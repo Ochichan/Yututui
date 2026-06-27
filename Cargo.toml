@@ -36,6 +36,10 @@ tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "process"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# The transport strip lays out wide media glyphs (⏮ ⏯ ⏭) and registers click rects by
+# hand, so it needs the same cell-width ratatui uses — `chars().count()` is wrong for
+# those. Already in the tree via ratatui, so this pins no extra copy.
+unicode-width = "0.2"
 
 # `kill_mpv_now` sends SIGKILL straight from the panic hook / signal handler; one
 # async-signal-safe syscall, no allocation. Unix only — Windows uses the Job Object

@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 use crate::app::{App, DownloadState, MouseTarget};
 use crate::keymap::Action;
 use crate::lyrics;
-use crate::ui::buttons::{self, ButtonSpec};
+use crate::ui::buttons::{self, Seg};
 use crate::util::format;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -65,9 +65,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     render_controls(frame, app, rows[3]);
 
-    // Transport status line: state, volume, queue position, shuffle, repeat.
+    // Transport status line: state, queue position, shuffle, repeat. (Volume sits in
+    // the transport strip above, next to its `-`/`+` controls.)
     let state = if app.paused { "⏸  paused" } else { "▶ playing" };
-    let mut info = format!("{state}    vol {}%", app.volume);
+    let mut info = state.to_owned();
     if !app.queue.is_empty() {
         let (pos, _) = app.queue.position();
         info.push_str(&format!("    {pos}/{}", app.queue.len()));
@@ -112,17 +113,35 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_help_button(frame, app, rows[6], Alignment::Center);
 }
 
+/// The transport strip under the seekbar: skip-back / play-pause / skip-forward, then a
+/// volume nudge cluster (`- 50% +`). No boxes — the glyphs *are* the buttons, so it
+/// reads like a real now-playing bar rather than a row of GUI buttons. Each control is
+/// padded to a few cells so it's an easy click target. The toggle shows the action
+/// (`▸` play when paused, `‖` pause when playing) and both glyphs are one cell, so the
+/// strip never reflows. Volume lives here (not the status line) to anchor the `-`/`+`
+/// controls to the number they change.
+///
+/// Every glyph is a plain non-emoji symbol (EAW-neutral, one cell everywhere) — unlike
+/// the ⏮/⏯ media emoji, which some terminals widen to two cells and so drift the click
+/// rects off the rendered glyph.
 fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
-    let play = if app.paused { "Play" } else { "Pause" };
-    let buttons = [
-        ButtonSpec::new(MouseTarget::Player(Action::PrevTrack), "Prev"),
-        ButtonSpec::new(MouseTarget::Player(Action::TogglePause), play),
-        ButtonSpec::new(MouseTarget::Player(Action::NextTrack), "Next"),
-        ButtonSpec::new(MouseTarget::Player(Action::VolDown), "Vol-"),
-        ButtonSpec::new(MouseTarget::Player(Action::VolUp), "Vol+"),
-        ButtonSpec::new(MouseTarget::Global(Action::ToggleHelp), "Keys"),
+    let toggle = if app.paused { " ▸ " } else { " ‖ " };
+    let vol = format!("{}%", app.volume);
+    let segments = [
+        Seg::button(MouseTarget::Player(Action::PrevTrack), " ⇤ "),
+        Seg::label("   "),
+        Seg::button(MouseTarget::Player(Action::TogglePause), toggle),
+        Seg::label("   "),
+        Seg::button(MouseTarget::Player(Action::NextTrack), " ⇥ "),
+        Seg::label("      "),
+        Seg::label("vol "),
+        Seg::button(MouseTarget::Player(Action::VolDown), " - "),
+        Seg::label(&vol),
+        Seg::button(MouseTarget::Player(Action::VolUp), " + "),
     ];
-    buttons::render_button_row(frame, app, area, &buttons, Alignment::Center);
+    let controls = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+    let labels = Style::default().fg(Color::Cyan);
+    buttons::render_segments(frame, app, area, &segments, controls, labels, Alignment::Center);
 }
 
 /// The synced-lyrics panel: a window of lines centered on the current one, which is
