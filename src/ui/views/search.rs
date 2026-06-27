@@ -6,11 +6,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, SearchFocus};
+use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -29,7 +30,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.search_focus == SearchFocus::Input;
-    let accent = if focused { Color::Magenta } else { Color::DarkGray };
+    let border = if focused { R::BorderFocused } else { R::BorderMuted };
     // Make it obvious when we're not signed in (anonymous = search + public play only).
     let title = if app.authenticated {
         " Search "
@@ -39,7 +40,8 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(accent));
+        .border_style(app.theme.style(border))
+        .style(app.theme.style(R::TextPrimary));
 
     // A trailing block cursor while the input has focus.
     let text = if focused {
@@ -47,12 +49,12 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         app.search_input.clone()
     };
-    frame.render_widget(Paragraph::new(text).block(block), area);
+    frame.render_widget(Paragraph::new(text).style(app.theme.style(R::TextPrimary)).block(block), area);
 }
 
 fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     if app.searching {
-        let msg = Line::from("Searching…").fg(Color::Yellow);
+        let msg = Line::from("Searching…").style(app.theme.style(R::Warning));
         frame.render_widget(Paragraph::new(msg), area);
         return;
     }
@@ -68,17 +70,23 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!("{heart}{} — {}  ({})", s.title, s.artist, s.duration)
             };
-            ListItem::new(line)
+            ListItem::new(line).style(app.theme.style(R::TextPrimary))
         })
         .collect();
 
     let highlight = if focused {
-        Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(app.theme.color(R::SelectionFg))
+            .bg(app.theme.color(R::SelectionBg))
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().add_modifier(Modifier::REVERSED)
+        Style::default()
+            .fg(app.theme.color(R::SelectionInactiveFg))
+            .bg(app.theme.color(R::SelectionInactiveBg))
     };
     let list = List::new(items)
         .highlight_style(highlight)
+        .style(app.theme.style(R::TextPrimary))
         .highlight_symbol("▶ ");
 
     let mut state = ListState::default();

@@ -5,18 +5,20 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, LibraryTab};
+use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(" Library ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(app.theme.style(R::BorderPrimary))
+        .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -41,12 +43,12 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 label,
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Magenta)
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg))
                     .add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled(label, Style::default().fg(Color::DarkGray))
+            Span::styled(label, app.theme.style(R::TextMuted))
         }
     };
     let mut spans = Vec::new();
@@ -70,7 +72,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             LibraryTab::History => "No history yet — play something.",
             LibraryTab::Downloads => "No downloaded tracks found in the download folder.",
         };
-        frame.render_widget(Paragraph::new(Line::from(msg).fg(Color::DarkGray)), area);
+        frame.render_widget(Paragraph::new(Line::from(msg).style(app.theme.style(R::TextMuted))), area);
         return;
     }
 
@@ -82,17 +84,18 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!("{} — {}  ({})", s.title, s.artist, s.duration)
             };
-            ListItem::new(line)
+            ListItem::new(line).style(app.theme.style(R::TextPrimary))
         })
         .collect();
 
     let list = List::new(items)
         .highlight_style(
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Magenta)
+                .fg(app.theme.color(R::SelectionFg))
+                .bg(app.theme.color(R::SelectionBg))
                 .add_modifier(Modifier::BOLD),
         )
+        .style(app.theme.style(R::TextPrimary))
         .highlight_symbol("▶ ");
 
     let mut state = ListState::default();

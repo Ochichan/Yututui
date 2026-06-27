@@ -24,6 +24,7 @@ use crate::player::PlayerCmd;
 use crate::playlists::Playlists;
 use crate::queue::Queue;
 use crate::settings::{self, Field, FieldKind, SettingsDraft, SettingsState, SettingsTab};
+use crate::theme::{ThemeConfig, ThemeRole};
 
 /// Queue length at or below which the autoplay/radio hook tops up the queue.
 const AUTOPLAY_THRESHOLD: usize = 3;
@@ -331,6 +332,8 @@ pub struct App {
     pub authenticated: bool,
     /// The resolved keybindings (defaults overlaid with user overrides from config).
     pub keymap: KeyMap,
+    /// Resolved color theme (preset plus user overrides).
+    pub theme: ThemeConfig,
     /// Whether the `?` help / cheat-sheet overlay is shown.
     pub help_visible: bool,
 
@@ -456,6 +459,7 @@ impl App {
             mode: Mode::Player,
             authenticated: false,
             keymap: KeyMap::default(),
+            theme: ThemeConfig::default(),
             help_visible: false,
             time_pos: None,
             duration: None,
@@ -518,6 +522,7 @@ impl App {
         self.ai_available = cfg.effective_gemini_api_key().is_some();
         self.gemini_model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
+        self.theme = cfg.effective_theme();
         // Keep the full config so the settings screen can persist the whole file.
         self.config = cfg.clone();
     }
@@ -814,8 +819,7 @@ impl App {
         // Ctrl+C always quits, regardless of mode or remapping (a hard safety key that is
         // never part of the keymap, so the user can't lock themselves out).
         if chord == Chord::new(KeyCode::Char('c'), KeyModifiers::CONTROL) {
-            self.should_quit = true;
-            return Vec::new();
+            return self.quit_app();
         }
 
         // Home is intentionally a hard global action: it should work even while a text
@@ -838,8 +842,7 @@ impl App {
         // While the help overlay is up, swallow input; help-toggle / Esc / Back dismiss it.
         if self.help_visible {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
-                self.should_quit = true;
-                return Vec::new();
+                return self.quit_app();
             }
             let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleHelp))
                 || k.code == KeyCode::Esc
@@ -873,8 +876,7 @@ impl App {
                     return Vec::new();
                 }
                 Action::Quit => {
-                    self.should_quit = true;
-                    return Vec::new();
+                    return self.quit_app();
                 }
                 Action::Home => return self.go_home(),
                 _ => {}
@@ -946,6 +948,18 @@ impl App {
         self.mode = Mode::Player;
         self.dirty = true;
         Vec::new()
+    }
+
+    fn quit_app(&mut self) -> Vec<Cmd> {
+        self.help_visible = false;
+        let cmds = if self.mode == Mode::Settings {
+            self.finish_settings_text_edit();
+            self.close_settings()
+        } else {
+            Vec::new()
+        };
+        self.should_quit = true;
+        cmds
     }
 
     /// A left-click at `(col, row)`: buttons fire their mapped action; the player's
@@ -1330,6 +1344,7 @@ impl App {
             // the user chose to keep only in the environment). The cost is that an env-only
             // key shows "(none)" here; the AI still works and README documents env-wins.
             gemini_api_key: self.config.gemini_api_key.clone().unwrap_or_default(),
+            theme: self.theme.clone(),
         };
         self.settings = Some(Box::new(SettingsState {
             tab: SettingsTab::General,
@@ -1354,6 +1369,10 @@ impl App {
             .settings
             .as_ref()
             .is_some_and(|s| s.tab == SettingsTab::Keys);
+        let on_colors_tab = self
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.tab == SettingsTab::Colors);
         // The editor must stay operable no matter how keys are remapped, so the literal
         // arrows / Enter / Esc / Tab are always honored here, on top of the configured ones.
         let action = self
@@ -1395,6 +1414,11 @@ impl App {
             // Reset the highlighted binding to its default (Keys tab only).
             Some(Action::DeleteChar) if on_keys_tab => {
                 self.settings_reset_binding();
+                Vec::new()
+            }
+            // Reset the highlighted color override to the selected theme preset default.
+            Some(Action::DeleteChar) if on_colors_tab => {
+                self.settings_reset_color();
                 Vec::new()
             }
             _ => Vec::new(),
@@ -1492,6 +1516,18 @@ impl App {
         }
     }
 
+    fn settings_reset_color(&mut self) {
+        let Some(Field::ThemeColor(role)) = self.settings.as_ref().map(|s| s.current_field()) else {
+            return;
+        };
+        if let Some(st) = self.settings.as_mut() {
+            st.draft.theme.reset_role(role);
+            self.theme = st.draft.theme.normalized();
+            self.status = format!("Reset {} color", role.label());
+            self.dirty = true;
+        }
+    }
+
     fn settings_switch_tab(&mut self, forward: bool) {
         if let Some(st) = self.settings.as_mut() {
             st.tab = st.tab.stepped(forward);
@@ -1582,8 +1618,16 @@ impl App {
                 s.draft.gemini_model = s.draft.gemini_model.cycled(dir >= 0);
                 Vec::new()
             }
+            Field::ThemePreset => {
+                let s = self.settings.as_mut().unwrap();
+                let next = s.draft.theme.preset_enum().stepped(dir);
+                s.draft.theme.set_preset(next);
+                self.theme = s.draft.theme.normalized();
+                self.status = format!("Theme: {}", next.label());
+                Vec::new()
+            }
             // Text fields ignore ←/→; Enter starts editing instead.
-            Field::CookiesFile | Field::DownloadDir | Field::ApiKey => Vec::new(),
+            Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => Vec::new(),
         }
     }
 
@@ -1643,6 +1687,9 @@ impl App {
         match field.kind() {
             FieldKind::Text => {
                 let st = self.settings.as_mut().unwrap();
+                if let Field::ThemeColor(role) = field {
+                    st.draft.theme.ensure_override_for_edit(role);
+                }
                 // A secret field (the API key) is masked, so editing in place is blind —
                 // appending to the hidden value silently corrupts it. Start fresh: clear
                 // the buffer so the user types/pastes a whole new key, but remember the
@@ -1673,6 +1720,9 @@ impl App {
         self.dirty = true;
         match k.code {
             KeyCode::Enter | KeyCode::Esc => {
+                if let Field::ThemeColor(role) = field {
+                    return self.settings_commit_color(role);
+                }
                 if let Some(st) = self.settings.as_mut() {
                     st.editing_text = false;
                     // Secret editor opened but left empty (no new key typed): restore the
@@ -1747,11 +1797,37 @@ impl App {
                 }
                 self.status = "API key saved".to_owned();
             }
+            Field::ThemeColor(_) => return Vec::new(),
             // Non-text fields never reach here (only Field::kind()==Text enters edit mode).
             _ => return Vec::new(),
         }
         cmds.push(Cmd::SaveConfig(Box::new(self.config.clone())));
         cmds
+    }
+
+    fn settings_commit_color(&mut self, role: ThemeRole) -> Vec<Cmd> {
+        let value = self
+            .settings
+            .as_ref()
+            .and_then(|s| s.draft.text_value(Field::ThemeColor(role)))
+            .unwrap_or_default()
+            .to_owned();
+        let Some(st) = self.settings.as_mut() else {
+            return Vec::new();
+        };
+        match st.draft.theme.set_override(role, &value) {
+            Ok(()) => {
+                st.editing_text = false;
+                self.theme = st.draft.theme.normalized();
+                self.status = format!("Set {} to {}", role.label(), st.draft.theme.effective_hex(role));
+            }
+            Err(msg) => {
+                st.editing_text = true;
+                self.status = msg;
+            }
+        }
+        self.dirty = true;
+        Vec::new()
     }
 
     /// The draft string backing the focused text field, if it is a text field.
@@ -1760,6 +1836,7 @@ impl App {
             Field::CookiesFile => Some(&mut st.draft.cookies_file),
             Field::DownloadDir => Some(&mut st.draft.download_dir),
             Field::ApiKey => Some(&mut st.draft.gemini_api_key),
+            Field::ThemeColor(role) => st.draft.theme.overrides.get_mut(role.id()),
             _ => None,
         }
     }
@@ -1804,6 +1881,8 @@ impl App {
         // Commit the edited keybindings (live + persisted as compact overrides).
         self.keymap = st.keymap.clone();
         self.config.keybindings = self.keymap.to_overrides();
+        self.theme = st.draft.theme.normalized();
+        self.config.theme = self.theme.clone();
         let key_changed = self.config.gemini_api_key != old_key;
         // Volume controls change the live value in place; fold it in so a save
         // doesn't persist the stale startup value.
@@ -2777,6 +2856,10 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
         app.update(Msg::Key(key(KeyCode::Tab)));
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Theme);
+        app.update(Msg::Key(key(KeyCode::Tab)));
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Colors);
+        app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General); // wraps
@@ -2786,7 +2869,7 @@ mod tests {
     fn settings_key_capture_accepts_ctrl_chords() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
-        for _ in 0..4 {
+        for _ in 0..6 {
             app.update(Msg::Key(key(KeyCode::Tab)));
         }
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
@@ -2813,6 +2896,52 @@ mod tests {
                 .get("player.toggle_pause")
                 .map(String::as_str),
             Some("ctrl+x")
+        );
+    }
+
+    #[test]
+    fn settings_theme_persists_when_closed_with_back() {
+        let mut app = app_playing(1, 0);
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // Theme tab
+        }
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Theme);
+
+        app.update(Msg::Key(key(KeyCode::Right))); // Default -> Midnight
+        assert_eq!(app.theme.preset, "midnight");
+
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+        let saved = save_config(&cmds).expect("a SaveConfig cmd");
+        assert_eq!(saved.theme.preset, "midnight");
+
+        let mut restored = App::new(100);
+        restored.apply_config(saved);
+        assert_eq!(restored.theme.preset, "midnight");
+    }
+
+    #[test]
+    fn settings_color_overrides_persist_when_quitting() {
+        let mut app = app_playing(1, 0);
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+        let role = crate::theme::ThemeRole::Accent;
+        {
+            let st = app.settings.as_mut().unwrap();
+            st.tab = SettingsTab::Colors;
+            st.row = crate::theme::ThemeRole::ALL
+                .iter()
+                .position(|&r| r == role)
+                .unwrap();
+            st.draft.theme.set_override(role, "#123456").unwrap();
+            app.theme = st.draft.theme.normalized();
+        }
+
+        let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('q'))));
+        assert!(app.should_quit);
+        let saved = save_config(&cmds).expect("a SaveConfig cmd");
+        assert_eq!(
+            saved.theme.overrides.get("accent").map(String::as_str),
+            Some("#123456")
         );
     }
 

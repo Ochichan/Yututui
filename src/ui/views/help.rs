@@ -4,12 +4,13 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
 use crate::keymap;
+use crate::theme::ThemeRole as R;
 
 /// Render the cheat-sheet as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -19,15 +20,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(" Help · keybindings ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(app.theme.style(R::BorderPrimary))
+        .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
     // Split into two columns so the full list fits without scrolling on most terminals.
     let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
     let (left, right) = build_columns(app);
-    frame.render_widget(Paragraph::new(left), cols[0]);
-    frame.render_widget(Paragraph::new(right), cols[1]);
+    frame.render_widget(Paragraph::new(left).style(app.theme.style(R::TextPrimary)), cols[0]);
+    frame.render_widget(Paragraph::new(right).style(app.theme.style(R::TextPrimary)), cols[1]);
 }
 
 /// Build the cheat-sheet lines, split across two columns at a group boundary.
@@ -46,7 +48,7 @@ fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
         }
         col.push(Line::from(Span::styled(
             ctx.title().to_owned(),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            app.theme.style(R::HelpGroup).add_modifier(Modifier::BOLD),
         )));
         for action in &actions {
             let key = app
@@ -54,8 +56,8 @@ fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
                 .chord(ctx, *action)
                 .map_or_else(|| "—".to_owned(), keymap::format_chord);
             col.push(Line::from(vec![
-                Span::styled(format!("{key:>8}  "), Style::default().fg(Color::Yellow)),
-                Span::raw(action.human_label_for(ctx).to_owned()),
+                Span::styled(format!("{key:>8}  "), app.theme.style(R::HelpKey)),
+                Span::styled(action.human_label_for(ctx).to_owned(), app.theme.style(R::HelpAction)),
             ]));
         }
         placed += actions.len() + 1;

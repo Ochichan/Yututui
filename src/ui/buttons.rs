@@ -8,13 +8,14 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget};
 use crate::keymap::Action;
+use crate::theme::ThemeRole as R;
 
 /// One piece of a control strip: either a clickable control (`target` set) or static
 /// label/spacing. Clickable segments get the button style and a published hit rect;
@@ -83,6 +84,6 @@ pub fn render_segments(
 pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect, alignment: Alignment) {
     let label = app.help_footer();
     let segs = [Seg::button(MouseTarget::Global(Action::ToggleHelp), label.as_str())];
-    let hint = Style::default().fg(Color::DarkGray);
+    let hint = app.theme.style(R::TextMuted);
     render_segments(frame, app, area, &segs, hint, hint, alignment);
 }

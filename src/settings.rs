@@ -13,6 +13,7 @@ use crate::ai::GeminiModel;
 use crate::config::{Config, SPEED_MAX, SPEED_MIN, default_cookies_file, default_download_dir};
 use crate::eq::{self, EqPreset};
 use crate::keymap::{Action, KeyContext, KeyMap};
+use crate::theme::{ThemeConfig, ThemeRole};
 
 /// Per-band gain limits and keyboard step (dB), for the EQ sliders.
 pub const BAND_GAIN_MIN: f64 = -12.0;
@@ -28,15 +29,19 @@ pub enum SettingsTab {
     Playback,
     Eq,
     Ai,
+    Theme,
+    Colors,
     Keys,
 }
 
 impl SettingsTab {
-    pub const ALL: [SettingsTab; 5] = [
+    pub const ALL: [SettingsTab; 7] = [
         SettingsTab::General,
         SettingsTab::Playback,
         SettingsTab::Eq,
         SettingsTab::Ai,
+        SettingsTab::Theme,
+        SettingsTab::Colors,
         SettingsTab::Keys,
     ];
 
@@ -46,6 +51,8 @@ impl SettingsTab {
             SettingsTab::Playback => "Playback",
             SettingsTab::Eq => "EQ",
             SettingsTab::Ai => "AI",
+            SettingsTab::Theme => "Theme",
+            SettingsTab::Colors => "Colors",
             SettingsTab::Keys => "Keys",
         }
     }
@@ -74,6 +81,8 @@ impl SettingsTab {
                 f
             }
             SettingsTab::Ai => vec![Field::GeminiModel, Field::ApiKey, Field::AutoplayRadio],
+            SettingsTab::Theme => vec![Field::ThemePreset],
+            SettingsTab::Colors => ThemeRole::ALL.iter().copied().map(Field::ThemeColor).collect(),
             // The Keys tab is a list of remappable bindings, not `Field`s; it has its own
             // navigation and rendering paths (see `crate::keymap::editable_entries`).
             SettingsTab::Keys => Vec::new(),
@@ -100,6 +109,9 @@ pub enum Field {
     GeminiModel,
     ApiKey,
     AutoplayRadio,
+    // Theme
+    ThemePreset,
+    ThemeColor(ThemeRole),
 }
 
 /// How a field is edited / rendered.
@@ -118,10 +130,10 @@ pub enum FieldKind {
 impl Field {
     pub fn kind(self) -> FieldKind {
         match self {
-            Field::CookiesFile | Field::DownloadDir | Field::ApiKey => FieldKind::Text,
+            Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => FieldKind::Text,
             Field::Mouse | Field::AutoplayOnStart | Field::Gapless | Field::AutoplayRadio
             | Field::Normalize => FieldKind::Toggle,
-            Field::EqPreset | Field::GeminiModel => FieldKind::Select,
+            Field::EqPreset | Field::GeminiModel | Field::ThemePreset => FieldKind::Select,
             Field::Speed | Field::Band(_) => FieldKind::Slider,
         }
     }
@@ -140,6 +152,8 @@ impl Field {
             Field::Normalize => "Normalize (loudness)".to_owned(),
             Field::GeminiModel => "Model".to_owned(),
             Field::ApiKey => "API key".to_owned(),
+            Field::ThemePreset => "Preset".to_owned(),
+            Field::ThemeColor(role) => role.label().to_owned(),
         }
     }
 
@@ -175,6 +189,8 @@ pub struct SettingsDraft {
     pub gemini_model: GeminiModel,
     /// The Gemini key as stored in config (env `GEMINI_API_KEY` still overrides at launch).
     pub gemini_api_key: String,
+    /// Color theme preset plus role overrides.
+    pub theme: ThemeConfig,
 }
 
 impl SettingsDraft {
@@ -206,6 +222,8 @@ impl SettingsDraft {
             Field::Band(i) => format!("{:+.0} dB", self.eq_bands[i]),
             Field::Normalize => toggle_str(self.normalize),
             Field::GeminiModel => self.gemini_model.label().to_owned(),
+            Field::ThemePreset => self.theme.preset_enum().label().to_owned(),
+            Field::ThemeColor(role) => self.theme.effective_hex(role),
             // Never echo the key. Editing shows a masked buffer (handled in the view); this
             // is the at-rest summary.
             Field::ApiKey => {
@@ -226,6 +244,7 @@ impl SettingsDraft {
             Field::CookiesFile => Some(&self.cookies_file),
             Field::DownloadDir => Some(&self.download_dir),
             Field::ApiKey => Some(&self.gemini_api_key),
+            Field::ThemeColor(role) => self.theme.overrides.get(role.id()).map(String::as_str),
             _ => None,
         }
     }
@@ -247,6 +266,7 @@ impl SettingsDraft {
         cfg.normalize = Some(self.normalize);
         cfg.gemini_model = self.gemini_model;
         cfg.gemini_api_key = blank_to_none(&self.gemini_api_key);
+        cfg.theme = self.theme.normalized();
     }
 }
 
@@ -327,6 +347,7 @@ mod tests {
             normalize: false,
             gemini_model: GeminiModel::default(),
             gemini_api_key: String::new(),
+            theme: ThemeConfig::default(),
         }
     }
 
@@ -334,7 +355,9 @@ mod tests {
     fn tabs_step_and_wrap() {
         assert_eq!(SettingsTab::General.stepped(true), SettingsTab::Playback);
         assert_eq!(SettingsTab::Eq.stepped(true), SettingsTab::Ai);
-        assert_eq!(SettingsTab::Ai.stepped(true), SettingsTab::Keys);
+        assert_eq!(SettingsTab::Ai.stepped(true), SettingsTab::Theme);
+        assert_eq!(SettingsTab::Theme.stepped(true), SettingsTab::Colors);
+        assert_eq!(SettingsTab::Colors.stepped(true), SettingsTab::Keys);
         assert_eq!(SettingsTab::Keys.stepped(true), SettingsTab::General); // wraps
         assert_eq!(SettingsTab::General.stepped(false), SettingsTab::Keys); // wraps back
     }
@@ -358,6 +381,67 @@ mod tests {
         assert_eq!(Field::ApiKey.kind(), FieldKind::Text);
         assert!(Field::ApiKey.is_secret());
         assert!(!Field::GeminiModel.is_secret());
+    }
+
+    #[test]
+    fn theme_and_colors_tabs_are_editable_and_persistent() {
+        assert_eq!(SettingsTab::Theme.fields(), vec![Field::ThemePreset]);
+        let color_fields = SettingsTab::Colors.fields();
+        assert_eq!(color_fields.len(), ThemeRole::ALL.len());
+        assert!(matches!(color_fields[0], Field::ThemeColor(ThemeRole::Background)));
+
+        let mut draft = base_draft();
+        draft.theme.set_preset(crate::theme::ThemePreset::Midnight);
+        draft.theme.set_override(ThemeRole::Accent, "#123456").unwrap();
+        let mut cfg = Config::default();
+        draft.apply_to(&mut cfg);
+        assert_eq!(cfg.theme.preset, "midnight");
+        assert_eq!(cfg.theme.overrides.get("accent").map(String::as_str), Some("#123456"));
+    }
+
+    #[test]
+    fn apply_to_persists_every_settings_field() {
+        let mut bands = EqPreset::Flat.gains();
+        bands[2] = 4.0;
+        let mut theme = ThemeConfig::default();
+        theme.set_preset(crate::theme::ThemePreset::HighContrast);
+        theme.set_override(ThemeRole::BorderPrimary, "#123456").unwrap();
+
+        let draft = SettingsDraft {
+            cookies_file: "/tmp/cookies.txt".to_owned(),
+            download_dir: "/tmp/downloads".to_owned(),
+            mouse: false,
+            autoplay_on_start: true,
+            speed: 1.7,
+            gapless: false,
+            autoplay_radio: true,
+            eq_preset: EqPreset::Custom,
+            eq_bands: bands,
+            normalize: true,
+            gemini_model: GeminiModel::Latest,
+            gemini_api_key: "  AIzaPersist  ".to_owned(),
+            theme,
+        };
+
+        let mut cfg = Config::default();
+        draft.apply_to(&mut cfg);
+        assert_eq!(cfg.cookies_file, Some(PathBuf::from("/tmp/cookies.txt")));
+        assert_eq!(cfg.download_dir, Some(PathBuf::from("/tmp/downloads")));
+        assert_eq!(cfg.mouse, Some(false));
+        assert_eq!(cfg.autoplay_on_start, Some(true));
+        assert_eq!(cfg.speed, Some(1.7));
+        assert_eq!(cfg.gapless, Some(false));
+        assert_eq!(cfg.autoplay_radio, Some(true));
+        assert_eq!(cfg.eq_preset, EqPreset::Custom);
+        assert_eq!(cfg.eq_bands, Some(bands));
+        assert_eq!(cfg.normalize, Some(true));
+        assert_eq!(cfg.gemini_model, GeminiModel::Latest);
+        assert_eq!(cfg.gemini_api_key.as_deref(), Some("AIzaPersist"));
+        assert_eq!(cfg.theme.preset, "high_contrast");
+        assert_eq!(
+            cfg.theme.overrides.get("border_primary").map(String::as_str),
+            Some("#123456")
+        );
     }
 
     #[test]

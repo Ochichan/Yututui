@@ -1,10 +1,10 @@
-//! The settings view: a tab bar (General / Playback / EQ) over a list of editable
+//! The settings view: a tab bar over a list of editable
 //! field rows. State lives in `App.settings`; like the library view, the `ListState`
 //! that highlights the focused row is rebuilt fresh each frame from a `usize` index.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 
@@ -13,19 +13,21 @@ use crate::keymap::{self, Action, KeyContext};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
 use crate::config::{SPEED_MAX, SPEED_MIN};
+use crate::theme::ThemeRole as R;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(" Settings ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     // No screen without state — but render defensively rather than panic.
     let Some(st) = app.settings.as_deref() else {
         return;
     };
+    let theme = &st.draft.theme;
+    let block = Block::default()
+        .title(" Settings ")
+        .borders(Borders::ALL)
+        .border_style(theme.style(R::BorderPrimary))
+        .style(theme.style(R::TextPrimary));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     let rows = Layout::vertical([
         Constraint::Length(1), // tab bar
@@ -45,13 +47,26 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Footer reflects the *committed* keymap, since that's what operates the screen until
     // the edits are saved.
     let k = |a| app.keymap.label(KeyContext::Settings, a);
-    let help_text = if st.editing_text {
+    let help_text = if st.editing_text && st.tab == SettingsTab::Colors {
+        "type #RRGGBB · Enter save · Backspace delete".to_owned()
+    } else if st.editing_text {
         // While typing a path/key, Enter or Esc both commit *and* persist it immediately,
         // so the value can't be lost by leaving the screen later.
         "type value · Enter or Esc save · Backspace delete".to_owned()
     } else if st.tab == SettingsTab::Keys {
         format!(
             "{}/{} select · {} rebind · {} reset · {} switch tab · {}/{} save+close",
+            k(Action::MoveUp),
+            k(Action::MoveDown),
+            k(Action::Confirm),
+            k(Action::DeleteChar),
+            k(Action::FocusNext),
+            k(Action::SettingsSave),
+            k(Action::SettingsCancel),
+        )
+    } else if st.tab == SettingsTab::Colors {
+        format!(
+            "{}/{} color · {} edit · {} reset · {} switch tab · {}/{} save+close",
             k(Action::MoveUp),
             k(Action::MoveDown),
             k(Action::Confirm),
@@ -73,13 +88,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             k(Action::SettingsCancel),
         )
     };
-    frame.render_widget(Paragraph::new(Line::from(help_text).fg(Color::DarkGray)), rows[3]);
+    frame.render_widget(Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))), rows[3]);
 }
 
 /// The Keys tab: a scrollable list of every remappable binding, grouped by context. The
 /// chord shown is from the *draft* keymap so edits appear immediately; the row being
 /// rebound shows a capture prompt.
 fn render_keys(frame: &mut Frame, st: &SettingsState, area: Rect) {
+    let theme = &st.draft.theme;
     let entries = keymap::editable_entries();
     let mut prev_ctx: Option<KeyContext> = None;
     let items: Vec<ListItem> = entries
@@ -100,17 +116,18 @@ fn render_keys(frame: &mut Frame, st: &SettingsState, area: Rect) {
             let group_cell =
                 if group.is_empty() { format!("{group:<13}") } else { format!("{group:<12} ") };
             let focused = i == st.row;
-            let key_color = if focused { Color::Cyan } else { Color::White };
+            let key_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
             ListItem::new(Line::from(vec![
-                Span::styled(group_cell, Style::default().fg(Color::Magenta)),
-                Span::styled(format!("{:<24}", action.human_label_for(ctx)), Style::default().fg(Color::Gray)),
-                Span::styled(key, Style::default().fg(key_color)),
+                Span::styled(group_cell, theme.style(R::SettingsGroup)),
+                Span::styled(format!("{:<24}", action.human_label_for(ctx)), theme.style(R::SettingsLabel)),
+                Span::styled(key, theme.style(key_role)),
             ]))
         })
         .collect();
 
     let list = List::new(items)
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD))
+        .style(theme.style(R::TextPrimary))
+        .highlight_style(theme.style(R::SettingsValueFocused).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
     let mut state = ListState::default();
@@ -119,11 +136,17 @@ fn render_keys(frame: &mut Frame, st: &SettingsState, area: Rect) {
 }
 
 fn render_tabs(frame: &mut Frame, st: &SettingsState, area: Rect) {
+    let theme = &st.draft.theme;
     let titles: Vec<&str> = crate::settings::SettingsTab::ALL.iter().map(|t| t.label()).collect();
     let tabs = Tabs::new(titles)
         .select(st.tab.index())
-        .style(Style::default().fg(Color::DarkGray))
-        .highlight_style(Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD))
+        .style(theme.style(R::TextMuted))
+        .highlight_style(
+            Style::default()
+                .fg(theme.color(R::SelectionFg))
+                .bg(theme.color(R::SelectionBg))
+                .add_modifier(Modifier::BOLD),
+        )
         .divider(" ");
     frame.render_widget(tabs, area);
 }
@@ -137,7 +160,8 @@ fn render_fields(frame: &mut Frame, st: &SettingsState, area: Rect) {
         .collect();
 
     let list = List::new(items)
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD))
+        .style(st.draft.theme.style(R::TextPrimary))
+        .highlight_style(st.draft.theme.style(R::SettingsValueFocused).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
     let mut state = ListState::default();
@@ -148,7 +172,23 @@ fn render_fields(frame: &mut Frame, st: &SettingsState, area: Rect) {
 /// One field row: a left-aligned label and its current value (with a slider bar for
 /// numeric fields and a caret for the text field being edited).
 fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a> {
+    let theme = &st.draft.theme;
     let label = format!("{:<22}", field.label());
+    if let Field::ThemeColor(role) = field {
+        let value = if focused && st.editing_text {
+            st.draft.text_value(field).unwrap_or_default().to_owned()
+        } else {
+            st.draft.value_display(field)
+        };
+        let value_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
+        return ListItem::new(Line::from(vec![
+            Span::styled(label, theme.style(R::SettingsLabel)),
+            Span::styled("  ", Style::default().bg(theme.color(role))),
+            Span::raw("  "),
+            Span::styled(format!("{:<9}", value), theme.style(value_role)),
+            Span::styled(role.description().to_owned(), theme.style(R::TextMuted)),
+        ]));
+    }
     let value = match (field, field.kind()) {
         // Secret fields (API key) are never shown in clear text; while editing, render a
         // masked buffer of *that field's* typed length so keystrokes still register visibly.
@@ -169,10 +209,10 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
         (_, FieldKind::Select) => format!("< {} >", st.draft.value_display(field)),
         _ => st.draft.value_display(field),
     };
-    let value_color = if focused { Color::Cyan } else { Color::White };
+    let value_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
     ListItem::new(Line::from(vec![
-        Span::styled(label, Style::default().fg(Color::Gray)),
-        Span::styled(value, Style::default().fg(value_color)),
+        Span::styled(label, theme.style(R::SettingsLabel)),
+        Span::styled(value, theme.style(value_role)),
     ]))
 }
 

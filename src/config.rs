@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai::GeminiModel;
 use crate::eq::{self, EqPreset};
+use crate::theme::ThemeConfig;
 
 /// Clamp range for playback speed (matches the `>`/`<` controls and the settings slider).
 pub const SPEED_MIN: f64 = 0.5;
@@ -56,6 +57,10 @@ pub struct Config {
     /// Which Gemini model the assistant uses.
     pub gemini_model: GeminiModel,
 
+    // Theme -------------------------------------------------------------------
+    /// Color theme preset plus per-role `#RRGGBB` overrides.
+    pub theme: ThemeConfig,
+
     // Keybindings -------------------------------------------------------------
     /// User keybinding overrides, keyed `"<context>.<action>"` → chord string (e.g.
     /// `"player.toggle_pause" -> "space"`). Only entries that differ from the built-in
@@ -80,6 +85,7 @@ impl Default for Config {
             autoplay_on_start: None,
             gemini_api_key: None,
             gemini_model: GeminiModel::default(),
+            theme: ThemeConfig::default(),
             keybindings: std::collections::BTreeMap::new(),
         }
     }
@@ -213,6 +219,11 @@ impl Config {
     pub fn effective_gemini_model(&self) -> GeminiModel {
         self.gemini_model
     }
+
+    /// The normalized theme config to apply at runtime.
+    pub fn effective_theme(&self) -> ThemeConfig {
+        self.theme.normalized()
+    }
 }
 
 /// Default location for an optional exported Netscape cookies file.
@@ -314,6 +325,11 @@ mod tests {
 
     #[test]
     fn json_round_trips() {
+        let mut theme = ThemeConfig::default();
+        theme.set_preset(crate::theme::ThemePreset::Midnight);
+        theme
+            .set_override(crate::theme::ThemeRole::BorderPrimary, "#123456")
+            .unwrap();
         let c = Config {
             cookie: Some("SID=abc".to_owned()),
             cookies_file: Some(PathBuf::from("/tmp/cookies.txt")),
@@ -329,6 +345,7 @@ mod tests {
             autoplay_on_start: Some(true),
             gemini_api_key: Some("AIzaSecret".to_owned()),
             gemini_model: GeminiModel::Latest,
+            theme,
             keybindings: std::collections::BTreeMap::new(),
         };
         let s = serde_json::to_string(&c).unwrap();
@@ -346,6 +363,11 @@ mod tests {
         assert_eq!(back.autoplay_on_start, Some(true));
         assert_eq!(back.gemini_api_key.as_deref(), Some("AIzaSecret"));
         assert_eq!(back.gemini_model, GeminiModel::Latest);
+        assert_eq!(back.theme.preset, "midnight");
+        assert_eq!(
+            back.theme.overrides.get("border_primary").map(String::as_str),
+            Some("#123456")
+        );
     }
 
     #[test]

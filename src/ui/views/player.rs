@@ -3,13 +3,14 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
 
 use crate::app::{App, DownloadState, MouseTarget};
 use crate::keymap::Action;
 use crate::lyrics;
+use crate::theme::ThemeRole as R;
 use crate::ui::buttons::{self, Seg};
 use crate::util::format;
 
@@ -17,7 +18,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(" ytm-tui ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(app.theme.style(R::BorderPrimary))
+        .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -34,7 +36,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Title (or an error, if playback failed).
     let title = if !app.status.is_empty() {
-        Line::from(app.status.clone()).fg(Color::Red).alignment(Alignment::Center)
+        Line::from(app.status.clone())
+            .style(app.theme.style(R::Error))
+            .alignment(Alignment::Center)
     } else {
         let text = match app.queue.current() {
             Some(s) => {
@@ -43,7 +47,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             }
             None => "Nothing playing — press / to search".to_owned(),
         };
-        Line::from(text.bold()).alignment(Alignment::Center)
+        Line::from(text.bold())
+            .style(app.theme.style(R::TextPrimary))
+            .alignment(Alignment::Center)
     };
     frame.render_widget(Paragraph::new(title), rows[0]);
 
@@ -52,7 +58,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let dur = app.duration.unwrap_or(0.0);
     let ratio = if dur > 0.0 { (pos / dur).clamp(0.0, 1.0) } else { 0.0 };
     let seekbar = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Green).bg(Color::DarkGray))
+        .gauge_style(
+            Style::default()
+                .fg(app.theme.color(R::GaugeFilled))
+                .bg(app.theme.color(R::GaugeEmpty)),
+        )
         .ratio(ratio)
         .label(format!(
             "{} / {}",
@@ -137,7 +147,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     // Same style for buttons and labels so the clickable parts are visually indistinguishable.
-    let style = Style::default().fg(Color::Cyan);
+    let style = app.theme.style(R::PlayerLabel);
     buttons::render_segments(frame, app, area, &segments, style, style, Alignment::Center);
 }
 
@@ -172,7 +182,8 @@ fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(" EQ ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(app.theme.style(R::BorderPrimary))
+        .style(app.theme.style(R::TextPrimary));
     let list = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -185,9 +196,9 @@ fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
         let selected = *preset == app.eq_preset;
         let marker = if selected { "▸ " } else { "  " };
         let style = if selected {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            app.theme.style(R::TextPrimary)
         };
         let line = Line::from(format!("{marker}{}", preset.label())).style(style);
         frame.render_widget(Paragraph::new(line), row);
@@ -221,8 +232,8 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
         Seg::label(&vol),
         Seg::button(MouseTarget::Player(Action::VolUp), " + "),
     ];
-    let controls = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
-    let labels = Style::default().fg(Color::Cyan);
+    let controls = app.theme.style(R::PlayerControl).add_modifier(Modifier::BOLD);
+    let labels = app.theme.style(R::PlayerLabel);
     buttons::render_segments(frame, app, area, &segments, controls, labels, Alignment::Center);
 }
 
@@ -230,7 +241,7 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
 /// highlighted. Auto-scrolls as `time-pos` advances.
 fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
     let centered = |s: &str, style: Style| Line::from(s.to_owned()).style(style).alignment(Alignment::Center);
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = app.theme.style(R::LyricsDim);
 
     let lines = match &app.lyrics {
         Some(t) if !t.lines.is_empty() => &t.lines,
@@ -256,7 +267,7 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
     // Keep the current line vertically centered.
     let start = cur.unwrap_or(0).saturating_sub(height / 2);
 
-    let current_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let current_style = app.theme.style(R::LyricsCurrent).add_modifier(Modifier::BOLD);
     let rendered: Vec<Line> = lines
         .iter()
         .enumerate()

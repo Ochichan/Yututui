@@ -15,6 +15,7 @@ mod playlists;
 mod queue;
 mod resolver;
 mod settings;
+mod theme;
 mod tui;
 mod ui;
 mod util;
