@@ -282,7 +282,7 @@ impl KeyMap {
     }
 
     /// The chord bound to `action` in `ctx` (falling back to `Common`/`Global`), formatted
-    /// for display — e.g. `␣`, `←`, `^R`. Used to build the footers and cheat-sheet.
+    /// for display — e.g. `␣`, `←`, `^r`. Used to build the footers and cheat-sheet.
     pub fn label(&self, ctx: KeyContext, action: Action) -> String {
         let chord = self
             .labels
@@ -544,7 +544,7 @@ fn code_token(code: KeyCode) -> &'static str {
 }
 
 /// Render a chord as a compact human-readable label for footers / cheat-sheet:
-/// `␣`, `←/→/↑/↓`, `Enter`, `Esc`, `Tab`, `^R`, `M-x`, etc.
+/// `␣`, `←/→/↑/↓`, `Enter`, `Esc`, `Tab`, `^r`, `M-x`, etc.
 pub fn format_chord(chord: Chord) -> String {
     let mut s = String::new();
     if chord.mods.contains(KeyModifiers::CONTROL) {
@@ -556,11 +556,8 @@ pub fn format_chord(chord: Chord) -> String {
     if chord.mods.contains(KeyModifiers::SHIFT) {
         s.push('⇧');
     }
-    let modified = chord.mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
     match chord.code {
         KeyCode::Char(' ') => s.push('␣'),
-        // Uppercase the letter when shown with ^/M- so it reads as `^R`, not `^r`.
-        KeyCode::Char(c) if modified && c.is_ascii_alphabetic() => s.push(c.to_ascii_uppercase()),
         KeyCode::Char(c) => s.push(c),
         KeyCode::Left => s.push('←'),
         KeyCode::Right => s.push('→'),
@@ -599,8 +596,8 @@ mod tests {
 
     #[test]
     fn ctrl_and_arrow_formatting() {
-        assert_eq!(format_chord(parse_chord("ctrl+r").unwrap()), "^R");
-        assert_eq!(format_chord(parse_chord("ctrl+q").unwrap()), "^Q");
+        assert_eq!(format_chord(parse_chord("ctrl+r").unwrap()), "^r");
+        assert_eq!(format_chord(parse_chord("ctrl+q").unwrap()), "^q");
         assert_eq!(format_chord(parse_chord("left").unwrap()), "←");
         assert_eq!(format_chord(parse_chord("right").unwrap()), "→");
         assert_eq!(format_chord(parse_chord("up").unwrap()), "↑");
