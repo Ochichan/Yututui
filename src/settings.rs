@@ -7,10 +7,10 @@
 //! and persists. Rendering lives in [`crate::ui::views::settings`]; key handling in
 //! [`crate::app`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
-use crate::config::{Config, SPEED_MAX, SPEED_MIN};
+use crate::config::{Config, SPEED_MAX, SPEED_MIN, default_cookies_file};
 use crate::eq::{self, EqPreset};
 use crate::keymap::{Action, KeyContext, KeyMap};
 
@@ -178,7 +178,13 @@ impl SettingsDraft {
     pub fn value_display(&self, field: Field) -> String {
         match field {
             Field::CookiesFile => {
-                if self.cookies_file.is_empty() { "(none)".to_owned() } else { self.cookies_file.clone() }
+                if self.cookies_file.is_empty() {
+                    default_cookies_file()
+                        .map(|p| format!("(default: {})", display_path(&p)))
+                        .unwrap_or_else(|| "(none)".to_owned())
+                } else {
+                    self.cookies_file.clone()
+                }
             }
             Field::DownloadDir => {
                 if self.download_dir.is_empty() { "(default)".to_owned() } else { self.download_dir.clone() }
@@ -232,6 +238,17 @@ impl SettingsDraft {
         cfg.gemini_model = self.gemini_model;
         cfg.gemini_api_key = blank_to_none(&self.gemini_api_key);
     }
+}
+
+fn display_path(path: &Path) -> String {
+    if let Some(user_dirs) = directories::UserDirs::new()
+        && let Ok(stripped) = path.strip_prefix(user_dirs.home_dir())
+    {
+        let mut shortened = PathBuf::from("~");
+        shortened.push(stripped);
+        return shortened.display().to_string();
+    }
+    path.display().to_string()
 }
 
 /// The whole settings-screen state, boxed in `App` so it costs nothing when closed.

@@ -158,7 +158,7 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
         }
         // Show the live edit buffer with a caret for the focused text field.
         (Field::CookiesFile | Field::DownloadDir, _) if focused && st.editing_text => {
-            format!("{}▏", st.draft.value_display(field))
+            format!("{}▏", st.draft.text_value(field).unwrap_or_default())
         }
         (Field::Speed, _) => {
             format!("{}  {:.1}x", bar(st.draft.speed, SPEED_MIN, SPEED_MAX), st.draft.speed)

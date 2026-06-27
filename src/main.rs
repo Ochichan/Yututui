@@ -74,9 +74,10 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
     // Config is loaded in `async_main` (so mouse capture can reflect it) and passed in.
     let cookie = cfg.effective_cookie();
     let had_cookie = cookie.is_some();
-    // Only hand mpv a cookies file that actually exists: a configured-but-not-yet-
-    // exported path would make yt-dlp error and break anonymous playback.
-    let cookies_file = cfg.cookies_file.clone().filter(|p| p.exists());
+    // Only hand mpv/yt-dlp a cookies file that actually exists: a configured/default
+    // path that has not been exported yet would make yt-dlp error and break anonymous
+    // playback.
+    let cookies_file = cfg.effective_cookies_file().filter(|p| p.exists());
 
     let mut app = App::new(cfg.volume);
     // Load the local library (favorites + history); an absent/corrupt file → empty.

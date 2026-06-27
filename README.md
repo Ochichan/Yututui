@@ -38,6 +38,33 @@ ytm
 
 Press `?` in-app for the key list.
 
+## Cookies
+
+Cookies are optional. Without a cookie file, `ytm` uses anonymous search and playback,
+which works for public tracks. Add cookies only if you need signed-in YouTube Music
+access, gated tracks, or downloads that require your browser session.
+
+By default, `ytm` looks for a Netscape-format `cookies.txt` here:
+
+- **macOS:** `~/Music/ytm-tui/cookies.txt`
+- **Windows:** `%USERPROFILE%\Music\ytm-tui\cookies.txt`
+
+Create the folder, export YouTube/YouTube Music cookies from your browser as
+`cookies.txt`, then restart `ytm`.
+
+```sh
+# macOS
+mkdir -p ~/Music/ytm-tui
+```
+
+```powershell
+# Windows (PowerShell)
+New-Item -ItemType Directory "$HOME\Music\ytm-tui" -Force
+```
+
+You can also override the path in Settings (`Cookies file`). Keep this file private:
+it can act like a logged-in browser session.
+
 ## License
 
 MIT. Do whatever you want.

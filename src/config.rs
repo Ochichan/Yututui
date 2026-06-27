@@ -2,8 +2,9 @@
 //! of the old `~/.youtube-music-cli/config.json`.
 //!
 //! Auth: either an inline `cookie` (raw `Cookie:` header) or a `cookies_file` pointing
-//! at a Netscape `cookies.txt`. The header form feeds ytmapi-rs; the file is also handed
-//! to mpv/yt-dlp so they own stream resolution (PO tokens, throttling).
+//! at a Netscape `cookies.txt`. If no file is configured, `~/Music/ytm-tui/cookies.txt`
+//! (the platform music folder) is tried. The header form feeds ytmapi-rs; the file is
+//! also handed to mpv/yt-dlp so they own stream resolution (PO tokens, throttling).
 
 use std::fs;
 use std::path::PathBuf;
@@ -23,6 +24,7 @@ pub struct Config {
     /// Raw `Cookie:` header for music.youtube.com (takes precedence over the file).
     pub cookie: Option<String>,
     /// Path to a Netscape `cookies.txt` exported from the browser.
+    /// `None` -> `<user music dir>/ytm-tui/cookies.txt`.
     pub cookies_file: Option<PathBuf>,
     /// Startup volume, 0-100.
     pub volume: i64,
@@ -113,14 +115,14 @@ impl Config {
     }
 
     /// The `Cookie:` header to authenticate ytmapi-rs, from the inline value or by
-    /// parsing the configured `cookies.txt`. `None` if neither yields cookies.
+    /// parsing the configured/default `cookies.txt`. `None` if neither yields cookies.
     pub fn effective_cookie(&self) -> Option<String> {
         if let Some(c) = &self.cookie
             && !c.trim().is_empty()
         {
             return Some(c.clone());
         }
-        if let Some(file) = &self.cookies_file
+        if let Some(file) = self.effective_cookies_file()
             && let Ok(content) = fs::read_to_string(file)
         {
             let header = parse_netscape_cookies(&content);
@@ -129,6 +131,12 @@ impl Config {
             }
         }
         None
+    }
+
+    /// The cookies file to try. An explicit setting wins; otherwise the cross-platform
+    /// default is `<user music dir>/ytm-tui/cookies.txt`.
+    pub fn effective_cookies_file(&self) -> Option<PathBuf> {
+        self.cookies_file.clone().or_else(default_cookies_file)
     }
 
     /// The concrete directory downloads are saved to. Precedence: `YTM_DOWNLOAD_DIR`
@@ -199,6 +207,20 @@ impl Config {
     pub fn effective_gemini_model(&self) -> GeminiModel {
         self.gemini_model
     }
+}
+
+/// Default location for an optional exported Netscape cookies file.
+///
+/// macOS: `~/Music/ytm-tui/cookies.txt`
+/// Windows: `%USERPROFILE%\Music\ytm-tui\cookies.txt`
+pub fn default_cookies_file() -> Option<PathBuf> {
+    directories::UserDirs::new()
+        .and_then(|u| u.audio_dir().map(std::path::Path::to_path_buf))
+        .map(cookies_file_under_audio_dir)
+}
+
+fn cookies_file_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
+    audio_dir.join("ytm-tui").join("cookies.txt")
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -383,6 +405,26 @@ mod tests {
         assert!(header.contains("SAPISID=secret1"));
         assert!(header.contains("SID=secret2"));
         assert!(!header.contains("IGNORED"));
+    }
+
+    #[test]
+    fn default_cookies_file_lives_under_audio_dir() {
+        assert_eq!(
+            cookies_file_under_audio_dir(PathBuf::from("/Users/alice/Music")),
+            PathBuf::from("/Users/alice/Music/ytm-tui/cookies.txt")
+        );
+    }
+
+    #[test]
+    fn configured_cookies_file_overrides_default() {
+        let cfg = Config {
+            cookies_file: Some(PathBuf::from("/custom/cookies.txt")),
+            ..Config::default()
+        };
+        assert_eq!(
+            cfg.effective_cookies_file(),
+            Some(PathBuf::from("/custom/cookies.txt"))
+        );
     }
 
     #[test]
