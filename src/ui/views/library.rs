@@ -4,7 +4,7 @@
 //! visible window is laid out by ratatui, so there's no need to pre-format into state.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
@@ -33,7 +33,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     render_tabs(frame, app, rows[0]);
     render_list(frame, app, rows[2]);
 
-    buttons::render_help_button(frame, app, rows[3], Alignment::Left);
+    buttons::render_help_button(frame, app, rows[3]);
 }
 
 fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {

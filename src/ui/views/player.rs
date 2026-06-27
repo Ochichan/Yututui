@@ -85,7 +85,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // The full key list lives in the `?` cheat-sheet now; the footer just points to it
     // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
-    buttons::render_help_button(frame, app, rows[6], Alignment::Center);
+    buttons::render_help_button(frame, app, rows[6]);
 
     // The EQ preset dropdown draws last so its rows sit on top and win hit-testing.
     if app.eq_dropdown_open {

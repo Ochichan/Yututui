@@ -81,9 +81,9 @@ pub fn render_segments(
 
 /// The footer hint (e.g. "?  keybindings"): a single dim, clickable label — reads as a
 /// status-bar hint, not a button. Shared by every screen's footer.
-pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect, alignment: Alignment) {
+pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
     let label = app.help_footer();
     let segs = [Seg::button(MouseTarget::Global(Action::ToggleHelp), label.as_str())];
     let hint = app.theme.style(R::TextMuted);
-    render_segments(frame, app, area, &segs, hint, hint, alignment);
+    render_segments(frame, app, area, &segs, hint, hint, Alignment::Center);
 }

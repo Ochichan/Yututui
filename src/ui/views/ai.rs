@@ -5,7 +5,7 @@
 //! the input still works (submitting yields an inline error pointing at settings).
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
@@ -47,7 +47,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
     render_input(frame, app, rows[2]);
 
-    buttons::render_help_button(frame, app, rows[3], Alignment::Left);
+    buttons::render_help_button(frame, app, rows[3]);
 }
 
 fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {

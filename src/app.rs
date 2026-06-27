@@ -4186,6 +4186,53 @@ mod tests {
         assert_eq!(app.volume, 40);
     }
 
+    fn rendered_help_button(app: &App, width: u16, height: u16) -> MouseButtonRegion {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::render(f, app)).unwrap();
+
+        app.mouse_buttons
+            .borrow()
+            .iter()
+            .find(|b| b.target == MouseTarget::Global(Action::ToggleHelp))
+            .copied()
+            .expect("rendered help button")
+    }
+
+    fn assert_centered_in(rect: Rect, container: Rect) {
+        let left = rect.x.saturating_sub(container.x);
+        let right = container
+            .x
+            .saturating_add(container.width)
+            .saturating_sub(rect.x.saturating_add(rect.width));
+        assert_eq!(left, right, "help button should be centered in {container:?}");
+    }
+
+    #[test]
+    fn help_button_is_centered_on_footer_screens() {
+        let inner = Rect {
+            x: 1,
+            y: 1,
+            width: 78,
+            height: 18,
+        };
+
+        let player = App::new(100);
+        assert_centered_in(rendered_help_button(&player, 80, 20).rect, inner);
+
+        let mut search = App::new(100);
+        search.mode = Mode::Search;
+        assert_centered_in(rendered_help_button(&search, 80, 20).rect, inner);
+
+        let mut library = App::new(100);
+        library.mode = Mode::Library;
+        assert_centered_in(rendered_help_button(&library, 80, 20).rect, inner);
+
+        let mut ai = App::new(100);
+        ai.mode = Mode::Ai;
+        assert_centered_in(rendered_help_button(&ai, 80, 20).rect, inner);
+    }
+
     #[test]
     fn rendering_player_registers_control_buttons() {
         let app = app_playing(2, 0);
