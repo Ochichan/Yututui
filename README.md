@@ -33,7 +33,7 @@ source — install [Rust](https://rustup.rs) first.
 ## Run
 
 ```sh
-ytm
+ytt
 ```
 
 Press `?` in-app for the key list.
@@ -45,23 +45,23 @@ Downloaded tracks are saved under the user Music folder by default:
 - **macOS:** `~/Music/ytm-tui`
 - **Windows:** `%USERPROFILE%\Music\ytm-tui`
 
-Files are written directly into that folder; `ytm` does not create per-channel subfolders.
+Files are written directly into that folder; `ytt` does not create per-channel subfolders.
 
 You can override this in Settings (`Download dir`) or with `YTM_DOWNLOAD_DIR`.
 
 ## Cookies
 
-Cookies are optional. Without a cookie file, `ytm` uses anonymous search and playback,
+Cookies are optional. Without a cookie file, `ytt` uses anonymous search and playback,
 which works for public tracks. Add cookies only if you need signed-in YouTube Music
 access, gated tracks, or downloads that require your browser session.
 
-By default, `ytm` looks for a Netscape-format `cookies.txt` here:
+By default, `ytt` looks for a Netscape-format `cookies.txt` here:
 
 - **macOS:** `~/Music/ytm-tui/cookies.txt`
 - **Windows:** `%USERPROFILE%\Music\ytm-tui\cookies.txt`
 
 Create the folder, export YouTube/YouTube Music cookies from your browser as
-`cookies.txt`, then restart `ytm`.
+`cookies.txt`, then restart `ytt`.
 
 ```sh
 # macOS

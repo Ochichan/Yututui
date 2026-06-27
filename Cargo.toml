@@ -1,13 +1,13 @@
 [package]
 name = "ytm-tui"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 
-# The shipped command is `ytm` — short to type and what the README/installers expose.
+# The shipped command is `ytt` — short to type and what the README/installers expose.
 # The crate keeps the longer `ytm-tui` name (and the config/data dir string stays
 # "ytm-tui"), so this only renames the produced binary, nothing user-facing.
 [[bin]]
-name = "ytm"
+name = "ytt"
 path = "src/main.rs"
 
 [dependencies]

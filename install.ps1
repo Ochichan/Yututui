@@ -1,13 +1,13 @@
-# ytm-tui installer (Windows) — makes `ytm` runnable from any terminal, no manual setup.
+# ytm-tui installer (Windows) — makes `ytt` runnable from any terminal, no manual setup.
 #
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 --build   # force a source build
 #
-# Uses a prebuilt dist\ytm.exe if present, otherwise builds from source with cargo.
+# Uses a prebuilt dist\ytt.exe if present, otherwise builds from source with cargo.
 # Adds the install dir to your user PATH and checks for the mpv / yt-dlp runtime tools.
 
 $ErrorActionPreference = 'Stop'
-$Bin = 'ytm'
+$Bin = 'ytt'
 
 # $PSScriptRoot is reliably set for script-file execution; fall back to the CWD when the script
 # is run via -Command / Invoke-Expression (where $MyInvocation.MyCommand.Path is $null).
@@ -20,7 +20,7 @@ function Warn($m) { Write-Host "warn: $m"  -ForegroundColor Yellow }
 function Die($m)  { Write-Host "error: $m" -ForegroundColor Red; exit 1 }
 
 $ForceBuild = $args -contains '--build'
-$Prebuilt   = Join-Path $ScriptDir 'dist\ytm.exe'
+$Prebuilt   = Join-Path $ScriptDir 'dist\ytt.exe'
 
 # These drive the install directory below; on Server Core / some CI / redirected-profile
 # environments they can be unset, which would silently produce a bogus root-relative path.
@@ -29,7 +29,7 @@ if (-not $env:USERPROFILE)  { Die '$env:USERPROFILE is not set.' }
 
 # dist\ is gitignored, so a fresh `git clone` won't have it -> fall through to cargo.
 if (-not $ForceBuild -and (Test-Path $Prebuilt)) {
-    $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\ytm'
+    $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\ytt'
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     $Dest = Join-Path $InstallDir "$Bin.exe"
     Copy-Item $Prebuilt $Dest -Force
@@ -47,7 +47,7 @@ elseif ($ForceBuild) {
     Die "Rust (cargo) is not installed or not on PATH — required for --build.`n  Install Rust: https://rustup.rs  then re-run."
 }
 else {
-    Die "No prebuilt dist\ytm.exe and Rust isn't installed.`n  Install Rust: https://rustup.rs  then re-run, or download a prebuilt binary from the project's Releases page."
+    Die "No prebuilt dist\ytt.exe and Rust isn't installed.`n  Install Rust: https://rustup.rs  then re-run, or download a prebuilt binary from the project's Releases page."
 }
 
 # --- make sure the install dir is on the user PATH -------------------------------------

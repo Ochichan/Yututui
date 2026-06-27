@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# ytm-tui installer (macOS / Linux) — makes `ytm` runnable from anywhere, no manual setup.
+# ytm-tui installer (macOS / Linux) — makes `ytt` runnable from anywhere, no manual setup.
 #
 #   ./install.sh                  # use a prebuilt binary if one ships for this platform,
 #                                 # otherwise build from source with cargo
@@ -12,7 +12,7 @@
 #
 set -euo pipefail
 
-BIN=ytm
+BIN=ytt
 
 # Run from the repo root regardless of where the script was invoked from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
@@ -38,12 +38,12 @@ OS="$(uname -s)"
 ARCH="$(uname -m)"
 
 # Map (OS, ARCH) -> the prebuilt artifact we look for in dist/, if any. The name matches
-# the binary inside the CI release archive (ytm-tui-macos-arm64.tar.gz contains `ytm`), so
+# the binary inside the CI release archive (ytm-tui-macos-arm64.tar.gz contains `ytt`), so
 # extracting that archive into dist/ enables the fast path. dist/ is gitignored, so a fresh
 # `git clone` won't have it and will fall through to the cargo build below.
 prebuilt_for_platform() {
   case "$OS/$ARCH" in
-    Darwin/arm64) echo "dist/ytm" ;;
+    Darwin/arm64) echo "dist/ytt" ;;
     *)            echo "" ;;
   esac
 }
