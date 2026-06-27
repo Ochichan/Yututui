@@ -15,6 +15,7 @@ mod playlists;
 mod queue;
 mod resolver;
 mod settings;
+mod theme;
 mod tui;
 mod ui;
 mod util;
@@ -82,6 +83,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
     let mut app = App::new(cfg.volume);
     // Load the local library (favorites + history); an absent/corrupt file → empty.
     app.library = library::Library::load();
+    app.downloaded_tracks = library::scan_downloads(&cfg.effective_download_dir());
     app.restore_last_played_from_library();
     // Load local playlists (the AI playlist tools read/write these).
     app.playlists = playlists::Playlists::load();
@@ -153,8 +155,11 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
     let lyrics_handle = lyrics::spawn(worker_tx.clone());
 
     // Download actor: yt-dlp best-audio + tags + cover art, capped concurrency.
-    let download_handle =
-        download::spawn(worker_tx.clone(), cfg.effective_download_dir(), cookies_file.clone());
+    let download_handle = download::spawn(
+        worker_tx.clone(),
+        cfg.effective_download_dir(),
+        cookies_file.clone(),
+    );
 
     // Resolver actor: pre-resolves the next track's stream URL for instant skip.
     let resolver_handle = resolver::spawn(worker_tx.clone(), cookies_file);
@@ -208,11 +213,23 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
                         tracing::warn!(error = %e, "failed to save library");
                     }
                 }
-                Cmd::FetchLyrics { video_id, artist, title } => {
+                Cmd::ScanDownloads(dir) => {
+                    let songs = library::scan_downloads(&dir);
+                    let _ = worker_tx.send(Msg::DownloadsScanned(songs));
+                }
+                Cmd::FetchLyrics {
+                    video_id,
+                    artist,
+                    title,
+                } => {
                     lyrics_handle.fetch(video_id, artist, title);
                 }
                 Cmd::Download(song) => download_handle.start(song),
-                Cmd::Resolve { video_id, watch_url } => {
+                Cmd::SetDownloadDir(dir) => download_handle.set_dir(dir),
+                Cmd::Resolve {
+                    video_id,
+                    watch_url,
+                } => {
                     resolver_handle.resolve(video_id, watch_url);
                 }
                 Cmd::SaveConfig(cfg) => {
@@ -238,8 +255,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
                 Cmd::ReloadAi { key, model } => {
                     // Drop the old actor (closing its channel ends its task) and bring up a
                     // fresh one for the new key, so a key edited in Settings works at once.
-                    ai_handle =
-                        key.and_then(|k| ai::spawn(&k, model, worker_tx.clone()));
+                    ai_handle = key.and_then(|k| ai::spawn(&k, model, worker_tx.clone()));
                     app.ai_available = ai_handle.is_some();
                 }
             }

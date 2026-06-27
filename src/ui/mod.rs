@@ -4,12 +4,23 @@ pub mod buttons;
 pub mod views;
 
 use ratatui::Frame;
+use ratatui::style::Style;
+use ratatui::widgets::Block;
 
 use crate::app::{App, Mode};
+use crate::theme::ThemeRole as R;
 
 pub fn render(frame: &mut Frame, app: &App) {
     app.clear_mouse_regions();
     let area = frame.area();
+    frame.render_widget(
+        Block::default().style(
+            Style::default()
+                .fg(app.theme.color(R::TextPrimary))
+                .bg(app.theme.color(R::Background)),
+        ),
+        area,
+    );
     match app.mode {
         Mode::Player => views::player::render(frame, app, area),
         Mode::Search => views::search::render(frame, app, area),

@@ -10,7 +10,7 @@
 
 use std::collections::VecDeque;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +19,8 @@ use crate::api::Song;
 /// Caps on the two collections (bounded memory).
 const FAVORITES_MAX: usize = 999;
 const HISTORY_MAX: usize = 999;
+const DOWNLOADS_MAX: usize = 999;
+const AUDIO_EXTENSIONS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"];
 
 /// Saved tracks and play history, persisted to `<data dir>/library.json`.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -63,7 +65,11 @@ impl Library {
 
     /// Toggle `song`'s favorite status. Returns `true` if it is now a favorite.
     pub fn toggle_favorite(&mut self, song: &Song) -> bool {
-        if let Some(pos) = self.favorites.iter().position(|s| s.video_id == song.video_id) {
+        if let Some(pos) = self
+            .favorites
+            .iter()
+            .position(|s| s.video_id == song.video_id)
+        {
             self.favorites.remove(pos);
             false
         } else {
@@ -95,17 +101,45 @@ fn library_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().join("library.json"))
 }
 
+/// Scan the configured download directory for directly playable local audio files.
+///
+/// The downloader writes files directly under this folder, so this intentionally stays
+/// non-recursive and bounded. Missing/unreadable directories simply produce an empty list.
+pub fn scan_downloads(dir: &Path) -> Vec<Song> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let path = e.path();
+            let is_file = e.file_type().ok().is_some_and(|t| t.is_file());
+            (is_file && is_audio_file(&path)).then_some(path)
+        })
+        .collect();
+    paths.sort_by_key(|p| p.file_name().map(|s| s.to_string_lossy().to_lowercase()));
+    paths.truncate(DOWNLOADS_MAX);
+    paths.into_iter().map(Song::local_file).collect()
+}
+
+fn is_audio_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            AUDIO_EXTENSIONS
+                .iter()
+                .any(|known| e.eq_ignore_ascii_case(known))
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn song(id: &str) -> Song {
-        Song {
-            video_id: id.to_owned(),
-            title: format!("t-{id}"),
-            artist: "a".to_owned(),
-            duration: "1:00".to_owned(),
-        }
+        Song::remote(id, format!("t-{id}"), "a", "1:00")
     }
 
     #[test]
@@ -147,14 +181,21 @@ mod tests {
         }
         assert_eq!(lib.history.len(), HISTORY_MAX);
         // The most recent play is at the front.
-        assert_eq!(lib.history.front().unwrap().video_id, (HISTORY_MAX + 24).to_string());
+        assert_eq!(
+            lib.history.front().unwrap().video_id,
+            (HISTORY_MAX + 24).to_string()
+        );
     }
 
     #[test]
     fn loaded_library_is_trimmed_to_caps() {
         let mut lib = Library {
-            favorites: (0..(FAVORITES_MAX + 25)).map(|i| song(&format!("fav-{i}"))).collect(),
-            history: (0..(HISTORY_MAX + 25)).map(|i| song(&format!("hist-{i}"))).collect(),
+            favorites: (0..(FAVORITES_MAX + 25))
+                .map(|i| song(&format!("fav-{i}")))
+                .collect(),
+            history: (0..(HISTORY_MAX + 25))
+                .map(|i| song(&format!("hist-{i}")))
+                .collect(),
         };
         lib.trim_to_caps();
         assert_eq!(lib.favorites.len(), FAVORITES_MAX);
@@ -177,5 +218,40 @@ mod tests {
         let back: Library = serde_json::from_str("{}").unwrap();
         assert!(back.favorites.is_empty());
         assert!(back.history.is_empty());
+    }
+
+    #[test]
+    fn scan_downloads_finds_supported_audio_files() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("b.MP3"), b"").unwrap();
+        fs::write(dir.join("a.m4a"), b"").unwrap();
+        fs::write(dir.join("note.txt"), b"").unwrap();
+        fs::create_dir_all(dir.join("album")).unwrap();
+        fs::write(dir.join("album").join("nested.flac"), b"").unwrap();
+
+        let songs = scan_downloads(&dir);
+        let titles: Vec<&str> = songs.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, vec!["a", "b"]);
+        assert!(songs.iter().all(Song::is_local));
+        assert!(songs.iter().all(|s| s.video_id.starts_with("local:")));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scan_downloads_ignores_missing_dirs() {
+        assert!(scan_downloads(&temp_dir().join("missing")).is_empty());
+    }
+
+    fn temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ytm-tui-library-test-{}-{nanos}",
+            std::process::id()
+        ))
     }
 }

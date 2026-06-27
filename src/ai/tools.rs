@@ -35,78 +35,130 @@ pub struct ToolDeps<'a> {
 /// The full set of tool schemas to advertise to Gemini.
 pub fn declarations() -> Vec<Value> {
     vec![
-        decl("search_tracks", "Search YouTube for tracks matching a query. Returns a list with videoId, title, and artist. Use this to find tracks before playing or queueing them.", json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "What to search for, e.g. an artist, song, or genre." },
-                "limit": { "type": "integer", "description": "Max results (1-20). Defaults to 10." }
-            },
-            "required": ["query"]
-        })),
-        decl("play_music", "Immediately start playing music. Provide a natural-language query (the best match plays) or a videoId from a prior search.", json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "What to play, e.g. 'lo-fi beats' or a song title." },
-                "videoId": { "type": "string", "description": "A specific videoId to play (from search_tracks)." }
-            },
-            "required": []
-        })),
-        decl("add_to_queue", "Append one or more tracks to the play queue. Provide a query, a single videoId, or a list of videoIds.", json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "What to queue." },
-                "limit": { "type": "integer", "description": "How many results to queue when using a query (1-20). Defaults to 5." },
-                "videoId": { "type": "string", "description": "A single videoId to queue." },
-                "videoIds": { "type": "array", "items": { "type": "string" }, "description": "Several videoIds to queue." }
-            },
-            "required": []
-        })),
-        decl("get_queue", "Get the current track and the upcoming queue.", json!({ "type": "object", "properties": {} })),
-        decl("start_radio", "Start an endless radio: queue tracks related to a seed (defaults to the current track) and turn on autoplay so the queue keeps refilling.", json!({
-            "type": "object",
-            "properties": {
-                "seed": { "type": "string", "description": "Seed to base the radio on. Defaults to what's playing." }
-            },
-            "required": []
-        })),
-        decl("stop_radio", "Turn off autoplay radio (the queue stops auto-refilling).", json!({ "type": "object", "properties": {} })),
-        decl("get_suggestions", "Get a list of tracks related to a seed (defaults to the current track) and show them as pickable suggestions. Does not change playback.", json!({
-            "type": "object",
-            "properties": {
-                "seed": { "type": "string", "description": "Seed to base suggestions on. Defaults to what's playing." }
-            },
-            "required": []
-        })),
-        decl("get_user_playlists", "List the user's local playlists with their track counts.", json!({ "type": "object", "properties": {} })),
-        decl("play_playlist", "Play one of the user's local playlists by name or id.", json!({
-            "type": "object",
-            "properties": { "playlist": { "type": "string", "description": "Playlist name or id." } },
-            "required": ["playlist"]
-        })),
-        decl("create_playlist", "Create a new empty local playlist.", json!({
-            "type": "object",
-            "properties": { "name": { "type": "string", "description": "Name for the new playlist." } },
-            "required": ["name"]
-        })),
-        decl("add_to_playlist", "Add tracks to a local playlist. Provide the playlist name/id and a query, videoId, or list of videoIds.", json!({
-            "type": "object",
-            "properties": {
-                "playlist": { "type": "string", "description": "Target playlist name or id." },
-                "query": { "type": "string", "description": "What to add." },
-                "videoId": { "type": "string" },
-                "videoIds": { "type": "array", "items": { "type": "string" } }
-            },
-            "required": ["playlist"]
-        })),
-        decl("get_track_info", "Get details (title, artist, duration) for a track by videoId or query.", json!({
-            "type": "object",
-            "properties": {
-                "videoId": { "type": "string" },
-                "query": { "type": "string" }
-            },
-            "required": []
-        })),
-        decl("get_user_favorites", "List the user's favorited tracks.", json!({ "type": "object", "properties": {} })),
+        decl(
+            "search_tracks",
+            "Search YouTube for tracks matching a query. Returns a list with videoId, title, and artist. Use this to find tracks before playing or queueing them.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "What to search for, e.g. an artist, song, or genre." },
+                    "limit": { "type": "integer", "description": "Max results (1-20). Defaults to 10." }
+                },
+                "required": ["query"]
+            }),
+        ),
+        decl(
+            "play_music",
+            "Immediately start playing music. Provide a natural-language query (the best match plays) or a videoId from a prior search.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "What to play, e.g. 'lo-fi beats' or a song title." },
+                    "videoId": { "type": "string", "description": "A specific videoId to play (from search_tracks)." }
+                },
+                "required": []
+            }),
+        ),
+        decl(
+            "add_to_queue",
+            "Append one or more tracks to the play queue. Provide a query, a single videoId, or a list of videoIds.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "What to queue." },
+                    "limit": { "type": "integer", "description": "How many results to queue when using a query (1-20). Defaults to 5." },
+                    "videoId": { "type": "string", "description": "A single videoId to queue." },
+                    "videoIds": { "type": "array", "items": { "type": "string" }, "description": "Several videoIds to queue." }
+                },
+                "required": []
+            }),
+        ),
+        decl(
+            "get_queue",
+            "Get the current track and the upcoming queue.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        decl(
+            "start_radio",
+            "Start an endless radio: queue tracks related to a seed (defaults to the current track) and turn on autoplay so the queue keeps refilling.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "seed": { "type": "string", "description": "Seed to base the radio on. Defaults to what's playing." }
+                },
+                "required": []
+            }),
+        ),
+        decl(
+            "stop_radio",
+            "Turn off autoplay radio (the queue stops auto-refilling).",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        decl(
+            "get_suggestions",
+            "Get a list of tracks related to a seed (defaults to the current track) and show them as pickable suggestions. Does not change playback.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "seed": { "type": "string", "description": "Seed to base suggestions on. Defaults to what's playing." }
+                },
+                "required": []
+            }),
+        ),
+        decl(
+            "get_user_playlists",
+            "List the user's local playlists with their track counts.",
+            json!({ "type": "object", "properties": {} }),
+        ),
+        decl(
+            "play_playlist",
+            "Play one of the user's local playlists by name or id.",
+            json!({
+                "type": "object",
+                "properties": { "playlist": { "type": "string", "description": "Playlist name or id." } },
+                "required": ["playlist"]
+            }),
+        ),
+        decl(
+            "create_playlist",
+            "Create a new empty local playlist.",
+            json!({
+                "type": "object",
+                "properties": { "name": { "type": "string", "description": "Name for the new playlist." } },
+                "required": ["name"]
+            }),
+        ),
+        decl(
+            "add_to_playlist",
+            "Add tracks to a local playlist. Provide the playlist name/id and a query, videoId, or list of videoIds.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "playlist": { "type": "string", "description": "Target playlist name or id." },
+                    "query": { "type": "string", "description": "What to add." },
+                    "videoId": { "type": "string" },
+                    "videoIds": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["playlist"]
+            }),
+        ),
+        decl(
+            "get_track_info",
+            "Get details (title, artist, duration) for a track by videoId or query.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "videoId": { "type": "string" },
+                    "query": { "type": "string" }
+                },
+                "required": []
+            }),
+        ),
+        decl(
+            "get_user_favorites",
+            "List the user's favorited tracks.",
+            json!({ "type": "object", "properties": {} }),
+        ),
     ]
 }
 
@@ -216,7 +268,13 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
                 return err("nothing matched to add — try search_tracks first");
             }
             let count = songs.len();
-            send(deps, Msg::AiAddToPlaylist { playlist: playlist.clone(), songs });
+            send(
+                deps,
+                Msg::AiAddToPlaylist {
+                    playlist: playlist.clone(),
+                    songs,
+                },
+            );
             json!({ "added": count, "playlist": playlist })
         }
 
@@ -249,10 +307,17 @@ async fn resolve_songs(args: &Value, deps: &mut ToolDeps<'_>, default_limit: usi
         }
     }
     if let Some(id) = str_arg(args, "videoId") {
-        return vec![deps.cache.get(&id).cloned().unwrap_or_else(|| bare_song(&id))];
+        return vec![
+            deps.cache
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| bare_song(&id)),
+        ];
     }
     if let Some(query) = str_arg(args, "query") {
-        let limit = uint_arg(args, "limit").unwrap_or(default_limit).clamp(1, 20);
+        let limit = uint_arg(args, "limit")
+            .unwrap_or(default_limit)
+            .clamp(1, 20);
         if let Ok(songs) = ytdlp_search(&query, limit).await {
             cache_all(deps, &songs);
             return songs;
@@ -264,7 +329,9 @@ async fn resolve_songs(args: &Value, deps: &mut ToolDeps<'_>, default_limit: usi
 /// Best-effort related tracks (anonymous): a `"<seed> radio"` search. Authenticated
 /// related-track endpoints could improve this later.
 async fn related(seed: &str, n: usize) -> Vec<Song> {
-    ytdlp_search(&format!("{seed} radio"), n).await.unwrap_or_default()
+    ytdlp_search(&format!("{seed} radio"), n)
+        .await
+        .unwrap_or_default()
 }
 
 fn send(deps: &mut ToolDeps<'_>, msg: Msg) {
@@ -282,7 +349,7 @@ fn cache_all(deps: &mut ToolDeps<'_>, songs: &[Song]) {
 }
 
 fn bare_song(id: &str) -> Song {
-    Song { video_id: id.to_owned(), title: id.to_owned(), artist: String::new(), duration: String::new() }
+    Song::remote(id, id, "", "")
 }
 
 fn fmt_song(s: &Song) -> String {
@@ -329,9 +396,19 @@ mod tests {
         }
         let names: Vec<&str> = decls.iter().filter_map(|d| d["name"].as_str()).collect();
         for expected in [
-            "search_tracks", "play_music", "add_to_queue", "get_queue", "start_radio",
-            "stop_radio", "get_suggestions", "get_user_playlists", "play_playlist",
-            "create_playlist", "add_to_playlist", "get_track_info", "get_user_favorites",
+            "search_tracks",
+            "play_music",
+            "add_to_queue",
+            "get_queue",
+            "start_radio",
+            "stop_radio",
+            "get_suggestions",
+            "get_user_playlists",
+            "play_playlist",
+            "create_playlist",
+            "add_to_playlist",
+            "get_track_info",
+            "get_user_favorites",
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");
         }
@@ -357,7 +434,12 @@ mod tests {
         let mut cache = HashMap::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut side = false;
-        let mut deps = ToolDeps { ctx: &ctx, cache: &mut cache, msg_tx: &tx, side_effected: &mut side };
+        let mut deps = ToolDeps {
+            ctx: &ctx,
+            cache: &mut cache,
+            msg_tx: &tx,
+            side_effected: &mut side,
+        };
 
         let q = execute_tool("get_queue", &json!({}), &mut deps).await;
         assert_eq!(q["current"], "Now — Artist");
@@ -373,13 +455,15 @@ mod tests {
     async fn play_music_by_cached_video_id_emits_intent() {
         let ctx = ctx();
         let mut cache = HashMap::new();
-        cache.insert(
-            "vid1".to_owned(),
-            Song { video_id: "vid1".to_owned(), title: "T".to_owned(), artist: "A".to_owned(), duration: "1:00".to_owned() },
-        );
+        cache.insert("vid1".to_owned(), Song::remote("vid1", "T", "A", "1:00"));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut side = false;
-        let mut deps = ToolDeps { ctx: &ctx, cache: &mut cache, msg_tx: &tx, side_effected: &mut side };
+        let mut deps = ToolDeps {
+            ctx: &ctx,
+            cache: &mut cache,
+            msg_tx: &tx,
+            side_effected: &mut side,
+        };
 
         let r = execute_tool("play_music", &json!({ "videoId": "vid1" }), &mut deps).await;
         assert_eq!(r["playing"], "T — A");
@@ -396,7 +480,12 @@ mod tests {
         let mut cache = HashMap::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut side = false;
-        let mut deps = ToolDeps { ctx: &ctx, cache: &mut cache, msg_tx: &tx, side_effected: &mut side };
+        let mut deps = ToolDeps {
+            ctx: &ctx,
+            cache: &mut cache,
+            msg_tx: &tx,
+            side_effected: &mut side,
+        };
         execute_tool("stop_radio", &json!({}), &mut deps).await;
         assert!(matches!(rx.try_recv().unwrap(), Msg::AiSetAutoplay(false)));
     }

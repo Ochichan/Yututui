@@ -46,6 +46,7 @@ Downloaded tracks are saved under the user Music folder by default:
 - **Windows:** `%USERPROFILE%\Music\ytm-tui`
 
 Files are written directly into that folder; `ytt` does not create per-channel subfolders.
+The Library view includes those local audio files under `All` and `Downloads`.
 
 You can override this in Settings (`Download dir`) or with `YTM_DOWNLOAD_DIR`.
 

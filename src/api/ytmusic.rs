@@ -44,12 +44,7 @@ impl YtMusicApi {
                     .context("YouTube Music search failed")?;
                 Ok(songs
                     .into_iter()
-                    .map(|s| Song {
-                        video_id: s.video_id.get_raw().to_owned(),
-                        title: s.title,
-                        artist: s.artist,
-                        duration: s.duration,
-                    })
+                    .map(|s| Song::remote(s.video_id.get_raw(), s.title, s.artist, s.duration))
                     .collect())
             }
             Self::Anonymous => ytdlp_search(query, ANON_SEARCH_LIMIT).await,
@@ -105,10 +100,5 @@ fn parse_entry(e: &serde_json::Value) -> Option<Song> {
         .and_then(serde_json::Value::as_f64)
         .map(format::time)
         .unwrap_or_default();
-    Some(Song {
-        video_id,
-        title,
-        artist,
-        duration,
-    })
+    Some(Song::remote(video_id, title, artist, duration))
 }

@@ -6,11 +6,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{AiFocus, AiRole, App};
+use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
 /// Max rows the suggestions list takes when present.
@@ -20,7 +21,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(format!(" AI Assistant · {} ", app.gemini_model.label()))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(app.theme.style(R::BorderPrimary))
+        .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -54,14 +56,14 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
         let lines = vec![
             Line::from("AI assistant — control playback in plain language.".bold()),
             Line::from(""),
-            Line::from("No Gemini API key is configured.").fg(Color::Yellow),
-            Line::from("Add one in Settings (press , then the AI tab),"),
-            Line::from("or set the GEMINI_API_KEY environment variable."),
+            Line::from("No Gemini API key is configured.").style(app.theme.style(R::Warning)),
+            Line::from("Add one in Settings (press , then the AI tab),").style(app.theme.style(R::TextPrimary)),
+            Line::from("or set the GEMINI_API_KEY environment variable.").style(app.theme.style(R::TextPrimary)),
             Line::from(""),
-            Line::from("Then ask things like:").fg(Color::DarkGray),
-            Line::from("  \"play some lo-fi beats\"").fg(Color::DarkGray),
-            Line::from("  \"queue three upbeat songs\"").fg(Color::DarkGray),
-            Line::from("  \"start a radio based on what's playing\"").fg(Color::DarkGray),
+            Line::from("Then ask things like:").style(app.theme.style(R::TextMuted)),
+            Line::from("  \"play some lo-fi beats\"").style(app.theme.style(R::TextMuted)),
+            Line::from("  \"queue three upbeat songs\"").style(app.theme.style(R::TextMuted)),
+            Line::from("  \"start a radio based on what's playing\"").style(app.theme.style(R::TextMuted)),
         ];
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
         return;
@@ -69,19 +71,19 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
     for m in &app.ai_messages {
-        let (prefix, color) = match m.role {
-            AiRole::User => ("you ", Color::Cyan),
-            AiRole::Ai => ("ai  ", Color::Green),
-            AiRole::Error => ("err ", Color::Red),
+        let (prefix, role) = match m.role {
+            AiRole::User => ("you ", R::AiUser),
+            AiRole::Ai => ("ai  ", R::AiAssistant),
+            AiRole::Error => ("err ", R::AiError),
         };
         // First visual line carries the role prefix; wrapping handles the rest.
-        lines.push(Line::from(format!("{prefix}{}", m.text)).fg(color));
+        lines.push(Line::from(format!("{prefix}{}", m.text)).style(app.theme.style(role)));
     }
     if app.ai_thinking {
-        lines.push(Line::from("ai  …thinking".to_owned()).fg(Color::Yellow));
+        lines.push(Line::from("ai  …thinking".to_owned()).style(app.theme.style(R::AiThinking)));
     }
     if lines.is_empty() {
-        lines.push(Line::from("Ask me to play, queue, or find music.").fg(Color::DarkGray));
+        lines.push(Line::from("Ask me to play, queue, or find music.").style(app.theme.style(R::TextMuted)));
     }
 
     // Keep the latest content visible: scroll so the last lines sit at the bottom.
@@ -95,11 +97,12 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.ai_focus == AiFocus::Suggestions;
-    let accent = if focused { Color::Magenta } else { Color::DarkGray };
+    let border = if focused { R::BorderFocused } else { R::BorderMuted };
     let block = Block::default()
         .title(" Suggestions ")
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(accent));
+        .border_style(app.theme.style(border))
+        .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -108,16 +111,21 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|s| {
             let heart = if app.library.is_favorite(&s.video_id) { "♥ " } else { "" };
-            ListItem::new(format!("{heart}{} — {}", s.title, s.artist))
+            ListItem::new(format!("{heart}{} — {}", s.title, s.artist)).style(app.theme.style(R::TextPrimary))
         })
         .collect();
 
     let highlight = if focused {
-        Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(app.theme.color(R::SelectionFg))
+            .bg(app.theme.color(R::SelectionBg))
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().add_modifier(Modifier::REVERSED)
+        Style::default()
+            .fg(app.theme.color(R::SelectionInactiveFg))
+            .bg(app.theme.color(R::SelectionInactiveBg))
     };
-    let list = List::new(items).highlight_style(highlight).highlight_symbol("▶ ");
+    let list = List::new(items).style(app.theme.style(R::TextPrimary)).highlight_style(highlight).highlight_symbol("▶ ");
 
     let mut state = ListState::default();
     state.select(Some(app.ai_suggestions_selected.min(app.ai_suggestions.len().saturating_sub(1))));
@@ -126,15 +134,16 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.ai_focus == AiFocus::Input;
-    let accent = if focused { Color::Magenta } else { Color::DarkGray };
+    let border = if focused { R::BorderFocused } else { R::BorderMuted };
     let block = Block::default()
         .title(" Ask ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(accent));
+        .border_style(app.theme.style(border))
+        .style(app.theme.style(R::TextPrimary));
     let text = if focused {
         format!("{}\u{2588}", app.ai_input)
     } else {
         app.ai_input.clone()
     };
-    frame.render_widget(Paragraph::new(text).block(block), area);
+    frame.render_widget(Paragraph::new(text).style(app.theme.style(R::TextPrimary)).block(block), area);
 }

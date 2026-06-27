@@ -25,6 +25,7 @@ const OUTPUT_TEMPLATE: &str = "%(title)s.%(ext)s";
 
 pub enum DownloadCmd {
     Start(Song),
+    SetDir(PathBuf),
 }
 
 pub struct DownloadHandle {
@@ -34,6 +35,10 @@ pub struct DownloadHandle {
 impl DownloadHandle {
     pub fn start(&self, song: Song) {
         let _ = self.tx.send(DownloadCmd::Start(song));
+    }
+
+    pub fn set_dir(&self, dir: PathBuf) {
+        let _ = self.tx.send(DownloadCmd::SetDir(dir));
     }
 }
 
@@ -46,23 +51,29 @@ pub fn spawn(
     let (tx, mut rx) = mpsc::unbounded_channel::<DownloadCmd>();
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
     tokio::spawn(async move {
-        while let Some(DownloadCmd::Start(song)) = rx.recv().await {
-            let sem = sem.clone();
-            let tx = msg_tx.clone();
-            let dir = dir.clone();
-            let cookies = cookies.clone();
-            tokio::spawn(async move {
-                let Ok(_permit) = sem.acquire_owned().await else {
-                    return; // semaphore closed; nothing to do
-                };
-                if let Err(e) = run_download(&song, &dir, cookies.as_deref(), &tx).await {
-                    tracing::warn!(error = %format!("{e:#}"), video_id = %song.video_id, "download failed");
-                    let _ = tx.send(Msg::DownloadError {
-                        video_id: song.video_id.clone(),
-                        error: format!("{e:#}"),
+        let mut dir = dir;
+        while let Some(cmd) = rx.recv().await {
+            match cmd {
+                DownloadCmd::SetDir(new_dir) => dir = new_dir,
+                DownloadCmd::Start(song) => {
+                    let sem = sem.clone();
+                    let tx = msg_tx.clone();
+                    let dir = dir.clone();
+                    let cookies = cookies.clone();
+                    tokio::spawn(async move {
+                        let Ok(_permit) = sem.acquire_owned().await else {
+                            return; // semaphore closed; nothing to do
+                        };
+                        if let Err(e) = run_download(&song, &dir, cookies.as_deref(), &tx).await {
+                            tracing::warn!(error = %format!("{e:#}"), video_id = %song.video_id, "download failed");
+                            let _ = tx.send(Msg::DownloadError {
+                                video_id: song.video_id.clone(),
+                                error: format!("{e:#}"),
+                            });
+                        }
                     });
                 }
-            });
+            }
         }
     });
     DownloadHandle { tx }
@@ -79,7 +90,12 @@ async fn run_download(
     let mut cmd = Command::new("yt-dlp");
     cmd.arg(song.watch_url())
         .args(["-f", "bestaudio", "-x", "--audio-format", "m4a"])
-        .args(["--embed-metadata", "--embed-thumbnail", "--no-playlist", "--newline"])
+        .args([
+            "--embed-metadata",
+            "--embed-thumbnail",
+            "--no-playlist",
+            "--newline",
+        ])
         .arg("-P")
         .arg(dir)
         .args(["-o", OUTPUT_TEMPLATE])
@@ -88,7 +104,9 @@ async fn run_download(
     if let Some(c) = cookies {
         cmd.arg("--cookies").arg(c);
     }
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().context("spawn yt-dlp (is it installed?)")?;
     let stdout = child.stdout.take().expect("stdout piped");
@@ -101,7 +119,10 @@ async fn run_download(
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if let Some(pct) = parse_percent(&line) {
-                let _ = tx2.send(Msg::DownloadProgress { video_id: vid.clone(), percent: pct });
+                let _ = tx2.send(Msg::DownloadProgress {
+                    video_id: vid.clone(),
+                    percent: pct,
+                });
             }
         }
     });
@@ -117,7 +138,10 @@ async fn run_download(
     }
     let path = out.lines().last().unwrap_or_default().trim().to_owned();
     tracing::info!(path = %path, video_id = %song.video_id, "download done");
-    let _ = tx.send(Msg::DownloadDone { video_id: song.video_id.clone(), path });
+    let _ = tx.send(Msg::DownloadDone {
+        video_id: song.video_id.clone(),
+        path,
+    });
     Ok(())
 }
 
