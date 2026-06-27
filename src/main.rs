@@ -1,6 +1,7 @@
 mod ai;
 mod api;
 mod app;
+mod artwork;
 mod config;
 mod deps;
 mod download;
@@ -45,13 +46,40 @@ async fn async_main() -> Result<()> {
     // Load config before terminal init so mouse capture reflects it.
     let cfg = config::Config::load();
     let mouse = cfg.effective_mouse();
+    // Album art is opt-in: only probe the terminal for its graphics protocol + font size
+    // when the user enabled it, and do it BEFORE `tui::init` (the query reads/writes stdio,
+    // so running it ahead of the alternate screen + event stream avoids racing them). A
+    // failed probe falls back to halfblocks so the feature still shows something.
+    let art_picker = if cfg.effective_album_art() {
+        Some(build_art_picker())
+    } else {
+        None
+    };
     let mut terminal = tui::init(mouse)?;
-    let result = run(&mut terminal, cfg).await;
+    let result = run(&mut terminal, cfg, art_picker).await;
     tui::restore(mouse);
     result
 }
 
-async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Result<()> {
+/// Build the terminal image picker, querying the terminal for its graphics protocol and
+/// font size. Falls back to a halfblocks-only picker if the query fails (e.g. a terminal
+/// that doesn't answer the control sequences), so album art still renders — just blocky.
+fn build_art_picker() -> ratatui_image::picker::Picker {
+    use ratatui_image::picker::Picker;
+    match Picker::from_query_stdio() {
+        Ok(picker) => picker,
+        Err(e) => {
+            tracing::warn!(error = %e, "terminal graphics probe failed; album art falls back to halfblocks");
+            Picker::halfblocks()
+        }
+    }
+}
+
+async fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    cfg: config::Config,
+    art_picker: Option<ratatui_image::picker::Picker>,
+) -> Result<()> {
     // Resolve cross-platform dirs; logging + PID registry degrade gracefully if absent.
     let dirs = directories::ProjectDirs::from("", "", "ytm-tui");
     let _log_guard = dirs.as_ref().and_then(|d| {
@@ -83,6 +111,8 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
     let cookies_file = cfg.effective_cookies_file().filter(|p| p.exists());
 
     let mut app = App::new(cfg.volume);
+    // Hand over the terminal image picker (present only when album art is enabled).
+    app.art_picker = art_picker;
     // Load the local library (favorites + history); an absent/corrupt file → empty.
     app.library = library::Library::load();
     app.downloaded_tracks = library::scan_downloads(&cfg.effective_download_dir());
@@ -155,6 +185,10 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
 
     // Lyrics actor: fetches synced lyrics from lrclib on demand, cached per track.
     let lyrics_handle = lyrics::spawn(worker_tx.clone());
+
+    // Artwork actor: fetches + decodes album art / thumbnails on demand (only used when
+    // album art is enabled; the reducer simply never emits a fetch otherwise).
+    let artwork_handle = artwork::spawn(worker_tx.clone());
 
     // Download actor: yt-dlp best-audio + tags + cover art, capped concurrency.
     let download_handle = download::spawn(
@@ -235,6 +269,9 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
                     title,
                 } => {
                     lyrics_handle.fetch(video_id, artist, title);
+                }
+                Cmd::FetchArtwork { video_id, source } => {
+                    artwork_handle.fetch(video_id, source);
                 }
                 Cmd::Download(song) => download_handle.start(song),
                 Cmd::SetDownloadDir(dir) => download_handle.set_dir(dir),

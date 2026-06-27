@@ -6,6 +6,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
+use ratatui_image::StatefulImage;
 
 use crate::app::{App, DownloadState, MouseTarget};
 use crate::keymap::Action;
@@ -77,10 +78,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     render_status_line(frame, app, rows[4]);
 
-    // Lyrics panel (toggled with `L`) fills the central area when shown.
-    if app.lyrics_visible {
-        render_lyrics(frame, app, rows[5]);
-    }
+    // Central filler: album art (top) and/or the lyrics panel (below). With album art off
+    // this is exactly the old behaviour — lyrics fill the whole area, nothing else draws.
+    render_filler(frame, app, rows[5]);
 
     // The full key list lives in the `?` cheat-sheet now; the footer just points to it
     // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
@@ -238,6 +238,42 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
     let controls = app.theme.style(R::PlayerControl).add_modifier(Modifier::BOLD);
     let labels = app.theme.style(R::PlayerLabel);
     buttons::render_segments(frame, app, area, &segments, controls, labels, Alignment::Center);
+}
+
+/// The central area below the transport strip. Album art (when enabled and ready) sits on
+/// top; the lyrics panel (when toggled) sits below it. They split the space so they never
+/// overlap. When album art is off the layout is unchanged from before — lyrics get the
+/// whole area, and an empty area draws nothing.
+fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
+    match (app.art_active(), app.lyrics_visible) {
+        // Art on top (≈60%), lyrics below (≈40%) — tuned to keep the cover prominent while
+        // leaving a readable lyrics window. The image fits its slice by aspect (see
+        // `render_artwork`); lyrics flow under it.
+        (true, true) => {
+            let [art_area, lyrics_area] =
+                Layout::vertical([Constraint::Fill(3), Constraint::Fill(2)]).areas(area);
+            render_artwork(frame, app, art_area);
+            render_lyrics(frame, app, lyrics_area);
+        }
+        (true, false) => render_artwork(frame, app, area),
+        (false, true) => render_lyrics(frame, app, area),
+        (false, false) => {}
+    }
+}
+
+/// Draw the current track's album art / thumbnail, centered within `area` by its true
+/// aspect ratio (square covers stay square, 16:9 thumbnails stay wide — the picker knows
+/// the terminal's font cell size). Only called when `app.art_active()`, so the protocol is
+/// present; on a terminal with no graphics protocol this renders as unicode half-blocks.
+fn render_artwork(frame: &mut Frame, app: &App, area: Rect) {
+    // Below a few cells there's nothing but mush; skip so a tiny terminal stays clean.
+    if area.width < 6 || area.height < 3 {
+        return;
+    }
+    let rect = app.art_fit_rect(area);
+    if let Some(proto) = app.art.borrow_mut().as_mut() {
+        frame.render_stateful_widget(StatefulImage::new(), rect, proto);
+    }
 }
 
 /// The synced-lyrics panel: a window of lines centered on the current one, which is

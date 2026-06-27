@@ -1,0 +1,123 @@
+//! Album art / video thumbnail fetch + decode actor.
+//!
+//! Remote (catalog) tracks: the thumbnail is derived from the `video_id` via
+//! `i.ytimg.com/vi/<id>/…` — `maxresdefault.jpg` (clean native aspect) first, falling
+//! back to `hqdefault.jpg` (always present). Local tracks: the embedded cover art is read
+//! straight out of the file with `lofty`. Either way we decode + downscale off the main
+//! thread and hand the UI a ready [`image::DynamicImage`]; the player view turns it into a
+//! terminal graphics protocol via `ratatui-image`.
+//!
+//! This is opt-in (config `album_art`): the reducer only emits a fetch when the feature is
+//! on and a graphics protocol was detected at startup, so nothing here runs otherwise.
+
+use std::path::PathBuf;
+
+use image::DynamicImage;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+
+use crate::app::Msg;
+
+/// Cap the decoded image to this many pixels on its longest side. The protocol re-scales
+/// to the (much smaller) render area anyway; this just bounds the in-flight RAM and the
+/// per-track decode/encode cost — priority #1 is low memory.
+const MAX_DIM: u32 = 512;
+
+/// Where a track's art comes from.
+pub enum ArtSource {
+    /// A catalog track: fetch `i.ytimg.com/vi/<video_id>/…`.
+    Remote { video_id: String },
+    /// A local file: read its embedded cover art.
+    Local(PathBuf),
+}
+
+pub enum ArtworkCmd {
+    Fetch { video_id: String, source: ArtSource },
+}
+
+pub struct ArtworkHandle {
+    tx: UnboundedSender<ArtworkCmd>,
+}
+
+impl ArtworkHandle {
+    pub fn fetch(&self, video_id: String, source: ArtSource) {
+        let _ = self.tx.send(ArtworkCmd::Fetch { video_id, source });
+    }
+}
+
+/// Spawn the artwork actor; results return as [`Msg::ArtworkResult`].
+pub fn spawn(msg_tx: UnboundedSender<Msg>) -> ArtworkHandle {
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(run_actor(rx, msg_tx));
+    ArtworkHandle { tx }
+}
+
+async fn run_actor(mut rx: UnboundedReceiver<ArtworkCmd>, msg_tx: UnboundedSender<Msg>) {
+    let client = reqwest::Client::builder()
+        .user_agent("ytm-tui/1 (https://github.com/Ochichan/ytm-tui)")
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    // Sequential, like the lyrics actor: rapid skips queue up and the UI drops stale
+    // results by `video_id`, so a per-track image never races a later one onto the screen.
+    while let Some(ArtworkCmd::Fetch { video_id, source }) = rx.recv().await {
+        let bytes = match source {
+            ArtSource::Remote { video_id: id } => fetch_remote(&client, &id).await,
+            ArtSource::Local(path) => fetch_local(path).await,
+        };
+        let image = match bytes {
+            Some(b) => decode_scaled(b).await,
+            None => None,
+        };
+        tracing::info!(video_id = %video_id, found = image.is_some(), "artwork");
+        let _ = msg_tx.send(Msg::ArtworkResult { video_id, image });
+    }
+}
+
+/// Fetch the YouTube thumbnail for `video_id`: try the clean native-aspect `maxresdefault`
+/// (absent for some tracks), then the always-present 4:3 `hqdefault`.
+async fn fetch_remote(client: &reqwest::Client, video_id: &str) -> Option<Vec<u8>> {
+    for quality in ["maxresdefault", "hqdefault"] {
+        let url = format!("https://i.ytimg.com/vi/{video_id}/{quality}.jpg");
+        if let Ok(resp) = client.get(&url).send().await
+            && let Ok(resp) = resp.error_for_status()
+            && let Ok(bytes) = resp.bytes().await
+            && !bytes.is_empty()
+        {
+            return Some(bytes.to_vec());
+        }
+    }
+    None
+}
+
+/// Read embedded cover art from a local audio file (off-thread; lofty parses tags).
+async fn fetch_local(path: PathBuf) -> Option<Vec<u8>> {
+    tokio::task::spawn_blocking(move || local_cover_bytes(&path))
+        .await
+        .ok()
+        .flatten()
+}
+
+fn local_cover_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
+    use lofty::file::TaggedFileExt;
+    let tagged = lofty::read_from_path(path).ok()?;
+    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+    let pic = tag.pictures().first()?;
+    Some(pic.data().to_vec())
+}
+
+/// Decode the raw bytes and downscale to [`MAX_DIM`] (off-thread — decode/resize is CPU).
+async fn decode_scaled(bytes: Vec<u8>) -> Option<DynamicImage> {
+    tokio::task::spawn_blocking(move || {
+        let img = image::load_from_memory(&bytes).ok()?;
+        Some(if img.width() > MAX_DIM || img.height() > MAX_DIM {
+            // `resize` preserves aspect, fitting within the box; Triangle is a good
+            // quality/speed balance (the protocol re-scales again at render).
+            img.resize(MAX_DIM, MAX_DIM, image::imageops::FilterType::Triangle)
+        } else {
+            img
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+}

@@ -2,6 +2,12 @@
 
 A fast, low-RAM YouTube Music player for your terminal. Inspired by youtube-music-cli.
 
+## Features
+
+- Keyboard-first YouTube Music playback with queue, search, library, downloads, lyrics, and AI radio controls.
+- Theme presets plus per-role color overrides from Settings.
+- Optional album art / video thumbnails in supported terminals. Enable `Album art (next launch)` in Settings.
+
 ## Requirements
 
 [`mpv`](https://mpv.io) and [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) must be on your `PATH`

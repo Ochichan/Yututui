@@ -35,7 +35,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 /// Build the cheat-sheet lines, split across two columns at a group boundary.
 fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
     let groups = keymap::groups();
-    let total: usize = groups.iter().map(|(_, a)| a.len() + 1).sum();
+    // Each group occupies its header + bindings + one trailing blank as padding.
+    let total: usize = groups.iter().map(|(_, a)| a.len() + 2).sum();
 
     let mut left: Vec<Line> = Vec::new();
     let mut right: Vec<Line> = Vec::new();
@@ -43,9 +44,6 @@ fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
     for (ctx, actions) in groups {
         // Once the left column holds roughly half the rows, spill into the right one.
         let col = if placed * 2 < total { &mut left } else { &mut right };
-        if !col.is_empty() {
-            col.push(Line::from(""));
-        }
         col.push(Line::from(Span::styled(
             ctx.title().to_owned(),
             app.theme.style(R::HelpGroup).add_modifier(Modifier::BOLD),
@@ -60,7 +58,9 @@ fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
                 Span::styled(action.human_label_for(ctx).to_owned(), app.theme.style(R::HelpAction)),
             ]));
         }
-        placed += actions.len() + 1;
+        // A little padding after each group so the sections breathe.
+        col.push(Line::from(""));
+        placed += actions.len() + 2;
     }
     (left, right)
 }

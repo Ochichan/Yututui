@@ -48,7 +48,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // the edits are saved.
     let k = |a| app.keymap.label(KeyContext::Settings, a);
     let help_text = if st.editing_text && st.tab == SettingsTab::Colors {
-        "type #RRGGBB · Enter save · Backspace delete".to_owned()
+        "type #RRGGBB or none · Enter save · Backspace delete".to_owned()
     } else if st.editing_text {
         // While typing a path/key, Enter or Esc both commit *and* persist it immediately,
         // so the value can't be lost by leaving the screen later.
@@ -97,33 +97,43 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 fn render_keys(frame: &mut Frame, st: &SettingsState, area: Rect) {
     let theme = &st.draft.theme;
     let entries = keymap::editable_entries();
+    // Each group gets its own header row (blank line before it, except the first), with the
+    // bindings listed underneath. The rendered list therefore holds more rows than `entries`,
+    // so map the focused binding index (`st.row`) to its display position for selection.
+    let mut items: Vec<ListItem> = Vec::with_capacity(entries.len() + 24);
+    let mut selected_display = 0usize;
     let mut prev_ctx: Option<KeyContext> = None;
-    let items: Vec<ListItem> = entries
-        .iter()
-        .enumerate()
-        .map(|(i, &(ctx, action))| {
-            let key = if st.capturing == Some((ctx, action)) {
-                "<press a key…>".to_owned()
-            } else {
-                st.keymap.chord(ctx, action).map_or_else(|| "—".to_owned(), keymap::format_chord)
-            };
-            // A context header label, shown once at the start of each group. Always keep at
-            // least one space before the action column: a couple of titles ("Navigation (all
-            // screens)", "Search results") are wider than the padding column and would
-            // otherwise run straight into the white action label.
-            let group = if prev_ctx != Some(ctx) { ctx.title() } else { "" };
+    for (i, &(ctx, action)) in entries.iter().enumerate() {
+        if prev_ctx != Some(ctx) {
+            items.push(ListItem::new(Line::from(Span::styled(
+                ctx.title().to_owned(),
+                theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
+            ))));
             prev_ctx = Some(ctx);
-            let group_cell =
-                if group.is_empty() { format!("{group:<13}") } else { format!("{group:<12} ") };
-            let focused = i == st.row;
-            let key_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
-            ListItem::new(Line::from(vec![
-                Span::styled(group_cell, theme.style(R::SettingsGroup)),
-                Span::styled(format!("{:<24}", action.human_label_for(ctx)), theme.style(R::SettingsLabel)),
-                Span::styled(key, theme.style(key_role)),
-            ]))
-        })
-        .collect();
+        }
+        let focused = i == st.row;
+        if focused {
+            selected_display = items.len();
+        }
+        let key = if st.capturing == Some((ctx, action)) {
+            "<press a key…>".to_owned()
+        } else {
+            st.keymap.chord(ctx, action).map_or_else(|| "—".to_owned(), keymap::format_chord)
+        };
+        let key_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
+        // Bindings indent one step in from their group header for a clear hierarchy.
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("  {:<24}", action.human_label_for(ctx)),
+                theme.style(R::SettingsLabel),
+            ),
+            Span::styled(key, theme.style(key_role)),
+        ])));
+        // A little padding after each group so the sections breathe.
+        if entries.get(i + 1).map(|(c, _)| *c) != Some(ctx) {
+            items.push(ListItem::new(Line::from("")));
+        }
+    }
 
     let list = List::new(items)
         .style(theme.style(R::TextPrimary))
@@ -131,7 +141,7 @@ fn render_keys(frame: &mut Frame, st: &SettingsState, area: Rect) {
         .highlight_symbol("▶ ");
 
     let mut state = ListState::default();
-    state.select(Some(st.row.min(entries.len().saturating_sub(1))));
+    state.select(Some(selected_display));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -173,22 +183,35 @@ fn render_fields(frame: &mut Frame, st: &SettingsState, area: Rect) {
 /// numeric fields and a caret for the text field being edited).
 fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a> {
     let theme = &st.draft.theme;
-    let label = format!("{:<22}", field.label());
     if let Field::ThemeColor(role) = field {
+        // Pad every role label to the widest one so the swatch, hex value, and description
+        // columns line up regardless of how long the role name is (role labels are ASCII,
+        // so byte length equals display width here).
+        let label_w = R::ALL.iter().map(|r| r.label().len()).max().unwrap_or(22);
+        let label = format!("{:<label_w$}", role.label());
         let value = if focused && st.editing_text {
             st.draft.text_value(field).unwrap_or_default().to_owned()
         } else {
             st.draft.value_display(field)
         };
         let value_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
+        // Transparent roles have no fill — show a hatched marker so it reads as "terminal
+        // background shows through" rather than a missing/black swatch.
+        let swatch = if theme.is_role_transparent(role) {
+            Span::styled("▒▒", theme.style(R::TextMuted))
+        } else {
+            Span::styled("  ", Style::default().bg(theme.color(role)))
+        };
         return ListItem::new(Line::from(vec![
             Span::styled(label, theme.style(R::SettingsLabel)),
-            Span::styled("  ", Style::default().bg(theme.color(role))),
+            Span::raw(" "),
+            swatch,
             Span::raw("  "),
             Span::styled(format!("{:<9}", value), theme.style(value_role)),
             Span::styled(role.description().to_owned(), theme.style(R::TextMuted)),
         ]));
     }
+    let label = format!("{:<22}", field.label());
     let value = match (field, field.kind()) {
         // Secret fields (API key) are never shown in clear text; while editing, render a
         // masked buffer of *that field's* typed length so keystrokes still register visibly.

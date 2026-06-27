@@ -11,10 +11,14 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use image::DynamicImage;
 use ratatui::layout::Rect;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 
 use crate::ai::GeminiModel;
 use crate::api::Song;
+use crate::artwork::ArtSource;
 use crate::config::{Config, SPEED_MAX, SPEED_MIN};
 use crate::eq::{self, EqPreset};
 use crate::keymap::{Action, Chord, KeyContext, KeyMap};
@@ -94,6 +98,11 @@ pub enum Msg {
         video_id: String,
         lines: Vec<LyricLine>,
     },
+    /// Decoded album art / thumbnail for `video_id` (`None` = none found / fetch failed).
+    ArtworkResult {
+        video_id: String,
+        image: Option<DynamicImage>,
+    },
     /// Download progress for `video_id` (0-100).
     DownloadProgress {
         video_id: String,
@@ -154,6 +163,11 @@ pub enum Cmd {
         video_id: String,
         artist: String,
         title: String,
+    },
+    /// Fetch + decode album art for a track (only when album art is enabled).
+    FetchArtwork {
+        video_id: String,
+        source: ArtSource,
     },
     /// Download a track to disk (best audio + tags + cover art).
     Download(Song),
@@ -422,6 +436,22 @@ pub struct App {
     /// Lyrics for the current track, if fetched.
     pub lyrics: Option<TrackLyrics>,
 
+    // Album art ---------------------------------------------------------------
+    /// The terminal graphics picker (font size + detected protocol), built once at startup
+    /// when album art is enabled. `None` → feature off, or the terminal couldn't be probed
+    /// (no art is fetched or drawn in that case).
+    pub art_picker: Option<Picker>,
+    /// The current track's art as a render-ready, resizable protocol. `RefCell` because
+    /// `StatefulImage` needs `&mut` during render, which only has `&App` (mirrors
+    /// [`Self::mouse_buttons`]).
+    pub art: RefCell<Option<StatefulProtocol>>,
+    /// Source pixel dimensions of the held art, for centering it within its panel.
+    pub art_dims: (u32, u32),
+    /// `video_id` the held art belongs to (guards against a stale image lingering).
+    art_video_id: Option<String>,
+    /// True between requesting art and the result arriving.
+    pub art_loading: bool,
+
     // Downloads ---------------------------------------------------------------
     /// In-flight / finished downloads, keyed by `video_id`, for the UI indicator.
     pub downloads: HashMap<String, DownloadState>,
@@ -499,6 +529,11 @@ impl App {
             lyrics_visible: false,
             lyrics_loading: false,
             lyrics: None,
+            art_picker: None,
+            art: RefCell::new(None),
+            art_dims: (0, 0),
+            art_video_id: None,
+            art_loading: false,
             downloads: HashMap::new(),
             download_sources: HashMap::new(),
             resolved: HashMap::new(),
@@ -685,6 +720,14 @@ impl App {
                 // Ignore stale results for a track we've already skipped past.
                 if self.queue.current().is_some_and(|s| s.video_id == video_id) {
                     self.lyrics = Some(TrackLyrics { video_id, lines });
+                    self.dirty = true;
+                }
+            }
+            Msg::ArtworkResult { video_id, image } => {
+                self.art_loading = false;
+                // Drop results for a track we've already skipped past.
+                if self.queue.current().is_some_and(|s| s.video_id == video_id) {
+                    self.set_artwork(video_id, image);
                     self.dirty = true;
                 }
             }
@@ -1338,6 +1381,7 @@ impl App {
             cookies_file: path_str(&self.config.cookies_file),
             download_dir: path_str(&self.config.download_dir),
             mouse: self.config.effective_mouse(),
+            album_art: self.config.effective_album_art(),
             autoplay_on_start: self.config.effective_autoplay_on_start(),
             speed: self.speed,
             gapless: self.config.effective_gapless(),
@@ -1568,6 +1612,11 @@ impl App {
             Field::Mouse => {
                 let s = self.settings.as_mut().unwrap();
                 s.draft.mouse = !s.draft.mouse;
+                Vec::new()
+            }
+            Field::AlbumArt => {
+                let s = self.settings.as_mut().unwrap();
+                s.draft.album_art = !s.draft.album_art;
                 Vec::new()
             }
             Field::AutoplayOnStart => {
@@ -1922,6 +1971,19 @@ impl App {
             cmds.push(Cmd::SetDownloadDir(new_download_dir.clone()));
             cmds.push(Cmd::ScanDownloads(new_download_dir));
         }
+        // React to an album-art toggle. Turning it off drops the held image (frees RAM).
+        // Turning it on fetches the current track's art live — but only when a protocol was
+        // detected at startup (`artwork_source` gates on the picker); a first-time enable
+        // with no picker takes effect next launch, as the field label says.
+        if !self.config.effective_album_art() {
+            self.clear_artwork();
+        } else if let Some(song) = self.queue.current().cloned()
+            && self.art_video_id.as_deref() != Some(song.video_id.as_str())
+            && let Some(source) = self.artwork_source(&song)
+        {
+            self.art_loading = true;
+            cmds.push(Cmd::FetchArtwork { video_id: song.video_id.clone(), source });
+        }
         cmds
     }
 
@@ -2215,6 +2277,8 @@ impl App {
                 self.loaded_video_id = Some(song.video_id.clone());
                 // Drop the previous track's lyrics; refresh if the panel is open.
                 self.lyrics = None;
+                // Drop the previous track's art; a fetch (below) refreshes it when enabled.
+                self.clear_artwork();
                 // Use a prefetched direct URL if we have one (instant skip); else hand mpv
                 // the track's own playback target (watch URL or local file path).
                 let prefetched = self.resolved.contains_key(&song.video_id);
@@ -2241,6 +2305,14 @@ impl App {
                 if self.lyrics_visible {
                     self.lyrics_loading = true;
                     cmds.push(fetch_lyrics_cmd(&song));
+                }
+                // Fetch album art for the new track when the feature is on.
+                if let Some(source) = self.artwork_source(&song) {
+                    self.art_loading = true;
+                    cmds.push(Cmd::FetchArtwork {
+                        video_id: song.video_id.clone(),
+                        source,
+                    });
                 }
                 // Prefetch the upcoming track's stream so the next skip is instant.
                 if let Some(next) = self.queue.peek_next()
@@ -2303,6 +2375,70 @@ impl App {
             (Some(l), Some(cur)) => l.video_id != cur.video_id,
             (None, Some(_)) => true,
             _ => false,
+        }
+    }
+
+    /// Whether album art should drive the layout: the feature is on, a protocol was
+    /// detected, and a decoded image is ready for the current track.
+    pub fn art_active(&self) -> bool {
+        self.config.effective_album_art()
+            && self.art_picker.is_some()
+            && self.art.borrow().is_some()
+    }
+
+    /// Turn a decoded image into a render-ready protocol (or clear when there's none / no
+    /// picker). Building the protocol is cheap; the encode happens lazily at render.
+    fn set_artwork(&mut self, video_id: String, image: Option<DynamicImage>) {
+        match (image, self.art_picker.as_ref()) {
+            (Some(img), Some(picker)) => {
+                self.art_dims = (img.width(), img.height());
+                *self.art.borrow_mut() = Some(picker.new_resize_protocol(img));
+                self.art_video_id = Some(video_id);
+            }
+            _ => self.clear_artwork(),
+        }
+    }
+
+    /// Drop any held art (track change, or the feature turned off) — also frees its RAM.
+    fn clear_artwork(&mut self) {
+        *self.art.borrow_mut() = None;
+        self.art_video_id = None;
+        self.art_dims = (0, 0);
+    }
+
+    /// The art's source, if album art is on and a protocol was detected. `None` keeps the
+    /// reducer from emitting a fetch (and the view from reserving space) when off.
+    fn artwork_source(&self, song: &Song) -> Option<ArtSource> {
+        if !self.config.effective_album_art() || self.art_picker.is_none() {
+            return None;
+        }
+        Some(match &song.local_path {
+            Some(path) => ArtSource::Local(path.clone()),
+            None => ArtSource::Remote { video_id: song.video_id.clone() },
+        })
+    }
+
+    /// A centered sub-rect of `area` matching the art's aspect ratio, using the terminal's
+    /// font cell size so square covers render square and wide thumbnails render wide. Falls
+    /// back to the whole `area` when dimensions/font size are unknown.
+    pub fn art_fit_rect(&self, area: Rect) -> Rect {
+        let (iw, ih) = self.art_dims;
+        let Some(font) = self.art_picker.as_ref().map(Picker::font_size) else {
+            return area;
+        };
+        if iw == 0 || ih == 0 || font.width == 0 || font.height == 0 {
+            return area;
+        }
+        let avail_w = f64::from(area.width) * f64::from(font.width);
+        let avail_h = f64::from(area.height) * f64::from(font.height);
+        let scale = (avail_w / f64::from(iw)).min(avail_h / f64::from(ih));
+        let w = (((f64::from(iw) * scale) / f64::from(font.width)).round() as u16).clamp(1, area.width);
+        let h = (((f64::from(ih) * scale) / f64::from(font.height)).round() as u16).clamp(1, area.height);
+        Rect {
+            x: area.x + (area.width - w) / 2,
+            y: area.y + (area.height - h) / 2,
+            width: w,
+            height: h,
         }
     }
 
@@ -3541,6 +3677,73 @@ mod tests {
             cmds.iter()
                 .any(|c| matches!(c, Cmd::FetchLyrics { video_id, .. } if video_id == "id1"))
         );
+    }
+
+    // --- Album art ----------------------------------------------------------
+
+    #[test]
+    fn album_art_off_emits_no_fetch() {
+        let mut app = app_playing(3, 0);
+        // Opt-in: off by default → advancing a track issues no artwork fetch.
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+        assert!(!cmds.iter().any(|c| matches!(c, Cmd::FetchArtwork { .. })));
+        assert!(!app.art_loading);
+    }
+
+    #[test]
+    fn album_art_on_fetches_remote_then_builds_protocol() {
+        let mut app = app_playing(3, 0);
+        app.config.album_art = Some(true);
+        app.art_picker = Some(Picker::halfblocks());
+        // Advancing to id1 now fetches its thumbnail from the remote source.
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+        assert!(app.art_loading);
+        assert!(cmds.iter().any(|c| matches!(
+            c,
+            Cmd::FetchArtwork { video_id, source: ArtSource::Remote { video_id: vid } }
+                if video_id == "id1" && vid == "id1"
+        )));
+        // The decoded image becomes a render-ready protocol for the current track.
+        app.update(Msg::ArtworkResult {
+            video_id: "id1".to_owned(),
+            image: Some(image::DynamicImage::new_rgb8(120, 120)),
+        });
+        assert!(!app.art_loading);
+        assert!(app.art_active());
+        assert_eq!(app.art_dims, (120, 120));
+    }
+
+    #[test]
+    fn artwork_result_for_stale_track_is_ignored() {
+        let mut app = app_playing(3, 0); // current id0
+        app.config.album_art = Some(true);
+        app.art_picker = Some(Picker::halfblocks());
+        app.update(Msg::ArtworkResult {
+            video_id: "stale".to_owned(),
+            image: Some(image::DynamicImage::new_rgb8(8, 8)),
+        });
+        assert!(!app.art_active());
+    }
+
+    #[test]
+    fn local_track_uses_local_art_source() {
+        let mut app = App::new(100);
+        app.config.album_art = Some(true);
+        app.art_picker = Some(Picker::halfblocks());
+        let song = Song::local_file(std::path::PathBuf::from("/music/song.m4a"));
+        assert!(matches!(app.artwork_source(&song), Some(ArtSource::Local(_))));
+    }
+
+    #[test]
+    fn art_fit_rect_centers_by_aspect() {
+        let mut app = App::new(100);
+        app.art_picker = Some(Picker::halfblocks()); // font cell 10x20 px
+        app.art_dims = (100, 100); // square source
+        let r = app.art_fit_rect(Rect { x: 0, y: 0, width: 40, height: 40 });
+        // Cells are 1:2 (10×20px), so a square cover spans the full width but only half the
+        // height, centered vertically in the box.
+        assert_eq!((r.width, r.height), (40, 20));
+        assert_eq!((r.x, r.y), (0, 10));
     }
 
     // --- M7: downloads ------------------------------------------------------

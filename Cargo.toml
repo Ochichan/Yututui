@@ -1,6 +1,6 @@
 [package]
 name = "ytm-tui"
-version = "1.1.1"
+version = "1.2.0"
 edition = "2024"
 
 # The shipped command is `ytt` — short to type and what the README/installers expose.
@@ -17,8 +17,24 @@ directories = "6.0.0"
 # Tiny, dependency-free RNG for queue shuffling (no `rand` pull-in).
 fastrand = "2"
 futures = "0.3.32"
+# Decode album art / thumbnails ourselves (off the render thread) and hand a ready
+# `DynamicImage` to ratatui-image. Default features are off so only the formats we
+# actually fetch are compiled in — JPEG (i.ytimg thumbnails + yt-dlp embedded covers),
+# PNG, and WebP (YouTube increasingly serves these). Keeps the binary lean (priority:
+# small binary) and pulls no C decoders. `^0.25.6` matches ratatui-image's pin so the
+# `image` copy is shared, not duplicated.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 interprocess = { version = "2.4.2", features = ["tokio"] }
+# Read embedded cover art out of locally downloaded tracks (m4a/mp3/flac). Pure Rust —
+# no C, so the macOS→Windows cross-build stays clean (same reason native-tls was chosen).
+lofty = "0.24"
 ratatui = "0.30.2"
+# Album art in the player view. `default-features = false` drops `chafa-dyn` (its only C
+# dependency — would break the clean Windows cross-compile) and `image-defaults` (we pull
+# `image` directly with just the formats we need). The Kitty/Sixel/iTerm2/halfblocks
+# protocol encoders are pure Rust and compiled unconditionally — no feature gates them —
+# so `crossterm` alone is enough. Opt-in feature; nothing renders unless the user enables it.
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 # Synced-lyrics fetch (lrclib) + raw browse. `native-tls` uses the OS TLS stack —
 # Security.framework on macOS, SChannel on Windows — so there's no bundled C crypto
 # (no aws-lc-sys/NASM): smaller binary, and Windows builds need no extra toolchain.
@@ -42,7 +58,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 unicode-width = "0.2"
 
 [build-dependencies]
-winresource = "0.1.31"
+embed-resource = "3.0.9"
 
 # `kill_mpv_now` sends SIGKILL straight from the panic hook / signal handler; one
 # async-signal-safe syscall, no allocation. Unix only — Windows uses the Job Object

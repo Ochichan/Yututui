@@ -36,12 +36,23 @@ impl ThemeConfig {
     pub fn effective_hex(&self, role: ThemeRole) -> String {
         self.overrides
             .get(role.id())
-            .and_then(|s| normalize_hex(s))
+            .and_then(|s| normalize_value(s))
             .unwrap_or_else(|| role.default_hex(self.preset_enum()).to_owned())
     }
 
+    /// Whether `role` resolves to "no color" — i.e. [`Color::Reset`], letting the terminal's
+    /// own background/foreground show through. Used to render a transparent swatch.
+    pub fn is_role_transparent(&self, role: ThemeRole) -> bool {
+        is_transparent(&self.effective_hex(role))
+    }
+
     pub fn color(&self, role: ThemeRole) -> Color {
-        color_from_hex(&self.effective_hex(role)).unwrap_or(Color::Reset)
+        let value = self.effective_hex(role);
+        if is_transparent(&value) {
+            Color::Reset
+        } else {
+            color_from_hex(&value).unwrap_or(Color::Reset)
+        }
     }
 
     pub fn style(&self, role: ThemeRole) -> Style {
@@ -51,13 +62,13 @@ impl ThemeConfig {
     }
 
     pub fn set_override(&mut self, role: ThemeRole, value: &str) -> Result<(), String> {
-        let Some(hex) = normalize_hex(value) else {
-            return Err(format!("Invalid color for {}: use #RRGGBB", role.label()));
+        let Some(canonical) = normalize_value(value) else {
+            return Err(format!("Invalid color for {}: use #RRGGBB or none", role.label()));
         };
-        if hex.eq_ignore_ascii_case(role.default_hex(self.preset_enum())) {
+        if canonical.eq_ignore_ascii_case(role.default_hex(self.preset_enum())) {
             self.overrides.remove(role.id());
         } else {
-            self.overrides.insert(role.id().to_owned(), hex);
+            self.overrides.insert(role.id().to_owned(), canonical);
         }
         Ok(())
     }
@@ -75,13 +86,13 @@ impl ThemeConfig {
         let preset = self.preset_enum();
         let mut overrides = BTreeMap::new();
         for role in ThemeRole::ALL {
-            if let Some(hex) = self
+            if let Some(value) = self
                 .overrides
                 .get(role.id())
-                .and_then(|value| normalize_hex(value))
-                && !hex.eq_ignore_ascii_case(role.default_hex(preset))
+                .and_then(|value| normalize_value(value))
+                && !value.eq_ignore_ascii_case(role.default_hex(preset))
             {
-                overrides.insert(role.id().to_owned(), hex);
+                overrides.insert(role.id().to_owned(), value);
             }
         }
         Self {
@@ -98,15 +109,27 @@ pub enum ThemePreset {
     Light,
     HighContrast,
     TerminalGreen,
+    Gruvbox,
+    Nord,
+    Dracula,
+    TokyoNight,
+    Solarized,
+    RosePine,
 }
 
 impl ThemePreset {
-    pub const ALL: [ThemePreset; 5] = [
+    pub const ALL: [ThemePreset; 11] = [
         ThemePreset::Default,
         ThemePreset::Midnight,
         ThemePreset::Light,
         ThemePreset::HighContrast,
         ThemePreset::TerminalGreen,
+        ThemePreset::Gruvbox,
+        ThemePreset::Nord,
+        ThemePreset::Dracula,
+        ThemePreset::TokyoNight,
+        ThemePreset::Solarized,
+        ThemePreset::RosePine,
     ];
 
     pub fn id(self) -> &'static str {
@@ -116,6 +139,12 @@ impl ThemePreset {
             ThemePreset::Light => "light",
             ThemePreset::HighContrast => "high_contrast",
             ThemePreset::TerminalGreen => "terminal_green",
+            ThemePreset::Gruvbox => "gruvbox",
+            ThemePreset::Nord => "nord",
+            ThemePreset::Dracula => "dracula",
+            ThemePreset::TokyoNight => "tokyo_night",
+            ThemePreset::Solarized => "solarized_dark",
+            ThemePreset::RosePine => "rose_pine",
         }
     }
 
@@ -126,6 +155,12 @@ impl ThemePreset {
             ThemePreset::Light => "Light",
             ThemePreset::HighContrast => "High Contrast",
             ThemePreset::TerminalGreen => "Terminal Green",
+            ThemePreset::Gruvbox => "Gruvbox",
+            ThemePreset::Nord => "Nord",
+            ThemePreset::Dracula => "Dracula",
+            ThemePreset::TokyoNight => "Tokyo Night",
+            ThemePreset::Solarized => "Solarized Dark",
+            ThemePreset::RosePine => "Rosé Pine",
         }
     }
 
@@ -345,6 +380,12 @@ impl ThemeRole {
             ThemePreset::Light => self.light(),
             ThemePreset::HighContrast => self.high_contrast(),
             ThemePreset::TerminalGreen => self.terminal_green(),
+            ThemePreset::Gruvbox => self.gruvbox(),
+            ThemePreset::Nord => self.nord(),
+            ThemePreset::Dracula => self.dracula(),
+            ThemePreset::TokyoNight => self.tokyo_night(),
+            ThemePreset::Solarized => self.solarized(),
+            ThemePreset::RosePine => self.rose_pine(),
         }
     }
 
@@ -352,9 +393,13 @@ impl ThemeRole {
         // Soft pastel dark palette (Catppuccin Mocha) — low-saturation accents on a
         // muted base so nothing glares; replaces the old pure-neon defaults.
         match self {
-            ThemeRole::Background => "#1E1E2E",
+            // Transparent by default: inherit the terminal's own background so the app blends
+            // with the user's color scheme / wallpaper / opacity. Other roles still carry the
+            // Mocha base (`#1E1E2E`) where a concrete dark is needed (e.g. text on accents).
+            ThemeRole::Background => "none",
             ThemeRole::TextPrimary => "#CDD6F4",
-            ThemeRole::TextMuted => "#6C7086",
+            // Lifted from overlay0 to overlay1 so quiet hints/empty states stay legible.
+            ThemeRole::TextMuted => "#7F849C",
             ThemeRole::TextSubtle => "#A6ADC8",
             ThemeRole::TextInverse => "#1E1E2E",
             ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
@@ -378,7 +423,8 @@ impl ThemeRole {
         match self {
             ThemeRole::Background => "#0B1020",
             ThemeRole::TextPrimary => "#E6EDF7",
-            ThemeRole::TextMuted => "#64748B",
+            // Nudged brighter so muted hints don't disappear against the very dark base.
+            ThemeRole::TextMuted => "#7689A3",
             ThemeRole::TextSubtle => "#94A3B8",
             ThemeRole::TextInverse => "#07111F",
             ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
@@ -469,6 +515,180 @@ impl ThemeRole {
             ThemeRole::SettingsLabel => "#78B88F",
         }
     }
+
+    fn gruvbox(self) -> &'static str {
+        // Retro warm palette: soft cream text on a dark roast base, earthy accents.
+        match self {
+            ThemeRole::Background => "#282828",
+            ThemeRole::TextPrimary => "#EBDBB2",
+            ThemeRole::TextMuted => "#928374",
+            ThemeRole::TextSubtle => "#A89984",
+            ThemeRole::TextInverse => "#282828",
+            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            | ThemeRole::SelectionBg => "#D3869B",
+            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            | ThemeRole::SelectionInactiveBg => "#504945",
+            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            | ThemeRole::SettingsGroup => "#8EC07C",
+            ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#B8BB26",
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#FABD2F",
+            ThemeRole::Error | ThemeRole::AiError => "#FB4934",
+            ThemeRole::SelectionFg => "#282828",
+            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#EBDBB2",
+            ThemeRole::SettingsLabel => "#A89984",
+        }
+    }
+
+    fn nord(self) -> &'static str {
+        // Arctic palette: cool desaturated frost accents on a slate base.
+        match self {
+            ThemeRole::Background => "#2E3440",
+            ThemeRole::TextPrimary => "#ECEFF4",
+            ThemeRole::TextMuted => "#616E88",
+            ThemeRole::TextSubtle => "#D8DEE9",
+            ThemeRole::TextInverse => "#2E3440",
+            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            | ThemeRole::SelectionBg => "#B48EAD",
+            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            | ThemeRole::SelectionInactiveBg => "#434C5E",
+            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            | ThemeRole::SettingsGroup => "#88C0D0",
+            ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#A3BE8C",
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#EBCB8B",
+            ThemeRole::Error | ThemeRole::AiError => "#BF616A",
+            ThemeRole::SelectionFg => "#2E3440",
+            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#ECEFF4",
+            ThemeRole::SettingsLabel => "#D8DEE9",
+        }
+    }
+
+    fn dracula(self) -> &'static str {
+        // High-energy dark: pink, cyan, and green pops on a deep grey-violet base.
+        match self {
+            ThemeRole::Background => "#282A36",
+            ThemeRole::TextPrimary => "#F8F8F2",
+            ThemeRole::TextMuted => "#6272A4",
+            ThemeRole::TextSubtle => "#9EA2C9",
+            ThemeRole::TextInverse => "#282A36",
+            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            | ThemeRole::SelectionBg => "#FF79C6",
+            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            | ThemeRole::SelectionInactiveBg => "#44475A",
+            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            | ThemeRole::SettingsGroup => "#8BE9FD",
+            ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#50FA7B",
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#F1FA8C",
+            ThemeRole::Error | ThemeRole::AiError => "#FF5555",
+            ThemeRole::SelectionFg => "#282A36",
+            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#F8F8F2",
+            ThemeRole::SettingsLabel => "#9EA2C9",
+        }
+    }
+
+    fn tokyo_night(self) -> &'static str {
+        // Calm modern dark: blue-leaning text and a violet accent on near-black indigo.
+        match self {
+            ThemeRole::Background => "#1A1B26",
+            ThemeRole::TextPrimary => "#C0CAF5",
+            ThemeRole::TextMuted => "#565F89",
+            ThemeRole::TextSubtle => "#A9B1D6",
+            ThemeRole::TextInverse => "#1A1B26",
+            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            | ThemeRole::SelectionBg => "#BB9AF7",
+            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            | ThemeRole::SelectionInactiveBg => "#3B4261",
+            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            | ThemeRole::SettingsGroup => "#7DCFFF",
+            ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#9ECE6A",
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#E0AF68",
+            ThemeRole::Error | ThemeRole::AiError => "#F7768E",
+            ThemeRole::SelectionFg => "#1A1B26",
+            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#C0CAF5",
+            ThemeRole::SettingsLabel => "#A9B1D6",
+        }
+    }
+
+    fn solarized(self) -> &'static str {
+        // Precision-tuned classic: low-glare teal/blue base with muted ANSI accents.
+        match self {
+            ThemeRole::Background => "#002B36",
+            ThemeRole::TextPrimary => "#93A1A1",
+            ThemeRole::TextMuted => "#586E75",
+            ThemeRole::TextSubtle => "#839496",
+            ThemeRole::TextInverse => "#002B36",
+            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            | ThemeRole::SelectionBg => "#D33682",
+            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            | ThemeRole::SelectionInactiveBg => "#073642",
+            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            | ThemeRole::SettingsGroup => "#2AA198",
+            ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#859900",
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#B58900",
+            ThemeRole::Error | ThemeRole::AiError => "#DC322F",
+            ThemeRole::SelectionFg => "#002B36",
+            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#93A1A1",
+            ThemeRole::SettingsLabel => "#839496",
+        }
+    }
+
+    fn rose_pine(self) -> &'static str {
+        // Soho-vibe muted palette: iris/foam/gold pastels on a dusky plum base.
+        match self {
+            ThemeRole::Background => "#191724",
+            ThemeRole::TextPrimary => "#E0DEF4",
+            ThemeRole::TextMuted => "#6E6A86",
+            ThemeRole::TextSubtle => "#908CAA",
+            ThemeRole::TextInverse => "#191724",
+            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            | ThemeRole::SelectionBg => "#C4A7E7",
+            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            | ThemeRole::SelectionInactiveBg => "#403D52",
+            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            | ThemeRole::SettingsGroup => "#9CCFD8",
+            ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#31748F",
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#F6C177",
+            ThemeRole::Error | ThemeRole::AiError => "#EB6F92",
+            ThemeRole::SelectionFg => "#191724",
+            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#E0DEF4",
+            ThemeRole::SettingsLabel => "#908CAA",
+        }
+    }
+}
+
+/// Canonical spelling of the "no color" value: the role resolves to [`Color::Reset`] so the
+/// terminal's own background/foreground shows through. Mainly used for a transparent base
+/// background that inherits the terminal's wallpaper/opacity.
+pub const TRANSPARENT: &str = "none";
+
+/// Whether `value` means "no color" (transparent). Accepts a few friendly spellings so the
+/// Colors tab can take `none`, `transparent`, or `-` interchangeably.
+pub fn is_transparent(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "none" | "transparent" | "-"
+    )
+}
+
+/// Normalize a user-entered color value: either the transparent sentinel (`none`) or a
+/// `#RRGGBB` hex. Returns `None` for anything else.
+pub fn normalize_value(value: &str) -> Option<String> {
+    if is_transparent(value) {
+        Some(TRANSPARENT.to_owned())
+    } else {
+        normalize_hex(value)
+    }
 }
 
 pub fn normalize_hex(value: &str) -> Option<String> {
@@ -509,6 +729,41 @@ mod tests {
         assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#C026D3");
         cfg.set_override(ThemeRole::BorderPrimary, "#123456").unwrap();
         assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#123456");
+    }
+
+    #[test]
+    fn every_preset_role_has_a_valid_value() {
+        for preset in ThemePreset::ALL {
+            for role in ThemeRole::ALL {
+                let value = role.default_hex(preset);
+                assert!(
+                    normalize_value(value).is_some(),
+                    "{}/{} has an invalid value {value}",
+                    preset.id(),
+                    role.id()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn background_can_be_transparent() {
+        // The Default preset ships with a transparent background.
+        let cfg = ThemeConfig::default();
+        assert_eq!(cfg.effective_hex(ThemeRole::Background), "none");
+        assert!(cfg.is_role_transparent(ThemeRole::Background));
+        assert_eq!(cfg.color(ThemeRole::Background), Color::Reset);
+
+        // A preset with a solid base can be overridden to transparent, and back.
+        let mut cfg = ThemeConfig::default();
+        cfg.set_preset(ThemePreset::Midnight);
+        assert!(!cfg.is_role_transparent(ThemeRole::Background));
+        cfg.set_override(ThemeRole::Background, "none").unwrap();
+        assert!(cfg.is_role_transparent(ThemeRole::Background));
+        assert_eq!(cfg.color(ThemeRole::Background), Color::Reset);
+        // "transparent" / "-" are accepted spellings too.
+        cfg.set_override(ThemeRole::Background, "TRANSPARENT").unwrap();
+        assert_eq!(cfg.effective_hex(ThemeRole::Background), "none");
     }
 
     #[test]

@@ -33,6 +33,10 @@ pub struct Config {
     pub download_dir: Option<PathBuf>,
     /// Capture the mouse for buttons and click-to-seek. `None` → enabled.
     pub mouse: Option<bool>,
+    /// Show album art / video thumbnail in the player view. `None` → off (opt-in: the
+    /// terminal is only probed for a graphics protocol when this is on, and turning it on
+    /// takes effect at the next launch). See [`crate::artwork`].
+    pub album_art: Option<bool>,
 
     // Playback / EQ -----------------------------------------------------------
     /// Selected equalizer preset.
@@ -76,6 +80,7 @@ impl Default for Config {
             volume: 100,
             download_dir: None,
             mouse: None,
+            album_art: None,
             eq_preset: EqPreset::default(),
             eq_bands: None,
             normalize: None,
@@ -168,6 +173,11 @@ impl Config {
     /// Whether to capture the mouse (buttons and click-to-seek). Enabled unless set to `false`.
     pub fn effective_mouse(&self) -> bool {
         self.mouse.unwrap_or(true)
+    }
+
+    /// Whether to show album art / thumbnails in the player view (default off; opt-in).
+    pub fn effective_album_art(&self) -> bool {
+        self.album_art.unwrap_or(false)
     }
 
     /// The ten band gains to apply: the hand-tuned array if set, else the preset's.
@@ -336,6 +346,7 @@ mod tests {
             volume: 70,
             download_dir: Some(PathBuf::from("/tmp/dl")),
             mouse: Some(false),
+            album_art: Some(true),
             eq_preset: EqPreset::BassBoost,
             eq_bands: Some([1.0; eq::BANDS]),
             normalize: Some(true),
@@ -354,6 +365,7 @@ mod tests {
         assert_eq!(back.cookie.as_deref(), Some("SID=abc"));
         assert_eq!(back.download_dir, Some(PathBuf::from("/tmp/dl")));
         assert_eq!(back.mouse, Some(false));
+        assert_eq!(back.album_art, Some(true));
         assert_eq!(back.eq_preset, EqPreset::BassBoost);
         assert_eq!(back.eq_bands, Some([1.0; eq::BANDS]));
         assert_eq!(back.normalize, Some(true));
@@ -430,6 +442,13 @@ mod tests {
         assert!(Config::default().effective_mouse());
         let off = Config { mouse: Some(false), ..Config::default() };
         assert!(!off.effective_mouse());
+    }
+
+    #[test]
+    fn album_art_off_by_default_and_overridable() {
+        assert!(!Config::default().effective_album_art()); // opt-in
+        let on = Config { album_art: Some(true), ..Config::default() };
+        assert!(on.effective_album_art());
     }
 
     #[test]
