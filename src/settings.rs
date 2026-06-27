@@ -65,7 +65,7 @@ impl SettingsTab {
     /// The ordered fields shown under this tab.
     pub fn fields(self) -> Vec<Field> {
         match self {
-            SettingsTab::General => vec![Field::CookiesFile, Field::DownloadDir, Field::Mouse],
+            SettingsTab::General => vec![Field::CookiesFile, Field::DownloadDir, Field::Mouse, Field::AutoplayOnStart],
             SettingsTab::Playback => vec![Field::Speed, Field::Gapless],
             SettingsTab::Eq => {
                 let mut f = vec![Field::EqPreset];
@@ -88,6 +88,7 @@ pub enum Field {
     CookiesFile,
     DownloadDir,
     Mouse,
+    AutoplayOnStart,
     // Playback
     Speed,
     Gapless,
@@ -118,7 +119,8 @@ impl Field {
     pub fn kind(self) -> FieldKind {
         match self {
             Field::CookiesFile | Field::DownloadDir | Field::ApiKey => FieldKind::Text,
-            Field::Mouse | Field::Gapless | Field::AutoplayRadio | Field::Normalize => FieldKind::Toggle,
+            Field::Mouse | Field::AutoplayOnStart | Field::Gapless | Field::AutoplayRadio
+            | Field::Normalize => FieldKind::Toggle,
             Field::EqPreset | Field::GeminiModel => FieldKind::Select,
             Field::Speed | Field::Band(_) => FieldKind::Slider,
         }
@@ -129,6 +131,7 @@ impl Field {
             Field::CookiesFile => "Cookies file".to_owned(),
             Field::DownloadDir => "Download dir".to_owned(),
             Field::Mouse => "Mouse (next launch)".to_owned(),
+            Field::AutoplayOnStart => "Autoplay on launch".to_owned(),
             Field::Speed => "Playback speed".to_owned(),
             Field::Gapless => "Gapless (next launch)".to_owned(),
             Field::AutoplayRadio => "Autoplay radio".to_owned(),
@@ -162,6 +165,7 @@ pub struct SettingsDraft {
     pub cookies_file: String,
     pub download_dir: String,
     pub mouse: bool,
+    pub autoplay_on_start: bool,
     pub speed: f64,
     pub gapless: bool,
     pub autoplay_radio: bool,
@@ -194,6 +198,7 @@ impl SettingsDraft {
                 }
             }
             Field::Mouse => toggle_str(self.mouse),
+            Field::AutoplayOnStart => toggle_str(self.autoplay_on_start),
             Field::Speed => format!("{:.1}x", self.speed),
             Field::Gapless => toggle_str(self.gapless),
             Field::AutoplayRadio => toggle_str(self.autoplay_radio),
@@ -231,6 +236,7 @@ impl SettingsDraft {
         cfg.cookies_file = blank_to_none(&self.cookies_file).map(PathBuf::from);
         cfg.download_dir = blank_to_none(&self.download_dir).map(PathBuf::from);
         cfg.mouse = Some(self.mouse);
+        cfg.autoplay_on_start = Some(self.autoplay_on_start);
         cfg.speed = Some(self.speed);
         cfg.gapless = Some(self.gapless);
         cfg.autoplay_radio = Some(self.autoplay_radio);
@@ -312,6 +318,7 @@ mod tests {
             cookies_file: String::new(),
             download_dir: String::new(),
             mouse: true,
+            autoplay_on_start: false,
             speed: 1.0,
             gapless: true,
             autoplay_radio: false,
@@ -330,6 +337,17 @@ mod tests {
         assert_eq!(SettingsTab::Ai.stepped(true), SettingsTab::Keys);
         assert_eq!(SettingsTab::Keys.stepped(true), SettingsTab::General); // wraps
         assert_eq!(SettingsTab::General.stepped(false), SettingsTab::Keys); // wraps back
+    }
+
+    #[test]
+    fn general_tab_has_autoplay_on_start_toggle() {
+        let f = SettingsTab::General.fields();
+        assert_eq!(f, vec![Field::CookiesFile, Field::DownloadDir, Field::Mouse, Field::AutoplayOnStart]);
+        assert_eq!(Field::AutoplayOnStart.kind(), FieldKind::Toggle);
+        // Off by default, and the toggle renders as an empty checkbox.
+        let draft = base_draft();
+        assert!(!draft.autoplay_on_start);
+        assert_eq!(draft.value_display(Field::AutoplayOnStart), "[ ]");
     }
 
     #[test]
@@ -392,6 +410,7 @@ mod tests {
         let draft = SettingsDraft {
             cookies_file: "/c.txt".to_owned(),
             mouse: false,
+            autoplay_on_start: true,
             speed: 1.5,
             gapless: false,
             autoplay_radio: true,
@@ -406,6 +425,7 @@ mod tests {
         assert_eq!(cfg.speed, Some(1.5));
         assert_eq!(cfg.cookies_file, Some(PathBuf::from("/c.txt")));
         assert_eq!(cfg.mouse, Some(false));
+        assert_eq!(cfg.autoplay_on_start, Some(true));
     }
 
     #[test]

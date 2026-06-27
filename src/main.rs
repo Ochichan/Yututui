@@ -170,6 +170,14 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
         .and_then(|key| ai::spawn(&key, cfg.effective_gemini_model(), worker_tx.clone()));
     app.ai_available = ai_handle.is_some();
 
+    // Opt-in autoplay-on-launch: now that every player/actor handle exists, ask the loop to
+    // start the restored track. Routed through the message pump so the resulting load/save
+    // commands flow through the normal dispatch below (no-op when the setting is off or
+    // nothing was restored).
+    if cfg.effective_autoplay_on_start() {
+        let _ = worker_tx.send(Msg::Autoplay);
+    }
+
     let mut events = EventStream::new();
     terminal.draw(|f| ui::render(f, &app))?;
 

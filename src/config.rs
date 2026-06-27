@@ -46,6 +46,9 @@ pub struct Config {
     pub gapless: Option<bool>,
     /// Auto-extend the queue with related tracks when it runs low. `None` → off.
     pub autoplay_radio: Option<bool>,
+    /// Auto-play the restored last track as soon as the app launches. `None` → off
+    /// (opt-in; a fresh launch otherwise seeds the track paused and idle).
+    pub autoplay_on_start: Option<bool>,
 
     // AI assistant ------------------------------------------------------------
     /// Google Gemini API key. The `GEMINI_API_KEY` env var overrides this when set.
@@ -74,6 +77,7 @@ impl Default for Config {
             speed: None,
             gapless: None,
             autoplay_radio: None,
+            autoplay_on_start: None,
             gemini_api_key: None,
             gemini_model: GeminiModel::default(),
             keybindings: std::collections::BTreeMap::new(),
@@ -183,6 +187,11 @@ impl Config {
     /// Whether queue auto-extend (radio) is on (default off).
     pub fn effective_autoplay_radio(&self) -> bool {
         self.autoplay_radio.unwrap_or(false)
+    }
+
+    /// Whether to auto-play the restored track as soon as the app launches (default off).
+    pub fn effective_autoplay_on_start(&self) -> bool {
+        self.autoplay_on_start.unwrap_or(false)
     }
 
     /// The Gemini API key to use. The `GEMINI_API_KEY` env var wins over the config
@@ -317,6 +326,7 @@ mod tests {
             speed: Some(1.5),
             gapless: Some(false),
             autoplay_radio: Some(true),
+            autoplay_on_start: Some(true),
             gemini_api_key: Some("AIzaSecret".to_owned()),
             gemini_model: GeminiModel::Latest,
             keybindings: std::collections::BTreeMap::new(),
@@ -333,6 +343,7 @@ mod tests {
         assert_eq!(back.speed, Some(1.5));
         assert_eq!(back.gapless, Some(false));
         assert_eq!(back.autoplay_radio, Some(true));
+        assert_eq!(back.autoplay_on_start, Some(true));
         assert_eq!(back.gemini_api_key.as_deref(), Some("AIzaSecret"));
         assert_eq!(back.gemini_model, GeminiModel::Latest);
     }
@@ -381,6 +392,7 @@ mod tests {
         assert_eq!(d.effective_speed(), 1.0);
         assert!(d.effective_gapless());
         assert!(!d.effective_autoplay_radio());
+        assert!(!d.effective_autoplay_on_start());
 
         // Preset gains feed through when no hand-tuned bands are set.
         let preset = Config { eq_preset: EqPreset::BassBoost, ..Config::default() };

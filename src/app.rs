@@ -58,6 +58,9 @@ pub enum Msg {
     Resize,
     /// A termination signal asked us to shut down.
     Quit,
+    /// Startup-only: begin playing the restored last track (sent once at launch when the
+    /// "autoplay on launch" setting is on). A no-op otherwise.
+    Autoplay,
     /// mpv playback position, in seconds.
     PlayerTimePos(f64),
     /// Current track duration, in seconds.
@@ -460,6 +463,22 @@ impl App {
         self.dirty = true;
     }
 
+    /// Opt-in: when "autoplay on launch" is enabled and [`restore_last_played_from_library`]
+    /// seeded a track, start playing it at launch — the same path pressing play would take
+    /// (load → record → prefetch). Returns no commands when the setting is off or nothing was
+    /// restored, leaving the queue paused and idle (the default). Called once at startup.
+    ///
+    /// [`restore_last_played_from_library`]: Self::restore_last_played_from_library
+    pub fn autoplay_on_start_cmds(&mut self) -> Vec<Cmd> {
+        if !self.config.effective_autoplay_on_start() || !self.current_needs_load() {
+            return Vec::new();
+        }
+        // Optimistic: mpv will confirm via a `pause` property-change once the track opens.
+        self.paused = false;
+        let song = self.queue.current().cloned();
+        self.load_song(song)
+    }
+
     /// The mpv `af` filter chain for the current EQ + normalization state, or `None` when
     /// nothing is active (the caller then clears `af`).
     fn current_af(&self) -> Option<String> {
@@ -485,6 +504,7 @@ impl App {
             Msg::MouseClick { col, row } => return self.on_mouse_click(col, row),
             Msg::Resize => self.dirty = true,
             Msg::Quit => self.should_quit = true,
+            Msg::Autoplay => return self.autoplay_on_start_cmds(),
             Msg::PlayerTimePos(t) => {
                 self.time_pos = Some(t);
                 // Real progress means the current track opened and is playing, so the
@@ -1094,6 +1114,7 @@ impl App {
             cookies_file: path_str(&self.config.cookies_file),
             download_dir: path_str(&self.config.download_dir),
             mouse: self.config.effective_mouse(),
+            autoplay_on_start: self.config.effective_autoplay_on_start(),
             speed: self.speed,
             gapless: self.config.effective_gapless(),
             autoplay_radio: self.autoplay_radio,
@@ -1291,6 +1312,11 @@ impl App {
             Field::Mouse => {
                 let s = self.settings.as_mut().unwrap();
                 s.draft.mouse = !s.draft.mouse;
+                Vec::new()
+            }
+            Field::AutoplayOnStart => {
+                let s = self.settings.as_mut().unwrap();
+                s.draft.autoplay_on_start = !s.draft.autoplay_on_start;
                 Vec::new()
             }
             Field::Gapless => {
@@ -1977,6 +2003,32 @@ mod tests {
         assert!(load_url(&cmds).expect("restored track load").contains("id0"));
         assert_eq!(app.loaded_video_id.as_deref(), Some("id0"));
         assert!(!app.paused);
+    }
+
+    #[test]
+    fn autoplay_on_start_plays_restored_track_when_enabled() {
+        let mut app = App::new(100);
+        app.library.record_play(&songs(1)[0]);
+        app.restore_last_played_from_library();
+        app.config.autoplay_on_start = Some(true);
+        // The launch trigger loads the restored track and starts it (no key press).
+        let cmds = app.update(Msg::Autoplay);
+        assert!(load_url(&cmds).expect("autoplay load at launch").contains("id0"));
+        assert_eq!(app.loaded_video_id.as_deref(), Some("id0"));
+        assert!(!app.paused);
+    }
+
+    #[test]
+    fn autoplay_on_start_is_noop_when_disabled() {
+        let mut app = App::new(100);
+        app.library.record_play(&songs(1)[0]);
+        app.restore_last_played_from_library();
+        // Default (opt-in off): the trigger does nothing; the track stays paused and unloaded.
+        assert!(!app.config.effective_autoplay_on_start());
+        let cmds = app.update(Msg::Autoplay);
+        assert!(load_url(&cmds).is_none());
+        assert!(app.loaded_video_id.is_none());
+        assert!(app.paused);
     }
 
     #[test]
