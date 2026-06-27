@@ -83,6 +83,7 @@ impl SettingsTab {
                 Field::Mouse,
                 Field::AlbumArt,
                 Field::AutoplayOnStart,
+                Field::ResetKeybindings,
                 Field::ResetAll,
             ],
             SettingsTab::Playback => vec![Field::Speed, Field::SeekInterval, Field::Gapless],
@@ -111,6 +112,8 @@ pub enum Field {
     Mouse,
     AlbumArt,
     AutoplayOnStart,
+    /// A button (not a value): restores all keybindings to their built-in defaults.
+    ResetKeybindings,
     /// A button (not a value): activates "reset every setting to defaults".
     ResetAll,
     // Playback
@@ -153,7 +156,7 @@ impl Field {
             | Field::AutoplayRadio | Field::Normalize => FieldKind::Toggle,
             Field::EqPreset | Field::GeminiModel | Field::ThemePreset => FieldKind::Select,
             Field::Speed | Field::SeekInterval | Field::Band(_) => FieldKind::Slider,
-            Field::ResetAll => FieldKind::Button,
+            Field::ResetKeybindings | Field::ResetAll => FieldKind::Button,
         }
     }
 
@@ -164,6 +167,7 @@ impl Field {
             Field::Mouse => "Mouse (next launch)".to_owned(),
             Field::AlbumArt => "Album art (next launch)".to_owned(),
             Field::AutoplayOnStart => "Autoplay on launch".to_owned(),
+            Field::ResetKeybindings => "Reset keybindings".to_owned(),
             Field::ResetAll => "Reset all settings".to_owned(),
             Field::Speed => "Playback speed".to_owned(),
             Field::SeekInterval => "Seek interval".to_owned(),
@@ -243,8 +247,8 @@ impl SettingsDraft {
             Field::AutoplayOnStart => toggle_str(self.autoplay_on_start),
             Field::Speed => format!("{:.1}x", self.speed),
             Field::SeekInterval => format!("{:.0}s", self.seek_seconds),
-            // A button, not a value: the row shows how to trigger it.
-            Field::ResetAll => "↵ press Enter".to_owned(),
+            // Buttons, not values: these rows show how to trigger them.
+            Field::ResetKeybindings | Field::ResetAll => "↵ press Enter".to_owned(),
             Field::Gapless => toggle_str(self.gapless),
             Field::AutoplayRadio => toggle_str(self.autoplay_radio),
             Field::EqPreset => self.eq_preset.label().to_owned(),
@@ -411,14 +415,17 @@ mod tests {
                 Field::Mouse,
                 Field::AlbumArt,
                 Field::AutoplayOnStart,
+                Field::ResetKeybindings,
                 Field::ResetAll,
             ]
         );
+        assert_eq!(Field::ResetKeybindings.kind(), FieldKind::Button);
         assert_eq!(Field::ResetAll.kind(), FieldKind::Button);
         assert_eq!(Field::AutoplayOnStart.kind(), FieldKind::Toggle);
         assert_eq!(Field::AlbumArt.kind(), FieldKind::Toggle);
         // Off by default, and the toggle renders as an empty checkbox.
         let draft = base_draft();
+        assert_eq!(draft.value_display(Field::ResetKeybindings), "↵ press Enter");
         assert!(!draft.autoplay_on_start);
         assert_eq!(draft.value_display(Field::AutoplayOnStart), "[ ]");
     }

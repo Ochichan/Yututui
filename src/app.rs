@@ -1741,7 +1741,7 @@ impl App {
             // Text fields ignore ←/→; Enter starts editing instead. The reset button has no
             // value to nudge — Enter activates it (see `settings_activate`).
             Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_)
-            | Field::ResetAll => Vec::new(),
+            | Field::ResetKeybindings | Field::ResetAll => Vec::new(),
         }
     }
 
@@ -1821,15 +1821,32 @@ impl App {
             }
             FieldKind::Toggle => self.settings_change(1),
             FieldKind::Button => {
-                if field == Field::ResetAll {
-                    // Gate the destructive reset behind an explicit confirmation modal.
-                    self.confirm_reset_all = true;
-                    self.dirty = true;
+                match field {
+                    Field::ResetKeybindings => self.settings_reset_keybindings(),
+                    Field::ResetAll => {
+                        // Gate the destructive reset behind an explicit confirmation modal.
+                        self.confirm_reset_all = true;
+                        self.dirty = true;
+                        Vec::new()
+                    }
+                    _ => Vec::new(),
                 }
-                Vec::new()
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Restore only the working keymap in Settings to built-in defaults. Like individual
+    /// key edits, this is committed and persisted when the settings screen closes.
+    fn settings_reset_keybindings(&mut self) -> Vec<Cmd> {
+        let Some(st) = self.settings.as_mut() else {
+            return Vec::new();
+        };
+        st.keymap = KeyMap::default();
+        st.capturing = None;
+        self.status = "Keybindings reset to defaults".to_owned();
+        self.dirty = true;
+        Vec::new()
     }
 
     /// Reset every editable setting (and the Keys-tab keymap draft) back to its built-in
@@ -3303,6 +3320,80 @@ mod tests {
             app.update(Msg::Key(key(KeyCode::Down)));
         }
         assert_eq!(app.settings.as_ref().unwrap().current_field(), Field::ResetAll);
+    }
+
+    /// Move the General-tab cursor onto the Reset-keybindings button.
+    fn focus_reset_keybindings(app: &mut App) {
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General tab)
+        let idx = SettingsTab::General
+            .fields()
+            .iter()
+            .position(|f| *f == Field::ResetKeybindings)
+            .expect("reset keybindings field");
+        for _ in 0..idx {
+            app.update(Msg::Key(key(KeyCode::Down)));
+        }
+        assert_eq!(
+            app.settings.as_ref().unwrap().current_field(),
+            Field::ResetKeybindings
+        );
+    }
+
+    #[test]
+    fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
+        let mut app = app_playing(1, 0);
+        app.keymap
+            .rebind(
+                KeyContext::Player,
+                Action::TogglePause,
+                crate::keymap::parse_chord("P").unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            app.keymap
+                .action(KeyContext::Player, crate::keymap::parse_chord("P").unwrap()),
+            Some(Action::TogglePause)
+        );
+
+        focus_reset_keybindings(&mut app);
+        let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(cmds.is_empty());
+        assert_eq!(app.status, "Keybindings reset to defaults");
+
+        let draft_keymap = &app.settings.as_ref().unwrap().keymap;
+        assert_eq!(
+            draft_keymap.action(
+                KeyContext::Player,
+                crate::keymap::parse_chord("space").unwrap()
+            ),
+            Some(Action::TogglePause)
+        );
+        assert_eq!(
+            draft_keymap.action(KeyContext::Player, crate::keymap::parse_chord("P").unwrap()),
+            None
+        );
+        // The live keymap follows the existing Settings flow: changes commit on close.
+        assert_eq!(
+            app.keymap
+                .action(KeyContext::Player, crate::keymap::parse_chord("P").unwrap()),
+            Some(Action::TogglePause)
+        );
+
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+        let saved = save_config(&cmds).expect("a SaveConfig cmd");
+        assert!(saved.keybindings.is_empty());
+        assert_eq!(
+            app.keymap.action(
+                KeyContext::Player,
+                crate::keymap::parse_chord("space").unwrap()
+            ),
+            Some(Action::TogglePause)
+        );
+        assert_eq!(
+            app.keymap
+                .action(KeyContext::Player, crate::keymap::parse_chord("P").unwrap()),
+            None
+        );
     }
 
     #[test]
