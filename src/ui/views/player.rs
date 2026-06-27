@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
 
 use crate::app::{App, DownloadState, MouseTarget};
 use crate::keymap::Action;
@@ -65,29 +65,57 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     render_controls(frame, app, rows[3]);
 
-    // Transport status line: state, queue position, shuffle, repeat. (Volume sits in
-    // the transport strip above, next to its `-`/`+` controls.)
+    render_status_line(frame, app, rows[4]);
+
+    // Lyrics panel (toggled with `L`) fills the central area when shown.
+    if app.lyrics_visible {
+        render_lyrics(frame, app, rows[5]);
+    }
+
+    // The full key list lives in the `?` cheat-sheet now; the footer just points to it
+    // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
+    buttons::render_help_button(frame, app, rows[6], Alignment::Center);
+
+    // The EQ preset dropdown draws last so its rows sit on top and win hit-testing.
+    if app.eq_dropdown_open {
+        render_eq_dropdown(frame, app, inner);
+    }
+}
+
+/// The transport status line: state, queue position, shuffle, repeat, speed, EQ, etc.
+///
+/// Rendered as click segments rather than one string so `repeat:` (toggles repeat) and
+/// `eq:` (opens the preset dropdown) are mouse targets — but every segment shares the same
+/// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
+/// always shown now (so the dropdown is always reachable); the rest stay conditional.
+fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
+    // (target, text); a `None` target is static label/spacing. Spacing is split into its
+    // own label so a clickable segment's hit rect hugs just its text.
+    let mut parts: Vec<(Option<MouseTarget>, String)> = Vec::new();
     let state = if app.paused { "⏸  paused" } else { "▶ playing" };
-    let mut info = state.to_owned();
+    parts.push((None, state.to_owned()));
     if !app.queue.is_empty() {
         let (pos, _) = app.queue.position();
-        info.push_str(&format!("    {pos}/{}", app.queue.len()));
+        parts.push((None, format!("    {pos}/{}", app.queue.len())));
     }
     if app.queue.shuffle {
-        info.push_str("    shuffle");
+        parts.push((None, "    shuffle".to_owned()));
     }
-    info.push_str(&format!("    repeat:{}", app.queue.repeat.label()));
+    parts.push((None, "    ".to_owned()));
+    parts.push((
+        Some(MouseTarget::Player(Action::CycleRepeat)),
+        format!("repeat:{}", app.queue.repeat.label()),
+    ));
     if (app.speed - 1.0).abs() > f64::EPSILON {
-        info.push_str(&format!("    {:.1}x", app.speed));
+        parts.push((None, format!("    {:.1}x", app.speed)));
     }
-    if app.eq_preset != crate::eq::EqPreset::Flat {
-        info.push_str(&format!("    eq:{}", app.eq_preset.label()));
-    }
+    parts.push((None, "    ".to_owned()));
+    parts.push((Some(MouseTarget::EqMenu), format!("eq:{}", app.eq_preset.label())));
     if app.normalize {
-        info.push_str("    norm");
+        parts.push((None, "    norm".to_owned()));
     }
     if app.autoplay_radio {
-        info.push_str("    radio");
+        parts.push((None, "    radio".to_owned()));
     }
     // Download indicator for the current track, if one is in flight or finished.
     if let Some(s) = app.queue.current()
@@ -98,19 +126,73 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             DownloadState::Done => "⬇ ✓".to_owned(),
             DownloadState::Failed => "⬇ ✗".to_owned(),
         };
-        info.push_str(&format!("    {tag}"));
-    }
-    let status = Line::from(info).fg(Color::Cyan).alignment(Alignment::Center);
-    frame.render_widget(Paragraph::new(status), rows[4]);
-
-    // Lyrics panel (toggled with `L`) fills the central area when shown.
-    if app.lyrics_visible {
-        render_lyrics(frame, app, rows[5]);
+        parts.push((None, format!("    {tag}")));
     }
 
-    // The full key list lives in the `?` cheat-sheet now; the footer just points to it
-    // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
-    buttons::render_help_button(frame, app, rows[6], Alignment::Center);
+    let segments: Vec<Seg> = parts
+        .iter()
+        .map(|(target, text)| match target {
+            Some(t) => Seg::button(*t, text.as_str()),
+            None => Seg::label(text.as_str()),
+        })
+        .collect();
+    // Same style for buttons and labels so the clickable parts are visually indistinguishable.
+    let style = Style::default().fg(Color::Cyan);
+    buttons::render_segments(frame, app, area, &segments, style, style, Alignment::Center);
+}
+
+/// The EQ preset dropdown, anchored under the `eq:` label and listing the built-in presets
+/// (the active one marked). Each row is a click target that selects that preset. Drawn over
+/// whatever is beneath it (`Clear`); dismissed by picking a preset or clicking elsewhere.
+fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
+    // Anchor under the `eq:` label, whose hit rect the status line just published.
+    let Some(anchor) = app
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .find(|b| b.target == MouseTarget::EqMenu)
+        .map(|b| b.rect)
+    else {
+        return;
+    };
+
+    let presets = crate::eq::EqPreset::CYCLE;
+    // Widest label is "Treble Boost" (12) + a 2-cell marker + 2 border columns.
+    let box_w = 16u16;
+    let box_h = presets.len() as u16 + 2;
+    // Drop below the label; clamp against the right/bottom edges so the box stays on screen.
+    let x = anchor.x.min(area.right().saturating_sub(box_w));
+    let y = (anchor.y + 1).min(area.bottom().saturating_sub(box_h));
+    let popup = Rect { x, y, width: box_w, height: box_h }.intersection(area);
+    if popup.is_empty() {
+        return;
+    }
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(" EQ ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+    let list = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    for (i, preset) in presets.iter().enumerate() {
+        let i = i as u16;
+        if i >= list.height {
+            break; // out of room (tiny terminal) — don't register off-box rows
+        }
+        let row = Rect { x: list.x, y: list.y + i, width: list.width, height: 1 };
+        let selected = *preset == app.eq_preset;
+        let marker = if selected { "▸ " } else { "  " };
+        let style = if selected {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let line = Line::from(format!("{marker}{}", preset.label())).style(style);
+        frame.render_widget(Paragraph::new(line), row);
+        app.register_mouse_button(row, MouseTarget::EqSelect(*preset));
+    }
 }
 
 /// The transport strip under the seekbar: skip-back / play-pause / skip-forward, then a

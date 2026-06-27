@@ -142,6 +142,10 @@ pub enum Cmd {
 pub enum MouseTarget {
     Global(Action),
     Player(Action),
+    /// Open/close the EQ preset dropdown on the player status line (clicking the `eq:` label).
+    EqMenu,
+    /// Pick an EQ preset from the open dropdown.
+    EqSelect(EqPreset),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +296,10 @@ pub struct App {
     pub speed: f64,
     /// Auto-extend the queue with related tracks when it runs low (radio mode).
     pub autoplay_radio: bool,
+    /// Whether the click-to-open EQ preset dropdown is showing on the player status line.
+    /// Player-only and session-ephemeral: toggled by clicking the `eq:` label, dismissed
+    /// by picking a preset or clicking elsewhere.
+    pub eq_dropdown_open: bool,
 
     // Settings ----------------------------------------------------------------
     /// The persisted config, kept so the settings screen can save the full file.
@@ -393,6 +401,7 @@ impl App {
             normalize: false,
             speed: 1.0,
             autoplay_radio: false,
+            eq_dropdown_open: false,
             config: Config::default(),
             settings: None,
             ai_available: false,
@@ -811,6 +820,13 @@ impl App {
         if let Some(target) = self.mouse_target_at(col, row) {
             return self.on_mouse_target(target);
         }
+        // A click that missed every button dismisses the EQ dropdown (modal-style), so the
+        // same click doesn't also seek.
+        if self.eq_dropdown_open {
+            self.eq_dropdown_open = false;
+            self.dirty = true;
+            return Vec::new();
+        }
         if self.mode != Mode::Player {
             return Vec::new();
         }
@@ -839,7 +855,28 @@ impl App {
             MouseTarget::Global(_) => Vec::new(),
             MouseTarget::Player(action) if self.mode == Mode::Player => self.on_player_action(action),
             MouseTarget::Player(_) => Vec::new(),
+            // Toggle the EQ dropdown by clicking its `eq:` label.
+            MouseTarget::EqMenu if self.mode == Mode::Player => {
+                self.eq_dropdown_open = !self.eq_dropdown_open;
+                self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::EqMenu => Vec::new(),
+            // Pick a preset from the open dropdown.
+            MouseTarget::EqSelect(preset) if self.mode == Mode::Player => self.select_eq_preset(preset),
+            MouseTarget::EqSelect(_) => Vec::new(),
         }
+    }
+
+    /// Apply an EQ preset chosen from the dropdown and close it. Mirrors the `e`-key cycle
+    /// ([`Action::CycleEq`]) — applied live to mpv, session-scoped (persisted via Settings).
+    fn select_eq_preset(&mut self, preset: EqPreset) -> Vec<Cmd> {
+        self.eq_preset = preset;
+        self.eq_bands = preset.gains();
+        self.eq_dropdown_open = false;
+        self.status = format!("EQ: {}", preset.label());
+        self.dirty = true;
+        vec![Cmd::Player(PlayerCmd::SetAudioFilter(self.current_af().unwrap_or_default()))]
     }
 
     fn on_key_player(&mut self, k: KeyEvent) -> Vec<Cmd> {
@@ -895,6 +932,7 @@ impl App {
             Action::OpenLibrary => {
                 self.mode = Mode::Library;
                 self.library_selected = 0;
+                self.eq_dropdown_open = false;
                 self.dirty = true;
                 Vec::new()
             }
@@ -929,6 +967,7 @@ impl App {
             Action::CycleEq => {
                 self.eq_preset = self.eq_preset.cycled();
                 self.eq_bands = self.eq_preset.gains();
+                self.eq_dropdown_open = false;
                 self.status = format!("EQ: {}", self.eq_preset.label());
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(self.current_af().unwrap_or_default()))]
@@ -952,6 +991,7 @@ impl App {
             Action::OpenSearch => {
                 self.mode = Mode::Search;
                 self.search_focus = SearchFocus::Input;
+                self.eq_dropdown_open = false;
                 self.dirty = true;
                 Vec::new()
             }
@@ -1107,6 +1147,7 @@ impl App {
     /// Open the settings screen, snapshotting the current persisted + live state into an
     /// editable draft.
     fn open_settings(&mut self) {
+        self.eq_dropdown_open = false;
         let path_str = |p: &Option<std::path::PathBuf>| {
             p.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
         };
@@ -1587,6 +1628,7 @@ impl App {
     fn enter_ai(&mut self) {
         self.mode = Mode::Ai;
         self.ai_focus = AiFocus::Input;
+        self.eq_dropdown_open = false;
         self.status.clear();
         self.dirty = true;
     }
