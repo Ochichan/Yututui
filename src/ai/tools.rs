@@ -19,6 +19,8 @@ use crate::app::{AiContext, Msg};
 const DEFAULT_RESOLVE: usize = 1;
 /// How many related tracks radio / suggestions pull in.
 const RELATED_COUNT: usize = 8;
+/// Per-conversation tool-result cache cap.
+const TOOL_CACHE_MAX: usize = 999;
 
 /// What a tool call needs to do its work.
 pub struct ToolDeps<'a> {
@@ -271,6 +273,9 @@ fn send(deps: &mut ToolDeps<'_>, msg: Msg) {
 }
 
 fn cache_all(deps: &mut ToolDeps<'_>, songs: &[Song]) {
+    if deps.cache.len().saturating_add(songs.len()) > TOOL_CACHE_MAX {
+        deps.cache.clear();
+    }
     for s in songs {
         deps.cache.insert(s.video_id.clone(), s.clone());
     }

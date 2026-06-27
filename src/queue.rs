@@ -10,7 +10,7 @@
 use crate::api::Song;
 
 /// Hard cap on queued tracks (priority #1: bounded memory).
-const MAX: usize = 200;
+const MAX: usize = 999;
 
 /// Repeat mode, cycled by the `r` key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

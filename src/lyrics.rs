@@ -14,7 +14,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use crate::app::Msg;
 
 /// Session cache cap (bounded memory; cleared wholesale when exceeded).
-const CACHE_MAX: usize = 100;
+const CACHE_MAX: usize = 999;
 
 /// One timed lyric line.
 #[derive(Debug, Clone)]

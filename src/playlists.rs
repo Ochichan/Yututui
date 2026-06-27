@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::api::Song;
 
 /// Caps (bounded memory).
-const PLAYLISTS_MAX: usize = 100;
-const SONGS_PER_PLAYLIST_MAX: usize = 500;
+const PLAYLISTS_MAX: usize = 999;
+const SONGS_PER_PLAYLIST_MAX: usize = 999;
 
 /// A named, ordered collection of tracks with a stable slug `id`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

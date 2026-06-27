@@ -4,7 +4,7 @@
 //! account, so it works in anonymous mode. (Account-sourced views — liked songs,
 //! your YTM playlists, home recommendations — need a cookie and layer on later.)
 //!
-//! Both collections are bounded at write time (priority #1: flat memory over long
+//! Both collections are bounded on load/write paths (priority #1: flat memory over long
 //! sessions) and de-duplicated by `video_id`. Persistence mirrors [`crate::config`]:
 //! pretty JSON written atomically (temp file + rename).
 
@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::api::Song;
 
 /// Caps on the two collections (bounded memory).
-const FAVORITES_MAX: usize = 500;
-const HISTORY_MAX: usize = 1000;
+const FAVORITES_MAX: usize = 999;
+const HISTORY_MAX: usize = 999;
 
 /// Saved tracks and play history, persisted to `<data dir>/library.json`.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -35,8 +35,9 @@ impl Library {
     pub fn load() -> Self {
         if let Some(path) = library_path()
             && let Ok(text) = fs::read_to_string(&path)
-            && let Ok(lib) = serde_json::from_str::<Library>(&text)
+            && let Ok(mut lib) = serde_json::from_str::<Library>(&text)
         {
+            lib.trim_to_caps();
             return lib;
         }
         Library::default()
@@ -77,6 +78,13 @@ impl Library {
     pub fn record_play(&mut self, song: &Song) {
         self.history.retain(|s| s.video_id != song.video_id);
         self.history.push_front(song.clone());
+        while self.history.len() > HISTORY_MAX {
+            self.history.pop_back();
+        }
+    }
+
+    fn trim_to_caps(&mut self) {
+        self.favorites.truncate(FAVORITES_MAX);
         while self.history.len() > HISTORY_MAX {
             self.history.pop_back();
         }
@@ -140,6 +148,17 @@ mod tests {
         assert_eq!(lib.history.len(), HISTORY_MAX);
         // The most recent play is at the front.
         assert_eq!(lib.history.front().unwrap().video_id, (HISTORY_MAX + 24).to_string());
+    }
+
+    #[test]
+    fn loaded_library_is_trimmed_to_caps() {
+        let mut lib = Library {
+            favorites: (0..(FAVORITES_MAX + 25)).map(|i| song(&format!("fav-{i}"))).collect(),
+            history: (0..(HISTORY_MAX + 25)).map(|i| song(&format!("hist-{i}"))).collect(),
+        };
+        lib.trim_to_caps();
+        assert_eq!(lib.favorites.len(), FAVORITES_MAX);
+        assert_eq!(lib.history.len(), HISTORY_MAX);
     }
 
     #[test]

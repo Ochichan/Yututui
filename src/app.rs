@@ -31,7 +31,7 @@ const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
 /// Consecutive empty radio extends before autoplay disables itself (circuit breaker).
 const AUTOPLAY_MAX_FAILURES: u8 = 3;
 /// Cap on AI chat transcript lines kept in memory (bounded memory).
-const AI_HISTORY_MAX: usize = 200;
+const AI_HISTORY_MAX: usize = 999;
 
 /// Seconds jumped per ←/→ press.
 const SEEK_STEP: f64 = 10.0;
@@ -40,7 +40,7 @@ const VOLUME_STEP: i64 = 5;
 /// Highest volume the UI sets (mpv would allow more, but 100 is a sane v1 ceiling).
 const VOLUME_MAX: i64 = 100;
 /// Cap on cached prefetched stream URLs (bounded memory; we only look a step ahead).
-const RESOLVED_MAX: usize = 16;
+const RESOLVED_MAX: usize = 999;
 /// How many tracks in a row may fail before we stop auto-skipping and surface the error.
 /// A single unplayable track (expired URL, region/age-gated, throttled) shouldn't halt
 /// the session, but a systemic failure (offline, bad cookie) shouldn't skip-storm the
@@ -354,6 +354,10 @@ pub struct App {
     /// URL mpv resolves itself). Recorded so a playback error can note the likelier cause
     /// (a stale prefetched CDN URL) in the log.
     last_load_prefetched: bool,
+    /// `video_id` of the track actually loaded into mpv. A cached/restored queue entry can
+    /// be visible before it is loaded; the first play action then loads it instead of only
+    /// toggling mpv's pause property.
+    loaded_video_id: Option<String>,
 
     /// Screen rect of the seekbar, written by the player view each render so a mouse
     /// click can be hit-tested against it. `Cell` because render only has `&App`.
@@ -417,6 +421,7 @@ impl App {
             mouse_buttons: RefCell::new(Vec::new()),
             last_shown_sec: -1,
             last_load_prefetched: false,
+            loaded_video_id: None,
         }
     }
 
@@ -434,6 +439,25 @@ impl App {
         self.keymap = KeyMap::from_config(cfg);
         // Keep the full config so the settings screen can persist the whole file.
         self.config = cfg.clone();
+    }
+
+    /// Seed the player with the last locally recorded track, without starting playback.
+    /// This gives a fresh launch something useful to show while keeping autoplay opt-in.
+    pub fn restore_last_played_from_library(&mut self) {
+        if !self.queue.is_empty() {
+            return;
+        }
+        let Some(song) = self.library.history.front().cloned() else {
+            return;
+        };
+        self.queue.set(vec![song], 0);
+        self.time_pos = None;
+        self.duration = None;
+        self.paused = true;
+        self.last_shown_sec = -1;
+        self.loaded_video_id = None;
+        self.status.clear();
+        self.dirty = true;
     }
 
     /// The mpv `af` filter chain for the current EQ + normalization state, or `None` when
@@ -812,6 +836,10 @@ impl App {
                 Vec::new()
             }
             Action::TogglePause => {
+                if self.current_needs_load() {
+                    let song = self.queue.current().cloned();
+                    return self.load_song(song);
+                }
                 // Optimistic toggle; mpv confirms via a `pause` property-change.
                 self.paused = !self.paused;
                 self.dirty = true;
@@ -1762,6 +1790,7 @@ impl App {
                 // "Playback error" / "Track unavailable") so the UI matches what's loading.
                 self.status.clear();
                 self.library.record_play(&song);
+                self.loaded_video_id = Some(song.video_id.clone());
                 // Drop the previous track's lyrics; refresh if the panel is open.
                 self.lyrics = None;
                 // Use a prefetched direct URL if we have one (instant skip); else hand mpv
@@ -1797,8 +1826,21 @@ impl App {
                 }
                 cmds
             }
-            None => Vec::new(),
+            None => {
+                self.time_pos = None;
+                self.duration = None;
+                self.paused = true;
+                self.last_shown_sec = -1;
+                self.loaded_video_id = None;
+                Vec::new()
+            }
         }
+    }
+
+    fn current_needs_load(&self) -> bool {
+        self.queue
+            .current()
+            .is_some_and(|song| self.loaded_video_id.as_deref() != Some(song.video_id.as_str()))
     }
 
     /// Mark a download as starting and emit the effect to run it.
@@ -1898,6 +1940,29 @@ mod tests {
         let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
         assert!(app.paused);
         assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::CyclePause)]));
+    }
+
+    #[test]
+    fn restores_last_history_track_without_autoplaying() {
+        let mut app = App::new(100);
+        app.library.record_play(&songs(2)[0]);
+        app.library.record_play(&songs(2)[1]);
+        app.restore_last_played_from_library();
+        assert_eq!(app.queue.len(), 1);
+        assert_eq!(current(&app), "id1");
+        assert!(app.paused);
+        assert!(app.loaded_video_id.is_none());
+    }
+
+    #[test]
+    fn play_loads_restored_history_track() {
+        let mut app = App::new(100);
+        app.library.record_play(&songs(1)[0]);
+        app.restore_last_played_from_library();
+        let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
+        assert!(load_url(&cmds).expect("restored track load").contains("id0"));
+        assert_eq!(app.loaded_video_id.as_deref(), Some("id0"));
+        assert!(!app.paused);
     }
 
     #[test]
@@ -2244,7 +2309,7 @@ mod tests {
                 .action(KeyContext::Player, crate::keymap::parse_chord("ctrl+x").unwrap()),
             Some(Action::TogglePause)
         );
-        assert!(app.status.contains("^X"));
+        assert!(app.status.contains("^x"));
 
         let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
         let saved = save_config(&cmds).expect("a SaveConfig cmd");

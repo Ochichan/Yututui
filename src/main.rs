@@ -82,6 +82,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
     let mut app = App::new(cfg.volume);
     // Load the local library (favorites + history); an absent/corrupt file → empty.
     app.library = library::Library::load();
+    app.restore_last_played_from_library();
     // Load local playlists (the AI playlist tools read/write these).
     app.playlists = playlists::Playlists::load();
     // Push persisted playback/EQ settings (preset, bands, normalize, speed, autoplay).
