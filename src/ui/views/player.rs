@@ -94,7 +94,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 /// The transport status line: state, queue position, shuffle, repeat, speed, EQ, etc.
 ///
-/// Rendered as click segments rather than one string so `repeat:` (toggles repeat) and
+/// Rendered as click segments rather than one string so `R:` (toggles repeat) and
 /// `eq:` (opens the preset dropdown) are mouse targets — but every segment shares the same
 /// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
@@ -102,7 +102,10 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     // (target, text); a `None` target is static label/spacing. Spacing is split into its
     // own label so a clickable segment's hit rect hugs just its text.
     let mut parts: Vec<(Option<MouseTarget>, String)> = Vec::new();
-    let state = if app.paused { "⏸  paused" } else { "▶ playing" };
+    // EAW-neutral glyphs (one cell everywhere) — the ⏸/▶ media emoji widen to two
+    // cells on some terminals (Windows), which drifts every later segment's hit rect
+    // off its rendered text and makes `R:`/`eq:` unclickable. See `render_controls`.
+    let state = if app.paused { "‖ paused" } else { "▸ playing" };
     parts.push((None, state.to_owned()));
     if !app.queue.is_empty() {
         let (pos, _) = app.queue.position();
@@ -114,7 +117,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     parts.push((None, "    ".to_owned()));
     parts.push((
         Some(MouseTarget::Player(Action::CycleRepeat)),
-        format!("repeat:{}", app.queue.repeat.label()),
+        format!("R: {}", app.queue.repeat.label()),
     ));
     if (app.speed - 1.0).abs() > f64::EPSILON {
         parts.push((None, format!("    {:.1}x", app.speed)));

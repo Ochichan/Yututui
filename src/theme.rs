@@ -349,26 +349,28 @@ impl ThemeRole {
     }
 
     fn default_dark(self) -> &'static str {
+        // Soft pastel dark palette (Catppuccin Mocha) — low-saturation accents on a
+        // muted base so nothing glares; replaces the old pure-neon defaults.
         match self {
-            ThemeRole::Background => "#000000",
-            ThemeRole::TextPrimary => "#FFFFFF",
-            ThemeRole::TextMuted => "#555555",
-            ThemeRole::TextSubtle => "#808080",
-            ThemeRole::TextInverse => "#000000",
+            ThemeRole::Background => "#1E1E2E",
+            ThemeRole::TextPrimary => "#CDD6F4",
+            ThemeRole::TextMuted => "#6C7086",
+            ThemeRole::TextSubtle => "#A6ADC8",
+            ThemeRole::TextInverse => "#1E1E2E",
             ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
-            | ThemeRole::SelectionBg => "#FF00FF",
+            | ThemeRole::SelectionBg => "#CBA6F7",
             ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
-            | ThemeRole::SelectionInactiveBg => "#555555",
+            | ThemeRole::SelectionInactiveBg => "#45475A",
             ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
             | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
-            | ThemeRole::SettingsGroup => "#00FFFF",
-            ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#00FF00",
-            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#FFFF00",
-            ThemeRole::Error | ThemeRole::AiError => "#FF0000",
-            ThemeRole::SelectionFg => "#000000",
+            | ThemeRole::SettingsGroup => "#89DCEB",
+            ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#A6E3A1",
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#F9E2AF",
+            ThemeRole::Error | ThemeRole::AiError => "#F38BA8",
+            ThemeRole::SelectionFg => "#1E1E2E",
             ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#FFFFFF",
-            ThemeRole::SettingsLabel => "#808080",
+            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#CDD6F4",
+            ThemeRole::SettingsLabel => "#A6ADC8",
         }
     }
 
@@ -502,7 +504,7 @@ mod tests {
     #[test]
     fn theme_config_uses_preset_and_overrides() {
         let mut cfg = ThemeConfig::default();
-        assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#FF00FF");
+        assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#CBA6F7");
         cfg.set_preset(ThemePreset::Light);
         assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#C026D3");
         cfg.set_override(ThemeRole::BorderPrimary, "#123456").unwrap();
