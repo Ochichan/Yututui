@@ -1500,7 +1500,7 @@ impl App {
         self.keymap = st.keymap.clone();
         self.config.keybindings = self.keymap.to_overrides();
         let key_changed = self.config.gemini_api_key != old_key;
-        // The `=`/`-` keys change the live volume in place; fold it in so a save
+        // Volume controls change the live value in place; fold it in so a save
         // doesn't persist the stale startup value.
         self.config.volume = self.volume;
         self.status = "Settings saved".to_owned();
@@ -1898,6 +1898,18 @@ mod tests {
         let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
         assert!(app.paused);
         assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::CyclePause)]));
+    }
+
+    #[test]
+    fn up_down_adjust_volume_in_player_mode() {
+        let mut app = App::new(50);
+        let cmds = app.update(Msg::Key(key(KeyCode::Up)));
+        assert_eq!(app.volume, 55);
+        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::SetVolume(55))]));
+
+        let cmds = app.update(Msg::Key(key(KeyCode::Down)));
+        assert_eq!(app.volume, 50);
+        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::SetVolume(50))]));
     }
 
     #[test]

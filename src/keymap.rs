@@ -352,8 +352,8 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::TogglePause, ch(' ')),
         (C::Player, A::SeekBack, key(KeyCode::Left)),
         (C::Player, A::SeekForward, key(KeyCode::Right)),
-        (C::Player, A::VolUp, ch('=')),
-        (C::Player, A::VolDown, ch('-')),
+        (C::Player, A::VolUp, key(KeyCode::Up)),
+        (C::Player, A::VolDown, key(KeyCode::Down)),
         (C::Player, A::NextTrack, ch('n')),
         (C::Player, A::PrevTrack, ch('p')),
         (C::Player, A::Favorite, ch('f')),
@@ -592,6 +592,8 @@ mod tests {
         assert_eq!(format_chord(parse_chord("ctrl+q").unwrap()), "^Q");
         assert_eq!(format_chord(parse_chord("left").unwrap()), "←");
         assert_eq!(format_chord(parse_chord("right").unwrap()), "→");
+        assert_eq!(format_chord(parse_chord("up").unwrap()), "↑");
+        assert_eq!(format_chord(parse_chord("down").unwrap()), "↓");
         assert_eq!(chord_to_config(parse_chord("ctrl+r").unwrap()), "ctrl+r");
     }
 
@@ -626,12 +628,15 @@ mod tests {
     fn defaults_resolve_to_actions() {
         let km = KeyMap::default();
         assert_eq!(km.action(KeyContext::Player, parse_chord("space").unwrap()), Some(Action::TogglePause));
+        assert_eq!(km.action(KeyContext::Player, parse_chord("up").unwrap()), Some(Action::VolUp));
+        assert_eq!(km.action(KeyContext::Player, parse_chord("down").unwrap()), Some(Action::VolDown));
         assert_eq!(km.action(KeyContext::Player, parse_chord("n").unwrap()), Some(Action::NextTrack));
         assert_eq!(km.action(KeyContext::Player, parse_chord("l").unwrap()), Some(Action::OpenLibrary));
         assert_eq!(km.action(KeyContext::Player, parse_chord("L").unwrap()), Some(Action::ToggleLyrics));
         assert_eq!(km.action(KeyContext::Player, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
         // Common nav falls through in a list context.
         assert_eq!(km.action(KeyContext::Library, parse_chord("up").unwrap()), Some(Action::MoveUp));
+        assert_eq!(km.action(KeyContext::Library, parse_chord("down").unwrap()), Some(Action::MoveDown));
         assert_eq!(km.action(KeyContext::Library, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
         assert_eq!(km.global_action(parse_chord("?").unwrap()), Some(Action::ToggleHelp));
     }
