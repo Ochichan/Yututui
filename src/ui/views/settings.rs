@@ -48,43 +48,40 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // the edits are saved.
     let k = |a| app.keymap.label(KeyContext::Settings, a);
     let help_text = if st.editing_text && st.tab == SettingsTab::Colors {
-        "type #RRGGBB or none · Enter save · Backspace delete".to_owned()
+        "type #RRGGBB or none  ·  Enter save  ·  Backspace delete".to_owned()
     } else if st.editing_text {
         // While typing a path/key, Enter or Esc both commit *and* persist it immediately,
         // so the value can't be lost by leaving the screen later.
-        "type value · Enter or Esc save · Backspace delete".to_owned()
+        "type value  ·  Enter or Esc save  ·  Backspace delete".to_owned()
     } else if st.tab == SettingsTab::Keys {
         format!(
-            "{}/{} select · {} rebind · {} reset · {} switch tab · {}/{} save+close",
+            "{}/{} select  ·  {} rebind  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
             k(Action::MoveUp),
             k(Action::MoveDown),
             k(Action::Confirm),
             k(Action::DeleteChar),
             k(Action::FocusNext),
-            k(Action::SettingsSave),
             k(Action::SettingsCancel),
         )
     } else if st.tab == SettingsTab::Colors {
         format!(
-            "{}/{} color · {} edit · {} reset · {} switch tab · {}/{} save+close",
+            "{}/{} color  ·  {} edit  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
             k(Action::MoveUp),
             k(Action::MoveDown),
             k(Action::Confirm),
             k(Action::DeleteChar),
             k(Action::FocusNext),
-            k(Action::SettingsSave),
             k(Action::SettingsCancel),
         )
     } else {
         format!(
-            "{}/{} field · {}/{} change · {} edit/toggle · {} switch tab · {}/{} save+close",
+            "{}/{} field  ·  {}/{} change  ·  {} edit/toggle  ·  {} switch tab  ·  {} save + quit",
             k(Action::MoveUp),
             k(Action::MoveDown),
             k(Action::ChangeDecrease),
             k(Action::ChangeIncrease),
             k(Action::Confirm),
             k(Action::FocusNext),
-            k(Action::SettingsSave),
             k(Action::SettingsCancel),
         )
     };

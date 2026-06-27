@@ -1472,11 +1472,9 @@ impl App {
             .action(KeyContext::Settings, k.into())
             .or_else(|| Self::settings_safety_action(k));
         match action {
-            // `q`/Esc and `s` both commit the draft before leaving the screen. The key
-            // name stays SettingsCancel for compatibility with existing keybinding ids.
-            Some(Action::SettingsCancel | Action::Back | Action::SettingsSave) => {
-                self.close_settings()
-            }
+            // `q`/Esc commit the draft before leaving the screen. The action name stays
+            // SettingsCancel for compatibility with existing keybinding ids.
+            Some(Action::SettingsCancel | Action::Back) => self.close_settings(),
             Some(Action::FocusNext) => {
                 self.settings_switch_tab(true);
                 Vec::new()
@@ -1856,7 +1854,7 @@ impl App {
         if let Some(st) = self.settings.as_ref() {
             self.theme = st.draft.theme.normalized();
         }
-        self.status = "All settings reset to defaults — save to apply".to_owned();
+        self.status = "All settings reset to defaults".to_owned();
         self.dirty = true;
         let mut cmds = self.settings_apply_speed();
         cmds.extend(self.settings_apply_af());
@@ -3163,7 +3161,7 @@ mod tests {
         );
         assert!(app.status.contains("^x"));
 
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
         let saved = save_config(&cmds).expect("a SaveConfig cmd");
         assert_eq!(
             saved
@@ -3202,8 +3200,8 @@ mod tests {
             Some(Action::Back)
         );
 
-        // The popup is modal: the next key only dismisses it (here `s` does NOT save+close).
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
+        // The popup is modal: the next key only dismisses it (here `q` does NOT save+quit).
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
         assert!(app.key_conflict.is_none());
         assert!(save_config(&cmds).is_none(), "dismiss key must be swallowed, not saved");
         assert!(app.settings.is_some(), "settings stayed open after dismiss");
@@ -3301,7 +3299,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_save_applies_and_persists() {
+    fn settings_close_applies_and_persists() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General)
         app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab; row 0 = Speed
@@ -3310,9 +3308,9 @@ mod tests {
             (app.speed - 1.0).abs() < 1e-9,
             "committed speed unchanged while editing"
         );
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('s')))); // save
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
         assert_eq!(app.mode, Mode::Player);
-        assert!((app.speed - 1.1).abs() < 1e-9, "speed applied on save");
+        assert!((app.speed - 1.1).abs() < 1e-9, "speed applied on close");
         let saved = save_config(&cmds).expect("a SaveConfig cmd");
         assert_eq!(saved.speed, Some(1.1));
     }
@@ -3323,7 +3321,7 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open
         app.update(Msg::Key(key(KeyCode::Tab))); // Playback; Speed
         app.update(Msg::Key(key(KeyCode::Right))); // draft speed -> 1.1
-        let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // save+close
+        let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // save+quit
         assert_eq!(app.mode, Mode::Player);
         assert!((app.speed - 1.1).abs() < 1e-9, "speed persisted on close");
         assert_eq!(
@@ -3360,7 +3358,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_save_reasserts_audio_and_persists_volume() {
+    fn settings_close_reasserts_audio_and_persists_volume() {
         let mut app = app_playing(1, 0);
         app.volume = 55; // a `=`/`-` change during the session
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open
@@ -3368,8 +3366,8 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Tab))); // EQ tab; row 0 = preset
         app.update(Msg::Key(key(KeyCode::Down))); // first band
         app.update(Msg::Key(key(KeyCode::Right))); // raise it (draft = Custom)
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('s')))); // save
-        // Save re-asserts the committed chain so the current track matches what was saved
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
+        // Closing re-asserts the committed chain so the current track matches what was saved
         // even if an EOF rebuilt mpv from the old bands mid-edit.
         assert!(cmds.iter().any(|c| matches!(c,
             Cmd::Player(PlayerCmd::SetAudioFilter(s)) if s.contains("equalizer"))));
@@ -3417,7 +3415,7 @@ mod tests {
         assert_eq!(app.mode, Mode::Settings);
         app.update(Msg::Key(key(KeyCode::Enter))); // commit edit mode
         assert!(!app.settings.as_ref().unwrap().editing_text);
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('s')))); // save
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
         assert_eq!(
             save_config(&cmds).unwrap().cookies_file,
             Some(std::path::PathBuf::from("/x.txt"))
@@ -3439,8 +3437,8 @@ mod tests {
             app.gemini_model, start,
             "committed model unchanged while editing"
         );
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('s')))); // save
-        assert_eq!(app.gemini_model, drafted, "model committed on save");
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
+        assert_eq!(app.gemini_model, drafted, "model committed on close");
         // The running actor is told to hot-swap; config persists the choice.
         assert!(
             cmds.iter()
@@ -3476,15 +3474,15 @@ mod tests {
             "committing a changed key must reload the AI actor"
         );
         assert!(!cmds.iter().any(|c| matches!(c, Cmd::SetAiModel(_))));
-        // The committed value is now in config, so a later `s`-save doesn't double-reload.
-        let save_cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
+        // The committed value is now in config, so a later close doesn't double-reload.
+        let save_cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
         assert_eq!(
             save_config(&save_cmds).unwrap().gemini_api_key.as_deref(),
             Some("AIzaKey")
         );
         assert!(
             !save_cmds.iter().any(|c| matches!(c, Cmd::ReloadAi { .. })),
-            "an unchanged key shouldn't rebuild the actor again on save"
+            "an unchanged key shouldn't rebuild the actor again on close"
         );
     }
 
@@ -3552,7 +3550,7 @@ mod tests {
             app.update(Msg::Key(key(KeyCode::Char(c))));
         }
         app.update(Msg::Key(key(KeyCode::Enter))); // commit
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('s')))); // save
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
         // Replaces, not "OLDKEYNEWKEY".
         assert_eq!(
             save_config(&cmds).unwrap().gemini_api_key.as_deref(),

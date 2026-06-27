@@ -50,7 +50,6 @@ pub enum Action {
     FocusPrev,
     DeleteChar,
     // Settings screen.
-    SettingsSave,
     SettingsCancel,
     ChangeDecrease,
     ChangeIncrease,
@@ -93,7 +92,6 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::FocusNext, "focus_next", "Next tab / focus"),
     (Action::FocusPrev, "focus_prev", "Previous tab / focus"),
     (Action::DeleteChar, "delete_char", "Delete character"),
-    (Action::SettingsSave, "settings_save", "Save settings"),
     (Action::SettingsCancel, "settings_cancel", "Close settings"),
     (Action::ChangeDecrease, "change_decrease", "Decrease value"),
     (Action::ChangeIncrease, "change_increase", "Increase value"),
@@ -118,7 +116,7 @@ impl Action {
         match (ctx, self) {
             (KeyContext::Library, Action::Back) => "Close Library",
             (KeyContext::SearchResults, Action::Back) => "Close Search Results",
-            (KeyContext::Settings, Action::SettingsCancel) => "Close Settings",
+            (KeyContext::Settings, Action::SettingsCancel) => "Save + quit",
             _ => self.human_label(),
         }
     }
@@ -312,9 +310,17 @@ impl KeyMap {
                 tracing::warn!(key, "ignoring malformed keybinding override");
                 continue;
             };
-            let (Some(ctx), Some(action), Some(chord)) =
-                (KeyContext::from_id(ctx_id), Action::from_id(action_id), parse_chord(val))
-            else {
+            let Some(ctx) = KeyContext::from_id(ctx_id) else {
+                tracing::warn!(key, value = val, "ignoring unknown keybinding override");
+                continue;
+            };
+            let Some(action) = Action::from_id(action_id) else {
+                if !(ctx_id == "settings" && action_id == "settings_save") {
+                    tracing::warn!(key, value = val, "ignoring unknown keybinding override");
+                }
+                continue;
+            };
+            let Some(chord) = parse_chord(val) else {
                 tracing::warn!(key, value = val, "ignoring unknown keybinding override");
                 continue;
             };
@@ -464,7 +470,6 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::SearchResults, A::FocusInput, ch('/')),
         (C::SearchResults, A::Back, ch('q')),
         // Settings screen commands (nav comes from Common).
-        (C::Settings, A::SettingsSave, ch('s')),
         (C::Settings, A::ChangeDecrease, key(KeyCode::Left)),
         (C::Settings, A::ChangeIncrease, key(KeyCode::Right)),
         (C::Settings, A::SettingsCancel, ch('q')),
@@ -794,7 +799,7 @@ mod tests {
     fn contextual_labels_describe_close_and_global_targets() {
         assert_eq!(Action::Back.human_label_for(KeyContext::Library), "Close Library");
         assert_eq!(Action::Back.human_label_for(KeyContext::SearchResults), "Close Search Results");
-        assert_eq!(Action::SettingsCancel.human_label_for(KeyContext::Settings), "Close Settings");
+        assert_eq!(Action::SettingsCancel.human_label_for(KeyContext::Settings), "Save + quit");
         assert_eq!(Action::Quit.human_label_for(KeyContext::Global), "Quit");
         assert_eq!(Action::Home.human_label_for(KeyContext::Global), "Go home");
     }
@@ -806,6 +811,17 @@ mod tests {
             .find_map(|(ctx, actions)| (ctx == KeyContext::Settings).then_some(actions))
             .unwrap();
         assert_eq!(settings_actions.last(), Some(&Action::SettingsCancel));
+    }
+
+    #[test]
+    fn settings_has_no_standalone_save_binding() {
+        let km = KeyMap::default();
+        assert_eq!(km.action(KeyContext::Settings, parse_chord("s").unwrap()), None);
+
+        let mut o = BTreeMap::new();
+        o.insert("settings.settings_save".to_owned(), "S".to_owned());
+        let km = KeyMap::from_overrides(&o);
+        assert_eq!(km.action(KeyContext::Settings, parse_chord("S").unwrap()), None);
     }
 
     #[test]
