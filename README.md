@@ -20,6 +20,13 @@ for playback:
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+Or with a package manager:
+
+```sh
+brew install Ochichan/tap/ytm-tui                                                          # macOS
+scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket; scoop install ytm-tui   # Windows
+```
+
 The installer uses a prebuilt binary when one ships for your platform, otherwise it builds from
 source — install [Rust](https://rustup.rs) first.
 
