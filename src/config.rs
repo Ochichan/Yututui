@@ -232,10 +232,6 @@ fn ytm_dir_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
     audio_dir.join("ytm-tui")
 }
 
-fn cookies_file_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
-    ytm_dir_under_audio_dir(audio_dir).join("cookies.txt")
-}
-
 fn config_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "ytm-tui")
         .map(|d| d.config_dir().join("config.json"))
@@ -423,7 +419,7 @@ mod tests {
     #[test]
     fn default_cookies_file_lives_under_audio_dir() {
         assert_eq!(
-            cookies_file_under_audio_dir(PathBuf::from("/Users/alice/Music")),
+            ytm_dir_under_audio_dir(PathBuf::from("/Users/alice/Music")).join("cookies.txt"),
             PathBuf::from("/Users/alice/Music/ytm-tui/cookies.txt")
         );
     }
