@@ -28,7 +28,7 @@ pub struct Config {
     pub cookies_file: Option<PathBuf>,
     /// Startup volume, 0-100.
     pub volume: i64,
-    /// Where downloads are saved. `None` → `~/Downloads/ytm-tui`.
+    /// Where downloads are saved. `None` -> `<user music dir>/ytm-tui`.
     pub download_dir: Option<PathBuf>,
     /// Capture the mouse for click-to-seek. `None` → enabled.
     pub mouse: Option<bool>,
@@ -140,9 +140,9 @@ impl Config {
     }
 
     /// The concrete directory downloads are saved to. Precedence: `YTM_DOWNLOAD_DIR`
-    /// env override, then the configured `download_dir`, then `~/Downloads/ytm-tui`.
-    /// The Downloads folder resolves per-OS (`~/Downloads` on macOS, the Downloads
-    /// known-folder on Windows) via the `directories` crate.
+    /// env override, then the configured `download_dir`, then `<user music dir>/ytm-tui`.
+    /// The music folder resolves per-OS (`~/Music` on macOS, the Music known-folder on
+    /// Windows) via the `directories` crate.
     pub fn effective_download_dir(&self) -> PathBuf {
         if let Ok(env) = std::env::var("YTM_DOWNLOAD_DIR")
             && !env.is_empty()
@@ -152,10 +152,7 @@ impl Config {
         if let Some(dir) = &self.download_dir {
             return dir.clone();
         }
-        directories::UserDirs::new()
-            .and_then(|u| u.download_dir().map(std::path::Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("ytm-tui")
+        default_download_dir()
     }
 
     /// Whether to capture the mouse (for click-to-seek). Enabled unless set to `false`.
@@ -214,13 +211,29 @@ impl Config {
 /// macOS: `~/Music/ytm-tui/cookies.txt`
 /// Windows: `%USERPROFILE%\Music\ytm-tui\cookies.txt`
 pub fn default_cookies_file() -> Option<PathBuf> {
+    default_ytm_dir().map(|dir| dir.join("cookies.txt"))
+}
+
+/// Default directory for downloaded tracks.
+///
+/// macOS: `~/Music/ytm-tui`
+/// Windows: `%USERPROFILE%\Music\ytm-tui`
+pub fn default_download_dir() -> PathBuf {
+    default_ytm_dir().unwrap_or_else(|| PathBuf::from("ytm-tui"))
+}
+
+fn default_ytm_dir() -> Option<PathBuf> {
     directories::UserDirs::new()
         .and_then(|u| u.audio_dir().map(std::path::Path::to_path_buf))
-        .map(cookies_file_under_audio_dir)
+        .map(ytm_dir_under_audio_dir)
+}
+
+fn ytm_dir_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
+    audio_dir.join("ytm-tui")
 }
 
 fn cookies_file_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
-    audio_dir.join("ytm-tui").join("cookies.txt")
+    ytm_dir_under_audio_dir(audio_dir).join("cookies.txt")
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -412,6 +425,14 @@ mod tests {
         assert_eq!(
             cookies_file_under_audio_dir(PathBuf::from("/Users/alice/Music")),
             PathBuf::from("/Users/alice/Music/ytm-tui/cookies.txt")
+        );
+    }
+
+    #[test]
+    fn default_download_dir_lives_under_audio_dir() {
+        assert_eq!(
+            ytm_dir_under_audio_dir(PathBuf::from("/Users/alice/Music")),
+            PathBuf::from("/Users/alice/Music/ytm-tui")
         );
     }
 

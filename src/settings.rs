@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
-use crate::config::{Config, SPEED_MAX, SPEED_MIN, default_cookies_file};
+use crate::config::{Config, SPEED_MAX, SPEED_MIN, default_cookies_file, default_download_dir};
 use crate::eq::{self, EqPreset};
 use crate::keymap::{Action, KeyContext, KeyMap};
 
@@ -187,7 +187,11 @@ impl SettingsDraft {
                 }
             }
             Field::DownloadDir => {
-                if self.download_dir.is_empty() { "(default)".to_owned() } else { self.download_dir.clone() }
+                if self.download_dir.is_empty() {
+                    format!("(default: {})", display_path(&default_download_dir()))
+                } else {
+                    self.download_dir.clone()
+                }
             }
             Field::Mouse => toggle_str(self.mouse),
             Field::Speed => format!("{:.1}x", self.speed),

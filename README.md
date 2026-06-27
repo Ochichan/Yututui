@@ -38,6 +38,15 @@ ytm
 
 Press `?` in-app for the key list.
 
+## Downloads
+
+Downloaded tracks are saved under the user Music folder by default:
+
+- **macOS:** `~/Music/ytm-tui`
+- **Windows:** `%USERPROFILE%\Music\ytm-tui`
+
+You can override this in Settings (`Download dir`) or with `YTM_DOWNLOAD_DIR`.
+
 ## Cookies
 
 Cookies are optional. Without a cookie file, `ytm` uses anonymous search and playback,
