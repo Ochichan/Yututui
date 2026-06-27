@@ -5,12 +5,13 @@
 //! the input still works (submitting yields an inline error pointing at settings).
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{AiFocus, AiRole, App};
+use crate::ui::buttons;
 
 /// Max rows the suggestions list takes when present.
 const SUGGESTIONS_HEIGHT: u16 = 7;
@@ -44,8 +45,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
     render_input(frame, app, rows[2]);
 
-    let help = Line::from(app.help_footer()).fg(Color::DarkGray);
-    frame.render_widget(Paragraph::new(help), rows[3]);
+    buttons::render_help_button(frame, app, rows[3], Alignment::Left);
 }
 
 fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {

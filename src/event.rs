@@ -10,7 +10,7 @@ use crate::app::Msg;
 pub fn translate(ev: Event) -> Option<Msg> {
     match ev {
         Event::Key(k) if k.kind == KeyEventKind::Press => Some(Msg::Key(k)),
-        // A left-button press is click-to-seek; the reducer hit-tests the seekbar.
+        // A left-button press may hit a UI button or the player's seekbar.
         Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
             Some(Msg::MouseClick { col: m.column, row: m.row })
         }

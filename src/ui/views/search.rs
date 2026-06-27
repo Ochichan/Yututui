@@ -5,12 +5,13 @@
 //! page of songs) so there's no need to pre-format into state.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, SearchFocus};
+use crate::ui::buttons;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::vertical([
@@ -23,8 +24,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     render_input(frame, app, rows[0]);
     render_results(frame, app, rows[1]);
 
-    let help = Line::from(app.help_footer()).fg(Color::DarkGray);
-    frame.render_widget(Paragraph::new(help), rows[2]);
+    buttons::render_help_button(frame, app, rows[2], Alignment::Left);
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {

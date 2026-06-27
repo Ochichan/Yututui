@@ -39,7 +39,7 @@ fn main() -> Result<()> {
 }
 
 async fn async_main() -> Result<()> {
-    // Load config before terminal init so mouse capture (click-to-seek) reflects it.
+    // Load config before terminal init so mouse capture reflects it.
     let cfg = config::Config::load();
     let mouse = cfg.effective_mouse();
     let mut terminal = tui::init(mouse)?;

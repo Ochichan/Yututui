@@ -30,7 +30,7 @@ pub struct Config {
     pub volume: i64,
     /// Where downloads are saved. `None` -> `<user music dir>/ytm-tui`.
     pub download_dir: Option<PathBuf>,
-    /// Capture the mouse for click-to-seek. `None` → enabled.
+    /// Capture the mouse for buttons and click-to-seek. `None` → enabled.
     pub mouse: Option<bool>,
 
     // Playback / EQ -----------------------------------------------------------
@@ -155,7 +155,7 @@ impl Config {
         default_download_dir()
     }
 
-    /// Whether to capture the mouse (for click-to-seek). Enabled unless set to `false`.
+    /// Whether to capture the mouse (buttons and click-to-seek). Enabled unless set to `false`.
     pub fn effective_mouse(&self) -> bool {
         self.mouse.unwrap_or(true)
     }

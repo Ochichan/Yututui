@@ -1,6 +1,6 @@
 //! Terminal setup/teardown. Built on ratatui 0.30's `try_init`/`restore`, which
 //! handle raw mode, the alternate screen, and a terminal-restoring panic hook.
-//! Mouse capture is opt-in (config `mouse`, default on) and drives click-to-seek.
+//! Mouse capture is opt-in (config `mouse`, default on) and drives buttons + seekbar.
 //! The panic hook is additionally wrapped in `player::lifetime` to kill mpv on a
 //! crash before the terminal is restored.
 

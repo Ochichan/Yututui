@@ -7,8 +7,10 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 
-use crate::app::{App, DownloadState};
+use crate::app::{App, DownloadState, MouseTarget};
+use crate::keymap::Action;
 use crate::lyrics;
+use crate::ui::buttons::{self, ButtonSpec};
 use crate::util::format;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -23,6 +25,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // title
         Constraint::Length(1), // spacer
         Constraint::Length(1), // seekbar
+        Constraint::Length(1), // mouse controls
         Constraint::Length(1), // transport status
         Constraint::Min(0),    // filler
         Constraint::Length(1), // help
@@ -60,6 +63,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
     app.seekbar_rect.set(Some(rows[2]));
 
+    render_controls(frame, app, rows[3]);
+
     // Transport status line: state, volume, queue position, shuffle, repeat.
     let state = if app.paused { "⏸  paused" } else { "▶ playing" };
     let mut info = format!("{state}    vol {}%", app.volume);
@@ -95,17 +100,29 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         info.push_str(&format!("    {tag}"));
     }
     let status = Line::from(info).fg(Color::Cyan).alignment(Alignment::Center);
-    frame.render_widget(Paragraph::new(status), rows[3]);
+    frame.render_widget(Paragraph::new(status), rows[4]);
 
     // Lyrics panel (toggled with `L`) fills the central area when shown.
     if app.lyrics_visible {
-        render_lyrics(frame, app, rows[4]);
+        render_lyrics(frame, app, rows[5]);
     }
 
     // The full key list lives in the `?` cheat-sheet now; the footer just points to it
     // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
-    let help = Line::from(app.help_footer()).fg(Color::DarkGray).alignment(Alignment::Center);
-    frame.render_widget(Paragraph::new(help), rows[5]);
+    buttons::render_help_button(frame, app, rows[6], Alignment::Center);
+}
+
+fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
+    let play = if app.paused { "Play" } else { "Pause" };
+    let buttons = [
+        ButtonSpec::new(MouseTarget::Player(Action::PrevTrack), "Prev"),
+        ButtonSpec::new(MouseTarget::Player(Action::TogglePause), play),
+        ButtonSpec::new(MouseTarget::Player(Action::NextTrack), "Next"),
+        ButtonSpec::new(MouseTarget::Player(Action::VolDown), "Vol-"),
+        ButtonSpec::new(MouseTarget::Player(Action::VolUp), "Vol+"),
+        ButtonSpec::new(MouseTarget::Global(Action::ToggleHelp), "Keys"),
+    ];
+    buttons::render_button_row(frame, app, area, &buttons, Alignment::Center);
 }
 
 /// The synced-lyrics panel: a window of lines centered on the current one, which is

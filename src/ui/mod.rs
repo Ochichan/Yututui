@@ -1,5 +1,6 @@
 //! Top-level rendering: owns the screen layout and dispatches to the active view.
 
+pub mod buttons;
 pub mod views;
 
 use ratatui::Frame;
@@ -7,6 +8,7 @@ use ratatui::Frame;
 use crate::app::{App, Mode};
 
 pub fn render(frame: &mut Frame, app: &App) {
+    app.clear_mouse_regions();
     let area = frame.area();
     match app.mode {
         Mode::Player => views::player::render(frame, app, area),

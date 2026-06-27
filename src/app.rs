@@ -5,7 +5,7 @@
 //! returns the [`Cmd`]s the run loop should dispatch to actors. Keeping `update` pure
 //! (state in, `Cmd`s out — no IO) makes it directly unit-testable.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -132,6 +132,19 @@ pub enum Cmd {
     /// `None` key tears the assistant down; a valid key brings it up live — so a key
     /// entered at runtime takes effect immediately, with no relaunch.
     ReloadAi { key: Option<String>, model: GeminiModel },
+}
+
+/// A clickable terminal region's semantic target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseTarget {
+    Global(Action),
+    Player(Action),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseButtonRegion {
+    pub rect: Rect,
+    pub target: MouseTarget,
 }
 
 /// Who authored a line in the AI chat transcript.
@@ -345,6 +358,9 @@ pub struct App {
     /// Screen rect of the seekbar, written by the player view each render so a mouse
     /// click can be hit-tested against it. `Cell` because render only has `&App`.
     pub seekbar_rect: Cell<Option<Rect>>,
+    /// Clickable button rects written by views each render. `RefCell` because render only
+    /// has `&App`, but the reducer needs the last rendered hit map.
+    pub mouse_buttons: RefCell<Vec<MouseButtonRegion>>,
 
     /// Last whole second we redrew for, so sub-second `time-pos` spam is coalesced.
     last_shown_sec: i64,
@@ -398,6 +414,7 @@ impl App {
             downloads: HashMap::new(),
             resolved: HashMap::new(),
             seekbar_rect: Cell::new(None),
+            mouse_buttons: RefCell::new(Vec::new()),
             last_shown_sec: -1,
             last_load_prefetched: false,
         }
@@ -706,6 +723,27 @@ impl App {
         format!("{}  keybindings", self.keymap.label(KeyContext::Global, Action::ToggleHelp))
     }
 
+    pub fn clear_mouse_regions(&self) {
+        self.seekbar_rect.set(None);
+        self.mouse_buttons.borrow_mut().clear();
+    }
+
+    pub fn register_mouse_button(&self, rect: Rect, target: MouseTarget) {
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        self.mouse_buttons.borrow_mut().push(MouseButtonRegion { rect, target });
+    }
+
+    fn mouse_target_at(&self, col: u16, row: u16) -> Option<MouseTarget> {
+        self.mouse_buttons
+            .borrow()
+            .iter()
+            .rev()
+            .find(|b| rect_contains(b.rect, col, row))
+            .map(|b| b.target)
+    }
+
     /// Whether a focused text field is currently capturing typed characters (so command
     /// keys and the `?` help shortcut must not fire — they'd be typed instead).
     fn in_text_entry(&self) -> bool {
@@ -717,10 +755,18 @@ impl App {
         }
     }
 
-    /// A left-click at `(col, row)`: if it landed on the player's seekbar, seek to the
-    /// matching fraction of the track. The seekbar rect is published by the view each
-    /// render. No-op off the bar, in other views, or when the duration is unknown.
+    /// A left-click at `(col, row)`: buttons fire their mapped action; the player's
+    /// seekbar seeks to the matching fraction of the track. Hit rects are published by
+    /// views each render.
     fn on_mouse_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if self.help_visible {
+            self.help_visible = false;
+            self.dirty = true;
+            return Vec::new();
+        }
+        if let Some(target) = self.mouse_target_at(col, row) {
+            return self.on_mouse_target(target);
+        }
         if self.mode != Mode::Player {
             return Vec::new();
         }
@@ -728,9 +774,7 @@ impl App {
             && let Some(dur) = self.duration
             && dur > 0.0
             && area.width > 0
-            && row == area.y
-            && col >= area.x
-            && col < area.x + area.width
+            && rect_contains(area, col, row)
         {
             let frac = f64::from(col - area.x) / f64::from(area.width);
             let target = (frac * dur).clamp(0.0, dur);
@@ -741,38 +785,58 @@ impl App {
         Vec::new()
     }
 
+    fn on_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
+        match target {
+            MouseTarget::Global(Action::ToggleHelp) => {
+                self.help_visible = true;
+                self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::Global(_) => Vec::new(),
+            MouseTarget::Player(action) if self.mode == Mode::Player => self.on_player_action(action),
+            MouseTarget::Player(_) => Vec::new(),
+        }
+    }
+
     fn on_key_player(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.keymap.action(KeyContext::Player, k.into()) {
-            Some(Action::Quit | Action::Back) => {
+            Some(action) => self.on_player_action(action),
+            None => Vec::new(),
+        }
+    }
+
+    fn on_player_action(&mut self, action: Action) -> Vec<Cmd> {
+        match action {
+            Action::Quit | Action::Back => {
                 self.should_quit = true;
                 Vec::new()
             }
-            Some(Action::TogglePause) => {
+            Action::TogglePause => {
                 // Optimistic toggle; mpv confirms via a `pause` property-change.
                 self.paused = !self.paused;
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::CyclePause)]
             }
-            Some(Action::SeekBack) => vec![Cmd::Player(PlayerCmd::SeekRelative(-SEEK_STEP))],
-            Some(Action::SeekForward) => vec![Cmd::Player(PlayerCmd::SeekRelative(SEEK_STEP))],
-            Some(Action::VolUp) => {
+            Action::SeekBack => vec![Cmd::Player(PlayerCmd::SeekRelative(-SEEK_STEP))],
+            Action::SeekForward => vec![Cmd::Player(PlayerCmd::SeekRelative(SEEK_STEP))],
+            Action::VolUp => {
                 self.volume = (self.volume + VOLUME_STEP).min(VOLUME_MAX);
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetVolume(self.volume))]
             }
-            Some(Action::VolDown) => {
+            Action::VolDown => {
                 self.volume = (self.volume - VOLUME_STEP).max(0);
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetVolume(self.volume))]
             }
             // Manual next: always moves on, even under repeat-one.
-            Some(Action::NextTrack) => self.advance(false),
-            Some(Action::PrevTrack) => {
+            Action::NextTrack => self.advance(false),
+            Action::PrevTrack => {
                 let song = self.queue.prev().cloned();
                 self.load_song(song)
             }
             // Favorite the current track (the ♥ marker in the title is the feedback).
-            Some(Action::Favorite) => {
+            Action::Favorite => {
                 if let Some(song) = self.queue.current().cloned() {
                     self.library.toggle_favorite(&song);
                     self.dirty = true;
@@ -780,14 +844,14 @@ impl App {
                 }
                 Vec::new()
             }
-            Some(Action::OpenLibrary) => {
+            Action::OpenLibrary => {
                 self.mode = Mode::Library;
                 self.library_selected = 0;
                 self.dirty = true;
                 Vec::new()
             }
             // Toggle the lyrics panel; fetch on first open for the current track.
-            Some(Action::ToggleLyrics) => {
+            Action::ToggleLyrics => {
                 self.lyrics_visible = !self.lyrics_visible;
                 self.dirty = true;
                 if self.lyrics_visible
@@ -799,45 +863,45 @@ impl App {
                 }
                 Vec::new()
             }
-            Some(Action::Download) => match self.queue.current().cloned() {
+            Action::Download => match self.queue.current().cloned() {
                 Some(song) => self.start_download(song),
                 None => Vec::new(),
             },
-            Some(Action::ToggleShuffle) => {
+            Action::ToggleShuffle => {
                 self.queue.toggle_shuffle();
                 self.dirty = true;
                 Vec::new()
             }
-            Some(Action::CycleRepeat) => {
+            Action::CycleRepeat => {
                 self.queue.cycle_repeat();
                 self.dirty = true;
                 Vec::new()
             }
             // Cycle the EQ preset and apply it immediately.
-            Some(Action::CycleEq) => {
+            Action::CycleEq => {
                 self.eq_preset = self.eq_preset.cycled();
                 self.eq_bands = self.eq_preset.gains();
                 self.status = format!("EQ: {}", self.eq_preset.label());
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(self.current_af().unwrap_or_default()))]
             }
-            Some(Action::ToggleNormalize) => {
+            Action::ToggleNormalize => {
                 self.normalize = !self.normalize;
                 self.status = format!("Normalize: {}", if self.normalize { "on" } else { "off" });
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(self.current_af().unwrap_or_default()))]
             }
-            Some(Action::SpeedUp) => self.adjust_speed(SPEED_STEP),
-            Some(Action::SpeedDown) => self.adjust_speed(-SPEED_STEP),
-            Some(Action::OpenSettings) => {
+            Action::SpeedUp => self.adjust_speed(SPEED_STEP),
+            Action::SpeedDown => self.adjust_speed(-SPEED_STEP),
+            Action::OpenSettings => {
                 self.open_settings();
                 Vec::new()
             }
-            Some(Action::OpenAi) => {
+            Action::OpenAi => {
                 self.enter_ai();
                 Vec::new()
             }
-            Some(Action::OpenSearch) => {
+            Action::OpenSearch => {
                 self.mode = Mode::Search;
                 self.search_focus = SearchFocus::Input;
                 self.dirty = true;
@@ -1772,10 +1836,19 @@ fn fetch_lyrics_cmd(song: &Song) -> Cmd {
     }
 }
 
+fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
+    col >= rect.x
+        && col < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crossterm::event::{KeyEventKind, KeyEventState};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent {
@@ -2689,7 +2762,7 @@ mod tests {
         assert!(url.contains("music.youtube.com/watch") && url.contains("id1"));
     }
 
-    // --- M9: mouse click-to-seek --------------------------------------------
+    // --- M9: mouse controls -------------------------------------------------
 
     #[test]
     fn click_on_seekbar_seeks_to_fraction() {
@@ -2720,5 +2793,80 @@ mod tests {
         app.seekbar_rect.set(Some(Rect { x: 0, y: 5, width: 100, height: 1 }));
         app.mode = Mode::Search;
         assert!(app.update(Msg::MouseClick { col: 50, row: 5 }).is_empty());
+    }
+
+    #[test]
+    fn click_player_buttons_dispatch_actions() {
+        let mut app = app_playing(3, 0);
+        app.register_mouse_button(
+            Rect { x: 10, y: 4, width: 9, height: 1 },
+            MouseTarget::Player(Action::TogglePause),
+        );
+        let cmds = app.update(Msg::MouseClick { col: 12, row: 4 });
+        assert!(app.paused);
+        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::CyclePause)]));
+
+        app.volume = 40;
+        app.register_mouse_button(
+            Rect { x: 22, y: 4, width: 8, height: 1 },
+            MouseTarget::Player(Action::VolUp),
+        );
+        let cmds = app.update(Msg::MouseClick { col: 25, row: 4 });
+        assert_eq!(app.volume, 45);
+        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::SetVolume(45))]));
+    }
+
+    #[test]
+    fn click_next_button_loads_next_track() {
+        let mut app = app_playing(3, 0);
+        app.register_mouse_button(
+            Rect { x: 0, y: 1, width: 8, height: 1 },
+            MouseTarget::Player(Action::NextTrack),
+        );
+        let cmds = app.update(Msg::MouseClick { col: 3, row: 1 });
+        assert_eq!(current(&app), "id1");
+        assert!(load_url(&cmds).expect("a Load cmd").contains("id1"));
+    }
+
+    #[test]
+    fn click_help_button_opens_cheatsheet() {
+        let mut app = app_playing(1, 0);
+        app.register_mouse_button(
+            Rect { x: 0, y: 9, width: 16, height: 1 },
+            MouseTarget::Global(Action::ToggleHelp),
+        );
+        assert!(app.update(Msg::MouseClick { col: 4, row: 9 }).is_empty());
+        assert!(app.help_visible);
+    }
+
+    #[test]
+    fn click_closes_help_overlay_before_buttons() {
+        let mut app = app_playing(1, 0);
+        app.help_visible = true;
+        app.volume = 40;
+        app.register_mouse_button(
+            Rect { x: 0, y: 1, width: 8, height: 1 },
+            MouseTarget::Player(Action::VolUp),
+        );
+        assert!(app.update(Msg::MouseClick { col: 3, row: 1 }).is_empty());
+        assert!(!app.help_visible);
+        assert_eq!(app.volume, 40);
+    }
+
+    #[test]
+    fn rendering_player_registers_control_buttons() {
+        let app = app_playing(2, 0);
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+        let buttons = app.mouse_buttons.borrow();
+        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::TogglePause)));
+        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::PrevTrack)));
+        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::NextTrack)));
+        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::VolDown)));
+        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::VolUp)));
+        assert!(buttons.iter().any(|b| b.target == MouseTarget::Global(Action::ToggleHelp)));
+        assert!(app.seekbar_rect.get().is_some());
     }
 }
