@@ -17,10 +17,12 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::app::Msg;
 
-/// Cap the decoded image to this many pixels on its longest side. The protocol re-scales
-/// to the (much smaller) render area anyway; this just bounds the in-flight RAM and the
-/// per-track decode/encode cost — priority #1 is low memory.
-const MAX_DIM: u32 = 512;
+/// Cap the decoded image to this many pixels on its longest side. The render protocol now
+/// upscales (`Resize::Scale`) to fill the art area, so the source needs enough detail to
+/// stay sharp when enlarged; this still bounds in-flight RAM and per-track decode/encode
+/// cost. Only the current track's image is held at a time, so peak cost is one image.
+/// (`maxresdefault` is natively 1280×720; raise this knob if the art ever looks soft.)
+const MAX_DIM: u32 = 1024;
 
 /// Where a track's art comes from.
 pub enum ArtSource {

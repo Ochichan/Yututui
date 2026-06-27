@@ -6,7 +6,8 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
-use ratatui_image::StatefulImage;
+use ratatui_image::{Resize, StatefulImage};
+use image::imageops::FilterType;
 
 use crate::app::{App, DownloadState, MouseTarget};
 use crate::keymap::Action;
@@ -244,40 +245,87 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_segments(frame, app, area, &segments, controls, labels, Alignment::Center);
 }
 
-/// The central area below the transport strip. Album art (when enabled and ready) sits on
-/// top; the lyrics panel (when toggled) sits below it. They split the space so they never
-/// overlap. When album art is off the layout is unchanged from before — lyrics get the
-/// whole area, and an empty area draws nothing.
+/// Blank rows framing the album art: one between the transport status line and the art,
+/// one between the art's bottom edge and the lyrics block.
+const ART_TOP_GAP: u16 = 1;
+const ART_LYRICS_GAP: u16 = 1;
+/// Smallest lyrics window (rows) we keep below the art when both are shown.
+const MIN_LYRICS_ROWS: u16 = 3;
+
+/// The central area below the transport strip. Album art (when enabled and ready) sits at
+/// the top, just under the status line; the lyrics panel (when toggled) starts right below
+/// the art's real bottom edge. When album art is off the layout is unchanged — lyrics get
+/// the whole area, and an empty area draws nothing.
 fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
     match (app.art_active(), app.lyrics_visible) {
-        // Art on top (≈60%), lyrics below (≈40%) — tuned to keep the cover prominent while
-        // leaving a readable lyrics window. The image fits its slice by aspect (see
-        // `render_artwork`); lyrics flow under it.
+        // Art on top, lyrics right under it. The art is capped so a readable lyrics window
+        // always remains, then lyrics start one row below the art's actual bottom (not at a
+        // fixed split), so there's no dead gap between them.
         (true, true) => {
-            let [art_area, lyrics_area] =
-                Layout::vertical([Constraint::Fill(3), Constraint::Fill(2)]).areas(area);
-            render_artwork(frame, app, art_area);
-            render_lyrics(frame, app, lyrics_area);
+            let after_gap = area.height.saturating_sub(ART_TOP_GAP);
+            // ~50% of the filler, but never so tall that lyrics drop below MIN_LYRICS_ROWS.
+            let cap = (after_gap / 2).min(after_gap.saturating_sub(MIN_LYRICS_ROWS));
+            let band = art_band(area, ART_TOP_GAP, cap);
+            match draw_art(frame, app, band) {
+                Some(art) => {
+                    let lyrics_y = art.bottom().saturating_add(ART_LYRICS_GAP);
+                    let lyrics_area = Rect {
+                        x: area.x,
+                        y: lyrics_y,
+                        width: area.width,
+                        height: area.bottom().saturating_sub(lyrics_y),
+                    };
+                    render_lyrics(frame, app, lyrics_area);
+                }
+                None => render_lyrics(frame, app, area),
+            }
         }
-        (true, false) => render_artwork(frame, app, area),
+        // Art only: medium size, capped to ~55% of the filler height, top-anchored.
+        (true, false) => {
+            let cap = (u32::from(area.height) * 11 / 20) as u16;
+            let band = art_band(area, ART_TOP_GAP, cap);
+            draw_art(frame, app, band);
+        }
         (false, true) => render_lyrics(frame, app, area),
         (false, false) => {}
     }
 }
 
-/// Draw the current track's album art / thumbnail, centered within `area` by its true
-/// aspect ratio (square covers stay square, 16:9 thumbnails stay wide — the picker knows
-/// the terminal's font cell size). Only called when `app.art_active()`, so the protocol is
-/// present; on a terminal with no graphics protocol this renders as unicode half-blocks.
-fn render_artwork(frame: &mut Frame, app: &App, area: Rect) {
+/// The top slice of `area` the art may occupy: skip `gap` rows under the status line, then
+/// cap the height to `max_h` (clamped to whatever space is left).
+fn art_band(area: Rect, gap: u16, max_h: u16) -> Rect {
+    let avail = area.height.saturating_sub(gap);
+    Rect {
+        x: area.x,
+        y: area.y + gap,
+        width: area.width,
+        height: max_h.min(avail),
+    }
+}
+
+/// Draw the current track's album art / thumbnail top-anchored within `band` and centered
+/// horizontally by its true aspect ratio (square covers stay square, 16:9 thumbnails stay
+/// wide — the picker knows the terminal's font cell size). Returns the rect the art
+/// actually occupies so the caller can start the lyrics right below it, or `None` when the
+/// band is too small to render anything legible. Only called when `app.art_active()`, so
+/// the protocol is present; with no graphics protocol this renders as unicode half-blocks.
+/// `Resize::Scale` lets a small source thumbnail grow to fill the rect (the default `Fit`
+/// never upscales).
+fn draw_art(frame: &mut Frame, app: &App, band: Rect) -> Option<Rect> {
     // Below a few cells there's nothing but mush; skip so a tiny terminal stays clean.
-    if area.width < 6 || area.height < 3 {
-        return;
+    if band.width < 6 || band.height < 3 {
+        return None;
     }
-    let rect = app.art_fit_rect(area);
+    let mut rect = app.art_fit_rect(band);
+    rect.y = band.y; // art_fit_rect centers vertically; re-anchor to the top of the band.
     if let Some(proto) = app.art.borrow_mut().as_mut() {
-        frame.render_stateful_widget(StatefulImage::new(), rect, proto);
+        frame.render_stateful_widget(
+            StatefulImage::new().resize(Resize::Scale(Some(FilterType::Lanczos3))),
+            rect,
+            proto,
+        );
     }
+    Some(rect)
 }
 
 /// The synced-lyrics panel: a window of lines centered on the current one, which is
