@@ -58,8 +58,7 @@ jobs:
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          cd target/${{ matrix.target }}/release
-          tar -czf "$GITHUB_WORKSPACE/${{ matrix.archive }}" "${{ matrix.bin }}"
+          scripts/package-macos.sh "${{ matrix.target }}" "${{ matrix.archive }}" "${{ matrix.bin }}" "$GITHUB_WORKSPACE"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'

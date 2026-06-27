@@ -1,4 +1,8 @@
 /target
 /dist
+/YtmTui.app/
+/ytm-tui-*.tar.gz
+/ytm-tui-*.zip
+/ytm-tui icons/
 .DS_Store
 .claude/
