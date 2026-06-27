@@ -39,8 +39,6 @@ const AUTOPLAY_MAX_FAILURES: u8 = 3;
 /// Cap on AI chat transcript lines kept in memory (bounded memory).
 const AI_HISTORY_MAX: usize = 999;
 
-/// Seconds jumped per ←/→ press.
-const SEEK_STEP: f64 = 10.0;
 /// Percentage points changed per volume keypress.
 const VOLUME_STEP: i64 = 5;
 /// Highest volume the UI sets (mpv would allow more, but 100 is a sane v1 ceiling).
@@ -353,6 +351,9 @@ pub struct App {
     /// A pending keybinding-conflict warning (Keys tab). When set, a modal popup is shown
     /// and the next key/click dismisses it; the attempted rebind is left unchanged.
     pub key_conflict: Option<Conflict>,
+    /// Whether the "reset all settings" confirmation modal (General tab) is showing. Enter/`y`
+    /// confirms (resets the draft to defaults); any other key / a click cancels.
+    pub confirm_reset_all: bool,
 
     // Playback ----------------------------------------------------------------
     /// Playback position in seconds, if known.
@@ -377,6 +378,8 @@ pub struct App {
     pub normalize: bool,
     /// Playback speed multiplier (1.0 = normal).
     pub speed: f64,
+    /// Seconds jumped per seek-back/-forward key (configurable; default 10s).
+    pub seek_seconds: f64,
     /// Auto-extend the queue with related tracks when it runs low (radio mode).
     pub autoplay_radio: bool,
     /// Whether the click-to-open EQ preset dropdown is showing on the player status line.
@@ -495,6 +498,7 @@ impl App {
             theme: ThemeConfig::default(),
             help_visible: false,
             key_conflict: None,
+            confirm_reset_all: false,
             time_pos: None,
             duration: None,
             paused: false,
@@ -505,6 +509,7 @@ impl App {
             eq_bands: [0.0; eq::BANDS],
             normalize: false,
             speed: 1.0,
+            seek_seconds: crate::config::SEEK_SECONDS_DEFAULT,
             autoplay_radio: false,
             eq_dropdown_open: false,
             config: Config::default(),
@@ -557,6 +562,7 @@ impl App {
         self.eq_bands = cfg.effective_eq_bands();
         self.normalize = cfg.effective_normalize();
         self.speed = cfg.effective_speed();
+        self.seek_seconds = cfg.effective_seek_seconds();
         self.autoplay_radio = cfg.effective_autoplay_radio();
         self.ai_available = cfg.effective_gemini_api_key().is_some();
         self.gemini_model = cfg.effective_gemini_model();
@@ -880,6 +886,16 @@ impl App {
             return Vec::new();
         }
 
+        // The "reset all settings" confirmation is modal: Enter or `y` confirms, anything
+        // else cancels. Handle it here so the key can't leak through to the settings list.
+        if self.confirm_reset_all {
+            self.confirm_reset_all = false;
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            return if confirmed { self.settings_reset_all() } else { Vec::new() };
+        }
+
         // Home is intentionally a hard global action: it should work even while a text
         // field or key-capture prompt is focused.
         if matches!(self.keymap.global_action(chord), Some(Action::Home)) {
@@ -1033,6 +1049,12 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
+        // A click cancels the reset-all confirmation (never confirms — that needs Enter/`y`).
+        if self.confirm_reset_all {
+            self.confirm_reset_all = false;
+            self.dirty = true;
+            return Vec::new();
+        }
         if self.help_visible {
             self.help_visible = false;
             self.dirty = true;
@@ -1130,8 +1152,8 @@ impl App {
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::CyclePause)]
             }
-            Action::SeekBack => vec![Cmd::Player(PlayerCmd::SeekRelative(-SEEK_STEP))],
-            Action::SeekForward => vec![Cmd::Player(PlayerCmd::SeekRelative(SEEK_STEP))],
+            Action::SeekBack => vec![Cmd::Player(PlayerCmd::SeekRelative(-self.seek_seconds))],
+            Action::SeekForward => vec![Cmd::Player(PlayerCmd::SeekRelative(self.seek_seconds))],
             Action::VolUp => {
                 self.volume = (self.volume + VOLUME_STEP).min(VOLUME_MAX);
                 self.dirty = true;
@@ -1401,6 +1423,7 @@ impl App {
             album_art: self.config.effective_album_art(),
             autoplay_on_start: self.config.effective_autoplay_on_start(),
             speed: self.speed,
+            seek_seconds: self.seek_seconds,
             gapless: self.config.effective_gapless(),
             autoplay_radio: self.autoplay_radio,
             eq_preset: self.eq_preset,
@@ -1424,6 +1447,7 @@ impl App {
             capturing: None,
         }));
         self.mode = Mode::Settings;
+        self.confirm_reset_all = false;
         self.status.clear();
         self.dirty = true;
     }
@@ -1660,6 +1684,14 @@ impl App {
                     settings::clamp_speed(s.draft.speed + f64::from(dir) * settings::SPEED_STEP);
                 self.settings_apply_speed()
             }
+            Field::SeekInterval => {
+                let s = self.settings.as_mut().unwrap();
+                s.draft.seek_seconds = settings::clamp_seek_seconds(
+                    s.draft.seek_seconds + f64::from(dir) * settings::SEEK_SECONDS_STEP,
+                );
+                // Stored only — affects the next seek key, nothing to push to mpv now.
+                Vec::new()
+            }
             Field::EqPreset => {
                 let s = self.settings.as_mut().unwrap();
                 // `Custom` isn't in CYCLE; rather than jump to a surprising neighbour,
@@ -1697,8 +1729,10 @@ impl App {
                 self.status = format!("Theme: {}", next.label());
                 Vec::new()
             }
-            // Text fields ignore ←/→; Enter starts editing instead.
-            Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => Vec::new(),
+            // Text fields ignore ←/→; Enter starts editing instead. The reset button has no
+            // value to nudge — Enter activates it (see `settings_activate`).
+            Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_)
+            | Field::ResetAll => Vec::new(),
         }
     }
 
@@ -1777,8 +1811,56 @@ impl App {
                 Vec::new()
             }
             FieldKind::Toggle => self.settings_change(1),
+            FieldKind::Button => {
+                if field == Field::ResetAll {
+                    // Gate the destructive reset behind an explicit confirmation modal.
+                    self.confirm_reset_all = true;
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             _ => Vec::new(),
         }
+    }
+
+    /// Reset every editable setting (and the Keys-tab keymap draft) back to its built-in
+    /// default. Mutates only the draft / working keymap — like any other settings edit, it
+    /// is committed and persisted when the screen closes. Live audio (speed, EQ, normalize)
+    /// is pushed to mpv immediately so the change is audible right away.
+    fn settings_reset_all(&mut self) -> Vec<Cmd> {
+        {
+            let Some(st) = self.settings.as_mut() else {
+                return Vec::new();
+            };
+            let def = Config::default();
+            let d = &mut st.draft;
+            d.cookies_file = String::new();
+            d.download_dir = String::new();
+            d.mouse = def.effective_mouse();
+            d.album_art = def.effective_album_art();
+            d.autoplay_on_start = def.effective_autoplay_on_start();
+            d.speed = def.effective_speed();
+            d.seek_seconds = def.effective_seek_seconds();
+            d.gapless = def.effective_gapless();
+            d.autoplay_radio = def.effective_autoplay_radio();
+            d.eq_preset = def.eq_preset;
+            d.eq_bands = def.effective_eq_bands();
+            d.normalize = def.effective_normalize();
+            d.gemini_model = def.effective_gemini_model();
+            d.gemini_api_key = String::new();
+            d.theme = def.effective_theme();
+            st.keymap = KeyMap::default();
+            st.editing_text = false;
+        }
+        // Reflect the reset theme live so the open settings screen re-colors immediately.
+        if let Some(st) = self.settings.as_ref() {
+            self.theme = st.draft.theme.normalized();
+        }
+        self.status = "All settings reset to defaults — save to apply".to_owned();
+        self.dirty = true;
+        let mut cmds = self.settings_apply_speed();
+        cmds.extend(self.settings_apply_af());
+        cmds
     }
 
     /// Feed one key into the focused text field's buffer. Committing the edit (Enter/Esc)
@@ -1931,6 +2013,7 @@ impl App {
     /// Leave the settings screen, copying the draft into live state + config and
     /// persisting it. This keeps `q`/Esc from silently discarding changed settings.
     fn close_settings(&mut self) -> Vec<Cmd> {
+        self.confirm_reset_all = false;
         let Some(st) = self.settings.take() else {
             self.mode = Mode::Player;
             self.dirty = true;
@@ -1940,6 +2023,7 @@ impl App {
         self.dirty = true;
         let d = &st.draft;
         self.speed = d.speed;
+        self.seek_seconds = d.seek_seconds;
         self.eq_bands = d.eq_bands;
         self.eq_preset = d.eq_preset;
         self.normalize = d.normalize;
@@ -2985,6 +3069,7 @@ mod tests {
             eq_preset: EqPreset::Vocal,
             normalize: Some(true),
             speed: Some(1.5),
+            seek_seconds: Some(30.0),
             autoplay_radio: Some(true),
             ..crate::config::Config::default()
         };
@@ -2994,7 +3079,23 @@ mod tests {
         assert_eq!(app.eq_bands, EqPreset::Vocal.gains());
         assert!(app.normalize);
         assert!((app.speed - 1.5).abs() < 1e-9);
+        assert!((app.seek_seconds - 30.0).abs() < 1e-9);
         assert!(app.autoplay_radio);
+    }
+
+    #[test]
+    fn seek_keys_use_the_configured_interval() {
+        let mut app = app_playing(1, 0);
+        app.apply_config(&crate::config::Config { seek_seconds: Some(30.0), ..Default::default() });
+        // Forward (→) jumps +interval, backward (←) jumps −interval.
+        match app.update(Msg::Key(key(KeyCode::Right))).as_slice() {
+            [Cmd::Player(PlayerCmd::SeekRelative(s))] => assert!((*s - 30.0).abs() < 1e-9),
+            _ => panic!("expected a single SeekRelative(+30) cmd"),
+        }
+        match app.update(Msg::Key(key(KeyCode::Left))).as_slice() {
+            [Cmd::Player(PlayerCmd::SeekRelative(s))] => assert!((*s + 30.0).abs() < 1e-9),
+            _ => panic!("expected a single SeekRelative(-30) cmd"),
+        }
     }
 
     // --- D: settings screen -------------------------------------------------
@@ -3106,6 +3207,51 @@ mod tests {
         assert!(app.key_conflict.is_none());
         assert!(save_config(&cmds).is_none(), "dismiss key must be swallowed, not saved");
         assert!(app.settings.is_some(), "settings stayed open after dismiss");
+    }
+
+    /// Move the General-tab cursor onto the Reset-all button.
+    fn focus_reset_all(app: &mut App) {
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General tab)
+        for _ in 0..SettingsTab::General.fields().len() - 1 {
+            app.update(Msg::Key(key(KeyCode::Down)));
+        }
+        assert_eq!(app.settings.as_ref().unwrap().current_field(), Field::ResetAll);
+    }
+
+    #[test]
+    fn reset_all_button_confirms_then_restores_defaults() {
+        let mut app = app_playing(1, 0);
+        focus_reset_all(&mut app);
+        // Dirty several draft values across tabs.
+        {
+            let d = &mut app.settings.as_mut().unwrap().draft;
+            d.speed = 1.8;
+            d.seek_seconds = 45.0;
+            d.gemini_api_key = "AIzaSecret".to_owned();
+        }
+        // Enter opens the confirmation modal (does not reset yet).
+        app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(app.confirm_reset_all);
+        assert!((app.settings.as_ref().unwrap().draft.speed - 1.8).abs() < 1e-9);
+        // `y` confirms → every draft value is back to its default.
+        app.update(Msg::Key(key(KeyCode::Char('y'))));
+        assert!(!app.confirm_reset_all);
+        let d = &app.settings.as_ref().unwrap().draft;
+        assert!((d.speed - 1.0).abs() < 1e-9);
+        assert!((d.seek_seconds - 10.0).abs() < 1e-9);
+        assert!(d.gemini_api_key.is_empty());
+    }
+
+    #[test]
+    fn reset_all_button_cancel_leaves_settings_untouched() {
+        let mut app = app_playing(1, 0);
+        focus_reset_all(&mut app);
+        app.settings.as_mut().unwrap().draft.speed = 1.8;
+        app.update(Msg::Key(key(KeyCode::Enter))); // open modal
+        assert!(app.confirm_reset_all);
+        app.update(Msg::Key(key(KeyCode::Esc))); // anything but Enter/`y` cancels
+        assert!(!app.confirm_reset_all);
+        assert!((app.settings.as_ref().unwrap().draft.speed - 1.8).abs() < 1e-9);
     }
 
     #[test]
@@ -4080,7 +4226,12 @@ mod tests {
                 .iter()
                 .any(|b| b.target == MouseTarget::Global(Action::ToggleHelp))
         );
-        // The status line publishes the repeat toggle and the EQ-dropdown opener.
+        // The status line publishes the shuffle + repeat toggles and the EQ-dropdown opener.
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b.target == MouseTarget::Player(Action::ToggleShuffle))
+        );
         assert!(
             buttons
                 .iter()

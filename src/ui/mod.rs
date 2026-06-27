@@ -36,4 +36,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(conflict) = &app.key_conflict {
         views::settings::render_conflict(frame, app, area, conflict);
     }
+    // The "reset all settings" confirmation is likewise modal.
+    if app.confirm_reset_all {
+        views::settings::render_confirm_reset(frame, app, area);
+    }
 }

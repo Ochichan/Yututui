@@ -12,7 +12,7 @@ use crate::app::App;
 use crate::keymap::{self, Action, Conflict, KeyContext};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
-use crate::config::{SPEED_MAX, SPEED_MIN};
+use crate::config::{SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
 use crate::theme::ThemeRole as R;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -211,7 +211,21 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
             Span::styled(role.description().to_owned(), theme.style(R::TextMuted)),
         ]));
     }
-    let label = format!("{:<22}", field.label());
+    // Pad every label in this tab to the widest one (+ a 2-space gutter, min 22) so the value
+    // column lines up regardless of label length — e.g. "Album art (next launch)" no longer
+    // pushes its value out of alignment with the shorter rows above it, and even that widest
+    // label keeps a gap before its value. Labels are ASCII here, so char count == width.
+    let label_w = st
+        .tab
+        .fields()
+        .iter()
+        .filter(|f| !matches!(f, Field::ThemeColor(_)))
+        .map(|f| f.label().chars().count())
+        .max()
+        .unwrap_or(20)
+        .max(20)
+        + 2;
+    let label = format!("{:<label_w$}", field.label());
     let value = match (field, field.kind()) {
         // Secret fields (API key) are never shown in clear text; while editing, render a
         // masked buffer of *that field's* typed length so keystrokes still register visibly.
@@ -226,6 +240,11 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
         (Field::Speed, _) => {
             format!("{}  {:.1}x", bar(st.draft.speed, SPEED_MIN, SPEED_MAX), st.draft.speed)
         }
+        (Field::SeekInterval, _) => format!(
+            "{}  {:.0}s",
+            bar(st.draft.seek_seconds, SEEK_SECONDS_MIN, SEEK_SECONDS_MAX),
+            st.draft.seek_seconds
+        ),
         (Field::Band(i), _) => {
             format!("{}  {:+.0} dB", bar(st.draft.eq_bands[i], BAND_GAIN_MIN, BAND_GAIN_MAX), st.draft.eq_bands[i])
         }
@@ -272,6 +291,43 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
             "Binding unchanged · press any key",
             theme.style(R::TextMuted),
         )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center).style(theme.style(R::TextPrimary)),
+        inner,
+    );
+}
+
+/// A modal confirmation for the "reset all settings" button. Resetting wipes every setting
+/// (keybindings, theme, API key included) and the screen always persists on close, so the
+/// destructive action is gated behind an explicit yes/no rather than a single keypress.
+pub fn render_confirm_reset(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let popup = centered_fixed(area, 56, 9);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" ⚠ Reset all settings ")
+        .borders(Borders::ALL)
+        .border_style(theme.style(R::Error).add_modifier(Modifier::BOLD))
+        .style(theme.style(R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from("Restore every setting to its default?"),
+        Line::from(Span::styled(
+            "Keybindings, theme, and API key included.",
+            theme.style(R::TextMuted),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Enter / y", theme.style(R::Error).add_modifier(Modifier::BOLD)),
+            Span::raw(" reset    "),
+            Span::styled("Esc", theme.style(R::Accent).add_modifier(Modifier::BOLD)),
+            Span::raw(" cancel"),
+        ]),
     ];
     frame.render_widget(
         Paragraph::new(lines).alignment(Alignment::Center).style(theme.style(R::TextPrimary)),

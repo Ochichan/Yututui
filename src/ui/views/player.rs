@@ -111,9 +111,13 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         let (pos, _) = app.queue.position();
         parts.push((None, format!("    {pos}/{}", app.queue.len())));
     }
-    if app.queue.shuffle {
-        parts.push((None, "    shuffle".to_owned()));
-    }
+    // Shuffle and repeat are both always shown as click toggles, so the line's layout never
+    // shifts as they flip — `S:on/off` mirrors the `R:` button next to it (stable UI).
+    parts.push((None, "    ".to_owned()));
+    parts.push((
+        Some(MouseTarget::Player(Action::ToggleShuffle)),
+        format!("S:{}", if app.queue.shuffle { "on" } else { "off" }),
+    ));
     parts.push((None, "    ".to_owned()));
     parts.push((
         Some(MouseTarget::Player(Action::CycleRepeat)),

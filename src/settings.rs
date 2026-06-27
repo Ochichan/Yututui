@@ -10,7 +10,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
-use crate::config::{Config, SPEED_MAX, SPEED_MIN, default_cookies_file, default_download_dir};
+use crate::config::{
+    Config, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN, default_cookies_file,
+    default_download_dir,
+};
 use crate::eq::{self, EqPreset};
 use crate::keymap::{Action, KeyContext, KeyMap};
 use crate::theme::{ThemeConfig, ThemeRole};
@@ -21,6 +24,8 @@ pub const BAND_GAIN_MAX: f64 = 12.0;
 pub const BAND_GAIN_STEP: f64 = 1.0;
 /// Playback-speed step for the settings slider (←/→).
 pub const SPEED_STEP: f64 = 0.1;
+/// Seek-step slider step (seconds) for the Playback tab (←/→).
+pub const SEEK_SECONDS_STEP: f64 = 1.0;
 
 /// The settings tabs, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,8 +77,15 @@ impl SettingsTab {
     /// The ordered fields shown under this tab.
     pub fn fields(self) -> Vec<Field> {
         match self {
-            SettingsTab::General => vec![Field::CookiesFile, Field::DownloadDir, Field::Mouse, Field::AlbumArt, Field::AutoplayOnStart],
-            SettingsTab::Playback => vec![Field::Speed, Field::Gapless],
+            SettingsTab::General => vec![
+                Field::CookiesFile,
+                Field::DownloadDir,
+                Field::Mouse,
+                Field::AlbumArt,
+                Field::AutoplayOnStart,
+                Field::ResetAll,
+            ],
+            SettingsTab::Playback => vec![Field::Speed, Field::SeekInterval, Field::Gapless],
             SettingsTab::Eq => {
                 let mut f = vec![Field::EqPreset];
                 f.extend((0..eq::BANDS).map(Field::Band));
@@ -99,8 +111,11 @@ pub enum Field {
     Mouse,
     AlbumArt,
     AutoplayOnStart,
+    /// A button (not a value): activates "reset every setting to defaults".
+    ResetAll,
     // Playback
     Speed,
+    SeekInterval,
     Gapless,
     // EQ
     EqPreset,
@@ -126,6 +141,8 @@ pub enum FieldKind {
     Select,
     /// A numeric value nudged with ←/→.
     Slider,
+    /// A pressable action (no value); Enter/Confirm triggers it.
+    Button,
 }
 
 impl Field {
@@ -135,7 +152,8 @@ impl Field {
             Field::Mouse | Field::AlbumArt | Field::AutoplayOnStart | Field::Gapless
             | Field::AutoplayRadio | Field::Normalize => FieldKind::Toggle,
             Field::EqPreset | Field::GeminiModel | Field::ThemePreset => FieldKind::Select,
-            Field::Speed | Field::Band(_) => FieldKind::Slider,
+            Field::Speed | Field::SeekInterval | Field::Band(_) => FieldKind::Slider,
+            Field::ResetAll => FieldKind::Button,
         }
     }
 
@@ -146,7 +164,9 @@ impl Field {
             Field::Mouse => "Mouse (next launch)".to_owned(),
             Field::AlbumArt => "Album art (next launch)".to_owned(),
             Field::AutoplayOnStart => "Autoplay on launch".to_owned(),
+            Field::ResetAll => "Reset all settings".to_owned(),
             Field::Speed => "Playback speed".to_owned(),
+            Field::SeekInterval => "Seek interval".to_owned(),
             Field::Gapless => "Gapless (next launch)".to_owned(),
             Field::AutoplayRadio => "Autoplay radio".to_owned(),
             Field::EqPreset => "Preset".to_owned(),
@@ -184,6 +204,8 @@ pub struct SettingsDraft {
     pub album_art: bool,
     pub autoplay_on_start: bool,
     pub speed: f64,
+    /// Seek step (seconds) for the seek-back/-forward keys.
+    pub seek_seconds: f64,
     pub gapless: bool,
     pub autoplay_radio: bool,
     pub eq_preset: EqPreset,
@@ -220,6 +242,9 @@ impl SettingsDraft {
             Field::AlbumArt => toggle_str(self.album_art),
             Field::AutoplayOnStart => toggle_str(self.autoplay_on_start),
             Field::Speed => format!("{:.1}x", self.speed),
+            Field::SeekInterval => format!("{:.0}s", self.seek_seconds),
+            // A button, not a value: the row shows how to trigger it.
+            Field::ResetAll => "↵ press Enter".to_owned(),
             Field::Gapless => toggle_str(self.gapless),
             Field::AutoplayRadio => toggle_str(self.autoplay_radio),
             Field::EqPreset => self.eq_preset.label().to_owned(),
@@ -262,6 +287,7 @@ impl SettingsDraft {
         cfg.album_art = Some(self.album_art);
         cfg.autoplay_on_start = Some(self.autoplay_on_start);
         cfg.speed = Some(self.speed);
+        cfg.seek_seconds = Some(self.seek_seconds);
         cfg.gapless = Some(self.gapless);
         cfg.autoplay_radio = Some(self.autoplay_radio);
         cfg.eq_preset = self.eq_preset;
@@ -333,6 +359,11 @@ pub fn clamp_speed(s: f64) -> f64 {
     ((s * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX)
 }
 
+/// Clamp/round a seek step to whole seconds within the supported range.
+pub fn clamp_seek_seconds(s: f64) -> f64 {
+    s.round().clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,6 +377,7 @@ mod tests {
             album_art: false,
             autoplay_on_start: false,
             speed: 1.0,
+            seek_seconds: 10.0,
             gapless: true,
             autoplay_radio: false,
             eq_preset: EqPreset::Flat,
@@ -371,7 +403,18 @@ mod tests {
     #[test]
     fn general_tab_has_autoplay_on_start_toggle() {
         let f = SettingsTab::General.fields();
-        assert_eq!(f, vec![Field::CookiesFile, Field::DownloadDir, Field::Mouse, Field::AlbumArt, Field::AutoplayOnStart]);
+        assert_eq!(
+            f,
+            vec![
+                Field::CookiesFile,
+                Field::DownloadDir,
+                Field::Mouse,
+                Field::AlbumArt,
+                Field::AutoplayOnStart,
+                Field::ResetAll,
+            ]
+        );
+        assert_eq!(Field::ResetAll.kind(), FieldKind::Button);
         assert_eq!(Field::AutoplayOnStart.kind(), FieldKind::Toggle);
         assert_eq!(Field::AlbumArt.kind(), FieldKind::Toggle);
         // Off by default, and the toggle renders as an empty checkbox.
@@ -421,6 +464,7 @@ mod tests {
             album_art: true,
             autoplay_on_start: true,
             speed: 1.7,
+            seek_seconds: 25.0,
             gapless: false,
             autoplay_radio: true,
             eq_preset: EqPreset::Custom,
@@ -439,6 +483,7 @@ mod tests {
         assert_eq!(cfg.album_art, Some(true));
         assert_eq!(cfg.autoplay_on_start, Some(true));
         assert_eq!(cfg.speed, Some(1.7));
+        assert_eq!(cfg.seek_seconds, Some(25.0));
         assert_eq!(cfg.gapless, Some(false));
         assert_eq!(cfg.autoplay_radio, Some(true));
         assert_eq!(cfg.eq_preset, EqPreset::Custom);

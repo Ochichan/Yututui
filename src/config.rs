@@ -19,6 +19,12 @@ use crate::theme::ThemeConfig;
 pub const SPEED_MIN: f64 = 0.5;
 pub const SPEED_MAX: f64 = 2.0;
 
+/// Clamp range for the seek step (seconds) used by the seek-back/-forward keys, exposed as
+/// a slider on the Playback settings tab. Default is 10s.
+pub const SEEK_SECONDS_MIN: f64 = 1.0;
+pub const SEEK_SECONDS_MAX: f64 = 60.0;
+pub const SEEK_SECONDS_DEFAULT: f64 = 10.0;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -47,6 +53,8 @@ pub struct Config {
     pub normalize: Option<bool>,
     /// Playback speed multiplier. `None` → 1.0×.
     pub speed: Option<f64>,
+    /// Seek step in seconds for the seek-back/-forward keys. `None` → 10s.
+    pub seek_seconds: Option<f64>,
     /// Gapless playback. `None` → on. Takes effect at the next launch (an mpv flag).
     pub gapless: Option<bool>,
     /// Auto-extend the queue with related tracks when it runs low. `None` → off.
@@ -85,6 +93,7 @@ impl Default for Config {
             eq_bands: None,
             normalize: None,
             speed: None,
+            seek_seconds: None,
             gapless: None,
             autoplay_radio: None,
             autoplay_on_start: None,
@@ -193,6 +202,11 @@ impl Config {
     /// Playback speed, clamped to the supported range (default 1.0×).
     pub fn effective_speed(&self) -> f64 {
         self.speed.unwrap_or(1.0).clamp(SPEED_MIN, SPEED_MAX)
+    }
+
+    /// Seek step in seconds, clamped to the supported range (default 10s).
+    pub fn effective_seek_seconds(&self) -> f64 {
+        self.seek_seconds.unwrap_or(SEEK_SECONDS_DEFAULT).clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
     }
 
     /// Whether gapless playback is on (default on).
@@ -351,6 +365,7 @@ mod tests {
             eq_bands: Some([1.0; eq::BANDS]),
             normalize: Some(true),
             speed: Some(1.5),
+            seek_seconds: Some(15.0),
             gapless: Some(false),
             autoplay_radio: Some(true),
             autoplay_on_start: Some(true),
@@ -370,6 +385,7 @@ mod tests {
         assert_eq!(back.eq_bands, Some([1.0; eq::BANDS]));
         assert_eq!(back.normalize, Some(true));
         assert_eq!(back.speed, Some(1.5));
+        assert_eq!(back.seek_seconds, Some(15.0));
         assert_eq!(back.gapless, Some(false));
         assert_eq!(back.autoplay_radio, Some(true));
         assert_eq!(back.autoplay_on_start, Some(true));
@@ -424,6 +440,7 @@ mod tests {
         assert_eq!(d.effective_eq_bands(), [0.0; eq::BANDS]);
         assert!(!d.effective_normalize());
         assert_eq!(d.effective_speed(), 1.0);
+        assert_eq!(d.effective_seek_seconds(), SEEK_SECONDS_DEFAULT);
         assert!(d.effective_gapless());
         assert!(!d.effective_autoplay_radio());
         assert!(!d.effective_autoplay_on_start());
@@ -435,6 +452,12 @@ mod tests {
         // Speed is clamped to the supported range.
         let fast = Config { speed: Some(9.0), ..Config::default() };
         assert_eq!(fast.effective_speed(), SPEED_MAX);
+
+        // Seek step is clamped to its supported range too.
+        let big = Config { seek_seconds: Some(999.0), ..Config::default() };
+        assert_eq!(big.effective_seek_seconds(), SEEK_SECONDS_MAX);
+        let tiny = Config { seek_seconds: Some(0.0), ..Config::default() };
+        assert_eq!(tiny.effective_seek_seconds(), SEEK_SECONDS_MIN);
     }
 
     #[test]
