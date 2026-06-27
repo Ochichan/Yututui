@@ -815,6 +815,9 @@ impl App {
     }
 
     fn on_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        // Some terminals render IME preedit text even in raw alternate-screen apps. Always
+        // redraw after a key press so committed Korean jamo used as shortcuts are covered.
+        self.dirty = true;
         let chord = Chord::from(k);
         // Ctrl+C always quits, regardless of mode or remapping (a hard safety key that is
         // never part of the keymap, so the user can't lock themselves out).
@@ -934,6 +937,10 @@ impl App {
             Mode::Settings => self.settings.as_ref().is_some_and(|s| s.editing_text),
             _ => false,
         }
+    }
+
+    pub fn should_scrub_ime_preedit(&self) -> bool {
+        !self.in_text_entry()
     }
 
     /// Return to the player/home screen from any mode. Settings use the normal close path
@@ -2520,6 +2527,22 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Char('ㅂ'))));
         assert!(!app.should_quit);
         assert_eq!(app.search_input, "ㅂ");
+    }
+
+    #[test]
+    fn korean_shortcut_key_redraws_even_when_unhandled() {
+        let mut app = App::new(100);
+        app.dirty = false;
+        app.update(Msg::Key(key(KeyCode::Char('ㅛ'))));
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn ime_preedit_scrub_is_disabled_in_text_entry() {
+        let mut app = App::new(100);
+        assert!(app.should_scrub_ime_preedit());
+        app.update(Msg::Key(key(KeyCode::Char('/'))));
+        assert!(!app.should_scrub_ime_preedit());
     }
 
     #[test]

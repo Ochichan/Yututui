@@ -696,6 +696,37 @@ mod tests {
     }
 
     #[test]
+    fn shifted_korean_2set_keys_without_distinct_jamo_normalize_to_uppercase_qwerty() {
+        for (jamo, latin) in [
+            ('ㅛ', 'Y'),
+            ('ㅕ', 'U'),
+            ('ㅑ', 'I'),
+            ('ㅁ', 'A'),
+            ('ㄴ', 'S'),
+            ('ㅇ', 'D'),
+            ('ㄹ', 'F'),
+            ('ㅎ', 'G'),
+            ('ㅗ', 'H'),
+            ('ㅓ', 'J'),
+            ('ㅏ', 'K'),
+            ('ㅣ', 'L'),
+            ('ㅋ', 'Z'),
+            ('ㅌ', 'X'),
+            ('ㅊ', 'C'),
+            ('ㅍ', 'V'),
+            ('ㅠ', 'B'),
+            ('ㅜ', 'N'),
+            ('ㅡ', 'M'),
+        ] {
+            assert_eq!(
+                ev(KeyCode::Char(jamo), KeyModifiers::SHIFT),
+                Chord::new(KeyCode::Char(latin), KeyModifiers::empty()),
+                "{jamo} should normalize to {latin}",
+            );
+        }
+    }
+
+    #[test]
     fn defaults_resolve_to_actions() {
         let km = KeyMap::default();
         assert_eq!(km.action(KeyContext::Player, parse_chord("space").unwrap()), Some(Action::TogglePause));

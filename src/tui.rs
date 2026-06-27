@@ -5,10 +5,16 @@
 //! crash before the terminal is restored.
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use ratatui::DefaultTerminal;
+
+static KEYBOARD_ENHANCEMENT_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Initialise the terminal. When `mouse` is true, mouse events are captured.
 pub fn init(mouse: bool) -> io::Result<DefaultTerminal> {
@@ -16,13 +22,63 @@ pub fn init(mouse: bool) -> io::Result<DefaultTerminal> {
     if mouse {
         execute!(io::stdout(), EnableMouseCapture)?;
     }
+    enable_keyboard_enhancement();
     Ok(terminal)
 }
 
 /// Restore the terminal to its original state. Safe to call more than once.
 pub fn restore(mouse: bool) {
+    disable_keyboard_enhancement();
     if mouse {
         let _ = execute!(io::stdout(), DisableMouseCapture);
     }
     ratatui::restore();
+}
+
+fn enable_keyboard_enhancement() {
+    if !should_probe_keyboard_enhancement() {
+        return;
+    }
+    if !matches!(
+        crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    ) {
+        return;
+    }
+    let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
+    if execute!(io::stdout(), PushKeyboardEnhancementFlags(flags)).is_ok() {
+        KEYBOARD_ENHANCEMENT_ENABLED.store(true, Ordering::Relaxed);
+    }
+}
+
+fn disable_keyboard_enhancement() {
+    if KEYBOARD_ENHANCEMENT_ENABLED.swap(false, Ordering::Relaxed) {
+        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+    }
+}
+
+fn should_probe_keyboard_enhancement() -> bool {
+    match std::env::var("YTM_TUI_KEYBOARD_ENHANCEMENT")
+        .ok()
+        .as_deref()
+    {
+        Some("0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF") => return false,
+        Some("1" | "true" | "True" | "TRUE" | "on" | "On" | "ON") => return true,
+        _ => {}
+    }
+
+    let term = std::env::var("TERM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let term_program = std::env::var("TERM_PROGRAM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    term.contains("kitty")
+        || term.contains("wezterm")
+        || term.contains("foot")
+        || term.contains("alacritty")
+        || term_program.contains("wezterm")
 }

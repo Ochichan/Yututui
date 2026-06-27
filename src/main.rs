@@ -25,7 +25,9 @@ use app::{App, Cmd, Msg};
 use crossterm::event::EventStream;
 use futures::StreamExt;
 use player::{PlayerCmd, PlayerHandle};
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 
 fn main() -> Result<()> {
     // Custom runtime: 2 workers + 512 KB stacks keeps stack RSS ~1.5 MB (vs ~4.5 MB
@@ -184,13 +186,18 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
     }
 
     let mut events = EventStream::new();
+    let mut input = event::Translator::default();
+    let mut ime_scrub = tokio::time::interval(Duration::from_millis(80));
+    ime_scrub.set_missed_tick_behavior(MissedTickBehavior::Skip);
     terminal.draw(|f| ui::render(f, &app))?;
 
     while !app.should_quit {
-        // Blocks (zero idle CPU) until input or a worker message arrives.
+        // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
+        // a low-rate redraw scrubs IME preedit text that some terminals paint without
+        // sending an input event to the app.
         let msg = tokio::select! {
             maybe = events.next() => match maybe {
-                Some(Ok(ev)) => match event::translate(ev) {
+                Some(Ok(ev)) => match input.translate(ev) {
                     Some(m) => m,
                     None => continue,
                 },
@@ -198,6 +205,11 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, cfg: config::Config) -> Re
                 None => break,
             },
             Some(m) = worker_rx.recv() => m,
+            _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
+                terminal.draw(|f| ui::render(f, &app))?;
+                app.dirty = false;
+                continue;
+            },
         };
 
         for cmd in app.update(msg) {
