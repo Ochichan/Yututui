@@ -3282,9 +3282,9 @@ mod tests {
     // --- M7: downloads ------------------------------------------------------
 
     #[test]
-    fn shift_d_starts_download_of_current_track() {
+    fn d_starts_download_of_current_track() {
         let mut app = app_playing(3, 0); // playing id0
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('D'))));
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('d'))));
         match cmds.as_slice() {
             [Cmd::Download(song)] => assert_eq!(song.video_id, "id0"),
             _ => panic!("expected a Download cmd"),
@@ -3293,13 +3293,13 @@ mod tests {
     }
 
     #[test]
-    fn shift_d_ignores_local_tracks() {
+    fn d_ignores_local_tracks() {
         let mut app = App::new(100);
         app.queue.set(
             vec![Song::local_file(PathBuf::from("/tmp/local-track.m4a"))],
             0,
         );
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('D'))));
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('d'))));
         assert!(cmds.is_empty());
         assert!(app.status.contains("Already local"));
     }

@@ -417,7 +417,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::Favorite, ch('f')),
         (C::Player, A::OpenLibrary, ch('l')),
         (C::Player, A::ToggleLyrics, ch('L')),
-        (C::Player, A::Download, ch('D')),
+        (C::Player, A::Download, ch('d')),
         (C::Player, A::ToggleShuffle, ch('s')),
         (C::Player, A::CycleRepeat, ch('r')),
         (C::Player, A::CycleEq, ch('e')),
@@ -442,12 +442,12 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Global, A::ToggleHelp, ch('?')),
         // Library list commands.
         (C::Library, A::Favorite, ch('f')),
-        (C::Library, A::Download, ch('D')),
+        (C::Library, A::Download, ch('d')),
         (C::Library, A::OpenAi, ch('a')),
         (C::Library, A::Quit, ch('q')),
         // Search results list commands.
         (C::SearchResults, A::Favorite, ch('f')),
-        (C::SearchResults, A::Download, ch('D')),
+        (C::SearchResults, A::Download, ch('d')),
         (C::SearchResults, A::FocusInput, ch('/')),
         (C::SearchResults, A::Back, ctrl('q')),
         // Settings screen commands (nav comes from Common).
@@ -722,7 +722,7 @@ mod tests {
             Some(Action::ToggleLyrics)
         );
         assert_eq!(
-            km.action(KeyContext::Player, ev(KeyCode::Char('ㅇ'), KeyModifiers::SHIFT)),
+            km.action(KeyContext::Player, ev(KeyCode::Char('ㅇ'), KeyModifiers::empty())),
             Some(Action::Download)
         );
         assert_eq!(
