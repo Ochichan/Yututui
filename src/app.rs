@@ -3081,6 +3081,66 @@ mod tests {
         assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::VolDown)));
         assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::VolUp)));
         assert!(buttons.iter().any(|b| b.target == MouseTarget::Global(Action::ToggleHelp)));
+        // The status line publishes the repeat toggle and the EQ-dropdown opener.
+        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::CycleRepeat)));
+        assert!(buttons.iter().any(|b| b.target == MouseTarget::EqMenu));
         assert!(app.seekbar_rect.get().is_some());
+    }
+
+    #[test]
+    fn eq_dropdown_renders_preset_rows_when_open() {
+        let mut app = app_playing(2, 0);
+        app.eq_dropdown_open = true;
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+        let buttons = app.mouse_buttons.borrow();
+        // One selectable row per built-in preset.
+        for preset in crate::eq::EqPreset::CYCLE {
+            assert!(
+                buttons.iter().any(|b| b.target == MouseTarget::EqSelect(preset)),
+                "missing dropdown row for {preset:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clicking_eq_label_toggles_dropdown() {
+        let mut app = app_playing(1, 0);
+        app.register_mouse_button(Rect { x: 30, y: 4, width: 7, height: 1 }, MouseTarget::EqMenu);
+        assert!(app.update(Msg::MouseClick { col: 32, row: 4 }).is_empty());
+        assert!(app.eq_dropdown_open);
+        // Clicking it again closes it.
+        app.register_mouse_button(Rect { x: 30, y: 4, width: 7, height: 1 }, MouseTarget::EqMenu);
+        assert!(app.update(Msg::MouseClick { col: 32, row: 4 }).is_empty());
+        assert!(!app.eq_dropdown_open);
+    }
+
+    #[test]
+    fn selecting_eq_preset_applies_and_closes_dropdown() {
+        let mut app = app_playing(1, 0);
+        app.eq_dropdown_open = true;
+        app.register_mouse_button(
+            Rect { x: 30, y: 6, width: 12, height: 1 },
+            MouseTarget::EqSelect(EqPreset::Vocal),
+        );
+        let cmds = app.update(Msg::MouseClick { col: 33, row: 6 });
+        assert_eq!(app.eq_preset, EqPreset::Vocal);
+        assert_eq!(app.eq_bands, EqPreset::Vocal.gains());
+        assert!(!app.eq_dropdown_open);
+        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::SetAudioFilter(_))]));
+    }
+
+    #[test]
+    fn outside_click_dismisses_eq_dropdown_without_seeking() {
+        let mut app = app_playing(1, 0);
+        app.eq_dropdown_open = true;
+        app.duration = Some(200.0);
+        app.seekbar_rect.set(Some(Rect { x: 0, y: 5, width: 100, height: 1 }));
+        // A click on the seekbar with the dropdown open just closes it (no seek emitted).
+        let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
+        assert!(!app.eq_dropdown_open);
+        assert!(cmds.is_empty());
     }
 }
