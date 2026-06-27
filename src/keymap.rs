@@ -401,7 +401,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('D')),
         (C::SearchResults, A::FocusInput, ch('/')),
-        (C::SearchResults, A::Back, ch('q')),
+        (C::SearchResults, A::Back, ctrl('q')),
         // Settings screen commands (nav comes from Common).
         (C::Settings, A::SettingsSave, ch('s')),
         (C::Settings, A::ChangeDecrease, key(KeyCode::Left)),
@@ -649,7 +649,7 @@ mod tests {
         assert_eq!(km.action(KeyContext::Library, parse_chord("up").unwrap()), Some(Action::MoveUp));
         assert_eq!(km.action(KeyContext::Library, parse_chord("down").unwrap()), Some(Action::MoveDown));
         assert_eq!(km.action(KeyContext::Library, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
-        assert_eq!(km.action(KeyContext::SearchResults, parse_chord("q").unwrap()), Some(Action::Back));
+        assert_eq!(km.action(KeyContext::SearchResults, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
         assert_eq!(km.global_action(parse_chord("?").unwrap()), Some(Action::ToggleHelp));
     }
 

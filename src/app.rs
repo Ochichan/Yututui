@@ -1970,12 +1970,12 @@ mod tests {
     }
 
     #[test]
-    fn q_quits_search_results_without_quitting_app() {
+    fn ctrl_q_quits_search_results_without_quitting_app() {
         let mut app = App::new(100);
         app.mode = Mode::Search;
         app.search_focus = SearchFocus::Results;
         app.search_results = songs(1);
-        app.update(Msg::Key(key(KeyCode::Char('q'))));
+        app.update(Msg::Key(ctrl(KeyCode::Char('q'))));
         assert_eq!(app.mode, Mode::Player);
         assert!(!app.should_quit);
     }
