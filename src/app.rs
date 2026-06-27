@@ -896,6 +896,13 @@ impl App {
             return if confirmed { self.settings_reset_all() } else { Vec::new() };
         }
 
+        // Search submit/select is fixed to the physical Enter key. Handle it before
+        // remappable globals so Enter stays local to Search while every other screen keeps
+        // using the user's keymap.
+        if self.mode == Mode::Search && !self.help_visible && k.code == KeyCode::Enter {
+            return self.on_key_search(k);
+        }
+
         // Home is intentionally a hard global action: it should work even while a text
         // field or key-capture prompt is focused.
         if matches!(self.keymap.global_action(chord), Some(Action::Home)) {
@@ -1256,6 +1263,9 @@ impl App {
     fn on_key_search(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.search_focus {
             SearchFocus::Input => {
+                if k.code == KeyCode::Enter {
+                    return self.submit_search_query();
+                }
                 let chord = Chord::from(k);
                 if chord.is_typeable()
                     && let KeyCode::Char(c) = k.code
@@ -1269,17 +1279,6 @@ impl App {
                         self.mode = Mode::Player;
                         self.dirty = true;
                         return Vec::new();
-                    }
-                    Some(Action::Confirm) => {
-                        let q = self.search_input.trim().to_owned();
-                        self.dirty = true;
-                        return if q.is_empty() {
-                            Vec::new()
-                        } else {
-                            self.searching = true;
-                            self.status.clear();
-                            vec![Cmd::Search(q)]
-                        };
                     }
                     Some(Action::DeleteChar) => {
                         self.search_input.pop();
@@ -1295,6 +1294,7 @@ impl App {
                 }
                 Vec::new()
             }
+            SearchFocus::Results if k.code == KeyCode::Enter => self.play_selected(),
             SearchFocus::Results => match self.keymap.action(KeyContext::SearchResults, k.into()) {
                 Some(Action::Back) => {
                     self.mode = Mode::Player;
@@ -1317,7 +1317,6 @@ impl App {
                     self.dirty = true;
                     Vec::new()
                 }
-                Some(Action::Confirm) => self.play_selected(),
                 // Favorite the highlighted result (♥ appears on the row).
                 Some(Action::Favorite) => {
                     if let Some(song) = self.search_results.get(self.search_selected).cloned() {
@@ -1340,6 +1339,18 @@ impl App {
                 }
                 _ => Vec::new(),
             },
+        }
+    }
+
+    fn submit_search_query(&mut self) -> Vec<Cmd> {
+        let q = self.search_input.trim().to_owned();
+        self.dirty = true;
+        if q.is_empty() {
+            Vec::new()
+        } else {
+            self.searching = true;
+            self.status.clear();
+            vec![Cmd::Search(q)]
         }
     }
 
@@ -2643,6 +2654,18 @@ mod tests {
         assert!(app.should_quit);
     }
 
+    fn confirm_on_f5_keymap() -> KeyMap {
+        let mut keymap = KeyMap::default();
+        keymap
+            .rebind(
+                KeyContext::Common,
+                Action::Confirm,
+                crate::keymap::parse_chord("f5").unwrap(),
+            )
+            .unwrap();
+        keymap
+    }
+
     #[test]
     fn space_toggles_pause_and_emits_cmd() {
         let mut app = App::new(100);
@@ -2794,6 +2817,55 @@ mod tests {
     }
 
     #[test]
+    fn search_submit_stays_enter_when_common_confirm_is_remapped() {
+        let mut app = App::new(100);
+        app.keymap = confirm_on_f5_keymap();
+        app.update(Msg::Key(key(KeyCode::Char('/'))));
+        for c in "lofi".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+
+        let cmds = app.update(Msg::Key(key(KeyCode::F(5))));
+        assert!(cmds.is_empty());
+        assert!(!app.searching);
+
+        let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(app.searching);
+        match cmds.as_slice() {
+            [Cmd::Search(q)] => assert_eq!(q, "lofi"),
+            _ => panic!("expected a Search cmd"),
+        }
+    }
+
+    #[test]
+    fn search_enter_beats_enter_global_remap_but_other_screens_keep_it() {
+        let mut keymap = confirm_on_f5_keymap();
+        keymap
+            .rebind(
+                KeyContext::Global,
+                Action::ToggleHelp,
+                crate::keymap::parse_chord("enter").unwrap(),
+            )
+            .unwrap();
+
+        let mut app = App::new(100);
+        app.keymap = keymap.clone();
+        app.mode = Mode::Search;
+        app.search_input = "lofi".to_owned();
+        let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(!app.help_visible);
+        match cmds.as_slice() {
+            [Cmd::Search(q)] => assert_eq!(q, "lofi"),
+            _ => panic!("expected a Search cmd"),
+        }
+
+        let mut player = App::new(100);
+        player.keymap = keymap;
+        assert!(player.update(Msg::Key(key(KeyCode::Enter))).is_empty());
+        assert!(player.help_visible);
+    }
+
+    #[test]
     fn results_then_enter_plays_and_returns_to_player() {
         let mut app = App::new(100);
         app.mode = Mode::Search;
@@ -2805,6 +2877,23 @@ mod tests {
         let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
         assert_eq!(app.mode, Mode::Player);
         assert!(load_url(&cmds).expect("a Load cmd").contains("abc123"));
+    }
+
+    #[test]
+    fn search_result_confirm_stays_enter_when_common_confirm_is_remapped() {
+        let mut app = App::new(100);
+        app.keymap = confirm_on_f5_keymap();
+        app.mode = Mode::Search;
+        app.search_focus = SearchFocus::Results;
+        app.search_results = songs(1);
+
+        let cmds = app.update(Msg::Key(key(KeyCode::F(5))));
+        assert!(load_url(&cmds).is_none());
+        assert_eq!(app.mode, Mode::Search);
+
+        let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert_eq!(app.mode, Mode::Player);
+        assert!(load_url(&cmds).expect("a Load cmd").contains("id0"));
     }
 
     #[test]
@@ -3750,6 +3839,26 @@ mod tests {
         assert_eq!(app.library_tab, LibraryTab::All);
         app.update(Msg::Key(key(KeyCode::Down))); // select all[1] = id1
         let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert_eq!(app.mode, Mode::Player);
+        assert_eq!(current(&app), "id1");
+        assert!(load_url(&cmds).expect("a Load cmd").contains("id1"));
+    }
+
+    #[test]
+    fn other_screens_keep_remapped_confirm_key() {
+        let mut app = app_playing(3, 0);
+        app.keymap = confirm_on_f5_keymap();
+        app.library.toggle_favorite(&songs(2)[1]);
+        app.library.toggle_favorite(&songs(2)[0]);
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
+        assert_eq!(app.mode, Mode::Library);
+        app.update(Msg::Key(key(KeyCode::Down)));
+
+        let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(load_url(&cmds).is_none());
+        assert_eq!(app.mode, Mode::Library);
+
+        let cmds = app.update(Msg::Key(key(KeyCode::F(5))));
         assert_eq!(app.mode, Mode::Player);
         assert_eq!(current(&app), "id1");
         assert!(load_url(&cmds).expect("a Load cmd").contains("id1"));

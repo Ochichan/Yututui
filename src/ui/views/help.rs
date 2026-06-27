@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
-use crate::keymap;
+use crate::keymap::{self, Action, KeyContext};
 use crate::theme::ThemeRole as R;
 
 /// Render the cheat-sheet as a centered popup over `area`.
@@ -34,35 +34,68 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Build the cheat-sheet lines, split across two columns at a group boundary.
 fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-    let groups = keymap::groups();
+    let groups = help_groups(app);
     // Each group occupies its header + bindings + one trailing blank as padding.
-    let total: usize = groups.iter().map(|(_, a)| a.len() + 2).sum();
+    let total: usize = groups.iter().map(|(_, rows)| rows.len() + 2).sum();
 
     let mut left: Vec<Line> = Vec::new();
     let mut right: Vec<Line> = Vec::new();
     let mut placed = 0usize;
-    for (ctx, actions) in groups {
+    for (title, rows) in groups {
         // Once the left column holds roughly half the rows, spill into the right one.
         let col = if placed * 2 < total { &mut left } else { &mut right };
         col.push(Line::from(Span::styled(
-            ctx.title().to_owned(),
+            title,
             app.theme.style(R::HelpGroup).add_modifier(Modifier::BOLD),
         )));
-        for action in &actions {
-            let key = app
-                .keymap
-                .chord(ctx, *action)
-                .map_or_else(|| "—".to_owned(), keymap::format_chord);
+        for (key, label) in &rows {
             col.push(Line::from(vec![
                 Span::styled(format!("{key:>8}  "), app.theme.style(R::HelpKey)),
-                Span::styled(action.human_label_for(ctx).to_owned(), app.theme.style(R::HelpAction)),
+                Span::styled(label.to_owned(), app.theme.style(R::HelpAction)),
             ]));
         }
         // A little padding after each group so the sections breathe.
         col.push(Line::from(""));
-        placed += actions.len() + 2;
+        placed += rows.len() + 2;
     }
     (left, right)
+}
+
+fn help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
+    let mut out = Vec::new();
+    for (ctx, actions) in keymap::groups() {
+        if ctx == KeyContext::SearchResults {
+            out.push((
+                KeyContext::SearchInput.title().to_owned(),
+                vec![fixed_enter_row(
+                    Action::Confirm.human_label_for(KeyContext::SearchInput),
+                )],
+            ));
+        }
+
+        let mut rows: Vec<(String, String)> = actions
+            .iter()
+            .map(|action| {
+                let key = app
+                    .keymap
+                    .chord(ctx, *action)
+                    .map_or_else(|| "—".to_owned(), keymap::format_chord);
+                (key, action.human_label_for(ctx).to_owned())
+            })
+            .collect();
+        if ctx == KeyContext::SearchResults {
+            rows.insert(
+                0,
+                fixed_enter_row(Action::Confirm.human_label_for(KeyContext::SearchResults)),
+            );
+        }
+        out.push((ctx.title().to_owned(), rows));
+    }
+    out
+}
+
+fn fixed_enter_row(label: &str) -> (String, String) {
+    ("Enter".to_owned(), label.to_owned())
 }
 
 /// A rect centered in `area`, sized to the given width/height percentages.
@@ -74,5 +107,31 @@ fn centered(area: Rect, pct_w: u16, pct_h: u16) -> Rect {
         y: area.y + area.height.saturating_sub(h) / 2,
         width: w,
         height: h,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_enter_rows_are_listed_as_fixed_help_rows() {
+        let app = App::new(100);
+        let groups = help_groups(&app);
+
+        let search_box = groups
+            .iter()
+            .find_map(|(title, rows)| (title == "Search box").then_some(rows))
+            .expect("search box group");
+        assert_eq!(search_box, &vec![("Enter".to_owned(), "Search".to_owned())]);
+
+        let search_results = groups
+            .iter()
+            .find_map(|(title, rows)| (title == "Search results").then_some(rows))
+            .expect("search results group");
+        assert_eq!(
+            search_results.first(),
+            Some(&("Enter".to_owned(), "Play selected".to_owned()))
+        );
     }
 }

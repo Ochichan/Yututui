@@ -115,6 +115,8 @@ impl Action {
     pub fn human_label_for(self, ctx: KeyContext) -> &'static str {
         match (ctx, self) {
             (KeyContext::Library, Action::Back) => "Close Library",
+            (KeyContext::SearchInput, Action::Confirm) => "Search",
+            (KeyContext::SearchResults, Action::Confirm) => "Play selected",
             (KeyContext::SearchResults, Action::Back) => "Close Search Results",
             (KeyContext::Settings, Action::SettingsCancel) => "Save + quit",
             _ => self.human_label(),
@@ -798,6 +800,11 @@ mod tests {
     #[test]
     fn contextual_labels_describe_close_and_global_targets() {
         assert_eq!(Action::Back.human_label_for(KeyContext::Library), "Close Library");
+        assert_eq!(Action::Confirm.human_label_for(KeyContext::SearchInput), "Search");
+        assert_eq!(
+            Action::Confirm.human_label_for(KeyContext::SearchResults),
+            "Play selected"
+        );
         assert_eq!(Action::Back.human_label_for(KeyContext::SearchResults), "Close Search Results");
         assert_eq!(Action::SettingsCancel.human_label_for(KeyContext::Settings), "Save + quit");
         assert_eq!(Action::Quit.human_label_for(KeyContext::Global), "Quit");
