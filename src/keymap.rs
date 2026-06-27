@@ -170,10 +170,11 @@ impl KeyContext {
 
 /// A normalized key combination: a [`KeyCode`] plus the ctrl/alt/shift modifiers.
 ///
-/// Equality is normalized so terminal quirks don't cause misses: for `Char` keys the
-/// `SHIFT` modifier is dropped (an uppercase `'L'` already encodes shift, and terminals
-/// disagree about whether to also set `SHIFT`), Ctrl/Alt letters ignore case, and
-/// `Shift+Tab` collapses to `BackTab`.
+/// Equality is normalized so terminal quirks don't cause misses: 2-beolsik Korean IME
+/// jamo are mapped back to their physical QWERTY keys, for `Char` keys the `SHIFT`
+/// modifier is dropped (an uppercase `'L'` already encodes shift, and terminals disagree
+/// about whether to also set `SHIFT`), Ctrl/Alt letters ignore case, and `Shift+Tab`
+/// collapses to `BackTab`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Chord {
     pub code: KeyCode,
@@ -189,6 +190,14 @@ impl Chord {
         } else {
             code
         };
+        if let KeyCode::Char(c) = code
+            && let Some(mut latin) = korean_2set_key(c)
+        {
+            if mods.contains(KeyModifiers::SHIFT) && latin.is_ascii_lowercase() {
+                latin = latin.to_ascii_uppercase();
+            }
+            code = KeyCode::Char(latin);
+        }
         // The char case already encodes shift; BackTab is inherently shifted.
         if matches!(code, KeyCode::Char(_) | KeyCode::BackTab) {
             mods.remove(KeyModifiers::SHIFT);
@@ -211,6 +220,45 @@ impl Chord {
             && !self.mods.contains(KeyModifiers::CONTROL)
             && !self.mods.contains(KeyModifiers::ALT)
     }
+}
+
+fn korean_2set_key(c: char) -> Option<char> {
+    Some(match c {
+        'ㅂ' => 'q',
+        'ㅈ' => 'w',
+        'ㄷ' => 'e',
+        'ㄱ' => 'r',
+        'ㅅ' => 't',
+        'ㅛ' => 'y',
+        'ㅕ' => 'u',
+        'ㅑ' => 'i',
+        'ㅐ' => 'o',
+        'ㅔ' => 'p',
+        'ㅁ' => 'a',
+        'ㄴ' => 's',
+        'ㅇ' => 'd',
+        'ㄹ' => 'f',
+        'ㅎ' => 'g',
+        'ㅗ' => 'h',
+        'ㅓ' => 'j',
+        'ㅏ' => 'k',
+        'ㅣ' => 'l',
+        'ㅋ' => 'z',
+        'ㅌ' => 'x',
+        'ㅊ' => 'c',
+        'ㅍ' => 'v',
+        'ㅠ' => 'b',
+        'ㅜ' => 'n',
+        'ㅡ' => 'm',
+        'ㅃ' => 'Q',
+        'ㅉ' => 'W',
+        'ㄸ' => 'E',
+        'ㄲ' => 'R',
+        'ㅆ' => 'T',
+        'ㅒ' => 'O',
+        'ㅖ' => 'P',
+        _ => return None,
+    })
 }
 
 impl From<KeyEvent> for Chord {
@@ -633,6 +681,17 @@ mod tests {
     }
 
     #[test]
+    fn korean_2set_keys_normalize_to_qwerty() {
+        assert_eq!(ev(KeyCode::Char('ㅂ'), KeyModifiers::empty()), parse_chord("q").unwrap());
+        assert_eq!(ev(KeyCode::Char('ㅂ'), KeyModifiers::CONTROL), parse_chord("ctrl+q").unwrap());
+        assert_eq!(ev(KeyCode::Char('ㄱ'), KeyModifiers::CONTROL), parse_chord("ctrl+r").unwrap());
+        assert_eq!(ev(KeyCode::Char('ㅂ'), KeyModifiers::ALT), parse_chord("alt+q").unwrap());
+        assert_eq!(ev(KeyCode::Char('ㅣ'), KeyModifiers::SHIFT), parse_chord("L").unwrap());
+        assert_eq!(ev(KeyCode::Char('ㅇ'), KeyModifiers::SHIFT), parse_chord("D").unwrap());
+        assert_eq!(ev(KeyCode::Char('ㅆ'), KeyModifiers::empty()), parse_chord("T").unwrap());
+    }
+
+    #[test]
     fn defaults_resolve_to_actions() {
         let km = KeyMap::default();
         assert_eq!(km.action(KeyContext::Player, parse_chord("space").unwrap()), Some(Action::TogglePause));
@@ -648,6 +707,32 @@ mod tests {
         assert_eq!(km.action(KeyContext::Library, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
         assert_eq!(km.action(KeyContext::SearchResults, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
         assert_eq!(km.global_action(parse_chord("?").unwrap()), Some(Action::ToggleHelp));
+    }
+
+    #[test]
+    fn korean_2set_keys_resolve_default_actions() {
+        let km = KeyMap::default();
+        assert_eq!(km.action(KeyContext::Player, ev(KeyCode::Char('ㅂ'), KeyModifiers::empty())), Some(Action::Quit));
+        assert_eq!(
+            km.action(KeyContext::Player, ev(KeyCode::Char('ㅣ'), KeyModifiers::empty())),
+            Some(Action::OpenLibrary)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, ev(KeyCode::Char('ㅣ'), KeyModifiers::SHIFT)),
+            Some(Action::ToggleLyrics)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, ev(KeyCode::Char('ㅇ'), KeyModifiers::SHIFT)),
+            Some(Action::Download)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, ev(KeyCode::Char('ㅂ'), KeyModifiers::CONTROL)),
+            Some(Action::Back)
+        );
+        assert_eq!(
+            km.global_action(ev(KeyCode::Char('ㄱ'), KeyModifiers::CONTROL)),
+            Some(Action::ToggleRadio)
+        );
     }
 
     #[test]

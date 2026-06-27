@@ -681,13 +681,13 @@ impl App {
     }
 
     fn on_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        let chord = Chord::from(k);
         // Ctrl+C always quits, regardless of mode or remapping (a hard safety key that is
         // never part of the keymap, so the user can't lock themselves out).
-        if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
+        if chord == Chord::new(KeyCode::Char('c'), KeyModifiers::CONTROL) {
             self.should_quit = true;
             return Vec::new();
         }
-        let chord = Chord::from(k);
 
         // The keybinding editor's capture mode grabs the next key verbatim (except Esc),
         // so it must run before the global/help shortcuts could swallow it.
@@ -700,7 +700,7 @@ impl App {
         if self.help_visible {
             let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleHelp))
                 || k.code == KeyCode::Esc
-                || k.code == KeyCode::Char('q');
+                || chord == Chord::new(KeyCode::Char('q'), KeyModifiers::empty());
             if close {
                 self.help_visible = false;
                 self.dirty = true;
@@ -1935,6 +1935,20 @@ mod tests {
     }
 
     #[test]
+    fn korean_q_key_quits_in_player_mode() {
+        let mut app = App::new(100);
+        app.update(Msg::Key(key(KeyCode::Char('ㅂ'))));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn korean_ctrl_c_still_quits() {
+        let mut app = App::new(100);
+        app.update(Msg::Key(ctrl(KeyCode::Char('ㅊ'))));
+        assert!(app.should_quit);
+    }
+
+    #[test]
     fn space_toggles_pause_and_emits_cmd() {
         let mut app = App::new(100);
         let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
@@ -1998,6 +2012,16 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Char('q'))));
         assert!(!app.should_quit);
         assert_eq!(app.search_input, "q");
+    }
+
+    #[test]
+    fn korean_letters_still_type_in_search_input() {
+        let mut app = App::new(100);
+        app.update(Msg::Key(key(KeyCode::Char('/'))));
+        assert_eq!(app.mode, Mode::Search);
+        app.update(Msg::Key(key(KeyCode::Char('ㅂ'))));
+        assert!(!app.should_quit);
+        assert_eq!(app.search_input, "ㅂ");
     }
 
     #[test]
@@ -2300,7 +2324,7 @@ mod tests {
             app.settings.as_ref().unwrap().capturing,
             Some((KeyContext::Player, Action::TogglePause))
         );
-        app.update(Msg::Key(ctrl(KeyCode::Char('X'))));
+        app.update(Msg::Key(ctrl(KeyCode::Char('ㅌ'))));
         assert_eq!(
             app.settings
                 .as_ref()
@@ -2925,6 +2949,14 @@ mod tests {
         );
         assert!(app.update(Msg::MouseClick { col: 4, row: 9 }).is_empty());
         assert!(app.help_visible);
+    }
+
+    #[test]
+    fn korean_q_key_closes_help_overlay() {
+        let mut app = app_playing(1, 0);
+        app.help_visible = true;
+        assert!(app.update(Msg::Key(key(KeyCode::Char('ㅂ')))).is_empty());
+        assert!(!app.help_visible);
     }
 
     #[test]
