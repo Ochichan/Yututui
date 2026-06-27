@@ -3,13 +3,13 @@
 //! that highlights the focused row is rebuilt fresh each frame from a `usize` index.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs};
 
 use crate::app::App;
-use crate::keymap::{self, Action, KeyContext};
+use crate::keymap::{self, Action, Conflict, KeyContext};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
 use crate::config::{SPEED_MAX, SPEED_MIN};
@@ -237,6 +237,58 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
         Span::styled(label, theme.style(R::SettingsLabel)),
         Span::styled(value, theme.style(value_role)),
     ]))
+}
+
+/// A modal warning shown when a rebind on the Keys tab collides with an existing binding.
+/// Names the offending chord, the action already holding it, and where it lives, so the
+/// failure is loud and actionable rather than a silently-dropped remap.
+pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conflict) {
+    let theme = &app.theme;
+    let popup = centered_fixed(area, 54, 9);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" ⚠ Keybinding conflict ")
+        .borders(Borders::ALL)
+        .border_style(theme.style(R::Warning).add_modifier(Modifier::BOLD))
+        .style(theme.style(R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let chord = keymap::format_chord(conflict.chord);
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(chord, theme.style(R::Warning).add_modifier(Modifier::BOLD)),
+            Span::raw(" is already bound to"),
+        ]),
+        Line::from(Span::styled(
+            format!("\u{201c}{}\u{201d}", conflict.existing.human_label_for(conflict.ctx)),
+            theme.style(R::Accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(format!("in {}", conflict.ctx.title()), theme.style(R::TextMuted))),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Binding unchanged · press any key",
+            theme.style(R::TextMuted),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center).style(theme.style(R::TextPrimary)),
+        inner,
+    );
+}
+
+/// A `w`×`h` rect centered in `area`, clamped so it never exceeds the available space.
+fn centered_fixed(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    }
 }
 
 /// A compact 11-cell slider bar with a marker at `value`'s position in `[min, max]`.

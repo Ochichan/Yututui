@@ -21,7 +21,7 @@ use crate::api::Song;
 use crate::artwork::ArtSource;
 use crate::config::{Config, SPEED_MAX, SPEED_MIN};
 use crate::eq::{self, EqPreset};
-use crate::keymap::{Action, Chord, KeyContext, KeyMap};
+use crate::keymap::{Action, Chord, Conflict, KeyContext, KeyMap};
 use crate::library::Library;
 use crate::lyrics::LyricLine;
 use crate::player::PlayerCmd;
@@ -350,6 +350,9 @@ pub struct App {
     pub theme: ThemeConfig,
     /// Whether the `?` help / cheat-sheet overlay is shown.
     pub help_visible: bool,
+    /// A pending keybinding-conflict warning (Keys tab). When set, a modal popup is shown
+    /// and the next key/click dismisses it; the attempted rebind is left unchanged.
+    pub key_conflict: Option<Conflict>,
 
     // Playback ----------------------------------------------------------------
     /// Playback position in seconds, if known.
@@ -491,6 +494,7 @@ impl App {
             keymap: KeyMap::default(),
             theme: ThemeConfig::default(),
             help_visible: false,
+            key_conflict: None,
             time_pos: None,
             duration: None,
             paused: false,
@@ -868,6 +872,14 @@ impl App {
             return self.quit_app();
         }
 
+        // A keybinding-conflict warning is modal: the next keypress just dismisses it (the
+        // rejected rebind already left the binding untouched), so it never leaks through to
+        // the screen underneath.
+        if self.key_conflict.take().is_some() {
+            self.dirty = true;
+            return Vec::new();
+        }
+
         // Home is intentionally a hard global action: it should work even while a text
         // field or key-capture prompt is focused.
         if matches!(self.keymap.global_action(chord), Some(Action::Home)) {
@@ -1016,6 +1028,11 @@ impl App {
     /// seekbar seeks to the matching fraction of the track. Hit rects are published by
     /// views each render.
     fn on_mouse_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        // A click dismisses the modal conflict warning, same as a keypress.
+        if self.key_conflict.take().is_some() {
+            self.dirty = true;
+            return Vec::new();
+        }
         if self.help_visible {
             self.help_visible = false;
             self.dirty = true;
@@ -1537,12 +1554,11 @@ impl App {
                     crate::keymap::format_chord(chord)
                 );
             }
-            Err(existing) => {
-                self.status = format!(
-                    "{} is already bound to {}",
-                    crate::keymap::format_chord(chord),
-                    existing.human_label()
-                );
+            Err(conflict) => {
+                // Surface the clash as a modal warning rather than a quiet status line, so
+                // the rebind visibly fails instead of silently keeping the old key.
+                self.status.clear();
+                self.key_conflict = Some(conflict);
             }
         }
         Vec::new()
@@ -1556,11 +1572,10 @@ impl App {
         if let Some(st) = self.settings.as_mut() {
             match st.keymap.reset(ctx, action) {
                 Ok(()) => self.status = format!("Reset {} to default", action.human_label()),
-                Err(existing) => {
-                    self.status = format!(
-                        "Default is taken by {} — unbind it first",
-                        existing.human_label()
-                    );
+                Err(conflict) => {
+                    // Same modal treatment as a manual rebind clash.
+                    self.status.clear();
+                    self.key_conflict = Some(conflict);
                 }
             }
             self.dirty = true;
@@ -3056,6 +3071,41 @@ mod tests {
                 .map(String::as_str),
             Some("ctrl+x")
         );
+    }
+
+    #[test]
+    fn settings_key_capture_conflict_raises_modal_warning() {
+        let mut app = app_playing(1, 0);
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+        for _ in 0..6 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // Keys tab
+        }
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
+        app.update(Msg::Key(key(KeyCode::Enter))); // capture player.toggle_pause
+
+        // `q` is already Back in Player → a conflict warning pops instead of silently
+        // dropping the rebind, and it names the offending chord, action, and context.
+        app.update(Msg::Key(key(KeyCode::Char('q'))));
+        let conflict = app.key_conflict.expect("a conflict warning should be raised");
+        assert_eq!(conflict.existing, Action::Back);
+        assert_eq!(conflict.ctx, KeyContext::Player);
+        assert_eq!(conflict.chord, crate::keymap::parse_chord("q").unwrap());
+        // The binding was left untouched: space still toggles pause, `q` still means Back.
+        let km = &app.settings.as_ref().unwrap().keymap;
+        assert_eq!(
+            km.action(KeyContext::Player, crate::keymap::parse_chord("space").unwrap()),
+            Some(Action::TogglePause)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, crate::keymap::parse_chord("q").unwrap()),
+            Some(Action::Back)
+        );
+
+        // The popup is modal: the next key only dismisses it (here `s` does NOT save+close).
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
+        assert!(app.key_conflict.is_none());
+        assert!(save_config(&cmds).is_none(), "dismiss key must be swallowed, not saved");
+        assert!(app.settings.is_some(), "settings stayed open after dismiss");
     }
 
     #[test]

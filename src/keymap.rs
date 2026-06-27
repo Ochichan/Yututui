@@ -269,6 +269,16 @@ impl From<KeyEvent> for Chord {
     }
 }
 
+/// Why a rebind was rejected: `chord` is already bound to `existing` in context `ctx`
+/// (the screen where it would have fired). Surfaced to the user as a warning popup so a
+/// conflicting remap is reported loudly rather than silently dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Conflict {
+    pub ctx: KeyContext,
+    pub existing: Action,
+    pub chord: Chord,
+}
+
 /// The resolved keybindings: chord → action (for dispatch) and action → chord (for
 /// rendering hints), both keyed by context.
 #[derive(Debug, Clone)]
@@ -349,24 +359,24 @@ impl KeyMap {
     }
 
     /// If `chord` is already used by a *different* action that would be active in `ctx`
-    /// (the context itself, the shared `Common` nav, or a `Global` binding), return that
-    /// action. Used to reject conflicting rebinds.
-    fn conflict(&self, ctx: KeyContext, action: Action, chord: Chord) -> Option<Action> {
+    /// (the context itself, the shared `Common` nav, or a `Global` binding), return the
+    /// [`Conflict`] describing it. Used to reject conflicting rebinds.
+    fn conflict(&self, ctx: KeyContext, action: Action, chord: Chord) -> Option<Conflict> {
         for c in [ctx, KeyContext::Common, KeyContext::Global] {
             if let Some(&existing) = self.bindings.get(&(c, chord))
                 && existing != action
             {
-                return Some(existing);
+                return Some(Conflict { ctx: c, existing, chord });
             }
         }
         None
     }
 
-    /// Rebind `(ctx, action)` to `chord`. Rejects (returns the conflicting action) if the
-    /// chord is already in use; otherwise drops the action's old chord and installs the new.
-    pub fn rebind(&mut self, ctx: KeyContext, action: Action, chord: Chord) -> Result<(), Action> {
-        if let Some(existing) = self.conflict(ctx, action, chord) {
-            return Err(existing);
+    /// Rebind `(ctx, action)` to `chord`. Rejects (returns the [`Conflict`]) if the chord
+    /// is already in use; otherwise drops the action's old chord and installs the new.
+    pub fn rebind(&mut self, ctx: KeyContext, action: Action, chord: Chord) -> Result<(), Conflict> {
+        if let Some(conflict) = self.conflict(ctx, action, chord) {
+            return Err(conflict);
         }
         if let Some(old) = self.labels.get(&(ctx, action)).copied() {
             self.bindings.remove(&(ctx, old));
@@ -376,9 +386,9 @@ impl KeyMap {
         Ok(())
     }
 
-    /// Restore `(ctx, action)` to its built-in default chord. Returns the conflicting
-    /// action if the default is currently taken by something else.
-    pub fn reset(&mut self, ctx: KeyContext, action: Action) -> Result<(), Action> {
+    /// Restore `(ctx, action)` to its built-in default chord. Returns the [`Conflict`] if
+    /// the default chord is currently taken by something else.
+    pub fn reset(&mut self, ctx: KeyContext, action: Action) -> Result<(), Conflict> {
         match default_chord(ctx, action) {
             Some(def) => self.rebind(ctx, action, def),
             None => Ok(()),
@@ -809,9 +819,13 @@ mod tests {
     #[test]
     fn rebind_rejects_conflict() {
         let mut km = KeyMap::default();
-        // `q` is already Back in Player → binding TogglePause to it is rejected.
+        // `q` is already Back in Player → binding TogglePause to it is rejected, and the
+        // rejection names the offending chord, the action holding it, and where.
         let q = parse_chord("q").unwrap();
-        assert_eq!(km.rebind(KeyContext::Player, Action::TogglePause, q), Err(Action::Back));
+        let err = km.rebind(KeyContext::Player, Action::TogglePause, q).unwrap_err();
+        assert_eq!(err.existing, Action::Back);
+        assert_eq!(err.chord, q);
+        assert_eq!(err.ctx, KeyContext::Player);
         // Space is still pause; q is still back/close.
         assert_eq!(km.action(KeyContext::Player, parse_chord("space").unwrap()), Some(Action::TogglePause));
         assert_eq!(km.action(KeyContext::Player, q), Some(Action::Back));
