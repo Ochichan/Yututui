@@ -1,0 +1,9 @@
+//! Per-screen rendering. Home/lyrics views arrive in later milestones, each as its own
+//! module here.
+
+pub mod ai;
+pub mod help;
+pub mod library;
+pub mod player;
+pub mod search;
+pub mod settings;

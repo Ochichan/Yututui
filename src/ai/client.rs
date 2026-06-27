@@ -1,0 +1,380 @@
+//! The Gemini REST client: request/response models and a single `generate()` call with
+//! transport-level retry (429 / 5xx / network) and typed errors.
+//!
+//! Wire facts that are easy to get wrong, all enforced here:
+//! - Auth is the **`x-goog-api-key` header**, never `?key=` (keeps the key out of URLs and
+//!   request logs). The header value is marked sensitive.
+//! - **Every** request struct is `#[serde(rename_all = "camelCase")]` — Gemini 400s on
+//!   snake_case keys (`systemInstruction`, `functionDeclarations`, `maxOutputTokens`, …).
+//!   A unit test asserts the serialized keys to catch a regression the compiler can't.
+//! - [`Part`] keeps unknown fields via `#[serde(flatten)]` so echoing a model turn back
+//!   preserves `thoughtSignature`; dropping it makes the next turn 400 on thinking models.
+//!
+//! Model fallback is *not* here — it lives in the actor, which alone knows whether a
+//! side-effecting tool already ran (after which a retry on a different model is unsafe).
+
+use std::fmt;
+use std::time::Duration;
+
+use reqwest::header::{HeaderValue, RETRY_AFTER};
+use serde::{Deserialize, Serialize};
+use tokio::time::sleep;
+
+use super::GeminiModel;
+
+/// Per-request transport retries (does not include the first attempt).
+const MAX_RETRIES: u32 = 3;
+/// Cap on error-body text kept in messages/logs.
+const ERR_BODY_CAP: usize = 200;
+
+// --- Request models ---------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateContentRequest {
+    pub contents: Vec<Content>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_instruction: Option<Content>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation_config: Option<GenerationConfig>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tool {
+    /// The 13 tool schemas, built in `tools.rs` as JSON values.
+    pub function_declarations: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
+// --- Shared / response models -----------------------------------------------
+
+/// A turn of conversation. Appears in both the request and the response, so it derives
+/// both `Serialize` and `Deserialize`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Content {
+    /// "user" or "model". Omitted for `systemInstruction`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    pub parts: Vec<Part>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Part {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_call: Option<FunctionCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_response: Option<FunctionResponse>,
+    /// Unknown fields (notably `thoughtSignature`) preserved verbatim across an echo.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionCall {
+    pub name: String,
+    #[serde(default)]
+    pub args: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionResponse {
+    pub name: String,
+    /// Gemini expects an object here; we wrap tool output as `{ "result": <value> }`.
+    pub response: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateContentResponse {
+    #[serde(default)]
+    pub candidates: Vec<Candidate>,
+    #[serde(default)]
+    pub prompt_feedback: Option<PromptFeedback>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    pub content: Option<Content>,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptFeedback {
+    #[serde(default)]
+    pub block_reason: Option<String>,
+}
+
+impl Part {
+    pub fn text(s: impl Into<String>) -> Self {
+        Part { text: Some(s.into()), ..Default::default() }
+    }
+
+    pub fn function_response(name: impl Into<String>, result: serde_json::Value) -> Self {
+        Part {
+            function_response: Some(FunctionResponse {
+                name: name.into(),
+                response: serde_json::json!({ "result": result }),
+            }),
+            ..Default::default()
+        }
+    }
+}
+
+impl Content {
+    pub fn user(parts: Vec<Part>) -> Self {
+        Content { role: Some("user".to_owned()), parts }
+    }
+
+    /// Concatenated text across all `text` parts.
+    pub fn joined_text(&self) -> String {
+        self.parts.iter().filter_map(|p| p.text.as_deref()).collect::<Vec<_>>().join("")
+    }
+
+    /// All `functionCall` parts in order.
+    pub fn function_calls(&self) -> Vec<&FunctionCall> {
+        self.parts.iter().filter_map(|p| p.function_call.as_ref()).collect()
+    }
+}
+
+impl GenerateContentResponse {
+    /// The model's content for the (single) candidate, if present.
+    pub fn content(&self) -> Option<&Content> {
+        self.candidates.first()?.content.as_ref()
+    }
+
+    pub fn finish_reason(&self) -> Option<&str> {
+        self.candidates.first()?.finish_reason.as_deref()
+    }
+
+    pub fn block_reason(&self) -> Option<&str> {
+        self.prompt_feedback.as_ref()?.block_reason.as_deref()
+    }
+}
+
+// --- Errors -----------------------------------------------------------------
+
+#[derive(Debug)]
+pub enum GeminiError {
+    /// 401/403 — bad or unauthorized key. Not retried; no fallback.
+    Auth,
+    /// 404 — the model id is gone. The actor may try a fallback model.
+    ModelNotFound,
+    /// 429 after retries exhausted.
+    RateLimited,
+    /// 5xx after retries exhausted.
+    Server(String),
+    /// Any other non-success status.
+    Http(String),
+    /// Transport failure / timeout.
+    Network(String),
+    /// Response body didn't decode.
+    Decode(String),
+}
+
+impl fmt::Display for GeminiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GeminiError::Auth => write!(f, "API key rejected (check your Gemini key)"),
+            GeminiError::ModelNotFound => write!(f, "model not found"),
+            GeminiError::RateLimited => write!(f, "rate limited — try again shortly"),
+            GeminiError::Server(s) => write!(f, "Gemini server error: {s}"),
+            GeminiError::Http(s) => write!(f, "{s}"),
+            GeminiError::Network(s) => write!(f, "network error: {s}"),
+            GeminiError::Decode(s) => write!(f, "could not parse response: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for GeminiError {}
+
+impl GeminiError {
+    /// Whether trying a fallback model could help (vs. a key/usage problem that won't).
+    pub fn is_model_fallbackable(&self) -> bool {
+        matches!(self, GeminiError::ModelNotFound | GeminiError::Server(_) | GeminiError::RateLimited)
+    }
+}
+
+// --- Client -----------------------------------------------------------------
+
+/// A Gemini REST client. Deliberately does NOT derive `Debug` — the key must never be
+/// printed.
+pub struct GeminiClient {
+    http: reqwest::Client,
+    /// The `x-goog-api-key` value, marked sensitive.
+    key: HeaderValue,
+}
+
+impl GeminiClient {
+    /// Build a client. Fails only if the key has bytes invalid for an HTTP header.
+    pub fn new(api_key: &str) -> Result<Self, GeminiError> {
+        let mut key = HeaderValue::from_str(api_key).map_err(|_| GeminiError::Auth)?;
+        key.set_sensitive(true);
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| GeminiError::Network(e.to_string()))?;
+        Ok(Self { http, key })
+    }
+
+    /// One `generateContent` call against `model`, retrying transient failures.
+    pub async fn generate(
+        &self,
+        model: GeminiModel,
+        req: &GenerateContentRequest,
+    ) -> Result<GenerateContentResponse, GeminiError> {
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+            model.api_id()
+        );
+        let mut attempt = 0u32;
+        loop {
+            let send = self
+                .http
+                .post(&url)
+                .header("x-goog-api-key", self.key.clone())
+                .json(req)
+                .send()
+                .await;
+
+            match send {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        return resp
+                            .json::<GenerateContentResponse>()
+                            .await
+                            .map_err(|e| GeminiError::Decode(e.to_string()));
+                    }
+                    let code = status.as_u16();
+                    let retry_after = resp
+                        .headers()
+                        .get(RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.trim().parse::<u64>().ok());
+                    let body = resp.text().await.unwrap_or_default();
+                    match code {
+                        401 | 403 => return Err(GeminiError::Auth),
+                        404 => return Err(GeminiError::ModelNotFound),
+                        429 => {
+                            if attempt >= MAX_RETRIES {
+                                return Err(GeminiError::RateLimited);
+                            }
+                            let secs = retry_after.unwrap_or_else(|| 1u64 << attempt); // 1/2/4
+                            sleep(Duration::from_secs(secs)).await;
+                        }
+                        500..=599 => {
+                            if attempt >= MAX_RETRIES {
+                                return Err(GeminiError::Server(truncate(&body)));
+                            }
+                            sleep(server_backoff(attempt)).await;
+                        }
+                        _ => return Err(GeminiError::Http(format!("HTTP {code}: {}", truncate(&body)))),
+                    }
+                }
+                Err(e) => {
+                    if attempt >= MAX_RETRIES {
+                        return Err(GeminiError::Network(e.to_string()));
+                    }
+                    sleep(server_backoff(attempt)).await;
+                }
+            }
+            attempt += 1;
+        }
+    }
+}
+
+/// 5xx/network backoff: 0.6 / 1.2 / 2.4 s.
+fn server_backoff(attempt: u32) -> Duration {
+    Duration::from_millis(600 * (1u64 << attempt))
+}
+
+fn truncate(s: &str) -> String {
+    let s = s.trim();
+    if s.len() <= ERR_BODY_CAP {
+        s.to_owned()
+    } else {
+        format!("{}…", &s[..ERR_BODY_CAP])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_serializes_with_camelcase_keys() {
+        let req = GenerateContentRequest {
+            contents: vec![Content::user(vec![Part::text("hi")])],
+            system_instruction: Some(Content { role: None, parts: vec![Part::text("be brief")] }),
+            tools: Some(vec![Tool { function_declarations: vec![serde_json::json!({"name": "x"})] }]),
+            generation_config: Some(GenerationConfig { temperature: Some(0.7), max_output_tokens: Some(1024) }),
+        };
+        let v = serde_json::to_value(&req).unwrap();
+        // The keys Gemini insists on being camelCase.
+        assert!(v.get("systemInstruction").is_some());
+        assert!(v.get("generationConfig").is_some());
+        assert!(v["generationConfig"].get("maxOutputTokens").is_some());
+        assert!(v["tools"][0].get("functionDeclarations").is_some());
+        // snake_case must NOT appear.
+        assert!(v.get("system_instruction").is_none());
+        assert!(v["generationConfig"].get("max_output_tokens").is_none());
+    }
+
+    #[test]
+    fn part_roundtrips_and_preserves_thought_signature() {
+        // A model turn carrying an opaque thoughtSignature must survive a parse → re-emit.
+        let raw = serde_json::json!({
+            "role": "model",
+            "parts": [
+                { "text": "ok", "thoughtSignature": "abc123" },
+                { "functionCall": { "name": "play_music", "args": { "query": "lofi" } } }
+            ]
+        });
+        let content: Content = serde_json::from_value(raw).unwrap();
+        assert_eq!(content.function_calls().len(), 1);
+        assert_eq!(content.function_calls()[0].name, "play_music");
+        let back = serde_json::to_value(&content).unwrap();
+        assert_eq!(back["parts"][0]["thoughtSignature"], "abc123");
+        // functionCall key stays camelCase.
+        assert!(back["parts"][1].get("functionCall").is_some());
+    }
+
+    #[test]
+    fn function_response_wraps_result() {
+        let p = Part::function_response("get_queue", serde_json::json!({ "len": 3 }));
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["functionResponse"]["name"], "get_queue");
+        assert_eq!(v["functionResponse"]["response"]["result"]["len"], 3);
+    }
+
+    #[test]
+    fn response_parses_finish_reason_and_text() {
+        let raw = serde_json::json!({
+            "candidates": [{
+                "content": { "role": "model", "parts": [{ "text": "hello" }] },
+                "finishReason": "STOP"
+            }]
+        });
+        let resp: GenerateContentResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(resp.finish_reason(), Some("STOP"));
+        assert_eq!(resp.content().unwrap().joined_text(), "hello");
+    }
+}

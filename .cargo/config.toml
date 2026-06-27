@@ -1,0 +1,28 @@
+# Project-local cargo configuration.
+#
+# Neutralise a leaked `LIBRARY_PATH` for this project's builds.
+#
+# The dev shell exports `LIBRARY_PATH=.../micromamba/envs/sysdeps/lib`, which the
+# macOS linker searches *before* the SDK defaults. That dir ships a conda-built
+# `libiconv.2.dylib` whose install name is `@rpath/libiconv.2.dylib`. Rust's `std`
+# links `-liconv`, so the produced binary ends up referencing `@rpath/libiconv.2.dylib`
+# with no `LC_RPATH` -> dyld fails at launch:
+#     Library not loaded: @rpath/libiconv.2.dylib ... no LC_RPATH's found
+#
+# Clearing it here forces the linker to fall back to the system libiconv
+# (`/usr/lib/libiconv.2.dylib`, absolute install name) -> a portable, runnable binary.
+# `force = true` wins even when the variable is already set in the environment.
+# No dependency in this project needs the micromamba libs, so clearing it is safe.
+# On Windows the MSVC linker uses `LIB`, not `LIBRARY_PATH`, so this is a harmless no-op.
+[env]
+LIBRARY_PATH = { value = "", force = true }
+
+# Cross-compile to Windows (x86_64-pc-windows-gnu) from macOS via the mingw-w64 toolchain
+# (`brew install mingw-w64`). The GNU target needs no MSVC/Windows SDK and — since the TLS
+# stack is `native-tls` (SChannel, pure Rust) — pulls in no C crypto, so the only external
+# tool required is the mingw linker. `-static` links the mingw CRT + libwinpthread/libgcc
+# statically, yielding a single self-contained `ytm.exe` (no runtime DLLs to ship);
+# combined with `panic = "abort"`, there's no libgcc_s unwinder dependency either.
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+rustflags = ["-C", "link-arg=-static"]

@@ -1,0 +1,63 @@
+[package]
+name = "ytm-tui"
+version = "1.0.0"
+edition = "2024"
+
+# The shipped command is `ytm` — short to type and what the README/installers expose.
+# The crate keeps the longer `ytm-tui` name (and the config/data dir string stays
+# "ytm-tui"), so this only renames the produced binary, nothing user-facing.
+[[bin]]
+name = "ytm"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.103"
+crossterm = { version = "0.29", features = ["event-stream"] }
+directories = "6.0.0"
+# Tiny, dependency-free RNG for queue shuffling (no `rand` pull-in).
+fastrand = "2"
+futures = "0.3.32"
+interprocess = { version = "2.4.2", features = ["tokio"] }
+ratatui = "0.30.2"
+# Synced-lyrics fetch (lrclib) + raw browse. `native-tls` uses the OS TLS stack —
+# Security.framework on macOS, SChannel on Windows — so there's no bundled C crypto
+# (no aws-lc-sys/NASM): smaller binary, and Windows builds need no extra toolchain.
+# Neither target uses OpenSSL, so the plan's "no system OpenSSL" intent still holds.
+# `json` decodes responses. Shares ytmapi-rs's TLS stack (one provider, not two).
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+# YouTube Music metadata client. Same native (system) TLS as above — dropping the
+# `rustls` feature is what removes aws-lc-sys. `simplified-queries` gives ergonomic
+# `search_songs`/`search_*` helpers.
+ytmapi-rs = { version = "0.3.2", default-features = false, features = ["native-tls", "simplified-queries"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sysinfo = "0.39.5"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "process", "sync", "io-util", "time", "signal"] }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# `kill_mpv_now` sends SIGKILL straight from the panic hook / signal handler; one
+# async-signal-safe syscall, no allocation. Unix only — Windows uses the Job Object
+# (M9) plus a sysinfo backstop instead.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# No-orphan on Windows: a Job Object with KILL_ON_JOB_CLOSE so the kernel terminates
+# mpv when our process dies for ANY reason (close button, logoff, Task-Manager kill) —
+# the hard kills signal handlers can't catch. Plus SetConsoleCtrlHandler for prompt
+# teardown. Version 0.61 is already in the tree (via tokio/sysinfo), so no extra copy.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Console",
+] }
+
+[profile.release]
+opt-level = "s"      # optimise for size; revisit "z"/3 after benchmarking
+lto = "fat"          # cross-crate dead-code stripping
+codegen-units = 1    # best inlining (required for fat LTO)
+panic = "abort"      # drop unwinding tables (~100 KB); panic hook still restores TTY
+strip = "symbols"    # strip debug symbols from the shipped binary
