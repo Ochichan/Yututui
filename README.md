@@ -45,6 +45,8 @@ Downloaded tracks are saved under the user Music folder by default:
 - **macOS:** `~/Music/ytm-tui`
 - **Windows:** `%USERPROFILE%\Music\ytm-tui`
 
+Files are written directly into that folder; `ytm` does not create per-channel subfolders.
+
 You can override this in Settings (`Download dir`) or with `YTM_DOWNLOAD_DIR`.
 
 ## Cookies

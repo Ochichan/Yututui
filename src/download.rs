@@ -1,5 +1,5 @@
 //! Track downloads via `yt-dlp` + `ffmpeg`: best audio → m4a, with embedded metadata
-//! and cover art, saved under `<download dir>/<artist>/<title>.m4a`.
+//! and cover art, saved directly under `<download dir>/<title>.m4a`.
 //!
 //! The actor receives [`DownloadCmd::Start`] and spawns one task per track, gated by a
 //! [`Semaphore`] so at most [`MAX_CONCURRENT`] run at once (priority #1: bounded work).
@@ -21,6 +21,7 @@ use crate::app::Msg;
 
 /// Most simultaneous downloads.
 const MAX_CONCURRENT: usize = 3;
+const OUTPUT_TEMPLATE: &str = "%(title)s.%(ext)s";
 
 pub enum DownloadCmd {
     Start(Song),
@@ -81,7 +82,7 @@ async fn run_download(
         .args(["--embed-metadata", "--embed-thumbnail", "--no-playlist", "--newline"])
         .arg("-P")
         .arg(dir)
-        .args(["-o", "%(artist,uploader,channel)s/%(title)s.%(ext)s"])
+        .args(["-o", OUTPUT_TEMPLATE])
         .args(["--progress-template", "download:%(progress._percent_str)s"])
         .args(["--no-simulate", "--print", "after_move:filepath"]);
     if let Some(c) = cookies {
@@ -142,5 +143,12 @@ mod tests {
         assert_eq!(parse_percent("[download] Destination: foo.m4a"), None);
         assert_eq!(parse_percent("download:n/a"), None);
         assert_eq!(parse_percent(""), None);
+    }
+
+    #[test]
+    fn output_template_does_not_create_channel_subdirs() {
+        assert_eq!(OUTPUT_TEMPLATE, "%(title)s.%(ext)s");
+        assert!(!OUTPUT_TEMPLATE.contains('/'));
+        assert!(!OUTPUT_TEMPLATE.contains('\\'));
     }
 }
