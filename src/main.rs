@@ -296,6 +296,13 @@ async fn run(
                         h.ask(prompt, context);
                     }
                 }
+                Cmd::RadioFallback {
+                    seed,
+                    seed_video_id,
+                    exclude_ids,
+                } => {
+                    api_handle.radio(seed, seed_video_id, exclude_ids, app::RADIO_FALLBACK_COUNT);
+                }
                 Cmd::SetAiModel(model) => {
                     if let Some(h) = &ai_handle {
                         h.set_model(model);

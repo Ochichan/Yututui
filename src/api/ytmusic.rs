@@ -6,6 +6,7 @@
 //!   returns "No results"), so we shell out to `yt-dlp "ytsearch…"` — public YouTube,
 //!   no auth, directly playable, and yt-dlp is already a dependency for playback.
 
+use std::collections::HashSet;
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
@@ -81,6 +82,90 @@ pub(crate) async fn ytdlp_search(query: &str, limit: usize) -> Result<Vec<Song>>
     Ok(entries.iter().filter_map(parse_entry).collect())
 }
 
+/// Best-effort related tracks for radio/autoplay without Gemini.
+///
+/// There is no stable public recommendation API in the app today, so the anonymous
+/// fallback uses the same yt-dlp search boundary as normal anonymous search. It asks for
+/// common "radio/mix/similar" queries and de-dupes against the caller's exclusions.
+pub(crate) async fn related_tracks(
+    seed: &str,
+    limit: usize,
+    excluded: &HashSet<String>,
+) -> Result<Vec<Song>> {
+    let limit = limit.clamp(1, 20);
+    let mut out = Vec::with_capacity(limit);
+    let mut seen = excluded.clone();
+    let mut had_success = false;
+    let mut last_err = None;
+
+    for query in radio_queries(seed) {
+        let search_limit = (limit * 2).clamp(limit, 50);
+        match ytdlp_search(&query, search_limit).await {
+            Ok(songs) => {
+                had_success = true;
+                for song in songs {
+                    if seen.insert(song.video_id.clone()) {
+                        out.push(song);
+                        if out.len() >= limit {
+                            return Ok(out);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+
+    if !had_success
+        && let Some(e) = last_err
+    {
+        return Err(e).context("related-track search failed");
+    }
+    Ok(out)
+}
+
+fn radio_queries(seed: &str) -> Vec<String> {
+    let seed = seed.trim();
+    if seed.is_empty() {
+        return vec![
+            "popular music radio".to_owned(),
+            "popular music mix".to_owned(),
+        ];
+    }
+
+    let mut queries = Vec::new();
+    push_query(&mut queries, format!("{seed} radio"));
+    push_query(&mut queries, format!("{seed} mix"));
+
+    if let Some((title, artist)) = split_seed(seed) {
+        push_query(&mut queries, format!("{artist} radio"));
+        push_query(&mut queries, format!("{artist} similar songs"));
+        push_query(&mut queries, format!("{title} {artist} mix"));
+    } else {
+        push_query(&mut queries, format!("{seed} similar songs"));
+    }
+
+    queries
+}
+
+fn split_seed(seed: &str) -> Option<(&str, &str)> {
+    seed.split_once(" — ")
+        .or_else(|| seed.split_once(" - "))
+        .and_then(|(title, artist)| {
+            let title = title.trim();
+            let artist = artist.trim();
+            (!title.is_empty() && !artist.is_empty()).then_some((title, artist))
+        })
+}
+
+fn push_query(queries: &mut Vec<String>, query: String) {
+    if !queries.iter().any(|q| q == &query) {
+        queries.push(query);
+    }
+}
+
 /// Map one yt-dlp flat-playlist entry to a [`Song`]. Skips entries without an id.
 fn parse_entry(e: &serde_json::Value) -> Option<Song> {
     let video_id = e.get("id")?.as_str()?.to_owned();
@@ -101,4 +186,37 @@ fn parse_entry(e: &serde_json::Value) -> Option<Song> {
         .map(format::time)
         .unwrap_or_default();
     Some(Song::remote(video_id, title, artist, duration))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn radio_queries_expand_title_artist_seed() {
+        let queries = radio_queries("Song — Artist");
+        assert_eq!(
+            queries,
+            vec![
+                "Song — Artist radio",
+                "Song — Artist mix",
+                "Artist radio",
+                "Artist similar songs",
+                "Song Artist mix",
+            ]
+        );
+    }
+
+    #[test]
+    fn radio_queries_handle_plain_seed() {
+        let queries = radio_queries("lo-fi beats");
+        assert_eq!(
+            queries,
+            vec![
+                "lo-fi beats radio",
+                "lo-fi beats mix",
+                "lo-fi beats similar songs",
+            ]
+        );
+    }
 }

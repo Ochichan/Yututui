@@ -32,6 +32,8 @@ use crate::theme::{ThemeConfig, ThemeRole};
 
 /// Queue length at or below which the autoplay/radio hook tops up the queue.
 const AUTOPLAY_THRESHOLD: usize = 3;
+/// Number of related tracks to request from the non-AI radio fallback.
+pub(crate) const RADIO_FALLBACK_COUNT: usize = 8;
 /// Minimum gap between autoplay top-up requests (avoids a request storm).
 const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
 /// Consecutive empty radio extends before autoplay disables itself (circuit breaker).
@@ -121,6 +123,16 @@ pub enum Msg {
         video_id: String,
         stream_url: String,
     },
+    /// Related tracks returned by the non-AI radio fallback.
+    RadioResults {
+        seed_video_id: String,
+        songs: Vec<Song>,
+    },
+    /// The non-AI radio fallback failed to fetch related tracks.
+    RadioError {
+        seed_video_id: String,
+        error: String,
+    },
 
     // AI assistant: intents emitted by the AI actor, applied here by `update()`.
     /// The assistant started/finished a turn (drives the thinking spinner).
@@ -184,6 +196,12 @@ pub enum Cmd {
     AskAi {
         prompt: String,
         context: Box<AiContext>,
+    },
+    /// Ask the anonymous API/search actor for related tracks to keep radio going without AI.
+    RadioFallback {
+        seed: String,
+        seed_video_id: String,
+        exclude_ids: Vec<String>,
     },
     /// Switch the running AI actor's model (settings save). No effect without a key.
     SetAiModel(GeminiModel),
@@ -410,7 +428,9 @@ pub struct App {
     /// Whether the input box or the suggestions list has focus in the AI view.
     pub ai_focus: AiFocus,
     /// When the autoplay hook last fired a top-up request (for the cooldown).
-    ai_last_extend: Option<Instant>,
+    radio_last_extend: Option<Instant>,
+    /// True while the non-AI radio fallback is fetching related tracks.
+    radio_pending: bool,
     /// Consecutive empty radio extends, for the autoplay circuit breaker.
     consecutive_radio_failures: u8,
     /// Consecutive mpv playback errors with no track playing in between, for the
@@ -522,7 +542,8 @@ impl App {
             ai_suggestions: Vec::new(),
             ai_suggestions_selected: 0,
             ai_focus: AiFocus::Input,
-            ai_last_extend: None,
+            radio_last_extend: None,
+            radio_pending: false,
             consecutive_radio_failures: 0,
             consecutive_play_errors: 0,
             playlists: Playlists::default(),
@@ -776,6 +797,29 @@ impl App {
                 }
                 self.resolved.insert(video_id, stream_url);
             }
+            Msg::RadioResults {
+                seed_video_id,
+                songs,
+            } => {
+                self.radio_pending = false;
+                if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
+                    let songs = self.filter_radio_songs(songs, &seed_video_id);
+                    self.extend_queue_from_radio(songs);
+                } else {
+                    self.dirty = true;
+                }
+            }
+            Msg::RadioError {
+                seed_video_id,
+                error,
+            } => {
+                self.radio_pending = false;
+                if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
+                    self.note_radio_failure(format!("Autoplay radio failed: {error}"));
+                } else {
+                    self.dirty = true;
+                }
+            }
 
             // --- AI assistant intents ---------------------------------------
             Msg::AiThinking(on) => {
@@ -803,22 +847,7 @@ impl App {
                 }
             }
             Msg::AiEnqueue(songs) => {
-                let added = self.queue.extend(songs);
-                if added == 0 {
-                    self.consecutive_radio_failures =
-                        self.consecutive_radio_failures.saturating_add(1);
-                    // Circuit breaker: stop a radio that keeps coming up empty.
-                    if self.autoplay_radio
-                        && self.consecutive_radio_failures >= AUTOPLAY_MAX_FAILURES
-                    {
-                        self.autoplay_radio = false;
-                        self.status = "Autoplay radio stopped (no related tracks found)".to_owned();
-                    }
-                } else {
-                    self.consecutive_radio_failures = 0;
-                    self.status = format!("Queued {added} track(s)");
-                }
-                self.dirty = true;
+                self.extend_queue_from_radio(songs);
             }
             Msg::AiSuggestions(songs) => {
                 self.ai_suggestions = songs;
@@ -2268,16 +2297,23 @@ impl App {
         }
     }
 
-    /// If autoplay/radio is on and the queue is running low, ask the assistant to top it
-    /// up — rate-limited by a cooldown and guarded against overlapping requests.
+    /// If autoplay/radio is on and the queue is running low, top it up. Gemini gets the
+    /// first chance when configured; otherwise the anonymous yt-dlp radio fallback runs.
     fn maybe_autoplay_extend(&mut self) -> Vec<Cmd> {
-        if !self.autoplay_radio || !self.ai_available || self.ai_thinking {
+        if !self.autoplay_radio {
             return Vec::new();
         }
         if self.queue.remaining() > AUTOPLAY_THRESHOLD {
             return Vec::new();
         }
-        let cooled = match self.ai_last_extend {
+        if self.ai_available {
+            if self.ai_thinking {
+                return Vec::new();
+            }
+        } else if self.radio_pending {
+            return Vec::new();
+        }
+        let cooled = match self.radio_last_extend {
             Some(t) => t.elapsed() >= AUTOPLAY_COOLDOWN,
             None => true,
         };
@@ -2288,16 +2324,100 @@ impl App {
             return Vec::new();
         };
         let seed = format!("{} — {}", cur.title, cur.artist);
-        self.ai_last_extend = Some(Instant::now());
-        self.ai_thinking = true;
+        let seed_video_id = cur.video_id.clone();
+        let exclude_ids = self.radio_exclude_ids(&seed_video_id);
+        self.radio_last_extend = Some(Instant::now());
         self.dirty = true;
-        let prompt = format!(
-            "The play queue is running low. Using the add_to_queue tool, add 5 to 8 tracks similar to \"{seed}\" to keep the music going. Reply with no text."
-        );
-        vec![Cmd::AskAi {
-            prompt,
-            context: Box::new(self.build_ai_context()),
-        }]
+        if self.ai_available {
+            self.ai_thinking = true;
+            let prompt = self.ai_radio_prompt(cur);
+            vec![Cmd::AskAi {
+                prompt,
+                context: Box::new(self.build_ai_context()),
+            }]
+        } else {
+            self.radio_pending = true;
+            self.status = "Autoplay radio: finding related tracks".to_owned();
+            vec![Cmd::RadioFallback {
+                seed,
+                seed_video_id,
+                exclude_ids,
+            }]
+        }
+    }
+
+    fn ai_radio_prompt(&self, current: &Song) -> String {
+        let context = self
+            .radio_context_labels(current)
+            .into_iter()
+            .map(|(role, label)| format!("- {role}: {label}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "The play queue is running low. Using the add_to_queue tool, add 5 to 8 tracks that fit this listening context. Weight the current track most, and use the previous tracks to keep the flow coherent. Avoid repeating these context tracks.\n{context}\nReply with no text."
+        )
+    }
+
+    fn radio_context_labels(&self, current: &Song) -> Vec<(&'static str, String)> {
+        let mut seen = HashSet::new();
+        seen.insert(current.video_id.clone());
+        let mut labels = vec![("Current", song_label(current))];
+
+        for song in &self.library.history {
+            if seen.insert(song.video_id.clone()) {
+                let role = match labels.len() {
+                    1 => "Previous 1",
+                    2 => "Previous 2",
+                    _ => break,
+                };
+                labels.push((role, song_label(song)));
+            }
+            if labels.len() >= 3 {
+                break;
+            }
+        }
+
+        labels
+    }
+
+    fn extend_queue_from_radio(&mut self, songs: Vec<Song>) {
+        let added = self.queue.extend(songs);
+        if added == 0 {
+            self.note_radio_failure("Autoplay radio found no new tracks".to_owned());
+        } else {
+            self.consecutive_radio_failures = 0;
+            self.status = format!("Queued {added} track(s)");
+            self.dirty = true;
+        }
+    }
+
+    fn note_radio_failure(&mut self, status: String) {
+        if self.autoplay_radio {
+            self.consecutive_radio_failures = self.consecutive_radio_failures.saturating_add(1);
+            if self.consecutive_radio_failures >= AUTOPLAY_MAX_FAILURES {
+                self.autoplay_radio = false;
+                self.radio_pending = false;
+                self.status = "Autoplay radio stopped (no related tracks found)".to_owned();
+            } else {
+                self.status = status;
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn radio_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
+        let mut ids: HashSet<String> = self.queue.video_ids().map(str::to_owned).collect();
+        ids.insert(seed_video_id.to_owned());
+        ids.extend(self.library.history.iter().map(|s| s.video_id.clone()));
+        ids.into_iter().collect()
+    }
+
+    fn filter_radio_songs(&self, songs: Vec<Song>, seed_video_id: &str) -> Vec<Song> {
+        let mut seen: HashSet<String> = self.radio_exclude_ids(seed_video_id).into_iter().collect();
+        songs
+            .into_iter()
+            .filter(|song| seen.insert(song.video_id.clone()))
+            .collect()
     }
 
     /// Number of rows in the currently selected library tab.
@@ -2582,6 +2702,14 @@ fn fetch_lyrics_cmd(song: &Song) -> Cmd {
         video_id: song.video_id.clone(),
         artist: song.artist.clone(),
         title: song.title.clone(),
+    }
+}
+
+fn song_label(song: &Song) -> String {
+    if song.artist.trim().is_empty() {
+        song.title.clone()
+    } else {
+        format!("{} — {}", song.title, song.artist)
     }
 }
 
@@ -3748,6 +3876,17 @@ mod tests {
         })
     }
 
+    fn radio_fallback(cmds: &[Cmd]) -> Option<(&str, &str, &[String])> {
+        cmds.iter().find_map(|c| match c {
+            Cmd::RadioFallback {
+                seed,
+                seed_video_id,
+                exclude_ids,
+            } => Some((seed.as_str(), seed_video_id.as_str(), exclude_ids.as_slice())),
+            _ => None,
+        })
+    }
+
     #[test]
     fn a_enters_ai_from_player_and_library() {
         let mut app = app_playing(1, 0);
@@ -3861,9 +4000,93 @@ mod tests {
             "autoplay should ask for more tracks"
         );
         assert!(app.ai_thinking);
+        assert!(radio_fallback(&cmds).is_none());
         // The cooldown blocks an immediate second request.
         let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
         assert!(ask_ai(&cmds).is_none());
+    }
+
+    #[test]
+    fn ai_autoplay_prompt_uses_current_and_two_previous_tracks() {
+        let mut app = app_playing(1, 0); // current id0 is already in history
+        let current = app.queue.current().cloned().unwrap();
+        app.library
+            .record_play(&Song::remote("prev2", "previous two", "artist b", "0:10"));
+        app.library
+            .record_play(&Song::remote("prev1", "previous one", "artist a", "0:10"));
+        app.library.record_play(&current); // current can be present in history; don't duplicate it.
+        app.ai_available = true;
+        app.autoplay_radio = true;
+
+        let cmds = app.maybe_autoplay_extend();
+        let prompt = ask_ai(&cmds).expect("AI autoplay prompt");
+        assert!(prompt.contains("- Current: t0 — a"));
+        assert!(prompt.contains("- Previous 1: previous one — artist a"));
+        assert!(prompt.contains("- Previous 2: previous two — artist b"));
+        assert_eq!(prompt.matches("t0 — a").count(), 1);
+    }
+
+    #[test]
+    fn autoplay_uses_radio_fallback_without_ai_key() {
+        let mut app = app_playing(2, 0); // remaining = 1 (<= threshold)
+        app.autoplay_radio = true;
+
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+        assert!(ask_ai(&cmds).is_none(), "no Gemini request without an API key");
+        let (seed, seed_video_id, exclude_ids) = radio_fallback(&cmds).expect("a fallback radio command");
+        assert_eq!(seed_video_id, "id1");
+        assert!(seed.contains("t1"));
+        assert!(exclude_ids.iter().any(|id| id == "id0"));
+        assert!(exclude_ids.iter().any(|id| id == "id1"));
+        assert!(app.radio_pending);
+
+        let cmds = app.maybe_autoplay_extend();
+        assert!(
+            radio_fallback(&cmds).is_none(),
+            "pending fallback blocks duplicate requests"
+        );
+    }
+
+    #[test]
+    fn radio_results_filter_duplicates_and_clear_pending() {
+        let mut app = app_playing(2, 0);
+        app.autoplay_radio = true;
+        app.radio_pending = true;
+
+        app.update(Msg::RadioResults {
+            seed_video_id: "id0".to_owned(),
+            songs: vec![
+                Song::remote("id0", "current", "a", "0:10"),
+                Song::remote("id2", "new", "a", "0:10"),
+                Song::remote("id2", "duplicate", "a", "0:10"),
+                Song::remote("id1", "queued", "a", "0:10"),
+                Song::remote("id3", "newer", "a", "0:10"),
+            ],
+        });
+
+        assert!(!app.radio_pending);
+        assert_eq!(app.queue.len(), 4);
+        assert!(app.queue.contains_video_id("id2"));
+        assert!(app.queue.contains_video_id("id3"));
+        assert!(app.status.contains("Queued 2"));
+    }
+
+    #[test]
+    fn radio_error_uses_circuit_breaker() {
+        let mut app = app_playing(1, 0);
+        app.autoplay_radio = true;
+
+        for _ in 0..AUTOPLAY_MAX_FAILURES {
+            app.radio_pending = true;
+            app.update(Msg::RadioError {
+                seed_video_id: "id0".to_owned(),
+                error: "yt-dlp failed".to_owned(),
+            });
+        }
+
+        assert!(!app.radio_pending);
+        assert!(!app.autoplay_radio);
+        assert!(app.status.contains("Autoplay radio stopped"));
     }
 
     #[test]

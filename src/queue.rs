@@ -74,6 +74,14 @@ impl Queue {
         self.songs.len()
     }
 
+    pub fn contains_video_id(&self, video_id: &str) -> bool {
+        self.songs.iter().any(|s| s.video_id == video_id)
+    }
+
+    pub fn video_ids(&self) -> impl Iterator<Item = &str> {
+        self.songs.iter().map(|s| s.video_id.as_str())
+    }
+
     /// The track currently selected to play, if any.
     pub fn current(&self) -> Option<&Song> {
         let idx = *self.order.get(self.cursor)?;

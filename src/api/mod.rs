@@ -4,6 +4,7 @@
 
 pub mod ytmusic;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -104,6 +105,12 @@ pub enum ApiMode {
 /// Commands the reducer sends to the API actor.
 pub enum ApiCmd {
     Search(String),
+    Radio {
+        seed: String,
+        seed_video_id: String,
+        exclude_ids: Vec<String>,
+        limit: usize,
+    },
 }
 
 /// Handle for issuing API requests; results return as [`Msg`]s.
@@ -114,6 +121,21 @@ pub struct ApiHandle {
 impl ApiHandle {
     pub fn search(&self, query: impl Into<String>) {
         let _ = self.tx.send(ApiCmd::Search(query.into()));
+    }
+
+    pub fn radio(
+        &self,
+        seed: impl Into<String>,
+        seed_video_id: impl Into<String>,
+        exclude_ids: Vec<String>,
+        limit: usize,
+    ) {
+        let _ = self.tx.send(ApiCmd::Radio {
+            seed: seed.into(),
+            seed_video_id: seed_video_id.into(),
+            exclude_ids,
+            limit,
+        });
     }
 }
 
@@ -154,6 +176,31 @@ async fn run_actor(
                     Err(e) => {
                         tracing::warn!(error = %format!("{e:#}"), "search failed");
                         Msg::SearchError(format!("{e:#}"))
+                    }
+                };
+                let _ = msg_tx.send(msg);
+            }
+            ApiCmd::Radio {
+                seed,
+                seed_video_id,
+                exclude_ids,
+                limit,
+            } => {
+                let excluded: HashSet<String> = exclude_ids.into_iter().collect();
+                let msg = match ytmusic::related_tracks(&seed, limit, &excluded).await {
+                    Ok(songs) => {
+                        tracing::info!(count = songs.len(), seed = %seed, "radio results");
+                        Msg::RadioResults {
+                            seed_video_id,
+                            songs,
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %format!("{e:#}"), seed = %seed, "radio search failed");
+                        Msg::RadioError {
+                            seed_video_id,
+                            error: format!("{e:#}"),
+                        }
                     }
                 };
                 let _ = msg_tx.send(msg);

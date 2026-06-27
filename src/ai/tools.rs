@@ -6,13 +6,13 @@
 //! [`AiContext`] snapshot; *search/resolve* tools shell out to yt-dlp (the same backend
 //! anonymous search uses) and cache `videoId → Song` so later tools can act on bare ids.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::Song;
-use crate::api::ytmusic::ytdlp_search;
+use crate::api::ytmusic::{related_tracks, ytdlp_search};
 use crate::app::{AiContext, Msg};
 
 /// Default number of tracks a query resolves to when the model doesn't ask for a count.
@@ -212,7 +212,9 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             let seed = str_arg(args, "seed")
                 .or_else(|| deps.ctx.current_track.clone())
                 .unwrap_or_else(|| "popular music".to_owned());
-            let songs = related(&seed, RELATED_COUNT).await;
+            let songs = related_tracks(&seed, RELATED_COUNT, &HashSet::new())
+                .await
+                .unwrap_or_default();
             cache_all(deps, &songs);
             let count = songs.len();
             send(deps, Msg::AiEnqueue(songs));
@@ -229,7 +231,9 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             let seed = str_arg(args, "seed")
                 .or_else(|| deps.ctx.current_track.clone())
                 .unwrap_or_else(|| "popular music".to_owned());
-            let songs = related(&seed, RELATED_COUNT).await;
+            let songs = related_tracks(&seed, RELATED_COUNT, &HashSet::new())
+                .await
+                .unwrap_or_default();
             cache_all(deps, &songs);
             let labels: Vec<String> = songs.iter().map(fmt_song).collect();
             // Populating the pickable list is not a playback mutation → no side-effect flag.
@@ -324,14 +328,6 @@ async fn resolve_songs(args: &Value, deps: &mut ToolDeps<'_>, default_limit: usi
         }
     }
     Vec::new()
-}
-
-/// Best-effort related tracks (anonymous): a `"<seed> radio"` search. Authenticated
-/// related-track endpoints could improve this later.
-async fn related(seed: &str, n: usize) -> Vec<Song> {
-    ytdlp_search(&format!("{seed} radio"), n)
-        .await
-        .unwrap_or_default()
 }
 
 fn send(deps: &mut ToolDeps<'_>, msg: Msg) {
