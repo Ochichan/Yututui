@@ -6,7 +6,8 @@
 //! (state in, `Cmd`s out — no IO) makes it directly unit-testable.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -41,6 +42,8 @@ const VOLUME_STEP: i64 = 5;
 const VOLUME_MAX: i64 = 100;
 /// Cap on cached prefetched stream URLs (bounded memory; we only look a step ahead).
 const RESOLVED_MAX: usize = 999;
+/// Cap on local download-folder rows held in memory.
+const DOWNLOADED_TRACKS_MAX: usize = 999;
 /// How many tracks in a row may fail before we stop auto-skipping and surface the error.
 /// A single unplayable track (expired URL, region/age-gated, throttled) shouldn't halt
 /// the session, but a systemic failure (offline, bad cookie) shouldn't skip-storm the
@@ -53,7 +56,10 @@ const SPEED_STEP: f64 = 0.1;
 pub enum Msg {
     Key(KeyEvent),
     /// A left-click at a terminal cell (1-based crossterm coords); may hit the seekbar.
-    MouseClick { col: u16, row: u16 },
+    MouseClick {
+        col: u16,
+        row: u16,
+    },
     /// The terminal was resized; ratatui auto-resizes on draw, we just redraw.
     Resize,
     /// A termination signal asked us to shut down.
@@ -74,19 +80,39 @@ pub enum Msg {
     /// mpv reported a playback error.
     PlayerError(String),
     /// Search returned results (possibly empty) for `query`.
-    SearchResults { query: String, songs: Vec<Song> },
+    SearchResults {
+        query: String,
+        songs: Vec<Song>,
+    },
     /// Search failed.
     SearchError(String),
+    /// Download folder scan completed.
+    DownloadsScanned(Vec<Song>),
     /// Synced lyrics for `video_id` (empty `lines` = none found).
-    LyricsResult { video_id: String, lines: Vec<LyricLine> },
+    LyricsResult {
+        video_id: String,
+        lines: Vec<LyricLine>,
+    },
     /// Download progress for `video_id` (0-100).
-    DownloadProgress { video_id: String, percent: f64 },
+    DownloadProgress {
+        video_id: String,
+        percent: f64,
+    },
     /// A download finished, saved at `path`.
-    DownloadDone { video_id: String, path: String },
+    DownloadDone {
+        video_id: String,
+        path: String,
+    },
     /// A download failed.
-    DownloadError { video_id: String, error: String },
+    DownloadError {
+        video_id: String,
+        error: String,
+    },
     /// A track's direct stream URL was prefetched (for instant skip).
-    Resolved { video_id: String, stream_url: String },
+    Resolved {
+        video_id: String,
+        stream_url: String,
+    },
 
     // AI assistant: intents emitted by the AI actor, applied here by `update()`.
     /// The assistant started/finished a turn (drives the thinking spinner).
@@ -106,7 +132,10 @@ pub enum Msg {
     /// Create a local playlist with this name (create_playlist).
     AiCreatePlaylist(String),
     /// Add these tracks to a local playlist by id or name (add_to_playlist).
-    AiAddToPlaylist { playlist: String, songs: Vec<Song> },
+    AiAddToPlaylist {
+        playlist: String,
+        songs: Vec<Song>,
+    },
     /// Play a local playlist by id or name (play_playlist).
     AiPlayPlaylist(String),
 }
@@ -117,24 +146,41 @@ pub enum Cmd {
     Search(String),
     /// Persist the library (favorites/history) to disk.
     SaveLibrary,
+    /// Refresh the local downloads list from this folder.
+    ScanDownloads(PathBuf),
     /// Fetch synced lyrics for a track.
-    FetchLyrics { video_id: String, artist: String, title: String },
+    FetchLyrics {
+        video_id: String,
+        artist: String,
+        title: String,
+    },
     /// Download a track to disk (best audio + tags + cover art).
     Download(Song),
+    /// Point the download actor at a new folder for future downloads.
+    SetDownloadDir(PathBuf),
     /// Prefetch a track's direct stream URL for instant skip.
-    Resolve { video_id: String, watch_url: String },
+    Resolve {
+        video_id: String,
+        watch_url: String,
+    },
     /// Persist the given config to disk (settings screen, on save).
     SaveConfig(Box<Config>),
     /// Persist the local playlists to disk (after an AI playlist mutation).
     SavePlaylists,
     /// Ask the AI assistant to handle a prompt, given a read-only state snapshot.
-    AskAi { prompt: String, context: Box<AiContext> },
+    AskAi {
+        prompt: String,
+        context: Box<AiContext>,
+    },
     /// Switch the running AI actor's model (settings save). No effect without a key.
     SetAiModel(GeminiModel),
     /// (Re)build the AI actor with a new key + model (settings save, key changed). A
     /// `None` key tears the assistant down; a valid key brings it up live — so a key
     /// entered at runtime takes effect immediately, with no relaunch.
-    ReloadAi { key: Option<String>, model: GeminiModel },
+    ReloadAi {
+        key: Option<String>,
+        model: GeminiModel,
+    },
 }
 
 /// A clickable terminal region's semantic target.
@@ -228,25 +274,42 @@ pub struct TrackLyrics {
     pub lines: Vec<LyricLine>,
 }
 
-/// The two lists in the library view.
+/// The lists in the library view.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum LibraryTab {
+    All,
     Favorites,
     History,
+    Downloads,
 }
 
 impl LibraryTab {
-    fn toggled(self) -> Self {
+    pub const ALL: [Self; 4] = [Self::All, Self::Favorites, Self::History, Self::Downloads];
+
+    fn next(self) -> Self {
         match self {
+            LibraryTab::All => LibraryTab::Favorites,
             LibraryTab::Favorites => LibraryTab::History,
+            LibraryTab::History => LibraryTab::Downloads,
+            LibraryTab::Downloads => LibraryTab::All,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            LibraryTab::All => LibraryTab::Downloads,
+            LibraryTab::Favorites => LibraryTab::All,
             LibraryTab::History => LibraryTab::Favorites,
+            LibraryTab::Downloads => LibraryTab::History,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
+            LibraryTab::All => "All",
             LibraryTab::Favorites => "Favorites",
             LibraryTab::History => "History",
+            LibraryTab::Downloads => "Downloads",
         }
     }
 }
@@ -343,6 +406,8 @@ pub struct App {
     // Library -----------------------------------------------------------------
     /// Favorites + play history, persisted to disk. Loaded by `main` after `new`.
     pub library: Library,
+    /// Local audio files found in the configured download directory.
+    pub downloaded_tracks: Vec<Song>,
     pub library_tab: LibraryTab,
     pub library_selected: usize,
 
@@ -357,6 +422,8 @@ pub struct App {
     // Downloads ---------------------------------------------------------------
     /// In-flight / finished downloads, keyed by `video_id`, for the UI indicator.
     pub downloads: HashMap<String, DownloadState>,
+    /// Original catalog metadata for in-flight downloads, keyed by `video_id`.
+    download_sources: HashMap<String, Song>,
 
     // Prefetch ----------------------------------------------------------------
     /// Pre-resolved direct stream URLs, keyed by `video_id` (for instant skip).
@@ -422,12 +489,14 @@ impl App {
             search_selected: 0,
             searching: false,
             library: Library::default(),
-            library_tab: LibraryTab::Favorites,
+            downloaded_tracks: Vec::new(),
+            library_tab: LibraryTab::All,
             library_selected: 0,
             lyrics_visible: false,
             lyrics_loading: false,
             lyrics: None,
             downloads: HashMap::new(),
+            download_sources: HashMap::new(),
             resolved: HashMap::new(),
             seekbar_rect: Cell::new(None),
             mouse_buttons: RefCell::new(Vec::new()),
@@ -550,7 +619,10 @@ impl App {
                 // Log *which* track failed and whether it came from a (possibly stale)
                 // prefetched URL. `e` already carries mpv's own reason (its `file_error`
                 // end-file field — the closest thing to a "why": HTTP 403, unsupported, …).
-                let failed = self.queue.current().map(|s| format!("{} — {}", s.title, s.artist));
+                let failed = self
+                    .queue
+                    .current()
+                    .map(|s| format!("{} — {}", s.title, s.artist));
                 tracing::warn!(
                     error = %e,
                     track = failed.as_deref().unwrap_or("?"),
@@ -595,6 +667,14 @@ impl App {
                 self.status = format!("Search error: {e}");
                 self.dirty = true;
             }
+            Msg::DownloadsScanned(songs) => {
+                self.downloaded_tracks = songs;
+                let len = self.library_len();
+                if self.library_selected >= len {
+                    self.library_selected = len.saturating_sub(1);
+                }
+                self.dirty = true;
+            }
             Msg::LyricsResult { video_id, lines } => {
                 self.lyrics_loading = false;
                 // Ignore stale results for a track we've already skipped past.
@@ -604,20 +684,34 @@ impl App {
                 }
             }
             Msg::DownloadProgress { video_id, percent } => {
-                self.downloads.insert(video_id, DownloadState::Running(percent.round() as u8));
+                self.downloads
+                    .insert(video_id, DownloadState::Running(percent.round() as u8));
                 self.dirty = true;
             }
             Msg::DownloadDone { video_id, path } => {
-                self.downloads.insert(video_id, DownloadState::Done);
+                self.downloads.insert(video_id.clone(), DownloadState::Done);
+                if !path.trim().is_empty() {
+                    let local = self
+                        .download_sources
+                        .remove(&video_id)
+                        .map(|source| source.with_local_path(PathBuf::from(&path)))
+                        .unwrap_or_else(|| Song::local_file(PathBuf::from(&path)));
+                    self.add_downloaded_track(local);
+                }
                 self.status = format!("Saved: {path}");
                 self.dirty = true;
             }
             Msg::DownloadError { video_id, error } => {
-                self.downloads.insert(video_id, DownloadState::Failed);
+                self.downloads
+                    .insert(video_id.clone(), DownloadState::Failed);
+                self.download_sources.remove(&video_id);
                 self.status = format!("Download failed: {error}");
                 self.dirty = true;
             }
-            Msg::Resolved { video_id, stream_url } => {
+            Msg::Resolved {
+                video_id,
+                stream_url,
+            } => {
                 // Bounded prefetch cache; no redraw (purely a skip-latency optimization).
                 if self.resolved.len() >= RESOLVED_MAX {
                     self.resolved.clear();
@@ -653,9 +747,12 @@ impl App {
             Msg::AiEnqueue(songs) => {
                 let added = self.queue.extend(songs);
                 if added == 0 {
-                    self.consecutive_radio_failures = self.consecutive_radio_failures.saturating_add(1);
+                    self.consecutive_radio_failures =
+                        self.consecutive_radio_failures.saturating_add(1);
                     // Circuit breaker: stop a radio that keeps coming up empty.
-                    if self.autoplay_radio && self.consecutive_radio_failures >= AUTOPLAY_MAX_FAILURES {
+                    if self.autoplay_radio
+                        && self.consecutive_radio_failures >= AUTOPLAY_MAX_FAILURES
+                    {
                         self.autoplay_radio = false;
                         self.status = "Autoplay radio stopped (no related tracks found)".to_owned();
                     }
@@ -686,7 +783,10 @@ impl App {
             Msg::AiAddToPlaylist { playlist, songs } => {
                 let mut any = false;
                 for song in songs {
-                    if matches!(self.playlists.add(&playlist, song), crate::playlists::AddResult::Added) {
+                    if matches!(
+                        self.playlists.add(&playlist, song),
+                        crate::playlists::AddResult::Added
+                    ) {
                         any = true;
                     }
                 }
@@ -720,7 +820,11 @@ impl App {
 
         // The keybinding editor's capture mode grabs the next key verbatim (except Esc),
         // so it must run before the global/help shortcuts could swallow it.
-        if self.mode == Mode::Settings && self.settings.as_ref().is_some_and(|s| s.capturing.is_some())
+        if self.mode == Mode::Settings
+            && self
+                .settings
+                .as_ref()
+                .is_some_and(|s| s.capturing.is_some())
         {
             return self.settings_capture_key(k);
         }
@@ -751,8 +855,10 @@ impl App {
                 }
                 Action::ToggleRadio => {
                     self.autoplay_radio = !self.autoplay_radio;
-                    self.status =
-                        format!("Autoplay radio: {}", if self.autoplay_radio { "on" } else { "off" });
+                    self.status = format!(
+                        "Autoplay radio: {}",
+                        if self.autoplay_radio { "on" } else { "off" }
+                    );
                     self.dirty = true;
                     return Vec::new();
                 }
@@ -773,7 +879,10 @@ impl App {
     /// `?` cheat-sheet (which already lists every binding for every screen). Built from the
     /// keymap so remapping "toggle help" updates the hint in lock-step.
     pub fn help_footer(&self) -> String {
-        format!("{}  keybindings", self.keymap.label(KeyContext::Global, Action::ToggleHelp))
+        format!(
+            "{}  keybindings",
+            self.keymap.label(KeyContext::Global, Action::ToggleHelp)
+        )
     }
 
     pub fn clear_mouse_regions(&self) {
@@ -785,7 +894,9 @@ impl App {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        self.mouse_buttons.borrow_mut().push(MouseButtonRegion { rect, target });
+        self.mouse_buttons
+            .borrow_mut()
+            .push(MouseButtonRegion { rect, target });
     }
 
     fn mouse_target_at(&self, col: u16, row: u16) -> Option<MouseTarget> {
@@ -853,7 +964,9 @@ impl App {
                 Vec::new()
             }
             MouseTarget::Global(_) => Vec::new(),
-            MouseTarget::Player(action) if self.mode == Mode::Player => self.on_player_action(action),
+            MouseTarget::Player(action) if self.mode == Mode::Player => {
+                self.on_player_action(action)
+            }
             MouseTarget::Player(_) => Vec::new(),
             // Toggle the EQ dropdown by clicking its `eq:` label.
             MouseTarget::EqMenu if self.mode == Mode::Player => {
@@ -863,7 +976,9 @@ impl App {
             }
             MouseTarget::EqMenu => Vec::new(),
             // Pick a preset from the open dropdown.
-            MouseTarget::EqSelect(preset) if self.mode == Mode::Player => self.select_eq_preset(preset),
+            MouseTarget::EqSelect(preset) if self.mode == Mode::Player => {
+                self.select_eq_preset(preset)
+            }
             MouseTarget::EqSelect(_) => Vec::new(),
         }
     }
@@ -876,7 +991,9 @@ impl App {
         self.eq_dropdown_open = false;
         self.status = format!("EQ: {}", preset.label());
         self.dirty = true;
-        vec![Cmd::Player(PlayerCmd::SetAudioFilter(self.current_af().unwrap_or_default()))]
+        vec![Cmd::Player(PlayerCmd::SetAudioFilter(
+            self.current_af().unwrap_or_default(),
+        ))]
     }
 
     fn on_key_player(&mut self, k: KeyEvent) -> Vec<Cmd> {
@@ -970,13 +1087,17 @@ impl App {
                 self.eq_dropdown_open = false;
                 self.status = format!("EQ: {}", self.eq_preset.label());
                 self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetAudioFilter(self.current_af().unwrap_or_default()))]
+                vec![Cmd::Player(PlayerCmd::SetAudioFilter(
+                    self.current_af().unwrap_or_default(),
+                ))]
             }
             Action::ToggleNormalize => {
                 self.normalize = !self.normalize;
                 self.status = format!("Normalize: {}", if self.normalize { "on" } else { "off" });
                 self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetAudioFilter(self.current_af().unwrap_or_default()))]
+                vec![Cmd::Player(PlayerCmd::SetAudioFilter(
+                    self.current_af().unwrap_or_default(),
+                ))]
             }
             Action::SpeedUp => self.adjust_speed(SPEED_STEP),
             Action::SpeedDown => self.adjust_speed(-SPEED_STEP),
@@ -1033,7 +1154,9 @@ impl App {
                 }
                 // Anything else types into the query box (player keys never leak here).
                 if let KeyCode::Char(c) = k.code
-                    && !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && !k
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                 {
                     self.search_input.push(c);
                     self.dirty = true;
@@ -1072,10 +1195,12 @@ impl App {
                     }
                     Vec::new()
                 }
-                Some(Action::Download) => match self.search_results.get(self.search_selected).cloned() {
-                    Some(song) => self.start_download(song),
-                    None => Vec::new(),
-                },
+                Some(Action::Download) => {
+                    match self.search_results.get(self.search_selected).cloned() {
+                        Some(song) => self.start_download(song),
+                        None => Vec::new(),
+                    }
+                }
                 Some(Action::FocusInput) => {
                     self.search_focus = SearchFocus::Input;
                     self.dirty = true;
@@ -1098,8 +1223,14 @@ impl App {
                 self.should_quit = true;
                 Vec::new()
             }
-            Some(Action::FocusNext | Action::FocusPrev) => {
-                self.library_tab = self.library_tab.toggled();
+            Some(Action::FocusNext) => {
+                self.library_tab = self.library_tab.next();
+                self.library_selected = 0;
+                self.dirty = true;
+                Vec::new()
+            }
+            Some(Action::FocusPrev) => {
+                self.library_tab = self.library_tab.prev();
                 self.library_selected = 0;
                 self.dirty = true;
                 Vec::new()
@@ -1149,7 +1280,9 @@ impl App {
     fn open_settings(&mut self) {
         self.eq_dropdown_open = false;
         let path_str = |p: &Option<std::path::PathBuf>| {
-            p.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+            p.as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
         };
         let draft = SettingsDraft {
             cookies_file: path_str(&self.config.cookies_file),
@@ -1188,7 +1321,10 @@ impl App {
         if self.settings.as_ref().is_some_and(|s| s.editing_text) {
             return self.settings_edit_text(k);
         }
-        let on_keys_tab = self.settings.as_ref().is_some_and(|s| s.tab == SettingsTab::Keys);
+        let on_keys_tab = self
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.tab == SettingsTab::Keys);
         // The editor must stay operable no matter how keys are remapped, so the literal
         // arrows / Enter / Esc / Tab are always honored here, on top of the configured ones.
         let action = self
@@ -1198,7 +1334,9 @@ impl App {
         match action {
             // `q`/Esc and `s` both commit the draft before leaving the screen. The key
             // name stays SettingsCancel for compatibility with existing keybinding ids.
-            Some(Action::SettingsCancel | Action::Back | Action::SettingsSave) => self.close_settings(),
+            Some(Action::SettingsCancel | Action::Back | Action::SettingsSave) => {
+                self.close_settings()
+            }
             Some(Action::FocusNext) => {
                 self.settings_switch_tab(true);
                 Vec::new()
@@ -1289,8 +1427,11 @@ impl App {
         };
         match st.keymap.rebind(ctx, action, chord) {
             Ok(()) => {
-                self.status =
-                    format!("Bound {} to {}", action.human_label(), crate::keymap::format_chord(chord));
+                self.status = format!(
+                    "Bound {} to {}",
+                    action.human_label(),
+                    crate::keymap::format_chord(chord)
+                );
             }
             Err(existing) => {
                 self.status = format!(
@@ -1312,8 +1453,10 @@ impl App {
             match st.keymap.reset(ctx, action) {
                 Ok(()) => self.status = format!("Reset {} to default", action.human_label()),
                 Err(existing) => {
-                    self.status =
-                        format!("Default is taken by {} — unbind it first", existing.human_label());
+                    self.status = format!(
+                        "Default is taken by {} — unbind it first",
+                        existing.human_label()
+                    );
                 }
             }
             self.dirty = true;
@@ -1377,7 +1520,8 @@ impl App {
             }
             Field::Speed => {
                 let s = self.settings.as_mut().unwrap();
-                s.draft.speed = settings::clamp_speed(s.draft.speed + f64::from(dir) * settings::SPEED_STEP);
+                s.draft.speed =
+                    settings::clamp_speed(s.draft.speed + f64::from(dir) * settings::SPEED_STEP);
                 self.settings_apply_speed()
             }
             Field::EqPreset => {
@@ -1388,9 +1532,16 @@ impl App {
                 s.draft.eq_preset = if s.draft.eq_preset == EqPreset::Custom {
                     EqPreset::Flat
                 } else {
-                    let cur = EqPreset::CYCLE.iter().position(|&p| p == s.draft.eq_preset).unwrap_or(0);
+                    let cur = EqPreset::CYCLE
+                        .iter()
+                        .position(|&p| p == s.draft.eq_preset)
+                        .unwrap_or(0);
                     let n = EqPreset::CYCLE.len();
-                    let next = if dir >= 0 { (cur + 1) % n } else { (cur + n - 1) % n };
+                    let next = if dir >= 0 {
+                        (cur + 1) % n
+                    } else {
+                        (cur + n - 1) % n
+                    };
                     EqPreset::CYCLE[next]
                 };
                 s.draft.eq_bands = s.draft.eq_preset.gains();
@@ -1414,7 +1565,8 @@ impl App {
             return Vec::new();
         };
         let was_active = st.draft.eq_bands.iter().any(|g| g.abs() > f64::EPSILON);
-        let gain = settings::clamp_band(st.draft.eq_bands[i] + f64::from(dir) * settings::BAND_GAIN_STEP);
+        let gain =
+            settings::clamp_band(st.draft.eq_bands[i] + f64::from(dir) * settings::BAND_GAIN_STEP);
         st.draft.eq_bands[i] = gain;
         st.draft.eq_preset = EqPreset::Custom;
         let bands = st.draft.eq_bands;
@@ -1529,18 +1681,30 @@ impl App {
     /// moment its edit is committed. Other draft fields persist when the settings screen
     /// closes. A changed key also rebuilds the AI actor so it takes effect immediately.
     fn settings_persist_text_field(&mut self, field: Field) -> Vec<Cmd> {
-        let value = match self.settings.as_ref().and_then(|s| s.draft.text_value(field)) {
+        let value = match self
+            .settings
+            .as_ref()
+            .and_then(|s| s.draft.text_value(field))
+        {
             Some(v) => v.to_owned(),
             None => return Vec::new(),
         };
         let mut cmds = Vec::new();
         match field {
             Field::CookiesFile => {
-                self.config.cookies_file = settings::blank_to_none(&value).map(std::path::PathBuf::from);
+                self.config.cookies_file =
+                    settings::blank_to_none(&value).map(std::path::PathBuf::from);
                 self.status = "Settings saved".to_owned();
             }
             Field::DownloadDir => {
-                self.config.download_dir = settings::blank_to_none(&value).map(std::path::PathBuf::from);
+                let old_dir = self.config.effective_download_dir();
+                self.config.download_dir =
+                    settings::blank_to_none(&value).map(std::path::PathBuf::from);
+                let new_dir = self.config.effective_download_dir();
+                if new_dir != old_dir {
+                    cmds.push(Cmd::SetDownloadDir(new_dir.clone()));
+                    cmds.push(Cmd::ScanDownloads(new_dir));
+                }
                 self.status = "Settings saved".to_owned();
             }
             Field::ApiKey => {
@@ -1590,6 +1754,7 @@ impl App {
         let model_changed = self.gemini_model != d.gemini_model;
         self.gemini_model = d.gemini_model;
         let old_key = self.config.gemini_api_key.clone();
+        let old_download_dir = self.config.effective_download_dir();
         d.apply_to(&mut self.config);
         // Commit the edited keybindings (live + persisted as compact overrides).
         self.keymap = st.keymap.clone();
@@ -1605,7 +1770,9 @@ impl App {
         // chain to guarantee the current track matches what was just saved.
         let mut cmds = vec![
             Cmd::SaveConfig(Box::new(self.config.clone())),
-            Cmd::Player(PlayerCmd::SetAudioFilter(self.current_af().unwrap_or_default())),
+            Cmd::Player(PlayerCmd::SetAudioFilter(
+                self.current_af().unwrap_or_default(),
+            )),
         ];
         // A changed key rebuilds the AI actor live (the client is otherwise built once
         // at spawn) — so a key entered at runtime takes effect now, no relaunch. The
@@ -1618,6 +1785,11 @@ impl App {
             });
         } else if model_changed {
             cmds.push(Cmd::SetAiModel(self.gemini_model));
+        }
+        let new_download_dir = self.config.effective_download_dir();
+        if new_download_dir != old_download_dir {
+            cmds.push(Cmd::SetDownloadDir(new_download_dir.clone()));
+            cmds.push(Cmd::ScanDownloads(new_download_dir));
         }
         cmds
     }
@@ -1649,7 +1821,9 @@ impl App {
                         return Vec::new();
                     }
                     // Drop into the suggestions list (if any) to pick a track.
-                    Some(Action::MoveDown | Action::FocusNext) if !self.ai_suggestions.is_empty() => {
+                    Some(Action::MoveDown | Action::FocusNext)
+                        if !self.ai_suggestions.is_empty() =>
+                    {
                         self.ai_focus = AiFocus::Suggestions;
                         self.dirty = true;
                         return Vec::new();
@@ -1658,7 +1832,9 @@ impl App {
                 }
                 // Every other char feeds the prompt — player keys never leak while typing.
                 if let KeyCode::Char(c) = k.code
-                    && !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && !k
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                 {
                     self.ai_input.push(c);
                     self.dirty = true;
@@ -1711,7 +1887,8 @@ impl App {
             self.push_ai_message(
                 AiRole::Error,
                 // Saving a key in Settings now brings the assistant up live (no restart).
-                "No Gemini API key. Add one in Settings (press ,) or set GEMINI_API_KEY.".to_owned(),
+                "No Gemini API key. Add one in Settings (press ,) or set GEMINI_API_KEY."
+                    .to_owned(),
             );
             return Vec::new();
         }
@@ -1720,7 +1897,10 @@ impl App {
             return Vec::new();
         }
         self.ai_thinking = true;
-        vec![Cmd::AskAi { prompt, context: Box::new(self.build_ai_context()) }]
+        vec![Cmd::AskAi {
+            prompt,
+            context: Box::new(self.build_ai_context()),
+        }]
     }
 
     /// Play the highlighted suggestion, queuing the whole list from that point.
@@ -1728,7 +1908,9 @@ impl App {
         if self.ai_suggestions.is_empty() {
             return Vec::new();
         }
-        let start = self.ai_suggestions_selected.min(self.ai_suggestions.len() - 1);
+        let start = self
+            .ai_suggestions_selected
+            .min(self.ai_suggestions.len() - 1);
         self.queue.set(self.ai_suggestions.clone(), start);
         self.status.clear();
         let song = self.queue.current().cloned();
@@ -1758,7 +1940,11 @@ impl App {
                 .playlists
                 .list()
                 .iter()
-                .map(|p| PlaylistInfo { id: p.id.clone(), name: p.name.clone(), count: p.songs.len() })
+                .map(|p| PlaylistInfo {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    count: p.songs.len(),
+                })
                 .collect(),
             authenticated: self.authenticated,
             autoplay_radio: self.autoplay_radio,
@@ -1791,31 +1977,68 @@ impl App {
         let prompt = format!(
             "The play queue is running low. Using the add_to_queue tool, add 5 to 8 tracks similar to \"{seed}\" to keep the music going. Reply with no text."
         );
-        vec![Cmd::AskAi { prompt, context: Box::new(self.build_ai_context()) }]
+        vec![Cmd::AskAi {
+            prompt,
+            context: Box::new(self.build_ai_context()),
+        }]
     }
 
     /// Number of rows in the currently selected library tab.
     fn library_len(&self) -> usize {
-        match self.library_tab {
+        self.library_count(self.library_tab)
+    }
+
+    pub fn library_count(&self, tab: LibraryTab) -> usize {
+        match tab {
+            LibraryTab::All => self.library_rows_for(tab).len(),
             LibraryTab::Favorites => self.library.favorites.len(),
             LibraryTab::History => self.library.history.len(),
+            LibraryTab::Downloads => self.downloaded_tracks.len(),
         }
+    }
+
+    pub fn library_rows(&self) -> Vec<&Song> {
+        self.library_rows_for(self.library_tab)
+    }
+
+    fn library_rows_for(&self, tab: LibraryTab) -> Vec<&Song> {
+        match tab {
+            LibraryTab::All => self.all_library_rows(),
+            LibraryTab::Favorites => self.library.favorites.iter().collect(),
+            LibraryTab::History => self.library.history.iter().collect(),
+            LibraryTab::Downloads => self.downloaded_tracks.iter().collect(),
+        }
+    }
+
+    fn all_library_rows(&self) -> Vec<&Song> {
+        let mut rows = Vec::new();
+        let mut seen = HashSet::new();
+        for song in self
+            .library
+            .favorites
+            .iter()
+            .chain(self.library.history.iter())
+            .chain(self.downloaded_tracks.iter())
+        {
+            if seen.insert(song.video_id.clone()) {
+                rows.push(song);
+            }
+        }
+        rows
+    }
+
+    fn library_songs(&self) -> Vec<Song> {
+        self.library_rows().into_iter().cloned().collect()
     }
 
     /// The track under the library cursor, if any.
     fn selected_library_song(&self) -> Option<Song> {
-        match self.library_tab {
-            LibraryTab::Favorites => self.library.favorites.get(self.library_selected).cloned(),
-            LibraryTab::History => self.library.history.get(self.library_selected).cloned(),
-        }
+        self.library_songs().get(self.library_selected).cloned()
     }
 
     /// Queue the current library tab (starting at the cursor) and start playing.
     fn play_from_library(&mut self) -> Vec<Cmd> {
-        let songs: Vec<Song> = match self.library_tab {
-            LibraryTab::Favorites => self.library.favorites.clone(),
-            LibraryTab::History => self.library.history.iter().cloned().collect(),
-        };
+        let songs = self.library_songs();
         if songs.is_empty() {
             return Vec::new();
         }
@@ -1831,7 +2054,8 @@ impl App {
         if self.search_results.is_empty() {
             return Vec::new();
         }
-        self.queue.set(self.search_results.clone(), self.search_selected);
+        self.queue
+            .set(self.search_results.clone(), self.search_selected);
         self.mode = Mode::Player;
         self.status.clear();
         let song = self.queue.current().cloned();
@@ -1862,10 +2086,14 @@ impl App {
                 // Drop the previous track's lyrics; refresh if the panel is open.
                 self.lyrics = None;
                 // Use a prefetched direct URL if we have one (instant skip); else hand mpv
-                // the watch URL and let it resolve.
+                // the track's own playback target (watch URL or local file path).
                 let prefetched = self.resolved.contains_key(&song.video_id);
                 self.last_load_prefetched = prefetched;
-                let url = self.resolved.get(&song.video_id).cloned().unwrap_or_else(|| song.watch_url());
+                let url = self
+                    .resolved
+                    .get(&song.video_id)
+                    .cloned()
+                    .unwrap_or_else(|| song.playback_target());
                 tracing::info!(url = %url, prefetched, "load track");
                 let mut cmds = vec![Cmd::Player(PlayerCmd::Load(url)), Cmd::SaveLibrary];
                 // Re-apply the EQ/normalization chain: a gapless graph rebuild on track
@@ -1885,11 +2113,16 @@ impl App {
                     cmds.push(fetch_lyrics_cmd(&song));
                 }
                 // Prefetch the upcoming track's stream so the next skip is instant.
-                if let Some(next) = self.queue.peek_next() {
+                if let Some(next) = self.queue.peek_next()
+                    && !next.is_local()
+                {
                     let video_id = next.video_id.clone();
                     let watch_url = next.watch_url();
                     if !self.resolved.contains_key(&video_id) {
-                        cmds.push(Cmd::Resolve { video_id, watch_url });
+                        cmds.push(Cmd::Resolve {
+                            video_id,
+                            watch_url,
+                        });
                     }
                 }
                 cmds
@@ -1913,10 +2146,25 @@ impl App {
 
     /// Mark a download as starting and emit the effect to run it.
     fn start_download(&mut self, song: Song) -> Vec<Cmd> {
-        self.downloads.insert(song.video_id.clone(), DownloadState::Running(0));
+        if song.is_local() {
+            self.status = format!("Already local: {}", song.title);
+            self.dirty = true;
+            return Vec::new();
+        }
+        self.downloads
+            .insert(song.video_id.clone(), DownloadState::Running(0));
+        self.download_sources
+            .insert(song.video_id.clone(), song.clone());
         self.status = format!("Downloading: {} — {}", song.title, song.artist);
         self.dirty = true;
         vec![Cmd::Download(song)]
+    }
+
+    fn add_downloaded_track(&mut self, song: Song) {
+        self.downloaded_tracks
+            .retain(|s| s.video_id != song.video_id);
+        self.downloaded_tracks.insert(0, song);
+        self.downloaded_tracks.truncate(DOWNLOADED_TRACKS_MAX);
     }
 
     /// Whether we lack lyrics for the current track (so a fetch is warranted).
@@ -2021,7 +2269,10 @@ mod tests {
         let mut app = App::new(100);
         let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
         assert!(app.paused);
-        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::CyclePause)]));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Player(PlayerCmd::CyclePause)]
+        ));
     }
 
     #[test]
@@ -2042,7 +2293,11 @@ mod tests {
         app.library.record_play(&songs(1)[0]);
         app.restore_last_played_from_library();
         let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
-        assert!(load_url(&cmds).expect("restored track load").contains("id0"));
+        assert!(
+            load_url(&cmds)
+                .expect("restored track load")
+                .contains("id0")
+        );
         assert_eq!(app.loaded_video_id.as_deref(), Some("id0"));
         assert!(!app.paused);
     }
@@ -2055,7 +2310,11 @@ mod tests {
         app.config.autoplay_on_start = Some(true);
         // The launch trigger loads the restored track and starts it (no key press).
         let cmds = app.update(Msg::Autoplay);
-        assert!(load_url(&cmds).expect("autoplay load at launch").contains("id0"));
+        assert!(
+            load_url(&cmds)
+                .expect("autoplay load at launch")
+                .contains("id0")
+        );
         assert_eq!(app.loaded_video_id.as_deref(), Some("id0"));
         assert!(!app.paused);
     }
@@ -2078,11 +2337,17 @@ mod tests {
         let mut app = App::new(50);
         let cmds = app.update(Msg::Key(key(KeyCode::Up)));
         assert_eq!(app.volume, 55);
-        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::SetVolume(55))]));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Player(PlayerCmd::SetVolume(55))]
+        ));
 
         let cmds = app.update(Msg::Key(key(KeyCode::Down)));
         assert_eq!(app.volume, 50);
-        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::SetVolume(50))]));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Player(PlayerCmd::SetVolume(50))]
+        ));
     }
 
     #[test]
@@ -2139,12 +2404,7 @@ mod tests {
         app.mode = Mode::Search;
         app.update(Msg::SearchResults {
             query: "x".to_owned(),
-            songs: vec![Song {
-                video_id: "abc123".to_owned(),
-                title: "Song".to_owned(),
-                artist: "Artist".to_owned(),
-                duration: "3:00".to_owned(),
-            }],
+            songs: vec![Song::remote("abc123", "Song", "Artist", "3:00")],
         });
         assert_eq!(app.search_focus, SearchFocus::Results);
         let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
@@ -2167,12 +2427,7 @@ mod tests {
 
     fn songs(n: usize) -> Vec<Song> {
         (0..n)
-            .map(|i| Song {
-                video_id: format!("id{i}"),
-                title: format!("t{i}"),
-                artist: "a".to_owned(),
-                duration: "0:10".to_owned(),
-            })
+            .map(|i| Song::remote(format!("id{i}"), format!("t{i}"), "a", "0:10"))
             .collect()
     }
 
@@ -2220,7 +2475,11 @@ mod tests {
         let mut app = app_playing(3, 0);
         app.queue.repeat = crate::queue::Repeat::One;
         let cmds = app.update(Msg::PlayerEof);
-        assert!(load_url(&cmds).expect("replay of same track").contains("id0"));
+        assert!(
+            load_url(&cmds)
+                .expect("replay of same track")
+                .contains("id0")
+        );
         assert_eq!(current(&app), "id0");
     }
 
@@ -2256,7 +2515,11 @@ mod tests {
         app.update(Msg::PlayerTimePos(3.0)); // id1 actually plays → streak cleared
         // A later failure starts a fresh streak, so it skips again rather than giving up.
         let cmds = app.update(Msg::PlayerError("boom".to_owned()));
-        assert!(load_url(&cmds).expect("skips again after a clean play").contains("id2"));
+        assert!(
+            load_url(&cmds)
+                .expect("skips again after a clean play")
+                .contains("id2")
+        );
         assert_eq!(current(&app), "id2");
     }
 
@@ -2290,7 +2553,11 @@ mod tests {
         assert_eq!(app.eq_preset, EqPreset::Flat);
         let cmds = app.update(Msg::Key(key(KeyCode::Char('e'))));
         assert_eq!(app.eq_preset, EqPreset::BassBoost);
-        assert!(af(&cmds).expect("a SetAudioFilter cmd").contains("equalizer"));
+        assert!(
+            af(&cmds)
+                .expect("a SetAudioFilter cmd")
+                .contains("equalizer")
+        );
         // Cycle the rest of the way back to Flat → the chain is cleared (empty string).
         let mut last = Vec::new();
         for _ in 0..(EqPreset::CYCLE.len() - 1) {
@@ -2305,7 +2572,11 @@ mod tests {
         let mut app = app_playing(3, 0);
         let cmds = app.update(Msg::Key(key(KeyCode::Char('N'))));
         assert!(app.normalize);
-        assert!(af(&cmds).expect("a SetAudioFilter cmd").contains("dynaudnorm"));
+        assert!(
+            af(&cmds)
+                .expect("a SetAudioFilter cmd")
+                .contains("dynaudnorm")
+        );
         let cmds = app.update(Msg::Key(key(KeyCode::Char('N'))));
         assert!(!app.normalize);
         assert_eq!(af(&cmds), Some(""));
@@ -2346,7 +2617,11 @@ mod tests {
         // A manual skip reloads the track and must re-send the EQ chain (gapless rebuild
         // can otherwise drop the labeled bands).
         let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
-        assert!(af(&cmds).expect("a SetAudioFilter cmd").contains("equalizer"));
+        assert!(
+            af(&cmds)
+                .expect("a SetAudioFilter cmd")
+                .contains("equalizer")
+        );
     }
 
     #[test]
@@ -2420,18 +2695,23 @@ mod tests {
         );
         app.update(Msg::Key(ctrl(KeyCode::Char('ㅌ'))));
         assert_eq!(
-            app.settings
-                .as_ref()
-                .unwrap()
-                .keymap
-                .action(KeyContext::Player, crate::keymap::parse_chord("ctrl+x").unwrap()),
+            app.settings.as_ref().unwrap().keymap.action(
+                KeyContext::Player,
+                crate::keymap::parse_chord("ctrl+x").unwrap()
+            ),
             Some(Action::TogglePause)
         );
         assert!(app.status.contains("^x"));
 
         let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
         let saved = save_config(&cmds).expect("a SaveConfig cmd");
-        assert_eq!(saved.keybindings.get("player.toggle_pause").map(String::as_str), Some("ctrl+x"));
+        assert_eq!(
+            saved
+                .keybindings
+                .get("player.toggle_pause")
+                .map(String::as_str),
+            Some("ctrl+x")
+        );
     }
 
     #[test]
@@ -2440,7 +2720,10 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General)
         app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab; row 0 = Speed
         app.update(Msg::Key(key(KeyCode::Right))); // speed 1.0 -> 1.1 (draft)
-        assert!((app.speed - 1.0).abs() < 1e-9, "committed speed unchanged while editing");
+        assert!(
+            (app.speed - 1.0).abs() < 1e-9,
+            "committed speed unchanged while editing"
+        );
         let cmds = app.update(Msg::Key(key(KeyCode::Char('s')))); // save
         assert_eq!(app.mode, Mode::Player);
         assert!((app.speed - 1.1).abs() < 1e-9, "speed applied on save");
@@ -2457,10 +2740,16 @@ mod tests {
         let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // save+close
         assert_eq!(app.mode, Mode::Player);
         assert!((app.speed - 1.1).abs() < 1e-9, "speed persisted on close");
-        assert_eq!(save_config(&cmds).expect("a SaveConfig cmd").speed, Some(1.1));
+        assert_eq!(
+            save_config(&cmds).expect("a SaveConfig cmd").speed,
+            Some(1.1)
+        );
         // Closing re-asserts the committed filter chain so the running track matches the
         // now-persisted settings.
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::Player(PlayerCmd::SetAudioFilter(_)))));
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::Player(PlayerCmd::SetAudioFilter(_))))
+        );
     }
 
     #[test]
@@ -2475,7 +2764,9 @@ mod tests {
         assert_eq!(st.draft.eq_preset, EqPreset::Custom);
         assert!(st.draft.eq_bands[0] > 0.0);
         // First non-zero band → full rebuild (creates the labels).
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::Player(PlayerCmd::SetAudioFilter(s)) if s.contains("equalizer"))));
+        assert!(cmds.iter().any(
+            |c| matches!(c, Cmd::Player(PlayerCmd::SetAudioFilter(s)) if s.contains("equalizer"))
+        ));
         // A second nudge with labels present uses the glitch-free af-command path.
         let cmds = app.update(Msg::Key(key(KeyCode::Right)));
         assert!(cmds.iter().any(|c| matches!(c,
@@ -2508,14 +2799,23 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Tab))); // EQ tab; row 0 = preset
         app.update(Msg::Key(key(KeyCode::Down))); // first band
         app.update(Msg::Key(key(KeyCode::Right))); // hand-tune → Custom
-        assert_eq!(app.settings.as_ref().unwrap().draft.eq_preset, EqPreset::Custom);
+        assert_eq!(
+            app.settings.as_ref().unwrap().draft.eq_preset,
+            EqPreset::Custom
+        );
         app.update(Msg::Key(key(KeyCode::Up))); // back to the preset row
         // From Custom, the first ←/→ snaps to Flat rather than jumping to a neighbour.
         app.update(Msg::Key(key(KeyCode::Right)));
-        assert_eq!(app.settings.as_ref().unwrap().draft.eq_preset, EqPreset::Flat);
+        assert_eq!(
+            app.settings.as_ref().unwrap().draft.eq_preset,
+            EqPreset::Flat
+        );
         // Then it cycles normally.
         app.update(Msg::Key(key(KeyCode::Right)));
-        assert_eq!(app.settings.as_ref().unwrap().draft.eq_preset, EqPreset::BassBoost);
+        assert_eq!(
+            app.settings.as_ref().unwrap().draft.eq_preset,
+            EqPreset::BassBoost
+        );
     }
 
     #[test]
@@ -2532,7 +2832,10 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Enter))); // commit edit mode
         assert!(!app.settings.as_ref().unwrap().editing_text);
         let cmds = app.update(Msg::Key(key(KeyCode::Char('s')))); // save
-        assert_eq!(save_config(&cmds).unwrap().cookies_file, Some(std::path::PathBuf::from("/x.txt")));
+        assert_eq!(
+            save_config(&cmds).unwrap().cookies_file,
+            Some(std::path::PathBuf::from("/x.txt"))
+        );
     }
 
     #[test]
@@ -2546,11 +2849,17 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Right))); // cycle model (draft only)
         let drafted = app.settings.as_ref().unwrap().draft.gemini_model;
         assert_ne!(drafted, start, "← /→ cycles the model in the draft");
-        assert_eq!(app.gemini_model, start, "committed model unchanged while editing");
+        assert_eq!(
+            app.gemini_model, start,
+            "committed model unchanged while editing"
+        );
         let cmds = app.update(Msg::Key(key(KeyCode::Char('s')))); // save
         assert_eq!(app.gemini_model, drafted, "model committed on save");
         // The running actor is told to hot-swap; config persists the choice.
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::SetAiModel(m) if *m == drafted)));
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::SetAiModel(m) if *m == drafted))
+        );
         assert_eq!(save_config(&cmds).unwrap().gemini_model, drafted);
     }
 
@@ -2570,16 +2879,23 @@ mod tests {
         // Committing the edit (Enter) persists the key immediately — it must NOT depend on
         // the user also pressing `s`, which is the trap that lost keys before.
         let cmds = app.update(Msg::Key(key(KeyCode::Enter))); // commit edit
-        assert_eq!(save_config(&cmds).unwrap().gemini_api_key.as_deref(), Some("AIzaKey"));
+        assert_eq!(
+            save_config(&cmds).unwrap().gemini_api_key.as_deref(),
+            Some("AIzaKey")
+        );
         // A new key rebuilds the assistant live (no relaunch), not just persists it.
         assert!(
-            cmds.iter().any(|c| matches!(c, Cmd::ReloadAi { key: Some(k), .. } if k == "AIzaKey")),
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::ReloadAi { key: Some(k), .. } if k == "AIzaKey")),
             "committing a changed key must reload the AI actor"
         );
         assert!(!cmds.iter().any(|c| matches!(c, Cmd::SetAiModel(_))));
         // The committed value is now in config, so a later `s`-save doesn't double-reload.
         let save_cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
-        assert_eq!(save_config(&save_cmds).unwrap().gemini_api_key.as_deref(), Some("AIzaKey"));
+        assert_eq!(
+            save_config(&save_cmds).unwrap().gemini_api_key.as_deref(),
+            Some("AIzaKey")
+        );
         assert!(
             !save_cmds.iter().any(|c| matches!(c, Cmd::ReloadAi { .. })),
             "an unchanged key shouldn't rebuild the actor again on save"
@@ -2602,7 +2918,10 @@ mod tests {
         }
         // Esc commits the field (and persists it) rather than discarding the typed key.
         let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
-        assert_eq!(save_config(&cmds).unwrap().gemini_api_key.as_deref(), Some("AIzaPersist"));
+        assert_eq!(
+            save_config(&cmds).unwrap().gemini_api_key.as_deref(),
+            Some("AIzaPersist")
+        );
         // Esc again leaves the screen; config already holds the key.
         app.update(Msg::Key(key(KeyCode::Esc)));
         assert_eq!(app.config.gemini_api_key.as_deref(), Some("AIzaPersist"));
@@ -2639,7 +2958,8 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Down))); // model -> API key row
         app.update(Msg::Key(key(KeyCode::Enter))); // start editing -> masked buffer cleared
         assert_eq!(
-            app.settings.as_ref().unwrap().draft.gemini_api_key, "",
+            app.settings.as_ref().unwrap().draft.gemini_api_key,
+            "",
             "editing a secret field clears it rather than appending blindly"
         );
         for c in "NEWKEY".chars() {
@@ -2648,7 +2968,10 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Enter))); // commit
         let cmds = app.update(Msg::Key(key(KeyCode::Char('s')))); // save
         // Replaces, not "OLDKEYNEWKEY".
-        assert_eq!(save_config(&cmds).unwrap().gemini_api_key.as_deref(), Some("NEWKEY"));
+        assert_eq!(
+            save_config(&cmds).unwrap().gemini_api_key.as_deref(),
+            Some("NEWKEY")
+        );
     }
 
     // --- A: AI assistant ----------------------------------------------------
@@ -2686,7 +3009,11 @@ mod tests {
         assert!(!app.ai_thinking);
         // Transcript holds the user prompt plus an error line.
         assert_eq!(app.ai_messages.last().unwrap().role, AiRole::Error);
-        assert!(app.ai_messages.iter().any(|m| m.role == AiRole::User && m.text == "play jazz"));
+        assert!(
+            app.ai_messages
+                .iter()
+                .any(|m| m.role == AiRole::User && m.text == "play jazz")
+        );
     }
 
     #[test]
@@ -2751,7 +3078,10 @@ mod tests {
         for _ in 0..AUTOPLAY_MAX_FAILURES {
             app.update(Msg::AiEnqueue(Vec::new())); // resolves nothing
         }
-        assert!(!app.autoplay_radio, "radio disabled after repeated empty extends");
+        assert!(
+            !app.autoplay_radio,
+            "radio disabled after repeated empty extends"
+        );
         assert!(app.status.contains("Autoplay radio stopped"));
     }
 
@@ -2762,7 +3092,10 @@ mod tests {
         app.autoplay_radio = true;
         // A manual next advances and should trigger a top-up AskAi.
         let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
-        assert!(ask_ai(&cmds).is_some(), "autoplay should ask for more tracks");
+        assert!(
+            ask_ai(&cmds).is_some(),
+            "autoplay should ask for more tracks"
+        );
         assert!(app.ai_thinking);
         // The cooldown blocks an immediate second request.
         let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
@@ -2774,7 +3107,10 @@ mod tests {
         let mut app = App::new(100);
         let cmds = app.update(Msg::AiCreatePlaylist("Focus".to_owned()));
         assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
-        app.update(Msg::AiAddToPlaylist { playlist: "Focus".to_owned(), songs: songs(2) });
+        app.update(Msg::AiAddToPlaylist {
+            playlist: "Focus".to_owned(),
+            songs: songs(2),
+        });
         assert_eq!(app.playlists.find("Focus").unwrap().songs.len(), 2);
         let cmds = app.update(Msg::AiPlayPlaylist("Focus".to_owned()));
         assert_eq!(current(&app), "id0");
@@ -2798,7 +3134,12 @@ mod tests {
     fn playing_records_history_most_recent_first() {
         let mut app = app_playing(3, 0); // loads id0 -> history [id0]
         app.update(Msg::Key(key(KeyCode::Char('n')))); // id1 -> [id1, id0]
-        let hist: Vec<&str> = app.library.history.iter().map(|s| s.video_id.as_str()).collect();
+        let hist: Vec<&str> = app
+            .library
+            .history
+            .iter()
+            .map(|s| s.video_id.as_str())
+            .collect();
         assert_eq!(hist, vec!["id1", "id0"]);
     }
 
@@ -2822,8 +3163,8 @@ mod tests {
         app.library.toggle_favorite(&songs(2)[0]);
         app.update(Msg::Key(key(KeyCode::Char('l'))));
         assert_eq!(app.mode, Mode::Library);
-        assert_eq!(app.library_tab, LibraryTab::Favorites);
-        app.update(Msg::Key(key(KeyCode::Down))); // select favorites[1] = id1
+        assert_eq!(app.library_tab, LibraryTab::All);
+        app.update(Msg::Key(key(KeyCode::Down))); // select all[1] = id1
         let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
         assert_eq!(app.mode, Mode::Player);
         assert_eq!(current(&app), "id1");
@@ -2835,10 +3176,12 @@ mod tests {
         let mut app = app_playing(1, 0);
         app.library.toggle_favorite(&songs(1)[0]); // favorites = [id0]
         app.update(Msg::Key(key(KeyCode::Char('l'))));
+        assert_eq!(app.library_tab, LibraryTab::All);
+        app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.library_tab, LibraryTab::Favorites);
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.library_tab, LibraryTab::History);
-        app.update(Msg::Key(key(KeyCode::Tab)));
+        app.update(Msg::Key(key(KeyCode::BackTab)));
         assert_eq!(app.library_tab, LibraryTab::Favorites);
         // Unfavorite the only entry: selection clamps to 0, list empties.
         app.update(Msg::Key(key(KeyCode::Char('f'))));
@@ -2846,12 +3189,43 @@ mod tests {
         assert!(app.library.favorites.is_empty());
     }
 
+    #[test]
+    fn library_all_includes_downloaded_tracks_and_loads_local_path() {
+        let mut app = App::new(100);
+        let local = Song::local_file(PathBuf::from("/tmp/local-track.m4a"));
+        app.downloaded_tracks = vec![local.clone()];
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
+        assert_eq!(app.library_tab, LibraryTab::All);
+        assert_eq!(app.library_len(), 1);
+
+        let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert_eq!(app.mode, Mode::Player);
+        assert_eq!(load_url(&cmds), Some("/tmp/local-track.m4a"));
+        assert_eq!(app.queue.current().unwrap().video_id, local.video_id);
+    }
+
+    #[test]
+    fn downloads_tab_shows_download_folder_tracks() {
+        let mut app = App::new(100);
+        app.downloaded_tracks = vec![Song::local_file(PathBuf::from("/tmp/a.m4a"))];
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
+        app.update(Msg::Key(key(KeyCode::BackTab))); // All -> Downloads
+        assert_eq!(app.library_tab, LibraryTab::Downloads);
+        assert_eq!(app.library_len(), 1);
+    }
+
     // --- M6: lyrics ---------------------------------------------------------
 
     fn lyric_lines() -> Vec<LyricLine> {
         vec![
-            LyricLine { time: 0.0, text: "one".to_owned() },
-            LyricLine { time: 5.0, text: "two".to_owned() },
+            LyricLine {
+                time: 0.0,
+                text: "one".to_owned(),
+            },
+            LyricLine {
+                time: 5.0,
+                text: "two".to_owned(),
+            },
         ]
     }
 
@@ -2874,10 +3248,16 @@ mod tests {
     #[test]
     fn lyrics_result_stored_only_for_current_track() {
         let mut app = app_playing(3, 0); // current id0
-        app.update(Msg::LyricsResult { video_id: "id0".to_owned(), lines: lyric_lines() });
+        app.update(Msg::LyricsResult {
+            video_id: "id0".to_owned(),
+            lines: lyric_lines(),
+        });
         assert!(app.lyrics.as_ref().is_some_and(|l| l.lines.len() == 2));
         // A late result for a different track is ignored.
-        app.update(Msg::LyricsResult { video_id: "stale".to_owned(), lines: lyric_lines() });
+        app.update(Msg::LyricsResult {
+            video_id: "stale".to_owned(),
+            lines: lyric_lines(),
+        });
         assert_eq!(app.lyrics.as_ref().unwrap().video_id, "id0");
     }
 
@@ -2885,12 +3265,18 @@ mod tests {
     fn advancing_track_clears_lyrics_and_refetches_when_open() {
         let mut app = app_playing(3, 0);
         app.lyrics_visible = true;
-        app.update(Msg::LyricsResult { video_id: "id0".to_owned(), lines: lyric_lines() });
+        app.update(Msg::LyricsResult {
+            video_id: "id0".to_owned(),
+            lines: lyric_lines(),
+        });
         assert!(app.lyrics.is_some());
         let cmds = app.update(Msg::Key(key(KeyCode::Char('n')))); // -> id1
         assert!(app.lyrics.is_none());
         assert!(app.lyrics_loading);
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::FetchLyrics { video_id, .. } if video_id == "id1")));
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::FetchLyrics { video_id, .. } if video_id == "id1"))
+        );
     }
 
     // --- M7: downloads ------------------------------------------------------
@@ -2907,19 +3293,42 @@ mod tests {
     }
 
     #[test]
+    fn shift_d_ignores_local_tracks() {
+        let mut app = App::new(100);
+        app.queue.set(
+            vec![Song::local_file(PathBuf::from("/tmp/local-track.m4a"))],
+            0,
+        );
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('D'))));
+        assert!(cmds.is_empty());
+        assert!(app.status.contains("Already local"));
+    }
+
+    #[test]
     fn download_progress_and_done_update_state() {
         let mut app = app_playing(1, 0);
-        app.update(Msg::DownloadProgress { video_id: "id0".to_owned(), percent: 42.6 });
+        app.update(Msg::DownloadProgress {
+            video_id: "id0".to_owned(),
+            percent: 42.6,
+        });
         assert_eq!(app.downloads.get("id0"), Some(&DownloadState::Running(43)));
-        app.update(Msg::DownloadDone { video_id: "id0".to_owned(), path: "/tmp/x.m4a".to_owned() });
+        app.update(Msg::DownloadDone {
+            video_id: "id0".to_owned(),
+            path: "/tmp/x.m4a".to_owned(),
+        });
         assert_eq!(app.downloads.get("id0"), Some(&DownloadState::Done));
         assert!(app.status.contains("/tmp/x.m4a"));
+        assert_eq!(app.downloaded_tracks.len(), 1);
+        assert_eq!(app.downloaded_tracks[0].playback_target(), "/tmp/x.m4a");
     }
 
     #[test]
     fn download_error_marks_failed() {
         let mut app = app_playing(1, 0);
-        app.update(Msg::DownloadError { video_id: "id0".to_owned(), error: "boom".to_owned() });
+        app.update(Msg::DownloadError {
+            video_id: "id0".to_owned(),
+            error: "boom".to_owned(),
+        });
         assert_eq!(app.downloads.get("id0"), Some(&DownloadState::Failed));
         assert!(app.status.contains("boom"));
     }
@@ -2928,7 +3337,10 @@ mod tests {
 
     fn resolve_cmd<'a>(cmds: &'a [Cmd], id: &str) -> Option<&'a str> {
         cmds.iter().find_map(|c| match c {
-            Cmd::Resolve { video_id, watch_url } if video_id == id => Some(watch_url.as_str()),
+            Cmd::Resolve {
+                video_id,
+                watch_url,
+            } if video_id == id => Some(watch_url.as_str()),
             _ => None,
         })
     }
@@ -2974,7 +3386,12 @@ mod tests {
     fn click_on_seekbar_seeks_to_fraction() {
         let mut app = app_playing(1, 0);
         app.duration = Some(200.0);
-        app.seekbar_rect.set(Some(Rect { x: 0, y: 5, width: 100, height: 1 }));
+        app.seekbar_rect.set(Some(Rect {
+            x: 0,
+            y: 5,
+            width: 100,
+            height: 1,
+        }));
         // Column 50 of a 100-wide bar → 50% of 200 s → ~100 s.
         let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
         match cmds.as_slice() {
@@ -2987,7 +3404,12 @@ mod tests {
     fn click_off_seekbar_is_ignored() {
         let mut app = app_playing(1, 0);
         app.duration = Some(200.0);
-        app.seekbar_rect.set(Some(Rect { x: 0, y: 5, width: 100, height: 1 }));
+        app.seekbar_rect.set(Some(Rect {
+            x: 0,
+            y: 5,
+            width: 100,
+            height: 1,
+        }));
         assert!(app.update(Msg::MouseClick { col: 50, row: 9 }).is_empty()); // wrong row
         assert!(app.update(Msg::MouseClick { col: 200, row: 5 }).is_empty()); // past the bar
     }
@@ -2996,7 +3418,12 @@ mod tests {
     fn click_does_nothing_outside_player_mode() {
         let mut app = app_playing(1, 0);
         app.duration = Some(200.0);
-        app.seekbar_rect.set(Some(Rect { x: 0, y: 5, width: 100, height: 1 }));
+        app.seekbar_rect.set(Some(Rect {
+            x: 0,
+            y: 5,
+            width: 100,
+            height: 1,
+        }));
         app.mode = Mode::Search;
         assert!(app.update(Msg::MouseClick { col: 50, row: 5 }).is_empty());
     }
@@ -3005,28 +3432,49 @@ mod tests {
     fn click_player_buttons_dispatch_actions() {
         let mut app = app_playing(3, 0);
         app.register_mouse_button(
-            Rect { x: 10, y: 4, width: 9, height: 1 },
+            Rect {
+                x: 10,
+                y: 4,
+                width: 9,
+                height: 1,
+            },
             MouseTarget::Player(Action::TogglePause),
         );
         let cmds = app.update(Msg::MouseClick { col: 12, row: 4 });
         assert!(app.paused);
-        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::CyclePause)]));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Player(PlayerCmd::CyclePause)]
+        ));
 
         app.volume = 40;
         app.register_mouse_button(
-            Rect { x: 22, y: 4, width: 8, height: 1 },
+            Rect {
+                x: 22,
+                y: 4,
+                width: 8,
+                height: 1,
+            },
             MouseTarget::Player(Action::VolUp),
         );
         let cmds = app.update(Msg::MouseClick { col: 25, row: 4 });
         assert_eq!(app.volume, 45);
-        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::SetVolume(45))]));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Player(PlayerCmd::SetVolume(45))]
+        ));
     }
 
     #[test]
     fn click_next_button_loads_next_track() {
         let mut app = app_playing(3, 0);
         app.register_mouse_button(
-            Rect { x: 0, y: 1, width: 8, height: 1 },
+            Rect {
+                x: 0,
+                y: 1,
+                width: 8,
+                height: 1,
+            },
             MouseTarget::Player(Action::NextTrack),
         );
         let cmds = app.update(Msg::MouseClick { col: 3, row: 1 });
@@ -3038,7 +3486,12 @@ mod tests {
     fn click_help_button_opens_cheatsheet() {
         let mut app = app_playing(1, 0);
         app.register_mouse_button(
-            Rect { x: 0, y: 9, width: 16, height: 1 },
+            Rect {
+                x: 0,
+                y: 9,
+                width: 16,
+                height: 1,
+            },
             MouseTarget::Global(Action::ToggleHelp),
         );
         assert!(app.update(Msg::MouseClick { col: 4, row: 9 }).is_empty());
@@ -3059,7 +3512,12 @@ mod tests {
         app.help_visible = true;
         app.volume = 40;
         app.register_mouse_button(
-            Rect { x: 0, y: 1, width: 8, height: 1 },
+            Rect {
+                x: 0,
+                y: 1,
+                width: 8,
+                height: 1,
+            },
             MouseTarget::Player(Action::VolUp),
         );
         assert!(app.update(Msg::MouseClick { col: 3, row: 1 }).is_empty());
@@ -3075,14 +3533,42 @@ mod tests {
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
 
         let buttons = app.mouse_buttons.borrow();
-        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::TogglePause)));
-        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::PrevTrack)));
-        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::NextTrack)));
-        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::VolDown)));
-        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::VolUp)));
-        assert!(buttons.iter().any(|b| b.target == MouseTarget::Global(Action::ToggleHelp)));
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b.target == MouseTarget::Player(Action::TogglePause))
+        );
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b.target == MouseTarget::Player(Action::PrevTrack))
+        );
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b.target == MouseTarget::Player(Action::NextTrack))
+        );
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b.target == MouseTarget::Player(Action::VolDown))
+        );
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b.target == MouseTarget::Player(Action::VolUp))
+        );
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b.target == MouseTarget::Global(Action::ToggleHelp))
+        );
         // The status line publishes the repeat toggle and the EQ-dropdown opener.
-        assert!(buttons.iter().any(|b| b.target == MouseTarget::Player(Action::CycleRepeat)));
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b.target == MouseTarget::Player(Action::CycleRepeat))
+        );
         assert!(buttons.iter().any(|b| b.target == MouseTarget::EqMenu));
         assert!(app.seekbar_rect.get().is_some());
     }
@@ -3099,7 +3585,9 @@ mod tests {
         // One selectable row per built-in preset.
         for preset in crate::eq::EqPreset::CYCLE {
             assert!(
-                buttons.iter().any(|b| b.target == MouseTarget::EqSelect(preset)),
+                buttons
+                    .iter()
+                    .any(|b| b.target == MouseTarget::EqSelect(preset)),
                 "missing dropdown row for {preset:?}"
             );
         }
@@ -3108,11 +3596,27 @@ mod tests {
     #[test]
     fn clicking_eq_label_toggles_dropdown() {
         let mut app = app_playing(1, 0);
-        app.register_mouse_button(Rect { x: 30, y: 4, width: 7, height: 1 }, MouseTarget::EqMenu);
+        app.register_mouse_button(
+            Rect {
+                x: 30,
+                y: 4,
+                width: 7,
+                height: 1,
+            },
+            MouseTarget::EqMenu,
+        );
         assert!(app.update(Msg::MouseClick { col: 32, row: 4 }).is_empty());
         assert!(app.eq_dropdown_open);
         // Clicking it again closes it.
-        app.register_mouse_button(Rect { x: 30, y: 4, width: 7, height: 1 }, MouseTarget::EqMenu);
+        app.register_mouse_button(
+            Rect {
+                x: 30,
+                y: 4,
+                width: 7,
+                height: 1,
+            },
+            MouseTarget::EqMenu,
+        );
         assert!(app.update(Msg::MouseClick { col: 32, row: 4 }).is_empty());
         assert!(!app.eq_dropdown_open);
     }
@@ -3122,14 +3626,22 @@ mod tests {
         let mut app = app_playing(1, 0);
         app.eq_dropdown_open = true;
         app.register_mouse_button(
-            Rect { x: 30, y: 6, width: 12, height: 1 },
+            Rect {
+                x: 30,
+                y: 6,
+                width: 12,
+                height: 1,
+            },
             MouseTarget::EqSelect(EqPreset::Vocal),
         );
         let cmds = app.update(Msg::MouseClick { col: 33, row: 6 });
         assert_eq!(app.eq_preset, EqPreset::Vocal);
         assert_eq!(app.eq_bands, EqPreset::Vocal.gains());
         assert!(!app.eq_dropdown_open);
-        assert!(matches!(cmds.as_slice(), [Cmd::Player(PlayerCmd::SetAudioFilter(_))]));
+        assert!(matches!(
+            cmds.as_slice(),
+            [Cmd::Player(PlayerCmd::SetAudioFilter(_))]
+        ));
     }
 
     #[test]
@@ -3137,7 +3649,12 @@ mod tests {
         let mut app = app_playing(1, 0);
         app.eq_dropdown_open = true;
         app.duration = Some(200.0);
-        app.seekbar_rect.set(Some(Rect { x: 0, y: 5, width: 100, height: 1 }));
+        app.seekbar_rect.set(Some(Rect {
+            x: 0,
+            y: 5,
+            width: 100,
+            height: 1,
+        }));
         // A click on the seekbar with the dropdown open just closes it (no seek emitted).
         let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
         assert!(!app.eq_dropdown_open);

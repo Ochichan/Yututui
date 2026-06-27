@@ -77,10 +77,11 @@ impl Playlists {
     /// reference either.
     pub fn find(&self, key: &str) -> Option<&Playlist> {
         let key = key.trim();
-        self.playlists
-            .iter()
-            .find(|p| p.id == key)
-            .or_else(|| self.playlists.iter().find(|p| p.name.eq_ignore_ascii_case(key)))
+        self.playlists.iter().find(|p| p.id == key).or_else(|| {
+            self.playlists
+                .iter()
+                .find(|p| p.name.eq_ignore_ascii_case(key))
+        })
     }
 
     /// Create a playlist with a unique slug id. Returns the new id, or `None` if the name
@@ -91,7 +92,11 @@ impl Playlists {
             return None;
         }
         let id = self.unique_id(name);
-        self.playlists.push(Playlist { id: id.clone(), name: name.to_owned(), songs: Vec::new() });
+        self.playlists.push(Playlist {
+            id: id.clone(),
+            name: name.to_owned(),
+            songs: Vec::new(),
+        });
         Some(id)
     }
 
@@ -100,11 +105,11 @@ impl Playlists {
     pub fn add(&mut self, key: &str, song: Song) -> AddResult {
         let key = key.trim();
         // Resolve to an index first (immutable borrow), then mutate.
-        let idx = self
-            .playlists
-            .iter()
-            .position(|p| p.id == key)
-            .or_else(|| self.playlists.iter().position(|p| p.name.eq_ignore_ascii_case(key)));
+        let idx = self.playlists.iter().position(|p| p.id == key).or_else(|| {
+            self.playlists
+                .iter()
+                .position(|p| p.name.eq_ignore_ascii_case(key))
+        });
         match idx {
             Some(i) => Self::push_song(&mut self.playlists[i], song),
             None => AddResult::NotFound,
@@ -125,7 +130,11 @@ impl Playlists {
     /// A unique slug id derived from `name`, disambiguated with a numeric suffix.
     fn unique_id(&self, name: &str) -> String {
         let base = slug(name);
-        let base = if base.is_empty() { "playlist".to_owned() } else { base };
+        let base = if base.is_empty() {
+            "playlist".to_owned()
+        } else {
+            base
+        };
         if !self.playlists.iter().any(|p| p.id == base) {
             return base;
         }
@@ -161,12 +170,7 @@ mod tests {
     use super::*;
 
     fn song(id: &str) -> Song {
-        Song {
-            video_id: id.to_owned(),
-            title: format!("t-{id}"),
-            artist: "a".to_owned(),
-            duration: "1:00".to_owned(),
-        }
+        Song::remote(id, format!("t-{id}"), "a", "1:00")
     }
 
     #[test]

@@ -232,12 +232,7 @@ mod tests {
     use super::*;
 
     fn song(id: &str) -> Song {
-        Song {
-            video_id: id.to_owned(),
-            title: format!("title-{id}"),
-            artist: "a".to_owned(),
-            duration: "0:10".to_owned(),
-        }
+        Song::remote(id, format!("title-{id}"), "a", "0:10")
     }
 
     fn songs(n: usize) -> Vec<Song> {

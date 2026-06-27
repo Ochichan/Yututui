@@ -1,6 +1,6 @@
-//! The library view: two tabs (Favorites / History), each a selectable list of tracks.
+//! The library view: saved tracks, recent history, and local download-folder audio.
 //!
-//! Rows are formatted per frame — both lists are bounded (≤500 / ≤1000) and only the
+//! Rows are formatted per frame. The underlying collections are bounded and only the
 //! visible window is laid out by ratatui, so there's no need to pre-format into state.
 
 use ratatui::Frame;
@@ -9,7 +9,6 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::api::Song;
 use crate::app::{App, LibraryTab};
 use crate::ui::buttons;
 
@@ -41,30 +40,35 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
         if app.library_tab == t {
             Span::styled(
                 label,
-                Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
             )
         } else {
             Span::styled(label, Style::default().fg(Color::DarkGray))
         }
     };
-    let line = Line::from(vec![
-        tab(LibraryTab::Favorites, app.library.favorites.len()),
-        Span::raw("  "),
-        tab(LibraryTab::History, app.library.history.len()),
-    ]);
+    let mut spans = Vec::new();
+    for (i, t) in LibraryTab::ALL.iter().copied().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(tab(t, app.library_count(t)));
+    }
+    let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);
 }
 
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
-    let rows: Vec<&Song> = match app.library_tab {
-        LibraryTab::Favorites => app.library.favorites.iter().collect(),
-        LibraryTab::History => app.library.history.iter().collect(),
-    };
+    let rows = app.library_rows();
 
     if rows.is_empty() {
         let msg = match app.library_tab {
+            LibraryTab::All => "No library tracks yet — play, favorite, or download something.",
             LibraryTab::Favorites => "No favorites yet — press f on a track to save it.",
             LibraryTab::History => "No history yet — play something.",
+            LibraryTab::Downloads => "No downloaded tracks found in the download folder.",
         };
         frame.render_widget(Paragraph::new(Line::from(msg).fg(Color::DarkGray)), area);
         return;
@@ -83,7 +87,12 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let list = List::new(items)
-        .highlight_style(Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("▶ ");
 
     let mut state = ListState::default();
