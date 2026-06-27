@@ -55,7 +55,7 @@ fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
                 .map_or_else(|| "—".to_owned(), keymap::format_chord);
             col.push(Line::from(vec![
                 Span::styled(format!("{key:>8}  "), Style::default().fg(Color::Yellow)),
-                Span::raw(action.human_label().to_owned()),
+                Span::raw(action.human_label_for(ctx).to_owned()),
             ]));
         }
         placed += actions.len() + 1;

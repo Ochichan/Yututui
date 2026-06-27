@@ -1969,6 +1969,17 @@ mod tests {
         assert!(load_url(&cmds).expect("a Load cmd").contains("abc123"));
     }
 
+    #[test]
+    fn q_quits_search_results_without_quitting_app() {
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.search_focus = SearchFocus::Results;
+        app.search_results = songs(1);
+        app.update(Msg::Key(key(KeyCode::Char('q'))));
+        assert_eq!(app.mode, Mode::Player);
+        assert!(!app.should_quit);
+    }
+
     // --- M4: queue / shuffle / repeat / auto-advance ------------------------
 
     fn songs(n: usize) -> Vec<Song> {

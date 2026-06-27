@@ -103,7 +103,7 @@ fn render_keys(frame: &mut Frame, st: &SettingsState, area: Rect) {
             let key_color = if focused { Color::Cyan } else { Color::White };
             ListItem::new(Line::from(vec![
                 Span::styled(group_cell, Style::default().fg(Color::Magenta)),
-                Span::styled(format!("{:<24}", action.human_label()), Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:<24}", action.human_label_for(ctx)), Style::default().fg(Color::Gray)),
                 Span::styled(key, Style::default().fg(key_color)),
             ]))
         })

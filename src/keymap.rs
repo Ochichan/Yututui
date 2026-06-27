@@ -111,6 +111,16 @@ impl Action {
         ACTION_META.iter().find(|(a, ..)| *a == self).map(|(.., l)| *l).unwrap_or("?")
     }
 
+    /// A human-readable label when the same action needs screen-specific wording.
+    pub fn human_label_for(self, ctx: KeyContext) -> &'static str {
+        match (ctx, self) {
+            (KeyContext::Library, Action::Quit) => "Quit Library",
+            (KeyContext::SearchResults, Action::Back) => "Quit Search Results",
+            (KeyContext::Settings, Action::SettingsCancel) => "Quit Settings",
+            _ => self.human_label(),
+        }
+    }
+
     fn from_id(id: &str) -> Option<Action> {
         ACTION_META.iter().find(|(_, i, _)| *i == id).map(|(a, ..)| *a)
     }
@@ -391,11 +401,12 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('D')),
         (C::SearchResults, A::FocusInput, ch('/')),
+        (C::SearchResults, A::Back, ch('q')),
         // Settings screen commands (nav comes from Common).
         (C::Settings, A::SettingsSave, ch('s')),
-        (C::Settings, A::SettingsCancel, ch('q')),
         (C::Settings, A::ChangeDecrease, key(KeyCode::Left)),
         (C::Settings, A::ChangeIncrease, key(KeyCode::Right)),
+        (C::Settings, A::SettingsCancel, ch('q')),
     ]
 }
 
@@ -638,7 +649,25 @@ mod tests {
         assert_eq!(km.action(KeyContext::Library, parse_chord("up").unwrap()), Some(Action::MoveUp));
         assert_eq!(km.action(KeyContext::Library, parse_chord("down").unwrap()), Some(Action::MoveDown));
         assert_eq!(km.action(KeyContext::Library, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
+        assert_eq!(km.action(KeyContext::SearchResults, parse_chord("q").unwrap()), Some(Action::Back));
         assert_eq!(km.global_action(parse_chord("?").unwrap()), Some(Action::ToggleHelp));
+    }
+
+    #[test]
+    fn contextual_labels_describe_screen_quit_targets() {
+        assert_eq!(Action::Quit.human_label_for(KeyContext::Library), "Quit Library");
+        assert_eq!(Action::Back.human_label_for(KeyContext::SearchResults), "Quit Search Results");
+        assert_eq!(Action::SettingsCancel.human_label_for(KeyContext::Settings), "Quit Settings");
+        assert_eq!(Action::Quit.human_label_for(KeyContext::Player), "Quit");
+    }
+
+    #[test]
+    fn settings_quit_binding_is_last_in_group() {
+        let settings_actions = groups()
+            .into_iter()
+            .find_map(|(ctx, actions)| (ctx == KeyContext::Settings).then_some(actions))
+            .unwrap();
+        assert_eq!(settings_actions.last(), Some(&Action::SettingsCancel));
     }
 
     #[test]
