@@ -17,7 +17,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" Help · keybindings (? or Esc to close) ")
+        .title(" Help · keybindings ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Magenta));
     let inner = block.inner(popup);

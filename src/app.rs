@@ -818,6 +818,12 @@ impl App {
             return Vec::new();
         }
 
+        // Home is intentionally a hard global action: it should work even while a text
+        // field or key-capture prompt is focused.
+        if matches!(self.keymap.global_action(chord), Some(Action::Home)) {
+            return self.go_home();
+        }
+
         // The keybinding editor's capture mode grabs the next key verbatim (except Esc),
         // so it must run before the global/help shortcuts could swallow it.
         if self.mode == Mode::Settings
@@ -829,11 +835,15 @@ impl App {
             return self.settings_capture_key(k);
         }
 
-        // While the help overlay is up, swallow input; help-toggle / Esc / q dismiss it.
+        // While the help overlay is up, swallow input; help-toggle / Esc / Back dismiss it.
         if self.help_visible {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                self.should_quit = true;
+                return Vec::new();
+            }
             let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleHelp))
                 || k.code == KeyCode::Esc
-                || chord == Chord::new(KeyCode::Char('q'), KeyModifiers::empty());
+                || matches!(self.keymap.action(KeyContext::Common, chord), Some(Action::Back));
             if close {
                 self.help_visible = false;
                 self.dirty = true;
@@ -862,6 +872,11 @@ impl App {
                     self.dirty = true;
                     return Vec::new();
                 }
+                Action::Quit => {
+                    self.should_quit = true;
+                    return Vec::new();
+                }
+                Action::Home => return self.go_home(),
                 _ => {}
             }
         }
@@ -917,6 +932,20 @@ impl App {
             Mode::Settings => self.settings.as_ref().is_some_and(|s| s.editing_text),
             _ => false,
         }
+    }
+
+    /// Return to the player/home screen from any mode. Settings use the normal close path
+    /// so draft values and keybinding changes are not silently discarded.
+    fn go_home(&mut self) -> Vec<Cmd> {
+        self.help_visible = false;
+        self.eq_dropdown_open = false;
+        if self.mode == Mode::Settings {
+            self.finish_settings_text_edit();
+            return self.close_settings();
+        }
+        self.mode = Mode::Player;
+        self.dirty = true;
+        Vec::new()
     }
 
     /// A left-click at `(col, row)`: buttons fire their mapped action; the player's
@@ -1005,10 +1034,11 @@ impl App {
 
     fn on_player_action(&mut self, action: Action) -> Vec<Cmd> {
         match action {
-            Action::Quit | Action::Back => {
+            Action::Quit => {
                 self.should_quit = true;
                 Vec::new()
             }
+            Action::Back | Action::Home => self.go_home(),
             Action::TogglePause => {
                 if self.current_needs_load() {
                     let song = self.queue.current().cloned();
@@ -1123,6 +1153,14 @@ impl App {
     fn on_key_search(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.search_focus {
             SearchFocus::Input => {
+                let chord = Chord::from(k);
+                if chord.is_typeable()
+                    && let KeyCode::Char(c) = k.code
+                {
+                    self.search_input.push(c);
+                    self.dirty = true;
+                    return Vec::new();
+                }
                 match self.keymap.action(KeyContext::SearchInput, k.into()) {
                     Some(Action::Back) => {
                         self.mode = Mode::Player;
@@ -1151,15 +1189,6 @@ impl App {
                         return Vec::new();
                     }
                     _ => {}
-                }
-                // Anything else types into the query box (player keys never leak here).
-                if let KeyCode::Char(c) = k.code
-                    && !k
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                {
-                    self.search_input.push(c);
-                    self.dirty = true;
                 }
                 Vec::new()
             }
@@ -1735,6 +1764,22 @@ impl App {
         }
     }
 
+    fn finish_settings_text_edit(&mut self) {
+        let Some(st) = self.settings.as_mut() else {
+            return;
+        };
+        if !st.editing_text {
+            return;
+        }
+        st.editing_text = false;
+        if let Some(prev) = st.secret_restore.take()
+            && let Some(buf) = Self::settings_text_buf(st)
+            && buf.is_empty()
+        {
+            *buf = prev;
+        }
+    }
+
     /// Leave the settings screen, copying the draft into live state + config and
     /// persisting it. This keeps `q`/Esc from silently discarding changed settings.
     fn close_settings(&mut self) -> Vec<Cmd> {
@@ -1808,6 +1853,14 @@ impl App {
     fn on_key_ai(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.ai_focus {
             AiFocus::Input => {
+                let chord = Chord::from(k);
+                if chord.is_typeable()
+                    && let KeyCode::Char(c) = k.code
+                {
+                    self.ai_input.push(c);
+                    self.dirty = true;
+                    return Vec::new();
+                }
                 match self.keymap.action(KeyContext::AiInput, k.into()) {
                     Some(Action::Back) => {
                         self.mode = Mode::Player;
@@ -1829,15 +1882,6 @@ impl App {
                         return Vec::new();
                     }
                     _ => {}
-                }
-                // Every other char feeds the prompt — player keys never leak while typing.
-                if let KeyCode::Char(c) = k.code
-                    && !k
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                {
-                    self.ai_input.push(c);
-                    self.dirty = true;
                 }
                 Vec::new()
             }
@@ -2244,16 +2288,32 @@ mod tests {
     }
 
     #[test]
-    fn q_quits_in_player_mode() {
+    fn q_is_back_in_player_mode_without_quitting() {
         let mut app = App::new(100);
         app.update(Msg::Key(key(KeyCode::Char('q'))));
+        assert_eq!(app.mode, Mode::Player);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_q_quits_in_player_mode() {
+        let mut app = App::new(100);
+        app.update(Msg::Key(ctrl(KeyCode::Char('q'))));
         assert!(app.should_quit);
     }
 
     #[test]
-    fn korean_q_key_quits_in_player_mode() {
+    fn korean_q_key_is_back_without_quitting() {
         let mut app = App::new(100);
         app.update(Msg::Key(key(KeyCode::Char('ㅂ'))));
+        assert_eq!(app.mode, Mode::Player);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn korean_ctrl_q_key_quits_in_player_mode() {
+        let mut app = App::new(100);
+        app.update(Msg::Key(ctrl(KeyCode::Char('ㅂ'))));
         assert!(app.should_quit);
     }
 
@@ -2413,13 +2473,55 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_q_quits_search_results_without_quitting_app() {
+    fn q_closes_search_results_without_quitting_app() {
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.search_focus = SearchFocus::Results;
+        app.search_results = songs(1);
+        app.update(Msg::Key(key(KeyCode::Char('q'))));
+        assert_eq!(app.mode, Mode::Player);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_q_quits_from_search_results() {
         let mut app = App::new(100);
         app.mode = Mode::Search;
         app.search_focus = SearchFocus::Results;
         app.search_results = songs(1);
         app.update(Msg::Key(ctrl(KeyCode::Char('q'))));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_h_goes_home_from_search_input_without_typing() {
+        let mut app = App::new(100);
+        app.update(Msg::Key(key(KeyCode::Char('/'))));
+        app.search_input = "abc".to_owned();
+        app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
         assert_eq!(app.mode, Mode::Player);
+        assert_eq!(app.search_input, "abc");
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn korean_ctrl_h_goes_home_from_library() {
+        let mut app = app_playing(1, 0);
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
+        assert_eq!(app.mode, Mode::Library);
+        app.update(Msg::Key(ctrl(KeyCode::Char('ㅗ'))));
+        assert_eq!(app.mode, Mode::Player);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_h_goes_home_from_help_overlay() {
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.help_visible = true;
+        app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+        assert_eq!(app.mode, Mode::Player);
+        assert!(!app.help_visible);
         assert!(!app.should_quit);
     }
 
@@ -3169,6 +3271,16 @@ mod tests {
         assert_eq!(app.mode, Mode::Player);
         assert_eq!(current(&app), "id1");
         assert!(load_url(&cmds).expect("a Load cmd").contains("id1"));
+    }
+
+    #[test]
+    fn q_closes_library_without_quitting_app() {
+        let mut app = app_playing(1, 0);
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
+        assert_eq!(app.mode, Mode::Library);
+        app.update(Msg::Key(key(KeyCode::Char('q'))));
+        assert_eq!(app.mode, Mode::Player);
+        assert!(!app.should_quit);
     }
 
     #[test]

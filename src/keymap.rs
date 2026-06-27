@@ -40,6 +40,7 @@ pub enum Action {
     OpenAi,
     OpenSearch,
     Quit,
+    Home,
     // Shared navigation (interpreted per context).
     MoveUp,
     MoveDown,
@@ -84,6 +85,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::OpenAi, "open_ai", "Open AI assistant"),
     (Action::OpenSearch, "open_search", "Open search"),
     (Action::Quit, "quit", "Quit"),
+    (Action::Home, "home", "Go home"),
     (Action::MoveUp, "move_up", "Move up"),
     (Action::MoveDown, "move_down", "Move down"),
     (Action::Confirm, "confirm", "Confirm / select"),
@@ -114,9 +116,9 @@ impl Action {
     /// A human-readable label when the same action needs screen-specific wording.
     pub fn human_label_for(self, ctx: KeyContext) -> &'static str {
         match (ctx, self) {
-            (KeyContext::Library, Action::Quit) => "Quit Library",
-            (KeyContext::SearchResults, Action::Back) => "Quit Search Results",
-            (KeyContext::Settings, Action::SettingsCancel) => "Quit Settings",
+            (KeyContext::Library, Action::Back) => "Close Library",
+            (KeyContext::SearchResults, Action::Back) => "Close Search Results",
+            (KeyContext::Settings, Action::SettingsCancel) => "Close Settings",
             _ => self.human_label(),
         }
     }
@@ -427,29 +429,30 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::OpenSettings, ch(',')),
         (C::Player, A::OpenAi, ch('a')),
         (C::Player, A::OpenSearch, ch('/')),
-        (C::Player, A::Quit, ch('q')),
-        (C::Player, A::Back, ctrl('q')),
+        (C::Player, A::Back, ch('q')),
         // Shared navigation (fallback for every list/text screen).
         (C::Common, A::MoveUp, key(KeyCode::Up)),
         (C::Common, A::MoveDown, key(KeyCode::Down)),
         (C::Common, A::Confirm, key(KeyCode::Enter)),
-        (C::Common, A::Back, ctrl('q')),
+        (C::Common, A::Back, ch('q')),
         (C::Common, A::FocusNext, key(KeyCode::Tab)),
         (C::Common, A::FocusPrev, key(KeyCode::BackTab)),
         (C::Common, A::DeleteChar, key(KeyCode::Backspace)),
-        // Global (active regardless of screen, outside text entry).
+        // Global (active across screens; typeable globals are suppressed in text fields).
+        (C::Global, A::Quit, ctrl('q')),
+        (C::Global, A::Home, ctrl('h')),
         (C::Global, A::ToggleRadio, ctrl('r')),
         (C::Global, A::ToggleHelp, ch('?')),
         // Library list commands.
         (C::Library, A::Favorite, ch('f')),
         (C::Library, A::Download, ch('d')),
         (C::Library, A::OpenAi, ch('a')),
-        (C::Library, A::Quit, ch('q')),
+        (C::Library, A::Back, ch('q')),
         // Search results list commands.
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('d')),
         (C::SearchResults, A::FocusInput, ch('/')),
-        (C::SearchResults, A::Back, ctrl('q')),
+        (C::SearchResults, A::Back, ch('q')),
         // Settings screen commands (nav comes from Common).
         (C::Settings, A::SettingsSave, ch('s')),
         (C::Settings, A::ChangeDecrease, key(KeyCode::Left)),
@@ -646,6 +649,7 @@ mod tests {
     fn ctrl_and_arrow_formatting() {
         assert_eq!(format_chord(parse_chord("ctrl+r").unwrap()), "^r");
         assert_eq!(format_chord(parse_chord("ctrl+q").unwrap()), "^q");
+        assert_eq!(format_chord(parse_chord("ctrl+h").unwrap()), "^h");
         assert_eq!(format_chord(parse_chord("left").unwrap()), "←");
         assert_eq!(format_chord(parse_chord("right").unwrap()), "→");
         assert_eq!(format_chord(parse_chord("up").unwrap()), "↑");
@@ -655,7 +659,7 @@ mod tests {
 
     #[test]
     fn parse_format_round_trip() {
-        for s in ["space", "ctrl+n", "ctrl+q", "L", ">", "/", "?", "enter", "esc", "backtab", "f5"] {
+        for s in ["space", "ctrl+n", "ctrl+q", "ctrl+h", "L", ">", "/", "?", "enter", "esc", "backtab", "f5"] {
             let chord = parse_chord(s).unwrap();
             assert_eq!(parse_chord(&chord_to_config(chord)).unwrap(), chord, "round trip {s}");
         }
@@ -700,19 +704,21 @@ mod tests {
         assert_eq!(km.action(KeyContext::Player, parse_chord("n").unwrap()), Some(Action::NextTrack));
         assert_eq!(km.action(KeyContext::Player, parse_chord("l").unwrap()), Some(Action::OpenLibrary));
         assert_eq!(km.action(KeyContext::Player, parse_chord("L").unwrap()), Some(Action::ToggleLyrics));
-        assert_eq!(km.action(KeyContext::Player, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
+        assert_eq!(km.action(KeyContext::Player, parse_chord("q").unwrap()), Some(Action::Back));
         // Common nav falls through in a list context.
         assert_eq!(km.action(KeyContext::Library, parse_chord("up").unwrap()), Some(Action::MoveUp));
         assert_eq!(km.action(KeyContext::Library, parse_chord("down").unwrap()), Some(Action::MoveDown));
-        assert_eq!(km.action(KeyContext::Library, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
-        assert_eq!(km.action(KeyContext::SearchResults, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
+        assert_eq!(km.action(KeyContext::Library, parse_chord("q").unwrap()), Some(Action::Back));
+        assert_eq!(km.action(KeyContext::SearchResults, parse_chord("q").unwrap()), Some(Action::Back));
+        assert_eq!(km.global_action(parse_chord("ctrl+q").unwrap()), Some(Action::Quit));
+        assert_eq!(km.global_action(parse_chord("ctrl+h").unwrap()), Some(Action::Home));
         assert_eq!(km.global_action(parse_chord("?").unwrap()), Some(Action::ToggleHelp));
     }
 
     #[test]
     fn korean_2set_keys_resolve_default_actions() {
         let km = KeyMap::default();
-        assert_eq!(km.action(KeyContext::Player, ev(KeyCode::Char('ㅂ'), KeyModifiers::empty())), Some(Action::Quit));
+        assert_eq!(km.action(KeyContext::Player, ev(KeyCode::Char('ㅂ'), KeyModifiers::empty())), Some(Action::Back));
         assert_eq!(
             km.action(KeyContext::Player, ev(KeyCode::Char('ㅣ'), KeyModifiers::empty())),
             Some(Action::OpenLibrary)
@@ -726,8 +732,16 @@ mod tests {
             Some(Action::Download)
         );
         assert_eq!(
-            km.action(KeyContext::SearchResults, ev(KeyCode::Char('ㅂ'), KeyModifiers::CONTROL)),
+            km.action(KeyContext::SearchResults, ev(KeyCode::Char('ㅂ'), KeyModifiers::empty())),
             Some(Action::Back)
+        );
+        assert_eq!(
+            km.global_action(ev(KeyCode::Char('ㅂ'), KeyModifiers::CONTROL)),
+            Some(Action::Quit)
+        );
+        assert_eq!(
+            km.global_action(ev(KeyCode::Char('ㅗ'), KeyModifiers::CONTROL)),
+            Some(Action::Home)
         );
         assert_eq!(
             km.global_action(ev(KeyCode::Char('ㄱ'), KeyModifiers::CONTROL)),
@@ -736,15 +750,16 @@ mod tests {
     }
 
     #[test]
-    fn contextual_labels_describe_screen_quit_targets() {
-        assert_eq!(Action::Quit.human_label_for(KeyContext::Library), "Quit Library");
-        assert_eq!(Action::Back.human_label_for(KeyContext::SearchResults), "Quit Search Results");
-        assert_eq!(Action::SettingsCancel.human_label_for(KeyContext::Settings), "Quit Settings");
-        assert_eq!(Action::Quit.human_label_for(KeyContext::Player), "Quit");
+    fn contextual_labels_describe_close_and_global_targets() {
+        assert_eq!(Action::Back.human_label_for(KeyContext::Library), "Close Library");
+        assert_eq!(Action::Back.human_label_for(KeyContext::SearchResults), "Close Search Results");
+        assert_eq!(Action::SettingsCancel.human_label_for(KeyContext::Settings), "Close Settings");
+        assert_eq!(Action::Quit.human_label_for(KeyContext::Global), "Quit");
+        assert_eq!(Action::Home.human_label_for(KeyContext::Global), "Go home");
     }
 
     #[test]
-    fn settings_quit_binding_is_last_in_group() {
+    fn settings_close_binding_is_last_in_group() {
         let settings_actions = groups()
             .into_iter()
             .find_map(|(ctx, actions)| (ctx == KeyContext::Settings).then_some(actions))
@@ -763,12 +778,12 @@ mod tests {
     #[test]
     fn rebind_rejects_conflict() {
         let mut km = KeyMap::default();
-        // `q` is already Quit in Player → binding TogglePause to it is rejected.
+        // `q` is already Back in Player → binding TogglePause to it is rejected.
         let q = parse_chord("q").unwrap();
-        assert_eq!(km.rebind(KeyContext::Player, Action::TogglePause, q), Err(Action::Quit));
-        // Space is still pause; q is still quit.
+        assert_eq!(km.rebind(KeyContext::Player, Action::TogglePause, q), Err(Action::Back));
+        // Space is still pause; q is still back/close.
         assert_eq!(km.action(KeyContext::Player, parse_chord("space").unwrap()), Some(Action::TogglePause));
-        assert_eq!(km.action(KeyContext::Player, q), Some(Action::Quit));
+        assert_eq!(km.action(KeyContext::Player, q), Some(Action::Back));
     }
 
     #[test]
