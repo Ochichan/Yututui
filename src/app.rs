@@ -993,7 +993,7 @@ impl App {
     // --- Settings screen ----------------------------------------------------
 
     /// Open the settings screen, snapshotting the current persisted + live state into an
-    /// editable draft (and a pristine copy for revert-on-cancel).
+    /// editable draft.
     fn open_settings(&mut self) {
         let path_str = |p: &Option<std::path::PathBuf>| {
             p.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
@@ -1018,7 +1018,6 @@ impl App {
         self.settings = Some(Box::new(SettingsState {
             tab: SettingsTab::General,
             row: 0,
-            original: draft.clone(),
             draft,
             editing_text: false,
             secret_restore: None,
@@ -1043,9 +1042,9 @@ impl App {
             .action(KeyContext::Settings, k.into())
             .or_else(|| Self::settings_safety_action(k));
         match action {
-            // `q`/Esc close settings WITHOUT quitting the app or saving.
-            Some(Action::SettingsCancel | Action::Back) => self.close_settings(false),
-            Some(Action::SettingsSave) => self.close_settings(true),
+            // `q`/Esc and `s` both commit the draft before leaving the screen. The key
+            // name stays SettingsCancel for compatibility with existing keybinding ids.
+            Some(Action::SettingsCancel | Action::Back | Action::SettingsSave) => self.close_settings(),
             Some(Action::FocusNext) => {
                 self.settings_switch_tab(true);
                 Vec::new()
@@ -1368,9 +1367,8 @@ impl App {
     }
 
     /// Persist a free-text config field (cookies path, download dir, API key) to disk the
-    /// moment its edit is committed. Audio/preview fields are untouched — they still commit
-    /// only on an explicit save and revert on cancel. A changed key also rebuilds the AI
-    /// actor so it takes effect immediately.
+    /// moment its edit is committed. Other draft fields persist when the settings screen
+    /// closes. A changed key also rebuilds the AI actor so it takes effect immediately.
     fn settings_persist_text_field(&mut self, field: Field) -> Vec<Cmd> {
         let value = match self.settings.as_ref().and_then(|s| s.draft.text_value(field)) {
             Some(v) => v.to_owned(),
@@ -1414,9 +1412,9 @@ impl App {
         }
     }
 
-    /// Leave the settings screen. On save, copy the draft into live state + config and
-    /// persist; on cancel, restore mpv to the committed (pre-edit) audio state.
-    fn close_settings(&mut self, save: bool) -> Vec<Cmd> {
+    /// Leave the settings screen, copying the draft into live state + config and
+    /// persisting it. This keeps `q`/Esc from silently discarding changed settings.
+    fn close_settings(&mut self) -> Vec<Cmd> {
         let Some(st) = self.settings.take() else {
             self.mode = Mode::Player;
             self.dirty = true;
@@ -1424,65 +1422,45 @@ impl App {
         };
         self.mode = Mode::Player;
         self.dirty = true;
-        if save {
-            let d = &st.draft;
-            self.speed = d.speed;
-            self.eq_bands = d.eq_bands;
-            self.eq_preset = d.eq_preset;
-            self.normalize = d.normalize;
-            self.autoplay_radio = d.autoplay_radio;
-            let model_changed = self.gemini_model != d.gemini_model;
-            self.gemini_model = d.gemini_model;
-            let old_key = self.config.gemini_api_key.clone();
-            d.apply_to(&mut self.config);
-            // Commit the edited keybindings (live + persisted as compact overrides).
-            self.keymap = st.keymap.clone();
-            self.config.keybindings = self.keymap.to_overrides();
-            let key_changed = self.config.gemini_api_key != old_key;
-            // The `=`/`-` keys change the live volume in place; fold it in so a save
-            // doesn't persist the stale startup value.
-            self.config.volume = self.volume;
-            self.status = "Settings saved".to_owned();
-            // Re-assert the committed audio chain before persisting: the draft was
-            // previewing live, but a track change mid-edit (EOF auto-advance) would have
-            // rebuilt mpv's chain from the *old* committed bands, so push the now-committed
-            // chain to guarantee the current track matches what was just saved.
-            let mut cmds = vec![
-                Cmd::SaveConfig(Box::new(self.config.clone())),
-                Cmd::Player(PlayerCmd::SetAudioFilter(self.current_af().unwrap_or_default())),
-            ];
-            // A changed key rebuilds the AI actor live (the client is otherwise built once
-            // at spawn) — so a key entered at runtime takes effect now, no relaunch. The
-            // rebuild already adopts the current model, so only hot-swap the model on the
-            // running actor when the key itself didn't change.
-            if key_changed {
-                cmds.push(Cmd::ReloadAi {
-                    key: self.config.effective_gemini_api_key(),
-                    model: self.gemini_model,
-                });
-            } else if model_changed {
-                cmds.push(Cmd::SetAiModel(self.gemini_model));
-            }
-            cmds
-        } else {
-            // Restore live audio to the committed state captured on open.
-            let o = st.original;
-            self.speed = o.speed;
-            self.eq_bands = o.eq_bands;
-            self.eq_preset = o.eq_preset;
-            self.normalize = o.normalize;
-            self.autoplay_radio = o.autoplay_radio;
-            self.status.clear();
-            vec![
-                Cmd::Player(PlayerCmd::SetProperty {
-                    name: "speed".to_owned(),
-                    value: serde_json::Value::from(self.speed),
-                }),
-                Cmd::Player(PlayerCmd::SetAudioFilter(
-                    eq::build_af_string(&self.eq_bands, self.normalize).unwrap_or_default(),
-                )),
-            ]
+        let d = &st.draft;
+        self.speed = d.speed;
+        self.eq_bands = d.eq_bands;
+        self.eq_preset = d.eq_preset;
+        self.normalize = d.normalize;
+        self.autoplay_radio = d.autoplay_radio;
+        let model_changed = self.gemini_model != d.gemini_model;
+        self.gemini_model = d.gemini_model;
+        let old_key = self.config.gemini_api_key.clone();
+        d.apply_to(&mut self.config);
+        // Commit the edited keybindings (live + persisted as compact overrides).
+        self.keymap = st.keymap.clone();
+        self.config.keybindings = self.keymap.to_overrides();
+        let key_changed = self.config.gemini_api_key != old_key;
+        // The `=`/`-` keys change the live volume in place; fold it in so a save
+        // doesn't persist the stale startup value.
+        self.config.volume = self.volume;
+        self.status = "Settings saved".to_owned();
+        // Re-assert the committed audio chain before persisting: the draft was
+        // previewing live, but a track change mid-edit (EOF auto-advance) would have
+        // rebuilt mpv's chain from the *old* committed bands, so push the now-committed
+        // chain to guarantee the current track matches what was just saved.
+        let mut cmds = vec![
+            Cmd::SaveConfig(Box::new(self.config.clone())),
+            Cmd::Player(PlayerCmd::SetAudioFilter(self.current_af().unwrap_or_default())),
+        ];
+        // A changed key rebuilds the AI actor live (the client is otherwise built once
+        // at spawn) — so a key entered at runtime takes effect now, no relaunch. The
+        // rebuild already adopts the current model, so only hot-swap the model on the
+        // running actor when the key itself didn't change.
+        if key_changed {
+            cmds.push(Cmd::ReloadAi {
+                key: self.config.effective_gemini_api_key(),
+                model: self.gemini_model,
+            });
+        } else if model_changed {
+            cmds.push(Cmd::SetAiModel(self.gemini_model));
         }
+        cmds
     }
 
     // --- AI assistant -------------------------------------------------------
@@ -2149,6 +2127,35 @@ mod tests {
     }
 
     #[test]
+    fn settings_key_capture_accepts_ctrl_chords() {
+        let mut app = app_playing(1, 0);
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Tab)));
+        }
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
+        app.update(Msg::Key(key(KeyCode::Enter))); // capture first binding: player.toggle_pause
+        assert_eq!(
+            app.settings.as_ref().unwrap().capturing,
+            Some((KeyContext::Player, Action::TogglePause))
+        );
+        app.update(Msg::Key(ctrl(KeyCode::Char('X'))));
+        assert_eq!(
+            app.settings
+                .as_ref()
+                .unwrap()
+                .keymap
+                .action(KeyContext::Player, crate::keymap::parse_chord("ctrl+x").unwrap()),
+            Some(Action::TogglePause)
+        );
+        assert!(app.status.contains("^X"));
+
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
+        let saved = save_config(&cmds).expect("a SaveConfig cmd");
+        assert_eq!(saved.keybindings.get("player.toggle_pause").map(String::as_str), Some("ctrl+x"));
+    }
+
+    #[test]
     fn settings_save_applies_and_persists() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General)
@@ -2163,17 +2170,17 @@ mod tests {
     }
 
     #[test]
-    fn settings_cancel_reverts_live_audio() {
+    fn settings_close_persists_live_audio() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open
         app.update(Msg::Key(key(KeyCode::Tab))); // Playback; Speed
         app.update(Msg::Key(key(KeyCode::Right))); // draft speed -> 1.1
-        let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // cancel
+        let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // save+close
         assert_eq!(app.mode, Mode::Player);
-        assert!((app.speed - 1.0).abs() < 1e-9, "speed reverted on cancel");
-        // The revert re-asserts mpv state: a speed SetProperty and an af reset.
-        assert!(cmds.iter().any(|c| matches!(c,
-            Cmd::Player(PlayerCmd::SetProperty { name, .. }) if name == "speed")));
+        assert!((app.speed - 1.1).abs() < 1e-9, "speed persisted on close");
+        assert_eq!(save_config(&cmds).expect("a SaveConfig cmd").speed, Some(1.1));
+        // Closing re-asserts the committed filter chain so the running track matches the
+        // now-persisted settings.
         assert!(cmds.iter().any(|c| matches!(c, Cmd::Player(PlayerCmd::SetAudioFilter(_)))));
     }
 
@@ -2241,7 +2248,7 @@ mod tests {
         for c in "/x.txt".chars() {
             app.update(Msg::Key(key(KeyCode::Char(c))));
         }
-        // `q` is typed, not treated as cancel, while editing.
+        // `q` is typed, not treated as close, while editing.
         assert_eq!(app.mode, Mode::Settings);
         app.update(Msg::Key(key(KeyCode::Enter))); // commit edit mode
         assert!(!app.settings.as_ref().unwrap().editing_text);
@@ -2301,9 +2308,9 @@ mod tests {
     }
 
     #[test]
-    fn api_key_persists_when_leaving_settings_via_cancel() {
+    fn api_key_persists_when_leaving_settings_via_close() {
         // The reported bug: type a key, then leave with Esc/q (the intuitive move) — the
-        // key must survive even though cancel discards the rest of the draft.
+        // key must survive.
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open
         for _ in 0..3 {
@@ -2317,7 +2324,7 @@ mod tests {
         // Esc commits the field (and persists it) rather than discarding the typed key.
         let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
         assert_eq!(save_config(&cmds).unwrap().gemini_api_key.as_deref(), Some("AIzaPersist"));
-        // Esc again leaves the screen (cancel) — config already holds the key.
+        // Esc again leaves the screen; config already holds the key.
         app.update(Msg::Key(key(KeyCode::Esc)));
         assert_eq!(app.config.gemini_api_key.as_deref(), Some("AIzaPersist"));
     }
@@ -2383,7 +2390,7 @@ mod tests {
         assert_eq!(app.ai_focus, AiFocus::Input);
         // And from the library view.
         let mut app = app_playing(1, 0);
-        app.update(Msg::Key(key(KeyCode::Char('L'))));
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
         app.update(Msg::Key(key(KeyCode::Char('a'))));
         assert_eq!(app.mode, Mode::Ai);
     }
@@ -2529,12 +2536,12 @@ mod tests {
     }
 
     #[test]
-    fn shift_l_opens_library_and_enter_plays_selected() {
+    fn l_opens_library_and_enter_plays_selected() {
         let mut app = app_playing(3, 0);
         // favorites become [id0, id1] (most-recent-first insertion).
         app.library.toggle_favorite(&songs(2)[1]);
         app.library.toggle_favorite(&songs(2)[0]);
-        app.update(Msg::Key(key(KeyCode::Char('L'))));
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
         assert_eq!(app.mode, Mode::Library);
         assert_eq!(app.library_tab, LibraryTab::Favorites);
         app.update(Msg::Key(key(KeyCode::Down))); // select favorites[1] = id1
@@ -2548,7 +2555,7 @@ mod tests {
     fn library_tab_toggles_and_unfavorite_fixes_selection() {
         let mut app = app_playing(1, 0);
         app.library.toggle_favorite(&songs(1)[0]); // favorites = [id0]
-        app.update(Msg::Key(key(KeyCode::Char('L'))));
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
         assert_eq!(app.library_tab, LibraryTab::Favorites);
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.library_tab, LibraryTab::History);
@@ -2570,9 +2577,9 @@ mod tests {
     }
 
     #[test]
-    fn l_toggles_lyrics_and_fetches_on_open() {
+    fn shift_l_toggles_lyrics_and_fetches_on_open() {
         let mut app = app_playing(3, 0); // playing id0
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('l'))));
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('L'))));
         assert!(app.lyrics_visible);
         assert!(app.lyrics_loading);
         match cmds.as_slice() {
@@ -2580,7 +2587,7 @@ mod tests {
             _ => panic!("expected a FetchLyrics cmd"),
         }
         // Toggling off issues no fetch.
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('l'))));
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('L'))));
         assert!(!app.lyrics_visible);
         assert!(cmds.is_empty());
     }

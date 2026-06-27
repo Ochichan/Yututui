@@ -97,7 +97,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let status = Line::from(info).fg(Color::Cyan).alignment(Alignment::Center);
     frame.render_widget(Paragraph::new(status), rows[3]);
 
-    // Lyrics panel (toggled with `l`) fills the central area when shown.
+    // Lyrics panel (toggled with `L`) fills the central area when shown.
     if app.lyrics_visible {
         render_lyrics(frame, app, rows[4]);
     }

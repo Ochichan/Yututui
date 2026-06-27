@@ -51,7 +51,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         "type value · Enter or Esc save · Backspace delete".to_owned()
     } else if st.tab == SettingsTab::Keys {
         format!(
-            "{}/{} select · {} rebind · {} reset · {} switch tab · {} save · {} cancel",
+            "{}/{} select · {} rebind · {} reset · {} switch tab · {}/{} save+close",
             k(Action::MoveUp),
             k(Action::MoveDown),
             k(Action::Confirm),
@@ -62,7 +62,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else {
         format!(
-            "{}/{} field · {}/{} change · {} edit/toggle · {} switch tab · {} save · {} cancel",
+            "{}/{} field · {}/{} change · {} edit/toggle · {} switch tab · {}/{} save+close",
             k(Action::MoveUp),
             k(Action::MoveDown),
             k(Action::ChangeDecrease),

@@ -1,10 +1,10 @@
-//! Settings-screen state: tabs, editable fields, and a draft the user commits or reverts.
+//! Settings-screen state: tabs, editable fields, and a draft the user commits on close.
 //!
 //! The screen edits a [`SettingsDraft`] — a snapshot of the persisted [`Config`] plus the
-//! live audio state — without touching `App`'s committed state. Audio-affecting fields
-//! (speed, EQ, normalization) are applied to mpv *live* as they change; on cancel the
-//! reducer restores mpv from the committed state, on save it copies the draft into `App`
-//! and persists. Rendering lives in [`crate::ui::views::settings`]; key handling in
+//! live audio state — without touching `App`'s committed state until the screen closes.
+//! Audio-affecting fields (speed, EQ, normalization) are applied to mpv *live* as they
+//! change; closing the screen copies the draft into `App` and persists. Rendering lives in
+//! [`crate::ui::views::settings`]; key handling in
 //! [`crate::app`].
 
 use std::path::{Path, PathBuf};
@@ -156,7 +156,7 @@ pub fn freq_label(i: usize) -> String {
     }
 }
 
-/// The user-editable snapshot. `Clone` so the screen can keep a pristine copy for revert.
+/// The user-editable snapshot.
 #[derive(Debug, Clone)]
 pub struct SettingsDraft {
     pub cookies_file: String,
@@ -261,8 +261,6 @@ pub struct SettingsState {
     pub tab: SettingsTab,
     pub row: usize,
     pub draft: SettingsDraft,
-    /// Pristine copy captured on open, used to revert live changes on cancel.
-    pub original: SettingsDraft,
     /// Whether the focused text field is in character-entry mode.
     pub editing_text: bool,
     /// The masked secret's value captured when its editor opened. The buffer is cleared
@@ -270,7 +268,7 @@ pub struct SettingsState {
     /// nothing restore the prior key instead of wiping it. `None` outside a secret edit.
     pub secret_restore: Option<String>,
     /// A working copy of the keymap edited on the Keys tab; committed to `App.keymap` and
-    /// persisted on save, discarded on cancel.
+    /// persisted when settings closes.
     pub keymap: KeyMap,
     /// The binding being rebound (Keys tab), while waiting to capture its new key.
     pub capturing: Option<(KeyContext, Action)>,

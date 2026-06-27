@@ -92,7 +92,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::FocusPrev, "focus_prev", "Previous tab / focus"),
     (Action::DeleteChar, "delete_char", "Delete character"),
     (Action::SettingsSave, "settings_save", "Save settings"),
-    (Action::SettingsCancel, "settings_cancel", "Cancel settings"),
+    (Action::SettingsCancel, "settings_cancel", "Close settings"),
     (Action::ChangeDecrease, "change_decrease", "Decrease value"),
     (Action::ChangeIncrease, "change_increase", "Increase value"),
     (Action::FocusInput, "focus_input", "Focus input box"),
@@ -162,7 +162,8 @@ impl KeyContext {
 ///
 /// Equality is normalized so terminal quirks don't cause misses: for `Char` keys the
 /// `SHIFT` modifier is dropped (an uppercase `'L'` already encodes shift, and terminals
-/// disagree about whether to also set `SHIFT`), and `Shift+Tab` collapses to `BackTab`.
+/// disagree about whether to also set `SHIFT`), Ctrl/Alt letters ignore case, and
+/// `Shift+Tab` collapses to `BackTab`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Chord {
     pub code: KeyCode,
@@ -173,7 +174,7 @@ impl Chord {
     pub fn new(code: KeyCode, mods: KeyModifiers) -> Self {
         let mut mods = mods & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT);
         // Normalize Shift+Tab → BackTab (terminals report either).
-        let code = if code == KeyCode::Tab && mods.contains(KeyModifiers::SHIFT) {
+        let mut code = if code == KeyCode::Tab && mods.contains(KeyModifiers::SHIFT) {
             KeyCode::BackTab
         } else {
             code
@@ -181,6 +182,14 @@ impl Chord {
         // The char case already encodes shift; BackTab is inherently shifted.
         if matches!(code, KeyCode::Char(_) | KeyCode::BackTab) {
             mods.remove(KeyModifiers::SHIFT);
+        }
+        // Terminals can report Ctrl+Q as either Char('q') or Char('Q'); persisted chord
+        // labels use lowercase modifiers, so normalize modified ASCII letters.
+        if let KeyCode::Char(c) = code
+            && mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && c.is_ascii_alphabetic()
+        {
+            code = KeyCode::Char(c.to_ascii_lowercase());
         }
         Chord { code, mods }
     }
@@ -348,8 +357,8 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::NextTrack, ch('n')),
         (C::Player, A::PrevTrack, ch('p')),
         (C::Player, A::Favorite, ch('f')),
-        (C::Player, A::OpenLibrary, ch('L')),
-        (C::Player, A::ToggleLyrics, ch('l')),
+        (C::Player, A::OpenLibrary, ch('l')),
+        (C::Player, A::ToggleLyrics, ch('L')),
         (C::Player, A::Download, ch('D')),
         (C::Player, A::ToggleShuffle, ch('s')),
         (C::Player, A::CycleRepeat, ch('r')),
@@ -361,12 +370,12 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::OpenAi, ch('a')),
         (C::Player, A::OpenSearch, ch('/')),
         (C::Player, A::Quit, ch('q')),
-        (C::Player, A::Back, key(KeyCode::Esc)),
+        (C::Player, A::Back, ctrl('q')),
         // Shared navigation (fallback for every list/text screen).
         (C::Common, A::MoveUp, key(KeyCode::Up)),
         (C::Common, A::MoveDown, key(KeyCode::Down)),
         (C::Common, A::Confirm, key(KeyCode::Enter)),
-        (C::Common, A::Back, key(KeyCode::Esc)),
+        (C::Common, A::Back, ctrl('q')),
         (C::Common, A::FocusNext, key(KeyCode::Tab)),
         (C::Common, A::FocusPrev, key(KeyCode::BackTab)),
         (C::Common, A::DeleteChar, key(KeyCode::Backspace)),
@@ -580,6 +589,7 @@ mod tests {
     #[test]
     fn ctrl_and_arrow_formatting() {
         assert_eq!(format_chord(parse_chord("ctrl+r").unwrap()), "^R");
+        assert_eq!(format_chord(parse_chord("ctrl+q").unwrap()), "^Q");
         assert_eq!(format_chord(parse_chord("left").unwrap()), "←");
         assert_eq!(format_chord(parse_chord("right").unwrap()), "→");
         assert_eq!(chord_to_config(parse_chord("ctrl+r").unwrap()), "ctrl+r");
@@ -587,7 +597,7 @@ mod tests {
 
     #[test]
     fn parse_format_round_trip() {
-        for s in ["space", "ctrl+n", "L", ">", "/", "?", "enter", "esc", "backtab", "f5"] {
+        for s in ["space", "ctrl+n", "ctrl+q", "L", ">", "/", "?", "enter", "esc", "backtab", "f5"] {
             let chord = parse_chord(s).unwrap();
             assert_eq!(parse_chord(&chord_to_config(chord)).unwrap(), chord, "round trip {s}");
         }
@@ -604,12 +614,25 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_char_case_is_normalized() {
+        assert_eq!(
+            ev(KeyCode::Char('Q'), KeyModifiers::CONTROL),
+            ev(KeyCode::Char('q'), KeyModifiers::CONTROL)
+        );
+        assert_eq!(chord_to_config(ev(KeyCode::Char('Q'), KeyModifiers::CONTROL)), "ctrl+q");
+    }
+
+    #[test]
     fn defaults_resolve_to_actions() {
         let km = KeyMap::default();
         assert_eq!(km.action(KeyContext::Player, parse_chord("space").unwrap()), Some(Action::TogglePause));
         assert_eq!(km.action(KeyContext::Player, parse_chord("n").unwrap()), Some(Action::NextTrack));
+        assert_eq!(km.action(KeyContext::Player, parse_chord("l").unwrap()), Some(Action::OpenLibrary));
+        assert_eq!(km.action(KeyContext::Player, parse_chord("L").unwrap()), Some(Action::ToggleLyrics));
+        assert_eq!(km.action(KeyContext::Player, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
         // Common nav falls through in a list context.
         assert_eq!(km.action(KeyContext::Library, parse_chord("up").unwrap()), Some(Action::MoveUp));
+        assert_eq!(km.action(KeyContext::Library, parse_chord("ctrl+q").unwrap()), Some(Action::Back));
         assert_eq!(km.global_action(parse_chord("?").unwrap()), Some(Action::ToggleHelp));
     }
 
