@@ -1,0 +1,188 @@
+//! AI-assistant reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+
+use super::*;
+
+impl App {
+    // --- AI assistant -------------------------------------------------------
+
+    /// Enter the AI assistant screen (input focused).
+    pub(in crate::app) fn enter_ai(&mut self) {
+        self.mode = Mode::Ai;
+        self.ai_focus = AiFocus::Input;
+        self.eq_dropdown_open = false;
+        self.radio_dropdown_open = false;
+        self.ai_select_all = false;
+        self.status.clear();
+        self.dirty = true;
+    }
+
+    pub(in crate::app) fn on_key_ai(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        match self.ai_focus {
+            AiFocus::Input => {
+                // Ctrl+A selects the whole prompt (desktop-style); idempotent re-select.
+                if matches!(self.keymap.action(KeyContext::AiInput, k.into()), Some(Action::SelectAll)) {
+                    self.ai_select_all = !self.ai_input.is_empty();
+                    self.dirty = true;
+                    return Vec::new();
+                }
+                // With the prompt selected, the next key consumes the selection: a character
+                // replaces it, Backspace clears it, anything else just deselects + falls through.
+                if std::mem::take(&mut self.ai_select_all) {
+                    self.dirty = true;
+                    let chord = Chord::from(k);
+                    if chord.is_typeable()
+                        && let KeyCode::Char(c) = k.code
+                    {
+                        self.ai_input.clear();
+                        self.ai_input.push(c);
+                        return Vec::new();
+                    }
+                    if matches!(self.keymap.action(KeyContext::AiInput, k.into()), Some(Action::DeleteChar)) {
+                        self.ai_input.clear();
+                        return Vec::new();
+                    }
+                }
+                let chord = Chord::from(k);
+                if chord.is_typeable()
+                    && let KeyCode::Char(c) = k.code
+                {
+                    self.ai_input.push(c);
+                    self.dirty = true;
+                    return Vec::new();
+                }
+                match self.keymap.action(KeyContext::AiInput, k.into()) {
+                    Some(Action::Back) => {
+                        self.mode = Mode::Player;
+                        self.dirty = true;
+                        return Vec::new();
+                    }
+                    Some(Action::Confirm) => return self.submit_ai_prompt(),
+                    Some(Action::DeleteChar) => {
+                        self.ai_input.pop();
+                        self.dirty = true;
+                        return Vec::new();
+                    }
+                    // Drop into the suggestions list (if any) to pick a track.
+                    Some(Action::MoveDown | Action::FocusNext)
+                        if !self.ai_suggestions.is_empty() =>
+                    {
+                        self.ai_focus = AiFocus::Suggestions;
+                        self.dirty = true;
+                        return Vec::new();
+                    }
+                    _ => {}
+                }
+                Vec::new()
+            }
+            AiFocus::Suggestions => match self.keymap.action(KeyContext::AiSuggestions, k.into()) {
+                Some(Action::Back) => {
+                    self.mode = Mode::Player;
+                    self.dirty = true;
+                    Vec::new()
+                }
+                Some(Action::MoveUp) => {
+                    if self.ai_suggestions_selected == 0 {
+                        self.ai_focus = AiFocus::Input;
+                    } else {
+                        self.ai_suggestions_selected -= 1;
+                    }
+                    self.dirty = true;
+                    Vec::new()
+                }
+                Some(Action::MoveDown) => {
+                    if self.ai_suggestions_selected + 1 < self.ai_suggestions.len() {
+                        self.ai_suggestions_selected += 1;
+                    }
+                    self.dirty = true;
+                    Vec::new()
+                }
+                Some(Action::FocusNext) => {
+                    self.ai_focus = AiFocus::Input;
+                    self.dirty = true;
+                    Vec::new()
+                }
+                Some(Action::Confirm) => self.play_ai_suggestion(),
+                _ => Vec::new(),
+            },
+        }
+    }
+
+    /// Submit the typed prompt to the assistant (or show onboarding if no key).
+    pub(in crate::app) fn submit_ai_prompt(&mut self) -> Vec<Cmd> {
+        let prompt = self.ai_input.trim().to_owned();
+        if prompt.is_empty() {
+            return Vec::new();
+        }
+        self.ai_input.clear();
+        self.ai_select_all = false;
+        self.push_ai_message(AiRole::User, prompt.clone());
+        self.dirty = true;
+        if !self.ai_available {
+            self.push_ai_message(
+                AiRole::Error,
+                // Saving a key in Settings now brings the assistant up live (no restart).
+                "No Gemini API key. Add one in Settings (press ,) or set GEMINI_API_KEY."
+                    .to_owned(),
+            );
+            return Vec::new();
+        }
+        // Ignore a new prompt while one is in flight (the spinner is showing).
+        if self.ai_thinking {
+            return Vec::new();
+        }
+        self.ai_thinking = true;
+        vec![Cmd::AskAi {
+            prompt,
+            context: Box::new(self.build_ai_context()),
+        }]
+    }
+
+    /// Play the highlighted suggestion, queuing the whole list from that point.
+    pub(in crate::app) fn play_ai_suggestion(&mut self) -> Vec<Cmd> {
+        if self.ai_suggestions.is_empty() {
+            return Vec::new();
+        }
+        let start = self
+            .ai_suggestions_selected
+            .min(self.ai_suggestions.len() - 1);
+        self.queue.set(self.ai_suggestions.clone(), start);
+        self.status.clear();
+        let song = self.queue.current().cloned();
+        self.load_song(song)
+    }
+
+    /// Append a line to the AI transcript, bounding its length.
+    pub(in crate::app) fn push_ai_message(&mut self, role: AiRole, text: String) {
+        self.ai_messages.push(AiMessage { role, text });
+        if self.ai_messages.len() > AI_HISTORY_MAX {
+            let overflow = self.ai_messages.len() - AI_HISTORY_MAX;
+            self.ai_messages.drain(0..overflow);
+        }
+    }
+
+    /// Snapshot the read-only state the AI actor needs to answer its read tools.
+    pub(in crate::app) fn build_ai_context(&self) -> AiContext {
+        let fmt = |s: &Song| format!("{} — {}", s.title, s.artist);
+        AiContext {
+            current_track: self.queue.current().map(fmt),
+            queue_upcoming: self.queue.upcoming(10).into_iter().map(fmt).collect(),
+            queue_len: self.queue.len(),
+            queue_remaining: self.queue.remaining(),
+            recent_history: self.library.history.iter().take(5).map(fmt).collect(),
+            favorites: self.library.favorites.iter().take(20).map(fmt).collect(),
+            playlists: self
+                .playlists
+                .list()
+                .iter()
+                .map(|p| PlaylistInfo {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    count: p.songs.len(),
+                })
+                .collect(),
+            authenticated: self.authenticated,
+            autoplay_radio: self.autoplay_radio,
+        }
+    }
+
+}
