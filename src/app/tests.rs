@@ -642,9 +642,9 @@ fn r_cycles_repeat_and_s_toggles_shuffle() {
 #[test]
 fn e_cycles_eq_preset_and_emits_filter() {
     let mut app = app_playing(3, 0);
-    assert_eq!(app.eq_preset, EqPreset::Flat);
+    assert_eq!(app.audio.preset, EqPreset::Flat);
     let cmds = app.update(Msg::Key(key(KeyCode::Char('e'))));
-    assert_eq!(app.eq_preset, EqPreset::BassBoost);
+    assert_eq!(app.audio.preset, EqPreset::BassBoost);
     assert!(
         af(&cmds)
             .expect("a SetAudioFilter cmd")
@@ -655,7 +655,7 @@ fn e_cycles_eq_preset_and_emits_filter() {
     for _ in 0..(EqPreset::CYCLE.len() - 1) {
         last = app.update(Msg::Key(key(KeyCode::Char('e'))));
     }
-    assert_eq!(app.eq_preset, EqPreset::Flat);
+    assert_eq!(app.audio.preset, EqPreset::Flat);
     assert_eq!(af(&last), Some(""));
 }
 
@@ -663,14 +663,14 @@ fn e_cycles_eq_preset_and_emits_filter() {
 fn shift_n_toggles_normalization() {
     let mut app = app_playing(3, 0);
     let cmds = app.update(Msg::Key(key(KeyCode::Char('N'))));
-    assert!(app.normalize);
+    assert!(app.audio.normalize);
     assert!(
         af(&cmds)
             .expect("a SetAudioFilter cmd")
             .contains("dynaudnorm")
     );
     let cmds = app.update(Msg::Key(key(KeyCode::Char('N'))));
-    assert!(!app.normalize);
+    assert!(!app.audio.normalize);
     assert_eq!(af(&cmds), Some(""));
 }
 
@@ -705,7 +705,7 @@ fn ctrl_r_toggles_autoplay_radio() {
 #[test]
 fn load_song_reapplies_active_eq_chain() {
     let mut app = app_playing(3, 0);
-    app.eq_bands = EqPreset::BassBoost.gains();
+    app.audio.bands = EqPreset::BassBoost.gains();
     // A manual skip reloads the track and must re-send the EQ chain (gapless rebuild
     // can otherwise drop the labeled bands).
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
@@ -728,11 +728,11 @@ fn apply_config_pushes_playback_settings() {
     };
     let mut app = App::new(100);
     app.apply_config(&cfg);
-    assert_eq!(app.eq_preset, EqPreset::Vocal);
-    assert_eq!(app.eq_bands, EqPreset::Vocal.gains());
-    assert!(app.normalize);
+    assert_eq!(app.audio.preset, EqPreset::Vocal);
+    assert_eq!(app.audio.bands, EqPreset::Vocal.gains());
+    assert!(app.audio.normalize);
     assert!((app.playback.speed - 1.5).abs() < 1e-9);
-    assert!((app.seek_seconds - 30.0).abs() < 1e-9);
+    assert!((app.audio.seek_seconds - 30.0).abs() < 1e-9);
     assert!(app.autoplay_radio);
 }
 
@@ -2764,8 +2764,8 @@ fn selecting_eq_preset_applies_and_closes_dropdown() {
         MouseTarget::EqSelect(EqPreset::Vocal),
     );
     let cmds = app.update(Msg::MouseClick { col: 33, row: 6 });
-    assert_eq!(app.eq_preset, EqPreset::Vocal);
-    assert_eq!(app.eq_bands, EqPreset::Vocal.gains());
+    assert_eq!(app.audio.preset, EqPreset::Vocal);
+    assert_eq!(app.audio.bands, EqPreset::Vocal.gains());
     assert!(!app.dropdowns.eq_open);
     assert!(matches!(
         cmds.as_slice(),

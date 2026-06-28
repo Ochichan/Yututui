@@ -210,12 +210,12 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         parts.push((None, format!("    {:.1}x", app.playback.speed)));
     }
     parts.push((None, "    ".to_owned()));
-    parts.push((Some(MouseTarget::EqMenu), format!("eq:{}", app.eq_preset.label())));
+    parts.push((Some(MouseTarget::EqMenu), format!("eq:{}", app.audio.preset.label())));
     // Faux VU bars trail the EQ label when the EQ-bars animation is on (no-op otherwise).
     if let Some(bars) = crate::ui::anim::eq_bars(app) {
         parts.push((None, format!("    {bars}")));
     }
-    if app.normalize {
+    if app.audio.normalize {
         parts.push((None, format!("    {}", t!("norm", "평준화"))));
     }
     if app.autoplay_radio {
@@ -349,7 +349,7 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
 fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
     let rows: Vec<(String, bool, MouseTarget)> = crate::eq::EqPreset::CYCLE
         .iter()
-        .map(|p| (p.label().to_owned(), *p == app.eq_preset, MouseTarget::EqSelect(*p)))
+        .map(|p| (p.label().to_owned(), *p == app.audio.preset, MouseTarget::EqSelect(*p)))
         .collect();
     render_dropdown(frame, app, area, MouseTarget::EqMenu, " EQ ", &rows);
 }

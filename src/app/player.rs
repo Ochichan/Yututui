@@ -6,7 +6,7 @@ impl App {
     /// The mpv `af` filter chain for the current EQ + normalization state, or `None` when
     /// nothing is active (the caller then clears `af`).
     pub(in crate::app) fn current_af(&self) -> Option<String> {
-        eq::build_af_string(&self.eq_bands, self.normalize)
+        eq::build_af_string(&self.audio.bands, self.audio.normalize)
     }
 
     /// Change playback speed by `delta`, clamped and rounded to one decimal, and emit the
@@ -112,8 +112,8 @@ impl App {
     /// Apply an EQ preset chosen from the dropdown and close it. Mirrors the `e`-key cycle
     /// ([`Action::CycleEq`]) — applied live to mpv, session-scoped (persisted via Settings).
     pub(in crate::app) fn select_eq_preset(&mut self, preset: EqPreset) -> Vec<Cmd> {
-        self.eq_preset = preset;
-        self.eq_bands = preset.gains();
+        self.audio.preset = preset;
+        self.audio.bands = preset.gains();
         self.dropdowns.eq_open = false;
         self.status.text = format!("EQ: {}", preset.label());
         self.dirty = true;
@@ -157,8 +157,8 @@ impl App {
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::CyclePause)]
             }
-            Action::SeekBack => vec![Cmd::Player(PlayerCmd::SeekRelative(-self.seek_seconds))],
-            Action::SeekForward => vec![Cmd::Player(PlayerCmd::SeekRelative(self.seek_seconds))],
+            Action::SeekBack => vec![Cmd::Player(PlayerCmd::SeekRelative(-self.audio.seek_seconds))],
+            Action::SeekForward => vec![Cmd::Player(PlayerCmd::SeekRelative(self.audio.seek_seconds))],
             Action::VolUp => {
                 self.playback.volume = (self.playback.volume + VOLUME_STEP).min(VOLUME_MAX);
                 self.dirty = true;
@@ -261,22 +261,22 @@ impl App {
             }
             // Cycle the EQ preset and apply it immediately.
             Action::CycleEq => {
-                self.eq_preset = self.eq_preset.cycled();
-                self.eq_bands = self.eq_preset.gains();
+                self.audio.preset = self.audio.preset.cycled();
+                self.audio.bands = self.audio.preset.gains();
                 self.dropdowns.eq_open = false;
                 self.dropdowns.radio_open = false;
-                self.status.text = format!("EQ: {}", self.eq_preset.label());
+                self.status.text = format!("EQ: {}", self.audio.preset.label());
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(
                     self.current_af().unwrap_or_default(),
                 ))]
             }
             Action::ToggleNormalize => {
-                self.normalize = !self.normalize;
+                self.audio.normalize = !self.audio.normalize;
                 self.status.text = format!(
                     "{}: {}",
                     t!("Normalize", "음량 평준화"),
-                    if self.normalize { "✓" } else { "✗" }
+                    if self.audio.normalize { "✓" } else { "✗" }
                 );
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(

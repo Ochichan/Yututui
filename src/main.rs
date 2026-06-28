@@ -186,7 +186,7 @@ async fn run(
                     value: serde_json::Value::from(app.playback.speed),
                 });
             }
-            if let Some(af) = crate::eq::build_af_string(&app.eq_bands, app.normalize) {
+            if let Some(af) = crate::eq::build_af_string(&app.audio.bands, app.audio.normalize) {
                 handle.send(PlayerCmd::SetAudioFilter(af));
             }
             // The M1 demo track is now opt-in; normal startup is idle until the user

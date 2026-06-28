@@ -140,14 +140,10 @@ pub struct App {
     video: Video,
 
     // Audio / EQ --------------------------------------------------------------
-    /// Selected equalizer preset (drives `eq_bands` when chosen via `e`).
-    pub eq_preset: EqPreset,
-    /// Current per-band gains (dB); editable live from the settings screen.
-    pub eq_bands: [f64; eq::BANDS],
-    /// Loudness normalization (`dynaudnorm`) on/off.
-    pub normalize: bool,
-    /// Seconds jumped per seek-back/-forward key (configurable; default 10s).
-    pub seek_seconds: f64,
+    /// Live audio-processing settings (EQ preset + per-band gains, loudness normalization, and
+    /// the seek step) — the in-session working copy mpv's filter chain is built from, mirrored
+    /// from the persisted `config` (see [`AudioEq`]).
+    pub audio: AudioEq,
     /// Auto-extend the queue with related tracks when it runs low (radio mode).
     pub autoplay_radio: bool,
     /// The two mutually-exclusive player status-line dropdowns (EQ preset + radio mode); both
@@ -249,10 +245,7 @@ impl App {
             status: Status::default(),
             video: Video::default(),
             anim_frame: 0,
-            eq_preset: EqPreset::default(),
-            eq_bands: [0.0; eq::BANDS],
-            normalize: false,
-            seek_seconds: crate::config::SEEK_SECONDS_DEFAULT,
+            audio: AudioEq::default(),
             autoplay_radio: false,
             dropdowns: Dropdowns::default(),
             queue_popup: QueuePopup::default(),
@@ -297,11 +290,11 @@ impl App {
     /// from `new` (whose `volume`-only signature many tests rely on) so `main` can apply
     /// the full config without churning those call sites.
     pub fn apply_config(&mut self, cfg: &Config) {
-        self.eq_preset = cfg.eq_preset;
-        self.eq_bands = cfg.effective_eq_bands();
-        self.normalize = cfg.effective_normalize();
+        self.audio.preset = cfg.eq_preset;
+        self.audio.bands = cfg.effective_eq_bands();
+        self.audio.normalize = cfg.effective_normalize();
         self.playback.speed = cfg.effective_speed();
-        self.seek_seconds = cfg.effective_seek_seconds();
+        self.audio.seek_seconds = cfg.effective_seek_seconds();
         self.autoplay_radio = cfg.effective_autoplay_radio();
         self.ai.available = cfg.effective_ai_key().is_some();
         self.ai.model = cfg.effective_gemini_model();

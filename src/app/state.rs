@@ -6,6 +6,33 @@
 
 use super::*;
 
+/// Live audio-processing settings: the active EQ preset and its per-band gains, loudness
+/// normalization, and the seek step. The in-session working copy mpv's filter chain is built
+/// from — distinct from the persisted defaults in [`Config`].
+pub struct AudioEq {
+    /// Selected equalizer preset (drives `bands` when chosen via `e`).
+    pub preset: EqPreset,
+    /// Current per-band gains (dB); editable live from the settings screen.
+    pub bands: [f64; eq::BANDS],
+    /// Loudness normalization (`dynaudnorm`) on/off.
+    pub normalize: bool,
+    /// Seconds jumped per seek-back/-forward key (configurable; default 10s).
+    pub seek_seconds: f64,
+}
+
+impl Default for AudioEq {
+    fn default() -> Self {
+        // Matches the historical flat-field init in `App::new` (apply_config overlays the
+        // persisted values afterwards); seek_seconds is non-zero so this can't derive.
+        Self {
+            preset: EqPreset::default(),
+            bands: [0.0; eq::BANDS],
+            normalize: false,
+            seek_seconds: crate::config::SEEK_SECONDS_DEFAULT,
+        }
+    }
+}
+
 /// Render→reducer bridges: state the render pass (which only has `&App`) writes so the reducer
 /// can read it on the next event. The plan keeps these together so the one place render reaches
 /// back into the reducer is visible at a glance and never split across domains.

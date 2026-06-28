@@ -22,13 +22,13 @@ impl App {
             album_art: self.config.effective_album_art(),
             autoplay_on_start: self.config.effective_autoplay_on_start(),
             speed: self.playback.speed,
-            seek_seconds: self.seek_seconds,
+            seek_seconds: self.audio.seek_seconds,
             gapless: self.config.effective_gapless(),
             autoplay_radio: self.autoplay_radio,
             radio_mode: self.config.radio.mode,
-            eq_preset: self.eq_preset,
-            eq_bands: self.eq_bands,
-            normalize: self.normalize,
+            eq_preset: self.audio.preset,
+            eq_bands: self.audio.bands,
+            normalize: self.audio.normalize,
             gemini_model: self.ai.model,
             // Deliberately the *raw* config key, not `effective_gemini_api_key()`: seeding the
             // env-provided value would let a save copy it into config.json (persisting a key
@@ -735,10 +735,10 @@ impl App {
         self.dirty = true;
         let d = &st.draft;
         self.playback.speed = d.speed;
-        self.seek_seconds = d.seek_seconds;
-        self.eq_bands = d.eq_bands;
-        self.eq_preset = d.eq_preset;
-        self.normalize = d.normalize;
+        self.audio.seek_seconds = d.seek_seconds;
+        self.audio.bands = d.eq_bands;
+        self.audio.preset = d.eq_preset;
+        self.audio.normalize = d.normalize;
         self.autoplay_radio = d.autoplay_radio;
         let model_changed = self.ai.model != d.gemini_model;
         self.ai.model = d.gemini_model;
