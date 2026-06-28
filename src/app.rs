@@ -27,7 +27,7 @@ use crate::lyrics::LyricLine;
 use crate::player::PlayerCmd;
 use crate::playlists::Playlists;
 use crate::queue::Queue;
-use crate::radio::{self, CandidateSource, Cooc, StationState};
+use crate::radio::{self, CandidateSource, Cooc, RadioMode, StationState};
 use crate::settings::{self, Field, FieldKind, SettingsDraft, SettingsState, SettingsTab};
 use crate::signals::{self, Signals};
 use crate::theme::{ThemeConfig, ThemeRole};
@@ -266,6 +266,10 @@ pub enum MouseTarget {
     EqMenu,
     /// Pick an EQ preset from the open dropdown.
     EqSelect(EqPreset),
+    /// Open/close the radio-mode dropdown on the player status line (clicking the `radio:` label).
+    RadioMenu,
+    /// Pick a radio mode from the open dropdown.
+    RadioSelect(RadioMode),
     /// A nav-bar item — switch to that screen from any screen.
     Nav(Mode),
     /// The search bar's submit button.
@@ -484,6 +488,9 @@ pub struct App {
     /// Player-only and session-ephemeral: toggled by clicking the `eq:` label, dismissed
     /// by picking a preset or clicking elsewhere.
     pub eq_dropdown_open: bool,
+    /// Same as [`Self::eq_dropdown_open`] but for the `radio:` mode dropdown. Mutually
+    /// exclusive with it (opening one closes the other).
+    pub radio_dropdown_open: bool,
     /// Whether the queue window (opened by clicking the `N/M` position label) is showing.
     /// Player-only overlay; while open it captures the keyboard (nav / Delete / Enter).
     pub queue_popup_open: bool,
@@ -646,6 +653,7 @@ impl App {
             seek_seconds: crate::config::SEEK_SECONDS_DEFAULT,
             autoplay_radio: false,
             eq_dropdown_open: false,
+            radio_dropdown_open: false,
             queue_popup_open: false,
             queue_popup_cursor: 0,
             queue_popup_anchor: 0,
@@ -1263,6 +1271,7 @@ impl App {
     fn go_home(&mut self) -> Vec<Cmd> {
         self.help_visible = false;
         self.eq_dropdown_open = false;
+        self.radio_dropdown_open = false;
         self.queue_popup_open = false;
         self.confirm_delete_files = None;
         if self.mode == Mode::Settings {
@@ -1340,10 +1349,11 @@ impl App {
         if let Some(target) = self.mouse_target_at(col, row) {
             return self.on_mouse_target(target);
         }
-        // A click that missed every button dismisses the EQ dropdown (modal-style), so the
-        // same click doesn't also seek.
-        if self.eq_dropdown_open {
+        // A click that missed every button dismisses an open status-line dropdown (modal-style),
+        // so the same click doesn't also seek.
+        if self.eq_dropdown_open || self.radio_dropdown_open {
             self.eq_dropdown_open = false;
+            self.radio_dropdown_open = false;
             self.dirty = true;
             return Vec::new();
         }
@@ -1377,8 +1387,9 @@ impl App {
                 self.on_player_action(action)
             }
             MouseTarget::Player(_) => Vec::new(),
-            // Toggle the EQ dropdown by clicking its `eq:` label.
+            // Toggle the EQ dropdown by clicking its `eq:` label (closes the radio one).
             MouseTarget::EqMenu if self.mode == Mode::Player => {
+                self.radio_dropdown_open = false;
                 self.eq_dropdown_open = !self.eq_dropdown_open;
                 self.dirty = true;
                 Vec::new()
@@ -1389,6 +1400,19 @@ impl App {
                 self.select_eq_preset(preset)
             }
             MouseTarget::EqSelect(_) => Vec::new(),
+            // Toggle the radio-mode dropdown by clicking its `radio:` label (closes the EQ one).
+            MouseTarget::RadioMenu if self.mode == Mode::Player => {
+                self.eq_dropdown_open = false;
+                self.radio_dropdown_open = !self.radio_dropdown_open;
+                self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::RadioMenu => Vec::new(),
+            // Pick a radio mode from the open dropdown.
+            MouseTarget::RadioSelect(mode) if self.mode == Mode::Player => {
+                self.select_radio_mode(mode)
+            }
+            MouseTarget::RadioSelect(_) => Vec::new(),
             // Nav bar: switch screens from anywhere.
             MouseTarget::Nav(mode) => self.navigate_to(mode),
             // Search bar submit button.
@@ -1499,6 +1523,7 @@ impl App {
     /// path so edits aren't lost; transient overlays are cleared.
     fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
         self.eq_dropdown_open = false;
+        self.radio_dropdown_open = false;
         self.queue_popup_open = false;
         self.confirm_delete_files = None;
         if self.mode == mode {
@@ -1691,6 +1716,14 @@ impl App {
         ))]
     }
 
+    fn select_radio_mode(&mut self, mode: RadioMode) -> Vec<Cmd> {
+        self.config.radio.mode = mode;
+        self.radio_dropdown_open = false;
+        self.status = format!("Radio: {}", mode.label());
+        self.dirty = true;
+        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+    }
+
     fn on_key_player(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.keymap.action(KeyContext::Player, k.into()) {
             Some(action) => self.on_player_action(action),
@@ -1775,6 +1808,7 @@ impl App {
                 self.mode = Mode::Library;
                 self.library_selected = 0;
                 self.eq_dropdown_open = false;
+                self.radio_dropdown_open = false;
                 self.dirty = true;
                 Vec::new()
             }
@@ -1814,6 +1848,7 @@ impl App {
                 self.eq_preset = self.eq_preset.cycled();
                 self.eq_bands = self.eq_preset.gains();
                 self.eq_dropdown_open = false;
+                self.radio_dropdown_open = false;
                 self.status = format!("EQ: {}", self.eq_preset.label());
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(
@@ -1842,6 +1877,7 @@ impl App {
                 self.mode = Mode::Search;
                 self.search_focus = SearchFocus::Input;
                 self.eq_dropdown_open = false;
+                self.radio_dropdown_open = false;
                 self.dirty = true;
                 Vec::new()
             }
@@ -2018,6 +2054,7 @@ impl App {
     /// editable draft.
     fn open_settings(&mut self) {
         self.eq_dropdown_open = false;
+        self.radio_dropdown_open = false;
         let path_str = |p: &Option<std::path::PathBuf>| {
             p.as_ref()
                 .map(|p| p.display().to_string())
@@ -2724,6 +2761,7 @@ impl App {
         self.mode = Mode::Ai;
         self.ai_focus = AiFocus::Input;
         self.eq_dropdown_open = false;
+        self.radio_dropdown_open = false;
         self.status.clear();
         self.dirty = true;
     }
@@ -3475,13 +3513,14 @@ impl App {
     }
 
     /// Whether a popup that paints *over* the album-art band is currently open (today: the
-    /// `eq:` preset dropdown). The render loop watches this so it can force one full redraw
-    /// when such a popup closes — graphics-protocol art (`StatefulProtocol`) won't re-emit on
-    /// its own when the render area is unchanged, so an overlay that overpainted it would
-    /// otherwise leave a stale artifact. Extend this predicate if another `Clear` popup that
-    /// can cover the art (e.g. the queue popup) shows the same artifact.
+    /// `eq:` preset dropdown or the `radio:` mode dropdown). The render loop watches this so it
+    /// can force one full redraw when such a popup closes — graphics-protocol art
+    /// (`StatefulProtocol`) won't re-emit on its own when the render area is unchanged, so an
+    /// overlay that overpainted it would otherwise leave a stale artifact. Extend this predicate
+    /// if another `Clear` popup that can cover the art (e.g. the queue popup) shows the same
+    /// artifact.
     pub fn art_overlay_open(&self) -> bool {
-        self.eq_dropdown_open
+        self.eq_dropdown_open || self.radio_dropdown_open
     }
 
     /// Turn a decoded image into a render-ready protocol (or clear when there's none / no
@@ -5987,6 +6026,92 @@ mod tests {
         let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
         assert!(!app.eq_dropdown_open);
         assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn art_overlay_open_tracks_radio_dropdown() {
+        // The radio dropdown overpaints the art band just like the EQ one, so the render loop's
+        // repaint edge must fire for it too.
+        let mut app = app_playing(1, 0);
+        assert!(!app.art_overlay_open());
+        app.radio_dropdown_open = true;
+        assert!(app.art_overlay_open());
+        app.radio_dropdown_open = false;
+        assert!(!app.art_overlay_open());
+    }
+
+    #[test]
+    fn rendering_player_registers_radio_menu_when_autoplay_on() {
+        let mut app = app_playing(2, 0);
+        app.autoplay_radio = true;
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+        assert!(
+            app.mouse_buttons
+                .borrow()
+                .iter()
+                .any(|b| b.target == MouseTarget::RadioMenu)
+        );
+    }
+
+    #[test]
+    fn radio_dropdown_renders_mode_rows_when_open() {
+        let mut app = app_playing(2, 0);
+        app.autoplay_radio = true;
+        app.radio_dropdown_open = true;
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+        let buttons = app.mouse_buttons.borrow();
+        for mode in crate::radio::RadioMode::CYCLE {
+            assert!(
+                buttons
+                    .iter()
+                    .any(|b| b.target == MouseTarget::RadioSelect(mode)),
+                "missing dropdown row for {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clicking_radio_label_closes_eq_and_opens_radio_dropdown() {
+        let mut app = app_playing(1, 0);
+        // Open the EQ dropdown first to prove the two are mutually exclusive.
+        app.eq_dropdown_open = true;
+        app.register_mouse_button(
+            Rect {
+                x: 40,
+                y: 4,
+                width: 14,
+                height: 1,
+            },
+            MouseTarget::RadioMenu,
+        );
+        assert!(app.update(Msg::MouseClick { col: 42, row: 4 }).is_empty());
+        assert!(app.radio_dropdown_open);
+        assert!(!app.eq_dropdown_open);
+    }
+
+    #[test]
+    fn selecting_radio_mode_applies_and_persists() {
+        use crate::radio::RadioMode;
+        let mut app = app_playing(1, 0);
+        app.radio_dropdown_open = true;
+        app.register_mouse_button(
+            Rect {
+                x: 40,
+                y: 6,
+                width: 9,
+                height: 1,
+            },
+            MouseTarget::RadioSelect(RadioMode::Discovery),
+        );
+        let cmds = app.update(Msg::MouseClick { col: 43, row: 6 });
+        assert_eq!(app.config.radio.mode, RadioMode::Discovery);
+        assert!(!app.radio_dropdown_open);
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
     }
 
     // --- Mouse: nav bar, clickable lists/tabs, and the queue window --------------

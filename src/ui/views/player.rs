@@ -90,9 +90,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
     buttons::render_help_button(frame, app, rows[7]);
 
-    // The EQ preset dropdown draws over the screen so its rows win hit-testing.
+    // The status-line dropdowns draw over the screen so their rows win hit-testing.
     if app.eq_dropdown_open {
         render_eq_dropdown(frame, app, inner);
+    }
+    if app.radio_dropdown_open {
+        render_radio_dropdown(frame, app, inner);
     }
     // The queue window draws last of all so it sits on top and its rects win.
     app.queue_popup_rect.set(None);
@@ -161,9 +164,13 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         parts.push((None, "    norm".to_owned()));
     }
     if app.autoplay_radio {
-        // Show the station's mode (Focused/Balanced/Discovery) so the setting is visible
-        // where it takes effect, styled like the `eq:`/`norm` labels next to it.
-        parts.push((None, format!("    radio:{}", app.config.radio.mode.label().to_lowercase())));
+        // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
+        // mode dropdown — same affordance as the `eq:` label next to it.
+        parts.push((None, "    ".to_owned()));
+        parts.push((
+            Some(MouseTarget::RadioMenu),
+            format!("radio:{}", app.config.radio.mode.label().to_lowercase()),
+        ));
     }
     // Download indicator for the current track, if one is in flight or finished.
     if let Some(s) = app.queue.current()
@@ -281,31 +288,58 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The EQ preset dropdown, anchored under the `eq:` label and listing the built-in presets
-/// (the active one marked). Each row is a click target that selects that preset. Drawn over
-/// whatever is beneath it (`Clear`); dismissed by picking a preset or clicking elsewhere.
+/// (the active one highlighted). Each row is a click target that selects that preset.
 fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
-    // Anchor under the `eq:` label, whose hit rect the status line just published.
+    let rows: Vec<(String, bool, MouseTarget)> = crate::eq::EqPreset::CYCLE
+        .iter()
+        .map(|p| (p.label().to_owned(), *p == app.eq_preset, MouseTarget::EqSelect(*p)))
+        .collect();
+    render_dropdown(frame, app, area, MouseTarget::EqMenu, " EQ ", &rows);
+}
+
+/// The radio-mode dropdown, anchored under the `radio:` label and listing the station modes
+/// (the active one highlighted). Each row is a click target that switches the mode. Mirrors
+/// the `eq:` dropdown exactly.
+fn render_radio_dropdown(frame: &mut Frame, app: &App, area: Rect) {
+    let cur = app.config.radio.mode;
+    let rows: Vec<(String, bool, MouseTarget)> = crate::radio::RadioMode::CYCLE
+        .iter()
+        .map(|m| (m.label().to_owned(), *m == cur, MouseTarget::RadioSelect(*m)))
+        .collect();
+    render_dropdown(frame, app, area, MouseTarget::RadioMenu, " Radio ", &rows);
+}
+
+/// Compact dropdown box width: the widest label + a one-cell left inset + two border columns.
+fn dropdown_width<'a>(labels: impl Iterator<Item = &'a str>) -> u16 {
+    labels.map(|l| l.chars().count() as u16).max().unwrap_or(0) + 1 + 2
+}
+
+/// A compact status-line dropdown shared by the `eq:` and `radio:` labels. Anchored under the
+/// label whose hit rect matches `anchor_target`; titled `title`; lists `rows` of
+/// `(label, is_active, click-target)`. The active row is a full-width highlight bar (no arrow
+/// gutter) so the box stays exactly as wide as the longest label. Drawn over whatever is
+/// beneath it (`Clear`); dismissed by picking a row or clicking elsewhere.
+fn render_dropdown(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    anchor_target: MouseTarget,
+    title: &str,
+    rows: &[(String, bool, MouseTarget)],
+) {
+    // Anchor under the label, whose hit rect the status line just published.
     let Some(anchor) = app
         .mouse_buttons
         .borrow()
         .iter()
-        .find(|b| b.target == MouseTarget::EqMenu)
+        .find(|b| b.target == anchor_target)
         .map(|b| b.rect)
     else {
         return;
     };
 
-    let presets = crate::eq::EqPreset::CYCLE;
-    // Hug the content: the widest label + a one-cell left inset + two border columns. The
-    // active preset is shown as a full-width highlight bar (no arrow gutter), so the box stays
-    // exactly as wide as the longest name ("Treble Boost") needs and no wider.
-    let label_w = presets
-        .iter()
-        .map(|p| p.label().chars().count() as u16)
-        .max()
-        .unwrap_or(0);
-    let box_w = label_w + 1 + 2;
-    let box_h = presets.len() as u16 + 2;
+    let box_w = dropdown_width(rows.iter().map(|(l, _, _)| l.as_str()));
+    let box_h = rows.len() as u16 + 2;
     // Drop below the label; clamp against the right/bottom edges so the box stays on screen.
     let x = anchor.x.min(area.right().saturating_sub(box_w));
     let y = (anchor.y + 1).min(area.bottom().saturating_sub(box_h));
@@ -316,26 +350,25 @@ fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(Clear, popup);
     let block = Block::default()
-        .title(" EQ ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
         .style(app.theme.style(R::TextPrimary));
     let list = block.inner(popup);
     frame.render_widget(block, popup);
 
-    for (i, preset) in presets.iter().enumerate() {
+    for (i, (label, active, target)) in rows.iter().enumerate() {
         let i = i as u16;
         if i >= list.height {
             break; // out of room (tiny terminal) — don't register off-box rows
         }
         let row = Rect { x: list.x, y: list.y + i, width: list.width, height: 1 };
-        let selected = *preset == app.eq_preset;
-        // One-cell inset, then pad to the full row width so the active preset's highlight bar
-        // spans the row (the trailing cells read as the selection bar, not as empty box).
-        let mut text = format!(" {}", preset.label());
+        // One-cell inset, then pad to the full row width so the active row's highlight bar
+        // spans it (the trailing cells read as the selection bar, not as empty box).
+        let mut text = format!(" {label}");
         let pad = (list.width as usize).saturating_sub(text.chars().count());
         text.push_str(&" ".repeat(pad));
-        let style = if selected {
+        let style = if *active {
             Style::default()
                 .fg(app.theme.color(R::SelectionFg))
                 .bg(app.theme.color(R::SelectionBg))
@@ -344,7 +377,7 @@ fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
             app.theme.style(R::TextPrimary)
         };
         frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
-        app.register_mouse_button(row, MouseTarget::EqSelect(*preset));
+        app.register_mouse_button(row, *target);
     }
 }
 

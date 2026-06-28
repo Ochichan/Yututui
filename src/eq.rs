@@ -57,8 +57,8 @@ impl EqPreset {
     pub fn label(self) -> &'static str {
         match self {
             EqPreset::Flat => "Flat",
-            EqPreset::BassBoost => "Bass Boost",
-            EqPreset::TrebleBoost => "Treble Boost",
+            EqPreset::BassBoost => "Bass",
+            EqPreset::TrebleBoost => "Treble",
             EqPreset::Vocal => "Vocal",
             EqPreset::Rock => "Rock",
             EqPreset::Jazz => "Jazz",
