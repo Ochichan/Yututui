@@ -19,6 +19,27 @@ pub enum RadioMode {
 }
 
 impl RadioMode {
+    /// All modes in toggle order (the settings cycle steps through these).
+    pub const CYCLE: [RadioMode; 3] =
+        [RadioMode::Focused, RadioMode::Balanced, RadioMode::Discovery];
+
+    /// A short human label for the settings field and the player status line.
+    pub fn label(self) -> &'static str {
+        match self {
+            RadioMode::Focused => "Focused",
+            RadioMode::Balanced => "Balanced",
+            RadioMode::Discovery => "Discovery",
+        }
+    }
+
+    /// The next mode when stepping the toggle forward/backward (wraps both ways).
+    pub fn cycled(self, forward: bool) -> Self {
+        let i = Self::CYCLE.iter().position(|&m| m == self).unwrap_or(1);
+        let n = Self::CYCLE.len();
+        let j = if forward { (i + 1) % n } else { (i + n - 1) % n };
+        Self::CYCLE[j]
+    }
+
     /// MMR relevance/diversity trade-off: higher = more relevance, less diversity. Tuned
     /// down from typical playlist values because a *radio* wants more variety than a
     /// hand-built playlist (research: 0.55–0.65 reads best for stations).
@@ -181,6 +202,16 @@ mod tests {
     fn default_mode_is_balanced() {
         assert_eq!(RadioMode::default(), RadioMode::Balanced);
         assert_eq!(RadioConfig::default().mode, RadioMode::Balanced);
+    }
+
+    #[test]
+    fn mode_cycles_through_all_three_both_ways() {
+        assert_eq!(RadioMode::Balanced.cycled(true), RadioMode::Discovery);
+        assert_eq!(RadioMode::Discovery.cycled(true), RadioMode::Focused); // wraps
+        assert_eq!(RadioMode::Focused.cycled(false), RadioMode::Discovery); // wraps back
+        // Every mode has a distinct, non-empty label.
+        let labels: Vec<&str> = RadioMode::CYCLE.iter().map(|m| m.label()).collect();
+        assert_eq!(labels, vec!["Focused", "Balanced", "Discovery"]);
     }
 
     #[test]

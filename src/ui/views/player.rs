@@ -161,7 +161,9 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         parts.push((None, "    norm".to_owned()));
     }
     if app.autoplay_radio {
-        parts.push((None, "    radio".to_owned()));
+        // Show the station's mode (Focused/Balanced/Discovery) so the setting is visible
+        // where it takes effect, styled like the `eq:`/`norm` labels next to it.
+        parts.push((None, format!("    radio:{}", app.config.radio.mode.label().to_lowercase())));
     }
     // Download indicator for the current track, if one is in flight or finished.
     if let Some(s) = app.queue.current()

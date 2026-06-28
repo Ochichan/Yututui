@@ -16,6 +16,7 @@ use crate::config::{
 };
 use crate::eq::{self, EqPreset};
 use crate::keymap::{Action, KeyContext, KeyMap};
+use crate::radio::RadioMode;
 use crate::theme::{ThemeConfig, ThemeRole};
 
 /// Per-band gain limits and keyboard step (dB), for the EQ sliders.
@@ -93,7 +94,9 @@ impl SettingsTab {
                 f.push(Field::Normalize);
                 f
             }
-            SettingsTab::Ai => vec![Field::GeminiModel, Field::ApiKey, Field::AutoplayRadio],
+            SettingsTab::Ai => {
+                vec![Field::GeminiModel, Field::ApiKey, Field::AutoplayRadio, Field::RadioMode]
+            }
             SettingsTab::Theme => vec![Field::ThemePreset],
             SettingsTab::Colors => ThemeRole::ALL.iter().copied().map(Field::ThemeColor).collect(),
             // The Keys tab is a list of remappable bindings, not `Field`s; it has its own
@@ -128,6 +131,8 @@ pub enum Field {
     GeminiModel,
     ApiKey,
     AutoplayRadio,
+    /// The radio station's adventurousness (Focused / Balanced / Discovery).
+    RadioMode,
     // Theme
     ThemePreset,
     ThemeColor(ThemeRole),
@@ -154,7 +159,9 @@ impl Field {
             Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => FieldKind::Text,
             Field::Mouse | Field::AlbumArt | Field::AutoplayOnStart | Field::Gapless
             | Field::AutoplayRadio | Field::Normalize => FieldKind::Toggle,
-            Field::EqPreset | Field::GeminiModel | Field::ThemePreset => FieldKind::Select,
+            Field::EqPreset | Field::GeminiModel | Field::ThemePreset | Field::RadioMode => {
+                FieldKind::Select
+            }
             Field::Speed | Field::SeekInterval | Field::Band(_) => FieldKind::Slider,
             Field::ResetKeybindings | Field::ResetAll => FieldKind::Button,
         }
@@ -173,6 +180,7 @@ impl Field {
             Field::SeekInterval => "Seek interval".to_owned(),
             Field::Gapless => "Gapless (next launch)".to_owned(),
             Field::AutoplayRadio => "Autoplay radio".to_owned(),
+            Field::RadioMode => "Radio mode".to_owned(),
             Field::EqPreset => "Preset".to_owned(),
             Field::Band(i) => format!("{:>5}", freq_label(i)),
             Field::Normalize => "Normalize (loudness)".to_owned(),
@@ -212,6 +220,8 @@ pub struct SettingsDraft {
     pub seek_seconds: f64,
     pub gapless: bool,
     pub autoplay_radio: bool,
+    /// The radio station's adventurousness (drives MMR λ, sampling temperature, artist spacing).
+    pub radio_mode: RadioMode,
     pub eq_preset: EqPreset,
     pub eq_bands: [f64; eq::BANDS],
     pub normalize: bool,
@@ -251,6 +261,7 @@ impl SettingsDraft {
             Field::ResetKeybindings | Field::ResetAll => "↵ press Enter".to_owned(),
             Field::Gapless => toggle_str(self.gapless),
             Field::AutoplayRadio => toggle_str(self.autoplay_radio),
+            Field::RadioMode => self.radio_mode.label().to_owned(),
             Field::EqPreset => self.eq_preset.label().to_owned(),
             Field::Band(i) => format!("{:+.0} dB", self.eq_bands[i]),
             Field::Normalize => toggle_str(self.normalize),
@@ -294,6 +305,7 @@ impl SettingsDraft {
         cfg.seek_seconds = Some(self.seek_seconds);
         cfg.gapless = Some(self.gapless);
         cfg.autoplay_radio = Some(self.autoplay_radio);
+        cfg.radio.mode = self.radio_mode;
         cfg.eq_preset = self.eq_preset;
         // Store the explicit band array only when it diverges from the preset's gains, so
         // a plain preset choice stays compact in config.json.
@@ -384,6 +396,7 @@ mod tests {
             seek_seconds: 10.0,
             gapless: true,
             autoplay_radio: false,
+            radio_mode: RadioMode::Balanced,
             eq_preset: EqPreset::Flat,
             eq_bands: EqPreset::Flat.gains(),
             normalize: false,
@@ -431,13 +444,20 @@ mod tests {
     }
 
     #[test]
-    fn ai_tab_has_model_key_and_autoplay() {
+    fn ai_tab_has_model_key_autoplay_and_radio_mode() {
         let f = SettingsTab::Ai.fields();
-        assert_eq!(f, vec![Field::GeminiModel, Field::ApiKey, Field::AutoplayRadio]);
+        assert_eq!(
+            f,
+            vec![Field::GeminiModel, Field::ApiKey, Field::AutoplayRadio, Field::RadioMode]
+        );
         assert_eq!(Field::GeminiModel.kind(), FieldKind::Select);
         assert_eq!(Field::ApiKey.kind(), FieldKind::Text);
         assert!(Field::ApiKey.is_secret());
         assert!(!Field::GeminiModel.is_secret());
+        // The radio mode is a non-secret cycle field.
+        assert_eq!(Field::RadioMode.kind(), FieldKind::Select);
+        assert!(!Field::RadioMode.is_secret());
+        assert_eq!(base_draft().value_display(Field::RadioMode), "Balanced");
     }
 
     #[test]
@@ -474,6 +494,7 @@ mod tests {
             seek_seconds: 25.0,
             gapless: false,
             autoplay_radio: true,
+            radio_mode: RadioMode::Discovery,
             eq_preset: EqPreset::Custom,
             eq_bands: bands,
             normalize: true,
@@ -493,6 +514,7 @@ mod tests {
         assert_eq!(cfg.seek_seconds, Some(25.0));
         assert_eq!(cfg.gapless, Some(false));
         assert_eq!(cfg.autoplay_radio, Some(true));
+        assert_eq!(cfg.radio.mode, RadioMode::Discovery);
         assert_eq!(cfg.eq_preset, EqPreset::Custom);
         assert_eq!(cfg.eq_bands, Some(bands));
         assert_eq!(cfg.normalize, Some(true));

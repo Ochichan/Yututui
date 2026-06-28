@@ -1995,6 +1995,7 @@ impl App {
             seek_seconds: self.seek_seconds,
             gapless: self.config.effective_gapless(),
             autoplay_radio: self.autoplay_radio,
+            radio_mode: self.config.radio.mode,
             eq_preset: self.eq_preset,
             eq_bands: self.eq_bands,
             normalize: self.normalize,
@@ -2240,6 +2241,13 @@ impl App {
                 s.draft.autoplay_radio = !s.draft.autoplay_radio;
                 Vec::new()
             }
+            Field::RadioMode => {
+                let s = self.settings.as_mut().unwrap();
+                let next = s.draft.radio_mode.cycled(dir >= 0);
+                s.draft.radio_mode = next;
+                self.status = format!("Radio mode: {}", next.label());
+                Vec::new()
+            }
             Field::Normalize => {
                 let s = self.settings.as_mut().unwrap();
                 s.draft.normalize = !s.draft.normalize;
@@ -2427,6 +2435,7 @@ impl App {
             d.seek_seconds = def.effective_seek_seconds();
             d.gapless = def.effective_gapless();
             d.autoplay_radio = def.effective_autoplay_radio();
+            d.radio_mode = def.radio.mode;
             d.eq_preset = def.eq_preset;
             d.eq_bands = def.effective_eq_bands();
             d.normalize = def.effective_normalize();
@@ -4178,6 +4187,28 @@ mod tests {
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General); // wraps
+    }
+
+    #[test]
+    fn radio_mode_cycles_on_the_ai_tab_and_persists() {
+        use crate::radio::RadioMode;
+        let mut app = app_playing(1, 0);
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
+        app.update(Msg::Key(key(KeyCode::Tab)));
+        app.update(Msg::Key(key(KeyCode::Tab)));
+        app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
+        // Fields: Model(0), ApiKey(1), AutoplayRadio(2), RadioMode(3).
+        for _ in 0..3 {
+            app.update(Msg::Key(key(KeyCode::Down)));
+        }
+        app.update(Msg::Key(key(KeyCode::Right))); // Balanced → Discovery
+        assert_eq!(app.settings.as_ref().unwrap().draft.radio_mode, RadioMode::Discovery);
+        assert!(app.status.contains("Radio mode: Discovery"));
+        // Closing settings commits the draft into config + emits a save.
+        let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+        assert_eq!(app.config.radio.mode, RadioMode::Discovery);
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
     }
 
     #[test]
