@@ -1412,6 +1412,10 @@ impl App {
         self.radio_dropdown_open = false;
         self.queue_popup_open = false;
         self.confirm_delete_files = None;
+        // Leaving the screen drops any pending text selection so it can't reappear highlighted
+        // when the input is re-entered later.
+        self.search_select_all = false;
+        self.ai_select_all = false;
         if self.mode == Mode::Settings {
             self.finish_settings_text_edit();
             return self.close_settings();
@@ -1844,6 +1848,9 @@ impl App {
         self.radio_dropdown_open = false;
         self.queue_popup_open = false;
         self.confirm_delete_files = None;
+        // Any navigation deselects: a Ctrl+A highlight must not survive a screen change.
+        self.search_select_all = false;
+        self.ai_select_all = false;
         if self.mode == mode {
             self.dirty = true;
             return Vec::new();
@@ -3284,6 +3291,7 @@ impl App {
         self.ai_focus = AiFocus::Input;
         self.eq_dropdown_open = false;
         self.radio_dropdown_open = false;
+        self.ai_select_all = false;
         self.status.clear();
         self.dirty = true;
     }
@@ -3616,6 +3624,8 @@ impl App {
         } else {
             format!("Queued {added} track(s)")
         };
+        // A successful top-up is a positive confirmation, not an error — render it green.
+        self.status_kind = StatusKind::Info;
         self.dirty = true;
         // If the seed track ended before this refill landed (e.g. a 1-song queue with radio
         // on), the player is idle — pick up the freshly queued track so playback resumes

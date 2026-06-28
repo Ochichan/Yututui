@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, MouseTarget, SearchFocus};
+use crate::app::{App, MouseTarget, SearchFocus, StatusKind};
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -38,6 +38,24 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // help
     ])
     .split(inner);
+
+    // A transient confirmation (e.g. "Added to queue: …" after enqueuing a search result while a
+    // track is already playing) rides the otherwise-empty top band so it's visible without leaving
+    // the search screen. It auto-clears after STATUS_TTL via the global StatusTick.
+    if !app.status.is_empty() {
+        let role = match app.status_kind {
+            StatusKind::Error => R::Error,
+            StatusKind::Info => R::Success,
+        };
+        frame.render_widget(
+            Paragraph::new(
+                Line::from(app.status.clone())
+                    .style(app.theme.style(role))
+                    .alignment(Alignment::Center),
+            ),
+            rows[0],
+        );
+    }
 
     render_input(frame, app, rows[1]);
     render_results(frame, app, rows[2]);
