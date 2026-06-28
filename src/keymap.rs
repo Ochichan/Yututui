@@ -57,6 +57,7 @@ pub enum Action {
     FocusNext,
     FocusPrev,
     DeleteChar,
+    SelectAll,
     // Queue window.
     QueueRemove,
     // Library list.
@@ -71,6 +72,10 @@ pub enum Action {
     ToggleRadio,
     ToggleHelp,
     ToggleAbout,
+    // Player extras: copy link + external mpv video overlay.
+    CopyLink,
+    PlayVideo,
+    ToggleVideoLayout,
 }
 
 /// Stable id (for config keys) + English + Korean human label (for the editor and
@@ -112,6 +117,7 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (Action::FocusNext, "focus_next", "Next tab / focus", "다음 탭 / 포커스"),
     (Action::FocusPrev, "focus_prev", "Previous tab / focus", "이전 탭 / 포커스"),
     (Action::DeleteChar, "delete_char", "Delete character", "문자 삭제"),
+    (Action::SelectAll, "select_all", "Select all", "전체 선택"),
     (Action::QueueRemove, "queue_remove", "Remove from queue", "대기열에서 제거"),
     (Action::LibraryRemove, "library_remove", "Remove / delete", "제거 / 삭제"),
     (Action::SettingsCancel, "settings_cancel", "Close settings", "설정 저장 후 닫기"),
@@ -121,6 +127,9 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (Action::ToggleRadio, "toggle_radio", "Toggle autoplay radio", "자동재생 라디오 켜기 / 끄기"),
     (Action::ToggleHelp, "toggle_help", "Toggle help", "도움말 켜기 / 끄기"),
     (Action::ToggleAbout, "toggle_about", "About ytm-tui", "ytm-tui 정보"),
+    (Action::CopyLink, "copy_link", "Copy track link", "트랙 링크 복사"),
+    (Action::PlayVideo, "play_video", "Video overlay (mpv)", "영상 오버레이 (mpv)"),
+    (Action::ToggleVideoLayout, "toggle_video_layout", "Video size / position", "영상 크기 / 위치"),
 ];
 
 impl Action {
@@ -146,6 +155,7 @@ impl Action {
             (KeyContext::Queue, Action::Confirm) => t!("Play / jump to track", "곡 재생 / 이동"),
             (KeyContext::Queue, Action::Back) => t!("Close queue", "대기열 닫기"),
             (KeyContext::SearchInput, Action::Confirm) => t!("Search", "검색"),
+            (KeyContext::AiInput, Action::Confirm) => t!("Send", "보내기"),
             (KeyContext::SearchResults, Action::Confirm) => t!("Play selected", "선택 항목 재생"),
             (KeyContext::SearchResults, Action::Back) => t!("Close Search Results", "검색 결과 닫기"),
             (KeyContext::Settings, Action::SettingsCancel) => t!("Save + quit", "저장하고 닫기"),
@@ -485,6 +495,9 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::OpenSettings, ch(',')),
         (C::Player, A::OpenAi, ch('a')),
         (C::Player, A::OpenSearch, ch('/')),
+        (C::Player, A::CopyLink, ch('y')),
+        (C::Player, A::PlayVideo, ch('v')),
+        (C::Player, A::ToggleVideoLayout, ch('V')),
         (C::Player, A::Back, ch('q')),
         // Shared navigation (fallback for every list/text screen).
         (C::Common, A::MoveUp, key(KeyCode::Up)),
@@ -514,11 +527,15 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Queue, A::Confirm, key(KeyCode::Enter)),
         (C::Queue, A::QueueRemove, key(KeyCode::Delete)),
         (C::Queue, A::Back, ch('q')),
+        // Search box (text entry; Enter→search is handled in the input handler).
+        (C::SearchInput, A::SelectAll, ctrl('a')),
         // Search results list commands.
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('d')),
         (C::SearchResults, A::FocusInput, ch('/')),
         (C::SearchResults, A::Back, ch('q')),
+        // AI box (text entry; Enter→send is handled in the input handler).
+        (C::AiInput, A::SelectAll, ctrl('a')),
         // Settings screen commands (nav comes from Common).
         (C::Settings, A::ChangeDecrease, key(KeyCode::Left)),
         (C::Settings, A::ChangeIncrease, key(KeyCode::Right)),
@@ -904,6 +921,16 @@ mod tests {
         assert!(parse_chord("?").unwrap().is_typeable());
         assert!(!parse_chord("ctrl+r").unwrap().is_typeable());
         assert!(!parse_chord("enter").unwrap().is_typeable());
+    }
+
+    #[test]
+    fn ctrl_a_selects_all_in_text_inputs() {
+        let km = KeyMap::default();
+        let ctrl_a = parse_chord("ctrl+a").unwrap();
+        assert_eq!(km.action(KeyContext::SearchInput, ctrl_a), Some(Action::SelectAll));
+        assert_eq!(km.action(KeyContext::AiInput, ctrl_a), Some(Action::SelectAll));
+        // Ctrl+A isn't a typed character, so it won't leak into the field as text.
+        assert!(!ctrl_a.is_typeable());
     }
 
     #[test]

@@ -462,6 +462,16 @@ pub enum SearchFocus {
     Results,
 }
 
+/// The semantic kind of the transient `status` line, controlling its color in the player
+/// view. Defaults to `Error` (red) so the existing `self.status = …` sites keep their styling;
+/// only positive confirmations opt into `Info` (green).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StatusKind {
+    #[default]
+    Error,
+    Info,
+}
+
 /// The whole application state.
 pub struct App {
     pub should_quit: bool,
@@ -508,6 +518,14 @@ pub struct App {
     /// When `status` was last set non-empty, used to auto-expire it after [`STATUS_TTL`]
     /// (set centrally in [`Self::update`]; `None` while the title is showing normally).
     status_set_at: Option<Instant>,
+    /// Semantic kind of the current `status` (drives its color); reset to `Error` on clear.
+    pub status_kind: StatusKind,
+    /// The detached mpv video-overlay process, if one is open. Tracked so a second `v` (or a
+    /// `Shift+V` layout switch) closes/respawns it instead of stacking windows.
+    video_proc: Option<std::process::Child>,
+    /// Whether opening the video overlay is what paused the audio, so closing it only resumes
+    /// playback we paused (not audio the user had paused themselves).
+    video_paused_audio: bool,
 
     // Audio / EQ --------------------------------------------------------------
     /// Selected equalizer preset (drives `eq_bands` when chosen via `e`).
@@ -557,6 +575,9 @@ pub struct App {
     pub ai_messages: Vec<AiMessage>,
     /// The AI prompt being typed.
     pub ai_input: String,
+    /// Whether Ctrl+A has selected the whole AI prompt (desktop-style: the next edit
+    /// replaces or clears it). Reset on any consuming keypress.
+    pub ai_select_all: bool,
     /// True while a request is in flight (drives the spinner; blocks a second request).
     pub ai_thinking: bool,
     /// The pickable related-tracks list (get_suggestions).
@@ -582,6 +603,9 @@ pub struct App {
 
     // Search ------------------------------------------------------------------
     pub search_input: String,
+    /// Whether Ctrl+A has selected the whole search query (desktop-style: the next edit
+    /// replaces or clears it). Reset on any consuming keypress.
+    pub search_select_all: bool,
     pub search_focus: SearchFocus,
     pub search_results: Vec<Song>,
     pub search_selected: usize,
@@ -696,6 +720,9 @@ impl App {
             queue: Queue::default(),
             status: String::new(),
             status_set_at: None,
+            status_kind: StatusKind::Error,
+            video_proc: None,
+            video_paused_audio: false,
             anim_frame: 0,
             eq_preset: EqPreset::default(),
             eq_bands: [0.0; eq::BANDS],
@@ -715,6 +742,7 @@ impl App {
             gemini_model: GeminiModel::default(),
             ai_messages: Vec::new(),
             ai_input: String::new(),
+            ai_select_all: false,
             ai_thinking: false,
             ai_suggestions: Vec::new(),
             ai_suggestions_selected: 0,
@@ -726,6 +754,7 @@ impl App {
             consecutive_play_errors: 0,
             playlists: Playlists::default(),
             search_input: String::new(),
+            search_select_all: false,
             search_focus: SearchFocus::Input,
             search_results: Vec::new(),
             search_selected: 0,
@@ -841,10 +870,19 @@ impl App {
     /// without each call site having to remember to arm a timer. See [`Self::status_visible`].
     pub fn update(&mut self, msg: Msg) -> Vec<Cmd> {
         let status_before = self.status.clone();
+        let kind_before = self.status_kind;
+        // Default this turn's status to the error styling; the few positive handlers override
+        // it to `Info` while they run. This keeps the kind in lock-step with the status text:
+        // an error set by one of the ~40 plain `self.status = …` sites can never inherit a
+        // leftover `Info` color from a previous green toast.
+        self.status_kind = StatusKind::Error;
         let cmds = self.dispatch(msg);
         if self.status != status_before {
             self.status_set_at =
                 if self.status.is_empty() { None } else { Some(Instant::now()) };
+        } else {
+            // Text unchanged this turn — keep the color the still-showing message already had.
+            self.status_kind = kind_before;
         }
         cmds
     }
@@ -1046,7 +1084,7 @@ impl App {
                         return self.start_ai_rerank(&seed_video_id, candidates);
                     }
                     let picks = self.plan_local_radio(&seed_video_id, candidates);
-                    self.extend_queue_from_radio(picks);
+                    return self.extend_queue_from_radio(picks);
                 } else {
                     self.dirty = true;
                 }
@@ -1073,7 +1111,7 @@ impl App {
                         &pending.local_pick,
                         self.config.radio.ai.picks,
                     );
-                    self.extend_queue_from_radio(picks);
+                    return self.extend_queue_from_radio(picks);
                 }
             }
             Msg::RadioError {
@@ -1114,7 +1152,7 @@ impl App {
                 }
             }
             Msg::AiEnqueue(songs) => {
-                self.extend_queue_from_radio(songs);
+                return self.extend_queue_from_radio(songs);
             }
             Msg::AiSuggestions(songs) => {
                 self.ai_suggestions = songs;
@@ -1123,10 +1161,12 @@ impl App {
             }
             Msg::AiSetAutoplay(on) => {
                 self.autoplay_radio = on;
+                self.dirty = true;
                 if on {
                     self.consecutive_radio_failures = 0;
+                    // Same proactive top-up as the manual toggle (see Action::ToggleRadio).
+                    return self.maybe_autoplay_extend();
                 }
-                self.dirty = true;
             }
             Msg::AiCreatePlaylist(name) => {
                 if self.playlists.create(&name).is_some() {
@@ -1286,6 +1326,11 @@ impl App {
                         if self.autoplay_radio { "✓" } else { "✗" }
                     );
                     self.dirty = true;
+                    // Kick off the top-up now (not at end-of-track) so a low/single-song queue
+                    // has the next tracks queued before the current one ends — no silent gap.
+                    if self.autoplay_radio {
+                        return self.maybe_autoplay_extend();
+                    }
                     return Vec::new();
                 }
                 Action::Quit => {
@@ -1386,6 +1431,94 @@ impl App {
         };
         self.should_quit = true;
         cmds
+    }
+
+    /// Whether an mpv video overlay is currently open. Reaps the handle if the user closed mpv
+    /// themselves, so a stale exited child reads as closed.
+    fn video_open(&mut self) -> bool {
+        match self.video_proc.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(Some(_)) => {
+                    self.video_proc = None;
+                    false
+                }
+                _ => true,
+            },
+            None => false,
+        }
+    }
+
+    /// Kill the video overlay if one is open (no-op otherwise). Called from the main loop's
+    /// clean-exit path so the overlay never outlives the app, regardless of how we quit.
+    pub fn close_video(&mut self) {
+        if let Some(mut child) = self.video_proc.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// `v`: toggle the external mpv video overlay. Open → close it and resume the audio we
+    /// paused; closed → launch it for the current track and pause the audio.
+    fn toggle_video_overlay(&mut self) -> Vec<Cmd> {
+        let mut cmds = Vec::new();
+        if self.video_open() {
+            self.close_video();
+            if self.video_paused_audio {
+                self.video_paused_audio = false;
+                self.paused = false;
+                cmds.push(Cmd::Player(PlayerCmd::SetProperty {
+                    name: "pause".to_owned(),
+                    value: serde_json::Value::Bool(false),
+                }));
+            }
+            self.status_kind = StatusKind::Info;
+            self.status = t!("Video closed", "영상 닫음").to_owned();
+        } else if let Some(song) = self.queue.current().cloned() {
+            let url = format!("https://www.youtube.com/watch?v={}", song.video_id);
+            let cookies = self.config.cookies_file.clone();
+            match spawn_video_overlay(&url, cookies.as_deref(), self.config.video_layout) {
+                Some(child) => {
+                    self.video_proc = Some(child);
+                    if !self.paused {
+                        self.paused = true;
+                        self.video_paused_audio = true;
+                        cmds.push(Cmd::Player(PlayerCmd::SetProperty {
+                            name: "pause".to_owned(),
+                            value: serde_json::Value::Bool(true),
+                        }));
+                    }
+                    self.status_kind = StatusKind::Info;
+                    self.status = t!("Opening video in mpv…", "mpv에서 영상을 여는 중…").to_owned();
+                }
+                None => {
+                    self.status = t!("Failed to launch mpv", "mpv 실행에 실패했습니다").to_owned();
+                }
+            }
+        } else {
+            self.status = t!("No track playing", "재생 중인 곡이 없습니다").to_owned();
+        }
+        self.dirty = true;
+        cmds
+    }
+
+    /// `Shift+V`: toggle the overlay layout (top-right 30% ↔ center 50%), persist it, and — if
+    /// a video is open — respawn it in the new layout (mpv can't reliably resize a live window).
+    fn toggle_video_layout(&mut self) -> Vec<Cmd> {
+        self.config.video_layout = self.config.video_layout.toggled();
+        let layout = self.config.video_layout;
+        if self.video_open()
+            && let Some(song) = self.queue.current().cloned()
+        {
+            self.close_video();
+            let url = format!("https://www.youtube.com/watch?v={}", song.video_id);
+            let cookies = self.config.cookies_file.clone();
+            self.video_proc = spawn_video_overlay(&url, cookies.as_deref(), layout);
+            // Audio stays paused (video_paused_audio unchanged).
+        }
+        self.status_kind = StatusKind::Info;
+        self.status = format!("{}: {}", t!("Video", "영상"), layout.label());
+        self.dirty = true;
+        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
     }
 
     /// A left-click at `(col, row)`: buttons fire their mapped action; the player's
@@ -1952,6 +2085,9 @@ impl App {
                 }
                 // Optimistic toggle; mpv confirms via a `pause` property-change.
                 self.paused = !self.paused;
+                // Manual pause/resume takes over from the video overlay: once the user controls
+                // playback themselves, closing the overlay must not auto-resume on their behalf.
+                self.video_paused_audio = false;
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::CyclePause)]
             }
@@ -2098,6 +2234,19 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            Action::CopyLink => {
+                if let Some(song) = self.queue.current() {
+                    let url = format!("https://www.youtube.com/watch?v={}", song.video_id);
+                    copy_to_clipboard(&url);
+                    self.status_kind = StatusKind::Info;
+                    self.status =
+                        t!("✓ Link copied to clipboard", "✓ 링크가 클립보드에 복사됐어요").to_owned();
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            Action::PlayVideo => self.toggle_video_overlay(),
+            Action::ToggleVideoLayout => self.toggle_video_layout(),
             _ => Vec::new(),
         }
     }
@@ -2105,6 +2254,29 @@ impl App {
     fn on_key_search(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.search_focus {
             SearchFocus::Input => {
+                // Ctrl+A selects the whole query (desktop-style); idempotent re-select.
+                if matches!(self.keymap.action(KeyContext::SearchInput, k.into()), Some(Action::SelectAll)) {
+                    self.search_select_all = !self.search_input.is_empty();
+                    self.dirty = true;
+                    return Vec::new();
+                }
+                // With the query selected, the next key consumes the selection: a character
+                // replaces it, Backspace clears it, anything else just deselects + falls through.
+                if std::mem::take(&mut self.search_select_all) {
+                    self.dirty = true;
+                    let chord = Chord::from(k);
+                    if chord.is_typeable()
+                        && let KeyCode::Char(c) = k.code
+                    {
+                        self.search_input.clear();
+                        self.search_input.push(c);
+                        return Vec::new();
+                    }
+                    if matches!(self.keymap.action(KeyContext::SearchInput, k.into()), Some(Action::DeleteChar)) {
+                        self.search_input.clear();
+                        return Vec::new();
+                    }
+                }
                 if k.code == KeyCode::Enter {
                     return self.submit_search_query();
                 }
@@ -2203,6 +2375,7 @@ impl App {
     }
 
     fn submit_search_query(&mut self) -> Vec<Cmd> {
+        self.search_select_all = false;
         let q = self.search_input.trim().to_owned();
         self.dirty = true;
         if q.is_empty() {
@@ -3118,6 +3291,29 @@ impl App {
     fn on_key_ai(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.ai_focus {
             AiFocus::Input => {
+                // Ctrl+A selects the whole prompt (desktop-style); idempotent re-select.
+                if matches!(self.keymap.action(KeyContext::AiInput, k.into()), Some(Action::SelectAll)) {
+                    self.ai_select_all = !self.ai_input.is_empty();
+                    self.dirty = true;
+                    return Vec::new();
+                }
+                // With the prompt selected, the next key consumes the selection: a character
+                // replaces it, Backspace clears it, anything else just deselects + falls through.
+                if std::mem::take(&mut self.ai_select_all) {
+                    self.dirty = true;
+                    let chord = Chord::from(k);
+                    if chord.is_typeable()
+                        && let KeyCode::Char(c) = k.code
+                    {
+                        self.ai_input.clear();
+                        self.ai_input.push(c);
+                        return Vec::new();
+                    }
+                    if matches!(self.keymap.action(KeyContext::AiInput, k.into()), Some(Action::DeleteChar)) {
+                        self.ai_input.clear();
+                        return Vec::new();
+                    }
+                }
                 let chord = Chord::from(k);
                 if chord.is_typeable()
                     && let KeyCode::Char(c) = k.code
@@ -3190,6 +3386,7 @@ impl App {
             return Vec::new();
         }
         self.ai_input.clear();
+        self.ai_select_all = false;
         self.push_ai_message(AiRole::User, prompt.clone());
         self.dirty = true;
         if !self.ai_available {
@@ -3334,8 +3531,7 @@ impl App {
         if shortlist.is_empty() {
             // Nothing to rerank → fall straight to the local pick (itself possibly empty, which
             // trips the circuit breaker via `extend_queue_from_radio`).
-            self.extend_queue_from_radio(local_pick);
-            return Vec::new();
+            return self.extend_queue_from_radio(local_pick);
         }
         let prompt = self.ai_rerank_prompt(seed_video_id, &shortlist);
         let shortlist_songs: Vec<Song> = shortlist.into_iter().map(|c| c.song).collect();
@@ -3406,21 +3602,40 @@ impl App {
         labels
     }
 
-    fn extend_queue_from_radio(&mut self, songs: Vec<Song>) {
+    fn extend_queue_from_radio(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
         let added = self.queue.extend(songs);
         if added == 0 {
             self.note_radio_failure(
                 t!("Autoplay radio found no new tracks", "자동재생 라디오가 새 곡을 찾지 못했어요").to_owned(),
             );
-        } else {
-            self.consecutive_radio_failures = 0;
-            self.status = if crate::i18n::is_korean() {
-                format!("{added}곡을 대기열에 추가함")
-            } else {
-                format!("Queued {added} track(s)")
-            };
-            self.dirty = true;
+            return Vec::new();
         }
+        self.consecutive_radio_failures = 0;
+        self.status = if crate::i18n::is_korean() {
+            format!("{added}곡을 대기열에 추가함")
+        } else {
+            format!("Queued {added} track(s)")
+        };
+        self.dirty = true;
+        // If the seed track ended before this refill landed (e.g. a 1-song queue with radio
+        // on), the player is idle — pick up the freshly queued track so playback resumes
+        // instead of staying stopped at the finished song.
+        if self.loaded_video_id.is_none() && self.queue.remaining() > 0 {
+            return self.advance(true);
+        }
+        // Still playing: pre-resolve the now-known next track's stream so the EOF→next hop is
+        // instant (mirrors load_song's peek-next prefetch).
+        let mut cmds = Vec::new();
+        if let Some(next) = self.queue.peek_next()
+            && !next.is_local()
+        {
+            let video_id = next.video_id.clone();
+            let watch_url = next.watch_url();
+            if !self.resolved.contains_key(&video_id) {
+                cmds.push(Cmd::Resolve { video_id, watch_url });
+            }
+        }
+        cmds
     }
 
     fn note_radio_failure(&mut self, status: String) {
@@ -3714,11 +3929,12 @@ impl App {
 
     /// Make the whole results list the queue, starting at the selected track, and play.
     fn play_selected(&mut self) -> Vec<Cmd> {
-        if self.search_results.is_empty() {
+        // Queue only the chosen track — not the whole result list. With autoplay radio on it
+        // seeds a fresh station from here; otherwise it just plays the one song.
+        let Some(song) = self.search_results.get(self.search_selected).cloned() else {
             return Vec::new();
-        }
-        self.queue
-            .set(self.search_results.clone(), self.search_selected);
+        };
+        self.queue.set(vec![song], 0);
         self.mode = Mode::Player;
         self.status.clear();
         let song = self.queue.current().cloned();
@@ -3847,6 +4063,11 @@ impl App {
                         });
                     }
                 }
+                // Start the autoplay-radio top-up as the track *starts* (not only at its end)
+                // so a low/single-song queue fetches its next tracks while this one still
+                // plays — closing the silent gap. Guarded + cooldown'd inside, and idempotent
+                // with the call in `advance` (the second one sees `radio_pending` and no-ops).
+                cmds.extend(self.maybe_autoplay_extend());
                 cmds
             }
             None => {
@@ -4071,6 +4292,66 @@ fn open_in_browser(url: &str) {
     let _ = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
+/// Copy `text` to the system clipboard, fire-and-forget. Mirrors `open_in_browser`: spawns the
+/// platform clipboard tool with stdio nulled and pipes `text` to its stdin, so no native
+/// clipboard crate is needed. macOS uses `pbcopy`, Windows `clip`; Linux tries `wl-copy`
+/// (Wayland) then `xclip`/`xsel` (X11), each of which self-daemonizes to keep the selection
+/// alive after we return. Any failure (tool absent) is silently ignored.
+fn copy_to_clipboard(text: &str) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    fn pipe(cmd: &mut Command, text: &str) -> bool {
+        match cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+            Ok(mut child) => {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    if cfg!(target_os = "macos") {
+        pipe(&mut Command::new("pbcopy"), text);
+    } else if cfg!(target_os = "windows") {
+        pipe(&mut Command::new("clip"), text);
+    } else if !pipe(&mut Command::new("wl-copy"), text)
+        && !pipe(Command::new("xclip").args(["-selection", "clipboard"]), text)
+    {
+        pipe(Command::new("xsel").arg("-ib"), text);
+    }
+}
+
+/// Spawn a borderless, always-on-top mpv overlay window for `url`, returning the child so the
+/// caller can track and later close it. Stdio is nulled so mpv can't touch the TUI's terminal.
+/// Cookies are forwarded to mpv's bundled yt-dlp (same option as the audio instance) when set;
+/// `--no-config` is intentionally omitted so the user's own mpv config applies to the video.
+fn spawn_video_overlay(
+    url: &str,
+    cookies: Option<&std::path::Path>,
+    layout: crate::config::VideoOverlay,
+) -> Option<std::process::Child> {
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new("mpv");
+    cmd.arg(url);
+    for arg in layout.mpv_window_args() {
+        cmd.arg(arg);
+    }
+    if let Some(path) = cookies {
+        cmd.arg(format!("--ytdl-raw-options-append=cookies={}", path.display()));
+    }
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(DETACHED_PROCESS);
+    }
+    cmd.spawn().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4148,6 +4429,76 @@ mod tests {
         let mut app = App::new(100);
         app.update(Msg::Key(ctrl(KeyCode::Char('ㅊ'))));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_a_selects_then_backspace_clears_search_input() {
+        let mut app = App::new(100);
+        app.update(Msg::Key(key(KeyCode::Char('/')))); // open search (input focused)
+        assert_eq!(app.mode, Mode::Search);
+        for c in "lofi".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        assert_eq!(app.search_input, "lofi");
+        app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+        assert!(app.search_select_all);
+        // Backspace with everything selected clears the field, not one char.
+        app.update(Msg::Key(key(KeyCode::Backspace)));
+        assert_eq!(app.search_input, "");
+        assert!(!app.search_select_all);
+    }
+
+    #[test]
+    fn ctrl_a_then_typing_replaces_search_input() {
+        let mut app = App::new(100);
+        app.update(Msg::Key(key(KeyCode::Char('/'))));
+        for c in "lofi".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+        app.update(Msg::Key(key(KeyCode::Char('x'))));
+        assert_eq!(app.search_input, "x");
+        assert!(!app.search_select_all);
+    }
+
+    #[test]
+    fn ctrl_a_selects_then_backspace_clears_ai_input() {
+        let mut app = App::new(100);
+        app.update(Msg::Key(key(KeyCode::Char('a')))); // open AI assistant (input focused)
+        assert_eq!(app.mode, Mode::Ai);
+        for c in "hi".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        assert_eq!(app.ai_input, "hi");
+        app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+        assert!(app.ai_select_all);
+        app.update(Msg::Key(key(KeyCode::Backspace)));
+        assert_eq!(app.ai_input, "");
+        assert!(!app.ai_select_all);
+    }
+
+    #[test]
+    fn radio_extend_resumes_playback_when_idle() {
+        let mut app = App::new(100);
+        app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
+        app.loaded_video_id = None; // the seed ended before this refill landed
+        let cmds = app.extend_queue_from_radio(vec![Song::remote("b", "B", "y", "2:00")]);
+        assert!(load_url(&cmds).is_some(), "should resume by loading the new track");
+        assert_eq!(app.loaded_video_id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn radio_extend_prefetches_next_while_playing() {
+        let mut app = App::new(100);
+        app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
+        app.loaded_video_id = Some("a".to_owned()); // still playing the seed
+        let cmds = app.extend_queue_from_radio(vec![Song::remote("b", "B", "y", "2:00")]);
+        assert!(load_url(&cmds).is_none(), "must not interrupt the playing track");
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::Resolve { video_id, .. } if video_id == "b")),
+            "should prefetch the upcoming track's stream"
+        );
     }
 
     fn confirm_on_f5_keymap() -> KeyMap {
@@ -4376,6 +4727,27 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_search_result_queues_only_the_selected_song() {
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.update(Msg::SearchResults {
+            query: "x".to_owned(),
+            songs: vec![
+                Song::remote("id0", "Zero", "A", "3:00"),
+                Song::remote("id1", "One", "B", "3:00"),
+                Song::remote("id2", "Two", "C", "3:00"),
+            ],
+        });
+        app.search_focus = SearchFocus::Results;
+        app.search_selected = 1;
+        let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert_eq!(app.mode, Mode::Player);
+        // Only the picked track lands in the queue — not the whole result list.
+        assert_eq!(app.queue.len(), 1);
+        assert!(load_url(&cmds).expect("a Load cmd").contains("id1"));
+    }
+
+    #[test]
     fn search_result_confirm_stays_enter_when_common_confirm_is_remapped() {
         let mut app = App::new(100);
         app.keymap = confirm_on_f5_keymap();
@@ -4453,27 +4825,20 @@ mod tests {
             .collect()
     }
 
-    /// An app whose queue is the search results, playing track `start`.
+    /// An app with an `n`-track queue, playing track `start`. Builds the queue directly so
+    /// it stays independent of how individual play paths populate the queue (e.g. search-play
+    /// only queues the one picked track).
     fn app_playing(n: usize, start: usize) -> App {
         let mut app = App::new(100);
-        app.search_results = songs(n);
-        app.search_selected = start;
-        app.search_focus = SearchFocus::Results;
-        app.mode = Mode::Search;
-        app.update(Msg::Key(key(KeyCode::Enter)));
+        app.queue.set(songs(n), start);
+        app.mode = Mode::Player;
+        let song = app.queue.current().cloned();
+        app.load_song(song);
         app
     }
 
     fn current(app: &App) -> &str {
         app.queue.current().unwrap().video_id.as_str()
-    }
-
-    #[test]
-    fn enter_queues_whole_results_list() {
-        let app = app_playing(5, 2);
-        assert_eq!(app.queue.len(), 5);
-        assert_eq!(current(&app), "id2");
-        assert_eq!(app.mode, Mode::Player);
     }
 
     #[test]
@@ -6198,13 +6563,11 @@ mod tests {
 
     #[test]
     fn loading_prefetches_the_next_track() {
-        // Playing id0 → should request a resolve for id1 (the next track).
+        // Loading id0 with id1 next in the queue → should request a resolve for id1.
         let mut app = App::new(100);
-        app.search_results = songs(3);
-        app.search_selected = 0;
-        app.search_focus = SearchFocus::Results;
-        app.mode = Mode::Search;
-        let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+        app.queue.set(songs(3), 0);
+        let song = app.queue.current().cloned();
+        let cmds = app.load_song(song);
         assert!(resolve_cmd(&cmds, "id1").is_some_and(|u| u.contains("id1")));
     }
 

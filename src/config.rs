@@ -15,6 +15,7 @@ use crate::ai::GeminiModel;
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
 use crate::radio::RadioConfig;
+use crate::t;
 use crate::theme::ThemeConfig;
 
 /// Clamp range for playback speed (matches the `>`/`<` controls and the settings slider).
@@ -90,6 +91,49 @@ impl AnimationsConfig {
     }
 }
 
+/// Window layout for the external mpv video overlay launched from the player (`v`), toggled
+/// live with `Shift+V`. `Compact` docks a small ~30% window top-right; `Large` centers a
+/// ~50% window. Persisted in `config.json`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoOverlay {
+    #[default]
+    Compact,
+    Large,
+}
+
+impl VideoOverlay {
+    /// The other layout (for the `Shift+V` toggle).
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Compact => Self::Large,
+            Self::Large => Self::Compact,
+        }
+    }
+
+    /// Short human label for the status toast.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Compact => t!("top-right · 30%", "우상단 · 30%"),
+            Self::Large => t!("center · 50%", "가운데 · 50%"),
+        }
+    }
+
+    /// mpv flags for a borderless, always-on-top overlay window. `Compact` docks top-right;
+    /// `Large` is left at mpv's default (centered) position, half size.
+    pub fn mpv_window_args(self) -> Vec<String> {
+        let mut args = vec!["--ontop".to_owned(), "--no-border".to_owned()];
+        match self {
+            Self::Compact => {
+                args.push("--autofit=30%".to_owned());
+                args.push("--geometry=-20+20".to_owned());
+            }
+            Self::Large => args.push("--autofit=50%".to_owned()),
+        }
+        args
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -159,6 +203,11 @@ pub struct Config {
     /// `"player.toggle_pause" -> "space"`). Only entries that differ from the built-in
     /// defaults are stored; everything else falls back to [`crate::keymap`]'s defaults.
     pub keybindings: std::collections::BTreeMap<String, String>,
+
+    // External video overlay --------------------------------------------------
+    /// Window layout for the mpv video overlay (`v` opens, `Shift+V` toggles). Defaults to
+    /// `Compact` (top-right ~30%).
+    pub video_layout: VideoOverlay,
 }
 
 impl Default for Config {
@@ -186,6 +235,7 @@ impl Default for Config {
             theme: ThemeConfig::default(),
             language: Language::default(),
             keybindings: std::collections::BTreeMap::new(),
+            video_layout: VideoOverlay::default(),
         }
     }
 }
@@ -484,6 +534,7 @@ mod tests {
             theme,
             language: Language::Korean,
             keybindings: std::collections::BTreeMap::new(),
+            video_layout: VideoOverlay::Large,
         };
         let s = serde_json::to_string(&c).unwrap();
         let back: Config = serde_json::from_str(&s).unwrap();
@@ -506,6 +557,7 @@ mod tests {
         assert!(!back.animations.donut);
         assert_eq!(back.gemini_api_key.as_deref(), Some("AIzaSecret"));
         assert_eq!(back.gemini_model, GeminiModel::Latest);
+        assert_eq!(back.video_layout, VideoOverlay::Large);
         assert_eq!(back.theme.preset, "midnight");
         assert_eq!(
             back.theme.overrides.get("border_primary").map(String::as_str),

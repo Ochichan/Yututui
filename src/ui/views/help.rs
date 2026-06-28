@@ -65,15 +65,6 @@ fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
 fn help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
     let mut out = Vec::new();
     for (ctx, actions) in keymap::groups() {
-        if ctx == KeyContext::SearchResults {
-            out.push((
-                KeyContext::SearchInput.title().to_owned(),
-                vec![fixed_enter_row(
-                    Action::Confirm.human_label_for(KeyContext::SearchInput),
-                )],
-            ));
-        }
-
         let mut rows: Vec<(String, String)> = actions
             .iter()
             .map(|action| {
@@ -84,11 +75,13 @@ fn help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
                 (key, action.human_label_for(ctx).to_owned())
             })
             .collect();
-        if ctx == KeyContext::SearchResults {
-            rows.insert(
-                0,
-                fixed_enter_row(Action::Confirm.human_label_for(KeyContext::SearchResults)),
-            );
+        // The text-input / results groups submit on Enter directly in their key handlers
+        // (not via a keymap binding), so list that as a fixed row at the top of the group.
+        if matches!(
+            ctx,
+            KeyContext::SearchInput | KeyContext::SearchResults | KeyContext::AiInput
+        ) {
+            rows.insert(0, fixed_enter_row(Action::Confirm.human_label_for(ctx)));
         }
         out.push((ctx.title().to_owned(), rows));
     }
@@ -125,7 +118,16 @@ mod tests {
             .iter()
             .find_map(|(title, rows)| (title == "Search box").then_some(rows))
             .expect("search box group");
-        assert_eq!(search_box, &vec![("Enter".to_owned(), "Search".to_owned())]);
+        // Enter→Search is a fixed row at the top; the keymap-driven rows follow it.
+        assert_eq!(search_box.first(), Some(&("Enter".to_owned(), "Search".to_owned())));
+        assert!(search_box.contains(&("^a".to_owned(), "Select all".to_owned())));
+
+        let ai_box = groups
+            .iter()
+            .find_map(|(title, rows)| (title == "AI box").then_some(rows))
+            .expect("ai box group");
+        assert_eq!(ai_box.first(), Some(&("Enter".to_owned(), "Send".to_owned())));
+        assert!(ai_box.contains(&("^a".to_owned(), "Select all".to_owned())));
 
         let search_results = groups
             .iter()

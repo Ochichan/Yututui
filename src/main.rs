@@ -391,6 +391,9 @@ async fn run(
         }
     }
 
+    // Close the video overlay (if one is open) so it doesn't outlive the app. This is the single
+    // cleanup chokepoint: every quit path just sets `should_quit` and falls out of the loop here.
+    app.close_video();
     // Belt-and-suspenders: persist the library + signals on a clean exit too.
     let _ = app.library.save();
     let _ = app.signals.save();

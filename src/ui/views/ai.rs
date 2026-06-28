@@ -6,8 +6,8 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::text::Line;
+use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{AiFocus, AiRole, App};
@@ -49,6 +49,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let rows = Layout::vertical([
+        Constraint::Length(2),                // reserved top band (aligns with Settings/Library)
         Constraint::Min(0),                   // transcript
         Constraint::Length(suggestions_rows), // suggestions (0 when none)
         Constraint::Length(3),                // input box
@@ -56,16 +57,119 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    render_transcript(frame, app, rows[0]);
+    render_transcript(frame, app, rows[1]);
     if has_suggestions {
-        render_suggestions(frame, app, rows[1]);
+        render_suggestions(frame, app, rows[2]);
     }
-    render_input(frame, app, rows[2]);
+    render_input(frame, app, rows[3]);
 
-    buttons::render_help_button(frame, app, rows[3]);
+    buttons::render_help_button(frame, app, rows[4]);
+
+    // "Gemini-tan" mascot sits in the upper-center-right while the start screen shows.
+    // Drawn last so it overlays cleanly; it hides once a conversation begins.
+    if app.ai_messages.is_empty() {
+        render_mascot(frame, inner);
+    }
+}
+
+/// Moe-ified "Gemini-tan" mascot — a chibi girl drawn in Gemini's blue→purple→cyan
+/// palette with raw `Color::Rgb`, so she keeps her brand colors under any theme. Sits in
+/// the upper-center-right of the start screen and is skipped on windows too small to hold
+/// her clear of the left-aligned welcome text.
+fn render_mascot(frame: &mut Frame, inner: Rect) {
+    const ART_W: u16 = 15;
+    const ART_H: u16 = 10;
+    // Widest onboarding line plus the chat left pad; keep the art clear of it.
+    const TEXT_W: u16 = 54;
+    if inner.width < TEXT_W + ART_W || inner.height < ART_H + 3 {
+        return;
+    }
+
+    // Gemini palette: blue → indigo → purple → pink → cyan, plus a bright sparkle.
+    let star = Color::Rgb(0xBF, 0xE4, 0xFF);
+    let cyan = Color::Rgb(0x5B, 0xC8, 0xFA);
+    let blue = Color::Rgb(0x42, 0x85, 0xF4);
+    let indigo = Color::Rgb(0x6E, 0x6B, 0xF0);
+    let purple = Color::Rgb(0xA7, 0x8B, 0xFA);
+    let pink = Color::Rgb(0xE6, 0x9B, 0xF2);
+
+    let sp = |s: &str, c: Color| Span::styled(s.to_string(), Style::default().fg(c));
+
+    // Per-letter blue→purple→cyan gradient for the name plate.
+    let label_cols = [blue, indigo, purple, pink, cyan, star];
+    let mut label_line = vec![sp("    ", blue)];
+    label_line.extend("GEMINI".chars().enumerate().map(|(i, c)| {
+        Span::styled(
+            c.to_string(),
+            Style::default().fg(label_cols[i % label_cols.len()]).add_modifier(Modifier::BOLD),
+        )
+    }));
+    label_line.push(sp("     ", blue));
+
+    // 10×15 chibi: star crown, bangs, big eyes + smile, sparkle dress, name plate.
+    let lines = vec![
+        Line::from(vec![sp("    ⋆  ", cyan), sp("✦", star), sp("  ⋆    ", cyan)]),
+        Line::from(vec![sp("  ╭─────────╮  ", blue)]),
+        Line::from(vec![
+            sp("  │", blue),
+            sp("▔▔▔", blue),
+            sp("▔▔▔", purple),
+            sp("▔▔▔", cyan),
+            sp("│  ", blue),
+        ]),
+        Line::from(vec![
+            sp("  │ ", blue),
+            sp("◕", cyan),
+            sp("  ", blue),
+            sp("▿", pink),
+            sp("  ", blue),
+            sp("◕", cyan),
+            sp(" │  ", blue),
+        ]),
+        Line::from(vec![sp("  │   ", blue), sp("◡◡◡", pink), sp("   │  ", blue)]),
+        Line::from(vec![sp("  ╰────", blue), sp("┬", purple), sp("────╯  ", blue)]),
+        Line::from(vec![
+            sp(" ", blue),
+            sp("✧", cyan),
+            sp(" ", blue),
+            sp("╭───┴───╮", purple),
+            sp(" ", blue),
+            sp("✧", cyan),
+            sp(" ", blue),
+        ]),
+        Line::from(vec![
+            sp("   ", blue),
+            sp("│", purple),
+            sp(" ", blue),
+            sp("✦", cyan),
+            sp(" ", blue),
+            sp("✦", cyan),
+            sp(" ", blue),
+            sp("✦", cyan),
+            sp(" ", blue),
+            sp("│", purple),
+            sp("   ", blue),
+        ]),
+        Line::from(vec![sp("   ╰───────╯   ", purple)]),
+        Line::from(label_line),
+    ];
+
+    // Nudge in from the right edge toward center, but never over the welcome text.
+    let free_w = inner.width - ART_W;
+    let x = inner.x + (free_w * 3 / 4).max(TEXT_W);
+    let art_rect = Rect { x, y: inner.y + 1, width: ART_W, height: ART_H };
+    frame.render_widget(Paragraph::new(lines), art_rect);
 }
 
 fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
+    // A little left breathing room so chat text doesn't hug the left border.
+    const CHAT_LEFT_PAD: u16 = 2;
+    let area = Rect {
+        x: area.x + CHAT_LEFT_PAD,
+        width: area.width.saturating_sub(CHAT_LEFT_PAD),
+        ..area
+    };
+
     // Onboarding when no key is set and nothing has been said yet.
     if !app.ai_available && app.ai_messages.is_empty() {
         let lines = vec![
@@ -179,10 +283,20 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(app.theme.style(border))
         .style(app.theme.style(R::TextPrimary));
-    let text = if focused {
-        format!("{}\u{2588}", app.ai_input)
+    // Ctrl+A selects the whole prompt: paint it with the selection colors. Otherwise show a
+    // trailing block cursor while focused, or plain text when not.
+    let para = if focused && app.ai_select_all && !app.ai_input.is_empty() {
+        let hl = Style::default()
+            .fg(app.theme.color(R::SelectionFg))
+            .bg(app.theme.color(R::SelectionBg));
+        Paragraph::new(Line::from(Span::styled(app.ai_input.clone(), hl)))
     } else {
-        app.ai_input.clone()
+        let text = if focused {
+            format!("{}\u{2588}", app.ai_input)
+        } else {
+            app.ai_input.clone()
+        };
+        Paragraph::new(text).style(app.theme.style(R::TextPrimary))
     };
-    frame.render_widget(Paragraph::new(text).style(app.theme.style(R::TextPrimary)).block(block), area);
+    frame.render_widget(para.block(block), area);
 }

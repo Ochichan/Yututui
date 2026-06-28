@@ -10,7 +10,7 @@ use ratatui_image::{Resize, StatefulImage};
 use image::imageops::FilterType;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, DownloadState, MouseTarget};
+use crate::app::{App, DownloadState, MouseTarget, StatusKind};
 use crate::keymap::Action;
 use crate::lyrics;
 use crate::t;
@@ -52,10 +52,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // plain bold line exactly as before; with them on, `anim::title_line` returns a shimmering /
     // scrolling line (and a pulsing ♥), which we render in place of it.
     if !app.status.is_empty() {
+        let role = match app.status_kind {
+            StatusKind::Error => R::Error,
+            StatusKind::Info => R::Success,
+        };
         frame.render_widget(
             Paragraph::new(
                 Line::from(app.status.clone())
-                    .style(app.theme.style(R::Error))
+                    .style(app.theme.style(role))
                     .alignment(Alignment::Center),
             ),
             rows[1],

@@ -7,7 +7,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, MouseTarget, SearchFocus};
@@ -32,16 +32,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let rows = Layout::vertical([
+        Constraint::Length(2), // reserved top band (aligns with Settings/Library tab row + spacer)
         Constraint::Length(3), // input box
         Constraint::Min(0),    // results
         Constraint::Length(1), // help
     ])
     .split(inner);
 
-    render_input(frame, app, rows[0]);
-    render_results(frame, app, rows[1]);
+    render_input(frame, app, rows[1]);
+    render_results(frame, app, rows[2]);
 
-    buttons::render_help_button(frame, app, rows[2]);
+    buttons::render_help_button(frame, app, rows[3]);
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
@@ -64,16 +65,22 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(app.theme.style(border))
         .style(app.theme.style(R::TextPrimary));
 
-    // A trailing block cursor while the input has focus.
-    let text = if focused {
-        format!("{}\u{2588}", app.search_input)
+    // Ctrl+A selects the whole query: paint it with the selection colors. Otherwise show a
+    // trailing block cursor while focused, or plain text when not.
+    let para = if focused && app.search_select_all && !app.search_input.is_empty() {
+        let hl = Style::default()
+            .fg(app.theme.color(R::SelectionFg))
+            .bg(app.theme.color(R::SelectionBg));
+        Paragraph::new(Line::from(Span::styled(app.search_input.clone(), hl)))
     } else {
-        app.search_input.clone()
+        let text = if focused {
+            format!("{}\u{2588}", app.search_input)
+        } else {
+            app.search_input.clone()
+        };
+        Paragraph::new(text).style(app.theme.style(R::TextPrimary))
     };
-    frame.render_widget(
-        Paragraph::new(text).style(app.theme.style(R::TextPrimary)).block(block),
-        input_area,
-    );
+    frame.render_widget(para.block(block), input_area);
     render_search_button(frame, app, button_area);
 }
 
