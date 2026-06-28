@@ -1,0 +1,403 @@
+//! Message, command, and view-state type definitions for the app reducer.
+//!
+//! Split out of the former monolithic `app.rs` (behaviour-preserving move). These are
+//! re-exported from `crate::app` (`pub use types::*`) so existing `crate::app::Msg` /
+//! `crate::app::Cmd` / `crate::app::Mode` paths keep resolving for actors and views.
+
+use super::*;
+
+/// Everything that can change the application state.
+pub enum Msg {
+    Key(KeyEvent),
+    /// A left-click at a terminal cell (1-based crossterm coords); may hit the seekbar.
+    MouseClick {
+        col: u16,
+        row: u16,
+    },
+    /// A left double-click at a cell — plays a song row / queue entry (vs. single-click,
+    /// which selects). Falls back to single-click behavior off a list row.
+    MouseDoubleClick {
+        col: u16,
+        row: u16,
+    },
+    /// The pointer was dragged with the left button held — extends the queue window's
+    /// multi-select range. Ignored outside that window.
+    MouseDrag {
+        col: u16,
+        row: u16,
+    },
+    /// The mouse wheel was scrolled (`up` = toward earlier items). Moves the active
+    /// Library / Search list's cursor; ignored in other modes.
+    MouseScroll {
+        up: bool,
+    },
+    /// The terminal was resized; ratatui auto-resizes on draw, we just redraw.
+    Resize,
+    /// A termination signal asked us to shut down.
+    Quit,
+    /// Startup-only: begin playing the restored last track (sent once at launch when the
+    /// "autoplay on launch" setting is on). A no-op otherwise.
+    Autoplay,
+    /// Periodic wake-up (driven by the main loop only while a transient `status` is showing)
+    /// that lets the reducer expire the status after [`STATUS_TTL`] and restore the title.
+    StatusTick,
+    /// Animation frame tick (~30 fps), driven by the main loop **only** while
+    /// [`App::animation_active`] holds — i.e. on the player view, master on, a track playing,
+    /// and at least one effect enabled. Advances `anim_frame` and forces a redraw. When all
+    /// animation toggles are off the main loop never arms this, so it costs literally nothing.
+    AnimTick,
+    /// mpv playback position, in seconds.
+    PlayerTimePos(f64),
+    /// Current track duration, in seconds.
+    PlayerDuration(f64),
+    /// mpv pause state changed.
+    PlayerPaused(bool),
+    /// mpv volume changed (0-100, but mpv can report fractional/over-100 values).
+    PlayerVolume(f64),
+    /// The current track reached its end.
+    PlayerEof,
+    /// mpv reported a playback error.
+    PlayerError(String),
+    /// Search returned results (possibly empty) for `query`.
+    SearchResults {
+        query: String,
+        songs: Vec<Song>,
+    },
+    /// Search failed.
+    SearchError(String),
+    /// Download folder scan completed.
+    DownloadsScanned(Vec<Song>),
+    /// Synced lyrics for `video_id` (empty `lines` = none found).
+    LyricsResult {
+        video_id: String,
+        lines: Vec<LyricLine>,
+    },
+    /// Decoded album art / thumbnail for `video_id` (`None` = none found / fetch failed).
+    ArtworkResult {
+        video_id: String,
+        image: Option<DynamicImage>,
+    },
+    /// Download progress for `video_id` (0-100).
+    DownloadProgress {
+        video_id: String,
+        percent: f64,
+    },
+    /// A download finished, saved at `path`.
+    DownloadDone {
+        video_id: String,
+        path: String,
+    },
+    /// A download failed.
+    DownloadError {
+        video_id: String,
+        error: String,
+    },
+    /// A track's direct stream URL was prefetched (for instant skip).
+    Resolved {
+        video_id: String,
+        stream_url: String,
+    },
+    /// Related tracks returned by the non-AI radio fallback, each tagged with the source it
+    /// came from (real YTM watch-playlist vs anonymous yt-dlp search) so the local engine can
+    /// weight provenance and prefer the better source on dedup.
+    RadioResults {
+        seed_video_id: String,
+        candidates: Vec<(Song, CandidateSource)>,
+    },
+    /// The non-AI radio fallback failed to fetch related tracks.
+    RadioError {
+        seed_video_id: String,
+        error: String,
+    },
+    /// The AI reranker's chosen candidate ids (best-first), or empty on any failure. The
+    /// reducer validates them against the stashed shortlist and tops up from the local pick.
+    RadioAiPicks {
+        seed_video_id: String,
+        ids: Vec<String>,
+    },
+
+    // AI assistant: intents emitted by the AI actor, applied here by `update()`.
+    /// The assistant started/finished a turn (drives the thinking spinner).
+    AiThinking(bool),
+    /// Assistant chat text to append to the transcript.
+    AiChat(String),
+    /// An AI error to surface in the transcript (also clears the spinner).
+    AiError(String),
+    /// Replace the queue with these tracks and start playing (play_music/play_playlist).
+    AiPlayTracks(Vec<Song>),
+    /// Append these tracks to the queue (add_to_queue/start_radio).
+    AiEnqueue(Vec<Song>),
+    /// Populate the pickable related-tracks list (get_suggestions).
+    AiSuggestions(Vec<Song>),
+    /// Turn autoplay/radio on or off (start_radio/stop_radio).
+    AiSetAutoplay(bool),
+    /// Create a local playlist with this name (create_playlist).
+    AiCreatePlaylist(String),
+    /// Add these tracks to a local playlist by id or name (add_to_playlist).
+    AiAddToPlaylist {
+        playlist: String,
+        songs: Vec<Song>,
+    },
+    /// Play a local playlist by id or name (play_playlist).
+    AiPlayPlaylist(String),
+}
+
+/// Side effects the reducer asks the run loop to perform.
+pub enum Cmd {
+    Player(PlayerCmd),
+    Search(String),
+    /// Persist the library (favorites/history) to disk.
+    SaveLibrary,
+    /// Persist the per-track preference signals (plays/skips/dislikes) to disk.
+    SaveSignals,
+    /// Refresh the local downloads list from this folder.
+    ScanDownloads(PathBuf),
+    /// Fetch synced lyrics for a track.
+    FetchLyrics {
+        video_id: String,
+        artist: String,
+        title: String,
+    },
+    /// Fetch + decode album art for a track (only when album art is enabled).
+    FetchArtwork {
+        video_id: String,
+        source: ArtSource,
+    },
+    /// Download a track to disk (best audio + tags + cover art).
+    Download(Song),
+    /// Point the download actor at a new folder for future downloads.
+    SetDownloadDir(PathBuf),
+    /// Prefetch a track's direct stream URL for instant skip.
+    Resolve {
+        video_id: String,
+        watch_url: String,
+    },
+    /// Persist the given config to disk (settings screen, on save).
+    SaveConfig(Box<Config>),
+    /// Persist the local playlists to disk (after an AI playlist mutation).
+    SavePlaylists,
+    /// Ask the AI assistant to handle a prompt, given a read-only state snapshot.
+    AskAi {
+        prompt: String,
+        context: Box<AiContext>,
+    },
+    /// Ask the anonymous API/search actor for related tracks to keep radio going without AI.
+    RadioFallback {
+        seed: String,
+        seed_video_id: String,
+        exclude_ids: Vec<String>,
+    },
+    /// Hand a local candidate shortlist to the AI actor to rerank (ids only). The result
+    /// returns as [`Msg::RadioAiPicks`]; failure degrades to the stashed local pick.
+    AiRerank {
+        seed_video_id: String,
+        prompt: String,
+    },
+    /// Switch the running AI actor's model (settings save). No effect without a key.
+    SetAiModel(GeminiModel),
+    /// (Re)build the AI actor with a new key + model (settings save, key changed). A
+    /// `None` key tears the assistant down; a valid key brings it up live — so a key
+    /// entered at runtime takes effect immediately, with no relaunch.
+    ReloadAi {
+        key: Option<String>,
+        model: GeminiModel,
+    },
+}
+
+/// A clickable terminal region's semantic target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseTarget {
+    Global(Action),
+    Player(Action),
+    /// Open/close the EQ preset dropdown on the player status line (clicking the `eq:` label).
+    EqMenu,
+    /// Pick an EQ preset from the open dropdown.
+    EqSelect(EqPreset),
+    /// Open/close the radio-mode dropdown on the player status line (clicking the `radio:` label).
+    RadioMenu,
+    /// Pick a radio mode from the open dropdown.
+    RadioSelect(RadioMode),
+    /// A nav-bar item — switch to that screen from any screen.
+    Nav(Mode),
+    /// The search bar's submit button.
+    SearchSubmit,
+    /// A Library tab header.
+    LibraryTab(LibraryTab),
+    /// A Settings tab header, by index into [`SettingsTab::ALL`].
+    SettingsTab(usize),
+    /// A clickable value control on a Settings field row — the checkbox of a toggle or the
+    /// `<` / `>` arrow of a Select/Slider. Carries the field-row index and the nudge direction,
+    /// so a click is the mouse equivalent of ←/→ on that row.
+    SettingsChange { row: usize, delta: i32 },
+    /// A clickable Settings button or text value, by field-row index — enters edit mode (text)
+    /// or fires the action (button); the mouse equivalent of Enter on that row.
+    SettingsActivate(usize),
+    /// A list row, by absolute item index (interpreted per the active screen). Single-click
+    /// selects; double-click plays.
+    ListRow(usize),
+    /// The `N/M` queue-position label on the player status line — opens the queue window.
+    QueuePos,
+    /// A row in the open queue window, by order position. Single-click selects; double-click
+    /// jumps playback to it.
+    QueueRow(usize),
+    /// The `✗` delete button on a queue-window row, by order position.
+    QueueDel(usize),
+    /// The `✗` delete button on a Library list row, by row index in the current tab.
+    LibraryDel(usize),
+    /// Confirm button on the "delete downloaded files" modal.
+    ConfirmDelete,
+    /// Cancel button on the "delete downloaded files" modal.
+    CancelDelete,
+    /// The `ytm-tui` brand label at the top-left of the nav bar — opens the About card.
+    AboutTitle,
+    /// The GitHub link inside the About card — opens the repo in the system browser.
+    AboutLink,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseButtonRegion {
+    pub rect: Rect,
+    pub target: MouseTarget,
+}
+
+/// Who authored a line in the AI chat transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiRole {
+    User,
+    Ai,
+    Error,
+}
+
+/// One line in the AI chat transcript.
+pub struct AiMessage {
+    pub role: AiRole,
+    pub text: String,
+}
+
+/// Within the AI screen, whether the input box or the suggestions list has focus.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum AiFocus {
+    Input,
+    Suggestions,
+}
+
+/// A local playlist's identity, for the AI context snapshot (no track payload).
+#[derive(Debug, Clone)]
+pub struct PlaylistInfo {
+    pub id: String,
+    pub name: String,
+    pub count: usize,
+}
+
+/// A read-only snapshot of app state handed to the AI actor with each prompt, so its
+/// read tools (get_queue, get_user_favorites, …) can answer without touching `App`.
+#[derive(Debug, Clone)]
+pub struct AiContext {
+    /// "Title — Artist" of the current track, if any.
+    pub current_track: Option<String>,
+    /// Up to a few upcoming queue entries, "Title — Artist".
+    pub queue_upcoming: Vec<String>,
+    pub queue_len: usize,
+    pub queue_remaining: usize,
+    /// A few recently-played tracks, most-recent first.
+    pub recent_history: Vec<String>,
+    /// A sample of favorited tracks.
+    pub favorites: Vec<String>,
+    /// The user's local playlists (names + counts; tracks fetched on demand).
+    pub playlists: Vec<PlaylistInfo>,
+    /// Whether a YTM cookie is configured (gates authenticated related-tracks).
+    pub authenticated: bool,
+    pub autoplay_radio: bool,
+}
+
+/// A radio rerank handed to the AI actor, kept until its `Msg::RadioAiPicks` returns. The
+/// `shortlist` is the exact set the model was shown — every returned id is validated against
+/// it (so a hallucinated id is dropped) — and `local_pick` is the guaranteed fallback ordering
+/// the engine produced, used to top up any slots the AI left empty.
+pub(crate) struct PendingRerank {
+    pub(crate) seed_video_id: String,
+    pub(crate) shortlist: Vec<Song>,
+    pub(crate) local_pick: Vec<Song>,
+}
+
+/// Per-track download state, for the UI indicator.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DownloadState {
+    Running(u8),
+    Done,
+    Failed,
+}
+
+/// Which screen is active.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Mode {
+    Player,
+    Search,
+    Library,
+    Settings,
+    Ai,
+}
+
+/// Synced lyrics for one track (held while it's the current track).
+pub struct TrackLyrics {
+    pub video_id: String,
+    pub lines: Vec<LyricLine>,
+}
+
+/// The lists in the library view.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum LibraryTab {
+    All,
+    Favorites,
+    History,
+    Downloads,
+}
+
+impl LibraryTab {
+    pub const ALL: [Self; 4] = [Self::All, Self::Favorites, Self::History, Self::Downloads];
+
+    pub(crate) fn next(self) -> Self {
+        match self {
+            LibraryTab::All => LibraryTab::Favorites,
+            LibraryTab::Favorites => LibraryTab::History,
+            LibraryTab::History => LibraryTab::Downloads,
+            LibraryTab::Downloads => LibraryTab::All,
+        }
+    }
+
+    pub(crate) fn prev(self) -> Self {
+        match self {
+            LibraryTab::All => LibraryTab::Downloads,
+            LibraryTab::Favorites => LibraryTab::All,
+            LibraryTab::History => LibraryTab::Favorites,
+            LibraryTab::Downloads => LibraryTab::History,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LibraryTab::All => t!("All", "전체"),
+            LibraryTab::Favorites => t!("Favorites", "즐겨찾기"),
+            LibraryTab::History => t!("History", "기록"),
+            LibraryTab::Downloads => t!("Downloads", "다운로드"),
+        }
+    }
+}
+
+/// Within the search screen, whether the query box or the results list has focus.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SearchFocus {
+    Input,
+    Results,
+}
+
+/// The semantic kind of the transient `status` line, controlling its color in the player
+/// view. Defaults to `Error` (red) so the existing `self.status = …` sites keep their styling;
+/// only positive confirmations opt into `Info` (green).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StatusKind {
+    #[default]
+    Error,
+    Info,
+}
+
