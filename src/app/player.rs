@@ -295,7 +295,7 @@ impl App {
             }
             Action::OpenSearch => {
                 self.mode = Mode::Search;
-                self.search_focus = SearchFocus::Input;
+                self.search.focus = SearchFocus::Input;
                 self.eq_dropdown_open = false;
                 self.radio_dropdown_open = false;
                 self.dirty = true;
@@ -323,7 +323,7 @@ impl App {
     /// currently playing we jump to the new track and start it; if a track is already
     /// playing we simply enqueue it (no interruption) and confirm with a toast.
     pub(in crate::app) fn play_selected(&mut self) -> Vec<Cmd> {
-        let Some(song) = self.search_results.get(self.search_selected).cloned() else {
+        let Some(song) = self.search.results.get(self.search.selected).cloned() else {
             return Vec::new();
         };
         let title = song.title.clone();

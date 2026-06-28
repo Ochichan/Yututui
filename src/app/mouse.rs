@@ -303,7 +303,7 @@ impl App {
                 self.dirty = true;
             }
             Mode::Search => {
-                self.search_scroll.wheel(up, n, self.search_results.len());
+                self.search_scroll.wheel(up, n, self.search.results.len());
                 self.dirty = true;
             }
             Mode::Ai => {
@@ -325,9 +325,9 @@ impl App {
     /// the view published (song index, or a Settings row index).
     pub(in crate::app) fn on_list_row_click(&mut self, index: usize) -> Vec<Cmd> {
         match self.mode {
-            Mode::Search if index < self.search_results.len() => {
-                self.search_selected = index;
-                self.search_focus = SearchFocus::Results;
+            Mode::Search if index < self.search.results.len() => {
+                self.search.selected = index;
+                self.search.focus = SearchFocus::Results;
                 self.dirty = true;
             }
             Mode::Library if index < self.library_len() => {
@@ -352,8 +352,8 @@ impl App {
     /// Settings rows have no "play", so a double-click just selects.
     pub(in crate::app) fn on_list_row_activate(&mut self, index: usize) -> Vec<Cmd> {
         match self.mode {
-            Mode::Search if index < self.search_results.len() => {
-                self.search_selected = index;
+            Mode::Search if index < self.search.results.len() => {
+                self.search.selected = index;
                 self.play_selected()
             }
             Mode::Library if index < self.library_len() => {

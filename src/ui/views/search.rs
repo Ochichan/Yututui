@@ -69,7 +69,7 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let input_area = cols[0];
     let button_area = cols[1];
 
-    let focused = app.search_focus == SearchFocus::Input;
+    let focused = app.search.focus == SearchFocus::Input;
     let border = if focused { R::BorderFocused } else { R::BorderMuted };
     // Make it obvious when we're not signed in (anonymous = search + public play only).
     let title = if app.authenticated {
@@ -85,16 +85,16 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
 
     // Ctrl+A selects the whole query: paint it with the selection colors. Otherwise show a
     // trailing block cursor while focused, or plain text when not.
-    let para = if focused && app.search_select_all && !app.search_input.is_empty() {
+    let para = if focused && app.search.select_all && !app.search.input.is_empty() {
         let hl = Style::default()
             .fg(app.theme.color(R::SelectionFg))
             .bg(app.theme.color(R::SelectionBg));
-        Paragraph::new(Line::from(Span::styled(app.search_input.clone(), hl)))
+        Paragraph::new(Line::from(Span::styled(app.search.input.clone(), hl)))
     } else {
         let text = if focused {
-            format!("{}\u{2588}", app.search_input)
+            format!("{}\u{2588}", app.search.input)
         } else {
-            app.search_input.clone()
+            app.search.input.clone()
         };
         Paragraph::new(text).style(app.theme.style(R::TextPrimary))
     };
@@ -125,15 +125,15 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
     app.list_viewport_rows.set(area.height);
 
-    if app.searching {
+    if app.search.searching {
         let msg = Line::from(t!("Searching…", "검색 중…")).style(app.theme.style(R::Warning));
         frame.render_widget(Paragraph::new(msg), area);
         return;
     }
 
-    let focused = app.search_focus == SearchFocus::Results;
+    let focused = app.search.focus == SearchFocus::Results;
     let items: Vec<ListItem> = app
-        .search_results
+        .search.results
         .iter()
         .map(|s| {
             let heart = if app.library.is_favorite(&s.video_id) { "♥ " } else { "" };
@@ -164,16 +164,16 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     // The wheel scrolls this viewport freely; the render keeps a keyboard-moved cursor on
     // screen with a margin (see `ui::scroll`). Pre-seed the offset so ratatui honors it; only
     // highlight the selection while it is actually visible, so the wheel can scroll past it.
-    let len = app.search_results.len();
+    let len = app.search.results.len();
     let offset = app.search_scroll.resolve(
-        app.search_selected.min(len.saturating_sub(1)),
+        app.search.selected.min(len.saturating_sub(1)),
         area.height,
         len,
         crate::ui::scroll::SCROLLOFF,
     );
     let mut state = ListState::default().with_offset(offset);
     if len > 0 {
-        let sel = app.search_selected.min(len - 1);
+        let sel = app.search.selected.min(len - 1);
         if (offset..offset + area.height as usize).contains(&sel) {
             state.select(Some(sel));
         }

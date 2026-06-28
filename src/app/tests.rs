@@ -87,13 +87,13 @@ fn ctrl_a_selects_then_backspace_clears_search_input() {
     for c in "lofi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
-    assert_eq!(app.search_input, "lofi");
+    assert_eq!(app.search.input, "lofi");
     app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
-    assert!(app.search_select_all);
+    assert!(app.search.select_all);
     // Backspace with everything selected clears the field, not one char.
     app.update(Msg::Key(key(KeyCode::Backspace)));
-    assert_eq!(app.search_input, "");
-    assert!(!app.search_select_all);
+    assert_eq!(app.search.input, "");
+    assert!(!app.search.select_all);
 }
 
 #[test]
@@ -105,8 +105,8 @@ fn ctrl_a_then_typing_replaces_search_input() {
     }
     app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
     app.update(Msg::Key(key(KeyCode::Char('x'))));
-    assert_eq!(app.search_input, "x");
-    assert!(!app.search_select_all);
+    assert_eq!(app.search.input, "x");
+    assert!(!app.search.select_all);
 }
 
 #[test]
@@ -119,9 +119,9 @@ fn navigating_away_clears_a_pending_select_all_highlight() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
-    assert!(app.search_select_all);
+    assert!(app.search.select_all);
     app.update(Msg::Key(ctrl(KeyCode::Char('h')))); // go home
-    assert!(!app.search_select_all, "highlight must not survive leaving the screen");
+    assert!(!app.search.select_all, "highlight must not survive leaving the screen");
 
     // AI box: same story — select all, leave, flag cleared so it can't reappear highlighted.
     app.update(Msg::Key(key(KeyCode::Char('a')))); // enter AI
@@ -292,7 +292,7 @@ fn slash_enters_search_and_q_is_typed_not_quit() {
     assert_eq!(app.mode, Mode::Search);
     app.update(Msg::Key(key(KeyCode::Char('q'))));
     assert!(!app.should_quit);
-    assert_eq!(app.search_input, "q");
+    assert_eq!(app.search.input, "q");
 }
 
 #[test]
@@ -302,7 +302,7 @@ fn korean_letters_still_type_in_search_input() {
     assert_eq!(app.mode, Mode::Search);
     app.update(Msg::Key(key(KeyCode::Char('ㅂ'))));
     assert!(!app.should_quit);
-    assert_eq!(app.search_input, "ㅂ");
+    assert_eq!(app.search.input, "ㅂ");
 }
 
 #[test]
@@ -329,7 +329,7 @@ fn enter_in_search_emits_search_cmd() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(app.searching);
+    assert!(app.search.searching);
     match cmds.as_slice() {
         [Cmd::Search(q)] => assert_eq!(q, "lofi"),
         _ => panic!("expected a Search cmd"),
@@ -347,10 +347,10 @@ fn search_submit_stays_enter_when_common_confirm_is_remapped() {
 
     let cmds = app.update(Msg::Key(key(KeyCode::F(5))));
     assert!(cmds.is_empty());
-    assert!(!app.searching);
+    assert!(!app.search.searching);
 
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(app.searching);
+    assert!(app.search.searching);
     match cmds.as_slice() {
         [Cmd::Search(q)] => assert_eq!(q, "lofi"),
         _ => panic!("expected a Search cmd"),
@@ -371,7 +371,7 @@ fn search_enter_beats_enter_global_remap_but_other_screens_keep_it() {
     let mut app = App::new(100);
     app.keymap = keymap.clone();
     app.mode = Mode::Search;
-    app.search_input = "lofi".to_owned();
+    app.search.input = "lofi".to_owned();
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(!app.help_visible);
     match cmds.as_slice() {
@@ -393,7 +393,7 @@ fn results_then_enter_plays_and_returns_to_player() {
         query: "x".to_owned(),
         songs: vec![Song::remote("abc123", "Song", "Artist", "3:00")],
     });
-    assert_eq!(app.search_focus, SearchFocus::Results);
+    assert_eq!(app.search.focus, SearchFocus::Results);
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(app.mode, Mode::Player);
     assert!(load_url(&cmds).expect("a Load cmd").contains("abc123"));
@@ -411,8 +411,8 @@ fn enter_on_search_result_queues_only_the_selected_song() {
             Song::remote("id2", "Two", "C", "3:00"),
         ],
     });
-    app.search_focus = SearchFocus::Results;
-    app.search_selected = 1;
+    app.search.focus = SearchFocus::Results;
+    app.search.selected = 1;
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(app.mode, Mode::Player);
     // Only the picked track lands in the queue — not the whole result list. Nothing was
@@ -435,8 +435,8 @@ fn enter_on_search_result_appends_without_wiping_the_playing_queue() {
         query: "x".to_owned(),
         songs: vec![Song::remote("new9", "New", "Z", "3:00")],
     });
-    app.search_focus = SearchFocus::Results;
-    app.search_selected = 0;
+    app.search.focus = SearchFocus::Results;
+    app.search.selected = 0;
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
 
     // The existing queue is preserved and grows by exactly one…
@@ -455,8 +455,8 @@ fn search_result_confirm_stays_enter_when_common_confirm_is_remapped() {
     let mut app = App::new(100);
     app.keymap = confirm_on_f5_keymap();
     app.mode = Mode::Search;
-    app.search_focus = SearchFocus::Results;
-    app.search_results = songs(1);
+    app.search.focus = SearchFocus::Results;
+    app.search.results = songs(1);
 
     let cmds = app.update(Msg::Key(key(KeyCode::F(5))));
     assert!(load_url(&cmds).is_none());
@@ -471,8 +471,8 @@ fn search_result_confirm_stays_enter_when_common_confirm_is_remapped() {
 fn q_closes_search_results_without_quitting_app() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.search_focus = SearchFocus::Results;
-    app.search_results = songs(1);
+    app.search.focus = SearchFocus::Results;
+    app.search.results = songs(1);
     app.update(Msg::Key(key(KeyCode::Char('q'))));
     assert_eq!(app.mode, Mode::Player);
     assert!(!app.should_quit);
@@ -482,8 +482,8 @@ fn q_closes_search_results_without_quitting_app() {
 fn ctrl_q_quits_from_search_results() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.search_focus = SearchFocus::Results;
-    app.search_results = songs(1);
+    app.search.focus = SearchFocus::Results;
+    app.search.results = songs(1);
     app.update(Msg::Key(ctrl(KeyCode::Char('q'))));
     assert!(app.should_quit);
 }
@@ -492,10 +492,10 @@ fn ctrl_q_quits_from_search_results() {
 fn ctrl_h_goes_home_from_search_input_without_typing() {
     let mut app = App::new(100);
     app.update(Msg::Key(key(KeyCode::Char('/'))));
-    app.search_input = "abc".to_owned();
+    app.search.input = "abc".to_owned();
     app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
     assert_eq!(app.mode, Mode::Player);
-    assert_eq!(app.search_input, "abc");
+    assert_eq!(app.search.input, "abc");
     assert!(!app.should_quit);
 }
 
@@ -1743,9 +1743,9 @@ fn playing_records_history_most_recent_first() {
 #[test]
 fn favorite_from_search_results() {
     let mut app = App::new(100);
-    app.search_results = songs(3);
-    app.search_selected = 1;
-    app.search_focus = SearchFocus::Results;
+    app.search.results = songs(3);
+    app.search.selected = 1;
+    app.search.focus = SearchFocus::Results;
     app.mode = Mode::Search;
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
     assert!(app.library.is_favorite("id1"));
@@ -1929,19 +1929,19 @@ fn library_page_and_jump_keys_move_the_cursor() {
 fn search_page_and_jump_keys_move_the_cursor() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.search_focus = SearchFocus::Results;
-    app.search_results = songs(30);
-    app.search_selected = 0;
+    app.search.focus = SearchFocus::Results;
+    app.search.results = songs(30);
+    app.search.selected = 0;
     app.list_viewport_rows.set(12);
 
     app.update(Msg::Key(key(KeyCode::PageDown)));
-    assert_eq!(app.search_selected, 11);
+    assert_eq!(app.search.selected, 11);
     app.update(Msg::Key(key(KeyCode::End)));
-    assert_eq!(app.search_selected, 29);
+    assert_eq!(app.search.selected, 29);
     app.update(Msg::Key(key(KeyCode::PageUp)));
-    assert_eq!(app.search_selected, 18);
+    assert_eq!(app.search.selected, 18);
     app.update(Msg::Key(key(KeyCode::Home)));
-    assert_eq!(app.search_selected, 0);
+    assert_eq!(app.search.selected, 0);
 }
 
 #[test]
@@ -1968,16 +1968,16 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
     // Search: same decoupling, clamped at the last page.
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.search_focus = SearchFocus::Results;
-    app.search_results = songs(20);
-    app.search_selected = 19;
-    let len = app.search_results.len();
-    app.search_scroll.resolve(app.search_selected, 10, len, SCROLLOFF); // offset -> last page (10)
+    app.search.focus = SearchFocus::Results;
+    app.search.results = songs(20);
+    app.search.selected = 19;
+    let len = app.search.results.len();
+    app.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF); // offset -> last page (10)
     app.update(Msg::MouseScroll { up: false });
-    assert_eq!(app.search_selected, 19); // selection untouched
-    assert_eq!(app.search_scroll.resolve(app.search_selected, 10, len, SCROLLOFF), 10); // clamped at end
+    assert_eq!(app.search.selected, 19); // selection untouched
+    assert_eq!(app.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF), 10); // clamped at end
     app.update(Msg::MouseScroll { up: true });
-    assert_eq!(app.search_scroll.resolve(app.search_selected, 10, len, SCROLLOFF), 7);
+    assert_eq!(app.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF), 7);
 }
 
 #[test]
@@ -2943,17 +2943,17 @@ fn clicking_a_nav_item_switches_screens() {
     assert_eq!(app.mode, Mode::Library);
     click_target(&mut app, MouseTarget::Nav(Mode::Search));
     assert_eq!(app.mode, Mode::Search);
-    assert_eq!(app.search_focus, SearchFocus::Input);
+    assert_eq!(app.search.focus, SearchFocus::Input);
 }
 
 #[test]
 fn clicking_the_search_button_submits_the_query() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.search_focus = SearchFocus::Input;
-    app.search_input = "lofi beats".to_owned();
+    app.search.focus = SearchFocus::Input;
+    app.search.input = "lofi beats".to_owned();
     let cmds = click_target(&mut app, MouseTarget::SearchSubmit);
-    assert!(app.searching);
+    assert!(app.search.searching);
     assert!(matches!(cmds.as_slice(), [Cmd::Search(q)] if q == "lofi beats"));
 }
 
@@ -2980,17 +2980,17 @@ fn clicking_a_settings_tab_switches_it() {
 fn single_click_on_a_result_row_selects_it() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.search_results = songs(5);
+    app.search.results = songs(5);
     click_target(&mut app, MouseTarget::ListRow(2));
-    assert_eq!(app.search_selected, 2);
-    assert_eq!(app.search_focus, SearchFocus::Results);
+    assert_eq!(app.search.selected, 2);
+    assert_eq!(app.search.focus, SearchFocus::Results);
 }
 
 #[test]
 fn double_click_on_a_result_row_plays_it() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.search_results = songs(5);
+    app.search.results = songs(5);
     render_app(&app);
     let (col, row) = button_center(&app, MouseTarget::ListRow(3));
     let cmds = app.update(Msg::MouseDoubleClick { col, row });

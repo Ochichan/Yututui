@@ -160,7 +160,7 @@ impl App {
     /// keys and the `?` help shortcut must not fire — they'd be typed instead).
     pub(in crate::app) fn in_text_entry(&self) -> bool {
         match self.mode {
-            Mode::Search => self.search_focus == SearchFocus::Input,
+            Mode::Search => self.search.focus == SearchFocus::Input,
             Mode::Ai => self.ai_focus == AiFocus::Input,
             Mode::Settings => self.settings.as_ref().is_some_and(|s| s.editing_text),
             _ => false,

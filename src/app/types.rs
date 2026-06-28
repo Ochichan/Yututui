@@ -385,8 +385,9 @@ impl LibraryTab {
 }
 
 /// Within the search screen, whether the query box or the results list has focus.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum SearchFocus {
+    #[default]
     Input,
     Results,
 }

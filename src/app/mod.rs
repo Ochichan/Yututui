@@ -36,6 +36,9 @@ use crate::theme::{ThemeConfig, ThemeRole};
 mod types;
 pub use types::*;
 
+mod state;
+pub use state::*;
+
 mod ai_reducer;
 mod artwork;
 mod download;
@@ -223,14 +226,8 @@ pub struct App {
     pub playlists: Playlists,
 
     // Search ------------------------------------------------------------------
-    pub search_input: String,
-    /// Whether Ctrl+A has selected the whole search query (desktop-style: the next edit
-    /// replaces or clears it). Reset on any consuming keypress.
-    pub search_select_all: bool,
-    pub search_focus: SearchFocus,
-    pub search_results: Vec<Song>,
-    pub search_selected: usize,
-    pub searching: bool,
+    /// Search query, results, selection, focus, and in-flight flag.
+    pub search: SearchState,
 
     // Library -----------------------------------------------------------------
     /// Favorites + play history, persisted to disk. Loaded by `main` after `new`.
@@ -381,12 +378,14 @@ impl App {
             consecutive_radio_failures: 0,
             consecutive_play_errors: 0,
             playlists: Playlists::default(),
-            search_input: String::new(),
-            search_select_all: false,
-            search_focus: SearchFocus::Input,
-            search_results: Vec::new(),
-            search_selected: 0,
-            searching: false,
+            search: SearchState {
+                input: String::new(),
+                select_all: false,
+                focus: SearchFocus::Input,
+                results: Vec::new(),
+                selected: 0,
+                searching: false,
+            },
             library: Library::default(),
             signals: Signals::default(),
             session_plays: 0,
@@ -606,25 +605,25 @@ impl App {
                 self.dirty = true;
             }
             Msg::SearchResults { query, songs } => {
-                self.searching = false;
+                self.search.searching = false;
                 if songs.is_empty() {
                     self.status = if crate::i18n::is_korean() {
                         format!("\"{query}\" 검색 결과 없음")
                     } else {
                         format!("No results for \"{query}\"")
                     };
-                    self.search_results.clear();
+                    self.search.results.clear();
                 } else {
                     self.status.clear();
-                    self.search_results = songs;
-                    self.search_selected = 0;
+                    self.search.results = songs;
+                    self.search.selected = 0;
                     self.search_scroll.reset();
-                    self.search_focus = SearchFocus::Results;
+                    self.search.focus = SearchFocus::Results;
                 }
                 self.dirty = true;
             }
             Msg::SearchError(e) => {
-                self.searching = false;
+                self.search.searching = false;
                 self.status = format!("{}: {e}", t!("Search error", "검색 오류"));
                 self.dirty = true;
             }
@@ -842,7 +841,7 @@ impl App {
         self.confirm_delete_files = None;
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
         // when the input is re-entered later.
-        self.search_select_all = false;
+        self.search.select_all = false;
         self.ai_select_all = false;
         if self.mode == Mode::Settings {
             self.finish_settings_text_edit();
@@ -884,7 +883,7 @@ impl App {
         self.queue_popup_open = false;
         self.confirm_delete_files = None;
         // Any navigation deselects: a Ctrl+A highlight must not survive a screen change.
-        self.search_select_all = false;
+        self.search.select_all = false;
         self.ai_select_all = false;
         if self.mode == mode {
             self.dirty = true;
@@ -900,7 +899,7 @@ impl App {
             Mode::Player => self.mode = Mode::Player,
             Mode::Search => {
                 self.mode = Mode::Search;
-                self.search_focus = SearchFocus::Input;
+                self.search.focus = SearchFocus::Input;
             }
             Mode::Library => {
                 self.mode = Mode::Library;
