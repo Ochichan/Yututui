@@ -231,16 +231,9 @@ pub struct App {
     pub downloads: Downloads,
 
     // Prefetch ----------------------------------------------------------------
-    /// Pre-resolved direct stream URLs, keyed by `video_id` (for instant skip).
-    resolved: HashMap<String, String>,
-    /// Whether the current track was loaded from a prefetched direct URL (vs the watch
-    /// URL mpv resolves itself). Recorded so a playback error can note the likelier cause
-    /// (a stale prefetched CDN URL) in the log.
-    last_load_prefetched: bool,
-    /// `video_id` of the track actually loaded into mpv. A cached/restored queue entry can
-    /// be visible before it is loaded; the first play action then loads it instead of only
-    /// toggling mpv's pause property.
-    loaded_video_id: Option<String>,
+    /// Prefetch / load tracking: stream-URL cache, last-load-was-prefetched flag, and the
+    /// `video_id` currently loaded into mpv (see [`Prefetch`]).
+    prefetch: Prefetch,
 
     /// Screen rect of the seekbar, written by the player view each render so a mouse
     /// click can be hit-tested against it. `Cell` because render only has `&App`.
@@ -336,7 +329,7 @@ impl App {
             lyrics: Lyrics::default(),
             art: ArtState::default(),
             downloads: Downloads::default(),
-            resolved: HashMap::new(),
+            prefetch: Prefetch::default(),
             seekbar_rect: Cell::new(None),
             list_viewport_rows: Cell::new(0),
             library_scroll: crate::ui::scroll::ScrollState::default(),
@@ -345,8 +338,6 @@ impl App {
             ai_scroll: crate::ui::scroll::ScrollState::default(),
             mouse_buttons: RefCell::new(Vec::new()),
             last_shown_sec: -1,
-            last_load_prefetched: false,
-            loaded_video_id: None,
         }
     }
 
@@ -385,7 +376,7 @@ impl App {
         self.playback.duration = None;
         self.playback.paused = true;
         self.last_shown_sec = -1;
-        self.loaded_video_id = None;
+        self.prefetch.loaded_video_id = None;
         self.status.clear();
         self.dirty = true;
     }
@@ -508,7 +499,7 @@ impl App {
                 tracing::warn!(
                     error = %e,
                     track = failed.as_deref().unwrap_or("?"),
-                    prefetched = self.last_load_prefetched,
+                    prefetched = self.prefetch.last_load_prefetched,
                     "playback error"
                 );
                 self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
@@ -611,10 +602,10 @@ impl App {
                 stream_url,
             } => {
                 // Bounded prefetch cache; no redraw (purely a skip-latency optimization).
-                if self.resolved.len() >= RESOLVED_MAX {
-                    self.resolved.clear();
+                if self.prefetch.resolved.len() >= RESOLVED_MAX {
+                    self.prefetch.resolved.clear();
                 }
-                self.resolved.insert(video_id, stream_url);
+                self.prefetch.resolved.insert(video_id, stream_url);
             }
             Msg::RadioResults {
                 seed_video_id,

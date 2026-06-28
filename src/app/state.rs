@@ -22,6 +22,22 @@ pub struct Playback {
     pub speed: f64,
 }
 
+/// Prefetch / load tracking: the pre-resolved stream-URL cache, whether the current track
+/// loaded from that cache, and the `video_id` actually loaded into mpv.
+#[derive(Default)]
+pub struct Prefetch {
+    /// Pre-resolved direct stream URLs, keyed by `video_id` (for instant skip).
+    pub resolved: HashMap<String, String>,
+    /// Whether the current track was loaded from a prefetched direct URL (vs the watch
+    /// URL mpv resolves itself). Recorded so a playback error can note the likelier cause
+    /// (a stale prefetched CDN URL) in the log.
+    pub last_load_prefetched: bool,
+    /// `video_id` of the track actually loaded into mpv. A cached/restored queue entry can
+    /// be visible before it is loaded; the first play action then loads it instead of only
+    /// toggling mpv's pause property.
+    pub loaded_video_id: Option<String>,
+}
+
 /// Download state, keyed by `video_id`: the in-flight/finished progress map shown in the UI,
 /// plus the original catalog metadata held while a download runs.
 #[derive(Default)]

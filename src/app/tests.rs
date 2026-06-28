@@ -154,17 +154,17 @@ fn ctrl_a_selects_then_backspace_clears_ai_input() {
 fn radio_extend_resumes_playback_when_idle() {
     let mut app = App::new(100);
     app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
-    app.loaded_video_id = None; // the seed ended before this refill landed
+    app.prefetch.loaded_video_id = None; // the seed ended before this refill landed
     let cmds = app.extend_queue_from_radio(vec![Song::remote("b", "B", "y", "2:00")]);
     assert!(load_url(&cmds).is_some(), "should resume by loading the new track");
-    assert_eq!(app.loaded_video_id.as_deref(), Some("b"));
+    assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("b"));
 }
 
 #[test]
 fn radio_extend_prefetches_next_while_playing() {
     let mut app = App::new(100);
     app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
-    app.loaded_video_id = Some("a".to_owned()); // still playing the seed
+    app.prefetch.loaded_video_id = Some("a".to_owned()); // still playing the seed
     let cmds = app.extend_queue_from_radio(vec![Song::remote("b", "B", "y", "2:00")]);
     assert!(load_url(&cmds).is_none(), "must not interrupt the playing track");
     assert!(
@@ -206,7 +206,7 @@ fn restores_last_history_track_without_autoplaying() {
     assert_eq!(app.queue.len(), 1);
     assert_eq!(current(&app), "id1");
     assert!(app.playback.paused);
-    assert!(app.loaded_video_id.is_none());
+    assert!(app.prefetch.loaded_video_id.is_none());
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn play_loads_restored_history_track() {
             .expect("restored track load")
             .contains("id0")
     );
-    assert_eq!(app.loaded_video_id.as_deref(), Some("id0"));
+    assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("id0"));
     assert!(!app.playback.paused);
 }
 
@@ -237,7 +237,7 @@ fn autoplay_on_start_plays_restored_track_when_enabled() {
             .expect("autoplay load at launch")
             .contains("id0")
     );
-    assert_eq!(app.loaded_video_id.as_deref(), Some("id0"));
+    assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("id0"));
     assert!(!app.playback.paused);
 }
 
@@ -250,7 +250,7 @@ fn autoplay_on_start_is_noop_when_disabled() {
     assert!(!app.config.effective_autoplay_on_start());
     let cmds = app.update(Msg::Autoplay);
     assert!(load_url(&cmds).is_none());
-    assert!(app.loaded_video_id.is_none());
+    assert!(app.prefetch.loaded_video_id.is_none());
     assert!(app.playback.paused);
 }
 
@@ -426,7 +426,7 @@ fn enter_on_search_result_appends_without_wiping_the_playing_queue() {
     // A 3-track queue is already playing track 0.
     let mut app = app_playing(3, 0);
     let before_len = app.queue.len();
-    let playing = app.loaded_video_id.clone();
+    let playing = app.prefetch.loaded_video_id.clone();
     assert_eq!(playing.as_deref(), Some("id0"));
 
     // Go to search, pick a fresh result, hit Enter.
@@ -443,7 +443,7 @@ fn enter_on_search_result_appends_without_wiping_the_playing_queue() {
     assert_eq!(app.queue.len(), before_len + 1);
     assert!(app.queue.video_ids().any(|v| v == "new9"));
     // …the current track keeps playing uninterrupted (no reload, no jump to Player)…
-    assert_eq!(app.loaded_video_id, playing);
+    assert_eq!(app.prefetch.loaded_video_id, playing);
     assert!(load_url(&cmds).is_none());
     assert_eq!(app.mode, Mode::Search);
     // …and it's confirmed as a positive (green) toast, not an error.

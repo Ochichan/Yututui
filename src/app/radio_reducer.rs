@@ -168,7 +168,7 @@ impl App {
         // If the seed track ended before this refill landed (e.g. a 1-song queue with radio
         // on), the player is idle — pick up the freshly queued track so playback resumes
         // instead of staying stopped at the finished song.
-        if self.loaded_video_id.is_none() && self.queue.remaining() > 0 {
+        if self.prefetch.loaded_video_id.is_none() && self.queue.remaining() > 0 {
             return self.advance(true);
         }
         // Still playing: pre-resolve the now-known next track's stream so the EOF→next hop is
@@ -179,7 +179,7 @@ impl App {
         {
             let video_id = next.video_id.clone();
             let watch_url = next.watch_url();
-            if !self.resolved.contains_key(&video_id) {
+            if !self.prefetch.resolved.contains_key(&video_id) {
                 cmds.push(Cmd::Resolve { video_id, watch_url });
             }
         }

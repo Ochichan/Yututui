@@ -327,7 +327,7 @@ impl App {
             return Vec::new();
         };
         let title = song.title.clone();
-        let was_idle = self.loaded_video_id.is_none();
+        let was_idle = self.prefetch.loaded_video_id.is_none();
         if self.queue.extend(vec![song]) == 0 {
             self.status_kind = StatusKind::Error;
             self.status = t!("Queue is full", "큐가 가득 찼어요").to_string();
@@ -418,17 +418,17 @@ impl App {
                 self.status.clear();
                 self.library.record_play(&song);
                 self.note_session_activity();
-                self.loaded_video_id = Some(song.video_id.clone());
+                self.prefetch.loaded_video_id = Some(song.video_id.clone());
                 // Drop the previous track's lyrics; refresh if the panel is open.
                 self.lyrics.track = None;
                 // Drop the previous track's art; a fetch (below) refreshes it when enabled.
                 self.clear_artwork();
                 // Use a prefetched direct URL if we have one (instant skip); else hand mpv
                 // the track's own playback target (watch URL or local file path).
-                let prefetched = self.resolved.contains_key(&song.video_id);
-                self.last_load_prefetched = prefetched;
+                let prefetched = self.prefetch.resolved.contains_key(&song.video_id);
+                self.prefetch.last_load_prefetched = prefetched;
                 let url = self
-                    .resolved
+                    .prefetch.resolved
                     .get(&song.video_id)
                     .cloned()
                     .unwrap_or_else(|| song.playback_target());
@@ -464,7 +464,7 @@ impl App {
                 {
                     let video_id = next.video_id.clone();
                     let watch_url = next.watch_url();
-                    if !self.resolved.contains_key(&video_id) {
+                    if !self.prefetch.resolved.contains_key(&video_id) {
                         cmds.push(Cmd::Resolve {
                             video_id,
                             watch_url,
@@ -483,7 +483,7 @@ impl App {
                 self.playback.duration = None;
                 self.playback.paused = true;
                 self.last_shown_sec = -1;
-                self.loaded_video_id = None;
+                self.prefetch.loaded_video_id = None;
                 Vec::new()
             }
         }
@@ -492,7 +492,7 @@ impl App {
     pub(in crate::app) fn current_needs_load(&self) -> bool {
         self.queue
             .current()
-            .is_some_and(|song| self.loaded_video_id.as_deref() != Some(song.video_id.as_str()))
+            .is_some_and(|song| self.prefetch.loaded_video_id.as_deref() != Some(song.video_id.as_str()))
     }
 
     /// Whether we lack lyrics for the current track (so a fetch is warranted).
