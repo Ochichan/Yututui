@@ -18,7 +18,7 @@ pub const SCROLLOFF: usize = 2;
 
 /// Persistent scroll state for one list. `Cell` throughout because the render pass only
 /// holds `&App` yet needs to record the viewport height and remember the offset across
-/// frames (mirroring [`crate::app::App::list_viewport_rows`]).
+/// frames (mirroring the [`crate::app::RenderBridges`] fields).
 #[derive(Debug, Default)]
 pub struct ScrollState {
     /// Index of the first visible row.

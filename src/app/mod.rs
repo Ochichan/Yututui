@@ -385,7 +385,7 @@ impl App {
             Msg::Autoplay => return self.autoplay_on_start_cmds(),
             Msg::StatusTick => {
                 // The status has been covering the title long enough — clear it so the
-                // wrapper above nulls `status_set_at` and the next frame redraws the title.
+                // wrapper above nulls `status.set_at` and the next frame redraws the title.
                 if matches!(self.status.set_at, Some(t) if t.elapsed() >= STATUS_TTL) {
                     self.status.text.clear();
                     self.dirty = true;

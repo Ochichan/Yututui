@@ -13,7 +13,7 @@ impl App {
         if self.queue.remaining() > AUTOPLAY_THRESHOLD {
             return Vec::new();
         }
-        // One refill in flight at a time: the pool fetch (`radio_pending`) or, when the AI
+        // One refill in flight at a time: the pool fetch (`radio.pending`) or, when the AI
         // reranks the fetched pool, that rerank call (`ai_thinking`).
         if self.radio.pending || (self.ai.available && self.ai.thinking) {
             return Vec::new();

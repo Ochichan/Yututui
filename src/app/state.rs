@@ -62,8 +62,9 @@ pub struct Status {
     /// A status/error line shown to the user (empty = normal; the track title shows instead).
     pub text: String,
     /// When `text` was last set non-empty, used to auto-expire it after [`STATUS_TTL`] (set
-    /// centrally in [`App::update`]; `None` while the title is showing normally).
-    pub set_at: Option<Instant>,
+    /// centrally in [`App::update`]; `None` while the title is showing normally). Reducer-only
+    /// (was a private App field) — `pub(in crate::app)` keeps it off the render-facing surface.
+    pub(in crate::app) set_at: Option<Instant>,
     /// Semantic kind of the current status (drives its color); reset to `Error` on clear.
     pub kind: StatusKind,
 }
@@ -140,8 +141,9 @@ pub struct Prefetch {
 pub struct Downloads {
     /// In-flight / finished downloads, keyed by `video_id`, for the UI indicator.
     pub active: HashMap<String, DownloadState>,
-    /// Original catalog metadata for in-flight downloads, keyed by `video_id`.
-    pub sources: HashMap<String, Song>,
+    /// Original catalog metadata for in-flight downloads, keyed by `video_id`. Reducer-only
+    /// (was a private App field) — `pub(in crate::app)` keeps it off the render-facing surface.
+    pub(in crate::app) sources: HashMap<String, Song>,
 }
 
 /// Lyrics-panel state: whether the panel is shown, the in-flight flag, and the fetched
@@ -207,16 +209,18 @@ pub struct ArtState {
     /// (no art is fetched or drawn in that case).
     pub picker: Option<Picker>,
     /// The current track's art as a render-ready, resizable protocol. `RefCell` because
-    /// `StatefulImage` needs `&mut` during render, which only has `&App` (mirrors
-    /// [`App::mouse_buttons`]).
+    /// `StatefulImage` needs `&mut` during render, which only has `&App` (mirrors the
+    /// [`RenderBridges`] fields).
     pub protocol: RefCell<Option<StatefulProtocol>>,
     /// The decoded source image kept alongside the protocol so [`App::refresh_art`] can
     /// rebuild a fresh protocol (new graphics-protocol id) on demand — see that method for why.
-    pub source: Option<DynamicImage>,
+    /// Reducer-only (was a private App field) — `pub(in crate::app)`.
+    pub(in crate::app) source: Option<DynamicImage>,
     /// Source pixel dimensions of the held art, for centering it within its panel.
     pub dims: (u32, u32),
     /// `video_id` the held art belongs to (guards against a stale image lingering).
-    pub video_id: Option<String>,
+    /// Reducer-only (was a private App field) — `pub(in crate::app)`.
+    pub(in crate::app) video_id: Option<String>,
     /// True between requesting art and the result arriving.
     pub loading: bool,
 }

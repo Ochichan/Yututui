@@ -101,7 +101,7 @@ impl App {
             let url = format!("https://www.youtube.com/watch?v={}", song.video_id);
             let cookies = self.config.cookies_file.clone();
             self.video.proc = spawn_video_overlay(&url, cookies.as_deref(), layout);
-            // Audio stays paused (video_paused_audio unchanged).
+            // Audio stays paused (video.paused_audio unchanged).
         }
         self.status.kind = StatusKind::Info;
         self.status.text = format!("{}: {}", t!("Video", "영상"), layout.label());
@@ -474,7 +474,7 @@ impl App {
                 // Start the autoplay-radio top-up as the track *starts* (not only at its end)
                 // so a low/single-song queue fetches its next tracks while this one still
                 // plays — closing the silent gap. Guarded + cooldown'd inside, and idempotent
-                // with the call in `advance` (the second one sees `radio_pending` and no-ops).
+                // with the call in `advance` (the second one sees `radio.pending` and no-ops).
                 cmds.extend(self.maybe_autoplay_extend());
                 cmds
             }

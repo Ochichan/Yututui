@@ -3039,7 +3039,7 @@ fn clicking_a_queue_delete_button_removes_that_track() {
 fn clicking_outside_the_queue_window_closes_it() {
     let mut app = app_playing(5, 0);
     app.update(Msg::Key(key(KeyCode::Char('c'))));
-    render_app(&app); // publishes queue_popup_rect
+    render_app(&app); // publishes queue_popup.rect
     // Top-left corner is well outside the centered popup.
     let cmds = app.update(Msg::MouseClick { col: 1, row: 1 });
     assert!(!app.queue_popup.open);
