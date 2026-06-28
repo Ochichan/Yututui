@@ -255,10 +255,12 @@ async fn run(
             _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
         };
 
-        // An overlay that paints over the album art (the `eq:` dropdown) won't make the
-        // graphics-protocol art re-emit when it closes (render area unchanged), so snapshot
-        // its state across dispatch and force one full redraw on the close edge below.
-        let overlay_before = app.art_overlay_open();
+        // An overlay that paints over the album art (the `eq:`/`radio:` dropdowns) won't make
+        // the graphics-protocol art re-emit when it closes (render area unchanged), so snapshot
+        // *which* one is open across dispatch and force one full redraw on the close-or-switch
+        // edge below. Tracking the kind (not just open/closed) catches one dropdown switching
+        // straight to the other, which leaves the old box's region as a stale artifact.
+        let overlay_before = app.art_overlay_kind();
 
         for cmd in app.update(msg) {
             match cmd {
@@ -342,11 +344,13 @@ async fn run(
         }
 
         if app.dirty {
-            // The art-covering overlay just closed: clear so the next draw re-emits every
-            // cell (including the art's cached protocol escape), repainting where the overlay
-            // overpainted it. One-shot on the edge, gated on art being active, so the extra
-            // full redraw is a single frame (negligible flicker) and never fires when off.
-            if overlay_before && !app.art_overlay_open() && app.art_active() {
+            // An art-covering overlay just closed or switched to the other dropdown: clear so the
+            // next draw re-emits every cell (including the art's cached protocol escape),
+            // repainting where the old box overpainted it. Fires when the kind moves *away from*
+            // an open overlay (close or switch), not on a fresh open (which only covers more art),
+            // so the extra full redraw is a single frame, gated on art being active.
+            let overlay_after = app.art_overlay_kind();
+            if overlay_before != 0 && overlay_before != overlay_after && app.art_active() {
                 terminal.clear()?;
             }
             terminal.draw(|f| ui::render(f, &app))?;

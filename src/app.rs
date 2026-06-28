@@ -3512,15 +3512,23 @@ impl App {
             && self.art.borrow().is_some()
     }
 
-    /// Whether a popup that paints *over* the album-art band is currently open (today: the
-    /// `eq:` preset dropdown or the `radio:` mode dropdown). The render loop watches this so it
-    /// can force one full redraw when such a popup closes — graphics-protocol art
-    /// (`StatefulProtocol`) won't re-emit on its own when the render area is unchanged, so an
-    /// overlay that overpainted it would otherwise leave a stale artifact. Extend this predicate
-    /// if another `Clear` popup that can cover the art (e.g. the queue popup) shows the same
+    /// *Which* popup that paints over the album-art band is open: `0` none, `1` the `eq:`
+    /// dropdown, `2` the `radio:` dropdown. The render loop snapshots this across dispatch and
+    /// forces one full redraw when the value changes *away from an open overlay* — i.e. a
+    /// dropdown closing **or** switching directly to the other one. Graphics-protocol art
+    /// (`StatefulProtocol`) won't re-emit on its own when the render area is unchanged, so the
+    /// just-uncovered region would otherwise keep the old box as a stale artifact. The switch
+    /// case matters specifically because *some* overlay stays open across it. Extend this if
+    /// another `Clear` popup that can cover the art (e.g. the queue popup) shows the same
     /// artifact.
-    pub fn art_overlay_open(&self) -> bool {
-        self.eq_dropdown_open || self.radio_dropdown_open
+    pub fn art_overlay_kind(&self) -> u8 {
+        if self.eq_dropdown_open {
+            1
+        } else if self.radio_dropdown_open {
+            2
+        } else {
+            0
+        }
     }
 
     /// Turn a decoded image into a render-ready protocol (or clear when there's none / no
@@ -5831,18 +5839,6 @@ mod tests {
     }
 
     #[test]
-    fn art_overlay_open_tracks_eq_dropdown() {
-        // The render loop relies on this edge to force a redraw so graphics-protocol album
-        // art repaints after the `eq:` dropdown closes (it overpaints the art band).
-        let mut app = app_playing(1, 0);
-        assert!(!app.art_overlay_open());
-        app.eq_dropdown_open = true;
-        assert!(app.art_overlay_open());
-        app.eq_dropdown_open = false;
-        assert!(!app.art_overlay_open());
-    }
-
-    #[test]
     fn dislike_key_toggles_and_clears_favorite() {
         let mut app = app_playing(2, 0);
         let id = current(&app).to_owned();
@@ -6029,15 +6025,19 @@ mod tests {
     }
 
     #[test]
-    fn art_overlay_open_tracks_radio_dropdown() {
-        // The radio dropdown overpaints the art band just like the EQ one, so the render loop's
-        // repaint edge must fire for it too.
+    fn art_overlay_kind_distinguishes_the_two_dropdowns() {
+        // The render loop clears on a change *away from* a non-zero kind, so switching eq->radio
+        // (1 -> 2) must register as a change even though `art_overlay_open()` stays true.
         let mut app = app_playing(1, 0);
-        assert!(!app.art_overlay_open());
+        assert_eq!(app.art_overlay_kind(), 0);
+        app.eq_dropdown_open = true;
+        assert_eq!(app.art_overlay_kind(), 1);
+        // Switch to the radio dropdown (mutually exclusive): kind changes 1 -> 2.
+        app.eq_dropdown_open = false;
         app.radio_dropdown_open = true;
-        assert!(app.art_overlay_open());
+        assert_eq!(app.art_overlay_kind(), 2);
         app.radio_dropdown_open = false;
-        assert!(!app.art_overlay_open());
+        assert_eq!(app.art_overlay_kind(), 0);
     }
 
     #[test]
