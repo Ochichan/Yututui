@@ -3,6 +3,8 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/icons/ytm-tui.ico");
+    // Embedded by the About card via `include_bytes!`; rebuild if the icon changes.
+    println!("cargo:rerun-if-changed=assets/icons/ytm-tui.png");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;

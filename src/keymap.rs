@@ -46,6 +46,10 @@ pub enum Action {
     // Shared navigation (interpreted per context).
     MoveUp,
     MoveDown,
+    PageUp,
+    PageDown,
+    JumpTop,
+    JumpBottom,
     Confirm,
     Back,
     FocusNext,
@@ -64,6 +68,7 @@ pub enum Action {
     // Global (active in any non-text-entry context).
     ToggleRadio,
     ToggleHelp,
+    ToggleAbout,
 }
 
 /// Stable id (for config keys) + human label (for the editor and cheat-sheet), in a
@@ -95,6 +100,10 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::Home, "home", "Go home"),
     (Action::MoveUp, "move_up", "Move up"),
     (Action::MoveDown, "move_down", "Move down"),
+    (Action::PageUp, "page_up", "Page up"),
+    (Action::PageDown, "page_down", "Page down"),
+    (Action::JumpTop, "jump_top", "Jump to top"),
+    (Action::JumpBottom, "jump_bottom", "Jump to bottom"),
     (Action::Confirm, "confirm", "Confirm / select"),
     (Action::Back, "back", "Back / close"),
     (Action::FocusNext, "focus_next", "Next tab / focus"),
@@ -108,6 +117,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::FocusInput, "focus_input", "Focus input box"),
     (Action::ToggleRadio, "toggle_radio", "Toggle autoplay radio"),
     (Action::ToggleHelp, "toggle_help", "Toggle help"),
+    (Action::ToggleAbout, "toggle_about", "About ytm-tui"),
 ];
 
 impl Action {
@@ -468,6 +478,10 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // Shared navigation (fallback for every list/text screen).
         (C::Common, A::MoveUp, key(KeyCode::Up)),
         (C::Common, A::MoveDown, key(KeyCode::Down)),
+        (C::Common, A::PageUp, key(KeyCode::PageUp)),
+        (C::Common, A::PageDown, key(KeyCode::PageDown)),
+        (C::Common, A::JumpTop, key(KeyCode::Home)),
+        (C::Common, A::JumpBottom, key(KeyCode::End)),
         (C::Common, A::Confirm, key(KeyCode::Enter)),
         (C::Common, A::FocusPrev, key(KeyCode::BackTab)),
         (C::Common, A::FocusNext, key(KeyCode::Tab)),
@@ -477,6 +491,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Global, A::Home, ctrl('h')),
         (C::Global, A::ToggleRadio, ctrl('r')),
         (C::Global, A::ToggleHelp, ch('?')),
+        (C::Global, A::ToggleAbout, key(KeyCode::F(1))),
         (C::Global, A::Quit, ctrl('q')),
         // Library list commands.
         (C::Library, A::Favorite, ch('f')),
@@ -783,6 +798,24 @@ mod tests {
         assert_eq!(km.global_action(parse_chord("ctrl+q").unwrap()), Some(Action::Quit));
         assert_eq!(km.global_action(parse_chord("ctrl+h").unwrap()), Some(Action::Home));
         assert_eq!(km.global_action(parse_chord("?").unwrap()), Some(Action::ToggleHelp));
+    }
+
+    #[test]
+    fn page_and_jump_keys_resolve_in_list_contexts() {
+        let km = KeyMap::default();
+        // The four new nav primitives live in Common, so they fall through into any list
+        // context (Library, Search results, …) and onto their standard physical keys.
+        for ctx in [KeyContext::Library, KeyContext::SearchResults] {
+            assert_eq!(km.action(ctx, parse_chord("pageup").unwrap()), Some(Action::PageUp));
+            assert_eq!(km.action(ctx, parse_chord("pagedown").unwrap()), Some(Action::PageDown));
+            assert_eq!(km.action(ctx, parse_chord("home").unwrap()), Some(Action::JumpTop));
+            assert_eq!(km.action(ctx, parse_chord("end").unwrap()), Some(Action::JumpBottom));
+        }
+        // They round-trip through ids/labels like every other action.
+        for a in [Action::PageUp, Action::PageDown, Action::JumpTop, Action::JumpBottom] {
+            assert_ne!(a.id(), "?");
+            assert_ne!(a.human_label(), "?");
+        }
     }
 
     #[test]

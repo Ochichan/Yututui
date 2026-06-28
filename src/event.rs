@@ -57,6 +57,12 @@ impl Translator {
                     row: m.row,
                 })
             }
+            // Wheel scroll moves the active list's cursor (Library / Search). `up` means
+            // toward earlier items.
+            Event::Mouse(m) if m.kind == MouseEventKind::ScrollUp => Some(Msg::MouseScroll { up: true }),
+            Event::Mouse(m) if m.kind == MouseEventKind::ScrollDown => {
+                Some(Msg::MouseScroll { up: false })
+            }
             Event::Resize(_, _) => Some(Msg::Resize),
             _ => None,
         }
@@ -185,6 +191,27 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(matches!(t.translate(ev), Some(Msg::MouseDrag { col: 7, row: 3 })));
+    }
+
+    #[test]
+    fn wheel_scroll_becomes_a_scroll_message() {
+        let mut t = Translator::default();
+        let wheel = |kind| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind,
+                column: 4,
+                row: 9,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert!(matches!(
+            t.translate(wheel(MouseEventKind::ScrollUp)),
+            Some(Msg::MouseScroll { up: true })
+        ));
+        assert!(matches!(
+            t.translate(wheel(MouseEventKind::ScrollDown)),
+            Some(Msg::MouseScroll { up: false })
+        ));
     }
 
     #[test]

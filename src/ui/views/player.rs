@@ -24,19 +24,27 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // The nav strip rides the top border line itself; `render_nav` overlays only the cells
+    // its text covers, so the border keeps drawing on either side of it.
+    buttons::render_nav(
+        frame,
+        app,
+        Rect { x: inner.x, y: area.y, width: inner.width, height: 1 },
+    );
+
     let rows = Layout::vertical([
-        Constraint::Length(1), // nav bar
+        Constraint::Length(1), // gap (border → title)
         Constraint::Length(1), // title
-        Constraint::Length(1), // spacer
+        Constraint::Length(1), // gap (title → seekbar)
         Constraint::Length(1), // seekbar
+        Constraint::Length(1), // gap (seekbar → controls)
         Constraint::Length(1), // mouse controls
+        Constraint::Length(1), // gap (controls → status)
         Constraint::Length(1), // transport status
         Constraint::Min(0),    // filler
         Constraint::Length(1), // help
     ])
     .split(inner);
-
-    buttons::render_nav(frame, app, rows[0]);
 
     // Title (or an error, if playback failed).
     let title = if !app.status.is_empty() {
@@ -77,17 +85,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
     app.seekbar_rect.set(Some(rows[3]));
 
-    render_controls(frame, app, rows[4]);
+    render_controls(frame, app, rows[5]);
 
-    render_status_line(frame, app, rows[5]);
+    render_status_line(frame, app, rows[7]);
 
     // Central filler: album art (top) and/or the lyrics panel (below). With album art off
     // this is exactly the old behaviour — lyrics fill the whole area, nothing else draws.
-    render_filler(frame, app, rows[6]);
+    render_filler(frame, app, rows[8]);
 
     // The full key list lives in the `?` cheat-sheet now; the footer just points to it
     // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
-    buttons::render_help_button(frame, app, rows[7]);
+    buttons::render_help_button(frame, app, rows[9]);
 
     // The status-line dropdowns draw over the screen so their rows win hit-testing.
     if app.eq_dropdown_open {

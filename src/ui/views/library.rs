@@ -15,15 +15,21 @@ use crate::ui::buttons;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
-        .title(" Library ")
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
         .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // The nav strip rides the top border line itself; `render_nav` overlays only the cells
+    // its text covers, so the border keeps drawing on either side of it.
+    buttons::render_nav(
+        frame,
+        app,
+        Rect { x: inner.x, y: area.y, width: inner.width, height: 1 },
+    );
+
     let rows = Layout::vertical([
-        Constraint::Length(1), // nav bar
         Constraint::Length(1), // tab bar
         Constraint::Length(1), // spacer
         Constraint::Min(0),    // list
@@ -31,11 +37,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    buttons::render_nav(frame, app, rows[0]);
-    render_tabs(frame, app, rows[1]);
-    render_list(frame, app, rows[3]);
+    render_tabs(frame, app, rows[0]);
+    render_list(frame, app, rows[2]);
 
-    buttons::render_help_button(frame, app, rows[4]);
+    buttons::render_help_button(frame, app, rows[3]);
 }
 
 fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
@@ -69,6 +74,9 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
+    // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
+    app.list_viewport_rows.set(area.height);
+
     let rows = app.library_rows();
 
     if rows.is_empty() {
@@ -142,6 +150,9 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             app.register_mouse_button(del_rect, MouseTarget::LibraryDel(i));
         }
     }
+
+    // Scrollbar on the right border, tracking the cursor; hidden when the list fits.
+    buttons::render_list_scrollbar(frame, app, area, len, cursor, visible);
 }
 
 /// A modal confirming deletion of downloaded files from disk. Deleting a real file is

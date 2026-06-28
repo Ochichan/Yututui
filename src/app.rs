@@ -51,6 +51,13 @@ const STATUS_TTL: Duration = Duration::from_secs(3);
 /// Cap on AI chat transcript lines kept in memory (bounded memory).
 const AI_HISTORY_MAX: usize = 999;
 
+/// Rows the cursor moves per mouse-wheel notch in the Library / Search lists — enough to
+/// read as scrolling, small enough to stay controllable.
+const MOUSE_SCROLL_LINES: usize = 3;
+/// Page size used by PageUp/PageDown before the first render records the real list
+/// viewport height (e.g. in tests that never draw a frame).
+const DEFAULT_PAGE_ROWS: usize = 10;
+
 /// Percentage points changed per volume keypress.
 const VOLUME_STEP: i64 = 5;
 /// Highest volume the UI sets (mpv would allow more, but 100 is a sane v1 ceiling).
@@ -88,6 +95,11 @@ pub enum Msg {
     MouseDrag {
         col: u16,
         row: u16,
+    },
+    /// The mouse wheel was scrolled (`up` = toward earlier items). Moves the active
+    /// Library / Search list's cursor; ignored in other modes.
+    MouseScroll {
+        up: bool,
     },
     /// The terminal was resized; ratatui auto-resizes on draw, we just redraw.
     Resize,
@@ -294,6 +306,10 @@ pub enum MouseTarget {
     ConfirmDelete,
     /// Cancel button on the "delete downloaded files" modal.
     CancelDelete,
+    /// The `ytm-tui` brand label at the top-left of the nav bar — opens the About card.
+    AboutTitle,
+    /// The GitHub link inside the About card — opens the repo in the system browser.
+    AboutLink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -453,6 +469,15 @@ pub struct App {
     /// Whether the "reset all settings" confirmation modal (General tab) is showing. Enter/`y`
     /// confirms (resets the draft to defaults); any other key / a click cancels.
     pub confirm_reset_all: bool,
+    /// Whether the About card overlay is showing. Opened by clicking the `ytm-tui` brand in the
+    /// nav bar or via `Action::ToggleAbout` (F1); any key/click (other than the GitHub link)
+    /// dismisses it.
+    pub about_visible: bool,
+    /// The app icon as a render-ready half-blocks protocol for the About card, decoded from the
+    /// embedded PNG and built once on first open. Half-blocks (not the graphics protocol used for
+    /// album art) so it draws in any terminal and repaints like plain text — leaving no residue
+    /// when the card closes over the view beneath. `RefCell` because render only has `&App`.
+    pub about_icon: RefCell<Option<StatefulProtocol>>,
 
     // Playback ----------------------------------------------------------------
     /// Playback position in seconds, if known.
@@ -622,6 +647,9 @@ pub struct App {
     /// Screen rect of the seekbar, written by the player view each render so a mouse
     /// click can be hit-tested against it. `Cell` because render only has `&App`.
     pub seekbar_rect: Cell<Option<Rect>>,
+    /// Viewport height (rows) of the active Library / Search list, written each render so
+    /// PageUp/PageDown can move by a screenful. `Cell` because render only has `&App`.
+    pub list_viewport_rows: Cell<u16>,
     /// Clickable button rects written by views each render. `RefCell` because render only
     /// has `&App`, but the reducer needs the last rendered hit map.
     pub mouse_buttons: RefCell<Vec<MouseButtonRegion>>,
@@ -642,6 +670,8 @@ impl App {
             help_visible: false,
             key_conflict: None,
             confirm_reset_all: false,
+            about_visible: false,
+            about_icon: RefCell::new(None),
             time_pos: None,
             duration: None,
             paused: false,
@@ -704,6 +734,7 @@ impl App {
             download_sources: HashMap::new(),
             resolved: HashMap::new(),
             seekbar_rect: Cell::new(None),
+            list_viewport_rows: Cell::new(0),
             mouse_buttons: RefCell::new(Vec::new()),
             last_shown_sec: -1,
             last_load_prefetched: false,
@@ -809,6 +840,7 @@ impl App {
             Msg::MouseClick { col, row } => return self.on_mouse_click(col, row),
             Msg::MouseDoubleClick { col, row } => return self.on_mouse_double_click(col, row),
             Msg::MouseDrag { col, row } => return self.on_mouse_drag(col, row),
+            Msg::MouseScroll { up } => return self.on_mouse_scroll(up),
             Msg::Resize => self.dirty = true,
             Msg::Quit => self.should_quit = true,
             Msg::Autoplay => return self.autoplay_on_start_cmds(),
@@ -1178,6 +1210,22 @@ impl App {
             return Vec::new();
         }
 
+        // The About card behaves like the help overlay: while it's up, swallow input; its own
+        // toggle (F1) / Esc / Back dismiss it, and Quit still works.
+        if self.about_visible {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return self.quit_app();
+            }
+            let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleAbout))
+                || k.code == KeyCode::Esc
+                || matches!(self.keymap.action(KeyContext::Common, chord), Some(Action::Back));
+            if close {
+                self.about_visible = false;
+                self.dirty = true;
+            }
+            return Vec::new();
+        }
+
         // Global shortcuts (help, radio). Suppressed only when a *typeable* key would feed
         // a focused text field — so `?` types into the search box but opens help elsewhere,
         // while Ctrl-based globals (radio) keep working everywhere as before.
@@ -1187,6 +1235,11 @@ impl App {
             match action {
                 Action::ToggleHelp => {
                     self.help_visible = true;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+                Action::ToggleAbout => {
+                    self.about_visible = true;
                     self.dirty = true;
                     return Vec::new();
                 }
@@ -1333,6 +1386,16 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
+        // The About card is modal: clicking its GitHub link opens the browser (and keeps the card
+        // up); a click anywhere else dismisses it.
+        if self.about_visible {
+            if let Some(t @ MouseTarget::AboutLink) = self.mouse_target_at(col, row) {
+                return self.on_mouse_target(t);
+            }
+            self.about_visible = false;
+            self.dirty = true;
+            return Vec::new();
+        }
         // The queue window is modal: a click outside it closes it ("창 밖을 클릭하면 꺼지고"),
         // and inside it only its own rows / `✗` buttons act — underlying player buttons are
         // ignored so a click landing on the player beneath the popup doesn't leak through.
@@ -1467,6 +1530,19 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            // Click the `ytm-tui` brand to open the About card.
+            MouseTarget::AboutTitle => {
+                self.about_visible = true;
+                self.dirty = true;
+                Vec::new()
+            }
+            // Click the GitHub link inside the About card to open the repo in the browser.
+            MouseTarget::AboutLink => {
+                open_in_browser(crate::ui::views::about::GITHUB_URL);
+                self.status = "Opening GitHub in your browser…".to_owned();
+                self.dirty = true;
+                Vec::new()
+            }
         }
     }
 
@@ -1476,6 +1552,7 @@ impl App {
     fn on_mouse_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
         // Modal overlays treat a double-click like a single click.
         if self.help_visible
+            || self.about_visible
             || self.key_conflict.is_some()
             || self.confirm_reset_all
             || self.confirm_delete_files.is_some()
@@ -1520,6 +1597,56 @@ impl App {
             self.dirty = true;
         }
         Vec::new()
+    }
+
+    /// Wheel scroll moves the active list's cursor by [`MOUSE_SCROLL_LINES`] rows (the
+    /// views are cursor-driven, so this scrolls the viewport with it). No-op outside the
+    /// Library / Search lists.
+    fn on_mouse_scroll(&mut self, up: bool) -> Vec<Cmd> {
+        match self.mode {
+            Mode::Library => self.move_library_cursor(up, MOUSE_SCROLL_LINES),
+            Mode::Search => self.move_search_cursor(up, MOUSE_SCROLL_LINES),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// How many rows a PageUp/PageDown moves: a screenful of the active list less one row
+    /// of context overlap. Falls back to [`DEFAULT_PAGE_ROWS`] before the first render
+    /// records the viewport height.
+    fn page_step(&self) -> usize {
+        let rows = self.list_viewport_rows.get() as usize;
+        if rows <= 1 { DEFAULT_PAGE_ROWS } else { rows - 1 }
+    }
+
+    /// Move the library cursor up/down by `lines`, clamped, collapsing the multi-select
+    /// range onto the cursor (like keyboard nav).
+    fn move_library_cursor(&mut self, up: bool, lines: usize) {
+        let len = self.library_len();
+        if len == 0 {
+            return;
+        }
+        self.library_selected = if up {
+            self.library_selected.saturating_sub(lines)
+        } else {
+            (self.library_selected + lines).min(len - 1)
+        };
+        self.library_anchor = self.library_selected;
+        self.dirty = true;
+    }
+
+    /// Move the search-results cursor up/down by `lines`, clamped.
+    fn move_search_cursor(&mut self, up: bool, lines: usize) {
+        let len = self.search_results.len();
+        if len == 0 {
+            return;
+        }
+        self.search_selected = if up {
+            self.search_selected.saturating_sub(lines)
+        } else {
+            (self.search_selected + lines).min(len - 1)
+        };
+        self.dirty = true;
     }
 
     /// Switch screens from a nav-bar click — the mouse equivalent of the `Open*` keys, but
@@ -1946,6 +2073,24 @@ impl App {
                     self.dirty = true;
                     Vec::new()
                 }
+                Some(Action::PageUp) => {
+                    self.move_search_cursor(true, self.page_step());
+                    Vec::new()
+                }
+                Some(Action::PageDown) => {
+                    self.move_search_cursor(false, self.page_step());
+                    Vec::new()
+                }
+                Some(Action::JumpTop) => {
+                    self.search_selected = 0;
+                    self.dirty = true;
+                    Vec::new()
+                }
+                Some(Action::JumpBottom) => {
+                    self.search_selected = self.search_results.len().saturating_sub(1);
+                    self.dirty = true;
+                    Vec::new()
+                }
                 // Favorite the highlighted result (♥ appears on the row).
                 Some(Action::Favorite) => {
                     if let Some(song) = self.search_results.get(self.search_selected).cloned() {
@@ -2020,6 +2165,26 @@ impl App {
                 if self.library_selected + 1 < len {
                     self.library_selected += 1;
                 }
+                self.library_anchor = self.library_selected;
+                self.dirty = true;
+                Vec::new()
+            }
+            Some(Action::PageUp) => {
+                self.move_library_cursor(true, self.page_step());
+                Vec::new()
+            }
+            Some(Action::PageDown) => {
+                self.move_library_cursor(false, self.page_step());
+                Vec::new()
+            }
+            Some(Action::JumpTop) => {
+                self.library_selected = 0;
+                self.library_anchor = 0;
+                self.dirty = true;
+                Vec::new()
+            }
+            Some(Action::JumpBottom) => {
+                self.library_selected = len.saturating_sub(1);
                 self.library_anchor = self.library_selected;
                 self.dirty = true;
                 Vec::new()
@@ -3561,6 +3726,7 @@ impl App {
         u8::from(self.eq_dropdown_open)
             | (u8::from(self.radio_dropdown_open) << 1)
             | (u8::from(self.queue_popup_open) << 2)
+            | (u8::from(self.about_visible) << 3)
     }
 
     /// Rebuild the held art into a fresh protocol so the *next* render re-transmits and
@@ -3669,6 +3835,28 @@ fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
         && col < rect.x.saturating_add(rect.width)
         && row >= rect.y
         && row < rect.y.saturating_add(rect.height)
+}
+
+/// Open `url` in the system's default browser, fire-and-forget. Spawns the platform opener
+/// (`open` / `xdg-open` / `cmd start`) detached with stdio nulled so it can't touch the TUI's
+/// terminal; any failure (no opener installed) is ignored — the URL is also shown in the card.
+fn open_in_browser(url: &str) {
+    use std::process::{Command, Stdio};
+    let mut cmd = if cfg!(target_os = "macos") {
+        let mut c = Command::new("open");
+        c.arg(url);
+        c
+    } else if cfg!(target_os = "windows") {
+        // `start` is a cmd builtin; the empty "" is its (ignored) window-title argument.
+        let mut c = Command::new("cmd");
+        c.args(["/C", "start", "", url]);
+        c
+    } else {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    let _ = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
 #[cfg(test)]
@@ -5371,6 +5559,80 @@ mod tests {
     }
 
     #[test]
+    fn library_page_and_jump_keys_move_the_cursor() {
+        let mut app = App::new(100);
+        for i in 0..30 {
+            app.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
+        }
+        open_library_tab(&mut app, LibraryTab::History);
+        let len = app.library_len();
+        assert_eq!(len, 30);
+        app.library_selected = 0;
+        app.library_anchor = 0;
+        // A 12-row viewport pages by 11 (one row of overlap).
+        app.list_viewport_rows.set(12);
+
+        app.update(Msg::Key(key(KeyCode::PageDown)));
+        assert_eq!(app.library_selected, 11);
+        assert_eq!(app.library_anchor, 11);
+        app.update(Msg::Key(key(KeyCode::PageUp)));
+        assert_eq!(app.library_selected, 0);
+
+        app.update(Msg::Key(key(KeyCode::End)));
+        assert_eq!(app.library_selected, len - 1);
+        assert_eq!(app.library_anchor, len - 1);
+        app.update(Msg::Key(key(KeyCode::Home)));
+        assert_eq!(app.library_selected, 0);
+        assert_eq!(app.library_anchor, 0);
+    }
+
+    #[test]
+    fn search_page_and_jump_keys_move_the_cursor() {
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.search_focus = SearchFocus::Results;
+        app.search_results = songs(30);
+        app.search_selected = 0;
+        app.list_viewport_rows.set(12);
+
+        app.update(Msg::Key(key(KeyCode::PageDown)));
+        assert_eq!(app.search_selected, 11);
+        app.update(Msg::Key(key(KeyCode::End)));
+        assert_eq!(app.search_selected, 29);
+        app.update(Msg::Key(key(KeyCode::PageUp)));
+        assert_eq!(app.search_selected, 18);
+        app.update(Msg::Key(key(KeyCode::Home)));
+        assert_eq!(app.search_selected, 0);
+    }
+
+    #[test]
+    fn wheel_scroll_moves_library_and_search_cursors() {
+        // Library: scroll down then up by MOUSE_SCROLL_LINES (3), clamped at the ends.
+        let mut app = App::new(100);
+        for i in 0..10 {
+            app.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
+        }
+        open_library_tab(&mut app, LibraryTab::History);
+        app.library_selected = 0;
+        app.update(Msg::MouseScroll { up: false });
+        assert_eq!(app.library_selected, 3);
+        assert_eq!(app.library_anchor, 3);
+        app.update(Msg::MouseScroll { up: true });
+        assert_eq!(app.library_selected, 0); // clamped, not negative
+
+        // Search: same, clamped at the last row.
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.search_focus = SearchFocus::Results;
+        app.search_results = songs(5);
+        app.search_selected = 4;
+        app.update(Msg::MouseScroll { up: false });
+        assert_eq!(app.search_selected, 4); // already at the end
+        app.update(Msg::MouseScroll { up: true });
+        assert_eq!(app.search_selected, 1);
+    }
+
+    #[test]
     fn library_delete_is_disabled_in_all_tab() {
         let mut app = App::new(100);
         app.library.toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
@@ -5855,6 +6117,34 @@ mod tests {
             .expect("rendered help button")
     }
 
+    #[test]
+    fn library_scrollbar_shows_only_when_the_list_overflows() {
+        // The thumb glyph appears on the right border column (79 in an 80-wide frame); the
+        // plain vertical border is a different glyph, so its presence proves the scrollbar.
+        let has_thumb = |app: &App| -> bool {
+            let backend = TestBackend::new(80, 20);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| crate::ui::render(f, app)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (0..20).any(|y| buf.cell((79, y)).is_some_and(|c| c.symbol() == "█"))
+        };
+
+        let mut overflow = App::new(100);
+        for i in 0..40 {
+            overflow.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
+        }
+        overflow.mode = Mode::Library;
+        overflow.library_tab = LibraryTab::History;
+        assert!(has_thumb(&overflow), "a long list should show a scrollbar thumb");
+
+        let mut fits = App::new(100);
+        fits.library.record_play(&Song::remote("a", "ta", "x", "0:10"));
+        fits.library.record_play(&Song::remote("b", "tb", "x", "0:10"));
+        fits.mode = Mode::Library;
+        fits.library_tab = LibraryTab::History;
+        assert!(!has_thumb(&fits), "a short list should not show a scrollbar");
+    }
+
     fn assert_centered_in(rect: Rect, container: Rect) {
         let left = rect.x.saturating_sub(container.x);
         let right = container
@@ -6095,6 +6385,11 @@ mod tests {
         app.radio_dropdown_open = false;
         assert_eq!(app.art_overlay_mask(), 0b100);
         app.queue_popup_open = false;
+        assert_eq!(app.art_overlay_mask(), 0);
+        // The About card covers the art too, so it gets its own bit (and the clean repaint).
+        app.about_visible = true;
+        assert_eq!(app.art_overlay_mask(), 0b1000);
+        app.about_visible = false;
         assert_eq!(app.art_overlay_mask(), 0);
     }
 

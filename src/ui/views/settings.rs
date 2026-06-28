@@ -24,15 +24,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
     let theme = &st.draft.theme;
     let block = Block::default()
-        .title(" Settings ")
         .borders(Borders::ALL)
         .border_style(theme.style(R::BorderPrimary))
         .style(theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // The nav strip rides the top border line itself; `render_nav` overlays only the cells
+    // its text covers, so the border keeps drawing on either side of it.
+    buttons::render_nav(
+        frame,
+        app,
+        Rect { x: inner.x, y: area.y, width: inner.width, height: 1 },
+    );
+
     let rows = Layout::vertical([
-        Constraint::Length(1), // nav bar
         Constraint::Length(1), // tab bar
         Constraint::Length(1), // spacer
         Constraint::Min(0),    // field list
@@ -40,12 +46,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    buttons::render_nav(frame, app, rows[0]);
-    render_tabs(frame, app, st, rows[1]);
+    render_tabs(frame, app, st, rows[0]);
     if st.tab == SettingsTab::Keys {
-        render_keys(frame, app, st, rows[3]);
+        render_keys(frame, app, st, rows[2]);
     } else {
-        render_fields(frame, app, st, rows[3]);
+        render_fields(frame, app, st, rows[2]);
     }
 
     // Footer reflects the *committed* keymap, since that's what operates the screen until
@@ -89,7 +94,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             k(Action::SettingsCancel),
         )
     };
-    frame.render_widget(Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))), rows[4]);
+    frame.render_widget(Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))), rows[3]);
 }
 
 /// The Keys tab: a scrollable list of every remappable binding, grouped by context. The

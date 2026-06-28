@@ -10,7 +10,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Mode, MouseTarget};
@@ -95,6 +95,11 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     const GAP: &str = "  ";
     const BRAND: &str = "ytm-tui";
     const SEP: &str = " │ ";
+    // Blank gutters framing the strip: `MARGIN` left of the brand (also nudges the whole bar
+    // right, off the corner); `END_PAD` after the last tab. END_PAD plus that tab's own
+    // trailing space matches MARGIN, so the gap before the border resumes looks symmetric.
+    const MARGIN: &str = "  ";
+    const END_PAD: &str = " ";
 
     let labels: Vec<String> = ITEMS.iter().map(|(_, l)| format!(" {l} ")).collect();
 
@@ -108,9 +113,18 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
 
     // Left-aligned strip starting at the inner edge. Brand + separator are static labels;
     // each tab is clickable, so we walk `x` in step with the spans to keep hit rects on text.
-    let mut spans = Vec::with_capacity(ITEMS.len() * 2 + 2);
+    let mut spans = Vec::with_capacity(ITEMS.len() * 2 + 4);
     let mut x = area.x;
 
+    // Left gutter before the brand.
+    spans.push(Span::raw(MARGIN));
+    x = x.saturating_add(text_width(MARGIN));
+
+    // The brand doubles as a click target that opens the About card.
+    app.register_mouse_button(
+        Rect { x, y: area.y, width: text_width(BRAND), height: area.height.min(1) },
+        MouseTarget::AboutTitle,
+    );
     spans.push(Span::styled(BRAND, brand));
     x = x.saturating_add(text_width(BRAND));
     spans.push(Span::styled(SEP, sep));
@@ -130,7 +144,13 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(label.clone(), style));
         x = x.saturating_add(w);
     }
-    frame.render_widget(Paragraph::new(Line::from(spans).alignment(Alignment::Left)), area);
+    // Right gutter, then render into a rect sized to the text (not the full row) so when this
+    // strip rides a border line the border keeps drawing in the cells past it.
+    spans.push(Span::raw(END_PAD));
+    x = x.saturating_add(text_width(END_PAD));
+    let used = x.saturating_sub(area.x).min(area.width);
+    let strip = Rect { width: used, ..area };
+    frame.render_widget(Paragraph::new(Line::from(spans)), strip);
 }
 
 /// Register a `ListRow(i)` click target over each visible row of a ratatui `List`. Call
@@ -157,6 +177,40 @@ pub fn register_list_rows(
             );
         }
     }
+}
+
+/// Draw a vertical scrollbar on the right border of `list_area`, but only when the content
+/// overflows the viewport. `position` is the selected (cursor) index, so the thumb tracks
+/// the cursor through the list and reaches both ends. A no-op when everything fits.
+///
+/// `list_area` spans the bordered view's inner width, so `list_area.right()` is the block's
+/// right border column — the scrollbar replaces that border segment and never clips a row.
+pub fn render_list_scrollbar(
+    frame: &mut Frame,
+    app: &App,
+    list_area: Rect,
+    content_len: usize,
+    position: usize,
+    viewport: usize,
+) {
+    if content_len <= viewport || list_area.height == 0 {
+        return;
+    }
+    let mut state = ScrollbarState::new(content_len)
+        .position(position)
+        .viewport_content_length(viewport);
+    let bar = Rect { x: list_area.right(), y: list_area.y, width: 1, height: list_area.height };
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("█")
+            .track_style(app.theme.style(R::BorderPrimary))
+            .thumb_style(app.theme.style(R::Accent)),
+        bar,
+        &mut state,
+    );
 }
 
 /// The footer hint (e.g. "?  keybindings"): a single dim, clickable label — reads as a

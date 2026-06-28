@@ -22,19 +22,25 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // The nav strip rides the top border line itself; `render_nav` overlays only the cells
+    // its text covers, so the border keeps drawing on either side of it.
+    buttons::render_nav(
+        frame,
+        app,
+        Rect { x: inner.x, y: area.y, width: inner.width, height: 1 },
+    );
+
     let rows = Layout::vertical([
-        Constraint::Length(1), // nav bar
         Constraint::Length(3), // input box
         Constraint::Min(0),    // results
         Constraint::Length(1), // help
     ])
     .split(inner);
 
-    buttons::render_nav(frame, app, rows[0]);
-    render_input(frame, app, rows[1]);
-    render_results(frame, app, rows[2]);
+    render_input(frame, app, rows[0]);
+    render_results(frame, app, rows[1]);
 
-    buttons::render_help_button(frame, app, rows[3]);
+    buttons::render_help_button(frame, app, rows[2]);
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
@@ -90,6 +96,9 @@ fn render_search_button(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_results(frame: &mut Frame, app: &App, area: Rect) {
+    // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
+    app.list_viewport_rows.set(area.height);
+
     if app.searching {
         let msg = Line::from("Searching…").style(app.theme.style(R::Warning));
         frame.render_widget(Paragraph::new(msg), area);
@@ -133,4 +142,13 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
     // Each visible row is a click target: single-click selects, double-click plays.
     buttons::register_list_rows(app, area, state.offset(), app.search_results.len(), Some);
+    // Scrollbar on the right border, tracking the cursor; hidden when results fit.
+    buttons::render_list_scrollbar(
+        frame,
+        app,
+        area,
+        app.search_results.len(),
+        app.search_selected,
+        area.height as usize,
+    );
 }

@@ -5,7 +5,7 @@
 //! the input still works (submitting yields an inline error pointing at settings).
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
@@ -19,7 +19,13 @@ const SUGGESTIONS_HEIGHT: u16 = 7;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
-        .title(format!(" AI Assistant · {} ", app.gemini_model.label()))
+        // Model indicator: kept as metadata but moved to the right of the border line so it
+        // doesn't collide with the nav strip that now rides the left of the same line.
+        .title(
+            Line::from(format!(" {} ", app.gemini_model.label()))
+                .style(app.theme.style(R::TextMuted))
+                .alignment(Alignment::Right),
+        )
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
         .style(app.theme.style(R::TextPrimary));
@@ -33,8 +39,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         0
     };
 
+    // The nav strip rides the top border line itself; `render_nav` overlays only the cells
+    // its text covers, so the border keeps drawing on either side of it.
+    buttons::render_nav(
+        frame,
+        app,
+        Rect { x: inner.x, y: area.y, width: inner.width, height: 1 },
+    );
+
     let rows = Layout::vertical([
-        Constraint::Length(1),                // nav bar
         Constraint::Min(0),                   // transcript
         Constraint::Length(suggestions_rows), // suggestions (0 when none)
         Constraint::Length(3),                // input box
@@ -42,14 +55,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    buttons::render_nav(frame, app, rows[0]);
-    render_transcript(frame, app, rows[1]);
+    render_transcript(frame, app, rows[0]);
     if has_suggestions {
-        render_suggestions(frame, app, rows[2]);
+        render_suggestions(frame, app, rows[1]);
     }
-    render_input(frame, app, rows[3]);
+    render_input(frame, app, rows[2]);
 
-    buttons::render_help_button(frame, app, rows[4]);
+    buttons::render_help_button(frame, app, rows[3]);
 }
 
 fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {

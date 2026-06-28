@@ -32,6 +32,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.help_visible {
         views::help::render(frame, app, area);
     }
+    // The About card draws on top too (clicking the `ytm-tui` brand or F1).
+    if app.about_visible {
+        views::about::render(frame, app, area);
+    }
     // A keybinding-conflict warning (Keys tab) is modal — it sits above everything else.
     if let Some(conflict) = &app.key_conflict {
         views::settings::render_conflict(frame, app, area, conflict);

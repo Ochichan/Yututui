@@ -134,4 +134,21 @@ mod tests {
             Some(&("Enter".to_owned(), "Play selected".to_owned()))
         );
     }
+
+    #[test]
+    fn page_and_jump_keys_appear_in_the_cheatsheet() {
+        let app = App::new(100);
+        let nav = help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Navigation (all screens)").then_some(rows))
+            .expect("navigation group");
+        for row in [
+            ("PgUp".to_owned(), "Page up".to_owned()),
+            ("PgDn".to_owned(), "Page down".to_owned()),
+            ("Home".to_owned(), "Jump to top".to_owned()),
+            ("End".to_owned(), "Jump to bottom".to_owned()),
+        ] {
+            assert!(nav.contains(&row), "cheat-sheet should list {row:?}");
+        }
+    }
 }
