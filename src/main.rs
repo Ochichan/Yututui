@@ -71,9 +71,12 @@ async fn async_main() -> Result<()> {
     i18n::set_language(cfg.effective_language());
     let mouse = cfg.effective_mouse();
     // Album art is opt-in: only probe the terminal for its graphics protocol + font size
-    // when the user enabled it, and do it BEFORE `tui::init` (the query reads/writes stdio,
-    // so running it ahead of the alternate screen + event stream avoids racing them). A
-    // failed probe falls back to halfblocks so the feature still shows something.
+    // when the user enabled it, and do it BEFORE `tui::init` so the 1x1 probe image and its
+    // cursor-position reports never land on the app's alternate screen. The probe is fully
+    // synchronous (see `ratatui_image::picker`): it raw-modes the tty, queries, and restores the
+    // previous mode before returning — so it can't leave `tui::init`'s crossterm raw-mode setup
+    // racing a half-restored terminal, and it spawns no reader that could outlive it and steal
+    // input from the event loop. A failed/absent probe falls back to halfblocks.
     let art_picker = if cfg.effective_album_art() {
         Some(build_art_picker())
     } else {
