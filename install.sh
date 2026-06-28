@@ -73,6 +73,25 @@ install_via_cargo() {
   # cargo installs into \$CARGO_HOME/bin (default ~/.cargo/bin), already on PATH via rustup.
   INSTALL_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
   ok "Built and installed -> $INSTALL_DIR/$BIN"
+
+  # If an older HOME-local install appears earlier on PATH than cargo's bin dir, refresh
+  # that visible command too; otherwise `ytt` would still launch the stale binary.
+  visible="$(command -v "$BIN" 2>/dev/null || true)"
+  if [ -n "$visible" ] && [ "$visible" != "$INSTALL_DIR/$BIN" ]; then
+    case "$visible" in
+      "$HOME"/*)
+        install -m 0755 "$INSTALL_DIR/$BIN" "$visible"
+        if [ "$OS" = Darwin ]; then
+          xattr -d com.apple.quarantine "$visible" 2>/dev/null || true
+        fi
+        INSTALL_DIR="$(dirname "$visible")"
+        ok "Updated PATH-visible binary -> $visible"
+        ;;
+      *)
+        warn "'$visible' appears earlier on PATH than $INSTALL_DIR/$BIN; update or remove it if `ytt` still starts an older build."
+        ;;
+    esac
+  fi
 }
 
 # --- choose a strategy -----------------------------------------------------------------
