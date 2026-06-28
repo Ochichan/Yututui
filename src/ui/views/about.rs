@@ -66,16 +66,24 @@ fn draw_icon(frame: &mut Frame, app: &App, band: Rect) {
     frame.render_stateful_widget(StatefulImage::new().resize(Resize::Fit(None)), rect, proto);
 }
 
-/// Decode the embedded PNG and build its half-blocks protocol once, caching it on the app.
-/// Half-blocks (rather than the Kitty/Sixel protocol used for album art) render in any terminal
-/// and repaint like ordinary text, so the card leaves no graphics residue when it closes over
-/// the view beneath.
+/// Decode the embedded PNG and build its render protocol once, caching it on the app.
+///
+/// Prefer the terminal's detected graphics protocol (`art_picker` — Kitty/Sixel) so the icon
+/// renders at full resolution like album art, instead of the blocky ~2px-per-cell half-blocks.
+/// Fall back to half-blocks when no picker was probed (album art off) or the terminal has no
+/// graphics support. Closing the card over album art repaints cleanly: `about_visible` is part
+/// of [`crate::app::App::art_overlay_mask`], so the main loop rebuilds the art (re-emitting every
+/// row) whenever the card toggles — the same dance the eq/radio/queue popups already rely on.
 fn ensure_icon(app: &App) {
     let needs_build = app.about_icon.borrow().is_none();
     if needs_build
         && let Ok(img) = image::load_from_memory(ICON_PNG)
     {
-        *app.about_icon.borrow_mut() = Some(Picker::halfblocks().new_resize_protocol(img));
+        let proto = match app.art_picker.as_ref() {
+            Some(picker) => picker.new_resize_protocol(img),
+            None => Picker::halfblocks().new_resize_protocol(img),
+        };
+        *app.about_icon.borrow_mut() = Some(proto);
     }
 }
 
