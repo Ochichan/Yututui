@@ -79,10 +79,11 @@ pub fn render_segments(
     frame.render_widget(Paragraph::new(Line::from(spans).alignment(alignment)), area);
 }
 
-/// The screen nav bar shown at the top of every view: Player · Search · Library ·
-/// Settings · AI. The active screen is highlighted (selection colors); the rest are muted.
-/// Each item is a click target that switches screens. Centered, no box chrome — it reads
-/// like a tab strip, consistent with the in-line "text is the button" controls elsewhere.
+/// The screen nav bar shown at the top of every view: `ytm-tui │ Player · Search ·
+/// Library · Settings · AI`. The `ytm-tui` brand sits at the top-left, set off by a muted
+/// `│`; the tabs follow. The active screen is highlighted (selection colors), the rest are
+/// muted, and each tab is a click target that switches screens. Left-aligned, no box chrome
+/// — it reads like a tab strip, consistent with the in-line "text is the button" controls.
 pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     const ITEMS: [(Mode, &str); 5] = [
         (Mode::Player, "Player"),
@@ -92,20 +93,29 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
         (Mode::Ai, "AI"),
     ];
     const GAP: &str = "  ";
+    const BRAND: &str = "ytm-tui";
+    const SEP: &str = " │ ";
 
     let labels: Vec<String> = ITEMS.iter().map(|(_, l)| format!(" {l} ")).collect();
-    let total: u16 = labels.iter().map(|s| text_width(s)).sum::<u16>()
-        + text_width(GAP) * (ITEMS.len() as u16 - 1);
-    // Same centering math ratatui uses, so the hit rects line up with the rendered text.
-    let mut x = area.x + area.width.saturating_sub(total) / 2;
 
+    let brand = app.theme.style(R::Accent).add_modifier(Modifier::BOLD);
+    let sep = app.theme.style(R::BorderMuted);
     let active = Style::default()
         .fg(app.theme.color(R::SelectionFg))
         .bg(app.theme.color(R::SelectionBg))
         .add_modifier(Modifier::BOLD);
     let muted = app.theme.style(R::TextMuted);
 
-    let mut spans = Vec::with_capacity(ITEMS.len() * 2);
+    // Left-aligned strip starting at the inner edge. Brand + separator are static labels;
+    // each tab is clickable, so we walk `x` in step with the spans to keep hit rects on text.
+    let mut spans = Vec::with_capacity(ITEMS.len() * 2 + 2);
+    let mut x = area.x;
+
+    spans.push(Span::styled(BRAND, brand));
+    x = x.saturating_add(text_width(BRAND));
+    spans.push(Span::styled(SEP, sep));
+    x = x.saturating_add(text_width(SEP));
+
     for (i, ((mode, _), label)) in ITEMS.iter().zip(&labels).enumerate() {
         if i > 0 {
             spans.push(Span::styled(GAP, muted));
@@ -120,7 +130,7 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(label.clone(), style));
         x = x.saturating_add(w);
     }
-    frame.render_widget(Paragraph::new(Line::from(spans).alignment(Alignment::Center)), area);
+    frame.render_widget(Paragraph::new(Line::from(spans).alignment(Alignment::Left)), area);
 }
 
 /// Register a `ListRow(i)` click target over each visible row of a ratatui `List`. Call

@@ -18,7 +18,6 @@ use crate::util::format;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
-        .title(" ytm-tui ")
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
         .style(app.theme.style(R::TextPrimary));
