@@ -447,7 +447,7 @@ fn enter_on_search_result_appends_without_wiping_the_playing_queue() {
     assert!(load_url(&cmds).is_none());
     assert_eq!(app.mode, Mode::Search);
     // …and it's confirmed as a positive (green) toast, not an error.
-    assert_eq!(app.status_kind, StatusKind::Info);
+    assert_eq!(app.status.kind, StatusKind::Info);
 }
 
 #[test]
@@ -582,7 +582,7 @@ fn player_error_auto_skips_to_next_track() {
     // The unplayable track is skipped: cursor + title move to the next track.
     assert!(load_url(&cmds).expect("load of next track").contains("id1"));
     assert_eq!(current(&app), "id1");
-    assert!(app.status.contains("skipped") || app.status.contains("unavailable"));
+    assert!(app.status.text.contains("skipped") || app.status.text.contains("unavailable"));
 }
 
 #[test]
@@ -596,7 +596,7 @@ fn player_error_stops_after_repeated_failures() {
     // ...the next one gives up instead of skip-storming the whole queue.
     let cmds = app.update(Msg::PlayerError("boom".to_owned()));
     assert!(load_url(&cmds).is_none(), "stops skipping after the budget");
-    assert!(app.status.contains("stopped") || app.status.contains("failed"));
+    assert!(app.status.text.contains("stopped") || app.status.text.contains("failed"));
 }
 
 #[test]
@@ -794,19 +794,19 @@ fn transient_status_expires_after_ttl_and_restores_the_title() {
     let mut app = app_playing(1, 0);
     // A notification covers the title and arms the expiry timer.
     app.update(Msg::Key(key(KeyCode::Char('N')))); // toggle normalize → sets status
-    assert!(!app.status.is_empty(), "an action should set a status");
+    assert!(!app.status.text.is_empty(), "an action should set a status");
     assert!(app.status_visible(), "a non-empty status arms the expiry tick");
 
     // Before the TTL elapses, a tick is a no-op — the notification stays.
     app.update(Msg::StatusTick);
-    assert!(!app.status.is_empty(), "status persists until the TTL elapses");
+    assert!(!app.status.text.is_empty(), "status persists until the TTL elapses");
     assert!(app.status_visible());
 
     // Backdate the timer past the TTL; the next tick clears it and restores the title.
-    app.status_set_at = Some(Instant::now() - STATUS_TTL - Duration::from_millis(1));
+    app.status.set_at = Some(Instant::now() - STATUS_TTL - Duration::from_millis(1));
     app.dirty = false; // so the assertion below proves the clear requested the redraw
     app.update(Msg::StatusTick);
-    assert!(app.status.is_empty(), "status auto-clears after the TTL");
+    assert!(app.status.text.is_empty(), "status auto-clears after the TTL");
     assert!(!app.status_visible(), "expiry disarms the tick");
     assert!(app.dirty, "clearing the status requests a redraw of the title");
 }
@@ -827,7 +827,7 @@ fn radio_mode_cycles_on_the_ai_tab_and_persists() {
     }
     app.update(Msg::Key(key(KeyCode::Right))); // Balanced → Discovery
     assert_eq!(app.settings.as_ref().unwrap().draft.radio_mode, RadioMode::Discovery);
-    assert!(app.status.contains("Radio mode: Discovery"));
+    assert!(app.status.text.contains("Radio mode: Discovery"));
     // Closing settings commits the draft into config + emits a save.
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
     assert_eq!(app.config.radio.mode, RadioMode::Discovery);
@@ -855,7 +855,7 @@ fn settings_key_capture_accepts_ctrl_chords() {
         ),
         Some(Action::TogglePause)
     );
-    assert!(app.status.contains("^x"));
+    assert!(app.status.text.contains("^x"));
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
     let saved = save_config(&cmds).expect("a SaveConfig cmd");
@@ -949,7 +949,7 @@ fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
     focus_reset_keybindings(&mut app);
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(cmds.is_empty());
-    assert_eq!(app.status, "Keybindings reset to defaults");
+    assert_eq!(app.status.text, "Keybindings reset to defaults");
 
     let draft_keymap = &app.settings.as_ref().unwrap().keymap;
     assert_eq!(
@@ -1484,7 +1484,7 @@ fn ai_enqueue_reports_count_and_extends() {
     let mut app = app_playing(2, 0); // queue has id0, id1
     app.update(Msg::AiEnqueue(songs(3)));
     assert_eq!(app.queue.len(), 5);
-    assert!(app.status.contains("Queued"));
+    assert!(app.status.text.contains("Queued"));
 }
 
 #[test]
@@ -1517,7 +1517,7 @@ fn ai_radio_circuit_breaker_disables_after_repeated_empties() {
         !app.autoplay_radio,
         "radio disabled after repeated empty extends"
     );
-    assert!(app.status.contains("Autoplay radio stopped"));
+    assert!(app.status.text.contains("Autoplay radio stopped"));
 }
 
 #[test]
@@ -1677,7 +1677,7 @@ fn radio_results_run_through_local_engine_and_clear_pending() {
     assert_eq!(app.queue.len(), 4, "two new tracks added to the queue of two");
     assert!(app.queue.contains_video_id("id2"));
     assert!(app.queue.contains_video_id("id3"));
-    assert!(app.status.contains("Queued 2"));
+    assert!(app.status.text.contains("Queued 2"));
 }
 
 #[test]
@@ -1696,7 +1696,7 @@ fn radio_error_uses_circuit_breaker() {
 
     assert!(!app.radio.pending);
     assert!(!app.autoplay_radio);
-    assert!(app.status.contains("Autoplay radio stopped"));
+    assert!(app.status.text.contains("Autoplay radio stopped"));
 }
 
 #[test]
@@ -2229,7 +2229,7 @@ fn d_ignores_local_tracks() {
     );
     let cmds = app.update(Msg::Key(key(KeyCode::Char('d'))));
     assert!(cmds.is_empty());
-    assert!(app.status.contains("Already local"));
+    assert!(app.status.text.contains("Already local"));
 }
 
 #[test]
@@ -2245,7 +2245,7 @@ fn download_progress_and_done_update_state() {
         path: "/tmp/x.m4a".to_owned(),
     });
     assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Done));
-    assert!(app.status.contains("/tmp/x.m4a"));
+    assert!(app.status.text.contains("/tmp/x.m4a"));
     assert_eq!(app.library_ui.downloaded.len(), 1);
     assert_eq!(app.library_ui.downloaded[0].playback_target(), "/tmp/x.m4a");
 }
@@ -2258,7 +2258,7 @@ fn download_error_marks_failed() {
         error: "boom".to_owned(),
     });
     assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Failed));
-    assert!(app.status.contains("boom"));
+    assert!(app.status.text.contains("boom"));
 }
 
 // --- M8: prefetch / instant skip ----------------------------------------

@@ -120,7 +120,7 @@ impl App {
                 }
                 Action::ToggleRadio => {
                     self.autoplay_radio = !self.autoplay_radio;
-                    self.status = format!(
+                    self.status.text = format!(
                         "{}: {}",
                         t!("Autoplay radio", "자동재생 라디오"),
                         if self.autoplay_radio { "✓" } else { "✗" }

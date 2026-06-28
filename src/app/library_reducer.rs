@@ -73,7 +73,7 @@ impl App {
         }
         self.queue.set(songs, self.library_ui.selected);
         self.mode = Mode::Player;
-        self.status.clear();
+        self.status.text.clear();
         let song = self.queue.current().cloned();
         self.load_song(song)
     }

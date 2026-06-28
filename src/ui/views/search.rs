@@ -42,14 +42,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // A transient confirmation (e.g. "Added to queue: …" after enqueuing a search result while a
     // track is already playing) rides the otherwise-empty top band so it's visible without leaving
     // the search screen. It auto-clears after STATUS_TTL via the global StatusTick.
-    if !app.status.is_empty() {
-        let role = match app.status_kind {
+    if !app.status.text.is_empty() {
+        let role = match app.status.kind {
             StatusKind::Error => R::Error,
             StatusKind::Info => R::Success,
         };
         frame.render_widget(
             Paragraph::new(
-                Line::from(app.status.clone())
+                Line::from(app.status.text.clone())
                     .style(app.theme.style(role))
                     .alignment(Alignment::Center),
             ),

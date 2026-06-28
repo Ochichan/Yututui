@@ -12,7 +12,7 @@ impl App {
         self.eq_dropdown_open = false;
         self.radio_dropdown_open = false;
         self.ai.select_all = false;
-        self.status.clear();
+        self.status.text.clear();
         self.dirty = true;
     }
 
@@ -146,7 +146,7 @@ impl App {
             .ai.suggestions_selected
             .min(self.ai.suggestions.len() - 1);
         self.queue.set(self.ai.suggestions.clone(), start);
-        self.status.clear();
+        self.status.text.clear();
         let song = self.queue.current().cloned();
         self.load_song(song)
     }

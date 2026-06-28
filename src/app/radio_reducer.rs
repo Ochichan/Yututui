@@ -33,7 +33,7 @@ impl App {
         let exclude_ids = self.radio_exclude_ids(&seed_video_id);
         self.radio.last_extend = Some(Instant::now());
         self.radio.pending = true;
-        self.status = t!("Autoplay radio: finding related tracks", "자동재생 라디오: 관련 곡을 찾는 중").to_owned();
+        self.status.text = t!("Autoplay radio: finding related tracks", "자동재생 라디오: 관련 곡을 찾는 중").to_owned();
         self.dirty = true;
         vec![Cmd::RadioFallback {
             seed,
@@ -87,7 +87,7 @@ impl App {
             local_pick,
         });
         self.ai.thinking = true;
-        self.status = t!("Autoplay radio: AI reranking", "자동재생 라디오: AI가 순위를 매기는 중").to_owned();
+        self.status.text = t!("Autoplay radio: AI reranking", "자동재생 라디오: AI가 순위를 매기는 중").to_owned();
         self.dirty = true;
         vec![Cmd::AiRerank {
             seed_video_id: seed_video_id.to_owned(),
@@ -157,13 +157,13 @@ impl App {
             return Vec::new();
         }
         self.radio.consecutive_failures = 0;
-        self.status = if crate::i18n::is_korean() {
+        self.status.text = if crate::i18n::is_korean() {
             format!("{added}곡을 대기열에 추가함")
         } else {
             format!("Queued {added} track(s)")
         };
         // A successful top-up is a positive confirmation, not an error — render it green.
-        self.status_kind = StatusKind::Info;
+        self.status.kind = StatusKind::Info;
         self.dirty = true;
         // If the seed track ended before this refill landed (e.g. a 1-song queue with radio
         // on), the player is idle — pick up the freshly queued track so playback resumes
@@ -192,13 +192,13 @@ impl App {
             if self.radio.consecutive_failures >= AUTOPLAY_MAX_FAILURES {
                 self.autoplay_radio = false;
                 self.radio.pending = false;
-                self.status = t!(
+                self.status.text = t!(
                     "Autoplay radio stopped (no related tracks found)",
                     "자동재생 라디오를 멈췄어요 (관련 곡을 찾지 못함)"
                 )
                 .to_owned();
             } else {
-                self.status = status;
+                self.status.text = status;
             }
         }
         self.dirty = true;

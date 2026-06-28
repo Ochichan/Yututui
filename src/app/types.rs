@@ -395,7 +395,7 @@ pub enum SearchFocus {
 }
 
 /// The semantic kind of the transient `status` line, controlling its color in the player
-/// view. Defaults to `Error` (red) so the existing `self.status = …` sites keep their styling;
+/// view. Defaults to `Error` (red) so the existing `self.status.text = …` sites keep their styling;
 /// only positive confirmations opt into `Info` (green).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum StatusKind {

@@ -51,14 +51,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Title (or an error, if playback failed). With the title/heart animations off this is the
     // plain bold line exactly as before; with them on, `anim::title_line` returns a shimmering /
     // scrolling line (and a pulsing ♥), which we render in place of it.
-    if !app.status.is_empty() {
-        let role = match app.status_kind {
+    if !app.status.text.is_empty() {
+        let role = match app.status.kind {
             StatusKind::Error => R::Error,
             StatusKind::Info => R::Success,
         };
         frame.render_widget(
             Paragraph::new(
-                Line::from(app.status.clone())
+                Line::from(app.status.text.clone())
                     .style(app.theme.style(role))
                     .alignment(Alignment::Center),
             ),

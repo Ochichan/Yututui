@@ -22,7 +22,7 @@ impl App {
         self.queue_popup.open = false;
         self.queue_popup.cursor = self.queue.cursor_pos();
         self.queue_popup.anchor = self.queue_popup.cursor;
-        self.status.clear();
+        self.status.text.clear();
         self.load_song(song)
     }
 

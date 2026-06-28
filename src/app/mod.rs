@@ -132,13 +132,9 @@ pub struct App {
     pub playback: Playback,
     /// The play queue: ordering, shuffle, repeat, and the current track.
     pub queue: Queue,
-    /// A status/error line shown to the user (empty = normal).
-    pub status: String,
-    /// When `status` was last set non-empty, used to auto-expire it after [`STATUS_TTL`]
-    /// (set centrally in [`Self::update`]; `None` while the title is showing normally).
-    status_set_at: Option<Instant>,
-    /// Semantic kind of the current `status` (drives its color); reset to `Error` on clear.
-    pub status_kind: StatusKind,
+    /// The transient status/notification line: its text, last-set time (for TTL expiry), and
+    /// semantic kind (see [`Status`]).
+    pub status: Status,
     /// Video-overlay state: the detached mpv process (if open) and whether opening it paused
     /// the audio (see [`Video`]). Private — render never reads it.
     video: Video,
@@ -267,9 +263,7 @@ impl App {
                 ..Default::default()
             },
             queue: Queue::default(),
-            status: String::new(),
-            status_set_at: None,
-            status_kind: StatusKind::Error,
+            status: Status::default(),
             video: Video::default(),
             anim_frame: 0,
             eq_preset: EqPreset::default(),
@@ -359,7 +353,7 @@ impl App {
         self.playback.paused = true;
         self.last_shown_sec = -1;
         self.prefetch.loaded_video_id = None;
-        self.status.clear();
+        self.status.text.clear();
         self.dirty = true;
     }
 
@@ -382,24 +376,24 @@ impl App {
 
     /// The reducer: apply one message, returning effects for the run loop to dispatch.
     /// Reducer entry point. Wraps [`Self::dispatch`] to centrally track when a transient
-    /// `status` notification is set or cleared (any of the ~40 `self.status = …` sites), so
+    /// `status` notification is set or cleared (any of the ~40 `self.status.text = …` sites), so
     /// the main loop can expire it after [`STATUS_TTL`] and bring the song title back —
     /// without each call site having to remember to arm a timer. See [`Self::status_visible`].
     pub fn update(&mut self, msg: Msg) -> Vec<Cmd> {
-        let status_before = self.status.clone();
-        let kind_before = self.status_kind;
+        let status_before = self.status.text.clone();
+        let kind_before = self.status.kind;
         // Default this turn's status to the error styling; the few positive handlers override
         // it to `Info` while they run. This keeps the kind in lock-step with the status text:
-        // an error set by one of the ~40 plain `self.status = …` sites can never inherit a
+        // an error set by one of the ~40 plain `self.status.text = …` sites can never inherit a
         // leftover `Info` color from a previous green toast.
-        self.status_kind = StatusKind::Error;
+        self.status.kind = StatusKind::Error;
         let cmds = self.dispatch(msg);
-        if self.status != status_before {
-            self.status_set_at =
-                if self.status.is_empty() { None } else { Some(Instant::now()) };
+        if self.status.text != status_before {
+            self.status.set_at =
+                if self.status.text.is_empty() { None } else { Some(Instant::now()) };
         } else {
             // Text unchanged this turn — keep the color the still-showing message already had.
-            self.status_kind = kind_before;
+            self.status.kind = kind_before;
         }
         cmds
     }
@@ -407,7 +401,7 @@ impl App {
     /// Whether a transient status is currently covering the title (drives the main loop's
     /// expiry tick — see [`Msg::StatusTick`]).
     pub fn status_visible(&self) -> bool {
-        self.status_set_at.is_some()
+        self.status.set_at.is_some()
     }
 
     fn dispatch(&mut self, msg: Msg) -> Vec<Cmd> {
@@ -423,8 +417,8 @@ impl App {
             Msg::StatusTick => {
                 // The status has been covering the title long enough — clear it so the
                 // wrapper above nulls `status_set_at` and the next frame redraws the title.
-                if matches!(self.status_set_at, Some(t) if t.elapsed() >= STATUS_TTL) {
-                    self.status.clear();
+                if matches!(self.status.set_at, Some(t) if t.elapsed() >= STATUS_TTL) {
+                    self.status.text.clear();
                     self.dirty = true;
                 }
             }
@@ -493,11 +487,11 @@ impl App {
                 {
                     // `advance(false)` always moves on (ignores repeat-one), unlike an EOF.
                     let cmds = self.advance(false);
-                    self.status = t!("⚠ Track unavailable — skipped to next", "⚠ 재생할 수 없는 곡 — 다음 곡으로 건너뜀").to_owned();
+                    self.status.text = t!("⚠ Track unavailable — skipped to next", "⚠ 재생할 수 없는 곡 — 다음 곡으로 건너뜀").to_owned();
                     self.dirty = true;
                     return cmds;
                 }
-                self.status = if self.consecutive_play_errors > MAX_CONSECUTIVE_PLAY_ERRORS {
+                self.status.text = if self.consecutive_play_errors > MAX_CONSECUTIVE_PLAY_ERRORS {
                     t!(
                         "Several tracks failed to play — stopped. Check your connection, or sign in (cookies) for gated tracks.",
                         "여러 곡 재생에 실패해서 중단했어요. 연결을 확인하거나, 제한된 곡은 로그인(쿠키)하세요."
@@ -510,14 +504,14 @@ impl App {
             Msg::SearchResults { query, songs } => {
                 self.search.searching = false;
                 if songs.is_empty() {
-                    self.status = if crate::i18n::is_korean() {
+                    self.status.text = if crate::i18n::is_korean() {
                         format!("\"{query}\" 검색 결과 없음")
                     } else {
                         format!("No results for \"{query}\"")
                     };
                     self.search.results.clear();
                 } else {
-                    self.status.clear();
+                    self.status.text.clear();
                     self.search.results = songs;
                     self.search.selected = 0;
                     self.search_scroll.reset();
@@ -527,7 +521,7 @@ impl App {
             }
             Msg::SearchError(e) => {
                 self.search.searching = false;
-                self.status = format!("{}: {e}", t!("Search error", "검색 오류"));
+                self.status.text = format!("{}: {e}", t!("Search error", "검색 오류"));
                 self.dirty = true;
             }
             Msg::DownloadsScanned(songs) => {
@@ -569,14 +563,14 @@ impl App {
                         .unwrap_or_else(|| Song::local_file(PathBuf::from(&path)));
                     self.add_downloaded_track(local);
                 }
-                self.status = format!("{}: {path}", t!("Saved", "저장됨"));
+                self.status.text = format!("{}: {path}", t!("Saved", "저장됨"));
                 self.dirty = true;
             }
             Msg::DownloadError { video_id, error } => {
                 self.downloads.active
                     .insert(video_id.clone(), DownloadState::Failed);
                 self.downloads.sources.remove(&video_id);
-                self.status = format!("{}: {error}", t!("Download failed", "다운로드 실패"));
+                self.status.text = format!("{}: {error}", t!("Download failed", "다운로드 실패"));
                 self.dirty = true;
             }
             Msg::Resolved {
@@ -664,7 +658,7 @@ impl App {
             Msg::AiPlayTracks(songs) => {
                 if !songs.is_empty() {
                     self.queue.set(songs, 0);
-                    self.status.clear();
+                    self.status.text.clear();
                     let song = self.queue.current().cloned();
                     return self.load_song(song);
                 }
@@ -713,7 +707,7 @@ impl App {
                     && !songs.is_empty()
                 {
                     self.queue.set(songs, 0);
-                    self.status.clear();
+                    self.status.text.clear();
                     let song = self.queue.current().cloned();
                     return self.load_song(song);
                 }

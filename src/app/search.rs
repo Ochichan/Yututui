@@ -148,7 +148,7 @@ impl App {
             Vec::new()
         } else {
             self.search.searching = true;
-            self.status.clear();
+            self.status.text.clear();
             vec![Cmd::Search(q)]
         }
     }

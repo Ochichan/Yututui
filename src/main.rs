@@ -156,7 +156,7 @@ async fn run(
     let missing = deps::missing();
     if !missing.is_empty() {
         tracing::warn!(missing = ?missing, "required external tools not found on PATH");
-        app.status = deps::install_hint(&missing);
+        app.status.text = deps::install_hint(&missing);
     }
 
     // Worker -> UI channel. Actors hold clones; the original stays alive so the
@@ -200,8 +200,8 @@ async fn run(
         Err(e) => {
             tracing::error!(error = %e, "failed to start mpv");
             // Keep the richer preflight hint if we already set one.
-            if app.status.is_empty() {
-                app.status = format!("{}: {e}", crate::t!("mpv unavailable", "mpv를 사용할 수 없음"));
+            if app.status.text.is_empty() {
+                app.status.text = format!("{}: {e}", crate::t!("mpv unavailable", "mpv를 사용할 수 없음"));
             }
             _mpv_guard = None;
         }
@@ -229,7 +229,7 @@ async fn run(
     // Resolver actor: pre-resolves the next track's stream URL for instant skip.
     let resolver_handle = resolver::spawn(worker_tx.clone(), cookies_file);
     if api_mode == api::ApiMode::Anonymous && had_cookie {
-        app.status = crate::t!(
+        app.status.text = crate::t!(
             "Cookie rejected — anonymous mode (search & play only)",
             "쿠키가 거부됨 — 익명 모드 (검색·재생만 가능)"
         )

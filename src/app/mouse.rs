@@ -226,7 +226,7 @@ impl App {
             // Click the GitHub link inside the About card to open the repo in the browser.
             MouseTarget::AboutLink => {
                 open_in_browser(crate::ui::views::about::GITHUB_URL);
-                self.status = t!("Opening GitHub in your browser…", "브라우저에서 GitHub을 여는 중…").to_owned();
+                self.status.text = t!("Opening GitHub in your browser…", "브라우저에서 GitHub을 여는 중…").to_owned();
                 self.dirty = true;
                 Vec::new()
             }

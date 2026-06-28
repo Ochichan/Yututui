@@ -51,7 +51,7 @@ impl App {
         }));
         self.mode = Mode::Settings;
         self.confirm_reset_all = false;
-        self.status.clear();
+        self.status.text.clear();
         self.dirty = true;
     }
 
@@ -153,7 +153,7 @@ impl App {
             && let Some(st) = self.settings.as_mut()
         {
             st.capturing = Some(entry);
-            self.status = t!("Press a key to bind (Esc to cancel)…", "바인딩할 키를 누르세요 (Esc로 취소)…").to_owned();
+            self.status.text = t!("Press a key to bind (Esc to cancel)…", "바인딩할 키를 누르세요 (Esc로 취소)…").to_owned();
             self.dirty = true;
         }
     }
@@ -166,7 +166,7 @@ impl App {
         };
         self.dirty = true;
         if k.code == KeyCode::Esc {
-            self.status = t!("Rebinding cancelled", "단축키 변경을 취소했어요").to_owned();
+            self.status.text = t!("Rebinding cancelled", "단축키 변경을 취소했어요").to_owned();
             return Vec::new();
         }
         let chord = Chord::from(k);
@@ -177,7 +177,7 @@ impl App {
             Ok(()) => {
                 let label = action.human_label();
                 let chord = crate::keymap::format_chord(chord);
-                self.status = if crate::i18n::is_korean() {
+                self.status.text = if crate::i18n::is_korean() {
                     format!("{label} → {chord} 으로 바인딩됨")
                 } else {
                     format!("Bound {label} to {chord}")
@@ -186,7 +186,7 @@ impl App {
             Err(conflict) => {
                 // Surface the clash as a modal warning rather than a quiet status line, so
                 // the rebind visibly fails instead of silently keeping the old key.
-                self.status.clear();
+                self.status.text.clear();
                 self.key_conflict = Some(conflict);
             }
         }
@@ -202,7 +202,7 @@ impl App {
             match st.keymap.reset(ctx, action) {
                 Ok(()) => {
                     let label = action.human_label();
-                    self.status = if crate::i18n::is_korean() {
+                    self.status.text = if crate::i18n::is_korean() {
                         format!("{label} 을(를) 기본값으로 되돌림")
                     } else {
                         format!("Reset {label} to default")
@@ -210,7 +210,7 @@ impl App {
                 }
                 Err(conflict) => {
                     // Same modal treatment as a manual rebind clash.
-                    self.status.clear();
+                    self.status.text.clear();
                     self.key_conflict = Some(conflict);
                 }
             }
@@ -226,7 +226,7 @@ impl App {
             st.draft.theme.reset_role(role);
             self.theme = st.draft.theme.normalized();
             let label = role.label();
-            self.status = if crate::i18n::is_korean() {
+            self.status.text = if crate::i18n::is_korean() {
                 format!("{label} 색상을 되돌림")
             } else {
                 format!("Reset {label} color")
@@ -294,7 +294,7 @@ impl App {
                 let s = self.settings.as_mut().unwrap();
                 let next = s.draft.radio_mode.cycled(dir >= 0);
                 s.draft.radio_mode = next;
-                self.status = format!("{}: {}", t!("Radio mode", "라디오 모드"), next.label());
+                self.status.text = format!("{}: {}", t!("Radio mode", "라디오 모드"), next.label());
                 Vec::new()
             }
             Field::Language => {
@@ -304,7 +304,7 @@ impl App {
                 // Apply live so the whole UI — including this settings screen — re-renders in
                 // the new language on the next frame; `close_settings` persists it.
                 crate::i18n::set_language(next);
-                self.status =
+                self.status.text =
                     format!("{}: {}", t!("Language", "언어"), next.native_name());
                 Vec::new()
             }
@@ -366,7 +366,7 @@ impl App {
                 let next = s.draft.theme.preset_enum().stepped(dir);
                 s.draft.theme.set_preset(next);
                 self.theme = s.draft.theme.normalized();
-                self.status = format!("{}: {}", t!("Theme", "테마"), next.label());
+                self.status.text = format!("{}: {}", t!("Theme", "테마"), next.label());
                 Vec::new()
             }
             // Toggle the background between the preset's color and "no color" (transparent).
@@ -513,7 +513,7 @@ impl App {
         };
         st.keymap = KeyMap::default();
         st.capturing = None;
-        self.status = t!("Keybindings reset to defaults", "단축키를 기본값으로 되돌렸어요").to_owned();
+        self.status.text = t!("Keybindings reset to defaults", "단축키를 기본값으로 되돌렸어요").to_owned();
         self.dirty = true;
         Vec::new()
     }
@@ -557,7 +557,7 @@ impl App {
             self.theme = st.draft.theme.normalized();
             crate::i18n::set_language(st.draft.language);
         }
-        self.status = t!("All settings reset to defaults", "모든 설정을 기본값으로 되돌렸어요").to_owned();
+        self.status.text = t!("All settings reset to defaults", "모든 설정을 기본값으로 되돌렸어요").to_owned();
         self.dirty = true;
         let mut cmds = self.settings_apply_speed();
         cmds.extend(self.settings_apply_af());
@@ -627,7 +627,7 @@ impl App {
             Field::CookiesFile => {
                 self.config.cookies_file =
                     settings::blank_to_none(&value).map(std::path::PathBuf::from);
-                self.status = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
             Field::DownloadDir => {
                 let old_dir = self.config.effective_download_dir();
@@ -638,7 +638,7 @@ impl App {
                     cmds.push(Cmd::SetDownloadDir(new_dir.clone()));
                     cmds.push(Cmd::ScanDownloads(new_dir));
                 }
-                self.status = t!("Settings saved", "설정을 저장했어요").to_owned();
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
             Field::ApiKey => {
                 let old_key = self.config.gemini_api_key.clone();
@@ -654,7 +654,7 @@ impl App {
                         model: self.ai.model,
                     });
                 }
-                self.status = t!("API key saved", "API 키를 저장했어요").to_owned();
+                self.status.text = t!("API key saved", "API 키를 저장했어요").to_owned();
             }
             Field::ThemeColor(_) => return Vec::new(),
             // Non-text fields never reach here (only Field::kind()==Text enters edit mode).
@@ -680,7 +680,7 @@ impl App {
                 self.theme = st.draft.theme.normalized();
                 let label = role.label();
                 let hex = st.draft.theme.effective_hex(role);
-                self.status = if crate::i18n::is_korean() {
+                self.status.text = if crate::i18n::is_korean() {
                     format!("{label} 을(를) {hex} 로 설정함")
                 } else {
                     format!("Set {label} to {hex}")
@@ -688,7 +688,7 @@ impl App {
             }
             Err(msg) => {
                 st.editing_text = true;
-                self.status = msg;
+                self.status.text = msg;
             }
         }
         self.dirty = true;
@@ -756,7 +756,7 @@ impl App {
         // Volume controls change the live value in place; fold it in so a save
         // doesn't persist the stale startup value.
         self.config.volume = self.playback.volume;
-        self.status = t!("Settings saved", "설정을 저장했어요").to_owned();
+        self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
         // Re-assert the committed audio chain before persisting: the draft was
         // previewing live, but a track change mid-edit (EOF auto-advance) would have
         // rebuilt mpv's chain from the *old* committed bands, so push the now-committed

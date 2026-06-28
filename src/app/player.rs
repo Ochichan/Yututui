@@ -13,7 +13,7 @@ impl App {
     /// `set_property speed` command.
     pub(in crate::app) fn adjust_speed(&mut self, delta: f64) -> Vec<Cmd> {
         self.playback.speed = (((self.playback.speed + delta) * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX);
-        self.status = format!("{}: {:.1}x", t!("Speed", "재생 속도"), self.playback.speed);
+        self.status.text = format!("{}: {:.1}x", t!("Speed", "재생 속도"), self.playback.speed);
         self.dirty = true;
         vec![Cmd::Player(PlayerCmd::SetProperty {
             name: "speed".to_owned(),
@@ -59,8 +59,8 @@ impl App {
                     value: serde_json::Value::Bool(false),
                 }));
             }
-            self.status_kind = StatusKind::Info;
-            self.status = t!("Video closed", "영상 닫음").to_owned();
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!("Video closed", "영상 닫음").to_owned();
         } else if let Some(song) = self.queue.current().cloned() {
             let url = format!("https://www.youtube.com/watch?v={}", song.video_id);
             let cookies = self.config.cookies_file.clone();
@@ -75,15 +75,15 @@ impl App {
                             value: serde_json::Value::Bool(true),
                         }));
                     }
-                    self.status_kind = StatusKind::Info;
-                    self.status = t!("Opening video in mpv…", "mpv에서 영상을 여는 중…").to_owned();
+                    self.status.kind = StatusKind::Info;
+                    self.status.text = t!("Opening video in mpv…", "mpv에서 영상을 여는 중…").to_owned();
                 }
                 None => {
-                    self.status = t!("Failed to launch mpv", "mpv 실행에 실패했습니다").to_owned();
+                    self.status.text = t!("Failed to launch mpv", "mpv 실행에 실패했습니다").to_owned();
                 }
             }
         } else {
-            self.status = t!("No track playing", "재생 중인 곡이 없습니다").to_owned();
+            self.status.text = t!("No track playing", "재생 중인 곡이 없습니다").to_owned();
         }
         self.dirty = true;
         cmds
@@ -103,8 +103,8 @@ impl App {
             self.video.proc = spawn_video_overlay(&url, cookies.as_deref(), layout);
             // Audio stays paused (video_paused_audio unchanged).
         }
-        self.status_kind = StatusKind::Info;
-        self.status = format!("{}: {}", t!("Video", "영상"), layout.label());
+        self.status.kind = StatusKind::Info;
+        self.status.text = format!("{}: {}", t!("Video", "영상"), layout.label());
         self.dirty = true;
         vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
     }
@@ -115,7 +115,7 @@ impl App {
         self.eq_preset = preset;
         self.eq_bands = preset.gains();
         self.eq_dropdown_open = false;
-        self.status = format!("EQ: {}", preset.label());
+        self.status.text = format!("EQ: {}", preset.label());
         self.dirty = true;
         vec![Cmd::Player(PlayerCmd::SetAudioFilter(
             self.current_af().unwrap_or_default(),
@@ -125,7 +125,7 @@ impl App {
     pub(in crate::app) fn select_radio_mode(&mut self, mode: RadioMode) -> Vec<Cmd> {
         self.config.radio.mode = mode;
         self.radio_dropdown_open = false;
-        self.status = format!("{}: {}", t!("Radio", "라디오"), mode.label());
+        self.status.text = format!("{}: {}", t!("Radio", "라디오"), mode.label());
         self.dirty = true;
         vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
     }
@@ -265,7 +265,7 @@ impl App {
                 self.eq_bands = self.eq_preset.gains();
                 self.eq_dropdown_open = false;
                 self.radio_dropdown_open = false;
-                self.status = format!("EQ: {}", self.eq_preset.label());
+                self.status.text = format!("EQ: {}", self.eq_preset.label());
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(
                     self.current_af().unwrap_or_default(),
@@ -273,7 +273,7 @@ impl App {
             }
             Action::ToggleNormalize => {
                 self.normalize = !self.normalize;
-                self.status = format!(
+                self.status.text = format!(
                     "{}: {}",
                     t!("Normalize", "음량 평준화"),
                     if self.normalize { "✓" } else { "✗" }
@@ -305,8 +305,8 @@ impl App {
                 if let Some(song) = self.queue.current() {
                     let url = format!("https://www.youtube.com/watch?v={}", song.video_id);
                     copy_to_clipboard(&url);
-                    self.status_kind = StatusKind::Info;
-                    self.status =
+                    self.status.kind = StatusKind::Info;
+                    self.status.text =
                         t!("✓ Link copied to clipboard", "✓ 링크가 클립보드에 복사됐어요").to_owned();
                     self.dirty = true;
                 }
@@ -329,8 +329,8 @@ impl App {
         let title = song.title.clone();
         let was_idle = self.prefetch.loaded_video_id.is_none();
         if self.queue.extend(vec![song]) == 0 {
-            self.status_kind = StatusKind::Error;
-            self.status = t!("Queue is full", "큐가 가득 찼어요").to_string();
+            self.status.kind = StatusKind::Error;
+            self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
             self.dirty = true;
             return Vec::new();
         }
@@ -338,13 +338,13 @@ impl App {
             // Nothing was playing → jump to the track we just appended and start it.
             self.queue.goto(self.queue.len().saturating_sub(1));
             self.mode = Mode::Player;
-            self.status.clear();
+            self.status.text.clear();
             let song = self.queue.current().cloned();
             return self.load_song(song);
         }
         // A track is already playing → just queue it up behind the rest, no interruption.
-        self.status_kind = StatusKind::Info;
-        self.status = format!("{} {}", t!("Added to queue:", "큐에 추가:"), title);
+        self.status.kind = StatusKind::Info;
+        self.status.text = format!("{} {}", t!("Added to queue:", "큐에 추가:"), title);
         self.dirty = true;
         Vec::new()
     }
@@ -415,7 +415,7 @@ impl App {
                 self.reset_progress();
                 // A new track is a clean slate: drop any stale status (e.g. a prior
                 // "Playback error" / "Track unavailable") so the UI matches what's loading.
-                self.status.clear();
+                self.status.text.clear();
                 self.library.record_play(&song);
                 self.note_session_activity();
                 self.prefetch.loaded_video_id = Some(song.video_id.clone());

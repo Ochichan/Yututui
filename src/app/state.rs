@@ -6,6 +6,19 @@
 
 use super::*;
 
+/// The transient status/notification line shown to the user: its text, when it was last set
+/// (for TTL auto-expiry), and its semantic kind (which drives its color).
+#[derive(Default)]
+pub struct Status {
+    /// A status/error line shown to the user (empty = normal; the track title shows instead).
+    pub text: String,
+    /// When `text` was last set non-empty, used to auto-expire it after [`STATUS_TTL`] (set
+    /// centrally in [`App::update`]; `None` while the title is showing normally).
+    pub set_at: Option<Instant>,
+    /// Semantic kind of the current status (drives its color); reset to `Error` on clear.
+    pub kind: StatusKind,
+}
+
 /// Video-overlay state: the detached mpv process (if open) and whether opening it is what
 /// paused the audio (so closing only resumes playback the overlay paused).
 #[derive(Default)]
