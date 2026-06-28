@@ -21,6 +21,9 @@ pub struct Sixel {
     pub data: String,
     pub size: Size,
     pub is_tmux: bool,
+    /// ytm-tui patch: per-encode anchor-cell tag so a freshly built protocol re-emits once. See
+    /// [`crate::protocol::next_redraw_tag`].
+    pub redraw_tag: u32,
 }
 
 impl Sixel {
@@ -30,6 +33,7 @@ impl Sixel {
             data,
             size,
             is_tmux,
+            redraw_tag: super::next_redraw_tag(),
         })
     }
 }
@@ -74,7 +78,15 @@ impl ProtocolTrait for Sixel {
         }
         let render_area = Rect::new(area.x, area.y, self.size.width, self.size.height);
 
-        render(&self.data, render_area, buf)
+        render(&self.data, render_area, buf);
+
+        // ytm-tui patch: stamp the anchor cell's (invisible) foreground with this protocol's
+        // redraw tag so a freshly built protocol differs from the displayed frame and ratatui's
+        // diff re-flushes the whole sixel exactly once — wiping any popup residue. See
+        // `crate::protocol::next_redraw_tag`.
+        if let Some(cell) = buf.cell_mut(Into::<Position>::into(render_area)) {
+            cell.set_fg(super::redraw_tag_color(self.redraw_tag));
+        }
     }
 
     fn size(&self) -> Size {
@@ -107,8 +119,44 @@ impl StatefulProtocolTrait for Sixel {
         *self = Sixel {
             data,
             size,
+            // ytm-tui patch: a re-encode (resize, or a rebuilt protocol) gets a fresh tag so the
+            // next render re-flushes the anchor cell exactly once.
+            redraw_tag: super::next_redraw_tag(),
             ..*self
         };
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ytm-tui patch regression: two protocols built from the *same* image must stamp DIFFERENT
+    /// anchor-cell foregrounds. That's what lets ratatui's frame diff re-flush the whole sixel
+    /// when `App::refresh_art` rebuilds the protocol after a popup closes — without it the anchor
+    /// cell is byte-identical, the diff skips it, and the art ghosts (Sixel on Windows Terminal).
+    #[test]
+    fn rebuilt_protocol_perturbs_anchor_cell_so_the_diff_reemits() {
+        let img = image::DynamicImage::new_rgb8(2, 2);
+        let size = Size::new(1, 1);
+        let area = Rect::new(0, 0, 1, 1);
+
+        let a = Sixel::new(img.clone(), size, false).unwrap();
+        let b = Sixel::new(img, size, false).unwrap();
+        assert_ne!(a.redraw_tag, b.redraw_tag, "each encode must take a unique tag");
+
+        let mut buf_a = Buffer::empty(area);
+        let mut buf_b = Buffer::empty(area);
+        a.render(area, &mut buf_a);
+        b.render(area, &mut buf_b);
+
+        let cell_a = buf_a.cell((0, 0)).unwrap();
+        let cell_b = buf_b.cell((0, 0)).unwrap();
+        // Same image => identical escape in the symbol, but the (invisible) fg differs, so the
+        // cells are unequal and the frame diff emits the second one over the first.
+        assert_eq!(cell_a.symbol(), cell_b.symbol(), "same image keeps the same escape");
+        assert_ne!(cell_a.fg, cell_b.fg, "a rebuilt protocol must perturb the anchor fg");
+        assert_ne!(cell_a, cell_b, "anchor cells must differ so ratatui re-emits the sixel");
     }
 }

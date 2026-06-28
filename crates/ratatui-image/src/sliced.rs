@@ -473,6 +473,7 @@ mod sixel_slice {
                 data,
                 size: Size::default(),
                 is_tmux: false,
+                redraw_tag: 0,
             };
             let sliced = SlicedSixel::from_sixel(sixel, 6, false);
             let sliced = sliced.borrow_dependent();

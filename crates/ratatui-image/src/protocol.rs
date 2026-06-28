@@ -5,12 +5,14 @@ use std::{
     fmt::Write,
     hash::{Hash, Hasher},
     num::NonZeroU16,
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use image::{DynamicImage, ImageBuffer, Rgba, imageops};
 use ratatui::{
     buffer::{Buffer, CellDiffOption},
     layout::{Rect, Size},
+    style::Color,
 };
 
 use self::{
@@ -29,6 +31,36 @@ pub mod kitty;
 pub mod sixel;
 
 const UNIT_WIDTH: CellDiffOption = CellDiffOption::ForcedWidth(NonZeroU16::new(1).unwrap());
+
+/// ytm-tui patch: a process-wide monotonic counter, bumped once per Sixel/iTerm2 (re-)encode.
+///
+/// The Sixel and iTerm2 protocols deliver the whole image as a single escape parked in the render
+/// area's top-left ("anchor") cell, with every other covered cell marked [`CellDiffOption::Skip`].
+/// A popup (`eq:`/`radio:` dropdown, queue window, About card) that overdraws part of the art and
+/// then closes leaves those `Skip` cells blank — only re-transmitting the anchor escape (whose
+/// `clear_area` prefix wipes the residue) repaints it. But ratatui's frame diff skips the anchor
+/// when its cell is byte-identical to the displayed frame, and re-encoding the same image yields
+/// the same bytes — so the Kitty-style "mint a new graphics id" trick (`App::refresh_art`) is a
+/// no-op here and the art ghosts (notably under Sixel on Windows Terminal).
+///
+/// Stamping this tag into the anchor cell's foreground (invisible — the image pixels paint over
+/// the cell) makes a freshly built protocol differ from the displayed frame, so the diff
+/// re-flushes the anchor exactly once. Steady-state renders reuse the same protocol and tag, so
+/// the cell stays identical and the diff skips it: no per-frame re-transmit, no flicker.
+static REDRAW_TAG: AtomicU32 = AtomicU32::new(1);
+
+/// Next anchor-cell redraw tag (see [`REDRAW_TAG`]). Bumped at each encode so consecutive encodes
+/// of the same image still differ.
+pub(crate) fn next_redraw_tag() -> u32 {
+    REDRAW_TAG.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Map a [`next_redraw_tag`] value to the anchor cell's foreground colour. The image pixels cover
+/// the cell, so this colour never shows; it exists only to perturb the cell for the frame diff.
+pub(crate) fn redraw_tag_color(tag: u32) -> Color {
+    let [_, r, g, b] = tag.to_be_bytes();
+    Color::Rgb(r, g, b)
+}
 
 pub(crate) trait ProtocolTrait: Send + Sync {
     /// Render the currently resized and encoded data to the buffer.
