@@ -3,21 +3,29 @@
 //! Key *release*/*repeat* events (which Windows delivers in addition to presses) are
 //! filtered out here so the reducer only ever sees presses.
 
+use std::time::{Duration, Instant};
+
 use crossterm::event::{
     Event, KeyCode, KeyEventKind, KeyModifiers, ModifierKeyCode, MouseButton, MouseEventKind,
 };
 
 use crate::app::Msg;
 
+/// Two left-presses within this window at the same cell count as a double-click.
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
+
 #[derive(Debug)]
 pub struct Translator {
     held_modifiers: KeyModifiers,
+    /// The most recent left-button press (time + cell), for double-click detection.
+    last_left_down: Option<(Instant, u16, u16)>,
 }
 
 impl Default for Translator {
     fn default() -> Self {
         Self {
             held_modifiers: KeyModifiers::NONE,
+            last_left_down: None,
         }
     }
 }
@@ -36,15 +44,40 @@ impl Translator {
                 k.modifiers |= self.held_modifiers;
                 Some(Msg::Key(k))
             }
-            // A left-button press may hit a UI button or the player's seekbar.
+            // A left-button press may hit a UI button or the player's seekbar. A second
+            // press at the same cell within the double-click window plays a song row /
+            // queue entry instead of merely selecting it.
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
-                Some(Msg::MouseClick {
+                Some(self.classify_left_down(m.column, m.row))
+            }
+            // Dragging with the left button held extends the queue window's selection.
+            Event::Mouse(m) if m.kind == MouseEventKind::Drag(MouseButton::Left) => {
+                Some(Msg::MouseDrag {
                     col: m.column,
                     row: m.row,
                 })
             }
             Event::Resize(_, _) => Some(Msg::Resize),
             _ => None,
+        }
+    }
+
+    /// Classify a left-button press as a single or double click, updating the timing state.
+    fn classify_left_down(&mut self, col: u16, row: u16) -> Msg {
+        self.classify_left_down_at(Instant::now(), col, row)
+    }
+
+    /// Timing core, split out so tests can supply a deterministic clock.
+    fn classify_left_down_at(&mut self, now: Instant, col: u16, row: u16) -> Msg {
+        let is_double = self.last_left_down.is_some_and(|(t, c, r)| {
+            c == col && r == row && now.duration_since(t) <= DOUBLE_CLICK_WINDOW
+        });
+        // Reset after a double so a third quick press starts a fresh single click.
+        self.last_left_down = if is_double { None } else { Some((now, col, row)) };
+        if is_double {
+            Msg::MouseDoubleClick { col, row }
+        } else {
+            Msg::MouseClick { col, row }
         }
     }
 
@@ -103,6 +136,55 @@ mod tests {
                 ))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn two_quick_presses_at_same_cell_are_a_double_click() {
+        let mut t = Translator::default();
+        let t0 = Instant::now();
+        assert!(matches!(
+            t.classify_left_down_at(t0, 10, 5),
+            Msg::MouseClick { col: 10, row: 5 }
+        ));
+        // Within the window, same cell -> double click.
+        assert!(matches!(
+            t.classify_left_down_at(t0 + Duration::from_millis(200), 10, 5),
+            Msg::MouseDoubleClick { col: 10, row: 5 }
+        ));
+        // A third quick press is a fresh single click (state reset after the double).
+        assert!(matches!(
+            t.classify_left_down_at(t0 + Duration::from_millis(300), 10, 5),
+            Msg::MouseClick { .. }
+        ));
+    }
+
+    #[test]
+    fn slow_or_moved_presses_stay_single_clicks() {
+        let mut t = Translator::default();
+        let t0 = Instant::now();
+        assert!(matches!(t.classify_left_down_at(t0, 10, 5), Msg::MouseClick { .. }));
+        // Too slow.
+        assert!(matches!(
+            t.classify_left_down_at(t0 + Duration::from_millis(600), 10, 5),
+            Msg::MouseClick { .. }
+        ));
+        // Different cell.
+        assert!(matches!(
+            t.classify_left_down_at(t0 + Duration::from_millis(650), 11, 5),
+            Msg::MouseClick { .. }
+        ));
+    }
+
+    #[test]
+    fn left_drag_becomes_a_drag_message() {
+        let mut t = Translator::default();
+        let ev = Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 7,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(matches!(t.translate(ev), Some(Msg::MouseDrag { col: 7, row: 3 })));
     }
 
     #[test]

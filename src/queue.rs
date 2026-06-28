@@ -93,6 +93,17 @@ impl Queue {
         (self.cursor + 1, self.songs.len())
     }
 
+    /// Every queued track in play order — the listing shown by the queue window.
+    pub fn ordered(&self) -> Vec<&Song> {
+        self.order.iter().filter_map(|&i| self.songs.get(i)).collect()
+    }
+
+    /// The current track's 0-based index within the play order, for highlighting the
+    /// playing row in the queue window. Aligns with [`ordered`](Self::ordered).
+    pub fn cursor_pos(&self) -> usize {
+        self.cursor
+    }
+
     /// How many tracks remain *after* the current one in the play order. Drives the
     /// autoplay/radio hook (extend when this runs low). Zero when empty or at the end.
     pub fn remaining(&self) -> usize {
@@ -198,6 +209,46 @@ impl Queue {
             self.cursor = self.order.len() - 1;
         }
         self.current()
+    }
+
+    /// Jump the cursor to an order position (as listed by [`ordered`](Self::ordered)),
+    /// returning the track now current. Out-of-range positions clamp to the last track;
+    /// an empty queue is a no-op returning `None`. Used by the queue window's "play this".
+    pub fn goto(&mut self, pos: usize) -> Option<&Song> {
+        if self.order.is_empty() {
+            return None;
+        }
+        self.cursor = pos.min(self.order.len() - 1);
+        self.current()
+    }
+
+    /// Remove the track at order position `pos` (as listed by [`ordered`](Self::ordered)),
+    /// keeping `songs`, `order`, and `cursor` consistent: the song is dropped, every later
+    /// `songs` index referenced by `order` is shifted down to match, and the cursor is moved
+    /// so the same track stays current when possible. Returns `Some(current_changed)` —
+    /// `true` when the removed track was the one playing, so the caller loads the new
+    /// current track (or stops if the queue is now empty) — or `None` if `pos` is out of
+    /// range. Powers the queue window's delete (single row or a drag-selected range).
+    pub fn remove_at(&mut self, pos: usize) -> Option<bool> {
+        let song_idx = *self.order.get(pos)?;
+        let was_current = pos == self.cursor;
+        self.songs.remove(song_idx);
+        self.order.remove(pos);
+        // `songs` indices above the removed one all shifted down by one; fix the references.
+        for idx in &mut self.order {
+            if *idx > song_idx {
+                *idx -= 1;
+            }
+        }
+        // Keep the cursor on the same track when removing before it; clamp when removing at
+        // or after it leaves the cursor past the (now shorter) end.
+        if pos < self.cursor {
+            self.cursor -= 1;
+        }
+        if self.cursor >= self.order.len() {
+            self.cursor = self.order.len().saturating_sub(1);
+        }
+        Some(was_current)
     }
 
     /// Toggle shuffle, keeping the current track current.
@@ -404,6 +455,87 @@ mod tests {
         let up: Vec<&str> = q.upcoming(2).iter().map(|s| s.video_id.as_str()).collect();
         assert_eq!(up, vec!["2", "3"]);
         assert_eq!(q.upcoming(99).len(), 3); // capped by what's left, not n
+    }
+
+    #[test]
+    fn ordered_lists_the_play_sequence() {
+        let mut q = Queue::default();
+        assert!(q.ordered().is_empty());
+        q.set(songs(3), 0);
+        let ids: Vec<&str> = q.ordered().iter().map(|s| s.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["0", "1", "2"]);
+    }
+
+    #[test]
+    fn goto_jumps_cursor_and_clamps() {
+        let mut q = Queue::default();
+        assert!(q.goto(0).is_none()); // empty -> no-op
+        q.set(songs(5), 0);
+        assert_eq!(q.goto(3).unwrap().video_id, "3");
+        assert_eq!(q.position(), (4, 5));
+        assert_eq!(q.cursor_pos(), 3);
+        // Out of range clamps to the last track.
+        assert_eq!(q.goto(99).unwrap().video_id, "4");
+        assert_eq!(q.cursor_pos(), 4);
+    }
+
+    #[test]
+    fn remove_before_cursor_keeps_current() {
+        let mut q = Queue::default();
+        q.set(songs(5), 2); // current = "2"
+        assert_eq!(q.remove_at(0), Some(false)); // removed "0", not the current track
+        assert_eq!(id(&q), "2");
+        assert_eq!(q.position(), (2, 4)); // now 2nd of 4
+    }
+
+    #[test]
+    fn remove_current_makes_the_next_track_current() {
+        let mut q = Queue::default();
+        q.set(songs(5), 2); // current = "2"
+        assert_eq!(q.remove_at(2), Some(true)); // removed the current track
+        assert_eq!(id(&q), "3"); // the track that shifted into its slot
+        assert_eq!(q.len(), 4);
+    }
+
+    #[test]
+    fn remove_after_cursor_keeps_current() {
+        let mut q = Queue::default();
+        q.set(songs(5), 2);
+        assert_eq!(q.remove_at(4), Some(false));
+        assert_eq!(id(&q), "2");
+        assert_eq!(q.len(), 4);
+    }
+
+    #[test]
+    fn remove_last_remaining_track_empties_the_queue() {
+        let mut q = Queue::default();
+        q.set(songs(1), 0);
+        assert_eq!(q.remove_at(0), Some(true));
+        assert!(q.is_empty());
+        assert!(q.current().is_none());
+    }
+
+    #[test]
+    fn remove_out_of_range_is_none() {
+        let mut q = Queue::default();
+        q.set(songs(2), 0);
+        assert_eq!(q.remove_at(5), None);
+        assert_eq!(q.len(), 2);
+    }
+
+    #[test]
+    fn remove_under_shuffle_stays_a_permutation() {
+        let mut q = Queue::default();
+        q.set(songs(6), 0);
+        q.rng = fastrand::Rng::with_seed(7);
+        q.toggle_shuffle();
+        q.remove_at(3);
+        assert_eq!(q.len(), 5);
+        let mut seen = q.order.clone();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..5).collect::<Vec<_>>());
+        // Every order entry still indexes a real song.
+        assert!(q.order.iter().all(|&i| i < q.songs.len()));
     }
 
     #[test]

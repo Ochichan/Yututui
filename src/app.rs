@@ -65,6 +65,18 @@ pub enum Msg {
         col: u16,
         row: u16,
     },
+    /// A left double-click at a cell — plays a song row / queue entry (vs. single-click,
+    /// which selects). Falls back to single-click behavior off a list row.
+    MouseDoubleClick {
+        col: u16,
+        row: u16,
+    },
+    /// The pointer was dragged with the left button held — extends the queue window's
+    /// multi-select range. Ignored outside that window.
+    MouseDrag {
+        col: u16,
+        row: u16,
+    },
     /// The terminal was resized; ratatui auto-resizes on draw, we just redraw.
     Resize,
     /// A termination signal asked us to shut down.
@@ -223,6 +235,24 @@ pub enum MouseTarget {
     EqMenu,
     /// Pick an EQ preset from the open dropdown.
     EqSelect(EqPreset),
+    /// A nav-bar item — switch to that screen from any screen.
+    Nav(Mode),
+    /// The search bar's submit button.
+    SearchSubmit,
+    /// A Library tab header.
+    LibraryTab(LibraryTab),
+    /// A Settings tab header, by index into [`SettingsTab::ALL`].
+    SettingsTab(usize),
+    /// A list row, by absolute item index (interpreted per the active screen). Single-click
+    /// selects; double-click plays.
+    ListRow(usize),
+    /// The `N/M` queue-position label on the player status line — opens the queue window.
+    QueuePos,
+    /// A row in the open queue window, by order position. Single-click selects; double-click
+    /// jumps playback to it.
+    QueueRow(usize),
+    /// The `✗` delete button on a queue-window row, by order position.
+    QueueDel(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,6 +434,18 @@ pub struct App {
     /// Player-only and session-ephemeral: toggled by clicking the `eq:` label, dismissed
     /// by picking a preset or clicking elsewhere.
     pub eq_dropdown_open: bool,
+    /// Whether the queue window (opened by clicking the `N/M` position label) is showing.
+    /// Player-only overlay; while open it captures the keyboard (nav / Delete / Enter).
+    pub queue_popup_open: bool,
+    /// The highlighted row in the queue window (order position) — the active end of the
+    /// drag/range selection.
+    pub queue_popup_cursor: usize,
+    /// The fixed end of the queue window's multi-select range (drag start / last single
+    /// click). The selection is the inclusive span between this and `queue_popup_cursor`.
+    pub queue_popup_anchor: usize,
+    /// Screen rect of the open queue window, written each render so a click outside it can
+    /// be detected (which closes it). `Cell` because render only has `&App`.
+    pub queue_popup_rect: Cell<Option<Rect>>,
 
     // Settings ----------------------------------------------------------------
     /// The persisted config, kept so the settings screen can save the full file.
@@ -532,6 +574,10 @@ impl App {
             seek_seconds: crate::config::SEEK_SECONDS_DEFAULT,
             autoplay_radio: false,
             eq_dropdown_open: false,
+            queue_popup_open: false,
+            queue_popup_cursor: 0,
+            queue_popup_anchor: 0,
+            queue_popup_rect: Cell::new(None),
             config: Config::default(),
             settings: None,
             ai_available: false,
@@ -651,6 +697,8 @@ impl App {
         match msg {
             Msg::Key(k) => return self.on_key(k),
             Msg::MouseClick { col, row } => return self.on_mouse_click(col, row),
+            Msg::MouseDoubleClick { col, row } => return self.on_mouse_double_click(col, row),
+            Msg::MouseDrag { col, row } => return self.on_mouse_drag(col, row),
             Msg::Resize => self.dirty = true,
             Msg::Quit => self.should_quit = true,
             Msg::Autoplay => return self.autoplay_on_start_cmds(),
@@ -993,6 +1041,12 @@ impl App {
             }
         }
 
+        // The queue window is a player overlay that captures the keyboard while open (after
+        // the global shortcuts above, so Quit/Home/Help still work).
+        if self.queue_popup_open {
+            return self.on_key_queue(k);
+        }
+
         match self.mode {
             Mode::Player => self.on_key_player(k),
             Mode::Search => self.on_key_search(k),
@@ -1055,6 +1109,7 @@ impl App {
     fn go_home(&mut self) -> Vec<Cmd> {
         self.help_visible = false;
         self.eq_dropdown_open = false;
+        self.queue_popup_open = false;
         if self.mode == Mode::Settings {
             self.finish_settings_text_edit();
             return self.close_settings();
@@ -1095,6 +1150,23 @@ impl App {
             self.help_visible = false;
             self.dirty = true;
             return Vec::new();
+        }
+        // The queue window is modal: a click outside it closes it ("창 밖을 클릭하면 꺼지고"),
+        // and inside it only its own rows / `✗` buttons act — underlying player buttons are
+        // ignored so a click landing on the player beneath the popup doesn't leak through.
+        if self.queue_popup_open {
+            let inside = self.queue_popup_rect.get().is_some_and(|r| rect_contains(r, col, row));
+            if !inside {
+                self.queue_popup_open = false;
+                self.dirty = true;
+                return Vec::new();
+            }
+            match self.mouse_target_at(col, row) {
+                Some(t @ (MouseTarget::QueueRow(_) | MouseTarget::QueueDel(_))) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => return Vec::new(),
+            }
         }
         if let Some(target) = self.mouse_target_at(col, row) {
             return self.on_mouse_target(target);
@@ -1148,6 +1220,264 @@ impl App {
                 self.select_eq_preset(preset)
             }
             MouseTarget::EqSelect(_) => Vec::new(),
+            // Nav bar: switch screens from anywhere.
+            MouseTarget::Nav(mode) => self.navigate_to(mode),
+            // Search bar submit button.
+            MouseTarget::SearchSubmit if self.mode == Mode::Search => self.submit_search_query(),
+            MouseTarget::SearchSubmit => Vec::new(),
+            // Library tab header.
+            MouseTarget::LibraryTab(tab) if self.mode == Mode::Library => {
+                self.library_tab = tab;
+                self.library_selected = 0;
+                self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::LibraryTab(_) => Vec::new(),
+            // Settings tab header.
+            MouseTarget::SettingsTab(i) if self.mode == Mode::Settings => {
+                self.settings_select_tab(i);
+                Vec::new()
+            }
+            MouseTarget::SettingsTab(_) => Vec::new(),
+            // Single-click a list row: select it (double-click plays — see double-click path).
+            MouseTarget::ListRow(i) => self.on_list_row_click(i),
+            // Open the queue window from the `N/M` position label.
+            MouseTarget::QueuePos if self.mode == Mode::Player => {
+                self.open_queue_popup();
+                Vec::new()
+            }
+            MouseTarget::QueuePos => Vec::new(),
+            // Single-click a queue row: select it (and anchor a drag range here).
+            MouseTarget::QueueRow(i) if self.queue_popup_open => {
+                self.queue_popup_cursor = i;
+                self.queue_popup_anchor = i;
+                self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::QueueRow(_) => Vec::new(),
+            // The `✗` button on a queue row removes just that track.
+            MouseTarget::QueueDel(i) if self.queue_popup_open => self.remove_queue_range(i, i),
+            MouseTarget::QueueDel(_) => Vec::new(),
+        }
+    }
+
+    /// A left double-click: play a song/queue row (vs. single-click, which selects). Falls
+    /// back to single-click behavior anywhere else so buttons, tabs, and the seekbar still
+    /// respond to the first press of a double-click.
+    fn on_mouse_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        // Modal overlays treat a double-click like a single click.
+        if self.help_visible || self.key_conflict.is_some() || self.confirm_reset_all {
+            return self.on_mouse_click(col, row);
+        }
+        if self.queue_popup_open {
+            let inside = self.queue_popup_rect.get().is_some_and(|r| rect_contains(r, col, row));
+            if inside {
+                if let Some(MouseTarget::QueueRow(i)) = self.mouse_target_at(col, row) {
+                    return self.queue_popup_play(i);
+                }
+                return Vec::new();
+            }
+            return self.on_mouse_click(col, row); // outside -> close, same as single click
+        }
+        match self.mouse_target_at(col, row) {
+            Some(MouseTarget::ListRow(i)) => self.on_list_row_activate(i),
+            _ => self.on_mouse_click(col, row),
+        }
+    }
+
+    /// A left-drag: extend the queue window's multi-select to the row under the pointer
+    /// (the anchor end stays fixed). Ignored unless the queue window is open.
+    fn on_mouse_drag(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if !self.queue_popup_open {
+            return Vec::new();
+        }
+        if let Some(MouseTarget::QueueRow(i) | MouseTarget::QueueDel(i)) =
+            self.mouse_target_at(col, row)
+            && self.queue_popup_cursor != i
+        {
+            self.queue_popup_cursor = i;
+            self.dirty = true;
+        }
+        Vec::new()
+    }
+
+    /// Switch screens from a nav-bar click — the mouse equivalent of the `Open*` keys, but
+    /// reachable from any screen. Leaving Settings commits the draft via the normal close
+    /// path so edits aren't lost; transient overlays are cleared.
+    fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
+        self.eq_dropdown_open = false;
+        self.queue_popup_open = false;
+        if self.mode == mode {
+            self.dirty = true;
+            return Vec::new();
+        }
+        let cmds = if self.mode == Mode::Settings {
+            self.finish_settings_text_edit();
+            self.close_settings() // sets mode = Player; overridden below if needed
+        } else {
+            Vec::new()
+        };
+        match mode {
+            Mode::Player => self.mode = Mode::Player,
+            Mode::Search => {
+                self.mode = Mode::Search;
+                self.search_focus = SearchFocus::Input;
+            }
+            Mode::Library => {
+                self.mode = Mode::Library;
+                self.library_selected = 0;
+            }
+            Mode::Settings => self.open_settings(),
+            Mode::Ai => self.enter_ai(),
+        }
+        self.dirty = true;
+        cmds
+    }
+
+    /// Select a Settings tab by index into [`SettingsTab::ALL`] (from a tab click).
+    fn settings_select_tab(&mut self, index: usize) {
+        if let Some(st) = self.settings.as_mut()
+            && let Some(&tab) = SettingsTab::ALL.get(index)
+        {
+            st.tab = tab;
+            st.row = 0;
+            st.editing_text = false;
+            st.capturing = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Single-click select on the active screen's list. `index` is the logical item index
+    /// the view published (song index, or a Settings row index).
+    fn on_list_row_click(&mut self, index: usize) -> Vec<Cmd> {
+        match self.mode {
+            Mode::Search if index < self.search_results.len() => {
+                self.search_selected = index;
+                self.search_focus = SearchFocus::Results;
+                self.dirty = true;
+            }
+            Mode::Library if index < self.library_len() => {
+                self.library_selected = index;
+                self.dirty = true;
+            }
+            Mode::Settings => {
+                if let Some(st) = self.settings.as_mut() {
+                    st.row = index;
+                    st.editing_text = false;
+                    self.dirty = true;
+                }
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Double-click activate on the active screen's list: play the song (Search/Library);
+    /// Settings rows have no "play", so a double-click just selects.
+    fn on_list_row_activate(&mut self, index: usize) -> Vec<Cmd> {
+        match self.mode {
+            Mode::Search if index < self.search_results.len() => {
+                self.search_selected = index;
+                self.play_selected()
+            }
+            Mode::Library if index < self.library_len() => {
+                self.library_selected = index;
+                self.play_from_library()
+            }
+            _ => self.on_list_row_click(index),
+        }
+    }
+
+    /// Open the queue window, selecting the currently playing track. No-op on an empty queue.
+    fn open_queue_popup(&mut self) {
+        if self.queue.is_empty() {
+            return;
+        }
+        let pos = self.queue.cursor_pos();
+        self.queue_popup_open = true;
+        self.queue_popup_cursor = pos;
+        self.queue_popup_anchor = pos;
+        self.dirty = true;
+    }
+
+    /// Jump playback to a queue order position and close the window.
+    fn queue_popup_play(&mut self, pos: usize) -> Vec<Cmd> {
+        let song = self.queue.goto(pos).cloned();
+        self.queue_popup_open = false;
+        self.queue_popup_cursor = self.queue.cursor_pos();
+        self.queue_popup_anchor = self.queue_popup_cursor;
+        self.status.clear();
+        self.load_song(song)
+    }
+
+    /// Remove the queue window's current selection (the inclusive anchor..=cursor range).
+    fn queue_popup_remove_selection(&mut self) -> Vec<Cmd> {
+        let lo = self.queue_popup_cursor.min(self.queue_popup_anchor);
+        let hi = self.queue_popup_cursor.max(self.queue_popup_anchor);
+        self.remove_queue_range(lo, hi)
+    }
+
+    /// Remove queue order positions `lo..=hi`, high-to-low so positions stay valid as
+    /// earlier ones drop. Reloads the playing track if it was among them (or stops on an
+    /// emptied queue), and clamps/closes the window's selection.
+    fn remove_queue_range(&mut self, lo: usize, hi: usize) -> Vec<Cmd> {
+        let mut current_changed = false;
+        for pos in (lo..=hi).rev() {
+            if let Some(changed) = self.queue.remove_at(pos) {
+                current_changed |= changed;
+            }
+        }
+        let len = self.queue.len();
+        if len == 0 {
+            self.queue_popup_open = false;
+            self.queue_popup_cursor = 0;
+            self.queue_popup_anchor = 0;
+        } else {
+            let sel = lo.min(len - 1);
+            self.queue_popup_cursor = sel;
+            self.queue_popup_anchor = sel;
+        }
+        self.dirty = true;
+        if current_changed {
+            let song = self.queue.current().cloned();
+            self.load_song(song)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Keyboard handling while the queue window is open (it captures the keyboard). Nav
+    /// (up/down via `Common`), Enter jumps+plays, Delete removes the selection, q/Esc close.
+    fn on_key_queue(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        if k.code == KeyCode::Esc {
+            self.queue_popup_open = false;
+            self.dirty = true;
+            return Vec::new();
+        }
+        match self.keymap.action(KeyContext::Queue, k.into()) {
+            Some(Action::Back) => {
+                self.queue_popup_open = false;
+                self.dirty = true;
+                Vec::new()
+            }
+            Some(Action::MoveUp) => {
+                self.queue_popup_cursor = self.queue_popup_cursor.saturating_sub(1);
+                self.queue_popup_anchor = self.queue_popup_cursor;
+                self.dirty = true;
+                Vec::new()
+            }
+            Some(Action::MoveDown) => {
+                let last = self.queue.len().saturating_sub(1);
+                if self.queue_popup_cursor < last {
+                    self.queue_popup_cursor += 1;
+                }
+                self.queue_popup_anchor = self.queue_popup_cursor;
+                self.dirty = true;
+                Vec::new()
+            }
+            Some(Action::Confirm) => self.queue_popup_play(self.queue_popup_cursor),
+            Some(Action::QueueRemove) => self.queue_popup_remove_selection(),
+            _ => Vec::new(),
         }
     }
 
@@ -1220,6 +1550,10 @@ impl App {
                 self.library_selected = 0;
                 self.eq_dropdown_open = false;
                 self.dirty = true;
+                Vec::new()
+            }
+            Action::OpenQueue => {
+                self.open_queue_popup();
                 Vec::new()
             }
             // Toggle the lyrics panel; fetch on first open for the current track.
@@ -4795,5 +5129,176 @@ mod tests {
         let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
         assert!(!app.eq_dropdown_open);
         assert!(cmds.is_empty());
+    }
+
+    // --- Mouse: nav bar, clickable lists/tabs, and the queue window --------------
+
+    /// Render `app` to an 80x24 test terminal so its per-frame mouse hit rects are published
+    /// (each frame clears and re-registers them, mirroring the real loop).
+    fn render_app(app: &App) {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::render(f, app)).unwrap();
+    }
+
+    /// The center cell of the hit rect registered for `target` in the last render.
+    fn button_center(app: &App, target: MouseTarget) -> (u16, u16) {
+        app.mouse_buttons
+            .borrow()
+            .iter()
+            .find(|b| b.target == target)
+            .map(|b| (b.rect.x + b.rect.width / 2, b.rect.y + b.rect.height / 2))
+            .unwrap_or_else(|| panic!("no hit rect registered for {target:?}"))
+    }
+
+    /// Render `app`, then click the center of `target`'s hit rect.
+    fn click_target(app: &mut App, target: MouseTarget) -> Vec<Cmd> {
+        render_app(app);
+        let (col, row) = button_center(app, target);
+        app.update(Msg::MouseClick { col, row })
+    }
+
+    #[test]
+    fn every_screen_renders_the_nav_bar() {
+        for mode in [Mode::Player, Mode::Search, Mode::Library, Mode::Settings, Mode::Ai] {
+            let mut app = app_playing(1, 0);
+            app.navigate_to(mode);
+            render_app(&app);
+            let buttons = app.mouse_buttons.borrow();
+            for nav in [Mode::Player, Mode::Search, Mode::Library, Mode::Settings, Mode::Ai] {
+                assert!(
+                    buttons.iter().any(|b| b.target == MouseTarget::Nav(nav)),
+                    "screen {mode:?} is missing nav item {nav:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_a_nav_item_switches_screens() {
+        let mut app = App::new(100);
+        assert_eq!(app.mode, Mode::Player);
+        click_target(&mut app, MouseTarget::Nav(Mode::Library));
+        assert_eq!(app.mode, Mode::Library);
+        click_target(&mut app, MouseTarget::Nav(Mode::Search));
+        assert_eq!(app.mode, Mode::Search);
+        assert_eq!(app.search_focus, SearchFocus::Input);
+    }
+
+    #[test]
+    fn clicking_the_search_button_submits_the_query() {
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.search_focus = SearchFocus::Input;
+        app.search_input = "lofi beats".to_owned();
+        let cmds = click_target(&mut app, MouseTarget::SearchSubmit);
+        assert!(app.searching);
+        assert!(matches!(cmds.as_slice(), [Cmd::Search(q)] if q == "lofi beats"));
+    }
+
+    #[test]
+    fn clicking_a_library_tab_switches_it() {
+        let mut app = App::new(100);
+        app.mode = Mode::Library;
+        assert_eq!(app.library_tab, LibraryTab::All);
+        click_target(&mut app, MouseTarget::LibraryTab(LibraryTab::Favorites));
+        assert_eq!(app.library_tab, LibraryTab::Favorites);
+    }
+
+    #[test]
+    fn clicking_a_settings_tab_switches_it() {
+        let mut app = app_playing(1, 0);
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General);
+        // SettingsTab::ALL[1] is Playback.
+        click_target(&mut app, MouseTarget::SettingsTab(1));
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::ALL[1]);
+    }
+
+    #[test]
+    fn single_click_on_a_result_row_selects_it() {
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.search_results = songs(5);
+        click_target(&mut app, MouseTarget::ListRow(2));
+        assert_eq!(app.search_selected, 2);
+        assert_eq!(app.search_focus, SearchFocus::Results);
+    }
+
+    #[test]
+    fn double_click_on_a_result_row_plays_it() {
+        let mut app = App::new(100);
+        app.mode = Mode::Search;
+        app.search_results = songs(5);
+        render_app(&app);
+        let (col, row) = button_center(&app, MouseTarget::ListRow(3));
+        let cmds = app.update(Msg::MouseDoubleClick { col, row });
+        assert_eq!(current(&app), "id3");
+        assert!(load_url(&cmds).is_some());
+    }
+
+    #[test]
+    fn clicking_the_position_label_opens_the_queue_window() {
+        let mut app = app_playing(5, 2);
+        assert!(!app.queue_popup_open);
+        click_target(&mut app, MouseTarget::QueuePos);
+        assert!(app.queue_popup_open);
+        // It opens focused on the currently playing track.
+        assert_eq!(app.queue_popup_cursor, 2);
+        assert_eq!(app.queue_popup_anchor, 2);
+    }
+
+    #[test]
+    fn double_clicking_a_queue_row_jumps_to_it() {
+        let mut app = app_playing(5, 0);
+        app.update(Msg::Key(key(KeyCode::Char('c')))); // open queue window
+        assert!(app.queue_popup_open);
+        render_app(&app);
+        let (col, row) = button_center(&app, MouseTarget::QueueRow(3));
+        let cmds = app.update(Msg::MouseDoubleClick { col, row });
+        assert_eq!(app.queue.cursor_pos(), 3);
+        assert_eq!(current(&app), "id3");
+        assert!(!app.queue_popup_open);
+        assert!(load_url(&cmds).is_some());
+    }
+
+    #[test]
+    fn clicking_a_queue_delete_button_removes_that_track() {
+        let mut app = app_playing(5, 0);
+        app.update(Msg::Key(key(KeyCode::Char('c'))));
+        click_target(&mut app, MouseTarget::QueueDel(2));
+        assert_eq!(app.queue.len(), 4);
+        assert!(
+            app.queue.ordered().iter().all(|s| s.video_id != "id2"),
+            "the removed track should be gone from the queue"
+        );
+    }
+
+    #[test]
+    fn clicking_outside_the_queue_window_closes_it() {
+        let mut app = app_playing(5, 0);
+        app.update(Msg::Key(key(KeyCode::Char('c'))));
+        render_app(&app); // publishes queue_popup_rect
+        // Top-left corner is well outside the centered popup.
+        let cmds = app.update(Msg::MouseClick { col: 1, row: 1 });
+        assert!(!app.queue_popup_open);
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn drag_selects_a_range_then_delete_removes_all_of_it() {
+        let mut app = app_playing(5, 0);
+        app.update(Msg::Key(key(KeyCode::Char('c')))); // open, cursor = anchor = 0
+        render_app(&app);
+        // Drag down to row 2: anchor stays at 0, so the selection spans 0..=2.
+        let (col, row) = button_center(&app, MouseTarget::QueueRow(2));
+        app.update(Msg::MouseDrag { col, row });
+        assert_eq!(app.queue_popup_anchor, 0);
+        assert_eq!(app.queue_popup_cursor, 2);
+        // The Delete key removes the whole selected range at once.
+        app.update(Msg::Key(key(KeyCode::Delete)));
+        assert_eq!(app.queue.len(), 2);
+        let ids: Vec<&str> = app.queue.ordered().iter().map(|s| s.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["id3", "id4"]);
     }
 }

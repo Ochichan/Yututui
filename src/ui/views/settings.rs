@@ -6,14 +6,15 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 
-use crate::app::App;
+use crate::app::{App, MouseTarget};
 use crate::keymap::{self, Action, Conflict, KeyContext};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
 use crate::config::{SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
 use crate::theme::ThemeRole as R;
+use crate::ui::buttons;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // No screen without state — but render defensively rather than panic.
@@ -30,6 +31,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let rows = Layout::vertical([
+        Constraint::Length(1), // nav bar
         Constraint::Length(1), // tab bar
         Constraint::Length(1), // spacer
         Constraint::Min(0),    // field list
@@ -37,11 +39,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    render_tabs(frame, st, rows[0]);
+    buttons::render_nav(frame, app, rows[0]);
+    render_tabs(frame, app, st, rows[1]);
     if st.tab == SettingsTab::Keys {
-        render_keys(frame, st, rows[2]);
+        render_keys(frame, app, st, rows[3]);
     } else {
-        render_fields(frame, st, rows[2]);
+        render_fields(frame, app, st, rows[3]);
     }
 
     // Footer reflects the *committed* keymap, since that's what operates the screen until
@@ -85,19 +88,22 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             k(Action::SettingsCancel),
         )
     };
-    frame.render_widget(Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))), rows[3]);
+    frame.render_widget(Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))), rows[4]);
 }
 
 /// The Keys tab: a scrollable list of every remappable binding, grouped by context. The
 /// chord shown is from the *draft* keymap so edits appear immediately; the row being
 /// rebound shows a capture prompt.
-fn render_keys(frame: &mut Frame, st: &SettingsState, area: Rect) {
+fn render_keys(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     let theme = &st.draft.theme;
     let entries = keymap::editable_entries();
     // Each group gets its own header row (blank line before it, except the first), with the
     // bindings listed underneath. The rendered list therefore holds more rows than `entries`,
     // so map the focused binding index (`st.row`) to its display position for selection.
     let mut items: Vec<ListItem> = Vec::with_capacity(entries.len() + 24);
+    // Parallel to `items`: the binding index a display row maps to, or `None` for the
+    // header/blank rows. Used to turn a click on a visible row back into a binding index.
+    let mut display_to_binding: Vec<Option<usize>> = Vec::with_capacity(entries.len() + 24);
     let mut selected_display = 0usize;
     let mut prev_ctx: Option<KeyContext> = None;
     for (i, &(ctx, action)) in entries.iter().enumerate() {
@@ -106,6 +112,7 @@ fn render_keys(frame: &mut Frame, st: &SettingsState, area: Rect) {
                 ctx.title().to_owned(),
                 theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
             ))));
+            display_to_binding.push(None);
             prev_ctx = Some(ctx);
         }
         let focused = i == st.row;
@@ -126,9 +133,11 @@ fn render_keys(frame: &mut Frame, st: &SettingsState, area: Rect) {
             ),
             Span::styled(key, theme.style(key_role)),
         ])));
+        display_to_binding.push(Some(i));
         // A little padding after each group so the sections breathe.
         if entries.get(i + 1).map(|(c, _)| *c) != Some(ctx) {
             items.push(ListItem::new(Line::from("")));
+            display_to_binding.push(None);
         }
     }
 
@@ -140,25 +149,44 @@ fn render_keys(frame: &mut Frame, st: &SettingsState, area: Rect) {
     let mut state = ListState::default();
     state.select(Some(selected_display));
     frame.render_stateful_widget(list, area, &mut state);
+    // Clicking a binding row selects that binding; header/blank rows aren't targets.
+    buttons::register_list_rows(app, area, state.offset(), display_to_binding.len(), |d| {
+        display_to_binding.get(d).copied().flatten()
+    });
 }
 
-fn render_tabs(frame: &mut Frame, st: &SettingsState, area: Rect) {
+fn render_tabs(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     let theme = &st.draft.theme;
-    let titles: Vec<&str> = crate::settings::SettingsTab::ALL.iter().map(|t| t.label()).collect();
-    let tabs = Tabs::new(titles)
-        .select(st.tab.index())
-        .style(theme.style(R::TextMuted))
-        .highlight_style(
-            Style::default()
-                .fg(theme.color(R::SelectionFg))
-                .bg(theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD),
-        )
-        .divider(" ");
-    frame.render_widget(tabs, area);
+    let active = Style::default()
+        .fg(theme.color(R::SelectionFg))
+        .bg(theme.color(R::SelectionBg))
+        .add_modifier(Modifier::BOLD);
+    let muted = theme.style(R::TextMuted);
+    // A single space between tabs (matching the old `Tabs` divider). Each tab cell is
+    // " label " (one cell of padding each side, as `Tabs` padded), and its hit rect is
+    // computed by walking the x cursor with the same width math ratatui lays the spans with.
+    const DIVIDER: &str = " ";
+    let mut spans = Vec::new();
+    let mut x = area.x;
+    for (i, t) in crate::settings::SettingsTab::ALL.iter().copied().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(DIVIDER, muted));
+            x = x.saturating_add(buttons::text_width(DIVIDER));
+        }
+        let label = format!(" {} ", t.label());
+        let w = buttons::text_width(&label);
+        app.register_mouse_button(
+            Rect { x, y: area.y, width: w, height: 1 },
+            MouseTarget::SettingsTab(i),
+        );
+        x = x.saturating_add(w);
+        let style = if st.tab == t { active } else { muted };
+        spans.push(Span::styled(label, style));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_fields(frame: &mut Frame, st: &SettingsState, area: Rect) {
+fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     let fields = st.tab.fields();
     let items: Vec<ListItem> = fields
         .iter()
@@ -174,6 +202,8 @@ fn render_fields(frame: &mut Frame, st: &SettingsState, area: Rect) {
     let mut state = ListState::default();
     state.select(Some(st.row.min(fields.len().saturating_sub(1))));
     frame.render_stateful_widget(list, area, &mut state);
+    // Each field row maps 1:1 to its index, so a click selects that row directly.
+    buttons::register_list_rows(app, area, state.offset(), fields.len(), Some);
 }
 
 /// One field row: a left-aligned label and its current value (with a slider bar for

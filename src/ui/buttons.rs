@@ -8,12 +8,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, MouseTarget};
+use crate::app::{App, Mode, MouseTarget};
 use crate::keymap::Action;
 use crate::theme::ThemeRole as R;
 
@@ -77,6 +77,76 @@ pub fn render_segments(
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans).alignment(alignment)), area);
+}
+
+/// The screen nav bar shown at the top of every view: Player · Search · Library ·
+/// Settings · AI. The active screen is highlighted (selection colors); the rest are muted.
+/// Each item is a click target that switches screens. Centered, no box chrome — it reads
+/// like a tab strip, consistent with the in-line "text is the button" controls elsewhere.
+pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
+    const ITEMS: [(Mode, &str); 5] = [
+        (Mode::Player, "Player"),
+        (Mode::Search, "Search"),
+        (Mode::Library, "Library"),
+        (Mode::Settings, "Settings"),
+        (Mode::Ai, "AI"),
+    ];
+    const GAP: &str = "  ";
+
+    let labels: Vec<String> = ITEMS.iter().map(|(_, l)| format!(" {l} ")).collect();
+    let total: u16 = labels.iter().map(|s| text_width(s)).sum::<u16>()
+        + text_width(GAP) * (ITEMS.len() as u16 - 1);
+    // Same centering math ratatui uses, so the hit rects line up with the rendered text.
+    let mut x = area.x + area.width.saturating_sub(total) / 2;
+
+    let active = Style::default()
+        .fg(app.theme.color(R::SelectionFg))
+        .bg(app.theme.color(R::SelectionBg))
+        .add_modifier(Modifier::BOLD);
+    let muted = app.theme.style(R::TextMuted);
+
+    let mut spans = Vec::with_capacity(ITEMS.len() * 2);
+    for (i, ((mode, _), label)) in ITEMS.iter().zip(&labels).enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(GAP, muted));
+            x = x.saturating_add(text_width(GAP));
+        }
+        let w = text_width(label);
+        app.register_mouse_button(
+            Rect { x, y: area.y, width: w, height: area.height.min(1) },
+            MouseTarget::Nav(*mode),
+        );
+        let style = if app.mode == *mode { active } else { muted };
+        spans.push(Span::styled(label.clone(), style));
+        x = x.saturating_add(w);
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans).alignment(Alignment::Center)), area);
+}
+
+/// Register a `ListRow(i)` click target over each visible row of a ratatui `List`. Call
+/// after `render_stateful_widget` with the list's `area`, the `ListState::offset()` it
+/// produced, and the total item count — so a click maps to the right item even when the
+/// list is scrolled. `index_of` maps a visible item position to the logical index the
+/// reducer expects (identity for song lists; binding-index for the settings Keys tab).
+pub fn register_list_rows(
+    app: &App,
+    area: Rect,
+    offset: usize,
+    count: usize,
+    index_of: impl Fn(usize) -> Option<usize>,
+) {
+    for vis in 0..area.height {
+        let item = offset + vis as usize;
+        if item >= count {
+            break;
+        }
+        if let Some(logical) = index_of(item) {
+            app.register_mouse_button(
+                Rect { x: area.x, y: area.y + vis, width: area.width, height: 1 },
+                MouseTarget::ListRow(logical),
+            );
+        }
+    }
 }
 
 /// The footer hint (e.g. "?  keybindings"): a single dim, clickable label — reads as a

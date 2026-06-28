@@ -26,6 +26,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let rows = Layout::vertical([
+        Constraint::Length(1), // nav bar
         Constraint::Length(1), // title
         Constraint::Length(1), // spacer
         Constraint::Length(1), // seekbar
@@ -35,6 +36,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // help
     ])
     .split(inner);
+
+    buttons::render_nav(frame, app, rows[0]);
 
     // Title (or an error, if playback failed).
     let title = if !app.status.is_empty() {
@@ -53,7 +56,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .style(app.theme.style(R::TextPrimary))
             .alignment(Alignment::Center)
     };
-    frame.render_widget(Paragraph::new(title), rows[0]);
+    frame.render_widget(Paragraph::new(title), rows[1]);
 
     // Seekbar.
     let pos = app.time_pos.unwrap_or(0.0);
@@ -71,25 +74,30 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             format::time(pos),
             if dur > 0.0 { format::time(dur) } else { "--:--".to_owned() }
         ));
-    frame.render_widget(seekbar, rows[2]);
+    frame.render_widget(seekbar, rows[3]);
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
-    app.seekbar_rect.set(Some(rows[2]));
+    app.seekbar_rect.set(Some(rows[3]));
 
-    render_controls(frame, app, rows[3]);
+    render_controls(frame, app, rows[4]);
 
-    render_status_line(frame, app, rows[4]);
+    render_status_line(frame, app, rows[5]);
 
     // Central filler: album art (top) and/or the lyrics panel (below). With album art off
     // this is exactly the old behaviour — lyrics fill the whole area, nothing else draws.
-    render_filler(frame, app, rows[5]);
+    render_filler(frame, app, rows[6]);
 
     // The full key list lives in the `?` cheat-sheet now; the footer just points to it
     // (chord pulled live from the keymap, so a remap of "toggle help" updates it).
-    buttons::render_help_button(frame, app, rows[6]);
+    buttons::render_help_button(frame, app, rows[7]);
 
-    // The EQ preset dropdown draws last so its rows sit on top and win hit-testing.
+    // The EQ preset dropdown draws over the screen so its rows win hit-testing.
     if app.eq_dropdown_open {
         render_eq_dropdown(frame, app, inner);
+    }
+    // The queue window draws last of all so it sits on top and its rects win.
+    app.queue_popup_rect.set(None);
+    if app.queue_popup_open {
+        render_queue_popup(frame, app, inner);
     }
 }
 
@@ -110,7 +118,10 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     parts.push((None, state.to_owned()));
     if !app.queue.is_empty() {
         let (pos, _) = app.queue.position();
-        parts.push((None, format!("    {pos}/{}", app.queue.len())));
+        // Clickable (opens the queue window) but styled exactly like the labels around it,
+        // so the line looks unchanged — same as the `S:`/`R:` toggles next to it.
+        parts.push((None, "    ".to_owned()));
+        parts.push((Some(MouseTarget::QueuePos), format!("{pos}/{}", app.queue.len())));
     }
     // Shuffle and repeat are both always shown as click toggles, so the line's layout never
     // shifts as they flip — `S:on/off` mirrors the `R:` button next to it (stable UI).
@@ -157,6 +168,97 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     // Same style for buttons and labels so the clickable parts are visually indistinguishable.
     let style = app.theme.style(R::PlayerLabel);
     buttons::render_segments(frame, app, area, &segments, style, style, Alignment::Center);
+}
+
+/// The queue window: a themed popup listing the whole play queue (current track marked),
+/// opened by clicking the `N/M` position label. Rows are click targets — single-click
+/// selects (drag to extend the selection), double-click jumps playback there — and each
+/// row's trailing `✗` removes that track. Keyboard nav / Delete / Enter operate it while
+/// open (see `App::on_key_queue`). Drawn last over everything (`Clear`) so its rects win.
+fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
+    let songs = app.queue.ordered();
+    if songs.is_empty() {
+        return;
+    }
+    let (pos, total) = app.queue.position();
+    let current = app.queue.cursor_pos();
+
+    // ~60% wide, tall enough for the list but capped to ~70% of the screen.
+    let box_w = (area.width * 3 / 5).clamp(24, area.width.saturating_sub(2).max(24));
+    let max_h = (area.height * 7 / 10).max(3);
+    let box_h = (songs.len() as u16 + 2).min(max_h);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(box_w) / 2,
+        y: area.y + area.height.saturating_sub(box_h) / 2,
+        width: box_w,
+        height: box_h,
+    }
+    .intersection(area);
+    if popup.is_empty() {
+        return;
+    }
+    app.queue_popup_rect.set(Some(popup));
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(format!(" Queue {pos}/{total} "))
+        .borders(Borders::ALL)
+        .border_style(app.theme.style(R::BorderPrimary))
+        .style(app.theme.style(R::TextPrimary));
+    let list = block.inner(popup);
+    frame.render_widget(block, popup);
+    if list.height == 0 || list.width < 4 {
+        return;
+    }
+
+    // Scroll so the cursor row stays visible (window roughly centered on it).
+    let visible = list.height as usize;
+    let cursor = app.queue_popup_cursor.min(songs.len() - 1);
+    let start = cursor
+        .saturating_sub(visible / 2)
+        .min(songs.len().saturating_sub(visible));
+    let sel_lo = app.queue_popup_cursor.min(app.queue_popup_anchor);
+    let sel_hi = app.queue_popup_cursor.max(app.queue_popup_anchor);
+
+    const DEL_W: u16 = 2; // "✗ " click target on the right edge
+    let body_w = list.width.saturating_sub(DEL_W) as usize;
+    for (vis, (i, song)) in songs.iter().enumerate().skip(start).take(visible).enumerate() {
+        let y = list.y + vis as u16;
+        let selected = i >= sel_lo && i <= sel_hi;
+        let is_current = i == current;
+        let marker = if is_current { "▸ " } else { "  " };
+        let text = format!("{marker}{:>3} {} — {}", i + 1, song.title, song.artist);
+        let text: String = text.chars().take(body_w.saturating_sub(1)).collect();
+
+        let mut base = if selected {
+            Style::default()
+                .fg(app.theme.color(R::SelectionFg))
+                .bg(app.theme.color(R::SelectionBg))
+        } else if is_current {
+            app.theme.style(R::Accent)
+        } else {
+            app.theme.style(R::TextPrimary)
+        };
+        if is_current {
+            base = base.add_modifier(Modifier::BOLD);
+        }
+        let row = Rect { x: list.x, y, width: list.width, height: 1 };
+        frame.render_widget(Paragraph::new(Line::from(text).style(base)), row);
+
+        // Trailing ✗ delete button, kept on the row's highlight when selected.
+        let del_x = row.x + row.width.saturating_sub(DEL_W);
+        let del_rect = Rect { x: del_x, y, width: DEL_W, height: 1 };
+        let mut del_style = app.theme.style(R::Error);
+        if selected {
+            del_style = del_style.bg(app.theme.color(R::SelectionBg));
+        }
+        frame.render_widget(Paragraph::new(Line::from("✗").style(del_style)), del_rect);
+        app.register_mouse_button(del_rect, MouseTarget::QueueDel(i));
+
+        // The row body (everything left of the ✗) selects / jumps to the track.
+        let body_rect = Rect { x: row.x, y, width: row.width.saturating_sub(DEL_W), height: 1 };
+        app.register_mouse_button(body_rect, MouseTarget::QueueRow(i));
+    }
 }
 
 /// The EQ preset dropdown, anchored under the `eq:` label and listing the built-in presets

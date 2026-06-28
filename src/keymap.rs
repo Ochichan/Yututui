@@ -28,6 +28,7 @@ pub enum Action {
     PrevTrack,
     Favorite,
     OpenLibrary,
+    OpenQueue,
     ToggleLyrics,
     Download,
     ToggleShuffle,
@@ -49,6 +50,8 @@ pub enum Action {
     FocusNext,
     FocusPrev,
     DeleteChar,
+    // Queue window.
+    QueueRemove,
     // Settings screen.
     SettingsCancel,
     ChangeDecrease,
@@ -72,6 +75,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::PrevTrack, "prev_track", "Previous track"),
     (Action::Favorite, "favorite", "Favorite / unfavorite"),
     (Action::OpenLibrary, "open_library", "Open library"),
+    (Action::OpenQueue, "open_queue", "Open queue"),
     (Action::ToggleLyrics, "toggle_lyrics", "Toggle lyrics"),
     (Action::Download, "download", "Download track"),
     (Action::ToggleShuffle, "toggle_shuffle", "Toggle shuffle"),
@@ -92,6 +96,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::FocusNext, "focus_next", "Next tab / focus"),
     (Action::FocusPrev, "focus_prev", "Previous tab / focus"),
     (Action::DeleteChar, "delete_char", "Delete character"),
+    (Action::QueueRemove, "queue_remove", "Remove from queue"),
     (Action::SettingsCancel, "settings_cancel", "Close settings"),
     (Action::ChangeDecrease, "change_decrease", "Decrease value"),
     (Action::ChangeIncrease, "change_increase", "Increase value"),
@@ -115,6 +120,8 @@ impl Action {
     pub fn human_label_for(self, ctx: KeyContext) -> &'static str {
         match (ctx, self) {
             (KeyContext::Library, Action::Back) => "Close Library",
+            (KeyContext::Queue, Action::Confirm) => "Play / jump to track",
+            (KeyContext::Queue, Action::Back) => "Close queue",
             (KeyContext::SearchInput, Action::Confirm) => "Search",
             (KeyContext::SearchResults, Action::Confirm) => "Play selected",
             (KeyContext::SearchResults, Action::Back) => "Close Search Results",
@@ -137,6 +144,7 @@ pub enum KeyContext {
     Common,
     Global,
     Library,
+    Queue,
     SearchInput,
     SearchResults,
     Settings,
@@ -149,6 +157,7 @@ const CONTEXT_META: &[(KeyContext, &str, &str)] = &[
     (KeyContext::Common, "common", "Navigation (all screens)"),
     (KeyContext::Global, "global", "Global"),
     (KeyContext::Library, "library", "Library"),
+    (KeyContext::Queue, "queue", "Queue window"),
     (KeyContext::SearchInput, "search_input", "Search box"),
     (KeyContext::SearchResults, "search_results", "Search results"),
     (KeyContext::Settings, "settings", "Settings"),
@@ -436,6 +445,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::NextTrack, ch('n')),
         (C::Player, A::Favorite, ch('f')),
         (C::Player, A::OpenLibrary, ch('l')),
+        (C::Player, A::OpenQueue, ch('c')),
         (C::Player, A::ToggleLyrics, ch('L')),
         (C::Player, A::Download, ch('d')),
         (C::Player, A::ToggleShuffle, ch('s')),
@@ -466,6 +476,10 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Library, A::Download, ch('d')),
         (C::Library, A::OpenAi, ch('a')),
         (C::Library, A::Back, ch('q')),
+        // Queue window (overlay on the player; up/down nav comes from Common).
+        (C::Queue, A::Confirm, key(KeyCode::Enter)),
+        (C::Queue, A::QueueRemove, key(KeyCode::Delete)),
+        (C::Queue, A::Back, ch('q')),
         // Search results list commands.
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('d')),

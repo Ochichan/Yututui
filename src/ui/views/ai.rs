@@ -34,20 +34,22 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let rows = Layout::vertical([
-        Constraint::Min(0),               // transcript
+        Constraint::Length(1),                // nav bar
+        Constraint::Min(0),                   // transcript
         Constraint::Length(suggestions_rows), // suggestions (0 when none)
-        Constraint::Length(3),            // input box
-        Constraint::Length(1),            // help
+        Constraint::Length(3),                // input box
+        Constraint::Length(1),                // help
     ])
     .split(inner);
 
-    render_transcript(frame, app, rows[0]);
+    buttons::render_nav(frame, app, rows[0]);
+    render_transcript(frame, app, rows[1]);
     if has_suggestions {
-        render_suggestions(frame, app, rows[1]);
+        render_suggestions(frame, app, rows[2]);
     }
-    render_input(frame, app, rows[2]);
+    render_input(frame, app, rows[3]);
 
-    buttons::render_help_button(frame, app, rows[3]);
+    buttons::render_help_button(frame, app, rows[4]);
 }
 
 fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
