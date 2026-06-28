@@ -150,13 +150,9 @@ pub struct App {
     pub seek_seconds: f64,
     /// Auto-extend the queue with related tracks when it runs low (radio mode).
     pub autoplay_radio: bool,
-    /// Whether the click-to-open EQ preset dropdown is showing on the player status line.
-    /// Player-only and session-ephemeral: toggled by clicking the `eq:` label, dismissed
-    /// by picking a preset or clicking elsewhere.
-    pub eq_dropdown_open: bool,
-    /// Same as [`Self::eq_dropdown_open`] but for the `radio:` mode dropdown. Mutually
-    /// exclusive with it (opening one closes the other).
-    pub radio_dropdown_open: bool,
+    /// The two mutually-exclusive player status-line dropdowns (EQ preset + radio mode); both
+    /// player-only and session-ephemeral (see [`Dropdowns`]).
+    pub dropdowns: Dropdowns,
     /// Queue-window overlay state: open flag, selection cursor + anchor, on-screen rect
     /// bridge, and wheel-scroll offset (see [`QueuePopup`]).
     pub queue_popup: QueuePopup,
@@ -269,8 +265,7 @@ impl App {
             normalize: false,
             seek_seconds: crate::config::SEEK_SECONDS_DEFAULT,
             autoplay_radio: false,
-            eq_dropdown_open: false,
-            radio_dropdown_open: false,
+            dropdowns: Dropdowns::default(),
             queue_popup: QueuePopup::default(),
             config: Config::default(),
             settings: None,
@@ -729,8 +724,8 @@ impl App {
     /// so draft values and keybinding changes are not silently discarded.
     fn go_home(&mut self) -> Vec<Cmd> {
         self.help_visible = false;
-        self.eq_dropdown_open = false;
-        self.radio_dropdown_open = false;
+        self.dropdowns.eq_open = false;
+        self.dropdowns.radio_open = false;
         self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
@@ -772,8 +767,8 @@ impl App {
     /// reachable from any screen. Leaving Settings commits the draft via the normal close
     /// path so edits aren't lost; transient overlays are cleared.
     fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
-        self.eq_dropdown_open = false;
-        self.radio_dropdown_open = false;
+        self.dropdowns.eq_open = false;
+        self.dropdowns.radio_open = false;
         self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;
         // Any navigation deselects: a Ctrl+A highlight must not survive a screen change.

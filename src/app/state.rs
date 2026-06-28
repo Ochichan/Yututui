@@ -19,6 +19,17 @@ pub struct Status {
     pub kind: StatusKind,
 }
 
+/// The two mutually-exclusive click-to-open dropdowns on the player status line (EQ preset
+/// and radio mode). Opening one closes the other; both are player-only and session-ephemeral.
+#[derive(Default)]
+pub struct Dropdowns {
+    /// Whether the EQ-preset dropdown is showing (toggled by clicking the `eq:` label,
+    /// dismissed by picking a preset or clicking elsewhere).
+    pub eq_open: bool,
+    /// Whether the radio-mode dropdown is showing. Mutually exclusive with `eq_open`.
+    pub radio_open: bool,
+}
+
 /// Listening-session tracking for skip-confidence: how many tracks have started this session
 /// (reset after a long idle gap) and when the last one started (to detect that gap).
 #[derive(Default)]

@@ -127,10 +127,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_help_button(frame, app, rows[9]);
 
     // The status-line dropdowns draw over the screen so their rows win hit-testing.
-    if app.eq_dropdown_open {
+    if app.dropdowns.eq_open {
         render_eq_dropdown(frame, app, inner);
     }
-    if app.radio_dropdown_open {
+    if app.dropdowns.radio_open {
         render_radio_dropdown(frame, app, inner);
     }
     // The queue window draws last of all so it sits on top and its rects win.

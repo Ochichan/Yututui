@@ -92,9 +92,9 @@ impl App {
         }
         // A click that missed every button dismisses an open status-line dropdown (modal-style),
         // so the same click doesn't also seek.
-        if self.eq_dropdown_open || self.radio_dropdown_open {
-            self.eq_dropdown_open = false;
-            self.radio_dropdown_open = false;
+        if self.dropdowns.eq_open || self.dropdowns.radio_open {
+            self.dropdowns.eq_open = false;
+            self.dropdowns.radio_open = false;
             self.dirty = true;
             return Vec::new();
         }
@@ -130,8 +130,8 @@ impl App {
             MouseTarget::Player(_) => Vec::new(),
             // Toggle the EQ dropdown by clicking its `eq:` label (closes the radio one).
             MouseTarget::EqMenu if self.mode == Mode::Player => {
-                self.radio_dropdown_open = false;
-                self.eq_dropdown_open = !self.eq_dropdown_open;
+                self.dropdowns.radio_open = false;
+                self.dropdowns.eq_open = !self.dropdowns.eq_open;
                 self.dirty = true;
                 Vec::new()
             }
@@ -143,8 +143,8 @@ impl App {
             MouseTarget::EqSelect(_) => Vec::new(),
             // Toggle the radio-mode dropdown by clicking its `radio:` label (closes the EQ one).
             MouseTarget::RadioMenu if self.mode == Mode::Player => {
-                self.eq_dropdown_open = false;
-                self.radio_dropdown_open = !self.radio_dropdown_open;
+                self.dropdowns.eq_open = false;
+                self.dropdowns.radio_open = !self.dropdowns.radio_open;
                 self.dirty = true;
                 Vec::new()
             }

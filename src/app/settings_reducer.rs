@@ -8,8 +8,8 @@ impl App {
     /// Open the settings screen, snapshotting the current persisted + live state into an
     /// editable draft.
     pub(in crate::app) fn open_settings(&mut self) {
-        self.eq_dropdown_open = false;
-        self.radio_dropdown_open = false;
+        self.dropdowns.eq_open = false;
+        self.dropdowns.radio_open = false;
         let path_str = |p: &Option<std::path::PathBuf>| {
             p.as_ref()
                 .map(|p| p.display().to_string())

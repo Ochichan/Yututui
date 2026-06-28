@@ -2705,7 +2705,7 @@ fn settings_control_hit_rects_land_on_their_glyphs() {
 #[test]
 fn eq_dropdown_renders_preset_rows_when_open() {
     let mut app = app_playing(2, 0);
-    app.eq_dropdown_open = true;
+    app.dropdowns.eq_open = true;
     let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
@@ -2735,7 +2735,7 @@ fn clicking_eq_label_toggles_dropdown() {
         MouseTarget::EqMenu,
     );
     assert!(app.update(Msg::MouseClick { col: 32, row: 4 }).is_empty());
-    assert!(app.eq_dropdown_open);
+    assert!(app.dropdowns.eq_open);
     // Clicking it again closes it.
     app.register_mouse_button(
         Rect {
@@ -2747,13 +2747,13 @@ fn clicking_eq_label_toggles_dropdown() {
         MouseTarget::EqMenu,
     );
     assert!(app.update(Msg::MouseClick { col: 32, row: 4 }).is_empty());
-    assert!(!app.eq_dropdown_open);
+    assert!(!app.dropdowns.eq_open);
 }
 
 #[test]
 fn selecting_eq_preset_applies_and_closes_dropdown() {
     let mut app = app_playing(1, 0);
-    app.eq_dropdown_open = true;
+    app.dropdowns.eq_open = true;
     app.register_mouse_button(
         Rect {
             x: 30,
@@ -2766,7 +2766,7 @@ fn selecting_eq_preset_applies_and_closes_dropdown() {
     let cmds = app.update(Msg::MouseClick { col: 33, row: 6 });
     assert_eq!(app.eq_preset, EqPreset::Vocal);
     assert_eq!(app.eq_bands, EqPreset::Vocal.gains());
-    assert!(!app.eq_dropdown_open);
+    assert!(!app.dropdowns.eq_open);
     assert!(matches!(
         cmds.as_slice(),
         [Cmd::Player(PlayerCmd::SetAudioFilter(_))]
@@ -2776,7 +2776,7 @@ fn selecting_eq_preset_applies_and_closes_dropdown() {
 #[test]
 fn outside_click_dismisses_eq_dropdown_without_seeking() {
     let mut app = app_playing(1, 0);
-    app.eq_dropdown_open = true;
+    app.dropdowns.eq_open = true;
     app.playback.duration = Some(200.0);
     app.seekbar_rect.set(Some(Rect {
         x: 0,
@@ -2786,7 +2786,7 @@ fn outside_click_dismisses_eq_dropdown_without_seeking() {
     }));
     // A click on the seekbar with the dropdown open just closes it (no seek emitted).
     let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
-    assert!(!app.eq_dropdown_open);
+    assert!(!app.dropdowns.eq_open);
     assert!(cmds.is_empty());
 }
 
@@ -2797,17 +2797,17 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     // a first, must register as an edge.
     let mut app = app_playing(1, 0);
     assert_eq!(app.art_overlay_mask(), 0);
-    app.eq_dropdown_open = true;
+    app.dropdowns.eq_open = true;
     assert_eq!(app.art_overlay_mask(), 0b001);
     // Switch eq -> radio: the mask still changes (0b001 -> 0b010) even though some popup
     // stays open across the switch.
-    app.eq_dropdown_open = false;
-    app.radio_dropdown_open = true;
+    app.dropdowns.eq_open = false;
+    app.dropdowns.radio_open = true;
     assert_eq!(app.art_overlay_mask(), 0b010);
     // The queue window is a distinct bit, and can stack with a dropdown.
     app.queue_popup.open = true;
     assert_eq!(app.art_overlay_mask(), 0b110);
-    app.radio_dropdown_open = false;
+    app.dropdowns.radio_open = false;
     assert_eq!(app.art_overlay_mask(), 0b100);
     app.queue_popup.open = false;
     assert_eq!(app.art_overlay_mask(), 0);
@@ -2837,7 +2837,7 @@ fn rendering_player_registers_radio_menu_when_autoplay_on() {
 fn radio_dropdown_renders_mode_rows_when_open() {
     let mut app = app_playing(2, 0);
     app.autoplay_radio = true;
-    app.radio_dropdown_open = true;
+    app.dropdowns.radio_open = true;
     let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
@@ -2857,7 +2857,7 @@ fn radio_dropdown_renders_mode_rows_when_open() {
 fn clicking_radio_label_closes_eq_and_opens_radio_dropdown() {
     let mut app = app_playing(1, 0);
     // Open the EQ dropdown first to prove the two are mutually exclusive.
-    app.eq_dropdown_open = true;
+    app.dropdowns.eq_open = true;
     app.register_mouse_button(
         Rect {
             x: 40,
@@ -2868,15 +2868,15 @@ fn clicking_radio_label_closes_eq_and_opens_radio_dropdown() {
         MouseTarget::RadioMenu,
     );
     assert!(app.update(Msg::MouseClick { col: 42, row: 4 }).is_empty());
-    assert!(app.radio_dropdown_open);
-    assert!(!app.eq_dropdown_open);
+    assert!(app.dropdowns.radio_open);
+    assert!(!app.dropdowns.eq_open);
 }
 
 #[test]
 fn selecting_radio_mode_applies_and_persists() {
     use crate::radio::RadioMode;
     let mut app = app_playing(1, 0);
-    app.radio_dropdown_open = true;
+    app.dropdowns.radio_open = true;
     app.register_mouse_button(
         Rect {
             x: 40,
@@ -2888,7 +2888,7 @@ fn selecting_radio_mode_applies_and_persists() {
     );
     let cmds = app.update(Msg::MouseClick { col: 43, row: 6 });
     assert_eq!(app.config.radio.mode, RadioMode::Discovery);
-    assert!(!app.radio_dropdown_open);
+    assert!(!app.dropdowns.radio_open);
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
 }
 

@@ -56,8 +56,8 @@ impl App {
     /// mask (not a bool) so switching one popup straight to another, or a second popup opening
     /// over a first, still registers as an edge. Add a bit here for any new art-covering popup.
     pub fn art_overlay_mask(&self) -> u8 {
-        u8::from(self.eq_dropdown_open)
-            | (u8::from(self.radio_dropdown_open) << 1)
+        u8::from(self.dropdowns.eq_open)
+            | (u8::from(self.dropdowns.radio_open) << 1)
             | (u8::from(self.queue_popup.open) << 2)
             | (u8::from(self.about_visible) << 3)
     }

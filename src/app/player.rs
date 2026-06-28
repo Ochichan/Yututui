@@ -114,7 +114,7 @@ impl App {
     pub(in crate::app) fn select_eq_preset(&mut self, preset: EqPreset) -> Vec<Cmd> {
         self.eq_preset = preset;
         self.eq_bands = preset.gains();
-        self.eq_dropdown_open = false;
+        self.dropdowns.eq_open = false;
         self.status.text = format!("EQ: {}", preset.label());
         self.dirty = true;
         vec![Cmd::Player(PlayerCmd::SetAudioFilter(
@@ -124,7 +124,7 @@ impl App {
 
     pub(in crate::app) fn select_radio_mode(&mut self, mode: RadioMode) -> Vec<Cmd> {
         self.config.radio.mode = mode;
-        self.radio_dropdown_open = false;
+        self.dropdowns.radio_open = false;
         self.status.text = format!("{}: {}", t!("Radio", "라디오"), mode.label());
         self.dirty = true;
         vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
@@ -223,8 +223,8 @@ impl App {
                 self.mode = Mode::Library;
                 self.library_ui.selected = 0;
                 self.library_scroll.reset();
-                self.eq_dropdown_open = false;
-                self.radio_dropdown_open = false;
+                self.dropdowns.eq_open = false;
+                self.dropdowns.radio_open = false;
                 self.dirty = true;
                 Vec::new()
             }
@@ -263,8 +263,8 @@ impl App {
             Action::CycleEq => {
                 self.eq_preset = self.eq_preset.cycled();
                 self.eq_bands = self.eq_preset.gains();
-                self.eq_dropdown_open = false;
-                self.radio_dropdown_open = false;
+                self.dropdowns.eq_open = false;
+                self.dropdowns.radio_open = false;
                 self.status.text = format!("EQ: {}", self.eq_preset.label());
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(
@@ -296,8 +296,8 @@ impl App {
             Action::OpenSearch => {
                 self.mode = Mode::Search;
                 self.search.focus = SearchFocus::Input;
-                self.eq_dropdown_open = false;
-                self.radio_dropdown_open = false;
+                self.dropdowns.eq_open = false;
+                self.dropdowns.radio_open = false;
                 self.dirty = true;
                 Vec::new()
             }
