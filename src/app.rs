@@ -6376,30 +6376,39 @@ mod tests {
     }
 
     #[test]
-    fn wheel_scroll_moves_library_and_search_cursors() {
-        // Library: scroll down then up by MOUSE_SCROLL_LINES (3), clamped at the ends.
+    fn wheel_scrolls_the_viewport_not_the_selection() {
+        use crate::ui::scroll::SCROLLOFF;
+        // The wheel moves the viewport offset by MOUSE_SCROLL_LINES (3), clamped at the ends,
+        // and leaves the selection where it is (it may scroll out of view). `resolve` records
+        // the viewport (normally a render's job) and reads the honored offset back.
         let mut app = App::new(100);
-        for i in 0..10 {
+        for i in 0..20 {
             app.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
         }
         open_library_tab(&mut app, LibraryTab::History);
         app.library_selected = 0;
-        app.update(Msg::MouseScroll { up: false });
-        assert_eq!(app.library_selected, 3);
-        assert_eq!(app.library_anchor, 3);
-        app.update(Msg::MouseScroll { up: true });
-        assert_eq!(app.library_selected, 0); // clamped, not negative
+        let len = app.library_len();
+        app.library_scroll.resolve(app.library_selected, 10, len, SCROLLOFF);
 
-        // Search: same, clamped at the last row.
+        app.update(Msg::MouseScroll { up: false });
+        assert_eq!(app.library_selected, 0); // selection untouched by the wheel
+        assert_eq!(app.library_scroll.resolve(app.library_selected, 10, len, SCROLLOFF), 3);
+        app.update(Msg::MouseScroll { up: true });
+        assert_eq!(app.library_scroll.resolve(app.library_selected, 10, len, SCROLLOFF), 0); // clamped at top
+
+        // Search: same decoupling, clamped at the last page.
         let mut app = App::new(100);
         app.mode = Mode::Search;
         app.search_focus = SearchFocus::Results;
-        app.search_results = songs(5);
-        app.search_selected = 4;
+        app.search_results = songs(20);
+        app.search_selected = 19;
+        let len = app.search_results.len();
+        app.search_scroll.resolve(app.search_selected, 10, len, SCROLLOFF); // offset -> last page (10)
         app.update(Msg::MouseScroll { up: false });
-        assert_eq!(app.search_selected, 4); // already at the end
+        assert_eq!(app.search_selected, 19); // selection untouched
+        assert_eq!(app.search_scroll.resolve(app.search_selected, 10, len, SCROLLOFF), 10); // clamped at end
         app.update(Msg::MouseScroll { up: true });
-        assert_eq!(app.search_selected, 1);
+        assert_eq!(app.search_scroll.resolve(app.search_selected, 10, len, SCROLLOFF), 7);
     }
 
     #[test]
