@@ -28,7 +28,7 @@ impl RadioMode {
         match self {
             RadioMode::Focused => crate::t!("Focused", "집중"),
             RadioMode::Balanced => crate::t!("Balanced", "균형"),
-            RadioMode::Discovery => crate::t!("Discovery", "탐험"),
+            RadioMode::Discovery => crate::t!("Discovery", "발견"),
         }
     }
 

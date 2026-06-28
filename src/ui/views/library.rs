@@ -133,7 +133,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             format!("{marker}{} — {}  ({})", song.title, song.artist, song.duration)
         };
-        let body: String = body.chars().take(body_w.saturating_sub(1)).collect();
+        let body = crate::ui::text::truncate_to_width(&body, body_w.saturating_sub(1));
 
         let base = if selected {
             Style::default()

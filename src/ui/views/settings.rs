@@ -18,6 +18,7 @@ use crate::t;
 use crate::theme::ThemeConfig;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
+use crate::ui::text::pad_to_width;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // No screen without state — but render defensively rather than panic.
@@ -76,7 +77,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else if st.tab == SettingsTab::Keys {
         if ko {
             format!(
-                "{}/{} 선택  ·  {} 재설정  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장 + 종료",
+                "{}/{} 선택  ·  {} 재설정  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
                 k(Action::MoveUp),
                 k(Action::MoveDown),
                 k(Action::Confirm),
@@ -98,7 +99,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else if st.tab == SettingsTab::Colors {
         if ko {
             format!(
-                "{}/{} 색상  ·  {} 편집  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장 + 종료",
+                "{}/{} 색상  ·  {} 편집  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
                 k(Action::MoveUp),
                 k(Action::MoveDown),
                 k(Action::Confirm),
@@ -119,7 +120,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         }
     } else if ko {
         format!(
-            "{}/{} 항목  ·  {}/{} 변경  ·  {} 편집/전환  ·  {} 탭 전환  ·  {} 저장 + 종료",
+            "{}/{} 이동  ·  {}/{} 변경  ·  {} 편집/전환  ·  {} 탭 전환  ·  {} 저장하고 닫기",
             k(Action::MoveUp),
             k(Action::MoveDown),
             k(Action::ChangeDecrease),
@@ -217,6 +218,17 @@ fn build_keys_column(
     let mut items: Vec<ListItem> = Vec::new();
     let mut display_to_binding: Vec<Option<usize>> = Vec::new();
     let mut selected = None;
+    // Pad every action label to the widest one (+2-cell gutter) by terminal *display* width, so
+    // the key column lines up flush across both columns and in any language — long Korean labels
+    // like "자동재생 라디오 켜기 / 끄기" (~27 cells) would overflow a fixed width and shove their key
+    // out of alignment.
+    let label_w = entries
+        .iter()
+        .map(|(c, a)| UnicodeWidthStr::width(a.human_label_for(*c)))
+        .max()
+        .unwrap_or(22)
+        .max(22)
+        + 2;
     for (gi, (ctx, binds)) in groups.iter().enumerate() {
         // A blank line before every group but the first lets the sections breathe.
         if gi > 0 {
@@ -235,7 +247,7 @@ fn build_keys_column(
                 selected = Some(items.len());
             }
             let key = if st.capturing == Some((c, action)) {
-                t!("<press a key…>", "<키를 누르세요…>").to_owned()
+                t!("<press a key…>", "<키 입력 대기…>").to_owned()
             } else {
                 st.keymap.chord(c, action).map_or_else(|| "—".to_owned(), keymap::format_chord)
             };
@@ -243,7 +255,7 @@ fn build_keys_column(
             // Bindings indent one step in from their group header for a clear hierarchy.
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("  {:<24}", action.human_label_for(c)),
+                    format!("  {}", pad_to_width(action.human_label_for(c), label_w)),
                     theme.style(R::SettingsLabel),
                 ),
                 Span::styled(key, theme.style(key_role)),
@@ -477,14 +489,6 @@ fn centered_fixed(area: Rect, w: u16, h: u16) -> Rect {
         width: w,
         height: h,
     }
-}
-
-/// Right-pad `s` with spaces to a target terminal *display* width (CJK-aware). `format!`'s
-/// `{:<width$}` counts Unicode scalars, which misaligns two-cell Korean characters; this
-/// measures with `unicode-width` instead so labels line up in any language.
-fn pad_to_width(s: &str, width: usize) -> String {
-    let pad = width.saturating_sub(UnicodeWidthStr::width(s));
-    format!("{s}{}", " ".repeat(pad))
 }
 
 /// A compact 11-cell slider bar with a marker at `value`'s position in `[min, max]`.

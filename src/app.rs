@@ -112,6 +112,11 @@ pub enum Msg {
     /// Periodic wake-up (driven by the main loop only while a transient `status` is showing)
     /// that lets the reducer expire the status after [`STATUS_TTL`] and restore the title.
     StatusTick,
+    /// Animation frame tick (~30 fps), driven by the main loop **only** while
+    /// [`App::animation_active`] holds — i.e. on the player view, master on, a track playing,
+    /// and at least one effect enabled. Advances `anim_frame` and forces a redraw. When all
+    /// animation toggles are off the main loop never arms this, so it costs literally nothing.
+    AnimTick,
     /// mpv playback position, in seconds.
     PlayerTimePos(f64),
     /// Current track duration, in seconds.
@@ -657,6 +662,10 @@ pub struct App {
 
     /// Last whole second we redrew for, so sub-second `time-pos` spam is coalesced.
     last_shown_sec: i64,
+
+    /// Monotonic animation frame counter, bumped on each [`Msg::AnimTick`] (~30 fps) while
+    /// animations are active. Drives every effect's phase; wraps harmlessly. `0` at rest.
+    anim_frame: u64,
 }
 
 impl App {
@@ -680,6 +689,7 @@ impl App {
             queue: Queue::default(),
             status: String::new(),
             status_set_at: None,
+            anim_frame: 0,
             eq_preset: EqPreset::default(),
             eq_bands: [0.0; eq::BANDS],
             normalize: false,
@@ -855,6 +865,13 @@ impl App {
                     self.status.clear();
                     self.dirty = true;
                 }
+            }
+            Msg::AnimTick => {
+                // Advance the animation phase and request a frame. The main loop only delivers
+                // this while `animation_active()` is true, so the wrapping `wrapping_add` and a
+                // single redraw are the entire per-frame cost; idle when animations are off.
+                self.anim_frame = self.anim_frame.wrapping_add(1);
+                self.dirty = true;
             }
             Msg::PlayerTimePos(t) => {
                 self.time_pos = Some(t);
@@ -1914,36 +1931,42 @@ impl App {
                 let song = self.queue.prev().cloned();
                 self.load_song(song)
             }
-            // Favorite the current track (the ♥ marker in the title / ♥: button is the
-            // feedback). Also nudges the artist affinity the radio engine learns from.
-            Action::Favorite => {
-                if let Some(song) = self.queue.current().cloned() {
-                    let now_fav = self.library.toggle_favorite(&song);
-                    let artist_key = signals::normalize_artist(&song.artist);
-                    self.signals
-                        .record_like(&song.video_id, &artist_key, now_fav, signals::unix_now());
-                    self.dirty = true;
-                    return vec![Cmd::SaveLibrary, Cmd::SaveSignals];
-                }
-                Vec::new()
-            }
-            // Dislike / un-dislike the current track: flips a persistent flag the radio
-            // engine treats as a hard block, drops it from favorites if set, and pushes the
-            // artist affinity down. Reached identically by key (`x`) and by the ✗: button.
-            Action::Dislike => {
+            // Cycle the current track's rating through one tri-state control: neutral → 👍 like
+            // → 👎 dislike → neutral. `like` is favorite membership (library); `dislike` is the
+            // persistent flag the radio engine treats as a hard block. The two are mutually
+            // exclusive, so a single 🤔/👍/👎 glyph (and the `f` key / its click) covers both,
+            // replacing the old separate ♥ favorite + ✗ dislike controls. Each leg nudges the
+            // artist affinity the engine learns from, and a full cycle nets back to zero.
+            Action::CycleRating => {
                 if let Some(song) = self.queue.current().cloned() {
                     let artist_key = signals::normalize_artist(&song.artist);
-                    let disliked =
-                        self.signals
-                            .toggle_dislike(&song.video_id, &artist_key, signals::unix_now());
-                    let mut cmds = vec![Cmd::SaveSignals];
-                    // Disliking a favorite is contradictory — drop the favorite too.
-                    if disliked && self.library.is_favorite(&song.video_id) {
-                        self.library.toggle_favorite(&song);
-                        cmds.push(Cmd::SaveLibrary);
+                    let now = signals::unix_now();
+                    let liked = self.library.is_favorite(&song.video_id);
+                    let disliked = self.signals.is_disliked(&song.video_id);
+                    match (liked, disliked) {
+                        // neutral → like: add to favorites, lift the artist affinity.
+                        (false, false) => {
+                            let now_fav = self.library.toggle_favorite(&song);
+                            self.signals.record_like(&song.video_id, &artist_key, now_fav, now);
+                            self.dirty = true;
+                            return vec![Cmd::SaveLibrary, Cmd::SaveSignals];
+                        }
+                        // like → dislike: drop the favorite (undoing its affinity lift) and set
+                        // the dislike flag (which pushes the affinity down).
+                        (true, _) => {
+                            self.library.toggle_favorite(&song);
+                            self.signals.record_like(&song.video_id, &artist_key, false, now);
+                            self.signals.toggle_dislike(&song.video_id, &artist_key, now);
+                            self.dirty = true;
+                            return vec![Cmd::SaveLibrary, Cmd::SaveSignals];
+                        }
+                        // dislike → neutral: clear the flag, restoring the affinity it pushed down.
+                        (false, true) => {
+                            self.signals.toggle_dislike(&song.video_id, &artist_key, now);
+                            self.dirty = true;
+                            return vec![Cmd::SaveSignals];
+                        }
                     }
-                    self.dirty = true;
-                    return cmds;
                 }
                 Vec::new()
             }
@@ -2267,6 +2290,7 @@ impl App {
             gemini_api_key: self.config.gemini_api_key.clone().unwrap_or_default(),
             theme: self.theme.clone(),
             language: self.config.language,
+            animations: self.config.animations,
         };
         self.settings = Some(Box::new(SettingsState {
             tab: SettingsTab::General,
@@ -2590,6 +2614,29 @@ impl App {
                 self.status = format!("{}: {}", t!("Theme", "테마"), next.label());
                 Vec::new()
             }
+            // Animation toggles: flip the mapped flag in the draft. The single `anim_flag`
+            // mapping keeps the 13 effects in lock-step across display/toggle/persist; the UI
+            // takes effect immediately because the player reads `config.animations` each frame
+            // and the draft is what's live while the screen is open (committed on close).
+            Field::AnimMaster
+            | Field::AnimTitle
+            | Field::AnimHeart
+            | Field::AnimSeekbar
+            | Field::AnimSpinner
+            | Field::AnimEqBars
+            | Field::AnimControls
+            | Field::AnimBorder
+            | Field::AnimRain
+            | Field::AnimDonut
+            | Field::AnimVisualizer
+            | Field::AnimStarfield
+            | Field::AnimBounce => {
+                let s = self.settings.as_mut().unwrap();
+                if let Some(flag) = field.anim_flag(&mut s.draft.animations) {
+                    *flag = !*flag;
+                }
+                Vec::new()
+            }
             // Text fields ignore ←/→; Enter starts editing instead. The reset button has no
             // value to nudge — Enter activates it (see `settings_activate`).
             Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_)
@@ -2729,6 +2776,7 @@ impl App {
             d.gemini_api_key = String::new();
             d.theme = def.effective_theme();
             d.language = def.effective_language();
+            d.animations = def.animations; // all effects off (the lightweight default)
             st.keymap = KeyMap::default();
             st.editing_text = false;
         }
@@ -3777,6 +3825,28 @@ impl App {
             && self.art.borrow().is_some()
     }
 
+    /// Whether the per-frame animation clock should run right now. True only when we're on the
+    /// player view, the master switch + at least one effect are enabled, a track is loaded, and
+    /// playback is not paused. The main loop arms its ~30 fps tick on this; when it is false the
+    /// tick never fires, so the player behaves byte-for-byte like today (the lightweight path).
+    pub fn animation_active(&self) -> bool {
+        matches!(self.mode, Mode::Player)
+            && !self.paused
+            && self.queue.current().is_some()
+            && self.config.animations.active()
+    }
+
+    /// The live animation config (per-effect toggles); read by the player view each frame.
+    #[allow(dead_code)]
+    pub fn animations(&self) -> &crate::config::AnimationsConfig {
+        &self.config.animations
+    }
+
+    /// Current animation frame counter — advances ~30×/s while [`Self::animation_active`].
+    pub fn anim_frame(&self) -> u64 {
+        self.anim_frame
+    }
+
     /// A bitmask of which `Clear` popups that paint over the album-art band are open:
     /// bit 0 = `eq:` dropdown, bit 1 = `radio:` dropdown, bit 2 = the queue window. The render
     /// loop snapshots this across dispatch and, on any change, calls [`Self::refresh_art`] so the
@@ -4569,6 +4639,8 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Colors);
         app.update(Msg::Key(key(KeyCode::Tab)));
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Animations);
+        app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General); // wraps
@@ -4623,7 +4695,7 @@ mod tests {
     fn settings_key_capture_accepts_ctrl_chords() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
-        for _ in 0..6 {
+        for _ in 0..7 {
             app.update(Msg::Key(key(KeyCode::Tab)));
         }
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
@@ -4657,7 +4729,7 @@ mod tests {
     fn settings_key_capture_conflict_raises_modal_warning() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
-        for _ in 0..6 {
+        for _ in 0..7 {
             app.update(Msg::Key(key(KeyCode::Tab))); // Keys tab
         }
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
@@ -6249,19 +6321,27 @@ mod tests {
     }
 
     #[test]
-    fn dislike_key_toggles_and_clears_favorite() {
+    fn rating_key_cycles_neutral_like_dislike() {
         let mut app = app_playing(2, 0);
         let id = current(&app).to_owned();
-        // Favorite first; disliking should both flip the dislike flag and drop the favorite.
-        app.update(Msg::Key(key(KeyCode::Char('f'))));
-        assert!(app.library.is_favorite(&id));
-        let cmds = app.update(Msg::Key(key(KeyCode::Char('x'))));
-        assert!(app.signals.is_disliked(&id));
+        // Starts neutral: neither favorited nor disliked.
         assert!(!app.library.is_favorite(&id));
-        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+        assert!(!app.signals.is_disliked(&id));
+        // First `f` → like (favorite); persists both library and signals.
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+        assert!(app.library.is_favorite(&id));
+        assert!(!app.signals.is_disliked(&id));
         assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
-        // Pressing dislike again clears it.
-        app.update(Msg::Key(key(KeyCode::Char('x'))));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+        // Second `f` → dislike; flips the flag and drops the favorite.
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+        assert!(!app.library.is_favorite(&id));
+        assert!(app.signals.is_disliked(&id));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+        // Third `f` → back to neutral.
+        app.update(Msg::Key(key(KeyCode::Char('f'))));
+        assert!(!app.library.is_favorite(&id));
         assert!(!app.signals.is_disliked(&id));
     }
 
@@ -6332,16 +6412,11 @@ mod tests {
                 .any(|b| b.target == MouseTarget::Player(Action::CycleRepeat))
         );
         assert!(buttons.iter().any(|b| b.target == MouseTarget::EqMenu));
-        // The like / dislike toggles for the current track sit on the same status line.
+        // The single tri-state rating control for the current track sits on the status line.
         assert!(
             buttons
                 .iter()
-                .any(|b| b.target == MouseTarget::Player(Action::Favorite))
-        );
-        assert!(
-            buttons
-                .iter()
-                .any(|b| b.target == MouseTarget::Player(Action::Dislike))
+                .any(|b| b.target == MouseTarget::Player(Action::CycleRating))
         );
         assert!(app.seekbar_rect.get().is_some());
     }

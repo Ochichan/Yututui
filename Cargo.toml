@@ -1,6 +1,6 @@
 [package]
 name = "ytm-tui"
-version = "1.4.1"
+version = "1.4.2"
 edition = "2024"
 
 # The shipped command is `ytt` — short to type and what the README/installers expose.
@@ -54,6 +54,10 @@ ytmapi-rs = { version = "0.3.2", default-features = false, features = ["native-t
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sysinfo = "0.39.5"
+# Optional player eye-candy (the Animations settings tab). A ratatui-native spinner used
+# for the "now playing" throbber; nothing renders unless the user enables it. Permissive
+# (Zlib) and pinned to ratatui 0.30, so it shares our ratatui copy — no second tree.
+throbber-widgets-tui = "0.11"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "process", "sync", "io-util", "time", "signal"] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"

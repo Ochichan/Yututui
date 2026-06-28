@@ -112,7 +112,7 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
 
     // Description.
     let desc = vec![
-        Line::from(t!("A YouTube Music player that lives", "터미널 안에서 동작하는")),
+        Line::from(t!("A YouTube Music player that lives", "터미널에서 바로 실행되는")),
         Line::from(t!("inside your terminal.", "YouTube Music 플레이어.")),
     ];
     frame.render_widget(

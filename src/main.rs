@@ -34,6 +34,24 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 fn main() -> Result<()> {
+    if let Some(arg) = std::env::args_os().nth(1) {
+        match arg.to_string_lossy().as_ref() {
+            "--version" | "-V" => {
+                println!("ytt {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "--help" | "-h" => {
+                println!("ytt {}", env!("CARGO_PKG_VERSION"));
+                println!();
+                println!("Usage: ytt [--version]");
+                println!();
+                println!("Launch the terminal YouTube Music player.");
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     // Custom runtime: 2 workers + 512 KB stacks keeps stack RSS ~1.5 MB (vs ~4.5 MB
     // at the 2 MB default). The render loop runs on the main task; actors run on the
     // worker threads so a blocked IPC read never stalls rendering.
@@ -239,6 +257,13 @@ async fn run(
     // expire it (and restore the title) ~3s after it was shown. Idle otherwise.
     let mut status_tick = tokio::time::interval(Duration::from_millis(250));
     status_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // Drives the optional player-view animations at ~30 fps — but only ticks while
+    // `app.animation_active()` holds (player view, master + an effect enabled, a track
+    // playing). With every animation toggle off (the default) the guard is false, this timer
+    // never wakes, and the loop stays exactly as light as before. `Skip` drops missed frames
+    // so a busy moment can't build up a backlog of redraws.
+    let mut anim_tick = tokio::time::interval(Duration::from_millis(33));
+    anim_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     terminal.draw(|f| ui::render(f, &app))?;
 
     while !app.should_quit {
@@ -261,6 +286,7 @@ async fn run(
                 continue;
             },
             _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
+            _ = anim_tick.tick(), if app.animation_active() => Msg::AnimTick,
         };
 
         // The `eq:`/`radio:` dropdowns and the queue window paint a `Clear` box over part of the

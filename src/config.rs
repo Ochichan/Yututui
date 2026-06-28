@@ -27,6 +27,69 @@ pub const SEEK_SECONDS_MIN: f64 = 1.0;
 pub const SEEK_SECONDS_MAX: f64 = 60.0;
 pub const SEEK_SECONDS_DEFAULT: f64 = 10.0;
 
+/// Player-view eye-candy toggles (the **Animations** settings tab). Every field is an
+/// independent on/off; **all default to `false`** so a fresh install behaves exactly like
+/// before (the app's whole identity is "fast and light"). `master` is a global kill-switch:
+/// when it is off, nothing animates regardless of the per-effect flags, and the animation
+/// frame-clock never even wakes (see `App::animation_active`). Grouped under one JSON key
+/// (`"animations"`) and `#[serde(default)]` so older config files forward-migrate cleanly.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AnimationsConfig {
+    /// Global enable. Off → the player renders identically to today, zero overhead.
+    pub master: bool,
+    // Element-level effects (restyle existing widgets in place) -----------------
+    /// Shimmer + marquee scroll on the now-playing title line.
+    pub title: bool,
+    /// Pulse the `♥` like-marker when the track is in the library.
+    pub heart: bool,
+    /// Moving sparkle / bright head on the filled seekbar.
+    pub seekbar: bool,
+    /// Spinning throbber next to "▸ playing" on the status line.
+    pub spinner: bool,
+    /// Faux VU `▁▂▃▅▇` bars on the status line.
+    pub eq_bars: bool,
+    /// Pulse/glow the transport play-pause glyph.
+    pub controls: bool,
+    /// "Breathing" outer border colour cycle.
+    pub border: bool,
+    // Filler-canvas effects (drawn only in blank zones) ------------------------
+    /// Matrix-style digital rain in the free zone(s).
+    pub rain: bool,
+    /// Classic spinning ASCII donut.
+    pub donut: bool,
+    /// Decorative (non-audio-reactive) spectrum visualizer.
+    pub visualizer: bool,
+    /// Drifting stars / musical notes.
+    pub starfield: bool,
+    /// DVD-style bouncing logo.
+    pub bounce: bool,
+}
+
+impl AnimationsConfig {
+    /// Whether any individual effect is enabled (ignores `master`).
+    pub fn any_effect(&self) -> bool {
+        self.title
+            || self.heart
+            || self.seekbar
+            || self.spinner
+            || self.eq_bars
+            || self.controls
+            || self.border
+            || self.rain
+            || self.donut
+            || self.visualizer
+            || self.starfield
+            || self.bounce
+    }
+
+    /// Whether animations should actually run: the master switch is on *and* at least one
+    /// effect is enabled. When this is `false`, the per-frame animation clock stays asleep.
+    pub fn active(&self) -> bool {
+        self.master && self.any_effect()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -68,6 +131,11 @@ pub struct Config {
     /// single tuned `Balanced` profile; every field is `#[serde(default)]`.
     pub radio: RadioConfig,
 
+    // Animations --------------------------------------------------------------
+    /// Player-view eye-candy toggles (the Animations tab). All off by default; see
+    /// [`AnimationsConfig`].
+    pub animations: AnimationsConfig,
+
     // AI assistant ------------------------------------------------------------
     /// Google Gemini API key. The `GEMINI_API_KEY` env var overrides this when set.
     pub gemini_api_key: Option<String>,
@@ -108,6 +176,7 @@ impl Default for Config {
             autoplay_radio: None,
             autoplay_on_start: None,
             radio: RadioConfig::default(),
+            animations: AnimationsConfig::default(),
             gemini_api_key: None,
             gemini_model: GeminiModel::default(),
             theme: ThemeConfig::default(),
@@ -387,6 +456,7 @@ mod tests {
             autoplay_radio: Some(true),
             autoplay_on_start: Some(true),
             radio: RadioConfig::default(),
+            animations: AnimationsConfig { master: true, rain: true, ..Default::default() },
             gemini_api_key: Some("AIzaSecret".to_owned()),
             gemini_model: GeminiModel::Latest,
             theme,
@@ -408,6 +478,9 @@ mod tests {
         assert_eq!(back.gapless, Some(false));
         assert_eq!(back.autoplay_radio, Some(true));
         assert_eq!(back.autoplay_on_start, Some(true));
+        assert!(back.animations.master);
+        assert!(back.animations.rain);
+        assert!(!back.animations.donut);
         assert_eq!(back.gemini_api_key.as_deref(), Some("AIzaSecret"));
         assert_eq!(back.gemini_model, GeminiModel::Latest);
         assert_eq!(back.theme.preset, "midnight");
@@ -497,6 +570,31 @@ mod tests {
     fn missing_fields_use_defaults() {
         let back: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(back.volume, 100);
+    }
+
+    #[test]
+    fn animations_off_by_default_and_active_logic() {
+        let a = AnimationsConfig::default();
+        assert!(!a.master);
+        assert!(!a.any_effect());
+        assert!(!a.active());
+
+        // An effect on but master off → inactive (global kill-switch wins).
+        let effect_only = AnimationsConfig { rain: true, ..Default::default() };
+        assert!(effect_only.any_effect());
+        assert!(!effect_only.active());
+
+        // Master on but no effect → still inactive (nothing to draw).
+        let master_only = AnimationsConfig { master: true, ..Default::default() };
+        assert!(!master_only.active());
+
+        // Master + an effect → active.
+        let on = AnimationsConfig { master: true, donut: true, ..Default::default() };
+        assert!(on.active());
+
+        // A missing "animations" key forward-migrates to all-off.
+        let back: Config = serde_json::from_str("{}").unwrap();
+        assert!(!back.animations.active());
     }
 
     #[test]

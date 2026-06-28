@@ -8,6 +8,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
 use ratatui_image::{Resize, StatefulImage};
 use image::imageops::FilterType;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DownloadState, MouseTarget};
 use crate::keymap::Action;
@@ -20,7 +21,7 @@ use crate::util::format;
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(app.theme.style(R::BorderPrimary))
+        .border_style(crate::ui::anim::border_style(app, app.theme.style(R::BorderPrimary)))
         .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -47,11 +48,28 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    // Title (or an error, if playback failed).
-    let title = if !app.status.is_empty() {
-        Line::from(app.status.clone())
-            .style(app.theme.style(R::Error))
-            .alignment(Alignment::Center)
+    // Title (or an error, if playback failed). With the title/heart animations off this is the
+    // plain bold line exactly as before; with them on, `anim::title_line` returns a shimmering /
+    // scrolling line (and a pulsing ♥), which we render in place of it.
+    if !app.status.is_empty() {
+        frame.render_widget(
+            Paragraph::new(
+                Line::from(app.status.clone())
+                    .style(app.theme.style(R::Error))
+                    .alignment(Alignment::Center),
+            ),
+            rows[1],
+        );
+    } else if let Some(line) = app.queue.current().and_then(|s| {
+        crate::ui::anim::title_line(
+            app,
+            &s.title,
+            &s.artist,
+            app.library.is_favorite(&s.video_id),
+            rows[1].width,
+        )
+    }) {
+        frame.render_widget(Paragraph::new(line), rows[1]);
     } else {
         let text = match app.queue.current() {
             Some(s) => {
@@ -60,11 +78,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             }
             None => t!("Nothing playing — press / to search", "재생 중인 곡 없음 — / 를 눌러 검색").to_owned(),
         };
-        Line::from(text.bold())
-            .style(app.theme.style(R::TextPrimary))
-            .alignment(Alignment::Center)
-    };
-    frame.render_widget(Paragraph::new(title), rows[1]);
+        frame.render_widget(
+            Paragraph::new(
+                Line::from(text.bold())
+                    .style(app.theme.style(R::TextPrimary))
+                    .alignment(Alignment::Center),
+            ),
+            rows[1],
+        );
+    }
 
     // Seekbar.
     let pos = app.time_pos.unwrap_or(0.0);
@@ -83,6 +105,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             if dur > 0.0 { format::time(dur) } else { "--:--".to_owned() }
         ));
     frame.render_widget(seekbar, rows[3]);
+    // A bright comet sweeps the filled portion when the seekbar animation is on (no-op otherwise).
+    crate::ui::anim::seekbar_overlay(frame, app, rows[3], ratio);
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
     app.seekbar_rect.set(Some(rows[3]));
 
@@ -112,23 +136,34 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// The transport status line: state, queue position, shuffle, repeat, speed, EQ, etc.
+/// The current track's tri-state rating glyph: 👍 liked, 👎 disliked, 🤔 neither. Language-neutral
+/// Unicode — all three are width-2, so the status line never shifts as the state changes — so the
+/// row reads identically in every UI language. `like` is favorite membership; `dislike` is the
+/// radio engine's hard-block flag — mutually exclusive, so one glyph covers both states, cycled by
+/// [`Action::CycleRating`].
+fn rating_glyph(liked: bool, disliked: bool) -> &'static str {
+    match (liked, disliked) {
+        (true, _) => "👍",
+        (false, true) => "👎",
+        (false, false) => "🤔",
+    }
+}
+
+/// The transport status line: state, queue position, rating, shuffle, repeat, speed, EQ, etc.
 ///
 /// Rendered as click segments rather than one string so `R:` (toggles repeat) and
 /// `eq:` (opens the preset dropdown) are mouse targets — but every segment shares the same
 /// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
-/// The compact on/off marker for the binary status-line toggles (`♥:`, `✗:`). Language-neutral
-/// Unicode glyphs — a check when on, a cross when off — so the row reads identically in every UI
-/// language. Shuffle and repeat carry their own media glyphs (see `render_status_line`).
-fn on_off(on: bool) -> &'static str {
-    if on { "✓" } else { "✗" }
-}
-
 fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     // (target, text); a `None` target is static label/spacing. Spacing is split into its
     // own label so a clickable segment's hit rect hugs just its text.
     let mut parts: Vec<(Option<MouseTarget>, String)> = Vec::new();
+    // A braille throbber leads the line when the spinner animation is on (no-op otherwise). It's a
+    // plain label, so `render_segments` keeps every later hit rect aligned to its rendered text.
+    if let Some(spin) = crate::ui::anim::spinner_prefix(app) {
+        parts.push((None, format!("{spin} ")));
+    }
     // EAW-neutral glyphs (one cell everywhere) — the ⏸/▶ media emoji widen to two
     // cells on some terminals (Windows), which drifts every later segment's hit rect
     // off its rendered text and makes `R:`/`eq:` unclickable. See `render_controls`.
@@ -142,21 +177,16 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         parts.push((None, "    ".to_owned()));
         parts.push((Some(MouseTarget::QueuePos), format!("{pos}/{}", app.queue.len())));
     }
-    // Like / dislike toggles for the current track. Same `PlayerLabel` style and 4-space
-    // gaps as `S:`/`R:` next to them, so they read as one aligned, non-intrusive row; click
-    // and key (`f` / `x`) hit the same Action, so the buttons mirror the keyboard exactly.
+    // The current track's rating: one tri-state glyph (🤔/👍/👎) that replaces the old separate
+    // ♥ favorite + ✗ dislike columns. Same `PlayerLabel` style and 4-space gap as `S:`/`R:` next
+    // to it; click and the `f` key hit the same Action, so it mirrors the keyboard exactly.
     if let Some(cur) = app.queue.current() {
         let liked = app.library.is_favorite(&cur.video_id);
         let disliked = app.signals.is_disliked(&cur.video_id);
         parts.push((None, "    ".to_owned()));
         parts.push((
-            Some(MouseTarget::Player(Action::Favorite)),
-            format!("♥:{}", on_off(liked)),
-        ));
-        parts.push((None, "    ".to_owned()));
-        parts.push((
-            Some(MouseTarget::Player(Action::Dislike)),
-            format!("✗:{}", on_off(disliked)),
+            Some(MouseTarget::Player(Action::CycleRating)),
+            rating_glyph(liked, disliked).to_owned(),
         ));
     }
     // Shuffle and repeat are both always shown as click toggles, so the line's layout never
@@ -177,6 +207,10 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     }
     parts.push((None, "    ".to_owned()));
     parts.push((Some(MouseTarget::EqMenu), format!("eq:{}", app.eq_preset.label())));
+    // Faux VU bars trail the EQ label when the EQ-bars animation is on (no-op otherwise).
+    if let Some(bars) = crate::ui::anim::eq_bars(app) {
+        parts.push((None, format!("    {bars}")));
+    }
     if app.normalize {
         parts.push((None, format!("    {}", t!("norm", "평준화"))));
     }
@@ -271,7 +305,7 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
         let is_current = i == current;
         let marker = if is_current { "▸ " } else { "  " };
         let text = format!("{marker}{:>3} {} — {}", i + 1, song.title, song.artist);
-        let text: String = text.chars().take(body_w.saturating_sub(1)).collect();
+        let text = crate::ui::text::truncate_to_width(&text, body_w.saturating_sub(1));
 
         let mut base = if selected {
             Style::default()
@@ -328,7 +362,7 @@ fn render_radio_dropdown(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Compact dropdown box width: the widest label + a one-cell left inset + two border columns.
 fn dropdown_width<'a>(labels: impl Iterator<Item = &'a str>) -> u16 {
-    labels.map(|l| l.chars().count() as u16).max().unwrap_or(0) + 1 + 2
+    labels.map(|l| UnicodeWidthStr::width(l) as u16).max().unwrap_or(0) + 1 + 2
 }
 
 /// A compact status-line dropdown shared by the `eq:` and `radio:` labels. Anchored under the
@@ -383,7 +417,7 @@ fn render_dropdown(
         // One-cell inset, then pad to the full row width so the active row's highlight bar
         // spans it (the trailing cells read as the selection bar, not as empty box).
         let mut text = format!(" {label}");
-        let pad = (list.width as usize).saturating_sub(text.chars().count());
+        let pad = (list.width as usize).saturating_sub(UnicodeWidthStr::width(text.as_str()));
         text.push_str(&" ".repeat(pad));
         let style = if *active {
             Style::default()
@@ -424,7 +458,10 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
         Seg::label(&vol),
         Seg::button(MouseTarget::Player(Action::VolUp), " + "),
     ];
-    let controls = app.theme.style(R::PlayerControl).add_modifier(Modifier::BOLD);
+    let controls = crate::ui::anim::controls_style(
+        app,
+        app.theme.style(R::PlayerControl).add_modifier(Modifier::BOLD),
+    );
     let labels = app.theme.style(R::PlayerLabel);
     buttons::render_segments(frame, app, area, &segments, controls, labels, Alignment::Center);
 }
@@ -464,14 +501,27 @@ fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
                 None => render_lyrics(frame, app, area),
             }
         }
-        // Art only: medium size, capped to ~55% of the filler height, top-anchored.
+        // Art only: medium size, capped to ~55% of the filler height, top-anchored. Canvas
+        // animations fill the blank region below the art's real bottom edge (never over the art).
         (true, false) => {
             let cap = (u32::from(area.height) * 11 / 20) as u16;
             let band = art_band(area, ART_TOP_GAP, cap);
-            draw_art(frame, app, band);
+            let art = draw_art(frame, app, band);
+            let below = art.map_or(area.y, |r| r.bottom()).saturating_add(ART_LYRICS_GAP);
+            if below < area.bottom() {
+                let zone = Rect {
+                    x: area.x,
+                    y: below,
+                    width: area.width,
+                    height: area.bottom() - below,
+                };
+                crate::ui::anim::render_canvas(frame, app, zone);
+            }
         }
         (false, true) => render_lyrics(frame, app, area),
-        (false, false) => {}
+        // No art, no lyrics: the whole filler is blank — the maximum canvas. With every animation
+        // off this stays empty (drawing nothing), exactly as before.
+        (false, false) => crate::ui::anim::render_canvas(frame, app, area),
     }
 }
 

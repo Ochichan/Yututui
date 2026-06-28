@@ -155,8 +155,7 @@ Don't memorize these. Press `?` in the app and the cheat sheet is right there. B
 | `←` / `→` | Rewind / fast-forward a few seconds |
 | `↑` / `↓` | Volume up / down |
 | `n` / `p` | Next / previous song |
-| `f` | Favorite ♥ the current song |
-| `x` | Dislike it (you'll hear less like it) |
+| `f` | Rate the current song — tap to cycle 🤔 neutral → 👍 like → 👎 dislike (like = favorite; dislike means you'll hear less like it) |
 | `/` | Open Search |
 | `l` | Open your Library |
 | `c` | Open the Queue (what's next) |

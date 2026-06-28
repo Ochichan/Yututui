@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
 use crate::config::{
-    Config, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN, default_cookies_file,
-    default_download_dir,
+    AnimationsConfig, Config, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN,
+    default_cookies_file, default_download_dir,
 };
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
@@ -39,17 +39,19 @@ pub enum SettingsTab {
     Ai,
     Theme,
     Colors,
+    Animations,
     Keys,
 }
 
 impl SettingsTab {
-    pub const ALL: [SettingsTab; 7] = [
+    pub const ALL: [SettingsTab; 8] = [
         SettingsTab::General,
         SettingsTab::Playback,
         SettingsTab::Eq,
         SettingsTab::Ai,
         SettingsTab::Theme,
         SettingsTab::Colors,
+        SettingsTab::Animations,
         SettingsTab::Keys,
     ];
 
@@ -61,6 +63,7 @@ impl SettingsTab {
             SettingsTab::Ai => t!("AI", "AI"),
             SettingsTab::Theme => t!("Theme", "테마"),
             SettingsTab::Colors => t!("Colors", "색상"),
+            SettingsTab::Animations => t!("Animations", "애니메이션"),
             SettingsTab::Keys => t!("Keys", "단축키"),
         }
     }
@@ -102,6 +105,23 @@ impl SettingsTab {
             }
             SettingsTab::Theme => vec![Field::ThemePreset],
             SettingsTab::Colors => ThemeRole::ALL.iter().copied().map(Field::ThemeColor).collect(),
+            // Master switch first (a one-toggle kill-switch), then the per-element effects in
+            // the order they appear in the player view (element-level, then filler canvas).
+            SettingsTab::Animations => vec![
+                Field::AnimMaster,
+                Field::AnimTitle,
+                Field::AnimHeart,
+                Field::AnimSeekbar,
+                Field::AnimSpinner,
+                Field::AnimEqBars,
+                Field::AnimControls,
+                Field::AnimBorder,
+                Field::AnimRain,
+                Field::AnimDonut,
+                Field::AnimVisualizer,
+                Field::AnimStarfield,
+                Field::AnimBounce,
+            ],
             // The Keys tab is a list of remappable bindings, not `Field`s; it has its own
             // navigation and rendering paths (see `crate::keymap::editable_entries`).
             SettingsTab::Keys => Vec::new(),
@@ -141,6 +161,21 @@ pub enum Field {
     // Theme
     ThemePreset,
     ThemeColor(ThemeRole),
+    // Animations — every one is a plain on/off toggle. `AnimMaster` is the global enable;
+    // the rest are per-effect. Each maps to a flag in [`AnimationsConfig`] via `anim_flag`.
+    AnimMaster,
+    AnimTitle,
+    AnimHeart,
+    AnimSeekbar,
+    AnimSpinner,
+    AnimEqBars,
+    AnimControls,
+    AnimBorder,
+    AnimRain,
+    AnimDonut,
+    AnimVisualizer,
+    AnimStarfield,
+    AnimBounce,
 }
 
 /// How a field is edited / rendered.
@@ -163,7 +198,11 @@ impl Field {
         match self {
             Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => FieldKind::Text,
             Field::Mouse | Field::AlbumArt | Field::AutoplayOnStart | Field::Gapless
-            | Field::AutoplayRadio | Field::Normalize => FieldKind::Toggle,
+            | Field::AutoplayRadio | Field::Normalize
+            | Field::AnimMaster | Field::AnimTitle | Field::AnimHeart | Field::AnimSeekbar
+            | Field::AnimSpinner | Field::AnimEqBars | Field::AnimControls | Field::AnimBorder
+            | Field::AnimRain | Field::AnimDonut | Field::AnimVisualizer | Field::AnimStarfield
+            | Field::AnimBounce => FieldKind::Toggle,
             Field::Language
             | Field::EqPreset
             | Field::GeminiModel
@@ -174,19 +213,42 @@ impl Field {
         }
     }
 
+    /// For an animation toggle field, a mutable handle to its flag inside an
+    /// [`AnimationsConfig`]; `None` for any non-animation field. This single mapping is the
+    /// source of truth used for both rendering the checkbox and flipping it on input — so the
+    /// 13 effects never drift out of sync across the display / toggle / persist paths.
+    pub(crate) fn anim_flag(self, a: &mut AnimationsConfig) -> Option<&mut bool> {
+        Some(match self {
+            Field::AnimMaster => &mut a.master,
+            Field::AnimTitle => &mut a.title,
+            Field::AnimHeart => &mut a.heart,
+            Field::AnimSeekbar => &mut a.seekbar,
+            Field::AnimSpinner => &mut a.spinner,
+            Field::AnimEqBars => &mut a.eq_bars,
+            Field::AnimControls => &mut a.controls,
+            Field::AnimBorder => &mut a.border,
+            Field::AnimRain => &mut a.rain,
+            Field::AnimDonut => &mut a.donut,
+            Field::AnimVisualizer => &mut a.visualizer,
+            Field::AnimStarfield => &mut a.starfield,
+            Field::AnimBounce => &mut a.bounce,
+            _ => return None,
+        })
+    }
+
     pub fn label(self) -> String {
         match self {
             Field::Language => t!("Language", "언어").to_owned(),
             Field::CookiesFile => t!("Cookies file", "쿠키 파일").to_owned(),
             Field::DownloadDir => t!("Download dir", "다운로드 폴더").to_owned(),
-            Field::Mouse => t!("Mouse (next launch)", "마우스 (다음 실행 시)").to_owned(),
-            Field::AlbumArt => t!("Album art (next launch)", "앨범 아트 (다음 실행 시)").to_owned(),
-            Field::AutoplayOnStart => t!("Autoplay on launch", "시작 시 자동재생").to_owned(),
+            Field::Mouse => t!("Mouse (next launch)", "마우스 (재시작 후 적용)").to_owned(),
+            Field::AlbumArt => t!("Album art (next launch)", "앨범 아트 (재시작 후 적용)").to_owned(),
+            Field::AutoplayOnStart => t!("Autoplay on launch", "앱 시작 시 자동재생").to_owned(),
             Field::ResetKeybindings => t!("Reset keybindings", "단축키 초기화").to_owned(),
             Field::ResetAll => t!("Reset all settings", "모든 설정 초기화").to_owned(),
             Field::Speed => t!("Playback speed", "재생 속도").to_owned(),
             Field::SeekInterval => t!("Seek interval", "탐색 간격").to_owned(),
-            Field::Gapless => t!("Gapless (next launch)", "갭리스 (다음 실행 시)").to_owned(),
+            Field::Gapless => t!("Gapless (next launch)", "갭리스 (재시작 후 적용)").to_owned(),
             Field::AutoplayRadio => t!("Autoplay radio", "자동재생 라디오").to_owned(),
             Field::RadioMode => t!("Radio mode", "라디오 모드").to_owned(),
             Field::EqPreset => t!("Preset", "프리셋").to_owned(),
@@ -196,6 +258,19 @@ impl Field {
             Field::ApiKey => t!("API key", "API 키").to_owned(),
             Field::ThemePreset => t!("Preset", "프리셋").to_owned(),
             Field::ThemeColor(role) => role.label().to_owned(),
+            Field::AnimMaster => t!("Enable animations", "애니메이션 켜기").to_owned(),
+            Field::AnimTitle => t!("Title shimmer", "제목 반짝임").to_owned(),
+            Field::AnimHeart => t!("Beating heart", "하트 박동").to_owned(),
+            Field::AnimSeekbar => t!("Seekbar glow", "탐색바 반짝임").to_owned(),
+            Field::AnimSpinner => t!("Now-playing spinner", "재생 스피너").to_owned(),
+            Field::AnimEqBars => t!("EQ bars", "EQ 막대").to_owned(),
+            Field::AnimControls => t!("Control pulse", "컨트롤 펄스").to_owned(),
+            Field::AnimBorder => t!("Breathing border", "테두리 호흡").to_owned(),
+            Field::AnimRain => t!("Matrix rain", "매트릭스 비").to_owned(),
+            Field::AnimDonut => t!("Spinning donut", "회전 도넛").to_owned(),
+            Field::AnimVisualizer => t!("Visualizer", "비주얼라이저").to_owned(),
+            Field::AnimStarfield => t!("Starfield / notes", "별·음표").to_owned(),
+            Field::AnimBounce => t!("Bouncing logo", "튕기는 로고").to_owned(),
         }
     }
 
@@ -241,6 +316,9 @@ pub struct SettingsDraft {
     /// UI language. Applied live (via [`crate::i18n::set_language`]) as the user cycles the
     /// dropdown, and persisted on close.
     pub language: Language,
+    /// Player-view animation toggles (the Animations tab). Edited in place; the whole struct
+    /// is copied into `Config` on save. See [`AnimationsConfig`].
+    pub animations: AnimationsConfig,
 }
 
 impl SettingsDraft {
@@ -277,7 +355,7 @@ impl SettingsDraft {
             Field::SeekInterval => format!("{:.0}s", self.seek_seconds),
             // Buttons, not values: these rows show how to trigger them.
             Field::ResetKeybindings | Field::ResetAll => {
-                t!("↵ press Enter", "↵ Enter 누르기").to_owned()
+                t!("↵ press Enter", "↵ Enter로 실행").to_owned()
             }
             Field::Gapless => toggle_str(self.gapless),
             Field::AutoplayRadio => toggle_str(self.autoplay_radio),
@@ -288,13 +366,32 @@ impl SettingsDraft {
             Field::GeminiModel => self.gemini_model.label().to_owned(),
             Field::ThemePreset => self.theme.preset_enum().label().to_owned(),
             Field::ThemeColor(role) => self.theme.effective_hex(role),
+            // All 13 animation toggles render as a checkbox; one mapping (`anim_flag`) reads
+            // the live value out of the draft's `animations`, so display never drifts from
+            // the toggle/persist paths. (`field` is the value being matched here.)
+            Field::AnimMaster
+            | Field::AnimTitle
+            | Field::AnimHeart
+            | Field::AnimSeekbar
+            | Field::AnimSpinner
+            | Field::AnimEqBars
+            | Field::AnimControls
+            | Field::AnimBorder
+            | Field::AnimRain
+            | Field::AnimDonut
+            | Field::AnimVisualizer
+            | Field::AnimStarfield
+            | Field::AnimBounce => {
+                let mut a = self.animations;
+                toggle_str(field.anim_flag(&mut a).map(|b| *b).unwrap_or(false))
+            }
             // Never echo the key. Editing shows a masked buffer (handled in the view); this
             // is the at-rest summary.
             Field::ApiKey => {
                 if self.gemini_api_key.trim().is_empty() {
                     t!("(none)", "(없음)").to_owned()
                 } else {
-                    t!("***configured***", "***설정됨***").to_owned()
+                    t!("***configured***", "***저장됨***").to_owned()
                 }
             }
         }
@@ -335,6 +432,7 @@ impl SettingsDraft {
         cfg.gemini_api_key = blank_to_none(&self.gemini_api_key);
         cfg.theme = self.theme.normalized();
         cfg.language = self.language;
+        cfg.animations = self.animations;
     }
 }
 
@@ -425,6 +523,7 @@ mod tests {
             gemini_api_key: String::new(),
             theme: ThemeConfig::default(),
             language: Language::English,
+            animations: AnimationsConfig::default(),
         }
     }
 
@@ -434,9 +533,41 @@ mod tests {
         assert_eq!(SettingsTab::Eq.stepped(true), SettingsTab::Ai);
         assert_eq!(SettingsTab::Ai.stepped(true), SettingsTab::Theme);
         assert_eq!(SettingsTab::Theme.stepped(true), SettingsTab::Colors);
-        assert_eq!(SettingsTab::Colors.stepped(true), SettingsTab::Keys);
+        assert_eq!(SettingsTab::Colors.stepped(true), SettingsTab::Animations);
+        assert_eq!(SettingsTab::Animations.stepped(true), SettingsTab::Keys);
         assert_eq!(SettingsTab::Keys.stepped(true), SettingsTab::General); // wraps
         assert_eq!(SettingsTab::General.stepped(false), SettingsTab::Keys); // wraps back
+    }
+
+    #[test]
+    fn animations_tab_is_all_toggles_and_persists() {
+        let _guard = crate::i18n::lock_for_test();
+        let f = SettingsTab::Animations.fields();
+        assert_eq!(f.len(), 13);
+        assert_eq!(f[0], Field::AnimMaster);
+        assert!(f.iter().all(|fld| fld.kind() == FieldKind::Toggle));
+
+        // Default draft: every animation toggle reads as off.
+        let mut draft = base_draft();
+        assert_eq!(draft.value_display(Field::AnimMaster), "[ ]");
+        assert_eq!(draft.value_display(Field::AnimRain), "[ ]");
+
+        // Flipping a couple through the shared mapping shows + persists.
+        *Field::AnimMaster.anim_flag(&mut draft.animations).unwrap() = true;
+        *Field::AnimDonut.anim_flag(&mut draft.animations).unwrap() = true;
+        assert_eq!(draft.value_display(Field::AnimMaster), "[x]");
+        assert_eq!(draft.value_display(Field::AnimDonut), "[x]");
+        assert_eq!(draft.value_display(Field::AnimRain), "[ ]");
+
+        let mut cfg = Config::default();
+        draft.apply_to(&mut cfg);
+        assert!(cfg.animations.master);
+        assert!(cfg.animations.donut);
+        assert!(!cfg.animations.rain);
+        assert!(cfg.animations.active());
+
+        // Non-animation fields map to no flag.
+        assert!(Field::Mouse.anim_flag(&mut AnimationsConfig::default()).is_none());
     }
 
     #[test]
@@ -527,11 +658,15 @@ mod tests {
             gemini_api_key: "  AIzaPersist  ".to_owned(),
             theme,
             language: Language::Korean,
+            animations: AnimationsConfig { master: true, border: true, ..Default::default() },
         };
 
         let mut cfg = Config::default();
         draft.apply_to(&mut cfg);
         assert_eq!(cfg.language, Language::Korean);
+        assert!(cfg.animations.master);
+        assert!(cfg.animations.border);
+        assert!(!cfg.animations.rain);
         assert_eq!(cfg.cookies_file, Some(PathBuf::from("/tmp/cookies.txt")));
         assert_eq!(cfg.download_dir, Some(PathBuf::from("/tmp/downloads")));
         assert_eq!(cfg.mouse, Some(false));

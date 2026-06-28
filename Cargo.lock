@@ -2488,7 +2488,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3024,6 +3024,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "throbber-widgets-tui"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b0452e418faaa263a742d94e5c2f9f50c777a0ae5b3ec53ce754d917d568e36"
+dependencies = [
+ "ratatui",
 ]
 
 [[package]]
@@ -3978,7 +3987,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-tui"
-version = "1.4.1"
+version = "1.4.2"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -3996,6 +4005,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sysinfo",
+ "throbber-widgets-tui",
  "tokio",
  "tracing",
  "tracing-appender",
