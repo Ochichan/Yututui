@@ -3514,13 +3514,10 @@ impl App {
 
     /// *Which* popup that paints over the album-art band is open: `0` none, `1` the `eq:`
     /// dropdown, `2` the `radio:` dropdown. The render loop snapshots this across dispatch and
-    /// forces one full redraw when the value changes *away from an open overlay* — i.e. a
-    /// dropdown closing **or** switching directly to the other one. Graphics-protocol art
-    /// (`StatefulProtocol`) won't re-emit on its own when the render area is unchanged, so the
-    /// just-uncovered region would otherwise keep the old box as a stale artifact. The switch
-    /// case matters specifically because *some* overlay stays open across it. Extend this if
-    /// another `Clear` popup that can cover the art (e.g. the queue popup) shows the same
-    /// artifact.
+    /// forces one full redraw when the value changes. Graphics-protocol art (`StatefulProtocol`)
+    /// can otherwise show stale or oversized cleared regions around text popups. The switch case
+    /// matters specifically because *some* overlay stays open across it. Extend this if another
+    /// `Clear` popup that can cover the art (e.g. the queue popup) shows the same artifact.
     pub fn art_overlay_kind(&self) -> u8 {
         if self.eq_dropdown_open {
             1
