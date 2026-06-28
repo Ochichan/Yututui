@@ -296,8 +296,15 @@ fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let presets = crate::eq::EqPreset::CYCLE;
-    // Widest label is "Treble Boost" (12) + a 2-cell marker + 2 border columns.
-    let box_w = 16u16;
+    // Hug the content: the widest label + a one-cell left inset + two border columns. The
+    // active preset is shown as a full-width highlight bar (no arrow gutter), so the box stays
+    // exactly as wide as the longest name ("Treble Boost") needs and no wider.
+    let label_w = presets
+        .iter()
+        .map(|p| p.label().chars().count() as u16)
+        .max()
+        .unwrap_or(0);
+    let box_w = label_w + 1 + 2;
     let box_h = presets.len() as u16 + 2;
     // Drop below the label; clamp against the right/bottom edges so the box stays on screen.
     let x = anchor.x.min(area.right().saturating_sub(box_w));
@@ -323,14 +330,20 @@ fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
         }
         let row = Rect { x: list.x, y: list.y + i, width: list.width, height: 1 };
         let selected = *preset == app.eq_preset;
-        let marker = if selected { "▸ " } else { "  " };
+        // One-cell inset, then pad to the full row width so the active preset's highlight bar
+        // spans the row (the trailing cells read as the selection bar, not as empty box).
+        let mut text = format!(" {}", preset.label());
+        let pad = (list.width as usize).saturating_sub(text.chars().count());
+        text.push_str(&" ".repeat(pad));
         let style = if selected {
-            app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(app.theme.color(R::SelectionFg))
+                .bg(app.theme.color(R::SelectionBg))
+                .add_modifier(Modifier::BOLD)
         } else {
             app.theme.style(R::TextPrimary)
         };
-        let line = Line::from(format!("{marker}{}", preset.label())).style(style);
-        frame.render_widget(Paragraph::new(line), row);
+        frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
         app.register_mouse_button(row, MouseTarget::EqSelect(*preset));
     }
 }
