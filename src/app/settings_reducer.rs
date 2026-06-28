@@ -5,6 +5,18 @@ use super::*;
 impl App {
     // --- Settings screen ----------------------------------------------------
 
+    /// The live settings draft, mutable. Valid **only** in `Mode::Settings`, where the reducer
+    /// upholds the invariant that `self.settings` is `Some`: `open_settings` sets it on entry and
+    /// `close_settings` clears it on exit, and every caller below is reached through a
+    /// `Mode::Settings` key/mouse route. `#[track_caller]` so a broken invariant blames the
+    /// offending reducer arm, not this accessor.
+    #[track_caller]
+    pub(in crate::app) fn settings_mut(&mut self) -> &mut SettingsState {
+        self.settings
+            .as_deref_mut()
+            .expect("settings draft present in Mode::Settings")
+    }
+
     /// Open the settings screen, snapshotting the current persisted + live state into an
     /// editable draft.
     pub(in crate::app) fn open_settings(&mut self) {
@@ -266,39 +278,39 @@ impl App {
         self.dirty = true;
         match field {
             Field::Mouse => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 s.draft.mouse = !s.draft.mouse;
                 Vec::new()
             }
             Field::AlbumArt => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 s.draft.album_art = !s.draft.album_art;
                 Vec::new()
             }
             Field::AutoplayOnStart => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 s.draft.autoplay_on_start = !s.draft.autoplay_on_start;
                 Vec::new()
             }
             Field::Gapless => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 s.draft.gapless = !s.draft.gapless;
                 Vec::new()
             }
             Field::AutoplayRadio => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 s.draft.autoplay_radio = !s.draft.autoplay_radio;
                 Vec::new()
             }
             Field::RadioMode => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 let next = s.draft.radio_mode.cycled(dir >= 0);
                 s.draft.radio_mode = next;
                 self.status.text = format!("{}: {}", t!("Radio mode", "라디오 모드"), next.label());
                 Vec::new()
             }
             Field::Language => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 let next = s.draft.language.cycled(dir >= 0);
                 s.draft.language = next;
                 // Apply live so the whole UI — including this settings screen — re-renders in
@@ -309,18 +321,18 @@ impl App {
                 Vec::new()
             }
             Field::Normalize => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 s.draft.normalize = !s.draft.normalize;
                 self.settings_apply_af()
             }
             Field::Speed => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 s.draft.speed =
                     settings::clamp_speed(s.draft.speed + f64::from(dir) * settings::SPEED_STEP);
                 self.settings_apply_speed()
             }
             Field::SeekInterval => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 s.draft.seek_seconds = settings::clamp_seek_seconds(
                     s.draft.seek_seconds + f64::from(dir) * settings::SEEK_SECONDS_STEP,
                 );
@@ -328,7 +340,7 @@ impl App {
                 Vec::new()
             }
             Field::EqPreset => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 // `Custom` isn't in CYCLE; rather than jump to a surprising neighbour,
                 // the first ←/→ from a hand-tuned state snaps back to Flat (a clean,
                 // known preset), and subsequent presses cycle normally.
@@ -352,17 +364,17 @@ impl App {
             }
             Field::Band(i) => self.settings_change_band(i, dir),
             Field::GeminiModel => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 s.draft.gemini_model = s.draft.gemini_model.cycled(dir >= 0);
                 Vec::new()
             }
             Field::AiEnabled => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 s.draft.ai_enabled = !s.draft.ai_enabled;
                 Vec::new()
             }
             Field::ThemePreset => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 let next = s.draft.theme.preset_enum().stepped(dir);
                 s.draft.theme.set_preset(next);
                 self.theme = s.draft.theme.normalized();
@@ -372,7 +384,7 @@ impl App {
             // Toggle the background between the preset's color and "no color" (transparent).
             // Mirrors the color editor's live-preview path so the change shows immediately.
             Field::BackgroundNone => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 if s.draft.theme.is_role_transparent(ThemeRole::Background) {
                     s.draft.theme.reset_role(ThemeRole::Background);
                 } else {
@@ -401,7 +413,7 @@ impl App {
             | Field::AnimVisualizer
             | Field::AnimStarfield
             | Field::AnimBounce => {
-                let s = self.settings.as_mut().unwrap();
+                let s = self.settings_mut();
                 if let Some(flag) = field.anim_flag(&mut s.draft.animations) {
                     *flag = !*flag;
                 }
@@ -469,7 +481,7 @@ impl App {
         };
         match field.kind() {
             FieldKind::Text => {
-                let st = self.settings.as_mut().unwrap();
+                let st = self.settings_mut();
                 if let Field::ThemeColor(role) = field {
                     st.draft.theme.ensure_override_for_edit(role);
                 }

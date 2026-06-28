@@ -109,8 +109,10 @@ async fn run_download(
         .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().context("spawn yt-dlp (is it installed?)")?;
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
+    // Piped just above, so these are effectively infallible — but a returned error beats a panic
+    // that would unwind through the spawned task and leave the download silently dead.
+    let stdout = child.stdout.take().context("yt-dlp stdout was not piped")?;
+    let stderr = child.stderr.take().context("yt-dlp stderr was not piped")?;
 
     // Stream progress from stderr.
     let vid = song.video_id.clone();
