@@ -73,10 +73,10 @@ impl App {
         // The queue window is modal: a click outside it closes it ("창 밖을 클릭하면 꺼지고"),
         // and inside it only its own rows / `✗` buttons act — underlying player buttons are
         // ignored so a click landing on the player beneath the popup doesn't leak through.
-        if self.queue_popup_open {
-            let inside = self.queue_popup_rect.get().is_some_and(|r| rect_contains(r, col, row));
+        if self.queue_popup.open {
+            let inside = self.queue_popup.rect.get().is_some_and(|r| rect_contains(r, col, row));
             if !inside {
-                self.queue_popup_open = false;
+                self.queue_popup.open = false;
                 self.dirty = true;
                 return Vec::new();
             }
@@ -195,15 +195,15 @@ impl App {
             }
             MouseTarget::QueuePos => Vec::new(),
             // Single-click a queue row: select it (and anchor a drag range here).
-            MouseTarget::QueueRow(i) if self.queue_popup_open => {
-                self.queue_popup_cursor = i;
-                self.queue_popup_anchor = i;
+            MouseTarget::QueueRow(i) if self.queue_popup.open => {
+                self.queue_popup.cursor = i;
+                self.queue_popup.anchor = i;
                 self.dirty = true;
                 Vec::new()
             }
             MouseTarget::QueueRow(_) => Vec::new(),
             // The `✗` button on a queue row removes just that track.
-            MouseTarget::QueueDel(i) if self.queue_popup_open => self.remove_queue_range(i, i),
+            MouseTarget::QueueDel(i) if self.queue_popup.open => self.remove_queue_range(i, i),
             MouseTarget::QueueDel(_) => Vec::new(),
             // The `✗` button on a library row removes just that track (per-tab semantics).
             MouseTarget::LibraryDel(i) if self.mode == Mode::Library => {
@@ -246,8 +246,8 @@ impl App {
         {
             return self.on_mouse_click(col, row);
         }
-        if self.queue_popup_open {
-            let inside = self.queue_popup_rect.get().is_some_and(|r| rect_contains(r, col, row));
+        if self.queue_popup.open {
+            let inside = self.queue_popup.rect.get().is_some_and(|r| rect_contains(r, col, row));
             if inside {
                 if let Some(MouseTarget::QueueRow(i)) = self.mouse_target_at(col, row) {
                     return self.queue_popup_play(i);
@@ -265,12 +265,12 @@ impl App {
     /// A left-drag: extend a multi-select range to the row under the pointer (the anchor end
     /// stays fixed). Works in the queue window and, identically, in the Library list.
     pub(in crate::app) fn on_mouse_drag(&mut self, col: u16, row: u16) -> Vec<Cmd> {
-        if self.queue_popup_open {
+        if self.queue_popup.open {
             if let Some(MouseTarget::QueueRow(i) | MouseTarget::QueueDel(i)) =
                 self.mouse_target_at(col, row)
-                && self.queue_popup_cursor != i
+                && self.queue_popup.cursor != i
             {
-                self.queue_popup_cursor = i;
+                self.queue_popup.cursor = i;
                 self.dirty = true;
             }
             return Vec::new();
@@ -292,8 +292,8 @@ impl App {
     /// overlay (the queue window) wins over the active screen.
     pub(in crate::app) fn on_mouse_scroll(&mut self, up: bool) -> Vec<Cmd> {
         let n = MOUSE_SCROLL_LINES;
-        if self.queue_popup_open {
-            self.queue_popup_scroll.wheel(up, n, self.queue.len());
+        if self.queue_popup.open {
+            self.queue_popup.scroll.wheel(up, n, self.queue.len());
             self.dirty = true;
             return Vec::new();
         }

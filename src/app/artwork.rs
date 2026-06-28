@@ -58,7 +58,7 @@ impl App {
     pub fn art_overlay_mask(&self) -> u8 {
         u8::from(self.eq_dropdown_open)
             | (u8::from(self.radio_dropdown_open) << 1)
-            | (u8::from(self.queue_popup_open) << 2)
+            | (u8::from(self.queue_popup.open) << 2)
             | (u8::from(self.about_visible) << 3)
     }
 

@@ -2805,11 +2805,11 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     app.radio_dropdown_open = true;
     assert_eq!(app.art_overlay_mask(), 0b010);
     // The queue window is a distinct bit, and can stack with a dropdown.
-    app.queue_popup_open = true;
+    app.queue_popup.open = true;
     assert_eq!(app.art_overlay_mask(), 0b110);
     app.radio_dropdown_open = false;
     assert_eq!(app.art_overlay_mask(), 0b100);
-    app.queue_popup_open = false;
+    app.queue_popup.open = false;
     assert_eq!(app.art_overlay_mask(), 0);
     // The About card covers the art too, so it gets its own bit (and the clean repaint).
     app.about_visible = true;
@@ -3001,25 +3001,25 @@ fn double_click_on_a_result_row_plays_it() {
 #[test]
 fn clicking_the_position_label_opens_the_queue_window() {
     let mut app = app_playing(5, 2);
-    assert!(!app.queue_popup_open);
+    assert!(!app.queue_popup.open);
     click_target(&mut app, MouseTarget::QueuePos);
-    assert!(app.queue_popup_open);
+    assert!(app.queue_popup.open);
     // It opens focused on the currently playing track.
-    assert_eq!(app.queue_popup_cursor, 2);
-    assert_eq!(app.queue_popup_anchor, 2);
+    assert_eq!(app.queue_popup.cursor, 2);
+    assert_eq!(app.queue_popup.anchor, 2);
 }
 
 #[test]
 fn double_clicking_a_queue_row_jumps_to_it() {
     let mut app = app_playing(5, 0);
     app.update(Msg::Key(key(KeyCode::Char('c')))); // open queue window
-    assert!(app.queue_popup_open);
+    assert!(app.queue_popup.open);
     render_app(&app);
     let (col, row) = button_center(&app, MouseTarget::QueueRow(3));
     let cmds = app.update(Msg::MouseDoubleClick { col, row });
     assert_eq!(app.queue.cursor_pos(), 3);
     assert_eq!(current(&app), "id3");
-    assert!(!app.queue_popup_open);
+    assert!(!app.queue_popup.open);
     assert!(load_url(&cmds).is_some());
 }
 
@@ -3042,7 +3042,7 @@ fn clicking_outside_the_queue_window_closes_it() {
     render_app(&app); // publishes queue_popup_rect
     // Top-left corner is well outside the centered popup.
     let cmds = app.update(Msg::MouseClick { col: 1, row: 1 });
-    assert!(!app.queue_popup_open);
+    assert!(!app.queue_popup.open);
     assert!(cmds.is_empty());
 }
 
@@ -3054,8 +3054,8 @@ fn drag_selects_a_range_then_delete_removes_all_of_it() {
     // Drag down to row 2: anchor stays at 0, so the selection spans 0..=2.
     let (col, row) = button_center(&app, MouseTarget::QueueRow(2));
     app.update(Msg::MouseDrag { col, row });
-    assert_eq!(app.queue_popup_anchor, 0);
-    assert_eq!(app.queue_popup_cursor, 2);
+    assert_eq!(app.queue_popup.anchor, 0);
+    assert_eq!(app.queue_popup.cursor, 2);
     // The Delete key removes the whole selected range at once.
     app.update(Msg::Key(key(KeyCode::Delete)));
     assert_eq!(app.queue.len(), 2);

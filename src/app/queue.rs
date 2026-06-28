@@ -9,27 +9,27 @@ impl App {
             return;
         }
         let pos = self.queue.cursor_pos();
-        self.queue_popup_open = true;
-        self.queue_popup_cursor = pos;
-        self.queue_popup_anchor = pos;
-        self.queue_popup_scroll.reset();
+        self.queue_popup.open = true;
+        self.queue_popup.cursor = pos;
+        self.queue_popup.anchor = pos;
+        self.queue_popup.scroll.reset();
         self.dirty = true;
     }
 
     /// Jump playback to a queue order position and close the window.
     pub(in crate::app) fn queue_popup_play(&mut self, pos: usize) -> Vec<Cmd> {
         let song = self.queue.goto(pos).cloned();
-        self.queue_popup_open = false;
-        self.queue_popup_cursor = self.queue.cursor_pos();
-        self.queue_popup_anchor = self.queue_popup_cursor;
+        self.queue_popup.open = false;
+        self.queue_popup.cursor = self.queue.cursor_pos();
+        self.queue_popup.anchor = self.queue_popup.cursor;
         self.status.clear();
         self.load_song(song)
     }
 
     /// Remove the queue window's current selection (the inclusive anchor..=cursor range).
     pub(in crate::app) fn queue_popup_remove_selection(&mut self) -> Vec<Cmd> {
-        let lo = self.queue_popup_cursor.min(self.queue_popup_anchor);
-        let hi = self.queue_popup_cursor.max(self.queue_popup_anchor);
+        let lo = self.queue_popup.cursor.min(self.queue_popup.anchor);
+        let hi = self.queue_popup.cursor.max(self.queue_popup.anchor);
         self.remove_queue_range(lo, hi)
     }
 
@@ -45,13 +45,13 @@ impl App {
         }
         let len = self.queue.len();
         if len == 0 {
-            self.queue_popup_open = false;
-            self.queue_popup_cursor = 0;
-            self.queue_popup_anchor = 0;
+            self.queue_popup.open = false;
+            self.queue_popup.cursor = 0;
+            self.queue_popup.anchor = 0;
         } else {
             let sel = lo.min(len - 1);
-            self.queue_popup_cursor = sel;
-            self.queue_popup_anchor = sel;
+            self.queue_popup.cursor = sel;
+            self.queue_popup.anchor = sel;
         }
         self.dirty = true;
         if current_changed {
@@ -66,32 +66,32 @@ impl App {
     /// (up/down via `Common`), Enter jumps+plays, Delete removes the selection, q/Esc close.
     pub(in crate::app) fn on_key_queue(&mut self, k: KeyEvent) -> Vec<Cmd> {
         if k.code == KeyCode::Esc {
-            self.queue_popup_open = false;
+            self.queue_popup.open = false;
             self.dirty = true;
             return Vec::new();
         }
         match self.keymap.action(KeyContext::Queue, k.into()) {
             Some(Action::Back) => {
-                self.queue_popup_open = false;
+                self.queue_popup.open = false;
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::MoveUp) => {
-                self.queue_popup_cursor = self.queue_popup_cursor.saturating_sub(1);
-                self.queue_popup_anchor = self.queue_popup_cursor;
+                self.queue_popup.cursor = self.queue_popup.cursor.saturating_sub(1);
+                self.queue_popup.anchor = self.queue_popup.cursor;
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::MoveDown) => {
                 let last = self.queue.len().saturating_sub(1);
-                if self.queue_popup_cursor < last {
-                    self.queue_popup_cursor += 1;
+                if self.queue_popup.cursor < last {
+                    self.queue_popup.cursor += 1;
                 }
-                self.queue_popup_anchor = self.queue_popup_cursor;
+                self.queue_popup.anchor = self.queue_popup.cursor;
                 self.dirty = true;
                 Vec::new()
             }
-            Some(Action::Confirm) => self.queue_popup_play(self.queue_popup_cursor),
+            Some(Action::Confirm) => self.queue_popup_play(self.queue_popup.cursor),
             Some(Action::QueueRemove) => self.queue_popup_remove_selection(),
             _ => Vec::new(),
         }

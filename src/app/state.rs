@@ -160,3 +160,24 @@ pub struct LibraryView {
     /// modal is open.
     pub confirm_delete: Option<Vec<PathBuf>>,
 }
+
+/// Queue-window overlay state: whether it's open, the selection cursor + anchor, its
+/// on-screen rect (a render→reducer bridge), and its wheel-scroll offset. Grouping the
+/// `Cell`/scroll bridges here keeps them next to the overlay state they belong to.
+#[derive(Default)]
+pub struct QueuePopup {
+    /// Whether the queue window (opened by clicking the `N/M` position label) is showing.
+    /// Player-only overlay; while open it captures the keyboard (nav / Delete / Enter).
+    pub open: bool,
+    /// The highlighted row in the queue window (order position) — the active end of the
+    /// drag/range selection.
+    pub cursor: usize,
+    /// The fixed end of the queue window's multi-select range (drag start / last single
+    /// click). The selection is the inclusive span between this and `cursor`.
+    pub anchor: usize,
+    /// Screen rect of the open queue window, written each render so a click outside it can
+    /// be detected (which closes it). `Cell` because render only has `&App`.
+    pub rect: Cell<Option<Rect>>,
+    /// Decoupled wheel-scroll offset for the queue window (see [`crate::ui::scroll`]).
+    pub scroll: crate::ui::scroll::ScrollState,
+}

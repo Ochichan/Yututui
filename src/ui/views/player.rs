@@ -134,8 +134,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         render_radio_dropdown(frame, app, inner);
     }
     // The queue window draws last of all so it sits on top and its rects win.
-    app.queue_popup_rect.set(None);
-    if app.queue_popup_open {
+    app.queue_popup.rect.set(None);
+    if app.queue_popup.open {
         render_queue_popup(frame, app, inner);
     }
 }
@@ -278,7 +278,7 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
     if popup.is_empty() {
         return;
     }
-    app.queue_popup_rect.set(Some(popup));
+    app.queue_popup.rect.set(Some(popup));
 
     frame.render_widget(Clear, popup);
     let block = Block::default()
@@ -295,10 +295,10 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
     // The wheel scrolls this viewport freely; the render only nudges it to keep a
     // keyboard-moved cursor on-screen with a margin (see `ui::scroll`).
     let visible = list.height as usize;
-    let cursor = app.queue_popup_cursor.min(songs.len() - 1);
-    let start = app.queue_popup_scroll.resolve(cursor, list.height, songs.len(), crate::ui::scroll::SCROLLOFF);
-    let sel_lo = app.queue_popup_cursor.min(app.queue_popup_anchor);
-    let sel_hi = app.queue_popup_cursor.max(app.queue_popup_anchor);
+    let cursor = app.queue_popup.cursor.min(songs.len() - 1);
+    let start = app.queue_popup.scroll.resolve(cursor, list.height, songs.len(), crate::ui::scroll::SCROLLOFF);
+    let sel_lo = app.queue_popup.cursor.min(app.queue_popup.anchor);
+    let sel_hi = app.queue_popup.cursor.max(app.queue_popup.anchor);
 
     const DEL_W: u16 = 2; // "✗ " click target on the right edge
     let body_w = list.width.saturating_sub(DEL_W) as usize;

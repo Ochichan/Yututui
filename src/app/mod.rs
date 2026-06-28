@@ -164,18 +164,9 @@ pub struct App {
     /// Same as [`Self::eq_dropdown_open`] but for the `radio:` mode dropdown. Mutually
     /// exclusive with it (opening one closes the other).
     pub radio_dropdown_open: bool,
-    /// Whether the queue window (opened by clicking the `N/M` position label) is showing.
-    /// Player-only overlay; while open it captures the keyboard (nav / Delete / Enter).
-    pub queue_popup_open: bool,
-    /// The highlighted row in the queue window (order position) — the active end of the
-    /// drag/range selection.
-    pub queue_popup_cursor: usize,
-    /// The fixed end of the queue window's multi-select range (drag start / last single
-    /// click). The selection is the inclusive span between this and `queue_popup_cursor`.
-    pub queue_popup_anchor: usize,
-    /// Screen rect of the open queue window, written each render so a click outside it can
-    /// be detected (which closes it). `Cell` because render only has `&App`.
-    pub queue_popup_rect: Cell<Option<Rect>>,
+    /// Queue-window overlay state: open flag, selection cursor + anchor, on-screen rect
+    /// bridge, and wheel-scroll offset (see [`QueuePopup`]).
+    pub queue_popup: QueuePopup,
 
     // Settings ----------------------------------------------------------------
     /// The persisted config, kept so the settings screen can save the full file.
@@ -246,7 +237,6 @@ pub struct App {
     /// selection on-screen with a margin. One per list so each keeps its own place.
     pub library_scroll: crate::ui::scroll::ScrollState,
     pub search_scroll: crate::ui::scroll::ScrollState,
-    pub queue_popup_scroll: crate::ui::scroll::ScrollState,
     pub ai_scroll: crate::ui::scroll::ScrollState,
     /// Clickable button rects written by views each render. `RefCell` because render only
     /// has `&App`, but the reducer needs the last rendered hit map.
@@ -293,10 +283,7 @@ impl App {
             autoplay_radio: false,
             eq_dropdown_open: false,
             radio_dropdown_open: false,
-            queue_popup_open: false,
-            queue_popup_cursor: 0,
-            queue_popup_anchor: 0,
-            queue_popup_rect: Cell::new(None),
+            queue_popup: QueuePopup::default(),
             config: Config::default(),
             settings: None,
             ai: AiState {
@@ -334,7 +321,6 @@ impl App {
             list_viewport_rows: Cell::new(0),
             library_scroll: crate::ui::scroll::ScrollState::default(),
             search_scroll: crate::ui::scroll::ScrollState::default(),
-            queue_popup_scroll: crate::ui::scroll::ScrollState::default(),
             ai_scroll: crate::ui::scroll::ScrollState::default(),
             mouse_buttons: RefCell::new(Vec::new()),
             last_shown_sec: -1,
@@ -758,7 +744,7 @@ impl App {
         self.help_visible = false;
         self.eq_dropdown_open = false;
         self.radio_dropdown_open = false;
-        self.queue_popup_open = false;
+        self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
         // when the input is re-entered later.
@@ -801,7 +787,7 @@ impl App {
     fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
         self.eq_dropdown_open = false;
         self.radio_dropdown_open = false;
-        self.queue_popup_open = false;
+        self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;
         // Any navigation deselects: a Ctrl+A highlight must not survive a screen change.
         self.search.select_all = false;

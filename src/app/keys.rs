@@ -143,7 +143,7 @@ impl App {
 
         // The queue window is a player overlay that captures the keyboard while open (after
         // the global shortcuts above, so Quit/Home/Help still work).
-        if self.queue_popup_open {
+        if self.queue_popup.open {
             return self.on_key_queue(k);
         }
 
