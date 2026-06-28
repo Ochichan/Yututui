@@ -331,13 +331,39 @@ fn truncate(s: &str) -> String {
     if s.len() <= ERR_BODY_CAP {
         s.to_owned()
     } else {
-        format!("{}…", &s[..ERR_BODY_CAP])
+        // ERR_BODY_CAP is a *byte* cap; snap it down to a char boundary before slicing.
+        // Gemini error bodies are multilingual (localized messages, echoed user content),
+        // so a multi-byte UTF-8 codepoint can straddle byte 200 — a raw `&s[..200]` would
+        // then panic with "byte index 200 is not a char boundary".
+        let end = s.floor_char_boundary(ERR_BODY_CAP);
+        format!("{}…", &s[..end])
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_caps_at_char_boundary_without_panicking() {
+        // Short bodies pass through verbatim (after trimming).
+        assert_eq!(truncate("  short error  "), "short error");
+
+        // A long body whose byte cap lands inside a multi-byte codepoint must not panic
+        // (regression: a raw `&s[..200]` slice panicked on a non-ASCII Gemini error body).
+        // 199 ASCII bytes then a 3-byte Korean codepoint straddling byte 200.
+        let body = format!("{}{}", "x".repeat(199), "가".repeat(10));
+        let out = truncate(&body);
+        assert!(out.ends_with('…'));
+        // Snapped *down* to the last char boundary ≤ 200, i.e. the 199 ASCII bytes.
+        assert_eq!(out, format!("{}…", "x".repeat(199)));
+
+        // An all-multibyte body longer than the cap is likewise safe.
+        let cjk = "가".repeat(100); // 300 bytes
+        let out = truncate(&cjk);
+        assert!(out.ends_with('…'));
+        assert!(out.len() <= ERR_BODY_CAP + '…'.len_utf8());
+    }
 
     #[test]
     fn request_serializes_with_camelcase_keys() {
