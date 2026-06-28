@@ -1259,7 +1259,7 @@ impl App {
                     self.status = format!(
                         "{}: {}",
                         t!("Autoplay radio", "자동재생 라디오"),
-                        if self.autoplay_radio { t!("on", "켜짐") } else { t!("off", "꺼짐") }
+                        if self.autoplay_radio { "✓" } else { "✗" }
                     );
                     self.dirty = true;
                     return Vec::new();
@@ -2003,7 +2003,7 @@ impl App {
                 self.status = format!(
                     "{}: {}",
                     t!("Normalize", "음량 평준화"),
-                    if self.normalize { t!("on", "켜짐") } else { t!("off", "꺼짐") }
+                    if self.normalize { "✓" } else { "✗" }
                 );
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(
@@ -2379,7 +2379,7 @@ impl App {
             && let Some(st) = self.settings.as_mut()
         {
             st.capturing = Some(entry);
-            self.status = t!("Press a key to bind (Esc to cancel)…", "바인딩할 키를 누르세요 (Esc 로 취소)…").to_owned();
+            self.status = t!("Press a key to bind (Esc to cancel)…", "바인딩할 키를 누르세요 (Esc로 취소)…").to_owned();
             self.dirty = true;
         }
     }
@@ -2392,7 +2392,7 @@ impl App {
         };
         self.dirty = true;
         if k.code == KeyCode::Esc {
-            self.status = t!("Rebinding cancelled", "재설정을 취소했어요").to_owned();
+            self.status = t!("Rebinding cancelled", "단축키 변경을 취소했어요").to_owned();
             return Vec::new();
         }
         let chord = Chord::from(k);
@@ -2738,7 +2738,7 @@ impl App {
             self.theme = st.draft.theme.normalized();
             crate::i18n::set_language(st.draft.language);
         }
-        self.status = t!("All settings reset to defaults", "모든 설정을 기본값으로 되돌렸습니다").to_owned();
+        self.status = t!("All settings reset to defaults", "모든 설정을 기본값으로 되돌렸어요").to_owned();
         self.dirty = true;
         let mut cmds = self.settings_apply_speed();
         cmds.extend(self.settings_apply_af());
@@ -3216,7 +3216,7 @@ impl App {
             local_pick,
         });
         self.ai_thinking = true;
-        self.status = t!("Autoplay radio: AI reranking", "자동재생 라디오: AI 가 순위를 매기는 중").to_owned();
+        self.status = t!("Autoplay radio: AI reranking", "자동재생 라디오: AI가 순위를 매기는 중").to_owned();
         self.dirty = true;
         vec![Cmd::AiRerank {
             seed_video_id: seed_video_id.to_owned(),

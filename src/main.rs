@@ -180,7 +180,7 @@ async fn run(
             tracing::error!(error = %e, "failed to start mpv");
             // Keep the richer preflight hint if we already set one.
             if app.status.is_empty() {
-                app.status = format!("{}: {e}", crate::t!("mpv unavailable", "mpv 를 사용할 수 없음"));
+                app.status = format!("{}: {e}", crate::t!("mpv unavailable", "mpv를 사용할 수 없음"));
             }
             _mpv_guard = None;
         }

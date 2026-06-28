@@ -31,11 +31,13 @@ impl Repeat {
         }
     }
 
+    /// A language-neutral Unicode glyph for the `R:` status-line button: the media
+    /// "repeat-all" / "repeat-one" symbols, and a cross when off. Identical in every UI language.
     pub fn label(self) -> &'static str {
         match self {
-            Repeat::Off => crate::t!("off", "끔"),
-            Repeat::All => crate::t!("all", "전체"),
-            Repeat::One => crate::t!("one", "한 곡"),
+            Repeat::Off => "✗",
+            Repeat::All => "🔁",
+            Repeat::One => "🔂",
         }
     }
 }

@@ -118,10 +118,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 /// `eq:` (opens the preset dropdown) are mouse targets — but every segment shares the same
 /// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
-/// The compact on/off marker for the status-line toggles (`♥:`, `✗:`, `S:`), in the active
-/// language. Korean uses single-cell-pair glyphs so the row width stays stable.
+/// The compact on/off marker for the binary status-line toggles (`♥:`, `✗:`). Language-neutral
+/// Unicode glyphs — a check when on, a cross when off — so the row reads identically in every UI
+/// language. Shuffle and repeat carry their own media glyphs (see `render_status_line`).
 fn on_off(on: bool) -> &'static str {
-    if on { t!("on", "켜") } else { t!("off", "꺼") }
+    if on { "✓" } else { "✗" }
 }
 
 fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
@@ -159,16 +160,17 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
     // Shuffle and repeat are both always shown as click toggles, so the line's layout never
-    // shifts as they flip — `S:on/off` mirrors the `R:` button next to it (stable UI).
+    // shifts as they appear/disappear. Each carries its media glyph — `S:🔀` shuffle, `R:🔁`/`R:🔂`
+    // repeat — or a cross when off, so they read the same in every UI language.
     parts.push((None, "    ".to_owned()));
     parts.push((
         Some(MouseTarget::Player(Action::ToggleShuffle)),
-        format!("S:{}", on_off(app.queue.shuffle)),
+        format!("S:{}", if app.queue.shuffle { "🔀" } else { "✗" }),
     ));
     parts.push((None, "    ".to_owned()));
     parts.push((
         Some(MouseTarget::Player(Action::CycleRepeat)),
-        format!("R: {}", app.queue.repeat.label()),
+        format!("R:{}", app.queue.repeat.label()),
     ));
     if (app.speed - 1.0).abs() > f64::EPSILON {
         parts.push((None, format!("    {:.1}x", app.speed)));
@@ -522,7 +524,7 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
             let msg = if app.lyrics_loading {
                 t!("Searching lyrics…", "가사 검색 중…")
             } else if app.lyrics.is_some() {
-                t!("No synced lyrics found.", "동기화된 가사가 없습니다.")
+                t!("No synced lyrics found.", "동기화된 가사가 없어요.")
             } else {
                 t!("Fetching lyrics…", "가사 가져오는 중…")
             };
