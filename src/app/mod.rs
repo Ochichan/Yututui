@@ -218,12 +218,8 @@ pub struct App {
     pub library_ui: LibraryView,
 
     // Lyrics ------------------------------------------------------------------
-    /// Whether the lyrics panel is shown in the player view.
-    pub lyrics_visible: bool,
-    /// True between requesting lyrics and the result arriving.
-    pub lyrics_loading: bool,
-    /// Lyrics for the current track, if fetched.
-    pub lyrics: Option<TrackLyrics>,
+    /// Lyrics-panel state: visibility, in-flight flag, and the fetched track lyrics.
+    pub lyrics: Lyrics,
 
     // Album art ---------------------------------------------------------------
     /// Album-art state: graphics picker, held render protocol, decoded source + dims,
@@ -339,9 +335,7 @@ impl App {
             session_plays: 0,
             last_activity_at: None,
             library_ui: LibraryView::default(),
-            lyrics_visible: false,
-            lyrics_loading: false,
-            lyrics: None,
+            lyrics: Lyrics::default(),
             art: ArtState::default(),
             downloads: HashMap::new(),
             download_sources: HashMap::new(),
@@ -575,10 +569,10 @@ impl App {
                 self.dirty = true;
             }
             Msg::LyricsResult { video_id, lines } => {
-                self.lyrics_loading = false;
+                self.lyrics.loading = false;
                 // Ignore stale results for a track we've already skipped past.
                 if self.queue.current().is_some_and(|s| s.video_id == video_id) {
-                    self.lyrics = Some(TrackLyrics { video_id, lines });
+                    self.lyrics.track = Some(TrackLyrics { video_id, lines });
                     self.dirty = true;
                 }
             }

@@ -234,13 +234,13 @@ impl App {
             }
             // Toggle the lyrics panel; fetch on first open for the current track.
             Action::ToggleLyrics => {
-                self.lyrics_visible = !self.lyrics_visible;
+                self.lyrics.visible = !self.lyrics.visible;
                 self.dirty = true;
-                if self.lyrics_visible
+                if self.lyrics.visible
                     && self.lyrics_stale()
                     && let Some(song) = self.queue.current().cloned()
                 {
-                    self.lyrics_loading = true;
+                    self.lyrics.loading = true;
                     return vec![fetch_lyrics_cmd(&song)];
                 }
                 Vec::new()
@@ -420,7 +420,7 @@ impl App {
                 self.note_session_activity();
                 self.loaded_video_id = Some(song.video_id.clone());
                 // Drop the previous track's lyrics; refresh if the panel is open.
-                self.lyrics = None;
+                self.lyrics.track = None;
                 // Drop the previous track's art; a fetch (below) refreshes it when enabled.
                 self.clear_artwork();
                 // Use a prefetched direct URL if we have one (instant skip); else hand mpv
@@ -446,8 +446,8 @@ impl App {
                 if let Some(af) = af {
                     cmds.push(Cmd::Player(PlayerCmd::SetAudioFilter(af)));
                 }
-                if self.lyrics_visible {
-                    self.lyrics_loading = true;
+                if self.lyrics.visible {
+                    self.lyrics.loading = true;
                     cmds.push(fetch_lyrics_cmd(&song));
                 }
                 // Fetch album art for the new track when the feature is on.
@@ -497,7 +497,7 @@ impl App {
 
     /// Whether we lack lyrics for the current track (so a fetch is warranted).
     pub(in crate::app) fn lyrics_stale(&self) -> bool {
-        match (&self.lyrics, self.queue.current()) {
+        match (&self.lyrics.track, self.queue.current()) {
             (Some(l), Some(cur)) => l.video_id != cur.video_id,
             (None, Some(_)) => true,
             _ => false,

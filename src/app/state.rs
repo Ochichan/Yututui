@@ -22,6 +22,18 @@ pub struct Playback {
     pub speed: f64,
 }
 
+/// Lyrics-panel state: whether the panel is shown, the in-flight flag, and the fetched
+/// lyrics for the current track.
+#[derive(Default)]
+pub struct Lyrics {
+    /// Whether the lyrics panel is shown in the player view.
+    pub visible: bool,
+    /// True between requesting lyrics and the result arriving.
+    pub loading: bool,
+    /// Lyrics for the current track, if fetched.
+    pub track: Option<TrackLyrics>,
+}
+
 /// Search-screen state: the query, its results, selection, focus, and in-flight flag.
 #[derive(Default)]
 pub struct SearchState {

@@ -2093,15 +2093,15 @@ fn lyric_lines() -> Vec<LyricLine> {
 fn shift_l_toggles_lyrics_and_fetches_on_open() {
     let mut app = app_playing(3, 0); // playing id0
     let cmds = app.update(Msg::Key(key(KeyCode::Char('L'))));
-    assert!(app.lyrics_visible);
-    assert!(app.lyrics_loading);
+    assert!(app.lyrics.visible);
+    assert!(app.lyrics.loading);
     match cmds.as_slice() {
         [Cmd::FetchLyrics { video_id, .. }] => assert_eq!(video_id, "id0"),
         _ => panic!("expected a FetchLyrics cmd"),
     }
     // Toggling off issues no fetch.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('L'))));
-    assert!(!app.lyrics_visible);
+    assert!(!app.lyrics.visible);
     assert!(cmds.is_empty());
 }
 
@@ -2112,27 +2112,27 @@ fn lyrics_result_stored_only_for_current_track() {
         video_id: "id0".to_owned(),
         lines: lyric_lines(),
     });
-    assert!(app.lyrics.as_ref().is_some_and(|l| l.lines.len() == 2));
+    assert!(app.lyrics.track.as_ref().is_some_and(|l| l.lines.len() == 2));
     // A late result for a different track is ignored.
     app.update(Msg::LyricsResult {
         video_id: "stale".to_owned(),
         lines: lyric_lines(),
     });
-    assert_eq!(app.lyrics.as_ref().unwrap().video_id, "id0");
+    assert_eq!(app.lyrics.track.as_ref().unwrap().video_id, "id0");
 }
 
 #[test]
 fn advancing_track_clears_lyrics_and_refetches_when_open() {
     let mut app = app_playing(3, 0);
-    app.lyrics_visible = true;
+    app.lyrics.visible = true;
     app.update(Msg::LyricsResult {
         video_id: "id0".to_owned(),
         lines: lyric_lines(),
     });
-    assert!(app.lyrics.is_some());
+    assert!(app.lyrics.track.is_some());
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n')))); // -> id1
-    assert!(app.lyrics.is_none());
-    assert!(app.lyrics_loading);
+    assert!(app.lyrics.track.is_none());
+    assert!(app.lyrics.loading);
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Cmd::FetchLyrics { video_id, .. } if video_id == "id1"))

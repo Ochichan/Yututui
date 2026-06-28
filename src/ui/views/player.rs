@@ -484,7 +484,7 @@ const MIN_LYRICS_ROWS: u16 = 3;
 /// the art's real bottom edge. When album art is off the layout is unchanged — lyrics get
 /// the whole area, and an empty area draws nothing.
 fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
-    match (app.art_active(), app.lyrics_visible) {
+    match (app.art_active(), app.lyrics.visible) {
         // Art on top, lyrics right under it. The art is capped so a readable lyrics window
         // always remains, then lyrics start one row below the art's actual bottom (not at a
         // fixed split), so there's no dead gap between them.
@@ -574,12 +574,12 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
     let centered = |s: &str, style: Style| Line::from(s.to_owned()).style(style).alignment(Alignment::Center);
     let dim = app.theme.style(R::LyricsDim);
 
-    let lines = match &app.lyrics {
+    let lines = match &app.lyrics.track {
         Some(t) if !t.lines.is_empty() => &t.lines,
         _ => {
-            let msg = if app.lyrics_loading {
+            let msg = if app.lyrics.loading {
                 t!("Searching lyrics…", "가사 검색 중…")
-            } else if app.lyrics.is_some() {
+            } else if app.lyrics.track.is_some() {
                 t!("No synced lyrics found.", "동기화된 가사가 없어요.")
             } else {
                 t!("Fetching lyrics…", "가사 가져오는 중…")
