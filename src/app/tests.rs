@@ -129,9 +129,9 @@ fn navigating_away_clears_a_pending_select_all_highlight() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
-    assert!(app.ai_select_all);
+    assert!(app.ai.select_all);
     app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
-    assert!(!app.ai_select_all);
+    assert!(!app.ai.select_all);
 }
 
 #[test]
@@ -142,12 +142,12 @@ fn ctrl_a_selects_then_backspace_clears_ai_input() {
     for c in "hi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
-    assert_eq!(app.ai_input, "hi");
+    assert_eq!(app.ai.input, "hi");
     app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
-    assert!(app.ai_select_all);
+    assert!(app.ai.select_all);
     app.update(Msg::Key(key(KeyCode::Backspace)));
-    assert_eq!(app.ai_input, "");
-    assert!(!app.ai_select_all);
+    assert_eq!(app.ai.input, "");
+    assert!(!app.ai.select_all);
 }
 
 #[test]
@@ -1202,7 +1202,7 @@ fn settings_text_field_edits_path_buffer() {
 #[test]
 fn settings_ai_tab_switches_model_live_and_persists() {
     let mut app = app_playing(1, 0);
-    let start = app.gemini_model;
+    let start = app.ai.model;
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General)
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
@@ -1212,11 +1212,11 @@ fn settings_ai_tab_switches_model_live_and_persists() {
     let drafted = app.settings.as_ref().unwrap().draft.gemini_model;
     assert_ne!(drafted, start, "← /→ cycles the model in the draft");
     assert_eq!(
-        app.gemini_model, start,
+        app.ai.model, start,
         "committed model unchanged while editing"
     );
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
-    assert_eq!(app.gemini_model, drafted, "model committed on close");
+    assert_eq!(app.ai.model, drafted, "model committed on close");
     // The running actor is told to hot-swap; config persists the choice.
     assert!(
         cmds.iter()
@@ -1422,7 +1422,7 @@ fn a_enters_ai_from_player_and_library() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('a'))));
     assert_eq!(app.mode, Mode::Ai);
-    assert_eq!(app.ai_focus, AiFocus::Input);
+    assert_eq!(app.ai.focus, AiFocus::Input);
     // And from the library view.
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('l'))));
@@ -1439,11 +1439,11 @@ fn ai_submit_without_key_shows_onboarding_error() {
     }
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(ask_ai(&cmds).is_none(), "no AskAi without a key");
-    assert!(!app.ai_thinking);
+    assert!(!app.ai.thinking);
     // Transcript holds the user prompt plus an error line.
-    assert_eq!(app.ai_messages.last().unwrap().role, AiRole::Error);
+    assert_eq!(app.ai.messages.last().unwrap().role, AiRole::Error);
     assert!(
-        app.ai_messages
+        app.ai.messages
             .iter()
             .any(|m| m.role == AiRole::User && m.text == "play jazz")
     );
@@ -1452,15 +1452,15 @@ fn ai_submit_without_key_shows_onboarding_error() {
 #[test]
 fn ai_submit_with_key_emits_ask_and_sets_thinking() {
     let mut app = app_playing(1, 0);
-    app.ai_available = true;
+    app.ai.available = true;
     app.update(Msg::Key(key(KeyCode::Char('a'))));
     for c in "play lofi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(ask_ai(&cmds), Some("play lofi"));
-    assert!(app.ai_thinking);
-    assert!(app.ai_input.is_empty());
+    assert!(app.ai.thinking);
+    assert!(app.ai.input.is_empty());
     // A second submit while thinking is ignored (no duplicate request).
     for c in "more".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
@@ -1490,19 +1490,19 @@ fn ai_enqueue_reports_count_and_extends() {
 #[test]
 fn ai_error_clears_thinking() {
     let mut app = app_playing(1, 0);
-    app.ai_thinking = true;
+    app.ai.thinking = true;
     app.update(Msg::AiError("boom".to_owned()));
-    assert!(!app.ai_thinking);
-    assert_eq!(app.ai_messages.last().unwrap().role, AiRole::Error);
+    assert!(!app.ai.thinking);
+    assert_eq!(app.ai.messages.last().unwrap().role, AiRole::Error);
 }
 
 #[test]
 fn ai_empty_chat_is_not_appended() {
     let mut app = app_playing(1, 0);
     app.update(Msg::AiChat("   ".to_owned()));
-    assert!(app.ai_messages.is_empty());
+    assert!(app.ai.messages.is_empty());
     app.update(Msg::AiChat("here you go".to_owned()));
-    assert_eq!(app.ai_messages.len(), 1);
+    assert_eq!(app.ai.messages.len(), 1);
 }
 
 #[test]
@@ -1523,7 +1523,7 @@ fn ai_radio_circuit_breaker_disables_after_repeated_empties() {
 #[test]
 fn autoplay_extends_when_queue_runs_low() {
     let mut app = app_playing(2, 0); // remaining = 1 (<= threshold)
-    app.ai_available = true;
+    app.ai.available = true;
     app.autoplay_radio = true;
     // A manual next advances and should fetch the candidate pool first (both AI and non-AI
     // paths share one pool; the AI reranks it once it returns).
@@ -1534,7 +1534,7 @@ fn autoplay_extends_when_queue_runs_low() {
     );
     assert!(ask_ai(&cmds).is_none(), "no free-form AI radio prompt anymore");
     assert!(app.radio_pending);
-    assert!(!app.ai_thinking, "the rerank only starts once the pool returns");
+    assert!(!app.ai.thinking, "the rerank only starts once the pool returns");
     // The cooldown / in-flight guard blocks an immediate second request.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
     assert!(radio_fallback(&cmds).is_none());
@@ -1549,7 +1549,7 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
     app.library
         .record_play(&Song::remote("prev1", "previous one", "artist a", "0:10"));
     app.library.record_play(&current); // current can be present in history; don't duplicate it.
-    app.ai_available = true;
+    app.ai.available = true;
     app.autoplay_radio = true;
 
     // The fetched pool flows through the local engine; a diverse shortlist goes to the AI.
@@ -1572,7 +1572,7 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
     // The exact candidate ids the model may choose from.
     assert!(prompt.contains("cand1"));
     assert!(prompt.contains("cand2"));
-    assert!(app.ai_thinking, "the rerank is in flight");
+    assert!(app.ai.thinking, "the rerank is in flight");
     assert!(app.pending_rerank.is_some(), "shortlist + local pick stashed for validation");
     assert!(!app.radio_pending, "the pool fetch is done");
 }
@@ -1580,9 +1580,9 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
 #[test]
 fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     let mut app = app_playing(2, 0); // queue id0 (current), id1
-    app.ai_available = true;
+    app.ai.available = true;
     app.autoplay_radio = true;
-    app.ai_thinking = true;
+    app.ai.thinking = true;
     app.pending_rerank = Some(PendingRerank {
         seed_video_id: "id0".to_owned(),
         shortlist: vec![
@@ -1601,7 +1601,7 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
         ids: vec!["s1".to_owned(), "HALLUCINATED".to_owned()],
     });
 
-    assert!(!app.ai_thinking, "rerank finished");
+    assert!(!app.ai.thinking, "rerank finished");
     assert!(app.pending_rerank.is_none(), "pending consumed");
     assert!(app.queue.contains_video_id("s1"), "valid AI id enqueued");
     assert!(app.queue.contains_video_id("s2"), "topped up from local pick");
@@ -1611,9 +1611,9 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
 #[test]
 fn radio_ai_picks_for_a_stale_seed_are_ignored() {
     let mut app = app_playing(2, 0);
-    app.ai_available = true;
+    app.ai.available = true;
     app.autoplay_radio = true;
-    app.ai_thinking = true;
+    app.ai.thinking = true;
     app.pending_rerank = Some(PendingRerank {
         seed_video_id: "current-seed".to_owned(),
         shortlist: vec![Song::remote("s1", "S1", "a", "3:00")],

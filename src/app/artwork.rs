@@ -32,7 +32,7 @@ impl App {
     /// resting pose and the tick stays asleep.
     pub fn ai_mascot_active(&self) -> bool {
         matches!(self.mode, Mode::Ai)
-            && self.ai_messages.is_empty()
+            && self.ai.messages.is_empty()
             && !self.paused
             && self.queue.current().is_some()
             && self.config.animations.master

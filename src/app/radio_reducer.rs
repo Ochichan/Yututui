@@ -15,7 +15,7 @@ impl App {
         }
         // One refill in flight at a time: the pool fetch (`radio_pending`) or, when the AI
         // reranks the fetched pool, that rerank call (`ai_thinking`).
-        if self.radio_pending || (self.ai_available && self.ai_thinking) {
+        if self.radio_pending || (self.ai.available && self.ai.thinking) {
             return Vec::new();
         }
         let cooled = match self.radio_last_extend {
@@ -86,7 +86,7 @@ impl App {
             shortlist: shortlist_songs,
             local_pick,
         });
-        self.ai_thinking = true;
+        self.ai.thinking = true;
         self.status = t!("Autoplay radio: AI reranking", "자동재생 라디오: AI가 순위를 매기는 중").to_owned();
         self.dirty = true;
         vec![Cmd::AiRerank {

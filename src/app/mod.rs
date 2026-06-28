@@ -191,24 +191,8 @@ pub struct App {
     pub settings: Option<Box<SettingsState>>,
 
     // AI assistant ------------------------------------------------------------
-    /// Whether a Gemini API key is configured (gates the assistant; `false` → onboarding).
-    pub ai_available: bool,
-    /// The Gemini model the assistant uses (shown in the AI view header).
-    pub gemini_model: GeminiModel,
-    /// The chat transcript (user prompts, assistant replies, errors).
-    pub ai_messages: Vec<AiMessage>,
-    /// The AI prompt being typed.
-    pub ai_input: String,
-    /// Whether Ctrl+A has selected the whole AI prompt (desktop-style: the next edit
-    /// replaces or clears it). Reset on any consuming keypress.
-    pub ai_select_all: bool,
-    /// True while a request is in flight (drives the spinner; blocks a second request).
-    pub ai_thinking: bool,
-    /// The pickable related-tracks list (get_suggestions).
-    pub ai_suggestions: Vec<Song>,
-    pub ai_suggestions_selected: usize,
-    /// Whether the input box or the suggestions list has focus in the AI view.
-    pub ai_focus: AiFocus,
+    /// AI-assistant state: availability, model, chat transcript, prompt, suggestions.
+    pub ai: AiState,
     /// When the autoplay hook last fired a top-up request (for the cooldown).
     radio_last_extend: Option<Instant>,
     /// True while the radio candidate-pool fetch is in flight (both the AI and non-AI paths
@@ -363,15 +347,17 @@ impl App {
             queue_popup_rect: Cell::new(None),
             config: Config::default(),
             settings: None,
-            ai_available: false,
-            gemini_model: GeminiModel::default(),
-            ai_messages: Vec::new(),
-            ai_input: String::new(),
-            ai_select_all: false,
-            ai_thinking: false,
-            ai_suggestions: Vec::new(),
-            ai_suggestions_selected: 0,
-            ai_focus: AiFocus::Input,
+            ai: AiState {
+                available: false,
+                model: GeminiModel::default(),
+                messages: Vec::new(),
+                input: String::new(),
+                select_all: false,
+                thinking: false,
+                suggestions: Vec::new(),
+                suggestions_selected: 0,
+                focus: AiFocus::Input,
+            },
             radio_last_extend: None,
             radio_pending: false,
             pending_rerank: None,
@@ -430,8 +416,8 @@ impl App {
         self.speed = cfg.effective_speed();
         self.seek_seconds = cfg.effective_seek_seconds();
         self.autoplay_radio = cfg.effective_autoplay_radio();
-        self.ai_available = cfg.effective_ai_key().is_some();
-        self.gemini_model = cfg.effective_gemini_model();
+        self.ai.available = cfg.effective_ai_key().is_some();
+        self.ai.model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
         self.theme = cfg.effective_theme();
         // Keep the process-wide UI language in sync with the applied config (this is the
@@ -695,7 +681,7 @@ impl App {
                     // With a key + reranker enabled, hand the model a diverse local shortlist to
                     // reorder (ids only); otherwise rank the pool purely locally. Either way the
                     // pool went through scoring + MMR + cooldown — never taken verbatim.
-                    if self.ai_available && self.config.radio.ai.enabled {
+                    if self.ai.available && self.config.radio.ai.enabled {
                         return self.start_ai_rerank(&seed_video_id, candidates);
                     }
                     let picks = self.plan_local_radio(&seed_video_id, candidates);
@@ -705,7 +691,7 @@ impl App {
                 }
             }
             Msg::RadioAiPicks { seed_video_id, ids } => {
-                self.ai_thinking = false;
+                self.ai.thinking = false;
                 self.dirty = true;
                 // Only consume `pending_rerank` when this result is for it (a stale/duplicate
                 // message for some other seed leaves the current rerank untouched). When it does
@@ -743,7 +729,7 @@ impl App {
 
             // --- AI assistant intents ---------------------------------------
             Msg::AiThinking(on) => {
-                self.ai_thinking = on;
+                self.ai.thinking = on;
                 self.dirty = true;
             }
             Msg::AiChat(text) => {
@@ -754,7 +740,7 @@ impl App {
                 }
             }
             Msg::AiError(text) => {
-                self.ai_thinking = false;
+                self.ai.thinking = false;
                 self.push_ai_message(AiRole::Error, text);
                 self.dirty = true;
             }
@@ -770,8 +756,8 @@ impl App {
                 return self.extend_queue_from_radio(songs);
             }
             Msg::AiSuggestions(songs) => {
-                self.ai_suggestions = songs;
-                self.ai_suggestions_selected = 0;
+                self.ai.suggestions = songs;
+                self.ai.suggestions_selected = 0;
                 self.ai_scroll.reset();
                 self.dirty = true;
             }
@@ -842,7 +828,7 @@ impl App {
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
         // when the input is re-entered later.
         self.search.select_all = false;
-        self.ai_select_all = false;
+        self.ai.select_all = false;
         if self.mode == Mode::Settings {
             self.finish_settings_text_edit();
             return self.close_settings();
@@ -884,7 +870,7 @@ impl App {
         self.confirm_delete_files = None;
         // Any navigation deselects: a Ctrl+A highlight must not survive a screen change.
         self.search.select_all = false;
-        self.ai_select_all = false;
+        self.ai.select_all = false;
         if self.mode == mode {
             self.dirty = true;
             return Vec::new();

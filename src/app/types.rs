@@ -275,8 +275,9 @@ pub struct AiMessage {
 }
 
 /// Within the AI screen, whether the input box or the suggestions list has focus.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum AiFocus {
+    #[default]
     Input,
     Suggestions,
 }

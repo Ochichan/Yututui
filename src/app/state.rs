@@ -23,3 +23,27 @@ pub struct SearchState {
     /// True between issuing a search request and its results arriving.
     pub searching: bool,
 }
+
+/// AI-assistant state: availability, model, the chat transcript, the prompt being
+/// typed, and the pickable suggestions list with its focus.
+#[derive(Default)]
+pub struct AiState {
+    /// Whether a Gemini API key is configured (gates the assistant; `false` → onboarding).
+    pub available: bool,
+    /// The Gemini model the assistant uses (shown in the AI view header).
+    pub model: GeminiModel,
+    /// The chat transcript (user prompts, assistant replies, errors).
+    pub messages: Vec<AiMessage>,
+    /// The AI prompt being typed.
+    pub input: String,
+    /// Whether Ctrl+A has selected the whole AI prompt (next edit replaces/clears it).
+    pub select_all: bool,
+    /// True while a request is in flight (drives the spinner; blocks a second request).
+    pub thinking: bool,
+    /// The pickable related-tracks list (get_suggestions).
+    pub suggestions: Vec<Song>,
+    /// The highlighted suggestion row.
+    pub suggestions_selected: usize,
+    /// Whether the input box or the suggestions list has focus.
+    pub focus: AiFocus,
+}

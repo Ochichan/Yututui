@@ -243,7 +243,7 @@ async fn run(
     let mut ai_handle = cfg
         .effective_ai_key()
         .and_then(|key| ai::spawn(&key, cfg.effective_gemini_model(), worker_tx.clone()));
-    app.ai_available = ai_handle.is_some();
+    app.ai.available = ai_handle.is_some();
 
     // Opt-in autoplay-on-launch: now that every player/actor handle exists, ask the loop to
     // start the restored track. Routed through the message pump so the resulting load/save
@@ -376,7 +376,7 @@ async fn run(
                     // Drop the old actor (closing its channel ends its task) and bring up a
                     // fresh one for the new key, so a key edited in Settings works at once.
                     ai_handle = key.and_then(|k| ai::spawn(&k, model, worker_tx.clone()));
-                    app.ai_available = ai_handle.is_some();
+                    app.ai.available = ai_handle.is_some();
                 }
             }
         }

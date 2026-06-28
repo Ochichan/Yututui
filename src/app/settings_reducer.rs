@@ -29,7 +29,7 @@ impl App {
             eq_preset: self.eq_preset,
             eq_bands: self.eq_bands,
             normalize: self.normalize,
-            gemini_model: self.gemini_model,
+            gemini_model: self.ai.model,
             // Deliberately the *raw* config key, not `effective_gemini_api_key()`: seeding the
             // env-provided value would let a save copy it into config.json (persisting a key
             // the user chose to keep only in the environment). The cost is that an env-only
@@ -651,7 +651,7 @@ impl App {
                     let ai_on = self.settings.as_ref().is_some_and(|s| s.draft.ai_enabled);
                     cmds.push(Cmd::ReloadAi {
                         key: if ai_on { self.config.effective_gemini_api_key() } else { None },
-                        model: self.gemini_model,
+                        model: self.ai.model,
                     });
                 }
                 self.status = t!("API key saved", "API 키를 저장했어요").to_owned();
@@ -740,8 +740,8 @@ impl App {
         self.eq_preset = d.eq_preset;
         self.normalize = d.normalize;
         self.autoplay_radio = d.autoplay_radio;
-        let model_changed = self.gemini_model != d.gemini_model;
-        self.gemini_model = d.gemini_model;
+        let model_changed = self.ai.model != d.gemini_model;
+        self.ai.model = d.gemini_model;
         let old_key = self.config.gemini_api_key.clone();
         let old_ai_enabled = self.config.effective_ai_enabled();
         let old_download_dir = self.config.effective_download_dir();
@@ -777,10 +777,10 @@ impl App {
         if key_changed || ai_enabled_changed {
             cmds.push(Cmd::ReloadAi {
                 key: self.config.effective_ai_key(),
-                model: self.gemini_model,
+                model: self.ai.model,
             });
         } else if model_changed {
-            cmds.push(Cmd::SetAiModel(self.gemini_model));
+            cmds.push(Cmd::SetAiModel(self.ai.model));
         }
         let new_download_dir = self.config.effective_download_dir();
         if new_download_dir != old_download_dir {

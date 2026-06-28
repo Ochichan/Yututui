@@ -307,7 +307,7 @@ impl App {
                 self.dirty = true;
             }
             Mode::Ai => {
-                self.ai_scroll.wheel(up, n, self.ai_suggestions.len());
+                self.ai_scroll.wheel(up, n, self.ai.suggestions.len());
                 self.dirty = true;
             }
             // Settings is an interactive form, not a browse list, so the wheel keeps walking
