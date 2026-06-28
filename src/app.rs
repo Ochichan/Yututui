@@ -1755,9 +1755,20 @@ impl App {
     /// Move the field cursor to `row` before a mouse-driven change/activate, so the shared
     /// keyboard handlers (`settings_change`/`settings_activate`) act on the clicked row.
     fn settings_focus_row(&mut self, row: usize) {
+        // Commit any in-progress text edit *before* moving focus: a secret editor (API key) is
+        // opened with its buffer cleared and the prior key stashed in `secret_restore`. Clicking
+        // straight to another control would otherwise leave that buffer empty with `editing_text`
+        // cleared, orphaning the stash — and `close_settings` would then erase the saved key.
+        // `finish_settings_text_edit` runs while the cursor is still on the secret row, so it
+        // restores into the right buffer.
+        self.finish_settings_text_edit();
         if let Some(st) = self.settings.as_mut() {
-            let max = st.tab.fields().len().saturating_sub(1);
-            st.row = row.min(max);
+            // The Keys tab has no `Field`s; leave its binding-selection cursor untouched (no
+            // field controls register there, so this is defensive).
+            let fields = st.tab.fields();
+            if !fields.is_empty() {
+                st.row = row.min(fields.len() - 1);
+            }
             st.editing_text = false;
             self.dirty = true;
         }
@@ -2833,6 +2844,7 @@ impl App {
             d.normalize = def.effective_normalize();
             d.gemini_model = def.effective_gemini_model();
             d.gemini_api_key = String::new();
+            d.ai_enabled = def.effective_ai_enabled(); // back to on (don't strand AI off)
             d.theme = def.effective_theme();
             d.language = def.effective_language();
             d.animations = def.animations; // all effects off (the lightweight default)
@@ -2932,8 +2944,13 @@ impl App {
                 let old_key = self.config.gemini_api_key.clone();
                 self.config.gemini_api_key = settings::blank_to_none(&value);
                 if self.config.gemini_api_key != old_key {
+                    // Gate the live AI rebuild on the *draft's* enable toggle: it commits to
+                    // `config.ai_enabled` only on close, so a key saved while AI is draft-disabled
+                    // must not spawn the actor (and a key saved right after re-enabling AI in the
+                    // draft should spawn it now). `close_settings` reconciles the final state.
+                    let ai_on = self.settings.as_ref().is_some_and(|s| s.draft.ai_enabled);
                     cmds.push(Cmd::ReloadAi {
-                        key: self.config.effective_ai_key(),
+                        key: if ai_on { self.config.effective_gemini_api_key() } else { None },
                         model: self.gemini_model,
                     });
                 }
@@ -5255,6 +5272,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn clicking_away_from_secret_editor_keeps_the_saved_key() {
+        // Opening the masked editor clears the buffer and stashes the prior key. Moving focus via
+        // the mouse path (settings_focus_row) must restore that stash — not leave an empty buffer
+        // that erases the key on close. (Regression: the mouse focus-row used to skip the
+        // edit-finish that restores the secret.)
+        let mut app = app_playing(1, 0);
+        app.config.gemini_api_key = Some("KEEPME".to_owned());
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft seeds from config)
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
+        }
+        app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
+        app.update(Msg::Key(key(KeyCode::Down))); // → API key row
+        app.update(Msg::Key(key(KeyCode::Enter))); // start editing -> buffer cleared, key stashed
+        assert_eq!(app.settings.as_ref().unwrap().draft.gemini_api_key, "");
+
+        // A click on another control re-focuses its row through this path.
+        app.settings_focus_row(0);
+        assert_eq!(
+            app.settings.as_ref().unwrap().draft.gemini_api_key,
+            "KEEPME",
+            "focusing away from an untouched secret edit restores the stashed key"
+        );
+        assert!(!app.settings.as_ref().unwrap().editing_text);
+
+        // And it survives the save-on-close.
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+        assert_eq!(save_config(&cmds).unwrap().gemini_api_key.as_deref(), Some("KEEPME"));
+    }
+
+    #[test]
+    fn reset_all_re_enables_ai() {
+        // Reset All must restore *every* field to its default, including the AI on/off switch —
+        // otherwise a user who disabled AI then reset would be stranded with AI off.
+        let mut app = app_playing(1, 0);
+        app.config.ai_enabled = Some(false);
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft.ai_enabled seeds false)
+        assert!(!app.settings.as_ref().unwrap().draft.ai_enabled);
+        app.settings_reset_all();
+        assert!(
+            app.settings.as_ref().unwrap().draft.ai_enabled,
+            "reset returns AI to its default (enabled)"
+        );
+    }
+
     // --- A: AI assistant ----------------------------------------------------
 
     /// The prompt of the `AskAi` command among `cmds`, if any.
@@ -6526,6 +6589,42 @@ mod tests {
             .position(|f| *f == Field::ResetAll)
             .unwrap();
         assert!(has(&general, MouseTarget::SettingsActivate(reset_all)), "reset-all button");
+    }
+
+    #[test]
+    fn settings_control_hit_rects_land_on_their_glyphs() {
+        // The strongest guard against the per-control rect math drifting from what `field_row`
+        // actually draws: assert each registered rect's top-left cell holds the glyph it targets.
+        // If the gutter/label-width offsets were wrong, the arrow rects would miss the glyphs.
+        let cell_at = |tab: SettingsTab, want: MouseTarget| -> String {
+            let mut app = app_playing(1, 0);
+            app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+            app.settings.as_mut().unwrap().tab = tab;
+            let backend = TestBackend::new(80, 32);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+            let rect = app
+                .mouse_buttons
+                .borrow()
+                .iter()
+                .find(|b| b.target == want)
+                .map(|b| b.rect)
+                .unwrap_or_else(|| panic!("no rect registered for {want:?}"));
+            let buf = terminal.backend().buffer().clone();
+            buf.cell((rect.x, rect.y)).map(|c| c.symbol().to_owned()).unwrap_or_default()
+        };
+
+        // Speed slider (Playback field 0): the −/+ rects sit on the ‹ › step arrows.
+        let dec = MouseTarget::SettingsChange { row: 0, delta: -1 };
+        let inc = MouseTarget::SettingsChange { row: 0, delta: 1 };
+        assert_eq!(cell_at(SettingsTab::Playback, dec), "‹", "speed decrease lands on ‹");
+        assert_eq!(cell_at(SettingsTab::Playback, inc), "›", "speed increase lands on ›");
+        // ThemePreset (Graphics field 0): a Select, so the arrows are < >.
+        assert_eq!(cell_at(SettingsTab::Graphics, dec), "<", "preset decrease lands on <");
+        assert_eq!(cell_at(SettingsTab::Graphics, inc), ">", "preset increase lands on >");
+        // BackgroundNone (Graphics field 1): a Toggle, rect over the [ ] / [x] checkbox.
+        let toggle = MouseTarget::SettingsChange { row: 1, delta: 1 };
+        assert_eq!(cell_at(SettingsTab::Graphics, toggle), "[", "background toggle lands on [");
     }
 
     #[test]

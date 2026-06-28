@@ -470,6 +470,9 @@ fn register_field_controls(
         }
 
         let vx = area.x + gutter + other_lw;
+        // Slider/Select widths don't depend on `focused` (no edit mode), so the ‹ › / < >
+        // arrow positions below are stable. Only Text/Button rows vary with `editing_text`, and
+        // those register a single whole-value activate rect where exact width is non-critical.
         let value = field_value_text(st, field, focused);
         let w = buttons::text_width(&value);
         match field.kind() {
