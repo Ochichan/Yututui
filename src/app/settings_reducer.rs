@@ -21,7 +21,7 @@ impl App {
             mouse: self.config.effective_mouse(),
             album_art: self.config.effective_album_art(),
             autoplay_on_start: self.config.effective_autoplay_on_start(),
-            speed: self.speed,
+            speed: self.playback.speed,
             seek_seconds: self.seek_seconds,
             gapless: self.config.effective_gapless(),
             autoplay_radio: self.autoplay_radio,
@@ -734,7 +734,7 @@ impl App {
         self.mode = Mode::Player;
         self.dirty = true;
         let d = &st.draft;
-        self.speed = d.speed;
+        self.playback.speed = d.speed;
         self.seek_seconds = d.seek_seconds;
         self.eq_bands = d.eq_bands;
         self.eq_preset = d.eq_preset;
@@ -755,7 +755,7 @@ impl App {
         let ai_enabled_changed = self.config.effective_ai_enabled() != old_ai_enabled;
         // Volume controls change the live value in place; fold it in so a save
         // doesn't persist the stale startup value.
-        self.config.volume = self.volume;
+        self.config.volume = self.playback.volume;
         self.status = t!("Settings saved", "설정을 저장했어요").to_owned();
         // Re-assert the committed audio chain before persisting: the draft was
         // previewing live, but a track change mid-edit (EOF auto-advance) would have

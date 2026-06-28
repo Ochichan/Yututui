@@ -190,7 +190,7 @@ fn confirm_on_f5_keymap() -> KeyMap {
 fn space_toggles_pause_and_emits_cmd() {
     let mut app = App::new(100);
     let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
-    assert!(app.paused);
+    assert!(app.playback.paused);
     assert!(matches!(
         cmds.as_slice(),
         [Cmd::Player(PlayerCmd::CyclePause)]
@@ -205,7 +205,7 @@ fn restores_last_history_track_without_autoplaying() {
     app.restore_last_played_from_library();
     assert_eq!(app.queue.len(), 1);
     assert_eq!(current(&app), "id1");
-    assert!(app.paused);
+    assert!(app.playback.paused);
     assert!(app.loaded_video_id.is_none());
 }
 
@@ -221,7 +221,7 @@ fn play_loads_restored_history_track() {
             .contains("id0")
     );
     assert_eq!(app.loaded_video_id.as_deref(), Some("id0"));
-    assert!(!app.paused);
+    assert!(!app.playback.paused);
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn autoplay_on_start_plays_restored_track_when_enabled() {
             .contains("id0")
     );
     assert_eq!(app.loaded_video_id.as_deref(), Some("id0"));
-    assert!(!app.paused);
+    assert!(!app.playback.paused);
 }
 
 #[test]
@@ -251,21 +251,21 @@ fn autoplay_on_start_is_noop_when_disabled() {
     let cmds = app.update(Msg::Autoplay);
     assert!(load_url(&cmds).is_none());
     assert!(app.loaded_video_id.is_none());
-    assert!(app.paused);
+    assert!(app.playback.paused);
 }
 
 #[test]
 fn up_down_adjust_volume_in_player_mode() {
     let mut app = App::new(50);
     let cmds = app.update(Msg::Key(key(KeyCode::Up)));
-    assert_eq!(app.volume, 55);
+    assert_eq!(app.playback.volume, 55);
     assert!(matches!(
         cmds.as_slice(),
         [Cmd::Player(PlayerCmd::SetVolume(55))]
     ));
 
     let cmds = app.update(Msg::Key(key(KeyCode::Down)));
-    assert_eq!(app.volume, 50);
+    assert_eq!(app.playback.volume, 50);
     assert!(matches!(
         cmds.as_slice(),
         [Cmd::Player(PlayerCmd::SetVolume(50))]
@@ -678,14 +678,14 @@ fn shift_n_toggles_normalization() {
 fn speed_up_and_down_clamp_and_emit() {
     let mut app = app_playing(3, 0);
     let cmds = app.update(Msg::Key(key(KeyCode::Char('>'))));
-    assert!((app.speed - 1.1).abs() < 1e-9);
+    assert!((app.playback.speed - 1.1).abs() < 1e-9);
     assert!(cmds.iter().any(|c| matches!(c,
         Cmd::Player(PlayerCmd::SetProperty { name, .. }) if name == "speed")));
     // Floor at SPEED_MIN no matter how many times we press down.
     for _ in 0..50 {
         app.update(Msg::Key(key(KeyCode::Char('<'))));
     }
-    assert!((app.speed - SPEED_MIN).abs() < 1e-9);
+    assert!((app.playback.speed - SPEED_MIN).abs() < 1e-9);
 }
 
 #[test]
@@ -731,7 +731,7 @@ fn apply_config_pushes_playback_settings() {
     assert_eq!(app.eq_preset, EqPreset::Vocal);
     assert_eq!(app.eq_bands, EqPreset::Vocal.gains());
     assert!(app.normalize);
-    assert!((app.speed - 1.5).abs() < 1e-9);
+    assert!((app.playback.speed - 1.5).abs() < 1e-9);
     assert!((app.seek_seconds - 30.0).abs() < 1e-9);
     assert!(app.autoplay_radio);
 }
@@ -1077,12 +1077,12 @@ fn settings_close_applies_and_persists() {
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab; row 0 = Speed
     app.update(Msg::Key(key(KeyCode::Right))); // speed 1.0 -> 1.1 (draft)
     assert!(
-        (app.speed - 1.0).abs() < 1e-9,
+        (app.playback.speed - 1.0).abs() < 1e-9,
         "committed speed unchanged while editing"
     );
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
     assert_eq!(app.mode, Mode::Player);
-    assert!((app.speed - 1.1).abs() < 1e-9, "speed applied on close");
+    assert!((app.playback.speed - 1.1).abs() < 1e-9, "speed applied on close");
     let saved = save_config(&cmds).expect("a SaveConfig cmd");
     assert_eq!(saved.speed, Some(1.1));
 }
@@ -1095,7 +1095,7 @@ fn settings_close_persists_live_audio() {
     app.update(Msg::Key(key(KeyCode::Right))); // draft speed -> 1.1
     let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // save+quit
     assert_eq!(app.mode, Mode::Player);
-    assert!((app.speed - 1.1).abs() < 1e-9, "speed persisted on close");
+    assert!((app.playback.speed - 1.1).abs() < 1e-9, "speed persisted on close");
     assert_eq!(
         save_config(&cmds).expect("a SaveConfig cmd").speed,
         Some(1.1)
@@ -1134,7 +1134,7 @@ fn settings_band_edit_sets_custom_and_emits_filter() {
 #[test]
 fn settings_close_reasserts_audio_and_persists_volume() {
     let mut app = app_playing(1, 0);
-    app.volume = 55; // a `=`/`-` change during the session
+    app.playback.volume = 55; // a `=`/`-` change during the session
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
     for _ in 0..4 {
@@ -2311,7 +2311,7 @@ fn skip_without_prefetch_falls_back_to_watch_url() {
 #[test]
 fn click_on_seekbar_seeks_to_fraction() {
     let mut app = app_playing(1, 0);
-    app.duration = Some(200.0);
+    app.playback.duration = Some(200.0);
     app.seekbar_rect.set(Some(Rect {
         x: 0,
         y: 5,
@@ -2329,7 +2329,7 @@ fn click_on_seekbar_seeks_to_fraction() {
 #[test]
 fn click_off_seekbar_is_ignored() {
     let mut app = app_playing(1, 0);
-    app.duration = Some(200.0);
+    app.playback.duration = Some(200.0);
     app.seekbar_rect.set(Some(Rect {
         x: 0,
         y: 5,
@@ -2343,7 +2343,7 @@ fn click_off_seekbar_is_ignored() {
 #[test]
 fn click_does_nothing_outside_player_mode() {
     let mut app = app_playing(1, 0);
-    app.duration = Some(200.0);
+    app.playback.duration = Some(200.0);
     app.seekbar_rect.set(Some(Rect {
         x: 0,
         y: 5,
@@ -2367,13 +2367,13 @@ fn click_player_buttons_dispatch_actions() {
         MouseTarget::Player(Action::TogglePause),
     );
     let cmds = app.update(Msg::MouseClick { col: 12, row: 4 });
-    assert!(app.paused);
+    assert!(app.playback.paused);
     assert!(matches!(
         cmds.as_slice(),
         [Cmd::Player(PlayerCmd::CyclePause)]
     ));
 
-    app.volume = 40;
+    app.playback.volume = 40;
     app.register_mouse_button(
         Rect {
             x: 22,
@@ -2384,7 +2384,7 @@ fn click_player_buttons_dispatch_actions() {
         MouseTarget::Player(Action::VolUp),
     );
     let cmds = app.update(Msg::MouseClick { col: 25, row: 4 });
-    assert_eq!(app.volume, 45);
+    assert_eq!(app.playback.volume, 45);
     assert!(matches!(
         cmds.as_slice(),
         [Cmd::Player(PlayerCmd::SetVolume(45))]
@@ -2436,7 +2436,7 @@ fn korean_q_key_closes_help_overlay() {
 fn click_closes_help_overlay_before_buttons() {
     let mut app = app_playing(1, 0);
     app.help_visible = true;
-    app.volume = 40;
+    app.playback.volume = 40;
     app.register_mouse_button(
         Rect {
             x: 0,
@@ -2448,7 +2448,7 @@ fn click_closes_help_overlay_before_buttons() {
     );
     assert!(app.update(Msg::MouseClick { col: 3, row: 1 }).is_empty());
     assert!(!app.help_visible);
-    assert_eq!(app.volume, 40);
+    assert_eq!(app.playback.volume, 40);
 }
 
 fn rendered_help_button(app: &App, width: u16, height: u16) -> MouseButtonRegion {
@@ -2777,7 +2777,7 @@ fn selecting_eq_preset_applies_and_closes_dropdown() {
 fn outside_click_dismisses_eq_dropdown_without_seeking() {
     let mut app = app_playing(1, 0);
     app.eq_dropdown_open = true;
-    app.duration = Some(200.0);
+    app.playback.duration = Some(200.0);
     app.seekbar_rect.set(Some(Rect {
         x: 0,
         y: 5,

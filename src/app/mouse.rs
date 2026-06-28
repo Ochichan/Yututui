@@ -102,7 +102,7 @@ impl App {
             return Vec::new();
         }
         if let Some(area) = self.seekbar_rect.get()
-            && let Some(dur) = self.duration
+            && let Some(dur) = self.playback.duration
             && dur > 0.0
             && area.width > 0
             && rect_contains(area, col, row)

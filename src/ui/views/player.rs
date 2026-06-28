@@ -93,8 +93,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Seekbar.
-    let pos = app.time_pos.unwrap_or(0.0);
-    let dur = app.duration.unwrap_or(0.0);
+    let pos = app.playback.time_pos.unwrap_or(0.0);
+    let dur = app.playback.duration.unwrap_or(0.0);
     let ratio = if dur > 0.0 { (pos / dur).clamp(0.0, 1.0) } else { 0.0 };
     let seekbar = Gauge::default()
         .gauge_style(
@@ -172,7 +172,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     // cells on some terminals (Windows), which drifts every later segment's hit rect
     // off its rendered text and makes `R:`/`eq:` unclickable. See `render_controls`.
     let state =
-        if app.paused { t!("‖ paused", "‖ 일시정지") } else { t!("▸ playing", "▸ 재생 중") };
+        if app.playback.paused { t!("‖ paused", "‖ 일시정지") } else { t!("▸ playing", "▸ 재생 중") };
     parts.push((None, state.to_owned()));
     if !app.queue.is_empty() {
         let (pos, _) = app.queue.position();
@@ -206,8 +206,8 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         Some(MouseTarget::Player(Action::CycleRepeat)),
         format!("R:{}", app.queue.repeat.label()),
     ));
-    if (app.speed - 1.0).abs() > f64::EPSILON {
-        parts.push((None, format!("    {:.1}x", app.speed)));
+    if (app.playback.speed - 1.0).abs() > f64::EPSILON {
+        parts.push((None, format!("    {:.1}x", app.playback.speed)));
     }
     parts.push((None, "    ".to_owned()));
     parts.push((Some(MouseTarget::EqMenu), format!("eq:{}", app.eq_preset.label())));
@@ -450,8 +450,8 @@ fn render_dropdown(
 /// the ⏮/⏯ media emoji, which some terminals widen to two cells and so drift the click
 /// rects off the rendered glyph.
 fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
-    let toggle = if app.paused { " ▸ " } else { " ‖ " };
-    let vol = format!("{}%", app.volume);
+    let toggle = if app.playback.paused { " ▸ " } else { " ‖ " };
+    let vol = format!("{}%", app.playback.volume);
     let segments = [
         Seg::button(MouseTarget::Player(Action::PrevTrack), " ⇤ "),
         Seg::label("   "),
@@ -593,7 +593,7 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
     if height == 0 {
         return;
     }
-    let pos = app.time_pos.unwrap_or(0.0);
+    let pos = app.playback.time_pos.unwrap_or(0.0);
     let cur = lyrics::current_index(lines, pos);
     // Keep the current line vertically centered.
     let start = cur.unwrap_or(0).saturating_sub(height / 2);

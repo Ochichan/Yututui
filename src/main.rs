@@ -180,10 +180,10 @@ async fn run(
         Ok((handle, guard)) => {
             handle.send(PlayerCmd::SetVolume(cfg.volume));
             // Apply persisted playback speed and the EQ/normalization chain up front.
-            if (app.speed - 1.0).abs() > f64::EPSILON {
+            if (app.playback.speed - 1.0).abs() > f64::EPSILON {
                 handle.send(PlayerCmd::SetProperty {
                     name: "speed".to_owned(),
-                    value: serde_json::Value::from(app.speed),
+                    value: serde_json::Value::from(app.playback.speed),
                 });
             }
             if let Some(af) = crate::eq::build_af_string(&app.eq_bands, app.normalize) {

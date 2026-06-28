@@ -12,12 +12,12 @@ impl App {
     /// Change playback speed by `delta`, clamped and rounded to one decimal, and emit the
     /// `set_property speed` command.
     pub(in crate::app) fn adjust_speed(&mut self, delta: f64) -> Vec<Cmd> {
-        self.speed = (((self.speed + delta) * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX);
-        self.status = format!("{}: {:.1}x", t!("Speed", "재생 속도"), self.speed);
+        self.playback.speed = (((self.playback.speed + delta) * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX);
+        self.status = format!("{}: {:.1}x", t!("Speed", "재생 속도"), self.playback.speed);
         self.dirty = true;
         vec![Cmd::Player(PlayerCmd::SetProperty {
             name: "speed".to_owned(),
-            value: serde_json::Value::from(self.speed),
+            value: serde_json::Value::from(self.playback.speed),
         })]
     }
 
@@ -53,7 +53,7 @@ impl App {
             self.close_video();
             if self.video_paused_audio {
                 self.video_paused_audio = false;
-                self.paused = false;
+                self.playback.paused = false;
                 cmds.push(Cmd::Player(PlayerCmd::SetProperty {
                     name: "pause".to_owned(),
                     value: serde_json::Value::Bool(false),
@@ -67,8 +67,8 @@ impl App {
             match spawn_video_overlay(&url, cookies.as_deref(), self.config.video_layout) {
                 Some(child) => {
                     self.video_proc = Some(child);
-                    if !self.paused {
-                        self.paused = true;
+                    if !self.playback.paused {
+                        self.playback.paused = true;
                         self.video_paused_audio = true;
                         cmds.push(Cmd::Player(PlayerCmd::SetProperty {
                             name: "pause".to_owned(),
@@ -150,7 +150,7 @@ impl App {
                     return self.load_song(song);
                 }
                 // Optimistic toggle; mpv confirms via a `pause` property-change.
-                self.paused = !self.paused;
+                self.playback.paused = !self.playback.paused;
                 // Manual pause/resume takes over from the video overlay: once the user controls
                 // playback themselves, closing the overlay must not auto-resume on their behalf.
                 self.video_paused_audio = false;
@@ -160,14 +160,14 @@ impl App {
             Action::SeekBack => vec![Cmd::Player(PlayerCmd::SeekRelative(-self.seek_seconds))],
             Action::SeekForward => vec![Cmd::Player(PlayerCmd::SeekRelative(self.seek_seconds))],
             Action::VolUp => {
-                self.volume = (self.volume + VOLUME_STEP).min(VOLUME_MAX);
+                self.playback.volume = (self.playback.volume + VOLUME_STEP).min(VOLUME_MAX);
                 self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetVolume(self.volume))]
+                vec![Cmd::Player(PlayerCmd::SetVolume(self.playback.volume))]
             }
             Action::VolDown => {
-                self.volume = (self.volume - VOLUME_STEP).max(0);
+                self.playback.volume = (self.playback.volume - VOLUME_STEP).max(0);
                 self.dirty = true;
-                vec![Cmd::Player(PlayerCmd::SetVolume(self.volume))]
+                vec![Cmd::Player(PlayerCmd::SetVolume(self.playback.volume))]
             }
             // Manual next: always moves on, even under repeat-one. A manual skip of the
             // current track is a (position-discounted) negative signal before advancing.
@@ -365,7 +365,7 @@ impl App {
         } else {
             // Unknown position (no progress reported yet) → treat as a weak negative, not a
             // strong one (the user may have skipped before playback even started).
-            let completion = match (self.time_pos, self.duration) {
+            let completion = match (self.playback.time_pos, self.playback.duration) {
                 (Some(t), Some(d)) if d > 0.0 => (t / d).clamp(0.0, 1.0) as f32,
                 _ => 0.5,
             };
@@ -479,9 +479,9 @@ impl App {
                 cmds
             }
             None => {
-                self.time_pos = None;
-                self.duration = None;
-                self.paused = true;
+                self.playback.time_pos = None;
+                self.playback.duration = None;
+                self.playback.paused = true;
                 self.last_shown_sec = -1;
                 self.loaded_video_id = None;
                 Vec::new()
@@ -506,9 +506,9 @@ impl App {
 
     /// Clear per-track playback state before loading a new track.
     pub(in crate::app) fn reset_progress(&mut self) {
-        self.time_pos = None;
-        self.duration = None;
-        self.paused = false;
+        self.playback.time_pos = None;
+        self.playback.duration = None;
+        self.playback.paused = false;
         self.last_shown_sec = -1;
     }
 }

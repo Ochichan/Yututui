@@ -18,7 +18,7 @@ impl App {
     /// app behaves byte-for-byte like today (the lightweight path).
     pub fn animation_active(&self) -> bool {
         (matches!(self.mode, Mode::Player)
-            && !self.paused
+            && !self.playback.paused
             && self.queue.current().is_some()
             && self.config.animations.active())
             || self.ai_mascot_active()
@@ -33,7 +33,7 @@ impl App {
     pub fn ai_mascot_active(&self) -> bool {
         matches!(self.mode, Mode::Ai)
             && self.ai.messages.is_empty()
-            && !self.paused
+            && !self.playback.paused
             && self.queue.current().is_some()
             && self.config.animations.master
     }

@@ -6,6 +6,22 @@
 
 use super::*;
 
+/// Live playback transport: position, track length, pause state, output volume, and speed.
+/// These mirror mpv's current state (distinct from the persisted defaults in [`Config`]).
+#[derive(Default)]
+pub struct Playback {
+    /// Playback position in seconds, if known.
+    pub time_pos: Option<f64>,
+    /// Track duration in seconds, if known.
+    pub duration: Option<f64>,
+    /// Whether playback is currently paused.
+    pub paused: bool,
+    /// Output volume, 0-100.
+    pub volume: i64,
+    /// Playback speed multiplier (1.0 = normal).
+    pub speed: f64,
+}
+
 /// Search-screen state: the query, its results, selection, focus, and in-flight flag.
 #[derive(Default)]
 pub struct SearchState {

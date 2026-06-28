@@ -127,14 +127,9 @@ pub struct App {
     pub about_icon: RefCell<Option<StatefulProtocol>>,
 
     // Playback ----------------------------------------------------------------
-    /// Playback position in seconds, if known.
-    pub time_pos: Option<f64>,
-    /// Track duration in seconds, if known.
-    pub duration: Option<f64>,
-    /// Whether playback is currently paused.
-    pub paused: bool,
-    /// Output volume, 0-100.
-    pub volume: i64,
+    /// Live playback transport: position, duration, pause state, volume, and speed
+    /// (mirrors mpv's current state, distinct from the persisted defaults in `config`).
+    pub playback: Playback,
     /// The play queue: ordering, shuffle, repeat, and the current track.
     pub queue: Queue,
     /// A status/error line shown to the user (empty = normal).
@@ -158,8 +153,6 @@ pub struct App {
     pub eq_bands: [f64; eq::BANDS],
     /// Loudness normalization (`dynaudnorm`) on/off.
     pub normalize: bool,
-    /// Playback speed multiplier (1.0 = normal).
-    pub speed: f64,
     /// Seconds jumped per seek-back/-forward key (configurable; default 10s).
     pub seek_seconds: f64,
     /// Auto-extend the queue with related tracks when it runs low (radio mode).
@@ -294,10 +287,11 @@ impl App {
             confirm_reset_all: false,
             about_visible: false,
             about_icon: RefCell::new(None),
-            time_pos: None,
-            duration: None,
-            paused: false,
-            volume: volume.clamp(0, VOLUME_MAX),
+            playback: Playback {
+                volume: volume.clamp(0, VOLUME_MAX),
+                speed: 1.0,
+                ..Default::default()
+            },
             queue: Queue::default(),
             status: String::new(),
             status_set_at: None,
@@ -308,7 +302,6 @@ impl App {
             eq_preset: EqPreset::default(),
             eq_bands: [0.0; eq::BANDS],
             normalize: false,
-            speed: 1.0,
             seek_seconds: crate::config::SEEK_SECONDS_DEFAULT,
             autoplay_radio: false,
             eq_dropdown_open: false,
@@ -373,7 +366,7 @@ impl App {
         self.eq_preset = cfg.eq_preset;
         self.eq_bands = cfg.effective_eq_bands();
         self.normalize = cfg.effective_normalize();
-        self.speed = cfg.effective_speed();
+        self.playback.speed = cfg.effective_speed();
         self.seek_seconds = cfg.effective_seek_seconds();
         self.autoplay_radio = cfg.effective_autoplay_radio();
         self.ai.available = cfg.effective_ai_key().is_some();
@@ -397,9 +390,9 @@ impl App {
             return;
         };
         self.queue.set(vec![song], 0);
-        self.time_pos = None;
-        self.duration = None;
-        self.paused = true;
+        self.playback.time_pos = None;
+        self.playback.duration = None;
+        self.playback.paused = true;
         self.last_shown_sec = -1;
         self.loaded_video_id = None;
         self.status.clear();
@@ -417,7 +410,7 @@ impl App {
             return Vec::new();
         }
         // Optimistic: mpv will confirm via a `pause` property-change once the track opens.
-        self.paused = false;
+        self.playback.paused = false;
         let song = self.queue.current().cloned();
         self.load_song(song)
     }
@@ -479,7 +472,7 @@ impl App {
                 self.dirty = true;
             }
             Msg::PlayerTimePos(t) => {
-                self.time_pos = Some(t);
+                self.playback.time_pos = Some(t);
                 // Real progress means the current track opened and is playing, so the
                 // auto-skip streak is broken — clear it.
                 if t > 0.0 {
@@ -494,17 +487,17 @@ impl App {
                 }
             }
             Msg::PlayerDuration(d) => {
-                self.duration = Some(d);
+                self.playback.duration = Some(d);
                 self.dirty = true;
             }
             Msg::PlayerPaused(p) => {
-                self.paused = p;
+                self.playback.paused = p;
                 self.dirty = true;
             }
             Msg::PlayerVolume(v) => {
-                self.volume = v.round() as i64;
+                self.playback.volume = v.round() as i64;
                 self.dirty = true;
-                tracing::info!(volume = self.volume, "volume");
+                tracing::info!(volume = self.playback.volume, "volume");
             }
             Msg::PlayerEof => {
                 tracing::info!("track ended (eof)");
