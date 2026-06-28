@@ -315,9 +315,25 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     };
     let list = List::new(items).style(app.theme.style(R::TextPrimary)).highlight_style(highlight).highlight_symbol("▶ ");
 
-    let mut state = ListState::default();
-    state.select(Some(app.ai_suggestions_selected.min(app.ai_suggestions.len().saturating_sub(1))));
+    // The wheel scrolls this viewport freely; the render keeps a keyboard-moved cursor on
+    // screen with a margin (see `ui::scroll`). Only highlight the selection while visible.
+    let len = app.ai_suggestions.len();
+    let offset = app.ai_scroll.resolve(
+        app.ai_suggestions_selected.min(len.saturating_sub(1)),
+        inner.height,
+        len,
+        crate::ui::scroll::SCROLLOFF,
+    );
+    let mut state = ListState::default().with_offset(offset);
+    if len > 0 {
+        let sel = app.ai_suggestions_selected.min(len - 1);
+        if (offset..offset + inner.height as usize).contains(&sel) {
+            state.select(Some(sel));
+        }
+    }
     frame.render_stateful_widget(list, inner, &mut state);
+    // Scrollbar on the right border, tracking the viewport position; hidden when it all fits.
+    buttons::render_list_scrollbar(frame, app, inner, len, state.offset(), inner.height as usize);
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {

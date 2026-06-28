@@ -292,12 +292,11 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    // Scroll so the cursor row stays visible (window roughly centered on it).
+    // The wheel scrolls this viewport freely; the render only nudges it to keep a
+    // keyboard-moved cursor on-screen with a margin (see `ui::scroll`).
     let visible = list.height as usize;
     let cursor = app.queue_popup_cursor.min(songs.len() - 1);
-    let start = cursor
-        .saturating_sub(visible / 2)
-        .min(songs.len().saturating_sub(visible));
+    let start = app.queue_popup_scroll.resolve(cursor, list.height, songs.len(), crate::ui::scroll::SCROLLOFF);
     let sel_lo = app.queue_popup_cursor.min(app.queue_popup_anchor);
     let sel_hi = app.queue_popup_cursor.max(app.queue_popup_anchor);
 
@@ -340,6 +339,9 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
         let body_rect = Rect { x: row.x, y, width: row.width.saturating_sub(DEL_W), height: 1 };
         app.register_mouse_button(body_rect, MouseTarget::QueueRow(i));
     }
+
+    // Scrollbar on the right border, tracking the viewport position; hidden when it all fits.
+    buttons::render_list_scrollbar(frame, app, list, songs.len(), start, visible);
 }
 
 /// The EQ preset dropdown, anchored under the `eq:` label and listing the built-in presets

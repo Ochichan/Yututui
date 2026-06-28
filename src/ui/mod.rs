@@ -2,6 +2,7 @@
 
 pub mod anim;
 pub mod buttons;
+pub mod scroll;
 pub mod text;
 pub mod views;
 

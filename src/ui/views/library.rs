@@ -117,11 +117,10 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     let deletable = app.library_tab != LibraryTab::All;
     let del_w: u16 = if deletable { 2 } else { 0 };
 
-    // Scroll so the cursor row stays visible (window roughly centered on it).
+    // The wheel scrolls this viewport freely (decoupled from the cursor); the render only
+    // nudges it to keep a keyboard-moved cursor on-screen with a margin — see `ui::scroll`.
     let visible = area.height as usize;
-    let start = cursor
-        .saturating_sub(visible / 2)
-        .min(len.saturating_sub(visible));
+    let start = app.library_scroll.resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
 
     let body_w = area.width.saturating_sub(del_w) as usize;
     for (vis, (i, song)) in rows.iter().enumerate().skip(start).take(visible).enumerate() {
@@ -163,8 +162,8 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    // Scrollbar on the right border, tracking the cursor; hidden when the list fits.
-    buttons::render_list_scrollbar(frame, app, area, len, cursor, visible);
+    // Scrollbar on the right border, tracking the viewport position; hidden when the list fits.
+    buttons::render_list_scrollbar(frame, app, area, len, start, visible);
 }
 
 /// A modal confirming deletion of downloaded files from disk. Deleting a real file is

@@ -687,6 +687,13 @@ pub struct App {
     /// Viewport height (rows) of the active Library / Search list, written each render so
     /// PageUp/PageDown can move by a screenful. `Cell` because render only has `&App`.
     pub list_viewport_rows: Cell<u16>,
+    /// Decoupled wheel-scroll offset for each browse list (see [`crate::ui::scroll`]). The
+    /// mouse wheel moves these directly; the render pass nudges them to keep the keyboard
+    /// selection on-screen with a margin. One per list so each keeps its own place.
+    pub library_scroll: crate::ui::scroll::ScrollState,
+    pub search_scroll: crate::ui::scroll::ScrollState,
+    pub queue_popup_scroll: crate::ui::scroll::ScrollState,
+    pub ai_scroll: crate::ui::scroll::ScrollState,
     /// Clickable button rects written by views each render. `RefCell` because render only
     /// has `&App`, but the reducer needs the last rendered hit map.
     pub mouse_buttons: RefCell<Vec<MouseButtonRegion>>,
@@ -782,6 +789,10 @@ impl App {
             resolved: HashMap::new(),
             seekbar_rect: Cell::new(None),
             list_viewport_rows: Cell::new(0),
+            library_scroll: crate::ui::scroll::ScrollState::default(),
+            search_scroll: crate::ui::scroll::ScrollState::default(),
+            queue_popup_scroll: crate::ui::scroll::ScrollState::default(),
+            ai_scroll: crate::ui::scroll::ScrollState::default(),
             mouse_buttons: RefCell::new(Vec::new()),
             last_shown_sec: -1,
             last_load_prefetched: false,
@@ -1003,6 +1014,7 @@ impl App {
                     self.status.clear();
                     self.search_results = songs;
                     self.search_selected = 0;
+                    self.search_scroll.reset();
                     self.search_focus = SearchFocus::Results;
                 }
                 self.dirty = true;
@@ -1157,6 +1169,7 @@ impl App {
             Msg::AiSuggestions(songs) => {
                 self.ai_suggestions = songs;
                 self.ai_suggestions_selected = 0;
+                self.ai_scroll.reset();
                 self.dirty = true;
             }
             Msg::AiSetAutoplay(on) => {
@@ -1662,6 +1675,7 @@ impl App {
             MouseTarget::LibraryTab(tab) if self.mode == Mode::Library => {
                 self.library_tab = tab;
                 self.library_selected = 0;
+                self.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }
@@ -1784,17 +1798,34 @@ impl App {
         Vec::new()
     }
 
-    /// Wheel scroll moves the active list's cursor by [`MOUSE_SCROLL_LINES`] rows (the
-    /// views are cursor-driven, so this scrolls the viewport with it). No-op outside the
-    /// Library / Search lists.
+    /// Wheel scroll moves the *viewport* of whichever list is on top by
+    /// [`MOUSE_SCROLL_LINES`] rows — decoupled from the selection, which stays put (it may
+    /// scroll out of view; the render pass keeps it visible only for keyboard nav). An open
+    /// overlay (the queue window) wins over the active screen.
     fn on_mouse_scroll(&mut self, up: bool) -> Vec<Cmd> {
+        let n = MOUSE_SCROLL_LINES;
+        if self.queue_popup_open {
+            self.queue_popup_scroll.wheel(up, n, self.queue.len());
+            self.dirty = true;
+            return Vec::new();
+        }
         match self.mode {
-            Mode::Library => self.move_library_cursor(up, MOUSE_SCROLL_LINES),
-            Mode::Search => self.move_search_cursor(up, MOUSE_SCROLL_LINES),
-            // The merged Playback/Graphics tabs overflow the viewport, so the wheel walks the
-            // field cursor (which scrolls the list with it).
+            Mode::Library => {
+                self.library_scroll.wheel(up, n, self.library_len());
+                self.dirty = true;
+            }
+            Mode::Search => {
+                self.search_scroll.wheel(up, n, self.search_results.len());
+                self.dirty = true;
+            }
+            Mode::Ai => {
+                self.ai_scroll.wheel(up, n, self.ai_suggestions.len());
+                self.dirty = true;
+            }
+            // Settings is an interactive form, not a browse list, so the wheel keeps walking
+            // the focused field (which the render then keeps on-screen with a margin).
             Mode::Settings => {
-                let delta = if up { -1 } else { 1 } * MOUSE_SCROLL_LINES as i32;
+                let delta = if up { -1 } else { 1 } * n as i32;
                 self.settings_move_row(delta);
             }
             _ => {}
@@ -1871,6 +1902,7 @@ impl App {
                 self.mode = Mode::Library;
                 self.library_selected = 0;
                 self.library_anchor = 0;
+                self.library_scroll.reset();
             }
             Mode::Settings => self.open_settings(),
             Mode::Ai => self.enter_ai(),
@@ -1966,6 +1998,7 @@ impl App {
         self.queue_popup_open = true;
         self.queue_popup_cursor = pos;
         self.queue_popup_anchor = pos;
+        self.queue_popup_scroll.reset();
         self.dirty = true;
     }
 
@@ -2163,6 +2196,7 @@ impl App {
             Action::OpenLibrary => {
                 self.mode = Mode::Library;
                 self.library_selected = 0;
+                self.library_scroll.reset();
                 self.eq_dropdown_open = false;
                 self.radio_dropdown_open = false;
                 self.dirty = true;
@@ -2410,6 +2444,7 @@ impl App {
                 self.library_tab = self.library_tab.next();
                 self.library_selected = 0;
                 self.library_anchor = 0;
+                self.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }
@@ -2417,6 +2452,7 @@ impl App {
                 self.library_tab = self.library_tab.prev();
                 self.library_selected = 0;
                 self.library_anchor = 0;
+                self.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }

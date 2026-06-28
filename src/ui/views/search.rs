@@ -161,20 +161,26 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         .style(app.theme.style(R::TextPrimary))
         .highlight_symbol("▶ ");
 
-    let mut state = ListState::default();
-    if !app.search_results.is_empty() {
-        state.select(Some(app.search_selected));
+    // The wheel scrolls this viewport freely; the render keeps a keyboard-moved cursor on
+    // screen with a margin (see `ui::scroll`). Pre-seed the offset so ratatui honors it; only
+    // highlight the selection while it is actually visible, so the wheel can scroll past it.
+    let len = app.search_results.len();
+    let offset = app.search_scroll.resolve(
+        app.search_selected.min(len.saturating_sub(1)),
+        area.height,
+        len,
+        crate::ui::scroll::SCROLLOFF,
+    );
+    let mut state = ListState::default().with_offset(offset);
+    if len > 0 {
+        let sel = app.search_selected.min(len - 1);
+        if (offset..offset + area.height as usize).contains(&sel) {
+            state.select(Some(sel));
+        }
     }
     frame.render_stateful_widget(list, area, &mut state);
     // Each visible row is a click target: single-click selects, double-click plays.
-    buttons::register_list_rows(app, area, state.offset(), app.search_results.len(), Some);
-    // Scrollbar on the right border, tracking the cursor; hidden when results fit.
-    buttons::render_list_scrollbar(
-        frame,
-        app,
-        area,
-        app.search_results.len(),
-        app.search_selected,
-        area.height as usize,
-    );
+    buttons::register_list_rows(app, area, state.offset(), len, Some);
+    // Scrollbar on the right border, tracking the viewport position; hidden when results fit.
+    buttons::render_list_scrollbar(frame, app, area, len, state.offset(), area.height as usize);
 }
