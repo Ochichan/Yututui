@@ -52,6 +52,8 @@ pub enum Action {
     DeleteChar,
     // Queue window.
     QueueRemove,
+    // Library list.
+    LibraryRemove,
     // Settings screen.
     SettingsCancel,
     ChangeDecrease,
@@ -97,6 +99,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::FocusPrev, "focus_prev", "Previous tab / focus"),
     (Action::DeleteChar, "delete_char", "Delete character"),
     (Action::QueueRemove, "queue_remove", "Remove from queue"),
+    (Action::LibraryRemove, "library_remove", "Remove / delete"),
     (Action::SettingsCancel, "settings_cancel", "Close settings"),
     (Action::ChangeDecrease, "change_decrease", "Decrease value"),
     (Action::ChangeIncrease, "change_increase", "Increase value"),
@@ -120,6 +123,7 @@ impl Action {
     pub fn human_label_for(self, ctx: KeyContext) -> &'static str {
         match (ctx, self) {
             (KeyContext::Library, Action::Back) => "Close Library",
+            (KeyContext::Library, Action::LibraryRemove) => "Remove / delete",
             (KeyContext::Queue, Action::Confirm) => "Play / jump to track",
             (KeyContext::Queue, Action::Back) => "Close queue",
             (KeyContext::SearchInput, Action::Confirm) => "Search",
@@ -475,6 +479,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Library, A::Favorite, ch('f')),
         (C::Library, A::Download, ch('d')),
         (C::Library, A::OpenAi, ch('a')),
+        (C::Library, A::LibraryRemove, key(KeyCode::Delete)),
         (C::Library, A::Back, ch('q')),
         // Queue window (overlay on the player; up/down nav comes from Common).
         (C::Queue, A::Confirm, key(KeyCode::Enter)),

@@ -79,6 +79,23 @@ impl Library {
         }
     }
 
+    /// Remove the favorite at `index` (position in [`Self::favorites`]). Returns whether a
+    /// track was removed — `false` for an out-of-range index. Powers the library's delete.
+    pub fn remove_favorite_at(&mut self, index: usize) -> bool {
+        if index < self.favorites.len() {
+            self.favorites.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove the history entry at `index` (position in [`Self::history`]). Returns whether a
+    /// track was removed — `false` for an out-of-range index. Powers the library's delete.
+    pub fn remove_history_at(&mut self, index: usize) -> bool {
+        self.history.remove(index).is_some()
+    }
+
     /// Record that `song` is being played: move it to the front of history (de-duping
     /// by id) and trim to the cap.
     pub fn record_play(&mut self, song: &Song) {
@@ -171,6 +188,30 @@ mod tests {
         lib.record_play(&song("a")); // replay 'a' -> back to front, no dupe
         let ids: Vec<&str> = lib.history.iter().map(|s| s.video_id.as_str()).collect();
         assert_eq!(ids, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn remove_favorite_at_drops_the_indexed_track() {
+        let mut lib = Library::default();
+        lib.toggle_favorite(&song("a"));
+        lib.toggle_favorite(&song("b")); // b is now first (newest-first)
+        assert!(lib.remove_favorite_at(0)); // removes b
+        let ids: Vec<&str> = lib.favorites.iter().map(|s| s.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["a"]);
+        assert!(!lib.remove_favorite_at(5)); // out of range
+        assert_eq!(lib.favorites.len(), 1);
+    }
+
+    #[test]
+    fn remove_history_at_drops_the_indexed_track() {
+        let mut lib = Library::default();
+        lib.record_play(&song("a"));
+        lib.record_play(&song("b")); // history front-to-back: b, a
+        assert!(lib.remove_history_at(1)); // removes a
+        let ids: Vec<&str> = lib.history.iter().map(|s| s.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["b"]);
+        assert!(!lib.remove_history_at(9)); // out of range
+        assert_eq!(lib.history.len(), 1);
     }
 
     #[test]

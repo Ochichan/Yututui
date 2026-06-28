@@ -40,4 +40,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.confirm_reset_all {
         views::settings::render_confirm_reset(frame, app, area);
     }
+    // Deleting downloaded files is modal and irreversible — drawn last so its buttons win.
+    if app.confirm_delete_files.is_some() {
+        views::library::render_confirm_delete(frame, app, area);
+    }
 }

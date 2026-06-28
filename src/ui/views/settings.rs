@@ -6,13 +6,14 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, MouseTarget};
 use crate::keymap::{self, Action, Conflict, KeyContext};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
 use crate::config::{SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
+use crate::theme::ThemeConfig;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
@@ -97,62 +98,109 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 fn render_keys(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     let theme = &st.draft.theme;
     let entries = keymap::editable_entries();
-    // Each group gets its own header row (blank line before it, except the first), with the
-    // bindings listed underneath. The rendered list therefore holds more rows than `entries`,
-    // so map the focused binding index (`st.row`) to its display position for selection.
-    let mut items: Vec<ListItem> = Vec::with_capacity(entries.len() + 24);
-    // Parallel to `items`: the binding index a display row maps to, or `None` for the
-    // header/blank rows. Used to turn a click on a visible row back into a binding index.
-    let mut display_to_binding: Vec<Option<usize>> = Vec::with_capacity(entries.len() + 24);
-    let mut selected_display = 0usize;
-    let mut prev_ctx: Option<KeyContext> = None;
-    for (i, &(ctx, action)) in entries.iter().enumerate() {
-        if prev_ctx != Some(ctx) {
-            items.push(ListItem::new(Line::from(Span::styled(
-                ctx.title().to_owned(),
-                theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
-            ))));
-            display_to_binding.push(None);
-            prev_ctx = Some(ctx);
-        }
-        let focused = i == st.row;
-        if focused {
-            selected_display = items.len();
-        }
-        let key = if st.capturing == Some((ctx, action)) {
-            "<press a key…>".to_owned()
-        } else {
-            st.keymap.chord(ctx, action).map_or_else(|| "—".to_owned(), keymap::format_chord)
-        };
-        let key_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
-        // Bindings indent one step in from their group header for a clear hierarchy.
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(
-                format!("  {:<24}", action.human_label_for(ctx)),
-                theme.style(R::SettingsLabel),
-            ),
-            Span::styled(key, theme.style(key_role)),
-        ])));
-        display_to_binding.push(Some(i));
-        // A little padding after each group so the sections breathe.
-        if entries.get(i + 1).map(|(c, _)| *c) != Some(ctx) {
-            items.push(ListItem::new(Line::from("")));
-            display_to_binding.push(None);
+
+    // Group consecutive bindings by context; each becomes a titled block. Whole groups are
+    // kept together so a context never straddles the two columns.
+    let mut groups: Vec<(KeyContext, Vec<usize>)> = Vec::new();
+    for (i, &(ctx, _)) in entries.iter().enumerate() {
+        match groups.last_mut() {
+            Some((c, v)) if *c == ctx => v.push(i),
+            _ => groups.push((ctx, vec![i])),
         }
     }
 
-    let list = List::new(items)
-        .style(theme.style(R::TextPrimary))
-        .highlight_style(theme.style(R::SettingsValueFocused).add_modifier(Modifier::BOLD))
-        .highlight_symbol("▶ ");
+    // The list used to be one tall column that overflowed; lay it out in two side-by-side
+    // columns instead. Break the (whole) groups at the point that best balances the two
+    // columns' heights. A blank line separates groups — counted here and drawn the same way,
+    // so the two columns' rows stay aligned.
+    let height = |g: &(KeyContext, Vec<usize>)| g.1.len() + 2; // header + bindings + gap
+    let total: usize = groups.iter().map(height).sum();
+    let (mut split, mut acc, mut best) = (groups.len(), 0usize, usize::MAX);
+    for (gi, g) in groups.iter().enumerate() {
+        acc += height(g);
+        let diff = acc.abs_diff(total - acc);
+        if diff < best {
+            best = diff;
+            split = gi + 1;
+        }
+    }
+    let split = split.min(groups.len());
 
-    let mut state = ListState::default();
-    state.select(Some(selected_display));
-    frame.render_stateful_widget(list, area, &mut state);
-    // Clicking a binding row selects that binding; header/blank rows aren't targets.
-    buttons::register_list_rows(app, area, state.offset(), display_to_binding.len(), |d| {
-        display_to_binding.get(d).copied().flatten()
-    });
+    let columns =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    for (ci, slice) in [&groups[..split], &groups[split..]].into_iter().enumerate() {
+        let (items, display_to_binding, selected) = build_keys_column(st, theme, slice, &entries);
+        // A 2-cell gutter between the columns keeps the left labels off the right block.
+        let col = columns[ci];
+        let col = if ci == 0 {
+            Rect { width: col.width.saturating_sub(2), ..col }
+        } else {
+            col
+        };
+        let list = List::new(items)
+            .style(theme.style(R::TextPrimary))
+            .highlight_style(theme.style(R::SettingsValueFocused).add_modifier(Modifier::BOLD))
+            .highlight_symbol("▶ ")
+            // Reserve the marker gutter in both columns (even the one with no selection) so
+            // their rows line up — the focused column would otherwise shift 2 cells left.
+            .highlight_spacing(HighlightSpacing::Always);
+        let mut state = ListState::default();
+        state.select(selected);
+        frame.render_stateful_widget(list, col, &mut state);
+        // Clicking a binding row selects that binding; header/blank rows aren't targets.
+        buttons::register_list_rows(app, col, state.offset(), display_to_binding.len(), |d| {
+            display_to_binding.get(d).copied().flatten()
+        });
+    }
+}
+
+/// Build one Keys-tab column from a slice of context groups: the rendered rows, a parallel
+/// `display row -> binding index` map (None for header/blank rows), and the display row to
+/// highlight (`Some` only when the focused binding `st.row` falls in this column).
+fn build_keys_column(
+    st: &SettingsState,
+    theme: &ThemeConfig,
+    groups: &[(KeyContext, Vec<usize>)],
+    entries: &[(KeyContext, Action)],
+) -> (Vec<ListItem<'static>>, Vec<Option<usize>>, Option<usize>) {
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut display_to_binding: Vec<Option<usize>> = Vec::new();
+    let mut selected = None;
+    for (gi, (ctx, binds)) in groups.iter().enumerate() {
+        // A blank line before every group but the first lets the sections breathe.
+        if gi > 0 {
+            items.push(ListItem::new(Line::from("")));
+            display_to_binding.push(None);
+        }
+        items.push(ListItem::new(Line::from(Span::styled(
+            ctx.title().to_owned(),
+            theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
+        ))));
+        display_to_binding.push(None);
+        for &i in binds {
+            let (c, action) = entries[i];
+            let focused = i == st.row;
+            if focused {
+                selected = Some(items.len());
+            }
+            let key = if st.capturing == Some((c, action)) {
+                "<press a key…>".to_owned()
+            } else {
+                st.keymap.chord(c, action).map_or_else(|| "—".to_owned(), keymap::format_chord)
+            };
+            let key_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
+            // Bindings indent one step in from their group header for a clear hierarchy.
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("  {:<24}", action.human_label_for(c)),
+                    theme.style(R::SettingsLabel),
+                ),
+                Span::styled(key, theme.style(key_role)),
+            ])));
+            display_to_binding.push(Some(i));
+        }
+    }
+    (items, display_to_binding, selected)
 }
 
 fn render_tabs(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {

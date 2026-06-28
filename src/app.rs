@@ -253,6 +253,12 @@ pub enum MouseTarget {
     QueueRow(usize),
     /// The `✗` delete button on a queue-window row, by order position.
     QueueDel(usize),
+    /// The `✗` delete button on a Library list row, by row index in the current tab.
+    LibraryDel(usize),
+    /// Confirm button on the "delete downloaded files" modal.
+    ConfirmDelete,
+    /// Cancel button on the "delete downloaded files" modal.
+    CancelDelete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -495,6 +501,14 @@ pub struct App {
     pub downloaded_tracks: Vec<Song>,
     pub library_tab: LibraryTab,
     pub library_selected: usize,
+    /// The fixed end of the library list's multi-select range (drag start / last single
+    /// click). The selection is the inclusive span between this and `library_selected`,
+    /// mirroring the queue window's drag-to-select.
+    pub library_anchor: usize,
+    /// Pending "delete downloaded files" confirmation: the on-disk paths queued for deletion
+    /// (file removal is irreversible, so it's gated behind an explicit yes/no). `None` when no
+    /// modal is open.
+    pub confirm_delete_files: Option<Vec<PathBuf>>,
 
     // Lyrics ------------------------------------------------------------------
     /// Whether the lyrics panel is shown in the player view.
@@ -602,6 +616,8 @@ impl App {
             downloaded_tracks: Vec::new(),
             library_tab: LibraryTab::All,
             library_selected: 0,
+            library_anchor: 0,
+            confirm_delete_files: None,
             lyrics_visible: false,
             lyrics_loading: false,
             lyrics: None,
@@ -973,6 +989,20 @@ impl App {
             return if confirmed { self.settings_reset_all() } else { Vec::new() };
         }
 
+        // Deleting downloaded files is irreversible, so it's gated behind the same modal:
+        // Enter or `y` confirms the on-disk delete, anything else backs out. Handled here so
+        // the key can't fall through to the library list underneath.
+        if self.confirm_delete_files.is_some() {
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            if confirmed {
+                return self.confirm_delete_files_apply();
+            }
+            self.confirm_delete_files = None;
+            return Vec::new();
+        }
+
         // Search submit/select is fixed to the physical Enter key. Handle it before
         // remappable globals so Enter stays local to Search while every other screen keeps
         // using the user's keymap.
@@ -1110,6 +1140,7 @@ impl App {
         self.help_visible = false;
         self.eq_dropdown_open = false;
         self.queue_popup_open = false;
+        self.confirm_delete_files = None;
         if self.mode == Mode::Settings {
             self.finish_settings_text_edit();
             return self.close_settings();
@@ -1145,6 +1176,20 @@ impl App {
             self.confirm_reset_all = false;
             self.dirty = true;
             return Vec::new();
+        }
+        // The download-delete confirmation is modal: only its own Delete/Cancel buttons act;
+        // a click anywhere else backs out without touching any files.
+        if self.confirm_delete_files.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(t @ (MouseTarget::ConfirmDelete | MouseTarget::CancelDelete)) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.confirm_delete_files = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
         }
         if self.help_visible {
             self.help_visible = false;
@@ -1258,6 +1303,18 @@ impl App {
             // The `✗` button on a queue row removes just that track.
             MouseTarget::QueueDel(i) if self.queue_popup_open => self.remove_queue_range(i, i),
             MouseTarget::QueueDel(_) => Vec::new(),
+            // The `✗` button on a library row removes just that track (per-tab semantics).
+            MouseTarget::LibraryDel(i) if self.mode == Mode::Library => {
+                self.library_delete_rows(i, i)
+            }
+            MouseTarget::LibraryDel(_) => Vec::new(),
+            // The "delete downloaded files" confirmation buttons.
+            MouseTarget::ConfirmDelete => self.confirm_delete_files_apply(),
+            MouseTarget::CancelDelete => {
+                self.confirm_delete_files = None;
+                self.dirty = true;
+                Vec::new()
+            }
         }
     }
 
@@ -1266,7 +1323,11 @@ impl App {
     /// respond to the first press of a double-click.
     fn on_mouse_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
         // Modal overlays treat a double-click like a single click.
-        if self.help_visible || self.key_conflict.is_some() || self.confirm_reset_all {
+        if self.help_visible
+            || self.key_conflict.is_some()
+            || self.confirm_reset_all
+            || self.confirm_delete_files.is_some()
+        {
             return self.on_mouse_click(col, row);
         }
         if self.queue_popup_open {
@@ -1285,17 +1346,25 @@ impl App {
         }
     }
 
-    /// A left-drag: extend the queue window's multi-select to the row under the pointer
-    /// (the anchor end stays fixed). Ignored unless the queue window is open.
+    /// A left-drag: extend a multi-select range to the row under the pointer (the anchor end
+    /// stays fixed). Works in the queue window and, identically, in the Library list.
     fn on_mouse_drag(&mut self, col: u16, row: u16) -> Vec<Cmd> {
-        if !self.queue_popup_open {
+        if self.queue_popup_open {
+            if let Some(MouseTarget::QueueRow(i) | MouseTarget::QueueDel(i)) =
+                self.mouse_target_at(col, row)
+                && self.queue_popup_cursor != i
+            {
+                self.queue_popup_cursor = i;
+                self.dirty = true;
+            }
             return Vec::new();
         }
-        if let Some(MouseTarget::QueueRow(i) | MouseTarget::QueueDel(i)) =
-            self.mouse_target_at(col, row)
-            && self.queue_popup_cursor != i
+        if self.mode == Mode::Library
+            && let Some(MouseTarget::ListRow(i) | MouseTarget::LibraryDel(i)) =
+                self.mouse_target_at(col, row)
+            && self.library_selected != i
         {
-            self.queue_popup_cursor = i;
+            self.library_selected = i;
             self.dirty = true;
         }
         Vec::new()
@@ -1307,6 +1376,7 @@ impl App {
     fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
         self.eq_dropdown_open = false;
         self.queue_popup_open = false;
+        self.confirm_delete_files = None;
         if self.mode == mode {
             self.dirty = true;
             return Vec::new();
@@ -1326,6 +1396,7 @@ impl App {
             Mode::Library => {
                 self.mode = Mode::Library;
                 self.library_selected = 0;
+                self.library_anchor = 0;
             }
             Mode::Settings => self.open_settings(),
             Mode::Ai => self.enter_ai(),
@@ -1358,6 +1429,8 @@ impl App {
             }
             Mode::Library if index < self.library_len() => {
                 self.library_selected = index;
+                // A fresh single click re-anchors the multi-select range here.
+                self.library_anchor = index;
                 self.dirty = true;
             }
             Mode::Settings => {
@@ -1732,17 +1805,21 @@ impl App {
             Some(Action::FocusNext) => {
                 self.library_tab = self.library_tab.next();
                 self.library_selected = 0;
+                self.library_anchor = 0;
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::FocusPrev) => {
                 self.library_tab = self.library_tab.prev();
                 self.library_selected = 0;
+                self.library_anchor = 0;
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::MoveUp) => {
                 self.library_selected = self.library_selected.saturating_sub(1);
+                // Keyboard nav collapses the range to the cursor (like the queue window).
+                self.library_anchor = self.library_selected;
                 self.dirty = true;
                 Vec::new()
             }
@@ -1750,9 +1827,12 @@ impl App {
                 if self.library_selected + 1 < len {
                     self.library_selected += 1;
                 }
+                self.library_anchor = self.library_selected;
                 self.dirty = true;
                 Vec::new()
             }
+            // Delete the selected range (mouse-drag or single row), per-tab semantics.
+            Some(Action::LibraryRemove) => self.library_delete_selection(),
             Some(Action::Confirm) => self.play_from_library(),
             Some(Action::OpenAi) => {
                 self.enter_ai();
@@ -2783,7 +2863,8 @@ impl App {
 
     fn all_library_rows(&self) -> Vec<&Song> {
         let mut rows = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen_ids = HashSet::new();
+        let mut seen_titles = HashSet::new();
         for song in self
             .library
             .favorites
@@ -2791,7 +2872,15 @@ impl App {
             .chain(self.library.history.iter())
             .chain(self.downloaded_tracks.iter())
         {
-            if seen.insert(song.video_id.clone()) {
+            // Collapse a track that lives in several collections to one row. The exact id
+            // catches a favorite that's also in history; the normalized title additionally
+            // catches a downloaded file (saved as `<title>.m4a`, so its title matches the
+            // catalog title) that duplicates a remote favorite/history entry. First in the
+            // chain wins, so the richer catalog entry is preferred over the local file.
+            let title_key = song.title.trim().to_lowercase();
+            let fresh_id = seen_ids.insert(song.video_id.clone());
+            let fresh_title = seen_titles.insert(title_key);
+            if fresh_id && fresh_title {
                 rows.push(song);
             }
         }
@@ -2818,6 +2907,85 @@ impl App {
         self.status.clear();
         let song = self.queue.current().cloned();
         self.load_song(song)
+    }
+
+    /// Delete the library list's current selection — the inclusive range between the drag
+    /// anchor and the cursor — using the active tab's delete semantics.
+    fn library_delete_selection(&mut self) -> Vec<Cmd> {
+        let lo = self.library_selected.min(self.library_anchor);
+        let hi = self.library_selected.max(self.library_anchor);
+        self.library_delete_rows(lo, hi)
+    }
+
+    /// Delete library rows `lo..=hi` (positions in the current tab) with per-tab meaning:
+    /// Favorites un-favorites, History forgets, Downloads asks before deleting the files on
+    /// disk, and All is an aggregate view so it's read-only. Clamps the selection afterward.
+    fn library_delete_rows(&mut self, lo: usize, hi: usize) -> Vec<Cmd> {
+        let len = self.library_len();
+        if lo >= len {
+            return Vec::new();
+        }
+        let hi = hi.min(len - 1);
+        match self.library_tab {
+            // Aggregate view — a row may live in several tabs, so deleting from here is
+            // ambiguous. Manage tracks from their own tab instead.
+            LibraryTab::All => Vec::new(),
+            LibraryTab::Favorites => {
+                // Descending so earlier removals don't shift the indices still to come.
+                for pos in (lo..=hi).rev() {
+                    self.library.remove_favorite_at(pos);
+                }
+                self.clamp_library_selection();
+                self.dirty = true;
+                vec![Cmd::SaveLibrary]
+            }
+            LibraryTab::History => {
+                for pos in (lo..=hi).rev() {
+                    self.library.remove_history_at(pos);
+                }
+                self.clamp_library_selection();
+                self.dirty = true;
+                vec![Cmd::SaveLibrary]
+            }
+            LibraryTab::Downloads => {
+                // Deleting real files is irreversible — gather the paths and ask first.
+                let paths: Vec<PathBuf> = (lo..=hi)
+                    .filter_map(|pos| self.downloaded_tracks.get(pos))
+                    .filter_map(|song| song.local_path.clone())
+                    .collect();
+                if !paths.is_empty() {
+                    self.confirm_delete_files = Some(paths);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    /// Carry out a confirmed download deletion: remove each file from disk, drop the matching
+    /// rows for instant feedback, then rescan the folder as the source of truth. A failed
+    /// delete is logged but doesn't abort the rest.
+    fn confirm_delete_files_apply(&mut self) -> Vec<Cmd> {
+        let Some(paths) = self.confirm_delete_files.take() else {
+            return Vec::new();
+        };
+        for path in &paths {
+            if let Err(err) = std::fs::remove_file(path) {
+                tracing::warn!(?path, error = %err, "failed to delete downloaded file");
+            }
+        }
+        self.downloaded_tracks
+            .retain(|song| song.local_path.as_ref().is_none_or(|p| !paths.contains(p)));
+        self.clamp_library_selection();
+        self.dirty = true;
+        vec![Cmd::ScanDownloads(self.config.effective_download_dir())]
+    }
+
+    /// Clamp the library cursor and the drag anchor into the current tab's row count.
+    fn clamp_library_selection(&mut self) {
+        let last = self.library_len().saturating_sub(1);
+        self.library_selected = self.library_selected.min(last);
+        self.library_anchor = self.library_anchor.min(last);
     }
 
     /// Make the whole results list the queue, starting at the selected track, and play.
@@ -2963,6 +3131,16 @@ impl App {
         self.config.effective_album_art()
             && self.art_picker.is_some()
             && self.art.borrow().is_some()
+    }
+
+    /// Whether a popup that paints *over* the album-art band is currently open (today: the
+    /// `eq:` preset dropdown). The render loop watches this so it can force one full redraw
+    /// when such a popup closes — graphics-protocol art (`StatefulProtocol`) won't re-emit on
+    /// its own when the render area is unchanged, so an overlay that overpainted it would
+    /// otherwise leave a stale artifact. Extend this predicate if another `Clear` popup that
+    /// can cover the art (e.g. the queue popup) shows the same artifact.
+    pub fn art_overlay_open(&self) -> bool {
+        self.eq_dropdown_open
     }
 
     /// Turn a decoded image into a render-ready protocol (or clear when there's none / no
@@ -4565,6 +4743,156 @@ mod tests {
         assert_eq!(app.library_len(), 1);
     }
 
+    // --- library multi-select delete (drag + Delete), per-tab semantics ------
+
+    /// A real, empty audio file in the temp dir, named uniquely so parallel tests don't clash.
+    fn temp_audio_file(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ytm-tui-app-test-{}-{tag}-{nanos}.m4a",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"").unwrap();
+        path
+    }
+
+    /// Open the library and switch to `tab` by tab-key presses (All is the entry tab).
+    fn open_library_tab(app: &mut App, tab: LibraryTab) {
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
+        while app.library_tab != tab {
+            app.update(Msg::Key(key(KeyCode::Tab)));
+        }
+    }
+
+    #[test]
+    fn library_delete_range_removes_from_favorites() {
+        let mut app = App::new(100);
+        app.library.toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
+        app.library.toggle_favorite(&Song::remote("b", "tb", "x", "0:10"));
+        app.library.toggle_favorite(&Song::remote("c", "tc", "x", "0:10")); // [c, b, a]
+        open_library_tab(&mut app, LibraryTab::Favorites);
+        // Cursor on row 0, drag-anchor on row 1: the selection spans rows 0..=1 (c, b).
+        app.library_selected = 0;
+        app.library_anchor = 1;
+        let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+        let ids: Vec<&str> = app.library.favorites.iter().map(|s| s.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["a"]);
+        assert_eq!(app.library_selected, 0);
+    }
+
+    #[test]
+    fn library_delete_range_removes_from_history() {
+        let mut app = App::new(100);
+        app.library.record_play(&Song::remote("a", "ta", "x", "0:10"));
+        app.library.record_play(&Song::remote("b", "tb", "x", "0:10"));
+        app.library.record_play(&Song::remote("c", "tc", "x", "0:10")); // front->back: c, b, a
+        open_library_tab(&mut app, LibraryTab::History);
+        app.library_selected = 1;
+        app.library_anchor = 2; // rows 1..=2 = b, a
+        let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+        let ids: Vec<&str> = app.library.history.iter().map(|s| s.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["c"]);
+    }
+
+    #[test]
+    fn library_delete_is_disabled_in_all_tab() {
+        let mut app = App::new(100);
+        app.library.toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
+        assert_eq!(app.library_tab, LibraryTab::All);
+        let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+        assert!(cmds.is_empty());
+        assert_eq!(app.library.favorites.len(), 1); // untouched
+    }
+
+    #[test]
+    fn library_all_dedups_same_title_across_collections() {
+        let mut app = App::new(100);
+        app.library.toggle_favorite(&Song::remote("yt1", "Song", "Artist", "3:00"));
+        // A downloaded file named after the same track (`Song.m4a` -> title "Song").
+        app.downloaded_tracks = vec![Song::local_file(PathBuf::from("/tmp/Song.m4a"))];
+        app.update(Msg::Key(key(KeyCode::Char('l'))));
+        assert_eq!(app.library_tab, LibraryTab::All);
+        // The remote favorite and the local file collapse to a single All-tab row...
+        assert_eq!(app.library_len(), 1);
+        // ...and the catalog entry (first in the chain) is the one kept.
+        assert_eq!(app.library_rows()[0].video_id, "yt1");
+    }
+
+    #[test]
+    fn downloads_delete_confirms_then_removes_file() {
+        let file = temp_audio_file("del");
+        let mut app = App::new(100);
+        app.downloaded_tracks = vec![Song::local_file(file.clone())];
+        open_library_tab(&mut app, LibraryTab::Downloads);
+        // Delete opens the confirmation modal rather than deleting outright.
+        let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+        assert!(cmds.is_empty());
+        assert!(app.confirm_delete_files.is_some());
+        assert!(file.exists());
+        // Confirming removes the file from disk and asks for a rescan.
+        let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+        assert!(app.confirm_delete_files.is_none());
+        assert!(!file.exists());
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::ScanDownloads(_))));
+    }
+
+    #[test]
+    fn downloads_delete_cancel_keeps_file() {
+        let file = temp_audio_file("keep");
+        let mut app = App::new(100);
+        app.downloaded_tracks = vec![Song::local_file(file.clone())];
+        open_library_tab(&mut app, LibraryTab::Downloads);
+        app.update(Msg::Key(key(KeyCode::Delete)));
+        assert!(app.confirm_delete_files.is_some());
+        // Any non-confirming key backs out and leaves the file alone.
+        let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+        assert!(app.confirm_delete_files.is_none());
+        assert!(file.exists());
+        assert!(cmds.is_empty());
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn library_mouse_drag_selects_range_then_delete_removes_it() {
+        let mut app = App::new(100);
+        app.library.toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
+        app.library.toggle_favorite(&Song::remote("b", "tb", "x", "0:10"));
+        app.library.toggle_favorite(&Song::remote("c", "tc", "x", "0:10")); // [c, b, a]
+        app.mode = Mode::Library;
+        app.library_tab = LibraryTab::Favorites;
+
+        // Render so the per-row hit rects are published.
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+        let row_rect = |i: usize| {
+            app.mouse_buttons
+                .borrow()
+                .iter()
+                .find(|b| b.target == MouseTarget::ListRow(i))
+                .map(|b| b.rect)
+                .expect("a rendered library row rect")
+        };
+        let r0 = row_rect(0);
+        let r2 = row_rect(2);
+
+        // Click row 0 (anchors the range), then drag onto row 2 (extends it).
+        app.update(Msg::MouseClick { col: r0.x, row: r0.y });
+        assert_eq!((app.library_selected, app.library_anchor), (0, 0));
+        app.update(Msg::MouseDrag { col: r2.x, row: r2.y });
+        assert_eq!((app.library_selected, app.library_anchor), (2, 0));
+
+        // Delete removes the whole selected 0..=2 range.
+        app.update(Msg::Key(key(KeyCode::Delete)));
+        assert!(app.library.favorites.is_empty());
+    }
+
     // --- M6: lyrics ---------------------------------------------------------
 
     fn lyric_lines() -> Vec<LyricLine> {
@@ -4988,6 +5316,18 @@ mod tests {
         let mut ai = App::new(100);
         ai.mode = Mode::Ai;
         assert_centered_in(rendered_help_button(&ai, 80, 20).rect, inner);
+    }
+
+    #[test]
+    fn art_overlay_open_tracks_eq_dropdown() {
+        // The render loop relies on this edge to force a redraw so graphics-protocol album
+        // art repaints after the `eq:` dropdown closes (it overpaints the art band).
+        let mut app = app_playing(1, 0);
+        assert!(!app.art_overlay_open());
+        app.eq_dropdown_open = true;
+        assert!(app.art_overlay_open());
+        app.eq_dropdown_open = false;
+        assert!(!app.art_overlay_open());
     }
 
     #[test]
