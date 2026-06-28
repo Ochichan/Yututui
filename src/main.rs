@@ -233,11 +233,12 @@ async fn run(
         .to_owned();
     }
 
-    // AI assistant actor: spawned only when a Gemini key is configured. Keep
-    // `ai_available` in lockstep with whether the actor actually started (a malformed key
-    // makes `spawn` return None even though one was set).
+    // AI assistant actor: spawned only when a Gemini key is configured *and* AI is enabled.
+    // `effective_ai_key()` returns None when the user has switched AI off, so the actor stays
+    // down even with a key saved. Keep `ai_available` in lockstep with whether the actor
+    // actually started (a malformed key makes `spawn` return None even though one was set).
     let mut ai_handle = cfg
-        .effective_gemini_api_key()
+        .effective_ai_key()
         .and_then(|key| ai::spawn(&key, cfg.effective_gemini_model(), worker_tx.clone()));
     app.ai_available = ai_handle.is_some();
 

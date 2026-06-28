@@ -296,6 +296,13 @@ pub enum MouseTarget {
     LibraryTab(LibraryTab),
     /// A Settings tab header, by index into [`SettingsTab::ALL`].
     SettingsTab(usize),
+    /// A clickable value control on a Settings field row — the checkbox of a toggle or the
+    /// `<` / `>` arrow of a Select/Slider. Carries the field-row index and the nudge direction,
+    /// so a click is the mouse equivalent of ←/→ on that row.
+    SettingsChange { row: usize, delta: i32 },
+    /// A clickable Settings button or text value, by field-row index — enters edit mode (text)
+    /// or fires the action (button); the mouse equivalent of Enter on that row.
+    SettingsActivate(usize),
     /// A list row, by absolute item index (interpreted per the active screen). Single-click
     /// selects; double-click plays.
     ListRow(usize),
@@ -763,7 +770,7 @@ impl App {
         self.speed = cfg.effective_speed();
         self.seek_seconds = cfg.effective_seek_seconds();
         self.autoplay_radio = cfg.effective_autoplay_radio();
-        self.ai_available = cfg.effective_gemini_api_key().is_some();
+        self.ai_available = cfg.effective_ai_key().is_some();
         self.gemini_model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
         self.theme = cfg.effective_theme();
@@ -1528,6 +1535,18 @@ impl App {
                 Vec::new()
             }
             MouseTarget::SettingsTab(_) => Vec::new(),
+            // Click a checkbox or `<`/`>` arrow: focus that row, then nudge it like ←/→.
+            MouseTarget::SettingsChange { row, delta } if self.mode == Mode::Settings => {
+                self.settings_focus_row(row);
+                self.settings_change(delta)
+            }
+            MouseTarget::SettingsChange { .. } => Vec::new(),
+            // Click a button or text value: focus that row, then activate it like Enter.
+            MouseTarget::SettingsActivate(row) if self.mode == Mode::Settings => {
+                self.settings_focus_row(row);
+                self.settings_activate()
+            }
+            MouseTarget::SettingsActivate(_) => Vec::new(),
             // Single-click a list row: select it (double-click plays — see double-click path).
             MouseTarget::ListRow(i) => self.on_list_row_click(i),
             // Open the queue window from the `N/M` position label.
@@ -1635,6 +1654,12 @@ impl App {
         match self.mode {
             Mode::Library => self.move_library_cursor(up, MOUSE_SCROLL_LINES),
             Mode::Search => self.move_search_cursor(up, MOUSE_SCROLL_LINES),
+            // The merged Playback/Graphics tabs overflow the viewport, so the wheel walks the
+            // field cursor (which scrolls the list with it).
+            Mode::Settings => {
+                let delta = if up { -1 } else { 1 } * MOUSE_SCROLL_LINES as i32;
+                self.settings_move_row(delta);
+            }
             _ => {}
         }
         Vec::new()
@@ -1723,6 +1748,17 @@ impl App {
             st.row = 0;
             st.editing_text = false;
             st.capturing = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Move the field cursor to `row` before a mouse-driven change/activate, so the shared
+    /// keyboard handlers (`settings_change`/`settings_activate`) act on the clicked row.
+    fn settings_focus_row(&mut self, row: usize) {
+        if let Some(st) = self.settings.as_mut() {
+            let max = st.tab.fields().len().saturating_sub(1);
+            st.row = row.min(max);
+            st.editing_text = false;
             self.dirty = true;
         }
     }
@@ -2288,6 +2324,7 @@ impl App {
             // the user chose to keep only in the environment). The cost is that an env-only
             // key shows "(none)" here; the AI still works and README documents env-wins.
             gemini_api_key: self.config.gemini_api_key.clone().unwrap_or_default(),
+            ai_enabled: self.config.effective_ai_enabled(),
             theme: self.theme.clone(),
             language: self.config.language,
             animations: self.config.animations,
@@ -2316,10 +2353,12 @@ impl App {
             .settings
             .as_ref()
             .is_some_and(|s| s.tab == SettingsTab::Keys);
-        let on_colors_tab = self
+        // A color row can now live anywhere (the Graphics tab), so the "reset color" key gates
+        // on the focused field's type rather than a dedicated Colors tab.
+        let on_color_field = self
             .settings
             .as_ref()
-            .is_some_and(|s| s.tab == SettingsTab::Colors);
+            .is_some_and(|s| matches!(s.current_field(), Some(Field::ThemeColor(_))));
         // The editor must stay operable no matter how keys are remapped, so the literal
         // arrows / Enter / Esc / Tab are always honored here, on top of the configured ones.
         let action = self
@@ -2362,7 +2401,7 @@ impl App {
                 Vec::new()
             }
             // Reset the highlighted color override to the selected theme preset default.
-            Some(Action::DeleteChar) if on_colors_tab => {
+            Some(Action::DeleteChar) if on_color_field => {
                 self.settings_reset_color();
                 Vec::new()
             }
@@ -2469,7 +2508,7 @@ impl App {
     }
 
     fn settings_reset_color(&mut self) {
-        let Some(Field::ThemeColor(role)) = self.settings.as_ref().map(|s| s.current_field()) else {
+        let Some(Field::ThemeColor(role)) = self.settings.as_ref().and_then(|s| s.current_field()) else {
             return;
         };
         if let Some(st) = self.settings.as_mut() {
@@ -2510,7 +2549,7 @@ impl App {
 
     /// Change the focused field's value with ←/→. Audio fields apply to mpv immediately.
     fn settings_change(&mut self, dir: i32) -> Vec<Cmd> {
-        let Some(field) = self.settings.as_ref().map(|s| s.current_field()) else {
+        let Some(field) = self.settings.as_ref().and_then(|s| s.current_field()) else {
             return Vec::new();
         };
         self.dirty = true;
@@ -2606,12 +2645,32 @@ impl App {
                 s.draft.gemini_model = s.draft.gemini_model.cycled(dir >= 0);
                 Vec::new()
             }
+            Field::AiEnabled => {
+                let s = self.settings.as_mut().unwrap();
+                s.draft.ai_enabled = !s.draft.ai_enabled;
+                Vec::new()
+            }
             Field::ThemePreset => {
                 let s = self.settings.as_mut().unwrap();
                 let next = s.draft.theme.preset_enum().stepped(dir);
                 s.draft.theme.set_preset(next);
                 self.theme = s.draft.theme.normalized();
                 self.status = format!("{}: {}", t!("Theme", "테마"), next.label());
+                Vec::new()
+            }
+            // Toggle the background between the preset's color and "no color" (transparent).
+            // Mirrors the color editor's live-preview path so the change shows immediately.
+            Field::BackgroundNone => {
+                let s = self.settings.as_mut().unwrap();
+                if s.draft.theme.is_role_transparent(ThemeRole::Background) {
+                    s.draft.theme.reset_role(ThemeRole::Background);
+                } else {
+                    let _ = s
+                        .draft
+                        .theme
+                        .set_override(ThemeRole::Background, crate::theme::TRANSPARENT);
+                }
+                self.theme = s.draft.theme.normalized();
                 Vec::new()
             }
             // Animation toggles: flip the mapped flag in the draft. The single `anim_flag`
@@ -2694,7 +2753,7 @@ impl App {
 
     /// Enter (Enter key): start editing a text field, or flip a toggle.
     fn settings_activate(&mut self) -> Vec<Cmd> {
-        let Some(field) = self.settings.as_ref().map(|s| s.current_field()) else {
+        let Some(field) = self.settings.as_ref().and_then(|s| s.current_field()) else {
             return Vec::new();
         };
         match field.kind() {
@@ -2797,7 +2856,7 @@ impl App {
     /// also persists free-text config fields immediately, so a typed value — notably the
     /// Gemini API key — can never be lost by leaving the screen via Esc/q instead of `s`.
     fn settings_edit_text(&mut self, k: KeyEvent) -> Vec<Cmd> {
-        let Some(field) = self.settings.as_ref().map(|s| s.current_field()) else {
+        let Some(field) = self.settings.as_ref().and_then(|s| s.current_field()) else {
             return Vec::new();
         };
         self.dirty = true;
@@ -2874,7 +2933,7 @@ impl App {
                 self.config.gemini_api_key = settings::blank_to_none(&value);
                 if self.config.gemini_api_key != old_key {
                     cmds.push(Cmd::ReloadAi {
-                        key: self.config.effective_gemini_api_key(),
+                        key: self.config.effective_ai_key(),
                         model: self.gemini_model,
                     });
                 }
@@ -2921,7 +2980,7 @@ impl App {
 
     /// The draft string backing the focused text field, if it is a text field.
     fn settings_text_buf(st: &mut SettingsState) -> Option<&mut String> {
-        match st.current_field() {
+        match st.current_field()? {
             Field::CookiesFile => Some(&mut st.draft.cookies_file),
             Field::DownloadDir => Some(&mut st.draft.download_dir),
             Field::ApiKey => Some(&mut st.draft.gemini_api_key),
@@ -2967,6 +3026,7 @@ impl App {
         let model_changed = self.gemini_model != d.gemini_model;
         self.gemini_model = d.gemini_model;
         let old_key = self.config.gemini_api_key.clone();
+        let old_ai_enabled = self.config.effective_ai_enabled();
         let old_download_dir = self.config.effective_download_dir();
         d.apply_to(&mut self.config);
         // Commit the edited keybindings (live + persisted as compact overrides).
@@ -2975,6 +3035,7 @@ impl App {
         self.theme = st.draft.theme.normalized();
         self.config.theme = self.theme.clone();
         let key_changed = self.config.gemini_api_key != old_key;
+        let ai_enabled_changed = self.config.effective_ai_enabled() != old_ai_enabled;
         // Volume controls change the live value in place; fold it in so a save
         // doesn't persist the stale startup value.
         self.config.volume = self.volume;
@@ -2993,9 +3054,12 @@ impl App {
         // at spawn) — so a key entered at runtime takes effect now, no relaunch. The
         // rebuild already adopts the current model, so only hot-swap the model on the
         // running actor when the key itself didn't change.
-        if key_changed {
+        // A changed key *or* a flipped AI on/off switch rebuilds the actor: `effective_ai_key`
+        // returns `None` when AI is off, so turning it off tears the actor down (and back on
+        // respawns it) without discarding the saved key.
+        if key_changed || ai_enabled_changed {
             cmds.push(Cmd::ReloadAi {
-                key: self.config.effective_gemini_api_key(),
+                key: self.config.effective_ai_key(),
                 model: self.gemini_model,
             });
         } else if model_changed {
@@ -4631,17 +4695,11 @@ mod tests {
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Playback);
         app.update(Msg::Key(key(KeyCode::Tab)));
-        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Eq);
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
+        app.update(Msg::Key(key(KeyCode::Tab)));
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Graphics);
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Theme);
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Colors);
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Animations);
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General); // wraps
     }
@@ -4674,12 +4732,12 @@ mod tests {
         use crate::radio::RadioMode;
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
+        }
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
-        // Fields: Model(0), ApiKey(1), AutoplayRadio(2), RadioMode(3).
-        for _ in 0..3 {
+        // Fields: AiEnabled(0), Model(1), ApiKey(2), AutoplayRadio(3), RadioMode(4).
+        for _ in 0..4 {
             app.update(Msg::Key(key(KeyCode::Down)));
         }
         app.update(Msg::Key(key(KeyCode::Right))); // Balanced → Discovery
@@ -4695,8 +4753,8 @@ mod tests {
     fn settings_key_capture_accepts_ctrl_chords() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
-        for _ in 0..7 {
-            app.update(Msg::Key(key(KeyCode::Tab)));
+        for _ in 0..2 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // → Hotkeys tab (index 2)
         }
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
         app.update(Msg::Key(key(KeyCode::Enter))); // capture first binding: player.toggle_pause
@@ -4729,8 +4787,8 @@ mod tests {
     fn settings_key_capture_conflict_raises_modal_warning() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
-        for _ in 0..7 {
-            app.update(Msg::Key(key(KeyCode::Tab))); // Keys tab
+        for _ in 0..2 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // → Hotkeys tab (index 2)
         }
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
         app.update(Msg::Key(key(KeyCode::Enter))); // capture player.toggle_pause
@@ -4766,7 +4824,7 @@ mod tests {
         for _ in 0..SettingsTab::General.fields().len() - 1 {
             app.update(Msg::Key(key(KeyCode::Down)));
         }
-        assert_eq!(app.settings.as_ref().unwrap().current_field(), Field::ResetAll);
+        assert_eq!(app.settings.as_ref().unwrap().current_field(), Some(Field::ResetAll));
     }
 
     /// Move the General-tab cursor onto the Reset-keybindings button.
@@ -4782,7 +4840,7 @@ mod tests {
         }
         assert_eq!(
             app.settings.as_ref().unwrap().current_field(),
-            Field::ResetKeybindings
+            Some(Field::ResetKeybindings)
         );
     }
 
@@ -4884,10 +4942,10 @@ mod tests {
     fn settings_theme_persists_when_closed_with_back() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
-        for _ in 0..4 {
-            app.update(Msg::Key(key(KeyCode::Tab))); // Theme tab
+        for _ in 0..3 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // → Graphics tab (index 3); row 0 = ThemePreset
         }
-        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Theme);
+        assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Graphics);
 
         app.update(Msg::Key(key(KeyCode::Right))); // Default -> Midnight
         assert_eq!(app.theme.preset, "midnight");
@@ -4908,8 +4966,9 @@ mod tests {
         let role = crate::theme::ThemeRole::Accent;
         {
             let st = app.settings.as_mut().unwrap();
-            st.tab = SettingsTab::Colors;
-            st.row = crate::theme::ThemeRole::ALL
+            st.tab = SettingsTab::Graphics;
+            // ThemeColor rows start at field index 2 (after ThemePreset and BackgroundNone).
+            st.row = 2 + crate::theme::ThemeRole::ALL
                 .iter()
                 .position(|&r| r == role)
                 .unwrap();
@@ -4968,9 +5027,11 @@ mod tests {
     fn settings_band_edit_sets_custom_and_emits_filter() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        app.update(Msg::Key(key(KeyCode::Tab))); // EQ tab; row 0 = preset
-        app.update(Msg::Key(key(KeyCode::Down))); // row 1 = first band (31 Hz)
+        app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
+        for _ in 0..4 {
+            // Speed → Seek → Gapless → EqPreset → Band(0) at row 4.
+            app.update(Msg::Key(key(KeyCode::Down)));
+        }
         let cmds = app.update(Msg::Key(key(KeyCode::Right))); // raise the band
         let st = app.settings.as_ref().unwrap();
         assert_eq!(st.draft.eq_preset, EqPreset::Custom);
@@ -4990,9 +5051,10 @@ mod tests {
         let mut app = app_playing(1, 0);
         app.volume = 55; // a `=`/`-` change during the session
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        app.update(Msg::Key(key(KeyCode::Tab))); // EQ tab; row 0 = preset
-        app.update(Msg::Key(key(KeyCode::Down))); // first band
+        app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 4
+        }
         app.update(Msg::Key(key(KeyCode::Right))); // raise it (draft = Custom)
         let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
         // Closing re-asserts the committed chain so the current track matches what was saved
@@ -5007,9 +5069,10 @@ mod tests {
     fn settings_preset_selector_snaps_from_custom_to_flat() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        app.update(Msg::Key(key(KeyCode::Tab))); // EQ tab; row 0 = preset
-        app.update(Msg::Key(key(KeyCode::Down))); // first band
+        app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 4
+        }
         app.update(Msg::Key(key(KeyCode::Right))); // hand-tune → Custom
         assert_eq!(
             app.settings.as_ref().unwrap().draft.eq_preset,
@@ -5056,9 +5119,10 @@ mod tests {
         let mut app = app_playing(1, 0);
         let start = app.gemini_model;
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General)
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        app.update(Msg::Key(key(KeyCode::Tab)));
-        app.update(Msg::Key(key(KeyCode::Tab))); // AI tab; row 0 = model
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
+        }
+        app.update(Msg::Key(key(KeyCode::Down))); // row 0 = AiEnabled → row 1 = model
         app.update(Msg::Key(key(KeyCode::Right))); // cycle model (draft only)
         let drafted = app.settings.as_ref().unwrap().draft.gemini_model;
         assert_ne!(drafted, start, "← /→ cycles the model in the draft");
@@ -5080,10 +5144,11 @@ mod tests {
     fn settings_ai_tab_edits_masked_api_key() {
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open
-        for _ in 0..3 {
-            app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
         }
-        app.update(Msg::Key(key(KeyCode::Down))); // model -> API key row
+        app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
+        app.update(Msg::Key(key(KeyCode::Down))); // Model -> API key row
         app.update(Msg::Key(key(KeyCode::Enter))); // start editing the key
         assert!(app.settings.as_ref().unwrap().editing_text);
         for c in "AIzaKey".chars() {
@@ -5121,10 +5186,11 @@ mod tests {
         // key must survive.
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open
-        for _ in 0..3 {
-            app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
         }
-        app.update(Msg::Key(key(KeyCode::Down))); // model -> API key row
+        app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
+        app.update(Msg::Key(key(KeyCode::Down))); // Model -> API key row
         app.update(Msg::Key(key(KeyCode::Enter))); // start editing
         for c in "AIzaPersist".chars() {
             app.update(Msg::Key(key(KeyCode::Char(c))));
@@ -5147,9 +5213,10 @@ mod tests {
         let mut app = app_playing(1, 0);
         app.config.gemini_api_key = Some("KEEPME".to_owned());
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft seeds from config)
-        for _ in 0..3 {
-            app.update(Msg::Key(key(KeyCode::Tab)));
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
         }
+        app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
         app.update(Msg::Key(key(KeyCode::Down))); // → API key row
         app.update(Msg::Key(key(KeyCode::Enter))); // start editing -> buffer cleared
         let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // leave editor without typing
@@ -5165,9 +5232,10 @@ mod tests {
         let mut app = app_playing(1, 0);
         app.config.gemini_api_key = Some("OLDKEY".to_owned());
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft seeds from config)
-        for _ in 0..3 {
-            app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab
+        for _ in 0..4 {
+            app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
         }
+        app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
         app.update(Msg::Key(key(KeyCode::Down))); // model -> API key row
         app.update(Msg::Key(key(KeyCode::Enter))); // start editing -> masked buffer cleared
         assert_eq!(
@@ -6419,6 +6487,45 @@ mod tests {
                 .any(|b| b.target == MouseTarget::Player(Action::CycleRating))
         );
         assert!(app.seekbar_rect.get().is_some());
+    }
+
+    #[test]
+    fn rendering_settings_registers_clickable_controls() {
+        // Each control kind must publish its own hit target *on top of* the row-select rect, so a
+        // click changes/activates the value rather than only moving the cursor onto it.
+        let render_targets = |tab: SettingsTab| -> Vec<MouseTarget> {
+            let mut app = app_playing(1, 0);
+            app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (mode → Settings)
+            app.settings.as_mut().unwrap().tab = tab;
+            let backend = TestBackend::new(80, 32);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+            app.mouse_buttons.borrow().iter().map(|b| b.target).collect()
+        };
+
+        // Graphics: a Select (ThemePreset, field 0), a Toggle (BackgroundNone, field 1), and a
+        // Text color row (first ThemeColor, field 2).
+        let g = render_targets(SettingsTab::Graphics);
+        let has = |ts: &[MouseTarget], t: MouseTarget| ts.contains(&t);
+        assert!(has(&g, MouseTarget::SettingsChange { row: 0, delta: -1 }), "preset ‹ arrow");
+        assert!(has(&g, MouseTarget::SettingsChange { row: 0, delta: 1 }), "preset › arrow");
+        assert!(has(&g, MouseTarget::SettingsChange { row: 1, delta: 1 }), "background toggle");
+        assert!(has(&g, MouseTarget::SettingsActivate(2)), "color row enters hex editor");
+        // Headers are render-only — a click on one falls through to nothing, never a field.
+
+        // Playback leads with the Speed slider (field 0): its ‹ › step arrows are click targets.
+        let p = render_targets(SettingsTab::Playback);
+        assert!(has(&p, MouseTarget::SettingsChange { row: 0, delta: -1 }), "speed ‹ arrow");
+        assert!(has(&p, MouseTarget::SettingsChange { row: 0, delta: 1 }), "speed › arrow");
+
+        // General's Reset buttons (no value) activate on click.
+        let general = render_targets(SettingsTab::General);
+        let reset_all = SettingsTab::General
+            .fields()
+            .iter()
+            .position(|f| *f == Field::ResetAll)
+            .unwrap();
+        assert!(has(&general, MouseTarget::SettingsActivate(reset_all)), "reset-all button");
     }
 
     #[test]

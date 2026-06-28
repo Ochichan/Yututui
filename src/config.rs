@@ -141,6 +141,9 @@ pub struct Config {
     pub gemini_api_key: Option<String>,
     /// Which Gemini model the assistant uses.
     pub gemini_model: GeminiModel,
+    /// Whether the AI assistant is enabled. `None` → on, so existing configs that already hold
+    /// a key keep AI working. Lets the user switch AI off while keeping the key saved.
+    pub ai_enabled: Option<bool>,
 
     // Theme -------------------------------------------------------------------
     /// Color theme preset plus per-role `#RRGGBB` overrides.
@@ -179,6 +182,7 @@ impl Default for Config {
             animations: AnimationsConfig::default(),
             gemini_api_key: None,
             gemini_model: GeminiModel::default(),
+            ai_enabled: None,
             theme: ThemeConfig::default(),
             language: Language::default(),
             keybindings: std::collections::BTreeMap::new(),
@@ -325,6 +329,23 @@ impl Config {
         self.gemini_model
     }
 
+    /// Whether the AI assistant is enabled (default on). When off, [`Self::effective_ai_key`]
+    /// reports no key, so the assistant stays torn down even if a key is configured.
+    pub fn effective_ai_enabled(&self) -> bool {
+        self.ai_enabled.unwrap_or(true)
+    }
+
+    /// The AI key to actually use: the effective Gemini key, but only while AI is enabled.
+    /// `None` when AI is switched off — the lever the settings toggle pulls to disable AI
+    /// without discarding the saved key.
+    pub fn effective_ai_key(&self) -> Option<String> {
+        if self.effective_ai_enabled() {
+            self.effective_gemini_api_key()
+        } else {
+            None
+        }
+    }
+
     /// The normalized theme config to apply at runtime.
     pub fn effective_theme(&self) -> ThemeConfig {
         self.theme.normalized()
@@ -459,6 +480,7 @@ mod tests {
             animations: AnimationsConfig { master: true, rain: true, ..Default::default() },
             gemini_api_key: Some("AIzaSecret".to_owned()),
             gemini_model: GeminiModel::Latest,
+            ai_enabled: Some(false),
             theme,
             language: Language::Korean,
             keybindings: std::collections::BTreeMap::new(),
@@ -478,6 +500,7 @@ mod tests {
         assert_eq!(back.gapless, Some(false));
         assert_eq!(back.autoplay_radio, Some(true));
         assert_eq!(back.autoplay_on_start, Some(true));
+        assert_eq!(back.ai_enabled, Some(false));
         assert!(back.animations.master);
         assert!(back.animations.rain);
         assert!(!back.animations.donut);
@@ -524,6 +547,35 @@ mod tests {
         // Empty/whitespace key reads as unset.
         let blank = Config { gemini_api_key: Some("   ".to_owned()), ..Config::default() };
         assert_eq!(blank.effective_gemini_api_key(), None);
+    }
+
+    #[test]
+    fn ai_off_switch_gates_the_key_without_discarding_it() {
+        // AI explicitly off: the key stays in config, but the *effective* key the assistant
+        // spawns from is None — so AI stays down even with a key saved. (None regardless of any
+        // `GEMINI_API_KEY` env var, since the disabled branch never consults the env.)
+        let off = Config {
+            gemini_api_key: Some("AIzaSaved".to_owned()),
+            ai_enabled: Some(false),
+            ..Config::default()
+        };
+        assert_eq!(off.gemini_api_key.as_deref(), Some("AIzaSaved")); // key retained
+        assert!(!off.effective_ai_enabled());
+        assert_eq!(off.effective_ai_key(), None); // but gated off
+
+        // Enabled (or the default unset → on) passes the effective key straight through. Asserts
+        // the *relationship* rather than a literal, so a concurrently-set env var can't flake it.
+        let on = Config {
+            gemini_api_key: Some("AIzaSaved".to_owned()),
+            ai_enabled: Some(true),
+            ..Config::default()
+        };
+        assert!(on.effective_ai_enabled());
+        assert_eq!(on.effective_ai_key(), on.effective_gemini_api_key());
+
+        let default_on = Config { ai_enabled: None, ..Config::default() };
+        assert!(default_on.effective_ai_enabled()); // unset defaults to on
+        assert_eq!(default_on.effective_ai_key(), default_on.effective_gemini_api_key());
     }
 
     #[test]

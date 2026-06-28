@@ -60,7 +60,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // the edits are saved.
     let k = |a| app.keymap.label(KeyContext::Settings, a);
     let ko = crate::i18n::is_korean();
-    let help_text = if st.editing_text && st.tab == SettingsTab::Colors {
+    let help_text = if st.editing_text && matches!(st.current_field(), Some(Field::ThemeColor(_))) {
         t!(
             "type #RRGGBB or none  ·  Enter save  ·  Backspace delete",
             "#RRGGBB 또는 none 입력  ·  Enter 저장  ·  Backspace 삭제"
@@ -96,7 +96,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 k(Action::SettingsCancel),
             )
         }
-    } else if st.tab == SettingsTab::Colors {
+    } else if matches!(st.current_field(), Some(Field::ThemeColor(_))) {
         if ko {
             format!(
                 "{}/{} 색상  ·  {} 편집  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장하고 닫기",
@@ -297,36 +297,203 @@ fn render_tabs(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
-    let fields = st.tab.fields();
-    let items: Vec<ListItem> = fields
+/// The list's selection marker. `HighlightSpacing::Always` reserves its width on *every* row
+/// (selected or not), so control hit-rects can assume a fixed content x-offset.
+const HL_SYMBOL: &str = "▶ ";
+
+/// Width of the label column for ordinary (non-color) rows: the widest label in the tab,
+/// floored at 20, plus a 2-cell gutter. Defined once so `field_row` and the click-target math
+/// agree on where each value column begins.
+fn other_label_width(tab: SettingsTab) -> usize {
+    tab.fields()
         .iter()
-        .enumerate()
-        .map(|(i, &field)| field_row(st, field, i == st.row))
-        .collect();
-
-    let list = List::new(items)
-        .style(st.draft.theme.style(R::TextPrimary))
-        .highlight_style(st.draft.theme.style(R::SettingsValueFocused).add_modifier(Modifier::BOLD))
-        .highlight_symbol("▶ ");
-
-    let mut state = ListState::default();
-    state.select(Some(st.row.min(fields.len().saturating_sub(1))));
-    frame.render_stateful_widget(list, area, &mut state);
-    // Each field row maps 1:1 to its index, so a click selects that row directly.
-    buttons::register_list_rows(app, area, state.offset(), fields.len(), Some);
+        .filter(|f| !matches!(f, Field::ThemeColor(_)))
+        .map(|f| UnicodeWidthStr::width(f.label().as_str()))
+        .max()
+        .unwrap_or(20)
+        .max(20)
+        + 2
 }
 
-/// One field row: a left-aligned label and its current value (with a slider bar for
-/// numeric fields and a caret for the text field being edited).
+/// Width of the label column for color-role rows (the widest role label by display width, so
+/// two-cell Korean labels still line the swatch/hex/description columns up).
+fn color_label_width() -> usize {
+    R::ALL.iter().map(|r| UnicodeWidthStr::width(r.label())).max().unwrap_or(22)
+}
+
+/// A slider value as it appears in a row: `‹ {bar}  {num} ›`. The `‹`/`›` are the clickable
+/// decrease/increase arrows (their hit-rects are published by [`register_field_controls`]).
+fn slider_str(bar: &str, num: &str) -> String {
+    format!("‹ {bar}  {num} ›")
+}
+
+/// The value text drawn to the right of a (non-color) field's label, exactly as [`field_row`]
+/// renders it. Shared so the click-target math never drifts from the on-screen glyphs.
+fn field_value_text(st: &SettingsState, field: Field, focused: bool) -> String {
+    match (field, field.kind()) {
+        // Secret fields (API key) are never shown in clear text; while editing, render a
+        // masked buffer of *that field's* typed length so keystrokes still register visibly.
+        (f, _) if f.is_secret() && focused && st.editing_text => {
+            let len = st.draft.text_value(field).map_or(0, |s| s.chars().count());
+            format!("{}▏", "•".repeat(len))
+        }
+        // Show the live edit buffer with a caret for the focused path field.
+        (Field::CookiesFile | Field::DownloadDir, _) if focused && st.editing_text => {
+            format!("{}▏", st.draft.text_value(field).unwrap_or_default())
+        }
+        (Field::Speed, _) => {
+            slider_str(&bar(st.draft.speed, SPEED_MIN, SPEED_MAX), &format!("{:.1}x", st.draft.speed))
+        }
+        (Field::SeekInterval, _) => slider_str(
+            &bar(st.draft.seek_seconds, SEEK_SECONDS_MIN, SEEK_SECONDS_MAX),
+            &format!("{:.0}s", st.draft.seek_seconds),
+        ),
+        (Field::Band(i), _) => slider_str(
+            &bar(st.draft.eq_bands[i], BAND_GAIN_MIN, BAND_GAIN_MAX),
+            &format!("{:+.0} dB", st.draft.eq_bands[i]),
+        ),
+        (_, FieldKind::Select) => format!("< {} >", st.draft.value_display(field)),
+        _ => st.draft.value_display(field),
+    }
+}
+
+fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
+    let theme = &st.draft.theme;
+    let fields = st.tab.fields();
+    let sections = st.tab.sections();
+    let focused_field = st.row.min(fields.len().saturating_sub(1));
+
+    // Build the display list. Sectioned tabs interleave a bold header (with a blank spacer
+    // before every header but the first) ahead of each section's fields; flat tabs list the
+    // fields directly. `display_to_field` maps each rendered row back to its field index, or
+    // `None` for header/blank rows — the same scheme the Keys tab uses, so headers stay
+    // unselectable and aren't mistaken for fields by clicks or the cursor.
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut display_to_field: Vec<Option<usize>> = Vec::new();
+    let mut selected = 0usize;
+
+    if sections.is_empty() {
+        for (i, &field) in fields.iter().enumerate() {
+            if i == focused_field {
+                selected = items.len();
+            }
+            items.push(field_row(st, field, i == focused_field));
+            display_to_field.push(Some(i));
+        }
+    } else {
+        let mut i = 0usize;
+        for (si, (title, count)) in sections.iter().enumerate() {
+            if si > 0 {
+                items.push(ListItem::new(Line::from("")));
+                display_to_field.push(None);
+            }
+            items.push(ListItem::new(Line::from(Span::styled(
+                (*title).to_owned(),
+                theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
+            ))));
+            display_to_field.push(None);
+            for _ in 0..*count {
+                if i == focused_field {
+                    selected = items.len();
+                }
+                items.push(field_row(st, fields[i], i == focused_field));
+                display_to_field.push(Some(i));
+                i += 1;
+            }
+        }
+    }
+
+    let list = List::new(items)
+        .style(theme.style(R::TextPrimary))
+        .highlight_style(theme.style(R::SettingsValueFocused).add_modifier(Modifier::BOLD))
+        .highlight_symbol(HL_SYMBOL)
+        // Reserve the marker gutter on every row so control hit-rects sit at a fixed x.
+        .highlight_spacing(HighlightSpacing::Always);
+
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+
+    let offset = state.offset();
+    // Whole-row clicks select the field; header/blank rows aren't targets.
+    buttons::register_list_rows(app, area, offset, display_to_field.len(), |d| {
+        display_to_field.get(d).copied().flatten()
+    });
+    // Per-control click targets (checkbox / arrows / button / text) on top of the row rects, so
+    // they win where they overlap (`mouse_target_at` takes the last-registered match).
+    register_field_controls(app, st, area, offset, &display_to_field);
+}
+
+/// Publish a hit rect for each visible field row's interactive control, layered over the row's
+/// select rect. Toggles get a rect over the `[x]` checkbox (→ flip); Select/Slider get rects
+/// over their `<`/`‹` and `>`/`›` arrows (→ −1 / +1); Buttons and text fields get a rect over
+/// their value (→ activate, i.e. press / enter edit mode).
+fn register_field_controls(
+    app: &App,
+    st: &SettingsState,
+    area: Rect,
+    offset: usize,
+    display_to_field: &[Option<usize>],
+) {
+    let fields = st.tab.fields();
+    let focused_field = st.row.min(fields.len().saturating_sub(1));
+    let gutter = buttons::text_width(HL_SYMBOL);
+    let other_lw = other_label_width(st.tab) as u16;
+    let color_lw = color_label_width() as u16;
+    let right = area.right();
+
+    // Register a clamped 1-row rect, skipping anything that starts past the visible width.
+    let put = |x: u16, w: u16, y: u16, target: MouseTarget| {
+        if w == 0 || x >= right {
+            return;
+        }
+        app.register_mouse_button(Rect { x, y, width: w.min(right - x), height: 1 }, target);
+    };
+
+    for vis in 0..area.height {
+        let display = offset + vis as usize;
+        if display >= display_to_field.len() {
+            break;
+        }
+        let Some(i) = display_to_field[display] else {
+            continue;
+        };
+        let field = fields[i];
+        let y = area.y + vis;
+        let focused = i == focused_field;
+
+        if let Field::ThemeColor(_) = field {
+            // The swatch + hex value opens the inline hex editor.
+            let vx = area.x + gutter + color_lw + 1; // gutter + label + leading space
+            put(vx, 2 + 2 + 9, y, MouseTarget::SettingsActivate(i)); // swatch + gap + hex
+            continue;
+        }
+
+        let vx = area.x + gutter + other_lw;
+        let value = field_value_text(st, field, focused);
+        let w = buttons::text_width(&value);
+        match field.kind() {
+            FieldKind::Toggle => {
+                put(vx, 3, y, MouseTarget::SettingsChange { row: i, delta: 1 });
+            }
+            FieldKind::Select | FieldKind::Slider => {
+                put(vx, 1, y, MouseTarget::SettingsChange { row: i, delta: -1 });
+                let last = vx.saturating_add(w.saturating_sub(1));
+                put(last, 1, y, MouseTarget::SettingsChange { row: i, delta: 1 });
+            }
+            FieldKind::Button | FieldKind::Text => {
+                put(vx, w, y, MouseTarget::SettingsActivate(i));
+            }
+        }
+    }
+}
+
+/// One field row: a left-aligned label and its current value (with a slider bar for numeric
+/// fields, `< … >` arrows for cycles, and a caret for the text field being edited).
 fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a> {
     let theme = &st.draft.theme;
     if let Field::ThemeColor(role) = field {
-        // Pad every role label to the widest one (by terminal *display* width, so Korean
-        // labels — whose characters are two cells wide — still line up the swatch, hex value,
-        // and description columns).
-        let label_w = R::ALL.iter().map(|r| UnicodeWidthStr::width(r.label())).max().unwrap_or(22);
-        let label = pad_to_width(role.label(), label_w);
+        let label = pad_to_width(role.label(), color_label_width());
         let value = if focused && st.editing_text {
             st.draft.text_value(field).unwrap_or_default().to_owned()
         } else {
@@ -349,47 +516,11 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
             Span::styled(role.description().to_owned(), theme.style(R::TextMuted)),
         ]));
     }
-    // Pad every label in this tab to the widest one (+ a 2-space gutter, min 22) so the value
-    // column lines up regardless of label length — e.g. "Album art (next launch)" no longer
-    // pushes its value out of alignment with the shorter rows above it, and even that widest
-    // label keeps a gap before its value. Measured by terminal *display* width so two-cell
-    // Korean characters line up like ASCII does.
-    let label_w = st
-        .tab
-        .fields()
-        .iter()
-        .filter(|f| !matches!(f, Field::ThemeColor(_)))
-        .map(|f| UnicodeWidthStr::width(f.label().as_str()))
-        .max()
-        .unwrap_or(20)
-        .max(20)
-        + 2;
-    let label = pad_to_width(&field.label(), label_w);
-    let value = match (field, field.kind()) {
-        // Secret fields (API key) are never shown in clear text; while editing, render a
-        // masked buffer of *that field's* typed length so keystrokes still register visibly.
-        (f, _) if f.is_secret() && focused && st.editing_text => {
-            let len = st.draft.text_value(field).map_or(0, |s| s.chars().count());
-            format!("{}▏", "•".repeat(len))
-        }
-        // Show the live edit buffer with a caret for the focused text field.
-        (Field::CookiesFile | Field::DownloadDir, _) if focused && st.editing_text => {
-            format!("{}▏", st.draft.text_value(field).unwrap_or_default())
-        }
-        (Field::Speed, _) => {
-            format!("{}  {:.1}x", bar(st.draft.speed, SPEED_MIN, SPEED_MAX), st.draft.speed)
-        }
-        (Field::SeekInterval, _) => format!(
-            "{}  {:.0}s",
-            bar(st.draft.seek_seconds, SEEK_SECONDS_MIN, SEEK_SECONDS_MAX),
-            st.draft.seek_seconds
-        ),
-        (Field::Band(i), _) => {
-            format!("{}  {:+.0} dB", bar(st.draft.eq_bands[i], BAND_GAIN_MIN, BAND_GAIN_MAX), st.draft.eq_bands[i])
-        }
-        (_, FieldKind::Select) => format!("< {} >", st.draft.value_display(field)),
-        _ => st.draft.value_display(field),
-    };
+    // Pad every label in this tab to the widest one (+ a 2-space gutter, min 20) so the value
+    // column lines up regardless of label length. The value text itself is produced by the
+    // shared `field_value_text`, so the click-target math stays in lockstep with the glyphs.
+    let label = pad_to_width(&field.label(), other_label_width(st.tab));
+    let value = field_value_text(st, field, focused);
     let value_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
     ListItem::new(Line::from(vec![
         Span::styled(label, theme.style(R::SettingsLabel)),

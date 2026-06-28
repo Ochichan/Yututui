@@ -34,37 +34,31 @@ pub const SEEK_SECONDS_STEP: f64 = 1.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
+    /// Playback controls + the EQ, shown as two sub-categories (see [`Self::sections`]).
     Playback,
-    Eq,
-    Ai,
-    Theme,
-    Colors,
-    Animations,
+    /// The remappable-keybinding editor (its own render/navigation path).
     Keys,
+    /// Theme preset, color roles, and animation toggles, as three sub-categories.
+    Graphics,
+    Ai,
 }
 
 impl SettingsTab {
-    pub const ALL: [SettingsTab; 8] = [
+    pub const ALL: [SettingsTab; 5] = [
         SettingsTab::General,
         SettingsTab::Playback,
-        SettingsTab::Eq,
-        SettingsTab::Ai,
-        SettingsTab::Theme,
-        SettingsTab::Colors,
-        SettingsTab::Animations,
         SettingsTab::Keys,
+        SettingsTab::Graphics,
+        SettingsTab::Ai,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             SettingsTab::General => t!("General", "일반"),
             SettingsTab::Playback => t!("Playback", "재생"),
-            SettingsTab::Eq => t!("EQ", "EQ"),
+            SettingsTab::Keys => t!("Hotkeys", "핫키"),
+            SettingsTab::Graphics => t!("Graphics", "그래픽"),
             SettingsTab::Ai => t!("AI", "AI"),
-            SettingsTab::Theme => t!("Theme", "테마"),
-            SettingsTab::Colors => t!("Colors", "색상"),
-            SettingsTab::Animations => t!("Animations", "애니메이션"),
-            SettingsTab::Keys => t!("Keys", "단축키"),
         }
     }
 
@@ -80,7 +74,8 @@ impl SettingsTab {
         Self::ALL[j]
     }
 
-    /// The ordered fields shown under this tab.
+    /// The ordered fields shown under this tab. Merged tabs concatenate their sub-categories'
+    /// fields in display order; [`Self::sections`] supplies the headers drawn between them.
     pub fn fields(self) -> Vec<Field> {
         match self {
             SettingsTab::General => vec![
@@ -93,38 +88,68 @@ impl SettingsTab {
                 Field::ResetKeybindings,
                 Field::ResetAll,
             ],
-            SettingsTab::Playback => vec![Field::Speed, Field::SeekInterval, Field::Gapless],
-            SettingsTab::Eq => {
-                let mut f = vec![Field::EqPreset];
+            // "Now Playing" controls then the EQ (preset + ten bands + normalize).
+            SettingsTab::Playback => {
+                let mut f = vec![
+                    Field::Speed,
+                    Field::SeekInterval,
+                    Field::Gapless,
+                    Field::EqPreset,
+                ];
                 f.extend((0..eq::BANDS).map(Field::Band));
                 f.push(Field::Normalize);
                 f
             }
-            SettingsTab::Ai => {
-                vec![Field::GeminiModel, Field::ApiKey, Field::AutoplayRadio, Field::RadioMode]
+            // Theme (preset + transparent-bg toggle), then every color role, then the
+            // animation toggles (master kill-switch first, then per-element effects).
+            SettingsTab::Graphics => {
+                let mut f = vec![Field::ThemePreset, Field::BackgroundNone];
+                f.extend(ThemeRole::ALL.iter().copied().map(Field::ThemeColor));
+                f.extend([
+                    Field::AnimMaster,
+                    Field::AnimTitle,
+                    Field::AnimHeart,
+                    Field::AnimSeekbar,
+                    Field::AnimSpinner,
+                    Field::AnimEqBars,
+                    Field::AnimControls,
+                    Field::AnimBorder,
+                    Field::AnimRain,
+                    Field::AnimDonut,
+                    Field::AnimVisualizer,
+                    Field::AnimStarfield,
+                    Field::AnimBounce,
+                ]);
+                f
             }
-            SettingsTab::Theme => vec![Field::ThemePreset],
-            SettingsTab::Colors => ThemeRole::ALL.iter().copied().map(Field::ThemeColor).collect(),
-            // Master switch first (a one-toggle kill-switch), then the per-element effects in
-            // the order they appear in the player view (element-level, then filler canvas).
-            SettingsTab::Animations => vec![
-                Field::AnimMaster,
-                Field::AnimTitle,
-                Field::AnimHeart,
-                Field::AnimSeekbar,
-                Field::AnimSpinner,
-                Field::AnimEqBars,
-                Field::AnimControls,
-                Field::AnimBorder,
-                Field::AnimRain,
-                Field::AnimDonut,
-                Field::AnimVisualizer,
-                Field::AnimStarfield,
-                Field::AnimBounce,
+            SettingsTab::Ai => vec![
+                Field::AiEnabled,
+                Field::GeminiModel,
+                Field::ApiKey,
+                Field::AutoplayRadio,
+                Field::RadioMode,
             ],
             // The Keys tab is a list of remappable bindings, not `Field`s; it has its own
             // navigation and rendering paths (see `crate::keymap::editable_entries`).
             SettingsTab::Keys => Vec::new(),
+        }
+    }
+
+    /// Sub-category headers for tabs that group their fields, each as `(title, field_count)`
+    /// in field order; the counts partition [`Self::fields`] exactly. An empty result means the
+    /// tab renders as a flat list with no headers.
+    pub fn sections(self) -> Vec<(&'static str, usize)> {
+        match self {
+            SettingsTab::Playback => vec![
+                (t!("Now Playing", "현재 재생"), 3),
+                (t!("EQ", "EQ"), eq::BANDS + 2),
+            ],
+            SettingsTab::Graphics => vec![
+                (t!("Theme", "테마"), 2),
+                (t!("Colors", "색상"), ThemeRole::ALL.len()),
+                (t!("Animations", "애니메이션"), 13),
+            ],
+            _ => Vec::new(),
         }
     }
 }
@@ -153,6 +178,9 @@ pub enum Field {
     Band(usize),
     Normalize,
     // AI
+    /// Master on/off for the AI assistant. Turning it off keeps the saved key but tears the
+    /// assistant down, so AI can be disabled without discarding the API key.
+    AiEnabled,
     GeminiModel,
     ApiKey,
     AutoplayRadio,
@@ -160,6 +188,8 @@ pub enum Field {
     RadioMode,
     // Theme
     ThemePreset,
+    /// Toggle the background to "no color" (transparent), letting the terminal show through.
+    BackgroundNone,
     ThemeColor(ThemeRole),
     // Animations — every one is a plain on/off toggle. `AnimMaster` is the global enable;
     // the rest are per-effect. Each maps to a flag in [`AnimationsConfig`] via `anim_flag`.
@@ -198,7 +228,7 @@ impl Field {
         match self {
             Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => FieldKind::Text,
             Field::Mouse | Field::AlbumArt | Field::AutoplayOnStart | Field::Gapless
-            | Field::AutoplayRadio | Field::Normalize
+            | Field::AutoplayRadio | Field::Normalize | Field::AiEnabled | Field::BackgroundNone
             | Field::AnimMaster | Field::AnimTitle | Field::AnimHeart | Field::AnimSeekbar
             | Field::AnimSpinner | Field::AnimEqBars | Field::AnimControls | Field::AnimBorder
             | Field::AnimRain | Field::AnimDonut | Field::AnimVisualizer | Field::AnimStarfield
@@ -254,9 +284,11 @@ impl Field {
             Field::EqPreset => t!("Preset", "프리셋").to_owned(),
             Field::Band(i) => format!("{:>5}", freq_label(i)),
             Field::Normalize => t!("Normalize (loudness)", "음량 평준화").to_owned(),
+            Field::AiEnabled => t!("Enable AI", "AI 사용").to_owned(),
             Field::GeminiModel => t!("Model", "모델").to_owned(),
             Field::ApiKey => t!("API key", "API 키").to_owned(),
             Field::ThemePreset => t!("Preset", "프리셋").to_owned(),
+            Field::BackgroundNone => t!("Background: None", "배경 없음").to_owned(),
             Field::ThemeColor(role) => role.label().to_owned(),
             Field::AnimMaster => t!("Enable animations", "애니메이션 켜기").to_owned(),
             Field::AnimTitle => t!("Title shimmer", "제목 반짝임").to_owned(),
@@ -311,6 +343,8 @@ pub struct SettingsDraft {
     pub gemini_model: GeminiModel,
     /// The Gemini key as stored in config (env `GEMINI_API_KEY` still overrides at launch).
     pub gemini_api_key: String,
+    /// Whether the AI assistant is enabled. Lets the user keep the key saved but turn AI off.
+    pub ai_enabled: bool,
     /// Color theme preset plus role overrides.
     pub theme: ThemeConfig,
     /// UI language. Applied live (via [`crate::i18n::set_language`]) as the user cycles the
@@ -363,8 +397,12 @@ impl SettingsDraft {
             Field::EqPreset => self.eq_preset.label().to_owned(),
             Field::Band(i) => format!("{:+.0} dB", self.eq_bands[i]),
             Field::Normalize => toggle_str(self.normalize),
+            Field::AiEnabled => toggle_str(self.ai_enabled),
             Field::GeminiModel => self.gemini_model.label().to_owned(),
             Field::ThemePreset => self.theme.preset_enum().label().to_owned(),
+            Field::BackgroundNone => {
+                toggle_str(self.theme.is_role_transparent(ThemeRole::Background))
+            }
             Field::ThemeColor(role) => self.theme.effective_hex(role),
             // All 13 animation toggles render as a checkbox; one mapping (`anim_flag`) reads
             // the live value out of the draft's `animations`, so display never drifts from
@@ -430,6 +468,7 @@ impl SettingsDraft {
         cfg.normalize = Some(self.normalize);
         cfg.gemini_model = self.gemini_model;
         cfg.gemini_api_key = blank_to_none(&self.gemini_api_key);
+        cfg.ai_enabled = Some(self.ai_enabled);
         cfg.theme = self.theme.normalized();
         cfg.language = self.language;
         cfg.animations = self.animations;
@@ -467,11 +506,13 @@ pub struct SettingsState {
 }
 
 impl SettingsState {
-    /// The field the cursor is on (clamped defensively; `saturating_sub` matches the
-    /// view's row clamp and stays panic-free if a future tab ever has no fields).
-    pub fn current_field(&self) -> Field {
+    /// The field the cursor is on, or `None` when the tab has no `Field`s (the Keys tab, which
+    /// edits bindings instead). `saturating_sub` matches the view's row clamp; `get` keeps this
+    /// panic-free even for an empty tab, so callers reached on any tab (e.g. the per-keystroke
+    /// "is this a color row?" check) stay sound.
+    pub fn current_field(&self) -> Option<Field> {
         let fields = self.tab.fields();
-        fields[self.row.min(fields.len().saturating_sub(1))]
+        fields.get(self.row.min(fields.len().saturating_sub(1))).copied()
     }
 }
 
@@ -521,6 +562,7 @@ mod tests {
             normalize: false,
             gemini_model: GeminiModel::default(),
             gemini_api_key: String::new(),
+            ai_enabled: true,
             theme: ThemeConfig::default(),
             language: Language::English,
             animations: AnimationsConfig::default(),
@@ -530,22 +572,29 @@ mod tests {
     #[test]
     fn tabs_step_and_wrap() {
         assert_eq!(SettingsTab::General.stepped(true), SettingsTab::Playback);
-        assert_eq!(SettingsTab::Eq.stepped(true), SettingsTab::Ai);
-        assert_eq!(SettingsTab::Ai.stepped(true), SettingsTab::Theme);
-        assert_eq!(SettingsTab::Theme.stepped(true), SettingsTab::Colors);
-        assert_eq!(SettingsTab::Colors.stepped(true), SettingsTab::Animations);
-        assert_eq!(SettingsTab::Animations.stepped(true), SettingsTab::Keys);
-        assert_eq!(SettingsTab::Keys.stepped(true), SettingsTab::General); // wraps
-        assert_eq!(SettingsTab::General.stepped(false), SettingsTab::Keys); // wraps back
+        assert_eq!(SettingsTab::Playback.stepped(true), SettingsTab::Keys);
+        assert_eq!(SettingsTab::Keys.stepped(true), SettingsTab::Graphics);
+        assert_eq!(SettingsTab::Graphics.stepped(true), SettingsTab::Ai);
+        assert_eq!(SettingsTab::Ai.stepped(true), SettingsTab::General); // wraps
+        assert_eq!(SettingsTab::General.stepped(false), SettingsTab::Ai); // wraps back
     }
 
     #[test]
-    fn animations_tab_is_all_toggles_and_persists() {
+    fn graphics_tab_groups_theme_colors_and_animations() {
         let _guard = crate::i18n::lock_for_test();
-        let f = SettingsTab::Animations.fields();
-        assert_eq!(f.len(), 13);
-        assert_eq!(f[0], Field::AnimMaster);
-        assert!(f.iter().all(|fld| fld.kind() == FieldKind::Toggle));
+        let f = SettingsTab::Graphics.fields();
+        // ThemePreset + BackgroundNone + every color role + 13 animation toggles.
+        assert_eq!(f.len(), 2 + ThemeRole::ALL.len() + 13);
+        assert_eq!(f[0], Field::ThemePreset);
+        assert_eq!(f[1], Field::BackgroundNone);
+        assert!(matches!(f[2], Field::ThemeColor(_)));
+        let anim_start = 2 + ThemeRole::ALL.len();
+        assert_eq!(f[anim_start], Field::AnimMaster);
+        assert!(f[anim_start..].iter().all(|fld| fld.kind() == FieldKind::Toggle));
+
+        // Section counts partition the field list exactly.
+        let total: usize = SettingsTab::Graphics.sections().iter().map(|(_, n)| n).sum();
+        assert_eq!(total, f.len());
 
         // Default draft: every animation toggle reads as off.
         let mut draft = base_draft();
@@ -568,6 +617,38 @@ mod tests {
 
         // Non-animation fields map to no flag.
         assert!(Field::Mouse.anim_flag(&mut AnimationsConfig::default()).is_none());
+    }
+
+    #[test]
+    fn background_none_toggle_tracks_transparency() {
+        let _guard = crate::i18n::lock_for_test();
+        assert_eq!(Field::BackgroundNone.kind(), FieldKind::Toggle);
+        let mut draft = base_draft();
+        // A preset with a concrete background reads as "not none".
+        draft.theme.set_preset(crate::theme::ThemePreset::Midnight);
+        assert!(!draft.theme.is_role_transparent(ThemeRole::Background));
+        assert_eq!(draft.value_display(Field::BackgroundNone), "[ ]");
+        // Forcing the override transparent flips the toggle on and persists.
+        draft.theme.set_override(ThemeRole::Background, crate::theme::TRANSPARENT).unwrap();
+        assert!(draft.theme.is_role_transparent(ThemeRole::Background));
+        assert_eq!(draft.value_display(Field::BackgroundNone), "[x]");
+        let mut cfg = Config::default();
+        draft.apply_to(&mut cfg);
+        assert!(cfg.theme.normalized().is_role_transparent(ThemeRole::Background));
+    }
+
+    #[test]
+    fn playback_tab_groups_now_playing_and_eq() {
+        let f = SettingsTab::Playback.fields();
+        // Speed + SeekInterval + Gapless, then EqPreset + ten bands + Normalize.
+        assert_eq!(f.len(), 3 + 1 + eq::BANDS + 1);
+        assert_eq!(f[0], Field::Speed);
+        assert_eq!(f[1], Field::SeekInterval);
+        assert_eq!(f[2], Field::Gapless);
+        assert_eq!(f[3], Field::EqPreset);
+        assert_eq!(f[3 + eq::BANDS + 1], Field::Normalize);
+        let total: usize = SettingsTab::Playback.sections().iter().map(|(_, n)| n).sum();
+        assert_eq!(total, f.len());
     }
 
     #[test]
@@ -604,8 +685,18 @@ mod tests {
         let f = SettingsTab::Ai.fields();
         assert_eq!(
             f,
-            vec![Field::GeminiModel, Field::ApiKey, Field::AutoplayRadio, Field::RadioMode]
+            vec![
+                Field::AiEnabled,
+                Field::GeminiModel,
+                Field::ApiKey,
+                Field::AutoplayRadio,
+                Field::RadioMode,
+            ]
         );
+        assert_eq!(Field::AiEnabled.kind(), FieldKind::Toggle);
+        assert!(!Field::AiEnabled.is_secret());
+        // Enabled by default in a fresh draft.
+        assert_eq!(base_draft().value_display(Field::AiEnabled), "[x]");
         assert_eq!(Field::GeminiModel.kind(), FieldKind::Select);
         assert_eq!(Field::ApiKey.kind(), FieldKind::Text);
         assert!(Field::ApiKey.is_secret());
@@ -617,9 +708,12 @@ mod tests {
     }
 
     #[test]
-    fn theme_and_colors_tabs_are_editable_and_persistent() {
-        assert_eq!(SettingsTab::Theme.fields(), vec![Field::ThemePreset]);
-        let color_fields = SettingsTab::Colors.fields();
+    fn theme_and_colors_are_editable_and_persistent() {
+        // Theme preset + transparent-bg toggle lead the Graphics tab; the color roles follow.
+        let f = SettingsTab::Graphics.fields();
+        assert_eq!(f[0], Field::ThemePreset);
+        let color_fields: Vec<Field> =
+            f.into_iter().filter(|fld| matches!(fld, Field::ThemeColor(_))).collect();
         assert_eq!(color_fields.len(), ThemeRole::ALL.len());
         assert!(matches!(color_fields[0], Field::ThemeColor(ThemeRole::Background)));
 
@@ -656,6 +750,7 @@ mod tests {
             normalize: true,
             gemini_model: GeminiModel::Latest,
             gemini_api_key: "  AIzaPersist  ".to_owned(),
+            ai_enabled: false,
             theme,
             language: Language::Korean,
             animations: AnimationsConfig { master: true, border: true, ..Default::default() },
@@ -664,6 +759,7 @@ mod tests {
         let mut cfg = Config::default();
         draft.apply_to(&mut cfg);
         assert_eq!(cfg.language, Language::Korean);
+        assert_eq!(cfg.ai_enabled, Some(false));
         assert!(cfg.animations.master);
         assert!(cfg.animations.border);
         assert!(!cfg.animations.rain);
@@ -710,11 +806,14 @@ mod tests {
     }
 
     #[test]
-    fn eq_tab_has_preset_ten_bands_and_normalize() {
-        let f = SettingsTab::Eq.fields();
-        assert_eq!(f.len(), eq::BANDS + 2);
-        assert_eq!(f[0], Field::EqPreset);
-        assert_eq!(f[eq::BANDS + 1], Field::Normalize);
+    fn eq_section_lives_under_playback() {
+        // EQ moved under Playback: preset, ten bands, then normalize, contiguous.
+        let f = SettingsTab::Playback.fields();
+        let preset_at = f.iter().position(|fld| *fld == Field::EqPreset).unwrap();
+        for (k, fld) in f[preset_at + 1..=preset_at + eq::BANDS].iter().enumerate() {
+            assert_eq!(*fld, Field::Band(k));
+        }
+        assert_eq!(f[preset_at + eq::BANDS + 1], Field::Normalize);
     }
 
     #[test]
