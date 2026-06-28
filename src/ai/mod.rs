@@ -26,17 +26,36 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 use crate::api::Song;
 use crate::app::{AiContext, Msg};
-use client::{Content, GenerateContentRequest, GenerationConfig, GeminiClient, GeminiError, Part, Tool};
+use client::{
+    Content, GeminiClient, GeminiError, GenerateContentRequest, GenerationConfig, Part,
+    ThinkingConfig, Tool,
+};
 
 /// Max tool-calling rounds before we give up (matches youtube-music-cli's cap).
 const MAX_ROUNDS: usize = 5;
 /// Client-side rate limit: at most this many requests per [`RATE_WINDOW`].
 const RATE_LIMIT: usize = 15;
 const RATE_WINDOW: Duration = Duration::from_secs(60);
+
+/// Reranker wall-clock budget: degrade to the local pick past this (Flash-Lite p99 can spike
+/// to several seconds, and we never want a slow rerank to stall the queue top-up).
+const RERANK_TIMEOUT: Duration = Duration::from_secs(9);
+/// Pure selection task → low variance.
+const RERANK_TEMPERATURE: f64 = 0.1;
+/// Thinking is off, but a ~12-id JSON array still needs headroom (a 64-token cap truncates to
+/// `MAX_TOKENS`).
+const RERANK_MAX_TOKENS: u32 = 512;
+const RERANK_SYSTEM_PROMPT: &str = "\
+You are RadioNext, a JSON-only radio reranker for a music player. You are given the recent \
+listening session (a seed track plus the last few played) and a list of candidate tracks, \
+each with an id. Rank the candidates into the best radio continuation: keep the flow coherent \
+with the seed, avoid repeating the same artist back-to-back, and shape a pleasant arc. Choose \
+ONLY from the given candidate ids — never invent or alter an id. Respond with JSON \
+{\"ids\":[...]} listing the chosen ids best-first, and nothing else.";
 
 const SYSTEM_PROMPT: &str = "\
 You are the built-in music assistant for ytm-tui, a terminal YouTube Music player. You \
@@ -50,6 +69,8 @@ Never fabricate tool results or videoIds you haven't seen.";
 /// Commands sent to the AI actor.
 pub enum AiCmd {
     Ask { prompt: String, context: Box<AiContext> },
+    /// One-shot ids-only radio rerank over a local candidate shortlist (the autoplay path).
+    Rerank { seed_video_id: String, prompt: String },
     /// Switch the model used for subsequent requests (settings save).
     SetModel(GeminiModel),
 }
@@ -62,6 +83,11 @@ pub struct AiHandle {
 impl AiHandle {
     pub fn ask(&self, prompt: String, context: Box<AiContext>) {
         let _ = self.tx.send(AiCmd::Ask { prompt, context });
+    }
+
+    /// Kick off a one-shot radio rerank; the result returns as [`Msg::RadioAiPicks`].
+    pub fn rerank(&self, seed_video_id: String, prompt: String) {
+        let _ = self.tx.send(AiCmd::Rerank { seed_video_id, prompt });
     }
 
     /// Hot-swap the model for future requests. Ignored if the actor has stopped.
@@ -103,6 +129,9 @@ impl AiActor {
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 AiCmd::Ask { prompt, context } => self.converse(prompt, *context).await,
+                AiCmd::Rerank { seed_video_id, prompt } => {
+                    self.rerank(seed_video_id, prompt).await
+                }
                 AiCmd::SetModel(model) => self.model = model,
             }
         }
@@ -162,7 +191,11 @@ impl AiActor {
 
         let system = Content { role: None, parts: vec![Part::text(SYSTEM_PROMPT)] };
         let decls = tools::declarations();
-        let gen_cfg = GenerationConfig { temperature: Some(0.7), max_output_tokens: Some(2048) };
+        let gen_cfg = GenerationConfig {
+            temperature: Some(0.7),
+            max_output_tokens: Some(2048),
+            ..Default::default()
+        };
         let first = format!("{}\nUser request: {prompt}", context_summary(&ctx));
         let mut contents = vec![Content::user(vec![Part::text(first)])];
 
@@ -237,6 +270,105 @@ impl AiActor {
             "Stopped after too many tool steps — try a simpler request.".to_owned(),
         ));
     }
+
+    /// One-shot ids-only radio rerank. Always emits [`Msg::RadioAiPicks`]; the ids are empty on
+    /// any failure (timeout, error, block, unparseable JSON), and the reducer then degrades to
+    /// the local pick. The model can never invent a track — the reducer validates every id
+    /// against the shortlist this call was built from.
+    async fn rerank(&mut self, seed_video_id: String, prompt: String) {
+        let _guard = ThinkingGuard(self.msg_tx.clone());
+        let req = build_rerank_request(&prompt);
+        let ids = self.rerank_call(&req).await.unwrap_or_default();
+        let _ = self.msg_tx.send(Msg::RadioAiPicks { seed_video_id, ids });
+    }
+
+    /// Run the reranker model chain (Flash-Lite → Flash), each under a hard timeout. Returns the
+    /// parsed ids, or `None` ("use the local fallback") on a timeout, a transient error once the
+    /// chain is exhausted, a block/early-stop finish, or unparseable JSON — none of which we
+    /// retry (the local pick is already a good answer).
+    async fn rerank_call(&mut self, req: &GenerateContentRequest) -> Option<Vec<String>> {
+        const CHAIN: [GeminiModel; 2] = [GeminiModel::FlashLite, GeminiModel::Flash];
+        for (i, &model) in CHAIN.iter().enumerate() {
+            self.throttle().await;
+            let resp = match timeout(RERANK_TIMEOUT, self.client.generate(model, req)).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    if e.is_model_fallbackable() && i + 1 < CHAIN.len() {
+                        tracing::warn!(from = model.label(), error = %e, "rerank model fallback");
+                        continue;
+                    }
+                    tracing::warn!(error = %e, "rerank failed → local fallback");
+                    return None;
+                }
+                Err(_) => {
+                    tracing::warn!(timeout_s = RERANK_TIMEOUT.as_secs(), "rerank timed out → local fallback");
+                    return None;
+                }
+            };
+            if let Some(reason) = resp.block_reason() {
+                tracing::warn!(reason, "rerank blocked → local fallback");
+                return None;
+            }
+            // A truncated/safety stop yields no usable JSON — fall back rather than retry.
+            if matches!(resp.finish_reason(), Some("MAX_TOKENS" | "SAFETY" | "RECITATION")) {
+                tracing::warn!(finish = resp.finish_reason(), "rerank stopped early → local fallback");
+                return None;
+            }
+            let text = resp.content().map(Content::joined_text).unwrap_or_default();
+            return parse_rerank_ids(&text);
+        }
+        None
+    }
+}
+
+/// Build the structured-output rerank request: JSON-only, thinking off, no tools. The strict
+/// schema + low temperature make this a near-deterministic selection over the shortlist.
+fn build_rerank_request(prompt: &str) -> GenerateContentRequest {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "ids": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 20 },
+            "conf": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "required": ["ids"],
+        "propertyOrdering": ["ids", "conf"]
+    });
+    GenerateContentRequest {
+        contents: vec![Content::user(vec![Part::text(prompt)])],
+        system_instruction: Some(Content {
+            role: None,
+            parts: vec![Part::text(RERANK_SYSTEM_PROMPT)],
+        }),
+        tools: None,
+        generation_config: Some(GenerationConfig {
+            temperature: Some(RERANK_TEMPERATURE),
+            max_output_tokens: Some(RERANK_MAX_TOKENS),
+            response_mime_type: Some("application/json".to_owned()),
+            response_schema: Some(schema),
+            thinking_config: Some(ThinkingConfig { thinking_budget: 0 }),
+            ..Default::default()
+        }),
+    }
+}
+
+/// Parse `{"ids":[...]}` (tolerating a stray code fence). Returns `None` on anything unusable so
+/// the caller falls back to the local pick.
+fn parse_rerank_ids(text: &str) -> Option<Vec<String>> {
+    let v: serde_json::Value = serde_json::from_str(strip_code_fence(text.trim())).ok()?;
+    let ids: Vec<String> = v
+        .get("ids")?
+        .as_array()?
+        .iter()
+        .filter_map(|x| x.as_str().map(str::to_owned))
+        .collect();
+    if ids.is_empty() { None } else { Some(ids) }
+}
+
+/// Strip a leading/trailing ```` ```json ```` / ```` ``` ```` fence if the model wrapped its
+/// JSON despite the JSON mime type.
+fn strip_code_fence(s: &str) -> &str {
+    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")).unwrap_or(s);
+    s.strip_suffix("```").unwrap_or(s).trim()
 }
 
 /// A compact, human-readable snapshot of player state for the model's first turn.
@@ -288,5 +420,36 @@ mod tests {
         assert!(s.contains("2 remaining"));
         assert!(s.contains("Mix (4)"));
         assert!(s.contains("Signed in: yes"));
+    }
+
+    #[test]
+    fn parse_rerank_ids_reads_ids_array() {
+        let ids = parse_rerank_ids(r#"{"ids":["a","b","c"],"conf":0.9}"#).unwrap();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn parse_rerank_ids_tolerates_a_code_fence() {
+        let ids = parse_rerank_ids("```json\n{\"ids\":[\"x\"]}\n```").unwrap();
+        assert_eq!(ids, vec!["x"]);
+    }
+
+    #[test]
+    fn parse_rerank_ids_rejects_garbage_and_empty() {
+        assert!(parse_rerank_ids("not json").is_none());
+        assert!(parse_rerank_ids(r#"{"ids":[]}"#).is_none(), "empty ids → fall back to local");
+        assert!(parse_rerank_ids(r#"{"other":1}"#).is_none());
+    }
+
+    #[test]
+    fn rerank_request_is_json_only_with_thinking_off_and_no_tools() {
+        let req = build_rerank_request("seed + candidates");
+        assert!(req.tools.is_none(), "reranker must not expose tools");
+        let v = serde_json::to_value(&req).unwrap();
+        let gc = &v["generationConfig"];
+        assert_eq!(gc["responseMimeType"], "application/json");
+        assert_eq!(gc["thinkingConfig"]["thinkingBudget"], 0);
+        assert_eq!(gc["maxOutputTokens"], RERANK_MAX_TOKENS);
+        assert!(gc["responseSchema"]["properties"].get("ids").is_some());
     }
 }

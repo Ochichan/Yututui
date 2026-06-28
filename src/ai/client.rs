@@ -48,13 +48,33 @@ pub struct Tool {
     pub function_declarations: Vec<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    /// `"application/json"` to force a JSON response (the structured-output path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_mime_type: Option<String>,
+    /// An OpenAPI-subset schema constraining the JSON response shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_schema: Option<serde_json::Value>,
+    /// Disables/limits "thinking" tokens. `thinking_budget: 0` turns thinking off — important on
+    /// 2.5 Flash (defaults to dynamic thinking ON) so the budget isn't drained from output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_config: Option<ThinkingConfig>,
+}
+
+/// `generationConfig.thinkingConfig`. `thinking_budget` is `i32` so `-1` ("dynamic") is
+/// representable, though the reranker pins it to `0` (off).
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThinkingConfig {
+    pub thinking_budget: i32,
 }
 
 // --- Shared / response models -----------------------------------------------
@@ -325,17 +345,28 @@ mod tests {
             contents: vec![Content::user(vec![Part::text("hi")])],
             system_instruction: Some(Content { role: None, parts: vec![Part::text("be brief")] }),
             tools: Some(vec![Tool { function_declarations: vec![serde_json::json!({"name": "x"})] }]),
-            generation_config: Some(GenerationConfig { temperature: Some(0.7), max_output_tokens: Some(1024) }),
+            generation_config: Some(GenerationConfig {
+                temperature: Some(0.7),
+                max_output_tokens: Some(1024),
+                response_mime_type: Some("application/json".to_owned()),
+                response_schema: Some(serde_json::json!({ "type": "object" })),
+                thinking_config: Some(ThinkingConfig { thinking_budget: 0 }),
+                ..Default::default()
+            }),
         };
         let v = serde_json::to_value(&req).unwrap();
         // The keys Gemini insists on being camelCase.
         assert!(v.get("systemInstruction").is_some());
         assert!(v.get("generationConfig").is_some());
         assert!(v["generationConfig"].get("maxOutputTokens").is_some());
+        assert!(v["generationConfig"].get("responseMimeType").is_some());
+        assert!(v["generationConfig"].get("responseSchema").is_some());
+        assert_eq!(v["generationConfig"]["thinkingConfig"]["thinkingBudget"], 0);
         assert!(v["tools"][0].get("functionDeclarations").is_some());
         // snake_case must NOT appear.
         assert!(v.get("system_instruction").is_none());
         assert!(v["generationConfig"].get("max_output_tokens").is_none());
+        assert!(v["generationConfig"].get("response_mime_type").is_none());
     }
 
     #[test]

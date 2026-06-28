@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::app::Msg;
+use crate::radio::CandidateSource;
 
 /// A search result track, trimmed to what the UI needs. Serializable so the local
 /// library (favorites/history) can persist tracks verbatim. `local_path` is set only for
@@ -186,22 +187,51 @@ async fn run_actor(
                 exclude_ids,
                 limit,
             } => {
-                let excluded: HashSet<String> = exclude_ids.into_iter().collect();
-                let msg = match ytmusic::related_tracks(&seed, limit, &excluded).await {
+                // Build one pool from two sources, tagged by provenance so the local engine can
+                // weight them: YTM's own radio continuation first (best), then yt-dlp text search
+                // to top up. `seen` carries the caller's exclusions and dedups across sources.
+                let mut seen: HashSet<String> = exclude_ids.into_iter().collect();
+                let mut candidates: Vec<(Song, CandidateSource)> = Vec::new();
+
+                match api.radio_continuation(&seed_video_id).await {
                     Ok(songs) => {
-                        tracing::info!(count = songs.len(), seed = %seed, "radio results");
-                        Msg::RadioResults {
-                            seed_video_id,
-                            songs,
+                        for s in songs {
+                            if seen.insert(s.video_id.clone()) {
+                                candidates.push((s, CandidateSource::WatchPlaylist));
+                            }
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(error = %format!("{e:#}"), seed = %seed, "radio search failed");
-                        Msg::RadioError {
-                            seed_video_id,
-                            error: format!("{e:#}"),
-                        }
+                        tracing::warn!(error = %format!("{e:#}"), "watch-playlist radio unavailable; using yt-dlp only");
                     }
+                }
+
+                // Top up the remainder from yt-dlp (skip entirely if the real radio already filled
+                // the pool). Only this source's failure can fail the whole request.
+                let want = limit.saturating_sub(candidates.len());
+                let mut ytdlp_err = None;
+                if want > 0 {
+                    match ytmusic::related_tracks(&seed, want, &seen).await {
+                        Ok(songs) => {
+                            for s in songs {
+                                if seen.insert(s.video_id.clone()) {
+                                    candidates.push((s, CandidateSource::YtdlpRadio));
+                                }
+                            }
+                        }
+                        Err(e) => ytdlp_err = Some(e),
+                    }
+                }
+
+                let msg = if candidates.is_empty() {
+                    let error = ytdlp_err
+                        .map(|e| format!("{e:#}"))
+                        .unwrap_or_else(|| "no related tracks found".to_owned());
+                    tracing::warn!(seed = %seed, %error, "radio search yielded nothing");
+                    Msg::RadioError { seed_video_id, error }
+                } else {
+                    tracing::info!(count = candidates.len(), seed = %seed, "radio results");
+                    Msg::RadioResults { seed_video_id, candidates }
                 };
                 let _ = msg_tx.send(msg);
             }

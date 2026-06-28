@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai::GeminiModel;
 use crate::eq::{self, EqPreset};
+use crate::radio::RadioConfig;
 use crate::theme::ThemeConfig;
 
 /// Clamp range for playback speed (matches the `>`/`<` controls and the settings slider).
@@ -62,6 +63,9 @@ pub struct Config {
     /// Auto-play the restored last track as soon as the app launches. `None` → off
     /// (opt-in; a fresh launch otherwise seeds the track paused and idle).
     pub autoplay_on_start: Option<bool>,
+    /// Local radio engine tuning (scoring weights, diversity, cooldown). Defaults ship a
+    /// single tuned `Balanced` profile; every field is `#[serde(default)]`.
+    pub radio: RadioConfig,
 
     // AI assistant ------------------------------------------------------------
     /// Google Gemini API key. The `GEMINI_API_KEY` env var overrides this when set.
@@ -97,6 +101,7 @@ impl Default for Config {
             gapless: None,
             autoplay_radio: None,
             autoplay_on_start: None,
+            radio: RadioConfig::default(),
             gemini_api_key: None,
             gemini_model: GeminiModel::default(),
             theme: ThemeConfig::default(),
@@ -369,6 +374,7 @@ mod tests {
             gapless: Some(false),
             autoplay_radio: Some(true),
             autoplay_on_start: Some(true),
+            radio: RadioConfig::default(),
             gemini_api_key: Some("AIzaSecret".to_owned()),
             gemini_model: GeminiModel::Latest,
             theme,

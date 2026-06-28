@@ -123,6 +123,23 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         parts.push((None, "    ".to_owned()));
         parts.push((Some(MouseTarget::QueuePos), format!("{pos}/{}", app.queue.len())));
     }
+    // Like / dislike toggles for the current track. Same `PlayerLabel` style and 4-space
+    // gaps as `S:`/`R:` next to them, so they read as one aligned, non-intrusive row; click
+    // and key (`f` / `x`) hit the same Action, so the buttons mirror the keyboard exactly.
+    if let Some(cur) = app.queue.current() {
+        let liked = app.library.is_favorite(&cur.video_id);
+        let disliked = app.signals.is_disliked(&cur.video_id);
+        parts.push((None, "    ".to_owned()));
+        parts.push((
+            Some(MouseTarget::Player(Action::Favorite)),
+            format!("♥:{}", if liked { "on" } else { "off" }),
+        ));
+        parts.push((None, "    ".to_owned()));
+        parts.push((
+            Some(MouseTarget::Player(Action::Dislike)),
+            format!("✗:{}", if disliked { "on" } else { "off" }),
+        ));
+    }
     // Shuffle and repeat are both always shown as click toggles, so the line's layout never
     // shifts as they flip — `S:on/off` mirrors the `R:` button next to it (stable UI).
     parts.push((None, "    ".to_owned()));

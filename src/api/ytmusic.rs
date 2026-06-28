@@ -12,7 +12,7 @@ use std::process::Stdio;
 use anyhow::{Context, Result, bail};
 use ytmapi_rs::YtMusic;
 use ytmapi_rs::auth::BrowserToken;
-use ytmapi_rs::common::YoutubeID;
+use ytmapi_rs::common::{VideoID, YoutubeID};
 
 use super::Song;
 use crate::util::format;
@@ -50,6 +50,33 @@ impl YtMusicApi {
             }
             Self::Anonymous => ytdlp_search(query, ANON_SEARCH_LIMIT).await,
         }
+    }
+
+    /// The real YouTube Music radio continuation for a seed track
+    /// (`get_watch_playlist_from_video_id`) — YTM's own "up next" mix, far better seeded than a
+    /// blind text search. Authenticated uses the logged-in client; anonymous spins up an
+    /// unauthenticated client (the query isn't login-gated, though YTM may still return nothing
+    /// without a cookie — the caller treats an error/empty result as "fall back to yt-dlp").
+    pub(crate) async fn radio_continuation(&self, seed_video_id: &str) -> Result<Vec<Song>> {
+        let tracks = match self {
+            Self::Browser(c) => c
+                .get_watch_playlist_from_video_id(VideoID::from_raw(seed_video_id))
+                .await
+                .context("watch-playlist (authenticated) failed")?,
+            Self::Anonymous => {
+                let client = YtMusic::new_unauthenticated()
+                    .await
+                    .context("anonymous YouTube Music client init failed")?;
+                client
+                    .get_watch_playlist_from_video_id(VideoID::from_raw(seed_video_id))
+                    .await
+                    .context("watch-playlist (anonymous) failed")?
+            }
+        };
+        Ok(tracks
+            .into_iter()
+            .map(|t| Song::remote(t.video_id.get_raw(), t.title, t.author, t.duration))
+            .collect())
     }
 }
 
@@ -92,7 +119,9 @@ pub(crate) async fn related_tracks(
     limit: usize,
     excluded: &HashSet<String>,
 ) -> Result<Vec<Song>> {
-    let limit = limit.clamp(1, 20);
+    // Allow up to 50 so the local radio engine gets a real candidate pool to rank (the
+    // engine, not this fetch, decides the final few picks).
+    let limit = limit.clamp(1, 50);
     let mut out = Vec::with_capacity(limit);
     let mut seen = excluded.clone();
     let mut had_success = false;

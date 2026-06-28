@@ -27,13 +27,20 @@ use crate::lyrics::LyricLine;
 use crate::player::PlayerCmd;
 use crate::playlists::Playlists;
 use crate::queue::Queue;
+use crate::radio::{self, CandidateSource, Cooc, StationState};
 use crate::settings::{self, Field, FieldKind, SettingsDraft, SettingsState, SettingsTab};
+use crate::signals::{self, Signals};
 use crate::theme::{ThemeConfig, ThemeRole};
 
 /// Queue length at or below which the autoplay/radio hook tops up the queue.
 const AUTOPLAY_THRESHOLD: usize = 3;
 /// Number of related tracks to request from the non-AI radio fallback.
 pub(crate) const RADIO_FALLBACK_COUNT: usize = 8;
+/// Size of the raw candidate pool fetched for the local radio engine to rank. Larger than
+/// the final pick count so scoring/diversity/cooldown have real choice.
+pub(crate) const RADIO_POOL_COUNT: usize = 40;
+/// How many recent history artists feed the radio cooldown window.
+const RADIO_RECENT_ARTISTS: usize = 12;
 /// Minimum gap between autoplay top-up requests (avoids a request storm).
 const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
 /// Consecutive empty radio extends before autoplay disables itself (circuit breaker).
@@ -56,6 +63,8 @@ const DOWNLOADED_TRACKS_MAX: usize = 999;
 const MAX_CONSECUTIVE_PLAY_ERRORS: u8 = 3;
 /// Playback-speed change per `>`/`<` press.
 const SPEED_STEP: f64 = 0.1;
+/// Idle gap (seconds) that ends a listening session, resetting the skip-confidence counter.
+const SESSION_GAP_SECS: i64 = 20 * 60;
 
 /// Everything that can change the application state.
 pub enum Msg {
@@ -135,15 +144,23 @@ pub enum Msg {
         video_id: String,
         stream_url: String,
     },
-    /// Related tracks returned by the non-AI radio fallback.
+    /// Related tracks returned by the non-AI radio fallback, each tagged with the source it
+    /// came from (real YTM watch-playlist vs anonymous yt-dlp search) so the local engine can
+    /// weight provenance and prefer the better source on dedup.
     RadioResults {
         seed_video_id: String,
-        songs: Vec<Song>,
+        candidates: Vec<(Song, CandidateSource)>,
     },
     /// The non-AI radio fallback failed to fetch related tracks.
     RadioError {
         seed_video_id: String,
         error: String,
+    },
+    /// The AI reranker's chosen candidate ids (best-first), or empty on any failure. The
+    /// reducer validates them against the stashed shortlist and tops up from the local pick.
+    RadioAiPicks {
+        seed_video_id: String,
+        ids: Vec<String>,
     },
 
     // AI assistant: intents emitted by the AI actor, applied here by `update()`.
@@ -178,6 +195,8 @@ pub enum Cmd {
     Search(String),
     /// Persist the library (favorites/history) to disk.
     SaveLibrary,
+    /// Persist the per-track preference signals (plays/skips/dislikes) to disk.
+    SaveSignals,
     /// Refresh the local downloads list from this folder.
     ScanDownloads(PathBuf),
     /// Fetch synced lyrics for a track.
@@ -214,6 +233,12 @@ pub enum Cmd {
         seed: String,
         seed_video_id: String,
         exclude_ids: Vec<String>,
+    },
+    /// Hand a local candidate shortlist to the AI actor to rerank (ids only). The result
+    /// returns as [`Msg::RadioAiPicks`]; failure degrades to the stashed local pick.
+    AiRerank {
+        seed_video_id: String,
+        prompt: String,
     },
     /// Switch the running AI actor's model (settings save). No effect without a key.
     SetAiModel(GeminiModel),
@@ -315,6 +340,16 @@ pub struct AiContext {
     /// Whether a YTM cookie is configured (gates authenticated related-tracks).
     pub authenticated: bool,
     pub autoplay_radio: bool,
+}
+
+/// A radio rerank handed to the AI actor, kept until its `Msg::RadioAiPicks` returns. The
+/// `shortlist` is the exact set the model was shown — every returned id is validated against
+/// it (so a hallucinated id is dropped) — and `local_pick` is the guaranteed fallback ordering
+/// the engine produced, used to top up any slots the AI left empty.
+struct PendingRerank {
+    seed_video_id: String,
+    shortlist: Vec<Song>,
+    local_pick: Vec<Song>,
 }
 
 /// Per-track download state, for the UI indicator.
@@ -477,8 +512,12 @@ pub struct App {
     pub ai_focus: AiFocus,
     /// When the autoplay hook last fired a top-up request (for the cooldown).
     radio_last_extend: Option<Instant>,
-    /// True while the non-AI radio fallback is fetching related tracks.
+    /// True while the radio candidate-pool fetch is in flight (both the AI and non-AI paths
+    /// fetch the same pool first).
     radio_pending: bool,
+    /// An AI rerank handed off to the assistant actor, awaiting its `Msg::RadioAiPicks`. Holds
+    /// the shortlist (to validate the returned ids against) and the local pick (the fallback).
+    pending_rerank: Option<PendingRerank>,
     /// Consecutive empty radio extends, for the autoplay circuit breaker.
     consecutive_radio_failures: u8,
     /// Consecutive mpv playback errors with no track playing in between, for the
@@ -497,6 +536,15 @@ pub struct App {
     // Library -----------------------------------------------------------------
     /// Favorites + play history, persisted to disk. Loaded by `main` after `new`.
     pub library: Library,
+    /// Per-track preference signals (plays/skips/dislikes + raw play log + artist affinity),
+    /// persisted separately from the library so `Song`'s shape stays unchanged. Loaded by
+    /// `main` after `new`; drives radio ranking and the ♥/✗ status-line toggles.
+    pub signals: Signals,
+    /// Tracks started in the current listening session (reset after a long idle gap). Used
+    /// to down-weight skip→dislike learning early in / in short sessions (noisier signal).
+    session_plays: u32,
+    /// Unix time of the last track start, for detecting session boundaries (idle gaps).
+    last_activity_at: Option<i64>,
     /// Local audio files found in the configured download directory.
     pub downloaded_tracks: Vec<Song>,
     pub library_tab: LibraryTab,
@@ -604,6 +652,7 @@ impl App {
             ai_focus: AiFocus::Input,
             radio_last_extend: None,
             radio_pending: false,
+            pending_rerank: None,
             consecutive_radio_failures: 0,
             consecutive_play_errors: 0,
             playlists: Playlists::default(),
@@ -613,6 +662,9 @@ impl App {
             search_selected: 0,
             searching: false,
             library: Library::default(),
+            signals: Signals::default(),
+            session_plays: 0,
+            last_activity_at: None,
             downloaded_tracks: Vec::new(),
             library_tab: LibraryTab::All,
             library_selected: 0,
@@ -748,7 +800,10 @@ impl App {
             }
             Msg::PlayerEof => {
                 tracing::info!("track ended (eof)");
-                return self.advance(true);
+                // The just-finished track played to its end → a full-play signal, then advance.
+                let mut cmds = self.record_outgoing(true);
+                cmds.extend(self.advance(true));
+                return cmds;
             }
             Msg::PlayerError(e) => {
                 // Log *which* track failed and whether it came from a (possibly stale)
@@ -863,14 +918,45 @@ impl App {
             }
             Msg::RadioResults {
                 seed_video_id,
-                songs,
+                candidates,
             } => {
                 self.radio_pending = false;
                 if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
-                    let songs = self.filter_radio_songs(songs, &seed_video_id);
-                    self.extend_queue_from_radio(songs);
+                    // With a key + reranker enabled, hand the model a diverse local shortlist to
+                    // reorder (ids only); otherwise rank the pool purely locally. Either way the
+                    // pool went through scoring + MMR + cooldown — never taken verbatim.
+                    if self.ai_available && self.config.radio.ai.enabled {
+                        return self.start_ai_rerank(&seed_video_id, candidates);
+                    }
+                    let picks = self.plan_local_radio(&seed_video_id, candidates);
+                    self.extend_queue_from_radio(picks);
                 } else {
                     self.dirty = true;
+                }
+            }
+            Msg::RadioAiPicks { seed_video_id, ids } => {
+                self.ai_thinking = false;
+                self.dirty = true;
+                // Only consume `pending_rerank` when this result is for it (a stale/duplicate
+                // message for some other seed leaves the current rerank untouched). When it does
+                // match but the seed is no longer queued (the user skipped/cleared mid-think),
+                // the chain still drops the stale rerank without enqueuing.
+                let ours = self
+                    .pending_rerank
+                    .as_ref()
+                    .is_some_and(|p| p.seed_video_id == seed_video_id);
+                if ours
+                    && let Some(pending) = self.pending_rerank.take()
+                    && self.autoplay_radio
+                    && self.queue.contains_video_id(&seed_video_id)
+                {
+                    let picks = radio::merge_ai_picks(
+                        &ids,
+                        &pending.shortlist,
+                        &pending.local_pick,
+                        self.config.radio.ai.picks,
+                    );
+                    self.extend_queue_from_radio(picks);
                 }
             }
             Msg::RadioError {
@@ -1603,18 +1689,47 @@ impl App {
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetVolume(self.volume))]
             }
-            // Manual next: always moves on, even under repeat-one.
-            Action::NextTrack => self.advance(false),
+            // Manual next: always moves on, even under repeat-one. A manual skip of the
+            // current track is a (position-discounted) negative signal before advancing.
+            Action::NextTrack => {
+                let mut cmds = self.record_outgoing(false);
+                cmds.extend(self.advance(false));
+                cmds
+            }
             Action::PrevTrack => {
                 let song = self.queue.prev().cloned();
                 self.load_song(song)
             }
-            // Favorite the current track (the ♥ marker in the title is the feedback).
+            // Favorite the current track (the ♥ marker in the title / ♥: button is the
+            // feedback). Also nudges the artist affinity the radio engine learns from.
             Action::Favorite => {
                 if let Some(song) = self.queue.current().cloned() {
-                    self.library.toggle_favorite(&song);
+                    let now_fav = self.library.toggle_favorite(&song);
+                    let artist_key = signals::normalize_artist(&song.artist);
+                    self.signals
+                        .record_like(&song.video_id, &artist_key, now_fav, signals::unix_now());
                     self.dirty = true;
-                    return vec![Cmd::SaveLibrary];
+                    return vec![Cmd::SaveLibrary, Cmd::SaveSignals];
+                }
+                Vec::new()
+            }
+            // Dislike / un-dislike the current track: flips a persistent flag the radio
+            // engine treats as a hard block, drops it from favorites if set, and pushes the
+            // artist affinity down. Reached identically by key (`x`) and by the ✗: button.
+            Action::Dislike => {
+                if let Some(song) = self.queue.current().cloned() {
+                    let artist_key = signals::normalize_artist(&song.artist);
+                    let disliked =
+                        self.signals
+                            .toggle_dislike(&song.video_id, &artist_key, signals::unix_now());
+                    let mut cmds = vec![Cmd::SaveSignals];
+                    // Disliking a favorite is contradictory — drop the favorite too.
+                    if disliked && self.library.is_favorite(&song.video_id) {
+                        self.library.toggle_favorite(&song);
+                        cmds.push(Cmd::SaveLibrary);
+                    }
+                    self.dirty = true;
+                    return cmds;
                 }
                 Vec::new()
             }
@@ -2711,8 +2826,9 @@ impl App {
         }
     }
 
-    /// If autoplay/radio is on and the queue is running low, top it up. Gemini gets the
-    /// first chance when configured; otherwise the anonymous yt-dlp radio fallback runs.
+    /// If autoplay/radio is on and the queue is running low, top it up. Both the AI and non-AI
+    /// paths fetch the *same* local candidate pool first; the AI reranker (when a key is
+    /// configured) then reorders it in [`Msg::RadioResults`]. The AI never invents tracks.
     fn maybe_autoplay_extend(&mut self) -> Vec<Cmd> {
         if !self.autoplay_radio {
             return Vec::new();
@@ -2720,11 +2836,9 @@ impl App {
         if self.queue.remaining() > AUTOPLAY_THRESHOLD {
             return Vec::new();
         }
-        if self.ai_available {
-            if self.ai_thinking {
-                return Vec::new();
-            }
-        } else if self.radio_pending {
+        // One refill in flight at a time: the pool fetch (`radio_pending`) or, when the AI
+        // reranks the fetched pool, that rerank call (`ai_thinking`).
+        if self.radio_pending || (self.ai_available && self.ai_thinking) {
             return Vec::new();
         }
         let cooled = match self.radio_last_extend {
@@ -2741,35 +2855,98 @@ impl App {
         let seed_video_id = cur.video_id.clone();
         let exclude_ids = self.radio_exclude_ids(&seed_video_id);
         self.radio_last_extend = Some(Instant::now());
+        self.radio_pending = true;
+        self.status = "Autoplay radio: finding related tracks".to_owned();
         self.dirty = true;
-        if self.ai_available {
-            self.ai_thinking = true;
-            let prompt = self.ai_radio_prompt(cur);
-            vec![Cmd::AskAi {
-                prompt,
-                context: Box::new(self.build_ai_context()),
-            }]
-        } else {
-            self.radio_pending = true;
-            self.status = "Autoplay radio: finding related tracks".to_owned();
-            vec![Cmd::RadioFallback {
-                seed,
-                seed_video_id,
-                exclude_ids,
-            }]
-        }
+        vec![Cmd::RadioFallback {
+            seed,
+            seed_video_id,
+            exclude_ids,
+        }]
     }
 
-    fn ai_radio_prompt(&self, current: &Song) -> String {
-        let context = self
-            .radio_context_labels(current)
-            .into_iter()
-            .map(|(role, label)| format!("- {role}: {label}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!(
-            "The play queue is running low. Using the add_to_queue tool, add 5 to 8 tracks that fit this listening context. Weight the current track most, and use the previous tracks to keep the flow coherent. Avoid repeating these context tracks.\n{context}\nReply with no text."
-        )
+    /// Stage 2 of the AI radio path: rank the fetched pool locally (the guaranteed `local_pick`
+    /// fallback) and hand a diverse shortlist to the assistant to rerank by id. Stashes both in
+    /// `pending_rerank` for [`Msg::RadioAiPicks`] to validate against, and emits the rerank
+    /// command. If the pool yields no rerankable shortlist, it enqueues the local pick directly.
+    fn start_ai_rerank(
+        &mut self,
+        seed_video_id: &str,
+        candidates: Vec<(Song, CandidateSource)>,
+    ) -> Vec<Cmd> {
+        let st = self.build_station_state(seed_video_id);
+        let cooc = Cooc::build(self.signals.play_log(), &self.config.radio.cooc);
+        let pool = radio::pool_from_tagged(candidates);
+        let now = signals::unix_now();
+        let local_pick = radio::plan_local(
+            pool.clone(),
+            &st,
+            &self.signals,
+            &cooc,
+            &self.config.radio,
+            self.config.radio.ai.picks,
+            now,
+        );
+        let shortlist = radio::shortlist_for_ai(
+            pool,
+            &st,
+            &self.signals,
+            &cooc,
+            &self.config.radio,
+            self.config.radio.ai.shortlist,
+            now,
+        );
+        if shortlist.is_empty() {
+            // Nothing to rerank → fall straight to the local pick (itself possibly empty, which
+            // trips the circuit breaker via `extend_queue_from_radio`).
+            self.extend_queue_from_radio(local_pick);
+            return Vec::new();
+        }
+        let prompt = self.ai_rerank_prompt(seed_video_id, &shortlist);
+        let shortlist_songs: Vec<Song> = shortlist.into_iter().map(|c| c.song).collect();
+        self.pending_rerank = Some(PendingRerank {
+            seed_video_id: seed_video_id.to_owned(),
+            shortlist: shortlist_songs,
+            local_pick,
+        });
+        self.ai_thinking = true;
+        self.status = "Autoplay radio: AI reranking".to_owned();
+        self.dirty = true;
+        vec![Cmd::AiRerank {
+            seed_video_id: seed_video_id.to_owned(),
+            prompt,
+        }]
+    }
+
+    /// Compact, ids-only rerank prompt: the recent session context plus the candidate shortlist
+    /// (id + metadata). The model picks ids from this list only — it never sees a track that
+    /// isn't already a playable local candidate.
+    fn ai_rerank_prompt(&self, seed_video_id: &str, shortlist: &[radio::Candidate]) -> String {
+        let mut s = String::from("Session so far (most recent last):\n");
+        let labels = self
+            .queue
+            .current()
+            .filter(|c| c.video_id == seed_video_id)
+            .map(|c| self.radio_context_labels(c))
+            .unwrap_or_default();
+        for (role, label) in labels.iter().rev() {
+            s.push_str(&format!("- {role}: {label}\n"));
+        }
+        s.push_str("\nCandidates (id | title | artist | source):\n");
+        for c in shortlist {
+            s.push_str(&format!(
+                "{} | {} | {} | {:?}\n",
+                c.video_id(),
+                c.song.title,
+                c.song.artist,
+                c.source
+            ));
+        }
+        s.push_str(&format!(
+            "\nReturn JSON {{\"ids\":[...]}} with up to {} candidate ids in the best listening order.",
+            self.config.radio.ai.picks
+        ));
+        s
     }
 
     fn radio_context_labels(&self, current: &Song) -> Vec<(&'static str, String)> {
@@ -2826,12 +3003,80 @@ impl App {
         ids.into_iter().collect()
     }
 
-    fn filter_radio_songs(&self, songs: Vec<Song>, seed_video_id: &str) -> Vec<Song> {
-        let mut seen: HashSet<String> = self.radio_exclude_ids(seed_video_id).into_iter().collect();
-        songs
-            .into_iter()
-            .filter(|song| seen.insert(song.video_id.clone()))
-            .collect()
+    /// Rank a raw candidate pool (from the anonymous related-tracks search) through the local
+    /// radio engine, returning the final picks. The engine applies hard filters (already-heard,
+    /// disliked, banned, bad-duration), a normalized additive base score, MMR diversity,
+    /// artist/album cooldown, and softmax sampling — a dramatic upgrade over the old
+    /// dedup-and-take. The deduped exclusion set is folded in via [`Self::build_station_state`].
+    fn plan_local_radio(
+        &self,
+        seed_video_id: &str,
+        candidates: Vec<(Song, CandidateSource)>,
+    ) -> Vec<Song> {
+        let st = self.build_station_state(seed_video_id);
+        let cooc = Cooc::build(self.signals.play_log(), &self.config.radio.cooc);
+        let pool = radio::pool_from_tagged(candidates);
+        radio::plan_local(
+            pool,
+            &st,
+            &self.signals,
+            &cooc,
+            &self.config.radio,
+            RADIO_FALLBACK_COUNT,
+            signals::unix_now(),
+        )
+    }
+
+    /// Snapshot the current playback context into a [`StationState`] the pure engine ranks
+    /// against: the seed, recently-heard tracks/artists (already-played filtering + cooldown),
+    /// and favorite artists (a seed-affinity boost). Dislikes are read straight from `signals`.
+    fn build_station_state(&self, seed_video_id: &str) -> StationState {
+        let mut recent_track_ids: Vec<String> = self.queue.video_ids().map(str::to_owned).collect();
+        recent_track_ids.extend(self.library.history.iter().map(|s| s.video_id.clone()));
+
+        // Cooldown window wants most-recent *last*; history is newest-first, so reverse it.
+        let mut recent_artist_keys: Vec<String> = self
+            .library
+            .history
+            .iter()
+            .take(RADIO_RECENT_ARTISTS)
+            .map(|s| signals::normalize_artist(&s.artist))
+            .collect();
+        recent_artist_keys.reverse();
+
+        let favorite_artist_keys: HashSet<String> = self
+            .library
+            .favorites
+            .iter()
+            .map(|s| signals::normalize_artist(&s.artist))
+            .collect();
+
+        StationState {
+            mode: self.config.radio.mode,
+            seed_video_id: seed_video_id.to_owned(),
+            seed_artist_key: self.radio_seed_artist_key(seed_video_id),
+            recent_track_ids,
+            recent_artist_keys,
+            banned_track_ids: HashSet::new(),
+            banned_artist_keys: HashSet::new(),
+            favorite_artist_keys,
+        }
+    }
+
+    /// The normalized artist key of the radio seed (usually the current track), for the
+    /// seed-artist affinity boost. Falls back to a history lookup, then empty.
+    fn radio_seed_artist_key(&self, seed_video_id: &str) -> String {
+        if let Some(cur) = self.queue.current()
+            && cur.video_id == seed_video_id
+        {
+            return signals::normalize_artist(&cur.artist);
+        }
+        self.library
+            .history
+            .iter()
+            .find(|s| s.video_id == seed_video_id)
+            .map(|s| signals::normalize_artist(&s.artist))
+            .unwrap_or_default()
     }
 
     /// Number of rows in the currently selected library tab.
@@ -3001,6 +3246,54 @@ impl App {
         self.load_song(song)
     }
 
+    /// Feed the outgoing current track into the preference signals. `full` = it played to
+    /// its end (EOF) → a full-play signal; otherwise it's a user skip and the completion is
+    /// derived from the last reported position (a weak negative when position is unknown).
+    /// Call this *before* [`Self::advance`] (it reads `queue.current()`). Playback *errors*
+    /// must not call it — a track that failed to play isn't a dislike. Returns the persist cmd.
+    fn record_outgoing(&mut self, full: bool) -> Vec<Cmd> {
+        let Some(song) = self.queue.current().cloned() else {
+            return Vec::new();
+        };
+        let artist_key = signals::normalize_artist(&song.artist);
+        let now = signals::unix_now();
+        if full {
+            self.signals.record_play(&song.video_id, &artist_key, 1.0, now);
+        } else {
+            // Unknown position (no progress reported yet) → treat as a weak negative, not a
+            // strong one (the user may have skipped before playback even started).
+            let completion = match (self.time_pos, self.duration) {
+                (Some(t), Some(d)) if d > 0.0 => (t / d).clamp(0.0, 1.0) as f32,
+                _ => 0.5,
+            };
+            let scale = self.skip_feedback_scale();
+            self.signals.record_skip(&song.video_id, &artist_key, completion, now, scale);
+        }
+        vec![Cmd::SaveSignals]
+    }
+
+    /// How much to trust a skip as a dislike signal: lower early in / in short sessions
+    /// (sampling, settling in, inattention), full once the user is clearly engaged. The
+    /// skip itself is always counted; this only scales the learned artist penalty.
+    fn skip_feedback_scale(&self) -> f32 {
+        match self.session_plays {
+            0..=4 => 0.3,  // short / early session — barely trust
+            5..=10 => 0.6, // warming up
+            _ => 1.0,      // deeply engaged
+        }
+    }
+
+    /// Update session bookkeeping on a track start: a long idle gap begins a fresh session,
+    /// otherwise this is the next track in the current one. Feeds [`Self::skip_feedback_scale`].
+    fn note_session_activity(&mut self) {
+        let now = signals::unix_now();
+        if self.last_activity_at.is_some_and(|prev| now - prev > SESSION_GAP_SECS) {
+            self.session_plays = 0;
+        }
+        self.session_plays = self.session_plays.saturating_add(1);
+        self.last_activity_at = Some(now);
+    }
+
     /// Move to the next queue track (auto = end-of-track) and load it, or stop. Also runs
     /// the autoplay/radio top-up check now that the queue has advanced.
     fn advance(&mut self, auto: bool) -> Vec<Cmd> {
@@ -3021,6 +3314,7 @@ impl App {
                 // "Playback error" / "Track unavailable") so the UI matches what's loading.
                 self.status.clear();
                 self.library.record_play(&song);
+                self.note_session_activity();
                 self.loaded_video_id = Some(song.video_id.clone());
                 // Drop the previous track's lyrics; refresh if the panel is open.
                 self.lyrics = None;
@@ -3649,7 +3943,9 @@ mod tests {
     fn eof_at_end_with_repeat_off_stops() {
         let mut app = app_playing(2, 1); // already on the last track
         let cmds = app.update(Msg::PlayerEof);
-        assert!(cmds.is_empty());
+        // Playback stops (no load/advance), though the finished track is still recorded.
+        assert!(load_url(&cmds).is_none());
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
         assert_eq!(current(&app), "id1");
     }
 
@@ -4399,6 +4695,16 @@ mod tests {
         })
     }
 
+    /// The `(seed_video_id, prompt)` of the `AiRerank` command among `cmds`, if any.
+    fn ai_rerank(cmds: &[Cmd]) -> Option<(&str, &str)> {
+        cmds.iter().find_map(|c| match c {
+            Cmd::AiRerank { seed_video_id, prompt } => {
+                Some((seed_video_id.as_str(), prompt.as_str()))
+            }
+            _ => None,
+        })
+    }
+
     #[test]
     fn a_enters_ai_from_player_and_library() {
         let mut app = app_playing(1, 0);
@@ -4505,21 +4811,23 @@ mod tests {
         let mut app = app_playing(2, 0); // remaining = 1 (<= threshold)
         app.ai_available = true;
         app.autoplay_radio = true;
-        // A manual next advances and should trigger a top-up AskAi.
+        // A manual next advances and should fetch the candidate pool first (both AI and non-AI
+        // paths share one pool; the AI reranks it once it returns).
         let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
         assert!(
-            ask_ai(&cmds).is_some(),
-            "autoplay should ask for more tracks"
+            radio_fallback(&cmds).is_some(),
+            "autoplay should fetch a candidate pool"
         );
-        assert!(app.ai_thinking);
-        assert!(radio_fallback(&cmds).is_none());
-        // The cooldown blocks an immediate second request.
+        assert!(ask_ai(&cmds).is_none(), "no free-form AI radio prompt anymore");
+        assert!(app.radio_pending);
+        assert!(!app.ai_thinking, "the rerank only starts once the pool returns");
+        // The cooldown / in-flight guard blocks an immediate second request.
         let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
-        assert!(ask_ai(&cmds).is_none());
+        assert!(radio_fallback(&cmds).is_none());
     }
 
     #[test]
-    fn ai_autoplay_prompt_uses_current_and_two_previous_tracks() {
+    fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
         let mut app = app_playing(1, 0); // current id0 is already in history
         let current = app.queue.current().cloned().unwrap();
         app.library
@@ -4530,12 +4838,81 @@ mod tests {
         app.ai_available = true;
         app.autoplay_radio = true;
 
-        let cmds = app.maybe_autoplay_extend();
-        let prompt = ask_ai(&cmds).expect("AI autoplay prompt");
+        // The fetched pool flows through the local engine; a diverse shortlist goes to the AI.
+        let src = CandidateSource::YtdlpRadio;
+        let cmds = app.update(Msg::RadioResults {
+            seed_video_id: "id0".to_owned(),
+            candidates: vec![
+                (Song::remote("cand1", "Track One", "band one", "3:00"), src),
+                (Song::remote("cand2", "Track Two", "band two", "3:10"), src),
+                (Song::remote("cand3", "Track Three", "band three", "3:20"), src),
+            ],
+        });
+
+        let (seed_id, prompt) = ai_rerank(&cmds).expect("an AI rerank command");
+        assert_eq!(seed_id, "id0");
+        // Session context (current + the two previous tracks).
         assert!(prompt.contains("- Current: t0 — a"));
         assert!(prompt.contains("- Previous 1: previous one — artist a"));
         assert!(prompt.contains("- Previous 2: previous two — artist b"));
-        assert_eq!(prompt.matches("t0 — a").count(), 1);
+        // The exact candidate ids the model may choose from.
+        assert!(prompt.contains("cand1"));
+        assert!(prompt.contains("cand2"));
+        assert!(app.ai_thinking, "the rerank is in flight");
+        assert!(app.pending_rerank.is_some(), "shortlist + local pick stashed for validation");
+        assert!(!app.radio_pending, "the pool fetch is done");
+    }
+
+    #[test]
+    fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
+        let mut app = app_playing(2, 0); // queue id0 (current), id1
+        app.ai_available = true;
+        app.autoplay_radio = true;
+        app.ai_thinking = true;
+        app.pending_rerank = Some(PendingRerank {
+            seed_video_id: "id0".to_owned(),
+            shortlist: vec![
+                Song::remote("s1", "S1", "a", "3:00"),
+                Song::remote("s2", "S2", "b", "3:00"),
+            ],
+            local_pick: vec![
+                Song::remote("s2", "S2", "b", "3:00"),
+                Song::remote("s1", "S1", "a", "3:00"),
+            ],
+        });
+
+        // AI returns one valid id + one hallucinated id (dropped); the gap tops up from local.
+        app.update(Msg::RadioAiPicks {
+            seed_video_id: "id0".to_owned(),
+            ids: vec!["s1".to_owned(), "HALLUCINATED".to_owned()],
+        });
+
+        assert!(!app.ai_thinking, "rerank finished");
+        assert!(app.pending_rerank.is_none(), "pending consumed");
+        assert!(app.queue.contains_video_id("s1"), "valid AI id enqueued");
+        assert!(app.queue.contains_video_id("s2"), "topped up from local pick");
+        assert!(!app.queue.contains_video_id("HALLUCINATED"), "hallucinated id dropped");
+    }
+
+    #[test]
+    fn radio_ai_picks_for_a_stale_seed_are_ignored() {
+        let mut app = app_playing(2, 0);
+        app.ai_available = true;
+        app.autoplay_radio = true;
+        app.ai_thinking = true;
+        app.pending_rerank = Some(PendingRerank {
+            seed_video_id: "current-seed".to_owned(),
+            shortlist: vec![Song::remote("s1", "S1", "a", "3:00")],
+            local_pick: vec![Song::remote("s1", "S1", "a", "3:00")],
+        });
+
+        // A result for a different (older) seed must not consume the in-flight rerank.
+        app.update(Msg::RadioAiPicks {
+            seed_video_id: "old-seed".to_owned(),
+            ids: vec!["s1".to_owned()],
+        });
+        assert!(app.pending_rerank.is_some(), "stale result leaves the current rerank intact");
+        assert!(!app.queue.contains_video_id("s1"));
     }
 
     #[test]
@@ -4560,24 +4937,29 @@ mod tests {
     }
 
     #[test]
-    fn radio_results_filter_duplicates_and_clear_pending() {
+    fn radio_results_run_through_local_engine_and_clear_pending() {
+        fastrand::seed(7);
         let mut app = app_playing(2, 0);
         app.autoplay_radio = true;
         app.radio_pending = true;
 
+        // The local engine excludes the seed (id0) and the already-queued track (id1), dedups
+        // the repeated id2, and ranks the rest. Distinct artists + normal durations keep the
+        // two survivors out of the artist-cooldown / duration hard filters, so both enqueue.
+        let src = CandidateSource::YtdlpRadio;
         app.update(Msg::RadioResults {
             seed_video_id: "id0".to_owned(),
-            songs: vec![
-                Song::remote("id0", "current", "a", "0:10"),
-                Song::remote("id2", "new", "a", "0:10"),
-                Song::remote("id2", "duplicate", "a", "0:10"),
-                Song::remote("id1", "queued", "a", "0:10"),
-                Song::remote("id3", "newer", "a", "0:10"),
+            candidates: vec![
+                (Song::remote("id0", "current", "a", "3:00"), src), // == seed, dropped
+                (Song::remote("id2", "New Song", "c", "3:00"), src), // kept
+                (Song::remote("id2", "New Song", "c", "3:00"), src), // canonical duplicate, deduped
+                (Song::remote("id1", "queued", "b", "3:00"), src),  // already queued, dropped
+                (Song::remote("id3", "Another", "d", "3:00"), src), // kept
             ],
         });
 
-        assert!(!app.radio_pending);
-        assert_eq!(app.queue.len(), 4);
+        assert!(!app.radio_pending, "results clear the in-flight guard");
+        assert_eq!(app.queue.len(), 4, "two new tracks added to the queue of two");
         assert!(app.queue.contains_video_id("id2"));
         assert!(app.queue.contains_video_id("id3"));
         assert!(app.status.contains("Queued 2"));
@@ -5331,6 +5713,40 @@ mod tests {
     }
 
     #[test]
+    fn dislike_key_toggles_and_clears_favorite() {
+        let mut app = app_playing(2, 0);
+        let id = current(&app).to_owned();
+        // Favorite first; disliking should both flip the dislike flag and drop the favorite.
+        app.update(Msg::Key(key(KeyCode::Char('f'))));
+        assert!(app.library.is_favorite(&id));
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('x'))));
+        assert!(app.signals.is_disliked(&id));
+        assert!(!app.library.is_favorite(&id));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+        // Pressing dislike again clears it.
+        app.update(Msg::Key(key(KeyCode::Char('x'))));
+        assert!(!app.signals.is_disliked(&id));
+    }
+
+    #[test]
+    fn manual_next_records_signals_then_advances() {
+        let mut app = app_playing(3, 0);
+        let id = current(&app).to_owned();
+        let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+        // The skipped track is persisted (SaveSignals) and playback advances.
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+        assert_ne!(current(&app), id);
+    }
+
+    #[test]
+    fn eof_records_signals_for_the_finished_track() {
+        let mut app = app_playing(3, 0);
+        let cmds = app.update(Msg::PlayerEof);
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    }
+
+    #[test]
     fn rendering_player_registers_control_buttons() {
         let app = app_playing(2, 0);
         let backend = TestBackend::new(80, 20);
@@ -5380,6 +5796,17 @@ mod tests {
                 .any(|b| b.target == MouseTarget::Player(Action::CycleRepeat))
         );
         assert!(buttons.iter().any(|b| b.target == MouseTarget::EqMenu));
+        // The like / dislike toggles for the current track sit on the same status line.
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b.target == MouseTarget::Player(Action::Favorite))
+        );
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b.target == MouseTarget::Player(Action::Dislike))
+        );
         assert!(app.seekbar_rect.get().is_some());
     }
 

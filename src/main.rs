@@ -14,8 +14,10 @@ mod lyrics;
 mod player;
 mod playlists;
 mod queue;
+mod radio;
 mod resolver;
 mod settings;
+mod signals;
 mod theme;
 mod tui;
 mod ui;
@@ -115,6 +117,8 @@ async fn run(
     app.art_picker = art_picker;
     // Load the local library (favorites + history); an absent/corrupt file → empty.
     app.library = library::Library::load();
+    // Load per-track preference signals (plays/skips/dislikes); absent → empty.
+    app.signals = signals::Signals::load();
     app.downloaded_tracks = library::scan_downloads(&cfg.effective_download_dir());
     app.restore_last_played_from_library();
     // Load local playlists (the AI playlist tools read/write these).
@@ -264,6 +268,11 @@ async fn run(
                         tracing::warn!(error = %e, "failed to save library");
                     }
                 }
+                Cmd::SaveSignals => {
+                    if let Err(e) = app.signals.save() {
+                        tracing::warn!(error = %e, "failed to save signals");
+                    }
+                }
                 Cmd::ScanDownloads(dir) => {
                     let songs = library::scan_downloads(&dir);
                     let _ = worker_tx.send(Msg::DownloadsScanned(songs));
@@ -301,12 +310,17 @@ async fn run(
                         h.ask(prompt, context);
                     }
                 }
+                Cmd::AiRerank { seed_video_id, prompt } => {
+                    if let Some(h) = &ai_handle {
+                        h.rerank(seed_video_id, prompt);
+                    }
+                }
                 Cmd::RadioFallback {
                     seed,
                     seed_video_id,
                     exclude_ids,
                 } => {
-                    api_handle.radio(seed, seed_video_id, exclude_ids, app::RADIO_FALLBACK_COUNT);
+                    api_handle.radio(seed, seed_video_id, exclude_ids, app::RADIO_POOL_COUNT);
                 }
                 Cmd::SetAiModel(model) => {
                     if let Some(h) = &ai_handle {
@@ -335,7 +349,8 @@ async fn run(
         }
     }
 
-    // Belt-and-suspenders: persist the library on a clean exit too.
+    // Belt-and-suspenders: persist the library + signals on a clean exit too.
     let _ = app.library.save();
+    let _ = app.signals.save();
     Ok(())
 }
