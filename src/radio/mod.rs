@@ -10,6 +10,7 @@ mod canonical;
 pub mod candidate;
 pub mod config;
 mod cooccurrence;
+mod musicgate;
 mod rerank;
 mod score;
 
@@ -22,6 +23,7 @@ use crate::signals::Signals;
 pub use candidate::{Candidate, CandidateSource};
 pub use config::{RadioConfig, RadioMode};
 pub use cooccurrence::Cooc;
+pub use score::{GateVerdict, classify_pool};
 
 /// The live station context the ranking reads: the seed, what was recently heard (for
 /// "already played" filtering, co-occurrence context, and cooldown), and the user's

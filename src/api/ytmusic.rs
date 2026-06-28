@@ -160,19 +160,22 @@ fn radio_queries(seed: &str) -> Vec<String> {
     if seed.is_empty() {
         return vec![
             "popular music radio".to_owned(),
-            "popular music mix".to_owned(),
+            "popular songs".to_owned(),
         ];
     }
 
+    // Note: no "… mix" queries — those pull 1-hour compilations / megamixes that the radio
+    // engine then has to filter out. "… radio" / "… songs" surface individual tracks instead.
     let mut queries = Vec::new();
     push_query(&mut queries, format!("{seed} radio"));
-    push_query(&mut queries, format!("{seed} mix"));
 
     if let Some((title, artist)) = split_seed(seed) {
         push_query(&mut queries, format!("{artist} radio"));
+        push_query(&mut queries, format!("{artist} songs"));
         push_query(&mut queries, format!("{artist} similar songs"));
-        push_query(&mut queries, format!("{title} {artist} mix"));
+        push_query(&mut queries, format!("{title} {artist}"));
     } else {
+        push_query(&mut queries, format!("{seed} songs"));
         push_query(&mut queries, format!("{seed} similar songs"));
     }
 
@@ -228,12 +231,14 @@ mod tests {
             queries,
             vec![
                 "Song — Artist radio",
-                "Song — Artist mix",
                 "Artist radio",
+                "Artist songs",
                 "Artist similar songs",
-                "Song Artist mix",
+                "Song Artist",
             ]
         );
+        // No "mix" queries — they pull long compilations.
+        assert!(!queries.iter().any(|q| q.contains("mix")));
     }
 
     #[test]
@@ -243,9 +248,10 @@ mod tests {
             queries,
             vec![
                 "lo-fi beats radio",
-                "lo-fi beats mix",
+                "lo-fi beats songs",
                 "lo-fi beats similar songs",
             ]
         );
+        assert!(!queries.iter().any(|q| q.contains("mix")));
     }
 }

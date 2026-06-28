@@ -255,11 +255,12 @@ async fn run(
             _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
         };
 
-        // An overlay that paints over the album art (the `eq:`/`radio:` dropdowns) can make
-        // graphics-protocol terminals clear more image pixels than the popup's cell rect. Snapshot
-        // *which* one is open across dispatch and force one full redraw on every open/close/switch
-        // edge so the art is re-emitted around the compact popup immediately.
-        let overlay_before = app.art_overlay_kind();
+        // The `eq:`/`radio:` dropdowns and the queue window paint a `Clear` box over part of the
+        // album art, but graphics-protocol art only re-emits when its render *area* changes — so a
+        // closed popup would leave a stale box where it was. Snapshot which art-covering popups are
+        // open across dispatch and, on any change, rebuild the art so it repaints cleanly (see
+        // `App::refresh_art`) — the same clean appear/disappear the full-width `?` overlay gets free.
+        let overlay_before = app.art_overlay_mask();
 
         for cmd in app.update(msg) {
             match cmd {
@@ -343,12 +344,12 @@ async fn run(
         }
 
         if app.dirty {
-            // A status dropdown just opened, closed, or switched: clear so the next draw re-emits
-            // every cell (including the art's cached protocol escape). This keeps terminals from
-            // showing an oversized blank area to the right of the small dropdown.
-            let overlay_after = app.art_overlay_kind();
+            // An art-covering popup (eq/radio dropdown or queue window) just opened, closed, or
+            // switched: rebuild the art so the next draw re-transmits and re-emits the whole image,
+            // overpainting any stale popup box. Cheaper and flicker-free vs a full-screen clear.
+            let overlay_after = app.art_overlay_mask();
             if overlay_before != overlay_after && app.art_active() {
-                terminal.clear()?;
+                app.refresh_art();
             }
             terminal.draw(|f| ui::render(f, &app))?;
             app.dirty = false;

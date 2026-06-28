@@ -80,6 +80,10 @@ pub struct ScoreWeights {
     pub novelty: f32,
     pub ytm_continuation: f32,
     pub completion: f32,
+    /// Magnitude of the positive bonus added for a [`super::musicgate::music_tier_score`] signal
+    /// (Topic/VEVO channel, "official audio/video" title). Applied to the raw [0,1] tier, not a
+    /// normalized column, so an "official audio" track gets a fixed nudge regardless of the batch.
+    pub music_tier: f32,
     /// Magnitude of the penalty subtracted for a disliked artist / version mismatch.
     pub dislike_penalty: f32,
 }
@@ -92,6 +96,7 @@ impl Default for ScoreWeights {
             novelty: 0.15,
             ytm_continuation: 0.15,
             completion: 0.05,
+            music_tier: 0.15,
             dislike_penalty: 0.40,
         }
     }
@@ -155,6 +160,32 @@ impl Default for AiRerankConfig {
     }
 }
 
+/// The MusicGate: a rule-based content filter that keeps non-music videos (reactions,
+/// podcasts, tutorials, …) and gimmick re-uploads out of the radio candidate pool. The
+/// non-music reject is always on (when `enabled`); the gimmick reject (karaoke / nightcore /
+/// 8D / sped-up / slowed+reverb) is mode-tied — forced in [`RadioMode::Focused`], opt-in via
+/// `block_altered_versions` otherwise — and self-disables when the pool would starve.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MusicGateConfig {
+    /// Master switch. When false, no candidates are hard-rejected by the gate (the soft
+    /// `version_penalty` in `canonical.rs` still applies independently).
+    pub enabled: bool,
+    /// Also apply the non-music hard-reject to `WatchPlaylist` candidates. Default true (the
+    /// strong-reject list is conservative enough that it essentially never trips on YTM's own
+    /// curated radio); set false to fully exempt that pre-curated source.
+    pub gate_watch_playlist: bool,
+    /// Hard-reject gimmick versions (karaoke / nightcore / 8D / sped-up / slowed+reverb) in
+    /// Balanced/Discovery too. Focused always blocks them regardless of this flag.
+    pub block_altered_versions: bool,
+}
+
+impl Default for MusicGateConfig {
+    fn default() -> Self {
+        Self { enabled: true, gate_watch_playlist: true, block_altered_versions: false }
+    }
+}
+
 /// The full set of local-radio tuning knobs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -175,6 +206,7 @@ pub struct RadioConfig {
     pub max_duration_secs: u32,
     pub cooc: CoocConfig,
     pub ai: AiRerankConfig,
+    pub gate: MusicGateConfig,
 }
 
 impl Default for RadioConfig {
@@ -190,6 +222,7 @@ impl Default for RadioConfig {
             max_duration_secs: 15 * 60,
             cooc: CoocConfig::default(),
             ai: AiRerankConfig::default(),
+            gate: MusicGateConfig::default(),
         }
     }
 }
@@ -232,5 +265,20 @@ mod tests {
         let bare: RadioConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(bare.weights.cooccurrence, 0.40);
         assert_eq!(bare.cooc.window, 8);
+    }
+
+    #[test]
+    fn musicgate_defaults_and_fill_missing() {
+        let cfg = RadioConfig::default();
+        assert!(cfg.gate.enabled);
+        assert!(cfg.gate.gate_watch_playlist);
+        assert!(!cfg.gate.block_altered_versions);
+        // Old configs (no `gate` key, or a partial one) fill from defaults.
+        let bare: RadioConfig = serde_json::from_str("{}").unwrap();
+        assert!(bare.gate.enabled);
+        let partial: RadioConfig =
+            serde_json::from_str(r#"{"gate":{"block_altered_versions":true}}"#).unwrap();
+        assert!(partial.gate.enabled, "missing sub-field fills from default");
+        assert!(partial.gate.block_altered_versions);
     }
 }

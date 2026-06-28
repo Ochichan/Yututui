@@ -1,0 +1,35 @@
+[tasks.default]
+alias = "ci"
+dependencies = [
+  "fmt",
+  "clippy",
+  "check",
+  "test",
+  "readme",
+  "build",
+]
+
+[tasks.fmt]
+command = "cargo"
+args = ["fmt", "--all", "--", "--check"]
+
+[tasks.clippy]
+command = "cargo"
+args = ["clippy", "--no-deps", "--tests", "--all-features", "--", "-D", "warnings"]
+
+[tasks.check]
+command = "cargo"
+args = ["check", "--all-features"]
+
+[tasks.test]
+command = "cargo"
+args = ["test", "--features", "crossterm"]
+
+[tasks.readme]
+command = "cargo"
+args = ["readme", "-o", "README.md"]
+
+[tasks.build]
+command = "cargo"
+args = ["build", "--features", "crossterm"]
+

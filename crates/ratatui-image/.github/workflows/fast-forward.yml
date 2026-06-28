@@ -1,0 +1,27 @@
+name: fast-forward
+on:
+  issue_comment:
+    types: [created, edited]
+jobs:
+  fast-forward:
+    if: ${{ contains(github.event.comment.body, '/merge')
+      && github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Fast forwarding
+        uses: sequoia-pgp/fast-forward@v1
+        with:
+          merge: true
+          # To reduce the workflow's verbosity, use 'on-error'
+          # to only post a comment when an error occurs, or 'never' to
+          # never post a comment.  (In all cases the information is
+          # still available in the step's summary.)
+          comment: never
+          # Use PAT to allow the push to trigger CI workflow
+          github_token: ${{ secrets.PAT }}

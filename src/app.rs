@@ -591,6 +591,9 @@ pub struct App {
     /// `StatefulImage` needs `&mut` during render, which only has `&App` (mirrors
     /// [`Self::mouse_buttons`]).
     pub art: RefCell<Option<StatefulProtocol>>,
+    /// The decoded source image kept alongside the protocol so [`Self::refresh_art`] can
+    /// rebuild a fresh protocol (new graphics-protocol id) on demand — see that method for why.
+    art_source: Option<DynamicImage>,
     /// Source pixel dimensions of the held art, for centering it within its panel.
     pub art_dims: (u32, u32),
     /// `video_id` the held art belongs to (guards against a stale image lingering).
@@ -693,6 +696,7 @@ impl App {
             lyrics: None,
             art_picker: None,
             art: RefCell::new(None),
+            art_source: None,
             art_dims: (0, 0),
             art_video_id: None,
             art_loading: false,
@@ -2962,6 +2966,7 @@ impl App {
         let st = self.build_station_state(seed_video_id);
         let cooc = Cooc::build(self.signals.play_log(), &self.config.radio.cooc);
         let pool = radio::pool_from_tagged(candidates);
+        self.log_radio_gate(&st, &pool);
         let now = signals::unix_now();
         let local_pick = radio::plan_local(
             pool.clone(),
@@ -3101,6 +3106,7 @@ impl App {
         let st = self.build_station_state(seed_video_id);
         let cooc = Cooc::build(self.signals.play_log(), &self.config.radio.cooc);
         let pool = radio::pool_from_tagged(candidates);
+        self.log_radio_gate(&st, &pool);
         radio::plan_local(
             pool,
             &st,
@@ -3110,6 +3116,39 @@ impl App {
             RADIO_FALLBACK_COUNT,
             signals::unix_now(),
         )
+    }
+
+    /// Emit a one-line `tracing` summary (plus per-drop `debug` lines) explaining what the
+    /// MusicGate did to the freshly-fetched radio pool — the low-friction "why did the radio
+    /// pick these?" view. Lands in `ytm-tui.log` at the default `info` level; per-candidate
+    /// detail needs `RUST_LOG=debug`. Purely observational — it never changes what is enqueued.
+    fn log_radio_gate(&self, st: &StationState, pool: &[radio::Candidate]) {
+        if !self.config.radio.gate.enabled || pool.is_empty() {
+            return;
+        }
+        let verdicts: Vec<radio::GateVerdict> =
+            radio::classify_pool(pool, st, &self.signals, &self.config.radio);
+        let kept = verdicts.iter().filter(|v| v.kept).count();
+        let dropped = verdicts.len() - kept;
+        if dropped == 0 {
+            tracing::info!(pool = verdicts.len(), kept, "radio gate: every candidate passed");
+            return;
+        }
+        let mut reasons: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+        for v in verdicts.iter().filter(|v| !v.kept) {
+            *reasons.entry(v.reason).or_default() += 1;
+        }
+        let summary = reasons.iter().map(|(r, n)| format!("{r}×{n}")).collect::<Vec<_>>().join(", ");
+        tracing::info!(pool = verdicts.len(), kept, dropped, %summary, "radio gate filtered the pool");
+        for v in verdicts.iter().filter(|v| !v.kept) {
+            tracing::debug!(
+                reason = v.reason,
+                source = ?v.source,
+                id = %v.video_id,
+                title = %v.title,
+                "radio gate drop"
+            );
+        }
     }
 
     /// Snapshot the current playback context into a [`StationState`] the pure engine ranks
@@ -3512,29 +3551,43 @@ impl App {
             && self.art.borrow().is_some()
     }
 
-    /// *Which* popup that paints over the album-art band is open: `0` none, `1` the `eq:`
-    /// dropdown, `2` the `radio:` dropdown. The render loop snapshots this across dispatch and
-    /// forces one full redraw when the value changes. Graphics-protocol art (`StatefulProtocol`)
-    /// can otherwise show stale or oversized cleared regions around text popups. The switch case
-    /// matters specifically because *some* overlay stays open across it. Extend this if another
-    /// `Clear` popup that can cover the art (e.g. the queue popup) shows the same artifact.
-    pub fn art_overlay_kind(&self) -> u8 {
-        if self.eq_dropdown_open {
-            1
-        } else if self.radio_dropdown_open {
-            2
-        } else {
-            0
+    /// A bitmask of which `Clear` popups that paint over the album-art band are open:
+    /// bit 0 = `eq:` dropdown, bit 1 = `radio:` dropdown, bit 2 = the queue window. The render
+    /// loop snapshots this across dispatch and, on any change, calls [`Self::refresh_art`] so the
+    /// graphics-protocol art repaints cleanly around (or after) the popup — see that method. A
+    /// mask (not a bool) so switching one popup straight to another, or a second popup opening
+    /// over a first, still registers as an edge. Add a bit here for any new art-covering popup.
+    pub fn art_overlay_mask(&self) -> u8 {
+        u8::from(self.eq_dropdown_open)
+            | (u8::from(self.radio_dropdown_open) << 1)
+            | (u8::from(self.queue_popup_open) << 2)
+    }
+
+    /// Rebuild the held art into a fresh protocol so the *next* render re-transmits and
+    /// re-emits the whole image. ratatui-image only re-emits its Kitty unicode-placeholder rows
+    /// when the render *area* changes, so a `Clear` popup that overdraws part of the art (the
+    /// `eq:`/`radio:` dropdowns, the queue window) leaves a stale background box where it was —
+    /// the art never repaints there on its own. `new_resize_protocol` mints a new random
+    /// graphics id, which changes every row's escape so ratatui's diff re-emits all of them and
+    /// the terminal re-transmits the pixels — a complete, flicker-localized repaint with no
+    /// full-screen `clear()` flash. This is how `eq:`/`radio:`/queue get the same clean
+    /// appear/disappear the (full-width) `?` help overlay gets for free. Cheap clone of one
+    /// already-bounded image (`MAX_DIM`), only on a popup toggle.
+    pub fn refresh_art(&self) {
+        if let (Some(img), Some(picker)) = (self.art_source.as_ref(), self.art_picker.as_ref()) {
+            *self.art.borrow_mut() = Some(picker.new_resize_protocol(img.clone()));
         }
     }
 
     /// Turn a decoded image into a render-ready protocol (or clear when there's none / no
-    /// picker). Building the protocol is cheap; the encode happens lazily at render.
+    /// picker). Building the protocol is cheap; the encode happens lazily at render. The decoded
+    /// image is also kept (`art_source`) so [`Self::refresh_art`] can rebuild on a popup toggle.
     fn set_artwork(&mut self, video_id: String, image: Option<DynamicImage>) {
         match (image, self.art_picker.as_ref()) {
             (Some(img), Some(picker)) => {
                 self.art_dims = (img.width(), img.height());
-                *self.art.borrow_mut() = Some(picker.new_resize_protocol(img));
+                *self.art.borrow_mut() = Some(picker.new_resize_protocol(img.clone()));
+                self.art_source = Some(img);
                 self.art_video_id = Some(video_id);
             }
             _ => self.clear_artwork(),
@@ -3544,6 +3597,7 @@ impl App {
     /// Drop any held art (track change, or the feature turned off) — also frees its RAM.
     fn clear_artwork(&mut self) {
         *self.art.borrow_mut() = None;
+        self.art_source = None;
         self.art_video_id = None;
         self.art_dims = (0, 0);
     }
@@ -6022,19 +6076,26 @@ mod tests {
     }
 
     #[test]
-    fn art_overlay_kind_distinguishes_the_two_dropdowns() {
-        // The render loop clears on a change *away from* a non-zero kind, so switching eq->radio
-        // (1 -> 2) must register as a change even though `art_overlay_open()` stays true.
+    fn art_overlay_mask_tracks_each_popup_independently() {
+        // The render loop refreshes the art on any change to this mask, so every art-covering
+        // popup needs its own bit — switching one straight to another, or stacking a second over
+        // a first, must register as an edge.
         let mut app = app_playing(1, 0);
-        assert_eq!(app.art_overlay_kind(), 0);
+        assert_eq!(app.art_overlay_mask(), 0);
         app.eq_dropdown_open = true;
-        assert_eq!(app.art_overlay_kind(), 1);
-        // Switch to the radio dropdown (mutually exclusive): kind changes 1 -> 2.
+        assert_eq!(app.art_overlay_mask(), 0b001);
+        // Switch eq -> radio: the mask still changes (0b001 -> 0b010) even though some popup
+        // stays open across the switch.
         app.eq_dropdown_open = false;
         app.radio_dropdown_open = true;
-        assert_eq!(app.art_overlay_kind(), 2);
+        assert_eq!(app.art_overlay_mask(), 0b010);
+        // The queue window is a distinct bit, and can stack with a dropdown.
+        app.queue_popup_open = true;
+        assert_eq!(app.art_overlay_mask(), 0b110);
         app.radio_dropdown_open = false;
-        assert_eq!(app.art_overlay_kind(), 0);
+        assert_eq!(app.art_overlay_mask(), 0b100);
+        app.queue_popup_open = false;
+        assert_eq!(app.art_overlay_mask(), 0);
     }
 
     #[test]
