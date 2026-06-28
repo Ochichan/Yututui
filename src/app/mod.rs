@@ -192,11 +192,9 @@ pub struct App {
     /// persisted separately from the library so `Song`'s shape stays unchanged. Loaded by
     /// `main` after `new`; drives radio ranking and the ♥/✗ status-line toggles.
     pub signals: Signals,
-    /// Tracks started in the current listening session (reset after a long idle gap). Used
-    /// to down-weight skip→dislike learning early in / in short sessions (noisier signal).
-    session_plays: u32,
-    /// Unix time of the last track start, for detecting session boundaries (idle gaps).
-    last_activity_at: Option<i64>,
+    /// Listening-session tracking (play count + last-start time) for skip-confidence; reset
+    /// after a long idle gap (see [`Session`]).
+    session: Session,
     /// Library-screen state: active tab, list cursor + multi-select anchor, local
     /// download-folder rows, and the pending file-delete confirmation.
     pub library_ui: LibraryView,
@@ -300,8 +298,7 @@ impl App {
             },
             library: Library::default(),
             signals: Signals::default(),
-            session_plays: 0,
-            last_activity_at: None,
+            session: Session::default(),
             library_ui: LibraryView::default(),
             lyrics: Lyrics::default(),
             art: ArtState::default(),

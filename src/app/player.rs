@@ -379,7 +379,7 @@ impl App {
     /// (sampling, settling in, inattention), full once the user is clearly engaged. The
     /// skip itself is always counted; this only scales the learned artist penalty.
     pub(in crate::app) fn skip_feedback_scale(&self) -> f32 {
-        match self.session_plays {
+        match self.session.plays {
             0..=4 => 0.3,  // short / early session — barely trust
             5..=10 => 0.6, // warming up
             _ => 1.0,      // deeply engaged
@@ -390,11 +390,11 @@ impl App {
     /// otherwise this is the next track in the current one. Feeds [`Self::skip_feedback_scale`].
     pub(in crate::app) fn note_session_activity(&mut self) {
         let now = signals::unix_now();
-        if self.last_activity_at.is_some_and(|prev| now - prev > SESSION_GAP_SECS) {
-            self.session_plays = 0;
+        if self.session.last_activity_at.is_some_and(|prev| now - prev > SESSION_GAP_SECS) {
+            self.session.plays = 0;
         }
-        self.session_plays = self.session_plays.saturating_add(1);
-        self.last_activity_at = Some(now);
+        self.session.plays = self.session.plays.saturating_add(1);
+        self.session.last_activity_at = Some(now);
     }
 
     /// Move to the next queue track (auto = end-of-track) and load it, or stop. Also runs

@@ -19,6 +19,17 @@ pub struct Status {
     pub kind: StatusKind,
 }
 
+/// Listening-session tracking for skip-confidence: how many tracks have started this session
+/// (reset after a long idle gap) and when the last one started (to detect that gap).
+#[derive(Default)]
+pub struct Session {
+    /// Tracks started in the current listening session (reset after a long idle gap). Used to
+    /// down-weight skip→dislike learning early in / in short sessions (noisier signal).
+    pub plays: u32,
+    /// Unix time of the last track start, for detecting session boundaries (idle gaps).
+    pub last_activity_at: Option<i64>,
+}
+
 /// Video-overlay state: the detached mpv process (if open) and whether opening it is what
 /// paused the audio (so closing only resumes playback the overlay paused).
 #[derive(Default)]
