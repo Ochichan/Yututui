@@ -227,10 +227,8 @@ pub struct App {
     pub art: ArtState,
 
     // Downloads ---------------------------------------------------------------
-    /// In-flight / finished downloads, keyed by `video_id`, for the UI indicator.
-    pub downloads: HashMap<String, DownloadState>,
-    /// Original catalog metadata for in-flight downloads, keyed by `video_id`.
-    download_sources: HashMap<String, Song>,
+    /// Download progress + source metadata, keyed by `video_id` (see [`Downloads`]).
+    pub downloads: Downloads,
 
     // Prefetch ----------------------------------------------------------------
     /// Pre-resolved direct stream URLs, keyed by `video_id` (for instant skip).
@@ -337,8 +335,7 @@ impl App {
             library_ui: LibraryView::default(),
             lyrics: Lyrics::default(),
             art: ArtState::default(),
-            downloads: HashMap::new(),
-            download_sources: HashMap::new(),
+            downloads: Downloads::default(),
             resolved: HashMap::new(),
             seekbar_rect: Cell::new(None),
             list_viewport_rows: Cell::new(0),
@@ -585,15 +582,15 @@ impl App {
                 }
             }
             Msg::DownloadProgress { video_id, percent } => {
-                self.downloads
+                self.downloads.active
                     .insert(video_id, DownloadState::Running(percent.round() as u8));
                 self.dirty = true;
             }
             Msg::DownloadDone { video_id, path } => {
-                self.downloads.insert(video_id.clone(), DownloadState::Done);
+                self.downloads.active.insert(video_id.clone(), DownloadState::Done);
                 if !path.trim().is_empty() {
                     let local = self
-                        .download_sources
+                        .downloads.sources
                         .remove(&video_id)
                         .map(|source| source.with_local_path(PathBuf::from(&path)))
                         .unwrap_or_else(|| Song::local_file(PathBuf::from(&path)));
@@ -603,9 +600,9 @@ impl App {
                 self.dirty = true;
             }
             Msg::DownloadError { video_id, error } => {
-                self.downloads
+                self.downloads.active
                     .insert(video_id.clone(), DownloadState::Failed);
-                self.download_sources.remove(&video_id);
+                self.downloads.sources.remove(&video_id);
                 self.status = format!("{}: {error}", t!("Download failed", "다운로드 실패"));
                 self.dirty = true;
             }

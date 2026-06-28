@@ -22,6 +22,16 @@ pub struct Playback {
     pub speed: f64,
 }
 
+/// Download state, keyed by `video_id`: the in-flight/finished progress map shown in the UI,
+/// plus the original catalog metadata held while a download runs.
+#[derive(Default)]
+pub struct Downloads {
+    /// In-flight / finished downloads, keyed by `video_id`, for the UI indicator.
+    pub active: HashMap<String, DownloadState>,
+    /// Original catalog metadata for in-flight downloads, keyed by `video_id`.
+    pub sources: HashMap<String, Song>,
+}
+
 /// Lyrics-panel state: whether the panel is shown, the in-flight flag, and the fetched
 /// lyrics for the current track.
 #[derive(Default)]

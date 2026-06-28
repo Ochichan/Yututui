@@ -2216,7 +2216,7 @@ fn d_starts_download_of_current_track() {
         [Cmd::Download(song)] => assert_eq!(song.video_id, "id0"),
         _ => panic!("expected a Download cmd"),
     }
-    assert_eq!(app.downloads.get("id0"), Some(&DownloadState::Running(0)));
+    assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Running(0)));
 }
 
 #[test]
@@ -2239,12 +2239,12 @@ fn download_progress_and_done_update_state() {
         video_id: "id0".to_owned(),
         percent: 42.6,
     });
-    assert_eq!(app.downloads.get("id0"), Some(&DownloadState::Running(43)));
+    assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Running(43)));
     app.update(Msg::DownloadDone {
         video_id: "id0".to_owned(),
         path: "/tmp/x.m4a".to_owned(),
     });
-    assert_eq!(app.downloads.get("id0"), Some(&DownloadState::Done));
+    assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Done));
     assert!(app.status.contains("/tmp/x.m4a"));
     assert_eq!(app.library_ui.downloaded.len(), 1);
     assert_eq!(app.library_ui.downloaded[0].playback_target(), "/tmp/x.m4a");
@@ -2257,7 +2257,7 @@ fn download_error_marks_failed() {
         video_id: "id0".to_owned(),
         error: "boom".to_owned(),
     });
-    assert_eq!(app.downloads.get("id0"), Some(&DownloadState::Failed));
+    assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Failed));
     assert!(app.status.contains("boom"));
 }
 

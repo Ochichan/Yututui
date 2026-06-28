@@ -10,9 +10,9 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        self.downloads
+        self.downloads.active
             .insert(song.video_id.clone(), DownloadState::Running(0));
-        self.download_sources
+        self.downloads.sources
             .insert(song.video_id.clone(), song.clone());
         self.status = format!("{}: {} — {}", t!("Downloading", "다운로드 중"), song.title, song.artist);
         self.dirty = true;

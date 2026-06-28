@@ -229,7 +229,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     }
     // Download indicator for the current track, if one is in flight or finished.
     if let Some(s) = app.queue.current()
-        && let Some(state) = app.downloads.get(&s.video_id)
+        && let Some(state) = app.downloads.active.get(&s.video_id)
     {
         let tag = match state {
             DownloadState::Running(p) => format!("⬇ {p}%"),
