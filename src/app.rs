@@ -3927,18 +3927,35 @@ impl App {
         self.library_anchor = self.library_anchor.min(last);
     }
 
-    /// Make the whole results list the queue, starting at the selected track, and play.
+    /// Add the selected search result to the queue. The existing queue is **preserved** —
+    /// the chosen track is appended, not substituted for the whole list. If nothing is
+    /// currently playing we jump to the new track and start it; if a track is already
+    /// playing we simply enqueue it (no interruption) and confirm with a toast.
     fn play_selected(&mut self) -> Vec<Cmd> {
-        // Queue only the chosen track — not the whole result list. With autoplay radio on it
-        // seeds a fresh station from here; otherwise it just plays the one song.
         let Some(song) = self.search_results.get(self.search_selected).cloned() else {
             return Vec::new();
         };
-        self.queue.set(vec![song], 0);
-        self.mode = Mode::Player;
-        self.status.clear();
-        let song = self.queue.current().cloned();
-        self.load_song(song)
+        let title = song.title.clone();
+        let was_idle = self.loaded_video_id.is_none();
+        if self.queue.extend(vec![song]) == 0 {
+            self.status_kind = StatusKind::Error;
+            self.status = t!("Queue is full", "큐가 가득 찼어요").to_string();
+            self.dirty = true;
+            return Vec::new();
+        }
+        if was_idle {
+            // Nothing was playing → jump to the track we just appended and start it.
+            self.queue.goto(self.queue.len().saturating_sub(1));
+            self.mode = Mode::Player;
+            self.status.clear();
+            let song = self.queue.current().cloned();
+            return self.load_song(song);
+        }
+        // A track is already playing → just queue it up behind the rest, no interruption.
+        self.status_kind = StatusKind::Info;
+        self.status = format!("{} {}", t!("Added to queue:", "큐에 추가:"), title);
+        self.dirty = true;
+        Vec::new()
     }
 
     /// Feed the outgoing current track into the preference signals. `full` = it played to
@@ -4127,15 +4144,31 @@ impl App {
             && self.art.borrow().is_some()
     }
 
-    /// Whether the per-frame animation clock should run right now. True only when we're on the
-    /// player view, the master switch + at least one effect are enabled, a track is loaded, and
-    /// playback is not paused. The main loop arms its ~30 fps tick on this; when it is false the
-    /// tick never fires, so the player behaves byte-for-byte like today (the lightweight path).
+    /// Whether the per-frame animation clock should run right now. True when we're on the
+    /// player view (master switch + at least one effect enabled, a track loaded, not paused),
+    /// **or** when the AI start-screen mascot wants to groove (see [`Self::ai_mascot_active`]).
+    /// The main loop arms its ~30 fps tick on this; when it is false the tick never fires, so the
+    /// app behaves byte-for-byte like today (the lightweight path).
     pub fn animation_active(&self) -> bool {
-        matches!(self.mode, Mode::Player)
+        (matches!(self.mode, Mode::Player)
             && !self.paused
             && self.queue.current().is_some()
-            && self.config.animations.active()
+            && self.config.animations.active())
+            || self.ai_mascot_active()
+    }
+
+    /// Whether the "Gemini-tan" mascot on the AI start screen should be dancing right now. True
+    /// only on the AI view *before any conversation has started*, while a track is actively
+    /// playing and the global animation master switch is on. Unlike the player path this gates on
+    /// `master` directly (not `active()`), so the mascot grooves even when every per-effect player
+    /// toggle is off — the dance is its own thing. When this is false the mascot renders a clean
+    /// resting pose and the tick stays asleep.
+    pub fn ai_mascot_active(&self) -> bool {
+        matches!(self.mode, Mode::Ai)
+            && self.ai_messages.is_empty()
+            && !self.paused
+            && self.queue.current().is_some()
+            && self.config.animations.master
     }
 
     /// The live animation config (per-effect toggles); read by the player view each frame.
@@ -4742,9 +4775,39 @@ mod tests {
         app.search_selected = 1;
         let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
         assert_eq!(app.mode, Mode::Player);
-        // Only the picked track lands in the queue — not the whole result list.
+        // Only the picked track lands in the queue — not the whole result list. Nothing was
+        // playing, so it starts immediately.
         assert_eq!(app.queue.len(), 1);
         assert!(load_url(&cmds).expect("a Load cmd").contains("id1"));
+    }
+
+    #[test]
+    fn enter_on_search_result_appends_without_wiping_the_playing_queue() {
+        // A 3-track queue is already playing track 0.
+        let mut app = app_playing(3, 0);
+        let before_len = app.queue.len();
+        let playing = app.loaded_video_id.clone();
+        assert_eq!(playing.as_deref(), Some("id0"));
+
+        // Go to search, pick a fresh result, hit Enter.
+        app.mode = Mode::Search;
+        app.update(Msg::SearchResults {
+            query: "x".to_owned(),
+            songs: vec![Song::remote("new9", "New", "Z", "3:00")],
+        });
+        app.search_focus = SearchFocus::Results;
+        app.search_selected = 0;
+        let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+
+        // The existing queue is preserved and grows by exactly one…
+        assert_eq!(app.queue.len(), before_len + 1);
+        assert!(app.queue.video_ids().any(|v| v == "new9"));
+        // …the current track keeps playing uninterrupted (no reload, no jump to Player)…
+        assert_eq!(app.loaded_video_id, playing);
+        assert!(load_url(&cmds).is_none());
+        assert_eq!(app.mode, Mode::Search);
+        // …and it's confirmed as a positive (green) toast, not an error.
+        assert_eq!(app.status_kind, StatusKind::Info);
     }
 
     #[test]
