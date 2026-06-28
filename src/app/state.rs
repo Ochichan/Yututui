@@ -6,6 +6,18 @@
 
 use super::*;
 
+/// Video-overlay state: the detached mpv process (if open) and whether opening it is what
+/// paused the audio (so closing only resumes playback the overlay paused).
+#[derive(Default)]
+pub struct Video {
+    /// The detached mpv video-overlay process, if one is open. Tracked so a second `v` (or a
+    /// `Shift+V` layout switch) closes/respawns it instead of stacking windows.
+    pub proc: Option<std::process::Child>,
+    /// Whether opening the video overlay is what paused the audio, so closing it only resumes
+    /// playback we paused (not audio the user had paused themselves).
+    pub paused_audio: bool,
+}
+
 /// Live playback transport: position, track length, pause state, output volume, and speed.
 /// These mirror mpv's current state (distinct from the persisted defaults in [`Config`]).
 #[derive(Default)]

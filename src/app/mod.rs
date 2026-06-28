@@ -139,12 +139,9 @@ pub struct App {
     status_set_at: Option<Instant>,
     /// Semantic kind of the current `status` (drives its color); reset to `Error` on clear.
     pub status_kind: StatusKind,
-    /// The detached mpv video-overlay process, if one is open. Tracked so a second `v` (or a
-    /// `Shift+V` layout switch) closes/respawns it instead of stacking windows.
-    video_proc: Option<std::process::Child>,
-    /// Whether opening the video overlay is what paused the audio, so closing it only resumes
-    /// playback we paused (not audio the user had paused themselves).
-    video_paused_audio: bool,
+    /// Video-overlay state: the detached mpv process (if open) and whether opening it paused
+    /// the audio (see [`Video`]). Private — render never reads it.
+    video: Video,
 
     // Audio / EQ --------------------------------------------------------------
     /// Selected equalizer preset (drives `eq_bands` when chosen via `e`).
@@ -273,8 +270,7 @@ impl App {
             status: String::new(),
             status_set_at: None,
             status_kind: StatusKind::Error,
-            video_proc: None,
-            video_paused_audio: false,
+            video: Video::default(),
             anim_frame: 0,
             eq_preset: EqPreset::default(),
             eq_bands: [0.0; eq::BANDS],

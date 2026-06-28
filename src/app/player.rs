@@ -24,10 +24,10 @@ impl App {
     /// Whether an mpv video overlay is currently open. Reaps the handle if the user closed mpv
     /// themselves, so a stale exited child reads as closed.
     pub(in crate::app) fn video_open(&mut self) -> bool {
-        match self.video_proc.as_mut() {
+        match self.video.proc.as_mut() {
             Some(child) => match child.try_wait() {
                 Ok(Some(_)) => {
-                    self.video_proc = None;
+                    self.video.proc = None;
                     false
                 }
                 _ => true,
@@ -39,7 +39,7 @@ impl App {
     /// Kill the video overlay if one is open (no-op otherwise). Called from the main loop's
     /// clean-exit path so the overlay never outlives the app, regardless of how we quit.
     pub fn close_video(&mut self) {
-        if let Some(mut child) = self.video_proc.take() {
+        if let Some(mut child) = self.video.proc.take() {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -51,8 +51,8 @@ impl App {
         let mut cmds = Vec::new();
         if self.video_open() {
             self.close_video();
-            if self.video_paused_audio {
-                self.video_paused_audio = false;
+            if self.video.paused_audio {
+                self.video.paused_audio = false;
                 self.playback.paused = false;
                 cmds.push(Cmd::Player(PlayerCmd::SetProperty {
                     name: "pause".to_owned(),
@@ -66,10 +66,10 @@ impl App {
             let cookies = self.config.cookies_file.clone();
             match spawn_video_overlay(&url, cookies.as_deref(), self.config.video_layout) {
                 Some(child) => {
-                    self.video_proc = Some(child);
+                    self.video.proc = Some(child);
                     if !self.playback.paused {
                         self.playback.paused = true;
-                        self.video_paused_audio = true;
+                        self.video.paused_audio = true;
                         cmds.push(Cmd::Player(PlayerCmd::SetProperty {
                             name: "pause".to_owned(),
                             value: serde_json::Value::Bool(true),
@@ -100,7 +100,7 @@ impl App {
             self.close_video();
             let url = format!("https://www.youtube.com/watch?v={}", song.video_id);
             let cookies = self.config.cookies_file.clone();
-            self.video_proc = spawn_video_overlay(&url, cookies.as_deref(), layout);
+            self.video.proc = spawn_video_overlay(&url, cookies.as_deref(), layout);
             // Audio stays paused (video_paused_audio unchanged).
         }
         self.status_kind = StatusKind::Info;
@@ -153,7 +153,7 @@ impl App {
                 self.playback.paused = !self.playback.paused;
                 // Manual pause/resume takes over from the video overlay: once the user controls
                 // playback themselves, closing the overlay must not auto-resume on their behalf.
-                self.video_paused_audio = false;
+                self.video.paused_audio = false;
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::CyclePause)]
             }
