@@ -222,7 +222,7 @@ impl App {
             Action::OpenLibrary => {
                 self.mode = Mode::Library;
                 self.library_ui.selected = 0;
-                self.library_scroll.reset();
+                self.bridges.library_scroll.reset();
                 self.dropdowns.eq_open = false;
                 self.dropdowns.radio_open = false;
                 self.dirty = true;

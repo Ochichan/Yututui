@@ -76,7 +76,7 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
-    app.list_viewport_rows.set(area.height);
+    app.bridges.list_viewport_rows.set(area.height);
 
     let rows = app.library_rows();
 
@@ -120,7 +120,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     // The wheel scrolls this viewport freely (decoupled from the cursor); the render only
     // nudges it to keep a keyboard-moved cursor on-screen with a margin — see `ui::scroll`.
     let visible = area.height as usize;
-    let start = app.library_scroll.resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
+    let start = app.bridges.library_scroll.resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
 
     let body_w = area.width.saturating_sub(del_w) as usize;
     for (vis, (i, song)) in rows.iter().enumerate().skip(start).take(visible).enumerate() {

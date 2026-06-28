@@ -35,7 +35,7 @@ impl App {
                 self.library_ui.tab = self.library_ui.tab.next();
                 self.library_ui.selected = 0;
                 self.library_ui.anchor = 0;
-                self.library_scroll.reset();
+                self.bridges.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }
@@ -43,7 +43,7 @@ impl App {
                 self.library_ui.tab = self.library_ui.tab.prev();
                 self.library_ui.selected = 0;
                 self.library_ui.anchor = 0;
-                self.library_scroll.reset();
+                self.bridges.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }

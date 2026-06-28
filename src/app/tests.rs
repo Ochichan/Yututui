@@ -1909,7 +1909,7 @@ fn library_page_and_jump_keys_move_the_cursor() {
     app.library_ui.selected = 0;
     app.library_ui.anchor = 0;
     // A 12-row viewport pages by 11 (one row of overlap).
-    app.list_viewport_rows.set(12);
+    app.bridges.list_viewport_rows.set(12);
 
     app.update(Msg::Key(key(KeyCode::PageDown)));
     assert_eq!(app.library_ui.selected, 11);
@@ -1932,7 +1932,7 @@ fn search_page_and_jump_keys_move_the_cursor() {
     app.search.focus = SearchFocus::Results;
     app.search.results = songs(30);
     app.search.selected = 0;
-    app.list_viewport_rows.set(12);
+    app.bridges.list_viewport_rows.set(12);
 
     app.update(Msg::Key(key(KeyCode::PageDown)));
     assert_eq!(app.search.selected, 11);
@@ -1957,13 +1957,13 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
     open_library_tab(&mut app, LibraryTab::History);
     app.library_ui.selected = 0;
     let len = app.library_len();
-    app.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF);
+    app.bridges.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF);
 
     app.update(Msg::MouseScroll { up: false });
     assert_eq!(app.library_ui.selected, 0); // selection untouched by the wheel
-    assert_eq!(app.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF), 3);
+    assert_eq!(app.bridges.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF), 3);
     app.update(Msg::MouseScroll { up: true });
-    assert_eq!(app.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF), 0); // clamped at top
+    assert_eq!(app.bridges.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF), 0); // clamped at top
 
     // Search: same decoupling, clamped at the last page.
     let mut app = App::new(100);
@@ -1972,12 +1972,12 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
     app.search.results = songs(20);
     app.search.selected = 19;
     let len = app.search.results.len();
-    app.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF); // offset -> last page (10)
+    app.bridges.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF); // offset -> last page (10)
     app.update(Msg::MouseScroll { up: false });
     assert_eq!(app.search.selected, 19); // selection untouched
-    assert_eq!(app.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF), 10); // clamped at end
+    assert_eq!(app.bridges.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF), 10); // clamped at end
     app.update(Msg::MouseScroll { up: true });
-    assert_eq!(app.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF), 7);
+    assert_eq!(app.bridges.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF), 7);
 }
 
 #[test]
@@ -2053,7 +2053,7 @@ fn library_mouse_drag_selects_range_then_delete_removes_it() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let row_rect = |i: usize| {
-        app.mouse_buttons
+        app.bridges.mouse_buttons
             .borrow()
             .iter()
             .find(|b| b.target == MouseTarget::ListRow(i))
@@ -2312,7 +2312,7 @@ fn skip_without_prefetch_falls_back_to_watch_url() {
 fn click_on_seekbar_seeks_to_fraction() {
     let mut app = app_playing(1, 0);
     app.playback.duration = Some(200.0);
-    app.seekbar_rect.set(Some(Rect {
+    app.bridges.seekbar_rect.set(Some(Rect {
         x: 0,
         y: 5,
         width: 100,
@@ -2330,7 +2330,7 @@ fn click_on_seekbar_seeks_to_fraction() {
 fn click_off_seekbar_is_ignored() {
     let mut app = app_playing(1, 0);
     app.playback.duration = Some(200.0);
-    app.seekbar_rect.set(Some(Rect {
+    app.bridges.seekbar_rect.set(Some(Rect {
         x: 0,
         y: 5,
         width: 100,
@@ -2344,7 +2344,7 @@ fn click_off_seekbar_is_ignored() {
 fn click_does_nothing_outside_player_mode() {
     let mut app = app_playing(1, 0);
     app.playback.duration = Some(200.0);
-    app.seekbar_rect.set(Some(Rect {
+    app.bridges.seekbar_rect.set(Some(Rect {
         x: 0,
         y: 5,
         width: 100,
@@ -2456,7 +2456,7 @@ fn rendered_help_button(app: &App, width: u16, height: u16) -> MouseButtonRegion
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, app)).unwrap();
 
-    app.mouse_buttons
+    app.bridges.mouse_buttons
         .borrow()
         .iter()
         .find(|b| b.target == MouseTarget::Global(Action::ToggleHelp))
@@ -2575,7 +2575,7 @@ fn rendering_player_registers_control_buttons() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
 
-    let buttons = app.mouse_buttons.borrow();
+    let buttons = app.bridges.mouse_buttons.borrow();
     assert!(
         buttons
             .iter()
@@ -2624,7 +2624,7 @@ fn rendering_player_registers_control_buttons() {
             .iter()
             .any(|b| b.target == MouseTarget::Player(Action::CycleRating))
     );
-    assert!(app.seekbar_rect.get().is_some());
+    assert!(app.bridges.seekbar_rect.get().is_some());
 }
 
 #[test]
@@ -2638,7 +2638,7 @@ fn rendering_settings_registers_clickable_controls() {
         let backend = TestBackend::new(80, 32);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
-        app.mouse_buttons.borrow().iter().map(|b| b.target).collect()
+        app.bridges.mouse_buttons.borrow().iter().map(|b| b.target).collect()
     };
 
     // Graphics: a Select (ThemePreset, field 0), a Toggle (BackgroundNone, field 1), and a
@@ -2679,7 +2679,7 @@ fn settings_control_hit_rects_land_on_their_glyphs() {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
         let rect = app
-            .mouse_buttons
+            .bridges.mouse_buttons
             .borrow()
             .iter()
             .find(|b| b.target == want)
@@ -2710,7 +2710,7 @@ fn eq_dropdown_renders_preset_rows_when_open() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
 
-    let buttons = app.mouse_buttons.borrow();
+    let buttons = app.bridges.mouse_buttons.borrow();
     // One selectable row per built-in preset.
     for preset in crate::eq::EqPreset::CYCLE {
         assert!(
@@ -2778,7 +2778,7 @@ fn outside_click_dismisses_eq_dropdown_without_seeking() {
     let mut app = app_playing(1, 0);
     app.dropdowns.eq_open = true;
     app.playback.duration = Some(200.0);
-    app.seekbar_rect.set(Some(Rect {
+    app.bridges.seekbar_rect.set(Some(Rect {
         x: 0,
         y: 5,
         width: 100,
@@ -2826,7 +2826,7 @@ fn rendering_player_registers_radio_menu_when_autoplay_on() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     assert!(
-        app.mouse_buttons
+        app.bridges.mouse_buttons
             .borrow()
             .iter()
             .any(|b| b.target == MouseTarget::RadioMenu)
@@ -2842,7 +2842,7 @@ fn radio_dropdown_renders_mode_rows_when_open() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
 
-    let buttons = app.mouse_buttons.borrow();
+    let buttons = app.bridges.mouse_buttons.borrow();
     for mode in crate::radio::RadioMode::CYCLE {
         assert!(
             buttons
@@ -2904,7 +2904,7 @@ fn render_app(app: &App) {
 
 /// The center cell of the hit rect registered for `target` in the last render.
 fn button_center(app: &App, target: MouseTarget) -> (u16, u16) {
-    app.mouse_buttons
+    app.bridges.mouse_buttons
         .borrow()
         .iter()
         .find(|b| b.target == target)
@@ -2925,7 +2925,7 @@ fn every_screen_renders_the_nav_bar() {
         let mut app = app_playing(1, 0);
         app.navigate_to(mode);
         render_app(&app);
-        let buttons = app.mouse_buttons.borrow();
+        let buttons = app.bridges.mouse_buttons.borrow();
         for nav in [Mode::Player, Mode::Search, Mode::Library, Mode::Settings, Mode::Ai] {
             assert!(
                 buttons.iter().any(|b| b.target == MouseTarget::Nav(nav)),

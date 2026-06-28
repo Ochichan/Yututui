@@ -4,21 +4,21 @@ use super::*;
 
 impl App {
     pub fn clear_mouse_regions(&self) {
-        self.seekbar_rect.set(None);
-        self.mouse_buttons.borrow_mut().clear();
+        self.bridges.seekbar_rect.set(None);
+        self.bridges.mouse_buttons.borrow_mut().clear();
     }
 
     pub fn register_mouse_button(&self, rect: Rect, target: MouseTarget) {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        self.mouse_buttons
+        self.bridges.mouse_buttons
             .borrow_mut()
             .push(MouseButtonRegion { rect, target });
     }
 
     pub(in crate::app) fn mouse_target_at(&self, col: u16, row: u16) -> Option<MouseTarget> {
-        self.mouse_buttons
+        self.bridges.mouse_buttons
             .borrow()
             .iter()
             .rev()
@@ -101,7 +101,7 @@ impl App {
         if self.mode != Mode::Player {
             return Vec::new();
         }
-        if let Some(area) = self.seekbar_rect.get()
+        if let Some(area) = self.bridges.seekbar_rect.get()
             && let Some(dur) = self.playback.duration
             && dur > 0.0
             && area.width > 0
@@ -163,7 +163,7 @@ impl App {
             MouseTarget::LibraryTab(tab) if self.mode == Mode::Library => {
                 self.library_ui.tab = tab;
                 self.library_ui.selected = 0;
-                self.library_scroll.reset();
+                self.bridges.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }
@@ -299,15 +299,15 @@ impl App {
         }
         match self.mode {
             Mode::Library => {
-                self.library_scroll.wheel(up, n, self.library_len());
+                self.bridges.library_scroll.wheel(up, n, self.library_len());
                 self.dirty = true;
             }
             Mode::Search => {
-                self.search_scroll.wheel(up, n, self.search.results.len());
+                self.bridges.search_scroll.wheel(up, n, self.search.results.len());
                 self.dirty = true;
             }
             Mode::Ai => {
-                self.ai_scroll.wheel(up, n, self.ai.suggestions.len());
+                self.bridges.ai_scroll.wheel(up, n, self.ai.suggestions.len());
                 self.dirty = true;
             }
             // Settings is an interactive form, not a browse list, so the wheel keeps walking

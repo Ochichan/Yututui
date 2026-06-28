@@ -318,7 +318,7 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     // The wheel scrolls this viewport freely; the render keeps a keyboard-moved cursor on
     // screen with a margin (see `ui::scroll`). Only highlight the selection while visible.
     let len = app.ai.suggestions.len();
-    let offset = app.ai_scroll.resolve(
+    let offset = app.bridges.ai_scroll.resolve(
         app.ai.suggestions_selected.min(len.saturating_sub(1)),
         inner.height,
         len,

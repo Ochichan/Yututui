@@ -213,21 +213,10 @@ pub struct App {
     /// `video_id` currently loaded into mpv (see [`Prefetch`]).
     prefetch: Prefetch,
 
-    /// Screen rect of the seekbar, written by the player view each render so a mouse
-    /// click can be hit-tested against it. `Cell` because render only has `&App`.
-    pub seekbar_rect: Cell<Option<Rect>>,
-    /// Viewport height (rows) of the active Library / Search list, written each render so
-    /// PageUp/PageDown can move by a screenful. `Cell` because render only has `&App`.
-    pub list_viewport_rows: Cell<u16>,
-    /// Decoupled wheel-scroll offset for each browse list (see [`crate::ui::scroll`]). The
-    /// mouse wheel moves these directly; the render pass nudges them to keep the keyboard
-    /// selection on-screen with a margin. One per list so each keeps its own place.
-    pub library_scroll: crate::ui::scroll::ScrollState,
-    pub search_scroll: crate::ui::scroll::ScrollState,
-    pub ai_scroll: crate::ui::scroll::ScrollState,
-    /// Clickable button rects written by views each render. `RefCell` because render only
-    /// has `&App`, but the reducer needs the last rendered hit map.
-    pub mouse_buttons: RefCell<Vec<MouseButtonRegion>>,
+    /// Render→reducer bridges: hit-test rects, the active list viewport height, the clickable
+    /// button map, and the per-list wheel-scroll offsets — all written by render (`&App`) for
+    /// the reducer to read on the next event (see [`RenderBridges`]).
+    pub bridges: RenderBridges,
 
     /// Last whole second we redrew for, so sub-second `time-pos` spam is coalesced.
     last_shown_sec: i64,
@@ -299,12 +288,7 @@ impl App {
             art: ArtState::default(),
             downloads: Downloads::default(),
             prefetch: Prefetch::default(),
-            seekbar_rect: Cell::new(None),
-            list_viewport_rows: Cell::new(0),
-            library_scroll: crate::ui::scroll::ScrollState::default(),
-            search_scroll: crate::ui::scroll::ScrollState::default(),
-            ai_scroll: crate::ui::scroll::ScrollState::default(),
-            mouse_buttons: RefCell::new(Vec::new()),
+            bridges: RenderBridges::default(),
             last_shown_sec: -1,
         }
     }
@@ -506,7 +490,7 @@ impl App {
                     self.status.text.clear();
                     self.search.results = songs;
                     self.search.selected = 0;
-                    self.search_scroll.reset();
+                    self.bridges.search_scroll.reset();
                     self.search.focus = SearchFocus::Results;
                 }
                 self.dirty = true;
@@ -661,7 +645,7 @@ impl App {
             Msg::AiSuggestions(songs) => {
                 self.ai.suggestions = songs;
                 self.ai.suggestions_selected = 0;
-                self.ai_scroll.reset();
+                self.bridges.ai_scroll.reset();
                 self.dirty = true;
             }
             Msg::AiSetAutoplay(on) => {
@@ -758,7 +742,7 @@ impl App {
     /// of context overlap. Falls back to [`DEFAULT_PAGE_ROWS`] before the first render
     /// records the viewport height.
     fn page_step(&self) -> usize {
-        let rows = self.list_viewport_rows.get() as usize;
+        let rows = self.bridges.list_viewport_rows.get() as usize;
         if rows <= 1 { DEFAULT_PAGE_ROWS } else { rows - 1 }
     }
 
@@ -794,7 +778,7 @@ impl App {
                 self.mode = Mode::Library;
                 self.library_ui.selected = 0;
                 self.library_ui.anchor = 0;
-                self.library_scroll.reset();
+                self.bridges.library_scroll.reset();
             }
             Mode::Settings => self.open_settings(),
             Mode::Ai => self.enter_ai(),

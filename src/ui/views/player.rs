@@ -112,7 +112,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op otherwise).
     crate::ui::anim::seekbar_overlay(frame, app, rows[3], ratio);
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
-    app.seekbar_rect.set(Some(rows[3]));
+    app.bridges.seekbar_rect.set(Some(rows[3]));
 
     render_controls(frame, app, rows[5]);
 
@@ -386,7 +386,7 @@ fn render_dropdown(
 ) {
     // Anchor under the label, whose hit rect the status line just published.
     let Some(anchor) = app
-        .mouse_buttons
+        .bridges.mouse_buttons
         .borrow()
         .iter()
         .find(|b| b.target == anchor_target)

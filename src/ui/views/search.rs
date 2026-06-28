@@ -123,7 +123,7 @@ fn render_search_button(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
-    app.list_viewport_rows.set(area.height);
+    app.bridges.list_viewport_rows.set(area.height);
 
     if app.search.searching {
         let msg = Line::from(t!("Searching…", "검색 중…")).style(app.theme.style(R::Warning));
@@ -165,7 +165,7 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     // screen with a margin (see `ui::scroll`). Pre-seed the offset so ratatui honors it; only
     // highlight the selection while it is actually visible, so the wheel can scroll past it.
     let len = app.search.results.len();
-    let offset = app.search_scroll.resolve(
+    let offset = app.bridges.search_scroll.resolve(
         app.search.selected.min(len.saturating_sub(1)),
         area.height,
         len,
