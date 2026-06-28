@@ -4505,6 +4505,31 @@ mod tests {
     }
 
     #[test]
+    fn navigating_away_clears_a_pending_select_all_highlight() {
+        let mut app = App::new(100);
+        // Search box: select the whole query, then leave via Ctrl+H (a global nav action that's
+        // resolved before the input handler's own deselect runs).
+        app.update(Msg::Key(key(KeyCode::Char('/'))));
+        for c in "lofi".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+        assert!(app.search_select_all);
+        app.update(Msg::Key(ctrl(KeyCode::Char('h')))); // go home
+        assert!(!app.search_select_all, "highlight must not survive leaving the screen");
+
+        // AI box: same story — select all, leave, flag cleared so it can't reappear highlighted.
+        app.update(Msg::Key(key(KeyCode::Char('a')))); // enter AI
+        for c in "hi".chars() {
+            app.update(Msg::Key(key(KeyCode::Char(c))));
+        }
+        app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
+        assert!(app.ai_select_all);
+        app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+        assert!(!app.ai_select_all);
+    }
+
+    #[test]
     fn ctrl_a_selects_then_backspace_clears_ai_input() {
         let mut app = App::new(100);
         app.update(Msg::Key(key(KeyCode::Char('a')))); // open AI assistant (input focused)
