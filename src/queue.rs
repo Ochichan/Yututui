@@ -33,9 +33,9 @@ impl Repeat {
 
     pub fn label(self) -> &'static str {
         match self {
-            Repeat::Off => "off",
-            Repeat::All => "all",
-            Repeat::One => "one",
+            Repeat::Off => crate::t!("off", "끔"),
+            Repeat::All => crate::t!("all", "전체"),
+            Repeat::One => crate::t!("one", "한 곡"),
         }
     }
 }

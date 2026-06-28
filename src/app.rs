@@ -22,6 +22,7 @@ use crate::artwork::ArtSource;
 use crate::config::{Config, SPEED_MAX, SPEED_MIN};
 use crate::eq::{self, EqPreset};
 use crate::keymap::{Action, Chord, Conflict, KeyContext, KeyMap};
+use crate::t;
 use crate::library::Library;
 use crate::lyrics::LyricLine;
 use crate::player::PlayerCmd;
@@ -434,10 +435,10 @@ impl LibraryTab {
 
     pub fn label(self) -> &'static str {
         match self {
-            LibraryTab::All => "All",
-            LibraryTab::Favorites => "Favorites",
-            LibraryTab::History => "History",
-            LibraryTab::Downloads => "Downloads",
+            LibraryTab::All => t!("All", "전체"),
+            LibraryTab::Favorites => t!("Favorites", "즐겨찾기"),
+            LibraryTab::History => t!("History", "기록"),
+            LibraryTab::Downloads => t!("Downloads", "다운로드"),
         }
     }
 }
@@ -756,6 +757,9 @@ impl App {
         self.gemini_model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
         self.theme = cfg.effective_theme();
+        // Keep the process-wide UI language in sync with the applied config (this is the
+        // central apply path, called at startup and after a settings save).
+        crate::i18n::set_language(cfg.effective_language());
         // Keep the full config so the settings screen can persist the whole file.
         self.config = cfg.clone();
     }
@@ -805,7 +809,7 @@ impl App {
     /// `set_property speed` command.
     fn adjust_speed(&mut self, delta: f64) -> Vec<Cmd> {
         self.speed = (((self.speed + delta) * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX);
-        self.status = format!("Speed: {:.1}x", self.speed);
+        self.status = format!("{}: {:.1}x", t!("Speed", "재생 속도"), self.speed);
         self.dirty = true;
         vec![Cmd::Player(PlayerCmd::SetProperty {
             name: "speed".to_owned(),
@@ -910,21 +914,28 @@ impl App {
                 {
                     // `advance(false)` always moves on (ignores repeat-one), unlike an EOF.
                     let cmds = self.advance(false);
-                    self.status = "⚠ Track unavailable — skipped to next".to_owned();
+                    self.status = t!("⚠ Track unavailable — skipped to next", "⚠ 재생할 수 없는 곡 — 다음 곡으로 건너뜀").to_owned();
                     self.dirty = true;
                     return cmds;
                 }
                 self.status = if self.consecutive_play_errors > MAX_CONSECUTIVE_PLAY_ERRORS {
-                    "Several tracks failed to play — stopped. Check your connection, or sign in (cookies) for gated tracks.".to_owned()
+                    t!(
+                        "Several tracks failed to play — stopped. Check your connection, or sign in (cookies) for gated tracks.",
+                        "여러 곡 재생에 실패해서 중단했어요. 연결을 확인하거나, 제한된 곡은 로그인(쿠키)하세요."
+                    ).to_owned()
                 } else {
-                    format!("Playback error: {e}")
+                    format!("{}: {e}", t!("Playback error", "재생 오류"))
                 };
                 self.dirty = true;
             }
             Msg::SearchResults { query, songs } => {
                 self.searching = false;
                 if songs.is_empty() {
-                    self.status = format!("No results for \"{query}\"");
+                    self.status = if crate::i18n::is_korean() {
+                        format!("\"{query}\" 검색 결과 없음")
+                    } else {
+                        format!("No results for \"{query}\"")
+                    };
                     self.search_results.clear();
                 } else {
                     self.status.clear();
@@ -936,7 +947,7 @@ impl App {
             }
             Msg::SearchError(e) => {
                 self.searching = false;
-                self.status = format!("Search error: {e}");
+                self.status = format!("{}: {e}", t!("Search error", "검색 오류"));
                 self.dirty = true;
             }
             Msg::DownloadsScanned(songs) => {
@@ -978,14 +989,14 @@ impl App {
                         .unwrap_or_else(|| Song::local_file(PathBuf::from(&path)));
                     self.add_downloaded_track(local);
                 }
-                self.status = format!("Saved: {path}");
+                self.status = format!("{}: {path}", t!("Saved", "저장됨"));
                 self.dirty = true;
             }
             Msg::DownloadError { video_id, error } => {
                 self.downloads
                     .insert(video_id.clone(), DownloadState::Failed);
                 self.download_sources.remove(&video_id);
-                self.status = format!("Download failed: {error}");
+                self.status = format!("{}: {error}", t!("Download failed", "다운로드 실패"));
                 self.dirty = true;
             }
             Msg::Resolved {
@@ -1047,7 +1058,7 @@ impl App {
             } => {
                 self.radio_pending = false;
                 if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
-                    self.note_radio_failure(format!("Autoplay radio failed: {error}"));
+                    self.note_radio_failure(format!("{}: {error}", t!("Autoplay radio failed", "자동재생 라디오 실패")));
                 } else {
                     self.dirty = true;
                 }
@@ -1246,8 +1257,9 @@ impl App {
                 Action::ToggleRadio => {
                     self.autoplay_radio = !self.autoplay_radio;
                     self.status = format!(
-                        "Autoplay radio: {}",
-                        if self.autoplay_radio { "on" } else { "off" }
+                        "{}: {}",
+                        t!("Autoplay radio", "자동재생 라디오"),
+                        if self.autoplay_radio { t!("on", "켜짐") } else { t!("off", "꺼짐") }
                     );
                     self.dirty = true;
                     return Vec::new();
@@ -1539,7 +1551,7 @@ impl App {
             // Click the GitHub link inside the About card to open the repo in the browser.
             MouseTarget::AboutLink => {
                 open_in_browser(crate::ui::views::about::GITHUB_URL);
-                self.status = "Opening GitHub in your browser…".to_owned();
+                self.status = t!("Opening GitHub in your browser…", "브라우저에서 GitHub을 여는 중…").to_owned();
                 self.dirty = true;
                 Vec::new()
             }
@@ -1850,7 +1862,7 @@ impl App {
     fn select_radio_mode(&mut self, mode: RadioMode) -> Vec<Cmd> {
         self.config.radio.mode = mode;
         self.radio_dropdown_open = false;
-        self.status = format!("Radio: {}", mode.label());
+        self.status = format!("{}: {}", t!("Radio", "라디오"), mode.label());
         self.dirty = true;
         vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
     }
@@ -1988,7 +2000,11 @@ impl App {
             }
             Action::ToggleNormalize => {
                 self.normalize = !self.normalize;
-                self.status = format!("Normalize: {}", if self.normalize { "on" } else { "off" });
+                self.status = format!(
+                    "{}: {}",
+                    t!("Normalize", "음량 평준화"),
+                    if self.normalize { t!("on", "켜짐") } else { t!("off", "꺼짐") }
+                );
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(
                     self.current_af().unwrap_or_default(),
@@ -2250,6 +2266,7 @@ impl App {
             // key shows "(none)" here; the AI still works and README documents env-wins.
             gemini_api_key: self.config.gemini_api_key.clone().unwrap_or_default(),
             theme: self.theme.clone(),
+            language: self.config.language,
         };
         self.settings = Some(Box::new(SettingsState {
             tab: SettingsTab::General,
@@ -2362,7 +2379,7 @@ impl App {
             && let Some(st) = self.settings.as_mut()
         {
             st.capturing = Some(entry);
-            self.status = "Press a key to bind (Esc to cancel)…".to_owned();
+            self.status = t!("Press a key to bind (Esc to cancel)…", "바인딩할 키를 누르세요 (Esc 로 취소)…").to_owned();
             self.dirty = true;
         }
     }
@@ -2375,7 +2392,7 @@ impl App {
         };
         self.dirty = true;
         if k.code == KeyCode::Esc {
-            self.status = "Rebinding cancelled".to_owned();
+            self.status = t!("Rebinding cancelled", "재설정을 취소했어요").to_owned();
             return Vec::new();
         }
         let chord = Chord::from(k);
@@ -2384,11 +2401,13 @@ impl App {
         };
         match st.keymap.rebind(ctx, action, chord) {
             Ok(()) => {
-                self.status = format!(
-                    "Bound {} to {}",
-                    action.human_label(),
-                    crate::keymap::format_chord(chord)
-                );
+                let label = action.human_label();
+                let chord = crate::keymap::format_chord(chord);
+                self.status = if crate::i18n::is_korean() {
+                    format!("{label} → {chord} 으로 바인딩됨")
+                } else {
+                    format!("Bound {label} to {chord}")
+                };
             }
             Err(conflict) => {
                 // Surface the clash as a modal warning rather than a quiet status line, so
@@ -2407,7 +2426,14 @@ impl App {
         };
         if let Some(st) = self.settings.as_mut() {
             match st.keymap.reset(ctx, action) {
-                Ok(()) => self.status = format!("Reset {} to default", action.human_label()),
+                Ok(()) => {
+                    let label = action.human_label();
+                    self.status = if crate::i18n::is_korean() {
+                        format!("{label} 을(를) 기본값으로 되돌림")
+                    } else {
+                        format!("Reset {label} to default")
+                    };
+                }
                 Err(conflict) => {
                     // Same modal treatment as a manual rebind clash.
                     self.status.clear();
@@ -2425,7 +2451,12 @@ impl App {
         if let Some(st) = self.settings.as_mut() {
             st.draft.theme.reset_role(role);
             self.theme = st.draft.theme.normalized();
-            self.status = format!("Reset {} color", role.label());
+            let label = role.label();
+            self.status = if crate::i18n::is_korean() {
+                format!("{label} 색상을 되돌림")
+            } else {
+                format!("Reset {label} color")
+            };
             self.dirty = true;
         }
     }
@@ -2489,7 +2520,18 @@ impl App {
                 let s = self.settings.as_mut().unwrap();
                 let next = s.draft.radio_mode.cycled(dir >= 0);
                 s.draft.radio_mode = next;
-                self.status = format!("Radio mode: {}", next.label());
+                self.status = format!("{}: {}", t!("Radio mode", "라디오 모드"), next.label());
+                Vec::new()
+            }
+            Field::Language => {
+                let s = self.settings.as_mut().unwrap();
+                let next = s.draft.language.cycled(dir >= 0);
+                s.draft.language = next;
+                // Apply live so the whole UI — including this settings screen — re-renders in
+                // the new language on the next frame; `close_settings` persists it.
+                crate::i18n::set_language(next);
+                self.status =
+                    format!("{}: {}", t!("Language", "언어"), next.native_name());
                 Vec::new()
             }
             Field::Normalize => {
@@ -2545,7 +2587,7 @@ impl App {
                 let next = s.draft.theme.preset_enum().stepped(dir);
                 s.draft.theme.set_preset(next);
                 self.theme = s.draft.theme.normalized();
-                self.status = format!("Theme: {}", next.label());
+                self.status = format!("{}: {}", t!("Theme", "테마"), next.label());
                 Vec::new()
             }
             // Text fields ignore ←/→; Enter starts editing instead. The reset button has no
@@ -2654,7 +2696,7 @@ impl App {
         };
         st.keymap = KeyMap::default();
         st.capturing = None;
-        self.status = "Keybindings reset to defaults".to_owned();
+        self.status = t!("Keybindings reset to defaults", "단축키를 기본값으로 되돌렸어요").to_owned();
         self.dirty = true;
         Vec::new()
     }
@@ -2686,14 +2728,17 @@ impl App {
             d.gemini_model = def.effective_gemini_model();
             d.gemini_api_key = String::new();
             d.theme = def.effective_theme();
+            d.language = def.effective_language();
             st.keymap = KeyMap::default();
             st.editing_text = false;
         }
-        // Reflect the reset theme live so the open settings screen re-colors immediately.
+        // Reflect the reset theme + language live so the open settings screen re-colors and
+        // re-translates immediately (the reset also restores the default English UI).
         if let Some(st) = self.settings.as_ref() {
             self.theme = st.draft.theme.normalized();
+            crate::i18n::set_language(st.draft.language);
         }
-        self.status = "All settings reset to defaults".to_owned();
+        self.status = t!("All settings reset to defaults", "모든 설정을 기본값으로 되돌렸습니다").to_owned();
         self.dirty = true;
         let mut cmds = self.settings_apply_speed();
         cmds.extend(self.settings_apply_af());
@@ -2763,7 +2808,7 @@ impl App {
             Field::CookiesFile => {
                 self.config.cookies_file =
                     settings::blank_to_none(&value).map(std::path::PathBuf::from);
-                self.status = "Settings saved".to_owned();
+                self.status = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
             Field::DownloadDir => {
                 let old_dir = self.config.effective_download_dir();
@@ -2774,7 +2819,7 @@ impl App {
                     cmds.push(Cmd::SetDownloadDir(new_dir.clone()));
                     cmds.push(Cmd::ScanDownloads(new_dir));
                 }
-                self.status = "Settings saved".to_owned();
+                self.status = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
             Field::ApiKey => {
                 let old_key = self.config.gemini_api_key.clone();
@@ -2785,7 +2830,7 @@ impl App {
                         model: self.gemini_model,
                     });
                 }
-                self.status = "API key saved".to_owned();
+                self.status = t!("API key saved", "API 키를 저장했어요").to_owned();
             }
             Field::ThemeColor(_) => return Vec::new(),
             // Non-text fields never reach here (only Field::kind()==Text enters edit mode).
@@ -2809,7 +2854,13 @@ impl App {
             Ok(()) => {
                 st.editing_text = false;
                 self.theme = st.draft.theme.normalized();
-                self.status = format!("Set {} to {}", role.label(), st.draft.theme.effective_hex(role));
+                let label = role.label();
+                let hex = st.draft.theme.effective_hex(role);
+                self.status = if crate::i18n::is_korean() {
+                    format!("{label} 을(를) {hex} 로 설정함")
+                } else {
+                    format!("Set {label} to {hex}")
+                };
             }
             Err(msg) => {
                 st.editing_text = true;
@@ -2879,7 +2930,7 @@ impl App {
         // Volume controls change the live value in place; fold it in so a save
         // doesn't persist the stale startup value.
         self.config.volume = self.volume;
-        self.status = "Settings saved".to_owned();
+        self.status = t!("Settings saved", "설정을 저장했어요").to_owned();
         // Re-assert the committed audio chain before persisting: the draft was
         // previewing live, but a track change mid-edit (EOF auto-advance) would have
         // rebuilt mpv's chain from the *old* committed bands, so push the now-committed
@@ -3110,7 +3161,7 @@ impl App {
         let exclude_ids = self.radio_exclude_ids(&seed_video_id);
         self.radio_last_extend = Some(Instant::now());
         self.radio_pending = true;
-        self.status = "Autoplay radio: finding related tracks".to_owned();
+        self.status = t!("Autoplay radio: finding related tracks", "자동재생 라디오: 관련 곡을 찾는 중").to_owned();
         self.dirty = true;
         vec![Cmd::RadioFallback {
             seed,
@@ -3165,7 +3216,7 @@ impl App {
             local_pick,
         });
         self.ai_thinking = true;
-        self.status = "Autoplay radio: AI reranking".to_owned();
+        self.status = t!("Autoplay radio: AI reranking", "자동재생 라디오: AI 가 순위를 매기는 중").to_owned();
         self.dirty = true;
         vec![Cmd::AiRerank {
             seed_video_id: seed_video_id.to_owned(),
@@ -3229,10 +3280,16 @@ impl App {
     fn extend_queue_from_radio(&mut self, songs: Vec<Song>) {
         let added = self.queue.extend(songs);
         if added == 0 {
-            self.note_radio_failure("Autoplay radio found no new tracks".to_owned());
+            self.note_radio_failure(
+                t!("Autoplay radio found no new tracks", "자동재생 라디오가 새 곡을 찾지 못했어요").to_owned(),
+            );
         } else {
             self.consecutive_radio_failures = 0;
-            self.status = format!("Queued {added} track(s)");
+            self.status = if crate::i18n::is_korean() {
+                format!("{added}곡을 대기열에 추가함")
+            } else {
+                format!("Queued {added} track(s)")
+            };
             self.dirty = true;
         }
     }
@@ -3243,7 +3300,11 @@ impl App {
             if self.consecutive_radio_failures >= AUTOPLAY_MAX_FAILURES {
                 self.autoplay_radio = false;
                 self.radio_pending = false;
-                self.status = "Autoplay radio stopped (no related tracks found)".to_owned();
+                self.status = t!(
+                    "Autoplay radio stopped (no related tracks found)",
+                    "자동재생 라디오를 멈췄어요 (관련 곡을 찾지 못함)"
+                )
+                .to_owned();
             } else {
                 self.status = status;
             }
@@ -3679,7 +3740,7 @@ impl App {
     /// Mark a download as starting and emit the effect to run it.
     fn start_download(&mut self, song: Song) -> Vec<Cmd> {
         if song.is_local() {
-            self.status = format!("Already local: {}", song.title);
+            self.status = format!("{}: {}", t!("Already local", "이미 로컬에 있음"), song.title);
             self.dirty = true;
             return Vec::new();
         }
@@ -3687,7 +3748,7 @@ impl App {
             .insert(song.video_id.clone(), DownloadState::Running(0));
         self.download_sources
             .insert(song.video_id.clone(), song.clone());
-        self.status = format!("Downloading: {} — {}", song.title, song.artist);
+        self.status = format!("{}: {} — {}", t!("Downloading", "다운로드 중"), song.title, song.artist);
         self.dirty = true;
         vec![Cmd::Download(song)]
     }
@@ -4537,6 +4598,7 @@ mod tests {
 
     #[test]
     fn radio_mode_cycles_on_the_ai_tab_and_persists() {
+        let _guard = crate::i18n::lock_for_test();
         use crate::radio::RadioMode;
         let mut app = app_playing(1, 0);
         app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
@@ -4654,6 +4716,7 @@ mod tests {
 
     #[test]
     fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
+        let _guard = crate::i18n::lock_for_test();
         let mut app = app_playing(1, 0);
         app.keymap
             .rebind(
@@ -4898,7 +4961,8 @@ mod tests {
     #[test]
     fn settings_text_field_edits_path_buffer() {
         let mut app = app_playing(1, 0);
-        app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General); row 0 = cookies file
+        app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General); row 0 = language
+        app.update(Msg::Key(key(KeyCode::Down))); // row 1 = cookies file
         app.update(Msg::Key(key(KeyCode::Enter))); // enter text-edit mode
         assert!(app.settings.as_ref().unwrap().editing_text);
         for c in "/x.txt".chars() {
@@ -5145,6 +5209,7 @@ mod tests {
 
     #[test]
     fn ai_enqueue_reports_count_and_extends() {
+        let _guard = crate::i18n::lock_for_test();
         let mut app = app_playing(2, 0); // queue has id0, id1
         app.update(Msg::AiEnqueue(songs(3)));
         assert_eq!(app.queue.len(), 5);
@@ -5171,6 +5236,7 @@ mod tests {
 
     #[test]
     fn ai_radio_circuit_breaker_disables_after_repeated_empties() {
+        let _guard = crate::i18n::lock_for_test();
         let mut app = app_playing(1, 0);
         app.autoplay_radio = true;
         for _ in 0..AUTOPLAY_MAX_FAILURES {
@@ -5315,6 +5381,7 @@ mod tests {
 
     #[test]
     fn radio_results_run_through_local_engine_and_clear_pending() {
+        let _guard = crate::i18n::lock_for_test();
         fastrand::seed(7);
         let mut app = app_playing(2, 0);
         app.autoplay_radio = true;
@@ -5344,6 +5411,7 @@ mod tests {
 
     #[test]
     fn radio_error_uses_circuit_breaker() {
+        let _guard = crate::i18n::lock_for_test();
         let mut app = app_playing(1, 0);
         app.autoplay_radio = true;
 
@@ -5873,6 +5941,7 @@ mod tests {
 
     #[test]
     fn d_ignores_local_tracks() {
+        let _guard = crate::i18n::lock_for_test();
         let mut app = App::new(100);
         app.queue.set(
             vec![Song::local_file(PathBuf::from("/tmp/local-track.m4a"))],

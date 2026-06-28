@@ -12,7 +12,10 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::{Resize, StatefulImage};
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::app::{App, MouseTarget};
+use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons::{self, Seg};
 
@@ -34,7 +37,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" About ")
+        .title(t!(" About ", " 정보 "))
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
         .style(app.theme.style(R::TextPrimary));
@@ -109,8 +112,8 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
 
     // Description.
     let desc = vec![
-        Line::from("A YouTube Music player that lives"),
-        Line::from("inside your terminal."),
+        Line::from(t!("A YouTube Music player that lives", "터미널 안에서 동작하는")),
+        Line::from(t!("inside your terminal.", "YouTube Music 플레이어.")),
     ];
     frame.render_widget(
         Paragraph::new(desc).alignment(Alignment::Center).style(app.theme.style(R::TextMuted)),
@@ -119,18 +122,20 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
 
     // Cheat-sheet-style key/value rows — same theme roles as the `?` help sheet so they match.
     let info = [
-        ("Command", "ytt"),
-        ("License", "MIT · © 2026 Ochichan"),
-        ("Author", "Ochichan"),
-        ("Built", "Rust · ratatui"),
+        (t!("Command", "명령어"), "ytt"),
+        (t!("License", "라이선스"), "MIT · © 2026 Ochichan"),
+        (t!("Author", "제작자"), "Ochichan"),
+        (t!("Built", "빌드"), "Rust · ratatui"),
     ];
     let key_style = app.theme.style(R::HelpKey);
     let val_style = app.theme.style(R::HelpAction);
     let lines: Vec<Line> = info
         .iter()
         .map(|(k, v)| {
+            // Pad to a 9-cell key column by *display* width so Korean keys line their values up.
+            let pad = 9usize.saturating_sub(UnicodeWidthStr::width(*k));
             Line::from(vec![
-                Span::styled(format!("  {k:<9}"), key_style),
+                Span::styled(format!("  {k}{}", " ".repeat(pad)), key_style),
                 Span::styled((*v).to_owned(), val_style),
             ])
         })
@@ -147,7 +152,10 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_segments(frame, app, rows[4], &segs, link_style, key_style, Alignment::Left);
 
     // Close hint.
-    let hint = Line::from("F1 / Esc to close · click the link to open ↗");
+    let hint = Line::from(t!(
+        "F1 / Esc to close · click the link to open ↗",
+        "F1 / Esc 닫기 · 링크를 클릭해 열기 ↗"
+    ));
     frame.render_widget(
         Paragraph::new(hint).alignment(Alignment::Center).style(app.theme.style(R::TextMuted)),
         rows[6],

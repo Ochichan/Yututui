@@ -189,7 +189,14 @@ impl AiActor {
     async fn converse(&mut self, prompt: String, ctx: AiContext) {
         let _guard = ThinkingGuard(self.msg_tx.clone());
 
-        let system = Content { role: None, parts: vec![Part::text(SYSTEM_PROMPT)] };
+        // When the UI is set to Korean, steer replies to Korean explicitly — the base prompt
+        // only says "reply in the user's language", which leaves English prompts ambiguous.
+        let system_text = if crate::i18n::is_korean() {
+            format!("{SYSTEM_PROMPT}\n\nRespond in Korean (한국어) regardless of the language the user writes in.")
+        } else {
+            SYSTEM_PROMPT.to_owned()
+        };
+        let system = Content { role: None, parts: vec![Part::text(system_text)] };
         let decls = tools::declarations();
         let gen_cfg = GenerationConfig {
             temperature: Some(0.7),
@@ -220,11 +227,16 @@ impl AiActor {
             };
 
             if let Some(reason) = resp.block_reason() {
-                let _ = self.msg_tx.send(Msg::AiError(format!("Request blocked ({reason}).")));
+                let _ = self.msg_tx.send(Msg::AiError(format!(
+                    "{} ({reason}).",
+                    crate::t!("Request blocked", "요청이 차단되었어요")
+                )));
                 return;
             }
             let Some(content) = resp.content().cloned() else {
-                let _ = self.msg_tx.send(Msg::AiError("Empty response from Gemini.".to_owned()));
+                let _ = self
+                    .msg_tx
+                    .send(Msg::AiError(crate::t!("Empty response from Gemini.", "Gemini 응답이 비어 있어요.").to_owned()));
                 return;
             };
 
@@ -236,7 +248,7 @@ impl AiActor {
             if calls.is_empty() {
                 let mut out = text;
                 if resp.finish_reason() == Some("MAX_TOKENS") {
-                    out.push_str("\n…(response truncated)");
+                    out.push_str(crate::t!("\n…(response truncated)", "\n…(응답이 잘렸어요)"));
                 }
                 let _ = self.msg_tx.send(Msg::AiChat(out));
                 return;
@@ -267,7 +279,11 @@ impl AiActor {
         }
 
         let _ = self.msg_tx.send(Msg::AiError(
-            "Stopped after too many tool steps — try a simpler request.".to_owned(),
+            crate::t!(
+                "Stopped after too many tool steps — try a simpler request.",
+                "도구 호출이 너무 많아 중단했어요 — 좀 더 간단히 요청해 보세요."
+            )
+            .to_owned(),
         ));
     }
 

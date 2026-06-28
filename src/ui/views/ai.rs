@@ -11,6 +11,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{AiFocus, AiRole, App};
+use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
@@ -68,16 +69,32 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     // Onboarding when no key is set and nothing has been said yet.
     if !app.ai_available && app.ai_messages.is_empty() {
         let lines = vec![
-            Line::from("AI assistant — control playback in plain language.".bold()),
+            Line::from(
+                t!("AI assistant — control playback in plain language.", "AI 어시스턴트 — 평범한 말로 재생을 제어하세요.").bold(),
+            ),
             Line::from(""),
-            Line::from("No Gemini API key is configured.").style(app.theme.style(R::Warning)),
-            Line::from("Add one in Settings (press , then the AI tab),").style(app.theme.style(R::TextPrimary)),
-            Line::from("or set the GEMINI_API_KEY environment variable.").style(app.theme.style(R::TextPrimary)),
+            Line::from(t!("No Gemini API key is configured.", "Gemini API 키가 설정되지 않았어요."))
+                .style(app.theme.style(R::Warning)),
+            Line::from(t!(
+                "Add one in Settings (press , then the AI tab),",
+                "설정에서 추가하거나 ( , 를 누른 뒤 AI 탭),"
+            ))
+            .style(app.theme.style(R::TextPrimary)),
+            Line::from(t!(
+                "or set the GEMINI_API_KEY environment variable.",
+                "GEMINI_API_KEY 환경 변수를 설정하세요."
+            ))
+            .style(app.theme.style(R::TextPrimary)),
             Line::from(""),
-            Line::from("Then ask things like:").style(app.theme.style(R::TextMuted)),
-            Line::from("  \"play some lo-fi beats\"").style(app.theme.style(R::TextMuted)),
-            Line::from("  \"queue three upbeat songs\"").style(app.theme.style(R::TextMuted)),
-            Line::from("  \"start a radio based on what's playing\"").style(app.theme.style(R::TextMuted)),
+            Line::from(t!("Then ask things like:", "그런 다음 이렇게 물어보세요:")).style(app.theme.style(R::TextMuted)),
+            Line::from(t!("  \"play some lo-fi beats\"", "  \"로파이 음악 좀 틀어줘\"")).style(app.theme.style(R::TextMuted)),
+            Line::from(t!("  \"queue three upbeat songs\"", "  \"신나는 곡 세 개 대기열에 넣어줘\""))
+                .style(app.theme.style(R::TextMuted)),
+            Line::from(t!(
+                "  \"start a radio based on what's playing\"",
+                "  \"지금 나오는 곡으로 라디오 시작해줘\""
+            ))
+            .style(app.theme.style(R::TextMuted)),
         ];
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
         return;
@@ -85,19 +102,27 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
     for m in &app.ai_messages {
+        // The prefix is a fixed-width label column; the Korean variants pad to 6 display cells
+        // (한글 글자 = 2 cells) so the message text lines up across role lines.
         let (prefix, role) = match m.role {
-            AiRole::User => ("you ", R::AiUser),
-            AiRole::Ai => ("ai  ", R::AiAssistant),
-            AiRole::Error => ("err ", R::AiError),
+            AiRole::User => (t!("you ", "나    "), R::AiUser),
+            AiRole::Ai => (t!("ai  ", "ai    "), R::AiAssistant),
+            AiRole::Error => (t!("err ", "오류  "), R::AiError),
         };
         // First visual line carries the role prefix; wrapping handles the rest.
         lines.push(Line::from(format!("{prefix}{}", m.text)).style(app.theme.style(role)));
     }
     if app.ai_thinking {
-        lines.push(Line::from("ai  …thinking".to_owned()).style(app.theme.style(R::AiThinking)));
+        lines.push(Line::from(t!("ai  …thinking", "ai    …생각 중").to_owned()).style(app.theme.style(R::AiThinking)));
     }
     if lines.is_empty() {
-        lines.push(Line::from("Ask me to play, queue, or find music.").style(app.theme.style(R::TextMuted)));
+        lines.push(
+            Line::from(t!(
+                "Ask me to play, queue, or find music.",
+                "재생, 대기열 추가, 음악 찾기를 부탁해 보세요."
+            ))
+            .style(app.theme.style(R::TextMuted)),
+        );
     }
 
     // Keep the latest content visible: scroll so the last lines sit at the bottom.
@@ -113,7 +138,7 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.ai_focus == AiFocus::Suggestions;
     let border = if focused { R::BorderFocused } else { R::BorderMuted };
     let block = Block::default()
-        .title(" Suggestions ")
+        .title(t!(" Suggestions ", " 추천 곡 "))
         .borders(Borders::TOP)
         .border_style(app.theme.style(border))
         .style(app.theme.style(R::TextPrimary));
@@ -150,7 +175,7 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.ai_focus == AiFocus::Input;
     let border = if focused { R::BorderFocused } else { R::BorderMuted };
     let block = Block::default()
-        .title(" Ask ")
+        .title(t!(" Ask ", " 질문 "))
         .borders(Borders::ALL)
         .border_style(app.theme.style(border))
         .style(app.theme.style(R::TextPrimary));

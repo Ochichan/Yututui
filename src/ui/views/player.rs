@@ -12,6 +12,7 @@ use image::imageops::FilterType;
 use crate::app::{App, DownloadState, MouseTarget};
 use crate::keymap::Action;
 use crate::lyrics;
+use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons::{self, Seg};
 use crate::util::format;
@@ -57,7 +58,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 let heart = if app.library.is_favorite(&s.video_id) { "♥ " } else { "" };
                 format!("{heart}{} — {}", s.title, s.artist)
             }
-            None => "Nothing playing — press / to search".to_owned(),
+            None => t!("Nothing playing — press / to search", "재생 중인 곡 없음 — / 를 눌러 검색").to_owned(),
         };
         Line::from(text.bold())
             .style(app.theme.style(R::TextPrimary))
@@ -117,6 +118,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 /// `eq:` (opens the preset dropdown) are mouse targets — but every segment shares the same
 /// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
+/// The compact on/off marker for the status-line toggles (`♥:`, `✗:`, `S:`), in the active
+/// language. Korean uses single-cell-pair glyphs so the row width stays stable.
+fn on_off(on: bool) -> &'static str {
+    if on { t!("on", "켜") } else { t!("off", "꺼") }
+}
+
 fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     // (target, text); a `None` target is static label/spacing. Spacing is split into its
     // own label so a clickable segment's hit rect hugs just its text.
@@ -124,7 +131,8 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     // EAW-neutral glyphs (one cell everywhere) — the ⏸/▶ media emoji widen to two
     // cells on some terminals (Windows), which drifts every later segment's hit rect
     // off its rendered text and makes `R:`/`eq:` unclickable. See `render_controls`.
-    let state = if app.paused { "‖ paused" } else { "▸ playing" };
+    let state =
+        if app.paused { t!("‖ paused", "‖ 일시정지") } else { t!("▸ playing", "▸ 재생 중") };
     parts.push((None, state.to_owned()));
     if !app.queue.is_empty() {
         let (pos, _) = app.queue.position();
@@ -142,12 +150,12 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         parts.push((None, "    ".to_owned()));
         parts.push((
             Some(MouseTarget::Player(Action::Favorite)),
-            format!("♥:{}", if liked { "on" } else { "off" }),
+            format!("♥:{}", on_off(liked)),
         ));
         parts.push((None, "    ".to_owned()));
         parts.push((
             Some(MouseTarget::Player(Action::Dislike)),
-            format!("✗:{}", if disliked { "on" } else { "off" }),
+            format!("✗:{}", on_off(disliked)),
         ));
     }
     // Shuffle and repeat are both always shown as click toggles, so the line's layout never
@@ -155,7 +163,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     parts.push((None, "    ".to_owned()));
     parts.push((
         Some(MouseTarget::Player(Action::ToggleShuffle)),
-        format!("S:{}", if app.queue.shuffle { "on" } else { "off" }),
+        format!("S:{}", on_off(app.queue.shuffle)),
     ));
     parts.push((None, "    ".to_owned()));
     parts.push((
@@ -168,7 +176,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     parts.push((None, "    ".to_owned()));
     parts.push((Some(MouseTarget::EqMenu), format!("eq:{}", app.eq_preset.label())));
     if app.normalize {
-        parts.push((None, "    norm".to_owned()));
+        parts.push((None, format!("    {}", t!("norm", "평준화"))));
     }
     if app.autoplay_radio {
         // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
@@ -234,7 +242,7 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(Clear, popup);
     let block = Block::default()
-        .title(format!(" Queue {pos}/{total} "))
+        .title(format!(" {} {pos}/{total} ", t!("Queue", "대기열")))
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
         .style(app.theme.style(R::TextPrimary));
@@ -313,7 +321,7 @@ fn render_radio_dropdown(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|m| (m.label().to_owned(), *m == cur, MouseTarget::RadioSelect(*m)))
         .collect();
-    render_dropdown(frame, app, area, MouseTarget::RadioMenu, " Radio ", &rows);
+    render_dropdown(frame, app, area, MouseTarget::RadioMenu, t!(" Radio ", " 라디오 "), &rows);
 }
 
 /// Compact dropdown box width: the widest label + a one-cell left inset + two border columns.
@@ -409,7 +417,7 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
         Seg::label("   "),
         Seg::button(MouseTarget::Player(Action::NextTrack), " ⇥ "),
         Seg::label("      "),
-        Seg::label("vol "),
+        Seg::label(t!("vol ", "볼륨 ")),
         Seg::button(MouseTarget::Player(Action::VolDown), " - "),
         Seg::label(&vol),
         Seg::button(MouseTarget::Player(Action::VolUp), " + "),
@@ -512,11 +520,11 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
         Some(t) if !t.lines.is_empty() => &t.lines,
         _ => {
             let msg = if app.lyrics_loading {
-                "Searching lyrics…"
+                t!("Searching lyrics…", "가사 검색 중…")
             } else if app.lyrics.is_some() {
-                "No synced lyrics found."
+                t!("No synced lyrics found.", "동기화된 가사가 없습니다.")
             } else {
-                "Fetching lyrics…"
+                t!("Fetching lyrics…", "가사 가져오는 중…")
             };
             frame.render_widget(Paragraph::new(centered(msg, dim)), area);
             return;

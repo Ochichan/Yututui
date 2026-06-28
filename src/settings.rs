@@ -15,8 +15,10 @@ use crate::config::{
     default_download_dir,
 };
 use crate::eq::{self, EqPreset};
+use crate::i18n::Language;
 use crate::keymap::{Action, KeyContext, KeyMap};
 use crate::radio::RadioMode;
+use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
 
 /// Per-band gain limits and keyboard step (dB), for the EQ sliders.
@@ -53,13 +55,13 @@ impl SettingsTab {
 
     pub fn label(self) -> &'static str {
         match self {
-            SettingsTab::General => "General",
-            SettingsTab::Playback => "Playback",
-            SettingsTab::Eq => "EQ",
-            SettingsTab::Ai => "AI",
-            SettingsTab::Theme => "Theme",
-            SettingsTab::Colors => "Colors",
-            SettingsTab::Keys => "Keys",
+            SettingsTab::General => t!("General", "일반"),
+            SettingsTab::Playback => t!("Playback", "재생"),
+            SettingsTab::Eq => t!("EQ", "EQ"),
+            SettingsTab::Ai => t!("AI", "AI"),
+            SettingsTab::Theme => t!("Theme", "테마"),
+            SettingsTab::Colors => t!("Colors", "색상"),
+            SettingsTab::Keys => t!("Keys", "단축키"),
         }
     }
 
@@ -79,6 +81,7 @@ impl SettingsTab {
     pub fn fields(self) -> Vec<Field> {
         match self {
             SettingsTab::General => vec![
+                Field::Language,
                 Field::CookiesFile,
                 Field::DownloadDir,
                 Field::Mouse,
@@ -110,6 +113,8 @@ impl SettingsTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     // General
+    /// The UI language (English / 한국어), cycled like any other Select field.
+    Language,
     CookiesFile,
     DownloadDir,
     Mouse,
@@ -159,9 +164,11 @@ impl Field {
             Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => FieldKind::Text,
             Field::Mouse | Field::AlbumArt | Field::AutoplayOnStart | Field::Gapless
             | Field::AutoplayRadio | Field::Normalize => FieldKind::Toggle,
-            Field::EqPreset | Field::GeminiModel | Field::ThemePreset | Field::RadioMode => {
-                FieldKind::Select
-            }
+            Field::Language
+            | Field::EqPreset
+            | Field::GeminiModel
+            | Field::ThemePreset
+            | Field::RadioMode => FieldKind::Select,
             Field::Speed | Field::SeekInterval | Field::Band(_) => FieldKind::Slider,
             Field::ResetKeybindings | Field::ResetAll => FieldKind::Button,
         }
@@ -169,24 +176,25 @@ impl Field {
 
     pub fn label(self) -> String {
         match self {
-            Field::CookiesFile => "Cookies file".to_owned(),
-            Field::DownloadDir => "Download dir".to_owned(),
-            Field::Mouse => "Mouse (next launch)".to_owned(),
-            Field::AlbumArt => "Album art (next launch)".to_owned(),
-            Field::AutoplayOnStart => "Autoplay on launch".to_owned(),
-            Field::ResetKeybindings => "Reset keybindings".to_owned(),
-            Field::ResetAll => "Reset all settings".to_owned(),
-            Field::Speed => "Playback speed".to_owned(),
-            Field::SeekInterval => "Seek interval".to_owned(),
-            Field::Gapless => "Gapless (next launch)".to_owned(),
-            Field::AutoplayRadio => "Autoplay radio".to_owned(),
-            Field::RadioMode => "Radio mode".to_owned(),
-            Field::EqPreset => "Preset".to_owned(),
+            Field::Language => t!("Language", "언어").to_owned(),
+            Field::CookiesFile => t!("Cookies file", "쿠키 파일").to_owned(),
+            Field::DownloadDir => t!("Download dir", "다운로드 폴더").to_owned(),
+            Field::Mouse => t!("Mouse (next launch)", "마우스 (다음 실행 시)").to_owned(),
+            Field::AlbumArt => t!("Album art (next launch)", "앨범 아트 (다음 실행 시)").to_owned(),
+            Field::AutoplayOnStart => t!("Autoplay on launch", "시작 시 자동 재생").to_owned(),
+            Field::ResetKeybindings => t!("Reset keybindings", "단축키 초기화").to_owned(),
+            Field::ResetAll => t!("Reset all settings", "모든 설정 초기화").to_owned(),
+            Field::Speed => t!("Playback speed", "재생 속도").to_owned(),
+            Field::SeekInterval => t!("Seek interval", "탐색 간격").to_owned(),
+            Field::Gapless => t!("Gapless (next launch)", "갭리스 (다음 실행 시)").to_owned(),
+            Field::AutoplayRadio => t!("Autoplay radio", "자동 재생 라디오").to_owned(),
+            Field::RadioMode => t!("Radio mode", "라디오 모드").to_owned(),
+            Field::EqPreset => t!("Preset", "프리셋").to_owned(),
             Field::Band(i) => format!("{:>5}", freq_label(i)),
-            Field::Normalize => "Normalize (loudness)".to_owned(),
-            Field::GeminiModel => "Model".to_owned(),
-            Field::ApiKey => "API key".to_owned(),
-            Field::ThemePreset => "Preset".to_owned(),
+            Field::Normalize => t!("Normalize (loudness)", "음량 평준화").to_owned(),
+            Field::GeminiModel => t!("Model", "모델").to_owned(),
+            Field::ApiKey => t!("API key", "API 키").to_owned(),
+            Field::ThemePreset => t!("Preset", "프리셋").to_owned(),
             Field::ThemeColor(role) => role.label().to_owned(),
         }
     }
@@ -230,24 +238,34 @@ pub struct SettingsDraft {
     pub gemini_api_key: String,
     /// Color theme preset plus role overrides.
     pub theme: ThemeConfig,
+    /// UI language. Applied live (via [`crate::i18n::set_language`]) as the user cycles the
+    /// dropdown, and persisted on close.
+    pub language: Language,
 }
 
 impl SettingsDraft {
     /// Render the current value of `field` for display.
     pub fn value_display(&self, field: Field) -> String {
         match field {
+            // Each language names itself, so this value is the same regardless of the active
+            // UI language (English / 한국어).
+            Field::Language => self.language.native_name().to_owned(),
             Field::CookiesFile => {
                 if self.cookies_file.is_empty() {
                     default_cookies_file()
-                        .map(|p| format!("(default: {})", display_path(&p)))
-                        .unwrap_or_else(|| "(none)".to_owned())
+                        .map(|p| format!("({}: {})", t!("default", "기본값"), display_path(&p)))
+                        .unwrap_or_else(|| t!("(none)", "(없음)").to_owned())
                 } else {
                     self.cookies_file.clone()
                 }
             }
             Field::DownloadDir => {
                 if self.download_dir.is_empty() {
-                    format!("(default: {})", display_path(&default_download_dir()))
+                    format!(
+                        "({}: {})",
+                        t!("default", "기본값"),
+                        display_path(&default_download_dir())
+                    )
                 } else {
                     self.download_dir.clone()
                 }
@@ -258,7 +276,9 @@ impl SettingsDraft {
             Field::Speed => format!("{:.1}x", self.speed),
             Field::SeekInterval => format!("{:.0}s", self.seek_seconds),
             // Buttons, not values: these rows show how to trigger them.
-            Field::ResetKeybindings | Field::ResetAll => "↵ press Enter".to_owned(),
+            Field::ResetKeybindings | Field::ResetAll => {
+                t!("↵ press Enter", "↵ Enter 누르기").to_owned()
+            }
             Field::Gapless => toggle_str(self.gapless),
             Field::AutoplayRadio => toggle_str(self.autoplay_radio),
             Field::RadioMode => self.radio_mode.label().to_owned(),
@@ -272,9 +292,9 @@ impl SettingsDraft {
             // is the at-rest summary.
             Field::ApiKey => {
                 if self.gemini_api_key.trim().is_empty() {
-                    "(none)".to_owned()
+                    t!("(none)", "(없음)").to_owned()
                 } else {
-                    "***configured***".to_owned()
+                    t!("***configured***", "***설정됨***").to_owned()
                 }
             }
         }
@@ -314,6 +334,7 @@ impl SettingsDraft {
         cfg.gemini_model = self.gemini_model;
         cfg.gemini_api_key = blank_to_none(&self.gemini_api_key);
         cfg.theme = self.theme.normalized();
+        cfg.language = self.language;
     }
 }
 
@@ -403,6 +424,7 @@ mod tests {
             gemini_model: GeminiModel::default(),
             gemini_api_key: String::new(),
             theme: ThemeConfig::default(),
+            language: Language::English,
         }
     }
 
@@ -419,10 +441,12 @@ mod tests {
 
     #[test]
     fn general_tab_has_autoplay_on_start_toggle() {
+        let _guard = crate::i18n::lock_for_test();
         let f = SettingsTab::General.fields();
         assert_eq!(
             f,
             vec![
+                Field::Language,
                 Field::CookiesFile,
                 Field::DownloadDir,
                 Field::Mouse,
@@ -445,6 +469,7 @@ mod tests {
 
     #[test]
     fn ai_tab_has_model_key_autoplay_and_radio_mode() {
+        let _guard = crate::i18n::lock_for_test();
         let f = SettingsTab::Ai.fields();
         assert_eq!(
             f,
@@ -501,10 +526,12 @@ mod tests {
             gemini_model: GeminiModel::Latest,
             gemini_api_key: "  AIzaPersist  ".to_owned(),
             theme,
+            language: Language::Korean,
         };
 
         let mut cfg = Config::default();
         draft.apply_to(&mut cfg);
+        assert_eq!(cfg.language, Language::Korean);
         assert_eq!(cfg.cookies_file, Some(PathBuf::from("/tmp/cookies.txt")));
         assert_eq!(cfg.download_dir, Some(PathBuf::from("/tmp/downloads")));
         assert_eq!(cfg.mouse, Some(false));
@@ -529,6 +556,7 @@ mod tests {
 
     #[test]
     fn api_key_display_is_masked() {
+        let _guard = crate::i18n::lock_for_test();
         let mut draft = base_draft();
         assert_eq!(draft.value_display(Field::ApiKey), "(none)");
         draft.gemini_api_key = "AIzaSuperSecret".to_owned();

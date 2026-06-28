@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::App;
 use crate::keymap::{self, Action, KeyContext};
+use crate::t;
 use crate::theme::ThemeRole as R;
 
 /// Render the cheat-sheet as a centered popup over `area`.
@@ -18,7 +19,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" Help · keybindings ")
+        .title(t!(" Help · keybindings ", " 도움말 · 단축키 "))
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
         .style(app.theme.style(R::TextPrimary));
@@ -116,6 +117,7 @@ mod tests {
 
     #[test]
     fn search_enter_rows_are_listed_as_fixed_help_rows() {
+        let _guard = crate::i18n::lock_for_test();
         let app = App::new(100);
         let groups = help_groups(&app);
 
@@ -137,6 +139,7 @@ mod tests {
 
     #[test]
     fn page_and_jump_keys_appear_in_the_cheatsheet() {
+        let _guard = crate::i18n::lock_for_test();
         let app = App::new(100);
         let nav = help_groups(&app)
             .into_iter()

@@ -7,6 +7,7 @@ mod deps;
 mod download;
 mod eq;
 mod event;
+mod i18n;
 mod keymap;
 mod library;
 mod logging;
@@ -47,6 +48,9 @@ fn main() -> Result<()> {
 async fn async_main() -> Result<()> {
     // Load config before terminal init so mouse capture reflects it.
     let cfg = config::Config::load();
+    // Apply the saved UI language before anything renders, so the first frame is already
+    // translated. The Settings dropdown updates this global live as the user changes it.
+    i18n::set_language(cfg.effective_language());
     let mouse = cfg.effective_mouse();
     // Album art is opt-in: only probe the terminal for its graphics protocol + font size
     // when the user enabled it, and do it BEFORE `tui::init` (the query reads/writes stdio,
@@ -176,7 +180,7 @@ async fn run(
             tracing::error!(error = %e, "failed to start mpv");
             // Keep the richer preflight hint if we already set one.
             if app.status.is_empty() {
-                app.status = format!("mpv unavailable: {e}");
+                app.status = format!("{}: {e}", crate::t!("mpv unavailable", "mpv 를 사용할 수 없음"));
             }
             _mpv_guard = None;
         }
@@ -204,7 +208,11 @@ async fn run(
     // Resolver actor: pre-resolves the next track's stream URL for instant skip.
     let resolver_handle = resolver::spawn(worker_tx.clone(), cookies_file);
     if api_mode == api::ApiMode::Anonymous && had_cookie {
-        app.status = "Cookie rejected — anonymous mode (search & play only)".to_owned();
+        app.status = crate::t!(
+            "Cookie rejected — anonymous mode (search & play only)",
+            "쿠키가 거부됨 — 익명 모드 (검색·재생만 가능)"
+        )
+        .to_owned();
     }
 
     // AI assistant actor: spawned only when a Gemini key is configured. Keep

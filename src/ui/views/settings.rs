@@ -7,12 +7,14 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget};
 use crate::keymap::{self, Action, Conflict, KeyContext};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
 use crate::config::{SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
+use crate::t;
 use crate::theme::ThemeConfig;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -56,29 +58,73 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Footer reflects the *committed* keymap, since that's what operates the screen until
     // the edits are saved.
     let k = |a| app.keymap.label(KeyContext::Settings, a);
+    let ko = crate::i18n::is_korean();
     let help_text = if st.editing_text && st.tab == SettingsTab::Colors {
-        "type #RRGGBB or none  ·  Enter save  ·  Backspace delete".to_owned()
+        t!(
+            "type #RRGGBB or none  ·  Enter save  ·  Backspace delete",
+            "#RRGGBB 또는 none 입력  ·  Enter 저장  ·  Backspace 삭제"
+        )
+        .to_owned()
     } else if st.editing_text {
         // While typing a path/key, Enter or Esc both commit *and* persist it immediately,
         // so the value can't be lost by leaving the screen later.
-        "type value  ·  Enter or Esc save  ·  Backspace delete".to_owned()
-    } else if st.tab == SettingsTab::Keys {
-        format!(
-            "{}/{} select  ·  {} rebind  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
-            k(Action::MoveUp),
-            k(Action::MoveDown),
-            k(Action::Confirm),
-            k(Action::DeleteChar),
-            k(Action::FocusNext),
-            k(Action::SettingsCancel),
+        t!(
+            "type value  ·  Enter or Esc save  ·  Backspace delete",
+            "값 입력  ·  Enter 또는 Esc 저장  ·  Backspace 삭제"
         )
+        .to_owned()
+    } else if st.tab == SettingsTab::Keys {
+        if ko {
+            format!(
+                "{}/{} 선택  ·  {} 재설정  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장 + 종료",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::Confirm),
+                k(Action::DeleteChar),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            )
+        } else {
+            format!(
+                "{}/{} select  ·  {} rebind  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::Confirm),
+                k(Action::DeleteChar),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            )
+        }
     } else if st.tab == SettingsTab::Colors {
+        if ko {
+            format!(
+                "{}/{} 색상  ·  {} 편집  ·  {} 초기화  ·  {} 탭 전환  ·  {} 저장 + 종료",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::Confirm),
+                k(Action::DeleteChar),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            )
+        } else {
+            format!(
+                "{}/{} color  ·  {} edit  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
+                k(Action::MoveUp),
+                k(Action::MoveDown),
+                k(Action::Confirm),
+                k(Action::DeleteChar),
+                k(Action::FocusNext),
+                k(Action::SettingsCancel),
+            )
+        }
+    } else if ko {
         format!(
-            "{}/{} color  ·  {} edit  ·  {} reset  ·  {} switch tab  ·  {} save + quit",
+            "{}/{} 항목  ·  {}/{} 변경  ·  {} 편집/전환  ·  {} 탭 전환  ·  {} 저장 + 종료",
             k(Action::MoveUp),
             k(Action::MoveDown),
+            k(Action::ChangeDecrease),
+            k(Action::ChangeIncrease),
             k(Action::Confirm),
-            k(Action::DeleteChar),
             k(Action::FocusNext),
             k(Action::SettingsCancel),
         )
@@ -189,7 +235,7 @@ fn build_keys_column(
                 selected = Some(items.len());
             }
             let key = if st.capturing == Some((c, action)) {
-                "<press a key…>".to_owned()
+                t!("<press a key…>", "<키를 누르세요…>").to_owned()
             } else {
                 st.keymap.chord(c, action).map_or_else(|| "—".to_owned(), keymap::format_chord)
             };
@@ -264,11 +310,11 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
 fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a> {
     let theme = &st.draft.theme;
     if let Field::ThemeColor(role) = field {
-        // Pad every role label to the widest one so the swatch, hex value, and description
-        // columns line up regardless of how long the role name is (role labels are ASCII,
-        // so byte length equals display width here).
-        let label_w = R::ALL.iter().map(|r| r.label().len()).max().unwrap_or(22);
-        let label = format!("{:<label_w$}", role.label());
+        // Pad every role label to the widest one (by terminal *display* width, so Korean
+        // labels — whose characters are two cells wide — still line up the swatch, hex value,
+        // and description columns).
+        let label_w = R::ALL.iter().map(|r| UnicodeWidthStr::width(r.label())).max().unwrap_or(22);
+        let label = pad_to_width(role.label(), label_w);
         let value = if focused && st.editing_text {
             st.draft.text_value(field).unwrap_or_default().to_owned()
         } else {
@@ -294,18 +340,19 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
     // Pad every label in this tab to the widest one (+ a 2-space gutter, min 22) so the value
     // column lines up regardless of label length — e.g. "Album art (next launch)" no longer
     // pushes its value out of alignment with the shorter rows above it, and even that widest
-    // label keeps a gap before its value. Labels are ASCII here, so char count == width.
+    // label keeps a gap before its value. Measured by terminal *display* width so two-cell
+    // Korean characters line up like ASCII does.
     let label_w = st
         .tab
         .fields()
         .iter()
         .filter(|f| !matches!(f, Field::ThemeColor(_)))
-        .map(|f| f.label().chars().count())
+        .map(|f| UnicodeWidthStr::width(f.label().as_str()))
         .max()
         .unwrap_or(20)
         .max(20)
         + 2;
-    let label = format!("{:<label_w$}", field.label());
+    let label = pad_to_width(&field.label(), label_w);
     let value = match (field, field.kind()) {
         // Secret fields (API key) are never shown in clear text; while editing, render a
         // masked buffer of *that field's* typed length so keystrokes still register visibly.
@@ -347,7 +394,7 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" ⚠ Keybinding conflict ")
+        .title(t!(" ⚠ Keybinding conflict ", " ⚠ 단축키 충돌 "))
         .borders(Borders::ALL)
         .border_style(theme.style(R::Warning).add_modifier(Modifier::BOLD))
         .style(theme.style(R::TextPrimary));
@@ -355,20 +402,25 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
     frame.render_widget(block, popup);
 
     let chord = keymap::format_chord(conflict.chord);
+    let where_line = if crate::i18n::is_korean() {
+        format!("{} 화면", conflict.ctx.title())
+    } else {
+        format!("in {}", conflict.ctx.title())
+    };
     let lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled(chord, theme.style(R::Warning).add_modifier(Modifier::BOLD)),
-            Span::raw(" is already bound to"),
+            Span::raw(t!(" is already bound to", " 은(는) 이미 사용 중")),
         ]),
         Line::from(Span::styled(
             format!("\u{201c}{}\u{201d}", conflict.existing.human_label_for(conflict.ctx)),
             theme.style(R::Accent).add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(format!("in {}", conflict.ctx.title()), theme.style(R::TextMuted))),
+        Line::from(Span::styled(where_line, theme.style(R::TextMuted))),
         Line::from(""),
         Line::from(Span::styled(
-            "Binding unchanged · press any key",
+            t!("Binding unchanged · press any key", "단축키 변경 안 됨 · 아무 키나 누르세요"),
             theme.style(R::TextMuted),
         )),
     ];
@@ -387,7 +439,7 @@ pub fn render_confirm_reset(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" ⚠ Reset all settings ")
+        .title(t!(" ⚠ Reset all settings ", " ⚠ 모든 설정 초기화 "))
         .borders(Borders::ALL)
         .border_style(theme.style(R::Error).add_modifier(Modifier::BOLD))
         .style(theme.style(R::TextPrimary));
@@ -396,17 +448,17 @@ pub fn render_confirm_reset(frame: &mut Frame, app: &App, area: Rect) {
 
     let lines = vec![
         Line::from(""),
-        Line::from("Restore every setting to its default?"),
+        Line::from(t!("Restore every setting to its default?", "모든 설정을 기본값으로 되돌릴까요?")),
         Line::from(Span::styled(
-            "Keybindings, theme, and API key included.",
+            t!("Keybindings, theme, and API key included.", "단축키, 테마, API 키 포함."),
             theme.style(R::TextMuted),
         )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Enter / y", theme.style(R::Error).add_modifier(Modifier::BOLD)),
-            Span::raw(" reset    "),
+            Span::raw(t!(" reset    ", " 초기화    ")),
             Span::styled("Esc", theme.style(R::Accent).add_modifier(Modifier::BOLD)),
-            Span::raw(" cancel"),
+            Span::raw(t!(" cancel", " 취소")),
         ]),
     ];
     frame.render_widget(
@@ -425,6 +477,14 @@ fn centered_fixed(area: Rect, w: u16, h: u16) -> Rect {
         width: w,
         height: h,
     }
+}
+
+/// Right-pad `s` with spaces to a target terminal *display* width (CJK-aware). `format!`'s
+/// `{:<width$}` counts Unicode scalars, which misaligns two-cell Korean characters; this
+/// measures with `unicode-width` instead so labels line up in any language.
+fn pad_to_width(s: &str, width: usize) -> String {
+    let pad = width.saturating_sub(UnicodeWidthStr::width(s));
+    format!("{s}{}", " ".repeat(pad))
 }
 
 /// A compact 11-cell slider bar with a marker at `value`'s position in `[min, max]`.

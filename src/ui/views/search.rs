@@ -11,6 +11,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, MouseTarget, SearchFocus};
+use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
@@ -53,9 +54,9 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let border = if focused { R::BorderFocused } else { R::BorderMuted };
     // Make it obvious when we're not signed in (anonymous = search + public play only).
     let title = if app.authenticated {
-        " Search "
+        t!(" Search ", " 검색 ")
     } else {
-        " Search · anonymous "
+        t!(" Search · anonymous ", " 검색 · 익명 ")
     };
     let block = Block::default()
         .title(title)
@@ -88,7 +89,7 @@ fn render_search_button(frame: &mut Frame, app: &App, area: Rect) {
         .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let label = Line::from("Search")
+    let label = Line::from(t!("Search", "검색"))
         .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
         .alignment(Alignment::Center);
     frame.render_widget(Paragraph::new(label), inner);
@@ -100,7 +101,7 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     app.list_viewport_rows.set(area.height);
 
     if app.searching {
-        let msg = Line::from("Searching…").style(app.theme.style(R::Warning));
+        let msg = Line::from(t!("Searching…", "검색 중…")).style(app.theme.style(R::Warning));
         frame.render_widget(Paragraph::new(msg), area);
         return;
     }

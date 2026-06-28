@@ -26,9 +26,9 @@ impl RadioMode {
     /// A short human label for the settings field and the player status line.
     pub fn label(self) -> &'static str {
         match self {
-            RadioMode::Focused => "Focused",
-            RadioMode::Balanced => "Balanced",
-            RadioMode::Discovery => "Discovery",
+            RadioMode::Focused => crate::t!("Focused", "집중"),
+            RadioMode::Balanced => crate::t!("Balanced", "균형"),
+            RadioMode::Discovery => crate::t!("Discovery", "탐험"),
         }
     }
 
@@ -239,10 +239,11 @@ mod tests {
 
     #[test]
     fn mode_cycles_through_all_three_both_ways() {
+        let _guard = crate::i18n::lock_for_test();
         assert_eq!(RadioMode::Balanced.cycled(true), RadioMode::Discovery);
         assert_eq!(RadioMode::Discovery.cycled(true), RadioMode::Focused); // wraps
         assert_eq!(RadioMode::Focused.cycled(false), RadioMode::Discovery); // wraps back
-        // Every mode has a distinct, non-empty label.
+        // Every mode has a distinct, non-empty label (English default, asserted under lock).
         let labels: Vec<&str> = RadioMode::CYCLE.iter().map(|m| m.label()).collect();
         assert_eq!(labels, vec!["Focused", "Balanced", "Discovery"]);
     }

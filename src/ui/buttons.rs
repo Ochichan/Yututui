@@ -14,6 +14,19 @@ use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarStat
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Mode, MouseTarget};
+use crate::t;
+
+/// The nav-bar label for a screen, in the active UI language. (`AI` is a proper noun, kept
+/// as-is in both languages.)
+fn nav_label(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Player => t!("Player", "플레이어"),
+        Mode::Search => t!("Search", "검색"),
+        Mode::Library => t!("Library", "라이브러리"),
+        Mode::Settings => t!("Settings", "설정"),
+        Mode::Ai => t!("AI", "AI"),
+    }
+}
 use crate::keymap::Action;
 use crate::theme::ThemeRole as R;
 
@@ -85,13 +98,8 @@ pub fn render_segments(
 /// muted, and each tab is a click target that switches screens. Left-aligned, no box chrome
 /// — it reads like a tab strip, consistent with the in-line "text is the button" controls.
 pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
-    const ITEMS: [(Mode, &str); 5] = [
-        (Mode::Player, "Player"),
-        (Mode::Search, "Search"),
-        (Mode::Library, "Library"),
-        (Mode::Settings, "Settings"),
-        (Mode::Ai, "AI"),
-    ];
+    const ITEMS: [Mode; 5] =
+        [Mode::Player, Mode::Search, Mode::Library, Mode::Settings, Mode::Ai];
     const GAP: &str = "  ";
     const BRAND: &str = "ytm-tui";
     const SEP: &str = " │ ";
@@ -101,7 +109,7 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     const MARGIN: &str = "  ";
     const END_PAD: &str = " ";
 
-    let labels: Vec<String> = ITEMS.iter().map(|(_, l)| format!(" {l} ")).collect();
+    let labels: Vec<String> = ITEMS.iter().map(|mode| format!(" {} ", nav_label(*mode))).collect();
 
     let brand = app.theme.style(R::Accent).add_modifier(Modifier::BOLD);
     let sep = app.theme.style(R::BorderMuted);
@@ -130,7 +138,7 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     spans.push(Span::styled(SEP, sep));
     x = x.saturating_add(text_width(SEP));
 
-    for (i, ((mode, _), label)) in ITEMS.iter().zip(&labels).enumerate() {
+    for (i, (mode, label)) in ITEMS.iter().zip(&labels).enumerate() {
         if i > 0 {
             spans.push(Span::styled(GAP, muted));
             x = x.saturating_add(text_width(GAP));

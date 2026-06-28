@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai::GeminiModel;
 use crate::eq::{self, EqPreset};
+use crate::i18n::Language;
 use crate::radio::RadioConfig;
 use crate::theme::ThemeConfig;
 
@@ -77,6 +78,11 @@ pub struct Config {
     /// Color theme preset plus per-role `#RRGGBB` overrides.
     pub theme: ThemeConfig,
 
+    // Localization ------------------------------------------------------------
+    /// UI language. `English` is the default; switching it re-renders every label, button,
+    /// hint, and message in the chosen language (see [`crate::i18n`]).
+    pub language: Language,
+
     // Keybindings -------------------------------------------------------------
     /// User keybinding overrides, keyed `"<context>.<action>"` → chord string (e.g.
     /// `"player.toggle_pause" -> "space"`). Only entries that differ from the built-in
@@ -105,6 +111,7 @@ impl Default for Config {
             gemini_api_key: None,
             gemini_model: GeminiModel::default(),
             theme: ThemeConfig::default(),
+            language: Language::default(),
             keybindings: std::collections::BTreeMap::new(),
         }
     }
@@ -253,6 +260,11 @@ impl Config {
     pub fn effective_theme(&self) -> ThemeConfig {
         self.theme.normalized()
     }
+
+    /// The UI language to apply at runtime (default English).
+    pub fn effective_language(&self) -> Language {
+        self.language
+    }
 }
 
 /// Default location for an optional exported Netscape cookies file.
@@ -378,6 +390,7 @@ mod tests {
             gemini_api_key: Some("AIzaSecret".to_owned()),
             gemini_model: GeminiModel::Latest,
             theme,
+            language: Language::Korean,
             keybindings: std::collections::BTreeMap::new(),
         };
         let s = serde_json::to_string(&c).unwrap();

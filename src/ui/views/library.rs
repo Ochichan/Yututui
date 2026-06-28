@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::{App, LibraryTab, MouseTarget};
+use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
 
@@ -81,10 +82,21 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 
     if rows.is_empty() {
         let msg = match app.library_tab {
-            LibraryTab::All => "No library tracks yet — play, favorite, or download something.",
-            LibraryTab::Favorites => "No favorites yet — press f on a track to save it.",
-            LibraryTab::History => "No history yet — play something.",
-            LibraryTab::Downloads => "No downloaded tracks found in the download folder.",
+            LibraryTab::All => t!(
+                "No library tracks yet — play, favorite, or download something.",
+                "아직 라이브러리에 곡이 없어요 — 재생하거나 즐겨찾기하거나 다운로드해 보세요."
+            ),
+            LibraryTab::Favorites => t!(
+                "No favorites yet — press f on a track to save it.",
+                "즐겨찾기가 없어요 — 곡에서 f 를 눌러 저장하세요."
+            ),
+            LibraryTab::History => {
+                t!("No history yet — play something.", "재생 기록이 없어요 — 뭐든 재생해 보세요.")
+            }
+            LibraryTab::Downloads => t!(
+                "No downloaded tracks found in the download folder.",
+                "다운로드 폴더에 받은 곡이 없어요."
+            ),
         };
         frame.render_widget(Paragraph::new(Line::from(msg).style(app.theme.style(R::TextMuted))), area);
         return;
@@ -166,7 +178,7 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" ⚠ Delete downloaded files ")
+        .title(t!(" ⚠ Delete downloaded files ", " ⚠ 다운로드한 파일 삭제 "))
         .borders(Borders::ALL)
         .border_style(theme.style(R::Error).add_modifier(Modifier::BOLD))
         .style(theme.style(R::TextPrimary));
@@ -182,24 +194,33 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
-    let noun = if count == 1 { "file" } else { "files" };
+    let prompt = if crate::i18n::is_korean() {
+        // Korean has no plural form, so the count carries the quantity on its own.
+        format!("다운로드한 파일 {count}개를 디스크에서 삭제할까요?")
+    } else {
+        let noun = if count == 1 { "file" } else { "files" };
+        format!("Delete {count} downloaded {noun} from disk?")
+    };
     frame.render_widget(
-        Paragraph::new(format!("Delete {count} downloaded {noun} from disk?"))
+        Paragraph::new(prompt)
             .alignment(Alignment::Center)
             .style(theme.style(R::TextPrimary)),
         rows[1],
     );
     frame.render_widget(
-        Paragraph::new("This permanently removes the actual files.")
-            .alignment(Alignment::Center)
-            .style(theme.style(R::TextMuted)),
+        Paragraph::new(t!(
+            "This permanently removes the actual files.",
+            "실제 파일이 영구적으로 삭제됩니다."
+        ))
+        .alignment(Alignment::Center)
+        .style(theme.style(R::TextMuted)),
         rows[2],
     );
 
     let segs = [
-        buttons::Seg::button(MouseTarget::ConfirmDelete, " Delete (Enter) "),
+        buttons::Seg::button(MouseTarget::ConfirmDelete, t!(" Delete (Enter) ", " 삭제 (Enter) ")),
         buttons::Seg::label("    "),
-        buttons::Seg::button(MouseTarget::CancelDelete, " Cancel (Esc) "),
+        buttons::Seg::button(MouseTarget::CancelDelete, t!(" Cancel (Esc) ", " 취소 (Esc) ")),
     ];
     buttons::render_segments(
         frame,

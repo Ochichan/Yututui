@@ -25,7 +25,17 @@ pub fn missing() -> Vec<&'static str> {
 /// A one-line, OS-appropriate install hint for the given missing tools.
 pub fn install_hint(missing: &[&str]) -> String {
     let tools = missing.join(" ");
-    if cfg!(target_os = "macos") {
+    // Tool names and the brew/scoop commands stay verbatim in both languages; only the
+    // surrounding guidance is localized.
+    if crate::i18n::is_korean() {
+        if cfg!(target_os = "macos") {
+            format!("{tools} 없음 — 설치: brew install {tools}")
+        } else if cfg!(target_os = "windows") {
+            format!("{tools} 없음 — 설치: scoop install {tools}  (또는 winget)")
+        } else {
+            format!("{tools} 없음 — 패키지 매니저로 설치하세요")
+        }
+    } else if cfg!(target_os = "macos") {
         format!("Missing {tools} — install with: brew install {tools}")
     } else if cfg!(target_os = "windows") {
         format!("Missing {tools} — install with: scoop install {tools}  (or winget)")

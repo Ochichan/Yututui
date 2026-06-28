@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::t;
+
 /// A semantic command, decoupled from the physical key that triggers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -71,83 +73,88 @@ pub enum Action {
     ToggleAbout,
 }
 
-/// Stable id (for config keys) + human label (for the editor and cheat-sheet), in a
-/// single table so the two never fall out of sync.
-const ACTION_META: &[(Action, &str, &str)] = &[
-    (Action::TogglePause, "toggle_pause", "Play / pause"),
-    (Action::SeekBack, "seek_back", "Seek backward"),
-    (Action::SeekForward, "seek_forward", "Seek forward"),
-    (Action::VolUp, "vol_up", "Volume up"),
-    (Action::VolDown, "vol_down", "Volume down"),
-    (Action::NextTrack, "next_track", "Next track"),
-    (Action::PrevTrack, "prev_track", "Previous track"),
-    (Action::Favorite, "favorite", "Favorite / unfavorite"),
-    (Action::Dislike, "dislike", "Dislike / undislike"),
-    (Action::OpenLibrary, "open_library", "Open library"),
-    (Action::OpenQueue, "open_queue", "Open queue"),
-    (Action::ToggleLyrics, "toggle_lyrics", "Toggle lyrics"),
-    (Action::Download, "download", "Download track"),
-    (Action::ToggleShuffle, "toggle_shuffle", "Toggle shuffle"),
-    (Action::CycleRepeat, "cycle_repeat", "Cycle repeat"),
-    (Action::CycleEq, "cycle_eq", "Cycle EQ preset"),
-    (Action::ToggleNormalize, "toggle_normalize", "Toggle normalization"),
-    (Action::SpeedUp, "speed_up", "Speed up"),
-    (Action::SpeedDown, "speed_down", "Speed down"),
-    (Action::OpenSettings, "open_settings", "Open settings"),
-    (Action::OpenAi, "open_ai", "Open AI assistant"),
-    (Action::OpenSearch, "open_search", "Open search"),
-    (Action::Quit, "quit", "Quit"),
-    (Action::Home, "home", "Go home"),
-    (Action::MoveUp, "move_up", "Move up"),
-    (Action::MoveDown, "move_down", "Move down"),
-    (Action::PageUp, "page_up", "Page up"),
-    (Action::PageDown, "page_down", "Page down"),
-    (Action::JumpTop, "jump_top", "Jump to top"),
-    (Action::JumpBottom, "jump_bottom", "Jump to bottom"),
-    (Action::Confirm, "confirm", "Confirm / select"),
-    (Action::Back, "back", "Back / close"),
-    (Action::FocusNext, "focus_next", "Next tab / focus"),
-    (Action::FocusPrev, "focus_prev", "Previous tab / focus"),
-    (Action::DeleteChar, "delete_char", "Delete character"),
-    (Action::QueueRemove, "queue_remove", "Remove from queue"),
-    (Action::LibraryRemove, "library_remove", "Remove / delete"),
-    (Action::SettingsCancel, "settings_cancel", "Close settings"),
-    (Action::ChangeDecrease, "change_decrease", "Decrease value"),
-    (Action::ChangeIncrease, "change_increase", "Increase value"),
-    (Action::FocusInput, "focus_input", "Focus input box"),
-    (Action::ToggleRadio, "toggle_radio", "Toggle autoplay radio"),
-    (Action::ToggleHelp, "toggle_help", "Toggle help"),
-    (Action::ToggleAbout, "toggle_about", "About ytm-tui"),
+/// Stable id (for config keys) + English + Korean human label (for the editor and
+/// cheat-sheet), in a single table so they never fall out of sync. The `id` is never
+/// translated — it is the persisted config key.
+const ACTION_META: &[(Action, &str, &str, &str)] = &[
+    (Action::TogglePause, "toggle_pause", "Play / pause", "재생 / 일시정지"),
+    (Action::SeekBack, "seek_back", "Seek backward", "뒤로 탐색"),
+    (Action::SeekForward, "seek_forward", "Seek forward", "앞으로 탐색"),
+    (Action::VolUp, "vol_up", "Volume up", "볼륨 올리기"),
+    (Action::VolDown, "vol_down", "Volume down", "볼륨 내리기"),
+    (Action::NextTrack, "next_track", "Next track", "다음 곡"),
+    (Action::PrevTrack, "prev_track", "Previous track", "이전 곡"),
+    (Action::Favorite, "favorite", "Favorite / unfavorite", "즐겨찾기 추가 / 해제"),
+    (Action::Dislike, "dislike", "Dislike / undislike", "싫어요 / 해제"),
+    (Action::OpenLibrary, "open_library", "Open library", "라이브러리 열기"),
+    (Action::OpenQueue, "open_queue", "Open queue", "대기열 열기"),
+    (Action::ToggleLyrics, "toggle_lyrics", "Toggle lyrics", "가사 켜기 / 끄기"),
+    (Action::Download, "download", "Download track", "곡 다운로드"),
+    (Action::ToggleShuffle, "toggle_shuffle", "Toggle shuffle", "셔플 켜기 / 끄기"),
+    (Action::CycleRepeat, "cycle_repeat", "Cycle repeat", "반복 모드 전환"),
+    (Action::CycleEq, "cycle_eq", "Cycle EQ preset", "EQ 프리셋 전환"),
+    (Action::ToggleNormalize, "toggle_normalize", "Toggle normalization", "음량 평준화 켜기 / 끄기"),
+    (Action::SpeedUp, "speed_up", "Speed up", "속도 올리기"),
+    (Action::SpeedDown, "speed_down", "Speed down", "속도 내리기"),
+    (Action::OpenSettings, "open_settings", "Open settings", "설정 열기"),
+    (Action::OpenAi, "open_ai", "Open AI assistant", "AI 어시스턴트 열기"),
+    (Action::OpenSearch, "open_search", "Open search", "검색 열기"),
+    (Action::Quit, "quit", "Quit", "종료"),
+    (Action::Home, "home", "Go home", "홈으로"),
+    (Action::MoveUp, "move_up", "Move up", "위로 이동"),
+    (Action::MoveDown, "move_down", "Move down", "아래로 이동"),
+    (Action::PageUp, "page_up", "Page up", "페이지 위로"),
+    (Action::PageDown, "page_down", "Page down", "페이지 아래로"),
+    (Action::JumpTop, "jump_top", "Jump to top", "맨 위로"),
+    (Action::JumpBottom, "jump_bottom", "Jump to bottom", "맨 아래로"),
+    (Action::Confirm, "confirm", "Confirm / select", "확인 / 선택"),
+    (Action::Back, "back", "Back / close", "뒤로 / 닫기"),
+    (Action::FocusNext, "focus_next", "Next tab / focus", "다음 탭 / 포커스"),
+    (Action::FocusPrev, "focus_prev", "Previous tab / focus", "이전 탭 / 포커스"),
+    (Action::DeleteChar, "delete_char", "Delete character", "문자 삭제"),
+    (Action::QueueRemove, "queue_remove", "Remove from queue", "대기열에서 제거"),
+    (Action::LibraryRemove, "library_remove", "Remove / delete", "제거 / 삭제"),
+    (Action::SettingsCancel, "settings_cancel", "Close settings", "설정 닫기"),
+    (Action::ChangeDecrease, "change_decrease", "Decrease value", "값 감소"),
+    (Action::ChangeIncrease, "change_increase", "Increase value", "값 증가"),
+    (Action::FocusInput, "focus_input", "Focus input box", "입력창 포커스"),
+    (Action::ToggleRadio, "toggle_radio", "Toggle autoplay radio", "자동 재생 라디오 켜기 / 끄기"),
+    (Action::ToggleHelp, "toggle_help", "Toggle help", "도움말 켜기 / 끄기"),
+    (Action::ToggleAbout, "toggle_about", "About ytm-tui", "ytm-tui 정보"),
 ];
 
 impl Action {
     /// The stable identifier used in `config.json` keys.
     pub fn id(self) -> &'static str {
-        ACTION_META.iter().find(|(a, ..)| *a == self).map(|(_, id, _)| *id).unwrap_or("?")
+        ACTION_META.iter().find(|(a, ..)| *a == self).map(|(_, id, ..)| *id).unwrap_or("?")
     }
 
-    /// A human-readable name for the editor / cheat-sheet.
+    /// A human-readable name for the editor / cheat-sheet, in the active UI language.
     pub fn human_label(self) -> &'static str {
-        ACTION_META.iter().find(|(a, ..)| *a == self).map(|(.., l)| *l).unwrap_or("?")
+        ACTION_META
+            .iter()
+            .find(|(a, ..)| *a == self)
+            .map(|(_, _, en, ko)| if crate::i18n::is_korean() { *ko } else { *en })
+            .unwrap_or("?")
     }
 
     /// A human-readable label when the same action needs screen-specific wording.
     pub fn human_label_for(self, ctx: KeyContext) -> &'static str {
         match (ctx, self) {
-            (KeyContext::Library, Action::Back) => "Close Library",
-            (KeyContext::Library, Action::LibraryRemove) => "Remove / delete",
-            (KeyContext::Queue, Action::Confirm) => "Play / jump to track",
-            (KeyContext::Queue, Action::Back) => "Close queue",
-            (KeyContext::SearchInput, Action::Confirm) => "Search",
-            (KeyContext::SearchResults, Action::Confirm) => "Play selected",
-            (KeyContext::SearchResults, Action::Back) => "Close Search Results",
-            (KeyContext::Settings, Action::SettingsCancel) => "Save + quit",
+            (KeyContext::Library, Action::Back) => t!("Close Library", "라이브러리 닫기"),
+            (KeyContext::Library, Action::LibraryRemove) => t!("Remove / delete", "제거 / 삭제"),
+            (KeyContext::Queue, Action::Confirm) => t!("Play / jump to track", "곡 재생 / 이동"),
+            (KeyContext::Queue, Action::Back) => t!("Close queue", "대기열 닫기"),
+            (KeyContext::SearchInput, Action::Confirm) => t!("Search", "검색"),
+            (KeyContext::SearchResults, Action::Confirm) => t!("Play selected", "선택 항목 재생"),
+            (KeyContext::SearchResults, Action::Back) => t!("Close Search Results", "검색 결과 닫기"),
+            (KeyContext::Settings, Action::SettingsCancel) => t!("Save + quit", "저장 + 종료"),
             _ => self.human_label(),
         }
     }
 
     fn from_id(id: &str) -> Option<Action> {
-        ACTION_META.iter().find(|(_, i, _)| *i == id).map(|(a, ..)| *a)
+        ACTION_META.iter().find(|(_, i, ..)| *i == id).map(|(a, ..)| *a)
     }
 }
 
@@ -168,30 +175,35 @@ pub enum KeyContext {
     AiSuggestions,
 }
 
-const CONTEXT_META: &[(KeyContext, &str, &str)] = &[
-    (KeyContext::Player, "player", "Player"),
-    (KeyContext::Common, "common", "Navigation (all screens)"),
-    (KeyContext::Global, "global", "Global"),
-    (KeyContext::Library, "library", "Library"),
-    (KeyContext::Queue, "queue", "Queue window"),
-    (KeyContext::SearchInput, "search_input", "Search box"),
-    (KeyContext::SearchResults, "search_results", "Search results"),
-    (KeyContext::Settings, "settings", "Settings"),
-    (KeyContext::AiInput, "ai_input", "AI box"),
-    (KeyContext::AiSuggestions, "ai_suggestions", "AI results"),
+const CONTEXT_META: &[(KeyContext, &str, &str, &str)] = &[
+    (KeyContext::Player, "player", "Player", "플레이어"),
+    (KeyContext::Common, "common", "Navigation (all screens)", "탐색 (모든 화면)"),
+    (KeyContext::Global, "global", "Global", "전역"),
+    (KeyContext::Library, "library", "Library", "라이브러리"),
+    (KeyContext::Queue, "queue", "Queue window", "대기열 창"),
+    (KeyContext::SearchInput, "search_input", "Search box", "검색창"),
+    (KeyContext::SearchResults, "search_results", "Search results", "검색 결과"),
+    (KeyContext::Settings, "settings", "Settings", "설정"),
+    (KeyContext::AiInput, "ai_input", "AI box", "AI 입력창"),
+    (KeyContext::AiSuggestions, "ai_suggestions", "AI results", "AI 결과"),
 ];
 
 impl KeyContext {
     pub fn id(self) -> &'static str {
-        CONTEXT_META.iter().find(|(c, ..)| *c == self).map(|(_, id, _)| *id).unwrap_or("?")
+        CONTEXT_META.iter().find(|(c, ..)| *c == self).map(|(_, id, ..)| *id).unwrap_or("?")
     }
 
+    /// The group title for the help cheat-sheet / Keys tab, in the active UI language.
     pub fn title(self) -> &'static str {
-        CONTEXT_META.iter().find(|(c, ..)| *c == self).map(|(.., t)| *t).unwrap_or("?")
+        CONTEXT_META
+            .iter()
+            .find(|(c, ..)| *c == self)
+            .map(|(_, _, en, ko)| if crate::i18n::is_korean() { *ko } else { *en })
+            .unwrap_or("?")
     }
 
     fn from_id(id: &str) -> Option<KeyContext> {
-        CONTEXT_META.iter().find(|(_, i, _)| *i == id).map(|(c, ..)| *c)
+        CONTEXT_META.iter().find(|(_, i, ..)| *i == id).map(|(c, ..)| *c)
     }
 }
 
@@ -854,6 +866,7 @@ mod tests {
 
     #[test]
     fn contextual_labels_describe_close_and_global_targets() {
+        let _guard = crate::i18n::lock_for_test();
         assert_eq!(Action::Back.human_label_for(KeyContext::Library), "Close Library");
         assert_eq!(Action::Confirm.human_label_for(KeyContext::SearchInput), "Search");
         assert_eq!(
