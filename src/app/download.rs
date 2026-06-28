@@ -20,9 +20,9 @@ impl App {
     }
 
     pub(in crate::app) fn add_downloaded_track(&mut self, song: Song) {
-        self.downloaded_tracks
+        self.library_ui.downloaded
             .retain(|s| s.video_id != song.video_id);
-        self.downloaded_tracks.insert(0, song);
-        self.downloaded_tracks.truncate(DOWNLOADED_TRACKS_MAX);
+        self.library_ui.downloaded.insert(0, song);
+        self.library_ui.downloaded.truncate(DOWNLOADED_TRACKS_MAX);
     }
 }

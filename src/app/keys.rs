@@ -35,14 +35,14 @@ impl App {
         // Deleting downloaded files is irreversible, so it's gated behind the same modal:
         // Enter or `y` confirms the on-disk delete, anything else backs out. Handled here so
         // the key can't fall through to the library list underneath.
-        if self.confirm_delete_files.is_some() {
+        if self.library_ui.confirm_delete.is_some() {
             self.dirty = true;
             let confirmed = k.code == KeyCode::Enter
                 || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
             if confirmed {
                 return self.confirm_delete_files_apply();
             }
-            self.confirm_delete_files = None;
+            self.library_ui.confirm_delete = None;
             return Vec::new();
         }
 

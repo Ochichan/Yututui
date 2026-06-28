@@ -220,18 +220,9 @@ pub struct App {
     session_plays: u32,
     /// Unix time of the last track start, for detecting session boundaries (idle gaps).
     last_activity_at: Option<i64>,
-    /// Local audio files found in the configured download directory.
-    pub downloaded_tracks: Vec<Song>,
-    pub library_tab: LibraryTab,
-    pub library_selected: usize,
-    /// The fixed end of the library list's multi-select range (drag start / last single
-    /// click). The selection is the inclusive span between this and `library_selected`,
-    /// mirroring the queue window's drag-to-select.
-    pub library_anchor: usize,
-    /// Pending "delete downloaded files" confirmation: the on-disk paths queued for deletion
-    /// (file removal is irreversible, so it's gated behind an explicit yes/no). `None` when no
-    /// modal is open.
-    pub confirm_delete_files: Option<Vec<PathBuf>>,
+    /// Library-screen state: active tab, list cursor + multi-select anchor, local
+    /// download-folder rows, and the pending file-delete confirmation.
+    pub library_ui: LibraryView,
 
     // Lyrics ------------------------------------------------------------------
     /// Whether the lyrics panel is shown in the player view.
@@ -354,11 +345,7 @@ impl App {
             signals: Signals::default(),
             session_plays: 0,
             last_activity_at: None,
-            downloaded_tracks: Vec::new(),
-            library_tab: LibraryTab::All,
-            library_selected: 0,
-            library_anchor: 0,
-            confirm_delete_files: None,
+            library_ui: LibraryView::default(),
             lyrics_visible: false,
             lyrics_loading: false,
             lyrics: None,
@@ -587,10 +574,10 @@ impl App {
                 self.dirty = true;
             }
             Msg::DownloadsScanned(songs) => {
-                self.downloaded_tracks = songs;
+                self.library_ui.downloaded = songs;
                 let len = self.library_len();
-                if self.library_selected >= len {
-                    self.library_selected = len.saturating_sub(1);
+                if self.library_ui.selected >= len {
+                    self.library_ui.selected = len.saturating_sub(1);
                 }
                 self.dirty = true;
             }
@@ -797,7 +784,7 @@ impl App {
         self.eq_dropdown_open = false;
         self.radio_dropdown_open = false;
         self.queue_popup_open = false;
-        self.confirm_delete_files = None;
+        self.library_ui.confirm_delete = None;
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
         // when the input is re-entered later.
         self.search.select_all = false;
@@ -840,7 +827,7 @@ impl App {
         self.eq_dropdown_open = false;
         self.radio_dropdown_open = false;
         self.queue_popup_open = false;
-        self.confirm_delete_files = None;
+        self.library_ui.confirm_delete = None;
         // Any navigation deselects: a Ctrl+A highlight must not survive a screen change.
         self.search.select_all = false;
         self.ai.select_all = false;
@@ -862,8 +849,8 @@ impl App {
             }
             Mode::Library => {
                 self.mode = Mode::Library;
-                self.library_selected = 0;
-                self.library_anchor = 0;
+                self.library_ui.selected = 0;
+                self.library_ui.anchor = 0;
                 self.library_scroll.reset();
             }
             Mode::Settings => self.open_settings(),

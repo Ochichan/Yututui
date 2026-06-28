@@ -86,3 +86,23 @@ pub struct RadioRuntime {
     /// Consecutive empty radio extends, for the autoplay circuit breaker.
     pub consecutive_failures: u8,
 }
+
+/// Library-screen state: the active tab, the list cursor and its multi-select anchor, the
+/// local download-folder rows, and the pending file-delete confirmation.
+#[derive(Default)]
+pub struct LibraryView {
+    /// Which library list is shown (All / Favorites / History / Downloads).
+    pub tab: LibraryTab,
+    /// The highlighted row in the active library list.
+    pub selected: usize,
+    /// The fixed end of the library list's multi-select range (drag start / last single
+    /// click). The selection is the inclusive span between this and `selected`, mirroring
+    /// the queue window's drag-to-select.
+    pub anchor: usize,
+    /// Local audio files found in the configured download directory.
+    pub downloaded: Vec<Song>,
+    /// Pending "delete downloaded files" confirmation: the on-disk paths queued for deletion
+    /// (file removal is irreversible, so it's gated behind an explicit yes/no). `None` when no
+    /// modal is open.
+    pub confirm_delete: Option<Vec<PathBuf>>,
+}

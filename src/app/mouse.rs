@@ -43,13 +43,13 @@ impl App {
         }
         // The download-delete confirmation is modal: only its own Delete/Cancel buttons act;
         // a click anywhere else backs out without touching any files.
-        if self.confirm_delete_files.is_some() {
+        if self.library_ui.confirm_delete.is_some() {
             match self.mouse_target_at(col, row) {
                 Some(t @ (MouseTarget::ConfirmDelete | MouseTarget::CancelDelete)) => {
                     return self.on_mouse_target(t);
                 }
                 _ => {
-                    self.confirm_delete_files = None;
+                    self.library_ui.confirm_delete = None;
                     self.dirty = true;
                     return Vec::new();
                 }
@@ -161,8 +161,8 @@ impl App {
             MouseTarget::SearchSubmit => Vec::new(),
             // Library tab header.
             MouseTarget::LibraryTab(tab) if self.mode == Mode::Library => {
-                self.library_tab = tab;
-                self.library_selected = 0;
+                self.library_ui.tab = tab;
+                self.library_ui.selected = 0;
                 self.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
@@ -213,7 +213,7 @@ impl App {
             // The "delete downloaded files" confirmation buttons.
             MouseTarget::ConfirmDelete => self.confirm_delete_files_apply(),
             MouseTarget::CancelDelete => {
-                self.confirm_delete_files = None;
+                self.library_ui.confirm_delete = None;
                 self.dirty = true;
                 Vec::new()
             }
@@ -242,7 +242,7 @@ impl App {
             || self.about_visible
             || self.key_conflict.is_some()
             || self.confirm_reset_all
-            || self.confirm_delete_files.is_some()
+            || self.library_ui.confirm_delete.is_some()
         {
             return self.on_mouse_click(col, row);
         }
@@ -278,9 +278,9 @@ impl App {
         if self.mode == Mode::Library
             && let Some(MouseTarget::ListRow(i) | MouseTarget::LibraryDel(i)) =
                 self.mouse_target_at(col, row)
-            && self.library_selected != i
+            && self.library_ui.selected != i
         {
-            self.library_selected = i;
+            self.library_ui.selected = i;
             self.dirty = true;
         }
         Vec::new()
@@ -331,9 +331,9 @@ impl App {
                 self.dirty = true;
             }
             Mode::Library if index < self.library_len() => {
-                self.library_selected = index;
+                self.library_ui.selected = index;
                 // A fresh single click re-anchors the multi-select range here.
-                self.library_anchor = index;
+                self.library_ui.anchor = index;
                 self.dirty = true;
             }
             Mode::Settings => {
@@ -357,7 +357,7 @@ impl App {
                 self.play_selected()
             }
             Mode::Library if index < self.library_len() => {
-                self.library_selected = index;
+                self.library_ui.selected = index;
                 self.play_from_library()
             }
             _ => self.on_list_row_click(index),

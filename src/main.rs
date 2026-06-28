@@ -144,7 +144,7 @@ async fn run(
     app.library = library::Library::load();
     // Load per-track preference signals (plays/skips/dislikes); absent → empty.
     app.signals = signals::Signals::load();
-    app.downloaded_tracks = library::scan_downloads(&cfg.effective_download_dir());
+    app.library_ui.downloaded = library::scan_downloads(&cfg.effective_download_dir());
     app.restore_last_played_from_library();
     // Load local playlists (the AI playlist tools read/write these).
     app.playlists = playlists::Playlists::load();

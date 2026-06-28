@@ -10,12 +10,12 @@ impl App {
         if len == 0 {
             return;
         }
-        self.library_selected = if up {
-            self.library_selected.saturating_sub(lines)
+        self.library_ui.selected = if up {
+            self.library_ui.selected.saturating_sub(lines)
         } else {
-            (self.library_selected + lines).min(len - 1)
+            (self.library_ui.selected + lines).min(len - 1)
         };
-        self.library_anchor = self.library_selected;
+        self.library_ui.anchor = self.library_ui.selected;
         self.dirty = true;
     }
 
@@ -32,33 +32,33 @@ impl App {
                 Vec::new()
             }
             Some(Action::FocusNext) => {
-                self.library_tab = self.library_tab.next();
-                self.library_selected = 0;
-                self.library_anchor = 0;
+                self.library_ui.tab = self.library_ui.tab.next();
+                self.library_ui.selected = 0;
+                self.library_ui.anchor = 0;
                 self.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::FocusPrev) => {
-                self.library_tab = self.library_tab.prev();
-                self.library_selected = 0;
-                self.library_anchor = 0;
+                self.library_ui.tab = self.library_ui.tab.prev();
+                self.library_ui.selected = 0;
+                self.library_ui.anchor = 0;
                 self.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::MoveUp) => {
-                self.library_selected = self.library_selected.saturating_sub(1);
+                self.library_ui.selected = self.library_ui.selected.saturating_sub(1);
                 // Keyboard nav collapses the range to the cursor (like the queue window).
-                self.library_anchor = self.library_selected;
+                self.library_ui.anchor = self.library_ui.selected;
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::MoveDown) => {
-                if self.library_selected + 1 < len {
-                    self.library_selected += 1;
+                if self.library_ui.selected + 1 < len {
+                    self.library_ui.selected += 1;
                 }
-                self.library_anchor = self.library_selected;
+                self.library_ui.anchor = self.library_ui.selected;
                 self.dirty = true;
                 Vec::new()
             }
@@ -71,14 +71,14 @@ impl App {
                 Vec::new()
             }
             Some(Action::JumpTop) => {
-                self.library_selected = 0;
-                self.library_anchor = 0;
+                self.library_ui.selected = 0;
+                self.library_ui.anchor = 0;
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::JumpBottom) => {
-                self.library_selected = len.saturating_sub(1);
-                self.library_anchor = self.library_selected;
+                self.library_ui.selected = len.saturating_sub(1);
+                self.library_ui.anchor = self.library_ui.selected;
                 self.dirty = true;
                 Vec::new()
             }
@@ -98,8 +98,8 @@ impl App {
                 if let Some(song) = self.selected_library_song() {
                     self.library.toggle_favorite(&song);
                     let new_len = self.library_len();
-                    if self.library_selected >= new_len {
-                        self.library_selected = new_len.saturating_sub(1);
+                    if self.library_ui.selected >= new_len {
+                        self.library_ui.selected = new_len.saturating_sub(1);
                     }
                     self.dirty = true;
                     return vec![Cmd::SaveLibrary];

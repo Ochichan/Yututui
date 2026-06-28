@@ -1760,7 +1760,7 @@ fn l_opens_library_and_enter_plays_selected() {
     app.library.toggle_favorite(&songs(2)[0]);
     app.update(Msg::Key(key(KeyCode::Char('l'))));
     assert_eq!(app.mode, Mode::Library);
-    assert_eq!(app.library_tab, LibraryTab::All);
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
     app.update(Msg::Key(key(KeyCode::Down))); // select all[1] = id1
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(app.mode, Mode::Player);
@@ -1803,16 +1803,16 @@ fn library_tab_toggles_and_unfavorite_fixes_selection() {
     let mut app = app_playing(1, 0);
     app.library.toggle_favorite(&songs(1)[0]); // favorites = [id0]
     app.update(Msg::Key(key(KeyCode::Char('l'))));
-    assert_eq!(app.library_tab, LibraryTab::All);
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
     app.update(Msg::Key(key(KeyCode::Tab)));
-    assert_eq!(app.library_tab, LibraryTab::Favorites);
+    assert_eq!(app.library_ui.tab, LibraryTab::Favorites);
     app.update(Msg::Key(key(KeyCode::Tab)));
-    assert_eq!(app.library_tab, LibraryTab::History);
+    assert_eq!(app.library_ui.tab, LibraryTab::History);
     app.update(Msg::Key(key(KeyCode::BackTab)));
-    assert_eq!(app.library_tab, LibraryTab::Favorites);
+    assert_eq!(app.library_ui.tab, LibraryTab::Favorites);
     // Unfavorite the only entry: selection clamps to 0, list empties.
     app.update(Msg::Key(key(KeyCode::Char('f'))));
-    assert_eq!(app.library_selected, 0);
+    assert_eq!(app.library_ui.selected, 0);
     assert!(app.library.favorites.is_empty());
 }
 
@@ -1820,9 +1820,9 @@ fn library_tab_toggles_and_unfavorite_fixes_selection() {
 fn library_all_includes_downloaded_tracks_and_loads_local_path() {
     let mut app = App::new(100);
     let local = Song::local_file(PathBuf::from("/tmp/local-track.m4a"));
-    app.downloaded_tracks = vec![local.clone()];
+    app.library_ui.downloaded = vec![local.clone()];
     app.update(Msg::Key(key(KeyCode::Char('l'))));
-    assert_eq!(app.library_tab, LibraryTab::All);
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
     assert_eq!(app.library_len(), 1);
 
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
@@ -1834,10 +1834,10 @@ fn library_all_includes_downloaded_tracks_and_loads_local_path() {
 #[test]
 fn downloads_tab_shows_download_folder_tracks() {
     let mut app = App::new(100);
-    app.downloaded_tracks = vec![Song::local_file(PathBuf::from("/tmp/a.m4a"))];
+    app.library_ui.downloaded = vec![Song::local_file(PathBuf::from("/tmp/a.m4a"))];
     app.update(Msg::Key(key(KeyCode::Char('l'))));
     app.update(Msg::Key(key(KeyCode::BackTab))); // All -> Downloads
-    assert_eq!(app.library_tab, LibraryTab::Downloads);
+    assert_eq!(app.library_ui.tab, LibraryTab::Downloads);
     assert_eq!(app.library_len(), 1);
 }
 
@@ -1860,7 +1860,7 @@ fn temp_audio_file(tag: &str) -> PathBuf {
 /// Open the library and switch to `tab` by tab-key presses (All is the entry tab).
 fn open_library_tab(app: &mut App, tab: LibraryTab) {
     app.update(Msg::Key(key(KeyCode::Char('l'))));
-    while app.library_tab != tab {
+    while app.library_ui.tab != tab {
         app.update(Msg::Key(key(KeyCode::Tab)));
     }
 }
@@ -1873,13 +1873,13 @@ fn library_delete_range_removes_from_favorites() {
     app.library.toggle_favorite(&Song::remote("c", "tc", "x", "0:10")); // [c, b, a]
     open_library_tab(&mut app, LibraryTab::Favorites);
     // Cursor on row 0, drag-anchor on row 1: the selection spans rows 0..=1 (c, b).
-    app.library_selected = 0;
-    app.library_anchor = 1;
+    app.library_ui.selected = 0;
+    app.library_ui.anchor = 1;
     let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
     let ids: Vec<&str> = app.library.favorites.iter().map(|s| s.video_id.as_str()).collect();
     assert_eq!(ids, vec!["a"]);
-    assert_eq!(app.library_selected, 0);
+    assert_eq!(app.library_ui.selected, 0);
 }
 
 #[test]
@@ -1889,8 +1889,8 @@ fn library_delete_range_removes_from_history() {
     app.library.record_play(&Song::remote("b", "tb", "x", "0:10"));
     app.library.record_play(&Song::remote("c", "tc", "x", "0:10")); // front->back: c, b, a
     open_library_tab(&mut app, LibraryTab::History);
-    app.library_selected = 1;
-    app.library_anchor = 2; // rows 1..=2 = b, a
+    app.library_ui.selected = 1;
+    app.library_ui.anchor = 2; // rows 1..=2 = b, a
     let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
     let ids: Vec<&str> = app.library.history.iter().map(|s| s.video_id.as_str()).collect();
@@ -1906,23 +1906,23 @@ fn library_page_and_jump_keys_move_the_cursor() {
     open_library_tab(&mut app, LibraryTab::History);
     let len = app.library_len();
     assert_eq!(len, 30);
-    app.library_selected = 0;
-    app.library_anchor = 0;
+    app.library_ui.selected = 0;
+    app.library_ui.anchor = 0;
     // A 12-row viewport pages by 11 (one row of overlap).
     app.list_viewport_rows.set(12);
 
     app.update(Msg::Key(key(KeyCode::PageDown)));
-    assert_eq!(app.library_selected, 11);
-    assert_eq!(app.library_anchor, 11);
+    assert_eq!(app.library_ui.selected, 11);
+    assert_eq!(app.library_ui.anchor, 11);
     app.update(Msg::Key(key(KeyCode::PageUp)));
-    assert_eq!(app.library_selected, 0);
+    assert_eq!(app.library_ui.selected, 0);
 
     app.update(Msg::Key(key(KeyCode::End)));
-    assert_eq!(app.library_selected, len - 1);
-    assert_eq!(app.library_anchor, len - 1);
+    assert_eq!(app.library_ui.selected, len - 1);
+    assert_eq!(app.library_ui.anchor, len - 1);
     app.update(Msg::Key(key(KeyCode::Home)));
-    assert_eq!(app.library_selected, 0);
-    assert_eq!(app.library_anchor, 0);
+    assert_eq!(app.library_ui.selected, 0);
+    assert_eq!(app.library_ui.anchor, 0);
 }
 
 #[test]
@@ -1955,15 +1955,15 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
         app.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
     }
     open_library_tab(&mut app, LibraryTab::History);
-    app.library_selected = 0;
+    app.library_ui.selected = 0;
     let len = app.library_len();
-    app.library_scroll.resolve(app.library_selected, 10, len, SCROLLOFF);
+    app.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF);
 
     app.update(Msg::MouseScroll { up: false });
-    assert_eq!(app.library_selected, 0); // selection untouched by the wheel
-    assert_eq!(app.library_scroll.resolve(app.library_selected, 10, len, SCROLLOFF), 3);
+    assert_eq!(app.library_ui.selected, 0); // selection untouched by the wheel
+    assert_eq!(app.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF), 3);
     app.update(Msg::MouseScroll { up: true });
-    assert_eq!(app.library_scroll.resolve(app.library_selected, 10, len, SCROLLOFF), 0); // clamped at top
+    assert_eq!(app.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF), 0); // clamped at top
 
     // Search: same decoupling, clamped at the last page.
     let mut app = App::new(100);
@@ -1985,7 +1985,7 @@ fn library_delete_is_disabled_in_all_tab() {
     let mut app = App::new(100);
     app.library.toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
     app.update(Msg::Key(key(KeyCode::Char('l'))));
-    assert_eq!(app.library_tab, LibraryTab::All);
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
     let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
     assert!(cmds.is_empty());
     assert_eq!(app.library.favorites.len(), 1); // untouched
@@ -1996,9 +1996,9 @@ fn library_all_dedups_same_title_across_collections() {
     let mut app = App::new(100);
     app.library.toggle_favorite(&Song::remote("yt1", "Song", "Artist", "3:00"));
     // A downloaded file named after the same track (`Song.m4a` -> title "Song").
-    app.downloaded_tracks = vec![Song::local_file(PathBuf::from("/tmp/Song.m4a"))];
+    app.library_ui.downloaded = vec![Song::local_file(PathBuf::from("/tmp/Song.m4a"))];
     app.update(Msg::Key(key(KeyCode::Char('l'))));
-    assert_eq!(app.library_tab, LibraryTab::All);
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
     // The remote favorite and the local file collapse to a single All-tab row...
     assert_eq!(app.library_len(), 1);
     // ...and the catalog entry (first in the chain) is the one kept.
@@ -2009,16 +2009,16 @@ fn library_all_dedups_same_title_across_collections() {
 fn downloads_delete_confirms_then_removes_file() {
     let file = temp_audio_file("del");
     let mut app = App::new(100);
-    app.downloaded_tracks = vec![Song::local_file(file.clone())];
+    app.library_ui.downloaded = vec![Song::local_file(file.clone())];
     open_library_tab(&mut app, LibraryTab::Downloads);
     // Delete opens the confirmation modal rather than deleting outright.
     let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
     assert!(cmds.is_empty());
-    assert!(app.confirm_delete_files.is_some());
+    assert!(app.library_ui.confirm_delete.is_some());
     assert!(file.exists());
     // Confirming removes the file from disk and asks for a rescan.
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(app.confirm_delete_files.is_none());
+    assert!(app.library_ui.confirm_delete.is_none());
     assert!(!file.exists());
     assert!(cmds.iter().any(|c| matches!(c, Cmd::ScanDownloads(_))));
 }
@@ -2027,13 +2027,13 @@ fn downloads_delete_confirms_then_removes_file() {
 fn downloads_delete_cancel_keeps_file() {
     let file = temp_audio_file("keep");
     let mut app = App::new(100);
-    app.downloaded_tracks = vec![Song::local_file(file.clone())];
+    app.library_ui.downloaded = vec![Song::local_file(file.clone())];
     open_library_tab(&mut app, LibraryTab::Downloads);
     app.update(Msg::Key(key(KeyCode::Delete)));
-    assert!(app.confirm_delete_files.is_some());
+    assert!(app.library_ui.confirm_delete.is_some());
     // Any non-confirming key backs out and leaves the file alone.
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(app.confirm_delete_files.is_none());
+    assert!(app.library_ui.confirm_delete.is_none());
     assert!(file.exists());
     assert!(cmds.is_empty());
     let _ = std::fs::remove_file(&file);
@@ -2046,7 +2046,7 @@ fn library_mouse_drag_selects_range_then_delete_removes_it() {
     app.library.toggle_favorite(&Song::remote("b", "tb", "x", "0:10"));
     app.library.toggle_favorite(&Song::remote("c", "tc", "x", "0:10")); // [c, b, a]
     app.mode = Mode::Library;
-    app.library_tab = LibraryTab::Favorites;
+    app.library_ui.tab = LibraryTab::Favorites;
 
     // Render so the per-row hit rects are published.
     let backend = TestBackend::new(80, 20);
@@ -2065,9 +2065,9 @@ fn library_mouse_drag_selects_range_then_delete_removes_it() {
 
     // Click row 0 (anchors the range), then drag onto row 2 (extends it).
     app.update(Msg::MouseClick { col: r0.x, row: r0.y });
-    assert_eq!((app.library_selected, app.library_anchor), (0, 0));
+    assert_eq!((app.library_ui.selected, app.library_ui.anchor), (0, 0));
     app.update(Msg::MouseDrag { col: r2.x, row: r2.y });
-    assert_eq!((app.library_selected, app.library_anchor), (2, 0));
+    assert_eq!((app.library_ui.selected, app.library_ui.anchor), (2, 0));
 
     // Delete removes the whole selected 0..=2 range.
     app.update(Msg::Key(key(KeyCode::Delete)));
@@ -2246,8 +2246,8 @@ fn download_progress_and_done_update_state() {
     });
     assert_eq!(app.downloads.get("id0"), Some(&DownloadState::Done));
     assert!(app.status.contains("/tmp/x.m4a"));
-    assert_eq!(app.downloaded_tracks.len(), 1);
-    assert_eq!(app.downloaded_tracks[0].playback_target(), "/tmp/x.m4a");
+    assert_eq!(app.library_ui.downloaded.len(), 1);
+    assert_eq!(app.library_ui.downloaded[0].playback_target(), "/tmp/x.m4a");
 }
 
 #[test]
@@ -2481,14 +2481,14 @@ fn library_scrollbar_shows_only_when_the_list_overflows() {
         overflow.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
     }
     overflow.mode = Mode::Library;
-    overflow.library_tab = LibraryTab::History;
+    overflow.library_ui.tab = LibraryTab::History;
     assert!(has_thumb(&overflow), "a long list should show a scrollbar thumb");
 
     let mut fits = App::new(100);
     fits.library.record_play(&Song::remote("a", "ta", "x", "0:10"));
     fits.library.record_play(&Song::remote("b", "tb", "x", "0:10"));
     fits.mode = Mode::Library;
-    fits.library_tab = LibraryTab::History;
+    fits.library_ui.tab = LibraryTab::History;
     assert!(!has_thumb(&fits), "a short list should not show a scrollbar");
 }
 
@@ -2961,9 +2961,9 @@ fn clicking_the_search_button_submits_the_query() {
 fn clicking_a_library_tab_switches_it() {
     let mut app = App::new(100);
     app.mode = Mode::Library;
-    assert_eq!(app.library_tab, LibraryTab::All);
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
     click_target(&mut app, MouseTarget::LibraryTab(LibraryTab::Favorites));
-    assert_eq!(app.library_tab, LibraryTab::Favorites);
+    assert_eq!(app.library_ui.tab, LibraryTab::Favorites);
 }
 
 #[test]

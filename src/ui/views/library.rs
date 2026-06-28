@@ -61,7 +61,7 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
             MouseTarget::LibraryTab(t),
         );
         x = x.saturating_add(w);
-        let style = if app.library_tab == t {
+        let style = if app.library_ui.tab == t {
             Style::default()
                 .fg(app.theme.color(R::SelectionFg))
                 .bg(app.theme.color(R::SelectionBg))
@@ -81,7 +81,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     let rows = app.library_rows();
 
     if rows.is_empty() {
-        let msg = match app.library_tab {
+        let msg = match app.library_ui.tab {
             LibraryTab::All => t!(
                 "No library tracks yet — play, favorite, or download something.",
                 "아직 라이브러리에 곡이 없어요 — 재생하거나 즐겨찾기하거나 다운로드해 보세요."
@@ -111,10 +111,10 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     // The All tab is an aggregate view (a track may live in several tabs at once), so it has
     // no per-row delete — manage tracks from their own Favorites/History/Downloads tab.
     let len = rows.len();
-    let cursor = app.library_selected.min(len - 1);
-    let sel_lo = cursor.min(app.library_anchor);
-    let sel_hi = cursor.max(app.library_anchor);
-    let deletable = app.library_tab != LibraryTab::All;
+    let cursor = app.library_ui.selected.min(len - 1);
+    let sel_lo = cursor.min(app.library_ui.anchor);
+    let sel_hi = cursor.max(app.library_ui.anchor);
+    let deletable = app.library_ui.tab != LibraryTab::All;
     let del_w: u16 = if deletable { 2 } else { 0 };
 
     // The wheel scrolls this viewport freely (decoupled from the cursor); the render only
@@ -171,7 +171,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
 /// confirm, Esc or a click elsewhere cancels. The buttons publish `ConfirmDelete` /
 /// `CancelDelete` hit rects so the modal is fully usable by mouse as well as keyboard.
 pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
-    let count = app.confirm_delete_files.as_ref().map_or(0, Vec::len);
+    let count = app.library_ui.confirm_delete.as_ref().map_or(0, Vec::len);
     let theme = &app.theme;
     let popup = centered_fixed(area, 56, 9);
     frame.render_widget(Clear, popup);
