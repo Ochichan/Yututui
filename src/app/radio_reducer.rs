@@ -15,10 +15,10 @@ impl App {
         }
         // One refill in flight at a time: the pool fetch (`radio_pending`) or, when the AI
         // reranks the fetched pool, that rerank call (`ai_thinking`).
-        if self.radio_pending || (self.ai.available && self.ai.thinking) {
+        if self.radio.pending || (self.ai.available && self.ai.thinking) {
             return Vec::new();
         }
-        let cooled = match self.radio_last_extend {
+        let cooled = match self.radio.last_extend {
             Some(t) => t.elapsed() >= AUTOPLAY_COOLDOWN,
             None => true,
         };
@@ -31,8 +31,8 @@ impl App {
         let seed = format!("{} — {}", cur.title, cur.artist);
         let seed_video_id = cur.video_id.clone();
         let exclude_ids = self.radio_exclude_ids(&seed_video_id);
-        self.radio_last_extend = Some(Instant::now());
-        self.radio_pending = true;
+        self.radio.last_extend = Some(Instant::now());
+        self.radio.pending = true;
         self.status = t!("Autoplay radio: finding related tracks", "자동재생 라디오: 관련 곡을 찾는 중").to_owned();
         self.dirty = true;
         vec![Cmd::RadioFallback {
@@ -81,7 +81,7 @@ impl App {
         }
         let prompt = self.ai_rerank_prompt(seed_video_id, &shortlist);
         let shortlist_songs: Vec<Song> = shortlist.into_iter().map(|c| c.song).collect();
-        self.pending_rerank = Some(PendingRerank {
+        self.radio.pending_rerank = Some(PendingRerank {
             seed_video_id: seed_video_id.to_owned(),
             shortlist: shortlist_songs,
             local_pick,
@@ -156,7 +156,7 @@ impl App {
             );
             return Vec::new();
         }
-        self.consecutive_radio_failures = 0;
+        self.radio.consecutive_failures = 0;
         self.status = if crate::i18n::is_korean() {
             format!("{added}곡을 대기열에 추가함")
         } else {
@@ -188,10 +188,10 @@ impl App {
 
     pub(in crate::app) fn note_radio_failure(&mut self, status: String) {
         if self.autoplay_radio {
-            self.consecutive_radio_failures = self.consecutive_radio_failures.saturating_add(1);
-            if self.consecutive_radio_failures >= AUTOPLAY_MAX_FAILURES {
+            self.radio.consecutive_failures = self.radio.consecutive_failures.saturating_add(1);
+            if self.radio.consecutive_failures >= AUTOPLAY_MAX_FAILURES {
                 self.autoplay_radio = false;
-                self.radio_pending = false;
+                self.radio.pending = false;
                 self.status = t!(
                     "Autoplay radio stopped (no related tracks found)",
                     "자동재생 라디오를 멈췄어요 (관련 곡을 찾지 못함)"

@@ -70,3 +70,19 @@ pub struct ArtState {
     /// True between requesting art and the result arriving.
     pub loading: bool,
 }
+
+/// Radio autoplay runtime: the cooldown clock, the in-flight pool flag, a handed-off AI
+/// rerank awaiting its picks, and the empty-extend circuit-breaker counter.
+#[derive(Default)]
+pub struct RadioRuntime {
+    /// When the autoplay hook last fired a top-up request (for the cooldown).
+    pub last_extend: Option<Instant>,
+    /// True while the radio candidate-pool fetch is in flight (both the AI and non-AI paths
+    /// fetch the same pool first).
+    pub pending: bool,
+    /// An AI rerank handed off to the assistant actor, awaiting its `Msg::RadioAiPicks`. Holds
+    /// the shortlist (to validate the returned ids against) and the local pick (the fallback).
+    pub pending_rerank: Option<PendingRerank>,
+    /// Consecutive empty radio extends, for the autoplay circuit breaker.
+    pub consecutive_failures: u8,
+}

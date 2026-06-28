@@ -1533,7 +1533,7 @@ fn autoplay_extends_when_queue_runs_low() {
         "autoplay should fetch a candidate pool"
     );
     assert!(ask_ai(&cmds).is_none(), "no free-form AI radio prompt anymore");
-    assert!(app.radio_pending);
+    assert!(app.radio.pending);
     assert!(!app.ai.thinking, "the rerank only starts once the pool returns");
     // The cooldown / in-flight guard blocks an immediate second request.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
@@ -1573,8 +1573,8 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
     assert!(prompt.contains("cand1"));
     assert!(prompt.contains("cand2"));
     assert!(app.ai.thinking, "the rerank is in flight");
-    assert!(app.pending_rerank.is_some(), "shortlist + local pick stashed for validation");
-    assert!(!app.radio_pending, "the pool fetch is done");
+    assert!(app.radio.pending_rerank.is_some(), "shortlist + local pick stashed for validation");
+    assert!(!app.radio.pending, "the pool fetch is done");
 }
 
 #[test]
@@ -1583,7 +1583,7 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     app.ai.available = true;
     app.autoplay_radio = true;
     app.ai.thinking = true;
-    app.pending_rerank = Some(PendingRerank {
+    app.radio.pending_rerank = Some(PendingRerank {
         seed_video_id: "id0".to_owned(),
         shortlist: vec![
             Song::remote("s1", "S1", "a", "3:00"),
@@ -1602,7 +1602,7 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     });
 
     assert!(!app.ai.thinking, "rerank finished");
-    assert!(app.pending_rerank.is_none(), "pending consumed");
+    assert!(app.radio.pending_rerank.is_none(), "pending consumed");
     assert!(app.queue.contains_video_id("s1"), "valid AI id enqueued");
     assert!(app.queue.contains_video_id("s2"), "topped up from local pick");
     assert!(!app.queue.contains_video_id("HALLUCINATED"), "hallucinated id dropped");
@@ -1614,7 +1614,7 @@ fn radio_ai_picks_for_a_stale_seed_are_ignored() {
     app.ai.available = true;
     app.autoplay_radio = true;
     app.ai.thinking = true;
-    app.pending_rerank = Some(PendingRerank {
+    app.radio.pending_rerank = Some(PendingRerank {
         seed_video_id: "current-seed".to_owned(),
         shortlist: vec![Song::remote("s1", "S1", "a", "3:00")],
         local_pick: vec![Song::remote("s1", "S1", "a", "3:00")],
@@ -1625,7 +1625,7 @@ fn radio_ai_picks_for_a_stale_seed_are_ignored() {
         seed_video_id: "old-seed".to_owned(),
         ids: vec!["s1".to_owned()],
     });
-    assert!(app.pending_rerank.is_some(), "stale result leaves the current rerank intact");
+    assert!(app.radio.pending_rerank.is_some(), "stale result leaves the current rerank intact");
     assert!(!app.queue.contains_video_id("s1"));
 }
 
@@ -1641,7 +1641,7 @@ fn autoplay_uses_radio_fallback_without_ai_key() {
     assert!(seed.contains("t1"));
     assert!(exclude_ids.iter().any(|id| id == "id0"));
     assert!(exclude_ids.iter().any(|id| id == "id1"));
-    assert!(app.radio_pending);
+    assert!(app.radio.pending);
 
     let cmds = app.maybe_autoplay_extend();
     assert!(
@@ -1656,7 +1656,7 @@ fn radio_results_run_through_local_engine_and_clear_pending() {
     fastrand::seed(7);
     let mut app = app_playing(2, 0);
     app.autoplay_radio = true;
-    app.radio_pending = true;
+    app.radio.pending = true;
 
     // The local engine excludes the seed (id0) and the already-queued track (id1), dedups
     // the repeated id2, and ranks the rest. Distinct artists + normal durations keep the
@@ -1673,7 +1673,7 @@ fn radio_results_run_through_local_engine_and_clear_pending() {
         ],
     });
 
-    assert!(!app.radio_pending, "results clear the in-flight guard");
+    assert!(!app.radio.pending, "results clear the in-flight guard");
     assert_eq!(app.queue.len(), 4, "two new tracks added to the queue of two");
     assert!(app.queue.contains_video_id("id2"));
     assert!(app.queue.contains_video_id("id3"));
@@ -1687,14 +1687,14 @@ fn radio_error_uses_circuit_breaker() {
     app.autoplay_radio = true;
 
     for _ in 0..AUTOPLAY_MAX_FAILURES {
-        app.radio_pending = true;
+        app.radio.pending = true;
         app.update(Msg::RadioError {
             seed_video_id: "id0".to_owned(),
             error: "yt-dlp failed".to_owned(),
         });
     }
 
-    assert!(!app.radio_pending);
+    assert!(!app.radio.pending);
     assert!(!app.autoplay_radio);
     assert!(app.status.contains("Autoplay radio stopped"));
 }

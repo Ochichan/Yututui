@@ -193,16 +193,11 @@ pub struct App {
     // AI assistant ------------------------------------------------------------
     /// AI-assistant state: availability, model, chat transcript, prompt, suggestions.
     pub ai: AiState,
-    /// When the autoplay hook last fired a top-up request (for the cooldown).
-    radio_last_extend: Option<Instant>,
-    /// True while the radio candidate-pool fetch is in flight (both the AI and non-AI paths
-    /// fetch the same pool first).
-    radio_pending: bool,
-    /// An AI rerank handed off to the assistant actor, awaiting its `Msg::RadioAiPicks`. Holds
-    /// the shortlist (to validate the returned ids against) and the local pick (the fallback).
-    pending_rerank: Option<PendingRerank>,
-    /// Consecutive empty radio extends, for the autoplay circuit breaker.
-    consecutive_radio_failures: u8,
+
+    // Radio runtime -----------------------------------------------------------
+    /// Radio autoplay runtime: cooldown clock, in-flight pool flag, a handed-off AI rerank,
+    /// and the empty-extend circuit-breaker counter.
+    pub radio: RadioRuntime,
     /// Consecutive mpv playback errors with no track playing in between, for the
     /// auto-skip circuit breaker (see [`MAX_CONSECUTIVE_PLAY_ERRORS`]).
     consecutive_play_errors: u8,
@@ -344,10 +339,7 @@ impl App {
                 suggestions_selected: 0,
                 focus: AiFocus::Input,
             },
-            radio_last_extend: None,
-            radio_pending: false,
-            pending_rerank: None,
-            consecutive_radio_failures: 0,
+            radio: RadioRuntime::default(),
             consecutive_play_errors: 0,
             playlists: Playlists::default(),
             search: SearchState {
@@ -657,7 +649,7 @@ impl App {
                 seed_video_id,
                 candidates,
             } => {
-                self.radio_pending = false;
+                self.radio.pending = false;
                 if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
                     // With a key + reranker enabled, hand the model a diverse local shortlist to
                     // reorder (ids only); otherwise rank the pool purely locally. Either way the
@@ -679,11 +671,11 @@ impl App {
                 // match but the seed is no longer queued (the user skipped/cleared mid-think),
                 // the chain still drops the stale rerank without enqueuing.
                 let ours = self
-                    .pending_rerank
+                    .radio.pending_rerank
                     .as_ref()
                     .is_some_and(|p| p.seed_video_id == seed_video_id);
                 if ours
-                    && let Some(pending) = self.pending_rerank.take()
+                    && let Some(pending) = self.radio.pending_rerank.take()
                     && self.autoplay_radio
                     && self.queue.contains_video_id(&seed_video_id)
                 {
@@ -700,7 +692,7 @@ impl App {
                 seed_video_id,
                 error,
             } => {
-                self.radio_pending = false;
+                self.radio.pending = false;
                 if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
                     self.note_radio_failure(format!("{}: {error}", t!("Autoplay radio failed", "자동재생 라디오 실패")));
                 } else {
@@ -746,7 +738,7 @@ impl App {
                 self.autoplay_radio = on;
                 self.dirty = true;
                 if on {
-                    self.consecutive_radio_failures = 0;
+                    self.radio.consecutive_failures = 0;
                     // Same proactive top-up as the manual toggle (see Action::ToggleRadio).
                     return self.maybe_autoplay_extend();
                 }
