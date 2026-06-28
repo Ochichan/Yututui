@@ -227,6 +227,10 @@ async fn run(
     let mut input = event::Translator::default();
     let mut ime_scrub = tokio::time::interval(Duration::from_millis(80));
     ime_scrub.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // Only polled while a transient status is covering the song title; lets the reducer
+    // expire it (and restore the title) ~3s after it was shown. Idle otherwise.
+    let mut status_tick = tokio::time::interval(Duration::from_millis(250));
+    status_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     terminal.draw(|f| ui::render(f, &app))?;
 
     while !app.should_quit {
@@ -248,6 +252,7 @@ async fn run(
                 app.dirty = false;
                 continue;
             },
+            _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
         };
 
         // An overlay that paints over the album art (the `eq:` dropdown) won't make the

@@ -45,6 +45,9 @@ const RADIO_RECENT_ARTISTS: usize = 12;
 const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
 /// Consecutive empty radio extends before autoplay disables itself (circuit breaker).
 const AUTOPLAY_MAX_FAILURES: u8 = 3;
+/// How long a transient `status` notification covers the song title before it auto-clears
+/// (on the Player screen the status line replaces the title, so it must not linger).
+const STATUS_TTL: Duration = Duration::from_secs(3);
 /// Cap on AI chat transcript lines kept in memory (bounded memory).
 const AI_HISTORY_MAX: usize = 999;
 
@@ -93,6 +96,9 @@ pub enum Msg {
     /// Startup-only: begin playing the restored last track (sent once at launch when the
     /// "autoplay on launch" setting is on). A no-op otherwise.
     Autoplay,
+    /// Periodic wake-up (driven by the main loop only while a transient `status` is showing)
+    /// that lets the reducer expire the status after [`STATUS_TTL`] and restore the title.
+    StatusTick,
     /// mpv playback position, in seconds.
     PlayerTimePos(f64),
     /// Current track duration, in seconds.
@@ -457,6 +463,9 @@ pub struct App {
     pub queue: Queue,
     /// A status/error line shown to the user (empty = normal).
     pub status: String,
+    /// When `status` was last set non-empty, used to auto-expire it after [`STATUS_TTL`]
+    /// (set centrally in [`Self::update`]; `None` while the title is showing normally).
+    status_set_at: Option<Instant>,
 
     // Audio / EQ --------------------------------------------------------------
     /// Selected equalizer preset (drives `eq_bands` when chosen via `e`).
@@ -629,6 +638,7 @@ impl App {
             volume: volume.clamp(0, VOLUME_MAX),
             queue: Queue::default(),
             status: String::new(),
+            status_set_at: None,
             eq_preset: EqPreset::default(),
             eq_bands: [0.0; eq::BANDS],
             normalize: false,
@@ -761,7 +771,27 @@ impl App {
     }
 
     /// The reducer: apply one message, returning effects for the run loop to dispatch.
+    /// Reducer entry point. Wraps [`Self::dispatch`] to centrally track when a transient
+    /// `status` notification is set or cleared (any of the ~40 `self.status = …` sites), so
+    /// the main loop can expire it after [`STATUS_TTL`] and bring the song title back —
+    /// without each call site having to remember to arm a timer. See [`Self::status_visible`].
     pub fn update(&mut self, msg: Msg) -> Vec<Cmd> {
+        let status_before = self.status.clone();
+        let cmds = self.dispatch(msg);
+        if self.status != status_before {
+            self.status_set_at =
+                if self.status.is_empty() { None } else { Some(Instant::now()) };
+        }
+        cmds
+    }
+
+    /// Whether a transient status is currently covering the title (drives the main loop's
+    /// expiry tick — see [`Msg::StatusTick`]).
+    pub fn status_visible(&self) -> bool {
+        self.status_set_at.is_some()
+    }
+
+    fn dispatch(&mut self, msg: Msg) -> Vec<Cmd> {
         match msg {
             Msg::Key(k) => return self.on_key(k),
             Msg::MouseClick { col, row } => return self.on_mouse_click(col, row),
@@ -770,6 +800,14 @@ impl App {
             Msg::Resize => self.dirty = true,
             Msg::Quit => self.should_quit = true,
             Msg::Autoplay => return self.autoplay_on_start_cmds(),
+            Msg::StatusTick => {
+                // The status has been covering the title long enough — clear it so the
+                // wrapper above nulls `status_set_at` and the next frame redraws the title.
+                if matches!(self.status_set_at, Some(t) if t.elapsed() >= STATUS_TTL) {
+                    self.status.clear();
+                    self.dirty = true;
+                }
+            }
             Msg::PlayerTimePos(t) => {
                 self.time_pos = Some(t);
                 // Real progress means the current track opened and is playing, so the
@@ -4187,6 +4225,28 @@ mod tests {
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
         app.update(Msg::Key(key(KeyCode::Tab)));
         assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General); // wraps
+    }
+
+    #[test]
+    fn transient_status_expires_after_ttl_and_restores_the_title() {
+        let mut app = app_playing(1, 0);
+        // A notification covers the title and arms the expiry timer.
+        app.update(Msg::Key(key(KeyCode::Char('N')))); // toggle normalize → sets status
+        assert!(!app.status.is_empty(), "an action should set a status");
+        assert!(app.status_visible(), "a non-empty status arms the expiry tick");
+
+        // Before the TTL elapses, a tick is a no-op — the notification stays.
+        app.update(Msg::StatusTick);
+        assert!(!app.status.is_empty(), "status persists until the TTL elapses");
+        assert!(app.status_visible());
+
+        // Backdate the timer past the TTL; the next tick clears it and restores the title.
+        app.status_set_at = Some(Instant::now() - STATUS_TTL - Duration::from_millis(1));
+        app.dirty = false; // so the assertion below proves the clear requested the redraw
+        app.update(Msg::StatusTick);
+        assert!(app.status.is_empty(), "status auto-clears after the TTL");
+        assert!(!app.status_visible(), "expiry disarms the tick");
+        assert!(app.dirty, "clearing the status requests a redraw of the title");
     }
 
     #[test]
