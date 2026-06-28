@@ -247,23 +247,9 @@ pub struct App {
     pub lyrics: Option<TrackLyrics>,
 
     // Album art ---------------------------------------------------------------
-    /// The terminal graphics picker (font size + detected protocol), built once at startup
-    /// when album art is enabled. `None` → feature off, or the terminal couldn't be probed
-    /// (no art is fetched or drawn in that case).
-    pub art_picker: Option<Picker>,
-    /// The current track's art as a render-ready, resizable protocol. `RefCell` because
-    /// `StatefulImage` needs `&mut` during render, which only has `&App` (mirrors
-    /// [`Self::mouse_buttons`]).
-    pub art: RefCell<Option<StatefulProtocol>>,
-    /// The decoded source image kept alongside the protocol so [`Self::refresh_art`] can
-    /// rebuild a fresh protocol (new graphics-protocol id) on demand — see that method for why.
-    art_source: Option<DynamicImage>,
-    /// Source pixel dimensions of the held art, for centering it within its panel.
-    pub art_dims: (u32, u32),
-    /// `video_id` the held art belongs to (guards against a stale image lingering).
-    art_video_id: Option<String>,
-    /// True between requesting art and the result arriving.
-    pub art_loading: bool,
+    /// Album-art state: graphics picker, held render protocol, decoded source + dims,
+    /// owning track id, and the in-flight flag.
+    pub art: ArtState,
 
     // Downloads ---------------------------------------------------------------
     /// In-flight / finished downloads, keyed by `video_id`, for the UI indicator.
@@ -384,12 +370,7 @@ impl App {
             lyrics_visible: false,
             lyrics_loading: false,
             lyrics: None,
-            art_picker: None,
-            art: RefCell::new(None),
-            art_source: None,
-            art_dims: (0, 0),
-            art_video_id: None,
-            art_loading: false,
+            art: ArtState::default(),
             downloads: HashMap::new(),
             download_sources: HashMap::new(),
             resolved: HashMap::new(),
@@ -630,7 +611,7 @@ impl App {
                 }
             }
             Msg::ArtworkResult { video_id, image } => {
-                self.art_loading = false;
+                self.art.loading = false;
                 // Drop results for a track we've already skipped past.
                 if self.queue.current().is_some_and(|s| s.video_id == video_id) {
                     self.set_artwork(video_id, image);

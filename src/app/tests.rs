@@ -2147,17 +2147,17 @@ fn album_art_off_emits_no_fetch() {
     // Opt-in: off by default → advancing a track issues no artwork fetch.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::FetchArtwork { .. })));
-    assert!(!app.art_loading);
+    assert!(!app.art.loading);
 }
 
 #[test]
 fn album_art_on_fetches_remote_then_builds_protocol() {
     let mut app = app_playing(3, 0);
     app.config.album_art = Some(true);
-    app.art_picker = Some(Picker::halfblocks());
+    app.art.picker = Some(Picker::halfblocks());
     // Advancing to id1 now fetches its thumbnail from the remote source.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
-    assert!(app.art_loading);
+    assert!(app.art.loading);
     assert!(cmds.iter().any(|c| matches!(
         c,
         Cmd::FetchArtwork { video_id, source: ArtSource::Remote { video_id: vid } }
@@ -2168,16 +2168,16 @@ fn album_art_on_fetches_remote_then_builds_protocol() {
         video_id: "id1".to_owned(),
         image: Some(image::DynamicImage::new_rgb8(120, 120)),
     });
-    assert!(!app.art_loading);
+    assert!(!app.art.loading);
     assert!(app.art_active());
-    assert_eq!(app.art_dims, (120, 120));
+    assert_eq!(app.art.dims, (120, 120));
 }
 
 #[test]
 fn artwork_result_for_stale_track_is_ignored() {
     let mut app = app_playing(3, 0); // current id0
     app.config.album_art = Some(true);
-    app.art_picker = Some(Picker::halfblocks());
+    app.art.picker = Some(Picker::halfblocks());
     app.update(Msg::ArtworkResult {
         video_id: "stale".to_owned(),
         image: Some(image::DynamicImage::new_rgb8(8, 8)),
@@ -2189,7 +2189,7 @@ fn artwork_result_for_stale_track_is_ignored() {
 fn local_track_uses_local_art_source() {
     let mut app = App::new(100);
     app.config.album_art = Some(true);
-    app.art_picker = Some(Picker::halfblocks());
+    app.art.picker = Some(Picker::halfblocks());
     let song = Song::local_file(std::path::PathBuf::from("/music/song.m4a"));
     assert!(matches!(app.artwork_source(&song), Some(ArtSource::Local(_))));
 }
@@ -2197,8 +2197,8 @@ fn local_track_uses_local_art_source() {
 #[test]
 fn art_fit_rect_centers_by_aspect() {
     let mut app = App::new(100);
-    app.art_picker = Some(Picker::halfblocks()); // font cell 10x20 px
-    app.art_dims = (100, 100); // square source
+    app.art.picker = Some(Picker::halfblocks()); // font cell 10x20 px
+    app.art.dims = (100, 100); // square source
     let r = app.art_fit_rect(Rect { x: 0, y: 0, width: 40, height: 40 });
     // Cells are 1:2 (10×20px), so a square cover spans the full width but only half the
     // height, centered vertically in the box.

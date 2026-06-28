@@ -452,7 +452,7 @@ impl App {
                 }
                 // Fetch album art for the new track when the feature is on.
                 if let Some(source) = self.artwork_source(&song) {
-                    self.art_loading = true;
+                    self.art.loading = true;
                     cmds.push(Cmd::FetchArtwork {
                         video_id: song.video_id.clone(),
                         source,

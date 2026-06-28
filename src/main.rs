@@ -139,7 +139,7 @@ async fn run(
 
     let mut app = App::new(cfg.volume);
     // Hand over the terminal image picker (present only when album art is enabled).
-    app.art_picker = art_picker;
+    app.art.picker = art_picker;
     // Load the local library (favorites + history); an absent/corrupt file → empty.
     app.library = library::Library::load();
     // Load per-track preference signals (plays/skips/dislikes); absent → empty.

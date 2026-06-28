@@ -558,7 +558,7 @@ fn draw_art(frame: &mut Frame, app: &App, band: Rect) -> Option<Rect> {
     }
     let mut rect = app.art_fit_rect(band);
     rect.y = band.y; // art_fit_rect centers vertically; re-anchor to the top of the band.
-    if let Some(proto) = app.art.borrow_mut().as_mut() {
+    if let Some(proto) = app.art.protocol.borrow_mut().as_mut() {
         frame.render_stateful_widget(
             StatefulImage::new().resize(Resize::Scale(Some(FilterType::Lanczos3))),
             rect,

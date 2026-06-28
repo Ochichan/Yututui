@@ -794,10 +794,10 @@ impl App {
         if !self.config.effective_album_art() {
             self.clear_artwork();
         } else if let Some(song) = self.queue.current().cloned()
-            && self.art_video_id.as_deref() != Some(song.video_id.as_str())
+            && self.art.video_id.as_deref() != Some(song.video_id.as_str())
             && let Some(source) = self.artwork_source(&song)
         {
-            self.art_loading = true;
+            self.art.loading = true;
             cmds.push(Cmd::FetchArtwork { video_id: song.video_id.clone(), source });
         }
         cmds

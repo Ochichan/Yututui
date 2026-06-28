@@ -7,8 +7,8 @@ impl App {
     /// detected, and a decoded image is ready for the current track.
     pub fn art_active(&self) -> bool {
         self.config.effective_album_art()
-            && self.art_picker.is_some()
-            && self.art.borrow().is_some()
+            && self.art.picker.is_some()
+            && self.art.protocol.borrow().is_some()
     }
 
     /// Whether the per-frame animation clock should run right now. True when we're on the
@@ -73,8 +73,8 @@ impl App {
     /// appear/disappear the (full-width) `?` help overlay gets for free. Cheap clone of one
     /// already-bounded image (`MAX_DIM`), only on a popup toggle.
     pub fn refresh_art(&self) {
-        if let (Some(img), Some(picker)) = (self.art_source.as_ref(), self.art_picker.as_ref()) {
-            *self.art.borrow_mut() = Some(picker.new_resize_protocol(img.clone()));
+        if let (Some(img), Some(picker)) = (self.art.source.as_ref(), self.art.picker.as_ref()) {
+            *self.art.protocol.borrow_mut() = Some(picker.new_resize_protocol(img.clone()));
         }
     }
 
@@ -82,12 +82,12 @@ impl App {
     /// picker). Building the protocol is cheap; the encode happens lazily at render. The decoded
     /// image is also kept (`art_source`) so [`Self::refresh_art`] can rebuild on a popup toggle.
     pub(in crate::app) fn set_artwork(&mut self, video_id: String, image: Option<DynamicImage>) {
-        match (image, self.art_picker.as_ref()) {
+        match (image, self.art.picker.as_ref()) {
             (Some(img), Some(picker)) => {
-                self.art_dims = (img.width(), img.height());
-                *self.art.borrow_mut() = Some(picker.new_resize_protocol(img.clone()));
-                self.art_source = Some(img);
-                self.art_video_id = Some(video_id);
+                self.art.dims = (img.width(), img.height());
+                *self.art.protocol.borrow_mut() = Some(picker.new_resize_protocol(img.clone()));
+                self.art.source = Some(img);
+                self.art.video_id = Some(video_id);
             }
             _ => self.clear_artwork(),
         }
@@ -95,16 +95,16 @@ impl App {
 
     /// Drop any held art (track change, or the feature turned off) — also frees its RAM.
     pub(in crate::app) fn clear_artwork(&mut self) {
-        *self.art.borrow_mut() = None;
-        self.art_source = None;
-        self.art_video_id = None;
-        self.art_dims = (0, 0);
+        *self.art.protocol.borrow_mut() = None;
+        self.art.source = None;
+        self.art.video_id = None;
+        self.art.dims = (0, 0);
     }
 
     /// The art's source, if album art is on and a protocol was detected. `None` keeps the
     /// reducer from emitting a fetch (and the view from reserving space) when off.
     pub(in crate::app) fn artwork_source(&self, song: &Song) -> Option<ArtSource> {
-        if !self.config.effective_album_art() || self.art_picker.is_none() {
+        if !self.config.effective_album_art() || self.art.picker.is_none() {
             return None;
         }
         Some(match &song.local_path {
@@ -117,8 +117,8 @@ impl App {
     /// font cell size so square covers render square and wide thumbnails render wide. Falls
     /// back to the whole `area` when dimensions/font size are unknown.
     pub fn art_fit_rect(&self, area: Rect) -> Rect {
-        let (iw, ih) = self.art_dims;
-        let Some(font) = self.art_picker.as_ref().map(Picker::font_size) else {
+        let (iw, ih) = self.art.dims;
+        let Some(font) = self.art.picker.as_ref().map(Picker::font_size) else {
             return area;
         };
         if iw == 0 || ih == 0 || font.width == 0 || font.height == 0 {

@@ -47,3 +47,26 @@ pub struct AiState {
     /// Whether the input box or the suggestions list has focus.
     pub focus: AiFocus,
 }
+
+/// Album-art state: the terminal graphics picker, the held render protocol, its decoded
+/// source image and dimensions, the owning track id, and the in-flight flag.
+#[derive(Default)]
+pub struct ArtState {
+    /// The terminal graphics picker (font size + detected protocol), built once at startup
+    /// when album art is enabled. `None` → feature off, or the terminal couldn't be probed
+    /// (no art is fetched or drawn in that case).
+    pub picker: Option<Picker>,
+    /// The current track's art as a render-ready, resizable protocol. `RefCell` because
+    /// `StatefulImage` needs `&mut` during render, which only has `&App` (mirrors
+    /// [`App::mouse_buttons`]).
+    pub protocol: RefCell<Option<StatefulProtocol>>,
+    /// The decoded source image kept alongside the protocol so [`App::refresh_art`] can
+    /// rebuild a fresh protocol (new graphics-protocol id) on demand — see that method for why.
+    pub source: Option<DynamicImage>,
+    /// Source pixel dimensions of the held art, for centering it within its panel.
+    pub dims: (u32, u32),
+    /// `video_id` the held art belongs to (guards against a stale image lingering).
+    pub video_id: Option<String>,
+    /// True between requesting art and the result arriving.
+    pub loading: bool,
+}
