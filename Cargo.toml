@@ -1,6 +1,6 @@
 [package]
 name = "ytm-tui"
-version = "1.5.3"
+version = "1.5.4"
 edition = "2024"
 
 # The shipped command is `ytt` — short to type and what the README/installers expose.
