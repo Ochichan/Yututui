@@ -49,24 +49,47 @@ impl Song {
         }
     }
 
-    /// Build a locally playable track from a file path. Metadata parsing is intentionally
-    /// avoided here; downloaded tracks created during this session can preserve richer
-    /// metadata via [`Self::with_local_path`].
+    /// Build a locally playable track from a file path. Rich metadata parsing is intentionally
+    /// avoided, but a YouTube id embedded in the filename by our downloader (`Title [<id>].m4a`,
+    /// see [`crate::download`]) is recovered into `yt_video_id` and stripped from the displayed
+    /// title — this is what lets a downloaded-and-online track still produce its share URL after
+    /// a restart. Plain/foreign filenames are unaffected. Session downloads can additionally
+    /// preserve richer metadata via [`Self::with_local_path`].
     pub fn local_file(path: PathBuf) -> Self {
-        let title = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .filter(|s| !s.trim().is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| path.display().to_string());
+        let stem = path.file_stem().and_then(|s| s.to_str());
+        let (title, yt_video_id) = match stem.and_then(Self::parse_embedded_id) {
+            Some((title, id)) => (title.to_owned(), Some(id.to_owned())),
+            None => (
+                stem.filter(|s| !s.trim().is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| path.display().to_string()),
+                None,
+            ),
+        };
         Self {
             video_id: Self::local_id(&path),
             title,
             artist: "Local file".to_owned(),
             duration: String::new(),
             local_path: Some(path),
-            yt_video_id: None,
+            yt_video_id,
         }
+    }
+
+    /// Parse a trailing ` [<id>]` YouTube-id tag off a file stem, returning
+    /// `(title_without_tag, id)`. The id must be exactly 11 URL-safe base64 chars (the YouTube
+    /// video-id shape), which makes accidental matches on bracketed titles like `Mix [Vol. 3]`
+    /// effectively impossible. Returns `None` when there is no tag or no real title before it.
+    pub(crate) fn parse_embedded_id(stem: &str) -> Option<(&str, &str)> {
+        let rest = stem.trim_end().strip_suffix(']')?;
+        let open = rest.rfind('[')?;
+        let id = &rest[open + 1..];
+        let is_id_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+        if id.len() != 11 || !id.bytes().all(is_id_char) {
+            return None;
+        }
+        let title = rest[..open].trim_end();
+        (!title.is_empty()).then_some((title, id))
     }
 
     /// Preserve known catalog metadata while making this entry play from `path`. The
@@ -81,6 +104,13 @@ impl Song {
             local_path: Some(path),
             yt_video_id: self.youtube_id().map(str::to_owned),
         }
+    }
+
+    /// Attach a recovered YouTube id to an otherwise id-less local track (used when the id is
+    /// restored from the download manifest or a title match rather than the filename).
+    pub fn with_yt_id(mut self, id: String) -> Self {
+        self.yt_video_id = Some(id);
+        self
     }
 
     pub fn is_local(&self) -> bool {

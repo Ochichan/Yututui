@@ -2224,6 +2224,157 @@ fn copy_link_warns_for_local_only_track() {
     );
 }
 
+/// A bare, pre-enrichment local entry (e.g. a `local:` track persisted to history before the
+/// fix, or a plain scanned file): `local:` identity, no `yt_video_id`, real `local_path`.
+fn bare_local(path: &str, title: &str) -> Song {
+    Song {
+        video_id: format!("local:{path}"),
+        title: title.to_owned(),
+        artist: "Local file".to_owned(),
+        duration: String::new(),
+        local_path: Some(PathBuf::from(path)),
+        yt_video_id: None,
+    }
+}
+
+#[test]
+fn local_file_recovers_embedded_id_from_filename() {
+    // Our downloader names files `Title [<id>].m4a`; a rescan recovers the id + clean title.
+    let tagged = Song::local_file(PathBuf::from("/tmp/My Song [dQw4w9WgXcQ].m4a"));
+    assert_eq!(tagged.title, "My Song");
+    assert_eq!(tagged.youtube_id(), Some("dQw4w9WgXcQ"));
+    assert_eq!(
+        tagged.share_url().as_deref(),
+        Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    );
+
+    // A plain filename stays local-only.
+    let plain = Song::local_file(PathBuf::from("/tmp/Just A File.m4a"));
+    assert_eq!(plain.title, "Just A File");
+    assert_eq!(plain.youtube_id(), None);
+
+    // A bracketed-but-not-an-id title is not mistaken for a tag (not 11 id chars).
+    let bracketed = Song::local_file(PathBuf::from("/tmp/Live Mix [Vol. 3].m4a"));
+    assert_eq!(bracketed.title, "Live Mix [Vol. 3]");
+    assert_eq!(bracketed.youtube_id(), None);
+
+    // Documented false-positive boundary: any trailing `[…]` whose contents are exactly 11
+    // id-shaped chars ([A-Za-z0-9_-]) IS treated as an embedded id, even ordinary words —
+    // the 11-char shape is heuristic, not proof. A 10- or 12-char bracket does not match.
+    let collision = Song::local_file(PathBuf::from("/tmp/Song [hello_world].m4a")); // 11 chars
+    assert_eq!(collision.title, "Song");
+    assert_eq!(collision.youtube_id(), Some("hello_world"));
+    let too_short = Song::local_file(PathBuf::from("/tmp/Song [helloworld].m4a")); // 10 chars
+    assert_eq!(too_short.youtube_id(), None);
+}
+
+#[test]
+fn enrich_downloads_restores_id_from_manifest_then_title_match() {
+    let mut app = App::new(100);
+    // Manifest remembers an enriched download (real artist + YouTube id), keyed by video_id.
+    let rich = Song::remote("dQw4w9WgXcQ", "Title", "Real Artist", "3:00")
+        .with_local_path(PathBuf::from("/tmp/whatever.m4a"));
+    app.download_store.record(&rich);
+    let from_manifest = app.enrich_downloads(vec![bare_local("/tmp/whatever.m4a", "Title")]);
+    assert_eq!(from_manifest[0].artist, "Real Artist");
+    assert_eq!(from_manifest[0].youtube_id(), Some("dQw4w9WgXcQ"));
+
+    // Legacy best-effort: an id-less scanned file borrows the id of a remote favorite with the
+    // same normalized title.
+    app.library.favorites = vec![Song::remote("favmatch1234", "My Tune", "A", "3:00")];
+    let from_title = app.enrich_downloads(vec![bare_local("/tmp/plain.m4a", "my tune")]);
+    assert_eq!(from_title[0].youtube_id(), Some("favmatch1234"));
+
+    // A *local-only* favorite (no YouTube origin) must NOT be borrowed from.
+    app.library.favorites = vec![bare_local("/tmp/other.m4a", "Lonely")];
+    let unmatched = app.enrich_downloads(vec![bare_local("/tmp/lonely.m4a", "Lonely")]);
+    assert_eq!(unmatched[0].youtube_id(), None);
+}
+
+#[test]
+fn copy_link_recovers_id_from_filename_for_bare_local_track() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    // A bare queue entry (no yt id) whose on-disk file carries the `[id]` tag.
+    app.queue
+        .set(vec![bare_local("/tmp/Great Song [dQw4w9WgXcQ].m4a", "Great Song")], 0);
+    app.mode = Mode::Player;
+    app.update(Msg::Key(key(KeyCode::Char('y'))));
+    assert_eq!(app.status.kind, StatusKind::Info, "id recovered from filename");
+}
+
+#[test]
+fn copy_link_recovers_id_via_title_match_against_favorites() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    app.library.favorites = vec![Song::remote("favmatch1234", "My Tune", "A", "3:00")];
+    app.queue.set(vec![bare_local("/tmp/plain.m4a", "My Tune")], 0);
+    app.mode = Mode::Player;
+    app.update(Msg::Key(key(KeyCode::Char('y'))));
+    assert_eq!(app.status.kind, StatusKind::Info, "id recovered by title match");
+}
+
+#[test]
+fn copy_link_works_on_all_tab_when_history_holds_a_bare_local_entry() {
+    // Finding 1: All-tab dedup prefers the history entry over the enriched download for the same
+    // title. The history entry is bare (`local:`, no yt id), but its file is `[id]`-tagged, so the
+    // copy-time recovery still produces a YouTube URL.
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    let path = "/tmp/Shared [dQw4w9WgXcQ].m4a";
+    app.library
+        .history
+        .push_front(bare_local(path, "Shared")); // pre-fix play, wins All-tab dedup
+    app.library_ui.downloaded = vec![bare_local(path, "Shared").with_yt_id("dQw4w9WgXcQ".to_owned())];
+
+    app.update(Msg::Key(key(KeyCode::Char('l')))); // Library, All tab
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter))); // play the All-tab current row
+    assert_eq!(app.mode, Mode::Player);
+    assert!(load_url(&cmds).is_some());
+    assert!(app.queue.current().unwrap().youtube_id().is_none(), "the bare history entry plays");
+
+    app.update(Msg::Key(key(KeyCode::Char('y'))));
+    assert_eq!(app.status.kind, StatusKind::Info, "copy still recovers the YouTube URL");
+}
+
+#[test]
+fn download_done_records_manifest_and_saves() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    let remote = Song::remote("dQw4w9WgXcQ", "Title", "Real Artist", "3:00");
+    app.start_download(remote); // populates downloads.sources
+
+    let cmds = app.update(Msg::DownloadDone {
+        video_id: "dQw4w9WgXcQ".to_owned(),
+        path: "/tmp/Title [dQw4w9WgXcQ].m4a".to_owned(),
+    });
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::SaveDownloads)),
+        "a completed download persists the manifest"
+    );
+    assert_eq!(app.library_ui.downloaded[0].youtube_id(), Some("dQw4w9WgXcQ"));
+    // The manifest remembers it: a later bare scan of the same file re-enriches.
+    let vid = app.library_ui.downloaded[0].video_id.clone();
+    let scanned = Song {
+        video_id: vid,
+        ..Song::local_file(PathBuf::from("/tmp/x.m4a"))
+    };
+    let out = app.download_store.enrich(vec![scanned]);
+    assert_eq!(out[0].youtube_id(), Some("dQw4w9WgXcQ"));
+    assert_eq!(out[0].artist, "Real Artist");
+}
+
+#[test]
+fn download_done_with_empty_path_does_not_save() {
+    let mut app = App::new(100);
+    let cmds = app.update(Msg::DownloadDone {
+        video_id: "x".to_owned(),
+        path: "   ".to_owned(),
+    });
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveDownloads)));
+}
+
 // --- library multi-select delete (drag + Delete), per-tab semantics ------
 
 /// A real, empty audio file in the temp dir, named uniquely so parallel tests don't clash.

@@ -171,6 +171,8 @@ pub enum Cmd {
     Search(String),
     /// Persist the library (favorites/history) to disk.
     SaveLibrary,
+    /// Persist the downloads manifest (completed downloads' YouTube identity) to disk.
+    SaveDownloads,
     /// Persist the per-track preference signals (plays/skips/dislikes) to disk.
     SaveSignals,
     /// Refresh the local downloads list from this folder.

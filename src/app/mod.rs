@@ -20,6 +20,7 @@ use crate::ai::GeminiModel;
 use crate::api::Song;
 use crate::artwork::ArtSource;
 use crate::config::{Config, SPEED_MAX, SPEED_MIN};
+use crate::downloads::DownloadStore;
 use crate::eq::{self, EqPreset};
 use crate::keymap::{Action, Chord, Conflict, KeyContext, KeyMap};
 use crate::t;
@@ -223,6 +224,10 @@ pub struct App {
     // Downloads ---------------------------------------------------------------
     /// Download progress + source metadata, keyed by `video_id` (see [`Downloads`]).
     pub downloads: Downloads,
+    /// Persisted manifest of completed downloads' YouTube identity + rich metadata, so a
+    /// downloaded-and-online track keeps its share URL across restarts (see [`DownloadStore`]).
+    /// Loaded by `main` after `new`.
+    pub download_store: DownloadStore,
 
     // Prefetch ----------------------------------------------------------------
     /// Prefetch / load tracking: stream-URL cache, last-load-was-prefetched flag, and the
@@ -307,6 +312,7 @@ impl App {
             lyrics: Lyrics::default(),
             art: ArtState::default(),
             downloads: Downloads::default(),
+            download_store: DownloadStore::default(),
             prefetch: Prefetch::default(),
             bridges: RenderBridges::default(),
             last_shown_sec: -1,
@@ -530,7 +536,7 @@ impl App {
                 self.dirty = true;
             }
             Msg::DownloadsScanned(songs) => {
-                self.library_ui.downloaded = songs;
+                self.library_ui.downloaded = self.enrich_downloads(songs);
                 let len = self.library_len();
                 if self.library_ui.selected >= len {
                     self.library_ui.selected = len.saturating_sub(1);
@@ -560,7 +566,8 @@ impl App {
             }
             Msg::DownloadDone { video_id, path } => {
                 self.downloads.active.insert(video_id.clone(), DownloadState::Done);
-                if !path.trim().is_empty() {
+                let saved = !path.trim().is_empty();
+                if saved {
                     let local = self
                         .downloads.sources
                         .remove(&video_id)
@@ -568,8 +575,14 @@ impl App {
                         .unwrap_or_else(|| Song::local_file(PathBuf::from(&path)));
                     self.add_downloaded_track(local);
                 }
+                // Success toast — opt out of this turn's default error styling.
+                self.status.kind = StatusKind::Info;
                 self.status.text = format!("{}: {path}", t!("Saved", "저장됨"));
                 self.dirty = true;
+                if saved {
+                    // Persist the manifest so the recovered YouTube id survives a restart.
+                    return vec![Cmd::SaveDownloads];
+                }
             }
             Msg::DownloadError { video_id, error } => {
                 self.downloads.active

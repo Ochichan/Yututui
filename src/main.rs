@@ -5,6 +5,7 @@ mod artwork;
 mod config;
 mod deps;
 mod download;
+mod downloads;
 mod eq;
 mod event;
 mod i18n;
@@ -162,7 +163,12 @@ async fn run(
     app.library = library::Library::load();
     // Load per-track preference signals (plays/skips/dislikes); absent → empty.
     app.signals = signals::Signals::load();
-    app.library_ui.downloaded = library::scan_downloads(&cfg.effective_download_dir());
+    // Load the downloads manifest, then enrich the bare disk scan with each track's remembered
+    // YouTube identity (+ real artist) so a downloaded-and-online track keeps its share link
+    // after a restart; files the manifest doesn't know are recovered from their `[id]` filename.
+    app.download_store = downloads::DownloadStore::load();
+    let scanned = library::scan_downloads(&cfg.effective_download_dir());
+    app.library_ui.downloaded = app.enrich_downloads(scanned);
     app.restore_last_played_from_library();
     // Load local playlists (the AI playlist tools read/write these).
     app.playlists = playlists::Playlists::load();
@@ -335,6 +341,11 @@ async fn run(
                         tracing::warn!(error = %e, "failed to save library");
                     }
                 }
+                Cmd::SaveDownloads => {
+                    if let Err(e) = app.download_store.save() {
+                        tracing::warn!(error = %e, "failed to save downloads manifest");
+                    }
+                }
                 Cmd::SaveSignals => {
                     if let Err(e) = app.signals.save() {
                         tracing::warn!(error = %e, "failed to save signals");
@@ -438,8 +449,9 @@ async fn run(
     // Close the video overlay (if one is open) so it doesn't outlive the app. This is the single
     // cleanup chokepoint: every quit path just sets `should_quit` and falls out of the loop here.
     app.close_video();
-    // Belt-and-suspenders: persist the library + signals on a clean exit too.
+    // Belt-and-suspenders: persist the library + signals + downloads manifest on a clean exit too.
     let _ = app.library.save();
     let _ = app.signals.save();
+    let _ = app.download_store.save();
     Ok(())
 }

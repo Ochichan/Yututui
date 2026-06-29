@@ -1,5 +1,7 @@
 //! Track downloads via `yt-dlp` + `ffmpeg`: best audio → m4a, with embedded metadata
-//! and cover art, saved directly under `<download dir>/<title>.m4a`.
+//! and cover art, saved directly under `<download dir>/<title> [<id>].m4a`. The YouTube id
+//! is embedded in the filename so a rescan (or a fresh launch) can recover the track's online
+//! identity — see [`crate::api::Song::local_file`] / [`crate::api::Song::parse_embedded_id`].
 //!
 //! The actor receives [`DownloadCmd::Start`] and spawns one task per track, gated by a
 //! [`Semaphore`] so at most [`MAX_CONCURRENT`] run at once (priority #1: bounded work).
@@ -21,7 +23,7 @@ use crate::app::Msg;
 
 /// Most simultaneous downloads.
 const MAX_CONCURRENT: usize = 3;
-const OUTPUT_TEMPLATE: &str = "%(title)s.%(ext)s";
+const OUTPUT_TEMPLATE: &str = "%(title)s [%(id)s].%(ext)s";
 
 pub enum DownloadCmd {
     Start(Song),
@@ -172,8 +174,10 @@ mod tests {
     }
 
     #[test]
-    fn output_template_does_not_create_channel_subdirs() {
-        assert_eq!(OUTPUT_TEMPLATE, "%(title)s.%(ext)s");
+    fn output_template_embeds_id_and_has_no_subdirs() {
+        // The id tag is what `Song::local_file` recovers on a rescan, so it must be present.
+        assert_eq!(OUTPUT_TEMPLATE, "%(title)s [%(id)s].%(ext)s");
+        assert!(OUTPUT_TEMPLATE.contains("[%(id)s]"));
         assert!(!OUTPUT_TEMPLATE.contains('/'));
         assert!(!OUTPUT_TEMPLATE.contains('\\'));
     }

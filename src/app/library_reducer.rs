@@ -145,9 +145,14 @@ impl App {
         }
         self.library_ui.downloaded
             .retain(|song| song.local_path.as_ref().is_none_or(|p| !paths.contains(p)));
+        // Forget the deleted files in the persisted manifest too, so they don't linger.
+        self.download_store.remove_paths(&paths);
         self.clamp_library_selection();
         self.dirty = true;
-        vec![Cmd::ScanDownloads(self.config.effective_download_dir())]
+        vec![
+            Cmd::ScanDownloads(self.config.effective_download_dir()),
+            Cmd::SaveDownloads,
+        ]
     }
 
     /// Clamp the library cursor and the drag anchor into the current tab's row count.

@@ -45,6 +45,34 @@ impl App {
         }
     }
 
+    /// Recover a YouTube video id for `song` even when `share_url()`/`youtube_id()` is `None`:
+    /// (1) parse an `[id]` tag from its local filename (our downloader embeds it), then (2) match
+    /// its normalized title against a remote favorite/history/downloaded entry that has a YouTube
+    /// origin. Returns the id (not a URL) so callers can build a share URL or a video URL. `None`
+    /// only when the track is genuinely local-only.
+    pub(in crate::app) fn recover_youtube_id(&self, song: &Song) -> Option<String> {
+        if let Some(id) = song.youtube_id() {
+            return Some(id.to_owned());
+        }
+        if let Some(stem) = song
+            .local_path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .and_then(|s| s.to_str())
+            && let Some((_, id)) = Song::parse_embedded_id(stem)
+        {
+            return Some(id.to_owned());
+        }
+        let key = song.title.trim().to_lowercase();
+        self.library
+            .favorites
+            .iter()
+            .chain(self.library.history.iter())
+            .chain(self.library_ui.downloaded.iter())
+            .find(|e| e.youtube_id().is_some() && e.title.trim().to_lowercase() == key)
+            .and_then(|e| e.youtube_id().map(str::to_owned))
+    }
+
     /// `v`: toggle the external mpv video overlay. Open → close it and resume the audio we
     /// paused; closed → launch it for the current track and pause the audio.
     pub(in crate::app) fn toggle_video_overlay(&mut self) -> Vec<Cmd> {
@@ -62,7 +90,17 @@ impl App {
             self.status.kind = StatusKind::Info;
             self.status.text = t!("Video closed", "영상 닫음").to_owned();
         } else if let Some(song) = self.queue.current().cloned() {
-            let url = format!("https://www.youtube.com/watch?v={}", song.video_id);
+            let Some(id) = self.recover_youtube_id(&song) else {
+                // Local-only track with no recoverable YouTube origin → nothing to show.
+                self.status.text = t!(
+                    "This track is local-only — no video",
+                    "로컬 전용 트랙이라 영상이 없어요"
+                )
+                .to_owned();
+                self.dirty = true;
+                return cmds;
+            };
+            let url = format!("https://www.youtube.com/watch?v={id}");
             let cookies = self.config.cookies_file.clone();
             match spawn_video_overlay(&url, cookies.as_deref(), self.config.video_layout) {
                 Some(child) => {
@@ -94,19 +132,48 @@ impl App {
     pub(in crate::app) fn toggle_video_layout(&mut self) -> Vec<Cmd> {
         self.config.video_layout = self.config.video_layout.toggled();
         let layout = self.config.video_layout;
-        if self.video_open()
-            && let Some(song) = self.queue.current().cloned()
-        {
+        let mut cmds = vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
+        if self.video_open() {
+            // Respawn in the new layout (mpv can't reliably resize a live window). If the
+            // current track has no recoverable YouTube origin, close the overlay and resume
+            // audio rather than leave a stale window falsely reporting the new layout.
+            let id = self
+                .queue
+                .current()
+                .cloned()
+                .and_then(|song| self.recover_youtube_id(&song));
             self.close_video();
-            let url = format!("https://www.youtube.com/watch?v={}", song.video_id);
-            let cookies = self.config.cookies_file.clone();
-            self.video.proc = spawn_video_overlay(&url, cookies.as_deref(), layout);
-            // Audio stays paused (video.paused_audio unchanged).
+            match id {
+                Some(id) => {
+                    let url = format!("https://www.youtube.com/watch?v={id}");
+                    let cookies = self.config.cookies_file.clone();
+                    self.video.proc = spawn_video_overlay(&url, cookies.as_deref(), layout);
+                    // Audio stays paused (video.paused_audio unchanged).
+                }
+                None => {
+                    if self.video.paused_audio {
+                        self.video.paused_audio = false;
+                        self.playback.paused = false;
+                        cmds.push(Cmd::Player(PlayerCmd::SetProperty {
+                            name: "pause".to_owned(),
+                            value: serde_json::Value::Bool(false),
+                        }));
+                    }
+                    self.status.kind = StatusKind::Info;
+                    self.status.text = t!(
+                        "This track is local-only — no video",
+                        "로컬 전용 트랙이라 영상이 없어요"
+                    )
+                    .to_owned();
+                    self.dirty = true;
+                    return cmds;
+                }
+            }
         }
         self.status.kind = StatusKind::Info;
         self.status.text = format!("{}: {}", t!("Video", "영상"), layout.label());
         self.dirty = true;
-        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+        cmds
     }
 
     /// Apply an EQ preset chosen from the dropdown and close it. Mirrors the `e`-key cycle
@@ -307,17 +374,27 @@ impl App {
             }
             Action::CopyLink => {
                 // Compute the (owned) URL before touching `self.status` to avoid borrowing
-                // `self` both immutably (queue) and mutably (status) at once.
-                match self.queue.current().map(|s| s.share_url()) {
-                    Some(Some(url)) => {
+                // `self` both immutably (queue) and mutably (status) at once. `recover_youtube_id`
+                // covers the cases plain `share_url()` misses — a downloaded track whose id lives
+                // in its `[id]` filename, or a bare `local:` history/queue entry whose twin is in
+                // favorites/history — so copying works regardless of which list the song came from.
+                let had_track = self.queue.current().is_some();
+                let url = self.queue.current().and_then(|s| {
+                    s.share_url().or_else(|| {
+                        self.recover_youtube_id(s)
+                            .map(|id| format!("https://www.youtube.com/watch?v={id}"))
+                    })
+                });
+                match url {
+                    Some(url) => {
                         copy_to_clipboard(&url);
                         self.status.kind = StatusKind::Info;
                         self.status.text =
                             t!("✓ Link copied to clipboard", "✓ 링크가 클립보드에 복사됐어요").to_owned();
                         self.dirty = true;
                     }
-                    Some(None) => {
-                        // Current track is local-only — no YouTube origin to share.
+                    None if had_track => {
+                        // Current track is genuinely local-only — no YouTube origin to share.
                         self.status.text = t!(
                             "This track is local-only — no YouTube link",
                             "로컬 전용 트랙이라 유튜브 링크가 없어요"
