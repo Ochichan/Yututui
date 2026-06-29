@@ -92,10 +92,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    // Seekbar.
-    let pos = app.playback.time_pos.unwrap_or(0.0);
-    let dur = app.playback.duration.unwrap_or(0.0);
-    let ratio = if dur > 0.0 { (pos / dur).clamp(0.0, 1.0) } else { 0.0 };
+    // Seekbar. Ratio + label (incl. the None/zero-duration handling) live in `format` so the
+    // edge cases are unit-tested without a frame buffer.
+    let ratio = format::seekbar_ratio(app.playback.time_pos, app.playback.duration);
     let seekbar = Gauge::default()
         .gauge_style(
             Style::default()
@@ -103,11 +102,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .bg(app.theme.color(R::GaugeEmpty)),
         )
         .ratio(ratio)
-        .label(format!(
-            "{} / {}",
-            format::time(pos),
-            if dur > 0.0 { format::time(dur) } else { "--:--".to_owned() }
-        ));
+        .label(format::seekbar_label(app.playback.time_pos, app.playback.duration));
     frame.render_widget(seekbar, rows[3]);
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op otherwise).
     crate::ui::anim::seekbar_overlay(frame, app, rows[3], ratio);
@@ -160,8 +155,25 @@ fn rating_glyph(liked: bool, disliked: bool) -> &'static str {
 /// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
 fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
-    // (target, text); a `None` target is static label/spacing. Spacing is split into its
-    // own label so a clickable segment's hit rect hugs just its text.
+    let parts = status_line_parts(app);
+    let segments: Vec<Seg> = parts
+        .iter()
+        .map(|(target, text)| match target {
+            Some(t) => Seg::button(*t, text.as_str()),
+            None => Seg::label(text.as_str()),
+        })
+        .collect();
+    // Same style for buttons and labels so the clickable parts are visually indistinguishable.
+    let style = app.theme.style(R::PlayerLabel);
+    buttons::render_segments(frame, app, area, &segments, style, style, Alignment::Center);
+}
+
+/// Build the transport status-line as `(target, text)` segments from app state — split out
+/// from [`render_status_line`] so the conditional assembly (queue position, rating, shuffle /
+/// repeat, speed, EQ, normalize, radio mode, download tag) is unit-testable without a frame
+/// buffer. A `None` target is a static label/spacing; spacing is its own label so a clickable
+/// segment's hit rect hugs just its text.
+fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, String)> {
     let mut parts: Vec<(Option<MouseTarget>, String)> = Vec::new();
     // A braille throbber leads the line when the spinner animation is on (no-op otherwise). It's a
     // plain label, so `render_segments` keeps every later hit rect aligned to its rendered text.
@@ -239,16 +251,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         parts.push((None, format!("    {tag}")));
     }
 
-    let segments: Vec<Seg> = parts
-        .iter()
-        .map(|(target, text)| match target {
-            Some(t) => Seg::button(*t, text.as_str()),
-            None => Seg::label(text.as_str()),
-        })
-        .collect();
-    // Same style for buttons and labels so the clickable parts are visually indistinguishable.
-    let style = app.theme.style(R::PlayerLabel);
-    buttons::render_segments(frame, app, area, &segments, style, style, Alignment::Center);
+    parts
 }
 
 /// The queue window: a themed popup listing the whole play queue (current track marked),
@@ -610,4 +613,41 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(rendered), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::Song;
+
+    fn has_target(
+        parts: &[(Option<MouseTarget>, String)],
+        pred: impl Fn(&MouseTarget) -> bool,
+    ) -> bool {
+        parts.iter().any(|(t, _)| t.as_ref().is_some_and(&pred))
+    }
+
+    #[test]
+    fn status_line_always_offers_shuffle_repeat_and_eq() {
+        let app = App::new(100);
+        let parts = status_line_parts(&app);
+        // Shuffle, repeat and the EQ menu are always present so the line never reflows.
+        assert!(has_target(&parts, |t| matches!(t, MouseTarget::Player(Action::ToggleShuffle))));
+        assert!(has_target(&parts, |t| matches!(t, MouseTarget::Player(Action::CycleRepeat))));
+        assert!(has_target(&parts, |t| matches!(t, MouseTarget::EqMenu)));
+        // Idle queue: no position label and no rating glyph (nothing is current).
+        assert!(!has_target(&parts, |t| matches!(t, MouseTarget::QueuePos)));
+        assert!(!has_target(&parts, |t| matches!(t, MouseTarget::Player(Action::CycleRating))));
+    }
+
+    #[test]
+    fn status_line_shows_position_and_rating_once_a_track_is_current() {
+        let mut app = App::new(100);
+        app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
+        let parts = status_line_parts(&app);
+        // The clickable N/M position label appears, reading "1/1".
+        assert!(parts.iter().any(|(t, s)| matches!(t, Some(MouseTarget::QueuePos)) && s == "1/1"));
+        // A current track means the tri-state rating glyph is offered.
+        assert!(has_target(&parts, |t| matches!(t, MouseTarget::Player(Action::CycleRating))));
+    }
 }
