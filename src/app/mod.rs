@@ -899,6 +899,8 @@ impl App {
             st.row = 0;
             st.editing_text = false;
             st.capturing = None;
+            // The new tab has a different row set; drop the old offset so it starts at the top.
+            self.bridges.reset_settings_scroll();
             self.dirty = true;
         }
     }

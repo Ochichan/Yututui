@@ -197,8 +197,9 @@ pub fn register_list_rows(
 }
 
 /// Draw a vertical scrollbar on the right border of `list_area`, but only when the content
-/// overflows the viewport. `position` is the selected (cursor) index, so the thumb tracks
-/// the cursor through the list and reaches both ends. A no-op when everything fits.
+/// overflows the viewport. `position` is the scroll offset (the first visible row), so the
+/// thumb tracks the viewport through the list and reaches both ends. A no-op when everything
+/// fits.
 ///
 /// `list_area` spans the bordered view's inner width, so `list_area.right()` is the block's
 /// right border column — the scrollbar replaces that border segment and never clips a row.

@@ -64,6 +64,8 @@ impl App {
         self.mode = Mode::Settings;
         self.confirm_reset_all = false;
         self.status.text.clear();
+        // Start every Settings session at the top; clear any offset left from a prior session.
+        self.bridges.reset_settings_scroll();
         self.dirty = true;
     }
 
@@ -253,6 +255,8 @@ impl App {
             st.row = 0;
             st.editing_text = false;
             st.capturing = None;
+            // The new tab has a different row set; drop the old offset so it starts at the top.
+            self.bridges.reset_settings_scroll();
             self.dirty = true;
         }
     }

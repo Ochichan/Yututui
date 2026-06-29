@@ -189,6 +189,7 @@ fn render_keys(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
         } else {
             col
         };
+        let len = items.len();
         let list = List::new(items)
             .style(theme.style(R::TextPrimary))
             .highlight_style(theme.style(R::SettingsValueFocused).add_modifier(Modifier::BOLD))
@@ -196,8 +197,21 @@ fn render_keys(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
             // Reserve the marker gutter in both columns (even the one with no selection) so
             // their rows line up — the focused column would otherwise shift 2 cells left.
             .highlight_spacing(HighlightSpacing::Always);
-        let mut state = ListState::default();
-        state.select(selected);
+        // Persist each column's offset (like the field list) so clicking a visible binding
+        // focuses it in place rather than snapping the column. Only the focused column
+        // re-anchors on its cursor (scrolloff=0 → no move for an already-visible row); the
+        // unfocused column keeps whatever position it had.
+        let offset = match selected {
+            Some(sel) => app.bridges.settings_keys_scroll[ci].resolve(sel, col.height, len, 0),
+            None => app.bridges.settings_keys_scroll[ci].view(col.height, len),
+        };
+        let mut state = ListState::default().with_offset(offset);
+        // Only select when this column is focused: ratatui's `ListState::select(None)` resets the
+        // offset to 0, which would throw away the `with_offset` we just pre-seeded for the
+        // unfocused column. `ListState::default()` already carries `selected = None`.
+        if let Some(sel) = selected {
+            state.select(Some(sel));
+        }
         frame.render_stateful_widget(list, col, &mut state);
         // Clicking a binding row selects that binding; header/blank rows aren't targets.
         buttons::register_list_rows(app, col, state.offset(), display_to_binding.len(), |d| {
@@ -410,6 +424,7 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
         }
     }
 
+    let len = items.len();
     let list = List::new(items)
         .style(theme.style(R::TextPrimary))
         .highlight_style(theme.style(R::SettingsValueFocused).add_modifier(Modifier::BOLD))
@@ -417,7 +432,14 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
         // Reserve the marker gutter on every row so control hit-rects sit at a fixed x.
         .highlight_spacing(HighlightSpacing::Always);
 
-    let mut state = ListState::default();
+    // Keep the scroll offset across frames so a click on a visible row focuses it *in place*.
+    // (A fresh `ListState::default()` let ratatui re-derive the offset from 0 every frame and
+    // pin the selection to an edge, so clicking the top/bottom row snapped the whole viewport.)
+    // `scrolloff = 0` means an already-visible cursor never moves the offset; keyboard nav past
+    // an edge still scrolls by one. The resolved offset always keeps `selected` on-screen, so
+    // the highlight is set unconditionally.
+    let offset = app.bridges.settings_scroll.resolve(selected, area.height, len, 0);
+    let mut state = ListState::default().with_offset(offset);
     state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
 
@@ -429,6 +451,8 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     // Per-control click targets (checkbox / arrows / button / text) on top of the row rects, so
     // they win where they overlap (`mouse_target_at` takes the last-registered match).
     register_field_controls(app, st, area, offset, &display_to_field);
+    // Right-border scrollbar tracking the viewport; a no-op when every row fits.
+    buttons::render_list_scrollbar(frame, app, area, len, offset, area.height as usize);
 }
 
 /// Publish a hit rect for each visible field row's interactive control, layered over the row's

@@ -2515,6 +2515,63 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
 }
 
 #[test]
+fn settings_click_on_a_visible_row_does_not_scroll() {
+    // The Settings field list now keeps a persistent offset (scrolloff = 0), so clicking a row
+    // that is already on-screen focuses it in place instead of snapping the viewport (the old
+    // `ListState::default()` re-derived the offset from 0 each frame and pinned it to an edge).
+    let mut app = app_playing(1, 0);
+    app.open_settings();
+    // Render of a long tab scrolled well down: focus display row 30 in a viewport of 10.
+    let off = app.bridges.settings_scroll.resolve(30, 10, 40, 0);
+    assert!((off..off + 10).contains(&30), "row 30 is visible at offset {off}");
+    // A click lands on the topmost visible row, then the bottommost: neither moves the offset.
+    assert_eq!(app.bridges.settings_scroll.resolve(off, 10, 40, 0), off, "top row click stays");
+    assert_eq!(app.bridges.settings_scroll.resolve(off + 9, 10, 40, 0), off, "bottom row click stays");
+}
+
+#[test]
+fn settings_scroll_resets_on_tab_switch() {
+    let mut app = app_playing(1, 0);
+    app.open_settings();
+    // Scroll both the field list and a Keys column down (as a render + wheel would).
+    app.bridges.settings_scroll.resolve(0, 10, 50, 0);
+    app.bridges.settings_scroll.wheel(false, 8, 50);
+    assert_eq!(app.bridges.settings_scroll.resolve(0, 10, 50, 0), 8);
+    app.bridges.settings_keys_scroll[0].resolve(0, 5, 30, 0);
+    app.bridges.settings_keys_scroll[0].wheel(false, 4, 30);
+    assert_eq!(app.bridges.settings_keys_scroll[0].resolve(0, 5, 30, 0), 4);
+
+    app.settings_switch_tab(true);
+
+    assert_eq!(app.bridges.settings_scroll.resolve(0, 10, 50, 0), 0, "field list resets to top");
+    assert_eq!(app.bridges.settings_keys_scroll[0].resolve(0, 5, 30, 0), 0, "keys column resets");
+}
+
+#[test]
+fn settings_scroll_resets_on_reopen() {
+    let mut app = app_playing(1, 0);
+    app.open_settings();
+    app.bridges.settings_scroll.resolve(0, 10, 50, 0);
+    app.bridges.settings_scroll.wheel(false, 5, 50);
+    assert_eq!(app.bridges.settings_scroll.resolve(0, 10, 50, 0), 5);
+    app.close_settings();
+    app.open_settings();
+    assert_eq!(app.bridges.settings_scroll.resolve(0, 10, 50, 0), 0, "reopening resets the offset");
+}
+
+#[test]
+fn liststate_select_none_resets_offset_so_keys_columns_must_guard_it() {
+    // The Keys tab pre-seeds each column's offset via `ListState::with_offset`, then selects
+    // only the focused column. This pins the ratatui API reason why: `select(None)` zeroes the
+    // offset, so calling it on the unfocused column would discard the pre-seeded scroll.
+    let mut state = ratatui::widgets::ListState::default().with_offset(5);
+    state.select(Some(3));
+    assert_eq!(state.offset(), 5, "select(Some) keeps the pre-seeded offset");
+    state.select(None);
+    assert_eq!(state.offset(), 0, "select(None) resets the offset — why the unfocused column skips it");
+}
+
+#[test]
 fn library_delete_is_disabled_in_all_tab() {
     let mut app = App::new(100);
     app.library.toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));

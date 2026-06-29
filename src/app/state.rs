@@ -53,6 +53,23 @@ pub struct RenderBridges {
     pub library_scroll: crate::ui::scroll::ScrollState,
     pub search_scroll: crate::ui::scroll::ScrollState,
     pub ai_scroll: crate::ui::scroll::ScrollState,
+    /// The Settings field list keeps its own persistent offset too, so a mouse click on a
+    /// visible row focuses it in place instead of letting ratatui re-derive the offset from 0
+    /// each frame (which snapped the clicked row across the viewport).
+    pub settings_scroll: crate::ui::scroll::ScrollState,
+    /// One offset per column of the two-column Keys tab; only the focused column re-anchors.
+    pub settings_keys_scroll: [crate::ui::scroll::ScrollState; 2],
+}
+
+impl RenderBridges {
+    /// Reset every Settings list's scroll offset (the field list and both Keys columns). Called
+    /// when the Settings screen opens or its tab changes, so a stale offset from the previous
+    /// tab/session can't carry over onto a different, shorter set of rows.
+    pub fn reset_settings_scroll(&self) {
+        self.settings_scroll.reset();
+        self.settings_keys_scroll[0].reset();
+        self.settings_keys_scroll[1].reset();
+    }
 }
 
 /// The transient status/notification line shown to the user: its text, when it was last set

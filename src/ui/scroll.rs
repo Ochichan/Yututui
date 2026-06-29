@@ -71,6 +71,18 @@ impl ScrollState {
         self.prev_sel.set(selected);
         off
     }
+
+    /// Render-time offset for a list that has **no active selection this frame** (e.g. the
+    /// unfocused column of the Keys tab). Records the viewport and clamps the stored offset to
+    /// the content, but never re-anchors to a cursor — so the column keeps its place instead of
+    /// snapping when focus moves elsewhere.
+    pub fn view(&self, viewport: u16, len: usize) -> usize {
+        self.viewport.set(viewport);
+        let max = len.saturating_sub(viewport as usize);
+        let off = self.offset.get().min(max);
+        self.offset.set(off);
+        off
+    }
 }
 
 /// The smallest offset shift from `offset` that brings `cursor` within `scrolloff` rows of
@@ -184,5 +196,37 @@ mod tests {
         assert_eq!(s.resolve(0, 10, 100, SO), 3);
         s.reset();
         assert_eq!(s.resolve(0, 10, 100, SO), 0);
+    }
+
+    #[test]
+    fn scrolloff_zero_click_in_place_does_not_scroll() {
+        // The Settings form passes scrolloff = 0: clicking any already-visible row must leave
+        // the offset untouched (the row stays exactly where it was on screen).
+        assert_eq!(scroll_to_cursor(5, 5, 10, 20, 0), 5); // topmost visible row
+        assert_eq!(scroll_to_cursor(5, 14, 10, 20, 0), 5); // bottommost visible row
+        assert_eq!(scroll_to_cursor(5, 9, 10, 20, 0), 5); // mid-viewport
+        // Keyboard nav one row past an edge still scrolls — by exactly one row, no lurch.
+        assert_eq!(scroll_to_cursor(5, 15, 10, 20, 0), 6); // one below the bottom
+        assert_eq!(scroll_to_cursor(5, 4, 10, 20, 0), 4); // one above the top
+    }
+
+    #[test]
+    fn resolve_scrolloff_zero_always_keeps_cursor_visible() {
+        let s = ScrollState::default();
+        for cursor in [30usize, 0, 49, 25] {
+            let off = s.resolve(cursor, 10, 50, 0);
+            assert!(cursor >= off && cursor < off + 10, "cursor {cursor} not visible at off {off}");
+        }
+    }
+
+    #[test]
+    fn view_clamps_without_re_anchoring() {
+        let s = ScrollState::default();
+        // A column with no selection keeps whatever offset it had, clamped to the content.
+        s.resolve(40, 10, 50, 0); // cursor pushed the offset down
+        let parked = s.resolve(40, 10, 50, 0);
+        assert_eq!(s.view(10, 50), parked); // view() honors the parked offset, no snap
+        // Clamps when the content shrinks below the stored offset.
+        assert_eq!(s.view(10, 5), 0);
     }
 }
