@@ -62,6 +62,7 @@ pub enum Action {
     QueueRemove,
     // Library list.
     LibraryRemove,
+    LibraryFilter,
     // Settings screen.
     SettingsCancel,
     ChangeDecrease,
@@ -122,6 +123,7 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (Action::SelectAll, "select_all", "Select all", "전체 선택"),
     (Action::QueueRemove, "queue_remove", "Remove from queue", "대기열에서 제거"),
     (Action::LibraryRemove, "library_remove", "Remove / delete", "제거 / 삭제"),
+    (Action::LibraryFilter, "library_filter", "Filter library", "라이브러리 필터"),
     (Action::SettingsCancel, "settings_cancel", "Close settings", "설정 저장 후 닫기"),
     (Action::ChangeDecrease, "change_decrease", "Decrease value", "값 낮추기"),
     (Action::ChangeIncrease, "change_increase", "Increase value", "값 높이기"),
@@ -528,6 +530,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Library, A::Download, ch('d')),
         (C::Library, A::OpenAi, ch('a')),
         (C::Library, A::LibraryRemove, key(KeyCode::Delete)),
+        (C::Library, A::LibraryFilter, ch('/')),
         (C::Library, A::Back, ch('q')),
         // Queue window (overlay on the player; up/down nav comes from Common).
         (C::Queue, A::Confirm, key(KeyCode::Enter)),

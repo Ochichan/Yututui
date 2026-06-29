@@ -293,6 +293,13 @@ pub struct LibraryView {
     /// (file removal is irreversible, so it's gated behind an explicit yes/no). `None` when no
     /// modal is open.
     pub confirm_delete: Option<Vec<PathBuf>>,
+    /// In-library incremental filter query (`/`). When non-empty, the active list narrows to
+    /// rows whose title or artist contains it (case-insensitive). Empty = no filter.
+    pub filter_query: String,
+    /// Whether the filter input box is capturing keystrokes (typed chars edit `filter_query`
+    /// and the list narrows live). Committed with Enter (keeps the filter, returns to list
+    /// navigation); cleared with Esc.
+    pub filter_editing: bool,
 }
 
 /// Queue-window overlay state: whether it's open, the selection cursor + anchor, its

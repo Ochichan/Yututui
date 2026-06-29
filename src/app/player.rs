@@ -292,8 +292,9 @@ impl App {
             }
             Action::OpenLibrary => {
                 self.mode = Mode::Library;
-                self.library_ui.selected = 0;
-                self.bridges.library_scroll.reset();
+                // Start each library visit with a clean, unfiltered list (also resets the
+                // cursor, the multi-select anchor, and the scroll offset).
+                self.clear_library_filter();
                 self.dropdowns.eq_open = false;
                 self.dropdowns.radio_open = false;
                 self.dirty = true;

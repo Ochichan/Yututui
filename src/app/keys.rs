@@ -193,6 +193,7 @@ impl App {
             Mode::Search => self.search.focus == SearchFocus::Input,
             Mode::Ai => self.ai.focus == AiFocus::Input,
             Mode::Settings => self.settings.as_ref().is_some_and(|s| s.editing_text),
+            Mode::Library => self.library_ui.filter_editing,
             _ => false,
         }
     }

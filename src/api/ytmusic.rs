@@ -17,8 +17,10 @@ use ytmapi_rs::common::{VideoID, YoutubeID};
 use super::Song;
 use crate::util::format;
 
-/// How many results an anonymous yt-dlp search asks for.
-const ANON_SEARCH_LIMIT: usize = 20;
+/// How many results a search returns, for both backends. The anonymous yt-dlp path asks
+/// for exactly this many; the authenticated path pages through continuations until it has
+/// at least this many (or runs out). Capped at 50 — `ytdlp_search` clamps to the same.
+const SEARCH_RESULT_LIMIT: usize = 50;
 
 /// A YouTube Music client in one of two auth modes.
 pub enum YtMusicApi {
@@ -35,20 +37,42 @@ impl YtMusicApi {
         Ok(Self::Browser(client))
     }
 
-    /// Search for songs matching `query`, using the backend for this mode.
+    /// Search for songs matching `query`, using the backend for this mode. Returns up to
+    /// [`SEARCH_RESULT_LIMIT`] tracks.
     pub async fn search_songs(&self, query: &str) -> Result<Vec<Song>> {
         match self {
+            // The simplified `search_songs` wrapper only fetches the first page (~20). Drive
+            // the continuation stream directly so we can collect up to SEARCH_RESULT_LIMIT,
+            // stopping early once we have enough (or the pages run out).
             Self::Browser(c) => {
-                let songs = c
-                    .search_songs(query)
-                    .await
-                    .context("YouTube Music search failed")?;
-                Ok(songs
-                    .into_iter()
-                    .map(|s| Song::remote(s.video_id.get_raw(), s.title, s.artist, s.duration))
-                    .collect())
+                use futures::StreamExt;
+                use ytmapi_rs::query::SearchQuery;
+                use ytmapi_rs::query::search::{FilteredSearch, SongsFilter};
+
+                // The blanket `From<&str>` builds the songs-filtered query (same conversion the
+                // `search_songs` wrapper does) without the deprecated `new`/`with_filter`.
+                let q: SearchQuery<FilteredSearch<SongsFilter>> = query.into();
+                let mut pages = std::pin::pin!(c.stream(&q));
+                let mut songs = Vec::new();
+                while songs.len() < SEARCH_RESULT_LIMIT
+                    && let Some(page) = pages.next().await
+                {
+                    let page = page.context("YouTube Music search failed")?;
+                    for s in page {
+                        songs.push(Song::remote(
+                            s.video_id.get_raw(),
+                            s.title,
+                            s.artist,
+                            s.duration,
+                        ));
+                        if songs.len() >= SEARCH_RESULT_LIMIT {
+                            break;
+                        }
+                    }
+                }
+                Ok(songs)
             }
-            Self::Anonymous => ytdlp_search(query, ANON_SEARCH_LIMIT).await,
+            Self::Anonymous => ytdlp_search(query, SEARCH_RESULT_LIMIT).await,
         }
     }
 

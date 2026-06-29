@@ -879,9 +879,8 @@ impl App {
             }
             Mode::Library => {
                 self.mode = Mode::Library;
-                self.library_ui.selected = 0;
-                self.library_ui.anchor = 0;
-                self.bridges.library_scroll.reset();
+                // Start each library visit clean (cursor, anchor, scroll, and any filter).
+                self.clear_library_filter();
             }
             Mode::Settings => self.open_settings(),
             Mode::Ai => self.enter_ai(),

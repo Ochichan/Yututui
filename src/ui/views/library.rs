@@ -39,6 +39,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     .split(inner);
 
     render_tabs(frame, app, rows[0]);
+    // The filter prompt rides the spacer row when active, so opening it never reflows the list.
+    if app.library_ui.filter_editing || !app.library_ui.filter_query.is_empty() {
+        render_filter(frame, app, rows[1]);
+    }
     render_list(frame, app, rows[2]);
 
     buttons::render_help_button(frame, app, rows[3]);
@@ -74,6 +78,35 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// The in-library filter prompt: `filter: <query>█  [N matches]` while typing, or
+/// `filter: <query>  (Esc to clear)` once committed. Rendered borderless on the spacer row.
+fn render_filter(frame: &mut Frame, app: &App, area: Rect) {
+    let editing = app.library_ui.filter_editing;
+    let query = &app.library_ui.filter_query;
+    let matches = app.library_rows().len();
+
+    let mut spans = vec![
+        Span::styled(t!("filter: ", "필터: "), app.theme.style(R::TextMuted)),
+        Span::styled(query.clone(), app.theme.style(R::TextPrimary)),
+    ];
+    if editing {
+        spans.push(Span::styled("\u{2588}", app.theme.style(R::Accent)));
+    }
+    let hint = if matches == 0 {
+        t!("  (no matches)", "  (일치 없음)").to_owned()
+    } else if editing {
+        if crate::i18n::is_korean() {
+            format!("  [{matches}개]")
+        } else {
+            format!("  [{matches} matches]")
+        }
+    } else {
+        t!("  (Esc to clear)", "  (Esc: 지우기)").to_owned()
+    };
+    spans.push(Span::styled(hint, app.theme.style(R::TextMuted)));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
     app.bridges.list_viewport_rows.set(area.height);
@@ -81,22 +114,32 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     let rows = app.library_rows();
 
     if rows.is_empty() {
-        let msg = match app.library_ui.tab {
-            LibraryTab::All => t!(
-                "No library tracks yet — play, favorite, or download something.",
-                "아직 라이브러리에 곡이 없어요 — 재생하거나 즐겨찾기하거나 다운로드해 보세요."
-            ),
-            LibraryTab::Favorites => t!(
-                "No favorites yet — press f on a track to save it.",
-                "즐겨찾기가 없어요 — 곡에서 f 를 눌러 저장하세요."
-            ),
-            LibraryTab::History => {
-                t!("No history yet — play something.", "재생 기록이 없어요 — 뭐든 재생해 보세요.")
+        // A filtered-to-nothing list gets a filter-specific message, not the per-tab "empty" hint.
+        let msg: String = if !app.library_ui.filter_query.is_empty() {
+            if crate::i18n::is_korean() {
+                format!("'{}' 와 일치하는 곡이 없어요.", app.library_ui.filter_query)
+            } else {
+                format!("No tracks match \"{}\".", app.library_ui.filter_query)
             }
-            LibraryTab::Downloads => t!(
-                "No downloaded tracks found in the download folder.",
-                "다운로드 폴더에 받은 곡이 없어요."
-            ),
+        } else {
+            match app.library_ui.tab {
+                LibraryTab::All => t!(
+                    "No library tracks yet — play, favorite, or download something.",
+                    "아직 라이브러리에 곡이 없어요 — 재생하거나 즐겨찾기하거나 다운로드해 보세요."
+                ),
+                LibraryTab::Favorites => t!(
+                    "No favorites yet — press f on a track to save it.",
+                    "즐겨찾기가 없어요 — 곡에서 f 를 눌러 저장하세요."
+                ),
+                LibraryTab::History => {
+                    t!("No history yet — play something.", "재생 기록이 없어요 — 뭐든 재생해 보세요.")
+                }
+                LibraryTab::Downloads => t!(
+                    "No downloaded tracks found in the download folder.",
+                    "다운로드 폴더에 받은 곡이 없어요."
+                ),
+            }
+            .to_owned()
         };
         frame.render_widget(Paragraph::new(Line::from(msg).style(app.theme.style(R::TextMuted))), area);
         return;

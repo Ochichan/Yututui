@@ -3,9 +3,10 @@
 use super::*;
 
 impl App {
-    /// Number of rows in the currently selected library tab.
+    /// Number of rows currently shown in the active library tab — after the in-library
+    /// filter, so selection/navigation bounds track what's actually on screen.
     pub(in crate::app) fn library_len(&self) -> usize {
-        self.library_count(self.library_ui.tab)
+        self.library_rows().len()
     }
 
     pub fn library_count(&self, tab: LibraryTab) -> usize {
@@ -18,7 +19,25 @@ impl App {
     }
 
     pub fn library_rows(&self) -> Vec<&Song> {
-        self.library_rows_for(self.library_ui.tab)
+        let rows = self.library_rows_for(self.library_ui.tab);
+        self.apply_library_filter(rows)
+    }
+
+    /// Narrow `rows` to the active in-library filter — a case-insensitive substring match on
+    /// the title or artist. Returns `rows` unchanged when no filter is set. The single choke
+    /// point so the displayed list, selection bounds, and every row operation (play /
+    /// favorite / download / delete) all see the same filtered set.
+    fn apply_library_filter<'a>(&self, rows: Vec<&'a Song>) -> Vec<&'a Song> {
+        let needle = self.library_ui.filter_query.trim().to_lowercase();
+        if needle.is_empty() {
+            return rows;
+        }
+        rows.into_iter()
+            .filter(|s| {
+                s.title.to_lowercase().contains(&needle)
+                    || s.artist.to_lowercase().contains(&needle)
+            })
+            .collect()
     }
 
     pub(in crate::app) fn library_rows_for(&self, tab: LibraryTab) -> Vec<&Song> {
@@ -90,27 +109,44 @@ impl App {
     /// Favorites un-favorites, History forgets, Downloads asks before deleting the files on
     /// disk, and All is an aggregate view so it's read-only. Clamps the selection afterward.
     pub(in crate::app) fn library_delete_rows(&mut self, lo: usize, hi: usize) -> Vec<Cmd> {
-        let len = self.library_len();
-        if lo >= len {
+        // Resolve the displayed (possibly filtered) rows to concrete songs first, then delete
+        // by identity. Under an active filter the row positions no longer map to the raw
+        // collection indices, so an index-based removal would hit the wrong tracks.
+        let targets = self.library_songs();
+        if lo >= targets.len() {
             return Vec::new();
         }
-        let hi = hi.min(len - 1);
+        let hi = hi.min(targets.len() - 1);
+        let targets = &targets[lo..=hi];
         match self.library_ui.tab {
             // Aggregate view — a row may live in several tabs, so deleting from here is
             // ambiguous. Manage tracks from their own tab instead.
             LibraryTab::All => Vec::new(),
             LibraryTab::Favorites => {
-                // Descending so earlier removals don't shift the indices still to come.
-                for pos in (lo..=hi).rev() {
-                    self.library.remove_favorite_at(pos);
+                for song in targets {
+                    if let Some(pos) = self
+                        .library
+                        .favorites
+                        .iter()
+                        .position(|s| s.video_id == song.video_id)
+                    {
+                        self.library.remove_favorite_at(pos);
+                    }
                 }
                 self.clamp_library_selection();
                 self.dirty = true;
                 vec![Cmd::SaveLibrary]
             }
             LibraryTab::History => {
-                for pos in (lo..=hi).rev() {
-                    self.library.remove_history_at(pos);
+                for song in targets {
+                    if let Some(pos) = self
+                        .library
+                        .history
+                        .iter()
+                        .position(|s| s.video_id == song.video_id)
+                    {
+                        self.library.remove_history_at(pos);
+                    }
                 }
                 self.clamp_library_selection();
                 self.dirty = true;
@@ -118,8 +154,8 @@ impl App {
             }
             LibraryTab::Downloads => {
                 // Deleting real files is irreversible — gather the paths and ask first.
-                let paths: Vec<PathBuf> = (lo..=hi)
-                    .filter_map(|pos| self.library_ui.downloaded.get(pos))
+                let paths: Vec<PathBuf> = targets
+                    .iter()
                     .filter_map(|song| song.local_path.clone())
                     .collect();
                 if !paths.is_empty() {
