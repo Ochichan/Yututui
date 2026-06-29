@@ -302,13 +302,26 @@ impl App {
                 Vec::new()
             }
             Action::CopyLink => {
-                if let Some(song) = self.queue.current() {
-                    let url = format!("https://www.youtube.com/watch?v={}", song.video_id);
-                    copy_to_clipboard(&url);
-                    self.status.kind = StatusKind::Info;
-                    self.status.text =
-                        t!("✓ Link copied to clipboard", "✓ 링크가 클립보드에 복사됐어요").to_owned();
-                    self.dirty = true;
+                // Compute the (owned) URL before touching `self.status` to avoid borrowing
+                // `self` both immutably (queue) and mutably (status) at once.
+                match self.queue.current().map(|s| s.share_url()) {
+                    Some(Some(url)) => {
+                        copy_to_clipboard(&url);
+                        self.status.kind = StatusKind::Info;
+                        self.status.text =
+                            t!("✓ Link copied to clipboard", "✓ 링크가 클립보드에 복사됐어요").to_owned();
+                        self.dirty = true;
+                    }
+                    Some(None) => {
+                        // Current track is local-only — no YouTube origin to share.
+                        self.status.text = t!(
+                            "This track is local-only — no YouTube link",
+                            "로컬 전용 트랙이라 유튜브 링크가 없어요"
+                        )
+                        .to_owned();
+                        self.dirty = true;
+                    }
+                    None => {}
                 }
                 Vec::new()
             }

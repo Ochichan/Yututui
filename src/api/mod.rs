@@ -25,6 +25,11 @@ pub struct Song {
     pub duration: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_path: Option<PathBuf>,
+    /// The original YouTube video ID, preserved when a catalog track is downloaded and its
+    /// `video_id` becomes a `local:` identity. `None` for pure local files and for remote
+    /// tracks (whose `video_id` is already the YouTube ID). Old persisted JSON omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yt_video_id: Option<String>,
 }
 
 impl Song {
@@ -40,6 +45,7 @@ impl Song {
             artist: artist.into(),
             duration: duration.into(),
             local_path: None,
+            yt_video_id: None,
         }
     }
 
@@ -59,10 +65,13 @@ impl Song {
             artist: "Local file".to_owned(),
             duration: String::new(),
             local_path: Some(path),
+            yt_video_id: None,
         }
     }
 
-    /// Preserve known catalog metadata while making this entry play from `path`.
+    /// Preserve known catalog metadata while making this entry play from `path`. The
+    /// original YouTube ID is kept in `yt_video_id` so the track still knows its online
+    /// URL even though `video_id` becomes a `local:` identity.
     pub fn with_local_path(&self, path: PathBuf) -> Self {
         Self {
             video_id: Self::local_id(&path),
@@ -70,11 +79,29 @@ impl Song {
             artist: self.artist.clone(),
             duration: self.duration.clone(),
             local_path: Some(path),
+            yt_video_id: self.youtube_id().map(str::to_owned),
         }
     }
 
     pub fn is_local(&self) -> bool {
         self.local_path.is_some()
+    }
+
+    /// The real YouTube video ID for this track, if it originated from YouTube. Pure local
+    /// files (dropped into the library, never sourced online) return `None`. Downloaded
+    /// catalog tracks keep their original ID via `yt_video_id` even though `video_id`
+    /// becomes a `local:` identity.
+    pub fn youtube_id(&self) -> Option<&str> {
+        if let Some(id) = self.yt_video_id.as_deref() {
+            return Some(id);
+        }
+        (!self.video_id.starts_with("local:")).then_some(self.video_id.as_str())
+    }
+
+    /// A shareable public URL for this track, if it has a YouTube origin.
+    pub fn share_url(&self) -> Option<String> {
+        self.youtube_id()
+            .map(|id| format!("https://www.youtube.com/watch?v={id}"))
     }
 
     /// The string passed to mpv: either a local file path or a YouTube Music watch URL.

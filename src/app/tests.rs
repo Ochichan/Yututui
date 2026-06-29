@@ -1883,6 +1883,61 @@ fn downloads_tab_shows_download_folder_tracks() {
     assert_eq!(app.library_len(), 1);
 }
 
+// --- copy link (`y`): only internet-sourced tracks expose a URL --------------
+
+#[test]
+fn youtube_id_and_share_url_distinguish_local_from_remote() {
+    // Remote: `video_id` is the YouTube ID, so the share URL is built from it.
+    let remote = Song::remote("abc123", "t", "a", "3:00");
+    assert_eq!(remote.youtube_id(), Some("abc123"));
+    assert_eq!(
+        remote.share_url().as_deref(),
+        Some("https://www.youtube.com/watch?v=abc123")
+    );
+
+    // Pure local file: never sourced online, so there is no URL to share.
+    let local = Song::local_file(PathBuf::from("/tmp/song.m4a"));
+    assert_eq!(local.youtube_id(), None);
+    assert_eq!(local.share_url(), None);
+
+    // Downloaded catalog track: local on disk but still knows its YouTube URL (#3).
+    let downloaded = remote.with_local_path(PathBuf::from("/tmp/abc123.m4a"));
+    assert!(downloaded.is_local());
+    assert_eq!(downloaded.youtube_id(), Some("abc123"));
+    assert_eq!(
+        downloaded.share_url().as_deref(),
+        Some("https://www.youtube.com/watch?v=abc123")
+    );
+}
+
+#[test]
+fn copy_link_copies_youtube_url_for_remote_track() {
+    let mut app = app_playing(1, 0); // queue of remote songs (video_id "id0")
+    app.update(Msg::Key(key(KeyCode::Char('y'))));
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert_eq!(
+        app.status.text,
+        t!("✓ Link copied to clipboard", "✓ 링크가 클립보드에 복사됐어요")
+    );
+}
+
+#[test]
+fn copy_link_warns_for_local_only_track() {
+    let mut app = App::new(100);
+    app.queue
+        .set(vec![Song::local_file(PathBuf::from("/tmp/copylink-local.m4a"))], 0);
+    app.mode = Mode::Player;
+    app.update(Msg::Key(key(KeyCode::Char('y'))));
+    assert_ne!(app.status.kind, StatusKind::Info);
+    assert_eq!(
+        app.status.text,
+        t!(
+            "This track is local-only — no YouTube link",
+            "로컬 전용 트랙이라 유튜브 링크가 없어요"
+        )
+    );
+}
+
 // --- library multi-select delete (drag + Delete), per-tab semantics ------
 
 /// A real, empty audio file in the temp dir, named uniquely so parallel tests don't clash.
