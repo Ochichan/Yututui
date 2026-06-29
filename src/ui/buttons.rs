@@ -238,3 +238,17 @@ pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
     let hint = app.theme.style(R::TextMuted);
     render_segments(frame, app, area, &segs, hint, hint, Alignment::Center);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::text_width;
+
+    #[test]
+    fn sparkle_and_blank_nav_slot_are_both_two_cells() {
+        // The ✨ animation toggle and its blank "off" state share one fixed 2-cell slot in
+        // `render_nav`, so the brand and tabs never shift between on/off. This pins the layout
+        // assumption against a future `unicode-width` table change.
+        assert_eq!(text_width("✨"), 2);
+        assert_eq!(text_width("  "), 2);
+    }
+}

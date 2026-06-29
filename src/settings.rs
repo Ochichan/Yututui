@@ -787,7 +787,13 @@ mod tests {
             ai_enabled: false,
             theme,
             language: Language::Korean,
-            animations: AnimationsConfig { master: true, border: true, ..Default::default() },
+            animations: AnimationsConfig {
+                master: true,
+                border: true,
+                fps: 45,
+                pause_unfocused: false,
+                ..Default::default()
+            },
         };
 
         let mut cfg = Config::default();
@@ -797,6 +803,8 @@ mod tests {
         assert!(cfg.animations.master);
         assert!(cfg.animations.border);
         assert!(!cfg.animations.rain);
+        assert_eq!(cfg.animations.fps, 45);
+        assert!(!cfg.animations.pause_unfocused);
         assert_eq!(cfg.cookies_file, Some(PathBuf::from("/tmp/cookies.txt")));
         assert_eq!(cfg.download_dir, Some(PathBuf::from("/tmp/downloads")));
         assert_eq!(cfg.mouse, Some(false));

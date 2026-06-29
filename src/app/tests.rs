@@ -761,6 +761,48 @@ fn save_config(cmds: &[Cmd]) -> Option<&Config> {
 }
 
 #[test]
+fn losing_terminal_focus_parks_animations_then_regaining_resumes() {
+    let mut app = app_playing(1, 0);
+    app.playback.paused = false;
+    // Master + one effect on → animations are logically running.
+    app.config.animations.master = true;
+    app.config.animations.rain = true;
+    assert!(app.config.animations.pause_unfocused, "pause_unfocused defaults on");
+    // Focused by default (the safe state for terminals that never report focus) → clock runs.
+    assert!(app.focused);
+    assert!(app.animation_active());
+    // Losing focus (window minimized / behind another) parks the ~fps tick...
+    app.update(Msg::Focus(false));
+    assert!(!app.focused);
+    assert!(!app.animation_active());
+    // ...and regaining it resumes immediately.
+    app.update(Msg::Focus(true));
+    assert!(app.animation_active());
+    // Opting out keeps animating even while unfocused.
+    app.config.animations.pause_unfocused = false;
+    app.update(Msg::Focus(false));
+    assert!(app.animation_active(), "pause_unfocused=false should keep animating unfocused");
+}
+
+#[test]
+fn toggling_animations_while_settings_open_survives_close() {
+    let mut app = app_playing(1, 0);
+    // Open settings; the draft is seeded from the (off) live config.
+    app.update(Msg::Key(key(KeyCode::Char(','))));
+    assert!(app.settings.is_some());
+    assert!(!app.config.animations.master);
+    // Toggle via the shared path (what both the `A` key and the ✨ click call).
+    let cmds = app.toggle_animations();
+    assert!(app.config.animations.master);
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))), "toggle persists");
+    // The draft must mirror the flip; otherwise close commits the stale (off) draft over it.
+    assert!(app.settings.as_ref().unwrap().draft.animations.master);
+    // Closing settings commits the draft → config; the toggle must stick, not revert.
+    app.close_settings();
+    assert!(app.config.animations.master, "close_settings must not revert the toggle");
+}
+
+#[test]
 fn comma_opens_settings_and_q_closes_without_quitting() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(','))));

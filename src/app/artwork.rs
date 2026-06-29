@@ -49,8 +49,8 @@ impl App {
             && self.config.animations.master
     }
 
-    /// The live animation config (per-effect toggles); read by the player view each frame.
-    #[allow(dead_code)]
+    /// The live animation config (per-effect toggles); read by the player view each frame and by
+    /// the nav bar's ✨ toggle.
     pub fn animations(&self) -> &crate::config::AnimationsConfig {
         &self.config.animations
     }

@@ -108,6 +108,17 @@ fn anim_tick_period(fps: u16) -> Duration {
     Duration::from_millis((1000 / u64::from(fps.max(1))).max(1))
 }
 
+/// Build the animation tick for `fps`. The first tick is scheduled one full period out (via
+/// `interval_at`) instead of firing immediately, so rebuilding the interval when the rate changes
+/// in Settings doesn't emit a spurious extra frame on the very next loop iteration. `Skip` drops
+/// missed frames so a busy moment can't back up a redraw backlog.
+fn anim_interval(fps: u16) -> tokio::time::Interval {
+    let period = anim_tick_period(fps);
+    let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    tick
+}
+
 async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     cfg: config::Config,
@@ -274,8 +285,7 @@ async fn run(
     // `Skip` drops missed frames so a busy moment can't build up a backlog of redraws. The period
     // is rebuilt below whenever the user changes the rate in Settings.
     let mut anim_fps = app.config.animations.effective_fps();
-    let mut anim_tick = tokio::time::interval(anim_tick_period(anim_fps));
-    anim_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut anim_tick = anim_interval(anim_fps);
     tui::draw_synced(terminal, |f| ui::render(f, &app))?;
 
     while !app.should_quit {
@@ -395,8 +405,7 @@ async fn run(
         let new_fps = app.config.animations.effective_fps();
         if new_fps != anim_fps {
             anim_fps = new_fps;
-            anim_tick = tokio::time::interval(anim_tick_period(anim_fps));
-            anim_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            anim_tick = anim_interval(anim_fps);
         }
 
         if app.dirty {

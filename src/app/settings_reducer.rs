@@ -411,7 +411,8 @@ impl App {
                 Vec::new()
             }
             // Animation toggles: flip the mapped flag in the draft. The single `anim_flag`
-            // mapping keeps the 13 effects in lock-step across display/toggle/persist; the UI
+            // mapping keeps these 13 flags (master + 12 effects) in lock-step across
+            // display/toggle/persist; the UI
             // takes effect immediately because the player reads `config.animations` each frame
             // and the draft is what's live while the screen is open (committed on close).
             Field::AnimMaster
