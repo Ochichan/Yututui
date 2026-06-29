@@ -135,7 +135,11 @@ jobs:
         with:
           merge-multiple: true
       - name: Assemble checksums.txt
-        run: cat *.sha256 | sort -k2 > checksums.txt
+        # The Windows runner's Git-Bash sha256sum writes its sidecar in "binary mode" as
+        # "<hash> *<file>" (one space + asterisk), whereas macOS/Linux emit text mode
+        # "<hash>  <file>". Normalise the marker out so the published asset is uniform and the
+        # awk extractors in the publish jobs match the Windows line too.
+        run: cat *.sha256 | sed 's/ \*/  /' | sort -k2 > checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -167,7 +171,7 @@ jobs:
       - name: Render formula
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          get() { awk -v f="$1" '$2 == f {print $1}' checksums.txt; }
+          get() { awk -v f="$1" '$2 == f || $2 == "*"f {print $1}' checksums.txt; }
           marm="$(get ytm-tui-macos-arm64.tar.gz)"; mx64="$(get ytm-tui-macos-x64.tar.gz)"
           lx64="$(get ytm-tui-linux-x64.tar.gz)";    larm="$(get ytm-tui-linux-arm64.tar.gz)"
           for h in "$marm" "$mx64" "$lx64" "$larm"; do
@@ -205,7 +209,7 @@ jobs:
       - name: Render manifest
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          sha="$(awk '$2 == "ytm-tui-windows-x64.zip" {print $1}' checksums.txt)"
+          sha="$(awk -v f="ytm-tui-windows-x64.zip" '$2 == f || $2 == "*"f {print $1}' checksums.txt)"
           [ -n "$sha" ] || { echo "::error::missing Windows checksum"; cat checksums.txt; exit 1; }
           sed -e "s/__VERSION__/$ver/g" -e "s/__SHA_WINDOWS_X64__/$sha/" \
               packaging/scoop/ytm-tui.json.tmpl > ytm-tui.json
