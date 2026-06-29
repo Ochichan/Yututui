@@ -17,7 +17,7 @@ It's fast, it's light, and it was built by one person who probably should have b
 - [Is this for me?](#is-this-for-me)
 - [Just give me music (the 60-second version)](#just-give-me-music-the-60-second-version)
 - [Installing it properly](#installing-it-properly)
-  - [Step 1 — the two helpers](#step-1--the-two-helpers-mpv--yt-dlp)
+  - [Step 1 — the helpers](#step-1--the-helpers)
   - [Step 2 — ytm-tui itself](#step-2--ytm-tui-itself)
   - [Step 3 — run it](#step-3--run-it)
 - [A tour of the screens](#a-tour-of-the-screens)
@@ -65,11 +65,10 @@ Probably **not** for you if you want giant album covers, an everything-is-a-mous
 
 ## Just give me music (the 60-second version)
 
-On a Mac with [Homebrew](https://brew.sh)? Paste these three lines and you're done:
+On a Mac with [Homebrew](https://brew.sh)? Paste these two lines and you're done:
 
 ```sh
-brew install mpv yt-dlp                 # the two helpers ytm-tui leans on
-brew install Ochichan/tap/ytm-tui       # ytm-tui itself
+brew install Ochichan/tap/ytm-tui       # ytm-tui + its helpers (mpv, yt-dlp, ffmpeg)
 ytt                                      # run it
 ```
 
@@ -83,48 +82,54 @@ On Windows or Linux, or not sure what Homebrew is? The next section walks you th
 
 `ytm-tui` is the friendly face. The actual "find the song and make sound come out" work is handed to two well-loved, free programs. You install those once, then install `ytm-tui`, then run it. Three steps.
 
-### Step 1 — the two helpers (mpv + yt-dlp)
+### Step 1 — the helpers
 
 - **[mpv](https://mpv.io)** — the engine that actually makes sound come out of your speakers.
 - **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — the part that fetches the audio from YouTube.
+- **[ffmpeg](https://ffmpeg.org)** — only needed for **downloads** (it stitches the audio into a tidy file). Skip it if you only ever stream.
 
-You install these **once**. Find your operating system in the table:
+> **Installing ytm-tui with a package manager (Homebrew, Scoop, Nix, or the AUR — see Step 2)?** It pulls these in for you automatically, so you can skip straight to Step 2. This step matters for the `curl | sh` and from-source paths, which install just the `ytt` binary.
+
+To install the helpers yourself, find your operating system in the table:
 
 | Your computer | Type this |
 | --- | --- |
-| **macOS** (with [Homebrew](https://brew.sh)) | `brew install mpv yt-dlp` |
-| **Windows** (with [Scoop](https://scoop.sh)) | `scoop install mpv yt-dlp` |
-| **Linux** (Debian/Ubuntu) | `sudo apt install mpv yt-dlp` |
-| **Linux** (Arch) | `sudo pacman -S mpv yt-dlp` |
+| **macOS** (with [Homebrew](https://brew.sh)) | `brew install mpv yt-dlp ffmpeg` |
+| **Windows** (with [Scoop](https://scoop.sh)) | `scoop install mpv yt-dlp ffmpeg` |
+| **Linux** (Debian/Ubuntu) | `sudo apt install mpv yt-dlp ffmpeg` |
+| **Linux** (Arch) | `sudo pacman -S mpv yt-dlp ffmpeg` |
 
 > **What's a "package manager"?** Think of it as an app store for the terminal — it installs programs with a single line. Homebrew (Mac), Scoop (Windows), and apt/pacman (Linux) are the popular ones. If you don't have the one in your row yet, click its link above and install it first. Also a one-time thing.
 
-**Did it work?** Type `mpv --version`, then `yt-dlp --version`. If each spits out a wall of text instead of "command not found," you're good to go.
+**Did it work?** Type `mpv --version`, then `yt-dlp --version`. If each spits out a wall of text instead of "command not found," you're good to go. (Want to check all of them at once — including ffmpeg? After Step 2, run **`ytt doctor`**.)
 
 ### Step 2 — ytm-tui itself
 
-**The easy way (recommended)** — let your package manager handle everything:
+**The easy way (recommended)** — one command for your platform. Each one installs `ytt` **and** its helpers (mpv, yt-dlp, ffmpeg) for you:
 
-```sh
-# macOS
-brew install Ochichan/tap/ytm-tui
+| Your computer | One command |
+| --- | --- |
+| **macOS** | `brew install Ochichan/tap/ytm-tui` |
+| **Windows** | `scoop bucket add extras; scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket; scoop install ytm-tui` |
+| **Linux** — any, with [Nix](https://nixos.org/download) | `nix run github:Ochichan/ytm-tui` |
+| **Linux** — Arch | `yay -S ytm-tui-bin` |
+| **Linux** — any other | `curl -fsSL https://github.com/Ochichan/ytm-tui/releases/latest/download/install.sh \| sh` |
 
-# Windows
-scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket
-scoop install ytm-tui
-```
+> **Nix** is the most reproducible option: `nix run github:Ochichan/ytm-tui` runs the exact pinned version with mpv/ffmpeg/yt-dlp bundled in, without touching the rest of your system. (If you keep your own newer `yt-dlp` on `PATH`, it still wins.)
+>
+> The **`curl | sh`** one-liner downloads a ready-made binary for your CPU, verifies it against the release checksum, and puts `ytt` on your `PATH`. It installs only `ytt`, so do Step 1 for the helpers — or just run `ytt doctor` afterwards to see what's missing.
 
-**The from-source way** — if you downloaded this repository as a folder:
+**The from-source way** — if you cloned this repository and want to build it yourself:
 
 ```sh
 # macOS / Linux
-./install.sh
+./install.sh --build
 
 # Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1 --build
 ```
 
-The installer is polite: it grabs a ready-made build if one exists for your computer, and otherwise builds it from scratch. Building from scratch needs [Rust](https://rustup.rs) (install that first), takes a few minutes, and is a great excuse to go make coffee. It also nudges the install folder onto your `PATH` so `ytt` runs from anywhere, and double-checks that mpv and yt-dlp are present.
+Building from source needs [Rust](https://rustup.rs) (install that first), takes a few minutes, and is a great excuse to go make coffee. Without `--build`, `./install.sh` just downloads a ready-made binary and only compiles when there's no prebuilt for your platform. Either way it nudges the install folder onto your `PATH` so `ytt` runs from anywhere.
 
 ### Step 3 — run it
 
@@ -136,6 +141,8 @@ Three letters. That's the whole command.
 
 **The single most useful thing to learn first:** press **`?`** at any time. It pops up the complete, always-current list of every key and what it does. So even if you forget everything in this README, the app itself remembers it for you.
 
+> **Something off?** Run **`ytt doctor`** — it checks that mpv, yt-dlp, and ffmpeg are on your `PATH` and that ytm-tui can write its files, then tells you exactly what to fix.
+>
 > **Seeing `ytt: command not found`?** Close your terminal, open a fresh window, and try again — your `PATH` just needs a moment to catch up. Still stuck? Jump to [When things go wrong](#when-things-go-wrong).
 
 ---
@@ -602,7 +609,7 @@ Deep breath. It's almost always one of these:
 
 | Symptom | The fix |
 | --- | --- |
-| **Nothing plays, or it errors the instant you press play** | mpv or yt-dlp probably isn't installed, or isn't on your `PATH`. Re-do [Step 1](#step-1--the-two-helpers-mpv--yt-dlp). |
+| **Nothing plays, or it errors the instant you press play** | mpv or yt-dlp probably isn't installed, or isn't on your `PATH`. Run `ytt doctor` to pinpoint it, or re-do [Step 1](#step-1--the-helpers). |
 | **`ytt: command not found`** | Open a brand-new terminal window. If it persists, the install folder isn't on your `PATH` — the installer printed the exact line to add; paste it into your shell's config file. |
 | **A specific song won't play** | Some tracks need you signed in. See [Signing in with cookies](#signing-in-with-cookies-optional). |
 | **It worked yesterday, now nothing plays** | YouTube changes things constantly, which breaks yt-dlp. Update it: `brew upgrade yt-dlp` (Mac), `scoop update yt-dlp` (Windows), or your package manager (Linux). |

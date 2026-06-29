@@ -17,7 +17,7 @@
 - [나한테 맞는 물건일까?](#나한테-맞는-물건일까)
 - [그냥 음악, 지금 당장 (60초 버전)](#그냥-음악-지금-당장-60초-버전)
 - [제대로 설치하기](#제대로-설치하기)
-  - [1단계 — 도우미 두 개](#1단계--도우미-두-개-mpv--yt-dlp)
+  - [1단계 — 도우미들](#1단계--도우미들)
   - [2단계 — ytm-tui 본체](#2단계--ytm-tui-본체)
   - [3단계 — 실행하기](#3단계--실행하기)
 - [화면 둘러보기](#화면-둘러보기)
@@ -65,11 +65,10 @@
 
 ## 그냥 음악, 지금 당장 (60초 버전)
 
-맥에 [Homebrew](https://brew.sh)가 깔려 있다면? 이 세 줄을 붙여넣으면 끝입니다:
+맥에 [Homebrew](https://brew.sh)가 깔려 있다면? 이 두 줄을 붙여넣으면 끝입니다:
 
 ```sh
-brew install mpv yt-dlp                 # ytm-tui가 기대는 도우미 두 개
-brew install Ochichan/tap/ytm-tui       # ytm-tui 본체
+brew install Ochichan/tap/ytm-tui       # ytm-tui + 도우미들(mpv, yt-dlp, ffmpeg)까지 한 번에
 ytt                                      # 실행
 ```
 
@@ -83,48 +82,54 @@ ytt                                      # 실행
 
 `ytm-tui`는 친절한 얼굴 역할입니다. 실제로 "노래를 찾아서 소리를 내는" 일은 사랑받는 무료 프로그램 두 개에게 맡깁니다. 그 둘을 한 번 설치하고, ytm-tui를 설치하고, 실행하면 됩니다. 세 단계예요.
 
-### 1단계 — 도우미 두 개 (mpv + yt-dlp)
+### 1단계 — 도우미들
 
 - **[mpv](https://mpv.io)** — 실제로 스피커에서 소리가 나오게 하는 엔진.
 - **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — 유튜브에서 음원을 가져오는 녀석.
+- **[ffmpeg](https://ffmpeg.org)** — **다운로드할 때만** 필요합니다(음원을 깔끔한 파일로 합쳐 주죠). 스트리밍만 할 거라면 건너뛰어도 됩니다.
 
-이 둘은 **딱 한 번만** 설치하면 됩니다. 표에서 내 운영체제를 찾으세요:
+> **패키지 매니저로 ytm-tui 본체를 설치하나요(Homebrew, Scoop, Nix, 또는 AUR — 2단계 참고)?** 그러면 이 도우미들도 알아서 함께 깔아 주니, 바로 2단계로 넘어가도 됩니다. 이 단계는 `ytt` 바이너리만 설치하는 `curl | sh`·소스 빌드 방식에서 의미가 있습니다.
+
+도우미들을 직접 설치하려면, 표에서 내 운영체제를 찾으세요:
 
 | 내 컴퓨터 | 이렇게 입력 |
 | --- | --- |
-| **macOS** ([Homebrew](https://brew.sh) 사용) | `brew install mpv yt-dlp` |
-| **Windows** ([Scoop](https://scoop.sh) 사용) | `scoop install mpv yt-dlp` |
-| **Linux** (데비안/우분투) | `sudo apt install mpv yt-dlp` |
-| **Linux** (아치) | `sudo pacman -S mpv yt-dlp` |
+| **macOS** ([Homebrew](https://brew.sh) 사용) | `brew install mpv yt-dlp ffmpeg` |
+| **Windows** ([Scoop](https://scoop.sh) 사용) | `scoop install mpv yt-dlp ffmpeg` |
+| **Linux** (데비안/우분투) | `sudo apt install mpv yt-dlp ffmpeg` |
+| **Linux** (아치) | `sudo pacman -S mpv yt-dlp ffmpeg` |
 
 > **"패키지 매니저"가 뭔가요?** 터미널용 앱스토어 같은 겁니다 — 한 줄로 프로그램을 설치해 주죠. Homebrew(맥), Scoop(윈도우), apt/pacman(리눅스)이 대표적입니다. 내 줄에 있는 게 아직 없다면, 위 링크를 눌러 먼저 설치하세요. 이것도 한 번만 하면 됩니다.
 
-**제대로 됐는지 확인하려면?** `mpv --version`, 그다음 `yt-dlp --version`을 입력해 보세요. "command not found" 대신 글자들이 주르륵 나오면 성공입니다.
+**제대로 됐는지 확인하려면?** `mpv --version`, 그다음 `yt-dlp --version`을 입력해 보세요. "command not found" 대신 글자들이 주르륵 나오면 성공입니다. (ffmpeg까지 한꺼번에 확인하고 싶다면? 2단계를 마친 뒤 **`ytt doctor`**를 실행하세요.)
 
 ### 2단계 — ytm-tui 본체
 
-**쉬운 방법 (추천)** — 패키지 매니저에게 다 맡기기:
+**쉬운 방법 (추천)** — 내 플랫폼에 맞는 명령 한 줄. 각 명령이 `ytt`는 물론 도우미들(mpv, yt-dlp, ffmpeg)까지 함께 깔아 줍니다:
 
-```sh
-# macOS
-brew install Ochichan/tap/ytm-tui
+| 내 컴퓨터 | 명령 한 줄 |
+| --- | --- |
+| **macOS** | `brew install Ochichan/tap/ytm-tui` |
+| **Windows** | `scoop bucket add extras; scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket; scoop install ytm-tui` |
+| **Linux** — 아무 배포판, [Nix](https://nixos.org/download) 사용 | `nix run github:Ochichan/ytm-tui` |
+| **Linux** — 아치 | `yay -S ytm-tui-bin` |
+| **Linux** — 그 외 전부 | `curl -fsSL https://github.com/Ochichan/ytm-tui/releases/latest/download/install.sh \| sh` |
 
-# Windows
-scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket
-scoop install ytm-tui
-```
+> **Nix**가 가장 재현성 높은 방법입니다: `nix run github:Ochichan/ytm-tui`는 고정된 정확한 버전을 mpv/ffmpeg/yt-dlp와 함께 묶어 실행하며, 시스템의 나머지는 건드리지 않습니다. (직접 깐 더 최신 `yt-dlp`가 `PATH`에 있다면 그쪽이 우선합니다.)
+>
+> **`curl | sh`** 한 줄짜리는 내 CPU에 맞는 완성품 바이너리를 내려받아, 릴리스 체크섬과 대조해 검증하고, `ytt`를 `PATH`에 올려 줍니다. `ytt`만 설치하므로, 도우미들은 1단계로 챙기거나 — 설치 후 `ytt doctor`로 빠진 게 뭔지 확인하세요.
 
-**소스에서 직접 까는 방법** — 이 저장소를 폴더째로 받았다면:
+**소스에서 직접 빌드하는 방법** — 이 저장소를 클론해서 직접 빌드하고 싶다면:
 
 ```sh
 # macOS / Linux
-./install.sh
+./install.sh --build
 
 # Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1 --build
 ```
 
-설치 스크립트는 예의가 바릅니다. 당신 컴퓨터에 맞는 완성품이 있으면 그걸 쓰고, 없으면 처음부터 직접 빌드합니다. 처음부터 빌드하려면 [Rust](https://rustup.rs)가 필요하고(먼저 설치하세요), 몇 분 걸리니, 커피 한 잔 내리러 가기 딱 좋은 순간입니다. 설치 폴더를 `PATH`에 슬쩍 추가해서 어디서든 `ytt`를 실행할 수 있게 해주고, mpv와 yt-dlp가 있는지도 다시 확인해 줍니다.
+소스 빌드에는 [Rust](https://rustup.rs)가 필요하고(먼저 설치하세요), 몇 분 걸리니 커피 한 잔 내리러 가기 딱 좋은 순간입니다. `--build` 없이 `./install.sh`를 실행하면 완성품 바이너리를 내려받고, 내 플랫폼용 완성품이 없을 때만 컴파일로 넘어갑니다. 어느 쪽이든 설치 폴더를 `PATH`에 슬쩍 추가해 어디서든 `ytt`를 실행할 수 있게 해 줍니다.
 
 ### 3단계 — 실행하기
 
@@ -136,6 +141,8 @@ ytt
 
 **가장 먼저 배워야 할 가장 쓸모 있는 것:** 언제든 **`?`**를 누르세요. 모든 키와 그 기능이 적힌, 항상 최신 상태인 전체 목록이 뜹니다. 그래서 이 README 내용을 다 잊어버려도, 앱이 대신 기억해 줍니다.
 
+> **뭔가 이상한가요?** **`ytt doctor`**를 실행하세요 — mpv·yt-dlp·ffmpeg가 `PATH`에 있는지, ytm-tui가 파일을 쓸 수 있는지 점검하고, 뭘 고쳐야 할지 정확히 알려 줍니다.
+>
 > **`ytt: command not found`가 뜬다면?** 터미널을 닫고 새 창을 연 뒤 다시 해보세요 — `PATH`가 따라잡을 시간이 필요할 뿐입니다. 그래도 막혔다면 [뭔가 잘못됐을 때](#뭔가-잘못됐을-때)로 가세요.
 
 ---
@@ -602,7 +609,7 @@ New-Item -ItemType Directory "$HOME\Music\ytm-tui" -Force
 
 | 증상 | 해결 |
 | --- | --- |
-| **아무것도 안 나오거나, 재생하자마자 에러가 난다** | mpv나 yt-dlp가 설치 안 됐거나 `PATH`에 없을 겁니다. [1단계](#1단계--도우미-두-개-mpv--yt-dlp)를 다시 하세요. |
+| **아무것도 안 나오거나, 재생하자마자 에러가 난다** | mpv나 yt-dlp가 설치 안 됐거나 `PATH`에 없을 겁니다. `ytt doctor`로 뭐가 빠졌는지 콕 집어 확인하거나, [1단계](#1단계--도우미들)를 다시 하세요. |
 | **`ytt: command not found`** | 완전히 새 터미널 창을 여세요. 그래도 그러면 설치 폴더가 `PATH`에 없는 겁니다 — 설치 스크립트가 추가할 정확한 줄을 출력했으니, 그걸 셸 설정 파일에 붙여넣으세요. |
 | **특정 곡이 안 나온다** | 일부 곡은 로그인이 필요합니다. [쿠키로 로그인하기](#쿠키로-로그인하기-선택)를 보세요. |
 | **어제까진 됐는데 이제 전부 안 나온다** | 유튜브가 수시로 바뀌면서 yt-dlp를 망가뜨립니다. 업데이트하세요: `brew upgrade yt-dlp`(맥), `scoop update yt-dlp`(윈도우), 또는 패키지 매니저(리눅스). |

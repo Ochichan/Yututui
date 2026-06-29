@@ -1,13 +1,17 @@
 # ytm-tui installer (Windows) — makes `ytt` runnable from any terminal, no manual setup.
 #
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1
-#   powershell -ExecutionPolicy Bypass -File .\install.ps1 --build   # force a source build
+#   irm https://github.com/Ochichan/ytm-tui/releases/latest/download/install.ps1 | iex
+#                                                            # download a prebuilt — no clone needed
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1   # from a clone: dist\ or a release zip
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 --build   # force a source build (needs Rust)
 #
-# Uses a prebuilt dist\ytt.exe if present, otherwise builds from source with cargo.
-# Adds the install dir to your user PATH and checks for the mpv / yt-dlp runtime tools.
+# Pin a version with  $env:YTT_VERSION = 'v1.6.0'  (default: the latest release).
+# Adds the install dir to your user PATH and checks for the mpv / yt-dlp / ffmpeg runtime tools.
+# (On Windows the one-command path is Scoop:  scoop install ytm-tui.)
 
 $ErrorActionPreference = 'Stop'
 $Bin = 'ytt'
+$RepoSlug = 'Ochichan/ytm-tui'
 
 # $PSScriptRoot is reliably set for script-file execution; fall back to the CWD when the script
 # is run via -Command / Invoke-Expression (where $MyInvocation.MyCommand.Path is $null).
@@ -27,27 +31,81 @@ $Prebuilt   = Join-Path $ScriptDir 'dist\ytt.exe'
 if (-not $env:LOCALAPPDATA) { Die '$env:LOCALAPPDATA is not set; cannot determine install directory.' }
 if (-not $env:USERPROFILE)  { Die '$env:USERPROFILE is not set.' }
 
-# dist\ is gitignored, so a fresh `git clone` won't have it -> fall through to cargo.
-if (-not $ForceBuild -and (Test-Path $Prebuilt)) {
-    $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\ytt'
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    $Dest = Join-Path $InstallDir "$Bin.exe"
-    Copy-Item $Prebuilt $Dest -Force
-    Ok "Installed prebuilt binary -> $Dest"
+# Copy an existing ytt.exe into the per-user programs dir; sets $script:InstallDir.
+function Install-File($srcExe) {
+    $script:InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\ytt'
+    New-Item -ItemType Directory -Force -Path $script:InstallDir | Out-Null
+    $dest = Join-Path $script:InstallDir "$Bin.exe"
+    Copy-Item $srcExe $dest -Force
+    Ok "Installed -> $dest"
 }
-elseif (Get-Command cargo -ErrorAction SilentlyContinue) {
+
+# Download the prebuilt zip from GitHub Releases, verify its SHA-256 against checksums.txt,
+# extract ytt.exe, and install it. Only an x64 build ships (it also runs on ARM64 via emulation).
+function Install-Download {
+    $archive = 'ytm-tui-windows-x64.zip'
+    $ver  = if ($env:YTT_VERSION) { $env:YTT_VERSION } else { 'latest' }
+    $base = "https://github.com/$RepoSlug/releases"
+    if ($ver -eq 'latest') {
+        $url = "$base/latest/download/$archive"; $cksUrl = "$base/latest/download/checksums.txt"
+    } else {
+        $url = "$base/download/$ver/$archive";    $cksUrl = "$base/download/$ver/checksums.txt"
+    }
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ytt-" + [System.IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    $zip = Join-Path $tmp $archive
+
+    Info "Downloading $archive ($ver)..."
+    try { Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing } catch { Die "download failed: $url" }
+
+    # checksums.txt is best-effort: verify when present, warn (don't abort) if a release lacks it.
+    $cks = Join-Path $tmp 'checksums.txt'
+    try {
+        Invoke-WebRequest -Uri $cksUrl -OutFile $cks -UseBasicParsing
+        $match = Select-String -Path $cks -Pattern ([regex]::Escape($archive)) | Select-Object -First 1
+        if ($match) {
+            $want = (($match.Line -split '\s+')[0]).ToLower()
+            $got  = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+            if ($want -ne $got) { Die "checksum mismatch for $archive - aborting" }
+            Ok "Checksum verified"
+        } else { Warn "no checksum entry for $archive - skipping integrity check" }
+    } catch { Warn "release has no checksums.txt - skipping integrity check" }
+
+    Info "Extracting..."
+    Expand-Archive -Path $zip -DestinationPath $tmp -Force
+    $exe = Join-Path $tmp "$Bin.exe"
+    if (-not (Test-Path $exe)) { Die "archive did not contain $Bin.exe" }
+    Install-File $exe
+    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+}
+
+# Build from a checkout with cargo; sets $script:InstallDir.
+function Install-ViaCargo {
+    if (-not (Test-Path (Join-Path $ScriptDir 'Cargo.toml'))) {
+        Die "Not a ytm-tui checkout, so there's nothing to build.`n  Use Scoop ( scoop install ytm-tui ), or clone the repo and re-run."
+    }
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        Die "Rust (cargo) is not installed or not on PATH - required for --build.`n  Install Rust: https://rustup.rs  then re-run."
+    }
     Info "Building from source with cargo - this can take a few minutes the first time..."
     cargo install --path . --force
     if ($LASTEXITCODE -ne 0) { Die "cargo install failed." }
     # cargo installs into %USERPROFILE%\.cargo\bin, already on PATH via rustup.
-    $InstallDir = Join-Path $env:USERPROFILE '.cargo\bin'
-    Ok "Built and installed -> $(Join-Path $InstallDir "$Bin.exe")"
+    $script:InstallDir = Join-Path $env:USERPROFILE '.cargo\bin'
+    Ok "Built and installed -> $(Join-Path $script:InstallDir "$Bin.exe")"
 }
-elseif ($ForceBuild) {
-    Die "Rust (cargo) is not installed or not on PATH — required for --build.`n  Install Rust: https://rustup.rs  then re-run."
+
+# --- choose a strategy -----------------------------------------------------------------
+# Order: explicit --build -> a local dist\ prebuilt (repo-dev fast path) -> download a prebuilt
+# (works with no clone). dist\ is gitignored, so a fresh `git clone` falls through to download.
+if ($ForceBuild) {
+    Install-ViaCargo
+}
+elseif (Test-Path $Prebuilt) {
+    Install-File $Prebuilt
 }
 else {
-    Die "No prebuilt dist\ytt.exe and Rust isn't installed.`n  Install Rust: https://rustup.rs  then re-run, or download a prebuilt binary from the project's Releases page."
+    Install-Download
 }
 
 # --- make sure the install dir is on the user PATH -------------------------------------
@@ -74,8 +132,9 @@ if (($env:Path -split ';') -notcontains $InstallDir) {
 }
 
 # --- preflight the runtime tools -------------------------------------------------------
+# mpv + yt-dlp are required for playback/search; ffmpeg is needed for downloads.
 $missing = @()
-foreach ($t in 'mpv', 'yt-dlp') {
+foreach ($t in 'mpv', 'yt-dlp', 'ffmpeg') {
     if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { $missing += $t }
 }
 if ($missing.Count -gt 0) {
@@ -83,7 +142,7 @@ if ($missing.Count -gt 0) {
     Warn "Missing runtime tools: $list - install with:  scoop install $list   (or winget install $list)"
 }
 else {
-    Ok "Runtime tools present (mpv, yt-dlp)"
+    Ok "Runtime tools present (mpv, yt-dlp, ffmpeg)"
 }
 
 Write-Host ""

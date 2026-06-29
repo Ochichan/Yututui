@@ -1,5 +1,8 @@
 /target
 /dist
+# Nix build symlinks (`nix build` writes ./result)
+/result
+/result-*
 /YtmTui.app/
 /ytm-tui-*.tar.gz
 /ytm-tui-*.zip

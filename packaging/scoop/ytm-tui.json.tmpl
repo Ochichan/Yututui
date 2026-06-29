@@ -1,0 +1,29 @@
+{
+    "version": "__VERSION__",
+    "description": "Fast, low-RAM YouTube Music player for your terminal",
+    "homepage": "https://github.com/Ochichan/ytm-tui",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/Ochichan/ytm-tui/releases/download/v__VERSION__/ytm-tui-windows-x64.zip",
+            "hash": "__SHA_WINDOWS_X64__"
+        }
+    },
+    "bin": "ytt.exe",
+    "depends": [
+        "extras/mpv",
+        "main/yt-dlp",
+        "main/ffmpeg"
+    ],
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/Ochichan/ytm-tui/releases/download/v$version/ytm-tui-windows-x64.zip"
+            }
+        },
+        "hash": {
+            "url": "https://github.com/Ochichan/ytm-tui/releases/download/v$version/checksums.txt"
+        }
+    }
+}

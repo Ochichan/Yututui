@@ -1,13 +1,34 @@
-//! Startup preflight for the external tools we shell out to (`mpv`, `yt-dlp`).
+//! Preflight for the external tools we shell out to (`mpv`, `yt-dlp`, `ffmpeg`).
 //!
-//! Both are hard runtime requirements — mpv is the playback engine, yt-dlp does search
-//! and stream resolution. When one is missing we surface a clear, OS-specific install
-//! hint in the status line instead of failing opaquely deep in an actor.
+//! `mpv` (playback) and `yt-dlp` (search + stream resolution) are hard runtime requirements:
+//! when one is missing the startup [`missing`] check surfaces a clear, OS-specific install
+//! hint in the status line instead of failing opaquely deep in an actor. `ffmpeg` is needed
+//! only for download post-processing (yt-dlp merges/converts with it), so it is *not* part of
+//! the startup nag — it's reported by `ytt doctor` (see `crate::doctor`) and surfaces if a
+//! download needs it.
 
 use std::process::{Command, Stdio};
 
+/// What an external tool is needed for. Drives whether [`missing`] nags at startup and how
+/// `ytt doctor` labels it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Need {
+    /// Playback / search — the app is unusable without it.
+    Core,
+    /// Download post-processing only (yt-dlp merge/convert).
+    Downloads,
+}
+
+/// Every external tool `ytt` may invoke, paired with what it's needed for. Single source of
+/// truth for both the startup preflight ([`missing`]) and `ytt doctor`.
+pub const TOOLS: &[(&str, Need)] = &[
+    ("mpv", Need::Core),
+    ("yt-dlp", Need::Core),
+    ("ffmpeg", Need::Downloads),
+];
+
 /// Whether `bin --version` runs at all (i.e. the tool is installed and on `PATH`).
-fn on_path(bin: &str) -> bool {
+pub(crate) fn on_path(bin: &str) -> bool {
     Command::new(bin)
         .arg("--version")
         .stdin(Stdio::null())
@@ -17,9 +38,15 @@ fn on_path(bin: &str) -> bool {
         .is_ok()
 }
 
-/// The required tools that aren't on `PATH`.
+/// The playback-critical tools that aren't on `PATH` (the startup preflight subset; ffmpeg is
+/// download-only and intentionally excluded).
 pub fn missing() -> Vec<&'static str> {
-    ["mpv", "yt-dlp"].into_iter().filter(|b| !on_path(b)).collect()
+    TOOLS
+        .iter()
+        .filter(|(_, need)| *need == Need::Core)
+        .map(|(bin, _)| *bin)
+        .filter(|bin| !on_path(bin))
+        .collect()
 }
 
 /// A one-line, OS-appropriate install hint for the given missing tools.
@@ -58,5 +85,15 @@ mod tests {
     #[test]
     fn nonexistent_binary_is_not_on_path() {
         assert!(!on_path("ytm-tui-definitely-not-a-real-binary-xyzzy"));
+    }
+
+    #[test]
+    fn ffmpeg_is_download_only_and_never_a_startup_requirement() {
+        // ffmpeg is a known tool tagged download-only…
+        let need = TOOLS.iter().find(|(b, _)| *b == "ffmpeg").map(|(_, n)| *n);
+        assert_eq!(need, Some(Need::Downloads));
+        // …so it can never appear in the startup preflight, which is Core-only —
+        // regardless of whether ffmpeg happens to be installed on this machine.
+        assert!(!missing().contains(&"ffmpeg"));
     }
 }

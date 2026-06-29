@@ -2,17 +2,21 @@
 #
 # ytm-tui installer (macOS / Linux) — makes `ytt` runnable from anywhere, no manual setup.
 #
-#   ./install.sh                  # use a prebuilt binary if one ships for this platform,
-#                                 # otherwise build from source with cargo
-#   ./install.sh --build          # always build from source (needs Rust)
+#   curl -fsSL https://github.com/Ochichan/ytm-tui/releases/latest/download/install.sh | sh
+#                                 # download a prebuilt binary for this OS/arch — no clone needed
+#   ./install.sh                  # from a clone: use ./dist or a release binary, else cargo build
+#   ./install.sh --build          # always build from source (needs Rust + a clone)
 #   ./install.sh --no-modify-path # don't touch any shell rc file
 #
-# It also puts the install dir on your PATH (if it isn't already, and unless
-# --no-modify-path is given) and checks that the two runtime tools (mpv, yt-dlp) are present.
+# Pin a version with  YTT_VERSION=v1.6.0 ./install.sh  (default: the latest release).
+#
+# It puts the install dir on your PATH (unless --no-modify-path) and checks that the runtime
+# tools (mpv, yt-dlp, ffmpeg) are present.
 #
 set -euo pipefail
 
 BIN=ytt
+REPO_SLUG="Ochichan/ytm-tui"
 
 # Run from the repo root regardless of where the script was invoked from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
@@ -63,6 +67,11 @@ install_prebuilt() {
 }
 
 install_via_cargo() {
+  if [ ! -f Cargo.toml ]; then
+    die "No prebuilt for $OS/$ARCH on the Releases page, and this isn't a ytm-tui checkout.
+  Clone it and re-run, or build with cargo:
+    git clone https://github.com/$REPO_SLUG && cd ytm-tui && ./install.sh"
+  fi
   command -v cargo >/dev/null 2>&1 || die \
 "No prebuilt binary for $OS/$ARCH and Rust isn't installed.
   Install Rust (one line):
@@ -94,12 +103,79 @@ install_via_cargo() {
   fi
 }
 
+# --- download a prebuilt release archive (the `curl | sh` path) ------------------------
+# Map (OS, ARCH) -> the release archive CI publishes (see .github/workflows/build.yml).
+# Empty when we don't ship a prebuilt for this platform.
+release_archive_for_platform() {
+  case "$OS/$ARCH" in
+    Darwin/arm64)              echo "ytm-tui-macos-arm64.tar.gz" ;;
+    Darwin/x86_64)             echo "ytm-tui-macos-x64.tar.gz" ;;
+    Linux/x86_64)              echo "ytm-tui-linux-x64.tar.gz" ;;
+    Linux/aarch64|Linux/arm64) echo "ytm-tui-linux-arm64.tar.gz" ;;
+    *)                         echo "" ;;
+  esac
+}
+
+# curl or wget, whichever exists.  $1 = url, $2 = output path.
+fetch() {
+  if   command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then wget -qO "$2" "$1"
+  else die "need curl or wget to download a prebuilt binary"; fi
+}
+
+# Verify archive $2 (in dir $1) against the matching line in $1/checksums.txt.
+verify_sha256() {
+  local dir="$1" archive="$2" want got
+  want="$(awk -v f="$archive" '$2 == f || $2 == "*" f {print $1}' "$dir/checksums.txt" | head -n1)"
+  [ -n "$want" ] || { warn "no checksum entry for $archive"; return 1; }
+  if   command -v sha256sum >/dev/null 2>&1; then got="$(sha256sum "$dir/$archive" | awk '{print $1}')"
+  elif command -v shasum    >/dev/null 2>&1; then got="$(shasum -a 256 "$dir/$archive" | awk '{print $1}')"
+  else warn "no sha256 tool — skipping integrity check"; return 0; fi
+  [ "$want" = "$got" ]
+}
+
+# Download the prebuilt for this platform, verify it, extract `ytt`, and install it.
+download_release() {
+  local archive="$1" ver base url cks_url tmp
+  ver="${YTT_VERSION:-latest}"
+  base="https://github.com/$REPO_SLUG/releases"
+  if [ "$ver" = latest ]; then
+    url="$base/latest/download/$archive";  cks_url="$base/latest/download/checksums.txt"
+  else
+    url="$base/download/$ver/$archive";     cks_url="$base/download/$ver/checksums.txt"
+  fi
+  tmp="$(mktemp -d)"
+
+  info "Downloading $archive ($ver)…"
+  fetch "$url" "$tmp/$archive" || die "download failed: $url"
+  # checksums.txt is best-effort: verify when present, warn (don't abort) if a release lacks it.
+  if fetch "$cks_url" "$tmp/checksums.txt" 2>/dev/null; then
+    verify_sha256 "$tmp" "$archive" || die "checksum mismatch for $archive — aborting"
+    ok "Checksum verified"
+  else
+    warn "release has no checksums.txt — skipping integrity check"
+  fi
+  info "Extracting…"
+  tar -xzf "$tmp/$archive" -C "$tmp" "$BIN" || die "archive did not contain $BIN"
+  install_prebuilt "$tmp/$BIN"
+  rm -rf "$tmp"
+}
+
 # --- choose a strategy -----------------------------------------------------------------
-prebuilt="$(prebuilt_for_platform)"
-if [ "$FORCE_BUILD" -eq 0 ] && [ -n "$prebuilt" ] && [ -f "$prebuilt" ]; then
-  install_prebuilt "$prebuilt"
-else
+# Order: explicit --build -> a local dist/ prebuilt (repo-dev fast path) -> a release download
+# (works with no clone) -> cargo build from a checkout.
+if [ "$FORCE_BUILD" -eq 1 ]; then
   install_via_cargo
+else
+  local_prebuilt="$(prebuilt_for_platform)"
+  release_archive="$(release_archive_for_platform)"
+  if [ -n "$local_prebuilt" ] && [ -f "$local_prebuilt" ]; then
+    install_prebuilt "$local_prebuilt"
+  elif [ -n "$release_archive" ]; then
+    download_release "$release_archive"
+  else
+    install_via_cargo
+  fi
 fi
 
 # --- make sure the install dir is on PATH ----------------------------------------------
@@ -141,8 +217,9 @@ else
 fi
 
 # --- preflight the runtime tools -------------------------------------------------------
+# mpv + yt-dlp are required for playback/search; ffmpeg is needed for downloads.
 missing=()
-for t in mpv yt-dlp; do command -v "$t" >/dev/null 2>&1 || missing+=("$t"); done
+for t in mpv yt-dlp ffmpeg; do command -v "$t" >/dev/null 2>&1 || missing+=("$t"); done
 if [ "${#missing[@]}" -gt 0 ]; then
   if [ "$OS" = Darwin ] && command -v brew >/dev/null 2>&1; then
     warn "Missing runtime tools: ${missing[*]} — install with:  brew install ${missing[*]}"
@@ -152,7 +229,7 @@ if [ "${#missing[@]}" -gt 0 ]; then
     warn "Missing runtime tools: ${missing[*]} — install them via your package manager"
   fi
 else
-  ok "Runtime tools present (mpv, yt-dlp)"
+  ok "Runtime tools present (mpv, yt-dlp, ffmpeg)"
 fi
 
 printf '\n'

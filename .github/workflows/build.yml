@@ -1,9 +1,12 @@
 name: build
 
-# Builds, lints, tests, and packages ytm-tui release binaries for macOS and Windows
-# on native runners. Windows builds "just work" here (MSVC + SChannel via native-tls,
-# no NASM/C-crypto toolchain needed) — which is why the actual .exe is produced in CI
-# rather than cross-compiled from a Mac. Artifacts are uploaded for each OS.
+# Builds, lints, tests, and packages ytm-tui release binaries on native runners (no
+# cross-compilation): macOS arm64 + x64, Windows x64, and Linux x64 + arm64. native-tls means
+# each OS uses its system TLS — Security.framework / SChannel / OpenSSL — so Windows needs no
+# NASM/C-crypto toolchain and Linux only needs libssl-dev. Every archive gets a SHA-256
+# sidecar; the release job folds them into a single checksums.txt. On a v* tag, three publish
+# jobs render the packaging/ templates from those checksums and push the Homebrew formula,
+# Scoop manifest, and AUR PKGBUILD to their external repos (see packaging/README.md).
 
 on:
   push:
@@ -28,13 +31,38 @@ jobs:
             target: aarch64-apple-darwin
             bin: ytt
             archive: ytm-tui-macos-arm64.tar.gz
+          - os: macos-15-intel
+            name: macOS (x64)
+            target: x86_64-apple-darwin
+            bin: ytt
+            archive: ytm-tui-macos-x64.tar.gz
           - os: windows-latest
             name: Windows (x64)
             target: x86_64-pc-windows-msvc
             bin: ytt.exe
             archive: ytm-tui-windows-x64.zip
+          - os: ubuntu-22.04
+            name: Linux (x64)
+            target: x86_64-unknown-linux-gnu
+            bin: ytt
+            archive: ytm-tui-linux-x64.tar.gz
+          - os: ubuntu-22.04-arm
+            name: Linux (arm64)
+            target: aarch64-unknown-linux-gnu
+            bin: ytt
+            archive: ytm-tui-linux-arm64.tar.gz
     steps:
       - uses: actions/checkout@v4
+
+      # native-tls links against the system OpenSSL on Linux, so the runner needs the headers
+      # plus pkg-config to locate them. (macOS/Windows use Security.framework/SChannel —
+      # nothing to install.) The native arm64 runner installs arm64 libssl, so there's no
+      # cross-compilation and no PKG_CONFIG_SYSROOT juggling.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -55,10 +83,17 @@ jobs:
       - name: Release build
         run: cargo build --release --target ${{ matrix.target }}
 
+      # macOS ships a YtmTui.app bundle (icon + Info.plist) next to the bare binary; Linux and
+      # Windows ship the bare binary in a tar.gz / zip.
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
           scripts/package-macos.sh "${{ matrix.target }}" "${{ matrix.archive }}" "${{ matrix.bin }}" "$GITHUB_WORKSPACE"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          tar -czf "${{ matrix.archive }}" -C "target/${{ matrix.target }}/release" "${{ matrix.bin }}"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -67,13 +102,28 @@ jobs:
           Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.bin }}" `
             -DestinationPath "${{ matrix.archive }}"
 
+      # One SHA-256 sidecar per archive in `sha256sum`/`shasum` format (`<hash>  <file>`). bash
+      # runs on all three runners (Git Bash on Windows); sha256sum ships on Linux and
+      # Git-for-Windows while macOS has shasum — so this single step is uniform across the matrix.
+      - name: Checksum
+        shell: bash
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.archive }}" | tee "${{ matrix.archive }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.archive }}" | tee "${{ matrix.archive }}.sha256"
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
-          path: ${{ matrix.archive }}
+          path: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256
 
-  # Attach the per-OS archives to a GitHub Release when a v* tag is pushed.
+  # Attach every archive — plus one combined checksums.txt — to a GitHub Release on a v* tag.
+  # The packaging channels (Homebrew / Scoop / AUR / install.sh) read checksums.txt.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
@@ -84,8 +134,119 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+      - name: Assemble checksums.txt
+        run: cat *.sha256 | sort -k2 > checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            ytm-tui-macos-arm64.tar.gz
-            ytm-tui-windows-x64.zip
+            ytm-tui-*.tar.gz
+            ytm-tui-*.zip
+            checksums.txt
+      # Hand checksums.txt to the packaging jobs as an artifact, so they don't round-trip the
+      # Releases API right after publish (avoids an asset-propagation race).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: checksums.txt
+
+  # --- one-click packaging channels -----------------------------------------------------
+  # Each job renders its packaging/ template from the release checksums and pushes to the
+  # external repo. Each is a clean no-op when its secret is absent (forks, or a tag pushed
+  # before the secrets are set up), so it never fails the run. Secrets + one-time setup are
+  # documented in packaging/README.md.
+
+  publish-homebrew:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: checksums
+      - name: Render formula
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          get() { awk -v f="$1" '$2 == f {print $1}' checksums.txt; }
+          marm="$(get ytm-tui-macos-arm64.tar.gz)"; mx64="$(get ytm-tui-macos-x64.tar.gz)"
+          lx64="$(get ytm-tui-linux-x64.tar.gz)";    larm="$(get ytm-tui-linux-arm64.tar.gz)"
+          for h in "$marm" "$mx64" "$lx64" "$larm"; do
+            [ -n "$h" ] || { echo "::error::missing checksum in checksums.txt"; cat checksums.txt; exit 1; }
+          done
+          sed -e "s/__VERSION__/$ver/g" \
+              -e "s/__SHA_MACOS_ARM64__/$marm/" -e "s/__SHA_MACOS_X64__/$mx64/" \
+              -e "s/__SHA_LINUX_X64__/$lx64/"   -e "s/__SHA_LINUX_ARM64__/$larm/" \
+              packaging/homebrew/ytm-tui.rb.tmpl > ytm-tui.rb
+          echo "--- rendered Formula/ytm-tui.rb ---"; cat ytm-tui.rb
+      - name: Push to homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then echo "TAP_TOKEN unset — skipping Homebrew publish"; exit 0; fi
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/Ochichan/homebrew-tap.git" tap
+          mkdir -p tap/Formula && cp ytm-tui.rb tap/Formula/ytm-tui.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/ytm-tui.rb
+          if git diff --cached --quiet; then echo "formula already up to date"; exit 0; fi
+          git commit -m "ytm-tui ${GITHUB_REF_NAME}"
+          git push
+
+  publish-scoop:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: checksums
+      - name: Render manifest
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          sha="$(awk '$2 == "ytm-tui-windows-x64.zip" {print $1}' checksums.txt)"
+          [ -n "$sha" ] || { echo "::error::missing Windows checksum"; cat checksums.txt; exit 1; }
+          sed -e "s/__VERSION__/$ver/g" -e "s/__SHA_WINDOWS_X64__/$sha/" \
+              packaging/scoop/ytm-tui.json.tmpl > ytm-tui.json
+          echo "--- rendered bucket/ytm-tui.json ---"; cat ytm-tui.json
+      - name: Push to scoop-bucket
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then echo "TAP_TOKEN unset — skipping Scoop publish"; exit 0; fi
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/Ochichan/scoop-bucket.git" bucket
+          mkdir -p bucket/bucket && cp ytm-tui.json bucket/bucket/ytm-tui.json
+          cd bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/ytm-tui.json
+          if git diff --cached --quiet; then echo "manifest already up to date"; exit 0; fi
+          git commit -m "ytm-tui ${GITHUB_REF_NAME}"
+          git push
+
+  publish-aur:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render PKGBUILD
+        run: |
+          sed "s/__VERSION__/${GITHUB_REF_NAME#v}/g" packaging/aur/PKGBUILD.tmpl > PKGBUILD
+          echo "--- rendered PKGBUILD ---"; cat PKGBUILD
+      # The action runs in an Arch container: updpkgsums fills the real checksums, then it
+      # regenerates .SRCINFO and pushes to ssh://aur@aur.archlinux.org/ytm-tui-bin.git.
+      - name: Publish to AUR
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+        with:
+          pkgname: ytm-tui-bin
+          pkgbuild: ./PKGBUILD
+          commit_username: Ochichan
+          commit_email: ohstar94@gmail.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.ref_name }}"
+          updpkgsums: true

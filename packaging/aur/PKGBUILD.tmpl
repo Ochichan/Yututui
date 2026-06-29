@@ -1,0 +1,34 @@
+# Maintainer: Ochichan <ohstar94@gmail.com>
+#
+# Source of truth for the AUR package `ytm-tui-bin`. The `build` workflow substitutes
+# the release version into pkgver on each v* tag; the deploy-aur action then runs
+# `updpkgsums` (replacing the SKIP checksums with the real ones), regenerates .SRCINFO,
+# and pushes to ssh://aur@aur.archlinux.org/ytm-tui-bin.git. Edit this template, not the
+# AUR copy.
+#
+# A -bin package: it reuses the exact x86_64 tarball the release already publishes
+# (ytm-tui-linux-x64.tar.gz, which contains the `ytt` binary), so there is no second
+# build and the bytes match the GitHub release one-to-one.
+pkgname=ytm-tui-bin
+pkgver=__VERSION__
+pkgrel=1
+pkgdesc="Fast, low-RAM YouTube Music player for your terminal (prebuilt binary)"
+arch=('x86_64')
+url="https://github.com/Ochichan/ytm-tui"
+license=('MIT')
+provides=('ytm-tui')
+conflicts=('ytm-tui')
+depends=('mpv' 'yt-dlp' 'ffmpeg')
+optdepends=('xdg-utils: open the current track on the web'
+            'wl-clipboard: copy text on Wayland'
+            'xclip: copy text on X11'
+            'xsel: copy text on X11 (alternative to xclip)')
+source=("$pkgname-$pkgver-x86_64.tar.gz::https://github.com/Ochichan/ytm-tui/releases/download/v$pkgver/ytm-tui-linux-x64.tar.gz"
+        "LICENSE-$pkgver::https://raw.githubusercontent.com/Ochichan/ytm-tui/v$pkgver/LICENSE")
+sha256sums=('SKIP'
+            'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/ytt" "$pkgdir/usr/bin/ytt"
+  install -Dm644 "$srcdir/LICENSE-$pkgver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

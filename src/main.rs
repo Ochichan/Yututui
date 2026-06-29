@@ -4,6 +4,7 @@ mod app;
 mod artwork;
 mod config;
 mod deps;
+mod doctor;
 mod download;
 mod downloads;
 mod eq;
@@ -51,6 +52,7 @@ fn main() -> Result<()> {
                 println!();
                 println!("Usage: ytt [OPTIONS]");
                 println!("       ytt -r <command>     Control a running instance");
+                println!("       ytt doctor           Check your environment and exit");
                 println!();
                 println!("Launch the terminal YouTube Music player.");
                 println!();
@@ -69,6 +71,9 @@ fn main() -> Result<()> {
                 std::process::exit(remote::client::run(&rest));
             }
             "--new-instance" => new_instance = true,
+            // One-shot environment diagnostic; never touches the terminal. Exits with its
+            // own status code (non-zero if a required tool or directory is unusable).
+            "doctor" => std::process::exit(doctor::run()),
             _ => {}
         }
     }
