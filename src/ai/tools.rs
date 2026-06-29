@@ -80,11 +80,21 @@ pub fn declarations() -> Vec<Value> {
         ),
         decl(
             "start_radio",
-            "Start an endless radio: queue tracks related to a seed (defaults to the current track) and turn on autoplay so the queue keeps refilling.",
+            "Start an endless radio: queue tracks related to a seed (defaults to the current track) and turn on autoplay so the queue keeps refilling. When the user describes a *vibe* (e.g. 'chill late-night drive, nothing too poppy'), also set `explore` to how adventurous the station should be and `avoid_artists` for anyone they want kept out — these shape every future refill, not just the first batch.",
             json!({
                 "type": "object",
                 "properties": {
-                    "seed": { "type": "string", "description": "Seed to base the radio on. Defaults to what's playing." }
+                    "seed": { "type": "string", "description": "Seed to base the radio on (an artist, song, or vibe). Defaults to what's playing." },
+                    "explore": {
+                        "type": "string",
+                        "enum": ["tight", "balanced", "wide"],
+                        "description": "How adventurous the station should be: 'tight' = stay close to the seed, 'balanced' = the default mix, 'wide' = lots of discovery. Omit unless the vibe implies one."
+                    },
+                    "avoid_artists": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Artist names to keep out of the station, if the user asked to avoid them."
+                    }
                 },
                 "required": []
             }),
@@ -217,9 +227,24 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
                 .unwrap_or_default();
             cache_all(deps, &songs);
             let count = songs.len();
+            // A vibe-shaped station carries an explore level and/or artists to avoid → persist it
+            // as a profile the engine applies to every refill. A plain "start radio" (no shaping
+            // hints) leaves any existing station untouched.
+            let explore = str_arg(args, "explore");
+            let avoid = str_list_arg(args, "avoid_artists");
+            if explore.is_some() || !avoid.is_empty() {
+                send(
+                    deps,
+                    Msg::AiSetStationProfile {
+                        query: seed.clone(),
+                        explore: explore.clone(),
+                        avoid_artists: avoid,
+                    },
+                );
+            }
             send(deps, Msg::AiEnqueue(songs));
             send(deps, Msg::AiSetAutoplay(true));
-            json!({ "started": true, "seed": seed, "queued": count })
+            json!({ "started": true, "seed": seed, "queued": count, "explore": explore })
         }
 
         "stop_radio" => {
@@ -372,6 +397,21 @@ fn uint_arg(args: &Value, key: &str) -> Option<usize> {
     args.get(key).and_then(Value::as_u64).map(|n| n as usize)
 }
 
+/// Read a string-array argument, trimming and dropping blanks (empty when absent or not an array).
+fn str_list_arg(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn err(msg: &str) -> Value {
     json!({ "error": msg })
 }
@@ -379,6 +419,24 @@ fn err(msg: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn str_list_arg_trims_drops_blanks_and_non_strings() {
+        let args = json!({ "avoid_artists": ["  A  ", "", "B", 7, "  "] });
+        assert_eq!(str_list_arg(&args, "avoid_artists"), vec!["A".to_owned(), "B".to_owned()]);
+        assert!(str_list_arg(&args, "missing").is_empty());
+        assert!(str_list_arg(&json!({ "avoid_artists": "notanarray" }), "avoid_artists").is_empty());
+    }
+
+    #[test]
+    fn start_radio_advertises_vibe_shaping_params() {
+        let decls = declarations();
+        let sr = decls.iter().find(|d| d["name"] == "start_radio").expect("start_radio declared");
+        let props = &sr["parameters"]["properties"];
+        assert!(props.get("explore").is_some(), "explore param advertised");
+        assert!(props.get("avoid_artists").is_some(), "avoid_artists param advertised");
+        assert_eq!(props["explore"]["enum"][0], "tight", "explore is a constrained enum");
+    }
 
     #[test]
     fn all_thirteen_tools_declared() {

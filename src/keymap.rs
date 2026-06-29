@@ -73,6 +73,7 @@ pub enum Action {
     ToggleHelp,
     ToggleAbout,
     ToggleAnimations,
+    WhyAi,
     // Player extras: copy link + external mpv video overlay.
     CopyLink,
     PlayVideo,
@@ -129,6 +130,7 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (Action::ToggleHelp, "toggle_help", "Toggle help", "도움말 켜기 / 끄기"),
     (Action::ToggleAbout, "toggle_about", "About ytm-tui", "ytm-tui 정보"),
     (Action::ToggleAnimations, "toggle_animations", "Toggle animations", "애니메이션 켜기 / 끄기"),
+    (Action::WhyAi, "why_ai", "Why these AI picks", "AI 선곡 이유 보기"),
     (Action::CopyLink, "copy_link", "Copy track link", "트랙 링크 복사"),
     (Action::PlayVideo, "play_video", "Video overlay (mpv)", "영상 오버레이 (mpv)"),
     (Action::ToggleVideoLayout, "toggle_video_layout", "Video size / position", "영상 크기 / 위치"),
@@ -519,6 +521,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Global, A::ToggleHelp, ch('?')),
         (C::Global, A::ToggleAbout, key(KeyCode::F(1))),
         (C::Global, A::ToggleAnimations, ch('A')),
+        (C::Global, A::WhyAi, ch('w')),
         (C::Global, A::Quit, ctrl('q')),
         // Library list commands.
         (C::Library, A::Favorite, ch('f')),

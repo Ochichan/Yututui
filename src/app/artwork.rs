@@ -33,6 +33,7 @@ impl App {
             && (!self.config.animations.pause_unfocused || self.focused)
             && !self.help_visible
             && !self.about_visible
+            && !self.why_ai_visible
     }
 
     /// Whether the "Gemini-tan" mascot on the AI start screen should be dancing right now. True
@@ -93,6 +94,7 @@ impl App {
             | (u8::from(self.dropdowns.radio_open) << 1)
             | (u8::from(self.queue_popup.open) << 2)
             | (u8::from(self.about_visible) << 3)
+            | (u8::from(self.why_ai_visible) << 4)
     }
 
     /// Rebuild the held art into a fresh protocol so the *next* render re-transmits and

@@ -27,6 +27,7 @@ use crate::library::Library;
 use crate::lyrics::LyricLine;
 use crate::player::PlayerCmd;
 use crate::playlists::Playlists;
+use crate::station::StationStore;
 use crate::queue::Queue;
 use crate::radio::{self, CandidateSource, Cooc, RadioMode, StationState};
 use crate::settings::{self, Field, FieldKind, SettingsDraft, SettingsState, SettingsTab};
@@ -61,10 +62,22 @@ pub(crate) const RADIO_FALLBACK_COUNT: usize = 8;
 pub(crate) const RADIO_POOL_COUNT: usize = 40;
 /// How many recent history artists feed the radio cooldown window.
 const RADIO_RECENT_ARTISTS: usize = 12;
+/// How many ordered session outcomes (plays/skips/likes/dislikes) to retain for the AI
+/// reranker's recovery context. Small: the model only needs the recent arc.
+const SESSION_EVENTS_CAP: usize = 20;
 /// Minimum gap between autoplay top-up requests (avoids a request storm).
 const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
 /// Consecutive empty radio extends before autoplay disables itself (circuit breaker).
 const AUTOPLAY_MAX_FAILURES: u8 = 3;
+/// How long a resolved AI rerank ordering stays replayable in [`RadioRuntime::ai_cache`]. Short:
+/// it only needs to catch rapid identical refills (e.g. skipping through a few tracks) before the
+/// candidate pool drifts and a fresh call is warranted anyway.
+const AI_CACHE_TTL: Duration = Duration::from_secs(600);
+/// Trailing skip streak that triggers an off-path feedback summary (the listener is clearly
+/// rejecting the station's direction). Matches the reranker's recovery threshold.
+const FEEDBACK_STREAK: usize = 3;
+/// Minimum gap between feedback summaries, so a long skip streak can't fire one every track.
+const FEEDBACK_COOLDOWN: Duration = Duration::from_secs(120);
 /// How long a transient `status` notification covers the song title before it auto-clears
 /// (on the Player screen the status line replaces the title, so it must not linger).
 const STATUS_TTL: Duration = Duration::from_secs(3);
@@ -125,6 +138,10 @@ pub struct App {
     /// album art) so it draws in any terminal and repaints like plain text — leaving no residue
     /// when the card closes over the view beneath. `RefCell` because render only has `&App`.
     pub about_icon: RefCell<Option<StatefulProtocol>>,
+    /// Whether the "Why AI" overlay is showing. Opened by `Action::WhyAi` (`w`) when the last
+    /// autoplay-radio refill went through the AI reranker; lists why each track was chosen (slot
+    /// role + reason codes + confidence). Esc / `w` / Back dismiss it, like the About card.
+    pub why_ai_visible: bool,
 
     // Playback ----------------------------------------------------------------
     /// Live playback transport: position, duration, pause state, volume, and speed
@@ -172,6 +189,9 @@ pub struct App {
     consecutive_play_errors: u8,
     /// The user's local playlists (the AI playlist tools read/write these).
     pub playlists: Playlists,
+    /// The active natural-language station profile (explore level + avoided artists), distilled
+    /// from a `start_radio` vibe and persisted. Read live by [`App::build_station_state`].
+    pub station: StationStore,
 
     // Search ------------------------------------------------------------------
     /// Search query, results, selection, focus, and in-flight flag.
@@ -241,6 +261,7 @@ impl App {
             confirm_reset_all: false,
             about_visible: false,
             about_icon: RefCell::new(None),
+            why_ai_visible: false,
             playback: Playback {
                 volume: volume.clamp(0, VOLUME_MAX),
                 speed: 1.0,
@@ -270,6 +291,7 @@ impl App {
             radio: RadioRuntime::default(),
             consecutive_play_errors: 0,
             playlists: Playlists::default(),
+            station: StationStore::default(),
             search: SearchState {
                 input: String::new(),
                 select_all: false,
@@ -584,7 +606,7 @@ impl App {
                     self.dirty = true;
                 }
             }
-            Msg::RadioAiPicks { seed_video_id, ids } => {
+            Msg::RadioAiPicks { seed_video_id, picks, conf } => {
                 self.ai.thinking = false;
                 self.dirty = true;
                 // Only consume `pending_rerank` when this result is for it (a stale/duplicate
@@ -600,12 +622,46 @@ impl App {
                     && self.autoplay_radio
                     && self.queue.contains_video_id(&seed_video_id)
                 {
+                    if let Some(conf) = conf {
+                        tracing::debug!(conf, picks = picks.len(), "radio AI rerank confidence");
+                    }
+                    // Resolve the model's opaque cids back to real tracks once, keeping its order. A
+                    // cid that isn't in the pack (a hallucinated id) is dropped here; `merge_ai_picks`
+                    // then re-validates against the shortlist and tops up from the local pick. The
+                    // same resolution feeds the "Why AI" overlay (title + role + reasons), which must
+                    // outlive the `pending_rerank` we're about to drop.
+                    let resolved: Vec<(String, ExplainPick)> = picks
+                        .iter()
+                        .filter_map(|p| {
+                            let vid = pending.cid_map.iter().find(|m| m.cid == p.cid)?.video_id.clone();
+                            let song = pending.shortlist.iter().find(|s| s.video_id == vid)?;
+                            let pick = ExplainPick {
+                                title: song.title.clone(),
+                                artist: song.artist.clone(),
+                                role: p.role.clone(),
+                                reasons: p.reasons.clone(),
+                            };
+                            Some((vid, pick))
+                        })
+                        .collect();
+                    let ids: Vec<String> = resolved.iter().map(|(vid, _)| vid.clone()).collect();
+                    if !resolved.is_empty() {
+                        self.radio.last_explain = Some(RadioAiExplain {
+                            conf,
+                            picks: resolved.into_iter().map(|(_, p)| p).collect(),
+                        });
+                    }
                     let picks = radio::merge_ai_picks(
                         &ids,
                         &pending.shortlist,
                         &pending.local_pick,
                         self.config.radio.ai.picks,
                     );
+                    // Cache the validated ordering so a rapid identical refill replays it without a
+                    // second call. Skip empty results (a failed rerank) so the next refill retries.
+                    if !ids.is_empty() {
+                        self.ai_cache_store(pending.cache_key, ids);
+                    }
                     return self.extend_queue_from_radio(picks);
                 }
             }
@@ -664,6 +720,21 @@ impl App {
                     return self.maybe_autoplay_extend();
                 }
             }
+            Msg::AiSetStationProfile {
+                query,
+                explore,
+                avoid_artists,
+            } => {
+                // Distill the vibe into engine knobs the local radio can actually act on:
+                // adventurousness (→ mode) and artists to keep out (→ banned_artist_keys, read
+                // live in `build_station_state`). Persist both so the station survives a restart.
+                let profile =
+                    crate::station::StationProfile::from_intent(&query, explore.as_deref(), &avoid_artists);
+                self.config.radio.mode = profile.explore.to_mode();
+                self.station.active = Some(profile);
+                self.dirty = true;
+                return vec![Cmd::SaveStationProfile, Cmd::SaveConfig(Box::new(self.config.clone()))];
+            }
             Msg::AiCreatePlaylist(name) => {
                 if self.playlists.create(&name).is_some() {
                     self.dirty = true;
@@ -693,6 +764,18 @@ impl App {
                     self.status.text.clear();
                     let song = self.queue.current().cloned();
                     return self.load_song(song);
+                }
+            }
+            Msg::StationPatch { down_artists, boost_artists } => {
+                // The off-path feedback summary landed (possibly empty on failure) — always clear
+                // the in-flight guard so the next streak can trigger again. Fold the avoid/boost
+                // into the active station and persist only when the avoid list actually changed.
+                self.radio.feedback_in_flight = false;
+                if let Some(profile) = self.station.active.as_mut()
+                    && profile.apply_feedback(&down_artists, &boost_artists)
+                {
+                    self.dirty = true;
+                    return vec![Cmd::SaveStationProfile];
                 }
             }
         }

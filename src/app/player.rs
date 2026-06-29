@@ -197,6 +197,8 @@ impl App {
                         (false, false) => {
                             let now_fav = self.library.toggle_favorite(&song);
                             self.signals.record_like(&song.video_id, &artist_key, now_fav, now);
+                            let comp = self.playback_completion();
+                            self.record_session_event(&artist_key, Outcome::Like, comp);
                             self.dirty = true;
                             return vec![Cmd::SaveLibrary, Cmd::SaveSignals];
                         }
@@ -206,6 +208,8 @@ impl App {
                             self.library.toggle_favorite(&song);
                             self.signals.record_like(&song.video_id, &artist_key, false, now);
                             self.signals.toggle_dislike(&song.video_id, &artist_key, now);
+                            let comp = self.playback_completion();
+                            self.record_session_event(&artist_key, Outcome::Dislike, comp);
                             self.dirty = true;
                             return vec![Cmd::SaveLibrary, Cmd::SaveSignals];
                         }
@@ -375,17 +379,56 @@ impl App {
         let now = signals::unix_now();
         if full {
             self.signals.record_play(&song.video_id, &artist_key, 1.0, now);
+            self.record_session_event(&artist_key, Outcome::FullPlay, 1.0);
         } else {
-            // Unknown position (no progress reported yet) → treat as a weak negative, not a
-            // strong one (the user may have skipped before playback even started).
-            let completion = match (self.playback.time_pos, self.playback.duration) {
-                (Some(t), Some(d)) if d > 0.0 => (t / d).clamp(0.0, 1.0) as f32,
-                _ => 0.5,
-            };
+            let completion = self.playback_completion();
             let scale = self.skip_feedback_scale();
             self.signals.record_skip(&song.video_id, &artist_key, completion, now, scale);
+            // A skip below the strong threshold is a near-instant bail — a louder "wrong way"
+            // cue for the reranker than an ordinary skip.
+            let outcome = if completion < signals::STRONG_SKIP_FRAC {
+                Outcome::QuickSkip
+            } else {
+                Outcome::Skip
+            };
+            self.record_session_event(&artist_key, outcome, completion);
         }
-        vec![Cmd::SaveSignals]
+        let mut cmds = vec![Cmd::SaveSignals];
+        // A skip just landed in the session log — if the listener is rejecting the active
+        // station's direction, this may kick off an off-path feedback summary (self-gated).
+        if let Some(feedback) = self.maybe_summarize_feedback() {
+            cmds.push(feedback);
+        }
+        cmds
+    }
+
+    /// Current track completion ratio in [0,1]. Unknown position (no progress reported yet) →
+    /// `0.5`, a weak negative: the user may have skipped before playback even started, so it
+    /// mustn't read as a strong dislike.
+    pub(in crate::app) fn playback_completion(&self) -> f32 {
+        match (self.playback.time_pos, self.playback.duration) {
+            (Some(t), Some(d)) if d > 0.0 => (t / d).clamp(0.0, 1.0) as f32,
+            _ => 0.5,
+        }
+    }
+
+    /// Push one ordered session outcome (newest at the back), bounded to the last
+    /// [`SESSION_EVENTS_CAP`]. Feeds the AI reranker's recovery context.
+    pub(in crate::app) fn record_session_event(
+        &mut self,
+        artist_key: &str,
+        outcome: Outcome,
+        completion: f32,
+    ) {
+        let buf = &mut self.radio.session_events;
+        buf.push_back(SessionEvent {
+            artist_key: artist_key.to_owned(),
+            outcome,
+            completion,
+        });
+        while buf.len() > SESSION_EVENTS_CAP {
+            buf.pop_front();
+        }
     }
 
     /// How much to trust a skip as a dislike signal: lower early in / in short sessions

@@ -79,12 +79,38 @@ impl App {
             // trips the circuit breaker via `extend_queue_from_radio`).
             return self.extend_queue_from_radio(local_pick);
         }
-        let prompt = self.ai_rerank_prompt(seed_video_id, &shortlist);
+        // Smart gate: skip the AI call when the local pick is already confident and the listener
+        // isn't skipping — saves the spend + latency. `smart_gate=false` restores always-on AI.
+        let skip_streak = self.radio_skip_streak();
+        if !radio::should_call_ai(&shortlist, skip_streak, &self.config.radio.ai) {
+            tracing::debug!(skip_streak, "radio AI gated → confident local pick");
+            return self.extend_queue_from_radio(local_pick);
+        }
+        // Result cache: a rapid identical refill (same seed artist, mode, recent ids, and candidate
+        // set) replays the last resolved ordering instead of spending another call. Keyed on the
+        // query, valued by the AI's chosen video ids (re-validated through `merge_ai_picks`).
+        let cand_ids: Vec<String> = shortlist.iter().map(|c| c.video_id().to_owned()).collect();
+        let cache_key =
+            radio::ai_cache_key(&st.seed_artist_key, st.mode, &st.recent_track_ids, &cand_ids);
+        if let Some(cached_ids) = self.ai_cache_lookup(cache_key) {
+            tracing::debug!("radio AI cache hit → replaying cached order");
+            let shortlist_songs: Vec<Song> = shortlist.iter().map(|c| c.song.clone()).collect();
+            let merged = radio::merge_ai_picks(
+                &cached_ids,
+                &shortlist_songs,
+                &local_pick,
+                self.config.radio.ai.picks,
+            );
+            return self.extend_queue_from_radio(merged);
+        }
+        let (prompt, cid_map) = self.ai_rerank_prompt(seed_video_id, &shortlist, st.mode);
         let shortlist_songs: Vec<Song> = shortlist.into_iter().map(|c| c.song).collect();
         self.radio.pending_rerank = Some(PendingRerank {
             seed_video_id: seed_video_id.to_owned(),
             shortlist: shortlist_songs,
             local_pick,
+            cid_map,
+            cache_key,
         });
         self.ai.thinking = true;
         self.status.text = t!("Autoplay radio: AI reranking", "자동재생 라디오: AI가 순위를 매기는 중").to_owned();
@@ -95,11 +121,39 @@ impl App {
         }]
     }
 
-    /// Compact, ids-only rerank prompt: the recent session context plus the candidate shortlist
-    /// (id + metadata). The model picks ids from this list only — it never sees a track that
-    /// isn't already a playable local candidate.
-    pub(in crate::app) fn ai_rerank_prompt(&self, seed_video_id: &str, shortlist: &[radio::Candidate]) -> String {
-        let mut s = String::from("Session so far (most recent last):\n");
+    /// A cached AI rerank ordering for `key`, if one is stored and still within [`AI_CACHE_TTL`].
+    fn ai_cache_lookup(&self, key: u64) -> Option<Vec<String>> {
+        self.radio
+            .ai_cache
+            .get(&key)
+            .filter(|(_, at)| at.elapsed() < AI_CACHE_TTL)
+            .map(|(ids, _)| ids.clone())
+    }
+
+    /// Store a resolved AI rerank ordering, pruning expired entries first so the map stays tiny.
+    pub(in crate::app) fn ai_cache_store(&mut self, key: u64, ids: Vec<String>) {
+        self.radio.ai_cache.retain(|_, (_, at)| at.elapsed() < AI_CACHE_TTL);
+        self.radio.ai_cache.insert(key, (ids, Instant::now()));
+    }
+
+    /// The compact, evidence-rich rerank prompt plus the `cid → video_id` map for resolving the
+    /// model's choices. The candidate pack ([`radio::pack::build_cands_block`]) emits each track
+    /// as one terse line of 0-100 feature scores under an opaque, shuffled `cid` — so the model
+    /// reranks on evidence, not on title or position. It can only pick cids from this pack, so it
+    /// never sees a track that isn't already a playable local candidate.
+    pub(in crate::app) fn ai_rerank_prompt(
+        &self,
+        seed_video_id: &str,
+        shortlist: &[radio::Candidate],
+        mode: radio::RadioMode,
+    ) -> (String, Vec<radio::PackedCand>) {
+        let picks = self.config.radio.ai.picks;
+        let (cands_block, cid_map) = radio::pack::build_cands_block(shortlist, seed_video_id);
+
+        let mut s = String::new();
+        s.push_str(&format!("TASK|radio_next|n={picks}|mode={mode:?}\n"));
+        s.push_str("RULE|candidate_only=1|json_only=1|ignore_candidate_position=1\n");
+        s.push_str("RECENT (most recent last):\n");
         let labels = self
             .queue
             .current()
@@ -109,21 +163,120 @@ impl App {
         for (role, label) in labels.iter().rev() {
             s.push_str(&format!("- {role}: {label}\n"));
         }
-        s.push_str("\nCandidates (id | title | artist | source):\n");
-        for c in shortlist {
-            s.push_str(&format!(
-                "{} | {} | {} | {:?}\n",
-                c.video_id(),
-                c.song.title,
-                c.song.artist,
-                c.source
+        if let Some(recovery) = self.radio_recovery_line() {
+            s.push_str(&recovery);
+            s.push('\n');
+        }
+        s.push_str(
+            "NOTE|candidates_unordered=1|use_scores_not_order=1|cids_from_CANDS_only=1\n\
+             Scores are 0-100: co=co-occurrence with recent, tr=transition from current, \
+             u=your affinity, nov=novelty, cont=source continuation, comp=completion rate, \
+             m=official-music tier.\n",
+        );
+        s.push_str(&cands_block);
+        s.push_str(&format!(
+            "\nReturn JSON {{\"ids\":[cid,...],\"roles\":[role,...],\"reasons\":[[code,...],...],\
+             \"conf\":0.0}} choosing up to {picks} cids best-first.",
+        ));
+        (s, cid_map)
+    }
+
+    /// A compact `RECOVERY|…` line summarizing how the recent session has been going, or `None`
+    /// when there's nothing actionable. Keys off the *artist* (the engine already excludes the
+    /// just-played track) and the trailing skip streak, so the model can react to the arc: widen
+    /// after a skip, stay close after a like, recover after a streak.
+    pub(in crate::app) fn radio_recovery_line(&self) -> Option<String> {
+        let events = &self.radio.session_events;
+        let last_skip =
+            events.iter().rev().find(|e| matches!(e.outcome, Outcome::Skip | Outcome::QuickSkip));
+        let last_like = events.iter().rev().find(|e| e.outcome == Outcome::Like);
+        let last_dislike = events.iter().rev().find(|e| e.outcome == Outcome::Dislike);
+        let streak = self.radio_skip_streak();
+
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(s) = last_skip {
+            let quick = if s.outcome == Outcome::QuickSkip { ",quick" } else { "" };
+            parts.push(format!(
+                "last_skip={}({}%{quick})",
+                s.artist_key,
+                (s.completion * 100.0).round() as i32
             ));
         }
-        s.push_str(&format!(
-            "\nReturn JSON {{\"ids\":[...]}} with up to {} candidate ids in the best listening order.",
-            self.config.radio.ai.picks
-        ));
-        s
+        if let Some(l) = last_like {
+            parts.push(format!("last_like={}", l.artist_key));
+        }
+        if let Some(d) = last_dislike {
+            parts.push(format!("disliked={}", d.artist_key));
+        }
+        if streak >= 2 {
+            parts.push(format!("skip_streak={streak}"));
+        }
+        (!parts.is_empty()).then(|| format!("RECOVERY|{}", parts.join("|")))
+    }
+
+    /// How many of the most recent session outcomes were skips, counting back from the newest
+    /// until the first non-skip. `0` means the last track played through (the user is content).
+    pub(in crate::app) fn radio_skip_streak(&self) -> usize {
+        self.radio
+            .session_events
+            .iter()
+            .rev()
+            .take_while(|e| matches!(e.outcome, Outcome::Skip | Outcome::QuickSkip))
+            .count()
+    }
+
+    /// Off the hot path: when the listener has clearly been rejecting the active station's
+    /// direction (a trailing skip streak), hand the recent session log to the assistant to distill
+    /// into an artist avoid/boost patch ([`Cmd::SummarizeFeedback`] → [`Msg::StationPatch`]).
+    /// Returns `None` (a no-op) unless every gate passes: there's an active station to refine, the
+    /// AI is configured, no summary is already in flight, the skip streak has reached
+    /// [`FEEDBACK_STREAK`], the cooldown has elapsed, and the digest is non-empty. Sets the
+    /// in-flight + cooldown guards so it fires at most once per streak/window.
+    pub(in crate::app) fn maybe_summarize_feedback(&mut self) -> Option<Cmd> {
+        if self.station.active.is_none() || !self.ai.available || self.radio.feedback_in_flight {
+            return None;
+        }
+        if self.radio_skip_streak() < FEEDBACK_STREAK {
+            return None;
+        }
+        if let Some(at) = self.radio.last_feedback_at
+            && at.elapsed() < FEEDBACK_COOLDOWN
+        {
+            return None;
+        }
+        let digest = self.feedback_digest()?;
+        self.radio.feedback_in_flight = true;
+        self.radio.last_feedback_at = Some(Instant::now());
+        tracing::debug!("radio feedback summary dispatched");
+        Some(Cmd::SummarizeFeedback { digest })
+    }
+
+    /// Render the active station and its recent session outcomes into the compact digest the
+    /// feedback summarizer reads. `None` when there's no station or no events to summarize. The
+    /// `STATION`/`ALREADY_AVOIDING` lines anchor the model to *this* station; the `SESSION` lines
+    /// are the recent arc (oldest first), each naming the artist key and what happened.
+    fn feedback_digest(&self) -> Option<String> {
+        let profile = self.station.active.as_ref()?;
+        if self.radio.session_events.is_empty() {
+            return None;
+        }
+        let mut s = String::new();
+        s.push_str(&format!("STATION|vibe={}|explore={:?}\n", profile.query, profile.explore));
+        if !profile.avoid_artist_keys.is_empty() {
+            s.push_str(&format!("ALREADY_AVOIDING|{}\n", profile.avoid_artist_keys.join(",")));
+        }
+        s.push_str("SESSION (oldest first):\n");
+        for e in &self.radio.session_events {
+            let outcome = match e.outcome {
+                Outcome::FullPlay => "played",
+                Outcome::Skip => "skipped",
+                Outcome::QuickSkip => "skipped_fast",
+                Outcome::Like => "liked",
+                Outcome::Dislike => "disliked",
+            };
+            s.push_str(&format!("- {}: {}\n", e.artist_key, outcome));
+        }
+        Some(s)
     }
 
     pub(in crate::app) fn radio_context_labels(&self, current: &Song) -> Vec<(&'static str, String)> {
@@ -300,8 +453,18 @@ impl App {
             recent_track_ids,
             recent_artist_keys,
             banned_track_ids: HashSet::new(),
-            banned_artist_keys: HashSet::new(),
+            // The active natural-language station's avoided artists are kept out of every refill.
+            banned_artist_keys: self.station.avoid_artist_keys().into_iter().collect(),
             favorite_artist_keys,
+        }
+    }
+
+    /// Sync the active station profile's adventurousness onto the live engine mode. The avoid
+    /// list is read live in [`App::build_station_state`], so only the mode needs applying here
+    /// (called at startup after the persisted profile loads).
+    pub(crate) fn apply_station_profile(&mut self) {
+        if let Some(profile) = &self.station.active {
+            self.config.radio.mode = profile.explore.to_mode();
         }
     }
 

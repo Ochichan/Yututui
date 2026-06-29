@@ -101,6 +101,22 @@ impl App {
             return Vec::new();
         }
 
+        // The "Why AI" overlay behaves like the About card: while it's up, swallow input; its own
+        // toggle (`w`) / Esc / Back dismiss it, and Quit still works.
+        if self.why_ai_visible {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return self.quit_app();
+            }
+            let close = matches!(self.keymap.global_action(chord), Some(Action::WhyAi))
+                || k.code == KeyCode::Esc
+                || matches!(self.keymap.action(KeyContext::Common, chord), Some(Action::Back));
+            if close {
+                self.why_ai_visible = false;
+                self.dirty = true;
+            }
+            return Vec::new();
+        }
+
         // Global shortcuts (help, radio). Suppressed only when a *typeable* key would feed
         // a focused text field — so `?` types into the search box but opens help elsewhere,
         // while Ctrl-based globals (radio) keep working everywhere as before.
@@ -115,6 +131,19 @@ impl App {
                 }
                 Action::ToggleAbout => {
                     self.about_visible = true;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+                Action::WhyAi => {
+                    // Only worth an overlay if a prior AI rerank left something to explain;
+                    // otherwise nudge the user with a transient note instead of an empty card.
+                    if self.radio.last_explain.is_some() {
+                        self.why_ai_visible = true;
+                    } else {
+                        self.status.kind = StatusKind::Info;
+                        self.status.text =
+                            t!("No AI radio picks to explain yet.", "아직 설명할 AI 라디오 선곡이 없어요.").to_owned();
+                    }
                     self.dirty = true;
                     return Vec::new();
                 }

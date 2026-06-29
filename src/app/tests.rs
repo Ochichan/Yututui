@@ -1607,16 +1607,194 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
 
     let (seed_id, prompt) = ai_rerank(&cmds).expect("an AI rerank command");
     assert_eq!(seed_id, "id0");
-    // Session context (current + the two previous tracks).
+    // Compact protocol header + candidate pack.
+    assert!(prompt.contains("TASK|radio_next"));
+    assert!(prompt.contains("CANDS"));
+    // Recent session context (current + the two previous tracks).
     assert!(prompt.contains("- Current: t0 — a"));
     assert!(prompt.contains("- Previous 1: previous one — artist a"));
     assert!(prompt.contains("- Previous 2: previous two — artist b"));
-    // The exact candidate ids the model may choose from.
-    assert!(prompt.contains("cand1"));
-    assert!(prompt.contains("cand2"));
+    // Candidates appear by title under opaque cids; the raw video ids stay hidden so the
+    // model can't read rank off them.
+    assert!(prompt.contains("Track One"));
+    assert!(prompt.contains("Track Two"));
+    assert!(!prompt.contains("cand1"), "raw video ids must not leak into the pack");
     assert!(app.ai.thinking, "the rerank is in flight");
     assert!(app.radio.pending_rerank.is_some(), "shortlist + local pick stashed for validation");
     assert!(!app.radio.pending, "the pool fetch is done");
+}
+
+#[test]
+fn smart_gate_skips_the_ai_call_and_enqueues_the_local_pick() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0); // current id0, remaining 0 → a refill is due
+    app.ai.available = true;
+    app.autoplay_radio = true;
+    // smart_gate is on by default; `ambiguity_gap = 0.0` makes a non-empty top-two gap always
+    // count as "confident" → the gate never spends a call when the listener isn't skipping.
+    app.config.radio.ai.smart_gate = true;
+    app.config.radio.ai.ambiguity_gap = 0.0;
+
+    let before = app.queue.len();
+    let src = CandidateSource::YtdlpRadio;
+    let cmds = app.update(Msg::RadioResults {
+        seed_video_id: "id0".to_owned(),
+        candidates: vec![
+            (Song::remote("cand1", "Track One", "band one", "3:00"), src),
+            (Song::remote("cand2", "Track Two", "band two", "3:10"), src),
+            (Song::remote("cand3", "Track Three", "band three", "3:20"), src),
+        ],
+    });
+
+    assert!(ai_rerank(&cmds).is_none(), "gated: no AI rerank command spent");
+    assert!(!app.ai.thinking, "gated path never marks the assistant as thinking");
+    assert!(app.radio.pending_rerank.is_none(), "gated path stashes nothing to validate");
+    assert!(app.queue.len() > before, "gated refill enqueues the local pick directly");
+}
+
+#[test]
+fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0); // current id0
+    app.ai.available = true;
+    app.autoplay_radio = true;
+    // Force the call through the gate so this exercises the cache, not the smart gate.
+    app.config.radio.ai.ambiguity_gap = 1.0;
+
+    let src = CandidateSource::YtdlpRadio;
+    let candidates = vec![
+        (Song::remote("cand1", "Track One", "band one", "3:00"), src),
+        (Song::remote("cand2", "Track Two", "band two", "3:10"), src),
+        (Song::remote("cand3", "Track Three", "band three", "3:20"), src),
+    ];
+
+    // First refill misses the cache → an AI call goes out, the rerank is stashed, and (on the AI
+    // path) the queue is left untouched, so the next refill recomputes the *same* cache key.
+    let cmds = app.update(Msg::RadioResults {
+        seed_video_id: "id0".to_owned(),
+        candidates: candidates.clone(),
+    });
+    assert!(ai_rerank(&cmds).is_some(), "first refill spends a call");
+    let pending = app.radio.pending_rerank.as_ref().expect("rerank stashed");
+    let key = pending.cache_key;
+    let cached_id = pending.cid_map[0].video_id.clone(); // a real shortlist track
+
+    // Seed the cache as if that rerank had resolved to `cached_id`, then clear the in-flight flags
+    // (queue/history untouched → the next identical refill keys to the same entry).
+    app.ai_cache_store(key, vec![cached_id.clone()]);
+    app.radio.pending_rerank = None;
+    app.ai.thinking = false;
+    app.radio.pending = false;
+    app.radio.last_extend = None;
+
+    // Second identical refill hits the cache → no call; the cached ordering is enqueued directly.
+    let cmds = app.update(Msg::RadioResults {
+        seed_video_id: "id0".to_owned(),
+        candidates,
+    });
+    assert!(ai_rerank(&cmds).is_none(), "cache hit: no second AI call");
+    assert!(!app.ai.thinking, "cache hit never marks the assistant as thinking");
+    assert!(app.radio.pending_rerank.is_none(), "cache hit stashes nothing to validate");
+    assert!(app.queue.contains_video_id(&cached_id), "cached ordering enqueued");
+}
+
+#[test]
+fn ai_set_station_profile_applies_mode_and_avoids_artists() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0); // current id0
+
+    let cmds = app.update(Msg::AiSetStationProfile {
+        query: "rainy day".to_owned(),
+        explore: Some("tight".to_owned()),
+        avoid_artists: vec!["Nickelback".to_owned()],
+    });
+
+    // The explore level drives the live engine mode, and the profile is stashed for persistence.
+    assert_eq!(app.config.radio.mode, crate::radio::RadioMode::Focused);
+    assert_eq!(app.station.active.as_ref().expect("station stashed").query, "rainy day");
+    // Both the station and the (now-mode-changed) config are persisted.
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+
+    // The avoided artist flows into the station state every refill reads.
+    let st = app.build_station_state("id0");
+    let want = crate::signals::normalize_artist("Nickelback");
+    assert!(st.banned_artist_keys.contains(&want), "avoided artist is banned in refills");
+}
+
+#[test]
+fn a_plain_start_radio_without_hints_leaves_no_station() {
+    // The reducer only stamps a profile when the tool passes shaping hints; this asserts the
+    // engine default holds when none are given (the tool simply omits the AiSetStationProfile msg).
+    let app = app_playing(1, 0);
+    assert!(app.station.active.is_none());
+    assert!(app.build_station_state("id0").banned_artist_keys.is_empty());
+}
+
+#[test]
+fn station_patch_folds_feedback_into_avoid_list_and_clears_inflight() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.station.active = Some(crate::station::StationProfile::from_intent("late night", Some("wide"), &[]));
+    app.radio.feedback_in_flight = true;
+
+    let cmds = app.update(Msg::StationPatch {
+        down_artists: vec!["Nickelback".to_owned()],
+        boost_artists: vec![],
+    });
+
+    // The in-flight guard always clears so the next streak can fire again.
+    assert!(!app.radio.feedback_in_flight, "in-flight guard cleared on patch");
+    // The down-voted artist is now avoided in every refill, and the change is persisted.
+    let want = crate::signals::normalize_artist("Nickelback");
+    assert!(app.station.active.as_ref().unwrap().avoid_artist_keys.contains(&want));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)));
+}
+
+#[test]
+fn empty_station_patch_clears_inflight_without_persisting() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.station.active = Some(crate::station::StationProfile::from_intent("q", None, &[]));
+    app.radio.feedback_in_flight = true;
+
+    // An empty patch (the off-path summary failed or found nothing) still clears the guard, but a
+    // no-op change must not trigger a pointless save.
+    let cmds = app.update(Msg::StationPatch { down_artists: vec![], boost_artists: vec![] });
+    assert!(!app.radio.feedback_in_flight);
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)), "no save on a no-op patch");
+}
+
+#[test]
+fn feedback_summary_fires_once_per_skip_streak_when_gated_open() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.ai.available = true;
+    app.station.active = Some(crate::station::StationProfile::from_intent("drive", Some("balanced"), &[]));
+    // A trailing skip streak at the trigger threshold (FEEDBACK_STREAK = 3).
+    for _ in 0..3 {
+        app.record_session_event("some artist", Outcome::QuickSkip, 0.05);
+    }
+
+    // First call past the gate: dispatches a summary and arms the in-flight guard.
+    let cmd = app.maybe_summarize_feedback();
+    assert!(matches!(cmd, Some(Cmd::SummarizeFeedback { .. })), "streak + active station → summary");
+    assert!(app.radio.feedback_in_flight);
+    // A second call while one is in flight is a no-op (single-flight).
+    assert!(app.maybe_summarize_feedback().is_none(), "in-flight guard suppresses duplicates");
+}
+
+#[test]
+fn feedback_summary_is_skipped_without_an_active_station() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.ai.available = true;
+    for _ in 0..3 {
+        app.record_session_event("x", Outcome::Skip, 0.1);
+    }
+    // No station to refine → nothing to learn, so no call (and no guard armed).
+    assert!(app.maybe_summarize_feedback().is_none());
+    assert!(!app.radio.feedback_in_flight);
 }
 
 #[test]
@@ -1635,12 +1813,21 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
             Song::remote("s2", "S2", "b", "3:00"),
             Song::remote("s1", "S1", "a", "3:00"),
         ],
+        cid_map: vec![
+            crate::radio::PackedCand { cid: "c1".to_owned(), video_id: "s1".to_owned() },
+            crate::radio::PackedCand { cid: "c2".to_owned(), video_id: "s2".to_owned() },
+        ],
+        cache_key: 0,
     });
 
-    // AI returns one valid id + one hallucinated id (dropped); the gap tops up from local.
+    // AI picks one valid cid + one hallucinated cid (dropped); the gap tops up from local.
     app.update(Msg::RadioAiPicks {
         seed_video_id: "id0".to_owned(),
-        ids: vec!["s1".to_owned(), "HALLUCINATED".to_owned()],
+        picks: vec![
+            AiPick { cid: "c1".to_owned(), role: Some("core".to_owned()), reasons: vec!["u".to_owned()] },
+            AiPick { cid: "HALLUCINATED".to_owned(), role: None, reasons: vec![] },
+        ],
+        conf: Some(0.8),
     });
 
     assert!(!app.ai.thinking, "rerank finished");
@@ -1660,15 +1847,114 @@ fn radio_ai_picks_for_a_stale_seed_are_ignored() {
         seed_video_id: "current-seed".to_owned(),
         shortlist: vec![Song::remote("s1", "S1", "a", "3:00")],
         local_pick: vec![Song::remote("s1", "S1", "a", "3:00")],
+        cid_map: vec![crate::radio::PackedCand { cid: "c1".to_owned(), video_id: "s1".to_owned() }],
+        cache_key: 0,
     });
 
     // A result for a different (older) seed must not consume the in-flight rerank.
     app.update(Msg::RadioAiPicks {
         seed_video_id: "old-seed".to_owned(),
-        ids: vec!["s1".to_owned()],
+        picks: vec![AiPick { cid: "c1".to_owned(), role: None, reasons: vec![] }],
+        conf: None,
     });
     assert!(app.radio.pending_rerank.is_some(), "stale result leaves the current rerank intact");
     assert!(!app.queue.contains_video_id("s1"));
+}
+
+#[test]
+fn why_ai_overlay_explains_the_last_ai_rerank() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(2, 0); // queue id0 (current), id1
+    app.ai.available = true;
+    app.autoplay_radio = true;
+    app.ai.thinking = true;
+    app.radio.pending_rerank = Some(PendingRerank {
+        seed_video_id: "id0".to_owned(),
+        shortlist: vec![
+            Song::remote("s1", "First Song", "Artist One", "3:00"),
+            Song::remote("s2", "Second Song", "Artist Two", "3:00"),
+        ],
+        local_pick: vec![Song::remote("s2", "Second Song", "Artist Two", "3:00")],
+        cid_map: vec![
+            crate::radio::PackedCand { cid: "c1".to_owned(), video_id: "s1".to_owned() },
+            crate::radio::PackedCand { cid: "c2".to_owned(), video_id: "s2".to_owned() },
+        ],
+        cache_key: 0,
+    });
+
+    app.update(Msg::RadioAiPicks {
+        seed_video_id: "id0".to_owned(),
+        picks: vec![
+            AiPick {
+                cid: "c1".to_owned(),
+                role: Some("bridge".to_owned()),
+                reasons: vec!["tr".to_owned(), "u".to_owned()],
+            },
+            AiPick { cid: "c2".to_owned(), role: Some("core".to_owned()), reasons: vec!["co".to_owned()] },
+        ],
+        conf: Some(0.75),
+    });
+
+    // The explanation is stashed, with cids resolved to real tracks in the model's order.
+    let explain = app.radio.last_explain.as_ref().expect("explanation stashed for the overlay");
+    assert_eq!(explain.conf, Some(0.75));
+    assert_eq!(explain.picks.len(), 2);
+    assert_eq!(explain.picks[0].title, "First Song");
+    assert_eq!(explain.picks[0].artist, "Artist One");
+    assert_eq!(explain.picks[0].role.as_deref(), Some("bridge"));
+    assert_eq!(explain.picks[0].reasons, vec!["tr", "u"]);
+    assert_eq!(explain.picks[1].title, "Second Song");
+
+    // `w` opens the overlay; `w` again dismisses it.
+    assert!(!app.why_ai_visible);
+    app.update(Msg::Key(key(KeyCode::Char('w'))));
+    assert!(app.why_ai_visible, "w opens the Why-AI overlay");
+    app.update(Msg::Key(key(KeyCode::Char('w'))));
+    assert!(!app.why_ai_visible, "w again dismisses it");
+}
+
+#[test]
+fn why_ai_without_a_rerank_shows_a_note_not_an_overlay() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(2, 0);
+    app.status.text.clear();
+    assert!(app.radio.last_explain.is_none());
+
+    app.update(Msg::Key(key(KeyCode::Char('w'))));
+    assert!(!app.why_ai_visible, "no overlay opens without a prior AI rerank");
+    assert!(!app.status.text.is_empty(), "a transient note is shown instead");
+}
+
+#[test]
+fn why_ai_overlay_renders_the_resolved_picks() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(2, 0);
+    app.radio.last_explain = Some(RadioAiExplain {
+        conf: Some(0.82),
+        picks: vec![
+            ExplainPick {
+                title: "Bridge Track".to_owned(),
+                artist: "Some Artist".to_owned(),
+                role: Some("bridge".to_owned()),
+                reasons: vec!["tr".to_owned(), "u".to_owned()],
+            },
+            ExplainPick {
+                title: "Core Track".to_owned(),
+                artist: "Another Artist".to_owned(),
+                role: Some("core".to_owned()),
+                reasons: vec![],
+            },
+        ],
+    });
+    app.why_ai_visible = true;
+
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap(); // must not panic
+    let buf = terminal.backend().buffer().clone();
+    let text: String = buf.content().iter().map(|c| c.symbol().to_owned()).collect();
+    assert!(text.contains("Bridge Track"), "overlay shows the first resolved track");
+    assert!(text.contains("Core Track"), "overlay shows the second resolved track");
 }
 
 #[test]

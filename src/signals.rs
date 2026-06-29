@@ -26,7 +26,7 @@ const COMPLETE_FRAC: f32 = 0.90;
 /// Skip-completion band edges (fraction of the track heard before the skip). Tuned from
 /// recsys research: a large share of skips land in the first seconds (a real rejection),
 /// while a late skip is effectively a full listen (no penalty).
-const STRONG_SKIP_FRAC: f32 = 0.10;
+pub const STRONG_SKIP_FRAC: f32 = 0.10;
 const MODERATE_SKIP_FRAC: f32 = 0.40;
 const WEAK_SKIP_FRAC: f32 = 0.75;
 

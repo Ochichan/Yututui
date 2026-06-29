@@ -125,6 +125,28 @@ pub struct GenerateContentResponse {
     pub candidates: Vec<Candidate>,
     #[serde(default)]
     pub prompt_feedback: Option<PromptFeedback>,
+    /// Token accounting for cost logging (see [`crate::ai::usage`]). Absent on error bodies.
+    #[serde(default)]
+    pub usage_metadata: Option<UsageMetadata>,
+}
+
+/// Gemini's per-response token counts. All optional/defaulted — the API omits zero fields and
+/// older responses may not carry every counter.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageMetadata {
+    #[serde(default)]
+    pub prompt_token_count: u32,
+    #[serde(default)]
+    pub candidates_token_count: u32,
+    #[serde(default)]
+    pub total_token_count: u32,
+    /// Thinking tokens (0 when thinking is off, as for the rerank path).
+    #[serde(default)]
+    pub thoughts_token_count: u32,
+    /// Tokens served from a context cache (billed at a discount).
+    #[serde(default)]
+    pub cached_content_token_count: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +208,10 @@ impl GenerateContentResponse {
 
     pub fn block_reason(&self) -> Option<&str> {
         self.prompt_feedback.as_ref()?.block_reason.as_deref()
+    }
+
+    pub fn usage(&self) -> Option<&UsageMetadata> {
+        self.usage_metadata.as_ref()
     }
 }
 

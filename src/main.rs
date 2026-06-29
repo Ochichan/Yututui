@@ -19,6 +19,7 @@ mod radio;
 mod resolver;
 mod settings;
 mod signals;
+mod station;
 mod theme;
 mod tui;
 mod ui;
@@ -165,6 +166,9 @@ async fn run(
     app.restore_last_played_from_library();
     // Load local playlists (the AI playlist tools read/write these).
     app.playlists = playlists::Playlists::load();
+    // Load the active natural-language station profile (explore level + avoided artists), if any.
+    app.station = station::StationStore::load();
+    app.apply_station_profile();
     // Push persisted playback/EQ settings (preset, bands, normalize, speed, autoplay).
     app.apply_config(&cfg);
 
@@ -368,6 +372,11 @@ async fn run(
                         tracing::warn!(error = %e, "failed to save playlists");
                     }
                 }
+                Cmd::SaveStationProfile => {
+                    if let Err(e) = app.station.save() {
+                        tracing::warn!(error = %e, "failed to save station profile");
+                    }
+                }
                 Cmd::AskAi { prompt, context } => {
                     if let Some(h) = &ai_handle {
                         h.ask(prompt, context);
@@ -376,6 +385,11 @@ async fn run(
                 Cmd::AiRerank { seed_video_id, prompt } => {
                     if let Some(h) = &ai_handle {
                         h.rerank(seed_video_id, prompt);
+                    }
+                }
+                Cmd::SummarizeFeedback { digest } => {
+                    if let Some(h) = &ai_handle {
+                        h.summarize_feedback(digest);
                     }
                 }
                 Cmd::RadioFallback {

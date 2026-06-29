@@ -239,6 +239,23 @@ pub struct RadioRuntime {
     pub pending_rerank: Option<PendingRerank>,
     /// Consecutive empty radio extends, for the autoplay circuit breaker.
     pub consecutive_failures: u8,
+    /// The last AI rerank's resolved explanation (picks → role + reasons + confidence), stashed
+    /// when `Msg::RadioAiPicks` resolves so the "Why AI" overlay (`w`) can show why these tracks
+    /// were chosen. `None` until the first AI rerank lands.
+    pub last_explain: Option<RadioAiExplain>,
+    /// Ordered recent listening outcomes (plays / skips / likes / dislikes), newest at the back,
+    /// bounded to the last [`SESSION_EVENTS_CAP`]. Drives the reranker's recovery context.
+    pub session_events: std::collections::VecDeque<SessionEvent>,
+    /// TTL cache of resolved AI rerank orderings, keyed by [`radio::ai_cache_key`]. Each value is
+    /// the AI's chosen `video_id` ordering plus when it was stored; a rapid identical refill
+    /// replays it instead of spending another call. Pruned by TTL on every insert (stays tiny).
+    pub ai_cache: HashMap<u64, (Vec<String>, Instant)>,
+    /// True while an off-path feedback summary is handed off to the assistant actor, awaiting its
+    /// `Msg::StationPatch`. A single-flight guard so a skip streak can't fan out duplicate calls.
+    pub feedback_in_flight: bool,
+    /// When the last feedback summary was dispatched, for the cooldown between summaries (a skip
+    /// streak shouldn't trigger one every track). `None` until the first summary fires.
+    pub last_feedback_at: Option<Instant>,
 }
 
 /// Library-screen state: the active tab, the list cursor and its multi-select anchor, the

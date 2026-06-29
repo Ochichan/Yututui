@@ -43,8 +43,29 @@ impl CandidateSource {
     }
 }
 
-/// A ranking candidate. `base_score`/`novelty` are filled in by the scoring pass; the rest
-/// is set at construction.
+/// Per-feature normalized scores retained from the scoring pass so the AI reranker can see
+/// the *evidence* behind a candidate (not just its collapsed `base_score`). Each field is in
+/// [0,1] (`music_tier`/`version_penalty` are the raw [0,1] signals; the rest are min-max
+/// normalized across the batch). Filled by [`super::score::filter_and_score`]; default-zero
+/// until then. Emitted as 0-100 integers in the compact candidate pack.
+#[allow(dead_code, reason = "read by the AI candidate pack builder in src/radio/pack.rs (A2/A3)")]
+#[derive(Debug, Clone, Default)]
+pub struct FeatureScores {
+    pub cooc: f32,
+    pub seed_affinity: f32,
+    pub novelty: f32,
+    pub continuation: f32,
+    pub completion: f32,
+    pub music_tier: f32,
+    pub version_penalty: f32,
+    /// How naturally this candidate follows the *immediately-preceding* (seed) track —
+    /// distinct from `cooc`, which spans the whole recent window. Evidence-only: it does NOT
+    /// feed `base_score`.
+    pub transition: f32,
+}
+
+/// A ranking candidate. `base_score`/`novelty`/`features` are filled in by the scoring pass;
+/// the rest is set at construction.
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub song: Song,
@@ -67,6 +88,10 @@ pub struct Candidate {
     pub duration_secs: Option<u32>,
     pub base_score: f32,
     pub novelty: f32,
+    /// Per-feature evidence for the AI reranker (see [`FeatureScores`]). Filled by the
+    /// scoring pass; default-zero until then.
+    #[allow(dead_code, reason = "read by the AI candidate pack builder in src/radio/pack.rs (A2/A3)")]
+    pub features: FeatureScores,
 }
 
 impl Candidate {
@@ -89,6 +114,7 @@ impl Candidate {
             duration_secs,
             base_score: 0.0,
             novelty: 0.0,
+            features: FeatureScores::default(),
         }
     }
 

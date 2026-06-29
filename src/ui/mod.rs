@@ -39,6 +39,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.about_visible {
         views::about::render(frame, app, area);
     }
+    // The "Why AI" card explains the last AI radio refill (`w`); also drawn on top.
+    if app.why_ai_visible {
+        views::why_ai::render(frame, app, area);
+    }
     // A keybinding-conflict warning (Keys tab) is modal — it sits above everything else.
     if let Some(conflict) = &app.key_conflict {
         views::settings::render_conflict(frame, app, area, conflict);

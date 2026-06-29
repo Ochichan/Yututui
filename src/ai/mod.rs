@@ -19,6 +19,7 @@
 pub mod client;
 pub mod model;
 pub mod tools;
+pub mod usage;
 
 pub use model::GeminiModel;
 
@@ -29,7 +30,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{sleep, timeout};
 
 use crate::api::Song;
-use crate::app::{AiContext, Msg};
+use crate::app::{AiContext, AiPick, Msg};
 use client::{
     Content, GeminiClient, GeminiError, GenerateContentRequest, GenerationConfig, Part,
     ThinkingConfig, Tool,
@@ -46,16 +47,64 @@ const RATE_WINDOW: Duration = Duration::from_secs(60);
 const RERANK_TIMEOUT: Duration = Duration::from_secs(9);
 /// Pure selection task → low variance.
 const RERANK_TEMPERATURE: f64 = 0.1;
-/// Thinking is off, but a ~12-id JSON array still needs headroom (a 64-token cap truncates to
-/// `MAX_TOKENS`).
-const RERANK_MAX_TOKENS: u32 = 512;
+/// Thinking is off, but the enriched reply (ids + roles + per-pick reason codes) needs headroom;
+/// a tight cap truncates the JSON to `MAX_TOKENS` and loses the picks.
+const RERANK_MAX_TOKENS: u32 = 768;
 const RERANK_SYSTEM_PROMPT: &str = "\
-You are RadioNext, a JSON-only radio reranker for a music player. You are given the recent \
-listening session (a seed track plus the last few played) and a list of candidate tracks, \
-each with an id. Rank the candidates into the best radio continuation: keep the flow coherent \
-with the seed, avoid repeating the same artist back-to-back, and shape a pleasant arc. Choose \
-ONLY from the given candidate ids — never invent or alter an id. Respond with JSON \
-{\"ids\":[...]} listing the chosen ids best-first, and nothing else.";
+You are RadioNext, a JSON-only radio reranker for a music player.
+
+Input: a few header/context lines (TASK, RULE, RECENT — the recent session, most recent last), \
+then a CANDS block with one candidate per line:
+  cid|a=artist|t=title|src=source|co=..|tr=..|u=..|nov=..|cont=..|comp=..|m=..|ver=version
+The cid is an opaque id. The numbers are 0-100 evidence scores already computed for you — use \
+them, do not recompute: co=co-occurrence with the recent session, tr=transition fit from the \
+current track, u=the listener's affinity, nov=novelty, cont=continuation of the current source, \
+comp=typical completion rate, m=official-music tier. ver is the version (song/live/remix/cover/\
+acoustic/instrumental).
+
+Rules:
+- The CANDS are UNORDERED. Ignore their line position; rank purely on the evidence.
+- Pick ONLY cids that appear in CANDS — never invent, alter, or merge a cid.
+- Shape a pleasant arc slot by slot: open with a bridge that flows from the current track \
+(high tr), settle into core picks the listener will love (high co/u/m), weave in adjacent \
+choices and a little discovery (higher nov) so it doesn't stagnate. Avoid the same artist \
+back-to-back. Prefer official songs over live/remix/cover unless one clearly fits.
+- If a RECOVERY line is present, adapt to it: after last_skip=<artist>, steer away from that \
+artist and lean wider (favor higher nov); after last_like=<artist>, stay in that lane but not \
+the exact same artist back-to-back; avoid any disliked=<artist> entirely; on skip_streak>=3, \
+make the FIRST pick a recovery role — a safe, high-affinity (high u), high-completion (high \
+comp) track to win the listener back.
+
+Output ONLY this JSON, nothing else:
+{\"ids\":[cid,...],\"roles\":[role,...],\"reasons\":[[code,...],...],\"conf\":0.0}
+- ids: chosen cids best-first (up to the requested n).
+- roles: parallel to ids, each one of core|bridge|adjacent|discovery|stabilizer|recovery.
+- reasons: parallel to ids, each a short list of the score codes that justified it, e.g. \
+[\"tr\",\"u\"].
+- conf: your overall confidence in [0,1].";
+
+/// Feedback summary is off the hot path but still shouldn't hang; reuse the reranker's budget.
+const FEEDBACK_TIMEOUT: Duration = Duration::from_secs(9);
+/// Two short string arrays — a tight cap is plenty.
+const FEEDBACK_MAX_TOKENS: u32 = 256;
+const FEEDBACK_SYSTEM_PROMPT: &str = "\
+You are StationTuner, a JSON-only feedback summarizer for a music radio station.
+
+Input: a STATION line (the station's vibe), an optional ALREADY_AVOIDING line, and a SESSION \
+log of recent outcomes (played / liked / skipped / skipped_fast / disliked), most recent last. \
+Each line names an artist key.
+
+Decide, for THIS station only:
+- down_artists: artists the listener clearly dislikes here — repeatedly skipped, skipped almost \
+immediately (skipped_fast), or disliked. Be conservative: ignore a single ordinary skip; require \
+a real pattern.
+- boost_artists: artists they clearly warmed to — liked, or consistently played to completion. \
+Use this to un-avoid an artist they're now enjoying.
+
+Never put an artist in both lists. Use the exact artist keys from the SESSION log. If the evidence \
+is weak, return empty arrays.
+
+Output ONLY this JSON: {\"down_artists\":[name,...],\"boost_artists\":[name,...]}";
 
 const SYSTEM_PROMPT: &str = "\
 You are the built-in music assistant for ytm-tui, a terminal YouTube Music player. You \
@@ -69,8 +118,11 @@ Never fabricate tool results or videoIds you haven't seen.";
 /// Commands sent to the AI actor.
 pub enum AiCmd {
     Ask { prompt: String, context: Box<AiContext> },
-    /// One-shot ids-only radio rerank over a local candidate shortlist (the autoplay path).
+    /// One-shot radio rerank over a local candidate pack (the autoplay path); the model picks
+    /// opaque cids the reducer resolves back to tracks.
     Rerank { seed_video_id: String, prompt: String },
+    /// Off-path: distill a recent-feedback digest into station avoid/boost artists.
+    SummarizeFeedback { digest: String },
     /// Switch the model used for subsequent requests (settings save).
     SetModel(GeminiModel),
 }
@@ -88,6 +140,11 @@ impl AiHandle {
     /// Kick off a one-shot radio rerank; the result returns as [`Msg::RadioAiPicks`].
     pub fn rerank(&self, seed_video_id: String, prompt: String) {
         let _ = self.tx.send(AiCmd::Rerank { seed_video_id, prompt });
+    }
+
+    /// Kick off an off-path feedback summary; the result returns as [`Msg::StationPatch`].
+    pub fn summarize_feedback(&self, digest: String) {
+        let _ = self.tx.send(AiCmd::SummarizeFeedback { digest });
     }
 
     /// Hot-swap the model for future requests. Ignored if the actor has stopped.
@@ -132,6 +189,7 @@ impl AiActor {
                 AiCmd::Rerank { seed_video_id, prompt } => {
                     self.rerank(seed_video_id, prompt).await
                 }
+                AiCmd::SummarizeFeedback { digest } => self.summarize_feedback(digest).await,
                 AiCmd::SetModel(model) => self.model = model,
             }
         }
@@ -218,6 +276,7 @@ impl AiActor {
                 generation_config: Some(gen_cfg.clone()),
             };
 
+            let started = Instant::now();
             let resp = match self.generate(&req, &mut model, side_effected).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -225,6 +284,15 @@ impl AiActor {
                     return;
                 }
             };
+            usage::append(&usage::AiUsageRecord::new(
+                "chat",
+                model,
+                resp.usage(),
+                started.elapsed().as_millis() as u64,
+                true,
+                0,
+                false,
+            ));
 
             if let Some(reason) = resp.block_reason() {
                 let _ = self.msg_tx.send(Msg::AiError(format!(
@@ -287,25 +355,26 @@ impl AiActor {
         ));
     }
 
-    /// One-shot ids-only radio rerank. Always emits [`Msg::RadioAiPicks`]; the ids are empty on
-    /// any failure (timeout, error, block, unparseable JSON), and the reducer then degrades to
-    /// the local pick. The model can never invent a track — the reducer validates every id
-    /// against the shortlist this call was built from.
+    /// One-shot radio rerank. Always emits [`Msg::RadioAiPicks`]; the picks are empty on any
+    /// failure (timeout, error, block, unparseable JSON), and the reducer then degrades to the
+    /// local pick. The model can never invent a track — it picks opaque `cid`s, and the reducer
+    /// resolves each one against the candidate pack this call was built from.
     async fn rerank(&mut self, seed_video_id: String, prompt: String) {
         let _guard = ThinkingGuard(self.msg_tx.clone());
         let req = build_rerank_request(&prompt);
-        let ids = self.rerank_call(&req).await.unwrap_or_default();
-        let _ = self.msg_tx.send(Msg::RadioAiPicks { seed_video_id, ids });
+        let (picks, conf) = self.rerank_call(&req).await.unwrap_or_default();
+        let _ = self.msg_tx.send(Msg::RadioAiPicks { seed_video_id, picks, conf });
     }
 
     /// Run the reranker model chain (Flash-Lite → Flash), each under a hard timeout. Returns the
-    /// parsed ids, or `None` ("use the local fallback") on a timeout, a transient error once the
-    /// chain is exhausted, a block/early-stop finish, or unparseable JSON — none of which we
-    /// retry (the local pick is already a good answer).
-    async fn rerank_call(&mut self, req: &GenerateContentRequest) -> Option<Vec<String>> {
+    /// parsed picks (and overall confidence), or `None` ("use the local fallback") on a timeout, a
+    /// transient error once the chain is exhausted, a block/early-stop finish, or unparseable JSON
+    /// — none of which we retry (the local pick is already a good answer).
+    async fn rerank_call(&mut self, req: &GenerateContentRequest) -> Option<(Vec<AiPick>, Option<f32>)> {
         const CHAIN: [GeminiModel; 2] = [GeminiModel::FlashLite, GeminiModel::Flash];
         for (i, &model) in CHAIN.iter().enumerate() {
             self.throttle().await;
+            let started = Instant::now();
             let resp = match timeout(RERANK_TIMEOUT, self.client.generate(model, req)).await {
                 Ok(Ok(r)) => r,
                 Ok(Err(e)) => {
@@ -321,20 +390,153 @@ impl AiActor {
                     return None;
                 }
             };
+            let latency_ms = started.elapsed().as_millis() as u64;
             if let Some(reason) = resp.block_reason() {
+                usage::append(&usage::AiUsageRecord::new(
+                    "rerank", model, resp.usage(), latency_ms, false, 0, true,
+                ));
                 tracing::warn!(reason, "rerank blocked → local fallback");
                 return None;
             }
             // A truncated/safety stop yields no usable JSON — fall back rather than retry.
             if matches!(resp.finish_reason(), Some("MAX_TOKENS" | "SAFETY" | "RECITATION")) {
+                usage::append(&usage::AiUsageRecord::new(
+                    "rerank", model, resp.usage(), latency_ms, false, 0, true,
+                ));
                 tracing::warn!(finish = resp.finish_reason(), "rerank stopped early → local fallback");
                 return None;
             }
             let text = resp.content().map(Content::joined_text).unwrap_or_default();
-            return parse_rerank_ids(&text);
+            let parsed = parse_rerank_picks(&text);
+            usage::append(&usage::AiUsageRecord::new(
+                "rerank",
+                model,
+                resp.usage(),
+                latency_ms,
+                parsed.is_some(),
+                parsed.as_ref().map_or(0, |(p, _)| p.len()),
+                parsed.is_none(),
+            ));
+            return parsed;
         }
         None
     }
+
+    /// One-shot, off-the-hot-path feedback summary. Turns the recent session log into a small
+    /// avoid/boost patch for the active station. Always emits [`Msg::StationPatch`] (empty on any
+    /// failure) so the reducer's in-flight guard always clears. No [`ThinkingGuard`]: this never
+    /// runs while the user is waiting on a pick, so it must not flip the "AI is thinking" spinner.
+    async fn summarize_feedback(&mut self, digest: String) {
+        let req = build_feedback_request(&digest);
+        let (down_artists, boost_artists) = self.feedback_call(&req).await.unwrap_or_default();
+        let _ = self.msg_tx.send(Msg::StationPatch { down_artists, boost_artists });
+    }
+
+    /// Run the feedback model chain (Flash-Lite → Flash) under a hard timeout. Mirrors
+    /// [`Self::rerank_call`]: returns `None` (→ empty patch, a no-op) on timeout, exhausted error,
+    /// block/early-stop, or unparseable JSON. None of these retry — a missed summary just means the
+    /// station learns nothing this round, which is harmless.
+    async fn feedback_call(&mut self, req: &GenerateContentRequest) -> Option<(Vec<String>, Vec<String>)> {
+        const CHAIN: [GeminiModel; 2] = [GeminiModel::FlashLite, GeminiModel::Flash];
+        for (i, &model) in CHAIN.iter().enumerate() {
+            self.throttle().await;
+            let started = Instant::now();
+            let resp = match timeout(FEEDBACK_TIMEOUT, self.client.generate(model, req)).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    if e.is_model_fallbackable() && i + 1 < CHAIN.len() {
+                        tracing::warn!(from = model.label(), error = %e, "feedback model fallback");
+                        continue;
+                    }
+                    tracing::warn!(error = %e, "feedback summary failed → no patch");
+                    return None;
+                }
+                Err(_) => {
+                    tracing::warn!(timeout_s = FEEDBACK_TIMEOUT.as_secs(), "feedback summary timed out → no patch");
+                    return None;
+                }
+            };
+            let latency_ms = started.elapsed().as_millis() as u64;
+            if let Some(reason) = resp.block_reason() {
+                usage::append(&usage::AiUsageRecord::new(
+                    "feedback", model, resp.usage(), latency_ms, false, 0, true,
+                ));
+                tracing::warn!(reason, "feedback summary blocked → no patch");
+                return None;
+            }
+            if matches!(resp.finish_reason(), Some("MAX_TOKENS" | "SAFETY" | "RECITATION")) {
+                usage::append(&usage::AiUsageRecord::new(
+                    "feedback", model, resp.usage(), latency_ms, false, 0, true,
+                ));
+                tracing::warn!(finish = resp.finish_reason(), "feedback summary stopped early → no patch");
+                return None;
+            }
+            let text = resp.content().map(Content::joined_text).unwrap_or_default();
+            let parsed = parse_feedback_patch(&text);
+            usage::append(&usage::AiUsageRecord::new(
+                "feedback",
+                model,
+                resp.usage(),
+                latency_ms,
+                parsed.is_some(),
+                parsed.as_ref().map_or(0, |(d, b)| d.len() + b.len()),
+                parsed.is_none(),
+            ));
+            return parsed;
+        }
+        None
+    }
+}
+
+/// Build the structured-output feedback request: JSON-only, thinking off, no tools. Two short
+/// string arrays out — a tight token cap and low temperature keep it cheap and stable.
+fn build_feedback_request(digest: &str) -> GenerateContentRequest {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "down_artists": { "type": "array", "items": { "type": "string" } },
+            "boost_artists": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["down_artists", "boost_artists"],
+        "propertyOrdering": ["down_artists", "boost_artists"]
+    });
+    GenerateContentRequest {
+        contents: vec![Content::user(vec![Part::text(digest)])],
+        system_instruction: Some(Content {
+            role: None,
+            parts: vec![Part::text(FEEDBACK_SYSTEM_PROMPT)],
+        }),
+        tools: None,
+        generation_config: Some(GenerationConfig {
+            temperature: Some(RERANK_TEMPERATURE),
+            max_output_tokens: Some(FEEDBACK_MAX_TOKENS),
+            response_mime_type: Some("application/json".to_owned()),
+            response_schema: Some(schema),
+            thinking_config: Some(ThinkingConfig { thinking_budget: 0 }),
+            ..Default::default()
+        }),
+    }
+}
+
+/// Parse the feedback reply `{"down_artists":[...],"boost_artists":[...]}` (tolerating a stray
+/// code fence). Either array may be missing/empty. Returns `None` only when the whole payload is
+/// unparseable; an empty-but-valid object yields two empty vecs (a valid no-op patch).
+fn parse_feedback_patch(text: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let v: serde_json::Value = serde_json::from_str(strip_code_fence(text.trim())).ok()?;
+    if !v.is_object() {
+        return None;
+    }
+    let names = |key: &str| -> Vec<String> {
+        v.get(key)
+            .and_then(serde_json::Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    Some((names("down_artists"), names("boost_artists")))
 }
 
 /// Build the structured-output rerank request: JSON-only, thinking off, no tools. The strict
@@ -344,10 +546,17 @@ fn build_rerank_request(prompt: &str) -> GenerateContentRequest {
         "type": "object",
         "properties": {
             "ids": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 20 },
+            "roles": { "type": "array", "items": {
+                "type": "string",
+                "enum": ["core", "bridge", "adjacent", "discovery", "stabilizer", "recovery"]
+            } },
+            "reasons": { "type": "array", "items": {
+                "type": "array", "items": { "type": "string" }
+            } },
             "conf": { "type": "number", "minimum": 0, "maximum": 1 }
         },
         "required": ["ids"],
-        "propertyOrdering": ["ids", "conf"]
+        "propertyOrdering": ["ids", "roles", "reasons", "conf"]
     });
     GenerateContentRequest {
         contents: vec![Content::user(vec![Part::text(prompt)])],
@@ -367,9 +576,12 @@ fn build_rerank_request(prompt: &str) -> GenerateContentRequest {
     }
 }
 
-/// Parse `{"ids":[...]}` (tolerating a stray code fence). Returns `None` on anything unusable so
-/// the caller falls back to the local pick.
-fn parse_rerank_ids(text: &str) -> Option<Vec<String>> {
+/// Parse the enriched rerank reply
+/// `{"ids":[cid,...],"roles":[...],"reasons":[[code,...],...],"conf":n}` (tolerating a stray code
+/// fence). `ids` is required and non-empty; `roles`/`reasons`/`conf` are optional and zipped
+/// positionally onto the ids (so an ids-only reply still parses). Returns `None` on anything
+/// unusable so the caller falls back to the local pick.
+fn parse_rerank_picks(text: &str) -> Option<(Vec<AiPick>, Option<f32>)> {
     let v: serde_json::Value = serde_json::from_str(strip_code_fence(text.trim())).ok()?;
     let ids: Vec<String> = v
         .get("ids")?
@@ -377,7 +589,28 @@ fn parse_rerank_ids(text: &str) -> Option<Vec<String>> {
         .iter()
         .filter_map(|x| x.as_str().map(str::to_owned))
         .collect();
-    if ids.is_empty() { None } else { Some(ids) }
+    if ids.is_empty() {
+        return None;
+    }
+    let roles = v.get("roles").and_then(serde_json::Value::as_array);
+    let reasons = v.get("reasons").and_then(serde_json::Value::as_array);
+    let conf = v.get("conf").and_then(serde_json::Value::as_f64).map(|c| c as f32);
+
+    let picks = ids
+        .into_iter()
+        .enumerate()
+        .map(|(i, cid)| {
+            let role =
+                roles.and_then(|r| r.get(i)).and_then(|x| x.as_str()).map(str::to_owned);
+            let reasons = reasons
+                .and_then(|r| r.get(i))
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| arr.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            AiPick { cid, role, reasons }
+        })
+        .collect();
+    Some((picks, conf))
 }
 
 /// Strip a leading/trailing ```` ```json ```` / ```` ``` ```` fence if the model wrapped its
@@ -439,22 +672,38 @@ mod tests {
     }
 
     #[test]
-    fn parse_rerank_ids_reads_ids_array() {
-        let ids = parse_rerank_ids(r#"{"ids":["a","b","c"],"conf":0.9}"#).unwrap();
-        assert_eq!(ids, vec!["a", "b", "c"]);
+    fn parse_rerank_picks_reads_ids_and_conf() {
+        let (picks, conf) = parse_rerank_picks(r#"{"ids":["a","b","c"],"conf":0.9}"#).unwrap();
+        let cids: Vec<&str> = picks.iter().map(|p| p.cid.as_str()).collect();
+        assert_eq!(cids, vec!["a", "b", "c"]);
+        assert_eq!(conf, Some(0.9));
+        // roles/reasons absent → defaulted, not an error.
+        assert!(picks.iter().all(|p| p.role.is_none() && p.reasons.is_empty()));
     }
 
     #[test]
-    fn parse_rerank_ids_tolerates_a_code_fence() {
-        let ids = parse_rerank_ids("```json\n{\"ids\":[\"x\"]}\n```").unwrap();
-        assert_eq!(ids, vec!["x"]);
+    fn parse_rerank_picks_zips_roles_and_reasons_onto_ids() {
+        let (picks, _) = parse_rerank_picks(
+            r#"{"ids":["a","b"],"roles":["bridge","core"],"reasons":[["tr"],["co","u"]],"conf":0.7}"#,
+        )
+        .unwrap();
+        assert_eq!(picks[0].role.as_deref(), Some("bridge"));
+        assert_eq!(picks[0].reasons, vec!["tr"]);
+        assert_eq!(picks[1].role.as_deref(), Some("core"));
+        assert_eq!(picks[1].reasons, vec!["co", "u"]);
     }
 
     #[test]
-    fn parse_rerank_ids_rejects_garbage_and_empty() {
-        assert!(parse_rerank_ids("not json").is_none());
-        assert!(parse_rerank_ids(r#"{"ids":[]}"#).is_none(), "empty ids → fall back to local");
-        assert!(parse_rerank_ids(r#"{"other":1}"#).is_none());
+    fn parse_rerank_picks_tolerates_a_code_fence() {
+        let (picks, _) = parse_rerank_picks("```json\n{\"ids\":[\"x\"]}\n```").unwrap();
+        assert_eq!(picks[0].cid, "x");
+    }
+
+    #[test]
+    fn parse_rerank_picks_rejects_garbage_and_empty() {
+        assert!(parse_rerank_picks("not json").is_none());
+        assert!(parse_rerank_picks(r#"{"ids":[]}"#).is_none(), "empty ids → fall back to local");
+        assert!(parse_rerank_picks(r#"{"other":1}"#).is_none());
     }
 
     #[test]
@@ -466,6 +715,49 @@ mod tests {
         assert_eq!(gc["responseMimeType"], "application/json");
         assert_eq!(gc["thinkingConfig"]["thinkingBudget"], 0);
         assert_eq!(gc["maxOutputTokens"], RERANK_MAX_TOKENS);
-        assert!(gc["responseSchema"]["properties"].get("ids").is_some());
+        let props = &gc["responseSchema"]["properties"];
+        assert!(props.get("ids").is_some());
+        assert!(props.get("roles").is_some(), "schema must expose roles");
+        assert!(props.get("reasons").is_some(), "schema must expose reasons");
+    }
+
+    #[test]
+    fn parse_feedback_patch_reads_both_arrays_and_trims_blanks() {
+        let (down, boost) =
+            parse_feedback_patch(r#"{"down_artists":["Nickelback"," "],"boost_artists":["  ABBA "]}"#)
+                .unwrap();
+        assert_eq!(down, vec!["Nickelback"]);
+        assert_eq!(boost, vec!["ABBA"], "names are trimmed and blanks dropped");
+    }
+
+    #[test]
+    fn parse_feedback_patch_allows_a_valid_empty_object_as_a_noop() {
+        // A well-formed object with no/empty arrays is a valid no-op patch, not a parse failure.
+        assert_eq!(parse_feedback_patch("{}"), Some((vec![], vec![])));
+        let (down, boost) = parse_feedback_patch(r#"{"down_artists":[]}"#).unwrap();
+        assert!(down.is_empty() && boost.is_empty());
+    }
+
+    #[test]
+    fn parse_feedback_patch_tolerates_a_code_fence_and_rejects_garbage() {
+        let (down, _) =
+            parse_feedback_patch("```json\n{\"down_artists\":[\"X\"]}\n```").unwrap();
+        assert_eq!(down, vec!["X"]);
+        assert!(parse_feedback_patch("not json").is_none());
+        assert!(parse_feedback_patch("[1,2,3]").is_none(), "a non-object is unusable");
+    }
+
+    #[test]
+    fn feedback_request_is_json_only_with_thinking_off_and_no_tools() {
+        let req = build_feedback_request("STATION|...\nSESSION|...");
+        assert!(req.tools.is_none(), "feedback summary must not expose tools");
+        let v = serde_json::to_value(&req).unwrap();
+        let gc = &v["generationConfig"];
+        assert_eq!(gc["responseMimeType"], "application/json");
+        assert_eq!(gc["thinkingConfig"]["thinkingBudget"], 0);
+        assert_eq!(gc["maxOutputTokens"], FEEDBACK_MAX_TOKENS);
+        let props = &gc["responseSchema"]["properties"];
+        assert!(props.get("down_artists").is_some());
+        assert!(props.get("boost_artists").is_some());
     }
 }

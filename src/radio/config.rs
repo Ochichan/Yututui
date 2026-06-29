@@ -152,11 +152,18 @@ pub struct AiRerankConfig {
     pub shortlist: usize,
     /// Tracks enqueued per refill.
     pub picks: usize,
+    /// Only spend an AI call when it's likely to help: skip the model (use the confident local
+    /// pick) when the top two local candidates are clearly separated and the listener isn't
+    /// skipping. Off → always call the model when `enabled` (the original behavior).
+    pub smart_gate: bool,
+    /// How close the top two local `base_score`s must be to count as "ambiguous" (and thus worth
+    /// an AI call). Larger = gate more aggressively (call the model more often).
+    pub ambiguity_gap: f32,
 }
 
 impl Default for AiRerankConfig {
     fn default() -> Self {
-        Self { enabled: true, shortlist: 12, picks: 8 }
+        Self { enabled: true, shortlist: 12, picks: 8, smart_gate: true, ambiguity_gap: 0.15 }
     }
 }
 

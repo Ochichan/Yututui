@@ -114,11 +114,14 @@ pub enum Msg {
         seed_video_id: String,
         error: String,
     },
-    /// The AI reranker's chosen candidate ids (best-first), or empty on any failure. The
-    /// reducer validates them against the stashed shortlist and tops up from the local pick.
+    /// The AI reranker's chosen picks (best-first), or empty on any failure. Each pick is an
+    /// opaque pack `cid`; the reducer resolves cids→tracks via the stashed `cid_map`, validates
+    /// against the shortlist, and tops up from the local pick.
     RadioAiPicks {
         seed_video_id: String,
-        ids: Vec<String>,
+        picks: Vec<AiPick>,
+        /// The model's self-reported confidence in [0,1], if it returned one.
+        conf: Option<f32>,
     },
 
     // AI assistant: intents emitted by the AI actor, applied here by `update()`.
@@ -136,6 +139,14 @@ pub enum Msg {
     AiSuggestions(Vec<Song>),
     /// Turn autoplay/radio on or off (start_radio/stop_radio).
     AiSetAutoplay(bool),
+    /// Shape the active station from a free-text vibe (start_radio with explore/avoid hints):
+    /// set the adventurousness and the artists to keep out. `explore` is the model's raw string
+    /// (tight/balanced/wide or a synonym), parsed leniently.
+    AiSetStationProfile {
+        query: String,
+        explore: Option<String>,
+        avoid_artists: Vec<String>,
+    },
     /// Create a local playlist with this name (create_playlist).
     AiCreatePlaylist(String),
     /// Add these tracks to a local playlist by id or name (add_to_playlist).
@@ -145,6 +156,13 @@ pub enum Msg {
     },
     /// Play a local playlist by id or name (play_playlist).
     AiPlayPlaylist(String),
+    /// Result of an off-path feedback summary (see [`Cmd::SummarizeFeedback`]): artists the
+    /// listener kept skipping vs. warmed to, folded into the active station's avoid list. Always
+    /// delivered (empty on failure) so the in-flight guard clears.
+    StationPatch {
+        down_artists: Vec<String>,
+        boost_artists: Vec<String>,
+    },
 }
 
 /// Side effects the reducer asks the run loop to perform.
@@ -181,6 +199,13 @@ pub enum Cmd {
     SaveConfig(Box<Config>),
     /// Persist the local playlists to disk (after an AI playlist mutation).
     SavePlaylists,
+    /// Persist the active natural-language station profile to disk (after a vibe-shaped radio).
+    SaveStationProfile,
+    /// Off-path: ask the assistant to distill a recent-feedback digest into artists to avoid /
+    /// re-allow for the active station. The result returns as [`Msg::StationPatch`].
+    SummarizeFeedback {
+        digest: String,
+    },
     /// Ask the AI assistant to handle a prompt, given a read-only state snapshot.
     AskAi {
         prompt: String,
@@ -324,6 +349,71 @@ pub(crate) struct PendingRerank {
     pub(crate) seed_video_id: String,
     pub(crate) shortlist: Vec<Song>,
     pub(crate) local_pick: Vec<Song>,
+    /// Maps each pack `cid` shown to the model back to its track's video id, so the AI's chosen
+    /// cids can be resolved to playable tracks before validation.
+    pub(crate) cid_map: Vec<crate::radio::PackedCand>,
+    /// Cache key for this rerank (hash of seed artist / mode / recent ids / candidate set), so the
+    /// resolved ordering can be stored on return and replayed for a rapid identical refill.
+    pub(crate) cache_key: u64,
+}
+
+/// One reranked pick the AI returned: the opaque pack `cid` it chose, plus optional explanation
+/// (slot role + reason codes) surfaced by the "Why AI" overlay.
+#[derive(Debug, Clone)]
+pub struct AiPick {
+    pub cid: String,
+    pub role: Option<String>,
+    pub reasons: Vec<String>,
+}
+
+/// The resolved, human-readable explanation of the last AI radio rerank, shown by the "Why AI"
+/// overlay (the `w` key). Built when [`Msg::RadioAiPicks`] resolves — the model's opaque cids are
+/// mapped back to real tracks (title + artist) while [`PendingRerank`] is still in hand — so the
+/// overlay can render it long after the pending rerank has been consumed.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RadioAiExplain {
+    /// The model's self-reported confidence in [0,1], if any.
+    pub(crate) conf: Option<f32>,
+    /// The picks the model chose, in its best-first order (hallucinated cids already dropped).
+    pub(crate) picks: Vec<ExplainPick>,
+}
+
+/// One resolved pick in a [`RadioAiExplain`]: the track it landed on plus the model's stated
+/// slot role and reason codes.
+#[derive(Debug, Clone)]
+pub(crate) struct ExplainPick {
+    pub(crate) title: String,
+    pub(crate) artist: String,
+    /// The model's slot role for this pick (core/bridge/adjacent/discovery/…), if it gave one.
+    pub(crate) role: Option<String>,
+    /// The model's reason codes (the evidence scores it leaned on, e.g. `tr`, `u`).
+    pub(crate) reasons: Vec<String>,
+}
+
+/// One ordered listening-session outcome (newest pushed to the back of
+/// [`crate::app::RadioRuntime::session_events`]). Feeds the AI reranker's *recovery context* — a
+/// skip → widen and avoid the skipped artist, a like → stay close — so the model reacts to the
+/// arc of the session, not just the aggregate per-track signals the engine already folds in.
+#[derive(Debug, Clone)]
+pub(crate) struct SessionEvent {
+    /// Normalized artist key (the recovery context keys off the artist, not the track id — the
+    /// engine already excludes the just-played track via history/cooldown).
+    pub(crate) artist_key: String,
+    pub(crate) outcome: Outcome,
+    /// Fraction of the track that played, [0,1] (meaningful for plays/skips; ~current position
+    /// for likes/dislikes).
+    pub(crate) completion: f32,
+}
+
+/// The kind of a [`SessionEvent`]. `QuickSkip` is a skip below [`crate::signals::STRONG_SKIP_FRAC`]
+/// (bailed almost immediately) — a stronger "wrong direction" signal than an ordinary `Skip`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    FullPlay,
+    Skip,
+    QuickSkip,
+    Like,
+    Dislike,
 }
 
 /// Per-track download state, for the UI indicator.

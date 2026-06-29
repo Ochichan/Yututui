@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use crate::radio::StationState;
 use crate::radio::canonical;
-use crate::radio::candidate::{Candidate, CandidateSource};
+use crate::radio::candidate::{Candidate, CandidateSource, FeatureScores};
 use crate::radio::config::{RadioConfig, RadioMode};
 use crate::radio::cooccurrence::Cooc;
 use crate::radio::musicgate;
@@ -33,6 +33,9 @@ struct RawFeatures {
     /// Positive [0,1] "official music" signal — added raw (not normalized).
     music_tier: f32,
     version_penalty: f32,
+    /// Co-occurrence affinity vs the *immediately-preceding* (seed) track. Evidence-only;
+    /// retained on `Candidate.features` for the AI reranker, never summed into `base_score`.
+    transition: f32,
 }
 
 /// Apply hard filters, dedup by canonical key, then fill `base_score`/`novelty` on the
@@ -61,6 +64,7 @@ pub fn filter_and_score(
     let nov_n = normalize(&column(&feats, |f| f.novelty));
     let cont_n = normalize(&column(&feats, |f| f.continuation));
     let comp_n = normalize(&column(&feats, |f| f.completion));
+    let trans_n = normalize(&column(&feats, |f| f.transition));
 
     let w = &cfg.weights;
     for (i, c) in kept.iter_mut().enumerate() {
@@ -72,6 +76,18 @@ pub fn filter_and_score(
             + w.completion * comp_n[i]
             + w.music_tier * feats[i].music_tier
             - w.dislike_penalty * feats[i].version_penalty;
+        // Retain the per-feature evidence for the AI reranker. `transition` is intentionally
+        // NOT part of `base_score` above — it only informs the model's slotting.
+        c.features = FeatureScores {
+            cooc: cooc_n[i],
+            seed_affinity: aff_n[i],
+            novelty: nov_n[i],
+            continuation: cont_n[i],
+            completion: comp_n[i],
+            music_tier: feats[i].music_tier,
+            version_penalty: feats[i].version_penalty,
+            transition: trans_n[i],
+        };
     }
     kept
 }
@@ -265,6 +281,14 @@ fn raw_features(
     let id = c.video_id();
     let cooc_aff = cooc.affinity(id, &st.recent_track_ids);
 
+    // Transition: how naturally this candidate follows the *immediately-preceding* (seed)
+    // track specifically — narrower than `cooc_aff` (which spans the whole recent window). A
+    // same-artist-as-seed continuation reads as a smooth transition. Evidence-only.
+    let mut transition = cooc.affinity(id, std::slice::from_ref(&st.seed_video_id));
+    if c.artist_key == st.seed_artist_key {
+        transition += 0.5;
+    }
+
     // Behavioral artist affinity + a boost for favorite / seed artists.
     let mut seed_affinity = sig.artist_weight(&c.artist_key);
     if st.favorite_artist_keys.contains(&c.artist_key) {
@@ -297,6 +321,7 @@ fn raw_features(
         completion,
         music_tier,
         version_penalty,
+        transition,
     }
 }
 
@@ -412,6 +437,44 @@ mod tests {
         let related = scored.iter().find(|c| c.video_id() == "related").unwrap();
         let unrelated = scored.iter().find(|c| c.video_id() == "unrelated").unwrap();
         assert!(related.base_score > unrelated.base_score);
+    }
+
+    #[test]
+    fn feature_scores_are_populated_and_in_range() {
+        let cfg = RadioConfig::default();
+        let st = station("seed");
+        // A graph where 'seed' is strongly followed by 'related' so transition/cooc are non-flat.
+        let mut pl: VecDeque<(String, i64)> = VecDeque::new();
+        for i in 0..5 {
+            pl.push_back(("seed".to_owned(), i * 100));
+            pl.push_back(("related".to_owned(), i * 100 + 10));
+        }
+        let cooc = Cooc::build(&pl, &cfg.cooc);
+        let pool = vec![
+            cand("related", "R", "seedartist", 0),
+            cand("other", "O", "b", 0),
+        ];
+        let scored = filter_and_score(pool, &st, &Signals::default(), &cooc, &cfg, 0);
+        for c in &scored {
+            let f = &c.features;
+            for v in [
+                f.cooc,
+                f.seed_affinity,
+                f.novelty,
+                f.continuation,
+                f.completion,
+                f.music_tier,
+                f.transition,
+            ] {
+                assert!((0.0..=1.0).contains(&v), "feature out of [0,1]: {v}");
+            }
+            // `novelty` field mirrors `features.novelty`.
+            assert_eq!(c.novelty, f.novelty);
+        }
+        // The same-seed-artist related track has the stronger transition evidence.
+        let related = scored.iter().find(|c| c.video_id() == "related").unwrap();
+        let other = scored.iter().find(|c| c.video_id() == "other").unwrap();
+        assert!(related.features.transition > other.features.transition);
     }
 
     #[test]
