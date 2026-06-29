@@ -3,6 +3,11 @@
 use super::*;
 
 impl App {
+    /// The track under the search-results cursor, if any.
+    pub(in crate::app) fn selected_search_song(&self) -> Option<Song> {
+        self.search.results.get(self.search.selected).cloned()
+    }
+
     /// Move the search-results cursor up/down by `lines`, clamped.
     pub(in crate::app) fn move_search_cursor(&mut self, up: bool, lines: usize) {
         let len = self.search.results.len();
@@ -74,8 +79,17 @@ impl App {
                 }
                 Vec::new()
             }
-            SearchFocus::Results if k.code == KeyCode::Enter => self.play_selected(),
+            // Enter plays the highlighted result right now, keeping the existing queue intact.
+            SearchFocus::Results if k.code == KeyCode::Enter => match self.selected_search_song() {
+                Some(song) => self.play_now(song),
+                None => Vec::new(),
+            },
             SearchFocus::Results => match self.keymap.action(KeyContext::SearchResults, k.into()) {
+                // `\` adds the highlighted result to the queue without interrupting playback.
+                Some(Action::Enqueue) => match self.selected_search_song() {
+                    Some(song) => self.enqueue(song),
+                    None => Vec::new(),
+                },
                 Some(Action::Back) => {
                     self.mode = Mode::Player;
                     self.dirty = true;

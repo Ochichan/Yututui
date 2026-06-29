@@ -20,6 +20,12 @@ pub enum Msg {
         col: u16,
         row: u16,
     },
+    /// A right-click at a cell — adds the song row under the pointer to the queue (the mouse
+    /// equivalent of `\`). Acts only on Search/Library list rows; ignored elsewhere.
+    MouseRightClick {
+        col: u16,
+        row: u16,
+    },
     /// The pointer was dragged with the left button held — extends the queue window's
     /// multi-select range. Ignored outside that window.
     MouseDrag {

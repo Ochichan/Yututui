@@ -50,6 +50,13 @@ impl Translator {
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
                 Some(self.classify_left_down(m.column, m.row))
             }
+            // A right-button press adds the song row under the pointer to the queue.
+            Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => {
+                Some(Msg::MouseRightClick {
+                    col: m.column,
+                    row: m.row,
+                })
+            }
             // Dragging with the left button held extends the queue window's selection.
             Event::Mouse(m) if m.kind == MouseEventKind::Drag(MouseButton::Left) => {
                 Some(Msg::MouseDrag {

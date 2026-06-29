@@ -202,11 +202,11 @@ This is where you'll spend most of your time. From top to bottom:
 
 Press **`/`** to search. You get:
 
-- **A search box** at the top, labelled `Search` (or `Search · anonymous` when you're not signed in — that's normal, public songs play fine without an account). Type your query; press `Enter` or click the **Search** button beside it.
+- **A search box** at the top, labelled `Search` (or `Search · anonymous` when you're not signed in — that's normal, public songs play fine without an account), with a **⌕** magnifying-glass icon on its left. Type your query; press `Enter`, or click the **⌕** icon or the **Search** button beside it.
 - **A results list** below. Each row reads `♥ Song Title — Artist  (3:48)` — the heart shows if it's already a favorite, and the time in parentheses is the song's length. The highlighted row is marked with `▶`.
 - While a search is running you'll see **`Searching…`**.
 
-Move with `↑`/`↓` and press `Enter` to play the highlighted song — or **double-click** any row. If a song is already playing, picking another adds it to the queue and flashes `Added to queue`.
+Move with `↑`/`↓` and press `Enter` to play the highlighted song right away — your current queue is kept, so whatever's lined up still plays afterward. Press `\` (or **right-click** a row) to add a song to the queue instead, without interrupting what's playing (`Added to queue` flashes to confirm). You can also **double-click** any row to play it.
 
 ### Library
 
@@ -223,7 +223,7 @@ Press **`l`** for your personal collection. Across the top are four tabs, each w
 - **History** — what you've played recently, newest first.
 - **Downloads** — the audio files saved in your download folder, ready to play offline.
 
-Switch tabs by clicking them, or with `Tab` / `Shift+Tab`. Inside a tab, move with `↑`/`↓`, press `Enter` (or double-click) to play.
+Switch tabs by clicking them, or with `Tab` / `Shift+Tab`. Inside a tab, move with `↑`/`↓`, then press `Enter` (or double-click) to play the selected song now — your current queue is kept. Press `\` (or **right-click** a row) to add it to the queue instead, or `P` (`Shift`+`P`) to play the whole tab as a fresh queue.
 
 **Filtering.** Press **`/`** while in the Library to filter the current tab — start typing and the list narrows live, with a running `[5 matches]` count. Press `Enter` to keep the filter, or `Esc` to clear it.
 
@@ -321,7 +321,9 @@ You don't need to memorize these — press `?` in the app for the live cheat she
 | `↑` / `↓` | Move up / down |
 | `PgUp` / `PgDn` | Jump a page at a time |
 | `Home` / `End` | Jump to the top / bottom |
-| `Enter` | Play (or jump to) the highlighted item |
+| `Enter` | Play the highlighted item now — your current queue is kept (in the Queue window, jump to it) |
+| `\` | Add the highlighted item to the queue — Search / Library (or **right-click** a row) |
+| `P` | Play the whole tab as a fresh queue (Library) |
 | `f` | Favorite it (♥) |
 | `d` | Download it |
 | `Delete` | Remove it (from the queue or library) |

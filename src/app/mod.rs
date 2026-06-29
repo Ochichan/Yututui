@@ -413,6 +413,7 @@ impl App {
             Msg::Key(k) => return self.on_key(k),
             Msg::MouseClick { col, row } => return self.on_mouse_click(col, row),
             Msg::MouseDoubleClick { col, row } => return self.on_mouse_double_click(col, row),
+            Msg::MouseRightClick { col, row } => return self.on_mouse_right_click(col, row),
             Msg::MouseDrag { col, row } => return self.on_mouse_drag(col, row),
             Msg::MouseScroll { up } => return self.on_mouse_scroll(up),
             Msg::Resize => self.dirty = true,

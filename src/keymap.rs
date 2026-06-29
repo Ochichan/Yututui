@@ -53,6 +53,7 @@ pub enum Action {
     JumpTop,
     JumpBottom,
     Confirm,
+    Enqueue,
     Back,
     FocusNext,
     FocusPrev,
@@ -63,6 +64,7 @@ pub enum Action {
     // Library list.
     LibraryRemove,
     LibraryFilter,
+    PlayAll,
     // Settings screen.
     SettingsCancel,
     ChangeDecrease,
@@ -116,6 +118,7 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (Action::JumpTop, "jump_top", "Jump to top", "맨 위로"),
     (Action::JumpBottom, "jump_bottom", "Jump to bottom", "맨 아래로"),
     (Action::Confirm, "confirm", "Confirm / select", "확인 / 선택"),
+    (Action::Enqueue, "enqueue", "Add to queue", "큐에 추가"),
     (Action::Back, "back", "Back / close", "뒤로 / 닫기"),
     (Action::FocusNext, "focus_next", "Next tab / focus", "다음 탭 / 포커스"),
     (Action::FocusPrev, "focus_prev", "Previous tab / focus", "이전 탭 / 포커스"),
@@ -124,6 +127,7 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (Action::QueueRemove, "queue_remove", "Remove from queue", "대기열에서 제거"),
     (Action::LibraryRemove, "library_remove", "Remove / delete", "제거 / 삭제"),
     (Action::LibraryFilter, "library_filter", "Filter library", "라이브러리 필터"),
+    (Action::PlayAll, "play_all", "Play whole tab", "탭 전체 재생"),
     (Action::SettingsCancel, "settings_cancel", "Close settings", "설정 저장 후 닫기"),
     (Action::ChangeDecrease, "change_decrease", "Decrease value", "값 낮추기"),
     (Action::ChangeIncrease, "change_increase", "Increase value", "값 높이기"),
@@ -156,6 +160,7 @@ impl Action {
     /// A human-readable label when the same action needs screen-specific wording.
     pub fn human_label_for(self, ctx: KeyContext) -> &'static str {
         match (ctx, self) {
+            (KeyContext::Library, Action::Confirm) => t!("Play selected", "선택 항목 재생"),
             (KeyContext::Library, Action::Back) => t!("Close Library", "라이브러리 닫기"),
             (KeyContext::Library, Action::LibraryRemove) => t!("Remove / delete", "제거 / 삭제"),
             (KeyContext::Queue, Action::Confirm) => t!("Play / jump to track", "곡 재생 / 이동"),
@@ -526,6 +531,9 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Global, A::WhyAi, ch('w')),
         (C::Global, A::Quit, ctrl('q')),
         // Library list commands.
+        (C::Library, A::Confirm, key(KeyCode::Enter)),
+        (C::Library, A::Enqueue, ch('\\')),
+        (C::Library, A::PlayAll, ch('P')),
         (C::Library, A::Favorite, ch('f')),
         (C::Library, A::Download, ch('d')),
         (C::Library, A::OpenAi, ch('a')),
@@ -538,7 +546,9 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Queue, A::Back, ch('q')),
         // Search box (text entry; Enter→search is handled in the input handler).
         (C::SearchInput, A::SelectAll, ctrl('a')),
-        // Search results list commands.
+        // Search results list commands (Enter→play is fixed to the physical key in the
+        // handler, so it's not listed here; the cheat-sheet shows it as a fixed row).
+        (C::SearchResults, A::Enqueue, ch('\\')),
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('d')),
         (C::SearchResults, A::FocusInput, ch('/')),
@@ -902,6 +912,22 @@ mod tests {
         assert_eq!(Action::SettingsCancel.human_label_for(KeyContext::Settings), "Save + quit");
         assert_eq!(Action::Quit.human_label_for(KeyContext::Global), "Quit");
         assert_eq!(Action::Home.human_label_for(KeyContext::Global), "Go home");
+    }
+
+    #[test]
+    fn enter_backslash_and_play_all_resolve_in_library_and_search_results() {
+        let _guard = crate::i18n::lock_for_test();
+        let km = KeyMap::default();
+        // Library: Enter = play selected, `\` = add to queue, `P` = play the whole tab.
+        assert_eq!(km.action(KeyContext::Library, parse_chord("enter").unwrap()), Some(Action::Confirm));
+        assert_eq!(km.action(KeyContext::Library, parse_chord("\\").unwrap()), Some(Action::Enqueue));
+        assert_eq!(km.action(KeyContext::Library, parse_chord("P").unwrap()), Some(Action::PlayAll));
+        // Search results: `\` = add to queue (Enter stays fixed in the handler, not the keymap).
+        assert_eq!(km.action(KeyContext::SearchResults, parse_chord("\\").unwrap()), Some(Action::Enqueue));
+        // The unified play/queue labels read consistently across both surfaces.
+        assert_eq!(Action::Confirm.human_label_for(KeyContext::Library), "Play selected");
+        assert_eq!(Action::Enqueue.human_label(), "Add to queue");
+        assert_eq!(Action::PlayAll.human_label(), "Play whole tab");
     }
 
     #[test]

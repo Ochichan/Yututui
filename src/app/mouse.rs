@@ -350,19 +350,61 @@ impl App {
         Vec::new()
     }
 
-    /// Double-click activate on the active screen's list: play the song (Search/Library);
-    /// Settings rows have no "play", so a double-click just selects.
+    /// Double-click activate on the active screen's list: play the song now, keeping the queue
+    /// (Search/Library) — the mouse equivalent of Enter. Settings rows have no "play", so a
+    /// double-click just selects.
     pub(in crate::app) fn on_list_row_activate(&mut self, index: usize) -> Vec<Cmd> {
         match self.mode {
             Mode::Search if index < self.search.results.len() => {
                 self.search.selected = index;
-                self.play_selected()
+                match self.selected_search_song() {
+                    Some(song) => self.play_now(song),
+                    None => Vec::new(),
+                }
             }
             Mode::Library if index < self.library_len() => {
                 self.library_ui.selected = index;
-                self.play_from_library()
+                match self.selected_library_song() {
+                    Some(song) => self.play_now(song),
+                    None => Vec::new(),
+                }
             }
             _ => self.on_list_row_click(index),
+        }
+    }
+
+    /// A right-click adds the song row under the pointer to the queue — the mouse equivalent
+    /// of `\`. Only Search/Library list rows act; a right-click on any other target (or while
+    /// a modal/overlay is up) is ignored so it can't disturb the player or a confirmation.
+    pub(in crate::app) fn on_mouse_right_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if self.help_visible
+            || self.about_visible
+            || self.key_conflict.is_some()
+            || self.confirm_reset_all
+            || self.library_ui.confirm_delete.is_some()
+            || self.queue_popup.open
+        {
+            return Vec::new();
+        }
+        let Some(MouseTarget::ListRow(index)) = self.mouse_target_at(col, row) else {
+            return Vec::new();
+        };
+        match self.mode {
+            Mode::Search if index < self.search.results.len() => {
+                self.search.selected = index;
+                match self.selected_search_song() {
+                    Some(song) => self.enqueue(song),
+                    None => Vec::new(),
+                }
+            }
+            Mode::Library if index < self.library_len() => {
+                self.library_ui.selected = index;
+                match self.selected_library_song() {
+                    Some(song) => self.enqueue(song),
+                    None => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
         }
     }
 }

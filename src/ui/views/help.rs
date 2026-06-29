@@ -137,6 +137,25 @@ mod tests {
             search_results.first(),
             Some(&("Enter".to_owned(), "Play selected".to_owned()))
         );
+        // `\` adds to the queue, listed right after the fixed Enter→Play row.
+        assert!(search_results.contains(&("\\".to_owned(), "Add to queue".to_owned())));
+    }
+
+    #[test]
+    fn library_lists_play_add_to_queue_and_play_whole_tab() {
+        let _guard = crate::i18n::lock_for_test();
+        let app = App::new(100);
+        let library = help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Library").then_some(rows))
+            .expect("library group");
+        for row in [
+            ("Enter".to_owned(), "Play selected".to_owned()),
+            ("\\".to_owned(), "Add to queue".to_owned()),
+            ("P".to_owned(), "Play whole tab".to_owned()),
+        ] {
+            assert!(library.contains(&row), "cheat-sheet should list {row:?}");
+        }
     }
 
     #[test]

@@ -413,14 +413,28 @@ impl App {
         }
     }
 
-    /// Add the selected search result to the queue. The existing queue is **preserved** —
-    /// the chosen track is appended, not substituted for the whole list. If nothing is
-    /// currently playing we jump to the new track and start it; if a track is already
-    /// playing we simply enqueue it (no interruption) and confirm with a toast.
-    pub(in crate::app) fn play_selected(&mut self) -> Vec<Cmd> {
-        let Some(song) = self.search.results.get(self.search.selected).cloned() else {
+    /// Play `song` right now **without wiping the queue**: insert it immediately after the
+    /// current track, jump to it, and load it, so whatever was queued resumes after it ends.
+    /// Into an empty queue it just becomes the sole track. This is the unified Enter / double-
+    /// click "play" gesture in both the Library and the Search results.
+    pub(in crate::app) fn play_now(&mut self, song: Song) -> Vec<Cmd> {
+        if !self.queue.play_now(song) {
+            self.status.kind = StatusKind::Error;
+            self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
+            self.dirty = true;
             return Vec::new();
-        };
+        }
+        self.mode = Mode::Player;
+        self.status.text.clear();
+        let song = self.queue.current().cloned();
+        self.load_song(song)
+    }
+
+    /// Append `song` to the end of the queue without interrupting playback — the unified `\` /
+    /// right-click "add to queue" gesture in the Library and Search results. If nothing is
+    /// currently playing we jump to it and start; if a track is already playing we simply
+    /// enqueue it (no interruption) and confirm with a toast.
+    pub(in crate::app) fn enqueue(&mut self, song: Song) -> Vec<Cmd> {
         let title = song.title.clone();
         let was_idle = self.prefetch.loaded_video_id.is_none();
         if self.queue.extend(vec![song]) == 0 {

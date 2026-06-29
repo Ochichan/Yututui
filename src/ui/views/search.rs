@@ -64,10 +64,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
-    // Reserve a themed Search button on the right; the input box takes the rest.
-    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(SEARCH_BTN_W)]).split(area);
-    let input_area = cols[0];
-    let button_area = cols[1];
+    // A magnifying-glass icon on the left, the input box in the middle, and a themed Search
+    // button on the right — symmetric search affordances on either side of the query.
+    let cols = Layout::horizontal([
+        Constraint::Length(SEARCH_ICON_W),
+        Constraint::Min(0),
+        Constraint::Length(SEARCH_BTN_W),
+    ])
+    .split(area);
+    let icon_area = cols[0];
+    let input_area = cols[1];
+    let button_area = cols[2];
+
+    render_search_icon(frame, app, icon_area);
 
     let focused = app.search.focus == SearchFocus::Input;
     let border = if focused { R::BorderFocused } else { R::BorderMuted };
@@ -102,8 +111,28 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     render_search_button(frame, app, button_area);
 }
 
+/// Width of the left magnifying-glass icon cluster (border + a single centered glyph).
+const SEARCH_ICON_W: u16 = 4;
+
 /// Width of the Search button cluster (border + " Search ").
 const SEARCH_BTN_W: u16 = 10;
+
+/// The magnifying-glass (⌕) icon to the left of the input box. A text-style glyph (width 1)
+/// for terminal-safe rendering; bordered to mirror the Search button on the right. Clicking it
+/// submits the query, the same as the Search button or Enter.
+fn render_search_icon(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(app.theme.style(R::BorderMuted))
+        .style(app.theme.style(R::TextPrimary));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let icon = Line::from("⌕")
+        .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
+        .alignment(Alignment::Center);
+    frame.render_widget(Paragraph::new(icon), inner);
+    app.register_mouse_button(area, MouseTarget::SearchSubmit);
+}
 
 /// The themed Search button next to the input box: clicking it submits the query, the same
 /// as pressing Enter. Bordered to match the input box; the whole cluster is the click rect.

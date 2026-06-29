@@ -140,6 +140,29 @@ impl Queue {
         added
     }
 
+    /// Insert `song` immediately after the current track in the play order and make it the
+    /// new current — "play this now" without disturbing the rest of the queue, which resumes
+    /// after this track ends. Into an empty queue it simply becomes the sole track. Returns
+    /// `false` (nothing inserted) when the queue is already at the [`MAX`] cap, so the caller
+    /// can report it; `true` otherwise. Shuffle-agnostic: it always lands right after the
+    /// cursor in play order, so the "now playing next" promise holds either way.
+    pub fn play_now(&mut self, song: Song) -> bool {
+        if self.songs.len() >= MAX {
+            return false;
+        }
+        let song_idx = self.songs.len();
+        self.songs.push(song);
+        if self.order.is_empty() {
+            self.order.push(song_idx);
+            self.cursor = 0;
+        } else {
+            let at = self.cursor + 1;
+            self.order.insert(at, song_idx);
+            self.cursor = at;
+        }
+        true
+    }
+
     /// Replace the queue with `songs` and make `start` the current track. Honors the
     /// current shuffle setting (the chosen track plays first, the rest follow randomly).
     pub fn set(&mut self, mut songs: Vec<Song>, start: usize) {
@@ -551,5 +574,60 @@ mod tests {
         let mut seen = q.order.clone();
         seen.sort_unstable();
         assert_eq!(seen, (0..7).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn play_now_into_empty_queue_makes_the_track_current() {
+        let mut q = Queue::default();
+        assert!(q.play_now(song("solo")));
+        assert_eq!(id(&q), "solo");
+        assert_eq!(q.position(), (1, 1));
+    }
+
+    #[test]
+    fn play_now_inserts_after_current_and_jumps_to_it() {
+        let mut q = Queue::default();
+        q.set(songs(4), 1); // queue 0,1,2,3 — playing "1"
+        assert!(q.play_now(song("new")));
+        // The inserted track is current…
+        assert_eq!(id(&q), "new");
+        assert_eq!(q.len(), 5);
+        // …and the queue resumes with what *was* after the old current ("2", "3").
+        assert_eq!(q.next(false).unwrap().video_id, "2");
+        assert_eq!(q.next(false).unwrap().video_id, "3");
+    }
+
+    #[test]
+    fn play_now_preserves_the_existing_queue() {
+        let mut q = Queue::default();
+        q.set(songs(3), 0);
+        q.play_now(song("x"));
+        // Every original track is still present; only one was added.
+        assert_eq!(q.len(), 4);
+        for orig in ["0", "1", "2"] {
+            assert!(q.video_ids().any(|v| v == orig), "kept {orig}");
+        }
+    }
+
+    #[test]
+    fn play_now_respects_the_cap() {
+        let mut q = Queue::default();
+        q.set(songs(MAX), 0);
+        assert!(!q.play_now(song("overflow"))); // full → rejected
+        assert_eq!(q.len(), MAX);
+    }
+
+    #[test]
+    fn play_now_under_shuffle_stays_a_permutation_and_is_current() {
+        let mut q = Queue::default();
+        q.set(songs(5), 2);
+        q.rng = fastrand::Rng::with_seed(99);
+        q.toggle_shuffle();
+        assert!(q.play_now(song("z")));
+        assert_eq!(id(&q), "z");
+        let mut seen = q.order.clone();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..6).collect::<Vec<_>>());
+        assert!(q.order.iter().all(|&i| i < q.songs.len()));
     }
 }
