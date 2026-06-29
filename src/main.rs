@@ -106,7 +106,7 @@ async fn async_main(new_instance: bool) -> Result<()> {
             );
             return Ok(());
         }
-        remote::BindOutcome::Bound(server) => Some(server),
+        remote::BindOutcome::Bound(server) => Some(*server),
         remote::BindOutcome::Unavailable => None,
     };
     // Album art is opt-in: only probe the terminal for its graphics protocol + font size

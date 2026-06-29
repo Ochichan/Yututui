@@ -39,7 +39,7 @@ pub enum BindOutcome {
     /// A live instance already owns the socket — the new launch should bow out.
     AlreadyRunning,
     /// We own the socket; spawn [`RemoteServer::start`] and keep its guard alive.
-    Bound(RemoteServer),
+    Bound(Box<RemoteServer>),
     /// Could not bind (e.g. unwritable runtime dir). Run the TUI without remote control.
     Unavailable,
 }
@@ -136,12 +136,12 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
         #[cfg(unix)]
         let _ = std::fs::remove_file(&ep);
         return match bind(&ep) {
-            Ok(listener) => BindOutcome::Bound(RemoteServer {
+            Ok(listener) => BindOutcome::Bound(Box::new(RemoteServer {
                 listener,
                 token: Arc::from(""),
                 endpoint: ep,
                 owns_instance_file: false,
-            }),
+            })),
             Err(e) => {
                 tracing::warn!(error = %e, "remote: secondary instance could not bind; no remote control");
                 BindOutcome::Unavailable
@@ -187,12 +187,12 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
     // accepting on it. We only bind the socket now (which is what the single-instance probe
     // checks); the socket alone, with no descriptor, is invisible to clients.
     let token = endpoint::gen_token();
-    BindOutcome::Bound(RemoteServer {
+    BindOutcome::Bound(Box::new(RemoteServer {
         listener,
         token: Arc::from(token.as_str()),
         endpoint: ep,
         owns_instance_file: true,
-    })
+    }))
 }
 
 fn now_unix() -> u64 {
