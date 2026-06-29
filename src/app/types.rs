@@ -156,6 +156,14 @@ pub enum Msg {
     },
     /// Play a local playlist by id or name (play_playlist).
     AiPlayPlaylist(String),
+    /// A command from a `ytt -r <cmd>` client, with a oneshot channel to reply on. Applied
+    /// through the same reducer path as a keypress (see [`App::apply_remote`]) so it is
+    /// independent of the current input mode; the computed response is sent back over the
+    /// channel for the control socket to write to the client.
+    Remote(
+        crate::remote::proto::RemoteCommand,
+        tokio::sync::oneshot::Sender<crate::remote::proto::RemoteResponse>,
+    ),
     /// Result of an off-path feedback summary (see [`Cmd::SummarizeFeedback`]): artists the
     /// listener kept skipping vs. warmed to, folded into the active station's avoid list. Always
     /// delivered (empty on failure) so the in-flight guard clears.

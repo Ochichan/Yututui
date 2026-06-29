@@ -51,6 +51,7 @@ mod mouse;
 mod player;
 mod queue;
 mod radio_reducer;
+mod remote_reducer;
 mod search;
 mod settings_reducer;
 
@@ -416,6 +417,11 @@ impl App {
             Msg::MouseScroll { up } => return self.on_mouse_scroll(up),
             Msg::Resize => self.dirty = true,
             Msg::Quit => self.should_quit = true,
+            Msg::Remote(cmd, reply) => {
+                let (resp, cmds) = self.apply_remote(cmd);
+                let _ = reply.send(resp);
+                return cmds;
+            }
             Msg::Autoplay => return self.autoplay_on_start_cmds(),
             Msg::StatusTick => {
                 // The status has been covering the title long enough — clear it so the

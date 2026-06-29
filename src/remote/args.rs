@@ -1,0 +1,171 @@
+//! Hand-rolled parser for `ytt -r <command> [args] [flags]`.
+//!
+//! The project ships no `clap`; this mirrors the existing `--version`/`--help` style in
+//! `main`. The verb (with short aliases) maps to a [`RemoteCommand`]; `-q`/`--json` are
+//! client-side display flags.
+
+use super::proto::{RemoteCommand, ToggleState};
+
+/// A successfully parsed `ytt -r` invocation.
+pub struct Parsed {
+    pub command: RemoteCommand,
+    /// Suppress the success line (errors still print).
+    pub quiet: bool,
+    /// Print the raw JSON response instead of the human line.
+    pub json: bool,
+}
+
+/// Why parsing stopped.
+pub enum ParseError {
+    /// `-h`/`--help` or no command — print usage to stdout, exit 0.
+    Usage(String),
+    /// Unknown verb / bad argument — print to stderr, exit 2.
+    Invalid(String),
+}
+
+pub const USAGE: &str = "\
+Usage: ytt -r <command> [flags]
+
+Control a running ytt instance over its local control socket.
+
+Commands:
+  next, n                 Skip to the next track
+  prev, p                 Go to the previous track
+  play-pause, pp, toggle  Toggle play / pause
+  up, vol-up              Volume up
+  down, vol-down          Volume down
+  back                    Seek backward
+  fwd, forward            Seek forward
+  radio [on|off|toggle]   Toggle (or set) autoplay radio
+  status, st              Print the current track / state
+  quit                    Quit the running instance
+
+Flags:
+  -q, --quiet             Suppress the success line (errors still print)
+      --json              Print the raw JSON response
+  -h, --help              Show this help
+
+Examples:
+  ytt -r pp               # play / pause
+  ytt -r radio off        # turn autoplay radio off
+  bindsym XF86AudioNext exec ytt -r next   # i3 / sway media key
+";
+
+/// Parse the arguments that follow `ytt -r` (i.e. `std::env::args().skip(2)`).
+pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
+    let mut verb: Option<&str> = None;
+    let mut rest: Vec<&str> = Vec::new();
+    let mut quiet = false;
+    let mut json = false;
+
+    for a in args {
+        match a.as_str() {
+            "-h" | "--help" => return Err(ParseError::Usage(USAGE.to_string())),
+            "-q" | "--quiet" => quiet = true,
+            "--json" => json = true,
+            other if verb.is_none() => verb = Some(other),
+            other => rest.push(other),
+        }
+    }
+
+    let Some(verb) = verb else {
+        return Err(ParseError::Usage(USAGE.to_string()));
+    };
+
+    let command = match verb {
+        "next" | "n" => RemoteCommand::Next,
+        "prev" | "p" | "previous" => RemoteCommand::Prev,
+        "play-pause" | "pp" | "toggle" | "play" | "pause" => RemoteCommand::TogglePause,
+        "up" | "vol-up" | "volup" => RemoteCommand::VolumeUp,
+        "down" | "vol-down" | "voldown" => RemoteCommand::VolumeDown,
+        "back" | "rewind" => RemoteCommand::SeekBack,
+        "fwd" | "forward" | "ff" => RemoteCommand::SeekForward,
+        "radio" => {
+            let state = match rest.first().copied() {
+                None => ToggleState::Toggle,
+                Some("on" | "true" | "1") => ToggleState::On,
+                Some("off" | "false" | "0") => ToggleState::Off,
+                Some("toggle") => ToggleState::Toggle,
+                Some(other) => {
+                    return Err(ParseError::Invalid(format!(
+                        "radio: expected on|off|toggle, got `{other}`"
+                    )));
+                }
+            };
+            RemoteCommand::Radio { state }
+        }
+        "status" | "st" => RemoteCommand::Status,
+        "quit" | "exit" => RemoteCommand::Quit,
+        other => {
+            return Err(ParseError::Invalid(format!(
+                "unknown command `{other}` (try `ytt -r --help`)"
+            )));
+        }
+    };
+
+    Ok(Parsed { command, quiet, json })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cmd(args: &[&str]) -> RemoteCommand {
+        let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        match parse(&owned) {
+            Ok(p) => p.command,
+            Err(ParseError::Invalid(m)) => panic!("unexpected invalid: {m}"),
+            Err(ParseError::Usage(_)) => panic!("unexpected usage"),
+        }
+    }
+
+    #[test]
+    fn aliases_map_to_commands() {
+        assert_eq!(cmd(&["n"]), RemoteCommand::Next);
+        assert_eq!(cmd(&["next"]), RemoteCommand::Next);
+        assert_eq!(cmd(&["p"]), RemoteCommand::Prev);
+        assert_eq!(cmd(&["pp"]), RemoteCommand::TogglePause);
+        assert_eq!(cmd(&["toggle"]), RemoteCommand::TogglePause);
+        assert_eq!(cmd(&["up"]), RemoteCommand::VolumeUp);
+        assert_eq!(cmd(&["vol-down"]), RemoteCommand::VolumeDown);
+        assert_eq!(cmd(&["back"]), RemoteCommand::SeekBack);
+        assert_eq!(cmd(&["fwd"]), RemoteCommand::SeekForward);
+        assert_eq!(cmd(&["status"]), RemoteCommand::Status);
+        assert_eq!(cmd(&["quit"]), RemoteCommand::Quit);
+    }
+
+    #[test]
+    fn radio_states() {
+        assert_eq!(cmd(&["radio"]), RemoteCommand::Radio { state: ToggleState::Toggle });
+        assert_eq!(cmd(&["radio", "on"]), RemoteCommand::Radio { state: ToggleState::On });
+        assert_eq!(cmd(&["radio", "off"]), RemoteCommand::Radio { state: ToggleState::Off });
+    }
+
+    #[test]
+    fn radio_bad_state_is_invalid() {
+        let owned = vec!["radio".to_string(), "loud".to_string()];
+        assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
+    }
+
+    #[test]
+    fn unknown_verb_is_invalid() {
+        let owned = vec!["frobnicate".to_string()];
+        assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
+    }
+
+    #[test]
+    fn empty_and_help_are_usage() {
+        assert!(matches!(parse(&[]), Err(ParseError::Usage(_))));
+        assert!(matches!(parse(&["--help".to_string()]), Err(ParseError::Usage(_))));
+    }
+
+    #[test]
+    fn flags_parse_in_any_position() {
+        let owned: Vec<String> =
+            ["-q", "next", "--json"].iter().map(|s| s.to_string()).collect();
+        let p = parse(&owned).unwrap_or_else(|_| panic!("should parse"));
+        assert_eq!(p.command, RemoteCommand::Next);
+        assert!(p.quiet);
+        assert!(p.json);
+    }
+}

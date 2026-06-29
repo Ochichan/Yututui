@@ -17,6 +17,7 @@ mod player;
 mod playlists;
 mod queue;
 mod radio;
+mod remote;
 mod resolver;
 mod settings;
 mod signals;
@@ -36,6 +37,9 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 fn main() -> Result<()> {
+    // `ytt --new-instance` deliberately launches a second, independent player even when one
+    // is already running (bypassing the single-instance guard); threaded into `async_main`.
+    let mut new_instance = false;
     if let Some(arg) = std::env::args_os().nth(1) {
         match arg.to_string_lossy().as_ref() {
             "--version" | "-V" => {
@@ -45,11 +49,26 @@ fn main() -> Result<()> {
             "--help" | "-h" => {
                 println!("ytt {}", env!("CARGO_PKG_VERSION"));
                 println!();
-                println!("Usage: ytt [--version]");
+                println!("Usage: ytt [OPTIONS]");
+                println!("       ytt -r <command>     Control a running instance");
                 println!();
                 println!("Launch the terminal YouTube Music player.");
+                println!();
+                println!("Options:");
+                println!("  -r, --remote <command>   Send a command to a running instance (see `ytt -r --help`)");
+                println!("      --new-instance       Start a second player even if one is already running");
+                println!("  -V, --version            Print version and exit");
+                println!("  -h, --help               Print this help and exit");
                 return Ok(());
             }
+            // Remote-control client: connect to a running instance, print the result, exit
+            // with its status code. This path never builds the multi-thread runtime and
+            // never touches terminal raw mode / the alternate screen.
+            "-r" | "--remote" => {
+                let rest: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(remote::client::run(&rest));
+            }
+            "--new-instance" => new_instance = true,
             _ => {}
         }
     }
@@ -62,16 +81,34 @@ fn main() -> Result<()> {
         .thread_stack_size(512 * 1024)
         .enable_all()
         .build()?;
-    rt.block_on(async_main())
+    rt.block_on(async_main(new_instance))
 }
 
-async fn async_main() -> Result<()> {
+async fn async_main(new_instance: bool) -> Result<()> {
     // Load config before terminal init so mouse capture reflects it.
     let cfg = config::Config::load();
     // Apply the saved UI language before anything renders, so the first frame is already
     // translated. The Settings dropdown updates this global live as the user changes it.
     i18n::set_language(cfg.effective_language());
     let mouse = cfg.effective_mouse();
+
+    // Single-instance guard + control socket. Done BEFORE the terminal is touched so the
+    // "already running" notice prints to a clean screen and we never enter the alternate
+    // screen just to bow out. `--new-instance` skips the guard and binds a private socket;
+    // a bind failure degrades to running without remote control rather than refusing to start.
+    let remote = match remote::bind_or_detect(new_instance).await {
+        remote::BindOutcome::AlreadyRunning => {
+            eprintln!(
+                "ytt is already running.\n  \
+                 Control it:  ytt -r <command>   (e.g. `ytt -r pp`, `ytt -r next`)\n  \
+                 Stop it:     ytt -r quit\n  \
+                 New player:  ytt --new-instance"
+            );
+            return Ok(());
+        }
+        remote::BindOutcome::Bound(server) => Some(server),
+        remote::BindOutcome::Unavailable => None,
+    };
     // Album art is opt-in: only probe the terminal for its graphics protocol + font size
     // when the user enabled it, and do it BEFORE `tui::init` so the 1x1 probe image and its
     // cursor-position reports never land on the app's alternate screen. The probe is fully
@@ -85,7 +122,7 @@ async fn async_main() -> Result<()> {
         None
     };
     let mut terminal = tui::init(mouse)?;
-    let result = run(&mut terminal, cfg, art_picker).await;
+    let result = run(&mut terminal, cfg, art_picker, remote).await;
     tui::restore(mouse);
     result
 }
@@ -125,6 +162,7 @@ async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     cfg: config::Config,
     art_picker: Option<ratatui_image::picker::Picker>,
+    remote: Option<remote::RemoteServer>,
 ) -> Result<()> {
     // Resolve cross-platform dirs; logging + PID registry degrade gracefully if absent.
     let dirs = directories::ProjectDirs::from("", "", "ytm-tui");
@@ -192,6 +230,12 @@ async fn run(
 
     // Signals (SIGINT/TERM/HUP) kill mpv and ask the loop to quit.
     player::lifetime::spawn_signal_handlers(worker_tx.clone());
+
+    // The remote-control accept loop is started — and the instance descriptor published — just
+    // before the reducer loop below (see `remote.map(..server.start..)`), NOT here. Publishing
+    // only once the app can actually service commands avoids a cold-start race where `ytt -r`
+    // found a live descriptor but nothing was accepting/answering yet. The socket itself is
+    // already bound (in `bind_or_detect`), so the single-instance guard is in force from launch.
 
     // Spawn mpv. `_mpv_guard` must outlive the loop: dropping it kills mpv on quit.
     let mut player_handle: Option<PlayerHandle> = None;
@@ -297,6 +341,14 @@ async fn run(
     let mut anim_fps = app.config.animations.effective_fps();
     let mut anim_tick = anim_interval(anim_fps);
     tui::draw_synced(terminal, |f| ui::render(f, &app))?;
+
+    // Every actor is up and the reducer loop is one statement away from draining `worker_rx`:
+    // now start the control server and publish the instance descriptor. Doing it here (rather
+    // than during setup) means a `ytt -r` that discovers the descriptor is guaranteed something
+    // is accepting and the reducer will answer promptly. `_remote_guard` lives to end of `run`;
+    // its Drop removes the descriptor (and best-effort the socket) on exit. `None` => remote
+    // control unavailable this run; the app still works as a normal player.
+    let _remote_guard = remote.map(|server| server.start(worker_tx.clone()));
 
     while !app.should_quit {
         // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
