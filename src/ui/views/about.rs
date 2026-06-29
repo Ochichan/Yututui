@@ -82,7 +82,7 @@ fn ensure_icon(app: &App) {
     if needs_build
         && let Ok(img) = image::load_from_memory(ICON_PNG)
     {
-        let proto = match app.art_picker.as_ref() {
+        let proto = match app.art.picker.as_ref() {
             Some(picker) => picker.new_resize_protocol(img),
             None => Picker::halfblocks().new_resize_protocol(img),
         };

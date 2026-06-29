@@ -71,9 +71,12 @@ async fn async_main() -> Result<()> {
     i18n::set_language(cfg.effective_language());
     let mouse = cfg.effective_mouse();
     // Album art is opt-in: only probe the terminal for its graphics protocol + font size
-    // when the user enabled it, and do it BEFORE `tui::init` (the query reads/writes stdio,
-    // so running it ahead of the alternate screen + event stream avoids racing them). A
-    // failed probe falls back to halfblocks so the feature still shows something.
+    // when the user enabled it, and do it BEFORE `tui::init` so the 1x1 probe image and its
+    // cursor-position reports never land on the app's alternate screen. The probe is fully
+    // synchronous (see `ratatui_image::picker`): it raw-modes the tty, queries, and restores the
+    // previous mode before returning — so it can't leave `tui::init`'s crossterm raw-mode setup
+    // racing a half-restored terminal, and it spawns no reader that could outlive it and steal
+    // input from the event loop. A failed/absent probe falls back to halfblocks.
     let art_picker = if cfg.effective_album_art() {
         Some(build_art_picker())
     } else {
@@ -136,12 +139,12 @@ async fn run(
 
     let mut app = App::new(cfg.volume);
     // Hand over the terminal image picker (present only when album art is enabled).
-    app.art_picker = art_picker;
+    app.art.picker = art_picker;
     // Load the local library (favorites + history); an absent/corrupt file → empty.
     app.library = library::Library::load();
     // Load per-track preference signals (plays/skips/dislikes); absent → empty.
     app.signals = signals::Signals::load();
-    app.downloaded_tracks = library::scan_downloads(&cfg.effective_download_dir());
+    app.library_ui.downloaded = library::scan_downloads(&cfg.effective_download_dir());
     app.restore_last_played_from_library();
     // Load local playlists (the AI playlist tools read/write these).
     app.playlists = playlists::Playlists::load();
@@ -153,7 +156,7 @@ async fn run(
     let missing = deps::missing();
     if !missing.is_empty() {
         tracing::warn!(missing = ?missing, "required external tools not found on PATH");
-        app.status = deps::install_hint(&missing);
+        app.status.text = deps::install_hint(&missing);
     }
 
     // Worker -> UI channel. Actors hold clones; the original stays alive so the
@@ -177,13 +180,13 @@ async fn run(
         Ok((handle, guard)) => {
             handle.send(PlayerCmd::SetVolume(cfg.volume));
             // Apply persisted playback speed and the EQ/normalization chain up front.
-            if (app.speed - 1.0).abs() > f64::EPSILON {
+            if (app.playback.speed - 1.0).abs() > f64::EPSILON {
                 handle.send(PlayerCmd::SetProperty {
                     name: "speed".to_owned(),
-                    value: serde_json::Value::from(app.speed),
+                    value: serde_json::Value::from(app.playback.speed),
                 });
             }
-            if let Some(af) = crate::eq::build_af_string(&app.eq_bands, app.normalize) {
+            if let Some(af) = crate::eq::build_af_string(&app.audio.bands, app.audio.normalize) {
                 handle.send(PlayerCmd::SetAudioFilter(af));
             }
             // The M1 demo track is now opt-in; normal startup is idle until the user
@@ -197,8 +200,8 @@ async fn run(
         Err(e) => {
             tracing::error!(error = %e, "failed to start mpv");
             // Keep the richer preflight hint if we already set one.
-            if app.status.is_empty() {
-                app.status = format!("{}: {e}", crate::t!("mpv unavailable", "mpv를 사용할 수 없음"));
+            if app.status.text.is_empty() {
+                app.status.text = format!("{}: {e}", crate::t!("mpv unavailable", "mpv를 사용할 수 없음"));
             }
             _mpv_guard = None;
         }
@@ -226,7 +229,7 @@ async fn run(
     // Resolver actor: pre-resolves the next track's stream URL for instant skip.
     let resolver_handle = resolver::spawn(worker_tx.clone(), cookies_file);
     if api_mode == api::ApiMode::Anonymous && had_cookie {
-        app.status = crate::t!(
+        app.status.text = crate::t!(
             "Cookie rejected — anonymous mode (search & play only)",
             "쿠키가 거부됨 — 익명 모드 (검색·재생만 가능)"
         )
@@ -240,7 +243,7 @@ async fn run(
     let mut ai_handle = cfg
         .effective_ai_key()
         .and_then(|key| ai::spawn(&key, cfg.effective_gemini_model(), worker_tx.clone()));
-    app.ai_available = ai_handle.is_some();
+    app.ai.available = ai_handle.is_some();
 
     // Opt-in autoplay-on-launch: now that every player/actor handle exists, ask the loop to
     // start the restored track. Routed through the message pump so the resulting load/save
@@ -373,7 +376,7 @@ async fn run(
                     // Drop the old actor (closing its channel ends its task) and bring up a
                     // fresh one for the new key, so a key edited in Settings works at once.
                     ai_handle = key.and_then(|k| ai::spawn(&k, model, worker_tx.clone()));
-                    app.ai_available = ai_handle.is_some();
+                    app.ai.available = ai_handle.is_some();
                 }
             }
         }

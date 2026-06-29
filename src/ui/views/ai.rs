@@ -23,7 +23,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         // Model indicator: kept as metadata but moved to the right of the border line so it
         // doesn't collide with the nav strip that now rides the left of the same line.
         .title(
-            Line::from(format!(" {} ", app.gemini_model.label()))
+            Line::from(format!(" {} ", app.ai.model.label()))
                 .style(app.theme.style(R::TextMuted))
                 .alignment(Alignment::Right),
         )
@@ -33,9 +33,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let has_suggestions = !app.ai_suggestions.is_empty();
+    let has_suggestions = !app.ai.suggestions.is_empty();
     let suggestions_rows = if has_suggestions {
-        SUGGESTIONS_HEIGHT.min(app.ai_suggestions.len() as u16 + 1)
+        SUGGESTIONS_HEIGHT.min(app.ai.suggestions.len() as u16 + 1)
     } else {
         0
     };
@@ -67,7 +67,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // "Gemini-tan" mascot sits in the upper-center-right while the start screen shows.
     // Drawn last so it overlays cleanly; it hides once a conversation begins.
-    if app.ai_messages.is_empty() {
+    if app.ai.messages.is_empty() {
         render_mascot(frame, app, inner);
     }
 }
@@ -216,7 +216,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     // Onboarding when no key is set and nothing has been said yet.
-    if !app.ai_available && app.ai_messages.is_empty() {
+    if !app.ai.available && app.ai.messages.is_empty() {
         let lines = vec![
             Line::from(
                 t!("AI assistant — control playback in plain language.", "AI 어시스턴트 — 평범한 말로 재생을 제어하세요.").bold(),
@@ -250,7 +250,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let mut lines: Vec<Line> = Vec::new();
-    for m in &app.ai_messages {
+    for m in &app.ai.messages {
         // The prefix is a fixed-width label column; the Korean variants pad to 6 display cells
         // (한글 글자 = 2 cells) so the message text lines up across role lines.
         let (prefix, role) = match m.role {
@@ -261,7 +261,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
         // First visual line carries the role prefix; wrapping handles the rest.
         lines.push(Line::from(format!("{prefix}{}", m.text)).style(app.theme.style(role)));
     }
-    if app.ai_thinking {
+    if app.ai.thinking {
         lines.push(Line::from(t!("ai  …thinking", "ai    …생각 중").to_owned()).style(app.theme.style(R::AiThinking)));
     }
     if lines.is_empty() {
@@ -284,7 +284,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
-    let focused = app.ai_focus == AiFocus::Suggestions;
+    let focused = app.ai.focus == AiFocus::Suggestions;
     let border = if focused { R::BorderFocused } else { R::BorderMuted };
     let block = Block::default()
         .title(t!(" Suggestions ", " 추천 곡 "))
@@ -295,7 +295,7 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let items: Vec<ListItem> = app
-        .ai_suggestions
+        .ai.suggestions
         .iter()
         .map(|s| {
             let heart = if app.library.is_favorite(&s.video_id) { "♥ " } else { "" };
@@ -317,16 +317,16 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
 
     // The wheel scrolls this viewport freely; the render keeps a keyboard-moved cursor on
     // screen with a margin (see `ui::scroll`). Only highlight the selection while visible.
-    let len = app.ai_suggestions.len();
-    let offset = app.ai_scroll.resolve(
-        app.ai_suggestions_selected.min(len.saturating_sub(1)),
+    let len = app.ai.suggestions.len();
+    let offset = app.bridges.ai_scroll.resolve(
+        app.ai.suggestions_selected.min(len.saturating_sub(1)),
         inner.height,
         len,
         crate::ui::scroll::SCROLLOFF,
     );
     let mut state = ListState::default().with_offset(offset);
     if len > 0 {
-        let sel = app.ai_suggestions_selected.min(len - 1);
+        let sel = app.ai.suggestions_selected.min(len - 1);
         if (offset..offset + inner.height as usize).contains(&sel) {
             state.select(Some(sel));
         }
@@ -337,7 +337,7 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
-    let focused = app.ai_focus == AiFocus::Input;
+    let focused = app.ai.focus == AiFocus::Input;
     let border = if focused { R::BorderFocused } else { R::BorderMuted };
     let block = Block::default()
         .title(t!(" Ask ", " 질문 "))
@@ -346,16 +346,16 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         .style(app.theme.style(R::TextPrimary));
     // Ctrl+A selects the whole prompt: paint it with the selection colors. Otherwise show a
     // trailing block cursor while focused, or plain text when not.
-    let para = if focused && app.ai_select_all && !app.ai_input.is_empty() {
+    let para = if focused && app.ai.select_all && !app.ai.input.is_empty() {
         let hl = Style::default()
             .fg(app.theme.color(R::SelectionFg))
             .bg(app.theme.color(R::SelectionBg));
-        Paragraph::new(Line::from(Span::styled(app.ai_input.clone(), hl)))
+        Paragraph::new(Line::from(Span::styled(app.ai.input.clone(), hl)))
     } else {
         let text = if focused {
-            format!("{}\u{2588}", app.ai_input)
+            format!("{}\u{2588}", app.ai.input)
         } else {
-            app.ai_input.clone()
+            app.ai.input.clone()
         };
         Paragraph::new(text).style(app.theme.style(R::TextPrimary))
     };

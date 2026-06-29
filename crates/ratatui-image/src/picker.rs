@@ -3,7 +3,7 @@
 use std::{
     env,
     io::{self, Read, Write},
-    sync::mpsc::Sender,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -432,42 +432,54 @@ fn font_size_fallback() -> Option<FontSize> {
     None
 }
 
-/// Query the terminal, by writing and reading to stdin and stdout.
-/// The terminal must be in "raw mode" and should probably be reset to "cooked mode" when this
-/// operation has completed.
+/// Query the terminal by writing capability/font-size escape sequences to stdout and reading the
+/// responses from stdin, bounded by `timeout`.
 ///
-/// The returned [ProtocolType] and [FontSize] may be included in the list of [Capability]s,
-/// but the burden of picking out the right one or a font-size fallback is already resolved here.
+/// The terminal must already be in "raw mode" (no echo, no canonical/line buffering) so the
+/// responses can be read byte-by-byte; the caller restores the previous mode afterwards.
+///
+/// Several control sequences are sent at once:
+/// - `_Gi=...`: Kitty graphics support.
+/// - `[c`: Capabilities including sixels.
+/// - `[16t`: Cell-size.
+/// - `[5n`: Device Status Report, implemented by all terminals. Its `[0n` answer is the
+///   terminator we stop on, so a cooperating terminal never makes us read forever.
+///
+/// We also stop once `timeout` elapses with no further input — so a terminal that drops a response
+/// cannot hang us. This runs entirely on the calling thread: there is no background reader that
+/// could outlive the call and steal input from the event loop later.
 fn query_stdio_capabilities(
     is_tmux: bool,
     options: QueryStdioOptions,
-    tx: &Sender<QueryResult>,
-) -> Result<()> {
-    // Send several control sequences at once:
-    // `_Gi=...`: Kitty graphics support.
-    // `[c`: Capabilities including sixels.
-    // `[16t`: Cell-size (perhaps we should also do `[14t`).
-    // `[1337n`: iTerm2 (some terminals implement the protocol but sadly not this custom CSI)
-    // `[5n`: Device Status Report, implemented by all terminals, ensure that there is some
-    // response and we don't hang reading forever.
+    timeout: Duration,
+) -> Result<(Option<ProtocolType>, Option<FontSize>, Vec<Capability>)> {
     let query = Parser::query(is_tmux, options);
     io::stdout().write_all(query.as_bytes())?;
     io::stdout().flush()?;
 
+    let deadline = Instant::now() + timeout;
     let mut parser = Parser::new();
     let mut responses = vec![];
     'out: loop {
-        let mut charbuf: [u8; 50] = [0; 50];
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() || !wait_readable(remaining)? {
+            // Timed out waiting for (more) response. Drain anything already buffered so stray
+            // bytes don't leak into the subsequent event loop, then give up on the rest.
+            drain_pending_input();
+            break 'out;
+        }
 
+        let mut charbuf: [u8; 50] = [0; 50];
         let read = io::stdin().read(&mut charbuf)?;
-        // A read blocks a bit, keep receiver busy now.
-        tx.send(QueryResult::Busy)
-            .map_err(|_senderr| Errors::NoStdinResponse)?;
+        if read == 0 {
+            break 'out; // EOF on stdin
+        }
 
         for ch in charbuf.iter().take(read) {
             let mut more_caps = parser.push(char::from(*ch));
             match more_caps[..] {
                 [Response::Status] => {
+                    // DSR terminator: the full response has arrived, nothing trails it.
                     break 'out;
                 }
                 _ => responses.append(&mut more_caps),
@@ -475,10 +487,44 @@ fn query_stdio_capabilities(
         }
     }
 
-    let result = interpret_parser_responses(responses)?;
-    tx.send(QueryResult::Done(result))
-        .map_err(|_senderr| Errors::NoStdinResponse)?;
-    Ok(())
+    interpret_parser_responses(responses)
+}
+
+/// Block until stdin is readable or `timeout` elapses; returns whether stdin became readable.
+#[cfg(not(windows))]
+fn wait_readable(timeout: Duration) -> Result<bool> {
+    use rustix::event::{PollFd, PollFlags, poll};
+
+    let stdin = rustix::stdio::stdin();
+    let mut fds = [PollFd::new(&stdin, PollFlags::IN)];
+    let millis: i32 = timeout.as_millis().try_into().unwrap_or(i32::MAX);
+    poll(&mut fds, millis)?;
+    Ok(fds[0].revents().contains(PollFlags::IN))
+}
+
+/// Block until stdin is readable or `timeout` elapses; returns whether stdin became readable.
+#[cfg(windows)]
+fn wait_readable(timeout: Duration) -> Result<bool> {
+    use windows::Win32::Foundation::WAIT_OBJECT_0;
+    use windows::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+    use windows::Win32::System::Threading::WaitForSingleObject;
+
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) }?;
+    let millis: u32 = timeout.as_millis().try_into().unwrap_or(u32::MAX);
+    let result = unsafe { WaitForSingleObject(handle, millis) };
+    Ok(result == WAIT_OBJECT_0)
+}
+
+/// Best-effort, non-blocking drain of any bytes still buffered on stdin (e.g. a late or partial
+/// capability response) so they are not re-interpreted as input events by the event loop.
+fn drain_pending_input() {
+    while matches!(wait_readable(Duration::ZERO), Ok(true)) {
+        let mut buf = [0u8; 64];
+        match io::stdin().read(&mut buf) {
+            Ok(n) if n > 0 => continue,
+            _ => break,
+        }
+    }
 }
 
 fn interpret_parser_responses(
@@ -552,49 +598,26 @@ fn interpret_parser_responses(
     Ok((proto, font_size, capabilities))
 }
 
-enum QueryResult {
-    Done((Option<ProtocolType>, Option<FontSize>, Vec<Capability>)),
-    Err(Errors),
-    Busy,
-}
 fn query_with_timeout(
     is_tmux: bool,
     options: QueryStdioOptions,
 ) -> Result<(Option<ProtocolType>, Option<FontSize>, Vec<Capability>)> {
-    use std::{sync::mpsc, thread};
-    let (tx, rx) = mpsc::channel();
-
     let timeout = options.timeout;
-    thread::spawn(move || {
-        if let Err(err) = tx
-            .send(QueryResult::Busy)
-            .map_err(|_senderr| Errors::NoStdinResponse)
-            .and_then(|_| enable_raw_mode())
-            .and_then(|disable_raw_mode| {
-                tx.send(QueryResult::Busy)
-                    .map_err(|_senderr| Errors::NoStdinResponse)?;
-                let result = query_stdio_capabilities(is_tmux, options, &tx);
-                disable_raw_mode()?;
-                result
-            })
-        {
-            // Last chance, fire and forget now.
-            let _ = tx.send(QueryResult::Err(err));
-        }
-    });
 
-    loop {
-        match rx.recv_timeout(timeout) {
-            Ok(qresult) => match qresult {
-                QueryResult::Done(result) => return Ok(result),
-                QueryResult::Err(err) => return Err(err),
-                QueryResult::Busy => continue, // restarts the timeout
-            },
-            Err(_recverr) => {
-                return Err(Errors::NoStdinResponse);
-            }
-        }
-    }
+    // Put the tty in raw mode so the query responses aren't echoed or line-buffered, run the
+    // query, then restore the previous mode BEFORE returning. Doing this synchronously — with no
+    // background thread — is what fixes the kitty startup corruption: the old design signalled
+    // completion over a channel and only restored the terminal mode afterwards, so the caller
+    // (crossterm's `enable_raw_mode`) could observe, and save as its restore target, a termios
+    // that was still raw. That left the app running in cooked mode (every keystroke echoed and
+    // line-buffered) and the user's shell in raw mode after exit. A detached reader could also
+    // outlive a timeout and keep stealing bytes from the event loop; there is none now.
+    let disable_raw_mode = enable_raw_mode()?;
+    let result = query_stdio_capabilities(is_tmux, options, timeout);
+    let restored = disable_raw_mode();
+    let caps = result?;
+    restored?;
+    Ok(caps)
 }
 
 #[cfg(test)]

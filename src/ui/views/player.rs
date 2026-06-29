@@ -51,14 +51,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Title (or an error, if playback failed). With the title/heart animations off this is the
     // plain bold line exactly as before; with them on, `anim::title_line` returns a shimmering /
     // scrolling line (and a pulsing ♥), which we render in place of it.
-    if !app.status.is_empty() {
-        let role = match app.status_kind {
+    if !app.status.text.is_empty() {
+        let role = match app.status.kind {
             StatusKind::Error => R::Error,
             StatusKind::Info => R::Success,
         };
         frame.render_widget(
             Paragraph::new(
-                Line::from(app.status.clone())
+                Line::from(app.status.text.clone())
                     .style(app.theme.style(role))
                     .alignment(Alignment::Center),
             ),
@@ -92,10 +92,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    // Seekbar.
-    let pos = app.time_pos.unwrap_or(0.0);
-    let dur = app.duration.unwrap_or(0.0);
-    let ratio = if dur > 0.0 { (pos / dur).clamp(0.0, 1.0) } else { 0.0 };
+    // Seekbar. Ratio + label (incl. the None/zero-duration handling) live in `format` so the
+    // edge cases are unit-tested without a frame buffer.
+    let ratio = format::seekbar_ratio(app.playback.time_pos, app.playback.duration);
     let seekbar = Gauge::default()
         .gauge_style(
             Style::default()
@@ -103,16 +102,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .bg(app.theme.color(R::GaugeEmpty)),
         )
         .ratio(ratio)
-        .label(format!(
-            "{} / {}",
-            format::time(pos),
-            if dur > 0.0 { format::time(dur) } else { "--:--".to_owned() }
-        ));
+        .label(format::seekbar_label(app.playback.time_pos, app.playback.duration));
     frame.render_widget(seekbar, rows[3]);
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op otherwise).
     crate::ui::anim::seekbar_overlay(frame, app, rows[3], ratio);
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
-    app.seekbar_rect.set(Some(rows[3]));
+    app.bridges.seekbar_rect.set(Some(rows[3]));
 
     render_controls(frame, app, rows[5]);
 
@@ -127,15 +122,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_help_button(frame, app, rows[9]);
 
     // The status-line dropdowns draw over the screen so their rows win hit-testing.
-    if app.eq_dropdown_open {
+    if app.dropdowns.eq_open {
         render_eq_dropdown(frame, app, inner);
     }
-    if app.radio_dropdown_open {
+    if app.dropdowns.radio_open {
         render_radio_dropdown(frame, app, inner);
     }
     // The queue window draws last of all so it sits on top and its rects win.
-    app.queue_popup_rect.set(None);
-    if app.queue_popup_open {
+    app.queue_popup.rect.set(None);
+    if app.queue_popup.open {
         render_queue_popup(frame, app, inner);
     }
 }
@@ -160,8 +155,25 @@ fn rating_glyph(liked: bool, disliked: bool) -> &'static str {
 /// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
 fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
-    // (target, text); a `None` target is static label/spacing. Spacing is split into its
-    // own label so a clickable segment's hit rect hugs just its text.
+    let parts = status_line_parts(app);
+    let segments: Vec<Seg> = parts
+        .iter()
+        .map(|(target, text)| match target {
+            Some(t) => Seg::button(*t, text.as_str()),
+            None => Seg::label(text.as_str()),
+        })
+        .collect();
+    // Same style for buttons and labels so the clickable parts are visually indistinguishable.
+    let style = app.theme.style(R::PlayerLabel);
+    buttons::render_segments(frame, app, area, &segments, style, style, Alignment::Center);
+}
+
+/// Build the transport status-line as `(target, text)` segments from app state — split out
+/// from [`render_status_line`] so the conditional assembly (queue position, rating, shuffle /
+/// repeat, speed, EQ, normalize, radio mode, download tag) is unit-testable without a frame
+/// buffer. A `None` target is a static label/spacing; spacing is its own label so a clickable
+/// segment's hit rect hugs just its text.
+fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, String)> {
     let mut parts: Vec<(Option<MouseTarget>, String)> = Vec::new();
     // A braille throbber leads the line when the spinner animation is on (no-op otherwise). It's a
     // plain label, so `render_segments` keeps every later hit rect aligned to its rendered text.
@@ -172,7 +184,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     // cells on some terminals (Windows), which drifts every later segment's hit rect
     // off its rendered text and makes `R:`/`eq:` unclickable. See `render_controls`.
     let state =
-        if app.paused { t!("‖ paused", "‖ 일시정지") } else { t!("▸ playing", "▸ 재생 중") };
+        if app.playback.paused { t!("‖ paused", "‖ 일시정지") } else { t!("▸ playing", "▸ 재생 중") };
     parts.push((None, state.to_owned()));
     if !app.queue.is_empty() {
         let (pos, _) = app.queue.position();
@@ -206,16 +218,16 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         Some(MouseTarget::Player(Action::CycleRepeat)),
         format!("R:{}", app.queue.repeat.label()),
     ));
-    if (app.speed - 1.0).abs() > f64::EPSILON {
-        parts.push((None, format!("    {:.1}x", app.speed)));
+    if (app.playback.speed - 1.0).abs() > f64::EPSILON {
+        parts.push((None, format!("    {:.1}x", app.playback.speed)));
     }
     parts.push((None, "    ".to_owned()));
-    parts.push((Some(MouseTarget::EqMenu), format!("eq:{}", app.eq_preset.label())));
+    parts.push((Some(MouseTarget::EqMenu), format!("eq:{}", app.audio.preset.label())));
     // Faux VU bars trail the EQ label when the EQ-bars animation is on (no-op otherwise).
     if let Some(bars) = crate::ui::anim::eq_bars(app) {
         parts.push((None, format!("    {bars}")));
     }
-    if app.normalize {
+    if app.audio.normalize {
         parts.push((None, format!("    {}", t!("norm", "평준화"))));
     }
     if app.autoplay_radio {
@@ -229,7 +241,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     }
     // Download indicator for the current track, if one is in flight or finished.
     if let Some(s) = app.queue.current()
-        && let Some(state) = app.downloads.get(&s.video_id)
+        && let Some(state) = app.downloads.active.get(&s.video_id)
     {
         let tag = match state {
             DownloadState::Running(p) => format!("⬇ {p}%"),
@@ -239,16 +251,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
         parts.push((None, format!("    {tag}")));
     }
 
-    let segments: Vec<Seg> = parts
-        .iter()
-        .map(|(target, text)| match target {
-            Some(t) => Seg::button(*t, text.as_str()),
-            None => Seg::label(text.as_str()),
-        })
-        .collect();
-    // Same style for buttons and labels so the clickable parts are visually indistinguishable.
-    let style = app.theme.style(R::PlayerLabel);
-    buttons::render_segments(frame, app, area, &segments, style, style, Alignment::Center);
+    parts
 }
 
 /// The queue window: a themed popup listing the whole play queue (current track marked),
@@ -278,7 +281,7 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
     if popup.is_empty() {
         return;
     }
-    app.queue_popup_rect.set(Some(popup));
+    app.queue_popup.rect.set(Some(popup));
 
     frame.render_widget(Clear, popup);
     let block = Block::default()
@@ -295,10 +298,10 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
     // The wheel scrolls this viewport freely; the render only nudges it to keep a
     // keyboard-moved cursor on-screen with a margin (see `ui::scroll`).
     let visible = list.height as usize;
-    let cursor = app.queue_popup_cursor.min(songs.len() - 1);
-    let start = app.queue_popup_scroll.resolve(cursor, list.height, songs.len(), crate::ui::scroll::SCROLLOFF);
-    let sel_lo = app.queue_popup_cursor.min(app.queue_popup_anchor);
-    let sel_hi = app.queue_popup_cursor.max(app.queue_popup_anchor);
+    let cursor = app.queue_popup.cursor.min(songs.len() - 1);
+    let start = app.queue_popup.scroll.resolve(cursor, list.height, songs.len(), crate::ui::scroll::SCROLLOFF);
+    let sel_lo = app.queue_popup.cursor.min(app.queue_popup.anchor);
+    let sel_hi = app.queue_popup.cursor.max(app.queue_popup.anchor);
 
     const DEL_W: u16 = 2; // "✗ " click target on the right edge
     let body_w = list.width.saturating_sub(DEL_W) as usize;
@@ -349,7 +352,7 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
 fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
     let rows: Vec<(String, bool, MouseTarget)> = crate::eq::EqPreset::CYCLE
         .iter()
-        .map(|p| (p.label().to_owned(), *p == app.eq_preset, MouseTarget::EqSelect(*p)))
+        .map(|p| (p.label().to_owned(), *p == app.audio.preset, MouseTarget::EqSelect(*p)))
         .collect();
     render_dropdown(frame, app, area, MouseTarget::EqMenu, " EQ ", &rows);
 }
@@ -386,7 +389,7 @@ fn render_dropdown(
 ) {
     // Anchor under the label, whose hit rect the status line just published.
     let Some(anchor) = app
-        .mouse_buttons
+        .bridges.mouse_buttons
         .borrow()
         .iter()
         .find(|b| b.target == anchor_target)
@@ -450,8 +453,8 @@ fn render_dropdown(
 /// the ⏮/⏯ media emoji, which some terminals widen to two cells and so drift the click
 /// rects off the rendered glyph.
 fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
-    let toggle = if app.paused { " ▸ " } else { " ‖ " };
-    let vol = format!("{}%", app.volume);
+    let toggle = if app.playback.paused { " ▸ " } else { " ‖ " };
+    let vol = format!("{}%", app.playback.volume);
     let segments = [
         Seg::button(MouseTarget::Player(Action::PrevTrack), " ⇤ "),
         Seg::label("   "),
@@ -484,7 +487,7 @@ const MIN_LYRICS_ROWS: u16 = 3;
 /// the art's real bottom edge. When album art is off the layout is unchanged — lyrics get
 /// the whole area, and an empty area draws nothing.
 fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
-    match (app.art_active(), app.lyrics_visible) {
+    match (app.art_active(), app.lyrics.visible) {
         // Art on top, lyrics right under it. The art is capped so a readable lyrics window
         // always remains, then lyrics start one row below the art's actual bottom (not at a
         // fixed split), so there's no dead gap between them.
@@ -558,7 +561,7 @@ fn draw_art(frame: &mut Frame, app: &App, band: Rect) -> Option<Rect> {
     }
     let mut rect = app.art_fit_rect(band);
     rect.y = band.y; // art_fit_rect centers vertically; re-anchor to the top of the band.
-    if let Some(proto) = app.art.borrow_mut().as_mut() {
+    if let Some(proto) = app.art.protocol.borrow_mut().as_mut() {
         frame.render_stateful_widget(
             StatefulImage::new().resize(Resize::Scale(Some(FilterType::Lanczos3))),
             rect,
@@ -574,12 +577,12 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
     let centered = |s: &str, style: Style| Line::from(s.to_owned()).style(style).alignment(Alignment::Center);
     let dim = app.theme.style(R::LyricsDim);
 
-    let lines = match &app.lyrics {
+    let lines = match &app.lyrics.track {
         Some(t) if !t.lines.is_empty() => &t.lines,
         _ => {
-            let msg = if app.lyrics_loading {
+            let msg = if app.lyrics.loading {
                 t!("Searching lyrics…", "가사 검색 중…")
-            } else if app.lyrics.is_some() {
+            } else if app.lyrics.track.is_some() {
                 t!("No synced lyrics found.", "동기화된 가사가 없어요.")
             } else {
                 t!("Fetching lyrics…", "가사 가져오는 중…")
@@ -593,7 +596,7 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
     if height == 0 {
         return;
     }
-    let pos = app.time_pos.unwrap_or(0.0);
+    let pos = app.playback.time_pos.unwrap_or(0.0);
     let cur = lyrics::current_index(lines, pos);
     // Keep the current line vertically centered.
     let start = cur.unwrap_or(0).saturating_sub(height / 2);
@@ -610,4 +613,41 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(rendered), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::Song;
+
+    fn has_target(
+        parts: &[(Option<MouseTarget>, String)],
+        pred: impl Fn(&MouseTarget) -> bool,
+    ) -> bool {
+        parts.iter().any(|(t, _)| t.as_ref().is_some_and(&pred))
+    }
+
+    #[test]
+    fn status_line_always_offers_shuffle_repeat_and_eq() {
+        let app = App::new(100);
+        let parts = status_line_parts(&app);
+        // Shuffle, repeat and the EQ menu are always present so the line never reflows.
+        assert!(has_target(&parts, |t| matches!(t, MouseTarget::Player(Action::ToggleShuffle))));
+        assert!(has_target(&parts, |t| matches!(t, MouseTarget::Player(Action::CycleRepeat))));
+        assert!(has_target(&parts, |t| matches!(t, MouseTarget::EqMenu)));
+        // Idle queue: no position label and no rating glyph (nothing is current).
+        assert!(!has_target(&parts, |t| matches!(t, MouseTarget::QueuePos)));
+        assert!(!has_target(&parts, |t| matches!(t, MouseTarget::Player(Action::CycleRating))));
+    }
+
+    #[test]
+    fn status_line_shows_position_and_rating_once_a_track_is_current() {
+        let mut app = App::new(100);
+        app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
+        let parts = status_line_parts(&app);
+        // The clickable N/M position label appears, reading "1/1".
+        assert!(parts.iter().any(|(t, s)| matches!(t, Some(MouseTarget::QueuePos)) && s == "1/1"));
+        // A current track means the tri-state rating glyph is offered.
+        assert!(has_target(&parts, |t| matches!(t, MouseTarget::Player(Action::CycleRating))));
+    }
 }

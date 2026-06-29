@@ -23,7 +23,27 @@ pub fn init(mouse: bool) -> io::Result<DefaultTerminal> {
         execute!(io::stdout(), EnableMouseCapture)?;
     }
     enable_keyboard_enhancement();
+    // Discard any input already queued by terminal setup — chiefly leftover bytes from the
+    // graphics/keyboard capability probes (DA1 `\e[?...c`, cell-size `\e[...t`, kitty APC) that
+    // would otherwise be mis-parsed as key/mouse events the moment the event loop starts.
+    flush_pending_input();
     Ok(terminal)
+}
+
+/// Drain and discard any events already buffered before the main event loop begins. Bounded so a
+/// user holding a key at launch can't make this spin.
+fn flush_pending_input() {
+    use std::time::Duration;
+    for _ in 0..1024 {
+        match crossterm::event::poll(Duration::ZERO) {
+            Ok(true) => {
+                if crossterm::event::read().is_err() {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
 }
 
 /// Restore the terminal to its original state. Safe to call more than once.
