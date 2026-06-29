@@ -39,6 +39,7 @@ It's fast, it's light, and it was built by one person who probably should have b
   - [AI (assistant + radio)](#ai-tab)
 - [Radio: music that never stops](#radio-music-that-never-stops)
 - [Downloads: keeping music offline](#downloads-keeping-music-offline)
+- [Remote control: drive it from anywhere](#remote-control-drive-it-from-anywhere)
 - [Signing in with cookies (optional)](#signing-in-with-cookies-optional)
 - [Where your settings are kept](#where-your-settings-are-kept)
 - [When things go wrong](#when-things-go-wrong)
@@ -476,6 +477,76 @@ Press **`d`** on any song and it's saved to your disk so you can play it even wi
 Everything goes into that one folder — no fiddly per-artist subfolders to dig through. Downloaded songs then appear automatically in your **Library**, under both **All** and **Downloads**, sitting right next to your streamed music.
 
 Want them somewhere else? Change **Download dir** in Settings, or set the `YTM_DOWNLOAD_DIR` environment variable.
+
+---
+
+## Remote control: drive it from anywhere
+
+Once `ytt` is up and playing, you can boss it around from *another* terminal — or, much nicer, straight from your keyboard's media keys — without ever clicking back into its window. The magic prefix is **`ytt -r`** (`-r` for *remote*):
+
+```sh
+ytt -r pp          # play / pause
+ytt -r next        # skip to the next song
+ytt -r radio on    # switch the endless radio on
+ytt -r status      # what's playing right now?
+ytt -r quit        # stop the music and close ytt
+```
+
+Each one quietly connects to the `ytt` you already have open, does the single thing you asked, prints a one-line "here's what happened," and gets out of the way. The music screen doesn't so much as flicker.
+
+**The full vocabulary** (every command has a short alias or two):
+
+| Type this | …and ytt will | Short for |
+| --- | --- | --- |
+| `ytt -r next` | Skip to the next song | `n` |
+| `ytt -r prev` | Back to the previous song | `p` |
+| `ytt -r play-pause` | Toggle play / pause | `pp`, `toggle` |
+| `ytt -r up` / `ytt -r down` | Nudge the volume up / down | `vol-up` / `vol-down` |
+| `ytt -r back` / `ytt -r fwd` | Seek backward / forward | `rewind` / `forward` |
+| `ytt -r radio [on\|off\|toggle]` | Turn the radio on, off, or flip it | — |
+| `ytt -r status` | Print a one-line "now playing" summary | `st` |
+| `ytt -r quit` | Stop playback and close the app | `exit` |
+
+`ytt -r status` answers with one tidy line, something like:
+
+```
+[playing] Bohemian Rhapsody — Queen  •  vol 80%  •  3/12  •  radio on
+```
+
+Two flags worth knowing: add **`-q`** to silence the success line (handy for media-key bindings that shouldn't chatter), and **`--json`** if you'd rather have a machine-readable blob for a status bar. `ytt -r --help` lists the lot.
+
+### Wiring it to your media keys
+
+This is the fun part. Teach those tiny `⏯ ⏭ ⏮` keys once and you'll never alt-tab to the player again. On **i3** or **sway**, drop this into your config:
+
+```
+bindsym XF86AudioPlay exec ytt -r pp
+bindsym XF86AudioNext exec ytt -r next
+bindsym XF86AudioPrev exec ytt -r prev
+```
+
+Anything that can run a command on a keypress works the same way — Hyprland's `bindl`, GNOME's custom shortcuts, or on macOS a tool like [skhd](https://github.com/koekeishiya/skhd) or Karabiner. Just point the key at `ytt -r <command>`.
+
+### Only one player at a time
+
+A small, pleasant side effect: once `ytt` is running, typing `ytt` again **won't** launch a second player to fight over your speakers. It bows out politely instead:
+
+```
+ytt is already running.
+  Control it:  ytt -r <command>   (e.g. `ytt -r pp`, `ytt -r next`)
+  Stop it:     ytt -r quit
+  New player:  ytt --new-instance
+```
+
+So a stray second launch just reminds you how to reach the one you've already got. And if you *really* do want a second, fully independent player, `ytt --new-instance` is the escape hatch.
+
+### For the scripters
+
+`ytt -r` follows the usual exit-code manners, so it behaves inside scripts and key bindings:
+
+- **`0`** — done, all good.
+- **`1`** — couldn't reach a running `ytt` (is one actually open?).
+- **`2`** — the command didn't make sense or didn't apply (a typo'd verb, or `next` on an empty queue).
 
 ---
 
