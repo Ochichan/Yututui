@@ -34,7 +34,7 @@ pub const SEEK_SECONDS_DEFAULT: f64 = 10.0;
 /// when it is off, nothing animates regardless of the per-effect flags, and the animation
 /// frame-clock never even wakes (see `App::animation_active`). Grouped under one JSON key
 /// (`"animations"`) and `#[serde(default)]` so older config files forward-migrate cleanly.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AnimationsConfig {
     /// Global enable. Off → the player renders identically to today, zero overhead.
@@ -65,9 +65,56 @@ pub struct AnimationsConfig {
     pub starfield: bool,
     /// DVD-style bouncing logo.
     pub bounce: bool,
+    // Behaviour knobs (not effects) -------------------------------------------
+    /// Park the animation tick while the terminal is unfocused (minimized or behind another
+    /// window). Defaults to `true`; opt out to keep animating off-screen. No-op on terminals that
+    /// don't report focus (DECSET ?1004). See [`crate::app::App::animation_active`].
+    pub pause_unfocused: bool,
+    /// Target animation frame rate. Read through [`Self::effective_fps`], which clamps to
+    /// [`FPS_MIN`]..=[`FPS_MAX`] so a hand-edited or corrupt config can't spin the loop or freeze
+    /// it. Lower values trade smoothness for less CPU/battery. Default [`FPS_DEFAULT`].
+    pub fps: u16,
+}
+
+/// Animation frame-rate bounds. The floor keeps motion perceptible; the ceiling caps the
+/// redraw cost. The default matches the long-standing fixed ~30 fps tick.
+pub const FPS_MIN: u16 = 5;
+pub const FPS_MAX: u16 = 60;
+pub const FPS_DEFAULT: u16 = 30;
+
+impl Default for AnimationsConfig {
+    /// All visual effects start **off** (reduced-motion by default); the behaviour knobs default
+    /// to `pause_unfocused: true` and `fps: 30`. A manual impl (rather than `#[derive(Default)]`)
+    /// is required so these aren't `bool`'s `false` / `u16`'s `0` (a `0` fps would clamp to the
+    /// floor and silently override the intended default).
+    fn default() -> Self {
+        Self {
+            master: false,
+            title: false,
+            heart: false,
+            seekbar: false,
+            spinner: false,
+            eq_bars: false,
+            controls: false,
+            border: false,
+            rain: false,
+            donut: false,
+            visualizer: false,
+            starfield: false,
+            bounce: false,
+            pause_unfocused: true,
+            fps: FPS_DEFAULT,
+        }
+    }
 }
 
 impl AnimationsConfig {
+    /// The frame rate to actually drive the tick at, clamped to a sane range so a bad config
+    /// value (0, or absurdly high) can't busy-spin or stall the animation loop.
+    pub fn effective_fps(&self) -> u16 {
+        self.fps.clamp(FPS_MIN, FPS_MAX)
+    }
+
     /// Whether any individual effect is enabled (ignores `master`).
     pub fn any_effect(&self) -> bool {
         self.title

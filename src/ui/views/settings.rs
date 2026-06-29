@@ -13,7 +13,7 @@ use crate::app::{App, MouseTarget};
 use crate::keymap::{self, Action, Conflict, KeyContext};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
-use crate::config::{SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
+use crate::config::{FPS_MAX, FPS_MIN, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
 use crate::t;
 use crate::theme::ThemeConfig;
 use crate::theme::ThemeRole as R;
@@ -352,6 +352,13 @@ fn field_value_text(st: &SettingsState, field: Field, focused: bool) -> String {
             &bar(st.draft.eq_bands[i], BAND_GAIN_MIN, BAND_GAIN_MAX),
             &format!("{:+.0} dB", st.draft.eq_bands[i]),
         ),
+        (Field::AnimFps, _) => {
+            let fps = st.draft.animations.effective_fps();
+            slider_str(
+                &bar(f64::from(fps), f64::from(FPS_MIN), f64::from(FPS_MAX)),
+                &format!("{fps} fps"),
+            )
+        }
         (_, FieldKind::Select) => format!("< {} >", st.draft.value_display(field)),
         _ => st.draft.value_display(field),
     }

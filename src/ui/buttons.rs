@@ -124,9 +124,18 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::with_capacity(ITEMS.len() * 2 + 4);
     let mut x = area.x;
 
-    // Left gutter before the brand.
-    spans.push(Span::raw(MARGIN));
-    x = x.saturating_add(text_width(MARGIN));
+    // Left gutter doubles as the global animation toggle: a ✨ when animations are on, two blank
+    // cells when off. Both are exactly 2 cells wide (`text_width("✨") == text_width("  ") == 2`),
+    // so the brand and tabs never shift between states. The hit rect is published in both states,
+    // so clicking the blank slot turns animations back on. Color emoji ignore SGR fg on many
+    // terminals, so the on/off signal is the glyph itself (✨ vs blank), not its color.
+    let spark = if app.animations().master { "✨" } else { MARGIN };
+    app.register_mouse_button(
+        Rect { x, y: area.y, width: text_width(MARGIN), height: area.height.min(1) },
+        MouseTarget::Global(Action::ToggleAnimations),
+    );
+    spans.push(Span::styled(spark, brand));
+    x = x.saturating_add(text_width(spark));
 
     // The brand doubles as a click target that opens the About card.
     app.register_mouse_button(

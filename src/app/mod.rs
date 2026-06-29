@@ -220,6 +220,11 @@ pub struct App {
     /// Monotonic animation frame counter, bumped on each [`Msg::AnimTick`] (~30 fps) while
     /// animations are active. Drives every effect's phase; wraps harmlessly. `0` at rest.
     anim_frame: u64,
+
+    /// Whether the terminal currently holds input focus (DECSET ?1004, fed by [`Msg::Focus`]).
+    /// Defaults to `true`, so terminals/multiplexers that never report focus animate exactly as
+    /// before — the pause is strictly additive. Gates [`App::animation_active`].
+    pub focused: bool,
 }
 
 impl App {
@@ -283,6 +288,7 @@ impl App {
             prefetch: Prefetch::default(),
             bridges: RenderBridges::default(),
             last_shown_sec: -1,
+            focused: true,
         }
     }
 
@@ -396,6 +402,14 @@ impl App {
                 // this while `animation_active()` is true, so the wrapping `wrapping_add` and a
                 // single redraw are the entire per-frame cost; idle when animations are off.
                 self.anim_frame = self.anim_frame.wrapping_add(1);
+                self.dirty = true;
+            }
+            Msg::Focus(f) => {
+                // Terminal focus toggled. `animation_active()` reads `focused` to park the ~30 fps
+                // tick while we're hidden; one redraw repaints cleanly on the transition (freeze a
+                // tidy frame on blur, resume instantly on focus). The seekbar keeps advancing via
+                // `PlayerTimePos`, which is independent of this tick.
+                self.focused = f;
                 self.dirty = true;
             }
             Msg::PlayerTimePos(t) => {

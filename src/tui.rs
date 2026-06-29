@@ -8,11 +8,12 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
-use ratatui::DefaultTerminal;
+use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+use ratatui::{DefaultTerminal, Frame};
 
 static KEYBOARD_ENHANCEMENT_ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -22,12 +23,33 @@ pub fn init(mouse: bool) -> io::Result<DefaultTerminal> {
     if mouse {
         execute!(io::stdout(), EnableMouseCapture)?;
     }
+    // Ask the terminal to report focus in/out (DECSET ?1004) so the reducer can park animations
+    // while we're hidden. Independent of mouse capture; a no-op on terminals that don't support
+    // it (they simply never send the events, and `App.focused` stays `true`). Safe to enable
+    // before the input flush below — focus is reported only on *transitions*, not as a backlog.
+    let _ = execute!(io::stdout(), EnableFocusChange);
     enable_keyboard_enhancement();
     // Discard any input already queued by terminal setup — chiefly leftover bytes from the
     // graphics/keyboard capability probes (DA1 `\e[?...c`, cell-size `\e[...t`, kitty APC) that
     // would otherwise be mis-parsed as key/mouse events the moment the event loop starts.
     flush_pending_input();
     Ok(terminal)
+}
+
+/// Draw one frame wrapped in a synchronized update (DECSET ?2026), so the terminal swaps the
+/// whole frame atomically instead of revealing it mid-paint. This removes tearing on the
+/// full-screen canvas effects (matrix rain / donut / visualizer), which touch most of the screen
+/// each frame. `Begin`/`End` are unsupported-terminal-safe — a terminal that doesn't grok the
+/// private mode simply ignores both, leaving behaviour identical to a bare `draw`. `End` is always
+/// emitted, even if `draw` errors, so a failed frame can't leave the terminal stuck mid-update.
+pub fn draw_synced<F>(terminal: &mut DefaultTerminal, render: F) -> io::Result<()>
+where
+    F: FnOnce(&mut Frame),
+{
+    let _ = execute!(io::stdout(), BeginSynchronizedUpdate);
+    let res = terminal.draw(render);
+    let _ = execute!(io::stdout(), EndSynchronizedUpdate);
+    res.map(|_| ())
 }
 
 /// Drain and discard any events already buffered before the main event loop begins. Bounded so a
@@ -49,6 +71,7 @@ fn flush_pending_input() {
 /// Restore the terminal to its original state. Safe to call more than once.
 pub fn restore(mouse: bool) {
     disable_keyboard_enhancement();
+    let _ = execute!(io::stdout(), DisableFocusChange);
     if mouse {
         let _ = execute!(io::stdout(), DisableMouseCapture);
     }

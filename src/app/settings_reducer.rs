@@ -339,6 +339,20 @@ impl App {
                 // Stored only — affects the next seek key, nothing to push to mpv now.
                 Vec::new()
             }
+            Field::AnimFps => {
+                let s = self.settings_mut();
+                let next = (i32::from(s.draft.animations.fps) + dir * i32::from(settings::ANIM_FPS_STEP))
+                    .clamp(i32::from(crate::config::FPS_MIN), i32::from(crate::config::FPS_MAX));
+                s.draft.animations.fps = next as u16;
+                // Stored only — the main loop rebuilds the animation-tick interval from the saved
+                // rate when Settings closes (it reads `config.animations.effective_fps()`).
+                Vec::new()
+            }
+            Field::AnimPauseUnfocused => {
+                let s = self.settings_mut();
+                s.draft.animations.pause_unfocused = !s.draft.animations.pause_unfocused;
+                Vec::new()
+            }
             Field::EqPreset => {
                 let s = self.settings_mut();
                 // `Custom` isn't in CYCLE; rather than jump to a surprising neighbour,

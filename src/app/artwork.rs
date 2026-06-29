@@ -16,12 +16,23 @@ impl App {
     /// **or** when the AI start-screen mascot wants to groove (see [`Self::ai_mascot_active`]).
     /// The main loop arms its ~30 fps tick on this; when it is false the tick never fires, so the
     /// app behaves byte-for-byte like today (the lightweight path).
+    ///
+    /// Two additional gates suppress the clock even when an effect is logically running:
+    /// - **Focus** — while `pause_unfocused` is on and the terminal has lost focus (minimized or
+    ///   behind another window), there's nothing to see, so we park the tick. Defaults make this
+    ///   a no-op on terminals that don't report focus (`focused` stays `true`).
+    /// - **Full-screen overlays** — the help (`?`) and About panes cover the animated area, so we
+    ///   freeze underneath them and resume on close. (Partial dropdowns don't count.)
     pub fn animation_active(&self) -> bool {
-        (matches!(self.mode, Mode::Player)
+        let running = (matches!(self.mode, Mode::Player)
             && !self.playback.paused
             && self.queue.current().is_some()
             && self.config.animations.active())
-            || self.ai_mascot_active()
+            || self.ai_mascot_active();
+        running
+            && (!self.config.animations.pause_unfocused || self.focused)
+            && !self.help_visible
+            && !self.about_visible
     }
 
     /// Whether the "Gemini-tan" mascot on the AI start screen should be dancing right now. True
@@ -47,6 +58,28 @@ impl App {
     /// Current animation frame counter — advances ~30×/s while [`Self::animation_active`].
     pub fn anim_frame(&self) -> u64 {
         self.anim_frame
+    }
+
+    /// Flip the global animation master switch and persist it. Shared by the `A` shortcut
+    /// ([`Action::ToggleAnimations`]) and the ✨ nav-bar button, so both paths behave identically
+    /// (DRY). Shows a transient ✓/✗ toast (auto-expired centrally by [`App::update`]).
+    pub(in crate::app) fn toggle_animations(&mut self) -> Vec<Cmd> {
+        let on = !self.config.animations.master;
+        self.config.animations.master = on;
+        // If the Settings screen is open, its draft is the source of truth on close
+        // (`SettingsDraft::apply_to` copies `draft.animations` wholesale), so mirror the flip there
+        // too — otherwise closing Settings would silently revert what the user just toggled.
+        if let Some(s) = self.settings.as_mut() {
+            s.draft.animations.master = on;
+        }
+        self.status.kind = StatusKind::Info;
+        self.status.text = format!(
+            "{}: {}",
+            t!("Animations", "애니메이션"),
+            if on { "✓" } else { "✗" }
+        );
+        self.dirty = true;
+        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
     }
 
     /// A bitmask of which `Clear` popups that paint over the album-art band are open:

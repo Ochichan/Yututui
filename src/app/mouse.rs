@@ -123,6 +123,8 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            // The ✨ at the top-left of the nav bar — same handler as the `A` shortcut.
+            MouseTarget::Global(Action::ToggleAnimations) => self.toggle_animations(),
             MouseTarget::Global(_) => Vec::new(),
             MouseTarget::Player(action) if self.mode == Mode::Player => {
                 self.on_player_action(action)

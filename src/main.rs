@@ -102,6 +102,12 @@ fn build_art_picker() -> ratatui_image::picker::Picker {
     }
 }
 
+/// The animation tick period for a given frame rate. `fps` is expected pre-clamped (via
+/// [`config::AnimationsConfig::effective_fps`]); the `.max(1)` is a divide-by-zero guard only.
+fn anim_tick_period(fps: u16) -> Duration {
+    Duration::from_millis((1000 / u64::from(fps.max(1))).max(1))
+}
+
 async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     cfg: config::Config,
@@ -261,14 +267,16 @@ async fn run(
     // expire it (and restore the title) ~3s after it was shown. Idle otherwise.
     let mut status_tick = tokio::time::interval(Duration::from_millis(250));
     status_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    // Drives the optional player-view animations at ~30 fps — but only ticks while
-    // `app.animation_active()` holds (player view, master + an effect enabled, a track
-    // playing). With every animation toggle off (the default) the guard is false, this timer
-    // never wakes, and the loop stays exactly as light as before. `Skip` drops missed frames
-    // so a busy moment can't build up a backlog of redraws.
-    let mut anim_tick = tokio::time::interval(Duration::from_millis(33));
+    // Drives the optional player-view animations at the configured frame rate — but only ticks
+    // while `app.animation_active()` holds (player view, master + an effect enabled, a track
+    // playing, focused, no full-screen overlay). With every animation toggle off (the default) the
+    // guard is false, this timer never wakes, and the loop stays exactly as light as before.
+    // `Skip` drops missed frames so a busy moment can't build up a backlog of redraws. The period
+    // is rebuilt below whenever the user changes the rate in Settings.
+    let mut anim_fps = app.config.animations.effective_fps();
+    let mut anim_tick = tokio::time::interval(anim_tick_period(anim_fps));
     anim_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    terminal.draw(|f| ui::render(f, &app))?;
+    tui::draw_synced(terminal, |f| ui::render(f, &app))?;
 
     while !app.should_quit {
         // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
@@ -285,7 +293,7 @@ async fn run(
             },
             Some(m) = worker_rx.recv() => m,
             _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
-                terminal.draw(|f| ui::render(f, &app))?;
+                tui::draw_synced(terminal, |f| ui::render(f, &app))?;
                 app.dirty = false;
                 continue;
             },
@@ -381,6 +389,16 @@ async fn run(
             }
         }
 
+        // The frame rate may have changed in Settings (committed to `config.animations` on close).
+        // Rebuild the tick so the new rate applies without a relaunch — only when it actually
+        // changed, so the common path costs one `u16` compare.
+        let new_fps = app.config.animations.effective_fps();
+        if new_fps != anim_fps {
+            anim_fps = new_fps;
+            anim_tick = tokio::time::interval(anim_tick_period(anim_fps));
+            anim_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        }
+
         if app.dirty {
             // An art-covering popup (eq/radio dropdown or queue window) just opened, closed, or
             // switched: rebuild the art so the next draw re-transmits and re-emits the whole image,
@@ -389,7 +407,7 @@ async fn run(
             if overlay_before != overlay_after && app.art_active() {
                 app.refresh_art();
             }
-            terminal.draw(|f| ui::render(f, &app))?;
+            tui::draw_synced(terminal, |f| ui::render(f, &app))?;
             app.dirty = false;
         }
     }

@@ -33,6 +33,11 @@ pub enum Msg {
     },
     /// The terminal was resized; ratatui auto-resizes on draw, we just redraw.
     Resize,
+    /// Terminal focus changed (DECSET ?1004). `false` while the window is unfocused
+    /// (minimized / behind another window); the main loop then parks the ~30 fps animation
+    /// tick (see [`App::animation_active`]). Unsupported terminals never send this, so the
+    /// app stays at its `focused: true` default and behaves exactly as before.
+    Focus(bool),
     /// A termination signal asked us to shut down.
     Quit,
     /// Startup-only: begin playing the restored last track (sent once at launch when the

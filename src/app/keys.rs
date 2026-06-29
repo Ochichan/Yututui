@@ -118,6 +118,7 @@ impl App {
                     self.dirty = true;
                     return Vec::new();
                 }
+                Action::ToggleAnimations => return self.toggle_animations(),
                 Action::ToggleRadio => {
                     self.autoplay_radio = !self.autoplay_radio;
                     self.status.text = format!(

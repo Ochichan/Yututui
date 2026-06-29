@@ -29,6 +29,9 @@ pub const BAND_GAIN_STEP: f64 = 1.0;
 pub const SPEED_STEP: f64 = 0.1;
 /// Seek-step slider step (seconds) for the Playback tab (←/→).
 pub const SEEK_SECONDS_STEP: f64 = 1.0;
+/// Animation frame-rate slider step (fps) for the Graphics tab (←/→). Values are clamped to
+/// [`crate::config::FPS_MIN`]..=[`crate::config::FPS_MAX`] on change.
+pub const ANIM_FPS_STEP: u16 = 5;
 
 /// The settings tabs, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +110,8 @@ impl SettingsTab {
                 f.extend(ThemeRole::ALL.iter().copied().map(Field::ThemeColor));
                 f.extend([
                     Field::AnimMaster,
+                    Field::AnimFps,
+                    Field::AnimPauseUnfocused,
                     Field::AnimTitle,
                     Field::AnimHeart,
                     Field::AnimSeekbar,
@@ -147,7 +152,7 @@ impl SettingsTab {
             SettingsTab::Graphics => vec![
                 (t!("Theme", "테마"), 2),
                 (t!("Colors", "색상"), ThemeRole::ALL.len()),
-                (t!("Animations", "애니메이션"), 13),
+                (t!("Animations", "애니메이션"), 15),
             ],
             _ => Vec::new(),
         }
@@ -191,9 +196,16 @@ pub enum Field {
     /// Toggle the background to "no color" (transparent), letting the terminal show through.
     BackgroundNone,
     ThemeColor(ThemeRole),
-    // Animations — every one is a plain on/off toggle. `AnimMaster` is the global enable;
-    // the rest are per-effect. Each maps to a flag in [`AnimationsConfig`] via `anim_flag`.
+    // Animations — `AnimMaster` is the global enable and `AnimFps` is the frame-rate slider; the
+    // rest are per-effect on/off toggles, each mapping to a flag in [`AnimationsConfig`] via
+    // `anim_flag`. `AnimFps` is the one non-toggle here (a `Slider`), so it is excluded from
+    // `anim_flag` and handled on its own in `kind`/`value_display`/`settings_change`.
     AnimMaster,
+    AnimFps,
+    /// Behaviour knob (a toggle): pause the animation tick while the terminal is unfocused.
+    /// Maps to `AnimationsConfig::pause_unfocused`, handled explicitly (not via `anim_flag`,
+    /// which is for visual effects only).
+    AnimPauseUnfocused,
     AnimTitle,
     AnimHeart,
     AnimSeekbar,
@@ -229,6 +241,7 @@ impl Field {
             Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => FieldKind::Text,
             Field::Mouse | Field::AlbumArt | Field::AutoplayOnStart | Field::Gapless
             | Field::AutoplayRadio | Field::Normalize | Field::AiEnabled | Field::BackgroundNone
+            | Field::AnimPauseUnfocused
             | Field::AnimMaster | Field::AnimTitle | Field::AnimHeart | Field::AnimSeekbar
             | Field::AnimSpinner | Field::AnimEqBars | Field::AnimControls | Field::AnimBorder
             | Field::AnimRain | Field::AnimDonut | Field::AnimVisualizer | Field::AnimStarfield
@@ -238,7 +251,9 @@ impl Field {
             | Field::GeminiModel
             | Field::ThemePreset
             | Field::RadioMode => FieldKind::Select,
-            Field::Speed | Field::SeekInterval | Field::Band(_) => FieldKind::Slider,
+            Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
+                FieldKind::Slider
+            }
             Field::ResetKeybindings | Field::ResetAll => FieldKind::Button,
         }
     }
@@ -291,6 +306,10 @@ impl Field {
             Field::BackgroundNone => t!("Background: None", "배경 없음").to_owned(),
             Field::ThemeColor(role) => role.label().to_owned(),
             Field::AnimMaster => t!("Enable animations", "애니메이션 켜기").to_owned(),
+            Field::AnimFps => t!("Frame rate", "프레임 레이트").to_owned(),
+            Field::AnimPauseUnfocused => {
+                t!("Pause when unfocused", "포커스 없을 때 정지").to_owned()
+            }
             Field::AnimTitle => t!("Title shimmer", "제목 반짝임").to_owned(),
             Field::AnimHeart => t!("Beating heart", "하트 박동").to_owned(),
             Field::AnimSeekbar => t!("Seekbar glow", "탐색바 반짝임").to_owned(),
@@ -405,6 +424,10 @@ impl SettingsDraft {
                 toggle_str(self.theme.is_role_transparent(ThemeRole::Background))
             }
             Field::ThemeColor(role) => self.theme.effective_hex(role),
+            // The lone numeric animation field: shown as "<n> fps" (clamped to the valid range).
+            Field::AnimFps => format!("{} fps", self.animations.effective_fps()),
+            // Behaviour knob, rendered as a checkbox (handled explicitly, not via `anim_flag`).
+            Field::AnimPauseUnfocused => toggle_str(self.animations.pause_unfocused),
             // All 13 animation toggles render as a checkbox; one mapping (`anim_flag`) reads
             // the live value out of the draft's `animations`, so display never drifts from
             // the toggle/persist paths. (`field` is the value being matched here.)
@@ -585,14 +608,23 @@ mod tests {
     fn graphics_tab_groups_theme_colors_and_animations() {
         let _guard = crate::i18n::lock_for_test();
         let f = SettingsTab::Graphics.fields();
-        // ThemePreset + BackgroundNone + every color role + 13 animation toggles.
-        assert_eq!(f.len(), 2 + ThemeRole::ALL.len() + 13);
+        // ThemePreset + BackgroundNone + every color role + 15 animation fields
+        // (master enable + fps slider + pause-when-unfocused toggle + 12 per-effect toggles).
+        assert_eq!(f.len(), 2 + ThemeRole::ALL.len() + 15);
         assert_eq!(f[0], Field::ThemePreset);
         assert_eq!(f[1], Field::BackgroundNone);
         assert!(matches!(f[2], Field::ThemeColor(_)));
         let anim_start = 2 + ThemeRole::ALL.len();
         assert_eq!(f[anim_start], Field::AnimMaster);
-        assert!(f[anim_start..].iter().all(|fld| fld.kind() == FieldKind::Toggle));
+        // The fps slider sits right after the master enable; it's the one non-toggle here.
+        assert_eq!(f[anim_start + 1], Field::AnimFps);
+        assert_eq!(Field::AnimFps.kind(), FieldKind::Slider);
+        assert!(
+            f[anim_start..]
+                .iter()
+                .filter(|fld| **fld != Field::AnimFps)
+                .all(|fld| fld.kind() == FieldKind::Toggle)
+        );
 
         // Section counts partition the field list exactly.
         let total: usize = SettingsTab::Graphics.sections().iter().map(|(_, n)| n).sum();

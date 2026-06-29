@@ -64,6 +64,11 @@ impl Translator {
                 Some(Msg::MouseScroll { up: false })
             }
             Event::Resize(_, _) => Some(Msg::Resize),
+            // Terminal focus in/out (DECSET ?1004, enabled in `tui::init`). Lets the reducer
+            // park animations while the window is hidden/behind another. A spurious startup
+            // `FocusGained` (some multiplexers emit one) is harmless — `focused` is already true.
+            Event::FocusGained => Some(Msg::Focus(true)),
+            Event::FocusLost => Some(Msg::Focus(false)),
             _ => None,
         }
     }
