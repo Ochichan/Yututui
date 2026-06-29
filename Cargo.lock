@@ -3987,7 +3987,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-tui"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "crossterm",
