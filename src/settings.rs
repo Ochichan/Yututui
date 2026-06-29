@@ -323,7 +323,8 @@ pub fn freq_label(i: usize) -> String {
 }
 
 /// The user-editable snapshot.
-#[derive(Debug, Clone)]
+// No `Debug`: holds the plaintext `gemini_api_key`, so it must not be `{:?}`-printable (see `Config`).
+#[derive(Clone)]
 pub struct SettingsDraft {
     pub cookies_file: String,
     pub download_dir: String,
@@ -487,7 +488,8 @@ fn display_path(path: &Path) -> String {
 }
 
 /// The whole settings-screen state, boxed in `App` so it costs nothing when closed.
-#[derive(Debug)]
+// No `Debug`: carries `secret_restore` (a captured copy of the API key) and the `draft` above,
+// so it must not be `{:?}`-printable.
 pub struct SettingsState {
     pub tab: SettingsTab,
     pub row: usize,

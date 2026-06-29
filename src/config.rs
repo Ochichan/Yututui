@@ -134,7 +134,9 @@ impl VideoOverlay {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// No `Debug`: this holds secrets (`cookie` raw header, `gemini_api_key`), so a stray `{:?}`
+// must not be able to leak them — same reason `GeminiClient` omits it.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Raw `Cookie:` header for music.youtube.com (takes precedence over the file).
