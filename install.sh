@@ -8,7 +8,7 @@
 #   ./install.sh --build          # always build from source (needs Rust + a clone)
 #   ./install.sh --no-modify-path # don't touch any shell rc file
 #
-# Pin a version with  YTT_VERSION=v1.6.0 ./install.sh  (default: the latest release).
+# Pin a version with  YTT_VERSION=v1.5.5 ./install.sh  (default: the latest release).
 #
 # It puts the install dir on your PATH (unless --no-modify-path) and checks that the runtime
 # tools (mpv, yt-dlp, ffmpeg) are present.

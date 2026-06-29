@@ -69,10 +69,10 @@ scoop install ytm-tui
 Per the release plan, exercise the whole pipeline on a throwaway pre-release first:
 
 ```sh
-git tag v1.6.0-rc1 && git push origin v1.6.0-rc1
+git tag vX.Y.Z-rc1 && git push origin vX.Y.Z-rc1
 ```
 
 That runs the 5-leg build matrix, publishes a pre-release with `checksums.txt`, and fires the
 three publish jobs — letting you confirm the tap/bucket/AUR pushes (and the unconfirmed
-`macos-15-intel` / `ubuntu-22.04-arm` runner labels) before tagging `v1.6.0`. Delete the
+`macos-15-intel` / `ubuntu-22.04-arm` runner labels) before tagging the real `vX.Y.Z`. Delete the
 pre-release + tag afterwards.
