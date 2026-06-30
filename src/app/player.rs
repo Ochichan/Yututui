@@ -696,6 +696,7 @@ impl App {
                 self.playback.paused = true;
                 self.last_shown_sec = -1;
                 self.prefetch.loaded_video_id = None;
+                self.clear_artwork();
                 Vec::new()
             }
         }

@@ -237,10 +237,16 @@ impl App {
 
     /// Drop any held art (track change, or the feature turned off) — also frees its RAM.
     pub(in crate::app) fn clear_artwork(&mut self) {
+        let had_native_art_under_overlay = self.native_art_active() && self.art.overlay_mask != 0;
         *self.art.protocol.borrow_mut() = None;
         self.art.source = None;
         self.art.video_id = None;
         self.art.dims = (0, 0);
+        self.art.loading = false;
+        if had_native_art_under_overlay {
+            self.art.force_clear_next_frame = true;
+            self.dirty = true;
+        }
     }
 
     /// The art's source, if album art is on and a protocol was detected. `None` keeps the

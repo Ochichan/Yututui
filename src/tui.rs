@@ -71,42 +71,55 @@ where
         let _ = execute!(io::stdout(), BeginSynchronizedUpdate);
         let res = (|| {
             write_vt_clear_for_native_images()?;
-            draw_frame_inner(terminal, clear_before, render)
+            draw_frame_after_explicit_clear(terminal, render)
         })();
         let _ = execute!(io::stdout(), EndSynchronizedUpdate);
         return res;
     }
     if clear_before {
         write_vt_clear_for_native_images()?;
+        return draw_frame_after_explicit_clear(terminal, render);
     }
-    draw_frame_inner(terminal, clear_before, render)
+    draw_frame_inner(terminal, render)
 }
 
 fn write_vt_clear_for_native_images() -> io::Result<()> {
     use io::Write;
 
-    // `Terminal::clear()` below is still required because it resets ratatui's back buffer. This
-    // explicit VT clear is a belt-and-braces step for terminal-native graphics: Windows Terminal's
-    // Sixel renderer sees the control sequence directly, even if a backend ever falls back to a
-    // platform clear path that only rewrites text cells.
+    // Clear native terminal graphics directly. We deliberately do not use `Terminal::clear()` for
+    // this path: ratatui preserves the cursor by querying crossterm's cursor position, which can
+    // race the event stream on Unix and fail after a 2s ESC[6n timeout during image-heavy redraws.
     let mut stdout = io::stdout().lock();
     stdout.write_all(b"\x1b[2J\x1b[H")?;
     stdout.flush()
 }
 
-fn draw_frame_inner<B, F>(
+fn draw_frame_inner<B, F>(terminal: &mut Terminal<B>, render: F) -> Result<(), B::Error>
+where
+    B: Backend,
+    F: FnOnce(&mut Frame),
+{
+    terminal.draw(render).map(|_| ())
+}
+
+fn draw_frame_after_explicit_clear<B, F>(
     terminal: &mut Terminal<B>,
-    clear_before: bool,
     render: F,
 ) -> Result<(), B::Error>
 where
     B: Backend,
     F: FnOnce(&mut Frame),
 {
-    if clear_before {
-        terminal.clear()?;
+    terminal.autoresize()?;
+    // After the explicit VT clear, reset ratatui's previous-screen buffer without calling
+    // `Terminal::clear()`. The next flush then treats the screen as empty and re-emits the full
+    // frame, including native-image anchor cells.
+    terminal.swap_buffers();
+    {
+        let mut frame = terminal.get_frame();
+        render(&mut frame);
     }
-    terminal.draw(render).map(|_| ())
+    terminal.apply_buffer_with_cursor(None).map(|_| ())
 }
 
 /// Drain and discard any events already buffered before the main event loop begins. Bounded so a
@@ -190,26 +203,95 @@ fn should_probe_keyboard_enhancement() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::backend::TestBackend;
+    use std::convert::Infallible;
+
+    use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
+    use ratatui::buffer::Cell;
+    use ratatui::layout::{Position, Size};
     use ratatui::widgets::Paragraph;
 
-    use super::draw_frame_inner;
+    use super::{draw_frame_after_explicit_clear, draw_frame_inner};
 
     #[test]
     fn clear_before_draw_forces_unchanged_cells_to_redraw() {
         let backend = TestBackend::new(5, 1);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
-        draw_frame_inner(&mut terminal, false, |frame| {
+        draw_frame_inner(&mut terminal, |frame| {
             frame.render_widget(Paragraph::new("abc"), frame.area());
         })
         .unwrap();
         terminal.backend().assert_buffer_lines(["abc  "]);
 
-        draw_frame_inner(&mut terminal, true, |frame| {
+        draw_frame_after_explicit_clear(&mut terminal, |frame| {
             frame.render_widget(Paragraph::new("abc"), frame.area());
         })
         .unwrap();
         terminal.backend().assert_buffer_lines(["abc  "]);
+    }
+
+    struct CursorQueryPanicBackend(TestBackend);
+
+    impl Backend for CursorQueryPanicBackend {
+        type Error = Infallible;
+
+        fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            self.0.draw(content)
+        }
+
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+            self.0.hide_cursor()
+        }
+
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
+            self.0.show_cursor()
+        }
+
+        fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
+            panic!("cursor position must not be queried")
+        }
+
+        fn set_cursor_position<P: Into<Position>>(
+            &mut self,
+            position: P,
+        ) -> Result<(), Self::Error> {
+            self.0.set_cursor_position(position)
+        }
+
+        fn clear(&mut self) -> Result<(), Self::Error> {
+            self.0.clear()
+        }
+
+        fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
+            self.0.clear_region(clear_type)
+        }
+
+        fn size(&self) -> Result<Size, Self::Error> {
+            self.0.size()
+        }
+
+        fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
+            self.0.window_size()
+        }
+
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            self.0.flush()
+        }
+    }
+
+    #[test]
+    fn explicit_clear_draw_does_not_query_cursor_position() {
+        let backend = CursorQueryPanicBackend(TestBackend::new(5, 1));
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        draw_frame_after_explicit_clear(&mut terminal, |frame| {
+            frame.render_widget(Paragraph::new("abc"), frame.area());
+        })
+        .unwrap();
+
+        terminal.backend().0.assert_buffer_lines(["abc  "]);
     }
 }

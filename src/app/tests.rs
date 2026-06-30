@@ -4885,6 +4885,115 @@ fn artwork_arriving_under_overlay_requests_full_clear() {
 }
 
 #[test]
+fn current_queue_delete_under_overlay_requests_clear_for_removed_native_art() {
+    let mut app = app_playing(3, 0);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+
+    app.queue_popup.open = true;
+    app.update(Msg::Resize);
+    assert!(
+        app.take_clear_before_draw(),
+        "opening the queue popup clears once"
+    );
+    app.dirty = false;
+
+    let cmds = app.remove_queue_range(0, 0);
+    assert_eq!(
+        app.queue.current().map(|s| s.video_id.as_str()),
+        Some("id1")
+    );
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::FetchArtwork { video_id, .. } if video_id == "id1"
+    )));
+    assert!(
+        app.take_clear_before_draw(),
+        "removing the visible native art under the queue popup must clear before redraw"
+    );
+}
+
+#[test]
+fn deleting_last_queue_track_under_overlay_clears_native_art() {
+    let mut app = app_playing(1, 0);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+
+    app.queue_popup.open = true;
+    app.update(Msg::Resize);
+    assert!(
+        app.take_clear_before_draw(),
+        "opening the queue popup clears once"
+    );
+    app.dirty = false;
+
+    let cmds = app.remove_queue_range(0, 0);
+    assert!(cmds.is_empty());
+    assert!(app.queue.is_empty());
+    assert!(!app.art_active());
+    assert!(
+        app.take_clear_before_draw(),
+        "emptying the queue still has to erase the old native art"
+    );
+}
+
+#[test]
+fn native_art_clear_under_player_overlays_requests_full_clear() {
+    fn set_eq(app: &mut App, open: bool) {
+        app.dropdowns.eq_open = open;
+    }
+    fn set_radio(app: &mut App, open: bool) {
+        app.dropdowns.radio_open = open;
+    }
+    fn set_help(app: &mut App, open: bool) {
+        app.help_visible = open;
+    }
+    fn set_about(app: &mut App, open: bool) {
+        app.about_visible = open;
+    }
+
+    for (name, set_open) in [
+        ("eq dropdown", set_eq as fn(&mut App, bool)),
+        ("radio dropdown", set_radio),
+        ("help overlay", set_help),
+        ("about popup", set_about),
+    ] {
+        let mut app = app_playing(3, 0);
+        make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+
+        set_open(&mut app, true);
+        app.update(Msg::Resize);
+        assert!(app.take_clear_before_draw(), "{name} opening clears once");
+        app.dirty = false;
+
+        let cmds = app.advance(false);
+        assert_eq!(
+            app.queue.current().map(|s| s.video_id.as_str()),
+            Some("id1")
+        );
+        assert!(cmds.iter().any(|c| matches!(
+            c,
+            Cmd::FetchArtwork { video_id, .. } if video_id == "id1"
+        )));
+        assert!(
+            app.take_clear_before_draw(),
+            "{name}: track change must clear removed native art before redraw"
+        );
+    }
+}
+
+#[test]
+fn clearing_halfblocks_art_under_overlay_does_not_request_native_clear() {
+    let mut app = app_playing(3, 0);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Halfblocks);
+    app.queue_popup.open = true;
+    app.art.overlay_mask = app.art_overlay_mask();
+    app.art.force_clear_next_frame = false;
+    app.dirty = false;
+
+    let _ = app.remove_queue_range(0, 0);
+    assert!(!app.take_clear_before_draw());
+}
+
+#[test]
 fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
     let player_area = ratatui::layout::Rect::new(0, 0, 80, 20);
     let modal_area = ratatui::layout::Rect::new(0, 0, 80, 24);
