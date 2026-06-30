@@ -151,18 +151,38 @@ impl App {
         vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
     }
 
-    /// A bitmask of which `Clear` popups that paint over the album-art band are open:
-    /// bit 0 = `eq:` dropdown, bit 1 = `radio:` dropdown, bit 2 = the queue window. The render
-    /// loop snapshots this across dispatch and, on any change, calls [`Self::refresh_art`] so the
-    /// graphics-protocol art repaints cleanly around (or after) the popup — see that method. A
-    /// mask (not a bool) so switching one popup straight to another, or a second popup opening
-    /// over a first, still registers as an edge. Add a bit here for any new art-covering popup.
-    pub fn art_overlay_mask(&self) -> u8 {
-        u8::from(self.dropdowns.eq_open)
-            | (u8::from(self.dropdowns.radio_open) << 1)
-            | (u8::from(self.queue_popup.open) << 2)
-            | (u8::from(self.about_visible) << 3)
-            | (u8::from(self.why_ai_visible) << 4)
+    /// A bitmask of visible surfaces that can cover graphics-protocol album art. Text-cell
+    /// overlays (`Clear`, modal blocks, and non-player screens) do not reliably erase Sixel/iTerm2
+    /// pixels, so the main loop snapshots this mask and clears native terminal graphics when it
+    /// changes. A mask (not a bool) keeps direct switches between overlays visible to the loop.
+    pub fn art_overlay_mask(&self) -> u16 {
+        u8::from(self.dropdowns.eq_open) as u16
+            | ((self.dropdowns.radio_open as u16) << 1)
+            | ((self.queue_popup.open as u16) << 2)
+            | ((self.help_visible as u16) << 3)
+            | ((self.about_visible as u16) << 4)
+            | ((self.why_ai_visible as u16) << 5)
+            | ((self.key_conflict.is_some() as u16) << 6)
+            | ((self.confirm_reset_all as u16) << 7)
+            | ((self.library_ui.confirm_delete.is_some() as u16) << 8)
+            | ((!matches!(self.mode, Mode::Player) as u16) << 9)
+    }
+
+    /// Whether the active album-art backend paints outside the normal text buffer. Halfblocks is
+    /// regular terminal text and can be overdrawn by `Clear`; graphics protocols need stronger
+    /// handling when popups or screen-level panels cover them.
+    pub fn art_uses_terminal_graphics(&self) -> bool {
+        self.art
+            .picker
+            .as_ref()
+            .is_some_and(|picker| !matches!(picker.protocol_type(), ProtocolType::Halfblocks))
+    }
+
+    /// Suppress native graphics-protocol art while an overlay is visible. The main loop clears the
+    /// terminal graphics layer on overlay transitions, and this keeps the next frame from
+    /// immediately re-planting art above the popup on terminals without reliable graphics z-order.
+    pub fn art_suppressed_by_overlay(&self) -> bool {
+        self.art_uses_terminal_graphics() && self.art_overlay_mask() != 0
     }
 
     /// Rebuild the held art into a fresh protocol so the *next* render re-transmits and
@@ -181,10 +201,12 @@ impl App {
             self.art.picker.as_ref(),
             self.art.resize_tx.as_ref(),
         ) {
-            *self.art.protocol.borrow_mut() = Some(ThreadProtocol::new(
-                tx.clone(),
-                Some(picker.new_resize_protocol(img.clone())),
-            ));
+            let fresh = picker.new_resize_protocol(img.clone());
+            let mut protocol = self.art.protocol.borrow_mut();
+            match protocol.as_mut() {
+                Some(current) => current.refresh_protocol(fresh),
+                None => *protocol = Some(ThreadProtocol::new(tx.clone(), Some(fresh))),
+            }
         }
     }
 

@@ -57,16 +57,30 @@ where
 pub fn draw_frame<F>(
     terminal: &mut DefaultTerminal,
     synchronized: bool,
+    clear_before: bool,
     render: F,
 ) -> io::Result<()>
 where
     F: FnOnce(&mut Frame),
 {
     if synchronized {
-        draw_synced(terminal, render)
-    } else {
-        terminal.draw(render).map(|_| ())
+        if !clear_before {
+            return draw_synced(terminal, render);
+        }
+        let _ = execute!(io::stdout(), BeginSynchronizedUpdate);
+        let res = (|| {
+            if clear_before {
+                terminal.clear()?;
+            }
+            terminal.draw(render).map(|_| ())
+        })();
+        let _ = execute!(io::stdout(), EndSynchronizedUpdate);
+        return res;
     }
+    if clear_before {
+        terminal.clear()?;
+    }
+    terminal.draw(render).map(|_| ())
 }
 
 /// Drain and discard any events already buffered before the main event loop begins. Bounded so a

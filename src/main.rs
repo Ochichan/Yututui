@@ -256,11 +256,15 @@ fn draw_app_frame(
     terminal: &mut ratatui::DefaultTerminal,
     app: &App,
     perf: &mut PerfStats,
+    clear_before: bool,
 ) -> std::io::Result<()> {
     let start = perf.enabled.then(Instant::now);
-    let res = tui::draw_frame(terminal, app.synchronized_draw_active(), |f| {
-        ui::render(f, app)
-    });
+    let res = tui::draw_frame(
+        terminal,
+        app.synchronized_draw_active() || clear_before,
+        clear_before,
+        |f| ui::render(f, app),
+    );
     if res.is_ok()
         && let Some(start) = start
     {
@@ -474,7 +478,7 @@ async fn run(
     let mut anim_fps = app.animation_tick_fps();
     let mut anim_tick = anim_interval(anim_fps);
     let mut perf = PerfStats::from_env();
-    draw_app_frame(terminal, &app, &mut perf)?;
+    draw_app_frame(terminal, &app, &mut perf, false)?;
 
     // Every actor is up and the reducer loop is one statement away from draining `worker_rx`:
     // now start the control server and publish the instance descriptor. Doing it here (rather
@@ -499,7 +503,7 @@ async fn run(
             },
             Some(m) = worker_rx.recv() => m,
             _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
-                draw_app_frame(terminal, &app, &mut perf)?;
+                draw_app_frame(terminal, &app, &mut perf, false)?;
                 app.dirty = false;
                 perf.maybe_log(&app);
                 continue;
@@ -629,14 +633,18 @@ async fn run(
         }
 
         if app.dirty {
-            // An art-covering popup (eq/radio dropdown or queue window) just opened, closed, or
-            // switched: rebuild the art so the next draw re-transmits and re-emits the whole image,
-            // overpainting any stale popup box. Cheaper and flicker-free vs a full-screen clear.
             let overlay_after = app.art_overlay_mask();
-            if overlay_before != overlay_after && app.art_active() {
+            // Native terminal graphics (Sixel/iTerm2/Kitty) live outside ratatui's text buffer.
+            // When a popup/modal/screen covers album art, clear the terminal graphics layer and
+            // force a full redraw. While the overlay remains visible, the player view suppresses
+            // art rendering so the image cannot reappear above the popup.
+            let clear_for_art_overlay = overlay_before != overlay_after
+                && app.art_active()
+                && app.art_uses_terminal_graphics();
+            if clear_for_art_overlay && overlay_after == 0 {
                 app.refresh_art();
             }
-            draw_app_frame(terminal, &app, &mut perf)?;
+            draw_app_frame(terminal, &app, &mut perf, clear_for_art_overlay)?;
             app.dirty = false;
         }
         perf.maybe_log(&app);

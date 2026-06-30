@@ -4530,30 +4530,74 @@ fn outside_click_dismisses_eq_dropdown_without_seeking() {
 
 #[test]
 fn art_overlay_mask_tracks_each_popup_independently() {
-    // The render loop refreshes the art on any change to this mask, so every art-covering
-    // popup needs its own bit — switching one straight to another, or stacking a second over
-    // a first, must register as an edge.
+    // The render loop clears native terminal graphics on any change to this mask, so every
+    // art-covering surface needs its own bit — switching one straight to another, or stacking a
+    // second over a first, must register as an edge.
     let mut app = app_playing(1, 0);
     assert_eq!(app.art_overlay_mask(), 0);
     app.dropdowns.eq_open = true;
-    assert_eq!(app.art_overlay_mask(), 0b001);
-    // Switch eq -> radio: the mask still changes (0b001 -> 0b010) even though some popup
+    assert_eq!(app.art_overlay_mask(), 1 << 0);
+    // Switch eq -> radio: the mask still changes even though some popup
     // stays open across the switch.
     app.dropdowns.eq_open = false;
     app.dropdowns.radio_open = true;
-    assert_eq!(app.art_overlay_mask(), 0b010);
+    assert_eq!(app.art_overlay_mask(), 1 << 1);
     // The queue window is a distinct bit, and can stack with a dropdown.
     app.queue_popup.open = true;
-    assert_eq!(app.art_overlay_mask(), 0b110);
+    assert_eq!(app.art_overlay_mask(), (1 << 1) | (1 << 2));
     app.dropdowns.radio_open = false;
-    assert_eq!(app.art_overlay_mask(), 0b100);
+    assert_eq!(app.art_overlay_mask(), 1 << 2);
     app.queue_popup.open = false;
     assert_eq!(app.art_overlay_mask(), 0);
-    // The About card covers the art too, so it gets its own bit (and the clean repaint).
+
+    app.help_visible = true;
+    assert_eq!(app.art_overlay_mask(), 1 << 3);
+    app.help_visible = false;
     app.about_visible = true;
-    assert_eq!(app.art_overlay_mask(), 0b1000);
+    assert_eq!(app.art_overlay_mask(), 1 << 4);
     app.about_visible = false;
+    app.why_ai_visible = true;
+    assert_eq!(app.art_overlay_mask(), 1 << 5);
+    app.why_ai_visible = false;
+    app.key_conflict = Some(Conflict {
+        ctx: KeyContext::Player,
+        existing: Action::TogglePause,
+        chord: Chord::new(KeyCode::Char('x'), KeyModifiers::NONE),
+    });
+    assert_eq!(app.art_overlay_mask(), 1 << 6);
+    app.key_conflict = None;
+    app.confirm_reset_all = true;
+    assert_eq!(app.art_overlay_mask(), 1 << 7);
+    app.confirm_reset_all = false;
+    app.library_ui.confirm_delete = Some(vec![std::path::PathBuf::from("track.mp3")]);
+    assert_eq!(app.art_overlay_mask(), 1 << 8);
+    app.library_ui.confirm_delete = None;
+    app.mode = Mode::Search;
+    assert_eq!(app.art_overlay_mask(), 1 << 9);
+    app.mode = Mode::Player;
     assert_eq!(app.art_overlay_mask(), 0);
+}
+
+#[test]
+fn graphics_protocol_art_is_suppressed_while_overlay_is_visible() {
+    let mut app = app_playing(1, 0);
+    app.art.picker = Some(Picker::halfblocks());
+    app.help_visible = true;
+    assert!(
+        !app.art_suppressed_by_overlay(),
+        "halfblocks are text cells and can be safely overdrawn"
+    );
+
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Sixel);
+    app.art.picker = Some(picker);
+    assert!(
+        app.art_suppressed_by_overlay(),
+        "native graphics are hidden while overlays are visible"
+    );
+
+    app.help_visible = false;
+    assert!(!app.art_suppressed_by_overlay());
 }
 
 #[test]
