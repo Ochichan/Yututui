@@ -28,7 +28,7 @@ use crate::library::Library;
 use crate::lyrics::LyricLine;
 use crate::player::PlayerCmd;
 use crate::playlists::Playlists;
-use crate::queue::Queue;
+use crate::queue::{Queue, QueueSnapshot};
 use crate::radio::{self, CandidateSource, Cooc, RadioMode, StationState};
 use crate::romanize::{RomanizeItem, RomanizedResult};
 use crate::search_source::{SearchConfig, SearchSource};
@@ -129,12 +129,18 @@ pub struct App {
     pub keymap: KeyMap,
     /// Resolved color theme (preset plus user overrides).
     pub theme: ThemeConfig,
-    /// Dedicated Radio UI mode: forces the Dario monochrome theme, Radio Browser-only search,
-    /// radio-only Library tabs, and hides the DJ Gem screen until normal mode is restored.
+    /// Dedicated Radio UI mode: swaps to a cached Radio theme, Radio Browser-only search,
+    /// and radio-only Library tabs until normal mode is restored.
     pub radio_dedicated_mode: bool,
-    /// The normal-mode theme to restore after leaving dedicated Radio mode. Updated on settings
-    /// saves while Radio mode is active so theme edits are not lost.
+    /// The normal-mode theme to restore after leaving dedicated Radio mode.
     normal_mode_theme: Option<ThemeConfig>,
+    /// The Radio-mode theme to restore on the next dedicated Radio entry. Defaults to Dario
+    /// until the user edits the theme while Radio mode is active.
+    radio_mode_theme: Option<ThemeConfig>,
+    /// The normal-mode queue to restore when leaving dedicated Radio mode.
+    normal_mode_queue: Option<QueueSnapshot>,
+    /// The Radio-mode queue to restore when entering dedicated Radio mode again.
+    radio_mode_queue: Option<QueueSnapshot>,
     /// A pending confirmation before entering or leaving dedicated Radio mode.
     pub pending_radio_mode_confirm: Option<RadioModeConfirm>,
     /// Whether the `?` help / cheat-sheet overlay is shown.
@@ -299,6 +305,9 @@ impl App {
             theme: ThemeConfig::default(),
             radio_dedicated_mode: false,
             normal_mode_theme: None,
+            radio_mode_theme: None,
+            normal_mode_queue: None,
+            radio_mode_queue: None,
             pending_radio_mode_confirm: None,
             help_visible: false,
             key_conflict: None,
@@ -383,7 +392,10 @@ impl App {
         let normal_theme = cfg.effective_theme();
         if self.radio_dedicated_mode {
             self.normal_mode_theme = Some(normal_theme);
-            self.theme = ThemeConfig::dario();
+            self.theme = self
+                .radio_mode_theme
+                .clone()
+                .unwrap_or_else(ThemeConfig::dario);
         } else {
             self.theme = normal_theme;
         }
@@ -455,9 +467,6 @@ impl App {
     }
 
     pub(in crate::app) fn ensure_radio_mode_constraints(&mut self) {
-        if self.radio_dedicated_mode && self.mode == Mode::Ai {
-            self.mode = Mode::Player;
-        }
         if !self.library_tab_available(self.library_ui.tab) {
             self.library_ui.tab = self.library_tabs()[0];
             self.clear_library_filter();
@@ -500,8 +509,12 @@ impl App {
             return Vec::new();
         }
         self.normal_mode_theme = Some(self.theme.clone());
+        self.normal_mode_queue = Some(self.queue.snapshot());
         self.radio_dedicated_mode = true;
-        self.theme = ThemeConfig::dario();
+        self.theme = self
+            .radio_mode_theme
+            .clone()
+            .unwrap_or_else(ThemeConfig::dario);
         self.search.source = SearchSource::RadioBrowser;
         self.search.searching = false;
         self.search.results.clear();
@@ -510,25 +523,23 @@ impl App {
         self.bridges.search_scroll.reset();
         self.library_ui.tab = LibraryTab::RadioFavorites;
         self.clear_library_filter();
-        if self.mode == Mode::Ai {
-            self.mode = Mode::Player;
-        }
-        self.why_ai_visible = false;
         self.dropdowns.eq_open = false;
         self.dropdowns.radio_open = false;
         self.dropdowns.search_source_open = false;
-        self.clear_artwork();
-        self.art.force_clear_next_frame = true;
+        let restore = self.radio_mode_queue.take();
+        let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
         self.status.kind = StatusKind::Info;
         self.status.text = t!("Radio mode enabled", "라디오 모드 켜짐").to_owned();
         self.dirty = true;
-        Vec::new()
+        cmds
     }
 
     fn exit_radio_dedicated_mode(&mut self) -> Vec<Cmd> {
         if !self.radio_dedicated_mode {
             return Vec::new();
         }
+        self.radio_mode_theme = Some(self.theme.clone());
+        self.radio_mode_queue = Some(self.queue.snapshot());
         self.radio_dedicated_mode = false;
         self.theme = self
             .normal_mode_theme
@@ -544,10 +555,36 @@ impl App {
         self.search.results.clear();
         self.search.selected = 0;
         self.dropdowns.search_source_open = false;
+        let restore = self.normal_mode_queue.take();
+        let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
         self.status.kind = StatusKind::Info;
         self.status.text = t!("Radio mode disabled", "라디오 모드 꺼짐").to_owned();
         self.dirty = true;
-        Vec::new()
+        cmds
+    }
+
+    fn stop_clear_and_restore_queue_for_mode_switch(
+        &mut self,
+        restore: Option<QueueSnapshot>,
+    ) -> Vec<Cmd> {
+        self.queue.set(Vec::new(), 0);
+        self.queue_popup.open = false;
+        self.queue_popup.cursor = 0;
+        self.queue_popup.anchor = 0;
+        self.radio.pending = false;
+        self.radio.pending_rerank = None;
+        self.ai.thinking = false;
+        let mut cmds = self.load_song(None);
+        self.art.force_clear_next_frame = true;
+        cmds.push(Cmd::Player(PlayerCmd::Stop));
+        if let Some(snapshot) = restore {
+            self.queue.restore_snapshot(snapshot);
+            if let Some(song) = self.queue.current().cloned() {
+                self.playback.paused = false;
+                cmds.extend(self.load_song(Some(song)));
+            }
+        }
+        cmds
     }
 
     pub(in crate::app) fn sync_playback_modes_to_config(&mut self) {
@@ -1150,7 +1187,11 @@ impl App {
     pub fn help_footer(&self) -> String {
         format!(
             "{}  keybindings",
-            self.keymap.label(KeyContext::Global, Action::ToggleHelp)
+            self.keymap.label_for_display(
+                KeyContext::Global,
+                Action::ToggleHelp,
+                self.retro_mode()
+            )
         )
     }
 
@@ -1204,10 +1245,6 @@ impl App {
     /// reachable from any screen. Leaving Settings commits the draft via the normal close
     /// path so edits aren't lost; transient overlays are cleared.
     fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
-        if self.radio_dedicated_mode && mode == Mode::Ai {
-            self.dirty = true;
-            return Vec::new();
-        }
         self.dropdowns.eq_open = false;
         self.dropdowns.radio_open = false;
         self.dropdowns.search_source_open = false;

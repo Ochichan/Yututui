@@ -160,10 +160,6 @@ impl App {
                     return Vec::new();
                 }
                 Action::WhyAi => {
-                    if self.radio_dedicated_mode {
-                        self.dirty = true;
-                        return Vec::new();
-                    }
                     // Only worth an overlay if a prior DJ Gem rerank left something to explain;
                     // otherwise nudge the user with a transient note instead of an empty card.
                     if self.radio.last_explain.is_some() {
@@ -180,7 +176,6 @@ impl App {
                     return Vec::new();
                 }
                 Action::ToggleAnimations => return self.toggle_animations(),
-                Action::ToggleRadioMode => return self.request_radio_mode_switch(),
                 Action::ToggleRadio => {
                     self.autoplay_radio = !self.autoplay_radio;
                     self.status.text = format!(

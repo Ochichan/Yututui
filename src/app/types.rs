@@ -617,8 +617,8 @@ impl RadioModeConfirm {
                 "검색은 Radio Browser만, 라이브러리는 라디오 좋아요와 히스토리만 표시됩니다."
             ),
             RadioModeConfirm::Exit => t!(
-                "Your normal theme, Search sources, Library tabs, and DJ Gem tab return.",
-                "일반 테마, 검색 소스, 라이브러리 탭, DJ Gem 탭이 돌아옵니다."
+                "Your normal theme, Search sources, Library tabs, and queue return.",
+                "일반 테마, 검색 소스, 라이브러리 탭, 큐가 돌아옵니다."
             ),
         }
     }

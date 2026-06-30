@@ -7,16 +7,6 @@ impl App {
 
     /// Enter the DJ Gem assistant screen (input focused).
     pub(in crate::app) fn enter_ai(&mut self) {
-        if self.radio_dedicated_mode {
-            self.status.kind = StatusKind::Info;
-            self.status.text = t!(
-                "DJ Gem is hidden in Radio mode.",
-                "라디오 모드에서는 DJ Gem을 숨깁니다."
-            )
-            .to_owned();
-            self.dirty = true;
-            return;
-        }
         self.mode = Mode::Ai;
         self.ai.focus = AiFocus::Input;
         self.dropdowns.eq_open = false;

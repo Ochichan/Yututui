@@ -18,8 +18,9 @@ use crate::t;
 
 /// The nav-bar label for a screen, in the active UI language. (`DJ Gem` is a proper noun, kept
 /// as-is in both languages.)
-fn nav_label(mode: Mode) -> &'static str {
+fn nav_label(mode: Mode, radio_mode: bool) -> &'static str {
     match mode {
+        Mode::Player if radio_mode => t!("Radio ", "라 디 오"),
         Mode::Player => t!("Player", "플레이어"),
         Mode::Search => t!("Search", "검색"),
         Mode::Library => t!("Library", "라이브러리"),
@@ -106,7 +107,8 @@ pub fn render_segments(
 }
 
 /// The screen nav bar shown at the top of every view: `ytm-tui │ Player · Search ·
-/// Library · Settings · DJ Gem`. The `ytm-tui` brand sits at the top-left, set off by a muted
+/// Library · Settings · DJ Gem` (or `Radio` for the player tab in dedicated Radio mode).
+/// The `ytm-tui` brand sits at the top-left, set off by a muted
 /// `│`; the tabs follow. The active screen is highlighted (selection colors), the rest are
 /// muted, and each tab is a click target that switches screens. Left-aligned, no box chrome
 /// — it reads like a tab strip, consistent with the in-line "text is the button" controls.
@@ -118,7 +120,13 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Settings,
         Mode::Ai,
     ];
-    const RADIO_ITEMS: [Mode; 4] = [Mode::Player, Mode::Search, Mode::Library, Mode::Settings];
+    const RADIO_ITEMS: [Mode; 5] = [
+        Mode::Player,
+        Mode::Search,
+        Mode::Library,
+        Mode::Settings,
+        Mode::Ai,
+    ];
     const GAP: &str = "  ";
     const BRAND: &str = "ytm-tui";
     const SEP: &str = " │ ";
@@ -188,7 +196,7 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::styled(GAP, muted));
             x = x.saturating_add(text_width(GAP));
         }
-        let label = nav_label(*mode);
+        let label = nav_label(*mode, app.radio_dedicated_mode);
         let w = text_width(label).saturating_add(2);
         app.register_mouse_button(
             Rect {
@@ -313,7 +321,8 @@ pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::text_width;
+    use super::{nav_label, text_width};
+    use crate::app::Mode;
 
     #[test]
     fn sparkle_and_blank_nav_slot_are_both_two_cells() {
@@ -322,5 +331,26 @@ mod tests {
         // assumption against a future `unicode-width` table change.
         assert_eq!(text_width("✨"), 2);
         assert_eq!(text_width("  "), 2);
+    }
+
+    #[test]
+    fn radio_nav_label_keeps_player_width() {
+        let _guard = crate::i18n::lock_for_test();
+
+        assert_eq!(nav_label(Mode::Player, false), "Player");
+        assert_eq!(nav_label(Mode::Player, true), "Radio ");
+        assert_eq!(
+            text_width(nav_label(Mode::Player, true)),
+            text_width("Player")
+        );
+
+        crate::i18n::set_language(crate::i18n::Language::Korean);
+        assert_eq!(nav_label(Mode::Player, false), "플레이어");
+        assert_eq!(nav_label(Mode::Player, true), "라 디 오");
+        assert_eq!(
+            text_width(nav_label(Mode::Player, true)),
+            text_width("플레이어")
+        );
+        crate::i18n::set_language(crate::i18n::Language::English);
     }
 }

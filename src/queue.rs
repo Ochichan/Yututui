@@ -56,6 +56,18 @@ pub struct Queue {
     rng: fastrand::Rng,
 }
 
+/// A point-in-time copy of the queue's playable state.
+///
+/// Fields stay private so only `Queue` can create valid snapshots, but `App` can store one
+/// while switching between normal and dedicated Radio modes.
+pub struct QueueSnapshot {
+    songs: Vec<Song>,
+    order: Vec<usize>,
+    cursor: usize,
+    shuffle: bool,
+    repeat: Repeat,
+}
+
 impl Default for Queue {
     fn default() -> Self {
         Self {
@@ -80,6 +92,37 @@ impl Queue {
 
     pub fn contains_video_id(&self, video_id: &str) -> bool {
         self.songs.iter().any(|s| s.video_id == video_id)
+    }
+
+    /// Capture the current queue exactly as it would play: tracks, play order, cursor,
+    /// shuffle, and repeat.
+    pub fn snapshot(&self) -> QueueSnapshot {
+        QueueSnapshot {
+            songs: self.songs.clone(),
+            order: self.order.clone(),
+            cursor: self.cursor,
+            shuffle: self.shuffle,
+            repeat: self.repeat,
+        }
+    }
+
+    /// Restore a snapshot previously produced by [`snapshot`](Self::snapshot).
+    pub fn restore_snapshot(&mut self, snapshot: QueueSnapshot) {
+        self.songs = snapshot.songs;
+        self.order = snapshot.order;
+        self.shuffle = snapshot.shuffle;
+        self.repeat = snapshot.repeat;
+
+        if self.order.len() != self.songs.len() || self.order.iter().any(|&i| i >= self.songs.len())
+        {
+            self.rebuild_order(snapshot.cursor.min(self.songs.len().saturating_sub(1)));
+            return;
+        }
+        self.cursor = if self.order.is_empty() {
+            0
+        } else {
+            snapshot.cursor.min(self.order.len() - 1)
+        };
     }
 
     #[cfg(test)]

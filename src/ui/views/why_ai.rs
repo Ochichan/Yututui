@@ -49,7 +49,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     draw_picks(frame, app, rows[0], explain);
 
     // The close key respects rebinds (it's the chord bound to `WhyAi`, not a hardcoded `w`).
-    let close_key = app.keymap.label(KeyContext::Global, Action::WhyAi);
+    let close_key =
+        app.keymap
+            .label_for_display(KeyContext::Global, Action::WhyAi, app.retro_mode());
     let hint = if crate::i18n::is_korean() {
         format!("{close_key} / Esc 닫기")
     } else {

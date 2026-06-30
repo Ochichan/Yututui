@@ -216,6 +216,7 @@ impl App {
                 Vec::new()
             }
             Action::Back | Action::Home => self.go_home(),
+            Action::ToggleRadioMode => self.request_radio_mode_switch(),
             Action::TogglePause => {
                 if self.current_needs_load() {
                     let song = self.queue.current().cloned();

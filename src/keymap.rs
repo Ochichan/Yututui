@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MediaKeyCode, ModifierKeyCode};
 
 use crate::t;
 
@@ -289,8 +289,8 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (
         Action::ToggleRadioMode,
         "toggle_radio_mode",
-        "Enter / exit radio mode",
-        "라디오 모드 들어가기 / 나가기",
+        "Radio/Normal mode",
+        "라디오/일반 모드",
     ),
     (
         Action::ToggleHelp,
@@ -400,7 +400,7 @@ impl Action {
 
 /// Which input surface a binding applies to. Mirrors the handler / focus structure in
 /// [`crate::app`]. `Common` is a fallback consulted for every screen (shared navigation);
-/// `Global` holds bindings active regardless of mode (help, radio).
+/// `Global` holds bindings active regardless of mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyContext {
     Player,
@@ -644,7 +644,7 @@ impl KeyMap {
                 tracing::warn!(key, "ignoring malformed keybinding override");
                 continue;
             };
-            let Some(ctx) = KeyContext::from_id(ctx_id) else {
+            let Some(mut ctx) = KeyContext::from_id(ctx_id) else {
                 tracing::warn!(key, value = val, "ignoring unknown keybinding override");
                 continue;
             };
@@ -658,6 +658,9 @@ impl KeyMap {
                 tracing::warn!(key, value = val, "ignoring unknown keybinding override");
                 continue;
             };
+            if ctx == KeyContext::Global && action == Action::ToggleRadioMode {
+                ctx = KeyContext::Player;
+            }
             labels.insert((ctx, action), chord);
         }
         // Preserve the old Search-results shortcut as an unlisted compatibility binding:
@@ -708,16 +711,18 @@ impl KeyMap {
         self.bindings.get(&(KeyContext::Global, chord)).copied()
     }
 
-    /// The chord bound to `action` in `ctx` (falling back to `Common`/`Global`), formatted
-    /// for display — e.g. `␣`, `←`, `^r`. Used to build the footers and cheat-sheet.
-    pub fn label(&self, ctx: KeyContext, action: Action) -> String {
+    /// The chord bound to `action` in `ctx`, formatted for the current display mode.
+    pub fn label_for_display(&self, ctx: KeyContext, action: Action, retro: bool) -> String {
         let chord = self
             .labels
             .get(&(ctx, action))
             .or_else(|| self.labels.get(&(KeyContext::Common, action)))
             .or_else(|| self.labels.get(&(KeyContext::Global, action)))
             .copied();
-        chord.map_or_else(|| "?".to_owned(), format_chord)
+        chord.map_or_else(
+            || "?".to_owned(),
+            |chord| format_chord_for_display(chord, retro),
+        )
     }
 
     /// The chord currently bound to `(ctx, action)`, if any (for the editor).
@@ -846,6 +851,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
     vec![
         // Player (the main screen; self-contained transport + screen switches).
         (C::Player, A::TogglePause, ch(' ')),
+        (C::Player, A::ToggleRadioMode, alt_shift('r')),
         (C::Player, A::SeekBack, key(KeyCode::Left)),
         (C::Player, A::SeekForward, key(KeyCode::Right)),
         (C::Player, A::VolUp, key(KeyCode::Up)),
@@ -886,7 +892,6 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // Global (active across screens; typeable globals are suppressed in text fields).
         (C::Global, A::Home, ctrl('h')),
         (C::Global, A::ToggleRadio, ctrl('r')),
-        (C::Global, A::ToggleRadioMode, alt_shift('r')),
         (C::Global, A::ToggleHelp, ch('?')),
         (C::Global, A::ToggleAbout, key(KeyCode::F(1))),
         (C::Global, A::ToggleAnimations, ch('A')),
@@ -1011,6 +1016,47 @@ fn parse_code(t: &str) -> Option<KeyCode> {
         "end" => KeyCode::End,
         "pageup" | "pgup" => KeyCode::PageUp,
         "pagedown" | "pgdn" => KeyCode::PageDown,
+        "null" => KeyCode::Null,
+        "capslock" | "caps_lock" => KeyCode::CapsLock,
+        "scrolllock" | "scroll_lock" => KeyCode::ScrollLock,
+        "numlock" | "num_lock" => KeyCode::NumLock,
+        "printscreen" | "print_screen" | "prtsc" => KeyCode::PrintScreen,
+        "pause" => KeyCode::Pause,
+        "menu" => KeyCode::Menu,
+        "keypadbegin" | "keypad_begin" | "begin" => KeyCode::KeypadBegin,
+        "media_play" => KeyCode::Media(MediaKeyCode::Play),
+        "media_pause" => KeyCode::Media(MediaKeyCode::Pause),
+        "media_play_pause" | "media_playpause" => KeyCode::Media(MediaKeyCode::PlayPause),
+        "media_reverse" => KeyCode::Media(MediaKeyCode::Reverse),
+        "media_stop" => KeyCode::Media(MediaKeyCode::Stop),
+        "media_fast_forward" | "media_fastforward" => KeyCode::Media(MediaKeyCode::FastForward),
+        "media_rewind" => KeyCode::Media(MediaKeyCode::Rewind),
+        "media_track_next" | "media_next" => KeyCode::Media(MediaKeyCode::TrackNext),
+        "media_track_previous" | "media_previous" | "media_prev" => {
+            KeyCode::Media(MediaKeyCode::TrackPrevious)
+        }
+        "media_record" => KeyCode::Media(MediaKeyCode::Record),
+        "media_lower_volume" | "media_volume_down" => KeyCode::Media(MediaKeyCode::LowerVolume),
+        "media_raise_volume" | "media_volume_up" => KeyCode::Media(MediaKeyCode::RaiseVolume),
+        "media_mute_volume" | "media_mute" => KeyCode::Media(MediaKeyCode::MuteVolume),
+        "left_shift" => KeyCode::Modifier(ModifierKeyCode::LeftShift),
+        "left_ctrl" | "left_control" => KeyCode::Modifier(ModifierKeyCode::LeftControl),
+        "left_alt" => KeyCode::Modifier(ModifierKeyCode::LeftAlt),
+        "left_super" => KeyCode::Modifier(ModifierKeyCode::LeftSuper),
+        "left_hyper" => KeyCode::Modifier(ModifierKeyCode::LeftHyper),
+        "left_meta" => KeyCode::Modifier(ModifierKeyCode::LeftMeta),
+        "right_shift" => KeyCode::Modifier(ModifierKeyCode::RightShift),
+        "right_ctrl" | "right_control" => KeyCode::Modifier(ModifierKeyCode::RightControl),
+        "right_alt" => KeyCode::Modifier(ModifierKeyCode::RightAlt),
+        "right_super" => KeyCode::Modifier(ModifierKeyCode::RightSuper),
+        "right_hyper" => KeyCode::Modifier(ModifierKeyCode::RightHyper),
+        "right_meta" => KeyCode::Modifier(ModifierKeyCode::RightMeta),
+        "iso_level3_shift" | "iso_level_3_shift" => {
+            KeyCode::Modifier(ModifierKeyCode::IsoLevel3Shift)
+        }
+        "iso_level5_shift" | "iso_level_5_shift" => {
+            KeyCode::Modifier(ModifierKeyCode::IsoLevel5Shift)
+        }
         _ => {
             if let Some(n) = lower.strip_prefix('f').and_then(|d| d.parse::<u8>().ok())
                 && (1..=12).contains(&n)
@@ -1068,7 +1114,62 @@ fn code_token(code: KeyCode) -> &'static str {
         KeyCode::End => "end",
         KeyCode::PageUp => "pageup",
         KeyCode::PageDown => "pagedown",
-        _ => "?",
+        KeyCode::Null => "null",
+        KeyCode::CapsLock => "capslock",
+        KeyCode::ScrollLock => "scrolllock",
+        KeyCode::NumLock => "numlock",
+        KeyCode::PrintScreen => "printscreen",
+        KeyCode::Pause => "pause",
+        KeyCode::Menu => "menu",
+        KeyCode::KeypadBegin => "keypadbegin",
+        KeyCode::Media(media) => media_token(media),
+        KeyCode::Modifier(modifier) => modifier_token(modifier),
+        KeyCode::F(_) | KeyCode::Char(_) => "?",
+    }
+}
+
+fn media_token(media: MediaKeyCode) -> &'static str {
+    match media {
+        MediaKeyCode::Play => "media_play",
+        MediaKeyCode::Pause => "media_pause",
+        MediaKeyCode::PlayPause => "media_play_pause",
+        MediaKeyCode::Reverse => "media_reverse",
+        MediaKeyCode::Stop => "media_stop",
+        MediaKeyCode::FastForward => "media_fast_forward",
+        MediaKeyCode::Rewind => "media_rewind",
+        MediaKeyCode::TrackNext => "media_track_next",
+        MediaKeyCode::TrackPrevious => "media_track_previous",
+        MediaKeyCode::Record => "media_record",
+        MediaKeyCode::LowerVolume => "media_lower_volume",
+        MediaKeyCode::RaiseVolume => "media_raise_volume",
+        MediaKeyCode::MuteVolume => "media_mute_volume",
+    }
+}
+
+fn modifier_token(modifier: ModifierKeyCode) -> &'static str {
+    match modifier {
+        ModifierKeyCode::LeftShift => "left_shift",
+        ModifierKeyCode::LeftControl => "left_ctrl",
+        ModifierKeyCode::LeftAlt => "left_alt",
+        ModifierKeyCode::LeftSuper => "left_super",
+        ModifierKeyCode::LeftHyper => "left_hyper",
+        ModifierKeyCode::LeftMeta => "left_meta",
+        ModifierKeyCode::RightShift => "right_shift",
+        ModifierKeyCode::RightControl => "right_ctrl",
+        ModifierKeyCode::RightAlt => "right_alt",
+        ModifierKeyCode::RightSuper => "right_super",
+        ModifierKeyCode::RightHyper => "right_hyper",
+        ModifierKeyCode::RightMeta => "right_meta",
+        ModifierKeyCode::IsoLevel3Shift => "iso_level3_shift",
+        ModifierKeyCode::IsoLevel5Shift => "iso_level5_shift",
+    }
+}
+
+pub fn format_chord_for_display(chord: Chord, retro: bool) -> String {
+    if retro {
+        format_chord_retro(chord)
+    } else {
+        format_chord(chord)
     }
 }
 
@@ -1104,9 +1205,122 @@ pub fn format_chord(chord: Chord) -> String {
         KeyCode::PageUp => s.push_str("PgUp"),
         KeyCode::PageDown => s.push_str("PgDn"),
         KeyCode::F(n) => s.push_str(&format!("F{n}")),
-        _ => s.push('?'),
+        KeyCode::Null => s.push_str("Null"),
+        KeyCode::CapsLock => s.push_str("Caps"),
+        KeyCode::ScrollLock => s.push_str("Scroll"),
+        KeyCode::NumLock => s.push_str("Num"),
+        KeyCode::PrintScreen => s.push_str("PrtSc"),
+        KeyCode::Pause => s.push_str("Pause"),
+        KeyCode::Menu => s.push_str("Menu"),
+        KeyCode::KeypadBegin => s.push_str("Begin"),
+        KeyCode::Media(media) => s.push_str(media_label(media)),
+        KeyCode::Modifier(modifier) => s.push_str(modifier_label(modifier)),
     }
     s
+}
+
+/// Retro-mode key labels avoid glyphs outside the 256-cell console set. This keeps the
+/// key editor and help sheet readable after the final retro frame scrubber runs.
+pub fn format_chord_retro(chord: Chord) -> String {
+    let mut parts = Vec::new();
+    if chord.mods.contains(KeyModifiers::CONTROL) {
+        parts.push("Ctrl".to_owned());
+    }
+    if chord.mods.contains(KeyModifiers::ALT) {
+        parts.push("Alt".to_owned());
+    }
+    if chord.mods.contains(KeyModifiers::SHIFT) {
+        parts.push("Shift".to_owned());
+    }
+    if chord.code == KeyCode::BackTab {
+        if !chord.mods.contains(KeyModifiers::SHIFT) {
+            parts.push("Shift".to_owned());
+        }
+        parts.push("Tab".to_owned());
+    } else {
+        parts.push(retro_key_label(
+            chord.code,
+            chord.mods.contains(KeyModifiers::SHIFT)
+                || chord
+                    .mods
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT),
+        ));
+    }
+    parts.join("+")
+}
+
+fn retro_key_label(code: KeyCode, shifted: bool) -> String {
+    match code {
+        KeyCode::Char(' ') => "Space".to_owned(),
+        KeyCode::Char('+') => "Plus".to_owned(),
+        KeyCode::Char(c) if shifted && c.is_ascii_alphabetic() => {
+            c.to_ascii_uppercase().to_string()
+        }
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Left => "Left".to_owned(),
+        KeyCode::Right => "Right".to_owned(),
+        KeyCode::Up => "Up".to_owned(),
+        KeyCode::Down => "Down".to_owned(),
+        KeyCode::Enter => "Enter".to_owned(),
+        KeyCode::Esc => "Esc".to_owned(),
+        KeyCode::Tab => "Tab".to_owned(),
+        KeyCode::BackTab => "Shift+Tab".to_owned(),
+        KeyCode::Backspace => "Backspace".to_owned(),
+        KeyCode::Delete => "Delete".to_owned(),
+        KeyCode::Insert => "Insert".to_owned(),
+        KeyCode::Home => "Home".to_owned(),
+        KeyCode::End => "End".to_owned(),
+        KeyCode::PageUp => "PageUp".to_owned(),
+        KeyCode::PageDown => "PageDown".to_owned(),
+        KeyCode::F(n) => format!("F{n}"),
+        KeyCode::Null => "Null".to_owned(),
+        KeyCode::CapsLock => "CapsLock".to_owned(),
+        KeyCode::ScrollLock => "ScrollLock".to_owned(),
+        KeyCode::NumLock => "NumLock".to_owned(),
+        KeyCode::PrintScreen => "PrintScreen".to_owned(),
+        KeyCode::Pause => "Pause".to_owned(),
+        KeyCode::Menu => "Menu".to_owned(),
+        KeyCode::KeypadBegin => "KeypadBegin".to_owned(),
+        KeyCode::Media(media) => media_label(media).replace(' ', ""),
+        KeyCode::Modifier(modifier) => modifier_label(modifier).replace(' ', ""),
+    }
+}
+
+fn media_label(media: MediaKeyCode) -> &'static str {
+    match media {
+        MediaKeyCode::Play => "Play",
+        MediaKeyCode::Pause => "Pause",
+        MediaKeyCode::PlayPause => "Play/Pause",
+        MediaKeyCode::Reverse => "Reverse",
+        MediaKeyCode::Stop => "Stop",
+        MediaKeyCode::FastForward => "Fast Forward",
+        MediaKeyCode::Rewind => "Rewind",
+        MediaKeyCode::TrackNext => "Next Track",
+        MediaKeyCode::TrackPrevious => "Previous Track",
+        MediaKeyCode::Record => "Record",
+        MediaKeyCode::LowerVolume => "Lower Volume",
+        MediaKeyCode::RaiseVolume => "Raise Volume",
+        MediaKeyCode::MuteVolume => "Mute Volume",
+    }
+}
+
+fn modifier_label(modifier: ModifierKeyCode) -> &'static str {
+    match modifier {
+        ModifierKeyCode::LeftShift => "Left Shift",
+        ModifierKeyCode::LeftControl => "Left Ctrl",
+        ModifierKeyCode::LeftAlt => "Left Alt",
+        ModifierKeyCode::LeftSuper => "Left Super",
+        ModifierKeyCode::LeftHyper => "Left Hyper",
+        ModifierKeyCode::LeftMeta => "Left Meta",
+        ModifierKeyCode::RightShift => "Right Shift",
+        ModifierKeyCode::RightControl => "Right Ctrl",
+        ModifierKeyCode::RightAlt => "Right Alt",
+        ModifierKeyCode::RightSuper => "Right Super",
+        ModifierKeyCode::RightHyper => "Right Hyper",
+        ModifierKeyCode::RightMeta => "Right Meta",
+        ModifierKeyCode::IsoLevel3Shift => "Iso Level 3 Shift",
+        ModifierKeyCode::IsoLevel5Shift => "Iso Level 5 Shift",
+    }
 }
 
 #[cfg(test)]
@@ -1144,6 +1358,36 @@ mod tests {
     }
 
     #[test]
+    fn retro_key_labels_use_words_and_plus_separators() {
+        assert_eq!(format_chord_retro(parse_chord("space").unwrap()), "Space");
+        assert_eq!(format_chord_retro(parse_chord("ctrl+r").unwrap()), "Ctrl+R");
+        assert_eq!(
+            format_chord_retro(parse_chord("ctrl+shift+x").unwrap()),
+            "Ctrl+Shift+X"
+        );
+        assert_eq!(
+            format_chord_retro(parse_chord("alt+shift+r").unwrap()),
+            "Alt+Shift+R"
+        );
+        assert_eq!(format_chord_retro(parse_chord("left").unwrap()), "Left");
+        assert_eq!(format_chord_retro(parse_chord("right").unwrap()), "Right");
+        assert_eq!(format_chord_retro(parse_chord("up").unwrap()), "Up");
+        assert_eq!(format_chord_retro(parse_chord("down").unwrap()), "Down");
+        assert_eq!(
+            format_chord_retro(parse_chord("backtab").unwrap()),
+            "Shift+Tab"
+        );
+        assert_eq!(
+            format_chord_for_display(parse_chord("space").unwrap(), true),
+            "Space"
+        );
+        assert_eq!(
+            format_chord_for_display(parse_chord("space").unwrap(), false),
+            "␣"
+        );
+    }
+
+    #[test]
     fn parse_format_round_trip() {
         for s in [
             "space",
@@ -1160,6 +1404,10 @@ mod tests {
             "esc",
             "backtab",
             "f5",
+            "capslock",
+            "printscreen",
+            "media_play_pause",
+            "left_shift",
         ] {
             let chord = parse_chord(s).unwrap();
             assert_eq!(
@@ -1344,6 +1592,15 @@ mod tests {
         assert_eq!(
             km.action(KeyContext::Player, parse_chord("delete").unwrap()),
             Some(Action::QueueRemove)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("alt+shift+r").unwrap()),
+            Some(Action::ToggleRadioMode)
+        );
+        assert_eq!(km.global_action(parse_chord("alt+shift+r").unwrap()), None);
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("alt+shift+r").unwrap()),
+            None
         );
         assert_eq!(
             km.action(KeyContext::Player, parse_chord("q").unwrap()),
@@ -1801,6 +2058,23 @@ mod tests {
     }
 
     #[test]
+    fn legacy_global_radio_mode_override_moves_to_player() {
+        let mut o = BTreeMap::new();
+        o.insert("global.toggle_radio_mode".to_owned(), "f8".to_owned());
+        let km = KeyMap::from_overrides(&o);
+
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("f8").unwrap()),
+            Some(Action::ToggleRadioMode)
+        );
+        assert_eq!(km.global_action(parse_chord("f8").unwrap()), None);
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("f8").unwrap()),
+            None
+        );
+    }
+
+    #[test]
     fn unknown_overrides_are_ignored() {
         let mut o = BTreeMap::new();
         o.insert("bogus.thing".to_owned(), "x".to_owned());
@@ -1822,6 +2096,10 @@ mod tests {
         assert!(
             editable_entries().contains(&(KeyContext::Player, Action::QueueRemove)),
             "Settings > Keys should list the player delete binding"
+        );
+        assert!(
+            editable_entries().contains(&(KeyContext::Player, Action::ToggleRadioMode)),
+            "Settings > Keys should list the Radio / Normal mode binding"
         );
         // Every action has a stable id and label.
         for (_, action, _) in default_bindings() {

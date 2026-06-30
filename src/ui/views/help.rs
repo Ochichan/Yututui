@@ -81,21 +81,13 @@ fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
 fn help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
     let mut out = Vec::new();
     for (ctx, actions) in keymap::groups() {
-        if app.radio_dedicated_mode
-            && matches!(ctx, KeyContext::AiInput | KeyContext::AiSuggestions)
-        {
-            continue;
-        }
         let mut rows: Vec<(String, String)> = actions
             .iter()
-            .filter(|action| {
-                !(app.radio_dedicated_mode && matches!(**action, Action::OpenAi | Action::WhyAi))
-            })
             .map(|action| {
-                let key = app
-                    .keymap
-                    .chord(ctx, *action)
-                    .map_or_else(|| "—".to_owned(), keymap::format_chord);
+                let key = app.keymap.chord(ctx, *action).map_or_else(
+                    || "—".to_owned(),
+                    |chord| keymap::format_chord_for_display(chord, app.retro_mode()),
+                );
                 (key, action.human_label_for(ctx).to_owned())
             })
             .collect();
@@ -173,6 +165,38 @@ mod tests {
         assert!(search_results.contains(&("Tab".to_owned(), "Open source menu".to_owned())));
         // `\` adds to the queue.
         assert!(search_results.contains(&("\\".to_owned(), "Add to queue".to_owned())));
+    }
+
+    #[test]
+    fn retro_help_uses_word_key_labels() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut app = App::new(100);
+        app.config.retro_mode = true;
+        let groups = help_groups(&app);
+
+        let player = groups
+            .iter()
+            .find_map(|(title, rows)| (title == "Player").then_some(rows))
+            .expect("player group");
+        assert!(player.contains(&("Space".to_owned(), "Play / pause".to_owned())));
+        assert!(player.contains(&("Alt+Shift+R".to_owned(), "Radio/Normal mode".to_owned())));
+        assert!(player.contains(&("Left".to_owned(), "Seek backward".to_owned())));
+        assert!(player.contains(&("Right".to_owned(), "Seek forward".to_owned())));
+
+        let nav = groups
+            .iter()
+            .find_map(|(title, rows)| (title == "Navigation (all screens)").then_some(rows))
+            .expect("navigation group");
+        assert!(nav.contains(&("Up".to_owned(), "Move up".to_owned())));
+        assert!(nav.contains(&("Down".to_owned(), "Move down".to_owned())));
+        assert!(nav.contains(&("Shift+Tab".to_owned(), "Previous tab / focus".to_owned())));
+
+        let global = groups
+            .iter()
+            .find_map(|(title, rows)| (title == "Global").then_some(rows))
+            .expect("global group");
+        assert!(global.contains(&("Ctrl+R".to_owned(), "Toggle autoplay radio".to_owned())));
+        assert!(!global.iter().any(|(_, label)| label == "Radio/Normal mode"));
     }
 
     #[test]

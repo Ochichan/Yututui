@@ -1088,7 +1088,9 @@ fn alt_shift_r_confirms_dedicated_radio_mode() {
     assert_eq!(app.library_tabs(), &LibraryTab::RADIO_MODE);
 
     app.update(Msg::Key(key(KeyCode::Char('g'))));
-    assert_ne!(app.mode, Mode::Ai, "DJ Gem is hidden in Radio mode");
+    assert_eq!(app.mode, Mode::Ai, "DJ Gem remains available in Radio mode");
+    app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
+    assert_eq!(app.mode, Mode::Player);
 
     app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
     assert_eq!(app.pending_radio_mode_confirm, Some(RadioModeConfirm::Exit));
@@ -1099,6 +1101,202 @@ fn alt_shift_r_confirms_dedicated_radio_mode() {
         !app.search_config_for_mode()
             .selectable_sources()
             .contains(&SearchSource::RadioBrowser)
+    );
+}
+
+#[test]
+fn alt_shift_r_radio_mode_switch_only_works_on_player() {
+    let mut app = App::new(100);
+
+    app.mode = Mode::Search;
+    app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
+    assert!(app.pending_radio_mode_confirm.is_none());
+    assert!(!app.radio_dedicated_mode);
+
+    app.mode = Mode::Library;
+    app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
+    assert!(app.pending_radio_mode_confirm.is_none());
+    assert!(!app.radio_dedicated_mode);
+
+    app.mode = Mode::Player;
+    app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
+    assert_eq!(
+        app.pending_radio_mode_confirm,
+        Some(RadioModeConfirm::Enter)
+    );
+}
+
+#[test]
+fn radio_mode_switch_stops_playback_restores_cached_queues_and_themes() {
+    let mut app = app_playing(3, 1);
+    app.theme.set_preset(crate::theme::ThemePreset::Midnight);
+    app.config.theme = app.theme.clone();
+    app.playback.paused = false;
+    app.radio.pending = true;
+    app.radio.pending_rerank = Some(PendingRerank {
+        seed_video_id: "id1".to_owned(),
+        shortlist: Vec::new(),
+        local_pick: Vec::new(),
+        cid_map: Vec::new(),
+        mode: crate::radio::config::RadioMode::Balanced,
+        cache_key: 42,
+    });
+
+    let enter = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+
+    assert!(app.radio_dedicated_mode);
+    assert!(has_stop(&enter), "entering Radio mode should stop mpv");
+    assert!(app.queue.is_empty());
+    assert!(app.playback.paused);
+    assert!(load_url(&enter).is_none());
+    assert!(!app.radio.pending);
+    assert!(app.radio.pending_rerank.is_none());
+    assert_eq!(app.theme.preset, "dario");
+
+    app.queue.set(
+        vec![radio_station("station-a"), radio_station("station-b")],
+        1,
+    );
+    app.load_song(app.queue.current().cloned());
+    app.playback.paused = false;
+    app.theme.set_preset(crate::theme::ThemePreset::RosePine);
+    let exit = app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
+
+    assert!(!app.radio_dedicated_mode);
+    assert!(has_stop(&exit), "leaving Radio mode should stop mpv");
+    assert_eq!(app.queue.len(), 3);
+    assert_eq!(current(&app), "id1");
+    assert!(
+        load_url(&exit)
+            .expect("restored normal track load")
+            .contains("id1")
+    );
+    assert!(!app.playback.paused);
+    assert_eq!(app.theme.preset, "midnight");
+
+    app.theme.set_preset(crate::theme::ThemePreset::Light);
+    app.queue.set(songs(2), 0);
+    app.load_song(app.queue.current().cloned());
+    let reenter = app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+
+    assert!(app.radio_dedicated_mode);
+    assert!(has_stop(&reenter));
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(current(&app), "rad:station-b");
+    assert!(
+        load_url(&reenter)
+            .expect("restored Radio station load")
+            .contains("station-b.mp3")
+    );
+    assert!(!app.playback.paused);
+    assert_eq!(
+        app.theme.preset, "rose_pine",
+        "Radio mode should remember the last Radio theme"
+    );
+
+    let second_exit = app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
+
+    assert!(!app.radio_dedicated_mode);
+    assert!(has_stop(&second_exit));
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(current(&app), "id0");
+    assert!(
+        load_url(&second_exit)
+            .expect("updated normal queue load")
+            .contains("id0")
+    );
+    assert_eq!(app.theme.preset, "light");
+}
+
+#[test]
+fn radio_mode_theme_edits_do_not_overwrite_normal_config_theme() {
+    let mut app = App::new(100);
+    app.theme.set_preset(crate::theme::ThemePreset::Midnight);
+    app.config.theme = app.theme.clone();
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+
+    app.open_settings();
+    {
+        let st = app.settings.as_mut().expect("settings open");
+        st.draft
+            .theme
+            .set_preset(crate::theme::ThemePreset::RosePine);
+    }
+    let cmds = app.close_settings();
+
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+    assert_eq!(app.theme.preset, "rose_pine");
+    assert_eq!(
+        app.config.theme.preset, "midnight",
+        "normal theme in config should survive Radio-mode theme edits"
+    );
+
+    app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
+    assert_eq!(app.theme.preset, "midnight");
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    assert_eq!(app.theme.preset, "rose_pine");
+}
+
+#[test]
+fn radio_mode_nav_labels_player_as_radio_without_shifting_tabs() {
+    let mut app = App::new(100);
+
+    let normal = render_app_buffer(&app, 80, 24);
+    let normal_text: String = normal
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+    assert!(
+        normal_text.contains("Player"),
+        "normal nav should show Player"
+    );
+    let normal_buttons = app.bridges.mouse_buttons.borrow();
+    let normal_player = normal_buttons
+        .iter()
+        .find(|b| b.target == MouseTarget::Nav(Mode::Player))
+        .expect("normal Player tab")
+        .rect;
+    let normal_search = normal_buttons
+        .iter()
+        .find(|b| b.target == MouseTarget::Nav(Mode::Search))
+        .expect("normal Search tab")
+        .rect;
+    drop(normal_buttons);
+
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    let radio = render_app_buffer(&app, 80, 24);
+    let radio_text: String = radio
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+    assert!(
+        radio_text.contains("Radio"),
+        "Radio nav should replace Player"
+    );
+    let radio_buttons = app.bridges.mouse_buttons.borrow();
+    let radio_player = radio_buttons
+        .iter()
+        .find(|b| b.target == MouseTarget::Nav(Mode::Player))
+        .expect("Radio Player tab")
+        .rect;
+    let radio_search = radio_buttons
+        .iter()
+        .find(|b| b.target == MouseTarget::Nav(Mode::Search))
+        .expect("Radio Search tab")
+        .rect;
+
+    assert_eq!(radio_player.width, normal_player.width);
+    assert_eq!(
+        radio_search.x, normal_search.x,
+        "Search tab should not shift when Player becomes Radio"
+    );
+    assert!(
+        radio_buttons
+            .iter()
+            .any(|b| b.target == MouseTarget::Nav(Mode::Ai)),
+        "DJ Gem tab stays visible in Radio mode"
     );
 }
 
@@ -1353,6 +1551,57 @@ fn settings_tab_cycles_through_all_tabs() {
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
     app.update(Msg::Key(key(KeyCode::Tab)));
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General); // wraps
+}
+
+#[test]
+fn settings_keys_lists_radio_normal_mode_binding() {
+    let mut app = App::new(100);
+    app.config.retro_mode = true;
+    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.settings.as_mut().unwrap().tab = SettingsTab::Keys;
+
+    let buf = render_app_buffer(&app, 120, 40);
+    let text: String = buf
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+
+    assert!(
+        text.contains("Player"),
+        "Keys tab should show player bindings"
+    );
+    assert!(
+        text.contains("Radio/Normal mode"),
+        "Keys tab should list the mode-switch action"
+    );
+    assert!(
+        text.contains("Alt+Shift+R"),
+        "Keys tab should show the default mode-switch key"
+    );
+}
+
+#[test]
+fn help_overlay_shows_player_radio_normal_mode_binding() {
+    let mut app = App::new(100);
+    app.config.retro_mode = true;
+    app.help_visible = true;
+
+    let buf = render_app_buffer(&app, 80, 24);
+    let text: String = buf
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+
+    assert!(
+        text.contains("Radio/Normal mode"),
+        "Help should show the player-only mode-switch action"
+    );
+    assert!(
+        text.contains("Alt+Shift+R"),
+        "Help should show the default mode-switch key"
+    );
 }
 
 #[test]
@@ -2769,8 +3018,13 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
 
     // `w` opens the overlay; `w` again dismisses it.
     assert!(!app.why_ai_visible);
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    assert!(app.radio_dedicated_mode);
     app.update(Msg::Key(key(KeyCode::Char('w'))));
-    assert!(app.why_ai_visible, "w opens the Why-DJ Gem overlay");
+    assert!(
+        app.why_ai_visible,
+        "w opens the Why-DJ Gem overlay in Radio mode"
+    );
     app.update(Msg::Key(key(KeyCode::Char('w'))));
     assert!(!app.why_ai_visible, "w again dismisses it");
 }
@@ -4772,6 +5026,8 @@ fn rating_radio_toggles_radio_favorite_without_signals() {
     assert!(app.library_rows().is_empty());
 
     app.mode = Mode::Player;
+    app.queue.set(vec![radio_station("station-like")], 0);
+    app.load_song(app.queue.current().cloned());
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));

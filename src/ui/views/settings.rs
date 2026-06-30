@@ -63,7 +63,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Footer reflects the *committed* keymap, since that's what operates the screen until
     // the edits are saved.
-    let k = |a| app.keymap.label(KeyContext::Settings, a);
+    let k = |a| {
+        app.keymap
+            .label_for_display(KeyContext::Settings, a, app.retro_mode())
+    };
     let ko = crate::i18n::is_korean();
     let help_text = if st.editing_text && matches!(st.current_field(), Some(Field::ThemeColor(_))) {
         t!(
@@ -189,7 +192,8 @@ fn render_keys(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     let columns =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
     for (ci, slice) in [&groups[..split], &groups[split..]].into_iter().enumerate() {
-        let (items, display_to_binding, selected) = build_keys_column(st, theme, slice, &entries);
+        let (items, display_to_binding, selected) =
+            build_keys_column(st, theme, slice, &entries, app.retro_mode());
         // A 2-cell gutter between the columns keeps the left labels off the right block.
         let col = columns[ci];
         let col = if ci == 0 {
@@ -243,6 +247,7 @@ fn build_keys_column(
     theme: &ThemeConfig,
     groups: &[(KeyContext, Vec<usize>)],
     entries: &[(KeyContext, Action)],
+    retro: bool,
 ) -> (Vec<ListItem<'static>>, Vec<Option<usize>>, Option<usize>) {
     let mut items: Vec<ListItem> = Vec::new();
     let mut display_to_binding: Vec<Option<usize>> = Vec::new();
@@ -278,9 +283,10 @@ fn build_keys_column(
             let key = if st.capturing == Some((c, action)) {
                 t!("<press a key…>", "<키 입력 대기…>").to_owned()
             } else {
-                st.keymap
-                    .chord(c, action)
-                    .map_or_else(|| "—".to_owned(), keymap::format_chord)
+                st.keymap.chord(c, action).map_or_else(
+                    || "—".to_owned(),
+                    |chord| keymap::format_chord_for_display(chord, retro),
+                )
             };
             let key_role = if focused {
                 R::SettingsValueFocused
@@ -651,7 +657,7 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let chord = keymap::format_chord(conflict.chord);
+    let chord = keymap::format_chord_for_display(conflict.chord, app.retro_mode());
     let where_line = if crate::i18n::is_korean() {
         format!("{} 화면", conflict.ctx.title())
     } else {

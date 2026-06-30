@@ -193,13 +193,14 @@ impl App {
             return Vec::new();
         }
         let chord = Chord::from(k);
+        let retro = self.retro_mode();
         let Some(st) = self.settings.as_mut() else {
             return Vec::new();
         };
         match st.keymap.rebind(ctx, action, chord) {
             Ok(()) => {
                 let label = action.human_label();
-                let chord = crate::keymap::format_chord(chord);
+                let chord = crate::keymap::format_chord_for_display(chord, retro);
                 self.status.text = if crate::i18n::is_korean() {
                     format!("{label} → {chord} 으로 바인딩됨")
                 } else {
@@ -995,13 +996,31 @@ impl App {
         let old_ai_enabled = self.config.effective_ai_enabled();
         let old_romanized_titles = self.config.effective_romanized_titles();
         let old_download_dir = self.config.effective_download_dir();
+        let normal_theme = if self.radio_dedicated_mode {
+            Some(
+                self.normal_mode_theme
+                    .clone()
+                    .unwrap_or_else(|| self.config.effective_theme()),
+            )
+        } else {
+            None
+        };
         d.apply_to(&mut self.config);
         self.search.source = self.config.effective_search().source;
         // Commit the edited keybindings (live + persisted as compact overrides).
         self.keymap = st.keymap.clone();
         self.config.keybindings = self.keymap.to_overrides();
         self.theme = st.draft.theme.normalized();
-        self.config.theme = self.theme.clone();
+        if self.radio_dedicated_mode {
+            self.radio_mode_theme = Some(self.theme.clone());
+            if let Some(normal_theme) = normal_theme {
+                self.normal_mode_theme = Some(normal_theme.clone());
+                self.config.theme = normal_theme;
+            }
+        } else {
+            self.config.theme = self.theme.clone();
+        }
+        self.ensure_radio_mode_constraints();
         let key_changed = self.config.gemini_api_key != old_key;
         let ai_enabled_changed = self.config.effective_ai_enabled() != old_ai_enabled;
         let romanized_changed = self.config.effective_romanized_titles() != old_romanized_titles;
