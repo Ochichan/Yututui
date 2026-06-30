@@ -7,7 +7,13 @@
 //! the startup nag — it's reported by `ytt doctor` (see `crate::doctor`) and surfaces if a
 //! download needs it.
 
-use std::process::{Command, Stdio};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 /// What an external tool is needed for. Drives whether [`missing`] nags at startup and how
 /// `ytt doctor` labels it.
@@ -27,15 +33,66 @@ pub const TOOLS: &[(&str, Need)] = &[
     ("ffmpeg", Need::Downloads),
 ];
 
-/// Whether `bin --version` runs at all (i.e. the tool is installed and on `PATH`).
+/// Whether `bin` resolves to an executable file on `PATH`.
 pub(crate) fn on_path(bin: &str) -> bool {
-    Command::new(bin)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok()
+    let path = Path::new(bin);
+    if path.is_absolute() || path.components().count() > 1 {
+        return is_executable(path);
+    }
+
+    let Some(paths) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&paths).any(|dir| {
+        executable_candidates(&dir, bin)
+            .into_iter()
+            .any(|candidate| is_executable(&candidate))
+    })
+}
+
+#[cfg(not(windows))]
+fn executable_candidates(dir: &Path, bin: &str) -> Vec<PathBuf> {
+    vec![dir.join(bin)]
+}
+
+#[cfg(windows)]
+fn executable_candidates(dir: &Path, bin: &str) -> Vec<PathBuf> {
+    let base = dir.join(bin);
+    if Path::new(bin).extension().is_some() {
+        return vec![base];
+    }
+
+    let pathext =
+        env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string().into());
+    let mut candidates = vec![base];
+    candidates.extend(
+        pathext
+            .to_string_lossy()
+            .split(';')
+            .filter(|ext| !ext.is_empty())
+            .map(|ext| dir.join(format!("{bin}{ext}"))),
+    );
+    candidates
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    is_executable_metadata(&meta)
+}
+
+#[cfg(unix)]
+fn is_executable_metadata(meta: &fs::Metadata) -> bool {
+    meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(windows)]
+fn is_executable_metadata(_: &fs::Metadata) -> bool {
+    true
 }
 
 /// The playback-critical tools that aren't on `PATH` (the startup preflight subset; ffmpeg is

@@ -54,6 +54,11 @@ pub enum Msg {
     /// Startup-only: begin playing the restored last track (sent once at launch when the
     /// "autoplay on launch" setting is on). A no-op otherwise.
     Autoplay,
+    /// The API actor finished startup authentication and selected its live mode.
+    ApiModeResolved {
+        mode: crate::api::ApiMode,
+        had_cookie: bool,
+    },
     /// Periodic wake-up (driven by the main loop only while a transient `status` is showing)
     /// that lets the reducer expire the status after [`STATUS_TTL`] and restore the title.
     StatusTick,

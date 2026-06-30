@@ -18,7 +18,7 @@ use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 
 use crate::ai::GeminiModel;
-use crate::api::Song;
+use crate::api::{ApiMode, Song};
 use crate::artwork::ArtSource;
 use crate::config::{Config, SPEED_MAX, SPEED_MIN};
 use crate::downloads::DownloadStore;
@@ -470,6 +470,17 @@ impl App {
                 return cmds;
             }
             Msg::Autoplay => return self.autoplay_on_start_cmds(),
+            Msg::ApiModeResolved { mode, had_cookie } => {
+                self.authenticated = mode == ApiMode::Authenticated;
+                if mode == ApiMode::Anonymous && had_cookie {
+                    self.status.text = crate::t!(
+                        "Cookie rejected — anonymous mode (search & play only)",
+                        "쿠키가 거부됨 — 익명 모드 (검색·재생만 가능)"
+                    )
+                    .to_owned();
+                }
+                self.dirty = true;
+            }
             Msg::StatusTick => {
                 // The status has been covering the title long enough — clear it so the
                 // wrapper above nulls `status.set_at` and the next frame redraws the title.

@@ -350,12 +350,23 @@ impl ApiHandle {
     }
 }
 
-/// Spawn the API actor, returning its handle and the auth mode it settled on.
+/// Spawn the API actor, returning its handle immediately.
 ///
 /// A configured cookie is tried first; if it's rejected we fall back to anonymous
 /// (yt-dlp) search so search + public playback still work. With no cookie we go straight
-/// to anonymous. Anonymous needs no network at startup, so this never fails.
-pub async fn spawn(cookie: Option<String>, msg_tx: UnboundedSender<Msg>) -> (ApiHandle, ApiMode) {
+/// to anonymous. Commands sent before authentication settles are buffered by the channel.
+pub fn spawn(cookie: Option<String>, msg_tx: UnboundedSender<Msg>) -> ApiHandle {
+    let had_cookie = cookie.is_some();
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let (api, mode) = init_api(cookie).await;
+        let _ = msg_tx.send(Msg::ApiModeResolved { mode, had_cookie });
+        run_actor(api, rx, msg_tx).await;
+    });
+    ApiHandle { tx }
+}
+
+async fn init_api(cookie: Option<String>) -> (ytmusic::YtMusicApi, ApiMode) {
     let (api, mode) = match cookie {
         Some(c) => match ytmusic::YtMusicApi::from_cookie(&c).await {
             Ok(api) => (api, ApiMode::Authenticated),
@@ -366,9 +377,7 @@ pub async fn spawn(cookie: Option<String>, msg_tx: UnboundedSender<Msg>) -> (Api
         },
         None => (ytmusic::YtMusicApi::Anonymous, ApiMode::Anonymous),
     };
-    let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run_actor(api, rx, msg_tx));
-    (ApiHandle { tx }, mode)
+    (api, mode)
 }
 
 async fn run_actor(

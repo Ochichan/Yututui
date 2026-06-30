@@ -35,6 +35,7 @@ use crossterm::event::EventStream;
 use futures::StreamExt;
 use player::{PlayerCmd, PlayerHandle};
 use ratatui_image::thread::ResizeRequest;
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
@@ -84,6 +85,9 @@ fn main() -> Result<()> {
         }
     }
 
+    let mut startup = StartupTrace::from_env();
+    startup.mark("args_parsed");
+
     // Custom runtime: 2 workers + 512 KB stacks keeps stack RSS ~1.5 MB (vs ~4.5 MB
     // at the 2 MB default). The render loop runs on the main task; actors run on the
     // worker threads so a blocked IPC read never stalls rendering.
@@ -92,12 +96,14 @@ fn main() -> Result<()> {
         .thread_stack_size(512 * 1024)
         .enable_all()
         .build()?;
-    rt.block_on(async_main(new_instance))
+    startup.mark("runtime_built");
+    rt.block_on(async_main(new_instance, startup))
 }
 
-async fn async_main(new_instance: bool) -> Result<()> {
+async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()> {
     // Load config before terminal init so mouse capture reflects it.
     let cfg = config::Config::load();
+    startup.mark("config_loaded");
     // Apply the saved UI language before anything renders, so the first frame is already
     // translated. The Settings dropdown updates this global live as the user changes it.
     i18n::set_language(cfg.effective_language());
@@ -120,6 +126,7 @@ async fn async_main(new_instance: bool) -> Result<()> {
         remote::BindOutcome::Bound(server) => Some(*server),
         remote::BindOutcome::Unavailable => None,
     };
+    startup.mark("remote_bound");
     // Album art is opt-in: only probe the terminal for its graphics protocol + font size
     // when the user enabled it, and do it BEFORE `tui::init` so the 1x1 probe image and its
     // cursor-position reports never land on the app's alternate screen. The probe is fully
@@ -132,18 +139,78 @@ async fn async_main(new_instance: bool) -> Result<()> {
     } else {
         None
     };
+    startup.mark("art_picker_ready");
     let mut terminal = tui::init(mouse)?;
-    let result = run(&mut terminal, cfg, art_picker, remote).await;
+    startup.mark("terminal_ready");
+    let result = run(&mut terminal, cfg, art_picker, remote, startup).await;
     tui::restore(mouse);
     result
+}
+
+struct StartupTrace {
+    enabled: bool,
+    start: Instant,
+    events: Vec<(&'static str, Duration)>,
+    flushed: usize,
+    logging_ready: bool,
+}
+
+impl StartupTrace {
+    fn from_env() -> Self {
+        Self {
+            enabled: std::env::var_os("YTM_STARTUP_TRACE").is_some(),
+            start: Instant::now(),
+            events: Vec::new(),
+            flushed: 0,
+            logging_ready: false,
+        }
+    }
+
+    fn mark(&mut self, label: &'static str) {
+        if !self.enabled {
+            return;
+        }
+        self.events.push((label, self.start.elapsed()));
+        self.flush();
+    }
+
+    fn enable_logging(&mut self) {
+        self.logging_ready = true;
+        self.flush();
+    }
+
+    fn flush(&mut self) {
+        if !self.enabled || !self.logging_ready {
+            return;
+        }
+        for (label, elapsed) in &self.events[self.flushed..] {
+            tracing::info!(
+                target: "ytt::startup",
+                label,
+                elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+                "startup"
+            );
+        }
+        self.flushed = self.events.len();
+    }
 }
 
 /// Build the terminal image picker, querying the terminal for its graphics protocol and
 /// font size. Falls back to a halfblocks-only picker if the query fails (e.g. a terminal
 /// that doesn't answer the control sequences), so album art still renders — just blocky.
 fn build_art_picker() -> ratatui_image::picker::Picker {
-    use ratatui_image::picker::Picker;
-    let mut picker = match Picker::from_query_stdio() {
+    use ratatui_image::picker::{Picker, cap_parser::QueryStdioOptions};
+    if image_protocol_override() == Some(ratatui_image::picker::ProtocolType::Halfblocks) {
+        return Picker::halfblocks();
+    }
+    if let Some(picker) = cached_halfblocks_art_picker() {
+        return picker;
+    }
+
+    let mut picker = match Picker::from_query_stdio_with_options(QueryStdioOptions {
+        timeout: Duration::from_millis(250),
+        ..QueryStdioOptions::default()
+    }) {
         Ok(picker) => picker,
         Err(e) => {
             tracing::warn!(error = %e, "terminal graphics probe failed; album art falls back to halfblocks");
@@ -153,7 +220,96 @@ fn build_art_picker() -> ratatui_image::picker::Picker {
     if let Some(protocol) = image_protocol_override() {
         picker.set_protocol_type(protocol);
     }
+    if picker.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks {
+        store_halfblocks_art_picker_cache();
+    }
     picker
+}
+
+fn cached_halfblocks_art_picker() -> Option<ratatui_image::picker::Picker> {
+    if terminal_has_native_image_hint() {
+        return None;
+    }
+    let path = art_picker_cache_path()?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    let mut parts = contents.trim().split('\t');
+    let version = parts.next()?;
+    let key = parts.next()?;
+    let protocol = parts.next()?;
+    let stored_at = parts.next()?.parse::<u64>().ok()?;
+    if version != "v1" || key != terminal_probe_cache_key().to_string() || protocol != "halfblocks"
+    {
+        return None;
+    }
+    let now = unix_seconds()?;
+    if now.saturating_sub(stored_at) > Duration::from_secs(24 * 60 * 60).as_secs() {
+        return None;
+    }
+    Some(ratatui_image::picker::Picker::halfblocks())
+}
+
+fn store_halfblocks_art_picker_cache() {
+    if terminal_has_native_image_hint() {
+        return;
+    }
+    let Some(path) = art_picker_cache_path() else {
+        return;
+    };
+    let Some(now) = unix_seconds() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let contents = format!("v1\t{}\thalfblocks\t{now}\n", terminal_probe_cache_key());
+    let _ = std::fs::write(path, contents);
+}
+
+fn art_picker_cache_path() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("", "", "ytm-tui")
+        .map(|dirs| dirs.cache_dir().join("art-picker.cache"))
+}
+
+fn terminal_probe_cache_key() -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for name in [
+        "TERM",
+        "TERM_PROGRAM",
+        "WT_SESSION",
+        "TMUX",
+        "KITTY_WINDOW_ID",
+        "WEZTERM_EXECUTABLE",
+        "KONSOLE_VERSION",
+        "YTM_TUI_IMAGE_PROTOCOL",
+    ] {
+        name.hash(&mut hasher);
+        std::env::var_os(name)
+            .map(|value| value.to_string_lossy().into_owned())
+            .hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn terminal_has_native_image_hint() -> bool {
+    env_nonempty("KITTY_WINDOW_ID")
+        || env_nonempty("WEZTERM_EXECUTABLE")
+        || env_nonempty("KONSOLE_VERSION")
+        || std::env::var("TERM").is_ok_and(|term| {
+            term.contains("kitty") || term.contains("wezterm") || term.contains("ghostty")
+        })
+        || std::env::var("TERM_PROGRAM")
+            .is_ok_and(|program| program.eq_ignore_ascii_case("iTerm.app"))
+}
+
+fn env_nonempty(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| !value.is_empty())
+}
+
+fn unix_seconds() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
 }
 
 fn image_protocol_override() -> Option<ratatui_image::picker::ProtocolType> {
@@ -364,6 +520,7 @@ async fn run(
     cfg: config::Config,
     art_picker: Option<ratatui_image::picker::Picker>,
     remote: Option<remote::RemoteServer>,
+    mut startup: StartupTrace,
 ) -> Result<()> {
     // Resolve cross-platform dirs; logging + PID registry degrade gracefully if absent.
     let dirs = directories::ProjectDirs::from("", "", "ytm-tui");
@@ -372,12 +529,15 @@ async fn run(
         std::fs::create_dir_all(dir).ok()?;
         logging::init(dir)
     });
+    startup.mark("logging_init_called");
+    startup.enable_logging();
     let data_dir = dirs.as_ref().map(|d| d.data_dir().to_path_buf());
     if let Some(dir) = &data_dir {
         let _ = std::fs::create_dir_all(dir);
         // Reap any mpv leaked by a prior run that died uncatchably (SIGKILL/power loss).
         player::lifetime::reap_orphans(dir);
     }
+    startup.mark("dirs_ready");
 
     // Wrap the terminal-restoring panic hook so a panic also kills mpv (matters under
     // `panic = "abort"`, where Drop never runs). Install after `tui::init`.
@@ -389,11 +549,11 @@ async fn run(
 
     // Config is loaded in `async_main` (so mouse capture can reflect it) and passed in.
     let cookie = cfg.effective_cookie();
-    let had_cookie = cookie.is_some();
     // Only hand mpv/yt-dlp a cookies file that actually exists: a configured/default
     // path that has not been exported yet would make yt-dlp error and break anonymous
     // playback.
     let cookies_file = cfg.effective_cookies_file().filter(|p| p.exists());
+    startup.mark("cookies_resolved");
 
     let mut app = App::new(cfg.volume);
     // Hand over the terminal image picker (present only when album art is enabled).
@@ -417,6 +577,15 @@ async fn run(
     app.apply_station_profile();
     // Push persisted playback/EQ settings (preset, bands, normalize, speed, autoplay).
     app.apply_config(&cfg);
+    startup.mark("app_state_loaded");
+
+    let mut perf = PerfStats::from_env();
+    draw_app_frame(terminal, &mut app, &mut perf)?;
+    startup.mark("first_draw");
+    if std::env::var_os("YTM_EXIT_AFTER_FIRST_DRAW").is_some() {
+        startup.mark("exit_after_first_draw");
+        return Ok(());
+    }
 
     // Preflight the external tools. If mpv/yt-dlp are missing, show an install hint up
     // front rather than surfacing an opaque spawn failure later.
@@ -425,6 +594,7 @@ async fn run(
         tracing::warn!(missing = ?missing, "required external tools not found on PATH");
         app.status.text = deps::install_hint(&missing);
     }
+    startup.mark("deps_checked");
 
     // Worker -> UI channel. Actors hold clones; the original stays alive so the
     // select! branch never resolves to `None`.
@@ -457,54 +627,35 @@ async fn run(
     // found a live descriptor but nothing was accepting/answering yet. The socket itself is
     // already bound (in `bind_or_detect`), so the single-instance guard is in force from launch.
 
-    // Spawn mpv. `_mpv_guard` must outlive the loop: dropping it kills mpv on quit.
+    // Spawn mpv off the startup path. Until the IPC actor is ready, reducer-emitted
+    // PlayerCmds are buffered below and replayed in order.
     let mut player_handle: Option<PlayerHandle> = None;
-    let _mpv_guard;
-    match player::spawn(
-        worker_tx.clone(),
-        data_dir.clone(),
-        cookies_file.clone(),
-        cfg.effective_gapless(),
-    )
-    .await
-    {
-        Ok((handle, guard)) => {
-            handle.send(PlayerCmd::SetVolume(cfg.volume));
-            // Apply persisted playback speed and the EQ/normalization chain up front.
-            if (app.playback.speed - 1.0).abs() > f64::EPSILON {
-                handle.send(PlayerCmd::SetProperty {
-                    name: "speed".to_owned(),
-                    value: serde_json::Value::from(app.playback.speed),
-                });
-            }
-            if let Some(af) = crate::eq::build_af_string(&app.audio.bands, app.audio.normalize) {
-                handle.send(PlayerCmd::SetAudioFilter(af));
-            }
-            // The M1 demo track is now opt-in; normal startup is idle until the user
-            // searches and plays something.
-            if let Ok(url) = std::env::var("YTM_PLAY_URL") {
-                handle.load(url);
-            }
-            player_handle = Some(handle);
-            _mpv_guard = Some(guard);
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to start mpv");
-            // Keep the richer preflight hint if we already set one.
-            if app.status.text.is_empty() {
-                app.status.text = format!(
-                    "{}: {e}",
-                    crate::t!("mpv unavailable", "mpv를 사용할 수 없음")
-                );
-            }
-            _mpv_guard = None;
-        }
-    }
+    let mut pending_player_cmds: Vec<PlayerCmd> = Vec::new();
+    let mut player_failed = false;
+    let mut _mpv_guard: Option<player::Mpv> = None;
+    let (player_ready_tx, mut player_ready_rx) =
+        mpsc::unbounded_channel::<Result<(PlayerHandle, player::Mpv), String>>();
+    let player_msg_tx = worker_tx.clone();
+    let player_data_dir = data_dir.clone();
+    let player_cookies_file = cookies_file.clone();
+    let player_gapless = cfg.effective_gapless();
+    tokio::spawn(async move {
+        let result = player::spawn(
+            player_msg_tx,
+            player_data_dir,
+            player_cookies_file,
+            player_gapless,
+        )
+        .await
+        .map_err(|e| format!("{e:#}"));
+        let _ = player_ready_tx.send(result);
+    });
+    startup.mark("mpv_spawned");
 
-    // Spawn the API actor: signed in if the cookie works, else anonymous (yt-dlp search
-    // + public playback still work). Anonymous never fails, so we always get a handle.
-    let (api_handle, api_mode) = api::spawn(cookie, worker_tx.clone()).await;
-    app.authenticated = api_mode == api::ApiMode::Authenticated;
+    // Spawn the API actor. Cookie auth runs inside the actor so first render and player setup
+    // don't wait on the network; commands sent before it settles stay queued in the channel.
+    let api_handle = api::spawn(cookie, worker_tx.clone());
+    startup.mark("api_spawned");
 
     // Lyrics actor: fetches synced lyrics from lrclib on demand, cached per track.
     let lyrics_handle = lyrics::spawn(worker_tx.clone());
@@ -523,13 +674,6 @@ async fn run(
 
     // Resolver actor: pre-resolves the next track's stream URL for instant skip.
     let resolver_handle = resolver::spawn(worker_tx.clone(), cookies_file);
-    if api_mode == api::ApiMode::Anonymous && had_cookie {
-        app.status.text = crate::t!(
-            "Cookie rejected — anonymous mode (search & play only)",
-            "쿠키가 거부됨 — 익명 모드 (검색·재생만 가능)"
-        )
-        .to_owned();
-    }
 
     // AI assistant actor: spawned only when a Gemini key is configured *and* AI is enabled.
     // `effective_ai_key()` returns None when the user has switched AI off, so the actor stays
@@ -565,9 +709,6 @@ async fn run(
     // is rebuilt below whenever the user changes the rate in Settings.
     let mut anim_fps = app.animation_tick_fps();
     let mut anim_tick = anim_interval(anim_fps);
-    let mut perf = PerfStats::from_env();
-    draw_app_frame(terminal, &mut app, &mut perf)?;
-
     // Every actor is up and the reducer loop is one statement away from draining `worker_rx`:
     // now start the control server and publish the instance descriptor. Doing it here (rather
     // than during setup) means a `ytt -r` that discovers the descriptor is guaranteed something
@@ -590,6 +731,54 @@ async fn run(
                 None => break,
             },
             Some(m) = worker_rx.recv() => m,
+            Some(result) = player_ready_rx.recv() => {
+                match result {
+                    Ok((handle, guard)) => {
+                        handle.send(PlayerCmd::SetVolume(cfg.volume));
+                        // Apply persisted playback speed and the EQ/normalization chain up front.
+                        if (app.playback.speed - 1.0).abs() > f64::EPSILON {
+                            handle.send(PlayerCmd::SetProperty {
+                                name: "speed".to_owned(),
+                                value: serde_json::Value::from(app.playback.speed),
+                            });
+                        }
+                        if let Some(af) =
+                            crate::eq::build_af_string(&app.audio.bands, app.audio.normalize)
+                        {
+                            handle.send(PlayerCmd::SetAudioFilter(af));
+                        }
+                        // The M1 demo track is opt-in; keep its ordering before queued startup
+                        // commands, matching the old synchronous setup path.
+                        if let Ok(url) = std::env::var("YTM_PLAY_URL") {
+                            handle.load(url);
+                        }
+                        for cmd in pending_player_cmds.drain(..) {
+                            handle.send(cmd);
+                        }
+                        player_handle = Some(handle);
+                        _mpv_guard = Some(guard);
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to start mpv");
+                        player_failed = true;
+                        pending_player_cmds.clear();
+                        // Keep the richer preflight hint if we already set one.
+                        if app.status.text.is_empty() {
+                            app.status.text = format!(
+                                "{}: {e}",
+                                crate::t!("mpv unavailable", "mpv를 사용할 수 없음")
+                            );
+                            app.dirty = true;
+                        }
+                    }
+                }
+                if app.dirty {
+                    draw_app_frame(terminal, &mut app, &mut perf)?;
+                    app.dirty = false;
+                    perf.maybe_log(&app);
+                }
+                continue;
+            },
             _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
                 draw_app_frame(terminal, &mut app, &mut perf)?;
                 app.dirty = false;
@@ -606,6 +795,8 @@ async fn run(
                 Cmd::Player(pc) => {
                     if let Some(p) = &player_handle {
                         p.send(pc);
+                    } else if !player_failed {
+                        pending_player_cmds.push(pc);
                     }
                 }
                 Cmd::Search {
