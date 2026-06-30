@@ -192,6 +192,13 @@ impl Song {
         self.local_path.is_some()
     }
 
+    /// True for live radio stations from Radio Browser. These are streams, not tracks, so they
+    /// stay out of song history and recommendation signals.
+    pub fn is_radio_station(&self) -> bool {
+        self.source == SearchSource::RadioBrowser
+            || matches!(&self.playable, Some(PlayableRef::RadioStream { .. }))
+    }
+
     /// The real YouTube video ID for this track, if it originated from YouTube. Pure local
     /// files (dropped into the library, never sourced online) return `None`. Downloaded
     /// catalog tracks keep their original ID via `yt_video_id` even though `video_id`

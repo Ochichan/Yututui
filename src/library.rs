@@ -1,4 +1,4 @@
-//! The local, on-disk library: favorite tracks and recently-played history.
+//! The local, on-disk library: favorite tracks, recently-played history, and radio stations.
 //!
 //! This is *our* library, persisted to the data dir — independent of any YouTube
 //! account, so it works in anonymous mode. (Account-sourced views — liked songs,
@@ -16,9 +16,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::Song;
 
-/// Caps on the two collections (bounded memory).
+/// Caps on the collections (bounded memory).
 const FAVORITES_MAX: usize = 999;
 const HISTORY_MAX: usize = 999;
+const RADIO_FAVORITES_MAX: usize = 999;
+const RADIOS_MAX: usize = 999;
 const DOWNLOADS_MAX: usize = 999;
 const AUDIO_EXTENSIONS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"];
 
@@ -30,6 +32,10 @@ pub struct Library {
     pub favorites: Vec<Song>,
     /// Recently played, most-recent first; capped at [`HISTORY_MAX`].
     pub history: VecDeque<Song>,
+    /// Favorite live radio stations, most-recently-favorited first; capped separately from songs.
+    pub radio_favorites: Vec<Song>,
+    /// Recently played live radio stations, most-recent first; capped at [`RADIOS_MAX`].
+    pub radios: VecDeque<Song>,
 }
 
 impl Library {
@@ -60,11 +66,18 @@ impl Library {
     }
 
     pub fn is_favorite(&self, video_id: &str) -> bool {
-        self.favorites.iter().any(|s| s.video_id == video_id)
+        self.favorites.iter().any(|s| s.video_id == video_id) || self.is_radio_favorite(video_id)
+    }
+
+    pub fn is_radio_favorite(&self, video_id: &str) -> bool {
+        self.radio_favorites.iter().any(|s| s.video_id == video_id)
     }
 
     /// Toggle `song`'s favorite status. Returns `true` if it is now a favorite.
     pub fn toggle_favorite(&mut self, song: &Song) -> bool {
+        if song.is_radio_station() {
+            return self.toggle_radio_favorite(song);
+        }
         if let Some(pos) = self
             .favorites
             .iter()
@@ -75,6 +88,26 @@ impl Library {
         } else {
             self.favorites.insert(0, song.clone());
             self.favorites.truncate(FAVORITES_MAX);
+            true
+        }
+    }
+
+    /// Toggle a live radio station's favorite status, separate from track favorites.
+    pub fn toggle_radio_favorite(&mut self, song: &Song) -> bool {
+        if !song.is_radio_station() {
+            return false;
+        }
+        self.remove_from_song_lists(&song.video_id);
+        if let Some(pos) = self
+            .radio_favorites
+            .iter()
+            .position(|s| s.video_id == song.video_id)
+        {
+            self.radio_favorites.remove(pos);
+            false
+        } else {
+            self.radio_favorites.insert(0, song.clone());
+            self.radio_favorites.truncate(RADIO_FAVORITES_MAX);
             true
         }
     }
@@ -96,9 +129,22 @@ impl Library {
         self.history.remove(index).is_some()
     }
 
-    /// Record that `song` is being played: move it to the front of history (de-duping
-    /// by id) and trim to the cap.
+    /// Remove every saved radio entry matching `video_id` from the Radio tab.
+    pub fn remove_radio_by_id(&mut self, video_id: &str) -> bool {
+        let before_favs = self.radio_favorites.len();
+        let before_recent = self.radios.len();
+        self.radio_favorites.retain(|s| s.video_id != video_id);
+        self.radios.retain(|s| s.video_id != video_id);
+        self.radio_favorites.len() != before_favs || self.radios.len() != before_recent
+    }
+
+    /// Record that `song` is being played. Normal tracks move to the front of history; live radio
+    /// stations move to the Radio tab instead so they never feed song history.
     pub fn record_play(&mut self, song: &Song) {
+        if song.is_radio_station() {
+            self.record_radio(song);
+            return;
+        }
         self.history.retain(|s| s.video_id != song.video_id);
         self.history.push_front(song.clone());
         while self.history.len() > HISTORY_MAX {
@@ -106,11 +152,84 @@ impl Library {
         }
     }
 
+    /// Record a live radio station in its own list, de-duped by id and kept out of song lists.
+    pub fn record_radio(&mut self, song: &Song) {
+        if !song.is_radio_station() {
+            return;
+        }
+        self.remove_from_song_lists(&song.video_id);
+        self.radios.retain(|s| s.video_id != song.video_id);
+        self.radios.push_front(song.clone());
+        while self.radios.len() > RADIOS_MAX {
+            self.radios.pop_back();
+        }
+    }
+
     fn trim_to_caps(&mut self) {
+        self.normalize_radio_entries();
         self.favorites.truncate(FAVORITES_MAX);
         while self.history.len() > HISTORY_MAX {
             self.history.pop_back();
         }
+        self.radio_favorites.truncate(RADIO_FAVORITES_MAX);
+        while self.radios.len() > RADIOS_MAX {
+            self.radios.pop_back();
+        }
+    }
+
+    fn normalize_radio_entries(&mut self) {
+        let mut moved_radio_favorites = Vec::new();
+        let mut moved_radios = Vec::new();
+
+        let mut favorites = Vec::with_capacity(self.favorites.len());
+        for song in self.favorites.drain(..) {
+            if song.is_radio_station() {
+                moved_radio_favorites.push(song);
+            } else {
+                favorites.push(song);
+            }
+        }
+        self.favorites = favorites;
+
+        let mut history = VecDeque::with_capacity(self.history.len());
+        while let Some(song) = self.history.pop_front() {
+            if song.is_radio_station() {
+                moved_radios.push(song);
+            } else {
+                history.push_back(song);
+            }
+        }
+        self.history = history;
+
+        for song in self.radio_favorites.drain(..) {
+            if song.is_radio_station() {
+                moved_radio_favorites.push(song);
+            }
+        }
+
+        while let Some(song) = self.radios.pop_front() {
+            if song.is_radio_station() {
+                moved_radios.push(song);
+            }
+        }
+
+        for song in moved_radio_favorites.into_iter().rev() {
+            self.add_radio_favorite_front(song);
+        }
+        for song in moved_radios.into_iter().rev() {
+            self.record_radio(&song);
+        }
+    }
+
+    fn add_radio_favorite_front(&mut self, song: Song) {
+        self.radio_favorites.retain(|s| s.video_id != song.video_id);
+        self.radio_favorites.insert(0, song);
+        self.radio_favorites.truncate(RADIO_FAVORITES_MAX);
+    }
+
+    fn remove_from_song_lists(&mut self, video_id: &str) {
+        self.favorites.retain(|s| s.video_id != video_id);
+        self.history.retain(|s| s.video_id != video_id);
     }
 }
 
@@ -159,6 +278,19 @@ mod tests {
         Song::remote(id, format!("t-{id}"), "a", "1:00")
     }
 
+    fn radio(id: &str) -> Song {
+        Song::from_source(
+            crate::search_source::SearchSource::RadioBrowser,
+            id,
+            format!("radio-{id}"),
+            "KR / MP3",
+            "",
+            crate::api::PlayableRef::RadioStream {
+                url: format!("https://example.com/{id}.mp3"),
+            },
+        )
+    }
+
     #[test]
     fn toggle_favorite_adds_then_removes() {
         let mut lib = Library::default();
@@ -188,6 +320,30 @@ mod tests {
         lib.record_play(&song("a")); // replay 'a' -> back to front, no dupe
         let ids: Vec<&str> = lib.history.iter().map(|s| s.video_id.as_str()).collect();
         assert_eq!(ids, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn radio_play_and_favorite_stay_out_of_song_lists() {
+        let mut lib = Library::default();
+        let station = radio("station-a");
+
+        lib.record_play(&station);
+        assert!(lib.history.is_empty());
+        assert_eq!(
+            lib.radios.front().map(|s| s.video_id.as_str()),
+            Some("rad:station-a")
+        );
+
+        assert!(lib.toggle_favorite(&station));
+        assert!(lib.favorites.is_empty());
+        assert!(lib.is_favorite("rad:station-a"));
+        assert!(lib.is_radio_favorite("rad:station-a"));
+        assert_eq!(lib.radio_favorites[0].video_id, "rad:station-a");
+
+        assert!(!lib.toggle_favorite(&station));
+        assert!(!lib.is_favorite("rad:station-a"));
+        assert!(lib.favorites.is_empty());
+        assert_eq!(lib.radios.len(), 1);
     }
 
     #[test]
@@ -237,10 +393,41 @@ mod tests {
             history: (0..(HISTORY_MAX + 25))
                 .map(|i| song(&format!("hist-{i}")))
                 .collect(),
+            ..Library::default()
         };
         lib.trim_to_caps();
         assert_eq!(lib.favorites.len(), FAVORITES_MAX);
         assert_eq!(lib.history.len(), HISTORY_MAX);
+    }
+
+    #[test]
+    fn trim_moves_legacy_radio_entries_out_of_song_lists() {
+        let fav_radio = radio("fav-radio");
+        let hist_radio = radio("hist-radio");
+        let mut lib = Library {
+            favorites: vec![fav_radio],
+            history: VecDeque::from(vec![hist_radio]),
+            ..Library::default()
+        };
+
+        lib.trim_to_caps();
+
+        assert!(lib.favorites.is_empty());
+        assert!(lib.history.is_empty());
+        assert_eq!(
+            lib.radio_favorites
+                .iter()
+                .map(|s| s.video_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["rad:fav-radio"]
+        );
+        assert_eq!(
+            lib.radios
+                .iter()
+                .map(|s| s.video_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["rad:hist-radio"]
+        );
     }
 
     #[test]
@@ -259,6 +446,8 @@ mod tests {
         let back: Library = serde_json::from_str("{}").unwrap();
         assert!(back.favorites.is_empty());
         assert!(back.history.is_empty());
+        assert!(back.radio_favorites.is_empty());
+        assert!(back.radios.is_empty());
     }
 
     #[test]

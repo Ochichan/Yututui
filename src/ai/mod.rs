@@ -31,6 +31,7 @@ use tokio::time::{sleep, timeout};
 
 use crate::api::Song;
 use crate::app::{AiContext, AiPick, Msg};
+use crate::romanize::{RomanizeItem, RomanizedResult};
 use client::{
     Content, GeminiClient, GeminiError, GenerateContentRequest, GenerationConfig, Part,
     ThinkingConfig, Tool,
@@ -110,6 +111,25 @@ is weak, return empty arrays.
 
 Output ONLY this JSON: {\"down_artists\":[name,...],\"boost_artists\":[name,...]}";
 
+/// Title romanization should stay snappy; the local fallback is already visible.
+const ROMANIZE_TIMEOUT: Duration = Duration::from_secs(9);
+const ROMANIZE_MAX_TOKENS: u32 = 2048;
+const ROMANIZE_SYSTEM_PROMPT: &str = "\
+You are MusicLatinizer, a JSON-only metadata normalizer for a terminal music player.
+
+Task:
+- Convert Korean, Japanese, Chinese, and other non-Latin song titles/artists into readable Latin
+  script for display.
+- Prefer romanization/transliteration by sound, not meaning translation. Example: 좋은 날 -> Joheun Nal,
+  not Good Day.
+- Preserve existing English, numbers, punctuation, featured artist markers, and official Latin
+  artist names when obvious.
+- Keep each output short and ASCII-friendly. No explanations, no extra keys.
+- Use the exact input id for each item. If an item already reads well in Latin, return it unchanged.
+
+Output ONLY this JSON:
+{\"items\":[{\"id\":\"0\",\"title_latin\":\"...\",\"artist_latin\":\"...\",\"confidence\":0.0}]}";
+
 const SYSTEM_PROMPT: &str = "\
 You are the built-in music assistant for ytm-tui, a terminal YouTube Music player. You \
 control real playback through the provided tools — when the user asks for music, take \
@@ -119,7 +139,7 @@ friendly, and reply in the user's language. Prefer the user's own queue, favorit
 playlists when relevant. If a request is ambiguous, make a reasonable choice and proceed. \
 Never fabricate tool results or videoIds you haven't seen.";
 
-/// Commands sent to the DJ Gem actor.
+/// Commands sent to the Gemini actor.
 pub enum AiCmd {
     Ask {
         prompt: String,
@@ -133,11 +153,16 @@ pub enum AiCmd {
     },
     /// Off-path: distill a recent-feedback digest into station avoid/boost artists.
     SummarizeFeedback { digest: String },
+    /// Batch Latin-script display upgrades for CJK title/artist metadata.
+    Romanize {
+        request_id: u64,
+        items: Vec<RomanizeItem>,
+    },
     /// Switch the model used for subsequent requests (settings save).
     SetModel(GeminiModel),
 }
 
-/// Handle for issuing assistant requests; results return as [`Msg`]s.
+/// Handle for issuing Gemini-backed requests; results return as [`Msg`]s.
 pub struct AiHandle {
     tx: UnboundedSender<AiCmd>,
 }
@@ -160,14 +185,18 @@ impl AiHandle {
         let _ = self.tx.send(AiCmd::SummarizeFeedback { digest });
     }
 
+    /// Kick off a batch title/artist romanization upgrade.
+    pub fn romanize(&self, request_id: u64, items: Vec<RomanizeItem>) {
+        let _ = self.tx.send(AiCmd::Romanize { request_id, items });
+    }
+
     /// Hot-swap the model for future requests. Ignored if the actor has stopped.
     pub fn set_model(&self, model: GeminiModel) {
         let _ = self.tx.send(AiCmd::SetModel(model));
     }
 }
 
-/// Spawn the DJ Gem actor. Returns `None` if the key can't form a valid header (treated as
-/// "no assistant"); the caller then leaves `ai_available` false.
+/// Spawn the Gemini actor. Returns `None` if the key can't form a valid header.
 pub fn spawn(api_key: &str, model: GeminiModel, msg_tx: UnboundedSender<Msg>) -> Option<AiHandle> {
     let client = GeminiClient::new(api_key).ok()?;
     let (tx, rx) = mpsc::unbounded_channel();
@@ -209,6 +238,9 @@ impl AiActor {
                     prompt,
                 } => self.rerank(seed_video_id, prompt).await,
                 AiCmd::SummarizeFeedback { digest } => self.summarize_feedback(digest).await,
+                AiCmd::Romanize { request_id, items } => {
+                    self.romanize_titles(request_id, items).await
+                }
                 AiCmd::SetModel(model) => self.model = model,
             }
         }
@@ -568,6 +600,186 @@ impl AiActor {
         }
         None
     }
+
+    /// One-shot title romanization upgrade. Always emits [`Msg::RomanizedTitles`]; empty entries
+    /// mean the local fallback remains in use.
+    async fn romanize_titles(&mut self, request_id: u64, items: Vec<RomanizeItem>) {
+        let keys: Vec<String> = items.iter().map(|item| item.key.clone()).collect();
+        let req = build_romanize_request(&items);
+        let entries = self.romanize_call(&req, &items).await.unwrap_or_default();
+        let _ = self.msg_tx.send(Msg::RomanizedTitles {
+            request_id,
+            keys,
+            entries,
+        });
+    }
+
+    /// Run the romanizer model chain (Flash-Lite → Flash) under a hard timeout. A failure returns
+    /// `None`, leaving the already-visible local romanizer result untouched.
+    async fn romanize_call(
+        &mut self,
+        req: &GenerateContentRequest,
+        items: &[RomanizeItem],
+    ) -> Option<Vec<RomanizedResult>> {
+        const CHAIN: [GeminiModel; 2] = [GeminiModel::FlashLite, GeminiModel::Flash];
+        for (i, &model) in CHAIN.iter().enumerate() {
+            self.throttle().await;
+            let started = Instant::now();
+            let resp = match timeout(ROMANIZE_TIMEOUT, self.client.generate(model, req)).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    if e.is_model_fallbackable() && i + 1 < CHAIN.len() {
+                        tracing::warn!(from = model.label(), error = %e, "romanize model fallback");
+                        continue;
+                    }
+                    tracing::warn!(error = %e, "romanize failed → local fallback");
+                    return None;
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_s = ROMANIZE_TIMEOUT.as_secs(),
+                        "romanize timed out → local fallback"
+                    );
+                    return None;
+                }
+            };
+            let latency_ms = started.elapsed().as_millis() as u64;
+            if let Some(reason) = resp.block_reason() {
+                usage::append(&usage::AiUsageRecord::new(
+                    "romanize",
+                    model,
+                    resp.usage(),
+                    latency_ms,
+                    false,
+                    0,
+                    true,
+                ));
+                tracing::warn!(reason, "romanize blocked → local fallback");
+                return None;
+            }
+            if matches!(
+                resp.finish_reason(),
+                Some("MAX_TOKENS" | "SAFETY" | "RECITATION")
+            ) {
+                usage::append(&usage::AiUsageRecord::new(
+                    "romanize",
+                    model,
+                    resp.usage(),
+                    latency_ms,
+                    false,
+                    0,
+                    true,
+                ));
+                tracing::warn!(finish = resp.finish_reason(), "romanize stopped early");
+                return None;
+            }
+            let text = resp.content().map(Content::joined_text).unwrap_or_default();
+            let parsed = parse_romanized_titles(&text, items);
+            usage::append(&usage::AiUsageRecord::new(
+                "romanize",
+                model,
+                resp.usage(),
+                latency_ms,
+                parsed.is_some(),
+                parsed.as_ref().map_or(0, Vec::len),
+                parsed.is_none(),
+            ));
+            return parsed;
+        }
+        None
+    }
+}
+
+/// Build a structured-output romanization request: JSON-only, thinking off, no tools.
+fn build_romanize_request(items: &[RomanizeItem]) -> GenerateContentRequest {
+    let input_items: Vec<serde_json::Value> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            serde_json::json!({
+                "id": i.to_string(),
+                "title": item.title.as_str(),
+                "artist": item.artist.as_str(),
+            })
+        })
+        .collect();
+    let prompt = serde_json::to_string(&serde_json::json!({ "items": input_items }))
+        .unwrap_or_else(|_| "{\"items\":[]}".to_owned());
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "title_latin": { "type": "string" },
+                        "artist_latin": { "type": "string" },
+                        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+                    },
+                    "required": ["id", "title_latin", "artist_latin"],
+                    "propertyOrdering": ["id", "title_latin", "artist_latin", "confidence"]
+                }
+            }
+        },
+        "required": ["items"],
+        "propertyOrdering": ["items"]
+    });
+    GenerateContentRequest {
+        contents: vec![Content::user(vec![Part::text(prompt)])],
+        system_instruction: Some(Content {
+            role: None,
+            parts: vec![Part::text(ROMANIZE_SYSTEM_PROMPT)],
+        }),
+        tools: None,
+        generation_config: Some(GenerationConfig {
+            temperature: Some(RERANK_TEMPERATURE),
+            max_output_tokens: Some(ROMANIZE_MAX_TOKENS),
+            response_mime_type: Some("application/json".to_owned()),
+            response_schema: Some(schema),
+            thinking_config: Some(ThinkingConfig { thinking_budget: 0 }),
+            ..Default::default()
+        }),
+    }
+}
+
+/// Parse `{"items":[{"id":"0","title_latin":"...","artist_latin":"...","confidence":0.9}]}`.
+fn parse_romanized_titles(text: &str, items: &[RomanizeItem]) -> Option<Vec<RomanizedResult>> {
+    let v: serde_json::Value = serde_json::from_str(strip_code_fence(text.trim())).ok()?;
+    let arr = v.get("items")?.as_array()?;
+    let mut out = Vec::new();
+    for item in arr {
+        let id = item.get("id")?.as_str()?;
+        let idx = id.parse::<usize>().ok()?;
+        let original = items.get(idx)?;
+        let title = item
+            .get("title_latin")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let artist = item
+            .get("artist_latin")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        if title.is_empty() && artist.is_empty() {
+            continue;
+        }
+        let confidence = item
+            .get("confidence")
+            .and_then(serde_json::Value::as_f64)
+            .map(|c| (c as f32).clamp(0.0, 1.0));
+        out.push(RomanizedResult {
+            key: original.key.clone(),
+            title,
+            artist,
+            confidence,
+        });
+    }
+    Some(out)
 }
 
 /// Build the structured-output feedback request: JSON-only, thinking off, no tools. Two short

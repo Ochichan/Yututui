@@ -255,6 +255,10 @@ pub struct Config {
     /// Whether the DJ Gem assistant is enabled. `None` → on, so existing configs that already hold
     /// a key keep DJ Gem working. Lets the user switch DJ Gem off while keeping the key saved.
     pub ai_enabled: Option<bool>,
+    /// Show Korean/Japanese/CJK track metadata as Latin-script display overlays. `None` → off.
+    /// This never mutates the source metadata; it only affects UI labels and may use Gemini to
+    /// improve the local romanizer when an API key is configured.
+    pub romanized_titles: Option<bool>,
 
     // Theme -------------------------------------------------------------------
     /// Color theme preset plus per-role `#RRGGBB` overrides.
@@ -306,6 +310,7 @@ impl Default for Config {
             gemini_api_key: None,
             gemini_model: GeminiModel::default(),
             ai_enabled: None,
+            romanized_titles: None,
             theme: ThemeConfig::default(),
             retro_mode: false,
             language: Language::default(),
@@ -505,6 +510,21 @@ impl Config {
         }
     }
 
+    /// Whether CJK titles/artists should be shown with Latin-script display overlays.
+    pub fn effective_romanized_titles(&self) -> bool {
+        self.romanized_titles.unwrap_or(false)
+    }
+
+    /// The Gemini key needed by any Gemini-backed feature. DJ Gem can be off while title
+    /// romanization remains on, so actor lifetime is gated by this broader service key.
+    pub fn effective_ai_service_key(&self) -> Option<String> {
+        if self.effective_ai_enabled() || self.effective_romanized_titles() {
+            self.effective_gemini_api_key()
+        } else {
+            None
+        }
+    }
+
     /// The normalized theme config to apply at runtime.
     pub fn effective_theme(&self) -> ThemeConfig {
         if self.retro_mode {
@@ -665,6 +685,7 @@ mod tests {
             gemini_api_key: Some("AIzaSecret".to_owned()),
             gemini_model: GeminiModel::Latest,
             ai_enabled: Some(false),
+            romanized_titles: Some(true),
             theme,
             retro_mode: true,
             language: Language::Korean,
@@ -690,6 +711,7 @@ mod tests {
         assert_eq!(back.autoplay_radio, Some(true));
         assert_eq!(back.autoplay_on_start, Some(true));
         assert_eq!(back.ai_enabled, Some(false));
+        assert_eq!(back.romanized_titles, Some(true));
         assert!(back.animations.master);
         assert!(back.animations.rain);
         assert!(!back.animations.donut);

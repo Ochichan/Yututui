@@ -147,6 +147,10 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
                         "재생 기록이 없어요 — 뭐든 재생해 보세요."
                     )
                 }
+                LibraryTab::Radio => t!(
+                    "No radio stations yet — play or favorite one from Radio Browser search.",
+                    "아직 라디오가 없어요 — Radio Browser 검색에서 재생하거나 즐겨찾기해 보세요."
+                ),
                 LibraryTab::Downloads => t!(
                     "No downloaded tracks found in the download folder.",
                     "다운로드 폴더에 받은 곡이 없어요."
@@ -195,13 +199,12 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
         let y = area.y + vis as u16;
         let selected = i >= sel_lo && i <= sel_hi;
         let marker = if i == cursor { "▶ " } else { "  " };
+        let title = app.display_title(song);
+        let artist = app.display_artist(song);
         let body = if song.duration.is_empty() {
-            format!("{marker}{} — {}", song.title, song.artist)
+            format!("{marker}{title} — {artist}")
         } else {
-            format!(
-                "{marker}{} — {}  ({})",
-                song.title, song.artist, song.duration
-            )
+            format!("{marker}{title} — {artist}  ({})", song.duration)
         };
         let body = crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1));
 

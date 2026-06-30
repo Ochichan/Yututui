@@ -478,7 +478,7 @@ impl App {
         if st.tab == SettingsTab::Keys {
             return None;
         }
-        let fields = st.tab.fields();
+        let fields = st.fields();
         let sections = st.tab.sections();
         Some(if sections.is_empty() {
             fields.len()

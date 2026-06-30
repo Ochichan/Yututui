@@ -146,6 +146,8 @@ impl SettingsTab {
                 Field::AiEnabled,
                 Field::GeminiModel,
                 Field::ApiKey,
+                Field::RomanizedTitles,
+                Field::ClearRomanizedTitleCache,
                 Field::AutoplayRadio,
                 Field::RadioMode,
             ],
@@ -214,6 +216,10 @@ pub enum Field {
     AiEnabled,
     GeminiModel,
     ApiKey,
+    /// Display Korean/Japanese/CJK track metadata as Latin-script overlays.
+    RomanizedTitles,
+    /// Remove cached Latin-script display overlays without touching source metadata.
+    ClearRomanizedTitleCache,
     AutoplayRadio,
     /// The radio station's adventurousness (Focused / Balanced / Discovery).
     RadioMode,
@@ -263,12 +269,13 @@ pub enum FieldKind {
     Button,
 }
 
-/// Settings actions that require an explicit confirmation before mutating the draft.
+/// Settings actions that require an explicit confirmation before mutating state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsConfirm {
     RetroMode,
     ResetKeybindings,
     ResetAll,
+    ClearRomanizedTitleCache,
 }
 
 impl SettingsConfirm {
@@ -280,6 +287,9 @@ impl SettingsConfirm {
             }
             SettingsConfirm::ResetAll => {
                 t!(" Confirm reset all settings ", " 모든 설정 초기화 확인 ")
+            }
+            SettingsConfirm::ClearRomanizedTitleCache => {
+                t!(" Confirm clear title cache ", " 제목 캐시 삭제 확인 ")
             }
         }
     }
@@ -302,6 +312,12 @@ impl SettingsConfirm {
                     "모든 설정을 기본값으로 되돌릴까요?"
                 )
             }
+            SettingsConfirm::ClearRomanizedTitleCache => {
+                t!(
+                    "Clear the romanized title cache?",
+                    "로마자 제목 캐시를 삭제할까요?"
+                )
+            }
         }
     }
 
@@ -322,6 +338,10 @@ impl SettingsConfirm {
             SettingsConfirm::ResetAll => t!(
                 "Keybindings, theme, language, and API key included.",
                 "단축키, 테마, 언어, API 키 포함."
+            ),
+            SettingsConfirm::ClearRomanizedTitleCache => t!(
+                "Only generated title/artist overlays are removed.",
+                "생성된 제목/아티스트 표시 캐시만 삭제됩니다."
             ),
         }
     }
@@ -350,6 +370,7 @@ impl Field {
             | Field::AutoplayRadio
             | Field::Normalize
             | Field::AiEnabled
+            | Field::RomanizedTitles
             | Field::RetroMode
             | Field::BackgroundNone
             | Field::AnimPauseUnfocused
@@ -375,7 +396,9 @@ impl Field {
             Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
                 FieldKind::Slider
             }
-            Field::ResetKeybindings | Field::ResetAll => FieldKind::Button,
+            Field::ResetKeybindings | Field::ResetAll | Field::ClearRomanizedTitleCache => {
+                FieldKind::Button
+            }
         }
     }
 
@@ -439,6 +462,10 @@ impl Field {
             Field::AiEnabled => t!("Enable DJ Gem", "DJ Gem 사용").to_owned(),
             Field::GeminiModel => t!("Model", "모델").to_owned(),
             Field::ApiKey => t!("API key", "API 키").to_owned(),
+            Field::RomanizedTitles => t!("Romanized titles", "제목 로마자 표기").to_owned(),
+            Field::ClearRomanizedTitleCache => {
+                t!("Clear romanized title cache", "로마자 제목 캐시 삭제").to_owned()
+            }
             Field::RetroMode => t!("Retro mode", "레트로 모드").to_owned(),
             Field::ThemePreset => t!("Preset", "프리셋").to_owned(),
             Field::BackgroundNone => t!("Background: None", "배경 없음").to_owned(),
@@ -506,6 +533,8 @@ pub struct SettingsDraft {
     pub gemini_api_key: String,
     /// Whether the DJ Gem assistant is enabled. Lets the user keep the key saved but turn DJ Gem off.
     pub ai_enabled: bool,
+    /// Whether CJK track names should be shown as Latin-script display overlays.
+    pub romanized_titles: bool,
     /// Color theme preset plus role overrides.
     pub theme: ThemeConfig,
     /// Linux basic TTY compatibility: English UI + Retro theme + ASCII-safe rendering.
@@ -569,7 +598,7 @@ impl SettingsDraft {
             Field::SeekInterval => format!("{:.0}s", self.seek_seconds),
             Field::MouseWheelVolume => toggle_str(self.mouse_wheel_volume),
             // Buttons, not values: these rows show how to trigger them.
-            Field::ResetKeybindings | Field::ResetAll => {
+            Field::ResetKeybindings | Field::ResetAll | Field::ClearRomanizedTitleCache => {
                 t!("↵ press Enter", "↵ Enter로 실행").to_owned()
             }
             Field::Gapless => toggle_str(self.gapless),
@@ -580,6 +609,7 @@ impl SettingsDraft {
             Field::Normalize => toggle_str(self.normalize),
             Field::AiEnabled => toggle_str(self.ai_enabled),
             Field::GeminiModel => self.gemini_model.label().to_owned(),
+            Field::RomanizedTitles => toggle_str(self.romanized_titles),
             Field::RetroMode => toggle_str(self.retro_mode),
             Field::ThemePreset => self.theme.preset_enum().label().to_owned(),
             Field::BackgroundNone => {
@@ -663,6 +693,7 @@ impl SettingsDraft {
         cfg.gemini_model = self.gemini_model;
         cfg.gemini_api_key = blank_to_none(&self.gemini_api_key);
         cfg.ai_enabled = Some(self.ai_enabled);
+        cfg.romanized_titles = Some(self.romanized_titles);
         cfg.retro_mode = self.retro_mode;
         if self.retro_mode {
             let mut retro = ThemeConfig::default();
@@ -709,12 +740,21 @@ pub struct SettingsState {
 }
 
 impl SettingsState {
+    /// The current tab's fields after applying draft-dependent visibility rules.
+    pub fn fields(&self) -> Vec<Field> {
+        let mut fields = self.tab.fields();
+        if self.tab == SettingsTab::Ai && self.draft.retro_mode {
+            fields.retain(|field| *field != Field::ClearRomanizedTitleCache);
+        }
+        fields
+    }
+
     /// The field the cursor is on, or `None` when the tab has no `Field`s (the Keys tab, which
     /// edits bindings instead). `saturating_sub` matches the view's row clamp; `get` keeps this
     /// panic-free even for an empty tab, so callers reached on any tab (e.g. the per-keystroke
     /// "is this a color row?" check) stay sound.
     pub fn current_field(&self) -> Option<Field> {
-        let fields = self.tab.fields();
+        let fields = self.fields();
         fields
             .get(self.row.min(fields.len().saturating_sub(1)))
             .copied()
@@ -779,6 +819,7 @@ mod tests {
             gemini_model: GeminiModel::default(),
             gemini_api_key: String::new(),
             ai_enabled: true,
+            romanized_titles: false,
             theme: ThemeConfig::default(),
             retro_mode: false,
             language: Language::English,
@@ -957,6 +998,8 @@ mod tests {
                 Field::AiEnabled,
                 Field::GeminiModel,
                 Field::ApiKey,
+                Field::RomanizedTitles,
+                Field::ClearRomanizedTitleCache,
                 Field::AutoplayRadio,
                 Field::RadioMode,
             ]
@@ -969,6 +1012,13 @@ mod tests {
         assert_eq!(Field::ApiKey.kind(), FieldKind::Text);
         assert!(Field::ApiKey.is_secret());
         assert!(!Field::GeminiModel.is_secret());
+        assert_eq!(Field::RomanizedTitles.kind(), FieldKind::Toggle);
+        assert_eq!(base_draft().value_display(Field::RomanizedTitles), "[ ]");
+        assert_eq!(Field::ClearRomanizedTitleCache.kind(), FieldKind::Button);
+        assert_eq!(
+            base_draft().value_display(Field::ClearRomanizedTitleCache),
+            "↵ press Enter"
+        );
         // The radio mode is a non-secret cycle field.
         assert_eq!(Field::RadioMode.kind(), FieldKind::Select);
         assert!(!Field::RadioMode.is_secret());
@@ -1040,6 +1090,7 @@ mod tests {
             gemini_model: GeminiModel::Latest,
             gemini_api_key: "  AIzaPersist  ".to_owned(),
             ai_enabled: false,
+            romanized_titles: true,
             theme,
             retro_mode: false,
             language: Language::Korean,
@@ -1056,6 +1107,7 @@ mod tests {
         draft.apply_to(&mut cfg);
         assert_eq!(cfg.language, Language::Korean);
         assert_eq!(cfg.ai_enabled, Some(false));
+        assert_eq!(cfg.romanized_titles, Some(true));
         assert!(cfg.animations.master);
         assert!(cfg.animations.border);
         assert!(!cfg.animations.rain);

@@ -75,10 +75,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             rows[1],
         );
     } else if let Some(line) = app.queue.current().and_then(|s| {
+        let title = app.display_title(s);
+        let artist = app.display_artist(s);
         crate::ui::anim::title_line(
             app,
-            &s.title,
-            &s.artist,
+            title.as_ref(),
+            artist.as_ref(),
             app.library.is_favorite(&s.video_id),
             rows[1].width,
         )
@@ -87,12 +89,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         let text = match app.queue.current() {
             Some(s) => {
+                let title = app.display_title(s);
+                let artist = app.display_artist(s);
                 let heart = if app.library.is_favorite(&s.video_id) {
                     "♥ "
                 } else {
                     ""
                 };
-                format!("{heart}{} — {}", s.title, s.artist)
+                format!("{heart}{title} — {artist}")
             }
             None => t!(
                 "Nothing playing — press / to search",
@@ -357,8 +361,10 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
         let selected = i >= sel_lo && i <= sel_hi;
         let is_current = i == current;
         let marker = if is_current { "▸ " } else { "  " };
+        let title = app.display_title(song);
+        let artist = app.display_artist(song);
         let text = crate::ui::text::truncate_owned_to_width(
-            format!("{marker}{:>3} {} — {}", i + 1, song.title, song.artist),
+            format!("{marker}{:>3} {title} — {artist}", i + 1),
             body_w.saturating_sub(1),
         );
 

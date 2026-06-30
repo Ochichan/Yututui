@@ -1,0 +1,572 @@
+//! Latin-script display names for tracks whose original metadata is hard to read in Retro mode.
+//!
+//! The original [`crate::api::Song`] title/artist are never mutated. Search, radio, downloads, and
+//! lyrics keep using source metadata; this module only supplies a cached display overlay.
+
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+use crate::api::Song;
+
+const CACHE_FILE: &str = "romanized_titles.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RomanizeQuality {
+    #[default]
+    Local,
+    Gemini,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RomanizedEntry {
+    pub title: String,
+    pub artist: String,
+    pub quality: RomanizeQuality,
+    /// True once Gemini has supplied an upgraded result for this exact key. Local entries with
+    /// `false` can be retried later when an API key becomes available or is corrected.
+    pub gemini_checked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+}
+
+impl Default for RomanizedEntry {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            artist: String::new(),
+            quality: RomanizeQuality::Local,
+            gemini_checked: false,
+            confidence: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RomanizeItem {
+    pub key: String,
+    pub title: String,
+    pub artist: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RomanizedResult {
+    pub key: String,
+    pub title: String,
+    pub artist: String,
+    pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RomanizeCache {
+    entries: BTreeMap<String, RomanizedEntry>,
+}
+
+impl RomanizeCache {
+    pub fn load() -> Self {
+        let Some(path) = cache_path() else {
+            return Self::default();
+        };
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Self>(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let Some(path) = cache_path() else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, path)
+    }
+
+    pub fn delete_saved() -> std::io::Result<()> {
+        let Some(path) = cache_path() else {
+            return Ok(());
+        };
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn display_title<'a>(&'a self, song: &'a Song) -> Cow<'a, str> {
+        self.entry_for(song)
+            .and_then(|entry| usable_overlay(&entry.title, &song.title))
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| Cow::Borrowed(song.title.as_str()))
+    }
+
+    pub fn display_artist<'a>(&'a self, song: &'a Song) -> Cow<'a, str> {
+        self.entry_for(song)
+            .and_then(|entry| usable_overlay(&entry.artist, &song.artist))
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| Cow::Borrowed(song.artist.as_str()))
+    }
+
+    pub fn entry_for(&self, song: &Song) -> Option<&RomanizedEntry> {
+        let key = key_for_song(song);
+        self.entries.get(&key)
+    }
+
+    pub fn ensure_local(&mut self, song: &Song) -> bool {
+        if !needs_latinization(&song.title, &song.artist) {
+            return false;
+        }
+        let key = key_for_song(song);
+        if self.entries.contains_key(&key) {
+            return false;
+        }
+        let title = clean_display(&romanize_text(&song.title));
+        let artist = clean_display(&romanize_text(&song.artist));
+        self.entries.insert(
+            key,
+            RomanizedEntry {
+                title,
+                artist,
+                quality: RomanizeQuality::Local,
+                gemini_checked: false,
+                confidence: None,
+            },
+        );
+        true
+    }
+
+    pub fn gemini_candidate(&self, song: &Song) -> Option<RomanizeItem> {
+        if !needs_latinization(&song.title, &song.artist) {
+            return None;
+        }
+        let key = key_for_song(song);
+        if self
+            .entries
+            .get(&key)
+            .is_some_and(|entry| entry.quality == RomanizeQuality::Gemini || entry.gemini_checked)
+        {
+            return None;
+        }
+        Some(RomanizeItem {
+            key,
+            title: song.title.clone(),
+            artist: song.artist.clone(),
+        })
+    }
+
+    pub fn apply_gemini_results(&mut self, results: &[RomanizedResult]) -> bool {
+        let mut changed = false;
+        for result in results {
+            let title = clean_display(&result.title);
+            let artist = clean_display(&result.artist);
+            if title.is_empty() && artist.is_empty() {
+                continue;
+            }
+            let next = RomanizedEntry {
+                title,
+                artist,
+                quality: RomanizeQuality::Gemini,
+                gemini_checked: true,
+                confidence: result.confidence,
+            };
+            if self.entries.get(&result.key) != Some(&next) {
+                self.entries.insert(result.key.clone(), next);
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
+fn cache_path() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().join(CACHE_FILE))
+}
+
+pub fn key_for_song(song: &Song) -> String {
+    let stable_id = song.youtube_id().unwrap_or(song.video_id.as_str());
+    [
+        song.source.code(),
+        stable_id,
+        song.title.trim(),
+        song.artist.trim(),
+    ]
+    .join("\u{1f}")
+}
+
+fn usable_overlay<'a>(overlay: &'a str, original: &str) -> Option<&'a str> {
+    let overlay = overlay.trim();
+    if overlay.is_empty() || overlay == original.trim() {
+        None
+    } else {
+        Some(overlay)
+    }
+}
+
+pub fn needs_latinization(title: &str, artist: &str) -> bool {
+    title.chars().chain(artist.chars()).any(is_target_script)
+}
+
+fn is_target_script(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x1100..=0x11ff // Hangul Jamo
+            | 0x3130..=0x318f // Hangul Compatibility Jamo
+            | 0xac00..=0xd7af // Hangul syllables
+            | 0x3040..=0x309f // Hiragana
+            | 0x30a0..=0x30ff // Katakana
+            | 0x3400..=0x4dbf // CJK Extension A
+            | 0x4e00..=0x9fff // CJK Unified Ideographs
+    )
+}
+
+pub fn romanize_text(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(s) = romanize_hangul_syllable_at(&chars, i) {
+            out.push_str(s.as_str());
+            i += 1;
+            continue;
+        }
+        if is_hangul_jamo(c) {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if let Some((s, used)) = romanize_kana_at(&chars, i, &out) {
+            out.push_str(&s);
+            i += used;
+            continue;
+        }
+        out.push(normalize_fullwidth_ascii(c));
+        i += 1;
+    }
+    out
+}
+
+const HANGUL_INITIAL: [&str; 19] = [
+    "g", "kk", "n", "d", "tt", "r", "m", "b", "pp", "s", "ss", "", "j", "jj", "ch", "k", "t", "p",
+    "h",
+];
+const HANGUL_MEDIAL: [&str; 21] = [
+    "a", "ae", "ya", "yae", "eo", "e", "yeo", "ye", "o", "wa", "wae", "oe", "yo", "u", "wo", "we",
+    "wi", "yu", "eu", "ui", "i",
+];
+const HANGUL_FINAL: [&str; 28] = [
+    "", "k", "k", "ks", "n", "nj", "nh", "t", "l", "lk", "lm", "lb", "ls", "lt", "lp", "lh", "m",
+    "p", "ps", "t", "t", "ng", "t", "t", "k", "t", "p", "t",
+];
+const HANGUL_FINAL_BEFORE_VOWEL: [&str; 28] = [
+    "", "g", "kk", "gs", "n", "nj", "nh", "d", "r", "lg", "lm", "lb", "ls", "lt", "lp", "lh", "m",
+    "b", "ps", "s", "ss", "ng", "j", "ch", "k", "t", "p", "h",
+];
+
+fn romanize_hangul_syllable_at(chars: &[char], idx: usize) -> Option<String> {
+    let (initial, medial, final_idx) = hangul_indices(chars[idx])?;
+    let final_s = if chars
+        .get(idx + 1)
+        .is_some_and(|&next| starts_with_silent_ieung(next))
+    {
+        HANGUL_FINAL_BEFORE_VOWEL[final_idx]
+    } else {
+        HANGUL_FINAL[final_idx]
+    };
+    Some(format!(
+        "{}{}{}",
+        HANGUL_INITIAL[initial], HANGUL_MEDIAL[medial], final_s
+    ))
+}
+
+fn hangul_indices(c: char) -> Option<(usize, usize, usize)> {
+    let code = c as u32;
+    if !(0xac00..=0xd7a3).contains(&code) {
+        return None;
+    }
+    let offset = code - 0xac00;
+    let initial = (offset / 588) as usize;
+    let medial = ((offset % 588) / 28) as usize;
+    let final_idx = (offset % 28) as usize;
+    Some((initial, medial, final_idx))
+}
+
+fn starts_with_silent_ieung(c: char) -> bool {
+    hangul_indices(c).is_some_and(|(initial, _, _)| initial == 11)
+}
+
+fn is_hangul_jamo(c: char) -> bool {
+    matches!(c as u32, 0x1100..=0x11ff | 0x3130..=0x318f)
+}
+
+fn romanize_kana_at(chars: &[char], idx: usize, out: &str) -> Option<(String, usize)> {
+    let c = hira(chars[idx])?;
+    if c == 'っ' {
+        if let Some((next, _)) = chars
+            .get(idx + 1)
+            .and_then(|_| romanize_kana_base(chars, idx + 1))
+        {
+            let doubled = first_consonant(&next).unwrap_or_default();
+            return Some((doubled.to_owned(), 1));
+        }
+        return Some(("".to_owned(), 1));
+    }
+    if c == 'ー' {
+        return Some((last_vowel(out).unwrap_or('-').to_string(), 1));
+    }
+    if let Some(next) = chars.get(idx + 1).and_then(|c| hira(*c))
+        && let Some(foreign) = foreign_vowel_combo(c, next)
+    {
+        return Some((foreign.to_owned(), 2));
+    }
+    if let Some(next) = chars.get(idx + 1).and_then(|c| hira(*c))
+        && matches!(next, 'ゃ' | 'ゅ' | 'ょ')
+        && let Some(base) = yoon_base(c)
+    {
+        let vowel = match next {
+            'ゃ' => "a",
+            'ゅ' => "u",
+            'ょ' => "o",
+            _ => "",
+        };
+        return Some((format!("{base}{vowel}"), 2));
+    }
+    romanize_kana_base(chars, idx)
+}
+
+fn foreign_vowel_combo(c: char, next: char) -> Option<&'static str> {
+    match (c, next) {
+        ('ふ', 'ぁ') => Some("fa"),
+        ('ふ', 'ぃ') => Some("fi"),
+        ('ふ', 'ぇ') => Some("fe"),
+        ('ふ', 'ぉ') => Some("fo"),
+        ('ゔ', 'ぁ') => Some("va"),
+        ('ゔ', 'ぃ') => Some("vi"),
+        ('ゔ', 'ぇ') => Some("ve"),
+        ('ゔ', 'ぉ') => Some("vo"),
+        ('て', 'ぃ') => Some("ti"),
+        ('で', 'ぃ') => Some("di"),
+        ('と', 'ぅ') => Some("tu"),
+        ('ど', 'ぅ') => Some("du"),
+        ('し', 'ぇ') => Some("she"),
+        ('じ', 'ぇ') => Some("je"),
+        ('ち', 'ぇ') => Some("che"),
+        ('つ', 'ぁ') => Some("tsa"),
+        ('つ', 'ぃ') => Some("tsi"),
+        ('つ', 'ぇ') => Some("tse"),
+        ('つ', 'ぉ') => Some("tso"),
+        _ => None,
+    }
+}
+
+fn romanize_kana_base(chars: &[char], idx: usize) -> Option<(String, usize)> {
+    let c = hira(chars[idx])?;
+    let s = match c {
+        'あ' => "a",
+        'い' | 'ぃ' => "i",
+        'う' | 'ぅ' => "u",
+        'え' | 'ぇ' => "e",
+        'お' | 'ぉ' => "o",
+        'ぁ' => "a",
+        'か' => "ka",
+        'き' => "ki",
+        'く' => "ku",
+        'け' => "ke",
+        'こ' => "ko",
+        'さ' => "sa",
+        'し' => "shi",
+        'す' => "su",
+        'せ' => "se",
+        'そ' => "so",
+        'た' => "ta",
+        'ち' => "chi",
+        'つ' => "tsu",
+        'て' => "te",
+        'と' => "to",
+        'な' => "na",
+        'に' => "ni",
+        'ぬ' => "nu",
+        'ね' => "ne",
+        'の' => "no",
+        'は' => "ha",
+        'ひ' => "hi",
+        'ふ' => "fu",
+        'へ' => "he",
+        'ほ' => "ho",
+        'ま' => "ma",
+        'み' => "mi",
+        'む' => "mu",
+        'め' => "me",
+        'も' => "mo",
+        'や' | 'ゃ' => "ya",
+        'ゆ' | 'ゅ' => "yu",
+        'よ' | 'ょ' => "yo",
+        'ら' => "ra",
+        'り' => "ri",
+        'る' => "ru",
+        'れ' => "re",
+        'ろ' => "ro",
+        'わ' => "wa",
+        'を' => "wo",
+        'ん' => "n",
+        'が' => "ga",
+        'ぎ' => "gi",
+        'ぐ' => "gu",
+        'げ' => "ge",
+        'ご' => "go",
+        'ざ' => "za",
+        'じ' => "ji",
+        'ず' => "zu",
+        'ぜ' => "ze",
+        'ぞ' => "zo",
+        'だ' => "da",
+        'ぢ' => "ji",
+        'づ' => "zu",
+        'で' => "de",
+        'ど' => "do",
+        'ば' => "ba",
+        'び' => "bi",
+        'ぶ' => "bu",
+        'べ' => "be",
+        'ぼ' => "bo",
+        'ぱ' => "pa",
+        'ぴ' => "pi",
+        'ぷ' => "pu",
+        'ぺ' => "pe",
+        'ぽ' => "po",
+        'ゔ' => "vu",
+        'ゎ' => "wa",
+        _ => return None,
+    };
+    Some((s.to_owned(), 1))
+}
+
+fn hira(c: char) -> Option<char> {
+    if c == 'ー' {
+        return Some(c);
+    }
+    let code = c as u32;
+    match code {
+        0x3040..=0x309f => Some(c),
+        0x30a0..=0x30ff => char::from_u32(code - 0x60),
+        _ => None,
+    }
+}
+
+fn yoon_base(c: char) -> Option<&'static str> {
+    match c {
+        'き' => Some("ky"),
+        'し' => Some("sh"),
+        'ち' => Some("ch"),
+        'に' => Some("ny"),
+        'ひ' => Some("hy"),
+        'み' => Some("my"),
+        'り' => Some("ry"),
+        'ぎ' => Some("gy"),
+        'じ' => Some("j"),
+        'ぢ' => Some("j"),
+        'び' => Some("by"),
+        'ぴ' => Some("py"),
+        _ => None,
+    }
+}
+
+fn first_consonant(s: &str) -> Option<&str> {
+    if s.starts_with("ch") {
+        Some("c")
+    } else if s.starts_with("sh") {
+        Some("s")
+    } else {
+        let first = s.chars().next()?;
+        (!matches!(first, 'a' | 'e' | 'i' | 'o' | 'u')).then_some(&s[..first.len_utf8()])
+    }
+}
+
+fn last_vowel(s: &str) -> Option<char> {
+    s.chars()
+        .rev()
+        .find(|c| matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u'))
+}
+
+fn normalize_fullwidth_ascii(c: char) -> char {
+    let code = c as u32;
+    if (0xff01..=0xff5e).contains(&code) {
+        char::from_u32(code - 0xfee0).unwrap_or(c)
+    } else {
+        c
+    }
+}
+
+fn clean_display(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for c in s.trim().chars() {
+        if c.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_romanizes_hangul_and_kana_without_touching_ascii() {
+        assert_eq!(
+            clean_display(&romanize_text("아이유 - 좋은 날")),
+            "aiyu - joheun nal"
+        );
+        assert_eq!(clean_display(&romanize_text("きらり")), "kirari");
+        assert_eq!(
+            clean_display(&romanize_text("ファースト Love")),
+            "faasuto Love"
+        );
+    }
+
+    #[test]
+    fn cache_uses_overlay_only_when_it_differs() {
+        let song = Song::remote("vid", "아이유", "좋은 날", "3:00");
+        let mut cache = RomanizeCache::default();
+        assert!(cache.ensure_local(&song));
+        assert_eq!(cache.display_title(&song), "aiyu");
+        assert_eq!(cache.display_artist(&song), "joheun nal");
+        assert!(!cache.ensure_local(&song));
+    }
+
+    #[test]
+    fn gemini_result_replaces_local_entry() {
+        let song = Song::remote("vid", "아이유", "좋은 날", "3:00");
+        let mut cache = RomanizeCache::default();
+        cache.ensure_local(&song);
+        let key = key_for_song(&song);
+        assert!(cache.apply_gemini_results(&[RomanizedResult {
+            key,
+            title: "IU".to_owned(),
+            artist: "Joeun Nal".to_owned(),
+            confidence: Some(0.9),
+        }]));
+        assert_eq!(cache.display_title(&song), "IU");
+        assert_eq!(cache.display_artist(&song), "Joeun Nal");
+    }
+}

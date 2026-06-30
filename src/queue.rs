@@ -82,6 +82,7 @@ impl Queue {
         self.songs.iter().any(|s| s.video_id == video_id)
     }
 
+    #[cfg(test)]
     pub fn video_ids(&self) -> impl Iterator<Item = &str> {
         self.songs.iter().map(|s| s.video_id.as_str())
     }

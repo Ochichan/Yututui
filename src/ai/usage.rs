@@ -29,7 +29,7 @@ fn price_per_million(model: GeminiModel) -> (f64, f64) {
 pub struct AiUsageRecord {
     /// Unix seconds.
     pub ts: i64,
-    /// `"rerank"` | `"chat"`.
+    /// `"chat"` | `"rerank"` | `"feedback"` | `"romanize"`.
     pub kind: &'static str,
     /// Resolved API model id (after any fallback).
     pub model: String,
@@ -43,7 +43,7 @@ pub struct AiUsageRecord {
     /// Whether the response parsed into usable structured output (always `true` for chat).
     pub valid_json: bool,
     pub picked_count: usize,
-    /// Whether this call ended up degrading to the local fallback (rerank only).
+    /// Whether this call ended up degrading to a local/no-op fallback.
     pub used_fallback: bool,
     pub est_cost_usd: f64,
 }

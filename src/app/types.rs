@@ -200,6 +200,13 @@ pub enum Msg {
         down_artists: Vec<String>,
         boost_artists: Vec<String>,
     },
+    /// Result of a batch title/artist romanization request. Empty `entries` means Gemini failed or
+    /// produced nothing usable; `keys` still clears the reducer's in-flight guard for those tracks.
+    RomanizedTitles {
+        request_id: u64,
+        keys: Vec<String>,
+        entries: Vec<RomanizedResult>,
+    },
 }
 
 /// Side effects the reducer asks the run loop to perform.
@@ -210,12 +217,16 @@ pub enum Cmd {
         source: SearchSource,
         config: SearchConfig,
     },
-    /// Persist the library (favorites/history) to disk.
+    /// Persist the library (song favorites/history and radio stations) to disk.
     SaveLibrary,
     /// Persist the downloads manifest (completed downloads' YouTube identity) to disk.
     SaveDownloads,
     /// Persist the per-track preference signals (plays/skips/dislikes) to disk.
     SaveSignals,
+    /// Persist the Latin-script title display cache to disk.
+    SaveRomanizedTitles,
+    /// Delete the persisted Latin-script title display cache from disk.
+    ClearRomanizedTitles,
     /// Refresh the local downloads list from this folder.
     ScanDownloads(PathBuf),
     /// Fetch synced lyrics for a track.
@@ -248,6 +259,11 @@ pub enum Cmd {
     /// re-allow for the active station. The result returns as [`Msg::StationPatch`].
     SummarizeFeedback {
         digest: String,
+    },
+    /// Ask Gemini to upgrade local CJK title/artist romanization for a visible batch.
+    RomanizeTitles {
+        request_id: u64,
+        items: Vec<RomanizeItem>,
     },
     /// Ask the DJ Gem assistant to handle a prompt, given a read-only state snapshot.
     AskAi {
@@ -284,6 +300,7 @@ pub enum Cmd {
     ReloadAi {
         key: Option<String>,
         model: GeminiModel,
+        assistant_enabled: bool,
     },
 }
 
@@ -529,17 +546,25 @@ pub enum LibraryTab {
     All,
     Favorites,
     History,
+    Radio,
     Downloads,
 }
 
 impl LibraryTab {
-    pub const ALL: [Self; 4] = [Self::All, Self::Favorites, Self::History, Self::Downloads];
+    pub const ALL: [Self; 5] = [
+        Self::All,
+        Self::Favorites,
+        Self::History,
+        Self::Radio,
+        Self::Downloads,
+    ];
 
     pub(crate) fn next(self) -> Self {
         match self {
             LibraryTab::All => LibraryTab::Favorites,
             LibraryTab::Favorites => LibraryTab::History,
-            LibraryTab::History => LibraryTab::Downloads,
+            LibraryTab::History => LibraryTab::Radio,
+            LibraryTab::Radio => LibraryTab::Downloads,
             LibraryTab::Downloads => LibraryTab::All,
         }
     }
@@ -549,7 +574,8 @@ impl LibraryTab {
             LibraryTab::All => LibraryTab::Downloads,
             LibraryTab::Favorites => LibraryTab::All,
             LibraryTab::History => LibraryTab::Favorites,
-            LibraryTab::Downloads => LibraryTab::History,
+            LibraryTab::Radio => LibraryTab::History,
+            LibraryTab::Downloads => LibraryTab::Radio,
         }
     }
 
@@ -558,6 +584,7 @@ impl LibraryTab {
             LibraryTab::All => t!("All", "전체"),
             LibraryTab::Favorites => t!("Favorites", "즐겨찾기"),
             LibraryTab::History => t!("History", "기록"),
+            LibraryTab::Radio => t!("Radio", "라디오"),
             LibraryTab::Downloads => t!("Downloads", "다운로드"),
         }
     }

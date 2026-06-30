@@ -51,6 +51,7 @@ impl App {
             // key shows "(none)" here; the DJ Gem still works and README documents env-wins.
             gemini_api_key: self.config.gemini_api_key.clone().unwrap_or_default(),
             ai_enabled: self.config.effective_ai_enabled(),
+            romanized_titles: self.config.effective_romanized_titles(),
             theme: self.theme.clone(),
             retro_mode: self.config.effective_retro_mode(),
             language: self.config.effective_language(),
@@ -275,7 +276,7 @@ impl App {
             // The Keys tab is a list of remappable bindings rather than `Field`s.
             let n = match st.tab {
                 SettingsTab::Keys => crate::keymap::editable_entries().len() as i32,
-                _ => st.tab.fields().len() as i32,
+                _ => st.fields().len() as i32,
             };
             st.row = (st.row as i32 + delta).clamp(0, n.max(1) - 1) as usize;
             st.editing_text = false;
@@ -473,6 +474,11 @@ impl App {
                 s.draft.ai_enabled = !s.draft.ai_enabled;
                 Vec::new()
             }
+            Field::RomanizedTitles => {
+                let s = self.settings_mut();
+                s.draft.romanized_titles = !s.draft.romanized_titles;
+                Vec::new()
+            }
             Field::ThemePreset => {
                 let s = self.settings_mut();
                 if s.draft.retro_mode {
@@ -539,7 +545,8 @@ impl App {
             | Field::ApiKey
             | Field::ThemeColor(_)
             | Field::ResetKeybindings
-            | Field::ResetAll => Vec::new(),
+            | Field::ResetAll
+            | Field::ClearRomanizedTitleCache => Vec::new(),
         }
     }
 
@@ -633,6 +640,10 @@ impl App {
                     self.settings_request_confirm(SettingsConfirm::ResetAll);
                     Vec::new()
                 }
+                Field::ClearRomanizedTitleCache => {
+                    self.settings_request_confirm(SettingsConfirm::ClearRomanizedTitleCache);
+                    Vec::new()
+                }
                 _ => Vec::new(),
             },
             _ => Vec::new(),
@@ -654,6 +665,9 @@ impl App {
             }
             SettingsConfirm::ResetKeybindings => self.settings_reset_keybindings(),
             SettingsConfirm::ResetAll => self.settings_reset_all(),
+            SettingsConfirm::ClearRomanizedTitleCache => {
+                self.settings_clear_romanized_title_cache()
+            }
         }
     }
 
@@ -696,6 +710,22 @@ impl App {
         Vec::new()
     }
 
+    /// Clear only the generated Latin-script display overlays. Source metadata, library rows,
+    /// settings, and the Gemini API key are left untouched.
+    pub(in crate::app) fn settings_clear_romanized_title_cache(&mut self) -> Vec<Cmd> {
+        self.romanization.cache.clear();
+        self.romanization.pending.clear();
+        self.romanization.min_valid_request_id =
+            self.romanization.next_request_id.saturating_add(1);
+        self.status.text = t!(
+            "Romanized title cache cleared",
+            "로마자 제목 캐시를 삭제했어요"
+        )
+        .to_owned();
+        self.dirty = true;
+        vec![Cmd::ClearRomanizedTitles]
+    }
+
     /// Reset every editable setting (and the Keys-tab keymap draft) back to its built-in
     /// default. Mutates only the draft / working keymap — like any other settings edit, it
     /// is committed and persisted when the screen closes. Live audio (speed, EQ, normalize)
@@ -724,6 +754,7 @@ impl App {
             d.gemini_model = def.effective_gemini_model();
             d.gemini_api_key = String::new();
             d.ai_enabled = def.effective_ai_enabled(); // back to on (don't strand DJ Gem off)
+            d.romanized_titles = def.effective_romanized_titles();
             d.theme = def.effective_theme();
             d.retro_mode = def.effective_retro_mode();
             d.language = def.effective_language();
@@ -849,15 +880,26 @@ impl App {
                     // `config.ai_enabled` only on close, so a key saved while DJ Gem is draft-disabled
                     // must not spawn the actor (and a key saved right after re-enabling DJ Gem in the
                     // draft should spawn it now). `close_settings` reconciles the final state.
-                    let ai_on = self.settings.as_ref().is_some_and(|s| s.draft.ai_enabled);
+                    let (ai_on, romanized_on) = self
+                        .settings
+                        .as_ref()
+                        .map(|s| (s.draft.ai_enabled, s.draft.romanized_titles))
+                        .unwrap_or_else(|| {
+                            (
+                                self.config.effective_ai_enabled(),
+                                self.config.effective_romanized_titles(),
+                            )
+                        });
                     cmds.push(Cmd::ReloadAi {
-                        key: if ai_on {
+                        key: if ai_on || romanized_on {
                             self.config.effective_gemini_api_key()
                         } else {
                             None
                         },
                         model: self.ai.model,
+                        assistant_enabled: ai_on,
                     });
+                    cmds.extend(self.request_current_surfaces_romanization());
                 }
                 self.status.text = t!("API key saved", "API 키를 저장했어요").to_owned();
             }
@@ -951,6 +993,7 @@ impl App {
         self.ai.model = d.gemini_model;
         let old_key = self.config.gemini_api_key.clone();
         let old_ai_enabled = self.config.effective_ai_enabled();
+        let old_romanized_titles = self.config.effective_romanized_titles();
         let old_download_dir = self.config.effective_download_dir();
         d.apply_to(&mut self.config);
         self.search.source = self.config.effective_search().source;
@@ -961,6 +1004,7 @@ impl App {
         self.config.theme = self.theme.clone();
         let key_changed = self.config.gemini_api_key != old_key;
         let ai_enabled_changed = self.config.effective_ai_enabled() != old_ai_enabled;
+        let romanized_changed = self.config.effective_romanized_titles() != old_romanized_titles;
         // Volume controls change the live value in place; fold it in so a save
         // doesn't persist the stale startup value.
         self.config.volume = self.playback.volume;
@@ -983,11 +1027,15 @@ impl App {
         // A changed key *or* a flipped DJ Gem on/off switch rebuilds the actor: `effective_ai_key`
         // returns `None` when DJ Gem is off, so turning it off tears the actor down (and back on
         // respawns it) without discarding the saved key.
-        if key_changed || ai_enabled_changed {
+        if key_changed || ai_enabled_changed || romanized_changed {
             cmds.push(Cmd::ReloadAi {
-                key: self.config.effective_ai_key(),
+                key: self.config.effective_ai_service_key(),
                 model: self.ai.model,
+                assistant_enabled: self.config.effective_ai_enabled(),
             });
+            if key_changed || romanized_changed {
+                cmds.extend(self.request_current_surfaces_romanization());
+            }
         } else if model_changed {
             cmds.push(Cmd::SetAiModel(self.ai.model));
         }

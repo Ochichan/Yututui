@@ -264,6 +264,11 @@ impl App {
             // artist affinity the engine learns from, and a full cycle nets back to zero.
             Action::CycleRating => {
                 if let Some(song) = self.queue.current().cloned() {
+                    if song.is_radio_station() {
+                        self.library.toggle_favorite(&song);
+                        self.dirty = true;
+                        return vec![Cmd::SaveLibrary];
+                    }
                     let artist_key = signals::normalize_artist(&song.artist);
                     let now = signals::unix_now();
                     let liked = self.library.is_favorite(&song.video_id);
@@ -455,6 +460,7 @@ impl App {
         if songs.is_empty() {
             return Vec::new();
         }
+        let requested_songs = songs.clone();
         if self.queue.play_now_many(songs) == 0 {
             self.status.kind = StatusKind::Error;
             self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
@@ -464,7 +470,9 @@ impl App {
         self.mode = Mode::Player;
         self.status.text.clear();
         let song = self.queue.current().cloned();
-        self.load_song(song)
+        let mut cmds = self.load_song(song);
+        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+        cmds
     }
 
     /// Append `song` to the end of the queue without interrupting playback — the unified `\` /
@@ -481,8 +489,8 @@ impl App {
         if songs.is_empty() {
             return Vec::new();
         }
+        let queued_songs = songs.clone();
         let requested = songs.len();
-        let first_title = songs[0].title.clone();
         let old_len = self.queue.len();
         let was_idle = self.prefetch.loaded_video_id.is_none();
         let added = self.queue.extend(songs);
@@ -499,8 +507,12 @@ impl App {
             self.mode = Mode::Player;
             self.status.text.clear();
             let song = self.queue.current().cloned();
-            return self.load_song(song);
+            let mut cmds = self.load_song(song);
+            cmds.extend(self.request_romanization_for_songs(&queued_songs));
+            return cmds;
         }
+        let cmds = self.request_romanization_for_songs(&queued_songs);
+        let first_title = self.display_title(&queued_songs[0]).into_owned();
         // A track is already playing → just queue it up behind the rest, no interruption.
         self.status.kind = StatusKind::Info;
         self.status.text = if requested == 1 && added == 1 {
@@ -513,7 +525,7 @@ impl App {
             )
         };
         self.dirty = true;
-        Vec::new()
+        cmds
     }
 
     /// Feed the outgoing current track into the preference signals. `full` = it played to
@@ -525,6 +537,9 @@ impl App {
         let Some(song) = self.queue.current().cloned() else {
             return Vec::new();
         };
+        if song.is_radio_station() {
+            return Vec::new();
+        }
         let artist_key = signals::normalize_artist(&song.artist);
         let now = signals::unix_now();
         if full {
@@ -629,7 +644,9 @@ impl App {
                 // "Playback error" / "Track unavailable") so the UI matches what's loading.
                 self.status.text.clear();
                 self.library.record_play(&song);
-                self.note_session_activity();
+                if !song.is_radio_station() {
+                    self.note_session_activity();
+                }
                 self.prefetch.loaded_video_id = Some(song.video_id.clone());
                 // Drop the previous track's lyrics; refresh if the panel is open.
                 self.lyrics.track = None;
@@ -688,6 +705,7 @@ impl App {
                 // plays — closing the silent gap. Guarded + cooldown'd inside, and idempotent
                 // with the call in `advance` (the second one sees `radio.pending` and no-ops).
                 cmds.extend(self.maybe_autoplay_extend());
+                cmds.extend(self.request_romanization_for_songs(std::slice::from_ref(&song)));
                 cmds
             }
             None => {

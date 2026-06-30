@@ -28,6 +28,9 @@ impl App {
         let Some(cur) = self.queue.current() else {
             return Vec::new();
         };
+        if cur.is_radio_station() {
+            return Vec::new();
+        }
         let seed = format!("{} — {}", cur.title, cur.artist);
         let seed_video_id = cur.video_id.clone();
         let exclude_ids = self.radio_exclude_ids(&seed_video_id);
@@ -362,7 +365,12 @@ impl App {
         seen.insert(current.video_id.clone());
         let mut labels = vec![("Current", song_label(current))];
 
-        for song in &self.library.history {
+        for song in self
+            .library
+            .history
+            .iter()
+            .filter(|song| !song.is_radio_station())
+        {
             if seen.insert(song.video_id.clone()) {
                 let role = match labels.len() {
                     1 => "Previous 1",
@@ -380,6 +388,7 @@ impl App {
     }
 
     pub(in crate::app) fn extend_queue_from_radio(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
+        let queued_songs = songs.clone();
         let added = self.queue.extend(songs);
         if added == 0 {
             return self.note_radio_failure(
@@ -403,11 +412,13 @@ impl App {
         // on), the player is idle — pick up the freshly queued track so playback resumes
         // instead of staying stopped at the finished song.
         if self.prefetch.loaded_video_id.is_none() && self.queue.remaining() > 0 {
-            return self.advance(true);
+            let mut cmds = self.advance(true);
+            cmds.extend(self.request_romanization_for_songs(&queued_songs));
+            return cmds;
         }
         // Still playing: pre-resolve the now-known next track's stream so the EOF→next hop is
         // instant (mirrors load_song's peek-next prefetch).
-        let mut cmds = Vec::new();
+        let mut cmds = self.request_romanization_for_songs(&queued_songs);
         if let Some(next) = self.queue.peek_next()
             && let Some(watch_url) = next.prefetch_target()
         {
@@ -449,15 +460,27 @@ impl App {
 
     pub(in crate::app) fn radio_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
         let profile = self.config.radio.mode.profile(&self.config.radio);
-        let mut ids: HashSet<String> = self.queue.video_ids().map(str::to_owned).collect();
+        let mut ids: HashSet<String> = self
+            .queue
+            .ordered_iter()
+            .filter(|song| !song.is_radio_station())
+            .map(|song| song.video_id.clone())
+            .collect();
         ids.insert(seed_video_id.to_owned());
         let favorite_ids: HashSet<&str> = self
             .library
             .favorites
             .iter()
+            .filter(|song| !song.is_radio_station())
             .map(|s| s.video_id.as_str())
             .collect();
-        for (idx, song) in self.library.history.iter().enumerate() {
+        for (idx, song) in self
+            .library
+            .history
+            .iter()
+            .filter(|song| !song.is_radio_station())
+            .enumerate()
+        {
             let inside_horizon = idx < profile.history_block_horizon;
             let protected_old_favorite =
                 profile.allow_old_liked_repeats && favorite_ids.contains(song.video_id.as_str());
@@ -551,7 +574,12 @@ impl App {
             .iter()
             .map(|(song, _)| song.video_id.clone())
             .collect();
-        seen.extend(self.queue.video_ids().map(str::to_owned));
+        seen.extend(
+            self.queue
+                .ordered_iter()
+                .filter(|song| !song.is_radio_station())
+                .map(|song| song.video_id.clone()),
+        );
         seen.insert(seed_video_id.to_owned());
 
         let (liked_cap, history_cap) = match mode {
@@ -560,7 +588,13 @@ impl App {
             RadioMode::Discovery => (6, 24),
         };
 
-        let mut favorites = self.library.favorites.clone();
+        let mut favorites: Vec<Song> = self
+            .library
+            .favorites
+            .iter()
+            .filter(|song| !song.is_radio_station())
+            .cloned()
+            .collect();
         favorites.sort_by(|a, b| {
             local_neighbor_score(b, &seed_artist, &self.signals).total_cmp(&local_neighbor_score(
                 a,
@@ -579,6 +613,7 @@ impl App {
             .library
             .history
             .iter()
+            .filter(|song| !song.is_radio_station())
             .skip(profile.history_block_horizon)
         {
             if added_history >= history_cap {
@@ -657,11 +692,17 @@ impl App {
     /// and favorite artists (a seed-affinity boost). Dislikes are read straight from `signals`.
     pub(in crate::app) fn build_station_state(&self, seed_video_id: &str) -> StationState {
         let profile = self.config.radio.mode.profile(&self.config.radio);
-        let mut recent_track_ids: Vec<String> = self.queue.video_ids().map(str::to_owned).collect();
+        let mut recent_track_ids: Vec<String> = self
+            .queue
+            .ordered_iter()
+            .filter(|song| !song.is_radio_station())
+            .map(|song| song.video_id.clone())
+            .collect();
         recent_track_ids.extend(
             self.library
                 .history
                 .iter()
+                .filter(|s| !s.is_radio_station())
                 .take(profile.history_block_horizon)
                 .map(|s| s.video_id.clone()),
         );
@@ -672,17 +713,21 @@ impl App {
             .library
             .history
             .iter()
+            .filter(|s| !s.is_radio_station())
             .take(RADIO_RECENT_ARTISTS)
             .map(|s| signals::normalize_artist(&s.artist))
             .collect();
         recent_artist_keys.reverse();
-        if let Some(cur) = self.queue.current() {
+        if let Some(cur) = self.queue.current()
+            && !cur.is_radio_station()
+        {
             push_artist_key(&mut recent_artist_keys, &cur.artist);
         }
         for song in self
             .queue
             .ordered_iter()
             .skip(self.queue.cursor_pos().saturating_add(1))
+            .filter(|song| !song.is_radio_station())
             .take(8)
         {
             push_artist_key(&mut recent_artist_keys, &song.artist);
@@ -692,6 +737,7 @@ impl App {
             .library
             .favorites
             .iter()
+            .filter(|s| !s.is_radio_station())
             .map(|s| signals::normalize_artist(&s.artist))
             .collect();
         let session_artist_bias = self.session_artist_bias();
@@ -755,12 +801,14 @@ impl App {
     pub(in crate::app) fn radio_seed_artist_key(&self, seed_video_id: &str) -> String {
         if let Some(cur) = self.queue.current()
             && cur.video_id == seed_video_id
+            && !cur.is_radio_station()
         {
             return signals::normalize_artist(&cur.artist);
         }
         self.library
             .history
             .iter()
+            .filter(|s| !s.is_radio_station())
             .find(|s| s.video_id == seed_video_id)
             .map(|s| signals::normalize_artist(&s.artist))
             .unwrap_or_default()

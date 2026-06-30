@@ -30,6 +30,7 @@ use crate::player::PlayerCmd;
 use crate::playlists::Playlists;
 use crate::queue::Queue;
 use crate::radio::{self, CandidateSource, Cooc, RadioMode, StationState};
+use crate::romanize::{RomanizeItem, RomanizedResult};
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::settings::{
     self, Field, FieldKind, SettingsConfirm, SettingsDraft, SettingsState, SettingsTab,
@@ -56,6 +57,7 @@ mod player;
 mod queue;
 mod radio_reducer;
 mod remote_reducer;
+mod romanize;
 mod search;
 mod settings_reducer;
 
@@ -191,6 +193,8 @@ pub struct App {
     // DJ Gem assistant ------------------------------------------------------------
     /// DJ Gem assistant state: availability, model, chat transcript, prompt, suggestions.
     pub ai: AiState,
+    /// Latin-script title display overlay cache and in-flight requests.
+    pub romanization: RomanizationRuntime,
 
     // Radio runtime -----------------------------------------------------------
     /// Radio autoplay runtime: cooldown clock, in-flight pool flag, a handed-off DJ Gem rerank,
@@ -317,6 +321,7 @@ impl App {
                 suggestions_selected: 0,
                 focus: AiFocus::Input,
             },
+            romanization: RomanizationRuntime::default(),
             radio: RadioRuntime::default(),
             consecutive_play_errors: 0,
             playlists: Playlists::default(),
@@ -493,6 +498,8 @@ impl App {
                     .to_owned();
                 }
                 self.dirty = true;
+                let results = self.search.results.clone();
+                return self.request_romanization_for_songs(&results);
             }
             Msg::StatusTick => {
                 // The status has been covering the title long enough — clear it so the
@@ -634,6 +641,8 @@ impl App {
                     self.library_ui.selected = len.saturating_sub(1);
                 }
                 self.dirty = true;
+                let downloaded = self.library_ui.downloaded.clone();
+                return self.request_romanization_for_songs(&downloaded);
             }
             Msg::LyricsResult { video_id, lines } => {
                 self.lyrics.loading = false;
@@ -778,8 +787,8 @@ impl App {
                                 .clone();
                             let song = pending.shortlist.iter().find(|s| s.video_id == vid)?;
                             let pick = ExplainPick {
-                                title: song.title.clone(),
-                                artist: song.artist.clone(),
+                                title: self.display_title(song).into_owned(),
+                                artist: self.display_artist(song).into_owned(),
                                 role: p.role.clone(),
                                 reasons: p.reasons.clone(),
                             };
@@ -851,10 +860,13 @@ impl App {
             }
             Msg::AiPlayTracks(songs) => {
                 if !songs.is_empty() {
+                    let requested_songs = songs.clone();
                     self.queue.set(songs, 0);
                     self.status.text.clear();
                     let song = self.queue.current().cloned();
-                    return self.load_song(song);
+                    let mut cmds = self.load_song(song);
+                    cmds.extend(self.request_romanization_for_songs(&requested_songs));
+                    return cmds;
                 }
             }
             Msg::AiEnqueue(songs) => {
@@ -865,6 +877,8 @@ impl App {
                 self.ai.suggestions_selected = 0;
                 self.bridges.ai_scroll.reset();
                 self.dirty = true;
+                let suggestions = self.ai.suggestions.clone();
+                return self.request_romanization_for_songs(&suggestions);
             }
             Msg::AiSetAutoplay(on) => {
                 self.autoplay_radio = on;
@@ -923,10 +937,13 @@ impl App {
                 if let Some(songs) = self.playlists.find(&key).map(|p| p.songs.clone())
                     && !songs.is_empty()
                 {
+                    let requested_songs = songs.clone();
                     self.queue.set(songs, 0);
                     self.status.text.clear();
                     let song = self.queue.current().cloned();
-                    return self.load_song(song);
+                    let mut cmds = self.load_song(song);
+                    cmds.extend(self.request_romanization_for_songs(&requested_songs));
+                    return cmds;
                 }
             }
             Msg::StationPatch {
@@ -943,6 +960,13 @@ impl App {
                     self.dirty = true;
                     return vec![Cmd::SaveStationProfile];
                 }
+            }
+            Msg::RomanizedTitles {
+                request_id,
+                keys,
+                entries,
+            } => {
+                return self.apply_romanized_titles(request_id, keys, entries);
             }
         }
         Vec::new()
@@ -1072,7 +1096,7 @@ impl App {
         if let Some(st) = self.settings.as_mut() {
             // The Keys tab has no `Field`s; leave its binding-selection cursor untouched (no
             // field controls register there, so this is defensive).
-            let fields = st.tab.fields();
+            let fields = st.fields();
             if !fields.is_empty() {
                 st.row = row.min(fields.len() - 1);
             }

@@ -343,12 +343,14 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
         .suggestions
         .iter()
         .map(|s| {
+            let title = app.display_title(s);
+            let artist = app.display_artist(s);
             let heart = if app.library.is_favorite(&s.video_id) {
                 "♥ "
             } else {
                 ""
             };
-            ListItem::new(format!("{heart}{} — {}", s.title, s.artist))
+            ListItem::new(format!("{heart}{title} — {artist}"))
                 .style(app.theme.style(R::TextPrimary))
         })
         .collect();

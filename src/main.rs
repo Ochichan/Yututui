@@ -20,6 +20,7 @@ mod queue;
 mod radio;
 mod remote;
 mod resolver;
+mod romanize;
 mod search_source;
 mod settings;
 mod signals;
@@ -547,6 +548,8 @@ async fn run(
     // Load the active natural-language station profile (explore level + avoided artists), if any.
     app.station = station::StationStore::load();
     app.apply_station_profile();
+    // Load Latin-script display overlays for CJK titles. Source metadata stays in the library.
+    app.romanization.cache = romanize::RomanizeCache::load();
     // Push persisted playback/EQ settings (preset, bands, normalize, speed, autoplay).
     app.apply_config(&cfg);
     startup.mark("app_state_loaded");
@@ -647,14 +650,12 @@ async fn run(
     // Resolver actor: pre-resolves the next track's stream URL for instant skip.
     let resolver_handle = resolver::spawn(worker_tx.clone(), cookies_file);
 
-    // DJ Gem assistant actor: spawned only when a Gemini key is configured *and* DJ Gem is enabled.
-    // `effective_ai_key()` returns None when the user has switched DJ Gem off, so the actor stays
-    // down even with a key saved. Keep `ai_available` in lockstep with whether the actor
-    // actually started (a malformed key makes `spawn` return None even though one was set).
+    // Gemini actor: spawned when any Gemini-backed feature is active. DJ Gem can be off while
+    // title romanization is on, so UI assistant availability is tracked separately below.
     let mut ai_handle = cfg
-        .effective_ai_key()
+        .effective_ai_service_key()
         .and_then(|key| ai::spawn(&key, cfg.effective_gemini_model(), worker_tx.clone()));
-    app.ai.available = ai_handle.is_some();
+    app.ai.available = cfg.effective_ai_enabled() && ai_handle.is_some();
 
     // Opt-in autoplay-on-launch: now that every player/actor handle exists, ask the loop to
     // start the restored track. Routed through the message pump so the resulting load/save
@@ -800,6 +801,16 @@ async fn run(
                         tracing::warn!(error = %e, "failed to save signals");
                     }
                 }
+                Cmd::SaveRomanizedTitles => {
+                    if let Err(e) = app.romanization.cache.save() {
+                        tracing::warn!(error = %e, "failed to save romanized title cache");
+                    }
+                }
+                Cmd::ClearRomanizedTitles => {
+                    if let Err(e) = romanize::RomanizeCache::delete_saved() {
+                        tracing::warn!(error = %e, "failed to delete romanized title cache");
+                    }
+                }
                 Cmd::ScanDownloads(dir) => {
                     let songs = library::scan_downloads(&dir);
                     let _ = worker_tx.send(Msg::DownloadsScanned(songs));
@@ -855,6 +866,18 @@ async fn run(
                         h.summarize_feedback(digest);
                     }
                 }
+                Cmd::RomanizeTitles { request_id, items } => {
+                    let keys: Vec<String> = items.iter().map(|item| item.key.clone()).collect();
+                    if let Some(h) = &ai_handle {
+                        h.romanize(request_id, items);
+                    } else {
+                        let _ = worker_tx.send(Msg::RomanizedTitles {
+                            request_id,
+                            keys,
+                            entries: Vec::new(),
+                        });
+                    }
+                }
                 Cmd::RadioFallback {
                     seed,
                     seed_video_id,
@@ -883,11 +906,15 @@ async fn run(
                         h.set_model(model);
                     }
                 }
-                Cmd::ReloadAi { key, model } => {
+                Cmd::ReloadAi {
+                    key,
+                    model,
+                    assistant_enabled,
+                } => {
                     // Drop the old actor (closing its channel ends its task) and bring up a
                     // fresh one for the new key, so a key edited in Settings works at once.
                     ai_handle = key.and_then(|k| ai::spawn(&k, model, worker_tx.clone()));
-                    app.ai.available = ai_handle.is_some();
+                    app.ai.available = assistant_enabled && ai_handle.is_some();
                 }
             }
         }

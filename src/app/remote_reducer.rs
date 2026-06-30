@@ -87,7 +87,7 @@ impl App {
 
     fn now_playing_line(&self) -> String {
         match self.queue.current() {
-            Some(s) => format!("{} — {}", s.title, s.artist),
+            Some(s) => self.display_song_label(s),
             None => "nothing playing".to_string(),
         }
     }
@@ -99,7 +99,7 @@ impl App {
             "playing"
         };
         match self.queue.current() {
-            Some(s) => format!("{state}: {} — {}", s.title, s.artist),
+            Some(s) => format!("{state}: {}", self.display_song_label(s)),
             None => state.to_string(),
         }
     }
@@ -112,8 +112,8 @@ impl App {
         let cur = self.queue.current();
         let (position, total) = self.queue.position();
         StatusSnapshot {
-            title: cur.map(|s| s.title.clone()),
-            artist: cur.map(|s| s.artist.clone()),
+            title: cur.map(|s| self.display_title(s).into_owned()),
+            artist: cur.map(|s| self.display_artist(s).into_owned()),
             paused: self.playback.paused,
             volume: self.playback.volume,
             position: if total == 0 { 0 } else { position },

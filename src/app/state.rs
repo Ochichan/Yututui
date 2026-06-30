@@ -221,6 +221,16 @@ pub struct AiState {
     pub focus: AiFocus,
 }
 
+/// Runtime state for Latin-script title overlays. The cache is persisted separately from the
+/// source library so source metadata stays untouched.
+#[derive(Default)]
+pub struct RomanizationRuntime {
+    pub cache: crate::romanize::RomanizeCache,
+    pub pending: HashSet<String>,
+    pub next_request_id: u64,
+    pub min_valid_request_id: u64,
+}
+
 /// Album-art state: the terminal graphics picker, the held render protocol, its decoded
 /// source image and dimensions, the owning track id, and the in-flight flag.
 #[derive(Default)]
@@ -302,7 +312,7 @@ pub struct RadioRuntime {
 /// local download-folder rows, and the pending file-delete confirmation.
 #[derive(Default)]
 pub struct LibraryView {
-    /// Which library list is shown (All / Favorites / History / Downloads).
+    /// Which library list is shown (All / Favorites / History / Radio / Downloads).
     pub tab: LibraryTab,
     /// The highlighted row in the active library list.
     pub selected: usize,

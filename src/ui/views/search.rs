@@ -187,6 +187,8 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         .results
         .iter()
         .map(|s| {
+            let title = app.display_title(s);
+            let artist = app.display_artist(s);
             let heart = if app.library.is_favorite(&s.video_id) {
                 "♥ "
             } else {
@@ -194,12 +196,9 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
             };
             let source = format!("[{}] ", s.source.code());
             let line = if s.duration.is_empty() {
-                format!("{source}{heart}{} — {}", s.title, s.artist)
+                format!("{source}{heart}{title} — {artist}")
             } else {
-                format!(
-                    "{source}{heart}{} — {}  ({})",
-                    s.title, s.artist, s.duration
-                )
+                format!("{source}{heart}{title} — {artist}  ({})", s.duration)
             };
             ListItem::new(line).style(app.theme.style(R::TextPrimary))
         })

@@ -9,11 +9,20 @@ impl App {
         self.library_rows().len()
     }
 
-    pub fn library_counts(&self) -> [usize; 4] {
+    pub fn library_counts(&self) -> [usize; 5] {
         [
             self.all_library_count(),
-            self.library.favorites.len(),
-            self.library.history.len(),
+            self.library
+                .favorites
+                .iter()
+                .filter(|s| !s.is_radio_station())
+                .count(),
+            self.library
+                .history
+                .iter()
+                .filter(|s| !s.is_radio_station())
+                .count(),
+            self.radio_library_count(),
             self.library_ui.downloaded.len(),
         ]
     }
@@ -36,6 +45,8 @@ impl App {
             .filter(|s| {
                 s.title.to_lowercase().contains(&needle)
                     || s.artist.to_lowercase().contains(&needle)
+                    || self.display_title(s).to_lowercase().contains(&needle)
+                    || self.display_artist(s).to_lowercase().contains(&needle)
             })
             .collect()
     }
@@ -43,8 +54,19 @@ impl App {
     pub(in crate::app) fn library_rows_for(&self, tab: LibraryTab) -> Vec<&Song> {
         match tab {
             LibraryTab::All => self.all_library_rows(),
-            LibraryTab::Favorites => self.library.favorites.iter().collect(),
-            LibraryTab::History => self.library.history.iter().collect(),
+            LibraryTab::Favorites => self
+                .library
+                .favorites
+                .iter()
+                .filter(|s| !s.is_radio_station())
+                .collect(),
+            LibraryTab::History => self
+                .library
+                .history
+                .iter()
+                .filter(|s| !s.is_radio_station())
+                .collect(),
+            LibraryTab::Radio => self.radio_library_rows(),
             LibraryTab::Downloads => self.library_ui.downloaded.iter().collect(),
         }
     }
@@ -59,6 +81,7 @@ impl App {
             .iter()
             .chain(self.library.history.iter())
             .chain(self.library_ui.downloaded.iter())
+            .filter(|song| !song.is_radio_station())
         {
             // Collapse a track that lives in several collections to one row. The exact id
             // catches a favorite that's also in history; the normalized title additionally
@@ -85,6 +108,7 @@ impl App {
             .iter()
             .chain(self.library.history.iter())
             .chain(self.library_ui.downloaded.iter())
+            .filter(|song| !song.is_radio_station())
         {
             let title_key = song.title.trim().to_lowercase();
             let fresh_id = seen_ids.insert(song.video_id.as_str());
@@ -94,6 +118,34 @@ impl App {
             }
         }
         count
+    }
+
+    pub(in crate::app) fn radio_library_rows(&self) -> Vec<&Song> {
+        let mut rows = Vec::new();
+        let mut seen_ids = HashSet::new();
+        for song in self
+            .library
+            .radio_favorites
+            .iter()
+            .chain(self.library.radios.iter())
+            .filter(|song| song.is_radio_station())
+        {
+            if seen_ids.insert(song.video_id.as_str()) {
+                rows.push(song);
+            }
+        }
+        rows
+    }
+
+    fn radio_library_count(&self) -> usize {
+        let mut seen_ids = HashSet::new();
+        self.library
+            .radio_favorites
+            .iter()
+            .chain(self.library.radios.iter())
+            .filter(|song| song.is_radio_station())
+            .filter(|song| seen_ids.insert(song.video_id.as_str()))
+            .count()
     }
 
     pub(in crate::app) fn library_songs(&self) -> Vec<Song> {
@@ -129,11 +181,14 @@ impl App {
         if songs.is_empty() {
             return Vec::new();
         }
+        let requested_songs = songs.clone();
         self.queue.set(songs, self.library_ui.selected);
         self.mode = Mode::Player;
         self.status.text.clear();
         let song = self.queue.current().cloned();
-        self.load_song(song)
+        let mut cmds = self.load_song(song);
+        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+        cmds
     }
 
     /// Delete the library list's current selection — the inclusive range between the drag
@@ -145,8 +200,9 @@ impl App {
     }
 
     /// Delete library rows `lo..=hi` (positions in the current tab) with per-tab meaning:
-    /// Favorites un-favorites, History forgets, Downloads asks before deleting the files on
-    /// disk, and All is an aggregate view so it's read-only. Clamps the selection afterward.
+    /// Favorites un-favorites, History forgets, Radio forgets the station, Downloads asks before
+    /// deleting the files on disk, and All is an aggregate view so it's read-only. Clamps the
+    /// selection afterward.
     pub(in crate::app) fn library_delete_rows(&mut self, lo: usize, hi: usize) -> Vec<Cmd> {
         // Resolve the displayed (possibly filtered) rows to concrete songs first, then delete
         // by identity. Under an active filter the row positions no longer map to the raw
@@ -190,6 +246,19 @@ impl App {
                 self.clamp_library_selection();
                 self.dirty = true;
                 vec![Cmd::SaveLibrary]
+            }
+            LibraryTab::Radio => {
+                let mut any = false;
+                for song in targets {
+                    any |= self.library.remove_radio_by_id(&song.video_id);
+                }
+                if any {
+                    self.clamp_library_selection();
+                    self.dirty = true;
+                    vec![Cmd::SaveLibrary]
+                } else {
+                    Vec::new()
+                }
             }
             LibraryTab::Downloads => {
                 // Deleting real files is irreversible — gather the paths and ask first.

@@ -815,6 +815,19 @@ fn songs(n: usize) -> Vec<Song> {
         .collect()
 }
 
+fn radio_station(id: &str) -> Song {
+    Song::from_source(
+        SearchSource::RadioBrowser,
+        id,
+        format!("Station {id}"),
+        "KR / MP3",
+        "",
+        crate::api::PlayableRef::RadioStream {
+            url: format!("https://example.com/{id}.mp3"),
+        },
+    )
+}
+
 /// An app with an `n`-track queue, playing track `start`. Builds the queue directly so
 /// it stays independent of how individual play paths populate the queue (e.g. search-play
 /// only queues the one picked track).
@@ -1009,6 +1022,20 @@ fn ctrl_r_toggles_autoplay_radio() {
         save_config(&cmds).expect("a SaveConfig cmd").autoplay_radio,
         Some(false)
     );
+}
+
+#[test]
+fn autoplay_radio_does_not_extend_from_radio_browser_streams() {
+    let mut app = App::new(100);
+    app.autoplay_radio = true;
+    app.queue.set(vec![radio_station("station-seed")], 0);
+    app.mode = Mode::Player;
+
+    let cmds = app.load_song(app.queue.current().cloned());
+
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::RadioFallback { .. })));
+    assert!(app.library.history.is_empty());
+    assert_eq!(app.library.radios.len(), 1);
 }
 
 #[test]
@@ -1319,8 +1346,9 @@ fn radio_mode_cycles_on_the_ai_tab_and_persists() {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
-    // Fields: AiEnabled(0), Model(1), ApiKey(2), AutoplayRadio(3), RadioMode(4).
-    for _ in 0..4 {
+    // Fields: AiEnabled(0), Model(1), ApiKey(2), RomanizedTitles(3), Clear cache(4),
+    // AutoplayRadio(5), RadioMode(6).
+    for _ in 0..6 {
         app.update(Msg::Key(key(KeyCode::Down)));
     }
     app.update(Msg::Key(key(KeyCode::Right))); // Balanced → Discovery
@@ -1333,6 +1361,83 @@ fn radio_mode_cycles_on_the_ai_tab_and_persists() {
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
     assert_eq!(app.config.radio.mode, RadioMode::Discovery);
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+}
+
+#[test]
+fn clear_romanized_title_cache_button_is_hidden_in_retro_draft() {
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
+    for _ in 0..4 {
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab
+    }
+
+    let st = app.settings.as_ref().unwrap();
+    assert_eq!(st.tab, SettingsTab::Ai);
+    assert!(st.fields().contains(&Field::ClearRomanizedTitleCache));
+
+    app.settings.as_mut().unwrap().draft.retro_mode = true;
+    assert!(
+        !app.settings
+            .as_ref()
+            .unwrap()
+            .fields()
+            .contains(&Field::ClearRomanizedTitleCache)
+    );
+}
+
+#[test]
+fn clear_romanized_title_cache_confirms_and_discards_stale_results() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.config.romanized_titles = Some(true);
+    app.romanization.next_request_id = 7;
+    let song = Song::remote("ko1", "좋은 날", "아이유", "0:10");
+    let stale_key = crate::romanize::key_for_song(&song);
+    assert!(app.romanization.cache.ensure_local(&song));
+    assert!(app.romanization.cache.entry_for(&song).is_some());
+
+    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
+    for _ in 0..4 {
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab
+    }
+    let idx = app
+        .settings
+        .as_ref()
+        .unwrap()
+        .fields()
+        .iter()
+        .position(|f| *f == Field::ClearRomanizedTitleCache)
+        .expect("clear cache field");
+    app.settings.as_mut().unwrap().row = idx;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.pending_settings_confirm,
+        Some(SettingsConfirm::ClearRomanizedTitleCache)
+    );
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('y'))));
+    assert!(app.pending_settings_confirm.is_none());
+    assert_eq!(app.status.text, "Romanized title cache cleared");
+    assert!(app.romanization.cache.entry_for(&song).is_none());
+    assert!(
+        cmds.iter()
+            .any(|cmd| matches!(cmd, Cmd::ClearRomanizedTitles))
+    );
+
+    let cmds = app.apply_romanized_titles(
+        7,
+        vec![stale_key.clone()],
+        vec![crate::romanize::RomanizedResult {
+            key: stale_key,
+            title: "Joeun Nal".to_owned(),
+            artist: "IU".to_owned(),
+            confidence: Some(0.9),
+        }],
+    );
+    assert!(cmds.is_empty());
+    assert!(app.romanization.cache.entry_for(&song).is_none());
 }
 
 #[test]
@@ -2095,6 +2200,30 @@ fn autoplay_extends_when_queue_runs_low() {
 }
 
 #[test]
+fn radio_tab_entries_do_not_feed_station_state() {
+    let mut app = app_playing(1, 0);
+    let normal_favorite = Song::remote("fav-song", "Favorite", "Song Artist", "0:10");
+    let normal_history = Song::remote("hist-song", "History", "History Artist", "0:10");
+    let radio_favorite = radio_station("fav-radio");
+    let radio_recent = radio_station("recent-radio");
+
+    app.library.favorites.push(normal_favorite);
+    app.library.history.push_front(normal_history);
+    app.library.radio_favorites.push(radio_favorite.clone());
+    app.library.radios.push_front(radio_recent.clone());
+
+    let st = app.build_station_state("id0");
+    let normal_fav_artist = crate::signals::normalize_artist("Song Artist");
+    let radio_artist = crate::signals::normalize_artist("KR / MP3");
+
+    assert!(st.favorite_artist_keys.contains(&normal_fav_artist));
+    assert!(!st.favorite_artist_keys.contains(&radio_artist));
+    assert!(!st.recent_track_ids.contains(&radio_favorite.video_id));
+    assert!(!st.recent_track_ids.contains(&radio_recent.video_id));
+    assert!(!st.recent_artist_keys.contains(&radio_artist));
+}
+
+#[test]
 fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
     let mut app = app_playing(1, 0); // current id0 is already in history
     let current = app.queue.current().cloned().unwrap();
@@ -2732,6 +2861,58 @@ fn playing_records_history_most_recent_first() {
         .map(|s| s.video_id.as_str())
         .collect();
     assert_eq!(hist, vec!["id1", "id0"]);
+}
+
+#[test]
+fn playing_radio_records_radio_tab_only() {
+    let mut app = App::new(100);
+    let station = radio_station("station-a");
+    app.queue.set(vec![station.clone()], 0);
+    let cmds = app.load_song(app.queue.current().cloned());
+
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(app.library.history.is_empty());
+    assert!(app.library.favorites.is_empty());
+    assert_eq!(
+        app.library.radios.front().map(|s| s.video_id.as_str()),
+        Some("rad:station-a")
+    );
+
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::All;
+    assert!(app.library_rows().is_empty());
+    app.library_ui.tab = LibraryTab::History;
+    assert!(app.library_rows().is_empty());
+    app.library_ui.tab = LibraryTab::Favorites;
+    assert!(app.library_rows().is_empty());
+    app.library_ui.tab = LibraryTab::Radio;
+    assert_eq!(row_ids(&app), vec!["rad:station-a"]);
+}
+
+#[test]
+fn radio_favorite_is_separate_from_song_favorites() {
+    let mut app = App::new(100);
+    let station = radio_station("station-fav");
+    app.search.results = vec![station.clone()];
+    app.search.focus = SearchFocus::Results;
+    app.mode = Mode::Search;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(app.library.favorites.is_empty());
+    assert!(app.library.history.is_empty());
+    assert_eq!(app.library.radio_favorites.len(), 1);
+    assert_eq!(app.library.radio_favorites[0].video_id, "rad:station-fav");
+    assert!(app.library.is_favorite("rad:station-fav"));
+
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Favorites;
+    assert!(app.library_rows().is_empty());
+    app.library_ui.tab = LibraryTab::All;
+    assert!(app.library_rows().is_empty());
+    app.library_ui.tab = LibraryTab::Radio;
+    assert_eq!(row_ids(&app), vec!["rad:station-fav"]);
 }
 
 #[test]
@@ -4455,6 +4636,28 @@ fn rating_key_cycles_neutral_like_dislike() {
 }
 
 #[test]
+fn rating_radio_toggles_radio_favorite_without_signals() {
+    let mut app = App::new(100);
+    let station = radio_station("station-like");
+    app.queue.set(vec![station], 0);
+    app.mode = Mode::Player;
+    app.load_song(app.queue.current().cloned());
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert!(app.library.favorites.is_empty());
+    assert!(app.library.is_radio_favorite("rad:station-like"));
+    assert!(!app.signals.is_disliked("rad:station-like"));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert!(!app.library.is_radio_favorite("rad:station-like"));
+}
+
+#[test]
 fn manual_next_records_signals_then_advances() {
     let mut app = app_playing(3, 0);
     let id = current(&app).to_owned();
@@ -4462,6 +4665,25 @@ fn manual_next_records_signals_then_advances() {
     // The skipped track is persisted (SaveSignals) and playback advances.
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
     assert_ne!(current(&app), id);
+}
+
+#[test]
+fn manual_next_from_radio_does_not_record_signals() {
+    let mut app = App::new(100);
+    app.queue.set(
+        vec![
+            radio_station("station-skip"),
+            Song::remote("id0", "t0", "a", "0:10"),
+        ],
+        0,
+    );
+    app.mode = Mode::Player;
+    app.load_song(app.queue.current().cloned());
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert_eq!(current(&app), "id0");
 }
 
 #[test]

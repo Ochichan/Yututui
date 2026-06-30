@@ -418,7 +418,7 @@ fn field_value_text(st: &SettingsState, field: Field, focused: bool) -> String {
 
 fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     let theme = &st.draft.theme;
-    let fields = st.tab.fields();
+    let fields = st.fields();
     let sections = st.tab.sections();
     let focused_field = st.row.min(fields.len().saturating_sub(1));
 
@@ -524,7 +524,7 @@ fn register_field_controls(
     offset: usize,
     display_to_field: &[Option<usize>],
 ) {
-    let fields = st.tab.fields();
+    let fields = st.fields();
     let focused_field = st.row.min(fields.len().saturating_sub(1));
     let gutter = buttons::text_width(HL_SYMBOL);
     let other_lw = other_label_width(st.tab) as u16;
