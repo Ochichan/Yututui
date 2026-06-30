@@ -225,10 +225,12 @@ pub struct ArtState {
     /// when album art is enabled. `None` → feature off, or the terminal couldn't be probed
     /// (no art is fetched or drawn in that case).
     pub picker: Option<Picker>,
-    /// The current track's art as a render-ready, resizable protocol. `RefCell` because
+    /// The current track's art as a render-ready, threaded resize protocol. `RefCell` because
     /// `StatefulImage` needs `&mut` during render, which only has `&App` (mirrors the
-    /// [`RenderBridges`] fields).
-    pub protocol: RefCell<Option<StatefulProtocol>>,
+    /// [`RenderBridges`] fields). Resize/encode work is sent off-thread through `resize_tx`.
+    pub protocol: RefCell<Option<ThreadProtocol>>,
+    /// Background resize/encode request channel for [`ThreadProtocol`].
+    pub(in crate::app) resize_tx: Option<tokio::sync::mpsc::UnboundedSender<ResizeRequest>>,
     /// The decoded source image kept alongside the protocol so [`App::refresh_art`] can
     /// rebuild a fresh protocol (new graphics-protocol id) on demand — see that method for why.
     /// Reducer-only (was a private App field) — `pub(in crate::app)`.
@@ -267,6 +269,9 @@ pub struct RadioRuntime {
     /// the AI's chosen `video_id` ordering plus when it was stored; a rapid identical refill
     /// replays it instead of spending another call. Pruned by TTL on every insert (stays tiny).
     pub ai_cache: HashMap<u64, (Vec<String>, Instant)>,
+    /// Cached co-occurrence graph keyed by [`Signals::play_log_generation`], so radio refills don't
+    /// rebuild the same nested HashMap when listening history has not changed.
+    pub cooc_cache: Option<(u64, Cooc)>,
     /// True while an off-path feedback summary is handed off to the assistant actor, awaiting its
     /// `Msg::StationPatch`. A single-flight guard so a skip streak can't fan out duplicate calls.
     pub feedback_in_flight: bool,

@@ -21,8 +21,9 @@ use crate::app::Msg;
 /// upscales (`Resize::Scale`) to fill the art area, so the source needs enough detail to
 /// stay sharp when enlarged; this still bounds in-flight RAM and per-track decode/encode
 /// cost. Only the current track's image is held at a time, so peak cost is one image.
-/// (`maxresdefault` is natively 1280×720; raise this knob if the art ever looks soft.)
-const MAX_DIM: u32 = 1024;
+/// (`maxresdefault` is natively 1280×720; 768px is enough for terminal-cell rendering while
+/// keeping protocol resize/encode work smaller.)
+const MAX_DIM: u32 = 768;
 
 /// Where a track's art comes from.
 pub enum ArtSource {

@@ -20,10 +20,14 @@ Each command installs `ytt` **and** its helpers (mpv, yt-dlp, ffmpeg) in one go.
 | **Windows** | `scoop bucket add extras; scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket; scoop install ytm-tui` |
 | **Linux** — any, with [Nix](https://nixos.org/download) | `nix run github:Ochichan/ytm-tui` |
 | **Linux** — Arch | `yay -S ytm-tui-bin` |
-| **Linux** — any other | `curl -fsSL https://github.com/Ochichan/ytm-tui/releases/latest/download/install.sh \| sh` |
+| **Linux** — any other | Download and run the installer below |
 | **From source** | `./install.sh --build` (needs [Rust](https://rustup.rs)) |
 
-> The `curl | sh` and from-source paths install **only** `ytt`. Install the helpers yourself (`brew install mpv yt-dlp ffmpeg`, `sudo apt install mpv yt-dlp ffmpeg`, `sudo pacman -S mpv yt-dlp ffmpeg`) — or just run `ytt doctor` afterward to see what's missing.
+```sh
+curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash
+```
+
+> The `curl | bash` and from-source paths install **only** `ytt`. Install the helpers yourself (`brew install mpv yt-dlp ffmpeg`, `sudo apt install mpv yt-dlp ffmpeg`, `sudo pacman -S mpv yt-dlp ffmpeg`) — or just run `ytt doctor` afterward to see what's missing.
 
 ---
 

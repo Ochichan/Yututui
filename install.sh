@@ -2,7 +2,7 @@
 #
 # ytm-tui installer (macOS / Linux) — makes `ytt` runnable from anywhere, no manual setup.
 #
-#   curl -fsSL https://github.com/Ochichan/ytm-tui/releases/latest/download/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash
 #                                 # download a prebuilt binary for this OS/arch — no clone needed
 #   ./install.sh                  # from a clone: use ./dist or a release binary, else cargo build
 #   ./install.sh --build          # always build from source (needs Rust + a clone)
@@ -103,7 +103,7 @@ install_via_cargo() {
   fi
 }
 
-# --- download a prebuilt release archive (the `curl | sh` path) ------------------------
+# --- download a prebuilt release archive (the `curl | bash` path) ----------------------
 # Map (OS, ARCH) -> the release archive CI publishes (see .github/workflows/build.yml).
 # Empty when we don't ship a prebuilt for this platform.
 release_archive_for_platform() {

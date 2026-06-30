@@ -3,6 +3,10 @@
 use super::*;
 
 impl App {
+    pub(crate) fn set_art_resize_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<ResizeRequest>) {
+        self.art.resize_tx = Some(tx);
+    }
+
     /// Whether album art should drive the layout: the feature is on, a protocol was
     /// detected, and a decoded image is ready for the current track.
     pub fn art_active(&self) -> bool {
@@ -34,6 +38,67 @@ impl App {
             && !self.help_visible
             && !self.about_visible
             && !self.why_ai_visible
+    }
+
+    /// Logical animation tick rate. This remains the configured FPS so frame-based animation phases
+    /// keep their existing timing even when the renderer skips expensive intermediate frames.
+    pub fn animation_tick_fps(&self) -> u16 {
+        self.config.animations.effective_fps()
+    }
+
+    /// Actual redraw cadence for the active animation mix. Cheap element effects keep the configured
+    /// FPS; full-cell canvas effects cap repaint work; the AI mascot only needs to redraw when its
+    /// pose can change.
+    pub fn animation_draw_fps(&self) -> u16 {
+        let fps = self.animation_tick_fps();
+        let a = &self.config.animations;
+        if matches!(self.mode, Mode::Player)
+            && a.master
+            && (a.rain || a.donut || a.visualizer || a.starfield)
+        {
+            fps.min(20)
+        } else if self.ai_mascot_active() {
+            (fps / 10).max(1)
+        } else {
+            fps
+        }
+    }
+
+    pub(crate) fn reset_animation_cadence(&mut self) {
+        self.anim_draw_credit = 0;
+        self.anim_last_draw_fps = 0;
+    }
+
+    pub(in crate::app) fn advance_animation(&mut self) {
+        self.anim_frame = self.anim_frame.wrapping_add(1);
+
+        let tick_fps = self.animation_tick_fps().max(1);
+        let draw_fps = self.animation_draw_fps().clamp(1, tick_fps);
+        if self.anim_last_draw_fps != draw_fps {
+            self.anim_last_draw_fps = draw_fps;
+            self.anim_draw_credit = 0;
+        }
+        if draw_fps >= tick_fps {
+            self.dirty = true;
+            return;
+        }
+
+        self.anim_draw_credit = self.anim_draw_credit.saturating_add(draw_fps);
+        if self.anim_draw_credit >= tick_fps {
+            self.anim_draw_credit -= tick_fps;
+            self.dirty = true;
+        }
+    }
+
+    /// Whether the next draw benefits from DEC synchronized update. Plain forms and one-line
+    /// status redraws avoid the extra escape traffic; album art and canvas animation keep the
+    /// atomic swap that prevents tearing/ghosting on terminals that support it.
+    pub fn synchronized_draw_active(&self) -> bool {
+        let a = &self.config.animations;
+        self.art_active()
+            || (matches!(self.mode, Mode::Player)
+                && a.master
+                && (a.rain || a.donut || a.visualizer || a.starfield))
     }
 
     /// Whether the "Gemini-tan" mascot on the AI start screen should be dancing right now. True
@@ -108,8 +173,13 @@ impl App {
     /// appear/disappear the (full-width) `?` help overlay gets for free. Cheap clone of one
     /// already-bounded image (`MAX_DIM`), only on a popup toggle.
     pub fn refresh_art(&self) {
-        if let (Some(img), Some(picker)) = (self.art.source.as_ref(), self.art.picker.as_ref()) {
-            *self.art.protocol.borrow_mut() = Some(picker.new_resize_protocol(img.clone()));
+        if let (Some(img), Some(picker), Some(tx)) = (
+            self.art.source.as_ref(),
+            self.art.picker.as_ref(),
+            self.art.resize_tx.as_ref(),
+        ) {
+            *self.art.protocol.borrow_mut() =
+                Some(ThreadProtocol::new(tx.clone(), Some(picker.new_resize_protocol(img.clone()))));
         }
     }
 
@@ -118,13 +188,23 @@ impl App {
     /// image is also kept (`art_source`) so [`Self::refresh_art`] can rebuild on a popup toggle.
     pub(in crate::app) fn set_artwork(&mut self, video_id: String, image: Option<DynamicImage>) {
         match (image, self.art.picker.as_ref()) {
-            (Some(img), Some(picker)) => {
+            (Some(img), Some(picker)) if self.art.resize_tx.is_some() => {
                 self.art.dims = (img.width(), img.height());
-                *self.art.protocol.borrow_mut() = Some(picker.new_resize_protocol(img.clone()));
+                let tx = self.art.resize_tx.as_ref().expect("checked above").clone();
+                *self.art.protocol.borrow_mut() =
+                    Some(ThreadProtocol::new(tx, Some(picker.new_resize_protocol(img.clone()))));
                 self.art.source = Some(img);
                 self.art.video_id = Some(video_id);
             }
             _ => self.clear_artwork(),
+        }
+    }
+
+    pub(in crate::app) fn apply_artwork_resize(&mut self, response: ResizeResponse) {
+        if let Some(proto) = self.art.protocol.borrow_mut().as_mut()
+            && proto.update_resized_protocol(response)
+        {
+            self.dirty = true;
         }
     }
 

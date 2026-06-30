@@ -52,20 +52,24 @@ pub async fn run_actor(
     let mut reader = BufReader::new(&conn);
     let mut line = String::new();
     let mut request_id: u64 = 10;
+    let mut last_sent_time_sec: Option<i64> = None;
 
     loop {
         line.clear();
         tokio::select! {
             read = reader.read_line(&mut line) => match read {
                 Ok(0) | Err(_) => break, // mpv closed the connection
-                Ok(_) => dispatch_incoming(&line, &msg_tx),
+                Ok(_) => dispatch_incoming(&line, &msg_tx, &mut last_sent_time_sec),
             },
             cmd = cmd_rx.recv() => match cmd {
                 None => break, // all senders dropped: shutting down
                 Some(cmd) => {
                     request_id += 1;
                     let json = match cmd {
-                        PlayerCmd::Load(url) => proto::cmd_loadfile(&url, "replace", request_id),
+                        PlayerCmd::Load(url) => {
+                            last_sent_time_sec = None;
+                            proto::cmd_loadfile(&url, "replace", request_id)
+                        },
                         PlayerCmd::CyclePause => proto::cmd_cycle("pause", request_id),
                         PlayerCmd::SeekRelative(secs) => proto::cmd_seek_relative(secs, request_id),
                         PlayerCmd::SeekAbsolute(secs) => proto::cmd_seek_absolute(secs, request_id),
@@ -98,7 +102,7 @@ async fn write_json(conn: &Stream, json: &str) -> io::Result<()> {
 }
 
 /// Translate one mpv line into a [`Msg`] for the reducer.
-fn dispatch_incoming(line: &str, tx: &UnboundedSender<Msg>) {
+fn dispatch_incoming(line: &str, tx: &UnboundedSender<Msg>, last_sent_time_sec: &mut Option<i64>) {
     let Some(incoming) = proto::parse_line(line) else {
         return;
     };
@@ -106,7 +110,11 @@ fn dispatch_incoming(line: &str, tx: &UnboundedSender<Msg>) {
         MpvIncoming::PropertyChange { name, value } => match name.as_str() {
             "time-pos" => {
                 if let Some(t) = value.as_f64() {
-                    let _ = tx.send(Msg::PlayerTimePos(t));
+                    let sec = t as i64;
+                    if *last_sent_time_sec != Some(sec) {
+                        *last_sent_time_sec = Some(sec);
+                        let _ = tx.send(Msg::PlayerTimePos(t));
+                    }
                 }
             }
             "duration" => {
@@ -128,9 +136,11 @@ fn dispatch_incoming(line: &str, tx: &UnboundedSender<Msg>) {
         },
         MpvIncoming::EndFile { reason, file_error } => match reason.as_str() {
             "eof" => {
+                *last_sent_time_sec = None;
                 let _ = tx.send(Msg::PlayerEof);
             }
             "error" => {
+                *last_sent_time_sec = None;
                 // Surface mpv's own reason when it gives one — it's the closest thing to a
                 // "why" (HTTP 403, unsupported format, …); otherwise a generic message.
                 let msg = match file_error {

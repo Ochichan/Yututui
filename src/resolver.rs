@@ -7,9 +7,11 @@
 //! resolved URL is the app's; staleness (yt-dlp URLs are ~6 h, IP-bound) only matters for
 //! sessions longer than that, where mpv falls back to a fresh resolve on error.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use tokio::process::Command;
 use tokio::sync::Semaphore;
@@ -38,21 +40,36 @@ impl ResolverHandle {
 pub fn spawn(msg_tx: UnboundedSender<Msg>, cookies: Option<PathBuf>) -> ResolverHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<ResolveCmd>();
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    let in_flight = Arc::new(Mutex::new(HashSet::<String>::new()));
     tokio::spawn(async move {
         while let Some(ResolveCmd::Resolve { video_id, watch_url }) = rx.recv().await {
+            if !in_flight.lock().is_ok_and(|mut ids| ids.insert(video_id.clone())) {
+                tracing::debug!(video_id = %video_id, "prefetch already in flight");
+                continue;
+            }
             let sem = sem.clone();
             let tx = msg_tx.clone();
             let cookies = cookies.clone();
+            let in_flight = in_flight.clone();
             tokio::spawn(async move {
                 let Ok(_permit) = sem.acquire_owned().await else {
+                    if let Ok(mut ids) = in_flight.lock() {
+                        ids.remove(&video_id);
+                    }
                     return;
                 };
                 match resolve_url(&watch_url, cookies.as_deref()).await {
                     Some(stream_url) => {
                         tracing::info!(video_id = %video_id, "prefetched");
-                        let _ = tx.send(Msg::Resolved { video_id, stream_url });
+                        let _ = tx.send(Msg::Resolved {
+                            video_id: video_id.clone(),
+                            stream_url,
+                        });
                     }
                     None => tracing::warn!(video_id = %video_id, "prefetch failed"),
+                }
+                if let Ok(mut ids) = in_flight.lock() {
+                    ids.remove(&video_id);
                 }
             });
         }

@@ -4,7 +4,7 @@
 //! identity — see [`crate::api::Song::local_file`] / [`crate::api::Song::parse_embedded_id`].
 //!
 //! The actor receives [`DownloadCmd::Start`] and spawns one task per track, gated by a
-//! [`Semaphore`] so at most [`MAX_CONCURRENT`] run at once (priority #1: bounded work).
+//! [`Semaphore`] so only a configured number run at once (priority #1: bounded work).
 //! Progress is parsed from yt-dlp's `--progress-template` lines and streamed back as
 //! [`Msg::DownloadProgress`]; the final saved path comes from `--print after_move:filepath`.
 
@@ -21,8 +21,6 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use crate::api::Song;
 use crate::app::Msg;
 
-/// Most simultaneous downloads.
-const MAX_CONCURRENT: usize = 3;
 const OUTPUT_TEMPLATE: &str = "%(title)s [%(id)s].%(ext)s";
 
 pub enum DownloadCmd {
@@ -49,9 +47,10 @@ pub fn spawn(
     msg_tx: UnboundedSender<Msg>,
     dir: PathBuf,
     cookies: Option<PathBuf>,
+    max_concurrent: usize,
 ) -> DownloadHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<DownloadCmd>();
-    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
+    let sem = Arc::new(Semaphore::new(max_concurrent.max(1)));
     tokio::spawn(async move {
         let mut dir = dir;
         while let Some(cmd) = rx.recv().await {
@@ -121,11 +120,17 @@ async fn run_download(
     let tx2 = tx.clone();
     let progress = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
+        let mut last_percent: Option<u8> = None;
         while let Ok(Some(line)) = lines.next_line().await {
             if let Some(pct) = parse_percent(&line) {
+                let rounded = pct.round().clamp(0.0, 100.0) as u8;
+                if last_percent == Some(rounded) {
+                    continue;
+                }
+                last_percent = Some(rounded);
                 let _ = tx2.send(Msg::DownloadProgress {
                     video_id: vid.clone(),
-                    percent: pct,
+                    percent: f64::from(rounded),
                 });
             }
         }

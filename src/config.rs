@@ -28,6 +28,12 @@ pub const SEEK_SECONDS_MIN: f64 = 1.0;
 pub const SEEK_SECONDS_MAX: f64 = 60.0;
 pub const SEEK_SECONDS_DEFAULT: f64 = 10.0;
 
+/// Concurrent `yt-dlp`/ffmpeg downloads. Keep the default conservative because each download
+/// can spawn multiple external processes and dominate CPU/RAM outside this Rust process.
+pub const DOWNLOAD_CONCURRENCY_MIN: usize = 1;
+pub const DOWNLOAD_CONCURRENCY_MAX: usize = 3;
+pub const DOWNLOAD_CONCURRENCY_DEFAULT: usize = 2;
+
 /// Player-view eye-candy toggles (the **Animations** settings tab). Every field is an
 /// independent on/off; **all default to `false`** so a fresh install behaves exactly like
 /// before (the app's whole identity is "fast and light"). `master` is a global kill-switch:
@@ -195,6 +201,8 @@ pub struct Config {
     pub volume: i64,
     /// Where downloads are saved. `None` -> `<user music dir>/ytm-tui`.
     pub download_dir: Option<PathBuf>,
+    /// Most simultaneous downloads. `None` -> [`DOWNLOAD_CONCURRENCY_DEFAULT`].
+    pub download_concurrency: Option<usize>,
     /// Capture the mouse for buttons and click-to-seek. `None` → enabled.
     pub mouse: Option<bool>,
     /// Show album art / video thumbnail in the player view. `None` → off (opt-in: the
@@ -266,6 +274,7 @@ impl Default for Config {
             cookies_file: None,
             volume: 100,
             download_dir: None,
+            download_concurrency: None,
             mouse: None,
             album_art: None,
             eq_preset: EqPreset::default(),
@@ -361,6 +370,18 @@ impl Config {
             return dir.clone();
         }
         default_download_dir()
+    }
+
+    /// Concurrent downloads, with an env override for quick one-off throttling.
+    pub fn effective_download_concurrency(&self) -> usize {
+        if let Ok(env) = std::env::var("YTM_DOWNLOAD_CONCURRENCY")
+            && let Ok(n) = env.trim().parse::<usize>()
+        {
+            return n.clamp(DOWNLOAD_CONCURRENCY_MIN, DOWNLOAD_CONCURRENCY_MAX);
+        }
+        self.download_concurrency
+            .unwrap_or(DOWNLOAD_CONCURRENCY_DEFAULT)
+            .clamp(DOWNLOAD_CONCURRENCY_MIN, DOWNLOAD_CONCURRENCY_MAX)
     }
 
     /// Whether to capture the mouse (buttons and click-to-seek). Enabled unless set to `false`.
@@ -565,6 +586,7 @@ mod tests {
             cookies_file: Some(PathBuf::from("/tmp/cookies.txt")),
             volume: 70,
             download_dir: Some(PathBuf::from("/tmp/dl")),
+            download_concurrency: Some(2),
             mouse: Some(false),
             album_art: Some(true),
             eq_preset: EqPreset::BassBoost,
@@ -797,6 +819,35 @@ mod tests {
         let dir = Config::default().effective_download_dir();
         unsafe { std::env::remove_var("YTM_DOWNLOAD_DIR") };
         assert_eq!(dir, PathBuf::from("/tmp/ytm-dl-test"));
+    }
+
+    #[test]
+    fn download_concurrency_defaults_clamps_and_honors_env() {
+        let old = std::env::var_os("YTM_DOWNLOAD_CONCURRENCY");
+        unsafe { std::env::remove_var("YTM_DOWNLOAD_CONCURRENCY") };
+
+        assert_eq!(
+            Config::default().effective_download_concurrency(),
+            DOWNLOAD_CONCURRENCY_DEFAULT
+        );
+        let high = Config { download_concurrency: Some(99), ..Config::default() };
+        assert_eq!(high.effective_download_concurrency(), DOWNLOAD_CONCURRENCY_MAX);
+        let zero = Config { download_concurrency: Some(0), ..Config::default() };
+        assert_eq!(zero.effective_download_concurrency(), DOWNLOAD_CONCURRENCY_MIN);
+
+        unsafe { std::env::set_var("YTM_DOWNLOAD_CONCURRENCY", "99") };
+        assert_eq!(
+            Config::default().effective_download_concurrency(),
+            DOWNLOAD_CONCURRENCY_MAX
+        );
+        unsafe { std::env::set_var("YTM_DOWNLOAD_CONCURRENCY", "not-a-number") };
+        let configured = Config { download_concurrency: Some(1), ..Config::default() };
+        assert_eq!(configured.effective_download_concurrency(), 1);
+
+        match old {
+            Some(v) => unsafe { std::env::set_var("YTM_DOWNLOAD_CONCURRENCY", v) },
+            None => unsafe { std::env::remove_var("YTM_DOWNLOAD_CONCURRENCY") },
+        }
     }
 
     #[test]

@@ -88,6 +88,8 @@ pub enum Msg {
         video_id: String,
         image: Option<DynamicImage>,
     },
+    /// Album-art protocol resize/encode finished off the UI thread.
+    ArtworkResized(ResizeResponse),
     /// Download progress for `video_id` (0-100).
     DownloadProgress {
         video_id: String,
@@ -514,4 +516,3 @@ pub enum StatusKind {
     Error,
     Info,
 }
-

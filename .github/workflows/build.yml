@@ -131,6 +131,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -145,6 +146,8 @@ jobs:
           files: |
             ytm-tui-*.tar.gz
             ytm-tui-*.zip
+            install.sh
+            install.ps1
             checksums.txt
       # Hand checksums.txt to the packaging jobs as an artifact, so they don't round-trip the
       # Releases API right after publish (avoids an asset-propagation race).

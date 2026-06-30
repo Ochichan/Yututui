@@ -15,6 +15,7 @@ use image::DynamicImage;
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 
 use crate::ai::GeminiModel;
 use crate::api::Song;
@@ -246,6 +247,13 @@ pub struct App {
     /// Monotonic animation frame counter, bumped on each [`Msg::AnimTick`] (~30 fps) while
     /// animations are active. Drives every effect's phase; wraps harmlessly. `0` at rest.
     anim_frame: u64,
+    /// Fractional redraw scheduler for animation frames. The phase can advance at the configured
+    /// FPS while heavyweight effects redraw at a lower cadence, preserving motion timing without
+    /// forcing the terminal compositor to repaint every logical tick.
+    anim_draw_credit: u16,
+    /// Last draw cadence used to interpret [`Self::anim_draw_credit`]. Reset when the active effect
+    /// mix moves between cheap element effects, canvas effects, and the AI mascot.
+    anim_last_draw_fps: u16,
 
     /// Whether the terminal currently holds input focus (DECSET ?1004, fed by [`Msg::Focus`]).
     /// Defaults to `true`, so terminals/multiplexers that never report focus animate exactly as
@@ -317,6 +325,8 @@ impl App {
             prefetch: Prefetch::default(),
             bridges: RenderBridges::default(),
             last_shown_sec: -1,
+            anim_draw_credit: 0,
+            anim_last_draw_fps: 0,
             focused: true,
         }
     }
@@ -433,11 +443,10 @@ impl App {
                 }
             }
             Msg::AnimTick => {
-                // Advance the animation phase and request a frame. The main loop only delivers
-                // this while `animation_active()` is true, so the wrapping `wrapping_add` and a
-                // single redraw are the entire per-frame cost; idle when animations are off.
-                self.anim_frame = self.anim_frame.wrapping_add(1);
-                self.dirty = true;
+                // Advance the logical animation phase on every configured tick, but only request
+                // an actual terminal redraw when the active effect mix is due. This keeps visual
+                // timing stable while cutting the expensive render/terminal/compositor path.
+                self.advance_animation();
             }
             Msg::Focus(f) => {
                 // Terminal focus toggled. `animation_active()` reads `focused` to park the ~30 fps
@@ -459,7 +468,7 @@ impl App {
                 if sec != self.last_shown_sec {
                     self.last_shown_sec = sec;
                     self.dirty = true;
-                    tracing::info!(time_pos = t, "progress");
+                    tracing::debug!(time_pos = t, "progress");
                 }
             }
             Msg::PlayerDuration(d) => {
@@ -520,6 +529,9 @@ impl App {
                 self.dirty = true;
             }
             Msg::SearchResults { query, songs } => {
+                if self.search.searching && query != self.search.input.trim() {
+                    return Vec::new();
+                }
                 self.search.searching = false;
                 if songs.is_empty() {
                     self.status.text = if crate::i18n::is_korean() {
@@ -566,10 +578,17 @@ impl App {
                     self.dirty = true;
                 }
             }
+            Msg::ArtworkResized(response) => self.apply_artwork_resize(response),
             Msg::DownloadProgress { video_id, percent } => {
-                self.downloads.active
-                    .insert(video_id, DownloadState::Running(percent.round() as u8));
-                self.dirty = true;
+                let percent = percent.round() as u8;
+                let changed = !matches!(
+                    self.downloads.active.get(&video_id),
+                    Some(DownloadState::Running(prev)) if *prev == percent
+                );
+                if changed {
+                    self.downloads.active.insert(video_id, DownloadState::Running(percent));
+                    self.dirty = true;
+                }
             }
             Msg::DownloadDone { video_id, path } => {
                 self.downloads.active.insert(video_id.clone(), DownloadState::Done);

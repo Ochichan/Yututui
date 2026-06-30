@@ -2227,6 +2227,7 @@ dependencies = [
  "rustix 0.38.44",
  "self_cell",
  "thiserror 1.0.69",
+ "tokio",
  "windows 0.58.0",
 ]
 

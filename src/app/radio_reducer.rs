@@ -52,7 +52,8 @@ impl App {
         candidates: Vec<(Song, CandidateSource)>,
     ) -> Vec<Cmd> {
         let st = self.build_station_state(seed_video_id);
-        let cooc = Cooc::build(self.signals.play_log(), &self.config.radio.cooc);
+        self.ensure_cooc_cache();
+        let cooc = &self.radio.cooc_cache.as_ref().expect("cooc cache populated").1;
         let pool = radio::pool_from_tagged(candidates);
         self.log_radio_gate(&st, &pool);
         let now = signals::unix_now();
@@ -60,7 +61,7 @@ impl App {
             pool.clone(),
             &st,
             &self.signals,
-            &cooc,
+            cooc,
             &self.config.radio,
             self.config.radio.ai.picks,
             now,
@@ -69,7 +70,7 @@ impl App {
             pool,
             &st,
             &self.signals,
-            &cooc,
+            cooc,
             &self.config.radio,
             self.config.radio.ai.shortlist,
             now,
@@ -370,23 +371,39 @@ impl App {
     /// artist/album cooldown, and softmax sampling — a dramatic upgrade over the old
     /// dedup-and-take. The deduped exclusion set is folded in via [`Self::build_station_state`].
     pub(in crate::app) fn plan_local_radio(
-        &self,
+        &mut self,
         seed_video_id: &str,
         candidates: Vec<(Song, CandidateSource)>,
     ) -> Vec<Song> {
         let st = self.build_station_state(seed_video_id);
-        let cooc = Cooc::build(self.signals.play_log(), &self.config.radio.cooc);
+        self.ensure_cooc_cache();
+        let cooc = &self.radio.cooc_cache.as_ref().expect("cooc cache populated").1;
         let pool = radio::pool_from_tagged(candidates);
         self.log_radio_gate(&st, &pool);
         radio::plan_local(
             pool,
             &st,
             &self.signals,
-            &cooc,
+            cooc,
             &self.config.radio,
             RADIO_FALLBACK_COUNT,
             signals::unix_now(),
         )
+    }
+
+    fn ensure_cooc_cache(&mut self) {
+        let generation = self.signals.play_log_generation();
+        let fresh = self
+            .radio
+            .cooc_cache
+            .as_ref()
+            .is_some_and(|(cached_generation, _)| *cached_generation == generation);
+        if !fresh {
+            self.radio.cooc_cache = Some((
+                generation,
+                Cooc::build(self.signals.play_log(), &self.config.radio.cooc),
+            ));
+        }
     }
 
     /// Emit a one-line `tracing` summary (plus per-drop `debug` lines) explaining what the
@@ -395,6 +412,9 @@ impl App {
     /// detail needs `RUST_LOG=debug`. Purely observational — it never changes what is enqueued.
     pub(in crate::app) fn log_radio_gate(&self, st: &StationState, pool: &[radio::Candidate]) {
         if !self.config.radio.gate.enabled || pool.is_empty() {
+            return;
+        }
+        if !tracing::enabled!(tracing::Level::INFO) && !tracing::enabled!(tracing::Level::DEBUG) {
             return;
         }
         let verdicts: Vec<radio::GateVerdict> =
@@ -411,14 +431,16 @@ impl App {
         }
         let summary = reasons.iter().map(|(r, n)| format!("{r}×{n}")).collect::<Vec<_>>().join(", ");
         tracing::info!(pool = verdicts.len(), kept, dropped, %summary, "radio gate filtered the pool");
-        for v in verdicts.iter().filter(|v| !v.kept) {
-            tracing::debug!(
-                reason = v.reason,
-                source = ?v.source,
-                id = %v.video_id,
-                title = %v.title,
-                "radio gate drop"
-            );
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            for v in verdicts.iter().filter(|v| !v.kept) {
+                tracing::debug!(
+                    reason = v.reason,
+                    source = ?v.source,
+                    id = %v.video_id,
+                    title = %v.title,
+                    "radio gate drop"
+                );
+            }
         }
     }
 
