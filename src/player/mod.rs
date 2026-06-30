@@ -100,7 +100,7 @@ pub async fn spawn(
     cookies_file: Option<PathBuf>,
     gapless: bool,
 ) -> Result<(PlayerHandle, Mpv)> {
-    let ipc_path = mpv::ipc_path();
+    let ipc_path = mpv::ipc_path()?;
     let child = mpv::spawn(&ipc_path, cookies_file.as_deref(), gapless)?;
     let mpv_pid = child.id().context("mpv exited before reporting a pid")?;
 

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::api::Song;
+use crate::util::safe_fs;
 
 const CACHE_FILE: &str = "romanized_titles.json";
 
@@ -72,7 +73,7 @@ impl RomanizeCache {
         let Some(path) = cache_path() else {
             return Self::default();
         };
-        std::fs::read_to_string(path)
+        safe_fs::read_to_string_no_symlink(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<Self>(&s).ok())
             .unwrap_or_default()
@@ -82,13 +83,7 @@ impl RomanizeCache {
         let Some(path) = cache_path() else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let json = serde_json::to_string_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, path)
+        safe_fs::write_private_atomic_json(&path, self)
     }
 
     pub fn delete_saved() -> std::io::Result<()> {

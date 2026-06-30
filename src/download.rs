@@ -14,14 +14,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::api::Song;
 use crate::app::Msg;
+use crate::util::{process, sanitize};
 
 const OUTPUT_TEMPLATE: &str = "%(title)s [%(id)s].%(ext)s";
+const YTDLP_STDOUT_MAX: usize = 64 * 1024;
 
 pub enum DownloadCmd {
     Start(Song),
@@ -66,10 +67,11 @@ pub fn spawn(
                             return; // semaphore closed; nothing to do
                         };
                         if let Err(e) = run_download(&song, &dir, cookies.as_deref(), &tx).await {
-                            tracing::warn!(error = %format!("{e:#}"), video_id = %song.video_id, "download failed");
+                            let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                            tracing::warn!(error = %error, video_id = %song.video_id, "download failed");
                             let _ = tx.send(Msg::DownloadError {
                                 video_id: song.video_id.clone(),
-                                error: format!("{e:#}"),
+                                error,
                             });
                         }
                     });
@@ -88,7 +90,7 @@ async fn run_download(
 ) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("create download dir {dir:?}"))?;
 
-    let mut cmd = Command::new("yt-dlp");
+    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
     cmd.arg(song.playback_target())
         .args(["-f", "bestaudio", "-x", "--audio-format", "m4a"])
         .args([
@@ -138,7 +140,13 @@ async fn run_download(
 
     // The final path is printed to stdout (small); read it to EOF.
     let mut out = String::new();
-    BufReader::new(stdout).read_to_string(&mut out).await?;
+    BufReader::new(stdout)
+        .take((YTDLP_STDOUT_MAX + 1) as u64)
+        .read_to_string(&mut out)
+        .await?;
+    if out.len() > YTDLP_STDOUT_MAX {
+        bail!("yt-dlp output too large");
+    }
     let status = child.wait().await?;
     let _ = progress.await;
 

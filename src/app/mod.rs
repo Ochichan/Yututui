@@ -39,6 +39,7 @@ use crate::station::StationStore;
 use crate::streaming::{self, CandidateSource, Cooc, StationState, StreamingMode};
 use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
+use crate::util::process;
 
 mod types;
 pub use types::*;
@@ -146,6 +147,8 @@ pub struct App {
     pub pending_radio_mode_confirm: Option<RadioModeConfirm>,
     /// Whether the `?` help / cheat-sheet overlay is shown.
     pub help_visible: bool,
+    /// Whether the mouse cheat-sheet overlay is shown. Opened only from the footer mouse icon.
+    pub mouse_help_visible: bool,
     /// A pending keybinding-conflict warning (Keys tab). When set, a modal popup is shown
     /// and the next key/click dismisses it; the attempted rebind is left unchanged.
     pub key_conflict: Option<Conflict>,
@@ -311,6 +314,7 @@ impl App {
             radio_mode_queue: None,
             pending_radio_mode_confirm: None,
             help_visible: false,
+            mouse_help_visible: false,
             key_conflict: None,
             pending_settings_confirm: None,
             about_visible: false,
@@ -1226,6 +1230,7 @@ impl App {
     /// so draft values and keybinding changes are not silently discarded.
     fn go_home(&mut self) -> Vec<Cmd> {
         self.help_visible = false;
+        self.mouse_help_visible = false;
         self.dropdowns.eq_open = false;
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
@@ -1246,6 +1251,7 @@ impl App {
 
     fn quit_app(&mut self) -> Vec<Cmd> {
         self.help_visible = false;
+        self.mouse_help_visible = false;
         let cmds = if self.mode == Mode::Settings {
             self.finish_settings_text_edit();
             self.close_settings()
@@ -1272,6 +1278,8 @@ impl App {
     /// reachable from any screen. Leaving Settings commits the draft via the normal close
     /// path so edits aren't lost; transient overlays are cleared.
     fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
+        self.help_visible = false;
+        self.mouse_help_visible = false;
         self.dropdowns.eq_open = false;
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
@@ -1379,18 +1387,18 @@ fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
 /// (`open` / `xdg-open` / `cmd start`) detached with stdio nulled so it can't touch the TUI's
 /// terminal; any failure (no opener installed) is ignored — the URL is also shown in the card.
 fn open_in_browser(url: &str) {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = Command::new("open");
+        let mut c = process::std_command("open", process::ProcessProfile::DesktopOpen);
         c.arg(url);
         c
     } else if cfg!(target_os = "windows") {
         // `start` is a cmd builtin; the empty "" is its (ignored) window-title argument.
-        let mut c = Command::new("cmd");
+        let mut c = process::std_command("cmd", process::ProcessProfile::DesktopOpen);
         c.args(["/C", "start", "", url]);
         c
     } else {
-        let mut c = Command::new("xdg-open");
+        let mut c = process::std_command("xdg-open", process::ProcessProfile::DesktopOpen);
         c.arg(url);
         c
     };
@@ -1428,16 +1436,27 @@ fn copy_to_clipboard(text: &str) {
     }
 
     if cfg!(target_os = "macos") {
-        pipe(&mut Command::new("pbcopy"), text);
-    } else if cfg!(target_os = "windows") {
-        pipe(&mut Command::new("clip"), text);
-    } else if !pipe(&mut Command::new("wl-copy"), text)
-        && !pipe(
-            Command::new("xclip").args(["-selection", "clipboard"]),
+        pipe(
+            &mut process::std_command("pbcopy", process::ProcessProfile::Clipboard),
             text,
-        )
-    {
-        pipe(Command::new("xsel").arg("-ib"), text);
+        );
+    } else if cfg!(target_os = "windows") {
+        pipe(
+            &mut process::std_command("clip", process::ProcessProfile::Clipboard),
+            text,
+        );
+    } else if !pipe(
+        &mut process::std_command("wl-copy", process::ProcessProfile::Clipboard),
+        text,
+    ) && !pipe(
+        process::std_command("xclip", process::ProcessProfile::Clipboard)
+            .args(["-selection", "clipboard"]),
+        text,
+    ) {
+        pipe(
+            process::std_command("xsel", process::ProcessProfile::Clipboard).arg("-ib"),
+            text,
+        );
     }
 }
 
@@ -1450,8 +1469,8 @@ fn spawn_video_overlay(
     cookies: Option<&std::path::Path>,
     layout: crate::config::VideoOverlay,
 ) -> Option<std::process::Child> {
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new("mpv");
+    use std::process::Stdio;
+    let mut cmd = process::std_command("mpv", process::ProcessProfile::Media);
     cmd.arg(url);
     for arg in layout.mpv_window_args() {
         cmd.arg(arg);

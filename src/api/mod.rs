@@ -14,6 +14,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use crate::app::Msg;
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
+use crate::util::sanitize;
 
 const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
@@ -378,7 +379,7 @@ async fn init_api(cookie: Option<String>) -> (ytmusic::YtMusicApi, ApiMode) {
         Some(c) => match ytmusic::YtMusicApi::from_cookie(&c).await {
             Ok(api) => (api, ApiMode::Authenticated),
             Err(e) => {
-                tracing::warn!(error = %format!("{e:#}"), "cookie auth failed; using anonymous search");
+                tracing::warn!(error = %sanitize::sanitize_error_text(format!("{e:#}")), "cookie auth failed; using anonymous search");
                 (ytmusic::YtMusicApi::Anonymous, ApiMode::Anonymous)
             }
         },
@@ -411,11 +412,9 @@ async fn run_actor(
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(source = %source.code(), error = %format!("{e:#}"), "search failed");
-                        Msg::SearchError {
-                            source,
-                            error: format!("{e:#}"),
-                        }
+                        let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                        tracing::warn!(source = %source.code(), error = %error, "search failed");
+                        Msg::SearchError { source, error }
                     }
                 };
                 let _ = msg_tx.send(msg);
@@ -442,7 +441,7 @@ async fn run_actor(
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(error = %format!("{e:#}"), "watch-playlist streaming unavailable; using yt-dlp only");
+                        tracing::warn!(error = %sanitize::sanitize_error_text(format!("{e:#}")), "watch-playlist streaming unavailable; using yt-dlp only");
                     }
                 }
 
@@ -492,7 +491,7 @@ async fn run_actor(
 
                 let msg = if candidates.is_empty() {
                     let error = ytdlp_err
-                        .map(|e| format!("{e:#}"))
+                        .map(|e| sanitize::sanitize_error_text(format!("{e:#}")))
                         .unwrap_or_else(|| "no related tracks found".to_owned());
                     tracing::warn!(seed = %seed, %error, "streaming search yielded nothing");
                     Msg::StreamingError {

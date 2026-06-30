@@ -12,15 +12,18 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
-use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::app::Msg;
+use crate::util::process;
 
 /// Most concurrent resolves (we only look one ahead, but `prev`/retries can overlap).
 const MAX_CONCURRENT: usize = 2;
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(12);
+const RESOLVE_STDOUT_MAX: usize = 16 * 1024;
 
 pub enum ResolveCmd {
     Resolve { video_id: String, watch_url: String },
@@ -89,16 +92,16 @@ pub fn spawn(msg_tx: UnboundedSender<Msg>, cookies: Option<PathBuf>) -> Resolver
 
 /// Resolve a watch URL to a direct audio stream URL via `yt-dlp -g`.
 async fn resolve_url(watch_url: &str, cookies: Option<&std::path::Path>) -> Option<String> {
-    let mut cmd = Command::new("yt-dlp");
+    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
     cmd.args(["-f", "bestaudio", "-g", "--no-playlist"])
         .arg(watch_url);
     if let Some(c) = cookies {
         cmd.arg("--cookies").arg(c);
     }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let out = cmd.output().await.ok()?;
+    cmd.stdin(Stdio::null()).stderr(Stdio::null());
+    let out = process::tokio_output_limited(cmd, RESOLVE_TIMEOUT, RESOLVE_STDOUT_MAX)
+        .await
+        .ok()?;
     if !out.status.success() {
         return None;
     }

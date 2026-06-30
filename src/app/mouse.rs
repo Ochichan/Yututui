@@ -88,6 +88,11 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
+        if self.mouse_help_visible {
+            self.mouse_help_visible = false;
+            self.dirty = true;
+            return Vec::new();
+        }
         // The About card is modal: clicking its GitHub link opens the browser (and keeps the card
         // up); a click anywhere else dismisses it.
         if self.about_visible {
@@ -168,6 +173,7 @@ impl App {
         match target {
             MouseTarget::Global(Action::ToggleHelp) => {
                 self.help_visible = true;
+                self.mouse_help_visible = false;
                 self.dirty = true;
                 Vec::new()
             }
@@ -247,6 +253,13 @@ impl App {
                 Vec::new()
             }
             MouseTarget::LibraryTab(_) => Vec::new(),
+            // Footer mouse icon: opens a mouse-only cheat-sheet.
+            MouseTarget::MouseHelp => {
+                self.help_visible = false;
+                self.mouse_help_visible = true;
+                self.dirty = true;
+                Vec::new()
+            }
             // Settings tab header.
             MouseTarget::SettingsTab(i) if self.mode == Mode::Settings => {
                 self.settings_select_tab(i);
@@ -350,6 +363,7 @@ impl App {
     pub(in crate::app) fn on_mouse_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
         // Modal overlays treat a double-click like a single click.
         if self.help_visible
+            || self.mouse_help_visible
             || self.about_visible
             || self.key_conflict.is_some()
             || self.pending_radio_mode_confirm.is_some()
@@ -646,33 +660,65 @@ impl App {
         }
     }
 
-    /// A right-click adds the song row under the pointer to the queue — the mouse equivalent
-    /// of `\`. Only Search/Library list rows act; a right-click on any other target (or while
-    /// a modal/overlay is up) is ignored so it can't disturb the player or a confirmation.
+    /// A right-click is contextual: Search/Library rows enqueue, while queue-window rows remove
+    /// that queue entry. Other targets are ignored so a stray context-click can't disturb modal
+    /// confirmations or the player.
     pub(in crate::app) fn on_mouse_right_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
         if self.help_visible
+            || self.mouse_help_visible
             || self.about_visible
             || self.key_conflict.is_some()
             || self.pending_radio_mode_confirm.is_some()
             || self.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
-            || self.queue_popup.open
         {
             return Vec::new();
         }
-        let Some(MouseTarget::ListRow(index)) = self.mouse_target_at(col, row) else {
+
+        if self.queue_popup.open {
+            let inside = self
+                .queue_popup
+                .rect
+                .get()
+                .is_some_and(|r| rect_contains(r, col, row));
+            if !inside {
+                return Vec::new();
+            }
+            return match self.mouse_target_at(col, row) {
+                Some(MouseTarget::QueueRow(index) | MouseTarget::QueueDel(index)) => {
+                    self.remove_queue_range(index, index)
+                }
+                _ => Vec::new(),
+            };
+        }
+
+        let Some(target) = self.mouse_target_at(col, row) else {
             return Vec::new();
         };
         match self.mode {
-            Mode::Search if index < self.search.results.len() => {
+            Mode::Search if matches!(target, MouseTarget::ListRow(_)) => {
+                let MouseTarget::ListRow(index) = target else {
+                    return Vec::new();
+                };
+                if index >= self.search.results.len() {
+                    return Vec::new();
+                }
                 self.search.selected = index;
                 match self.selected_search_song() {
                     Some(song) => self.enqueue(song),
                     None => Vec::new(),
                 }
             }
-            Mode::Library if index < self.library_len() => {
+            Mode::Library => {
+                let index = match target {
+                    MouseTarget::ListRow(i) | MouseTarget::LibraryDel(i) => i,
+                    _ => return Vec::new(),
+                };
+                if index >= self.library_len() {
+                    return Vec::new();
+                }
                 self.library_ui.selected = index;
+                self.library_ui.anchor = index;
                 match self.selected_library_song() {
                     Some(song) => self.enqueue(song),
                     None => Vec::new(),

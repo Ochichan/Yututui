@@ -767,6 +767,28 @@ fn right_click_on_a_search_row_adds_it_to_the_queue() {
 }
 
 #[test]
+fn right_click_on_a_library_delete_cell_adds_that_row_to_the_queue() {
+    let mut app = app_playing(1, 0);
+    let playing = app.prefetch.loaded_video_id.clone();
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Favorites;
+    app.library.favorites = vec![Song::remote("fav0", "Favorite Zero", "A", "3:00")];
+
+    render_app(&app);
+    let (col, row) = button_center(&app, MouseTarget::LibraryDel(0));
+    let cmds = app.update(Msg::MouseRightClick { col, row });
+
+    assert_eq!(app.library_ui.selected, 0);
+    assert!(load_url(&cmds).is_none());
+    assert_eq!(app.prefetch.loaded_video_id, playing);
+    assert!(app.queue.video_ids().any(|v| v == "fav0"));
+    assert!(
+        app.library.favorites.iter().any(|s| s.video_id == "fav0"),
+        "right-clicking the library delete cell must enqueue, not delete"
+    );
+}
+
+#[test]
 fn q_closes_search_results_without_quitting_app() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
@@ -4250,6 +4272,7 @@ fn library_all_dedups_same_title_across_collections() {
 fn downloads_delete_confirms_then_removes_file() {
     let file = temp_audio_file("del");
     let mut app = App::new(100);
+    app.config.download_dir = file.parent().map(PathBuf::from);
     app.library_ui.downloaded = vec![Song::local_file(file.clone())];
     open_library_tab(&mut app, LibraryTab::Downloads);
     // Delete opens the confirmation modal rather than deleting outright.
@@ -4262,6 +4285,52 @@ fn downloads_delete_confirms_then_removes_file() {
     assert!(app.library_ui.confirm_delete.is_none());
     assert!(!file.exists());
     assert!(cmds.iter().any(|c| matches!(c, Cmd::ScanDownloads(_))));
+}
+
+#[test]
+fn downloads_delete_refuses_file_outside_download_dir() {
+    let file = temp_audio_file("outside");
+    let root = std::env::temp_dir().join(format!("ytm-tui-app-test-root-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut app = App::new(100);
+    app.config.download_dir = Some(root.clone());
+    app.library_ui.downloaded = vec![Song::local_file(file.clone())];
+    open_library_tab(&mut app, LibraryTab::Downloads);
+    app.update(Msg::Key(key(KeyCode::Delete)));
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(file.exists());
+    assert_eq!(app.library_ui.downloaded.len(), 1);
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::ScanDownloads(_))));
+    let _ = std::fs::remove_file(&file);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn downloads_delete_refuses_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "ytm-tui-app-test-symlink-root-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let real = root.join("real.m4a");
+    let link = root.join("link.m4a");
+    std::fs::write(&real, b"").unwrap();
+    symlink(&real, &link).unwrap();
+    let mut app = App::new(100);
+    app.config.download_dir = Some(root.clone());
+    app.library_ui.downloaded = vec![Song::local_file(link.clone())];
+    open_library_tab(&mut app, LibraryTab::Downloads);
+    app.update(Msg::Key(key(KeyCode::Delete)));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(link.exists());
+    assert!(real.exists());
+    assert_eq!(app.library_ui.downloaded.len(), 1);
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_file(&real);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -4323,6 +4392,28 @@ fn library_mouse_drag_selects_range_then_delete_removes_it() {
     // Delete removes the whole selected 0..=2 range.
     app.update(Msg::Key(key(KeyCode::Delete)));
     assert!(app.library.favorites.is_empty());
+}
+
+#[test]
+fn library_tabs_mark_favorite_rows_with_a_heart() {
+    let song = Song::remote("shared", "Shared Song", "Artist", "0:10");
+    let mut app = App::new(100);
+    app.library.record_play(&song);
+    app.library.toggle_favorite(&song);
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::History;
+
+    let buf = render_app_buffer(&app, 80, 24);
+    let text: String = buf
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+
+    assert!(
+        text.contains("♥ Shared Song"),
+        "favorite rows should show a heart in non-Favorites library tabs too"
+    );
 }
 
 #[test]
@@ -4792,11 +4883,36 @@ fn click_help_button_opens_cheatsheet() {
 }
 
 #[test]
+fn click_mouse_help_button_opens_mouse_cheatsheet() {
+    let mut app = app_playing(1, 0);
+    app.register_mouse_button(
+        Rect {
+            x: 18,
+            y: 9,
+            width: 8,
+            height: 1,
+        },
+        MouseTarget::MouseHelp,
+    );
+    assert!(app.update(Msg::MouseClick { col: 20, row: 9 }).is_empty());
+    assert!(app.mouse_help_visible);
+    assert!(!app.help_visible);
+}
+
+#[test]
 fn korean_q_key_closes_help_overlay() {
     let mut app = app_playing(1, 0);
     app.help_visible = true;
     assert!(app.update(Msg::Key(key(KeyCode::Char('ㅂ')))).is_empty());
     assert!(!app.help_visible);
+}
+
+#[test]
+fn esc_closes_mouse_help_overlay() {
+    let mut app = app_playing(1, 0);
+    app.mouse_help_visible = true;
+    assert!(app.update(Msg::Key(key(KeyCode::Esc))).is_empty());
+    assert!(!app.mouse_help_visible);
 }
 
 #[test]
@@ -4818,18 +4934,51 @@ fn click_closes_help_overlay_before_buttons() {
     assert_eq!(app.playback.volume, 40);
 }
 
-fn rendered_help_button(app: &App, width: u16, height: u16) -> MouseButtonRegion {
+#[test]
+fn click_closes_mouse_help_overlay_before_buttons() {
+    let mut app = app_playing(1, 0);
+    app.mouse_help_visible = true;
+    app.playback.volume = 40;
+    app.register_mouse_button(
+        Rect {
+            x: 0,
+            y: 1,
+            width: 8,
+            height: 1,
+        },
+        MouseTarget::Player(Action::VolUp),
+    );
+    assert!(app.update(Msg::MouseClick { col: 3, row: 1 }).is_empty());
+    assert!(!app.mouse_help_visible);
+    assert_eq!(app.playback.volume, 40);
+}
+
+fn rendered_help_cluster(app: &App, width: u16, height: u16) -> Rect {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, app)).unwrap();
 
-    app.bridges
-        .mouse_buttons
-        .borrow()
+    let buttons = app.bridges.mouse_buttons.borrow();
+    let key = buttons
         .iter()
         .find(|b| b.target == MouseTarget::Global(Action::ToggleHelp))
-        .copied()
-        .expect("rendered help button")
+        .map(|b| b.rect)
+        .expect("rendered key help button");
+    let mouse = buttons
+        .iter()
+        .find(|b| b.target == MouseTarget::MouseHelp)
+        .map(|b| b.rect)
+        .expect("rendered mouse help button");
+    let left = key.left().min(mouse.left());
+    let top = key.top().min(mouse.top());
+    let right = key.right().max(mouse.right());
+    let bottom = key.bottom().max(mouse.bottom());
+    Rect {
+        x: left,
+        y: top,
+        width: right.saturating_sub(left),
+        height: bottom.saturating_sub(top),
+    }
 }
 
 #[test]
@@ -5032,19 +5181,19 @@ fn help_button_is_centered_on_footer_screens() {
     };
 
     let player = App::new(100);
-    assert_centered_in(rendered_help_button(&player, 80, 20).rect, inner);
+    assert_centered_in(rendered_help_cluster(&player, 80, 20), inner);
 
     let mut search = App::new(100);
     search.mode = Mode::Search;
-    assert_centered_in(rendered_help_button(&search, 80, 20).rect, inner);
+    assert_centered_in(rendered_help_cluster(&search, 80, 20), inner);
 
     let mut library = App::new(100);
     library.mode = Mode::Library;
-    assert_centered_in(rendered_help_button(&library, 80, 20).rect, inner);
+    assert_centered_in(rendered_help_cluster(&library, 80, 20), inner);
 
     let mut ai = App::new(100);
     ai.mode = Mode::Ai;
-    assert_centered_in(rendered_help_button(&ai, 80, 20).rect, inner);
+    assert_centered_in(rendered_help_cluster(&ai, 80, 20), inner);
 }
 
 #[test]
@@ -5193,6 +5342,7 @@ fn rendering_player_registers_control_buttons() {
             .iter()
             .any(|b| b.target == MouseTarget::Global(Action::ToggleHelp))
     );
+    assert!(buttons.iter().any(|b| b.target == MouseTarget::MouseHelp));
     // The status line publishes the shuffle + repeat toggles and the EQ-dropdown opener.
     assert!(
         buttons
@@ -5483,6 +5633,10 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     assert_eq!(app.art_overlay_mask(), 1 << 10);
     app.mode = Mode::Player;
     assert_eq!(app.art_overlay_mask(), 0);
+    app.mouse_help_visible = true;
+    assert_eq!(app.art_overlay_mask(), 1 << 11);
+    app.mouse_help_visible = false;
+    assert_eq!(app.art_overlay_mask(), 0);
 }
 
 fn configure_test_art_picker(app: &mut App, protocol: ratatui_image::picker::ProtocolType) {
@@ -5712,6 +5866,9 @@ fn native_art_clear_under_player_overlays_requests_full_clear() {
     fn set_help(app: &mut App, open: bool) {
         app.help_visible = open;
     }
+    fn set_mouse_help(app: &mut App, open: bool) {
+        app.mouse_help_visible = open;
+    }
     fn set_about(app: &mut App, open: bool) {
         app.about_visible = open;
     }
@@ -5720,6 +5877,7 @@ fn native_art_clear_under_player_overlays_requests_full_clear() {
         ("eq dropdown", set_eq as fn(&mut App, bool)),
         ("streaming dropdown", set_streaming),
         ("help overlay", set_help),
+        ("mouse help overlay", set_mouse_help),
         ("about popup", set_about),
     ] {
         let mut app = app_playing(3, 0);
@@ -5788,6 +5946,11 @@ fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
     help.help_visible = true;
     let buf = render_app_buffer(&help, modal_area.width, modal_area.height);
     assert_opaque_rect(&buf, centered_percent(modal_area, 80, 80));
+
+    let mut mouse_help = app_playing(1, 0);
+    mouse_help.mouse_help_visible = true;
+    let buf = render_app_buffer(&mouse_help, modal_area.width, modal_area.height);
+    assert_opaque_rect(&buf, centered_percent(modal_area, 84, 82));
 
     let mut about = app_playing(1, 0);
     about.about_visible = true;
@@ -6467,6 +6630,23 @@ fn clicking_a_queue_delete_button_removes_that_track() {
     assert!(
         app.queue.ordered().iter().all(|s| s.video_id != "id2"),
         "the removed track should be gone from the queue"
+    );
+}
+
+#[test]
+fn right_clicking_a_queue_row_removes_that_track() {
+    let mut app = app_playing(5, 0);
+    app.update(Msg::Key(key(KeyCode::Char('c'))));
+    render_app(&app);
+    let (col, row) = button_center(&app, MouseTarget::QueueRow(2));
+
+    let cmds = app.update(Msg::MouseRightClick { col, row });
+
+    assert!(load_url(&cmds).is_none());
+    assert_eq!(app.queue.len(), 4);
+    assert!(
+        app.queue.ordered().iter().all(|s| s.video_id != "id2"),
+        "the right-clicked track should be gone from the queue"
     );
 }
 

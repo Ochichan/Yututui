@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::api::Song;
+use crate::util::safe_fs;
 
 /// Caps on the collections (bounded memory).
 const FAVORITES_MAX: usize = 999;
@@ -42,7 +43,7 @@ impl Library {
     /// Load from disk, falling back to an empty library if absent or unreadable.
     pub fn load() -> Self {
         if let Some(path) = library_path()
-            && let Ok(text) = fs::read_to_string(&path)
+            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
             && let Ok(mut lib) = serde_json::from_str::<Library>(&text)
         {
             lib.trim_to_caps();
@@ -56,13 +57,7 @@ impl Library {
         let Some(path) = library_path() else {
             return Ok(());
         };
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let json = serde_json::to_string_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, &path)
+        safe_fs::write_private_atomic_json(&path, self)
     }
 
     pub fn is_favorite(&self, video_id: &str) -> bool {

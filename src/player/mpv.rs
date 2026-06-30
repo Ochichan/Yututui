@@ -9,22 +9,25 @@ use std::path::Path;
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
+
+use crate::util::{process, runtime};
 
 /// A per-process IPC endpoint: a Unix socket path on macOS/Linux, a named pipe on
 /// Windows. Unique per pid so concurrent instances never collide.
-pub fn ipc_path() -> String {
+pub fn ipc_path() -> Result<String> {
     let pid = std::process::id();
     #[cfg(windows)]
     {
-        format!(r"\\.\pipe\ytm-tui-mpv-{pid}")
+        Ok(format!(r"\\.\pipe\ytm-tui-mpv-{pid}"))
     }
     #[cfg(unix)]
     {
-        std::env::temp_dir()
+        Ok(runtime::app_runtime_dir()
+            .context("prepare mpv IPC runtime dir")?
             .join(format!("ytm-tui-mpv-{pid}.sock"))
             .to_string_lossy()
-            .into_owned()
+            .into_owned())
     }
 }
 
@@ -37,7 +40,7 @@ pub fn ipc_path() -> String {
 /// streams resolve (age-gated / library tracks). yt-dlp owns stream resolution — PO
 /// tokens, signature deciphering, throttling — so we never touch those ourselves.
 pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Result<Child> {
-    let mut cmd = Command::new("mpv");
+    let mut cmd = process::tokio_command("mpv", process::ProcessProfile::Media);
     cmd.arg("--no-video")
         .arg("--no-terminal")
         .arg("--idle=yes")

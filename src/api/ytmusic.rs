@@ -18,7 +18,7 @@ use ytmapi_rs::common::{VideoID, YoutubeID};
 use super::{PlayableRef, Song};
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{self, StreamingConfig, StreamingMode};
-use crate::util::format;
+use crate::util::{format, http, process, sanitize};
 
 /// How many results a search returns, for both backends. The anonymous yt-dlp path asks
 /// for exactly this many; the authenticated path pages through continuations until it has
@@ -26,6 +26,9 @@ use crate::util::format;
 const SEARCH_RESULT_LIMIT: usize = 50;
 const STREAMING_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(8);
 const PROVIDER_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
+const PROVIDER_JSON_MAX: usize = 2 * 1024 * 1024;
+const YTDLP_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
+const YTDLP_JSON_MAX: usize = 2 * 1024 * 1024;
 
 /// A YouTube Music client in one of two auth modes.
 pub enum YtMusicApi {
@@ -70,8 +73,9 @@ impl YtMusicApi {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(source = %source.code(), error = %format!("{e:#}"), "source search failed");
-                    errors.push(format!("{}: {e:#}", source.code()));
+                    let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                    tracing::warn!(source = %source.code(), error = %error, "source search failed");
+                    errors.push(format!("{}: {error}", source.code()));
                 }
             }
             if songs.len() >= SEARCH_RESULT_LIMIT {
@@ -198,14 +202,14 @@ async fn ytdlp_flat_search(
     } else {
         format!("{prefix}{limit}:{query}")
     };
-    let output = tokio::process::Command::new("yt-dlp")
-        .arg(&spec)
+    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
+    cmd.arg(&spec)
         .arg("--flat-playlist")
         .arg("--dump-single-json")
         .arg("--no-warnings")
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
+        .stderr(Stdio::null());
+    let output = process::tokio_output_limited(cmd, YTDLP_SEARCH_TIMEOUT, YTDLP_JSON_MAX)
         .await
         .context("failed to run yt-dlp — is it installed and on PATH?")?;
     if !output.status.success() {
@@ -307,9 +311,10 @@ pub(crate) async fn preflight_streaming_picks(
                         }
                     }
                     Err(e) => {
+                        let error = sanitize::sanitize_error_text(format!("{e:#}"));
                         tracing::warn!(
                             id = %song.video_id,
-                            error = %format!("{e:#}"),
+                            error = %error,
                             "streaming preflight metadata lookup failed"
                         );
                         if risk >= 0.55 {
@@ -340,20 +345,16 @@ struct EnrichedVideoMeta {
 
 async fn enrich_video_meta(video_id: &str) -> Result<EnrichedVideoMeta> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let output = tokio::time::timeout(
-        STREAMING_PREFLIGHT_TIMEOUT,
-        tokio::process::Command::new("yt-dlp")
-            .arg("--dump-single-json")
-            .arg("--no-playlist")
-            .arg("--no-warnings")
-            .arg(&url)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output(),
-    )
-    .await
-    .context("yt-dlp metadata lookup timed out")?
-    .context("failed to run yt-dlp metadata lookup")?;
+    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
+    cmd.arg("--dump-single-json")
+        .arg("--no-playlist")
+        .arg("--no-warnings")
+        .arg(&url)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    let output = process::tokio_output_limited(cmd, STREAMING_PREFLIGHT_TIMEOUT, YTDLP_JSON_MAX)
+        .await
+        .context("failed to run yt-dlp metadata lookup")?;
     if !output.status.success() {
         bail!(
             "yt-dlp metadata lookup exited with status {}",
@@ -527,7 +528,7 @@ async fn audius_search(query: &str, config: &SearchConfig, limit: usize) -> Resu
     let app_name = config.effective_audius_app_name();
     let client = provider_client()?;
     let limit = limit.clamp(1, 50).to_string();
-    let json: serde_json::Value = client
+    let resp = client
         .get("https://discoveryprovider.audius.co/v1/tracks/search")
         .query(&[
             ("query", query),
@@ -538,8 +539,8 @@ async fn audius_search(query: &str, config: &SearchConfig, limit: usize) -> Resu
         .await
         .context("Audius search request failed")?
         .error_for_status()
-        .context("Audius search returned an error")?
-        .json()
+        .context("Audius search returned an error")?;
+    let json: serde_json::Value = http::json_limited(resp, PROVIDER_JSON_MAX)
         .await
         .context("could not parse Audius search response")?;
     let entries = json
@@ -559,7 +560,7 @@ async fn jamendo_search(query: &str, config: &SearchConfig, limit: usize) -> Res
     };
     let client = provider_client()?;
     let limit = limit.clamp(1, 50).to_string();
-    let json: serde_json::Value = client
+    let resp = client
         .get("https://api.jamendo.com/v3.0/tracks/")
         .query(&[
             ("client_id", client_id),
@@ -572,8 +573,8 @@ async fn jamendo_search(query: &str, config: &SearchConfig, limit: usize) -> Res
         .await
         .context("Jamendo search request failed")?
         .error_for_status()
-        .context("Jamendo search returned an error")?
-        .json()
+        .context("Jamendo search returned an error")?;
+    let json: serde_json::Value = http::json_limited(resp, PROVIDER_JSON_MAX)
         .await
         .context("could not parse Jamendo search response")?;
     if json
@@ -599,7 +600,7 @@ async fn archive_search(query: &str, limit: usize) -> Result<Vec<Song>> {
     let client = provider_client()?;
     let rows = limit.clamp(1, 20).to_string();
     let q = format!("{query} AND mediatype:audio");
-    let json: serde_json::Value = client
+    let resp = client
         .get("https://archive.org/advancedsearch.php")
         .query(&[
             ("q", q.as_str()),
@@ -614,8 +615,8 @@ async fn archive_search(query: &str, limit: usize) -> Result<Vec<Song>> {
         .await
         .context("Internet Archive search request failed")?
         .error_for_status()
-        .context("Internet Archive search returned an error")?
-        .json()
+        .context("Internet Archive search returned an error")?;
+    let json: serde_json::Value = http::json_limited(resp, PROVIDER_JSON_MAX)
         .await
         .context("could not parse Internet Archive search response")?;
     let docs = json
@@ -652,7 +653,7 @@ async fn archive_search(query: &str, limit: usize) -> Result<Vec<Song>> {
 async fn radio_browser_search(query: &str, limit: usize) -> Result<Vec<Song>> {
     let client = provider_client()?;
     let limit = limit.clamp(1, 50).to_string();
-    let json: serde_json::Value = client
+    let resp = client
         .get("https://de1.api.radio-browser.info/json/stations/search")
         .query(&[
             ("name", query),
@@ -665,8 +666,8 @@ async fn radio_browser_search(query: &str, limit: usize) -> Result<Vec<Song>> {
         .await
         .context("Radio Browser search request failed")?
         .error_for_status()
-        .context("Radio Browser search returned an error")?
-        .json()
+        .context("Radio Browser search returned an error")?;
+    let json: serde_json::Value = http::json_limited(resp, PROVIDER_JSON_MAX)
         .await
         .context("could not parse Radio Browser search response")?;
     let entries = json.as_array().map(Vec::as_slice).unwrap_or_default();
@@ -795,7 +796,8 @@ async fn archive_audio_file(
     identifier: &str,
 ) -> Option<(String, Option<String>)> {
     let url = format!("https://archive.org/metadata/{identifier}");
-    let json: serde_json::Value = client.get(url).send().await.ok()?.json().await.ok()?;
+    let resp = client.get(url).send().await.ok()?.error_for_status().ok()?;
+    let json: serde_json::Value = http::json_limited(resp, PROVIDER_JSON_MAX).await.ok()?;
     let files = json.get("files")?.as_array()?;
     files
         .iter()

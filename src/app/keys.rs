@@ -65,7 +65,11 @@ impl App {
         // Search submit/select is fixed to the physical Enter key. Handle it before
         // remappable globals so Enter stays local to Search while every other screen keeps
         // using the user's keymap.
-        if self.mode == Mode::Search && !self.help_visible && k.code == KeyCode::Enter {
+        if self.mode == Mode::Search
+            && !self.help_visible
+            && !self.mouse_help_visible
+            && k.code == KeyCode::Enter
+        {
             return self.on_key_search(k);
         }
 
@@ -99,6 +103,24 @@ impl App {
                 );
             if close {
                 self.help_visible = false;
+                self.dirty = true;
+            }
+            return Vec::new();
+        }
+
+        // The mouse cheat-sheet is opened by a mouse-only footer icon. While up, swallow input;
+        // Esc / Back dismiss it, and Quit still works.
+        if self.mouse_help_visible {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return self.quit_app();
+            }
+            let close = k.code == KeyCode::Esc
+                || matches!(
+                    self.keymap.action(KeyContext::Common, chord),
+                    Some(Action::Back)
+                );
+            if close {
+                self.mouse_help_visible = false;
                 self.dirty = true;
             }
             return Vec::new();

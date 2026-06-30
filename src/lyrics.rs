@@ -12,9 +12,11 @@ use serde::Deserialize;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::app::Msg;
+use crate::util::{http, sanitize};
 
 /// Session cache cap (bounded memory; cleared wholesale when exceeded).
 const CACHE_MAX: usize = 999;
+const LYRICS_JSON_MAX: usize = 512 * 1024;
 
 /// One timed lyric line.
 #[derive(Debug, Clone)]
@@ -142,9 +144,11 @@ async fn fetch(client: &reqwest::Client, artist: &str, title: &str) -> Vec<Lyric
         .send()
         .await;
     let items: Vec<LrcItem> = match resp {
-        Ok(r) => r.json().await.unwrap_or_default(),
+        Ok(r) => http::json_limited(r, LYRICS_JSON_MAX)
+            .await
+            .unwrap_or_default(),
         Err(e) => {
-            tracing::warn!(error = %e, "lyrics fetch failed");
+            tracing::warn!(error = %sanitize::sanitize_error_text(e.to_string()), "lyrics fetch failed");
             return Vec::new();
         }
     };

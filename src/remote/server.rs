@@ -18,7 +18,7 @@ use interprocess::local_socket::tokio::Listener;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::{GenericFilePath, ListenerOptions};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -33,6 +33,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 const READ_TIMEOUT: Duration = Duration::from_millis(500);
 /// How long to wait for the reducer to compute a reply (it runs on the main loop).
 const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+/// Normal remote requests are tiny JSON objects. Bound one line to avoid unbounded buffering.
+const MAX_REQUEST_BYTES: usize = 4 * 1024;
 
 /// Outcome of trying to become the controllable instance.
 pub enum BindOutcome {
@@ -141,7 +143,13 @@ fn bind(endpoint_name: &str) -> io::Result<Listener> {
 /// keeps targeting the primary.
 pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
     if new_instance {
-        let ep = endpoint::alt_socket_endpoint(std::process::id());
+        let ep = match endpoint::alt_socket_endpoint(std::process::id()) {
+            Ok(ep) => ep,
+            Err(e) => {
+                tracing::warn!(error = %e, "remote: could not resolve runtime dir; no remote control");
+                return BindOutcome::Unavailable;
+            }
+        };
         #[cfg(unix)]
         let _ = std::fs::remove_file(&ep);
         return match bind(&ep) {
@@ -158,8 +166,18 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
         };
     }
 
-    let ep = endpoint::socket_endpoint();
+    let ep = match endpoint::socket_endpoint() {
+        Ok(ep) => ep,
+        Err(e) => {
+            tracing::warn!(error = %e, "remote: could not resolve runtime dir; no remote control");
+            return BindOutcome::Unavailable;
+        }
+    };
     if probe_alive(&ep).await {
+        return BindOutcome::AlreadyRunning;
+    }
+    let legacy_ep = endpoint::legacy_primary_endpoint_for_probe();
+    if legacy_ep != ep && probe_alive(&legacy_ep).await {
         return BindOutcome::AlreadyRunning;
     }
     // Stale or absent: best-effort clear the leftover socket file, then bind.
@@ -195,7 +213,13 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
     // loop is spawned — not here — so `ytt -r` never finds a descriptor before anything is
     // accepting on it. We only bind the socket now (which is what the single-instance probe
     // checks); the socket alone, with no descriptor, is invisible to clients.
-    let token = endpoint::gen_token();
+    let token = match endpoint::gen_token() {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::warn!(error = %e, "remote: could not generate control token; no remote control");
+            return BindOutcome::Unavailable;
+        }
+    };
     BindOutcome::Bound(Box::new(RemoteServer {
         listener,
         token: Arc::from(token.as_str()),
@@ -248,18 +272,59 @@ pub async fn serve(listener: Listener, token: Arc<str>, tx: UnboundedSender<Msg>
 /// Read one request line (bounded), compute a response via the reducer, write it back.
 async fn handle_conn(conn: Stream, token: &str, tx: UnboundedSender<Msg>) -> io::Result<()> {
     let mut reader = BufReader::new(&conn);
-    let mut line = String::new();
-    match timeout(READ_TIMEOUT, reader.read_line(&mut line)).await {
-        Ok(Ok(n)) if n > 0 => {}
+    let mut line = Vec::new();
+    match timeout(READ_TIMEOUT, read_bounded_line(&mut reader, &mut line)).await {
+        Ok(Ok(ReadLineOutcome::Line)) => {}
+        Ok(Ok(ReadLineOutcome::TooLarge)) => {
+            write_response(&conn, &RemoteResponse::err("bad_request")).await?;
+            return Ok(());
+        }
         // EOF, read error, or timeout: drop the connection silently.
         _ => return Ok(()),
     }
 
-    let resp = build_response(line.trim(), token, &tx).await;
+    let line = match std::str::from_utf8(&line) {
+        Ok(s) => s.trim(),
+        Err(_) => {
+            write_response(&conn, &RemoteResponse::err("bad_request")).await?;
+            return Ok(());
+        }
+    };
+    let resp = build_response(line, token, &tx).await;
+    write_response(&conn, &resp).await?;
+    Ok(())
+}
+
+enum ReadLineOutcome {
+    Line,
+    TooLarge,
+}
+
+async fn read_bounded_line<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+) -> io::Result<ReadLineOutcome> {
+    let mut byte = [0u8; 1];
+    loop {
+        let n = reader.read(&mut byte).await?;
+        if n == 0 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "remote EOF"));
+        }
+        line.push(byte[0]);
+        if line.len() > MAX_REQUEST_BYTES {
+            return Ok(ReadLineOutcome::TooLarge);
+        }
+        if byte[0] == b'\n' {
+            return Ok(ReadLineOutcome::Line);
+        }
+    }
+}
+
+async fn write_response(conn: &Stream, resp: &RemoteResponse) -> io::Result<()> {
     let mut bytes = serde_json::to_vec(&resp).unwrap_or_else(|_| br#"{"ok":false}"#.to_vec());
     bytes.push(b'\n');
 
-    let mut writer = &conn;
+    let mut writer = conn;
     writer.write_all(&bytes).await?;
     writer.flush().await?;
     Ok(())
@@ -292,6 +357,7 @@ async fn build_response(line: &str, token: &str, tx: &UnboundedSender<Msg>) -> R
 mod tests {
     use super::*;
     use crate::remote::proto::RemoteCommand;
+    use tokio::io::AsyncBufReadExt;
 
     /// Connect to `path`, send one line, return the one-line response.
     async fn send_line(path: &str, line: &str) -> String {
@@ -355,6 +421,34 @@ mod tests {
 
         // Unparseable line → bad_request (no panic, still one response line).
         let resp = parse(&send_line(&path, "{not json}").await);
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("bad_request"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn oversized_request_is_rejected_before_reducer() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "ytm-tui-remote-oversized-test-{}.sock",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        let _ = std::fs::remove_file(&path);
+        let listener = bind(&path).unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Msg>();
+        tokio::spawn(async move {
+            if rx.recv().await.is_some() {
+                panic!("oversized remote request reached reducer");
+            }
+        });
+        tokio::spawn(serve(listener, Arc::from("secret"), tx));
+
+        let too_large = format!("{} \n", "x".repeat(MAX_REQUEST_BYTES + 1));
+        let resp = parse(&send_line(&path, &too_large).await);
         assert!(!resp.ok);
         assert_eq!(resp.reason.as_deref(), Some("bad_request"));
 

@@ -18,7 +18,42 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Install supply-chain tools
+        run: cargo install --locked cargo-audit cargo-deny
+      - name: RustSec audit
+        run: cargo audit
+      - name: Dependency policy
+        run: cargo deny check
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -72,8 +107,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The project's quality gate is clippy with warnings-as-errors (the codebase uses
-      # a deliberate compact style, not rustfmt's default), matching local development.
       - name: Clippy (warnings = errors)
         run: cargo clippy --all-targets --target ${{ matrix.target }} -- -D warnings
 
@@ -126,10 +159,12 @@ jobs:
   # The packaging channels (Homebrew / Scoop / AUR / install.sh) read checksums.txt.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, quality]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -141,6 +176,13 @@ jobs:
         # "<hash>  <file>". Normalise the marker out so the published asset is uniform and the
         # awk extractors in the publish jobs match the Windows line too.
         run: cat *.sha256 | sed 's/ \*/  /' | sort -k2 > checksums.txt
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            ytm-tui-*.tar.gz
+            ytm-tui-*.zip
+            checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: |

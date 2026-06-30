@@ -7,12 +7,12 @@
 //! [`crate::streaming::StationState`]'s `banned_artist_keys`). Persisted to `<data dir>/station.json`,
 //! mirroring [`crate::playlists`], so a later feedback pass can refine it.
 
-use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::streaming::StreamingMode;
+use crate::util::safe_fs;
 
 /// How adventurous the listener asked the station to be — a small, stable, model-facing scale
 /// that maps onto the engine's [`StreamingMode`].
@@ -104,7 +104,7 @@ impl StationStore {
     /// Load from disk, falling back to empty if absent or unreadable.
     pub fn load() -> Self {
         if let Some(path) = station_path()
-            && let Ok(text) = fs::read_to_string(&path)
+            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
             && let Ok(s) = serde_json::from_str::<StationStore>(&text)
         {
             return s;
@@ -117,13 +117,7 @@ impl StationStore {
         let Some(path) = station_path() else {
             return Ok(());
         };
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let json = serde_json::to_string_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, &path)
+        safe_fs::write_private_atomic_json(&path, self)
     }
 
     /// The active station's avoid list as engine artist keys (empty when no station is set).

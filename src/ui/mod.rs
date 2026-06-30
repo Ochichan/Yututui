@@ -43,6 +43,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.help_visible {
         views::help::render(frame, app, area);
     }
+    // The mouse cheat-sheet is opened only from the footer mouse icon.
+    if app.mouse_help_visible {
+        views::help::render_mouse(frame, app, area);
+    }
     // The About card draws on top too (clicking the `ytm-tui` brand or F1).
     if app.about_visible {
         views::about::render(frame, app, area);

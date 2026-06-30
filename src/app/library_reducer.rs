@@ -1,6 +1,7 @@
 //! Library data/delete reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
 
 use super::*;
+use crate::util::sanitize;
 
 impl App {
     /// Number of rows currently shown in the active library tab — after the in-library
@@ -316,16 +317,27 @@ impl App {
         let Some(paths) = self.library_ui.confirm_delete.take() else {
             return Vec::new();
         };
+        let root = self.config.effective_download_dir();
+        let mut deleted = Vec::new();
         for path in &paths {
-            if let Err(err) = std::fs::remove_file(path) {
-                tracing::warn!(?path, error = %err, "failed to delete downloaded file");
+            match remove_download_file_if_safe(path, &root) {
+                Ok(()) => deleted.push(path.clone()),
+                Err(err) => {
+                    tracing::warn!(
+                        path = %sanitize::sanitize_error_text(path.display().to_string()),
+                        error = %sanitize::sanitize_error_text(err.to_string()),
+                        "refused or failed to delete downloaded file"
+                    );
+                }
             }
         }
-        self.library_ui
-            .downloaded
-            .retain(|song| song.local_path.as_ref().is_none_or(|p| !paths.contains(p)));
+        self.library_ui.downloaded.retain(|song| {
+            song.local_path
+                .as_ref()
+                .is_none_or(|p| !deleted.contains(p))
+        });
         // Forget the deleted files in the persisted manifest too, so they don't linger.
-        self.download_store.remove_paths(&paths);
+        self.download_store.remove_paths(&deleted);
         self.clamp_library_selection();
         self.dirty = true;
         vec![
@@ -340,4 +352,39 @@ impl App {
         self.library_ui.selected = self.library_ui.selected.min(last);
         self.library_ui.anchor = self.library_ui.anchor.min(last);
     }
+}
+
+fn remove_download_file_if_safe(
+    path: &std::path::Path,
+    download_dir: &std::path::Path,
+) -> std::io::Result<()> {
+    let root = download_dir.canonicalize()?;
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "refusing to delete symlink",
+        ));
+    }
+    if !meta.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "refusing to delete non-regular file",
+        ));
+    }
+    let target = path.canonicalize()?;
+    if !target.starts_with(&root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "refusing to delete outside download directory",
+        ));
+    }
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "download file changed before delete",
+        ));
+    }
+    std::fs::remove_file(path)
 }

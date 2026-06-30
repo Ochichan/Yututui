@@ -307,14 +307,17 @@ pub fn render_list_scrollbar(
     }
 }
 
-/// The footer hint (e.g. "?  keybindings"): a single dim, clickable label — reads as a
-/// status-bar hint, not a button. Shared by every screen's footer.
+/// Footer hints: the keybinding cheat-sheet plus a mouse-only cheat-sheet icon. They read as
+/// status-bar hints, not boxed buttons. Shared by every screen's footer.
 pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
-    let label = app.help_footer();
-    let segs = [Seg::button(
-        MouseTarget::Global(Action::ToggleHelp),
-        label.as_str(),
-    )];
+    let key_label = app.help_footer();
+    let mouse_icon = if app.retro_mode() { "?" } else { "🖱" };
+    let mouse_label = format!("{mouse_icon} {}", t!("mouse", "마우스"));
+    let segs = [
+        Seg::button(MouseTarget::Global(Action::ToggleHelp), key_label.as_str()),
+        Seg::label("   "),
+        Seg::button(MouseTarget::MouseHelp, mouse_label.as_str()),
+    ];
     let hint = app.theme.style(R::TextMuted);
     render_segments(frame, app, area, &segs, hint, hint, Alignment::Center);
 }

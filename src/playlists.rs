@@ -7,12 +7,12 @@
 //! the playlist count and per-playlist track count bounded at write time (priority #1:
 //! flat memory).
 
-use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::api::Song;
+use crate::util::safe_fs;
 
 /// Caps (bounded memory).
 const PLAYLISTS_MAX: usize = 999;
@@ -47,7 +47,7 @@ impl Playlists {
     /// Load from disk, falling back to empty if absent or unreadable.
     pub fn load() -> Self {
         if let Some(path) = playlists_path()
-            && let Ok(text) = fs::read_to_string(&path)
+            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
             && let Ok(p) = serde_json::from_str::<Playlists>(&text)
         {
             return p;
@@ -60,13 +60,7 @@ impl Playlists {
         let Some(path) = playlists_path() else {
             return Ok(());
         };
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let json = serde_json::to_string_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, &path)
+        safe_fs::write_private_atomic_json(&path, self)
     }
 
     pub fn list(&self) -> &[Playlist] {

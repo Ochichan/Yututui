@@ -11,6 +11,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::util::safe_fs;
+
 use crate::ai::GeminiModel;
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
@@ -327,7 +329,7 @@ impl Config {
     /// corrupt file falls back to defaults (+ migration).
     pub fn load() -> Self {
         if let Some(path) = config_path()
-            && let Ok(text) = fs::read_to_string(&path)
+            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
             && let Ok(cfg) = serde_json::from_str::<Config>(&text)
         {
             return cfg;
@@ -346,13 +348,7 @@ impl Config {
         let Some(path) = config_path() else {
             return Ok(()); // no config dir on this platform; nothing to do
         };
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let json = serde_json::to_string_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, &path)
+        safe_fs::write_private_atomic_json(&path, self)
     }
 
     /// The `Cookie:` header to authenticate ytmapi-rs, from the inline value or by

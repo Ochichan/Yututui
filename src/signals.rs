@@ -9,11 +9,12 @@
 //! JSON written atomically (temp file + rename).
 
 use std::collections::{HashMap, VecDeque};
-use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+
+use crate::util::safe_fs;
 
 /// Cap on per-track signal entries; oldest (non-disliked first, by `last_played_at`)
 /// evicted past this so memory stays flat over long-lived installs.
@@ -83,7 +84,7 @@ impl Signals {
     /// Load from disk, falling back to empty if absent or unreadable.
     pub fn load() -> Self {
         if let Some(path) = signals_path()
-            && let Ok(text) = fs::read_to_string(&path)
+            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
             && let Ok(mut sig) = serde_json::from_str::<Signals>(&text)
         {
             sig.enforce_caps();
@@ -97,13 +98,7 @@ impl Signals {
         let Some(path) = signals_path() else {
             return Ok(());
         };
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let json = serde_json::to_string_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, &path)
+        safe_fs::write_private_atomic_json(&path, self)
     }
 
     /// Whether the track is explicitly disliked.

@@ -55,28 +55,29 @@ function Install-Download {
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     $zip = Join-Path $tmp $archive
 
-    Info "Downloading $archive ($ver)..."
-    try { Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing } catch { Die "download failed: $url" }
-
-    # checksums.txt is best-effort: verify when present, warn (don't abort) if a release lacks it.
-    $cks = Join-Path $tmp 'checksums.txt'
     try {
-        Invoke-WebRequest -Uri $cksUrl -OutFile $cks -UseBasicParsing
+        Info "Downloading $archive ($ver)..."
+        try { Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing } catch { Die "download failed: $url" }
+
+        $cks = Join-Path $tmp 'checksums.txt'
+        try { Invoke-WebRequest -Uri $cksUrl -OutFile $cks -UseBasicParsing } catch { Die "release has no checksums.txt - aborting" }
         $match = Select-String -Path $cks -Pattern ([regex]::Escape($archive)) | Select-Object -First 1
         if ($match) {
             $want = (($match.Line -split '\s+')[0]).ToLower()
             $got  = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
             if ($want -ne $got) { Die "checksum mismatch for $archive - aborting" }
             Ok "Checksum verified"
-        } else { Warn "no checksum entry for $archive - skipping integrity check" }
-    } catch { Warn "release has no checksums.txt - skipping integrity check" }
+        } else { Die "no checksum entry for $archive - aborting" }
 
-    Info "Extracting..."
-    Expand-Archive -Path $zip -DestinationPath $tmp -Force
-    $exe = Join-Path $tmp "$Bin.exe"
-    if (-not (Test-Path $exe)) { Die "archive did not contain $Bin.exe" }
-    Install-File $exe
-    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+        Info "Extracting..."
+        Expand-Archive -Path $zip -DestinationPath $tmp -Force
+        $exe = Join-Path $tmp "$Bin.exe"
+        if (-not (Test-Path $exe)) { Die "archive did not contain $Bin.exe" }
+        Install-File $exe
+    }
+    finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
 }
 
 # Build from a checkout with cargo; sets $script:InstallDir.

@@ -11,12 +11,12 @@
 //! doesn't know (e.g. copied from another machine); this manifest adds the richer metadata.
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::api::Song;
+use crate::util::safe_fs;
 
 /// Cap on remembered downloads (bounded memory; matches the scan cap).
 const STORE_MAX: usize = 999;
@@ -33,7 +33,7 @@ impl DownloadStore {
     /// Load from disk, falling back to an empty store if absent or unreadable.
     pub fn load() -> Self {
         if let Some(path) = store_path()
-            && let Ok(text) = fs::read_to_string(&path)
+            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
             && let Ok(mut store) = serde_json::from_str::<DownloadStore>(&text)
         {
             store.tracks.truncate(STORE_MAX);
@@ -47,13 +47,7 @@ impl DownloadStore {
         let Some(path) = store_path() else {
             return Ok(());
         };
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let json = serde_json::to_string_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, &path)
+        safe_fs::write_private_atomic_json(&path, self)
     }
 
     /// Remember an enriched downloaded track (dedup by `video_id`, newest first).

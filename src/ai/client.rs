@@ -21,11 +21,14 @@ use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
 use super::GeminiModel;
+use crate::util::{http, sanitize};
 
 /// Per-request transport retries (does not include the first attempt).
 const MAX_RETRIES: u32 = 3;
 /// Cap on error-body text kept in messages/logs.
 const ERR_BODY_CAP: usize = 200;
+const RESPONSE_BODY_MAX: usize = 4 * 1024 * 1024;
+const ERROR_BODY_MAX: usize = 64 * 1024;
 
 // --- Request models ---------------------------------------------------------
 
@@ -320,10 +323,14 @@ impl GeminiClient {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.is_success() {
-                        return resp
-                            .json::<GenerateContentResponse>()
-                            .await
-                            .map_err(|e| GeminiError::Decode(e.to_string()));
+                        return http::json_limited::<GenerateContentResponse>(
+                            resp,
+                            RESPONSE_BODY_MAX,
+                        )
+                        .await
+                        .map_err(|e| {
+                            GeminiError::Decode(sanitize::sanitize_error_text(e.to_string()))
+                        });
                     }
                     let code = status.as_u16();
                     let retry_after = resp
@@ -331,7 +338,12 @@ impl GeminiClient {
                         .get(RETRY_AFTER)
                         .and_then(|v| v.to_str().ok())
                         .and_then(|s| s.trim().parse::<u64>().ok());
-                    let body = resp.text().await.unwrap_or_default();
+                    let body = http::read_response_limited(resp, ERROR_BODY_MAX)
+                        .await
+                        .ok()
+                        .and_then(|b| String::from_utf8(b).ok())
+                        .map(sanitize::sanitize_error_text)
+                        .unwrap_or_default();
                     match code {
                         401 | 403 => return Err(GeminiError::Auth),
                         404 => return Err(GeminiError::ModelNotFound),

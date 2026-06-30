@@ -16,6 +16,7 @@ use image::DynamicImage;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::app::Msg;
+use crate::util::http;
 
 /// Cap the decoded image to this many pixels on its longest side. The render protocol now
 /// upscales (`Resize::Scale`) to fill the art area, so the source needs enough detail to
@@ -24,6 +25,7 @@ use crate::app::Msg;
 /// (`maxresdefault` is natively 1280×720; 768px is enough for terminal-cell rendering while
 /// keeping protocol resize/encode work smaller.)
 const MAX_DIM: u32 = 768;
+const REMOTE_ART_MAX_BYTES: usize = 5 * 1024 * 1024;
 
 /// Where a track's art comes from.
 pub enum ArtSource {
@@ -83,10 +85,10 @@ async fn fetch_remote(client: &reqwest::Client, video_id: &str) -> Option<Vec<u8
         let url = format!("https://i.ytimg.com/vi/{video_id}/{quality}.jpg");
         if let Ok(resp) = client.get(&url).send().await
             && let Ok(resp) = resp.error_for_status()
-            && let Ok(bytes) = resp.bytes().await
+            && let Ok(bytes) = http::read_response_limited(resp, REMOTE_ART_MAX_BYTES).await
             && !bytes.is_empty()
         {
-            return Some(bytes.to_vec());
+            return Some(bytes);
         }
     }
     None

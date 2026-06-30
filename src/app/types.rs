@@ -20,8 +20,8 @@ pub enum Msg {
         col: u16,
         row: u16,
     },
-    /// A right-click at a cell — adds the song row under the pointer to the queue (the mouse
-    /// equivalent of `\`). Acts only on Search/Library list rows; ignored elsewhere.
+    /// A right-click at a cell. Search/Library rows add the song to the queue; queue-window
+    /// rows remove that entry. Ignored elsewhere.
     MouseRightClick {
         col: u16,
         row: u16,
@@ -334,6 +334,8 @@ pub enum MouseTarget {
     SearchSourceSelect(SearchSource),
     /// A Library tab header.
     LibraryTab(LibraryTab),
+    /// The footer mouse-help icon. Mouse-only: no keybinding maps to this overlay.
+    MouseHelp,
     /// A Settings tab header, by index into [`SettingsTab::ALL`].
     SettingsTab(usize),
     /// A clickable value control on a Settings field row — the checkbox of a toggle or the

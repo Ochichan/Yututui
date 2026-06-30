@@ -5,14 +5,13 @@
 //! Best-effort: any I/O or serialize failure is logged at `warn` and swallowed. Usage logging
 //! must never disrupt playback.
 
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::PathBuf;
 
 use serde::Serialize;
 
 use crate::ai::GeminiModel;
 use crate::ai::client::UsageMetadata;
+use crate::util::safe_fs;
 
 /// USD per 1M (input, output) tokens, standard tier — verified June 2026. `Latest` aliases the
 /// current Flash tier, so it is priced as Flash (a conservative over-estimate, never under).
@@ -92,9 +91,6 @@ pub fn append(record: &AiUsageRecord) {
     let Some(path) = log_path() else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let line = match serde_json::to_string(record) {
         Ok(s) => s,
         Err(e) => {
@@ -102,13 +98,8 @@ pub fn append(record: &AiUsageRecord) {
             return;
         }
     };
-    match OpenOptions::new().create(true).append(true).open(&path) {
-        Ok(mut f) => {
-            if let Err(e) = writeln!(f, "{line}") {
-                tracing::warn!(error = %e, "ai usage: append failed");
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "ai usage: open failed"),
+    if let Err(e) = safe_fs::append_private_jsonl(&path, &line) {
+        tracing::warn!(error = %e, "ai usage: append failed");
     }
 }
 

@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::util::safe_fs;
+
 #[cfg(unix)]
 use crate::app::Msg;
 #[cfg(unix)]
@@ -229,16 +231,14 @@ fn registry_path(dir: &Path) -> std::path::PathBuf {
 /// Record `{app_pid, mpv_pid}` so a later run can reap a leaked mpv.
 pub fn register(dir: &Path, app_pid: u32, mpv_pid: u32) {
     let record = Lifeline { app_pid, mpv_pid };
-    if let Ok(json) = serde_json::to_string(&record) {
-        let _ = std::fs::write(registry_path(dir), json);
-    }
+    let _ = safe_fs::write_private_atomic_json(&registry_path(dir), &record);
 }
 
 /// Reap a previous instance's mpv if that instance died without cleaning up (the only
 /// path not covered by signals/Drop/panic/Job Object — e.g. SIGKILL or power loss).
 pub fn reap_orphans(dir: &Path) {
     let path = registry_path(dir);
-    let Ok(data) = std::fs::read_to_string(&path) else {
+    let Ok(data) = safe_fs::read_to_string_no_symlink(&path) else {
         return;
     };
     let Ok(record) = serde_json::from_str::<Lifeline>(&data) else {

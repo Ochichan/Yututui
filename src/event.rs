@@ -55,7 +55,8 @@ impl Translator {
                 self.left_down = true;
                 Some(self.classify_left_down(m.column, m.row))
             }
-            // A right-button press adds the song row under the pointer to the queue.
+            // A right-button press is interpreted by the active surface: queue rows delete,
+            // Search/Library rows enqueue.
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => {
                 Some(Msg::MouseRightClick {
                     col: m.column,

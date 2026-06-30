@@ -17,6 +17,13 @@ set -euo pipefail
 
 BIN=ytt
 REPO_SLUG="Ochichan/ytm-tui"
+DOWNLOAD_TMP=""
+cleanup_download_tmp() {
+  if [ -n "${DOWNLOAD_TMP:-}" ]; then
+    rm -rf "$DOWNLOAD_TMP"
+  fi
+}
+trap cleanup_download_tmp EXIT
 
 # Run from the repo root regardless of where the script was invoked from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
@@ -127,10 +134,10 @@ fetch() {
 verify_sha256() {
   local dir="$1" archive="$2" want got
   want="$(awk -v f="$archive" '$2 == f || $2 == "*" f {print $1}' "$dir/checksums.txt" | head -n1)"
-  [ -n "$want" ] || { warn "no checksum entry for $archive"; return 1; }
+  [ -n "$want" ] || return 1
   if   command -v sha256sum >/dev/null 2>&1; then got="$(sha256sum "$dir/$archive" | awk '{print $1}')"
   elif command -v shasum    >/dev/null 2>&1; then got="$(shasum -a 256 "$dir/$archive" | awk '{print $1}')"
-  else warn "no sha256 tool — skipping integrity check"; return 0; fi
+  else return 2; fi
   [ "$want" = "$got" ]
 }
 
@@ -145,20 +152,18 @@ download_release() {
     url="$base/download/$ver/$archive";     cks_url="$base/download/$ver/checksums.txt"
   fi
   tmp="$(mktemp -d)"
+  DOWNLOAD_TMP="$tmp"
 
   info "Downloading $archive ($ver)…"
   fetch "$url" "$tmp/$archive" || die "download failed: $url"
-  # checksums.txt is best-effort: verify when present, warn (don't abort) if a release lacks it.
-  if fetch "$cks_url" "$tmp/checksums.txt" 2>/dev/null; then
-    verify_sha256 "$tmp" "$archive" || die "checksum mismatch for $archive — aborting"
-    ok "Checksum verified"
-  else
-    warn "release has no checksums.txt — skipping integrity check"
-  fi
+  fetch "$cks_url" "$tmp/checksums.txt" 2>/dev/null || die "release has no checksums.txt — aborting"
+  verify_sha256 "$tmp" "$archive" || die "checksum verification failed for $archive — aborting"
+  ok "Checksum verified"
   info "Extracting…"
   tar -xzf "$tmp/$archive" -C "$tmp" "$BIN" || die "archive did not contain $BIN"
   install_prebuilt "$tmp/$BIN"
   rm -rf "$tmp"
+  DOWNLOAD_TMP=""
 }
 
 # --- choose a strategy -----------------------------------------------------------------

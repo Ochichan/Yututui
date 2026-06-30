@@ -179,6 +179,7 @@ impl App {
             | ((self.pending_settings_confirm.is_some() as u16) << 8)
             | ((self.library_ui.confirm_delete.is_some() as u16) << 9)
             | ((!matches!(self.mode, Mode::Player) as u16) << 10)
+            | ((self.mouse_help_visible as u16) << 11)
     }
 
     /// Track overlay/screen transitions that can cover native terminal graphics. Ratatui's normal

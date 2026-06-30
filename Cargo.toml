@@ -25,6 +25,7 @@ directories = "6.0.0"
 # Tiny, dependency-free RNG for queue shuffling (no `rand` pull-in).
 fastrand = "2"
 futures = "0.3.32"
+getrandom = "0.4"
 # Decode album art / thumbnails ourselves (off the render thread) and hand a ready
 # `DynamicImage` to ratatui-image. Default features are off so only the formats we
 # actually fetch are compiled in — JPEG (i.ytimg thumbnails + yt-dlp embedded covers),
@@ -54,7 +55,7 @@ ratatui-image = { version = "11", default-features = false, features = ["crosste
 # (no aws-lc-sys/NASM): smaller binary, and Windows builds need no extra toolchain.
 # Neither target uses OpenSSL, so the plan's "no system OpenSSL" intent still holds.
 # `json` decodes responses. Shares ytmapi-rs's TLS stack (one provider, not two).
-reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "stream"] }
 # YouTube Music metadata client. Same native (system) TLS as above — dropping the
 # `rustls` feature is what removes aws-lc-sys. `simplified-queries` gives ergonomic
 # `search_songs`/`search_*` helpers.

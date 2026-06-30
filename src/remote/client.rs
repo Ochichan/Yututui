@@ -13,7 +13,7 @@ use std::time::Duration;
 use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
 
 use super::args::{self, ParseError, Parsed};
@@ -22,6 +22,7 @@ use super::proto::{PROTOCOL_VERSION, RemoteRequest, RemoteResponse};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_REPLY_BYTES: usize = 4096;
 
 const EXIT_OK: i32 = 0;
 const EXIT_TRANSPORT: i32 = 1;
@@ -102,17 +103,25 @@ async fn exchange(parsed: Parsed) -> i32 {
     }
 
     let mut reader = BufReader::new(&conn);
-    let mut line = String::new();
-    let resp: RemoteResponse = match timeout(REPLY_TIMEOUT, reader.read_line(&mut line)).await {
-        Ok(Ok(n)) if n > 0 => match serde_json::from_str(line.trim()) {
-            Ok(r) => r,
-            Err(_) => {
-                eprintln!("ytt -r: malformed response from ytt.");
-                return EXIT_TRANSPORT;
-            }
-        },
-        _ => {
+    let line = match timeout(REPLY_TIMEOUT, read_bounded_line(&mut reader)).await {
+        Ok(Ok(Some(line))) => line,
+        Ok(Ok(None)) => {
             eprintln!("ytt -r: no response from ytt.");
+            return EXIT_TRANSPORT;
+        }
+        Ok(Err(_)) => {
+            eprintln!("ytt -r: malformed response from ytt.");
+            return EXIT_TRANSPORT;
+        }
+        Err(_) => {
+            eprintln!("ytt -r: no response from ytt.");
+            return EXIT_TRANSPORT;
+        }
+    };
+    let resp: RemoteResponse = match serde_json::from_str(line.trim()) {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("ytt -r: malformed response from ytt.");
             return EXIT_TRANSPORT;
         }
     };
@@ -131,5 +140,32 @@ async fn exchange(parsed: Parsed) -> i32 {
         let reason = resp.reason.as_deref().unwrap_or("rejected");
         eprintln!("ytt -r: {reason}");
         EXIT_USAGE
+    }
+}
+
+async fn read_bounded_line<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Option<String>> {
+    let mut buf = Vec::with_capacity(256);
+    let mut byte = [0u8; 1];
+    loop {
+        let n = reader.read(&mut byte).await?;
+        if n == 0 {
+            return if buf.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+            };
+        }
+        if buf.len() >= MAX_REPLY_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "remote response too large",
+            ));
+        }
+        buf.push(byte[0]);
+        if byte[0] == b'\n' {
+            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+        }
     }
 }

@@ -226,12 +226,17 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
         let y = area.y + vis as u16;
         let selected = i >= sel_lo && i <= sel_hi;
         let marker = if i == cursor { "▶ " } else { "  " };
+        let heart = if app.library.is_favorite(&song.video_id) {
+            "♥ "
+        } else {
+            "  "
+        };
         let title = app.display_title(song);
         let artist = app.display_artist(song);
         let body = if song.duration.is_empty() {
-            format!("{marker}{title} — {artist}")
+            format!("{marker}{heart}{title} — {artist}")
         } else {
-            format!("{marker}{title} — {artist}  ({})", song.duration)
+            format!("{marker}{heart}{title} — {artist}  ({})", song.duration)
         };
         let body = crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1));
 
