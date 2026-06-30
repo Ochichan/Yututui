@@ -1,11 +1,11 @@
-//! AI-assistant reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
+//! DJ Gem assistant reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
 
 use super::*;
 
 impl App {
-    // --- AI assistant -------------------------------------------------------
+    // --- DJ Gem assistant -------------------------------------------------------
 
-    /// Enter the AI assistant screen (input focused).
+    /// Enter the DJ Gem assistant screen (input focused).
     pub(in crate::app) fn enter_ai(&mut self) {
         self.mode = Mode::Ai;
         self.ai.focus = AiFocus::Input;
@@ -159,7 +159,7 @@ impl App {
         self.load_song(song)
     }
 
-    /// Append a line to the AI transcript, bounding its length.
+    /// Append a line to the DJ Gem transcript, bounding its length.
     pub(in crate::app) fn push_ai_message(&mut self, role: AiRole, text: String) {
         self.ai.messages.push(AiMessage { role, text });
         if self.ai.messages.len() > AI_HISTORY_MAX {
@@ -168,7 +168,7 @@ impl App {
         }
     }
 
-    /// Snapshot the read-only state the AI actor needs to answer its read tools.
+    /// Snapshot the read-only state the DJ Gem actor needs to answer its read tools.
     pub(in crate::app) fn build_ai_context(&self) -> AiContext {
         let fmt = |s: &Song| format!("{} — {}", s.title, s.artist);
         AiContext {

@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The model exposed in the settings AI tab. Persisted as snake_case in `config.json`.
+/// The model exposed in the settings DJ Gem tab. Persisted as snake_case in `config.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GeminiModel {
@@ -21,7 +21,7 @@ pub enum GeminiModel {
 }
 
 impl GeminiModel {
-    /// Order the settings AI tab cycles through with ←/→.
+    /// Order the settings DJ Gem tab cycles through with ←/→.
     pub const CYCLE: [GeminiModel; 3] = [
         GeminiModel::Flash,
         GeminiModel::FlashLite,

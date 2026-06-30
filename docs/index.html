@@ -4,17 +4,17 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>ytm-tui — YouTube Music in your terminal</title>
-<meta name="description" content="A fast, keyboard-driven YouTube Music client that lives in your terminal. AI radio, real album art, remote control, 11 themes. No browser, no ads. Rust + ratatui, MIT." />
+<meta name="description" content="A fast, keyboard-driven YouTube Music client that lives in your terminal. DJ Gem radio, real album art, remote control, 11 themes. No browser, no ads. Rust + ratatui, MIT." />
 
 <!-- Open Graph / social -->
 <meta property="og:type" content="website" />
 <meta property="og:title" content="ytm-tui — YouTube Music in your terminal" />
-<meta property="og:description" content="Fast, keyboard-driven YouTube Music in your terminal. AI radio, real album art, remote control. No browser, no ads." />
+<meta property="og:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem radio, real album art, remote control. No browser, no ads." />
 <meta property="og:url" content="https://ochichan.github.io/ytm-tui/" />
 <meta property="og:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
 <meta name="twitter:card" content="summary" />
 <meta name="twitter:title" content="ytm-tui — YouTube Music in your terminal" />
-<meta name="twitter:description" content="Fast, keyboard-driven YouTube Music in your terminal. AI radio, real album art, remote control." />
+<meta name="twitter:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem radio, real album art, remote control." />
 <meta name="twitter:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
 
 <link rel="icon" type="image/png" href="ytm-tui.png" />
@@ -384,7 +384,7 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .spinner { color: var(--iris); }
 
 /* ============================================================
-   Interactive screens — faithful Search / Library / Settings / AI.
+   Interactive screens — faithful Search / Library / Settings / DJ Gem.
    The nav tabs switch which one shows; only one is visible at a time.
    Role → color mapping mirrors the app (accent=foam, selection=iris,
    muted=muted, error/heart=love). Built from the real src/ui/views/*.
@@ -438,7 +438,7 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .srow.sel .lbl, .srow.sel .val, .srow.sel .val.tog { color: var(--bg); }
 @media (max-width: 560px) { .srow { font-size: .76rem; } .set-list { overflow-x: auto; } }
 
-/* AI: transcript + Gemini-tan mascot + Suggestions panel + Ask box */
+/* DJ Gem: transcript + Gemini-tan mascot + Suggestions panel + Ask box */
 .ai { width: 100%; flex: 1; display: flex; flex-direction: column; gap: .75rem; }
 .ai-head { display: flex; align-items: center; justify-content: space-between; font-size: .76rem; color: var(--muted); border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
 .ai-head .model { color: var(--iris); }
@@ -492,7 +492,7 @@ kbd {
 }
 
 /* ============================================================
-   "Why these picks" band (AI radio spotlight)
+   "Why these picks" band (DJ Gem radio spotlight)
    ============================================================ */
 .why-band { background: var(--surface); border-block: 1px solid var(--line); }
 .why-grid { display: grid; grid-template-columns: 1fr 1.1fr; gap: clamp(2rem, 5vw, 4rem); align-items: center; }
@@ -653,7 +653,7 @@ kbd {
     </h1>
   </div>
   <p class="hero__sub" data-i18n="hero.sub">
-    A fast, keyboard-driven YouTube Music client with AI radio, real album art, and remote control.
+    A fast, keyboard-driven YouTube Music client with DJ Gem radio, real album art, and remote control.
     No browser tab quietly eating your RAM. No ads. No mouse required — though it's there if you miss it.
   </p>
   <div class="hero__cta">
@@ -683,7 +683,7 @@ kbd {
         <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-search" data-screen="search" id="tab-search" tabindex="-1" data-i18n="tab.search">Search</button>
         <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-library" data-screen="library" id="tab-library" tabindex="-1" data-i18n="tab.library">Library</button>
         <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-settings" data-screen="settings" id="tab-settings" tabindex="-1" data-i18n="tab.settings">Settings</button>
-        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-ai" data-screen="ai" id="tab-ai" tabindex="-1" data-i18n="tab.ai">AI</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-ai" data-screen="ai" id="tab-ai" tabindex="-1" data-i18n="tab.ai">DJ Gem</button>
       </span>
       <span class="term__cue" id="d-cue" data-i18n="demo.clickcue">click to explore</span>
       <span class="right"><span id="demo-clock">7:06</span></span>
@@ -785,7 +785,7 @@ kbd {
           <span class="subtab" data-i18n="set.playback">Playback</span>
           <span class="subtab" data-i18n="set.hotkeys">Hotkeys</span>
           <span class="subtab" data-i18n="set.graphics">Graphics</span>
-          <span class="subtab">AI</span>
+          <span class="subtab">DJ Gem</span>
         </div>
         <div class="set-list">
           <div class="srow sel"><span class="mk" aria-hidden="true">▶</span><span class="lbl" data-i18n="set.lang">Language</span><span class="val">&lt; <span data-i18n="set.lang.val">English</span> &gt;</span></div>
@@ -801,11 +801,11 @@ kbd {
       </div>
     </div><!-- /#screen-settings -->
 
-    <!-- ===== AI screen (Gemini-tan, empty state) ===== -->
+    <!-- ===== DJ Gem screen (Gemini-tan, empty state) ===== -->
     <div class="term__screen" id="screen-ai" role="tabpanel" aria-labelledby="tab-ai" data-screen="ai" tabindex="0" hidden>
       <div class="ai">
         <div class="ai-head">
-          <span data-i18n="ai.eyebrow">✦ AI assistant</span>
+          <span data-i18n="ai.eyebrow">✦ DJ Gem assistant</span>
           <span class="model" title="Gemini model">Flash Lite</span>
         </div>
         <div class="ai-body">
@@ -855,7 +855,7 @@ kbd {
   <div class="features-grid reveal">
     <article class="feature iri">
       <div class="feature__top"><kbd>Ctrl R</kbd></div>
-      <h3 class="display" data-i18n="f.radio.h">AI radio that reads the room</h3>
+      <h3 class="display" data-i18n="f.radio.h">DJ Gem radio that reads the room</h3>
       <p data-i18n-html="f.radio.p">Press <code>Ctrl+R</code> and ytm-tui becomes a station built around what you're hearing. A Gemini-powered <em>Queue Director</em> lines up songs that fit the mood — Focused, Balanced, or Discovery. Press <code>w</code> for the plain-language reasoning.</p>
     </article>
 
@@ -891,7 +891,7 @@ kbd {
   </div>
 </section>
 
-<!-- ===================== WHY (AI radio spotlight) ===================== -->
+<!-- ===================== WHY (DJ Gem radio spotlight) ===================== -->
 <section class="why-band section" id="radio" aria-labelledby="why-h2">
   <div class="wrap why-grid">
     <div class="section-head reveal" style="margin-bottom:0">
@@ -901,7 +901,7 @@ kbd {
     </div>
 
     <div class="why-card reveal" aria-label="Why these picks overlay">
-      <div class="why-card__title"><span aria-hidden="true">✦</span> <span data-i18n="why.card.title">Why these AI picks</span></div>
+      <div class="why-card__title"><span aria-hidden="true">✦</span> <span data-i18n="why.card.title">Why these DJ Gem picks</span></div>
       <div class="why-card__body">
         <div class="why-pick">
           <span class="n">1</span>
@@ -1067,7 +1067,7 @@ var KO = {
   "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
   "hero.h1a": "지금 재생 중 —",
   "hero.h1b": "터미널 안에서.",
-  "hero.sub": "빠르고 키보드로 다루는 유튜브 뮤직 클라이언트예요. AI 라디오, 진짜 앨범 아트, 원격 제어까지. 램을 야금야금 먹는 브라우저 탭도, 광고도 없죠. 마우스요? 없어도 되지만, 아쉬울까 봐 챙겨뒀어요.",
+  "hero.sub": "빠르고 키보드로 다루는 유튜브 뮤직 클라이언트예요. DJ Gem 라디오, 진짜 앨범 아트, 원격 제어까지. 램을 야금야금 먹는 브라우저 탭도, 광고도 없죠. 마우스요? 없어도 되지만, 아쉬울까 봐 챙겨뒀어요.",
   "hero.cta1": "ytm-tui 설치하기",
   "hero.cta2": "GitHub에서 별 주기",
   "copy": "복사",
@@ -1078,7 +1078,7 @@ var KO = {
   "demo.upnext": "다음 곡",
   "hint.help": "단축키",
 
-  "tab.player": "플레이어", "tab.search": "검색", "tab.library": "라이브러리", "tab.settings": "설정", "tab.ai": "AI",
+  "tab.player": "플레이어", "tab.search": "검색", "tab.library": "라이브러리", "tab.settings": "설정", "tab.ai": "DJ Gem",
   "demo.clickcue": "눌러서 둘러보기",
 
   "search.cap": "검색", "search.btn": "검색",
@@ -1093,13 +1093,13 @@ var KO = {
   "set.resetkeys": "단축키 초기화", "set.resetall": "모든 설정 초기화",
   "set.enter": "Enter 누르기", "set.switch": "탭 전환",
 
-  "ai.eyebrow": "✦ AI 어시스턴트", "ai.empty": "재생·대기열·검색을 말로 시켜보세요.",
+  "ai.eyebrow": "✦ DJ Gem 어시스턴트", "ai.empty": "재생·대기열·검색을 말로 시켜보세요.",
   "ai.sugtitle": "추천", "ai.ask": "질문", "ai.prompt": "back number 같은 곡 틀어줘", "ai.send": "전송",
 
   "feat.eyebrow": "핵심만 쏙",
   "feat.h2": "모든 기능이, 키 하나로",
   "feat.sub": "전부 키보드로, 전부 빠르게, 전부 원하는 대로 재설정할 수 있어요. <code>ytt</code> 한 번이면 이 모든 게 시작됩니다.",
-  "f.radio.h": "분위기를 읽는 AI 라디오",
+  "f.radio.h": "분위기를 읽는 DJ Gem 라디오",
   "f.radio.p": "<code>Ctrl+R</code> 한 번이면 지금 듣는 곡을 중심으로 나만의 라디오가 시작돼요. Gemini 기반 <em>큐 디렉터</em>가 분위기에 맞는 곡을 골라 이어주죠 — Focused, Balanced, Discovery 모드 중에서. <code>w</code> 를 누르면 그 이유를 쉬운 말로 설명해 줍니다.",
   "f.art.h": "터미널 안에, 진짜 앨범 아트",
   "f.art.p": "네, 진짜 커버 이미지를 플레이어에 그대로 띄워줍니다 (지원하는 터미널에서요). 픽셀이 있을 거라곤 생각도 못 한 곳에 떡하니. 그 아래로는 싱크된 가사가 흘러가죠, 1인용 노래방처럼.",
@@ -1115,7 +1115,7 @@ var KO = {
   "why.eyebrow": "이유까지 말하는 라디오",
   "why.h2": "그냥 자동 재생이 아니에요. 왜 골랐는지도 말해주죠.",
   "why.sub": "대부분의 플레이어는 다음 곡을 찍어놓고 잘 맞기만 바라죠. ytm-tui의 라디오는 <em>한 세트</em>를 통째로 설계합니다 — 기준 곡, 연결, 상승, 마무리까지 — 그리고 대기열이 비어갈 때마다 음악을 계속 채워줘요. <code>w</code> 를 누르면 복잡한 수식 없이 쉬운 말로 그 과정을 보여줍니다.",
-  "why.card.title": "이 AI 선곡의 이유",
+  "why.card.title": "이 DJ Gem 선곡의 이유",
   "why.r1.role": "기준", "why.r1.reason": "검색한 템포를 잡아줍니다.",
   "why.r2.role": "연결", "why.r2.reason": "키는 유지, 드럼은 빼서 집중 모드로.",
   "why.r3.role": "상승", "why.r3.reason": "늘어지지 않게 살짝 에너지를 올려요.",
@@ -1155,7 +1155,7 @@ var JA = {
   "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
   "hero.h1a": "再生中 —",
   "hero.h1b": "ターミナルの中で。",
-  "hero.sub": "速くて、キーボードで操る YouTube Music クライアント。AI ラジオ、本物のアルバムアート、リモート操作まで。RAM をじわじわ食うブラウザのタブも、広告もなし。マウス？ なくても平気ですが、恋しくならないように用意してあります。",
+  "hero.sub": "速くて、キーボードで操る YouTube Music クライアント。DJ Gem ラジオ、本物のアルバムアート、リモート操作まで。RAM をじわじわ食うブラウザのタブも、広告もなし。マウス？ なくても平気ですが、恋しくならないように用意してあります。",
   "hero.cta1": "ytm-tui をインストール",
   "hero.cta2": "GitHub でスターを付ける",
   "copy": "コピー",
@@ -1166,7 +1166,7 @@ var JA = {
   "demo.upnext": "次の曲",
   "hint.help": "ショートカット",
 
-  "tab.player": "プレイヤー", "tab.search": "検索", "tab.library": "ライブラリ", "tab.settings": "設定", "tab.ai": "AI",
+  "tab.player": "プレイヤー", "tab.search": "検索", "tab.library": "ライブラリ", "tab.settings": "設定", "tab.ai": "DJ Gem",
   "demo.clickcue": "クリックして見てみる",
 
   "search.cap": "検索", "search.btn": "検索",
@@ -1181,13 +1181,13 @@ var JA = {
   "set.resetkeys": "ショートカットを初期化", "set.resetall": "すべての設定を初期化",
   "set.enter": "Enter を押す", "set.switch": "タブ切り替え",
 
-  "ai.eyebrow": "✦ AI アシスタント", "ai.empty": "再生・キュー・検索を言葉で頼んでみて。",
+  "ai.eyebrow": "✦ DJ Gem アシスタント", "ai.empty": "再生・キュー・検索を言葉で頼んでみて。",
   "ai.sugtitle": "おすすめ", "ai.ask": "質問", "ai.prompt": "back number みたいな曲をかけて", "ai.send": "送信",
 
   "feat.eyebrow": "おいしいところだけ",
   "feat.h2": "すべての機能が、キー一つで",
   "feat.sub": "全部キーボードで、全部速く、全部好きなように再設定できます。<code>ytt</code> と打てば、その瞬間からすべてが始まります。",
-  "f.radio.h": "空気を読む AI ラジオ",
+  "f.radio.h": "空気を読む DJ Gem ラジオ",
   "f.radio.p": "<code>Ctrl+R</code> を押せば、ytm-tui が今聴いている曲を中心にしたステーションに早変わり。Gemini 搭載の<em>キュー・ディレクター</em>が雰囲気に合う曲を並べてくれます — Focused、Balanced、Discovery の中から。<code>w</code> を押せば、その理由をやさしい言葉で説明します。",
   "f.art.h": "ターミナルの中に、本物のアルバムアート",
   "f.art.p": "そう、本物のカバー画像をプレイヤーにそのまま表示します（対応するターミナルで）。ピクセルなんてないと思っていた場所に、どんと。その下には同期した歌詞が流れます、一人カラオケみたいに。",
@@ -1203,7 +1203,7 @@ var JA = {
   "why.eyebrow": "理由まで語るラジオ",
   "why.h2": "ただ自動再生するだけじゃない。なぜ選んだかも教えてくれる。",
   "why.sub": "ほとんどのプレイヤーは次の曲を当てずっぽうで選んで、合うことを祈るだけ。ytm-tui のラジオは<em>ワンセット</em>をまるごと設計します — 基準の曲、つなぎ、盛り上げ、締め — そしてキューが空きそうになるたびに音楽を満たし続けます。<code>w</code> を押せば、難しい数式なしでやさしい言葉でその過程を見せてくれます。",
-  "why.card.title": "この AI 選曲の理由",
+  "why.card.title": "この DJ Gem 選曲の理由",
   "why.r1.role": "基準", "why.r1.reason": "検索したテンポを決めます。",
   "why.r2.role": "つなぎ", "why.r2.reason": "キーは保ったまま、ドラムを抜いて集中モードへ。",
   "why.r3.role": "盛り上げ", "why.r3.reason": "間延びしないよう少しだけエネルギーを上げます。",

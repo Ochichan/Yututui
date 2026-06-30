@@ -35,7 +35,7 @@ struct RawFeatures {
     version_penalty: f32,
     gate_risk: f32,
     /// Co-occurrence affinity vs the *immediately-preceding* (seed) track. Evidence-only;
-    /// retained on `Candidate.features` for the AI reranker, never summed into `base_score`.
+    /// retained on `Candidate.features` for the DJ Gem reranker, never summed into `base_score`.
     transition: f32,
 }
 
@@ -83,7 +83,7 @@ pub fn filter_and_score(
             + w.music_tier * feats[i].music_tier
             - w.dislike_penalty * feats[i].version_penalty
             - GATE_DEMOTE_PENALTY * feats[i].gate_risk;
-        // Retain the per-feature evidence for the AI reranker. `transition` is intentionally
+        // Retain the per-feature evidence for the DJ Gem reranker. `transition` is intentionally
         // NOT part of `base_score` above — it only informs the model's slotting.
         c.features = FeatureScores {
             cooc: cooc_n[i],

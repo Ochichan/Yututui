@@ -145,7 +145,7 @@ mod tests {
 
         let ai_box = groups
             .iter()
-            .find_map(|(title, rows)| (title == "AI box").then_some(rows))
+            .find_map(|(title, rows)| (title == "DJ Gem box").then_some(rows))
             .expect("ai box group");
         assert_eq!(
             ai_box.first(),
@@ -178,7 +178,7 @@ mod tests {
         for row in [
             ("Enter".to_owned(), "Play selected".to_owned()),
             ("\\".to_owned(), "Add to queue".to_owned()),
-            ("P".to_owned(), "Play whole tab".to_owned()),
+            ("a".to_owned(), "Play whole tab".to_owned()),
         ] {
             assert!(library.contains(&row), "cheat-sheet should list {row:?}");
         }

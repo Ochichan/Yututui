@@ -2,7 +2,7 @@
 //! tutorials, …) and gimmick re-uploads (karaoke / nightcore / 8D / sped-up / slowed+reverb)
 //! out of the radio candidate pool.
 //!
-//! No AI, no YouTube Data API, no `regex` — just lowercased token matching over the title and
+//! No DJ Gem, no YouTube Data API, no `regex` — just lowercased token matching over the title and
 //! channel name, mirroring [`super::canonical::version_penalty`]. The only metadata available
 //! is the (lean) [`crate::api::Song`]: `title` and `artist` (which holds the channel/uploader
 //! name for yt-dlp-sourced rows). The heuristics are deliberately conservative — they prefer

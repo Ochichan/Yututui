@@ -1,6 +1,6 @@
 //! Shared list-scroll math.
 //!
-//! Every browse list (Library, Search, the Queue window, the AI suggestions) keeps one
+//! Every browse list (Library, Search, the Queue window, the DJ Gem suggestions) keeps one
 //! [`ScrollState`]. The mouse wheel moves its [`offset`](ScrollState::offset) **directly and
 //! independently of the selection** — the highlighted row may scroll out of view, matching
 //! how desktop apps and browsers behave. Keyboard / click moves the selection instead, and

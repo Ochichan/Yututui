@@ -247,13 +247,13 @@ pub struct Config {
     /// [`AnimationsConfig`].
     pub animations: AnimationsConfig,
 
-    // AI assistant ------------------------------------------------------------
+    // DJ Gem assistant ------------------------------------------------------------
     /// Google Gemini API key. The `GEMINI_API_KEY` env var overrides this when set.
     pub gemini_api_key: Option<String>,
     /// Which Gemini model the assistant uses.
     pub gemini_model: GeminiModel,
-    /// Whether the AI assistant is enabled. `None` → on, so existing configs that already hold
-    /// a key keep AI working. Lets the user switch AI off while keeping the key saved.
+    /// Whether the DJ Gem assistant is enabled. `None` → on, so existing configs that already hold
+    /// a key keep DJ Gem working. Lets the user switch DJ Gem off while keeping the key saved.
     pub ai_enabled: Option<bool>,
 
     // Theme -------------------------------------------------------------------
@@ -488,14 +488,14 @@ impl Config {
         self.gemini_model
     }
 
-    /// Whether the AI assistant is enabled (default on). When off, [`Self::effective_ai_key`]
+    /// Whether the DJ Gem assistant is enabled (default on). When off, [`Self::effective_ai_key`]
     /// reports no key, so the assistant stays torn down even if a key is configured.
     pub fn effective_ai_enabled(&self) -> bool {
         self.ai_enabled.unwrap_or(true)
     }
 
-    /// The AI key to actually use: the effective Gemini key, but only while AI is enabled.
-    /// `None` when AI is switched off — the lever the settings toggle pulls to disable AI
+    /// The DJ Gem key to actually use: the effective Gemini key, but only while DJ Gem is enabled.
+    /// `None` when DJ Gem is switched off — the lever the settings toggle pulls to disable DJ Gem
     /// without discarding the saved key.
     pub fn effective_ai_key(&self) -> Option<String> {
         if self.effective_ai_enabled() {
@@ -773,8 +773,8 @@ mod tests {
 
     #[test]
     fn ai_off_switch_gates_the_key_without_discarding_it() {
-        // AI explicitly off: the key stays in config, but the *effective* key the assistant
-        // spawns from is None — so AI stays down even with a key saved. (None regardless of any
+        // DJ Gem explicitly off: the key stays in config, but the *effective* key the assistant
+        // spawns from is None — so DJ Gem stays down even with a key saved. (None regardless of any
         // `GEMINI_API_KEY` env var, since the disabled branch never consults the env.)
         let off = Config {
             gemini_api_key: Some("AIzaSaved".to_owned()),

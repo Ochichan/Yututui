@@ -46,14 +46,14 @@ impl CandidateSource {
     }
 }
 
-/// Per-feature normalized scores retained from the scoring pass so the AI reranker can see
+/// Per-feature normalized scores retained from the scoring pass so the DJ Gem reranker can see
 /// the *evidence* behind a candidate (not just its collapsed `base_score`). Each field is in
 /// [0,1] (`music_tier`/`version_penalty` are the raw [0,1] signals; the rest are min-max
 /// normalized across the batch). Filled by [`super::score::filter_and_score`]; default-zero
 /// until then. Emitted as 0-100 integers in the compact candidate pack.
 #[allow(
     dead_code,
-    reason = "read by the AI candidate pack builder in src/radio/pack.rs (A2/A3)"
+    reason = "read by the DJ Gem candidate pack builder in src/radio/pack.rs (A2/A3)"
 )]
 #[derive(Debug, Clone, Default)]
 pub struct FeatureScores {
@@ -103,11 +103,11 @@ pub struct Candidate {
     pub duration_secs: Option<u32>,
     pub base_score: f32,
     pub novelty: f32,
-    /// Per-feature evidence for the AI reranker (see [`FeatureScores`]). Filled by the
+    /// Per-feature evidence for the DJ Gem reranker (see [`FeatureScores`]). Filled by the
     /// scoring pass; default-zero until then.
     #[allow(
         dead_code,
-        reason = "read by the AI candidate pack builder in src/radio/pack.rs (A2/A3)"
+        reason = "read by the DJ Gem candidate pack builder in src/radio/pack.rs (A2/A3)"
     )]
     pub features: FeatureScores,
 }

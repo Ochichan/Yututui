@@ -48,7 +48,7 @@ impl App {
             // Deliberately the *raw* config key, not `effective_gemini_api_key()`: seeding the
             // env-provided value would let a save copy it into config.json (persisting a key
             // the user chose to keep only in the environment). The cost is that an env-only
-            // key shows "(none)" here; the AI still works and README documents env-wins.
+            // key shows "(none)" here; the DJ Gem still works and README documents env-wins.
             gemini_api_key: self.config.gemini_api_key.clone().unwrap_or_default(),
             ai_enabled: self.config.effective_ai_enabled(),
             theme: self.theme.clone(),
@@ -723,7 +723,7 @@ impl App {
             d.normalize = def.effective_normalize();
             d.gemini_model = def.effective_gemini_model();
             d.gemini_api_key = String::new();
-            d.ai_enabled = def.effective_ai_enabled(); // back to on (don't strand AI off)
+            d.ai_enabled = def.effective_ai_enabled(); // back to on (don't strand DJ Gem off)
             d.theme = def.effective_theme();
             d.retro_mode = def.effective_retro_mode();
             d.language = def.effective_language();
@@ -796,7 +796,7 @@ impl App {
 
     /// Persist a free-text config field (cookies path, download dir, API key) to disk the
     /// moment its edit is committed. Other draft fields persist when the settings screen
-    /// closes. A changed key also rebuilds the AI actor so it takes effect immediately.
+    /// closes. A changed key also rebuilds the DJ Gem actor so it takes effect immediately.
     pub(in crate::app) fn settings_persist_text_field(&mut self, field: Field) -> Vec<Cmd> {
         let value = match self
             .settings
@@ -845,9 +845,9 @@ impl App {
                 let old_key = self.config.gemini_api_key.clone();
                 self.config.gemini_api_key = settings::blank_to_none(&value);
                 if self.config.gemini_api_key != old_key {
-                    // Gate the live AI rebuild on the *draft's* enable toggle: it commits to
-                    // `config.ai_enabled` only on close, so a key saved while AI is draft-disabled
-                    // must not spawn the actor (and a key saved right after re-enabling AI in the
+                    // Gate the live DJ Gem rebuild on the *draft's* enable toggle: it commits to
+                    // `config.ai_enabled` only on close, so a key saved while DJ Gem is draft-disabled
+                    // must not spawn the actor (and a key saved right after re-enabling DJ Gem in the
                     // draft should spawn it now). `close_settings` reconciles the final state.
                     let ai_on = self.settings.as_ref().is_some_and(|s| s.draft.ai_enabled);
                     cmds.push(Cmd::ReloadAi {
@@ -976,12 +976,12 @@ impl App {
                 self.current_af().unwrap_or_default(),
             )),
         ];
-        // A changed key rebuilds the AI actor live (the client is otherwise built once
+        // A changed key rebuilds the DJ Gem actor live (the client is otherwise built once
         // at spawn) — so a key entered at runtime takes effect now, no relaunch. The
         // rebuild already adopts the current model, so only hot-swap the model on the
         // running actor when the key itself didn't change.
-        // A changed key *or* a flipped AI on/off switch rebuilds the actor: `effective_ai_key`
-        // returns `None` when AI is off, so turning it off tears the actor down (and back on
+        // A changed key *or* a flipped DJ Gem on/off switch rebuilds the actor: `effective_ai_key`
+        // returns `None` when DJ Gem is off, so turning it off tears the actor down (and back on
         // respawns it) without discarding the saved key.
         if key_changed || ai_enabled_changed {
             cmds.push(Cmd::ReloadAi {

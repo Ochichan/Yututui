@@ -124,7 +124,7 @@ pub enum Msg {
         video_id: String,
         stream_url: String,
     },
-    /// Related tracks returned by the non-AI radio fallback, each tagged with the source it
+    /// Related tracks returned by the non-DJ Gem radio fallback, each tagged with the source it
     /// came from (real YTM watch-playlist vs anonymous yt-dlp search) so the local engine can
     /// weight provenance and prefer the better source on dedup.
     RadioResults {
@@ -138,12 +138,12 @@ pub enum Msg {
         seed_video_id: String,
         songs: Vec<Song>,
     },
-    /// The non-AI radio fallback failed to fetch related tracks.
+    /// The non-DJ Gem radio fallback failed to fetch related tracks.
     RadioError {
         seed_video_id: String,
         error: String,
     },
-    /// The AI reranker's chosen picks (best-first), or empty on any failure. Each pick is an
+    /// The DJ Gem reranker's chosen picks (best-first), or empty on any failure. Each pick is an
     /// opaque pack `cid`; the reducer resolves cids→tracks via the stashed `cid_map`, validates
     /// against the shortlist, and tops up from the local pick.
     RadioAiPicks {
@@ -153,12 +153,12 @@ pub enum Msg {
         conf: Option<f32>,
     },
 
-    // AI assistant: intents emitted by the AI actor, applied here by `update()`.
+    // DJ Gem assistant: intents emitted by the DJ Gem actor, applied here by `update()`.
     /// The assistant started/finished a turn (drives the thinking spinner).
     AiThinking(bool),
     /// Assistant chat text to append to the transcript.
     AiChat(String),
-    /// An AI error to surface in the transcript (also clears the spinner).
+    /// An DJ Gem error to surface in the transcript (also clears the spinner).
     AiError(String),
     /// Replace the queue with these tracks and start playing (play_music/play_playlist).
     AiPlayTracks(Vec<Song>),
@@ -240,7 +240,7 @@ pub enum Cmd {
     },
     /// Persist the given config to disk (settings screen, on save).
     SaveConfig(Box<Config>),
-    /// Persist the local playlists to disk (after an AI playlist mutation).
+    /// Persist the local playlists to disk (after a DJ Gem playlist mutation).
     SavePlaylists,
     /// Persist the active natural-language station profile to disk (after a vibe-shaped radio).
     SaveStationProfile,
@@ -249,12 +249,12 @@ pub enum Cmd {
     SummarizeFeedback {
         digest: String,
     },
-    /// Ask the AI assistant to handle a prompt, given a read-only state snapshot.
+    /// Ask the DJ Gem assistant to handle a prompt, given a read-only state snapshot.
     AskAi {
         prompt: String,
         context: Box<AiContext>,
     },
-    /// Ask the anonymous API/search actor for related tracks to keep radio going without AI.
+    /// Ask the anonymous API/search actor for related tracks to keep radio going without DJ Gem.
     RadioFallback {
         seed: String,
         seed_video_id: String,
@@ -270,15 +270,15 @@ pub enum Cmd {
         mode: RadioMode,
         config: radio::RadioConfig,
     },
-    /// Hand a local candidate shortlist to the AI actor to rerank (ids only). The result
+    /// Hand a local candidate shortlist to the DJ Gem actor to rerank (ids only). The result
     /// returns as [`Msg::RadioAiPicks`]; failure degrades to the stashed local pick.
     AiRerank {
         seed_video_id: String,
         prompt: String,
     },
-    /// Switch the running AI actor's model (settings save). No effect without a key.
+    /// Switch the running DJ Gem actor's model (settings save). No effect without a key.
     SetAiModel(GeminiModel),
-    /// (Re)build the AI actor with a new key + model (settings save, key changed). A
+    /// (Re)build the DJ Gem actor with a new key + model (settings save, key changed). A
     /// `None` key tears the assistant down; a valid key brings it up live — so a key
     /// entered at runtime takes effect immediately, with no relaunch.
     ReloadAi {
@@ -371,7 +371,7 @@ pub enum ScrollSurface {
     Queue,
 }
 
-/// Who authored a line in the AI chat transcript.
+/// Who authored a line in the DJ Gem chat transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiRole {
     User,
@@ -379,13 +379,13 @@ pub enum AiRole {
     Error,
 }
 
-/// One line in the AI chat transcript.
+/// One line in the DJ Gem chat transcript.
 pub struct AiMessage {
     pub role: AiRole,
     pub text: String,
 }
 
-/// Within the AI screen, whether the input box or the suggestions list has focus.
+/// Within the DJ Gem screen, whether the input box or the suggestions list has focus.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 pub enum AiFocus {
     #[default]
@@ -393,7 +393,7 @@ pub enum AiFocus {
     Suggestions,
 }
 
-/// A local playlist's identity, for the AI context snapshot (no track payload).
+/// A local playlist's identity, for the DJ Gem context snapshot (no track payload).
 #[derive(Debug, Clone)]
 pub struct PlaylistInfo {
     pub id: String,
@@ -401,7 +401,7 @@ pub struct PlaylistInfo {
     pub count: usize,
 }
 
-/// A read-only snapshot of app state handed to the AI actor with each prompt, so its
+/// A read-only snapshot of app state handed to the DJ Gem actor with each prompt, so its
 /// read tools (get_queue, get_user_favorites, …) can answer without touching `App`.
 #[derive(Debug, Clone)]
 pub struct AiContext {
@@ -422,16 +422,16 @@ pub struct AiContext {
     pub autoplay_radio: bool,
 }
 
-/// A radio rerank handed to the AI actor, kept until its `Msg::RadioAiPicks` returns. The
+/// A radio rerank handed to the DJ Gem actor, kept until its `Msg::RadioAiPicks` returns. The
 /// `shortlist` is the exact set the model was shown — every returned id is validated against
 /// it (so a hallucinated id is dropped) — and `local_pick` is the guaranteed fallback ordering
-/// the engine produced, used to top up any slots the AI left empty.
+/// the engine produced, used to top up any slots the DJ Gem left empty.
 pub(crate) struct PendingRerank {
     pub(crate) seed_video_id: String,
     pub(crate) mode: RadioMode,
     pub(crate) shortlist: Vec<Song>,
     pub(crate) local_pick: Vec<Song>,
-    /// Maps each pack `cid` shown to the model back to its track's video id, so the AI's chosen
+    /// Maps each pack `cid` shown to the model back to its track's video id, so the DJ Gem's chosen
     /// cids can be resolved to playable tracks before validation.
     pub(crate) cid_map: Vec<crate::radio::PackedCand>,
     /// Cache key for this rerank (hash of seed artist / mode / recent ids / candidate set), so the
@@ -439,8 +439,8 @@ pub(crate) struct PendingRerank {
     pub(crate) cache_key: u64,
 }
 
-/// One reranked pick the AI returned: the opaque pack `cid` it chose, plus optional explanation
-/// (slot role + reason codes) surfaced by the "Why AI" overlay.
+/// One reranked pick the DJ Gem returned: the opaque pack `cid` it chose, plus optional explanation
+/// (slot role + reason codes) surfaced by the "Why DJ Gem" overlay.
 #[derive(Debug, Clone)]
 pub struct AiPick {
     pub cid: String,
@@ -448,7 +448,7 @@ pub struct AiPick {
     pub reasons: Vec<String>,
 }
 
-/// The resolved, human-readable explanation of the last AI radio rerank, shown by the "Why AI"
+/// The resolved, human-readable explanation of the last DJ Gem radio rerank, shown by the "Why DJ Gem"
 /// overlay (the `w` key). Built when [`Msg::RadioAiPicks`] resolves — the model's opaque cids are
 /// mapped back to real tracks (title + artist) while [`PendingRerank`] is still in hand — so the
 /// overlay can render it long after the pending rerank has been consumed.
@@ -473,7 +473,7 @@ pub(crate) struct ExplainPick {
 }
 
 /// One ordered listening-session outcome (newest pushed to the back of
-/// [`crate::app::RadioRuntime::session_events`]). Feeds the AI reranker's *recovery context* — a
+/// [`crate::app::RadioRuntime::session_events`]). Feeds the DJ Gem reranker's *recovery context* — a
 /// skip → widen and avoid the skipped artist, a like → stay close — so the model reacts to the
 /// arc of the session, not just the aggregate per-track signals the engine already folds in.
 #[derive(Debug, Clone)]

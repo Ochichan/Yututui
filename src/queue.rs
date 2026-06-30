@@ -217,7 +217,7 @@ impl Queue {
     }
 
     /// Up to `n` upcoming tracks (those after the current one in play order) — feeds the
-    /// AI assistant's `get_queue` context snapshot.
+    /// DJ Gem assistant's `get_queue` context snapshot.
     pub fn upcoming(&self, n: usize) -> Vec<&Song> {
         self.order
             .iter()

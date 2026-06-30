@@ -1,4 +1,4 @@
-//! The AI assistant: a multi-turn Gemini function-calling agent that drives playback.
+//! The DJ Gem assistant: a multi-turn Gemini function-calling agent that drives playback.
 //!
 //! Mirrors `youtube-music-cli`'s LLM service, adapted to this app's TEA architecture: the
 //! actor can't touch `App`, so tool side-effects flow back as [`crate::app::Msg`]s that
@@ -119,7 +119,7 @@ friendly, and reply in the user's language. Prefer the user's own queue, favorit
 playlists when relevant. If a request is ambiguous, make a reasonable choice and proceed. \
 Never fabricate tool results or videoIds you haven't seen.";
 
-/// Commands sent to the AI actor.
+/// Commands sent to the DJ Gem actor.
 pub enum AiCmd {
     Ask {
         prompt: String,
@@ -166,7 +166,7 @@ impl AiHandle {
     }
 }
 
-/// Spawn the AI actor. Returns `None` if the key can't form a valid header (treated as
+/// Spawn the DJ Gem actor. Returns `None` if the key can't form a valid header (treated as
 /// "no assistant"); the caller then leaves `ai_available` false.
 pub fn spawn(api_key: &str, model: GeminiModel, msg_tx: UnboundedSender<Msg>) -> Option<AiHandle> {
     let client = GeminiClient::new(api_key).ok()?;
@@ -253,7 +253,7 @@ impl AiActor {
                         && e.is_model_fallbackable()
                         && let Some(fb) = model.fallback()
                     {
-                        tracing::warn!(from = model.label(), to = fb.label(), error = %e, "AI model fallback");
+                        tracing::warn!(from = model.label(), to = fb.label(), error = %e, "DJ Gem model fallback");
                         *model = fb;
                         continue;
                     }
@@ -480,7 +480,7 @@ impl AiActor {
     /// One-shot, off-the-hot-path feedback summary. Turns the recent session log into a small
     /// avoid/boost patch for the active station. Always emits [`Msg::StationPatch`] (empty on any
     /// failure) so the reducer's in-flight guard always clears. No [`ThinkingGuard`]: this never
-    /// runs while the user is waiting on a pick, so it must not flip the "AI is thinking" spinner.
+    /// runs while the user is waiting on a pick, so it must not flip the "DJ Gem is thinking" spinner.
     async fn summarize_feedback(&mut self, digest: String) {
         let req = build_feedback_request(&digest);
         let (down_artists, boost_artists) = self.feedback_call(&req).await.unwrap_or_default();

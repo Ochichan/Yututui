@@ -574,7 +574,7 @@ async fn run(
     let scanned = library::scan_downloads(&cfg.effective_download_dir());
     app.library_ui.downloaded = app.enrich_downloads(scanned);
     app.restore_last_played_from_library();
-    // Load local playlists (the AI playlist tools read/write these).
+    // Load local playlists (the DJ Gem playlist tools read/write these).
     app.playlists = playlists::Playlists::load();
     // Load the active natural-language station profile (explore level + avoided artists), if any.
     app.station = station::StationStore::load();
@@ -679,8 +679,8 @@ async fn run(
     // Resolver actor: pre-resolves the next track's stream URL for instant skip.
     let resolver_handle = resolver::spawn(worker_tx.clone(), cookies_file);
 
-    // AI assistant actor: spawned only when a Gemini key is configured *and* AI is enabled.
-    // `effective_ai_key()` returns None when the user has switched AI off, so the actor stays
+    // DJ Gem assistant actor: spawned only when a Gemini key is configured *and* DJ Gem is enabled.
+    // `effective_ai_key()` returns None when the user has switched DJ Gem off, so the actor stays
     // down even with a key saved. Keep `ai_available` in lockstep with whether the actor
     // actually started (a malformed key makes `spawn` return None even though one was set).
     let mut ai_handle = cfg

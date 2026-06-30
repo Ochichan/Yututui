@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, Mode, MouseTarget, ScrollSurface};
 use crate::t;
 
-/// The nav-bar label for a screen, in the active UI language. (`AI` is a proper noun, kept
+/// The nav-bar label for a screen, in the active UI language. (`DJ Gem` is a proper noun, kept
 /// as-is in both languages.)
 fn nav_label(mode: Mode) -> &'static str {
     match mode {
@@ -24,7 +24,7 @@ fn nav_label(mode: Mode) -> &'static str {
         Mode::Search => t!("Search", "검색"),
         Mode::Library => t!("Library", "라이브러리"),
         Mode::Settings => t!("Settings", "설정"),
-        Mode::Ai => t!("AI", "AI"),
+        Mode::Ai => t!("DJ Gem", "DJ Gem"),
     }
 }
 use crate::keymap::Action;
@@ -106,7 +106,7 @@ pub fn render_segments(
 }
 
 /// The screen nav bar shown at the top of every view: `ytm-tui │ Player · Search ·
-/// Library · Settings · AI`. The `ytm-tui` brand sits at the top-left, set off by a muted
+/// Library · Settings · DJ Gem`. The `ytm-tui` brand sits at the top-left, set off by a muted
 /// `│`; the tabs follow. The active screen is highlighted (selection colors), the rest are
 /// muted, and each tab is a click target that switches screens. Left-aligned, no box chrome
 /// — it reads like a tab strip, consistent with the in-line "text is the button" controls.

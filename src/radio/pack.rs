@@ -1,4 +1,4 @@
-//! The compact, position-bias-resistant candidate pack handed to the AI reranker.
+//! The compact, position-bias-resistant candidate pack handed to the DJ Gem reranker.
 //!
 //! Instead of a plain `video_id | title | artist` list, each candidate becomes one terse line
 //! of *evidence* — the per-feature scores the local engine already computed (see

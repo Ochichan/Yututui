@@ -70,7 +70,7 @@ pub enum Action {
     SettingsCancel,
     ChangeDecrease,
     ChangeIncrease,
-    // Search / AI results.
+    // Search / DJ Gem results.
     FocusInput,
     // Global (active in any non-text-entry context).
     ToggleRadio,
@@ -176,8 +176,8 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (
         Action::OpenAi,
         "open_ai",
-        "Open AI assistant",
-        "AI 어시스턴트 열기",
+        "Open DJ Gem assistant",
+        "DJ Gem 어시스턴트 열기",
     ),
     (
         Action::OpenSearch,
@@ -306,8 +306,8 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (
         Action::WhyAi,
         "why_ai",
-        "Why these AI picks",
-        "AI 선곡 이유 보기",
+        "Why these DJ Gem picks",
+        "DJ Gem 선곡 이유 보기",
     ),
     (
         Action::CopyLink,
@@ -426,12 +426,17 @@ const CONTEXT_META: &[(KeyContext, &str, &str, &str)] = &[
         "검색 결과",
     ),
     (KeyContext::Settings, "settings", "Settings", "설정"),
-    (KeyContext::AiInput, "ai_input", "AI box", "AI 입력창"),
+    (
+        KeyContext::AiInput,
+        "ai_input",
+        "DJ Gem box",
+        "DJ Gem 입력창",
+    ),
     (
         KeyContext::AiSuggestions,
         "ai_suggestions",
-        "AI results",
-        "AI 결과",
+        "DJ Gem results",
+        "DJ Gem 결과",
     ),
 ];
 
@@ -824,7 +829,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::SpeedUp, ch('>')),
         (C::Player, A::SpeedDown, ch('<')),
         (C::Player, A::OpenSettings, ch(',')),
-        (C::Player, A::OpenAi, ch('a')),
+        (C::Player, A::OpenAi, ch('g')),
         (C::Player, A::OpenSearch, ch('s')),
         (C::Player, A::CopyLink, ch('y')),
         (C::Player, A::PlayVideo, ch('v')),
@@ -853,10 +858,10 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // Library list commands.
         (C::Library, A::Confirm, key(KeyCode::Enter)),
         (C::Library, A::Enqueue, ch('\\')),
-        (C::Library, A::PlayAll, ch('P')),
+        (C::Library, A::PlayAll, ch('a')),
         (C::Library, A::Favorite, ch('f')),
         (C::Library, A::Download, ch('d')),
-        (C::Library, A::OpenAi, ch('a')),
+        (C::Library, A::OpenAi, ch('g')),
         (C::Library, A::LibraryRemove, key(KeyCode::Delete)),
         (C::Library, A::LibraryFilter, ch('/')),
         (C::Library, A::Back, ch('q')),
@@ -880,7 +885,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('d')),
         (C::SearchResults, A::Back, ch('q')),
-        // AI box (text entry; Enter→send is handled in the input handler).
+        // DJ Gem box (text entry; Enter→send is handled in the input handler).
         (C::AiInput, A::SelectAll, ctrl('a')),
         // Settings screen commands (nav comes from Common).
         (C::Settings, A::ChangeDecrease, key(KeyCode::Left)),
@@ -1395,7 +1400,7 @@ mod tests {
     fn enter_backslash_and_play_all_resolve_in_library_and_search_results() {
         let _guard = crate::i18n::lock_for_test();
         let km = KeyMap::default();
-        // Library: Enter = play selected, `\` = add to queue, `P` = play the whole tab.
+        // Library: Enter = play selected, `\` = add to queue, `a` = play the whole tab.
         assert_eq!(
             km.action(KeyContext::Library, parse_chord("enter").unwrap()),
             Some(Action::Confirm)
@@ -1405,7 +1410,7 @@ mod tests {
             Some(Action::Enqueue)
         );
         assert_eq!(
-            km.action(KeyContext::Library, parse_chord("P").unwrap()),
+            km.action(KeyContext::Library, parse_chord("a").unwrap()),
             Some(Action::PlayAll)
         );
         // Search results: `\` = add to queue (Enter stays fixed in the handler, not the keymap).

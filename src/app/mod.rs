@@ -61,21 +61,21 @@ mod settings_reducer;
 
 /// Queue length at or below which the autoplay/radio hook tops up the queue.
 const AUTOPLAY_THRESHOLD: usize = 3;
-/// Number of related tracks to request from the non-AI radio fallback.
+/// Number of related tracks to request from the non-DJ Gem radio fallback.
 pub(crate) const RADIO_FALLBACK_COUNT: usize = 8;
 /// Size of the raw candidate pool fetched for the local radio engine to rank. Larger than
 /// the final pick count so scoring/diversity/cooldown have real choice.
 pub(crate) const RADIO_POOL_COUNT: usize = 40;
 /// How many recent history artists feed the radio cooldown window.
 const RADIO_RECENT_ARTISTS: usize = 12;
-/// How many ordered session outcomes (plays/skips/likes/dislikes) to retain for the AI
+/// How many ordered session outcomes (plays/skips/likes/dislikes) to retain for the DJ Gem
 /// reranker's recovery context. Small: the model only needs the recent arc.
 const SESSION_EVENTS_CAP: usize = 20;
 /// Minimum gap between autoplay top-up requests (avoids a request storm).
 const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
 /// Consecutive empty radio extends before autoplay disables itself (circuit breaker).
 const AUTOPLAY_MAX_FAILURES: u8 = 3;
-/// How long a resolved AI rerank ordering stays replayable in [`RadioRuntime::ai_cache`]. Short:
+/// How long a resolved DJ Gem rerank ordering stays replayable in [`RadioRuntime::ai_cache`]. Short:
 /// it only needs to catch rapid identical refills (e.g. skipping through a few tracks) before the
 /// candidate pool drifts and a fresh call is warranted anyway.
 const AI_CACHE_TTL: Duration = Duration::from_secs(600);
@@ -87,7 +87,7 @@ const FEEDBACK_COOLDOWN: Duration = Duration::from_secs(120);
 /// How long a transient `status` notification covers the song title before it auto-clears
 /// (on the Player screen the status line replaces the title, so it must not linger).
 const STATUS_TTL: Duration = Duration::from_secs(3);
-/// Cap on AI chat transcript lines kept in memory (bounded memory).
+/// Cap on DJ Gem chat transcript lines kept in memory (bounded memory).
 const AI_HISTORY_MAX: usize = 999;
 
 /// Rows the cursor moves per mouse-wheel notch in the Library / Search lists — enough to
@@ -150,8 +150,8 @@ pub struct App {
             StatefulProtocol,
         )>,
     >,
-    /// Whether the "Why AI" overlay is showing. Opened by `Action::WhyAi` (`w`) when the last
-    /// autoplay-radio refill went through the AI reranker; lists why each track was chosen (slot
+    /// Whether the "Why DJ Gem" overlay is showing. Opened by `Action::WhyAi` (`w`) when the last
+    /// autoplay-radio refill went through the DJ Gem reranker; lists why each track was chosen (slot
     /// role + reason codes + confidence). Esc / `w` / Back dismiss it, like the About card.
     pub why_ai_visible: bool,
 
@@ -188,18 +188,18 @@ pub struct App {
     /// The settings screen state, present only while `Mode::Settings` is active.
     pub settings: Option<Box<SettingsState>>,
 
-    // AI assistant ------------------------------------------------------------
-    /// AI-assistant state: availability, model, chat transcript, prompt, suggestions.
+    // DJ Gem assistant ------------------------------------------------------------
+    /// DJ Gem assistant state: availability, model, chat transcript, prompt, suggestions.
     pub ai: AiState,
 
     // Radio runtime -----------------------------------------------------------
-    /// Radio autoplay runtime: cooldown clock, in-flight pool flag, a handed-off AI rerank,
+    /// Radio autoplay runtime: cooldown clock, in-flight pool flag, a handed-off DJ Gem rerank,
     /// and the empty-extend circuit-breaker counter.
     pub radio: RadioRuntime,
     /// Consecutive mpv playback errors with no track playing in between, for the
     /// auto-skip circuit breaker (see [`MAX_CONSECUTIVE_PLAY_ERRORS`]).
     consecutive_play_errors: u8,
-    /// The user's local playlists (the AI playlist tools read/write these).
+    /// The user's local playlists (the DJ Gem playlist tools read/write these).
     pub playlists: Playlists,
     /// The active natural-language station profile (explore level + avoided artists), distilled
     /// from a `start_radio` vibe and persisted. Read live by [`App::build_station_state`].
@@ -267,7 +267,7 @@ pub struct App {
     /// forcing the terminal compositor to repaint every logical tick.
     anim_draw_credit: u16,
     /// Last draw cadence used to interpret [`Self::anim_draw_credit`]. Reset when the active effect
-    /// mix moves between cheap element effects, canvas effects, and the AI mascot.
+    /// mix moves between cheap element effects, canvas effects, and the DJ Gem mascot.
     anim_last_draw_fps: u16,
 
     /// Whether the terminal currently holds input focus (DECSET ?1004, fed by [`Msg::Focus`]).
@@ -756,12 +756,16 @@ impl App {
                     && self.queue.contains_video_id(&seed_video_id)
                 {
                     if let Some(conf) = conf {
-                        tracing::debug!(conf, picks = picks.len(), "radio AI rerank confidence");
+                        tracing::debug!(
+                            conf,
+                            picks = picks.len(),
+                            "radio DJ Gem rerank confidence"
+                        );
                     }
                     // Resolve the model's opaque cids back to real tracks once, keeping its order. A
                     // cid that isn't in the pack (a hallucinated id) is dropped here; `merge_ai_picks`
                     // then re-validates against the shortlist and tops up from the local pick. The
-                    // same resolution feeds the "Why AI" overlay (title + role + reasons), which must
+                    // same resolution feeds the "Why DJ Gem" overlay (title + role + reasons), which must
                     // outlive the `pending_rerank` we're about to drop.
                     let resolved: Vec<(String, ExplainPick)> = picks
                         .iter()
@@ -828,7 +832,7 @@ impl App {
                 }
             }
 
-            // --- AI assistant intents ---------------------------------------
+            // --- DJ Gem assistant intents ---------------------------------------
             Msg::AiThinking(on) => {
                 self.ai.thinking = on;
                 self.dirty = true;

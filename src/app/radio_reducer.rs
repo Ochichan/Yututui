@@ -3,9 +3,9 @@
 use super::*;
 
 impl App {
-    /// If autoplay/radio is on and the queue is running low, top it up. Both the AI and non-AI
-    /// paths fetch the *same* local candidate pool first; the AI reranker (when a key is
-    /// configured) then reorders it in [`Msg::RadioResults`]. The AI never invents tracks.
+    /// If autoplay/radio is on and the queue is running low, top it up. Both the DJ Gem and non-DJ Gem
+    /// paths fetch the *same* local candidate pool first; the DJ Gem reranker (when a key is
+    /// configured) then reorders it in [`Msg::RadioResults`]. The DJ Gem never invents tracks.
     pub(in crate::app) fn maybe_autoplay_extend(&mut self) -> Vec<Cmd> {
         if !self.autoplay_radio {
             return Vec::new();
@@ -13,7 +13,7 @@ impl App {
         if self.queue.remaining() > AUTOPLAY_THRESHOLD {
             return Vec::new();
         }
-        // One refill in flight at a time: the pool fetch (`radio.pending`) or, when the AI
+        // One refill in flight at a time: the pool fetch (`radio.pending`) or, when the DJ Gem
         // reranks the fetched pool, that rerank call (`ai_thinking`).
         if self.radio.pending || (self.ai.available && self.ai.thinking) {
             return Vec::new();
@@ -47,7 +47,7 @@ impl App {
         }]
     }
 
-    /// Stage 2 of the AI radio path: rank the fetched pool locally (the guaranteed `local_pick`
+    /// Stage 2 of the DJ Gem radio path: rank the fetched pool locally (the guaranteed `local_pick`
     /// fallback) and hand a diverse shortlist to the assistant to rerank by id. Stashes both in
     /// `pending_rerank` for [`Msg::RadioAiPicks`] to validate against, and emits the rerank
     /// command. If the pool yields no rerankable shortlist, it enqueues the local pick directly.
@@ -91,16 +91,16 @@ impl App {
             // trips the circuit breaker via `extend_queue_from_radio`).
             return self.extend_sanitized_radio(seed_video_id, local_pick, &[]);
         }
-        // Smart gate: skip the AI call when the local pick is already confident and the listener
-        // isn't skipping — saves the spend + latency. `smart_gate=false` restores always-on AI.
+        // Smart gate: skip the DJ Gem call when the local pick is already confident and the listener
+        // isn't skipping — saves the spend + latency. `smart_gate=false` restores always-on DJ Gem.
         let skip_streak = self.radio_skip_streak();
         if !radio::should_call_ai(&shortlist, skip_streak, &self.config.radio) {
-            tracing::debug!(skip_streak, "radio AI gated → confident local pick");
+            tracing::debug!(skip_streak, "radio DJ Gem gated → confident local pick");
             return self.extend_sanitized_radio(seed_video_id, local_pick, &[]);
         }
         // Result cache: a rapid identical refill (same seed artist, mode, recent ids, and candidate
         // set) replays the last resolved ordering instead of spending another call. Keyed on the
-        // query, valued by the AI's chosen video ids (re-validated through `merge_ai_picks`).
+        // query, valued by the DJ Gem's chosen video ids (re-validated through `merge_ai_picks`).
         let cand_ids: Vec<String> = shortlist.iter().map(|c| c.video_id().to_owned()).collect();
         let recovery_line = self.radio_recovery_line();
         let station_query = self
@@ -125,7 +125,7 @@ impl App {
             prompt_recipe_hash: recipe_hash,
         });
         if let Some(cached_ids) = self.ai_cache_lookup(cache_key) {
-            tracing::debug!("radio AI cache hit → replaying cached order");
+            tracing::debug!("radio DJ Gem cache hit → replaying cached order");
             let shortlist_songs: Vec<Song> = shortlist.iter().map(|c| c.song.clone()).collect();
             let merged = radio::merge_ai_picks(
                 &cached_ids,
@@ -148,8 +148,8 @@ impl App {
         });
         self.ai.thinking = true;
         self.status.text = t!(
-            "Autoplay radio: AI reranking",
-            "자동재생 라디오: AI가 순위를 매기는 중"
+            "Autoplay radio: DJ Gem reranking",
+            "자동재생 라디오: DJ Gem이 순위를 매기는 중"
         )
         .to_owned();
         self.dirty = true;
@@ -159,7 +159,7 @@ impl App {
         }]
     }
 
-    /// A cached AI rerank ordering for `key`, if one is stored and still within [`AI_CACHE_TTL`].
+    /// A cached DJ Gem rerank ordering for `key`, if one is stored and still within [`AI_CACHE_TTL`].
     fn ai_cache_lookup(&self, key: u64) -> Option<Vec<String>> {
         self.radio
             .ai_cache
@@ -168,7 +168,7 @@ impl App {
             .map(|(ids, _)| ids.clone())
     }
 
-    /// Store a resolved AI rerank ordering, pruning expired entries first so the map stays tiny.
+    /// Store a resolved DJ Gem rerank ordering, pruning expired entries first so the map stays tiny.
     pub(in crate::app) fn ai_cache_store(&mut self, key: u64, ids: Vec<String>) {
         self.radio
             .ai_cache
@@ -298,7 +298,7 @@ impl App {
     /// direction (a trailing skip streak), hand the recent session log to the assistant to distill
     /// into an artist avoid/boost patch ([`Cmd::SummarizeFeedback`] → [`Msg::StationPatch`]).
     /// Returns `None` (a no-op) unless every gate passes: there's an active station to refine, the
-    /// AI is configured, no summary is already in flight, the skip streak has reached
+    /// DJ Gem is configured, no summary is already in flight, the skip streak has reached
     /// [`FEEDBACK_STREAK`], the cooldown has elapsed, and the digest is non-empty. Sets the
     /// in-flight + cooldown guards so it fires at most once per streak/window.
     pub(in crate::app) fn maybe_summarize_feedback(&mut self) -> Option<Cmd> {

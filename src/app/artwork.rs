@@ -37,7 +37,7 @@ impl App {
 
     /// Whether the per-frame animation clock should run right now. True when we're on the
     /// player view (master switch + at least one effect enabled, a track loaded, not paused),
-    /// **or** when the AI start-screen mascot wants to groove (see [`Self::ai_mascot_active`]).
+    /// **or** when the DJ Gem start-screen mascot wants to groove (see [`Self::ai_mascot_active`]).
     /// The main loop arms its ~30 fps tick on this; when it is false the tick never fires, so the
     /// app behaves byte-for-byte like today (the lightweight path).
     ///
@@ -62,7 +62,7 @@ impl App {
     }
 
     /// Actual redraw cadence for the active animation mix. Cheap element effects keep the configured
-    /// FPS; full-cell canvas effects cap repaint work; the AI mascot only needs to redraw when its
+    /// FPS; full-cell canvas effects cap repaint work; the DJ Gem mascot only needs to redraw when its
     /// pose can change.
     pub fn animation_draw_fps(&self) -> u16 {
         let fps = self.animation_tick_fps();
@@ -116,8 +116,8 @@ impl App {
                 && (a.rain || a.donut || a.visualizer || a.starfield))
     }
 
-    /// Whether the "Gemini-tan" mascot on the AI start screen should be dancing right now. True
-    /// only on the AI view *before any conversation has started*, while a track is actively
+    /// Whether the "Gemini-tan" mascot on the DJ Gem start screen should be dancing right now. True
+    /// only on the DJ Gem view *before any conversation has started*, while a track is actively
     /// playing and the global animation master switch is on. Unlike the player path this gates on
     /// `master` directly (not `active()`), so the mascot grooves even when every per-effect player
     /// toggle is off — the dance is its own thing. When this is false the mascot renders a clean

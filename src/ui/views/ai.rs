@@ -1,4 +1,4 @@
-//! The AI assistant view: a chat transcript over an optional pickable suggestions list
+//! The DJ Gem assistant view: a chat transcript over an optional pickable suggestions list
 //! and a prompt input box. Mirrors the search view's focus-accent convention.
 //!
 //! When no API key is configured the transcript area shows an onboarding block instead;
@@ -238,8 +238,8 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
         let lines = vec![
             Line::from(
                 t!(
-                    "AI assistant — control playback in plain language.",
-                    "AI 어시스턴트 — 평범한 말로 재생을 제어하세요."
+                    "DJ Gem assistant — control playback in plain language.",
+                    "DJ Gem 어시스턴트 — 평범한 말로 재생을 제어하세요."
                 )
                 .bold(),
             ),
@@ -250,8 +250,8 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
             ))
             .style(app.theme.style(R::Warning)),
             Line::from(t!(
-                "Add one in Settings (press , then the AI tab),",
-                "설정에서 추가하거나 ( , 를 누른 뒤 AI 탭),"
+                "Add one in Settings (press , then the DJ Gem tab),",
+                "설정에서 추가하거나 ( , 를 누른 뒤 DJ Gem 탭),"
             ))
             .style(app.theme.style(R::TextPrimary)),
             Line::from(t!(
@@ -291,7 +291,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
         // (한글 글자 = 2 cells) so the message text lines up across role lines.
         let (prefix, role) = match m.role {
             AiRole::User => (t!("you ", "나    "), R::AiUser),
-            AiRole::Ai => (t!("ai  ", "ai    "), R::AiAssistant),
+            AiRole::Ai => (t!("gem ", "Gem   "), R::AiAssistant),
             AiRole::Error => (t!("err ", "오류  "), R::AiError),
         };
         // First visual line carries the role prefix; wrapping handles the rest.
@@ -299,7 +299,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     }
     if app.ai.thinking {
         lines.push(
-            Line::from(t!("ai  …thinking", "ai    …생각 중").to_owned())
+            Line::from(t!("gem …thinking", "Gem   …생각 중").to_owned())
                 .style(app.theme.style(R::AiThinking)),
         );
     }

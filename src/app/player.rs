@@ -565,7 +565,7 @@ impl App {
     }
 
     /// Push one ordered session outcome (newest at the back), bounded to the last
-    /// [`SESSION_EVENTS_CAP`]. Feeds the AI reranker's recovery context.
+    /// [`SESSION_EVENTS_CAP`]. Feeds the DJ Gem reranker's recovery context.
     pub(in crate::app) fn record_session_event(
         &mut self,
         artist_key: &str,

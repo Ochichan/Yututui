@@ -79,7 +79,7 @@ impl RadioMode {
 
     /// Fully-derived runtime policy for this mode. The persisted [`RadioConfig`] keeps the
     /// user-tunable defaults/backward compatibility; this profile is the single contract the
-    /// radio pipeline reads so a mode changes scoring, filtering, diversity, history, and AI
+    /// radio pipeline reads so a mode changes scoring, filtering, diversity, history, and DJ Gem
     /// behavior together.
     pub fn profile(self, base: &RadioConfig) -> ModeProfile {
         match self {
@@ -345,24 +345,24 @@ impl Default for CoocConfig {
     }
 }
 
-/// AI reranker knobs. When a Gemini key is configured and this is enabled, the engine hands
+/// DJ Gem reranker knobs. When a Gemini key is configured and this is enabled, the engine hands
 /// the model a diverse local shortlist and asks it to pick ids only — it can never invent a
 /// track, and any failure degrades to the pure-local pick with no user-visible breakage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiRerankConfig {
-    /// Run the AI reranker when a key is present. Off → always the pure local engine.
+    /// Run the DJ Gem reranker when a key is present. Off → always the pure local engine.
     pub enabled: bool,
     /// Diverse candidates handed to the model (a tight list reranks sharper than a long one).
     pub shortlist: usize,
     /// Tracks enqueued per refill.
     pub picks: usize,
-    /// Only spend an AI call when it's likely to help: skip the model (use the confident local
+    /// Only spend a DJ Gem call when it's likely to help: skip the model (use the confident local
     /// pick) when the top two local candidates are clearly separated and the listener isn't
     /// skipping. Off → always call the model when `enabled` (the original behavior).
     pub smart_gate: bool,
     /// How close the top two local `base_score`s must be to count as "ambiguous" (and thus worth
-    /// an AI call). Larger = gate more aggressively (call the model more often).
+    /// a DJ Gem call). Larger = gate more aggressively (call the model more often).
     pub ambiguity_gap: f32,
 }
 

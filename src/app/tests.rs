@@ -126,8 +126,8 @@ fn navigating_away_clears_a_pending_select_all_highlight() {
         "highlight must not survive leaving the screen"
     );
 
-    // AI box: same story — select all, leave, flag cleared so it can't reappear highlighted.
-    app.update(Msg::Key(key(KeyCode::Char('a')))); // enter AI
+    // DJ Gem box: same story — select all, leave, flag cleared so it can't reappear highlighted.
+    app.update(Msg::Key(key(KeyCode::Char('g')))); // enter DJ Gem
     for c in "hi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
@@ -140,7 +140,7 @@ fn navigating_away_clears_a_pending_select_all_highlight() {
 #[test]
 fn ctrl_a_selects_then_backspace_clears_ai_input() {
     let mut app = App::new(100);
-    app.update(Msg::Key(key(KeyCode::Char('a')))); // open AI assistant (input focused)
+    app.update(Msg::Key(key(KeyCode::Char('g')))); // open DJ Gem assistant (input focused)
     assert_eq!(app.mode, Mode::Ai);
     for c in "hi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
@@ -690,7 +690,7 @@ fn backslash_on_library_drag_selection_enqueues_all_selected_tracks() {
 }
 
 #[test]
-fn shift_p_on_library_plays_the_whole_tab_as_a_fresh_queue() {
+fn a_on_library_plays_the_whole_tab_as_a_fresh_queue() {
     // A 2-track queue is already playing id0/id1.
     let mut app = app_playing(2, 0);
     app.library.favorites = vec![
@@ -704,7 +704,7 @@ fn shift_p_on_library_plays_the_whole_tab_as_a_fresh_queue() {
     let rows = app.library_songs().len();
     assert_eq!(rows, 3);
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('P'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('a'))));
     // The whole tab replaces the queue: the old id0/id1 are gone, playback starts at f1.
     assert_eq!(app.mode, Mode::Player);
     assert!(load_url(&cmds).is_some());
@@ -1132,7 +1132,7 @@ fn overlays_do_not_park_animations_but_focus_still_does() {
     app.why_ai_visible = true;
     assert!(
         app.animation_active(),
-        "Why-AI overlay should not pause the background animation"
+        "Why-DJ Gem overlay should not pause the background animation"
     );
 
     app.update(Msg::Focus(false));
@@ -1316,7 +1316,7 @@ fn radio_mode_cycles_on_the_ai_tab_and_persists() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
     for _ in 0..4 {
-        app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
     // Fields: AiEnabled(0), Model(1), ApiKey(2), AutoplayRadio(3), RadioMode(4).
@@ -1743,7 +1743,7 @@ fn settings_ai_tab_switches_model_live_and_persists() {
     let start = app.ai.model;
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General)
     for _ in 0..4 {
-        app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
     app.update(Msg::Key(key(KeyCode::Down))); // row 0 = AiEnabled → row 1 = model
     app.update(Msg::Key(key(KeyCode::Right))); // cycle model (draft only)
@@ -1768,7 +1768,7 @@ fn settings_ai_tab_edits_masked_api_key() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     for _ in 0..4 {
-        app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
     app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
     app.update(Msg::Key(key(KeyCode::Down))); // Model -> API key row
@@ -1788,7 +1788,7 @@ fn settings_ai_tab_edits_masked_api_key() {
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Cmd::ReloadAi { key: Some(k), .. } if k == "AIzaKey")),
-        "committing a changed key must reload the AI actor"
+        "committing a changed key must reload the DJ Gem actor"
     );
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::SetAiModel(_))));
     // The committed value is now in config, so a later close doesn't double-reload.
@@ -1810,7 +1810,7 @@ fn api_key_persists_when_leaving_settings_via_close() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     for _ in 0..4 {
-        app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
     app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
     app.update(Msg::Key(key(KeyCode::Down))); // Model -> API key row
@@ -1837,7 +1837,7 @@ fn opening_then_leaving_key_editor_empty_keeps_existing_key() {
     app.config.gemini_api_key = Some("KEEPME".to_owned());
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft seeds from config)
     for _ in 0..4 {
-        app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
     app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
     app.update(Msg::Key(key(KeyCode::Down))); // → API key row
@@ -1856,7 +1856,7 @@ fn editing_existing_api_key_starts_fresh_not_appended() {
     app.config.gemini_api_key = Some("OLDKEY".to_owned());
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft seeds from config)
     for _ in 0..4 {
-        app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
     app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
     app.update(Msg::Key(key(KeyCode::Down))); // model -> API key row
@@ -1888,7 +1888,7 @@ fn clicking_away_from_secret_editor_keeps_the_saved_key() {
     app.config.gemini_api_key = Some("KEEPME".to_owned());
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft seeds from config)
     for _ in 0..4 {
-        app.update(Msg::Key(key(KeyCode::Tab))); // → AI tab (index 4)
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
     app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
     app.update(Msg::Key(key(KeyCode::Down))); // → API key row
@@ -1914,8 +1914,8 @@ fn clicking_away_from_secret_editor_keeps_the_saved_key() {
 
 #[test]
 fn reset_all_re_enables_ai() {
-    // Reset All must restore *every* field to its default, including the AI on/off switch —
-    // otherwise a user who disabled AI then reset would be stranded with AI off.
+    // Reset All must restore *every* field to its default, including the DJ Gem on/off switch —
+    // otherwise a user who disabled DJ Gem then reset would be stranded with DJ Gem off.
     let mut app = app_playing(1, 0);
     app.config.ai_enabled = Some(false);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft.ai_enabled seeds false)
@@ -1923,11 +1923,11 @@ fn reset_all_re_enables_ai() {
     app.settings_reset_all();
     assert!(
         app.settings.as_ref().unwrap().draft.ai_enabled,
-        "reset returns AI to its default (enabled)"
+        "reset returns DJ Gem to its default (enabled)"
     );
 }
 
-// --- A: AI assistant ----------------------------------------------------
+// --- G: DJ Gem assistant ----------------------------------------------------
 
 /// The prompt of the `AskAi` command among `cmds`, if any.
 fn ask_ai(cmds: &[Cmd]) -> Option<&str> {
@@ -1965,22 +1965,22 @@ fn ai_rerank(cmds: &[Cmd]) -> Option<(&str, &str)> {
 }
 
 #[test]
-fn a_enters_ai_from_player_and_library() {
+fn g_enters_ai_from_player_and_library() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char('a'))));
+    app.update(Msg::Key(key(KeyCode::Char('g'))));
     assert_eq!(app.mode, Mode::Ai);
     assert_eq!(app.ai.focus, AiFocus::Input);
     // And from the library view.
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('l'))));
-    app.update(Msg::Key(key(KeyCode::Char('a'))));
+    app.update(Msg::Key(key(KeyCode::Char('g'))));
     assert_eq!(app.mode, Mode::Ai);
 }
 
 #[test]
 fn ai_submit_without_key_shows_onboarding_error() {
     let mut app = app_playing(1, 0); // ai_available defaults to false
-    app.update(Msg::Key(key(KeyCode::Char('a'))));
+    app.update(Msg::Key(key(KeyCode::Char('g'))));
     for c in "play jazz".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
@@ -2001,7 +2001,7 @@ fn ai_submit_without_key_shows_onboarding_error() {
 fn ai_submit_with_key_emits_ask_and_sets_thinking() {
     let mut app = app_playing(1, 0);
     app.ai.available = true;
-    app.update(Msg::Key(key(KeyCode::Char('a'))));
+    app.update(Msg::Key(key(KeyCode::Char('g'))));
     for c in "play lofi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
@@ -2073,8 +2073,8 @@ fn autoplay_extends_when_queue_runs_low() {
     let mut app = app_playing(2, 0); // remaining = 1 (<= threshold)
     app.ai.available = true;
     app.autoplay_radio = true;
-    // A manual next advances and should fetch the candidate pool first (both AI and non-AI
-    // paths share one pool; the AI reranks it once it returns).
+    // A manual next advances and should fetch the candidate pool first (both DJ Gem and non-DJ Gem
+    // paths share one pool; the DJ Gem reranks it once it returns).
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
     assert!(
         radio_fallback(&cmds).is_some(),
@@ -2082,7 +2082,7 @@ fn autoplay_extends_when_queue_runs_low() {
     );
     assert!(
         ask_ai(&cmds).is_none(),
-        "no free-form AI radio prompt anymore"
+        "no free-form DJ Gem radio prompt anymore"
     );
     assert!(app.radio.pending);
     assert!(
@@ -2106,7 +2106,7 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
     app.ai.available = true;
     app.autoplay_radio = true;
 
-    // The fetched pool flows through the local engine; a diverse shortlist goes to the AI.
+    // The fetched pool flows through the local engine; a diverse shortlist goes to the DJ Gem.
     let cmds = app.update(Msg::RadioResults {
         seed_video_id: "id0".to_owned(),
         candidates: vec![
@@ -2125,7 +2125,7 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
         ],
     });
 
-    let (seed_id, prompt) = ai_rerank(&cmds).expect("an AI rerank command");
+    let (seed_id, prompt) = ai_rerank(&cmds).expect("a DJ Gem rerank command");
     assert_eq!(seed_id, "id0");
     // Compact protocol header + candidate pack.
     assert!(prompt.contains("TASK|radio_next"));
@@ -2177,7 +2177,7 @@ fn smart_gate_skips_the_ai_call_and_enqueues_the_local_pick() {
 
     assert!(
         ai_rerank(&cmds).is_none(),
-        "gated: no AI rerank command spent"
+        "gated: no DJ Gem rerank command spent"
     );
     assert!(
         !app.ai.thinking,
@@ -2212,7 +2212,7 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
         ),
     ];
 
-    // First refill misses the cache → an AI call goes out, the rerank is stashed, and (on the AI
+    // First refill misses the cache → a DJ Gem call goes out, the rerank is stashed, and (on the DJ Gem
     // path) the queue is left untouched, so the next refill recomputes the *same* cache key.
     let cmds = app.update(Msg::RadioResults {
         seed_video_id: "id0".to_owned(),
@@ -2236,7 +2236,10 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
         seed_video_id: "id0".to_owned(),
         candidates,
     });
-    assert!(ai_rerank(&cmds).is_none(), "cache hit: no second AI call");
+    assert!(
+        ai_rerank(&cmds).is_none(),
+        "cache hit: no second DJ Gem call"
+    );
     assert!(
         !app.ai.thinking,
         "cache hit never marks the assistant as thinking"
@@ -2416,7 +2419,7 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
         cache_key: 0,
     });
 
-    // AI picks one valid cid + one hallucinated cid (dropped); the gap tops up from local.
+    // DJ Gem picks one valid cid + one hallucinated cid (dropped); the gap tops up from local.
     app.update(Msg::RadioAiPicks {
         seed_video_id: "id0".to_owned(),
         picks: vec![
@@ -2436,7 +2439,10 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
 
     assert!(!app.ai.thinking, "rerank finished");
     assert!(app.radio.pending_rerank.is_none(), "pending consumed");
-    assert!(app.queue.contains_video_id("s1"), "valid AI id enqueued");
+    assert!(
+        app.queue.contains_video_id("s1"),
+        "valid DJ Gem id enqueued"
+    );
     assert!(
         app.queue.contains_video_id("s2"),
         "topped up from local pick"
@@ -2544,7 +2550,7 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
     // `w` opens the overlay; `w` again dismisses it.
     assert!(!app.why_ai_visible);
     app.update(Msg::Key(key(KeyCode::Char('w'))));
-    assert!(app.why_ai_visible, "w opens the Why-AI overlay");
+    assert!(app.why_ai_visible, "w opens the Why-DJ Gem overlay");
     app.update(Msg::Key(key(KeyCode::Char('w'))));
     assert!(!app.why_ai_visible, "w again dismisses it");
 }
@@ -2559,7 +2565,7 @@ fn why_ai_without_a_rerank_shows_a_note_not_an_overlay() {
     app.update(Msg::Key(key(KeyCode::Char('w'))));
     assert!(
         !app.why_ai_visible,
-        "no overlay opens without a prior AI rerank"
+        "no overlay opens without a prior DJ Gem rerank"
     );
     assert!(
         !app.status.text.is_empty(),
@@ -3030,7 +3036,7 @@ fn playing_the_whole_tab_under_a_filter_queues_only_the_filtered_subset() {
     app.update(Msg::Key(key(KeyCode::Enter))); // commit; two matches
     assert_eq!(app.library_len(), 2);
 
-    app.update(Msg::Key(key(KeyCode::Char('P')))); // play the whole filtered tab
+    app.update(Msg::Key(key(KeyCode::Char('a')))); // play the whole filtered tab
     assert_eq!(app.mode, Mode::Player);
     let ids: Vec<&str> = app.queue.video_ids().collect();
     assert_eq!(ids, vec!["a", "b"]); // only the matched tracks were queued
@@ -4373,7 +4379,7 @@ fn ai_suggestions_scrollbar_renders_inside_borderless_list() {
         .iter()
         .find(|b| b.target == MouseTarget::Scrollbar(ScrollSurface::AiSuggestions))
         .map(|b| b.rect)
-        .expect("rendered AI suggestions scrollbar rect");
+        .expect("rendered DJ Gem suggestions scrollbar rect");
     let buf = terminal.backend().buffer();
 
     assert!(bar.x < 80, "scrollbar should not be registered off-screen");

@@ -179,7 +179,7 @@ impl YtMusicApi {
 }
 
 /// Anonymous search via `yt-dlp "ytsearchN:<query>" --flat-playlist --dump-single-json`.
-/// Shared with the AI assistant actor, which resolves the model's tool queries the same
+/// Shared with the DJ Gem assistant actor, which resolves the model's tool queries the same
 /// way (public YouTube, no auth) — hence `pub(crate)` and a caller-chosen `limit`.
 pub(crate) async fn ytdlp_search(query: &str, limit: usize) -> Result<Vec<Song>> {
     ytdlp_flat_search(SearchSource::Youtube, "ytsearch", query, limit).await

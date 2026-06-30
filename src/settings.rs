@@ -62,7 +62,7 @@ impl SettingsTab {
             SettingsTab::Playback => t!("Playback", "재생"),
             SettingsTab::Keys => t!("Hotkeys", "핫키"),
             SettingsTab::Graphics => t!("Graphics", "그래픽"),
-            SettingsTab::Ai => t!("AI", "AI"),
+            SettingsTab::Ai => t!("DJ Gem", "DJ Gem"),
         }
     }
 
@@ -208,9 +208,9 @@ pub enum Field {
     EqPreset,
     Band(usize),
     Normalize,
-    // AI
-    /// Master on/off for the AI assistant. Turning it off keeps the saved key but tears the
-    /// assistant down, so AI can be disabled without discarding the API key.
+    // DJ Gem
+    /// Master on/off for the DJ Gem assistant. Turning it off keeps the saved key but tears the
+    /// assistant down, so DJ Gem can be disabled without discarding the API key.
     AiEnabled,
     GeminiModel,
     ApiKey,
@@ -436,7 +436,7 @@ impl Field {
             Field::EqPreset => t!("Preset", "프리셋").to_owned(),
             Field::Band(i) => format!("{:>5}", freq_label(i)),
             Field::Normalize => t!("Normalize (loudness)", "음량 평준화").to_owned(),
-            Field::AiEnabled => t!("Enable AI", "AI 사용").to_owned(),
+            Field::AiEnabled => t!("Enable DJ Gem", "DJ Gem 사용").to_owned(),
             Field::GeminiModel => t!("Model", "모델").to_owned(),
             Field::ApiKey => t!("API key", "API 키").to_owned(),
             Field::RetroMode => t!("Retro mode", "레트로 모드").to_owned(),
@@ -504,7 +504,7 @@ pub struct SettingsDraft {
     pub gemini_model: GeminiModel,
     /// The Gemini key as stored in config (env `GEMINI_API_KEY` still overrides at launch).
     pub gemini_api_key: String,
-    /// Whether the AI assistant is enabled. Lets the user keep the key saved but turn AI off.
+    /// Whether the DJ Gem assistant is enabled. Lets the user keep the key saved but turn DJ Gem off.
     pub ai_enabled: bool,
     /// Color theme preset plus role overrides.
     pub theme: ThemeConfig,

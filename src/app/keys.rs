@@ -110,7 +110,7 @@ impl App {
             return Vec::new();
         }
 
-        // The "Why AI" overlay behaves like the About card: while it's up, swallow input; its own
+        // The "Why DJ Gem" overlay behaves like the About card: while it's up, swallow input; its own
         // toggle (`w`) / Esc / Back dismiss it, and Quit still works.
         if self.why_ai_visible {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
@@ -147,15 +147,15 @@ impl App {
                     return Vec::new();
                 }
                 Action::WhyAi => {
-                    // Only worth an overlay if a prior AI rerank left something to explain;
+                    // Only worth an overlay if a prior DJ Gem rerank left something to explain;
                     // otherwise nudge the user with a transient note instead of an empty card.
                     if self.radio.last_explain.is_some() {
                         self.why_ai_visible = true;
                     } else {
                         self.status.kind = StatusKind::Info;
                         self.status.text = t!(
-                            "No AI radio picks to explain yet.",
-                            "아직 설명할 AI 라디오 선곡이 없어요."
+                            "No DJ Gem radio picks to explain yet.",
+                            "아직 설명할 DJ Gem 라디오 선곡이 없어요."
                         )
                         .to_owned();
                     }

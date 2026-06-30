@@ -1,7 +1,7 @@
-//! The "Why AI" overlay: a small, centered card explaining the last autoplay-radio refill that
+//! The "Why DJ Gem" overlay: a small, centered card explaining the last autoplay-radio refill that
 //! went through the Gemini reranker. For each pick it shows the slot role the model assigned
 //! (core / bridge / discovery / …), the track it landed on, and the evidence codes the model
-//! said it leaned on — so the AI's choices are inspectable rather than opaque. Opened with `w`
+//! said it leaned on — so the DJ Gem's choices are inspectable rather than opaque. Opened with `w`
 //! ([`crate::keymap::Action::WhyAi`]); dismissed by `w` / Esc / Back. Styled with the same theme
 //! roles as the `?` cheat-sheet and About card so it matches whatever preset is active.
 
@@ -17,7 +17,7 @@ use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::text::truncate_to_width;
 
-/// Render the "Why AI" card as a centered popup over `area`.
+/// Render the "Why DJ Gem" card as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let Some(explain) = app.radio.last_explain.as_ref() else {
         return;
@@ -32,10 +32,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let title = match explain.conf {
         Some(c) => format!(
             " {} · {:.0}% ",
-            t!("Why these AI picks", "AI 선곡 이유"),
+            t!("Why these DJ Gem picks", "DJ Gem 선곡 이유"),
             (c * 100.0).round()
         ),
-        None => format!(" {} ", t!("Why these AI picks", "AI 선곡 이유")),
+        None => format!(" {} ", t!("Why these DJ Gem picks", "DJ Gem 선곡 이유")),
     };
     let block = Block::default()
         .title(title)

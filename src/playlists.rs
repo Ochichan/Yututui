@@ -1,4 +1,4 @@
-//! Local, on-disk playlists — the backend behind the AI assistant's playlist tools
+//! Local, on-disk playlists — the backend behind the DJ Gem assistant's playlist tools
 //! (`get_user_playlists`, `create_playlist`, `add_to_playlist`, `play_playlist`).
 //!
 //! ytm-tui has no account-sourced playlists, so these are *ours*: created and edited
@@ -73,7 +73,7 @@ impl Playlists {
         &self.playlists
     }
 
-    /// Resolve a playlist by `id` first, then by case-insensitive name — the AI may
+    /// Resolve a playlist by `id` first, then by case-insensitive name — the DJ Gem may
     /// reference either.
     pub fn find(&self, key: &str) -> Option<&Playlist> {
         let key = key.trim();

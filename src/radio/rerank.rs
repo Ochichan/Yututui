@@ -88,9 +88,9 @@ pub fn select(
 }
 
 /// Deterministically pick the top `k` candidates by greedy MMR (relevance traded against
-/// diversity), with NO softmax sampling. This is the shortlist handed to the AI reranker — it
+/// diversity), with NO softmax sampling. This is the shortlist handed to the DJ Gem reranker — it
 /// should be the engine's best diverse set, not a sampled one, so the model reranks a stable,
-/// non-redundant list. Returns the candidates (the AI needs their metadata), highest-ranked first.
+/// non-redundant list. Returns the candidates (the DJ Gem needs their metadata), highest-ranked first.
 pub fn mmr_topk(
     mut scored: Vec<Candidate>,
     st: &StationState,

@@ -53,7 +53,7 @@ pub struct StationState {
 
 /// Run the full local pipeline — hard filter → normalized base score → MMR + cooldown →
 /// softmax sample — and return up to `n` picks. The guaranteed-available radio path; also
-/// the fallback when an AI rerank is unavailable.
+/// the fallback when a DJ Gem rerank is unavailable.
 pub fn plan_local(
     pool: Vec<Candidate>,
     st: &StationState,
@@ -67,8 +67,8 @@ pub fn plan_local(
     rerank::select(scored, st, cooc, cfg, n)
 }
 
-/// The diverse top-`k` candidates to hand the AI reranker — same hard-filter + score pipeline
-/// as [`plan_local`], but stopping at a deterministic MMR shortlist (no softmax). The AI picks
+/// The diverse top-`k` candidates to hand the DJ Gem reranker — same hard-filter + score pipeline
+/// as [`plan_local`], but stopping at a deterministic MMR shortlist (no softmax). The DJ Gem picks
 /// from these by id; it never sees a track that isn't already a playable local candidate.
 pub fn shortlist_for_ai(
     pool: Vec<Candidate>,
@@ -83,10 +83,10 @@ pub fn shortlist_for_ai(
     rerank::mmr_topk(scored, st, cooc, cfg, k)
 }
 
-/// Turn the AI reranker's chosen ids into the final pick list. Every id is validated against the
+/// Turn the DJ Gem reranker's chosen ids into the final pick list. Every id is validated against the
 /// shortlist the model was shown (so a hallucinated/altered id is silently dropped), de-duped,
 /// then any shortfall is topped up from the engine's own `local_pick` order. The result is
-/// always a subset of real, playable candidates — AI failure degrades to pure-local with no
+/// always a subset of real, playable candidates — DJ Gem failure degrades to pure-local with no
 /// user-visible breakage.
 pub fn merge_ai_picks(
     ids: &[String],
@@ -107,7 +107,7 @@ pub fn merge_ai_picks(
             out.push(song.clone());
         }
     }
-    // Backfill from the engine's own ranked picks for anything the AI dropped/omitted.
+    // Backfill from the engine's own ranked picks for anything the DJ Gem dropped/omitted.
     for song in local_pick {
         if out.len() >= n {
             break;
@@ -119,7 +119,7 @@ pub fn merge_ai_picks(
     out
 }
 
-/// Confidence-aware version of [`merge_ai_picks`]. Low-confidence AI output is treated as a
+/// Confidence-aware version of [`merge_ai_picks`]. Low-confidence DJ Gem output is treated as a
 /// light nudge over the local engine instead of a full ordering replacement.
 pub fn merge_ai_picks_with_confidence(
     ids: &[String],
@@ -142,7 +142,7 @@ pub fn merge_ai_picks_with_confidence(
 }
 
 /// Last synchronous safety pass before radio picks are appended to the queue. The scoring pass
-/// already filtered candidates, but cached AI orders and low-context fallbacks can still benefit
+/// already filtered candidates, but cached DJ Gem orders and low-context fallbacks can still benefit
 /// from a final cheap title/channel/duration check.
 pub fn sanitize_final_picks(
     picks: Vec<Song>,
@@ -216,7 +216,7 @@ pub fn needs_metadata_preflight(song: &Song, mode: RadioMode, cfg: &RadioConfig)
     risk >= 0.35 || (duration_unknown && music_tier <= 0.0 && risk >= 0.15)
 }
 
-/// Whether an autoplay refill is worth an AI rerank call. With `smart_gate` off it's always
+/// Whether an autoplay refill is worth a DJ Gem rerank call. With `smart_gate` off it's always
 /// `true` (spend the call whenever the reranker is enabled). With it on, we still call when the
 /// listener is unsettled (a trailing skip streak) or when the local pick is *ambiguous* — the top
 /// two candidates' `base_score`s are within `ambiguity_gap`. A clearly-best local pick with a
@@ -256,7 +256,7 @@ pub struct AiCacheKeyParts<'a> {
     pub prompt_recipe_hash: u64,
 }
 
-/// A stable key for caching an AI rerank's result. The candidate set is order-independent
+/// A stable key for caching a DJ Gem rerank's result. The candidate set is order-independent
 /// (sorted before hashing), while station/recovery/profile inputs are included because they
 /// change what the same candidates mean.
 pub fn ai_cache_key(parts: AiCacheKeyParts<'_>) -> u64 {
@@ -574,7 +574,7 @@ mod tests {
             song("a", "x"),
             song("b", "y"),
         ];
-        // AI returns: one valid, one duplicate of it, one hallucinated id not in the shortlist.
+        // DJ Gem returns: one valid, one duplicate of it, one hallucinated id not in the shortlist.
         let ids = vec!["b".to_owned(), "b".to_owned(), "ZZZ".to_owned()];
 
         let merged = merge_ai_picks(&ids, &shortlist, &local_pick, 3);
@@ -589,7 +589,7 @@ mod tests {
         let local_pick = vec![song("a", "x"), song("b", "y")];
         let merged = merge_ai_picks(&[], &shortlist, &local_pick, 5);
         let order: Vec<&str> = merged.iter().map(|s| s.video_id.as_str()).collect();
-        assert_eq!(order, vec!["a", "b"], "no AI ids → pure local pick");
+        assert_eq!(order, vec!["a", "b"], "no DJ Gem ids → pure local pick");
     }
 
     /// A scored candidate with a chosen `base_score` (the only field the gate reads).

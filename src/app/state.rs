@@ -197,19 +197,19 @@ pub struct SearchState {
     pub searching: bool,
 }
 
-/// AI-assistant state: availability, model, the chat transcript, the prompt being
+/// DJ Gem assistant state: availability, model, the chat transcript, the prompt being
 /// typed, and the pickable suggestions list with its focus.
 #[derive(Default)]
 pub struct AiState {
     /// Whether a Gemini API key is configured (gates the assistant; `false` → onboarding).
     pub available: bool,
-    /// The Gemini model the assistant uses (shown in the AI view header).
+    /// The Gemini model the assistant uses (shown in the DJ Gem view header).
     pub model: GeminiModel,
     /// The chat transcript (user prompts, assistant replies, errors).
     pub messages: Vec<AiMessage>,
-    /// The AI prompt being typed.
+    /// The DJ Gem prompt being typed.
     pub input: String,
-    /// Whether Ctrl+A has selected the whole AI prompt (next edit replaces/clears it).
+    /// Whether Ctrl+A has selected the whole DJ Gem prompt (next edit replaces/clears it).
     pub select_all: bool,
     /// True while a request is in flight (drives the spinner; blocks a second request).
     pub thinking: bool,
@@ -262,29 +262,29 @@ pub struct ArtState {
     pub(in crate::app) overlay_refresh_clear_frames: u8,
 }
 
-/// Radio autoplay runtime: the cooldown clock, the in-flight pool flag, a handed-off AI
+/// Radio autoplay runtime: the cooldown clock, the in-flight pool flag, a handed-off DJ Gem
 /// rerank awaiting its picks, and the empty-extend circuit-breaker counter.
 #[derive(Default)]
 pub struct RadioRuntime {
     /// When the autoplay hook last fired a top-up request (for the cooldown).
     pub last_extend: Option<Instant>,
-    /// True while the radio candidate-pool fetch is in flight (both the AI and non-AI paths
+    /// True while the radio candidate-pool fetch is in flight (both the DJ Gem and non-DJ Gem paths
     /// fetch the same pool first).
     pub pending: bool,
-    /// An AI rerank handed off to the assistant actor, awaiting its `Msg::RadioAiPicks`. Holds
+    /// An DJ Gem rerank handed off to the assistant actor, awaiting its `Msg::RadioAiPicks`. Holds
     /// the shortlist (to validate the returned ids against) and the local pick (the fallback).
     pub pending_rerank: Option<PendingRerank>,
     /// Consecutive empty radio extends, for the autoplay circuit breaker.
     pub consecutive_failures: u8,
-    /// The last AI rerank's resolved explanation (picks → role + reasons + confidence), stashed
-    /// when `Msg::RadioAiPicks` resolves so the "Why AI" overlay (`w`) can show why these tracks
-    /// were chosen. `None` until the first AI rerank lands.
+    /// The last DJ Gem rerank's resolved explanation (picks → role + reasons + confidence), stashed
+    /// when `Msg::RadioAiPicks` resolves so the "Why DJ Gem" overlay (`w`) can show why these tracks
+    /// were chosen. `None` until the first DJ Gem rerank lands.
     pub last_explain: Option<RadioAiExplain>,
     /// Ordered recent listening outcomes (plays / skips / likes / dislikes), newest at the back,
     /// bounded to the last [`SESSION_EVENTS_CAP`]. Drives the reranker's recovery context.
     pub session_events: std::collections::VecDeque<SessionEvent>,
-    /// TTL cache of resolved AI rerank orderings, keyed by [`radio::ai_cache_key`]. Each value is
-    /// the AI's chosen `video_id` ordering plus when it was stored; a rapid identical refill
+    /// TTL cache of resolved DJ Gem rerank orderings, keyed by [`radio::ai_cache_key`]. Each value is
+    /// the DJ Gem's chosen `video_id` ordering plus when it was stored; a rapid identical refill
     /// replays it instead of spending another call. Pruned by TTL on every insert (stays tiny).
     pub ai_cache: HashMap<u64, (Vec<String>, Instant)>,
     /// Cached co-occurrence graph keyed by [`Signals::play_log_generation`], so radio refills don't
