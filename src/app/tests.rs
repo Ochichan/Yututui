@@ -1003,6 +1003,42 @@ fn losing_terminal_focus_parks_animations_then_regaining_resumes() {
 }
 
 #[test]
+fn overlays_do_not_park_animations_but_focus_still_does() {
+    let mut app = app_playing(1, 0);
+    app.playback.paused = false;
+    app.config.animations.master = true;
+    app.config.animations.rain = true;
+
+    assert!(app.animation_active());
+
+    app.help_visible = true;
+    assert!(
+        app.animation_active(),
+        "cheat-sheet overlay should not pause the background animation"
+    );
+    app.help_visible = false;
+
+    app.about_visible = true;
+    assert!(
+        app.animation_active(),
+        "About overlay should not pause the background animation"
+    );
+    app.about_visible = false;
+
+    app.why_ai_visible = true;
+    assert!(
+        app.animation_active(),
+        "Why-AI overlay should not pause the background animation"
+    );
+
+    app.update(Msg::Focus(false));
+    assert!(
+        !app.animation_active(),
+        "focus loss still parks animations even while an overlay is visible"
+    );
+}
+
+#[test]
 fn canvas_animation_advances_phase_every_tick_but_caps_redraws() {
     let mut app = app_playing(1, 0);
     app.playback.paused = false;

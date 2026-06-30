@@ -24,23 +24,18 @@ impl App {
     /// The main loop arms its ~30 fps tick on this; when it is false the tick never fires, so the
     /// app behaves byte-for-byte like today (the lightweight path).
     ///
-    /// Two additional gates suppress the clock even when an effect is logically running:
-    /// - **Focus** — while `pause_unfocused` is on and the terminal has lost focus (minimized or
-    ///   behind another window), there's nothing to see, so we park the tick. Defaults make this
-    ///   a no-op on terminals that don't report focus (`focused` stays `true`).
-    /// - **Full-screen overlays** — the help (`?`) and About panes cover the animated area, so we
-    ///   freeze underneath them and resume on close. (Partial dropdowns don't count.)
+    /// One additional gate suppresses the clock even when an effect is logically running:
+    /// **Focus** — while `pause_unfocused` is on and the terminal has lost focus (minimized or
+    /// behind another window), there's nothing to see, so we park the tick. Defaults make this
+    /// a no-op on terminals that don't report focus (`focused` stays `true`). Overlays do not
+    /// park the animation; they draw above the scene, matching the queue popup behavior.
     pub fn animation_active(&self) -> bool {
         let running = (matches!(self.mode, Mode::Player)
             && !self.playback.paused
             && self.queue.current().is_some()
             && self.config.animations.active())
             || self.ai_mascot_active();
-        running
-            && (!self.config.animations.pause_unfocused || self.focused)
-            && !self.help_visible
-            && !self.about_visible
-            && !self.why_ai_visible
+        running && (!self.config.animations.pause_unfocused || self.focused)
     }
 
     /// Logical animation tick rate. This remains the configured FPS so frame-based animation phases
