@@ -307,6 +307,8 @@ pub enum MouseTarget {
     Nav(Mode),
     /// The search bar's submit button.
     SearchSubmit,
+    /// The search query input box.
+    SearchInput,
     /// Open/close the search-source dropdown.
     SearchSourceMenu,
     /// Pick a source from the search-source dropdown.

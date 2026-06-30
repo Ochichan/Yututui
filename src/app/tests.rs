@@ -5051,7 +5051,7 @@ fn about_icon_uses_sixel_when_available() {
 }
 
 #[test]
-fn popup_art_marker_dirties_kitty_anchor_when_popup_hits_middle_of_art_row() {
+fn popup_art_marker_leaves_current_player_anchor_unchanged() {
     use ratatui_image::protocol::kitty::StatefulKitty;
     use ratatui_image::protocol::{StatefulProtocol, StatefulProtocolType};
     use ratatui_image::{FontSize, Resize, ResizeEncodeRender};
@@ -5091,14 +5091,145 @@ fn popup_art_marker_dirties_kitty_anchor_when_popup_hits_middle_of_art_row() {
                 .expect("anchor is inside the buffer")
                 .symbol()
                 .to_owned();
-            assert_ne!(before, after);
-            assert!(after.contains('\u{10EEEE}'));
-            assert!(
-                !after.contains("_G"),
-                "row marker must not retransmit image pixels"
-            );
+            assert_eq!(before, after);
         })
         .unwrap();
+}
+
+#[test]
+fn player_about_popup_keeps_full_kitty_art_rows_at_the_edges() {
+    use image::imageops::FilterType;
+    use ratatui_image::picker::ProtocolType;
+    use ratatui_image::{Resize, ResizeEncodeRender};
+
+    let area = Rect::new(0, 0, 120, 50);
+    let popup = centered_fixed(area, 60, 22);
+    let image = image::DynamicImage::new_rgba8(160, 90);
+    let mut app = app_playing(1, 0);
+    app.about_visible = true;
+    configure_test_art_picker(&mut app, ProtocolType::Kitty);
+    let video_id = app.queue.current().unwrap().video_id.clone();
+    app.set_artwork(video_id, Some(image.clone()));
+
+    // First render publishes the actual fitted art rect. The protocol may go pending because the
+    // resize worker is absent in this unit test; we only need the rect for the deterministic setup
+    // below.
+    let _ = render_app_buffer(&app, area.width, area.height);
+    let art = app
+        .art
+        .rect
+        .get()
+        .expect("player render should publish art rect");
+    assert!(
+        art.left() < popup.left(),
+        "test geometry must expose a left art edge"
+    );
+    assert!(
+        !art.intersection(popup).is_empty(),
+        "test geometry must overlap the About popup"
+    );
+
+    let mut protocol = app
+        .art
+        .picker
+        .as_ref()
+        .expect("configured above")
+        .new_resize_protocol(image);
+    protocol.resize_encode(
+        &Resize::Scale(Some(FilterType::Lanczos3)),
+        ratatui::layout::Size::new(art.width, art.height),
+    );
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    *app.art.protocol.borrow_mut() = Some(ThreadProtocol::new(tx, Some(protocol)));
+
+    let buf = render_app_buffer(&app, area.width, area.height);
+    let overlap = art.intersection(popup);
+    for y in overlap.top()..overlap.bottom() {
+        let symbol = buf
+            .cell((art.left(), y))
+            .expect("art anchor row is inside the buffer")
+            .symbol();
+        let placeholders = symbol.chars().filter(|ch| *ch == '\u{10EEEE}').count();
+        assert!(
+            placeholders > 1,
+            "row {y} was replaced by a single Kitty marker instead of the full art row: {symbol:?}"
+        );
+    }
+}
+
+#[test]
+fn non_player_frame_clears_stale_art_rect_so_popups_dont_bleed_art() {
+    // Album art is only drawn by the player view, which records its rect in `app.art.rect`. On any
+    // other screen (Search, Library, ...) the art isn't on screen, yet its kitty image is still
+    // transmitted to the terminal. A full frame must clear `art.rect` up front so a leftover rect
+    // from the last player frame can't survive — otherwise `mark_art_rows_for_popup` (run by every
+    // popup, e.g. About) re-anchors that stale image under the popup and bleeds it through as a
+    // stray vertical bar.
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.about_visible = true;
+    // A leftover rect from the last time the player view was shown.
+    app.art.rect.set(Some(Rect::new(4, 3, 10, 6)));
+
+    let backend = TestBackend::new(80, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+    assert_eq!(
+        app.art.rect.get(),
+        None,
+        "a non-player frame must clear the stale album-art rect before popups read it"
+    );
+}
+
+#[test]
+fn search_mode_popup_does_not_replant_stale_album_art_placeholder() {
+    // End-to-end guard for the stray vertical bar: render a real (already-transmitted) kitty image
+    // protocol with a stale player-era art rect, on the Search screen, with the About card open. A
+    // full frame must not re-plant any kitty unicode placeholder — the player view didn't run, so
+    // its art has no business reappearing under/beside the popup.
+    use ratatui_image::protocol::kitty::StatefulKitty;
+    use ratatui_image::protocol::{StatefulProtocol, StatefulProtocolType};
+    use ratatui_image::{FontSize, Resize, ResizeEncodeRender};
+
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.about_visible = true;
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut protocol = StatefulProtocol::new(
+        image::DynamicImage::new_rgba8(20, 20),
+        FontSize::new(10, 20),
+        None,
+        StatefulProtocolType::Kitty(StatefulKitty::new(42, false)),
+    );
+    protocol.resize_encode(&Resize::Scale(None), ratatui::layout::Size::new(20, 8));
+    *app.art.protocol.borrow_mut() = Some(ThreadProtocol::new(tx, Some(protocol)));
+
+    // A leftover rect whose left edge sits just outside the centered About card but overlaps it
+    // vertically — the exact geometry that re-anchored art col-0 as a stray bar beside the popup.
+    // (Without the per-frame clear, `mark_art_rows_for_popup` would plant placeholders at column 2.)
+    app.art.rect.set(Some(Rect::new(2, 6, 20, 8)));
+
+    let backend = TestBackend::new(80, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+    // The About icon falls back to half-blocks here (no graphics picker), so it contributes no
+    // placeholder — any `\u{10EEEE}` in the buffer would be the stale art bleeding through.
+    let buf = terminal.backend().buffer();
+    let mut planted = Vec::new();
+    for y in 0..30u16 {
+        for x in 0..80u16 {
+            if buf[(x, y)].symbol().contains('\u{10EEEE}') {
+                planted.push((x, y));
+            }
+        }
+    }
+    assert!(
+        planted.is_empty(),
+        "stale album art re-planted as kitty placeholders at {planted:?}"
+    );
 }
 
 #[test]
@@ -5364,6 +5495,22 @@ fn clicking_the_search_button_submits_the_query() {
         [Cmd::Search { query, source, .. }]
             if query == "lofi beats" && *source == SearchSource::Youtube
     ));
+}
+
+#[test]
+fn clicking_the_search_input_focuses_the_query_box() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.search.results = songs(2);
+    app.search.focus = SearchFocus::Results;
+    app.search.select_all = true;
+    app.dropdowns.search_source_open = true;
+
+    click_target(&mut app, MouseTarget::SearchInput);
+
+    assert_eq!(app.search.focus, SearchFocus::Input);
+    assert!(!app.search.select_all);
+    assert!(!app.dropdowns.search_source_open);
 }
 
 #[test]

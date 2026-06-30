@@ -26,6 +26,12 @@ pub fn render(frame: &mut Frame, app: &App) {
         ),
         area,
     );
+    // Album art is a per-frame output: only the player view draws it (and records its rect).
+    // Clear the rect up front so it reflects *this* frame — otherwise a stale rect from the last
+    // player frame survives into Search/Library/etc., where `mark_art_rows_for_popup` would
+    // re-anchor the (still-transmitted) kitty image under a popup and bleed it through as a stray
+    // vertical bar. Player mode re-sets it below before any popup reads it.
+    app.art.rect.set(None);
     match app.mode {
         Mode::Player => views::player::render(frame, app, area),
         Mode::Search => views::search::render(frame, app, area),
@@ -92,14 +98,10 @@ pub fn seal_popup_background(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-pub fn mark_art_rows_for_popup(frame: &mut Frame, app: &App, popup: Rect) {
-    let Some(art) = app.art.rect.get() else {
-        return;
-    };
-    if art.intersection(popup).is_empty() {
-        return;
-    }
-    if let Some(protocol) = app.art.protocol.borrow().as_ref() {
-        protocol.mark_kitty_rows_for_redraw(art, popup, frame.buffer_mut());
-    }
+pub fn mark_art_rows_for_popup(_frame: &mut Frame, _app: &App, _popup: Rect) {
+    // Popup/native-image synchronization is handled by `App::sync_art_overlay_state`, which asks
+    // the next overlay transition frame to clear and redraw. Re-planting Kitty row anchors here is
+    // harmful with the explicit per-cell placeholder patch in `crates/ratatui-image`: an interior
+    // popup can replace a full image row with a single marker and make the album art look sliced at
+    // the popup edges.
 }

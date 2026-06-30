@@ -196,6 +196,14 @@ impl App {
             // Search bar submit button.
             MouseTarget::SearchSubmit if self.mode == Mode::Search => self.submit_search_query(),
             MouseTarget::SearchSubmit => Vec::new(),
+            MouseTarget::SearchInput if self.mode == Mode::Search => {
+                self.search.focus = SearchFocus::Input;
+                self.search.select_all = false;
+                self.dropdowns.search_source_open = false;
+                self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::SearchInput => Vec::new(),
             MouseTarget::SearchSourceMenu if self.mode == Mode::Search => {
                 self.dropdowns.eq_open = false;
                 self.dropdowns.radio_open = false;

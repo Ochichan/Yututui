@@ -129,6 +129,7 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(text).style(app.theme.style(R::TextPrimary))
     };
     frame.render_widget(para.block(block), input_area);
+    app.register_mouse_button(input_area, MouseTarget::SearchInput);
     render_search_button(frame, app, button_area);
 }
 
