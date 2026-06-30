@@ -356,11 +356,11 @@ fn enter_in_search_emits_search_cmd() {
 }
 
 #[test]
-fn ctrl_s_opens_search_source_menu_and_cycles_source() {
+fn tab_opens_search_source_menu_and_cycles_source() {
     let mut app = App::new(100);
     app.update(Msg::Key(key(KeyCode::Char('/'))));
 
-    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('s'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Tab)));
     assert!(cmds.is_empty());
     assert!(app.dropdowns.search_source_open);
     assert_eq!(app.search.source, SearchSource::Youtube);

@@ -694,6 +694,9 @@ impl KeyMap {
             if let Some(&existing) = self.bindings.get(&(c, chord))
                 && existing != action
             {
+                if allowed_common_shadow(ctx, action, c, existing, chord) {
+                    continue;
+                }
                 return Some(Conflict {
                     ctx: c,
                     existing,
@@ -755,6 +758,20 @@ impl KeyMap {
         }
         out
     }
+}
+
+fn allowed_common_shadow(
+    ctx: KeyContext,
+    action: Action,
+    conflict_ctx: KeyContext,
+    existing: Action,
+    chord: Chord,
+) -> bool {
+    matches!(ctx, KeyContext::SearchInput | KeyContext::SearchResults)
+        && action == Action::ToggleSearchSourceMenu
+        && conflict_ctx == KeyContext::Common
+        && existing == Action::FocusNext
+        && chord == Chord::new(KeyCode::Tab, KeyModifiers::empty())
 }
 
 fn linked_rebinds(ctx: KeyContext, action: Action) -> &'static [(KeyContext, Action)] {
@@ -849,12 +866,16 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Queue, A::Back, ch('q')),
         // Search box (text entry; Enter→search is handled in the input handler).
         (C::SearchInput, A::SelectAll, ctrl('a')),
-        (C::SearchInput, A::ToggleSearchSourceMenu, ctrl('s')),
+        (C::SearchInput, A::ToggleSearchSourceMenu, key(KeyCode::Tab)),
         (C::SearchInput, A::FocusPrev, key(KeyCode::BackTab)),
         // Search results list commands (Enter→play is fixed to the physical key in the
         // handler, so it's not listed here; the cheat-sheet shows it as a fixed row).
         (C::SearchResults, A::FocusPrev, key(KeyCode::BackTab)),
-        (C::SearchResults, A::ToggleSearchSourceMenu, ctrl('s')),
+        (
+            C::SearchResults,
+            A::ToggleSearchSourceMenu,
+            key(KeyCode::Tab),
+        ),
         (C::SearchResults, A::Enqueue, ch('\\')),
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('d')),
@@ -1493,6 +1514,43 @@ mod tests {
         assert_eq!(
             km.action(KeyContext::Player, parse_chord("space").unwrap()),
             None
+        );
+    }
+
+    #[test]
+    fn search_source_menu_tab_can_shadow_common_focus_next() {
+        let mut km = KeyMap::default();
+        let f7 = parse_chord("f7").unwrap();
+        let tab = parse_chord("tab").unwrap();
+
+        km.rebind(KeyContext::SearchInput, Action::ToggleSearchSourceMenu, f7)
+            .unwrap();
+        assert_eq!(
+            km.action(KeyContext::SearchInput, f7),
+            Some(Action::ToggleSearchSourceMenu)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, f7),
+            Some(Action::ToggleSearchSourceMenu)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchInput, tab),
+            Some(Action::FocusNext)
+        );
+
+        km.reset(KeyContext::SearchInput, Action::ToggleSearchSourceMenu)
+            .unwrap();
+        assert_eq!(
+            km.action(KeyContext::SearchInput, tab),
+            Some(Action::ToggleSearchSourceMenu)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, tab),
+            Some(Action::ToggleSearchSourceMenu)
+        );
+        assert!(
+            !km.to_overrides()
+                .contains_key("search_input.toggle_search_source_menu")
         );
     }
 
