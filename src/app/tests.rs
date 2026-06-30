@@ -4682,6 +4682,123 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     assert_eq!(app.art_overlay_mask(), 0);
 }
 
+fn configure_test_art_picker(app: &mut App, protocol: ratatui_image::picker::ProtocolType) {
+    let mut picker = ratatui_image::picker::Picker::halfblocks();
+    picker.set_protocol_type(protocol);
+    app.config.album_art = Some(true);
+    app.art.picker = Some(picker);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.set_art_resize_tx(tx);
+}
+
+fn make_test_art_active(app: &mut App, protocol: ratatui_image::picker::ProtocolType) {
+    configure_test_art_picker(app, protocol);
+    let video_id = app.queue.current().unwrap().video_id.clone();
+    app.set_artwork(video_id, Some(image::DynamicImage::new_rgba8(32, 32)));
+    app.art.overlay_mask = app.art_overlay_mask();
+    app.art.force_clear_next_frame = false;
+    app.dirty = false;
+}
+
+#[test]
+fn named_overlay_transitions_request_one_full_clear_when_native_art_is_active() {
+    fn set_eq(app: &mut App, open: bool) {
+        app.dropdowns.eq_open = open;
+    }
+    fn set_radio(app: &mut App, open: bool) {
+        app.dropdowns.radio_open = open;
+    }
+    fn set_queue(app: &mut App, open: bool) {
+        app.queue_popup.open = open;
+    }
+    fn set_about(app: &mut App, open: bool) {
+        app.about_visible = open;
+    }
+    fn set_why_ai(app: &mut App, open: bool) {
+        app.why_ai_visible = open;
+    }
+
+    for (name, set_open) in [
+        ("eq dropdown", set_eq as fn(&mut App, bool)),
+        ("radio dropdown", set_radio),
+        ("queue popup", set_queue),
+        ("about popup", set_about),
+        ("why-ai popup", set_why_ai),
+    ] {
+        let mut app = app_playing(1, 0);
+        make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+
+        set_open(&mut app, true);
+        app.update(Msg::Resize);
+        assert!(
+            app.take_clear_before_draw(),
+            "{name} opening should clear native art before redraw"
+        );
+        assert!(
+            !app.take_clear_before_draw(),
+            "{name} opening clear request should be one-shot"
+        );
+
+        set_open(&mut app, false);
+        app.update(Msg::Resize);
+        assert!(
+            app.take_clear_before_draw(),
+            "{name} closing should clear native art before redraw"
+        );
+        assert!(
+            !app.take_clear_before_draw(),
+            "{name} closing clear request should be one-shot"
+        );
+    }
+}
+
+#[test]
+fn art_overlay_transition_does_not_clear_without_art() {
+    let mut app = app_playing(1, 0);
+
+    app.about_visible = true;
+    app.update(Msg::Resize);
+    assert!(!app.take_clear_before_draw());
+}
+
+#[test]
+fn art_overlay_transition_does_not_clear_for_halfblocks_art() {
+    let mut app = app_playing(1, 0);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Halfblocks);
+
+    app.about_visible = true;
+    app.update(Msg::Resize);
+    assert!(!app.take_clear_before_draw());
+}
+
+#[test]
+fn about_native_icon_transition_requests_clear_without_album_art() {
+    let mut app = app_playing(1, 0);
+    configure_test_art_picker(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+
+    app.about_visible = true;
+    app.update(Msg::Resize);
+    assert!(app.take_clear_before_draw());
+    assert!(!app.take_clear_before_draw());
+
+    app.about_visible = false;
+    app.update(Msg::Resize);
+    assert!(app.take_clear_before_draw());
+}
+
+#[test]
+fn artwork_arriving_under_overlay_requests_full_clear() {
+    let mut app = app_playing(1, 0);
+    configure_test_art_picker(&mut app, ratatui_image::picker::ProtocolType::Sixel);
+    app.about_visible = true;
+    app.update(Msg::Resize);
+    assert!(app.take_clear_before_draw());
+
+    let video_id = app.queue.current().unwrap().video_id.clone();
+    app.set_artwork(video_id, Some(image::DynamicImage::new_rgba8(32, 32)));
+    assert!(app.take_clear_before_draw());
+}
+
 #[test]
 fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
     let player_area = ratatui::layout::Rect::new(0, 0, 80, 20);
@@ -4818,6 +4935,34 @@ fn about_icon_uses_foreground_kitty_when_available() {
         .symbol();
     assert!(symbol.contains("_G"));
     assert!(symbol.contains("z=0,"));
+}
+
+#[test]
+fn about_icon_uses_sixel_when_available() {
+    use ratatui_image::picker::{Picker, ProtocolType};
+
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let icon = about_icon_rect(area);
+    let mut app = app_playing(1, 0);
+    app.about_visible = true;
+
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ProtocolType::Sixel);
+    app.art.picker = Some(picker);
+
+    let buf = render_app_buffer(&app, area.width, area.height);
+    let cached_protocol = app
+        .about_icon
+        .borrow()
+        .as_ref()
+        .map(|(_, protocol, _)| *protocol);
+    assert_eq!(cached_protocol, Some(Some(ProtocolType::Sixel)));
+
+    let symbol = buf
+        .cell((icon.left(), icon.top()))
+        .expect("icon top-left is inside the buffer")
+        .symbol();
+    assert!(symbol.contains("\x1bP"));
 }
 
 #[test]

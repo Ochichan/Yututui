@@ -244,6 +244,14 @@ pub struct ArtState {
     pub(in crate::app) video_id: Option<String>,
     /// True between requesting art and the result arriving.
     pub loading: bool,
+    /// Last visible-overlay bitmask observed by the reducer. When this changes while a native
+    /// terminal image can be visible, the next draw clears the terminal before repainting so
+    /// Sixel / Kitty / iTerm2 state cannot keep popup residue outside ratatui's diff buffer.
+    pub(in crate::app) overlay_mask: u16,
+    /// One-shot request for the render loop to call `Terminal::clear()` before the next frame.
+    /// Kept in art state because the expensive clear is only needed to resync native terminal
+    /// graphics after an overlay or screen transition has covered album art or the About icon.
+    pub(in crate::app) force_clear_next_frame: bool,
 }
 
 /// Radio autoplay runtime: the cooldown clock, the in-flight pool flag, a handed-off AI

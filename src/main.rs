@@ -142,12 +142,101 @@ async fn async_main(new_instance: bool) -> Result<()> {
 /// that doesn't answer the control sequences), so album art still renders — just blocky.
 fn build_art_picker() -> ratatui_image::picker::Picker {
     use ratatui_image::picker::Picker;
-    match Picker::from_query_stdio() {
+    let mut picker = match Picker::from_query_stdio() {
         Ok(picker) => picker,
         Err(e) => {
             tracing::warn!(error = %e, "terminal graphics probe failed; album art falls back to halfblocks");
             Picker::halfblocks()
         }
+    };
+    if let Some(protocol) = image_protocol_override() {
+        picker.set_protocol_type(protocol);
+    }
+    picker
+}
+
+fn image_protocol_override() -> Option<ratatui_image::picker::ProtocolType> {
+    let value = std::env::var("YTM_TUI_IMAGE_PROTOCOL").ok()?;
+    parse_image_protocol_override(&value)
+}
+
+fn parse_image_protocol_override(value: &str) -> Option<ratatui_image::picker::ProtocolType> {
+    use ratatui_image::picker::ProtocolType;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "halfblocks" | "halfblock" | "blocks" | "block" => Some(ProtocolType::Halfblocks),
+        "sixel" => Some(ProtocolType::Sixel),
+        "kitty" => Some(ProtocolType::Kitty),
+        "iterm2" | "iterm" => Some(ProtocolType::Iterm2),
+        _ => None,
+    }
+}
+
+fn log_art_picker(picker: Option<&ratatui_image::picker::Picker>) {
+    let override_value = std::env::var("YTM_TUI_IMAGE_PROTOCOL").ok();
+    let term = std::env::var("TERM").ok();
+    let term_program = std::env::var("TERM_PROGRAM").ok();
+    let wt_session = std::env::var("WT_SESSION").ok();
+    if let Some(value) = override_value.as_deref()
+        && parse_image_protocol_override(value).is_none()
+    {
+        tracing::warn!(
+            image_protocol_override = value,
+            "ignored unsupported terminal image protocol override"
+        );
+    }
+    let Some(picker) = picker else {
+        tracing::info!(
+            image_protocol_override = override_value.as_deref().unwrap_or(""),
+            term = term.as_deref().unwrap_or(""),
+            term_program = term_program.as_deref().unwrap_or(""),
+            wt_session = wt_session.as_deref().unwrap_or(""),
+            "terminal graphics disabled"
+        );
+        return;
+    };
+    let font = picker.font_size();
+    tracing::info!(
+        protocol = ?picker.protocol_type(),
+        cell_width = font.width,
+        cell_height = font.height,
+        capabilities = ?picker.capabilities(),
+        image_protocol_override = override_value.as_deref().unwrap_or(""),
+        term = term.as_deref().unwrap_or(""),
+        term_program = term_program.as_deref().unwrap_or(""),
+        wt_session = wt_session.as_deref().unwrap_or(""),
+        "terminal graphics picker"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui_image::picker::ProtocolType;
+
+    use super::parse_image_protocol_override;
+
+    #[test]
+    fn image_protocol_override_accepts_supported_protocol_names() {
+        assert_eq!(
+            parse_image_protocol_override("halfblocks"),
+            Some(ProtocolType::Halfblocks)
+        );
+        assert_eq!(
+            parse_image_protocol_override("sixel"),
+            Some(ProtocolType::Sixel)
+        );
+        assert_eq!(
+            parse_image_protocol_override("kitty"),
+            Some(ProtocolType::Kitty)
+        );
+        assert_eq!(
+            parse_image_protocol_override("iterm2"),
+            Some(ProtocolType::Iterm2)
+        );
+        assert_eq!(
+            parse_image_protocol_override("  SIXEL  "),
+            Some(ProtocolType::Sixel)
+        );
+        assert_eq!(parse_image_protocol_override("bad"), None);
     }
 }
 
@@ -254,13 +343,13 @@ impl PerfStats {
 
 fn draw_app_frame(
     terminal: &mut ratatui::DefaultTerminal,
-    app: &App,
+    app: &mut App,
     perf: &mut PerfStats,
 ) -> std::io::Result<()> {
     let start = perf.enabled.then(Instant::now);
-    let res = tui::draw_frame(terminal, app.synchronized_draw_active(), false, |f| {
-        ui::render(f, app)
-    });
+    let clear_before = app.take_clear_before_draw();
+    let synchronized = clear_before || app.synchronized_draw_active();
+    let res = tui::draw_frame(terminal, synchronized, clear_before, |f| ui::render(f, app));
     if res.is_ok()
         && let Some(start) = start
     {
@@ -308,6 +397,7 @@ async fn run(
     let mut app = App::new(cfg.volume);
     // Hand over the terminal image picker (present only when album art is enabled).
     app.art.picker = art_picker;
+    log_art_picker(app.art.picker.as_ref());
     // Load the local library (favorites + history); an absent/corrupt file → empty.
     app.library = library::Library::load();
     // Load per-track preference signals (plays/skips/dislikes); absent → empty.
@@ -475,7 +565,7 @@ async fn run(
     let mut anim_fps = app.animation_tick_fps();
     let mut anim_tick = anim_interval(anim_fps);
     let mut perf = PerfStats::from_env();
-    draw_app_frame(terminal, &app, &mut perf)?;
+    draw_app_frame(terminal, &mut app, &mut perf)?;
 
     // Every actor is up and the reducer loop is one statement away from draining `worker_rx`:
     // now start the control server and publish the instance descriptor. Doing it here (rather
@@ -500,7 +590,7 @@ async fn run(
             },
             Some(m) = worker_rx.recv() => m,
             _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
-                draw_app_frame(terminal, &app, &mut perf)?;
+                draw_app_frame(terminal, &mut app, &mut perf)?;
                 app.dirty = false;
                 perf.maybe_log(&app);
                 continue;
@@ -639,7 +729,7 @@ async fn run(
         }
 
         if app.dirty {
-            draw_app_frame(terminal, &app, &mut perf)?;
+            draw_app_frame(terminal, &mut app, &mut perf)?;
             app.dirty = false;
         }
         perf.maybe_log(&app);

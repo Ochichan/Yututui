@@ -137,9 +137,9 @@ pub struct App {
     /// dismisses it.
     pub about_visible: bool,
     /// The app icon as a render-ready protocol for the About card, decoded from the embedded PNG
-    /// and cached with the popup background it was composited against. Kitty-capable terminals use
-    /// foreground Kitty graphics for pixel quality; everything else falls back to half-blocks so
-    /// the card still draws everywhere. `RefCell` because render only has `&App`.
+    /// and cached with the popup background it was composited against. Native image-capable
+    /// terminals reuse the detected picker for pixel quality; everything else falls back to
+    /// half-blocks so the card still draws everywhere. `RefCell` because render only has `&App`.
     pub about_icon: RefCell<
         Option<(
             ratatui::style::Color,
@@ -425,6 +425,7 @@ impl App {
             // Text unchanged this turn — keep the color the still-showing message already had.
             self.status.kind = kind_before;
         }
+        self.sync_art_overlay_state();
         cmds
     }
 

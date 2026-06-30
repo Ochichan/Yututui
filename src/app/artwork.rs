@@ -18,6 +18,21 @@ impl App {
             && self.art.protocol.borrow().is_some()
     }
 
+    fn native_image_protocol_selected(&self) -> bool {
+        self.art.picker.as_ref().is_some_and(|picker| {
+            picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks
+        })
+    }
+
+    fn native_art_active(&self) -> bool {
+        self.art_active() && self.native_image_protocol_selected()
+    }
+
+    fn native_about_icon_touched(&self, previous: u16, next: u16) -> bool {
+        const ABOUT_BIT: u16 = 1 << 4;
+        ((previous | next) & ABOUT_BIT) != 0 && self.native_image_protocol_selected()
+    }
+
     /// Whether the per-frame animation clock should run right now. True when we're on the
     /// player view (master switch + at least one effect enabled, a track loaded, not paused),
     /// **or** when the AI start-screen mascot wants to groove (see [`Self::ai_mascot_active`]).
@@ -147,8 +162,8 @@ impl App {
     }
 
     /// A bitmask of visible surfaces that can cover album art. Keeping each popup/modal distinct
-    /// makes the render tests catch newly-added overlay surfaces that need opaque backgrounds.
-    #[cfg(test)]
+    /// lets the render loop notice every transition that can desynchronize native terminal
+    /// graphics from ratatui's diff buffer.
     pub fn art_overlay_mask(&self) -> u16 {
         u8::from(self.dropdowns.eq_open) as u16
             | ((self.dropdowns.radio_open as u16) << 1)
@@ -160,6 +175,34 @@ impl App {
             | ((self.confirm_reset_all as u16) << 7)
             | ((self.library_ui.confirm_delete.is_some() as u16) << 8)
             | ((!matches!(self.mode, Mode::Player) as u16) << 9)
+    }
+
+    /// Track overlay/screen transitions that can cover native terminal graphics. Ratatui's normal
+    /// frame diff is sufficient for text cells, but protocols such as Sixel park image bytes in
+    /// one anchor cell and mark the rest skipped. A popup open/close can therefore leave terminal
+    /// graphics stale even though the next ratatui buffer is logically correct. One full clear on
+    /// the next frame re-syncs the terminal without paying that cost during steady-state playback.
+    pub(in crate::app) fn sync_art_overlay_state(&mut self) {
+        let next = self.art_overlay_mask();
+        if self.art.overlay_mask == next {
+            return;
+        }
+        let previous = self.art.overlay_mask;
+        self.art.overlay_mask = next;
+        if self.native_art_active() || self.native_about_icon_touched(previous, next) {
+            self.art.force_clear_next_frame = true;
+            self.dirty = true;
+            tracing::debug!(
+                previous,
+                next,
+                "native-image overlay state changed; next frame will clear before draw"
+            );
+        }
+    }
+
+    /// Consume the one-shot full-redraw request set by [`Self::sync_art_overlay_state`].
+    pub fn take_clear_before_draw(&mut self) -> bool {
+        std::mem::take(&mut self.art.force_clear_next_frame)
     }
 
     /// Turn a decoded image into a render-ready protocol (or clear when there's none / no
@@ -175,6 +218,10 @@ impl App {
                 ));
                 self.art.source = Some(img);
                 self.art.video_id = Some(video_id);
+                if self.art.overlay_mask != 0 && self.native_art_active() {
+                    self.art.force_clear_next_frame = true;
+                    self.dirty = true;
+                }
             }
             _ => self.clear_artwork(),
         }

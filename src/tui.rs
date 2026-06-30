@@ -13,7 +13,8 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
-use ratatui::{DefaultTerminal, Frame};
+use ratatui::backend::Backend;
+use ratatui::{DefaultTerminal, Frame, Terminal};
 
 static KEYBOARD_ENHANCEMENT_ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -69,14 +70,39 @@ where
         }
         let _ = execute!(io::stdout(), BeginSynchronizedUpdate);
         let res = (|| {
-            if clear_before {
-                terminal.clear()?;
-            }
-            terminal.draw(render).map(|_| ())
+            write_vt_clear_for_native_images()?;
+            draw_frame_inner(terminal, clear_before, render)
         })();
         let _ = execute!(io::stdout(), EndSynchronizedUpdate);
         return res;
     }
+    if clear_before {
+        write_vt_clear_for_native_images()?;
+    }
+    draw_frame_inner(terminal, clear_before, render)
+}
+
+fn write_vt_clear_for_native_images() -> io::Result<()> {
+    use io::Write;
+
+    // `Terminal::clear()` below is still required because it resets ratatui's back buffer. This
+    // explicit VT clear is a belt-and-braces step for terminal-native graphics: Windows Terminal's
+    // Sixel renderer sees the control sequence directly, even if a backend ever falls back to a
+    // platform clear path that only rewrites text cells.
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(b"\x1b[2J\x1b[H")?;
+    stdout.flush()
+}
+
+fn draw_frame_inner<B, F>(
+    terminal: &mut Terminal<B>,
+    clear_before: bool,
+    render: F,
+) -> Result<(), B::Error>
+where
+    B: Backend,
+    F: FnOnce(&mut Frame),
+{
     if clear_before {
         terminal.clear()?;
     }
@@ -160,4 +186,30 @@ fn should_probe_keyboard_enhancement() -> bool {
         || term.contains("foot")
         || term.contains("alacritty")
         || term_program.contains("wezterm")
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::backend::TestBackend;
+    use ratatui::widgets::Paragraph;
+
+    use super::draw_frame_inner;
+
+    #[test]
+    fn clear_before_draw_forces_unchanged_cells_to_redraw() {
+        let backend = TestBackend::new(5, 1);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        draw_frame_inner(&mut terminal, false, |frame| {
+            frame.render_widget(Paragraph::new("abc"), frame.area());
+        })
+        .unwrap();
+        terminal.backend().assert_buffer_lines(["abc  "]);
+
+        draw_frame_inner(&mut terminal, true, |frame| {
+            frame.render_widget(Paragraph::new("abc"), frame.area());
+        })
+        .unwrap();
+        terminal.backend().assert_buffer_lines(["abc  "]);
+    }
 }

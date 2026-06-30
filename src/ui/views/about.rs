@@ -82,9 +82,9 @@ fn draw_icon(frame: &mut Frame, app: &App, band: Rect) {
 
 /// Decode the embedded PNG and build its render protocol once, caching it on the app.
 ///
-/// Use foreground Kitty when the terminal picker supports it so the embedded PNG keeps pixel-level
-/// detail inside the popup. Other terminals keep the half-block fallback, composited
-/// against the popup background so transparent corners repaint cleanly.
+/// Use the detected native image protocol when available so the embedded PNG keeps pixel-level
+/// detail inside the popup. Half-block fallback is still composited against the popup background
+/// so transparent corners repaint cleanly on text-only terminals.
 fn ensure_icon(app: &App) {
     let bg = crate::ui::popup_bg(app);
     let target_protocol = about_icon_protocol(app);
@@ -107,6 +107,16 @@ fn ensure_icon(app: &App) {
                 picker.set_background_color(Some(color_to_rgba(bg)));
                 picker.new_resize_protocol_with_kitty_z_index(img, Some(ABOUT_ICON_KITTY_Z_INDEX))
             }
+            Some(_) => {
+                let mut picker = app
+                    .art
+                    .picker
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_else(Picker::halfblocks);
+                picker.set_background_color(Some(color_to_rgba(bg)));
+                picker.new_resize_protocol(img)
+            }
             _ => {
                 let mut picker = Picker::halfblocks();
                 picker.set_background_color(Some(color_to_rgba(bg)));
@@ -121,8 +131,8 @@ fn about_icon_protocol(app: &App) -> Option<ProtocolType> {
     app.art
         .picker
         .as_ref()
-        .filter(|picker| picker.protocol_type() == ProtocolType::Kitty)
         .map(|picker| picker.protocol_type())
+        .filter(|protocol| *protocol != ProtocolType::Halfblocks)
 }
 
 fn color_to_rgba(color: Color) -> image::Rgba<u8> {
