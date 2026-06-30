@@ -1,6 +1,6 @@
 # ytm-tui installer (Windows) — makes `ytt` runnable from any terminal, no manual setup.
 #
-#   irm https://github.com/Ochichan/ytm-tui/releases/latest/download/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
 #                                                            # download a prebuilt — no clone needed
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1   # from a clone: dist\ or a release zip
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 --build   # force a source build (needs Rust)

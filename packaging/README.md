@@ -16,8 +16,8 @@ published formula/manifest always points at the exact bytes of that release.
 
 ## What the CI does on a `v*` tag
 
-After the `build` matrix and the `release` job (which publishes the archives + a combined
-`checksums.txt`), three jobs run:
+After the `build` matrix and the `release` job (which publishes the archives, installer
+scripts, and a combined `checksums.txt`), three jobs run:
 
 - **`publish-homebrew`** — fills the version + the four macOS/Linux SHAs into the formula
   template and pushes it to the tap. The formula is a **prebuilt binary** install

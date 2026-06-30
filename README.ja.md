@@ -20,10 +20,14 @@ Rust + ratatui。MIT。
 | **Windows** | `scoop bucket add extras; scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket; scoop install ytm-tui` |
 | **Linux** — 任意のディストロ、[Nix](https://nixos.org/download) | `nix run github:Ochichan/ytm-tui` |
 | **Linux** — Arch | `yay -S ytm-tui-bin` |
-| **Linux** — その他 | `curl -fsSL https://github.com/Ochichan/ytm-tui/releases/latest/download/install.sh \| sh` |
+| **Linux** — その他 | 下のインストーラを実行 |
 | **ソースからビルド** | `./install.sh --build`（[Rust](https://rustup.rs) が必要） |
 
-> `curl | sh` とソースビルドは `ytt` **だけ**を入れます。補助ツールは自分で入れるか（`brew install mpv yt-dlp ffmpeg`、`sudo apt install mpv yt-dlp ffmpeg`、`sudo pacman -S mpv yt-dlp ffmpeg`）— インストール後に `ytt doctor` で何が足りないか確認してください。
+```sh
+curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash
+```
+
+> `curl | bash` とソースビルドは `ytt` **だけ**を入れます。補助ツールは自分で入れるか（`brew install mpv yt-dlp ffmpeg`、`sudo apt install mpv yt-dlp ffmpeg`、`sudo pacman -S mpv yt-dlp ffmpeg`）— インストール後に `ytt doctor` で何が足りないか確認してください。
 
 ---
 
