@@ -1,0 +1,1507 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>ytm-tui — YouTube Music in your terminal</title>
+<meta name="description" content="A fast, keyboard-driven YouTube Music client that lives in your terminal. AI radio, real album art, remote control, 11 themes. No browser, no ads. Rust + ratatui, MIT." />
+
+<!-- Open Graph / social -->
+<meta property="og:type" content="website" />
+<meta property="og:title" content="ytm-tui — YouTube Music in your terminal" />
+<meta property="og:description" content="Fast, keyboard-driven YouTube Music in your terminal. AI radio, real album art, remote control. No browser, no ads." />
+<meta property="og:url" content="https://ochichan.github.io/ytm-tui/" />
+<meta property="og:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:title" content="ytm-tui — YouTube Music in your terminal" />
+<meta name="twitter:description" content="Fast, keyboard-driven YouTube Music in your terminal. AI radio, real album art, remote control." />
+<meta name="twitter:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
+
+<link rel="icon" type="image/png" href="ytm-tui.png" />
+<link rel="apple-touch-icon" href="ytm-tui.png" />
+
+<meta name="theme-color" content="#faf4ed" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#191724" media="(prefers-color-scheme: dark)" />
+
+<!-- Set theme + lang before paint to avoid a flash -->
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem("ytt-theme");
+    if (!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", t);
+
+    var l = localStorage.getItem("ytt-lang");
+    if (!l) {
+      var nav = (navigator.language || "en").toLowerCase();
+      l = nav.indexOf("ko") === 0 ? "ko" : nav.indexOf("ja") === 0 ? "ja" : "en";
+    }
+    document.documentElement.setAttribute("data-lang", l);
+    document.documentElement.setAttribute("lang", l);
+  } catch (e) {}
+  // mark JS available so scroll-reveal only hides content when we can reveal it again
+  document.documentElement.classList.add("js");
+})();
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet" />
+
+<style>
+/* ============================================================
+   ytm-tui — promo page
+   Theme: Rosé Pine (Dawn = light, Main = dark) — one of the app's own themes.
+   Type:  JetBrains Mono everywhere (terminal voice) + Bricolage Grotesque (headlines).
+   ============================================================ */
+
+/* ---- Rosé Pine: Main (dark) ---- */
+html[data-theme="dark"] {
+  --bg:        #191724;
+  --surface:   #1f1d2e;
+  --overlay:   #26233a;
+  --line:      #403d52;  /* highlight med */
+  --line-soft: #21202e;  /* highlight low */
+  --muted:     #6e6a86;
+  --subtle:    #908caa;
+  --text:      #e0def4;
+  --love:      #eb6f92;  /* primary accent (rose-red) */
+  --gold:      #f6c177;
+  --rose:      #ebbcba;
+  --pine:      #31748f;
+  --foam:      #9ccfd8;
+  --iris:      #c4a7e7;
+  --glow:      rgba(235,111,146,.22);
+  --shadow:    0 24px 60px -28px rgba(0,0,0,.65), 0 2px 0 rgba(255,255,255,.02) inset;
+  color-scheme: dark;
+}
+/* ---- Rosé Pine: Dawn (light) ---- */
+html[data-theme="light"] {
+  --bg:        #faf4ed;
+  --surface:   #fffaf3;
+  --overlay:   #f2e9e1;
+  --line:      #dfdad9;
+  --line-soft: #f4ede8;
+  --muted:     #9893a5;
+  --subtle:    #797593;
+  --text:      #575279;
+  --love:      #b4637a;
+  --gold:      #ea9d34;
+  --rose:      #d7827e;
+  --pine:      #286983;
+  --foam:      #56949f;
+  --iris:      #907aa9;
+  --glow:      rgba(180,99,122,.16);
+  --shadow:    0 24px 50px -30px rgba(87,82,121,.35);
+  color-scheme: light;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+* { margin: 0; }
+[hidden] { display: none !important; } /* the `hidden` attr must beat author display rules */
+
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: clamp(14px, 0.5vw + 13px, 16px);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+  transition: background .35s ease, color .35s ease;
+}
+
+/* Ambient: faint grid + a single accent glow behind the hero. The one flourish. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(var(--line-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
+  background-size: 46px 46px;
+  -webkit-mask-image: radial-gradient(120% 80% at 50% -8%, #000 0%, transparent 62%);
+          mask-image: radial-gradient(120% 80% at 50% -8%, #000 0%, transparent 62%);
+  opacity: .55;
+}
+
+::selection { background: var(--glow); color: var(--text); }
+
+a { color: var(--foam); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+:focus-visible {
+  outline: 2px solid var(--love);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+
+.display {
+  font-family: "Bricolage Grotesque", "JetBrains Mono", system-ui, sans-serif;
+  letter-spacing: -0.02em;
+  line-height: 1.03;
+  word-break: keep-all; /* keep Korean words intact, break only at spaces */
+}
+
+/* ---- layout helpers ---- */
+.wrap { width: min(1180px, 100% - 2.4rem); margin-inline: auto; position: relative; z-index: 1; }
+.section { padding-block: clamp(3.6rem, 8vw, 6.5rem); position: relative; z-index: 1; }
+.eyebrow {
+  font-size: .8rem; letter-spacing: .06em; color: var(--muted);
+  display: inline-flex; align-items: center; gap: .55rem;
+}
+.eyebrow .dot { color: var(--love); }
+.section-head { max-width: 60ch; margin-bottom: clamp(2rem, 4vw, 3rem); }
+.section-head h2 { font-size: clamp(1.7rem, 3.6vw, 2.7rem); font-weight: 800; }
+.section-head p { color: var(--subtle); margin-top: .9rem; max-width: 56ch; }
+
+/* skip link */
+.skip {
+  position: absolute; left: -9999px; top: 0; z-index: 100;
+  background: var(--love); color: var(--bg); padding: .6rem 1rem; border-radius: 4px;
+}
+.skip:focus { left: 1rem; top: 1rem; }
+
+/* ============================================================
+   Top bar — styled like ytm-tui's own nav, not mac window dots
+   ============================================================ */
+.topbar {
+  position: sticky; top: 0; z-index: 40;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar__inner {
+  width: min(1180px, 100% - 2.4rem); margin-inline: auto;
+  display: flex; align-items: center; gap: 1rem;
+  height: 56px;
+}
+.brand { display: flex; align-items: center; gap: .55rem; font-weight: 700; color: var(--text); }
+.brand .spark { color: var(--gold); }
+.brand .name { letter-spacing: -0.01em; }
+.brand .sep { color: var(--line); }
+.brand .ver { color: var(--muted); font-size: .78rem; }
+.topbar__nav { display: none; gap: 1.1rem; color: var(--muted); font-size: .85rem; margin-left: .4rem; }
+.topbar__nav a { color: var(--muted); }
+.topbar__nav a:hover { color: var(--text); text-decoration: none; }
+.topbar__spacer { flex: 1; }
+.topbar__tools { display: flex; align-items: center; gap: .55rem; }
+
+@media (min-width: 860px) { .topbar__nav { display: flex; } }
+@media (max-width: 520px) { .brand .ver, .brand .sep { display: none; } }
+
+/* segmented + icon toggles */
+.seg {
+  display: inline-flex; border: 1px solid var(--line); border-radius: 999px;
+  overflow: hidden; background: var(--surface);
+}
+.seg button {
+  font: inherit; font-size: .8rem; cursor: pointer; border: 0; background: transparent;
+  color: var(--muted); padding: .34rem .7rem; line-height: 1; transition: color .2s, background .2s;
+}
+.seg button[aria-pressed="true"] { background: var(--love); color: var(--bg); }
+.icon-btn {
+  font: inherit; cursor: pointer; background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 999px; width: 34px; height: 30px;
+  display: inline-grid; place-items: center; transition: border-color .2s, transform .2s, color .2s;
+}
+.icon-btn:hover { border-color: var(--love); color: var(--love); }
+.icon-btn:active { transform: scale(.94); }
+.gh-link {
+  display: inline-grid; place-items: center; width: 34px; height: 30px;
+  border: 1px solid var(--line); border-radius: 999px; color: var(--text); background: var(--surface);
+  transition: border-color .2s, color .2s;
+}
+.gh-link:hover { border-color: var(--foam); color: var(--foam); }
+.gh-link svg { width: 16px; height: 16px; }
+
+/* ============================================================
+   Hero
+   ============================================================ */
+.hero { padding-top: clamp(2.6rem, 6vw, 4.5rem); }
+.hero__copy { max-width: 40ch; }
+.hero h1 {
+  font-size: clamp(2.5rem, 7vw, 4.6rem); font-weight: 800; margin-top: 1.1rem;
+}
+.hero h1 .accent { color: var(--love); }
+.hero__sub { color: var(--subtle); font-size: clamp(.98rem, 1vw + .8rem, 1.12rem); margin-top: 1.3rem; max-width: 52ch; }
+.hero__cta { display: flex; flex-wrap: wrap; gap: .8rem; margin-top: 1.8rem; align-items: center; }
+
+.btn {
+  font: inherit; cursor: pointer; border-radius: 6px; padding: .7rem 1.15rem;
+  display: inline-flex; align-items: center; gap: .55rem; border: 1px solid transparent;
+  transition: transform .15s ease, box-shadow .25s ease, background .2s, color .2s, border-color .2s;
+  white-space: nowrap;
+}
+.btn--primary { background: var(--love); color: var(--bg); font-weight: 700; box-shadow: 0 10px 24px -12px var(--glow); }
+.btn--primary:hover { transform: translateY(-2px); box-shadow: 0 16px 30px -12px var(--glow); text-decoration: none; }
+.btn--ghost { background: transparent; color: var(--text); border-color: var(--line); }
+.btn--ghost:hover { border-color: var(--foam); color: var(--foam); transform: translateY(-2px); text-decoration: none; }
+
+/* inline copy-one-liner under CTA */
+.oneliner {
+  margin-top: 1.3rem; display: inline-flex; align-items: stretch; gap: 0;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface); overflow: hidden;
+  max-width: 100%;
+}
+.oneliner code { padding: .55rem .8rem; color: var(--text); font-size: .85rem; white-space: nowrap; overflow-x: auto; }
+.oneliner .prompt { color: var(--pine); }
+.copy-btn {
+  font: inherit; cursor: pointer; border: 0; border-left: 1px solid var(--line);
+  background: var(--overlay); color: var(--subtle); padding: 0 .8rem; font-size: .78rem;
+  transition: color .2s, background .2s; white-space: nowrap;
+}
+.copy-btn:hover { color: var(--love); }
+.copy-btn.copied { color: var(--pine); }
+
+.trust {
+  margin-top: 2.4rem; display: flex; flex-wrap: wrap; gap: .5rem .4rem; color: var(--muted); font-size: .8rem;
+  align-items: center;
+}
+.trust span { display: inline-flex; align-items: center; gap: .45rem; }
+.trust .pipe { color: var(--line); }
+
+/* ============================================================
+   Terminal demo (the signature element) — faithful ytm-tui Player
+   Single centered column: title -> seek -> controls -> status -> art -> hint.
+   Queue is a popup (press c), exactly like the real app.
+   ============================================================ */
+.term {
+  margin-top: clamp(2.4rem, 5vw, 3.6rem);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  position: relative;
+}
+.term::after { /* soft accent glow under the terminal */
+  content: ""; position: absolute; inset: auto 0 -40% 0; height: 60%; z-index: -1;
+  background: radial-gradient(60% 100% at 50% 0%, var(--glow), transparent 70%);
+  filter: blur(20px);
+}
+.term__bar {
+  display: flex; align-items: center; gap: .9rem;
+  padding: .55rem .9rem; border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--overlay) 60%, var(--surface));
+  font-size: .82rem;
+}
+.term__bar .tname { color: var(--text); font-weight: 700; }
+.term__bar .vbar { color: var(--line); }
+.term__tabs { display: flex; gap: .3rem; color: var(--muted); align-items: center; }
+.term__tabs .tab {
+  font: inherit; font-size: inherit; line-height: 1.2; cursor: pointer;
+  background: transparent; border: 0; color: var(--muted);
+  padding: .08rem .5rem; border-radius: 3px; white-space: nowrap;
+  transition: color .15s ease, background .15s ease;
+}
+.term__tabs .tab:hover { color: var(--text); background: color-mix(in srgb, var(--iris) 16%, transparent); }
+.term__tabs .tab.active { background: var(--iris); color: var(--bg); font-weight: 600; }
+.term__tabs .tab.active:hover { color: var(--bg); }
+.term__cue {
+  font-size: .72rem; color: var(--iris); white-space: nowrap; margin-left: .15rem;
+  display: inline-flex; align-items: center; gap: .3rem;
+  transition: opacity .4s ease;
+}
+.term__cue::before { content: "▸"; display: inline-block; animation: cue-nudge 1.4s ease-in-out infinite; }
+@keyframes cue-nudge { 0%, 100% { transform: translateX(0); opacity: .55; } 50% { transform: translateX(3px); opacity: 1; } }
+.term__bar .right { margin-left: auto; color: var(--muted); }
+@media (max-width: 640px) {
+  .term__bar .tname, .term__bar .vbar, .term__cue, .term__bar .right { display: none; }
+  .term__tabs { gap: .1rem; overflow-x: auto; -ms-overflow-style: none; scrollbar-width: none; }
+  .term__tabs::-webkit-scrollbar { display: none; }
+  .term__tabs .tab { padding: .08rem .42rem; }
+}
+
+.term__screen {
+  position: relative; overflow: hidden;
+  padding: clamp(1.3rem, 3vw, 2.1rem) 1.2rem clamp(1rem, 2vw, 1.3rem);
+  display: flex; flex-direction: column; gap: 1rem;
+  min-height: 380px;
+}
+.term__screen--player { align-items: center; text-align: center; }
+
+/* now playing (centered column) */
+.np2__title { font-weight: 700; color: var(--text); font-size: clamp(.95rem, 1.6vw, 1.12rem); max-width: 90%; }
+.np2__title .heart { color: var(--love); }
+.np2__title .np__empty { color: var(--muted); font-weight: 400; }
+
+.seek2 { position: relative; width: 100%; max-width: 760px; display: flex; align-items: center; justify-content: center; height: 1.5em; }
+.seek2__track { position: absolute; left: 0; right: 0; top: 50%; height: 4px; transform: translateY(-50%); background: var(--line); border-radius: 2px; }
+.seek2__fill { position: absolute; left: 0; top: 50%; height: 4px; transform: translateY(-50%); width: 2%; background: var(--foam); border-radius: 2px; }
+.seek2__time { position: relative; z-index: 1; color: var(--foam); font-size: .78rem; background: var(--surface); padding: 0 .7rem; }
+
+.controls2 { display: flex; align-items: center; justify-content: center; gap: 1.4rem; color: var(--subtle); font-size: 1rem; }
+.controls2 .play { color: var(--text); font-size: 1.15rem; }
+.controls2 .vol { color: var(--muted); font-size: .82rem; margin-left: 1.2rem; }
+.controls2 .vol b { color: var(--text); }
+
+.status2 { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .35rem 1.1rem; font-size: .78rem; color: var(--muted); }
+.status2 .chip { white-space: nowrap; }
+.status2 .state { color: var(--subtle); }
+.status2 .eq { color: var(--gold); }
+.status2 .radio { color: var(--iris); }
+
+.art2 {
+  width: clamp(150px, 32vw, 208px); aspect-ratio: 1; border: 1px solid var(--line); border-radius: 6px;
+  overflow: hidden; background: var(--overlay); display: grid; place-items: center; margin-top: .1rem;
+}
+.art2 img { width: 100%; height: 100%; object-fit: cover; }
+.art2 .placeholder { color: var(--muted); font-size: 1.8rem; }
+
+.hintbar { color: var(--muted); font-size: .76rem; margin-top: auto; padding-top: .4rem; }
+.hintbar kbd { color: var(--text); }
+
+/* key flash (^R, c) */
+.keyflash { position: absolute; top: .9rem; left: 50%; transform: translateX(-50%); z-index: 6; }
+.keyflash kbd { font-size: .85rem; background: var(--iris); color: var(--bg); border-color: transparent; box-shadow: 0 6px 18px -6px var(--glow); }
+
+/* queue popup overlay (press c) */
+.qpop {
+  position: absolute; left: 50%; bottom: 1rem; transform: translateX(-50%);
+  width: min(440px, 90%); background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 24px 50px -20px rgba(0,0,0,.55); text-align: left; overflow: hidden; z-index: 5;
+  animation: qpop-in .35s ease;
+}
+@keyframes qpop-in { from { opacity: 0; transform: translate(-50%, 14px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.qpop__bar { display: flex; align-items: center; justify-content: space-between; padding: .55rem .8rem; border-bottom: 1px solid var(--line); font-size: .8rem; color: var(--subtle); }
+.qpop__bar .k { color: var(--iris); }
+.qpop__list { padding: .4rem .5rem .6rem; display: flex; flex-direction: column; }
+.qrow2 { display: grid; grid-template-columns: 1.3ch 1.6ch 1fr; gap: .55rem; align-items: baseline; padding: .3rem .4rem; border-radius: 4px; opacity: 0; translate: 0 5px; transition: opacity .35s ease, translate .35s ease; font-size: .84rem; }
+.qrow2.show { opacity: 1; translate: 0 0; }
+.qrow2.playing { background: var(--overlay); }
+.qrow2 .mark { color: var(--love); }
+.qrow2 .num { color: var(--muted); }
+.qrow2 .ttl { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spinner { color: var(--iris); }
+
+/* ============================================================
+   Interactive screens — faithful Search / Library / Settings / AI.
+   The nav tabs switch which one shows; only one is visible at a time.
+   Role → color mapping mirrors the app (accent=foam, selection=iris,
+   muted=muted, error/heart=love). Built from the real src/ui/views/*.
+   ============================================================ */
+.term__screen[hidden] { display: none !important; }
+.scr { width: 100%; flex: 1; display: flex; flex-direction: column; gap: .85rem; text-align: left; }
+.scr-help { color: var(--muted); font-size: .76rem; margin-top: auto; padding-top: .6rem; }
+.scr-help kbd { color: var(--text); }
+.cur { /* block cursor the app appends to a focused input */
+  display: inline-block; width: .5ch; height: 1.05em; background: var(--foam);
+  margin-left: .15ch; vertical-align: text-bottom; animation: blink 1.1s step-end infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* shared list rows (Search results + Library tracks): {▶}{♥}title — artist (dur){✗} */
+.scr-list { display: flex; flex-direction: column; width: 100%; }
+.lrow { display: flex; align-items: baseline; gap: .5rem; padding: .26rem .5rem; border-radius: 4px; font-size: .86rem; color: var(--text); }
+.lrow .mk { flex: none; width: 1.1ch; color: var(--love); }
+.lrow .body { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .heart { color: var(--love); }
+.lrow .dash { color: var(--muted); }
+.lrow .art { color: var(--subtle); }
+.lrow .dur { color: var(--muted); }
+.lrow .del { flex: none; color: var(--love); padding-left: .6rem; }
+.lrow.sel { background: var(--iris); color: var(--bg); }
+.lrow.sel .heart, .lrow.sel .dash, .lrow.sel .art, .lrow.sel .dur { color: var(--bg); }
+
+/* Search: three bordered boxes — [⌕] [ query █ ] [Search] */
+.srch { display: flex; gap: .5rem; width: 100%; align-items: stretch; }
+.srch__icon, .srch__btn { flex: none; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); display: grid; place-items: center; }
+.srch__icon { width: 2.7rem; color: var(--foam); font-weight: 700; font-size: 1rem; }
+.srch__btn { padding: 0 1.1rem; color: var(--foam); font-weight: 700; font-size: .85rem; }
+.srch__box { position: relative; flex: 1; min-width: 0; border: 1px solid var(--foam); border-radius: 6px; background: var(--bg); padding: .62rem .78rem; color: var(--text); display: flex; align-items: center; font-size: .88rem; }
+.srch__cap { position: absolute; top: -.58rem; left: .6rem; font-size: .68rem; background: var(--surface); padding: 0 .35rem; color: var(--foam); }
+
+/* sub-tab strips (Library + Settings) — plain text, count in parens */
+.subtabs { display: flex; gap: .3rem; flex-wrap: wrap; width: 100%; font-size: .82rem; }
+.subtab { color: var(--muted); padding: .06rem .55rem; border-radius: 3px; white-space: nowrap; }
+.subtab .n { opacity: .75; }
+.subtab.on { background: var(--iris); color: var(--bg); font-weight: 700; }
+.subtab.on .n { opacity: .9; }
+
+/* Settings field rows: {▶}{label}{value}; values show kind glyphs ([x], < v >, sliders) */
+.set-list { display: flex; flex-direction: column; width: 100%; }
+.srow { display: flex; align-items: baseline; gap: .5rem; padding: .3rem .5rem; border-radius: 4px; font-size: .86rem; }
+.srow .mk { flex: none; width: 1.1ch; color: var(--love); }
+.srow .lbl { flex: none; width: 23ch; color: var(--subtle); white-space: nowrap; }
+.srow .val { color: var(--foam); white-space: nowrap; }
+.srow .val.tog { color: var(--text); font-weight: 700; }
+.srow.sel { background: var(--iris); color: var(--bg); }
+.srow.sel .lbl, .srow.sel .val, .srow.sel .val.tog { color: var(--bg); }
+@media (max-width: 560px) { .srow { font-size: .76rem; } .set-list { overflow-x: auto; } }
+
+/* AI: transcript + Gemini-tan mascot + Suggestions panel + Ask box */
+.ai { width: 100%; flex: 1; display: flex; flex-direction: column; gap: .75rem; }
+.ai-head { display: flex; align-items: center; justify-content: space-between; font-size: .76rem; color: var(--muted); border-bottom: 1px solid var(--line); padding-bottom: .35rem; }
+.ai-head .model { color: var(--iris); }
+.ai-body { position: relative; flex: 1; min-height: 156px; }
+.ai-empty { color: var(--muted); font-size: .86rem; max-width: 30ch; }
+.gemini-tan {
+  position: absolute; top: -.1rem; right: 0; margin: 0;
+  font-size: .64rem; line-height: 1.18; white-space: pre;
+  font-family: "JetBrains Mono", monospace; pointer-events: none; user-select: none;
+}
+.gemini-tan .c0 { color: #BFE4FF; } .gemini-tan .c1 { color: #5BC8FA; }
+.gemini-tan .c2 { color: #4285F4; } .gemini-tan .c3 { color: #6E6BF0; }
+.gemini-tan .c4 { color: #A78BFA; } .gemini-tan .c5 { color: #E69BF2; }
+@media (max-width: 700px) { .gemini-tan { display: none; } }
+.ai-sug { border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.ai-sug__title { font-size: .72rem; color: var(--subtle); padding: .32rem .6rem; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--overlay) 50%, var(--surface)); }
+.ai-sug__list { display: flex; flex-direction: column; padding: .2rem; }
+.ai-ask { display: flex; gap: .5rem; }
+.ai-ask__box { position: relative; flex: 1; min-width: 0; border: 1px solid var(--foam); border-radius: 6px; background: var(--bg); padding: .6rem .78rem; color: var(--text); display: flex; align-items: center; font-size: .86rem; }
+.ai-ask__cap { position: absolute; top: -.58rem; left: .6rem; font-size: .68rem; background: var(--surface); padding: 0 .35rem; color: var(--foam); }
+.ai-ask__btn { flex: none; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--foam); font-weight: 700; padding: 0 1rem; display: grid; place-items: center; font-size: .85rem; }
+
+/* ============================================================
+   Features — ratatui-style panes with a title in the border
+   ============================================================ */
+.features-grid {
+  display: grid; gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  grid-template-columns: repeat(3, 1fr);
+}
+@media (max-width: 900px) { .features-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .features-grid { grid-template-columns: 1fr; } }
+
+.feature {
+  background: var(--surface); padding: 2rem 1.5rem 1.7rem; position: relative;
+  transition: background .25s ease;
+}
+.feature:hover { background: var(--overlay); }
+.feature__top { display: flex; align-items: center; gap: .6rem; margin-bottom: 1rem; }
+.feature h3 { font-size: 1.18rem; font-weight: 700; letter-spacing: -.01em; }
+.feature p { color: var(--subtle); font-size: .9rem; }
+.feature p code { color: var(--text); background: var(--bg); padding: .05rem .35rem; border-radius: 3px; border: 1px solid var(--line); }
+.feature.lov h3 { color: var(--love); } .feature.iri h3 { color: var(--iris); }
+.feature.gol h3 { color: var(--gold); } .feature.foa h3 { color: var(--foam); }
+.feature.pin h3 { color: var(--pine); } .feature.ros h3 { color: var(--rose); }
+
+kbd {
+  font-family: "JetBrains Mono", monospace; font-size: .74rem; line-height: 1;
+  color: var(--subtle); background: var(--bg); border: 1px solid var(--line);
+  border-bottom-width: 2px; border-radius: 4px; padding: .3rem .45rem; white-space: nowrap;
+}
+
+/* ============================================================
+   "Why these picks" band (AI radio spotlight)
+   ============================================================ */
+.why-band { background: var(--surface); border-block: 1px solid var(--line); }
+.why-grid { display: grid; grid-template-columns: 1fr 1.1fr; gap: clamp(2rem, 5vw, 4rem); align-items: center; }
+@media (max-width: 820px) { .why-grid { grid-template-columns: 1fr; } }
+.why-card {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+  box-shadow: var(--shadow); overflow: hidden;
+}
+.why-card__title {
+  padding: .7rem 1rem; border-bottom: 1px solid var(--line); color: var(--iris); font-size: .85rem;
+  display: flex; align-items: center; gap: .5rem; background: color-mix(in srgb, var(--iris) 8%, var(--bg));
+}
+.why-card__body { padding: .6rem 1rem 1rem; display: flex; flex-direction: column; }
+.why-pick { display: grid; grid-template-columns: 2ch 1fr; gap: .6rem; padding: .7rem 0; border-bottom: 1px dashed var(--line); }
+.why-pick:last-child { border-bottom: 0; }
+.why-pick .n { color: var(--muted); }
+.why-pick .ttl { color: var(--text); font-weight: 600; }
+.why-pick .role { color: var(--iris); font-size: .72rem; border: 1px solid color-mix(in srgb, var(--iris) 40%, transparent); border-radius: 4px; padding: 0 .35rem; margin-left: .5rem; }
+.why-pick .reason { color: var(--subtle); font-size: .82rem; margin-top: .25rem; }
+
+/* ============================================================
+   Install
+   ============================================================ */
+.tabs { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: 1.1rem; }
+.tab-btn {
+  font: inherit; cursor: pointer; background: var(--surface); color: var(--subtle);
+  border: 1px solid var(--line); border-radius: 6px; padding: .45rem .85rem; font-size: .85rem;
+  display: inline-flex; align-items: center; gap: .45rem; transition: color .2s, border-color .2s, background .2s;
+}
+.tab-btn[aria-selected="true"] { color: var(--love); border-color: var(--love); background: color-mix(in srgb, var(--love) 8%, var(--surface)); }
+.tab-btn:hover { color: var(--text); }
+
+.terminal-box {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+  box-shadow: var(--shadow); overflow: hidden;
+}
+.terminal-box__bar { display: flex; align-items: center; gap: .5rem; padding: .5rem .85rem; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .76rem; background: color-mix(in srgb, var(--overlay) 55%, var(--surface)); }
+.terminal-box__bar .dotrow { display: inline-flex; gap: .35rem; }
+.terminal-box__bar .d { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+.terminal-box__bar .d.l { background: var(--love); } .terminal-box__bar .d.g { background: var(--gold); } .terminal-box__bar .d.p { background: var(--pine); }
+.cmd-panel { display: none; padding: 1.1rem 1.2rem; }
+.cmd-panel.active { display: block; }
+.cmd-line { display: flex; align-items: flex-start; gap: .6rem; padding: .25rem 0; }
+.cmd-line .prompt { color: var(--pine); user-select: none; }
+.cmd-line code { color: var(--text); font-size: .88rem; word-break: break-all; flex: 1; }
+.cmd-line .hash { color: var(--muted); }
+.cmd-note { color: var(--muted); font-size: .8rem; margin-top: .7rem; padding-top: .7rem; border-top: 1px dashed var(--line); }
+.cmd-panel .copy-line { float: right; margin-top: -1.6rem; }
+
+.run-row { margin-top: 1.4rem; display: flex; flex-wrap: wrap; gap: .8rem 1.4rem; align-items: center; color: var(--subtle); font-size: .9rem; }
+.run-row .big { color: var(--text); font-size: 1rem; }
+.run-row .big .prompt { color: var(--pine); }
+.run-row kbd { margin: 0 .15rem; }
+
+/* ============================================================
+   Remote control band
+   ============================================================ */
+.remote-grid { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(1.4rem, 4vw, 3rem); }
+@media (max-width: 820px) { .remote-grid { grid-template-columns: 1fr; } }
+.remote-list { display: flex; flex-direction: column; gap: .55rem; }
+.remote-list .r {
+  display: grid; grid-template-columns: minmax(0,1.2fr) 1fr; gap: 1rem; align-items: baseline;
+  padding: .55rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: var(--surface);
+}
+.remote-list .r code { color: var(--foam); font-size: .85rem; }
+.remote-list .r .desc { color: var(--subtle); font-size: .83rem; }
+.remote-aside { display: flex; flex-direction: column; gap: 1rem; }
+.statusline {
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: .8rem 1rem; font-size: .82rem;
+  color: var(--subtle);
+}
+.statusline .st { color: var(--pine); }
+.statusline b { color: var(--text); font-weight: 600; }
+
+/* ============================================================
+   Footer
+   ============================================================ */
+.foot { border-top: 1px solid var(--line); background: var(--surface); }
+.foot__cta { text-align: center; padding-block: clamp(3rem, 7vw, 5rem); }
+.foot__cta h2 { font-size: clamp(1.8rem, 4vw, 3rem); font-weight: 800; }
+.foot__cta p { color: var(--subtle); margin-top: .8rem; max-width: 46ch; margin-inline: auto; }
+.foot__cta .btn { margin-top: 1.8rem; }
+
+.foot__grid {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 1.5rem; align-items: center;
+  padding-block: 2rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .82rem;
+}
+@media (max-width: 720px) { .foot__grid { grid-template-columns: 1fr; text-align: center; justify-items: center; } }
+.foot__mascot { display: flex; align-items: center; gap: .9rem; }
+.foot__mascot img { width: 52px; height: 52px; border-radius: 10px; border: 1px solid var(--line); }
+.foot__mascot .thanks { max-width: 34ch; }
+.foot__mascot .thanks a { color: var(--love); }
+.foot__links { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
+.foot__meta { text-align: right; }
+@media (max-width: 720px) { .foot__meta { text-align: center; } }
+.foot__meta .lic { color: var(--subtle); }
+.disclaimer { padding-bottom: 2.5rem; color: var(--muted); font-size: .72rem; text-align: center; max-width: 60ch; margin-inline: auto; opacity: .8; }
+
+/* ============================================================
+   Scroll reveal (only hide when JS can reveal it again)
+   ============================================================ */
+.js .reveal { opacity: 0; transform: translateY(16px); transition: opacity .7s ease, transform .7s ease; }
+.js .reveal.in { opacity: 1; transform: none; }
+
+/* ============================================================
+   Reduced motion
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1 !important; transform: none !important; transition: none !important; }
+  .seek2__fill, .spinner, .qpop, .cur, .term__cue::before { animation: none !important; }
+  .btn:hover, .btn--ghost:hover, .btn--primary:hover { transform: none; }
+  *, *::before, *::after { transition-duration: .001ms !important; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main" data-i18n="skip">Skip to content</a>
+
+<!-- ===================== TOP BAR ===================== -->
+<header class="topbar">
+  <div class="topbar__inner">
+    <div class="brand">
+      <span class="spark" aria-hidden="true">✨</span>
+      <span class="name">ytm-tui</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span class="ver">v1.5.5</span>
+    </div>
+    <nav class="topbar__nav" aria-label="Sections">
+      <a href="#features" data-i18n="nav.features">Features</a>
+      <a href="#radio" data-i18n="nav.radio">Radio</a>
+      <a href="#install" data-i18n="nav.install">Install</a>
+      <a href="#remote" data-i18n="nav.remote">Remote</a>
+    </nav>
+    <div class="topbar__spacer"></div>
+    <div class="topbar__tools">
+      <div class="seg" role="group" aria-label="Language">
+        <button type="button" id="lang-en" data-lang-btn="en" aria-pressed="true">EN</button>
+        <button type="button" id="lang-ko" data-lang-btn="ko" aria-pressed="false">한</button>
+        <button type="button" id="lang-ja" data-lang-btn="ja" aria-pressed="false">日</button>
+      </div>
+      <button type="button" class="icon-btn" id="theme-toggle" aria-label="Toggle light / dark"><span id="theme-icon">☾</span></button>
+      <a class="gh-link" href="https://github.com/Ochichan/ytm-tui" aria-label="GitHub repository" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ===================== HERO ===================== -->
+<section class="hero section wrap" aria-labelledby="hero-h1">
+  <p class="eyebrow"><span class="dot">●</span> <span data-i18n="hero.eyebrow">~/ytm-tui — Rust · ratatui · MIT</span></p>
+  <div class="hero__copy">
+    <h1 class="display" id="hero-h1">
+      <span data-i18n="hero.h1a">Now playing —</span><br>
+      <span class="accent" data-i18n="hero.h1b">in your terminal.</span>
+    </h1>
+  </div>
+  <p class="hero__sub" data-i18n="hero.sub">
+    A fast, keyboard-driven YouTube Music client with AI radio, real album art, and remote control.
+    No browser tab quietly eating your RAM. No ads. No mouse required — though it's there if you miss it.
+  </p>
+  <div class="hero__cta">
+    <a class="btn btn--primary" href="#install"><span aria-hidden="true">▸</span> <span data-i18n="hero.cta1">Install ytm-tui</span></a>
+    <a class="btn btn--ghost" href="https://github.com/Ochichan/ytm-tui" target="_blank" rel="noopener"><span aria-hidden="true">★</span> <span data-i18n="hero.cta2">Star it on GitHub</span></a>
+  </div>
+  <div class="oneliner">
+    <code><span class="prompt">$</span> <span id="brewcmd">brew install Ochichan/tap/ytm-tui</span></code>
+    <button class="copy-btn" type="button" data-copy="brew install Ochichan/tap/ytm-tui" data-i18n="copy">copy</button>
+  </div>
+
+  <div class="trust" aria-label="At a glance">
+    <span data-i18n="trust.ram">🪶 Tiny memory footprint</span><span class="pipe">│</span>
+    <span data-i18n="trust.ads">🚫 Zero ads</span><span class="pipe">│</span>
+    <span data-i18n="trust.themes">🎨 11 themes, fully recolorable</span><span class="pipe">│</span>
+    <span data-i18n="trust.keys">⌨ Every key rebindable</span><span class="pipe">│</span>
+    <span data-i18n="trust.mit">⚖ MIT</span>
+  </div>
+
+  <!-- ===== the living terminal (signature) — a faithful ytm-tui Player ===== -->
+  <div class="term" id="demo" aria-label="A live preview of the ytm-tui Player screen">
+    <div class="term__bar">
+      <span class="tname">ytm-tui</span>
+      <span class="vbar" aria-hidden="true">│</span>
+      <span class="term__tabs" role="tablist" aria-label="ytm-tui screens">
+        <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="screen-player" data-screen="player" id="tab-player" data-i18n="tab.player">Player</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-search" data-screen="search" id="tab-search" tabindex="-1" data-i18n="tab.search">Search</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-library" data-screen="library" id="tab-library" tabindex="-1" data-i18n="tab.library">Library</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-settings" data-screen="settings" id="tab-settings" tabindex="-1" data-i18n="tab.settings">Settings</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-ai" data-screen="ai" id="tab-ai" tabindex="-1" data-i18n="tab.ai">AI</button>
+      </span>
+      <span class="term__cue" id="d-cue" data-i18n="demo.clickcue">click to explore</span>
+      <span class="right"><span id="demo-clock">7:06</span></span>
+    </div>
+
+    <div class="term__screen term__screen--player" id="screen-player" role="tabpanel" aria-labelledby="tab-player" data-screen="player" tabindex="0">
+      <div class="keyflash" id="d-keyflash" hidden><kbd id="d-keycap">^R</kbd></div>
+
+      <div class="np2__title" id="d-title">
+        <span class="np__empty" data-i18n="demo.empty">Nothing playing — press / to search</span>
+      </div>
+
+      <div class="seek2" aria-hidden="true">
+        <div class="seek2__track"></div>
+        <div class="seek2__fill" id="d-fill"></div>
+        <div class="seek2__time"><span id="d-elapsed">0:00</span> / <span id="d-total">0:00</span></div>
+      </div>
+
+      <div class="controls2" aria-hidden="true">
+        <span>⇤</span>
+        <span class="play" id="d-playicon">‖</span>
+        <span>⇥</span>
+        <span class="vol">vol <span>−</span> <b>80%</b> <span>+</span></span>
+      </div>
+
+      <div class="status2" aria-hidden="true">
+        <span class="chip state" id="d-state"></span>
+        <span class="chip" id="d-pos"></span>
+        <span class="chip">🤔</span>
+        <span class="chip">S:✗</span>
+        <span class="chip">R:✗</span>
+        <span class="chip eq">eq:Bass</span>
+        <span class="chip radio" id="d-radio">radio:✗</span>
+      </div>
+
+      <div class="art2" id="d-art"><span class="placeholder" aria-hidden="true">♪</span></div>
+
+      <div class="hintbar" aria-hidden="true"><kbd>?</kbd> <span data-i18n="hint.help">keybindings</span></div>
+
+      <!-- queue popup (press c) -->
+      <div class="qpop" id="d-qpop" hidden>
+        <div class="qpop__bar">
+          <span class="lbl"><span class="k">[c]</span> <span data-i18n="demo.upnext">Up next</span></span>
+          <span id="d-qstate"></span>
+        </div>
+        <div class="qpop__list" id="d-queue"></div>
+      </div>
+    </div><!-- /#screen-player -->
+
+    <!-- ===== SEARCH screen ===== -->
+    <div class="term__screen" id="screen-search" role="tabpanel" aria-labelledby="tab-search" data-screen="search" tabindex="0" hidden>
+      <div class="scr">
+        <div class="srch">
+          <div class="srch__icon" aria-hidden="true">⌕</div>
+          <div class="srch__box">
+            <span class="srch__cap" data-i18n="search.cap">Search</span>
+            <span>back number</span><span class="cur" aria-hidden="true"></span>
+          </div>
+          <button class="srch__btn" type="button" tabindex="-1" data-i18n="search.btn">Search</button>
+        </div>
+        <div class="scr-list" role="list">
+          <div class="lrow sel" role="listitem"><span class="mk" aria-hidden="true">▶</span><span class="body"><span class="heart" aria-hidden="true">♥ </span>クリスマスソング <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (5:42)</span></span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">高嶺の花子さん <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (5:10)</span></span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">花束 <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (5:33)</span></span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">わたがし <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (4:47)</span></span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">大不正解 <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (4:05)</span></span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">SISTER <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (4:31)</span></span></div>
+        </div>
+        <div class="scr-help"><kbd>?</kbd> <span data-i18n="hint.help">keybindings</span></div>
+      </div>
+    </div><!-- /#screen-search -->
+
+    <!-- ===== LIBRARY screen ===== -->
+    <div class="term__screen" id="screen-library" role="tabpanel" aria-labelledby="tab-library" data-screen="library" tabindex="0" hidden>
+      <div class="scr">
+        <div class="subtabs">
+          <span class="subtab"><span data-i18n="lib.all">All</span> <span class="n">(128)</span></span>
+          <span class="subtab on"><span data-i18n="lib.fav">Favorites</span> <span class="n">(42)</span></span>
+          <span class="subtab"><span data-i18n="lib.hist">History</span> <span class="n">(87)</span></span>
+          <span class="subtab"><span data-i18n="lib.dl">Downloads</span> <span class="n">(15)</span></span>
+        </div>
+        <div class="scr-list" role="list">
+          <div class="lrow sel" role="listitem"><span class="mk" aria-hidden="true">▶</span><span class="body">Late Night Study <span class="dash">—</span> <span class="art">Mello</span><span class="dur">  (2:48)</span></span><span class="del" aria-hidden="true">✗</span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">Amber <span class="dash">—</span> <span class="art">Sundial</span><span class="dur">  (4:11)</span></span><span class="del" aria-hidden="true">✗</span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">Ceramic <span class="dash">—</span> <span class="art">Tide Pools</span><span class="dur">  (3:22)</span></span><span class="del" aria-hidden="true">✗</span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">Foxtrot <span class="dash">—</span> <span class="art">Holo Beats</span><span class="dur">  (3:05)</span></span><span class="del" aria-hidden="true">✗</span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">Marrow <span class="dash">—</span> <span class="art">Kettle</span><span class="dur">  (5:18)</span></span><span class="del" aria-hidden="true">✗</span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">Paper Planes <span class="dash">—</span> <span class="art">Aoi</span><span class="dur">  (3:51)</span></span><span class="del" aria-hidden="true">✗</span></div>
+        </div>
+        <div class="scr-help"><kbd>?</kbd> <span data-i18n="hint.help">keybindings</span></div>
+      </div>
+    </div><!-- /#screen-library -->
+
+    <!-- ===== SETTINGS screen (General tab) ===== -->
+    <div class="term__screen" id="screen-settings" role="tabpanel" aria-labelledby="tab-settings" data-screen="settings" tabindex="0" hidden>
+      <div class="scr">
+        <div class="subtabs">
+          <span class="subtab on" data-i18n="set.general">General</span>
+          <span class="subtab" data-i18n="set.playback">Playback</span>
+          <span class="subtab" data-i18n="set.hotkeys">Hotkeys</span>
+          <span class="subtab" data-i18n="set.graphics">Graphics</span>
+          <span class="subtab">AI</span>
+        </div>
+        <div class="set-list">
+          <div class="srow sel"><span class="mk" aria-hidden="true">▶</span><span class="lbl" data-i18n="set.lang">Language</span><span class="val">&lt; <span data-i18n="set.lang.val">English</span> &gt;</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.cookies">Cookies file</span><span class="val" data-i18n="set.default">(default: ~/…)</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.dldir">Download dir</span><span class="val">~/Music/ytm-tui</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.mouse">Mouse (next launch)</span><span class="val tog">[x]</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.art">Album art (next launch)</span><span class="val tog">[x]</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.autoplay">Autoplay on launch</span><span class="val tog">[ ]</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.resetkeys">Reset keybindings</span><span class="val">↵ <span data-i18n="set.enter">press Enter</span></span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.resetall">Reset all settings</span><span class="val">↵ <span data-i18n="set.enter">press Enter</span></span></div>
+        </div>
+        <div class="scr-help"><kbd>?</kbd> <span data-i18n="hint.help">keybindings</span> · <kbd>Tab</kbd> <span data-i18n="set.switch">switch tab</span></div>
+      </div>
+    </div><!-- /#screen-settings -->
+
+    <!-- ===== AI screen (Gemini-tan, empty state) ===== -->
+    <div class="term__screen" id="screen-ai" role="tabpanel" aria-labelledby="tab-ai" data-screen="ai" tabindex="0" hidden>
+      <div class="ai">
+        <div class="ai-head">
+          <span data-i18n="ai.eyebrow">✦ AI assistant</span>
+          <span class="model" title="Gemini model">Flash Lite</span>
+        </div>
+        <div class="ai-body">
+<pre class="gemini-tan" aria-hidden="true"><span class="c1">  ╱╲         ╱╲</span><span class="c0">  ✦</span>
+<span class="c2">  ╭───────────────╮</span>
+<span class="c2">  │</span><span class="c2">▔▔▔▔</span><span class="c3">▔▔▔▔</span><span class="c4">▔▔▔</span><span class="c1">▔▔▔▔</span><span class="c2">│</span>
+<span class="c2">  │</span><span class="c1">   ◕   ▿   ◕   </span><span class="c2">│</span>
+<span class="c2">  │</span><span class="c4">      ╰ω╯      </span><span class="c2">│</span>
+<span class="c2">  ╰───────┬───────╯</span>
+<span class="c2">  ╭───────┴───────╮</span>
+<span class="c2">  │</span><span class="c4">   ✦   </span><span class="c5">♪</span><span class="c4">   ✦   </span><span class="c2">│</span>
+<span class="c2">  │</span><span class="c4">   ✦       ✦   </span><span class="c2">│</span>
+<span class="c2">  ╰───────────────╯</span>
+<span class="c5">     ♪    </span><span class="c1">♫</span><span class="c4">    ♩</span>
+<span class="c2"> G</span><span class="c3">  E</span><span class="c4">  M</span><span class="c5">  I</span><span class="c1">  N</span><span class="c2">  I</span></pre>
+          <p class="ai-empty" data-i18n="ai.empty">Ask me to play, queue, or find music.</p>
+        </div>
+        <div class="ai-sug">
+          <div class="ai-sug__title" data-i18n="ai.sugtitle">Suggestions</div>
+          <div class="ai-sug__list">
+            <div class="lrow sel"><span class="mk" aria-hidden="true">▶</span><span class="body">Late Night Study <span class="dash">—</span> <span class="art">Mello</span></span></div>
+            <div class="lrow"><span class="mk"></span><span class="body"><span class="heart" aria-hidden="true">♥ </span>Amber <span class="dash">—</span> <span class="art">Sundial</span></span></div>
+            <div class="lrow"><span class="mk"></span><span class="body">Foxtrot <span class="dash">—</span> <span class="art">Holo Beats</span></span></div>
+          </div>
+        </div>
+        <div class="ai-ask">
+          <div class="ai-ask__box">
+            <span class="ai-ask__cap" data-i18n="ai.ask">Ask</span>
+            <span data-i18n="ai.prompt">play something like back number</span><span class="cur" aria-hidden="true"></span>
+          </div>
+          <button class="ai-ask__btn" type="button" tabindex="-1" data-i18n="ai.send">Send</button>
+        </div>
+        <div class="scr-help"><kbd>?</kbd> <span data-i18n="hint.help">keybindings</span></div>
+      </div>
+    </div><!-- /#screen-ai -->
+  </div>
+</section>
+
+<!-- ===================== FEATURES ===================== -->
+<section class="section wrap" id="features" aria-labelledby="feat-h2">
+  <div class="section-head reveal">
+    <p class="eyebrow"><span class="dot">●</span> <span data-i18n="feat.eyebrow">The good stuff</span></p>
+    <h2 class="display" id="feat-h2" data-i18n="feat.h2">Everything, one key away</h2>
+    <p data-i18n-html="feat.sub">It's all keyboard, all fast, and all yours to rebind. Here's what you get the moment you type <code>ytt</code>.</p>
+  </div>
+
+  <div class="features-grid reveal">
+    <article class="feature iri">
+      <div class="feature__top"><kbd>Ctrl R</kbd></div>
+      <h3 class="display" data-i18n="f.radio.h">AI radio that reads the room</h3>
+      <p data-i18n-html="f.radio.p">Press <code>Ctrl+R</code> and ytm-tui becomes a station built around what you're hearing. A Gemini-powered <em>Queue Director</em> lines up songs that fit the mood — Focused, Balanced, or Discovery. Press <code>w</code> for the plain-language reasoning.</p>
+    </article>
+
+    <article class="feature gol">
+      <div class="feature__top"><kbd>album art</kbd></div>
+      <h3 class="display" data-i18n="f.art.h">Real album art. In a terminal.</h3>
+      <p data-i18n-html="f.art.p">Yes — actual cover images, drawn right in the Player on terminals that can show them. Pixels where you least expect them. Synced lyrics scroll underneath, karaoke for one.</p>
+    </article>
+
+    <article class="feature foa">
+      <div class="feature__top"><kbd>ytt -r</kbd></div>
+      <h3 class="display" data-i18n="f.remote.h">Drive it from anywhere</h3>
+      <p data-i18n-html="f.remote.p">Wire your media keys once — <code>⏯ ⏭ ⏮</code> — and never alt-tab back. <code>ytt -r next</code>, <code>ytt -r pp</code>, <code>ytt -r status</code>. A stray second launch just hands you the controls.</p>
+    </article>
+
+    <article class="feature pin">
+      <div class="feature__top"><kbd>/</kbd></div>
+      <h3 class="display" data-i18n="f.nav.h">Search, library, queue, lyrics</h3>
+      <p data-i18n-html="f.nav.p">Slash to search, <code>Enter</code> to play. <code>l</code> for your library, <code>c</code> for the queue, <code>Shift+L</code> for time-synced lyrics. Favorites, history and downloads, all in one list.</p>
+    </article>
+
+    <article class="feature ros">
+      <div class="feature__top"><kbd>,</kbd></div>
+      <h3 class="display" data-i18n="f.custom.h">Unmistakably yours</h3>
+      <p data-i18n-html="f.custom.p">11 built-in themes (Gruvbox, Nord, Dracula, Tokyo Night, Rosé Pine…), every color tweakable in hex, every key rebindable, a 10-band EQ, and animations from a calm still screen to a spinning ASCII donut.</p>
+    </article>
+
+    <article class="feature lov">
+      <div class="feature__top"><kbd>?</kbd></div>
+      <h3 class="display" data-i18n="f.help.h">The app remembers the keys</h3>
+      <p data-i18n-html="f.help.p">Forget a shortcut? Press <code>?</code> for the full, always-current cheat sheet, grouped by screen — in your language, with your custom bindings. Even Korean jamo work: <code>ㅂ</code> = <code>q</code>.</p>
+    </article>
+  </div>
+</section>
+
+<!-- ===================== WHY (AI radio spotlight) ===================== -->
+<section class="why-band section" id="radio" aria-labelledby="why-h2">
+  <div class="wrap why-grid">
+    <div class="section-head reveal" style="margin-bottom:0">
+      <p class="eyebrow"><span class="dot">●</span> <span data-i18n="why.eyebrow">Radio with its reasons</span></p>
+      <h2 class="display" id="why-h2" data-i18n="why.h2">It doesn't just autoplay. It can tell you why.</h2>
+      <p data-i18n-html="why.sub">Most players guess your next song and hope. ytm-tui's radio plans a <em>set</em> — an anchor, a bridge, a lift, a wind-down — then keeps the music flowing as your queue runs dry. Press <code>w</code> and it shows its work, in plain language, no math.</p>
+    </div>
+
+    <div class="why-card reveal" aria-label="Why these picks overlay">
+      <div class="why-card__title"><span aria-hidden="true">✦</span> <span data-i18n="why.card.title">Why these AI picks</span></div>
+      <div class="why-card__body">
+        <div class="why-pick">
+          <span class="n">1</span>
+          <div><span class="ttl">Late Night Study — Mello</span><span class="role" data-i18n="why.r1.role">anchor</span><div class="reason" data-i18n="why.r1.reason">Sets the tempo you searched for.</div></div>
+        </div>
+        <div class="why-pick">
+          <span class="n">2</span>
+          <div><span class="ttl">Foxtrot — Holo Beats</span><span class="role" data-i18n="why.r2.role">bridge</span><div class="reason" data-i18n="why.r2.reason">Keeps the key, swaps the drums for focus.</div></div>
+        </div>
+        <div class="why-pick">
+          <span class="n">3</span>
+          <div><span class="ttl">Amber — Sundial</span><span class="role" data-i18n="why.r3.role">lift</span><div class="reason" data-i18n="why.r3.reason">A small energy lift so the set doesn't flatline.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== INSTALL ===================== -->
+<section class="section wrap" id="install" aria-labelledby="inst-h2">
+  <div class="section-head reveal">
+    <p class="eyebrow"><span class="dot">●</span> <span data-i18n="inst.eyebrow">Two minutes to music</span></p>
+    <h2 class="display" id="inst-h2" data-i18n="inst.h2">Pick your platform. Paste one line.</h2>
+    <p data-i18n="inst.sub">Each command installs ytt and its helpers (mpv, yt-dlp, ffmpeg) for you. Then type three letters and you're listening.</p>
+  </div>
+
+  <div class="reveal">
+    <div class="tabs" role="tablist" aria-label="Install method">
+      <button class="tab-btn" role="tab" aria-selected="true" data-tab="mac"> macOS</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="win"> Windows</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="lin"> Linux</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="src"> From source</button>
+    </div>
+
+    <div class="terminal-box">
+      <div class="terminal-box__bar">
+        <span class="dotrow" aria-hidden="true"><span class="d l"></span><span class="d g"></span><span class="d p"></span></span>
+        <span id="inst-host">ytt@macos ~ </span>
+      </div>
+
+      <!-- macOS -->
+      <div class="cmd-panel active" data-panel="mac">
+        <button class="copy-btn copy-line" type="button" data-copy="brew install Ochichan/tap/ytm-tui" data-i18n="copy">copy</button>
+        <div class="cmd-line"><span class="prompt">$</span> <code>brew install Ochichan/tap/ytm-tui</code></div>
+        <p class="cmd-note" data-i18n="inst.mac.note">Homebrew pulls in mpv, yt-dlp and ffmpeg automatically. Don't have Homebrew? Grab it at brew.sh first.</p>
+      </div>
+
+      <!-- Windows -->
+      <div class="cmd-panel" data-panel="win">
+        <button class="copy-btn copy-line" type="button" data-copy="scoop bucket add extras
+scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket
+scoop install ytm-tui" data-i18n="copy">copy</button>
+        <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop bucket add extras</code></div>
+        <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket</code></div>
+        <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop install ytm-tui</code></div>
+        <p class="cmd-note" data-i18n="inst.win.note">Uses Scoop (scoop.sh). Installs ytt plus mpv, yt-dlp and ffmpeg in one go.</p>
+      </div>
+
+      <!-- Linux -->
+      <div class="cmd-panel" data-panel="lin">
+        <div class="cmd-line"><span class="hash"># Nix — the most reproducible option</span></div>
+        <div class="cmd-line"><span class="prompt">$</span> <code>nix run github:Ochichan/ytm-tui</code> <button class="copy-btn" type="button" data-copy="nix run github:Ochichan/ytm-tui" data-i18n="copy">copy</button></div>
+        <div class="cmd-line" style="margin-top:.6rem"><span class="hash"># Arch (AUR)</span></div>
+        <div class="cmd-line"><span class="prompt">$</span> <code>yay -S ytm-tui-bin</code> <button class="copy-btn" type="button" data-copy="yay -S ytm-tui-bin" data-i18n="copy">copy</button></div>
+        <div class="cmd-line" style="margin-top:.6rem"><span class="hash"># Any other distro — prebuilt binary</span></div>
+        <div class="cmd-line"><span class="prompt">$</span> <code>curl -fsSL https://github.com/Ochichan/ytm-tui/releases/latest/download/install.sh | sh</code></div>
+        <p class="cmd-note" data-i18n="inst.lin.note">The curl one-liner verifies the checksum and adds ytt to your PATH. It installs only ytt — run ytt doctor afterwards to check the helpers.</p>
+      </div>
+
+      <!-- From source -->
+      <div class="cmd-panel" data-panel="src">
+        <div class="cmd-line"><span class="hash"># macOS / Linux — needs Rust (rustup.rs)</span></div>
+        <div class="cmd-line"><span class="prompt">$</span> <code>./install.sh --build</code> <button class="copy-btn" type="button" data-copy="./install.sh --build" data-i18n="copy">copy</button></div>
+        <div class="cmd-line" style="margin-top:.6rem"><span class="hash"># Windows (PowerShell)</span></div>
+        <div class="cmd-line"><span class="prompt">&gt;</span> <code>powershell -ExecutionPolicy Bypass -File .\install.ps1 --build</code></div>
+        <p class="cmd-note" data-i18n="inst.src.note">Clone the repo first. Building takes a few minutes — a great excuse to make coffee.</p>
+      </div>
+    </div>
+
+    <div class="run-row">
+      <span class="big" data-i18n="inst.then">Then run it:</span>
+      <span class="big mono"><span class="prompt">$</span> ytt</span>
+      <span data-i18n-html="inst.firstkey">…and press <kbd>?</kbd> at any time for every key. The app teaches you the rest.</span>
+    </div>
+    <p class="cmd-note" style="border:0;padding-top:.6rem" data-i18n-html="inst.doctor">Something off? Run <code>ytt doctor</code> — it checks mpv, yt-dlp and ffmpeg and tells you exactly what to fix.</p>
+  </div>
+</section>
+
+<!-- ===================== REMOTE ===================== -->
+<section class="why-band section" id="remote" aria-labelledby="rem-h2">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow"><span class="dot">●</span> <span data-i18n="rem.eyebrow">Remote control</span></p>
+      <h2 class="display" id="rem-h2" data-i18n="rem.h2">Reach it without leaving your work</h2>
+      <p data-i18n-html="rem.sub">Once <code>ytt</code> is playing, boss it around from another terminal — or straight from your keyboard's media keys. It does the one thing you asked, prints a tidy line, and gets out of the way. The music screen doesn't even flicker.</p>
+    </div>
+
+    <div class="remote-grid reveal">
+      <div class="remote-list">
+        <div class="r"><code>ytt -r pp</code><span class="desc" data-i18n="rem.pp">Play / pause</span></div>
+        <div class="r"><code>ytt -r next</code><span class="desc" data-i18n="rem.next">Skip to the next song</span></div>
+        <div class="r"><code>ytt -r radio on</code><span class="desc" data-i18n="rem.radio">Switch the endless radio on</span></div>
+        <div class="r"><code>ytt -r status</code><span class="desc" data-i18n="rem.status">What's playing right now?</span></div>
+        <div class="r"><code>ytt -r quit</code><span class="desc" data-i18n="rem.quit">Stop the music and close ytt</span></div>
+      </div>
+
+      <div class="remote-aside">
+        <div class="statusline">
+          <div style="color:var(--muted);margin-bottom:.4rem" data-i18n="rem.example">ytt -r status →</div>
+          <div><span class="st">[playing]</span> <b>クリスマスソング — back number</b> • vol 80% • 1/4 • radio on</div>
+        </div>
+        <div class="statusline">
+          <div style="color:var(--muted);margin-bottom:.4rem" data-i18n="rem.wire"># wire it to your media keys (i3 / sway)</div>
+          <div style="color:var(--foam)">bindsym XF86AudioPlay exec ytt -r pp</div>
+          <div style="color:var(--foam)">bindsym XF86AudioNext exec ytt -r next</div>
+        </div>
+        <p style="color:var(--subtle);font-size:.85rem" data-i18n-html="rem.single">And launching <code>ytt</code> twice won't start a second player fighting over your speakers — it just reminds you how to reach the one you've got.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ===================== FOOTER ===================== -->
+<footer class="foot">
+  <div class="wrap foot__cta reveal">
+    <h2 class="display" data-i18n="foot.h2">Built by one person who probably should have been asleep.</h2>
+    <p data-i18n="foot.p">It works on their machine. Now, hopefully, on yours too. If it earns a spot in your terminal, a star means a lot.</p>
+    <a class="btn btn--primary" href="https://github.com/Ochichan/ytm-tui" target="_blank" rel="noopener"><span aria-hidden="true">★</span> <span data-i18n="foot.cta">Star it on GitHub</span></a>
+  </div>
+
+  <div class="wrap foot__grid">
+    <div class="foot__mascot">
+      <img src="ytm-tui.png" alt="ytm-tui mascot — a fox-girl in headphones" width="52" height="52" loading="lazy" />
+      <p class="thanks" data-i18n-html="foot.thanks">QA hero: <a href="https://github.com/ZZNN75" target="_blank" rel="noopener">@ZZNN75</a> broke everything on purpose first, so you won't have to. 🫡</p>
+    </div>
+    <div class="foot__links">
+      <a href="https://github.com/Ochichan/ytm-tui/blob/main/README.md" target="_blank" rel="noopener">README · EN</a>
+      <a href="https://github.com/Ochichan/ytm-tui/blob/main/README.ko.md" target="_blank" rel="noopener">한국어</a>
+      <a href="https://github.com/Ochichan/ytm-tui/blob/main/README.ja.md" target="_blank" rel="noopener">日本語</a>
+    </div>
+    <div class="foot__meta">
+      <div class="lic">MIT © Ochichan</div>
+      <div data-i18n="foot.made">Rust · ratatui</div>
+    </div>
+  </div>
+
+  <p class="disclaimer" data-i18n="foot.disclaimer">
+    Not affiliated with YouTube or Google. Plays public songs anonymously; bring your own account via cookies if you like.
+  </p>
+</footer>
+
+<script>
+/* ============================================================
+   i18n — English lives in the HTML (also works with JS off).
+   Korean lives here; toggling back to EN restores the captured baseline.
+   ============================================================ */
+var KO = {
+  "skip": "본문으로 건너뛰기",
+  "nav.features": "기능", "nav.radio": "라디오", "nav.install": "설치", "nav.remote": "원격 제어",
+
+  "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
+  "hero.h1a": "지금 재생 중 —",
+  "hero.h1b": "터미널 안에서.",
+  "hero.sub": "빠르고 키보드로 다루는 유튜브 뮤직 클라이언트예요. AI 라디오, 진짜 앨범 아트, 원격 제어까지. 램을 야금야금 먹는 브라우저 탭도, 광고도 없죠. 마우스요? 없어도 되지만, 아쉬울까 봐 챙겨뒀어요.",
+  "hero.cta1": "ytm-tui 설치하기",
+  "hero.cta2": "GitHub에서 별 주기",
+  "copy": "복사",
+  "trust.ram": "🪶 가벼운 메모리", "trust.ads": "🚫 광고 없음", "trust.themes": "🎨 테마 11종, 색 전부 변경 가능",
+  "trust.keys": "⌨ 모든 키 재설정 가능", "trust.mit": "⚖ MIT",
+
+  "demo.empty": "재생 중인 곡 없음 — / 를 눌러 검색하세요",
+  "demo.upnext": "다음 곡",
+  "hint.help": "단축키",
+
+  "tab.player": "플레이어", "tab.search": "검색", "tab.library": "라이브러리", "tab.settings": "설정", "tab.ai": "AI",
+  "demo.clickcue": "눌러서 둘러보기",
+
+  "search.cap": "검색", "search.btn": "검색",
+
+  "lib.all": "전체", "lib.fav": "즐겨찾기", "lib.hist": "기록", "lib.dl": "다운로드",
+
+  "set.general": "일반", "set.playback": "재생", "set.hotkeys": "단축키", "set.graphics": "그래픽",
+  "set.lang": "언어", "set.lang.val": "한국어",
+  "set.cookies": "쿠키 파일", "set.default": "(기본값: ~/…)",
+  "set.dldir": "다운로드 폴더",
+  "set.mouse": "마우스 (다음 실행)", "set.art": "앨범 아트 (다음 실행)", "set.autoplay": "실행 시 자동재생",
+  "set.resetkeys": "단축키 초기화", "set.resetall": "모든 설정 초기화",
+  "set.enter": "Enter 누르기", "set.switch": "탭 전환",
+
+  "ai.eyebrow": "✦ AI 어시스턴트", "ai.empty": "재생·대기열·검색을 말로 시켜보세요.",
+  "ai.sugtitle": "추천", "ai.ask": "질문", "ai.prompt": "back number 같은 곡 틀어줘", "ai.send": "전송",
+
+  "feat.eyebrow": "핵심만 쏙",
+  "feat.h2": "모든 기능이, 키 하나로",
+  "feat.sub": "전부 키보드로, 전부 빠르게, 전부 원하는 대로 재설정할 수 있어요. <code>ytt</code> 한 번이면 이 모든 게 시작됩니다.",
+  "f.radio.h": "분위기를 읽는 AI 라디오",
+  "f.radio.p": "<code>Ctrl+R</code> 한 번이면 지금 듣는 곡을 중심으로 나만의 라디오가 시작돼요. Gemini 기반 <em>큐 디렉터</em>가 분위기에 맞는 곡을 골라 이어주죠 — Focused, Balanced, Discovery 모드 중에서. <code>w</code> 를 누르면 그 이유를 쉬운 말로 설명해 줍니다.",
+  "f.art.h": "터미널 안에, 진짜 앨범 아트",
+  "f.art.p": "네, 진짜 커버 이미지를 플레이어에 그대로 띄워줍니다 (지원하는 터미널에서요). 픽셀이 있을 거라곤 생각도 못 한 곳에 떡하니. 그 아래로는 싱크된 가사가 흘러가죠, 1인용 노래방처럼.",
+  "f.remote.h": "어디서든 조종하기",
+  "f.remote.p": "미디어 키를 한 번만 연결하면 — <code>⏯ ⏭ ⏮</code> — 다시는 창을 전환할 필요가 없어요. <code>ytt -r next</code>, <code>ytt -r pp</code>, <code>ytt -r status</code>. 실수로 한 번 더 실행해도, 그냥 조종 방법만 알려줍니다.",
+  "f.nav.h": "검색 · 보관함 · 큐 · 가사",
+  "f.nav.p": "<code>/</code> 로 검색하고 <code>Enter</code> 로 재생. <code>l</code> 보관함, <code>c</code> 큐, <code>Shift+L</code> 싱크 가사. 즐겨찾기 · 기록 · 다운로드가 한 목록에.",
+  "f.custom.h": "누가 봐도 내 취향",
+  "f.custom.p": "내장 테마 11종(Gruvbox, Nord, Dracula, Tokyo Night, Rosé Pine…), 모든 색을 hex로 조정, 모든 키 재설정, 10밴드 EQ, 그리고 고요한 정지 화면부터 빙글빙글 도는 ASCII 도넛까지 이어지는 애니메이션.",
+  "f.help.h": "단축키는 앱이 기억합니다",
+  "f.help.p": "단축키가 가물가물하세요? <code>?</code> 를 누르면 화면별로 정리된 최신 치트시트가 떠요 — 내 언어로, 내가 바꾼 키 그대로. 한글 자모도 그대로 통해요: <code>ㅂ</code> = <code>q</code>.",
+
+  "why.eyebrow": "이유까지 말하는 라디오",
+  "why.h2": "그냥 자동 재생이 아니에요. 왜 골랐는지도 말해주죠.",
+  "why.sub": "대부분의 플레이어는 다음 곡을 찍어놓고 잘 맞기만 바라죠. ytm-tui의 라디오는 <em>한 세트</em>를 통째로 설계합니다 — 기준 곡, 연결, 상승, 마무리까지 — 그리고 대기열이 비어갈 때마다 음악을 계속 채워줘요. <code>w</code> 를 누르면 복잡한 수식 없이 쉬운 말로 그 과정을 보여줍니다.",
+  "why.card.title": "이 AI 선곡의 이유",
+  "why.r1.role": "기준", "why.r1.reason": "검색한 템포를 잡아줍니다.",
+  "why.r2.role": "연결", "why.r2.reason": "키는 유지, 드럼은 빼서 집중 모드로.",
+  "why.r3.role": "상승", "why.r3.reason": "늘어지지 않게 살짝 에너지를 올려요.",
+
+  "inst.eyebrow": "음악까지 2분",
+  "inst.h2": "플랫폼을 고르고, 한 줄 붙여넣기.",
+  "inst.sub": "각 명령은 ytt와 보조 프로그램(mpv, yt-dlp, ffmpeg)까지 알아서 설치해 줍니다. 그다음 세 글자만 치면 음악이 나와요.",
+  "inst.mac.note": "Homebrew가 mpv, yt-dlp, ffmpeg를 자동으로 함께 설치합니다. Homebrew가 없다면 brew.sh에서 먼저 설치하세요.",
+  "inst.win.note": "Scoop(scoop.sh)을 사용합니다. ytt와 mpv, yt-dlp, ffmpeg를 한 번에 설치해요.",
+  "inst.lin.note": "curl 한 줄이 체크섬을 검증하고 ytt를 PATH에 추가합니다. ytt만 설치하므로, 이후 ytt doctor로 보조 프로그램을 점검하세요.",
+  "inst.src.note": "먼저 저장소를 클론하세요. 빌드에 몇 분 걸립니다 — 커피 한 잔 하기 딱 좋죠.",
+  "inst.then": "그다음 실행:",
+  "inst.firstkey": "…그리고 언제든 <kbd>?</kbd> 를 누르면 모든 키가 나옵니다. 앱이 스스로 알려줘요.",
+  "inst.doctor": "뭔가 이상한가요? <code>ytt doctor</code> 를 실행하면 mpv, yt-dlp, ffmpeg를 점검하고 정확히 뭘 고쳐야 할지 알려줍니다.",
+
+  "rem.eyebrow": "원격 제어",
+  "rem.h2": "하던 일을 멈추지 않고 조종하기",
+  "rem.sub": "<code>ytt</code> 가 재생 중이면, 다른 터미널에서 — 또는 키보드의 미디어 키로 — 바로 조종할 수 있어요. 시킨 한 가지만 하고, 한 줄로 결과를 알려준 뒤, 비켜줍니다. 음악 화면은 깜빡이지도 않아요.",
+  "rem.pp": "재생 / 일시정지", "rem.next": "다음 곡으로", "rem.radio": "무한 라디오 켜기",
+  "rem.status": "지금 뭐가 재생 중이지?", "rem.quit": "음악 멈추고 ytt 종료",
+  "rem.example": "ytt -r status →",
+  "rem.wire": "# 미디어 키에 연결 (i3 / sway)",
+  "rem.single": "그리고 <code>ytt</code> 를 두 번 실행해도 스피커를 두고 다투는 두 번째 플레이어가 생기지 않아요 — 이미 켜져 있는 쪽을 어떻게 부를지만 알려주죠.",
+
+  "foot.h2": "분명 잠들었어야 할 사람이 만들었습니다.",
+  "foot.p": "그 사람 컴퓨터에선 잘 돌아갑니다. 이제 여러분 컴퓨터에서도 그러길 바라요. 터미널 한구석에 자리를 얻는다면, 별 하나가 큰 힘이 됩니다.",
+  "foot.cta": "GitHub에서 별 주기",
+  "foot.thanks": "QA 영웅: <a href=\"https://github.com/ZZNN75\" target=\"_blank\" rel=\"noopener\">@ZZNN75</a> 님이 일부러 다 부숴본 덕분에, 여러분은 부술 일이 없습니다. 🫡",
+  "foot.made": "Rust · ratatui",
+  "foot.disclaimer": "YouTube 또는 Google과 무관합니다. 공개된 곡을 익명으로 재생하며, 원한다면 쿠키로 본인 계정을 연결할 수 있습니다."
+};
+
+var JA = {
+  "skip": "本文へスキップ",
+  "nav.features": "機能", "nav.radio": "ラジオ", "nav.install": "インストール", "nav.remote": "リモート操作",
+
+  "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
+  "hero.h1a": "再生中 —",
+  "hero.h1b": "ターミナルの中で。",
+  "hero.sub": "速くて、キーボードで操る YouTube Music クライアント。AI ラジオ、本物のアルバムアート、リモート操作まで。RAM をじわじわ食うブラウザのタブも、広告もなし。マウス？ なくても平気ですが、恋しくならないように用意してあります。",
+  "hero.cta1": "ytm-tui をインストール",
+  "hero.cta2": "GitHub でスターを付ける",
+  "copy": "コピー",
+  "trust.ram": "🪶 軽いメモリ使用量", "trust.ads": "🚫 広告ゼロ", "trust.themes": "🎨 テーマ11種、色は全部変更可能",
+  "trust.keys": "⌨ すべてのキーを再設定可能", "trust.mit": "⚖ MIT",
+
+  "demo.empty": "再生中の曲なし — / を押して検索",
+  "demo.upnext": "次の曲",
+  "hint.help": "ショートカット",
+
+  "tab.player": "プレイヤー", "tab.search": "検索", "tab.library": "ライブラリ", "tab.settings": "設定", "tab.ai": "AI",
+  "demo.clickcue": "クリックして見てみる",
+
+  "search.cap": "検索", "search.btn": "検索",
+
+  "lib.all": "すべて", "lib.fav": "お気に入り", "lib.hist": "履歴", "lib.dl": "ダウンロード",
+
+  "set.general": "一般", "set.playback": "再生", "set.hotkeys": "ショートカット", "set.graphics": "グラフィック",
+  "set.lang": "言語", "set.lang.val": "日本語",
+  "set.cookies": "Cookie ファイル", "set.default": "(既定: ~/…)",
+  "set.dldir": "ダウンロード先",
+  "set.mouse": "マウス (次回起動時)", "set.art": "アルバムアート (次回起動時)", "set.autoplay": "起動時に自動再生",
+  "set.resetkeys": "ショートカットを初期化", "set.resetall": "すべての設定を初期化",
+  "set.enter": "Enter を押す", "set.switch": "タブ切り替え",
+
+  "ai.eyebrow": "✦ AI アシスタント", "ai.empty": "再生・キュー・検索を言葉で頼んでみて。",
+  "ai.sugtitle": "おすすめ", "ai.ask": "質問", "ai.prompt": "back number みたいな曲をかけて", "ai.send": "送信",
+
+  "feat.eyebrow": "おいしいところだけ",
+  "feat.h2": "すべての機能が、キー一つで",
+  "feat.sub": "全部キーボードで、全部速く、全部好きなように再設定できます。<code>ytt</code> と打てば、その瞬間からすべてが始まります。",
+  "f.radio.h": "空気を読む AI ラジオ",
+  "f.radio.p": "<code>Ctrl+R</code> を押せば、ytm-tui が今聴いている曲を中心にしたステーションに早変わり。Gemini 搭載の<em>キュー・ディレクター</em>が雰囲気に合う曲を並べてくれます — Focused、Balanced、Discovery の中から。<code>w</code> を押せば、その理由をやさしい言葉で説明します。",
+  "f.art.h": "ターミナルの中に、本物のアルバムアート",
+  "f.art.p": "そう、本物のカバー画像をプレイヤーにそのまま表示します（対応するターミナルで）。ピクセルなんてないと思っていた場所に、どんと。その下には同期した歌詞が流れます、一人カラオケみたいに。",
+  "f.remote.h": "どこからでも操作",
+  "f.remote.p": "メディアキーを一度つなげば — <code>⏯ ⏭ ⏮</code> — もう二度とウィンドウを切り替えなくて済みます。<code>ytt -r next</code>、<code>ytt -r pp</code>、<code>ytt -r status</code>。うっかりもう一度起動しても、操作の仕方を教えてくれるだけです。",
+  "f.nav.h": "検索 · ライブラリ · キュー · 歌詞",
+  "f.nav.p": "<code>/</code> で検索して <code>Enter</code> で再生。<code>l</code> でライブラリ、<code>c</code> でキュー、<code>Shift+L</code> で時間同期の歌詞。お気に入り・履歴・ダウンロードが一つのリストに。",
+  "f.custom.h": "誰が見ても自分好み",
+  "f.custom.p": "内蔵テーマ11種（Gruvbox、Nord、Dracula、Tokyo Night、Rosé Pine…）、すべての色を hex で調整、すべてのキーを再設定、10バンド EQ、そして静かな静止画面からくるくる回る ASCII ドーナツまで続くアニメーション。",
+  "f.help.h": "ショートカットはアプリが覚えています",
+  "f.help.p": "ショートカットがうろ覚え？ <code>?</code> を押せば画面ごとに整理された最新のチートシートが表示されます — あなたの言語で、あなたが変えたキーのまま。ハングルの字母だってちゃんと通ります：<code>ㅂ</code> = <code>q</code>。",
+
+  "why.eyebrow": "理由まで語るラジオ",
+  "why.h2": "ただ自動再生するだけじゃない。なぜ選んだかも教えてくれる。",
+  "why.sub": "ほとんどのプレイヤーは次の曲を当てずっぽうで選んで、合うことを祈るだけ。ytm-tui のラジオは<em>ワンセット</em>をまるごと設計します — 基準の曲、つなぎ、盛り上げ、締め — そしてキューが空きそうになるたびに音楽を満たし続けます。<code>w</code> を押せば、難しい数式なしでやさしい言葉でその過程を見せてくれます。",
+  "why.card.title": "この AI 選曲の理由",
+  "why.r1.role": "基準", "why.r1.reason": "検索したテンポを決めます。",
+  "why.r2.role": "つなぎ", "why.r2.reason": "キーは保ったまま、ドラムを抜いて集中モードへ。",
+  "why.r3.role": "盛り上げ", "why.r3.reason": "間延びしないよう少しだけエネルギーを上げます。",
+
+  "inst.eyebrow": "音楽まで2分",
+  "inst.h2": "プラットフォームを選んで、一行貼り付け。",
+  "inst.sub": "各コマンドが ytt と補助ツール（mpv、yt-dlp、ffmpeg）まで自動で入れてくれます。あとは3文字打つだけで音楽が流れます。",
+  "inst.mac.note": "Homebrew が mpv、yt-dlp、ffmpeg を自動で一緒に入れます。Homebrew がない場合は brew.sh で先に入れてください。",
+  "inst.win.note": "Scoop（scoop.sh）を使います。ytt と mpv、yt-dlp、ffmpeg を一度に入れます。",
+  "inst.lin.note": "curl 一行がチェックサムを検証して ytt を PATH に追加します。ytt だけを入れるので、あとで ytt doctor で補助ツールを確認してください。",
+  "inst.src.note": "先にリポジトリをクローンしてください。ビルドには数分かかります — コーヒーを淹れる口実にどうぞ。",
+  "inst.then": "あとは実行:",
+  "inst.firstkey": "…そしていつでも <kbd>?</kbd> を押せばすべてのキーが出ます。残りはアプリが教えてくれます。",
+  "inst.doctor": "何かおかしい？ <code>ytt doctor</code> を実行すれば mpv、yt-dlp、ffmpeg を点検して、何を直すべきか正確に教えてくれます。",
+
+  "rem.eyebrow": "リモート操作",
+  "rem.h2": "作業を止めずに操作する",
+  "rem.sub": "<code>ytt</code> が再生中なら、別のターミナルから — あるいはキーボードのメディアキーで — そのまま操作できます。頼んだ一つだけをこなして、一行で結果を伝え、すっと退きます。音楽画面はちらつきもしません。",
+  "rem.pp": "再生 / 一時停止", "rem.next": "次の曲へ", "rem.radio": "無限ラジオをオン",
+  "rem.status": "今、何が再生中？", "rem.quit": "音楽を止めて ytt を終了",
+  "rem.example": "ytt -r status →",
+  "rem.wire": "# メディアキーに割り当て (i3 / sway)",
+  "rem.single": "そして <code>ytt</code> を二度起動しても、スピーカーを取り合う二つ目のプレイヤーは生まれません — すでに動いている方への呼びかけ方を教えてくれるだけです。",
+
+  "foot.h2": "本当は寝ているべきだった一人が作りました。",
+  "foot.p": "その人のマシンでは動きます。これで、願わくばあなたのマシンでも。ターミナルの片隅に居場所をもらえたら、スター一つが大きな励みになります。",
+  "foot.cta": "GitHub でスターを付ける",
+  "foot.thanks": "QA ヒーロー：<a href=\"https://github.com/ZZNN75\" target=\"_blank\" rel=\"noopener\">@ZZNN75</a> さんがわざと全部壊してくれたおかげで、あなたが壊す必要はありません。🫡",
+  "foot.made": "Rust · ratatui",
+  "foot.disclaimer": "YouTube または Google とは無関係です。公開されている曲を匿名で再生します。お望みなら Cookie で自分のアカウントを接続できます。"
+};
+
+var DICTS = { ko: KO, ja: JA };
+
+/* dynamic strings used by the live demo, all languages */
+var T = {
+  en: { playing: "▸ playing", thinking: "Queue Director is thinking…", done: "4 in queue" },
+  ko: { playing: "▸ 재생 중", thinking: "큐 디렉터가 고르는 중…", done: "대기열 4곡" },
+  ja: { playing: "▸ 再生中", thinking: "キュー・ディレクターが選んでいます…", done: "キューに4曲" }
+};
+
+var html = document.documentElement;
+var i18nNodes = [];
+document.querySelectorAll("[data-i18n]").forEach(function (el) {
+  i18nNodes.push({ el: el, key: el.getAttribute("data-i18n"), en: el.textContent, html: false });
+});
+document.querySelectorAll("[data-i18n-html]").forEach(function (el) {
+  i18nNodes.push({ el: el, key: el.getAttribute("data-i18n-html"), en: el.innerHTML, html: true });
+});
+
+function applyLang(lang) {
+  var dict = DICTS[lang];
+  i18nNodes.forEach(function (n) {
+    var val = dict ? dict[n.key] : n.en;
+    if (val == null) val = n.en;
+    if (n.html) n.el.innerHTML = val; else n.el.textContent = val;
+  });
+  html.setAttribute("data-lang", lang);
+  html.setAttribute("lang", lang);
+  document.querySelectorAll("[data-lang-btn]").forEach(function (b) {
+    b.setAttribute("aria-pressed", String(b.getAttribute("data-lang-btn") === lang));
+  });
+  try { localStorage.setItem("ytt-lang", lang); } catch (e) {}
+  if (demo) demo.restart();
+}
+
+document.querySelectorAll("[data-lang-btn]").forEach(function (b) {
+  b.addEventListener("click", function () { applyLang(b.getAttribute("data-lang-btn")); });
+});
+
+/* ---- Theme toggle ---- */
+var themeIcon = document.getElementById("theme-icon");
+function setThemeIcon() { themeIcon.textContent = html.getAttribute("data-theme") === "light" ? "☼" : "☾"; }
+setThemeIcon();
+document.getElementById("theme-toggle").addEventListener("click", function () {
+  var next = html.getAttribute("data-theme") === "light" ? "dark" : "light";
+  html.setAttribute("data-theme", next);
+  setThemeIcon();
+  try { localStorage.setItem("ytt-theme", next); } catch (e) {}
+});
+
+/* ---- Copy buttons ---- */
+document.querySelectorAll(".copy-btn").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    var text = btn.getAttribute("data-copy");
+    var lang = html.getAttribute("data-lang");
+    var label = { ko: "복사", ja: "コピー" }[lang] || "copy";
+    var ok = { ko: "복사됨 ✓", ja: "コピー済み ✓" }[lang] || "copied ✓";
+    function flash() { btn.textContent = ok; btn.classList.add("copied"); setTimeout(function () { btn.textContent = label; btn.classList.remove("copied"); }, 1600); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(flash).catch(flash);
+    } else {
+      var ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch (e) {} document.body.removeChild(ta); flash();
+    }
+  });
+});
+
+/* ---- Install tabs ---- */
+var HOSTS = { mac: "ytt@macos ~ ", win: "PS C:\\Users\\ytt> ", lin: "ytt@linux ~ ", src: "ytt@src ~/ytm-tui " };
+document.querySelectorAll(".tab-btn").forEach(function (tab) {
+  tab.addEventListener("click", function () {
+    var name = tab.getAttribute("data-tab");
+    document.querySelectorAll(".tab-btn").forEach(function (t) { t.setAttribute("aria-selected", String(t === tab)); });
+    document.querySelectorAll(".cmd-panel").forEach(function (p) { p.classList.toggle("active", p.getAttribute("data-panel") === name); });
+    var host = document.getElementById("inst-host"); if (host) host.textContent = HOSTS[name] || HOSTS.mac;
+  });
+});
+
+/* ---- Interactive demo screens — nav tabs switch the visible screen ---- */
+(function () {
+  var bar = document.querySelector(".term__tabs");
+  if (!bar) return;
+  var tabs = Array.prototype.slice.call(bar.querySelectorAll(".tab"));
+  var screens = Array.prototype.slice.call(document.querySelectorAll(".term__screen"));
+  var cue = document.getElementById("d-cue");
+  function dismissCue() {
+    if (!cue) return;
+    cue.style.opacity = "0";
+    setTimeout(function () { if (cue) cue.style.display = "none"; }, 420);
+    cue = null;
+  }
+  function show(name) {
+    tabs.forEach(function (t) {
+      var on = t.getAttribute("data-screen") === name;
+      t.classList.toggle("active", on);
+      t.setAttribute("aria-selected", String(on));
+      t.tabIndex = on ? 0 : -1;
+    });
+    screens.forEach(function (s) { s.hidden = s.getAttribute("data-screen") !== name; });
+    dismissCue();
+  }
+  tabs.forEach(function (t, i) {
+    t.addEventListener("click", function () { show(t.getAttribute("data-screen")); });
+    t.addEventListener("keydown", function (e) {
+      var d = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (!d) return;
+      e.preventDefault();
+      var n = (i + d + tabs.length) % tabs.length;
+      tabs[n].focus(); show(tabs[n].getAttribute("data-screen"));
+    });
+  });
+  setTimeout(dismissCue, 12000); /* retire the hint on its own if untouched */
+})();
+
+/* ---- Scroll reveal ---- */
+(function () {
+  var els = document.querySelectorAll(".reveal");
+  if (!("IntersectionObserver" in window) || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    els.forEach(function (e) { e.classList.add("in"); }); return;
+  }
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) { if (en.isIntersecting) { en.target.classList.add("in"); io.unobserve(en.target); } });
+  }, { threshold: 0.12 });
+  els.forEach(function (e) { io.observe(e); });
+})();
+
+/* ============================================================
+   The living terminal — a faithful ytm-tui Player session
+   boot → play → ^R radio on → c opens Queue popup → advance → loop
+   ============================================================ */
+var demo = (function () {
+  var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var TRACKS = [
+    { t: "クリスマスソング — Christmas Song", a: "back number", d: "5:42", fav: false },
+    { t: "Late Night Study", a: "Mello", d: "2:48", fav: true },
+    { t: "Amber", a: "Sundial", d: "4:11", fav: false }
+  ];
+  var QUEUE = [
+    "クリスマスソング — back number",
+    "Late Night Study — Mello",
+    "Foxtrot — Holo Beats",
+    "Amber — Sundial"
+  ];
+  var TRACK_MS = 9000;
+  var QTOTAL = 1;
+  var els = {
+    title: document.getElementById("d-title"),
+    fill: document.getElementById("d-fill"),
+    elapsed: document.getElementById("d-elapsed"),
+    total: document.getElementById("d-total"),
+    playicon: document.getElementById("d-playicon"),
+    state: document.getElementById("d-state"),
+    pos: document.getElementById("d-pos"),
+    radio: document.getElementById("d-radio"),
+    art: document.getElementById("d-art"),
+    queue: document.getElementById("d-queue"),
+    qstate: document.getElementById("d-qstate"),
+    qpop: document.getElementById("d-qpop"),
+    keyflash: document.getElementById("d-keyflash"),
+    keycap: document.getElementById("d-keycap"),
+    clock: document.getElementById("demo-clock")
+  };
+  if (!els.title) return null;
+
+  var timers = [], raf = null, spinTimer = null, playStart = 0, current = 0;
+  function L() { return T[html.getAttribute("data-lang")] || T.en; }
+  function emptyMsg() {
+    var dict = DICTS[html.getAttribute("data-lang")];
+    return (dict && dict["demo.empty"]) || "Nothing playing — press / to search";
+  }
+  function after(ms, fn) { timers.push(setTimeout(fn, ms)); }
+  function clearAll() {
+    timers.forEach(clearTimeout); timers = [];
+    if (raf) cancelAnimationFrame(raf), raf = null;
+    if (spinTimer) clearInterval(spinTimer), spinTimer = null;
+  }
+  function toSeconds(m) { var p = m.split(":"); return (+p[0]) * 60 + (+p[1]); }
+  function fmt(s) { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+  function setTrack(i) {
+    current = i; var tr = TRACKS[i];
+    els.title.innerHTML = (tr.fav ? '<span class="heart" aria-hidden="true">♥</span> ' : "") +
+      '<span class="t">' + tr.t + " — " + tr.a + "</span>";
+    els.art.innerHTML = '<img src="ytm-tui.png" alt="" />';
+    els.total.textContent = tr.d;
+    els.pos.textContent = (i + 1) + "/" + QTOTAL;
+    playStart = performance.now();
+  }
+  function tick(now) {
+    var tr = TRACKS[current];
+    var pct = Math.min(1, (now - playStart) / TRACK_MS);
+    els.fill.style.width = (pct * 100) + "%";
+    els.elapsed.textContent = fmt(pct * toSeconds(tr.d));
+    raf = requestAnimationFrame(tick);
+  }
+  var SPIN = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+  function flashKey(k) { els.keycap.textContent = k; els.keyflash.hidden = false; after(950, function () { els.keyflash.hidden = true; }); }
+  function addRow(i, playing) {
+    var row = document.createElement("div");
+    row.className = "qrow2" + (playing ? " playing" : "");
+    row.innerHTML = '<span class="mark">' + (playing ? "▸" : " ") + "</span>" +
+      '<span class="num">' + (i + 1) + "</span>" +
+      '<span class="ttl">' + QUEUE[i] + "</span>";
+    els.queue.appendChild(row);
+    requestAnimationFrame(function () { row.classList.add("show"); });
+  }
+  function renderFinal() {
+    QTOTAL = QUEUE.length;
+    setTrack(0);
+    els.state.textContent = L().playing; els.playicon.textContent = "‖";
+    els.fill.style.width = "38%"; els.elapsed.textContent = "2:10";
+    els.radio.textContent = "radio:balanced";
+    els.qpop.hidden = true;
+  }
+  function run() {
+    clearAll();
+    QTOTAL = 1;
+    els.title.innerHTML = '<span class="np__empty">' + emptyMsg() + "</span>";
+    els.art.innerHTML = '<span class="placeholder" aria-hidden="true">♪</span>';
+    els.fill.style.width = "0%"; els.elapsed.textContent = "0:00"; els.total.textContent = "0:00";
+    els.state.textContent = ""; els.playicon.textContent = "‖"; els.pos.textContent = "";
+    els.radio.textContent = "radio:✗"; els.qpop.hidden = true; els.queue.innerHTML = ""; els.qstate.textContent = "";
+
+    after(1100, play);
+    function play() {
+      setTrack(0);
+      els.state.textContent = L().playing;
+      raf = requestAnimationFrame(tick);
+      after(1700, radio);
+    }
+    function radio() {
+      flashKey("^R");
+      after(480, function () { els.radio.textContent = "radio:balanced"; });
+      after(1500, queue);
+    }
+    function queue() {
+      flashKey("c");
+      after(480, function () {
+        QTOTAL = QUEUE.length; els.pos.textContent = "1/" + QTOTAL;
+        els.qpop.hidden = false;
+        var si = 0;
+        els.qstate.innerHTML = '<span class="spinner">' + SPIN[0] + "</span> " + L().thinking;
+        spinTimer = setInterval(function () { si = (si + 1) % SPIN.length; var s = els.qstate.querySelector(".spinner"); if (s) s.textContent = SPIN[si]; }, 90);
+        var k = 0;
+        function pop() {
+          if (k < QUEUE.length) { addRow(k, k === 0); k++; after(640, pop); }
+          else { if (spinTimer) clearInterval(spinTimer), spinTimer = null; els.qstate.textContent = L().done; after(2900, closeAndAdvance); }
+        }
+        after(520, pop);
+      });
+    }
+    function closeAndAdvance() {
+      els.qpop.hidden = true;
+      after(650, function () { setTrack(1); after(4200, run); });
+    }
+  }
+  function clock() {
+    if (reduced) return;
+    var h = 7, m = 6;
+    setInterval(function () { m = (m + 1) % 60; if (m === 0) h = (h + 1) % 24; els.clock.textContent = h + ":" + String(m).padStart(2, "0"); }, 4000);
+  }
+
+  if (reduced) { renderFinal(); } else { run(); clock(); }
+  return { restart: function () { clearAll(); if (reduced) renderFinal(); else run(); } };
+})();
+
+/* finally, apply the language chosen before paint */
+applyLang(html.getAttribute("data-lang") || "en");
+</script>
+</body>
+</html>
