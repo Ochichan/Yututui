@@ -725,6 +725,7 @@ impl App {
                 self.playback.time_pos = None;
                 self.playback.duration = None;
                 self.playback.paused = true;
+                self.playback.stream_now_playing = None;
                 self.last_shown_sec = -1;
                 self.prefetch.loaded_video_id = None;
                 self.clear_artwork();
@@ -753,6 +754,7 @@ impl App {
         self.playback.time_pos = None;
         self.playback.duration = None;
         self.playback.paused = false;
+        self.playback.stream_now_playing = None;
         self.last_shown_sec = -1;
     }
 }

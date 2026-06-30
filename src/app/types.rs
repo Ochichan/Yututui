@@ -75,6 +75,8 @@ pub enum Msg {
     PlayerPaused(bool),
     /// mpv volume changed (0-100, but mpv can report fractional/over-100 values).
     PlayerVolume(f64),
+    /// mpv stream metadata changed. Live radio streams often expose ICY now-playing titles here.
+    PlayerMetadata(serde_json::Value),
     /// The current track reached its end.
     PlayerEof,
     /// mpv reported a playback error.
@@ -428,6 +430,10 @@ pub struct PlaylistInfo {
 pub struct AiContext {
     /// "Title — Artist" of the current track, if any.
     pub current_track: Option<String>,
+    /// The currently loaded live radio station, if the current queue item is a station.
+    pub current_radio_station: Option<String>,
+    /// The stream's own now-playing metadata for the current radio station, if mpv has seen it.
+    pub current_radio_now_playing: Option<String>,
     /// Up to a few upcoming queue entries, "Title — Artist".
     pub queue_upcoming: Vec<String>,
     pub queue_len: usize,
@@ -441,6 +447,24 @@ pub struct AiContext {
     /// Whether a YTM cookie is configured (gates authenticated related-tracks).
     pub authenticated: bool,
     pub autoplay_radio: bool,
+}
+
+/// A live radio stream's current ICY/metadata title, as exposed by mpv.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamNowPlaying {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub raw: String,
+}
+
+impl StreamNowPlaying {
+    pub fn label(&self) -> String {
+        match (&self.title, &self.artist) {
+            (Some(title), Some(artist)) => format!("{title} — {artist}"),
+            (Some(title), None) => title.clone(),
+            _ => self.raw.clone(),
+        }
+    }
 }
 
 /// A radio rerank handed to the DJ Gem actor, kept until its `Msg::RadioAiPicks` returns. The

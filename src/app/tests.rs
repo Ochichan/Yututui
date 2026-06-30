@@ -859,6 +859,71 @@ fn current(app: &App) -> &str {
 }
 
 #[test]
+fn radio_stream_metadata_updates_dj_gem_context() {
+    let mut app = App::new(100);
+    app.queue.set(vec![radio_station("groove")], 0);
+    app.load_song(app.queue.current().cloned());
+
+    app.update(Msg::PlayerMetadata(serde_json::json!({
+        "icy-title": "Artist - Track"
+    })));
+
+    assert_eq!(
+        app.playback
+            .stream_now_playing
+            .as_ref()
+            .map(StreamNowPlaying::label)
+            .as_deref(),
+        Some("Track — Artist")
+    );
+    let ctx = app.build_ai_context();
+    assert_eq!(
+        ctx.current_radio_station.as_deref(),
+        Some("Station groove — KR / MP3")
+    );
+    assert_eq!(
+        ctx.current_radio_now_playing.as_deref(),
+        Some("Track — Artist")
+    );
+
+    app.dirty = false;
+    app.update(Msg::PlayerMetadata(serde_json::json!({
+        "icy-title": "Artist - Track"
+    })));
+    assert!(!app.dirty, "unchanged stream metadata should not redraw");
+}
+
+#[test]
+fn stream_metadata_is_ignored_for_regular_tracks() {
+    let mut app = app_playing(1, 0);
+
+    app.update(Msg::PlayerMetadata(serde_json::json!({
+        "icy-title": "Artist - Track"
+    })));
+
+    assert!(app.playback.stream_now_playing.is_none());
+    let ctx = app.build_ai_context();
+    assert!(ctx.current_radio_station.is_none());
+    assert!(ctx.current_radio_now_playing.is_none());
+}
+
+#[test]
+fn loading_a_new_track_clears_stale_stream_metadata() {
+    let mut app = App::new(100);
+    app.queue.set(vec![radio_station("groove")], 0);
+    app.load_song(app.queue.current().cloned());
+    app.update(Msg::PlayerMetadata(serde_json::json!({
+        "icy-title": "Artist - Track"
+    })));
+    assert!(app.playback.stream_now_playing.is_some());
+
+    app.queue.set(songs(1), 0);
+    app.load_song(app.queue.current().cloned());
+
+    assert!(app.playback.stream_now_playing.is_none());
+}
+
+#[test]
 fn eof_auto_advances_to_next_track() {
     let mut app = app_playing(3, 0);
     let cmds = app.update(Msg::PlayerEof);

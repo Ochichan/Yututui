@@ -60,6 +60,7 @@ mod remote_reducer;
 mod romanize;
 mod search;
 mod settings_reducer;
+mod stream_metadata;
 
 /// Queue length at or below which the autoplay/radio hook tops up the queue.
 const AUTOPLAY_THRESHOLD: usize = 3;
@@ -759,6 +760,22 @@ impl App {
                 self.playback.volume = v.round() as i64;
                 self.dirty = true;
                 tracing::info!(volume = self.playback.volume, "volume");
+            }
+            Msg::PlayerMetadata(metadata) => {
+                let parsed = self.queue.current().cloned().and_then(|song| {
+                    if !song.is_radio_station() {
+                        return None;
+                    }
+                    let station_label = self.display_song_label(&song);
+                    stream_metadata::parse_stream_now_playing(
+                        &metadata,
+                        &[song.title.as_str(), station_label.as_str()],
+                    )
+                });
+                if self.playback.stream_now_playing != parsed {
+                    self.playback.stream_now_playing = parsed;
+                    self.dirty = true;
+                }
             }
             Msg::PlayerEof => {
                 tracing::info!("track ended (eof)");

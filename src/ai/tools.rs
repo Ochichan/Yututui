@@ -213,6 +213,8 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
 
         "get_queue" => json!({
             "current": deps.ctx.current_track,
+            "radioStation": deps.ctx.current_radio_station,
+            "radioNowPlaying": deps.ctx.current_radio_now_playing,
             "upcoming": deps.ctx.queue_upcoming,
             "length": deps.ctx.queue_len,
             "remaining": deps.ctx.queue_remaining,
@@ -495,6 +497,8 @@ mod tests {
     fn ctx() -> AiContext {
         AiContext {
             current_track: Some("Now — Artist".to_owned()),
+            current_radio_station: None,
+            current_radio_now_playing: None,
             queue_upcoming: vec!["Next — Artist".to_owned()],
             queue_len: 2,
             queue_remaining: 1,
@@ -526,6 +530,29 @@ mod tests {
         let f = execute_tool("get_user_favorites", &json!({}), &mut deps).await;
         assert_eq!(f["favorites"][0], "Fave — Artist");
 
+        assert!(!side, "read tools must not set the side-effect flag");
+    }
+
+    #[tokio::test]
+    async fn get_queue_reports_radio_stream_now_playing() {
+        let mut ctx = ctx();
+        ctx.current_track = Some("Groove Radio — US / MP3 / 128k".to_owned());
+        ctx.current_radio_station = ctx.current_track.clone();
+        ctx.current_radio_now_playing = Some("Track — Artist".to_owned());
+        let mut cache = HashMap::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut side = false;
+        let mut deps = ToolDeps {
+            ctx: &ctx,
+            cache: &mut cache,
+            msg_tx: &tx,
+            side_effected: &mut side,
+        };
+
+        let q = execute_tool("get_queue", &json!({}), &mut deps).await;
+
+        assert_eq!(q["radioStation"], "Groove Radio — US / MP3 / 128k");
+        assert_eq!(q["radioNowPlaying"], "Track — Artist");
         assert!(!side, "read tools must not set the side-effect flag");
     }
 

@@ -137,6 +137,9 @@ action with tools rather than only describing it. Typically search_tracks first 
 videoIds, then play_music or add_to_queue with those ids. Keep replies short and \
 friendly, and reply in the user's language. Prefer the user's own queue, favorites, and \
 playlists when relevant. If a request is ambiguous, make a reasonable choice and proceed. \
+When the current item is a live radio station and the user asks what song is playing, answer \
+from current radio stream metadata if present; if absent, say the station has not exposed the \
+current song metadata yet. Do not guess. \
 Never fabricate tool results or videoIds you haven't seen.";
 
 /// Commands sent to the Gemini actor.
@@ -938,6 +941,15 @@ fn context_summary(ctx: &AiContext) -> String {
         "- Now playing: {}\n",
         ctx.current_track.as_deref().unwrap_or("nothing")
     ));
+    if let Some(station) = &ctx.current_radio_station {
+        s.push_str(&format!("- Current radio station: {station}\n"));
+        match &ctx.current_radio_now_playing {
+            Some(track) => s.push_str(&format!("- Current radio stream track: {track}\n")),
+            None => s.push_str(
+                "- Current radio stream track: unavailable; this station has not exposed now-playing metadata yet\n",
+            ),
+        }
+    }
     if !ctx.queue_upcoming.is_empty() {
         s.push_str(&format!("- Up next: {}\n", ctx.queue_upcoming.join("; ")));
     }
@@ -985,6 +997,8 @@ mod tests {
     fn ctx() -> AiContext {
         AiContext {
             current_track: Some("Song — Artist".to_owned()),
+            current_radio_station: None,
+            current_radio_now_playing: None,
             queue_upcoming: vec!["Next — Artist".to_owned()],
             queue_len: 3,
             queue_remaining: 2,
@@ -1007,6 +1021,30 @@ mod tests {
         assert!(s.contains("2 remaining"));
         assert!(s.contains("Mix (4)"));
         assert!(s.contains("Signed in: yes"));
+    }
+
+    #[test]
+    fn context_summary_includes_radio_stream_metadata() {
+        let mut ctx = ctx();
+        ctx.current_track = Some("Groove Radio — US / MP3 / 128k".to_owned());
+        ctx.current_radio_station = ctx.current_track.clone();
+        ctx.current_radio_now_playing = Some("The Track — The Artist".to_owned());
+
+        let s = context_summary(&ctx);
+
+        assert!(s.contains("Current radio station: Groove Radio"));
+        assert!(s.contains("Current radio stream track: The Track — The Artist"));
+    }
+
+    #[test]
+    fn context_summary_warns_when_radio_stream_metadata_is_absent() {
+        let mut ctx = ctx();
+        ctx.current_track = Some("Groove Radio — US / MP3 / 128k".to_owned());
+        ctx.current_radio_station = ctx.current_track.clone();
+
+        let s = context_summary(&ctx);
+
+        assert!(s.contains("Current radio stream track: unavailable"));
     }
 
     #[test]

@@ -136,6 +136,8 @@ pub struct Playback {
     pub volume: i64,
     /// Playback speed multiplier (1.0 = normal).
     pub speed: f64,
+    /// Current live-radio now-playing metadata, when the active stream exposes it.
+    pub stream_now_playing: Option<StreamNowPlaying>,
 }
 
 /// Prefetch / load tracking: the pre-resolved stream-URL cache, whether the current track

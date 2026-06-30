@@ -174,8 +174,19 @@ impl App {
     /// Snapshot the read-only state the DJ Gem actor needs to answer its read tools.
     pub(in crate::app) fn build_ai_context(&self) -> AiContext {
         let fmt = |s: &Song| format!("{} — {}", s.title, s.artist);
+        let current_radio_station = self
+            .queue
+            .current()
+            .filter(|song| song.is_radio_station())
+            .map(|song| self.display_song_label(song));
+        let current_radio_now_playing = current_radio_station
+            .as_ref()
+            .and(self.playback.stream_now_playing.as_ref())
+            .map(StreamNowPlaying::label);
         AiContext {
             current_track: self.queue.current().map(fmt),
+            current_radio_station,
+            current_radio_now_playing,
             queue_upcoming: self.queue.upcoming(10).into_iter().map(fmt).collect(),
             queue_len: self.queue.len(),
             queue_remaining: self.queue.remaining(),

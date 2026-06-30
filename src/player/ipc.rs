@@ -49,6 +49,7 @@ pub async fn run_actor(
         (2, "duration"),
         (3, "pause"),
         (4, "volume"),
+        (5, "metadata"),
     ] {
         if let Err(e) = write_json(&conn, &proto::cmd_observe(id, prop)).await {
             tracing::warn!(error = %e, property = prop, "failed to observe mpv property");
@@ -142,6 +143,9 @@ fn dispatch_incoming(line: &str, tx: &UnboundedSender<Msg>, last_sent_time_sec: 
                     let _ = tx.send(Msg::PlayerVolume(v));
                 }
             }
+            "metadata" => {
+                let _ = tx.send(Msg::PlayerMetadata(value));
+            }
             _ => {}
         },
         MpvIncoming::EndFile { reason, file_error } => match reason.as_str() {
@@ -162,5 +166,29 @@ fn dispatch_incoming(line: &str, tx: &UnboundedSender<Msg>, last_sent_time_sec: 
             _ => {}
         },
         MpvIncoming::Other => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_property_change_is_forwarded() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut last_sent_time_sec = None;
+
+        dispatch_incoming(
+            r#"{"event":"property-change","id":5,"name":"metadata","data":{"icy-title":"Artist - Track"}}"#,
+            &tx,
+            &mut last_sent_time_sec,
+        );
+
+        match rx.try_recv().expect("metadata message") {
+            Msg::PlayerMetadata(value) => {
+                assert_eq!(value["icy-title"], "Artist - Track");
+            }
+            _ => panic!("expected PlayerMetadata"),
+        }
     }
 }
