@@ -542,6 +542,57 @@ fn backslash_on_library_enqueues_selected_song_without_interrupting() {
 }
 
 #[test]
+fn enter_on_library_drag_selection_plays_all_selected_tracks() {
+    let mut app = app_playing(2, 0);
+    app.library.favorites = vec![
+        Song::remote("f0", "F0", "A", "3:00"),
+        Song::remote("f1", "F1", "B", "3:00"),
+        Song::remote("f2", "F2", "C", "3:00"),
+    ];
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Favorites;
+    app.library_ui.anchor = 0;
+    app.library_ui.selected = 2;
+    let before_len = app.queue.len();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert_eq!(app.mode, Mode::Player);
+    assert!(load_url(&cmds).expect("a Load cmd").contains("f0"));
+    assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("f0"));
+    assert_eq!(app.queue.len(), before_len + 3);
+    let ids: Vec<&str> = app.queue.ordered().iter().map(|s| s.video_id.as_str()).collect();
+    assert_eq!(&ids[1..4], &["f0", "f1", "f2"]);
+}
+
+#[test]
+fn backslash_on_library_drag_selection_enqueues_all_selected_tracks() {
+    let mut app = app_playing(2, 0);
+    let playing = app.prefetch.loaded_video_id.clone();
+    app.library.favorites = vec![
+        Song::remote("f0", "F0", "A", "3:00"),
+        Song::remote("f1", "F1", "B", "3:00"),
+        Song::remote("f2", "F2", "C", "3:00"),
+    ];
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Favorites;
+    app.library_ui.anchor = 0;
+    app.library_ui.selected = 2;
+    let before_len = app.queue.len();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('\\'))));
+
+    assert!(load_url(&cmds).is_none());
+    assert_eq!(app.mode, Mode::Library);
+    assert_eq!(app.prefetch.loaded_video_id, playing);
+    assert_eq!(app.queue.len(), before_len + 3);
+    for id in ["f0", "f1", "f2"] {
+        assert!(app.queue.video_ids().any(|v| v == id), "queued {id}");
+    }
+    assert_eq!(app.status.kind, StatusKind::Info);
+}
+
+#[test]
 fn shift_p_on_library_plays_the_whole_tab_as_a_fresh_queue() {
     // A 2-track queue is already playing id0/id1.
     let mut app = app_playing(2, 0);
@@ -3074,6 +3125,37 @@ fn library_mouse_drag_selects_range_then_delete_removes_it() {
     assert!(app.library.favorites.is_empty());
 }
 
+#[test]
+fn library_drag_after_release_starts_a_fresh_range() {
+    let mut app = App::new(100);
+    app.library.favorites = vec![
+        Song::remote("a", "ta", "x", "0:10"),
+        Song::remote("b", "tb", "x", "0:10"),
+        Song::remote("c", "tc", "x", "0:10"),
+        Song::remote("d", "td", "x", "0:10"),
+    ];
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Favorites;
+    render_app(&app);
+
+    let (c0, r0) = button_center(&app, MouseTarget::ListRow(0));
+    let (c2, r2) = button_center(&app, MouseTarget::ListRow(2));
+    let (c3, r3) = button_center(&app, MouseTarget::ListRow(3));
+
+    app.update(Msg::MouseClick { col: c0, row: r0 });
+    assert_eq!((app.library_ui.selected, app.library_ui.anchor), (0, 0));
+    app.update(Msg::MouseLeftUp);
+
+    app.update(Msg::MouseDrag { col: c2, row: r2 });
+    assert_eq!(
+        (app.library_ui.selected, app.library_ui.anchor),
+        (2, 2),
+        "a new drag after release must not extend the old row-0 selection"
+    );
+    app.update(Msg::MouseDrag { col: c3, row: r3 });
+    assert_eq!((app.library_ui.selected, app.library_ui.anchor), (3, 2));
+}
+
 // --- M6: lyrics ---------------------------------------------------------
 
 fn lyric_lines() -> Vec<LyricLine> {
@@ -4103,6 +4185,11 @@ fn drag_selects_a_range_then_delete_removes_all_of_it() {
     let mut app = app_playing(5, 0);
     app.update(Msg::Key(key(KeyCode::Char('c')))); // open, cursor = anchor = 0
     render_app(&app);
+    let (start_col, start_row) = button_center(&app, MouseTarget::QueueRow(0));
+    app.update(Msg::MouseClick {
+        col: start_col,
+        row: start_row,
+    });
     // Drag down to row 2: anchor stays at 0, so the selection spans 0..=2.
     let (col, row) = button_center(&app, MouseTarget::QueueRow(2));
     app.update(Msg::MouseDrag { col, row });
@@ -4113,4 +4200,42 @@ fn drag_selects_a_range_then_delete_removes_all_of_it() {
     assert_eq!(app.queue.len(), 2);
     let ids: Vec<&str> = app.queue.ordered().iter().map(|s| s.video_id.as_str()).collect();
     assert_eq!(ids, vec!["id3", "id4"]);
+}
+
+#[test]
+fn queue_drag_after_release_starts_a_fresh_range() {
+    let mut app = app_playing(5, 0);
+    app.update(Msg::Key(key(KeyCode::Char('c'))));
+    render_app(&app);
+    let (c0, r0) = button_center(&app, MouseTarget::QueueRow(0));
+    let (c2, r2) = button_center(&app, MouseTarget::QueueRow(2));
+    let (c4, r4) = button_center(&app, MouseTarget::QueueRow(4));
+
+    app.update(Msg::MouseClick { col: c0, row: r0 });
+    assert_eq!((app.queue_popup.cursor, app.queue_popup.anchor), (0, 0));
+    app.update(Msg::MouseLeftUp);
+
+    app.update(Msg::MouseDrag { col: c2, row: r2 });
+    assert_eq!(
+        (app.queue_popup.cursor, app.queue_popup.anchor),
+        (2, 2),
+        "a new drag after release must not extend the old row-0 selection"
+    );
+    app.update(Msg::MouseDrag { col: c4, row: r4 });
+    assert_eq!((app.queue_popup.cursor, app.queue_popup.anchor), (4, 2));
+}
+
+#[test]
+fn enter_on_queue_drag_range_starts_at_range_beginning() {
+    let mut app = app_playing(5, 0);
+    app.update(Msg::Key(key(KeyCode::Char('c'))));
+    app.queue_popup.anchor = 1;
+    app.queue_popup.cursor = 3;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert!(!app.queue_popup.open);
+    assert_eq!(app.queue.cursor_pos(), 1);
+    assert_eq!(current(&app), "id1");
+    assert!(load_url(&cmds).expect("a Load cmd").contains("id1"));
 }

@@ -154,20 +154,35 @@ impl Queue {
     /// can report it; `true` otherwise. Shuffle-agnostic: it always lands right after the
     /// cursor in play order, so the "now playing next" promise holds either way.
     pub fn play_now(&mut self, song: Song) -> bool {
-        if self.songs.len() >= MAX {
-            return false;
+        self.play_now_many(vec![song]) == 1
+    }
+
+    /// Insert `more` immediately after the current track and make the first inserted track
+    /// current. Returns the number actually inserted, bounded by [`MAX`].
+    pub fn play_now_many(&mut self, more: Vec<Song>) -> usize {
+        let free = MAX.saturating_sub(self.songs.len());
+        if free == 0 {
+            return 0;
         }
-        let song_idx = self.songs.len();
-        self.songs.push(song);
+        let old_len = self.songs.len();
+        let more: Vec<Song> = more.into_iter().take(free).collect();
+        if more.is_empty() {
+            return 0;
+        }
+        let added = more.len();
+        self.songs.extend(more);
+        let new_indices = old_len..old_len + added;
         if self.order.is_empty() {
-            self.order.push(song_idx);
+            self.order.extend(new_indices);
             self.cursor = 0;
         } else {
             let at = self.cursor + 1;
-            self.order.insert(at, song_idx);
+            for (offset, idx) in new_indices.enumerate() {
+                self.order.insert(at + offset, idx);
+            }
             self.cursor = at;
         }
-        true
+        added
     }
 
     /// Replace the queue with `songs` and make `start` the current track. Honors the

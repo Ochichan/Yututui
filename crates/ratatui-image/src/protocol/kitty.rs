@@ -18,6 +18,11 @@ use ratatui::{buffer::Buffer, layout::Rect};
 
 use super::{ProtocolTrait, StatefulProtocolTrait};
 
+// Keep graphics-protocol album art behind all TUI text/popups. Kitty treats negative
+// z-index placements as below text; values below INT32_MIN/2 also stay below cells with
+// non-default backgrounds, which matters for highlighted popup rows.
+const TEXT_BACKGROUND_Z_INDEX: i32 = i32::MIN / 2 - 1;
+
 #[derive(Default, Clone)]
 struct KittyProtoState {
     transmitted: Arc<AtomicBool>,
@@ -263,7 +268,11 @@ fn transmit_virtual(img: &DynamicImage, id: u32, is_tmux: bool) -> String {
         write!(data, "{escape}_Gq=2,").unwrap();
 
         if i == 0 {
-            write!(data, "i={id},a=T,U=1,f=32,t=d,s={w},v={h},").unwrap();
+            write!(
+                data,
+                "i={id},a=T,U=1,f=32,t=d,s={w},v={h},z={TEXT_BACKGROUND_Z_INDEX},"
+            )
+            .unwrap();
         }
 
         // m=0 means over
@@ -277,6 +286,21 @@ fn transmit_virtual(img: &DynamicImage, id: u32, is_tmux: bool) -> String {
     }
 
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use image::{DynamicImage, ImageBuffer, Rgba};
+
+    use super::*;
+
+    #[test]
+    fn virtual_transmission_places_kitty_image_behind_text_and_backgrounds() {
+        let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1, 1, Rgba([0, 0, 0, 0])));
+        let seq = transmit_virtual(&image, 42, false);
+
+        assert!(seq.contains(&format!("z={TEXT_BACKGROUND_Z_INDEX},")));
+    }
 }
 
 /// From https://sw.kovidgoyal.net/kitty/_downloads/1792bad15b12979994cd6ecc54c967a6/rowcolumn-diacritics.txt

@@ -164,15 +164,9 @@ impl App {
             // Delete the selected range (mouse-drag or single row), per-tab semantics.
             Some(Action::LibraryRemove) => self.library_delete_selection(),
             // Enter plays the highlighted track right now, keeping the existing queue intact.
-            Some(Action::Confirm) => match self.selected_library_song() {
-                Some(song) => self.play_now(song),
-                None => Vec::new(),
-            },
+            Some(Action::Confirm) => self.play_now_many(self.selected_library_songs()),
             // `\` adds the highlighted track to the queue without interrupting playback.
-            Some(Action::Enqueue) => match self.selected_library_song() {
-                Some(song) => self.enqueue(song),
-                None => Vec::new(),
-            },
+            Some(Action::Enqueue) => self.enqueue_many(self.selected_library_songs()),
             // `P` plays the whole current tab as a fresh queue (the old Enter behavior).
             Some(Action::PlayAll) => self.play_from_library(),
             Some(Action::OpenAi) => {

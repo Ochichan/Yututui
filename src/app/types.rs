@@ -32,6 +32,9 @@ pub enum Msg {
         col: u16,
         row: u16,
     },
+    /// The left mouse button was released. Used to end the current drag-selection
+    /// session so a later drag starts a fresh range instead of extending stale state.
+    MouseLeftUp,
     /// The mouse wheel was scrolled at a terminal cell. `up` means toward earlier items
     /// for lists, and volume-up over the player volume cluster.
     MouseScroll {

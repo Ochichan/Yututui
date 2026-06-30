@@ -105,6 +105,20 @@ impl App {
         self.library_songs().get(self.library_ui.selected).cloned()
     }
 
+    /// Tracks in the current library drag/selection range, in visible row order.
+    pub(in crate::app) fn selected_library_songs(&self) -> Vec<Song> {
+        let songs = self.library_songs();
+        if songs.is_empty() {
+            return Vec::new();
+        }
+        let lo = self.library_ui.selected.min(self.library_ui.anchor);
+        if lo >= songs.len() {
+            return Vec::new();
+        }
+        let hi = self.library_ui.selected.max(self.library_ui.anchor).min(songs.len() - 1);
+        songs[lo..=hi].to_vec()
+    }
+
     /// Queue the current library tab (starting at the cursor) and start playing.
     pub(in crate::app) fn play_from_library(&mut self) -> Vec<Cmd> {
         let songs = self.library_songs();

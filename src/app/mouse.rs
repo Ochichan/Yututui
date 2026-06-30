@@ -77,6 +77,7 @@ impl App {
             let inside = self.queue_popup.rect.get().is_some_and(|r| rect_contains(r, col, row));
             if !inside {
                 self.queue_popup.open = false;
+                self.drag_selection = None;
                 self.dirty = true;
                 return Vec::new();
             }
@@ -166,6 +167,8 @@ impl App {
             MouseTarget::LibraryTab(tab) if self.mode == Mode::Library => {
                 self.library_ui.tab = tab;
                 self.library_ui.selected = 0;
+                self.library_ui.anchor = 0;
+                self.drag_selection = None;
                 self.bridges.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
@@ -201,6 +204,10 @@ impl App {
             MouseTarget::QueueRow(i) if self.queue_popup.open => {
                 self.queue_popup.cursor = i;
                 self.queue_popup.anchor = i;
+                self.drag_selection = Some(DragSelection {
+                    surface: DragSurface::Queue,
+                    anchor: i,
+                });
                 self.dirty = true;
                 Vec::new()
             }
@@ -271,22 +278,41 @@ impl App {
         if self.queue_popup.open {
             if let Some(MouseTarget::QueueRow(i) | MouseTarget::QueueDel(i)) =
                 self.mouse_target_at(col, row)
-                && self.queue_popup.cursor != i
             {
-                self.queue_popup.cursor = i;
-                self.dirty = true;
+                let anchor = self.drag_anchor(DragSurface::Queue, i);
+                if self.queue_popup.anchor != anchor || self.queue_popup.cursor != i {
+                    self.queue_popup.anchor = anchor;
+                    self.queue_popup.cursor = i;
+                    self.dirty = true;
+                }
             }
             return Vec::new();
         }
         if self.mode == Mode::Library
             && let Some(MouseTarget::ListRow(i) | MouseTarget::LibraryDel(i)) =
                 self.mouse_target_at(col, row)
-            && self.library_ui.selected != i
         {
-            self.library_ui.selected = i;
-            self.dirty = true;
+            let anchor = self.drag_anchor(DragSurface::Library, i);
+            if self.library_ui.anchor != anchor || self.library_ui.selected != i {
+                self.library_ui.anchor = anchor;
+                self.library_ui.selected = i;
+                self.dirty = true;
+            }
         }
         Vec::new()
+    }
+
+    fn drag_anchor(&mut self, surface: DragSurface, row: usize) -> usize {
+        match self.drag_selection {
+            Some(DragSelection { surface: active, anchor }) if active == surface => anchor,
+            _ => {
+                self.drag_selection = Some(DragSelection {
+                    surface,
+                    anchor: row,
+                });
+                row
+            }
+        }
     }
 
     /// Wheel scroll nudges volume when the pointer is over the player's volume cluster.
@@ -351,6 +377,10 @@ impl App {
                 self.library_ui.selected = index;
                 // A fresh single click re-anchors the multi-select range here.
                 self.library_ui.anchor = index;
+                self.drag_selection = Some(DragSelection {
+                    surface: DragSurface::Library,
+                    anchor: index,
+                });
                 self.dirty = true;
             }
             Mode::Settings => {

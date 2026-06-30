@@ -91,7 +91,10 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
-            Some(Action::Confirm) => self.queue_popup_play(self.queue_popup.cursor),
+            Some(Action::Confirm) => {
+                let start = self.queue_popup.cursor.min(self.queue_popup.anchor);
+                self.queue_popup_play(start)
+            }
             Some(Action::QueueRemove) => self.queue_popup_remove_selection(),
             _ => Vec::new(),
         }

@@ -213,6 +213,9 @@ pub struct App {
     /// Library-screen state: active tab, list cursor + multi-select anchor, local
     /// download-folder rows, and the pending file-delete confirmation.
     pub library_ui: LibraryView,
+    /// Active mouse drag-selection session. Cleared on left-button release so a later
+    /// drag starts from its own first row, not whatever was selected before.
+    drag_selection: Option<DragSelection>,
 
     // Lyrics ------------------------------------------------------------------
     /// Lyrics-panel state: visibility, in-flight flag, and the fetched track lyrics.
@@ -318,6 +321,7 @@ impl App {
             signals: Signals::default(),
             session: Session::default(),
             library_ui: LibraryView::default(),
+            drag_selection: None,
             lyrics: Lyrics::default(),
             art: ArtState::default(),
             downloads: Downloads::default(),
@@ -425,6 +429,10 @@ impl App {
             Msg::MouseDoubleClick { col, row } => return self.on_mouse_double_click(col, row),
             Msg::MouseRightClick { col, row } => return self.on_mouse_right_click(col, row),
             Msg::MouseDrag { col, row } => return self.on_mouse_drag(col, row),
+            Msg::MouseLeftUp => {
+                self.drag_selection = None;
+                return Vec::new();
+            }
             Msg::MouseScroll { up, col, row } => return self.on_mouse_scroll(up, col, row),
             Msg::Resize => self.dirty = true,
             Msg::Quit => self.should_quit = true,

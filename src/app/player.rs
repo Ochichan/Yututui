@@ -418,7 +418,16 @@ impl App {
     /// Into an empty queue it just becomes the sole track. This is the unified Enter / double-
     /// click "play" gesture in both the Library and the Search results.
     pub(in crate::app) fn play_now(&mut self, song: Song) -> Vec<Cmd> {
-        if !self.queue.play_now(song) {
+        self.play_now_many(vec![song])
+    }
+
+    /// Play several tracks now without wiping the queue: insert them immediately after the
+    /// current track, jump to the first inserted track, and let the rest follow in order.
+    pub(in crate::app) fn play_now_many(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
+        if songs.is_empty() {
+            return Vec::new();
+        }
+        if self.queue.play_now_many(songs) == 0 {
             self.status.kind = StatusKind::Error;
             self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
             self.dirty = true;
@@ -435,17 +444,29 @@ impl App {
     /// currently playing we jump to it and start; if a track is already playing we simply
     /// enqueue it (no interruption) and confirm with a toast.
     pub(in crate::app) fn enqueue(&mut self, song: Song) -> Vec<Cmd> {
-        let title = song.title.clone();
+        self.enqueue_many(vec![song])
+    }
+
+    /// Append several tracks to the end of the queue without interrupting playback. If idle,
+    /// start the first appended track.
+    pub(in crate::app) fn enqueue_many(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
+        if songs.is_empty() {
+            return Vec::new();
+        }
+        let requested = songs.len();
+        let first_title = songs[0].title.clone();
+        let old_len = self.queue.len();
         let was_idle = self.prefetch.loaded_video_id.is_none();
-        if self.queue.extend(vec![song]) == 0 {
+        let added = self.queue.extend(songs);
+        if added == 0 {
             self.status.kind = StatusKind::Error;
             self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
             self.dirty = true;
             return Vec::new();
         }
         if was_idle {
-            // Nothing was playing → jump to the track we just appended and start it.
-            self.queue.goto(self.queue.len().saturating_sub(1));
+            // Nothing was playing → jump to the first track we just appended and start it.
+            self.queue.goto(old_len.min(self.queue.len().saturating_sub(1)));
             self.mode = Mode::Player;
             self.status.text.clear();
             let song = self.queue.current().cloned();
@@ -453,7 +474,11 @@ impl App {
         }
         // A track is already playing → just queue it up behind the rest, no interruption.
         self.status.kind = StatusKind::Info;
-        self.status.text = format!("{} {}", t!("Added to queue:", "큐에 추가:"), title);
+        self.status.text = if requested == 1 && added == 1 {
+            format!("{} {}", t!("Added to queue:", "큐에 추가:"), first_title)
+        } else {
+            format!("{} {}", added, t!("tracks added to queue", "곡을 큐에 추가"))
+        };
         self.dirty = true;
         Vec::new()
     }

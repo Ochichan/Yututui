@@ -64,6 +64,9 @@ impl Translator {
                     row: m.row,
                 })
             }
+            Event::Mouse(m) if m.kind == MouseEventKind::Up(MouseButton::Left) => {
+                Some(Msg::MouseLeftUp)
+            }
             // Wheel scroll moves the active list's viewport, or nudges volume over the
             // player volume cluster. Preserve the pointer cell so the reducer can decide.
             Event::Mouse(m) if m.kind == MouseEventKind::ScrollUp => Some(Msg::MouseScroll {
@@ -211,6 +214,18 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(matches!(t.translate(ev), Some(Msg::MouseDrag { col: 7, row: 3 })));
+    }
+
+    #[test]
+    fn left_button_up_ends_drag_selection() {
+        let mut t = Translator::default();
+        let ev = Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 7,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(matches!(t.translate(ev), Some(Msg::MouseLeftUp)));
     }
 
     #[test]

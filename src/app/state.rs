@@ -327,3 +327,15 @@ pub struct QueuePopup {
     /// Decoupled wheel-scroll offset for the queue window (see [`crate::ui::scroll`]).
     pub scroll: crate::ui::scroll::ScrollState,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DragSurface {
+    Queue,
+    Library,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DragSelection {
+    pub surface: DragSurface,
+    pub anchor: usize,
+}
