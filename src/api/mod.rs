@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::app::Msg;
-use crate::radio::CandidateSource;
+use crate::radio::{CandidateSource, RadioConfig, RadioMode};
 
 const RADIO_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
@@ -171,6 +171,14 @@ pub enum ApiCmd {
         seed_video_id: String,
         exclude_ids: Vec<String>,
         limit: usize,
+        mode: RadioMode,
+    },
+    RadioPreflight {
+        seed_video_id: String,
+        picks: Vec<Song>,
+        fallback: Vec<Song>,
+        mode: RadioMode,
+        config: RadioConfig,
     },
 }
 
@@ -190,12 +198,31 @@ impl ApiHandle {
         seed_video_id: impl Into<String>,
         exclude_ids: Vec<String>,
         limit: usize,
+        mode: RadioMode,
     ) {
         let _ = self.tx.send(ApiCmd::Radio {
             seed: seed.into(),
             seed_video_id: seed_video_id.into(),
             exclude_ids,
             limit,
+            mode,
+        });
+    }
+
+    pub fn radio_preflight(
+        &self,
+        seed_video_id: impl Into<String>,
+        picks: Vec<Song>,
+        fallback: Vec<Song>,
+        mode: RadioMode,
+        config: RadioConfig,
+    ) {
+        let _ = self.tx.send(ApiCmd::RadioPreflight {
+            seed_video_id: seed_video_id.into(),
+            picks,
+            fallback,
+            mode,
+            config,
         });
     }
 }
@@ -226,7 +253,7 @@ async fn run_actor(
     mut rx: UnboundedReceiver<ApiCmd>,
     msg_tx: UnboundedSender<Msg>,
 ) {
-    let mut radio_ytdlp_cache: HashMap<String, (Instant, Vec<Song>)> = HashMap::new();
+    let mut radio_ytdlp_cache: HashMap<(String, RadioMode), (Instant, Vec<Song>)> = HashMap::new();
     while let Some(cmd) = rx.recv().await {
         match cmd {
             ApiCmd::Search(query) => {
@@ -247,6 +274,7 @@ async fn run_actor(
                 seed_video_id,
                 exclude_ids,
                 limit,
+                mode,
             } => {
                 // Build one pool from two sources, tagged by provenance so the local engine can
                 // weight them: YTM's own radio continuation first (best), then yt-dlp text search
@@ -276,17 +304,18 @@ async fn run_actor(
                     radio_ytdlp_cache.retain(|_, (stored, _)| {
                         now.duration_since(*stored) < RADIO_YTDLP_CACHE_TTL
                     });
+                    let cache_key = (seed.clone(), mode);
                     let cached = radio_ytdlp_cache
-                        .get(&seed)
+                        .get(&cache_key)
                         .filter(|(stored, _)| now.duration_since(*stored) < RADIO_YTDLP_CACHE_TTL)
                         .map(|(_, songs)| songs.clone());
                     let ytdlp_pool = match cached {
                         Some(songs) => Ok(songs),
                         None => {
                             let empty = HashSet::new();
-                            match ytmusic::related_tracks(&seed, limit, &empty).await {
+                            match ytmusic::related_tracks(&seed, limit, &empty, mode).await {
                                 Ok(songs) => {
-                                    radio_ytdlp_cache.insert(seed.clone(), (now, songs.clone()));
+                                    radio_ytdlp_cache.insert(cache_key, (now, songs.clone()));
                                     Ok(songs)
                                 }
                                 Err(e) => Err(e),
@@ -325,6 +354,19 @@ async fn run_actor(
                     }
                 };
                 let _ = msg_tx.send(msg);
+            }
+            ApiCmd::RadioPreflight {
+                seed_video_id,
+                picks,
+                fallback,
+                mode,
+                config,
+            } => {
+                let songs = ytmusic::preflight_radio_picks(picks, fallback, mode, &config).await;
+                let _ = msg_tx.send(Msg::RadioPreflighted {
+                    seed_video_id,
+                    songs,
+                });
             }
         }
     }

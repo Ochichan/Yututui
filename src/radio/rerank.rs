@@ -28,12 +28,13 @@ pub fn select(
     }
     // Sample only from the strongest candidates.
     scored.sort_by(|a, b| b.base_score.total_cmp(&a.base_score));
-    scored.truncate(cfg.sample_top_k.max(n));
+    let profile = st.mode.profile(cfg);
+    scored.truncate(profile.sample_top_k.max(n));
 
-    let lambda = st.mode.mmr_lambda();
-    let temp = st.mode.temperature();
-    let artist_gap = st.mode.artist_gap();
-    let album_gap = cfg.album_gap;
+    let lambda = profile.mmr_lambda;
+    let temp = profile.temperature;
+    let artist_gap = profile.artist_gap;
+    let album_gap = profile.album_gap;
     let simw = &cfg.sim_weights;
 
     // Cooldown windows seeded with what was recently played (so the first picks don't clash
@@ -101,9 +102,10 @@ pub fn mmr_topk(
         return Vec::new();
     }
     scored.sort_by(|a, b| b.base_score.total_cmp(&a.base_score));
-    scored.truncate(cfg.sample_top_k.max(k));
+    let profile = st.mode.profile(cfg);
+    scored.truncate(profile.sample_top_k.max(k));
 
-    let lambda = st.mode.mmr_lambda();
+    let lambda = profile.mmr_lambda;
     let simw = &cfg.sim_weights;
     let mut selected: Vec<Candidate> = Vec::new();
     let mut remaining = scored;
@@ -225,6 +227,9 @@ mod tests {
             banned_track_ids: HashSet::new(),
             banned_artist_keys: HashSet::new(),
             favorite_artist_keys: HashSet::new(),
+            session_artist_bias: std::collections::HashMap::new(),
+            temporary_novelty_boost: 0.0,
+            temporary_familiarity_boost: 0.0,
         }
     }
 

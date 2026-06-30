@@ -1781,6 +1781,7 @@ fn radio_fallback(cmds: &[Cmd]) -> Option<(&str, &str, &[String])> {
             seed,
             seed_video_id,
             exclude_ids,
+            ..
         } => Some((
             seed.as_str(),
             seed_video_id.as_str(),
@@ -1944,15 +1945,20 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
     app.autoplay_radio = true;
 
     // The fetched pool flows through the local engine; a diverse shortlist goes to the AI.
-    let src = CandidateSource::YtdlpRadio;
     let cmds = app.update(Msg::RadioResults {
         seed_video_id: "id0".to_owned(),
         candidates: vec![
-            (Song::remote("cand1", "Track One", "band one", "3:00"), src),
-            (Song::remote("cand2", "Track Two", "band two", "3:10"), src),
+            (
+                Song::remote("cand1", "Track One", "band one", "3:00"),
+                CandidateSource::WatchPlaylist,
+            ),
+            (
+                Song::remote("cand2", "Track Two", "band two", "3:10"),
+                CandidateSource::YtdlpRadio,
+            ),
             (
                 Song::remote("cand3", "Track Three", "band three", "3:20"),
-                src,
+                CandidateSource::WatchPlaylist,
             ),
         ],
     });
@@ -1988,10 +1994,10 @@ fn smart_gate_skips_the_ai_call_and_enqueues_the_local_pick() {
     let mut app = app_playing(1, 0); // current id0, remaining 0 → a refill is due
     app.ai.available = true;
     app.autoplay_radio = true;
-    // smart_gate is on by default; `ambiguity_gap = 0.0` makes a non-empty top-two gap always
-    // count as "confident" → the gate never spends a call when the listener isn't skipping.
+    // smart_gate is on by default; a negative ambiguity gap forces the score-gap branch to read
+    // as confident, so this test isolates the gated local path.
     app.config.radio.ai.smart_gate = true;
-    app.config.radio.ai.ambiguity_gap = 0.0;
+    app.config.radio.ai.ambiguity_gap = -1.0;
 
     let before = app.queue.len();
     let src = CandidateSource::YtdlpRadio;
@@ -2226,6 +2232,7 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     app.ai.thinking = true;
     app.radio.pending_rerank = Some(PendingRerank {
         seed_video_id: "id0".to_owned(),
+        mode: crate::radio::RadioMode::Balanced,
         shortlist: vec![
             Song::remote("s1", "S1", "a", "3:00"),
             Song::remote("s2", "S2", "b", "3:00"),
@@ -2286,6 +2293,7 @@ fn radio_ai_picks_for_a_stale_seed_are_ignored() {
     app.ai.thinking = true;
     app.radio.pending_rerank = Some(PendingRerank {
         seed_video_id: "current-seed".to_owned(),
+        mode: crate::radio::RadioMode::Balanced,
         shortlist: vec![Song::remote("s1", "S1", "a", "3:00")],
         local_pick: vec![Song::remote("s1", "S1", "a", "3:00")],
         cid_map: vec![crate::radio::PackedCand {
@@ -2321,6 +2329,7 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
     app.ai.thinking = true;
     app.radio.pending_rerank = Some(PendingRerank {
         seed_video_id: "id0".to_owned(),
+        mode: crate::radio::RadioMode::Balanced,
         shortlist: vec![
             Song::remote("s1", "First Song", "Artist One", "3:00"),
             Song::remote("s2", "Second Song", "Artist Two", "3:00"),

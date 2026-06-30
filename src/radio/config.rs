@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// How adventurous the station is. Drives MMR λ, sampling temperature, and artist spacing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum RadioMode {
     /// Stay close to the seed (tight, relevance-dominant).
     Focused,
@@ -76,6 +76,194 @@ impl RadioMode {
             RadioMode::Discovery => 10,
         }
     }
+
+    /// Fully-derived runtime policy for this mode. The persisted [`RadioConfig`] keeps the
+    /// user-tunable defaults/backward compatibility; this profile is the single contract the
+    /// radio pipeline reads so a mode changes scoring, filtering, diversity, history, and AI
+    /// behavior together.
+    pub fn profile(self, base: &RadioConfig) -> ModeProfile {
+        match self {
+            RadioMode::Focused => ModeProfile {
+                weights: ScoreWeights {
+                    cooccurrence: 0.50,
+                    seed_affinity: 0.32,
+                    novelty: 0.04,
+                    ytm_continuation: 0.22,
+                    completion: 0.08,
+                    music_tier: 0.18,
+                    dislike_penalty: 0.55,
+                },
+                mmr_lambda: 0.78,
+                temperature: 0.25,
+                artist_gap: 4,
+                album_gap: 4,
+                sample_top_k: 20,
+                history_block_horizon: 40,
+                allow_old_liked_repeats: true,
+                source_mix: SourceMix::focused(),
+                version_policy: VersionPolicy::StrictCanonical,
+                gate_min_pool: 3,
+                ai_recipe: AiSlotRecipe {
+                    familiar_min: 6,
+                    bridge_min: 1,
+                    discovery_min: 0,
+                    familiar_max: 8,
+                    discovery_max: 1,
+                    max_same_artist: 2,
+                },
+                ai_always_call: false,
+                profile_version: 1,
+            },
+            RadioMode::Balanced => ModeProfile {
+                weights: base.weights.clone(),
+                mmr_lambda: self.mmr_lambda(),
+                temperature: self.temperature(),
+                artist_gap: self.artist_gap(),
+                album_gap: base.album_gap,
+                sample_top_k: base.sample_top_k,
+                history_block_horizon: 140,
+                allow_old_liked_repeats: false,
+                source_mix: SourceMix::balanced(),
+                version_policy: VersionPolicy::Normal,
+                gate_min_pool: 6,
+                ai_recipe: AiSlotRecipe {
+                    familiar_min: 2,
+                    bridge_min: 3,
+                    discovery_min: 2,
+                    familiar_max: 5,
+                    discovery_max: 4,
+                    max_same_artist: 1,
+                },
+                ai_always_call: false,
+                profile_version: 1,
+            },
+            RadioMode::Discovery => ModeProfile {
+                weights: ScoreWeights {
+                    cooccurrence: 0.22,
+                    seed_affinity: 0.12,
+                    novelty: 0.38,
+                    ytm_continuation: 0.07,
+                    completion: 0.04,
+                    music_tier: 0.08,
+                    dislike_penalty: 0.35,
+                },
+                mmr_lambda: 0.42,
+                temperature: 0.90,
+                artist_gap: 11,
+                album_gap: 7,
+                sample_top_k: 70,
+                history_block_horizon: 320,
+                allow_old_liked_repeats: false,
+                source_mix: SourceMix::discovery(),
+                version_policy: VersionPolicy::AllowDeepCuts,
+                gate_min_pool: 10,
+                ai_recipe: AiSlotRecipe {
+                    familiar_min: 0,
+                    bridge_min: 2,
+                    discovery_min: 5,
+                    familiar_max: 1,
+                    discovery_max: 8,
+                    max_same_artist: 1,
+                },
+                ai_always_call: true,
+                profile_version: 1,
+            },
+        }
+    }
+}
+
+/// Runtime policy derived from a [`RadioMode`] plus the persisted base config.
+#[derive(Debug, Clone)]
+pub struct ModeProfile {
+    pub weights: ScoreWeights,
+    pub mmr_lambda: f32,
+    pub temperature: f32,
+    pub artist_gap: usize,
+    pub album_gap: usize,
+    pub sample_top_k: usize,
+    pub history_block_horizon: usize,
+    pub allow_old_liked_repeats: bool,
+    pub source_mix: SourceMix,
+    pub version_policy: VersionPolicy,
+    pub gate_min_pool: usize,
+    pub ai_recipe: AiSlotRecipe,
+    pub ai_always_call: bool,
+    pub profile_version: u32,
+}
+
+/// Mode-specific prior over candidate provenance. This is intentionally a multiplier, not a
+/// quota allocator, so source mix can improve behavior without starving small candidate pools.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceMix {
+    pub watch_playlist: f32,
+    pub artist_top: f32,
+    pub mood_playlist: f32,
+    pub ytdlp_radio: f32,
+    pub history_cooc: f32,
+    pub liked_neighbor: f32,
+}
+
+impl SourceMix {
+    pub fn focused() -> Self {
+        Self {
+            watch_playlist: 1.20,
+            artist_top: 1.15,
+            mood_playlist: 0.80,
+            ytdlp_radio: 0.85,
+            history_cooc: 1.05,
+            liked_neighbor: 1.10,
+        }
+    }
+
+    pub fn balanced() -> Self {
+        Self {
+            watch_playlist: 1.0,
+            artist_top: 1.0,
+            mood_playlist: 1.0,
+            ytdlp_radio: 1.0,
+            history_cooc: 1.0,
+            liked_neighbor: 1.0,
+        }
+    }
+
+    pub fn discovery() -> Self {
+        Self {
+            watch_playlist: 0.85,
+            artist_top: 0.80,
+            mood_playlist: 1.20,
+            ytdlp_radio: 1.15,
+            history_cooc: 1.10,
+            liked_neighbor: 0.95,
+        }
+    }
+
+    pub fn prior(self, source: super::candidate::CandidateSource) -> f32 {
+        match source {
+            super::candidate::CandidateSource::WatchPlaylist => self.watch_playlist,
+            super::candidate::CandidateSource::ArtistTop => self.artist_top,
+            super::candidate::CandidateSource::MoodPlaylist => self.mood_playlist,
+            super::candidate::CandidateSource::YtdlpRadio => self.ytdlp_radio,
+            super::candidate::CandidateSource::HistoryCooc => self.history_cooc,
+            super::candidate::CandidateSource::LikedNeighbor => self.liked_neighbor,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionPolicy {
+    StrictCanonical,
+    Normal,
+    AllowDeepCuts,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AiSlotRecipe {
+    pub familiar_min: usize,
+    pub bridge_min: usize,
+    pub discovery_min: usize,
+    pub familiar_max: usize,
+    pub discovery_max: usize,
+    pub max_same_artist: usize,
 }
 
 /// Additive weights for the base score's [0,1]-normalized feature terms (Balanced default).

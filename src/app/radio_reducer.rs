@@ -43,6 +43,7 @@ impl App {
             seed,
             seed_video_id,
             exclude_ids,
+            mode: self.config.radio.mode,
         }]
     }
 
@@ -53,7 +54,7 @@ impl App {
     pub(in crate::app) fn start_ai_rerank(
         &mut self,
         seed_video_id: &str,
-        candidates: Vec<(Song, CandidateSource)>,
+        mut candidates: Vec<(Song, CandidateSource)>,
     ) -> Vec<Cmd> {
         let st = self.build_station_state(seed_video_id);
         self.ensure_cooc_cache();
@@ -63,6 +64,7 @@ impl App {
             .as_ref()
             .expect("cooc cache populated")
             .1;
+        self.augment_radio_candidates(seed_video_id, &mut candidates);
         let pool = radio::pool_from_tagged(candidates);
         self.log_radio_gate(&st, &pool);
         let now = signals::unix_now();
@@ -87,25 +89,41 @@ impl App {
         if shortlist.is_empty() {
             // Nothing to rerank → fall straight to the local pick (itself possibly empty, which
             // trips the circuit breaker via `extend_queue_from_radio`).
-            return self.extend_queue_from_radio(local_pick);
+            return self.extend_sanitized_radio(seed_video_id, local_pick, &[]);
         }
         // Smart gate: skip the AI call when the local pick is already confident and the listener
         // isn't skipping — saves the spend + latency. `smart_gate=false` restores always-on AI.
         let skip_streak = self.radio_skip_streak();
-        if !radio::should_call_ai(&shortlist, skip_streak, &self.config.radio.ai) {
+        if !radio::should_call_ai(&shortlist, skip_streak, &self.config.radio) {
             tracing::debug!(skip_streak, "radio AI gated → confident local pick");
-            return self.extend_queue_from_radio(local_pick);
+            return self.extend_sanitized_radio(seed_video_id, local_pick, &[]);
         }
         // Result cache: a rapid identical refill (same seed artist, mode, recent ids, and candidate
         // set) replays the last resolved ordering instead of spending another call. Keyed on the
         // query, valued by the AI's chosen video ids (re-validated through `merge_ai_picks`).
         let cand_ids: Vec<String> = shortlist.iter().map(|c| c.video_id().to_owned()).collect();
-        let cache_key = radio::ai_cache_key(
-            &st.seed_artist_key,
-            st.mode,
-            &st.recent_track_ids,
-            &cand_ids,
-        );
+        let recovery_line = self.radio_recovery_line();
+        let station_query = self
+            .station
+            .active
+            .as_ref()
+            .map(|p| p.query.as_str())
+            .unwrap_or("");
+        let avoid_artist_keys = self.station.avoid_artist_keys();
+        let profile = st.mode.profile(&self.config.radio);
+        let recipe_hash = radio::ai_recipe_hash(profile.ai_recipe);
+        let cache_key = radio::ai_cache_key(radio::AiCacheKeyParts {
+            seed_artist: &st.seed_artist_key,
+            mode: st.mode,
+            recent_ids: &st.recent_track_ids,
+            candidate_ids: &cand_ids,
+            station_query,
+            avoid_artist_keys: &avoid_artist_keys,
+            recovery_line: recovery_line.as_deref(),
+            skip_streak,
+            profile_version: profile.profile_version,
+            prompt_recipe_hash: recipe_hash,
+        });
         if let Some(cached_ids) = self.ai_cache_lookup(cache_key) {
             tracing::debug!("radio AI cache hit → replaying cached order");
             let shortlist_songs: Vec<Song> = shortlist.iter().map(|c| c.song.clone()).collect();
@@ -115,12 +133,14 @@ impl App {
                 &local_pick,
                 self.config.radio.ai.picks,
             );
-            return self.extend_queue_from_radio(merged);
+            return self.extend_sanitized_radio(seed_video_id, merged, &local_pick);
         }
-        let (prompt, cid_map) = self.ai_rerank_prompt(seed_video_id, &shortlist, st.mode);
+        let (prompt, cid_map) =
+            self.ai_rerank_prompt(seed_video_id, &shortlist, st.mode, recovery_line.as_deref());
         let shortlist_songs: Vec<Song> = shortlist.into_iter().map(|c| c.song).collect();
         self.radio.pending_rerank = Some(PendingRerank {
             seed_video_id: seed_video_id.to_owned(),
+            mode: st.mode,
             shortlist: shortlist_songs,
             local_pick,
             cid_map,
@@ -166,12 +186,35 @@ impl App {
         seed_video_id: &str,
         shortlist: &[radio::Candidate],
         mode: radio::RadioMode,
+        recovery_line: Option<&str>,
     ) -> (String, Vec<radio::PackedCand>) {
         let picks = self.config.radio.ai.picks;
+        let profile = mode.profile(&self.config.radio);
+        let recipe = profile.ai_recipe;
         let (cands_block, cid_map) = radio::pack::build_cands_block(shortlist, seed_video_id);
 
         let mut s = String::new();
         s.push_str(&format!("TASK|radio_next|n={picks}|mode={mode:?}\n"));
+        s.push_str(&format!(
+            "RECIPE|familiar_min={}|bridge_min={}|discovery_min={}|familiar_max={}|discovery_max={}|max_same_artist={}\n",
+            recipe.familiar_min,
+            recipe.bridge_min,
+            recipe.discovery_min,
+            recipe.familiar_max,
+            recipe.discovery_max,
+            recipe.max_same_artist,
+        ));
+        s.push_str(match mode {
+            radio::RadioMode::Focused => {
+                "POLICY|prefer_canonical=1|old_liked_ok=1|avoid_live_remix_cover=1|avoid_sped_up=1\n"
+            }
+            radio::RadioMode::Balanced => {
+                "POLICY|prefer_canonical=1|allow_bridge=1|avoid_sped_up=1\n"
+            }
+            radio::RadioMode::Discovery => {
+                "POLICY|prefer_new_artists=1|allow_live_acoustic=1|allow_deep_cuts=1|avoid_sped_up=1\n"
+            }
+        });
         s.push_str("RULE|candidate_only=1|json_only=1|ignore_candidate_position=1\n");
         s.push_str("RECENT (most recent last):\n");
         let labels = self
@@ -183,8 +226,8 @@ impl App {
         for (role, label) in labels.iter().rev() {
             s.push_str(&format!("- {role}: {label}\n"));
         }
-        if let Some(recovery) = self.radio_recovery_line() {
-            s.push_str(&recovery);
+        if let Some(recovery) = recovery_line {
+            s.push_str(recovery);
             s.push('\n');
         }
         s.push_str(
@@ -400,9 +443,23 @@ impl App {
     }
 
     pub(in crate::app) fn radio_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
+        let profile = self.config.radio.mode.profile(&self.config.radio);
         let mut ids: HashSet<String> = self.queue.video_ids().map(str::to_owned).collect();
         ids.insert(seed_video_id.to_owned());
-        ids.extend(self.library.history.iter().map(|s| s.video_id.clone()));
+        let favorite_ids: HashSet<&str> = self
+            .library
+            .favorites
+            .iter()
+            .map(|s| s.video_id.as_str())
+            .collect();
+        for (idx, song) in self.library.history.iter().enumerate() {
+            let inside_horizon = idx < profile.history_block_horizon;
+            let protected_old_favorite =
+                profile.allow_old_liked_repeats && favorite_ids.contains(song.video_id.as_str());
+            if inside_horizon || !protected_old_favorite {
+                ids.insert(song.video_id.clone());
+            }
+        }
         ids.into_iter().collect()
     }
 
@@ -414,7 +471,7 @@ impl App {
     pub(in crate::app) fn plan_local_radio(
         &mut self,
         seed_video_id: &str,
-        candidates: Vec<(Song, CandidateSource)>,
+        mut candidates: Vec<(Song, CandidateSource)>,
     ) -> Vec<Song> {
         let st = self.build_station_state(seed_video_id);
         self.ensure_cooc_cache();
@@ -424,6 +481,7 @@ impl App {
             .as_ref()
             .expect("cooc cache populated")
             .1;
+        self.augment_radio_candidates(seed_video_id, &mut candidates);
         let pool = radio::pool_from_tagged(candidates);
         self.log_radio_gate(&st, &pool);
         radio::plan_local(
@@ -435,6 +493,97 @@ impl App {
             RADIO_FALLBACK_COUNT,
             signals::unix_now(),
         )
+    }
+
+    pub(in crate::app) fn extend_sanitized_radio(
+        &mut self,
+        seed_video_id: &str,
+        songs: Vec<Song>,
+        fallback: &[Song],
+    ) -> Vec<Cmd> {
+        let sanitized = radio::sanitize_final_picks(
+            songs,
+            fallback,
+            self.config.radio.mode,
+            &self.config.radio,
+        );
+        if !sanitized.is_empty()
+            && radio::final_preflight_needed(
+                &sanitized,
+                fallback,
+                self.config.radio.mode,
+                &self.config.radio,
+            )
+        {
+            self.radio.pending = true;
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!(
+                "Autoplay radio: checking tracks",
+                "자동재생 라디오: 곡을 확인하는 중"
+            )
+            .to_owned();
+            self.dirty = true;
+            return vec![Cmd::RadioPreflight {
+                seed_video_id: seed_video_id.to_owned(),
+                picks: sanitized,
+                fallback: fallback.to_vec(),
+                mode: self.config.radio.mode,
+                config: self.config.radio.clone(),
+            }];
+        }
+        self.extend_queue_from_radio(sanitized)
+    }
+
+    fn augment_radio_candidates(
+        &self,
+        seed_video_id: &str,
+        candidates: &mut Vec<(Song, CandidateSource)>,
+    ) {
+        let mode = self.config.radio.mode;
+        let profile = mode.profile(&self.config.radio);
+        let seed_artist = self.radio_seed_artist_key(seed_video_id);
+        let mut seen: HashSet<String> = candidates
+            .iter()
+            .map(|(song, _)| song.video_id.clone())
+            .collect();
+        seen.extend(self.queue.video_ids().map(str::to_owned));
+        seen.insert(seed_video_id.to_owned());
+
+        let (liked_cap, history_cap) = match mode {
+            RadioMode::Focused => (14, 8),
+            RadioMode::Balanced => (10, 14),
+            RadioMode::Discovery => (6, 24),
+        };
+
+        let mut favorites = self.library.favorites.clone();
+        favorites.sort_by(|a, b| {
+            local_neighbor_score(b, &seed_artist, &self.signals).total_cmp(&local_neighbor_score(
+                a,
+                &seed_artist,
+                &self.signals,
+            ))
+        });
+        for song in favorites.into_iter().take(liked_cap) {
+            if seen.insert(song.video_id.clone()) {
+                candidates.push((song, CandidateSource::LikedNeighbor));
+            }
+        }
+
+        let mut added_history = 0usize;
+        for song in self
+            .library
+            .history
+            .iter()
+            .skip(profile.history_block_horizon)
+        {
+            if added_history >= history_cap {
+                break;
+            }
+            if seen.insert(song.video_id.clone()) {
+                candidates.push((song.clone(), CandidateSource::HistoryCooc));
+                added_history += 1;
+            }
+        }
     }
 
     fn ensure_cooc_cache(&mut self) {
@@ -502,10 +651,18 @@ impl App {
     /// against: the seed, recently-heard tracks/artists (already-played filtering + cooldown),
     /// and favorite artists (a seed-affinity boost). Dislikes are read straight from `signals`.
     pub(in crate::app) fn build_station_state(&self, seed_video_id: &str) -> StationState {
+        let profile = self.config.radio.mode.profile(&self.config.radio);
         let mut recent_track_ids: Vec<String> = self.queue.video_ids().map(str::to_owned).collect();
-        recent_track_ids.extend(self.library.history.iter().map(|s| s.video_id.clone()));
+        recent_track_ids.extend(
+            self.library
+                .history
+                .iter()
+                .take(profile.history_block_horizon)
+                .map(|s| s.video_id.clone()),
+        );
 
-        // Cooldown window wants most-recent *last*; history is newest-first, so reverse it.
+        // Cooldown window wants most-recent *last*. History is newest-first, so reverse it, then
+        // append current/upcoming queue artists so newly appended radio picks do not repeat them.
         let mut recent_artist_keys: Vec<String> = self
             .library
             .history
@@ -514,6 +671,17 @@ impl App {
             .map(|s| signals::normalize_artist(&s.artist))
             .collect();
         recent_artist_keys.reverse();
+        if let Some(cur) = self.queue.current() {
+            push_artist_key(&mut recent_artist_keys, &cur.artist);
+        }
+        for song in self
+            .queue
+            .ordered_iter()
+            .skip(self.queue.cursor_pos().saturating_add(1))
+            .take(8)
+        {
+            push_artist_key(&mut recent_artist_keys, &song.artist);
+        }
 
         let favorite_artist_keys: HashSet<String> = self
             .library
@@ -521,6 +689,20 @@ impl App {
             .iter()
             .map(|s| signals::normalize_artist(&s.artist))
             .collect();
+        let session_artist_bias = self.session_artist_bias();
+        let skip_streak = self.radio_skip_streak();
+        let temporary_novelty_boost =
+            if self.config.radio.mode == RadioMode::Focused && skip_streak >= 2 {
+                0.12
+            } else {
+                0.0
+            };
+        let temporary_familiarity_boost =
+            if self.config.radio.mode == RadioMode::Discovery && skip_streak >= 2 {
+                0.20
+            } else {
+                0.0
+            };
 
         StationState {
             mode: self.config.radio.mode,
@@ -532,7 +714,26 @@ impl App {
             // The active natural-language station's avoided artists are kept out of every refill.
             banned_artist_keys: self.station.avoid_artist_keys().into_iter().collect(),
             favorite_artist_keys,
+            session_artist_bias,
+            temporary_novelty_boost,
+            temporary_familiarity_boost,
         }
+    }
+
+    fn session_artist_bias(&self) -> HashMap<String, f32> {
+        let mut out: HashMap<String, f32> = HashMap::new();
+        for event in self.radio.session_events.iter().rev().take(8) {
+            let delta = match event.outcome {
+                Outcome::FullPlay => 0.05,
+                Outcome::Like => 0.15,
+                Outcome::Skip => -0.10,
+                Outcome::QuickSkip => -0.20,
+                Outcome::Dislike => -0.40,
+            };
+            let entry = out.entry(event.artist_key.clone()).or_insert(0.0);
+            *entry = (*entry + delta).clamp(-0.50, 0.35);
+        }
+        out
     }
 
     /// Sync the active station profile's adventurousness onto the live engine mode. The avoid
@@ -559,4 +760,21 @@ impl App {
             .map(|s| signals::normalize_artist(&s.artist))
             .unwrap_or_default()
     }
+}
+
+fn push_artist_key(keys: &mut Vec<String>, artist: &str) {
+    let key = signals::normalize_artist(artist);
+    if !key.is_empty() {
+        keys.push(key);
+    }
+}
+
+fn local_neighbor_score(song: &Song, seed_artist_key: &str, sig: &Signals) -> f32 {
+    let artist_key = signals::normalize_artist(&song.artist);
+    let seed_bonus = if artist_key == seed_artist_key {
+        1.0
+    } else {
+        0.0
+    };
+    seed_bonus + sig.artist_weight(&artist_key)
 }

@@ -122,6 +122,13 @@ pub enum Msg {
         seed_video_id: String,
         candidates: Vec<(Song, CandidateSource)>,
     },
+    /// Final radio picks after the API actor has run any needed metadata preflight. This is the
+    /// last gate before enqueueing; it can drop risky public-YouTube candidates and top up from
+    /// fallback picks.
+    RadioPreflighted {
+        seed_video_id: String,
+        songs: Vec<Song>,
+    },
     /// The non-AI radio fallback failed to fetch related tracks.
     RadioError {
         seed_video_id: String,
@@ -239,6 +246,16 @@ pub enum Cmd {
         seed: String,
         seed_video_id: String,
         exclude_ids: Vec<String>,
+        mode: RadioMode,
+    },
+    /// Ask the API actor to run a final metadata preflight on radio picks before enqueueing.
+    /// Only risky candidates trigger full yt-dlp extraction; clean picks pass through.
+    RadioPreflight {
+        seed_video_id: String,
+        picks: Vec<Song>,
+        fallback: Vec<Song>,
+        mode: RadioMode,
+        config: radio::RadioConfig,
     },
     /// Hand a local candidate shortlist to the AI actor to rerank (ids only). The result
     /// returns as [`Msg::RadioAiPicks`]; failure degrades to the stashed local pick.
@@ -388,6 +405,7 @@ pub struct AiContext {
 /// the engine produced, used to top up any slots the AI left empty.
 pub(crate) struct PendingRerank {
     pub(crate) seed_video_id: String,
+    pub(crate) mode: RadioMode,
     pub(crate) shortlist: Vec<Song>,
     pub(crate) local_pick: Vec<Song>,
     /// Maps each pack `cid` shown to the model back to its track's video id, so the AI's chosen

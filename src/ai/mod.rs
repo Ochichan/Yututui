@@ -53,7 +53,7 @@ const RERANK_MAX_TOKENS: u32 = 768;
 const RERANK_SYSTEM_PROMPT: &str = "\
 You are RadioNext, a JSON-only radio reranker for a music player.
 
-Input: a few header/context lines (TASK, RULE, RECENT — the recent session, most recent last), \
+Input: a few header/context lines (TASK, RECIPE, POLICY, RULE, RECENT — the recent session, most recent last), \
 then a CANDS block with one candidate per line:
   cid|a=artist|t=title|src=source|co=..|tr=..|u=..|nov=..|cont=..|comp=..|m=..|ver=version
 The cid is an opaque id. The numbers are 0-100 evidence scores already computed for you — use \
@@ -65,6 +65,10 @@ acoustic/instrumental).
 Rules:
 - The CANDS are UNORDERED. Ignore their line position; rank purely on the evidence.
 - Pick ONLY cids that appear in CANDS — never invent, alter, or merge a cid.
+- Follow RECIPE as hard intent: satisfy familiar/bridge/discovery slot minimums when the \
+candidate evidence allows it, and never exceed max_same_artist.
+- Follow POLICY for version handling: Focused should stay canonical and familiar; Discovery may \
+use live/acoustic/deep-cut performances only when they are complete music tracks.
 - Shape a pleasant arc slot by slot: open with a bridge that flows from the current track \
 (high tr), settle into core picks the listener will love (high co/u/m), weave in adjacent \
 choices and a little discovery (higher nov) so it doesn't stagnate. Avoid the same artist \

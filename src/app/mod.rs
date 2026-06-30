@@ -671,10 +671,20 @@ impl App {
                         return self.start_ai_rerank(&seed_video_id, candidates);
                     }
                     let picks = self.plan_local_radio(&seed_video_id, candidates);
-                    return self.extend_queue_from_radio(picks);
+                    return self.extend_sanitized_radio(&seed_video_id, picks, &[]);
                 } else {
                     self.dirty = true;
                 }
+            }
+            Msg::RadioPreflighted {
+                seed_video_id,
+                songs,
+            } => {
+                self.radio.pending = false;
+                if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
+                    return self.extend_queue_from_radio(songs);
+                }
+                self.dirty = true;
             }
             Msg::RadioAiPicks {
                 seed_video_id,
@@ -725,24 +735,34 @@ impl App {
                         })
                         .collect();
                     let ids: Vec<String> = resolved.iter().map(|(vid, _)| vid.clone()).collect();
+                    let roles: Vec<Option<String>> =
+                        resolved.iter().map(|(_, pick)| pick.role.clone()).collect();
+                    let recipe_ok =
+                        radio::ai_roles_match_recipe(&roles, pending.mode, &self.config.radio);
+                    let effective_conf = if recipe_ok {
+                        conf
+                    } else {
+                        Some(conf.unwrap_or(0.35).min(0.40))
+                    };
                     if !resolved.is_empty() {
                         self.radio.last_explain = Some(RadioAiExplain {
-                            conf,
+                            conf: effective_conf,
                             picks: resolved.into_iter().map(|(_, p)| p).collect(),
                         });
                     }
-                    let picks = radio::merge_ai_picks(
+                    let picks = radio::merge_ai_picks_with_confidence(
                         &ids,
                         &pending.shortlist,
                         &pending.local_pick,
                         self.config.radio.ai.picks,
+                        effective_conf,
                     );
                     // Cache the validated ordering so a rapid identical refill replays it without a
                     // second call. Skip empty results (a failed rerank) so the next refill retries.
-                    if !ids.is_empty() {
+                    if !ids.is_empty() && recipe_ok && effective_conf.unwrap_or(0.0) >= 0.45 {
                         self.ai_cache_store(pending.cache_key, ids);
                     }
-                    return self.extend_queue_from_radio(picks);
+                    return self.extend_sanitized_radio(&seed_video_id, picks, &pending.local_pick);
                 }
             }
             Msg::RadioError {

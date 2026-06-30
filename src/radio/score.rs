@@ -11,9 +11,9 @@ use std::collections::HashSet;
 use crate::radio::StationState;
 use crate::radio::candidate::{Candidate, CandidateSource, FeatureScores};
 use crate::radio::canonical;
-use crate::radio::config::{RadioConfig, RadioMode};
+use crate::radio::config::{RadioConfig, RadioMode, VersionPolicy};
 use crate::radio::cooccurrence::Cooc;
-use crate::radio::musicgate;
+use crate::radio::musicgate::{self, GateAction};
 use crate::signals::Signals;
 
 const SECS_PER_DAY: f32 = 86_400.0;
@@ -21,7 +21,7 @@ const SECS_PER_DAY: f32 = 86_400.0;
 const NEVER_PLAYED_DAYS: f32 = 3650.0;
 /// Below this many survivors after the hard filter, gimmick-blocking is skipped so the gate
 /// can't starve the (already thin) candidate pool.
-const GATE_MIN_POOL: usize = 6;
+const GATE_DEMOTE_PENALTY: f32 = 0.18;
 
 /// Raw (un-normalized) feature values for one candidate.
 struct RawFeatures {
@@ -33,6 +33,7 @@ struct RawFeatures {
     /// Positive [0,1] "official music" signal — added raw (not normalized).
     music_tier: f32,
     version_penalty: f32,
+    gate_risk: f32,
     /// Co-occurrence affinity vs the *immediately-preceding* (seed) track. Evidence-only;
     /// retained on `Candidate.features` for the AI reranker, never summed into `base_score`.
     transition: f32,
@@ -70,7 +71,8 @@ pub fn filter_and_score(
     let comp_n = normalize(&column(&feats, |f| f.completion));
     let trans_n = normalize(&column(&feats, |f| f.transition));
 
-    let w = &cfg.weights;
+    let profile = st.mode.profile(cfg);
+    let w = &profile.weights;
     for (i, c) in kept.iter_mut().enumerate() {
         c.novelty = nov_n[i];
         c.base_score = w.cooccurrence * cooc_n[i]
@@ -79,7 +81,8 @@ pub fn filter_and_score(
             + w.ytm_continuation * cont_n[i]
             + w.completion * comp_n[i]
             + w.music_tier * feats[i].music_tier
-            - w.dislike_penalty * feats[i].version_penalty;
+            - w.dislike_penalty * feats[i].version_penalty
+            - GATE_DEMOTE_PENALTY * feats[i].gate_risk;
         // Retain the per-feature evidence for the AI reranker. `transition` is intentionally
         // NOT part of `base_score` above — it only informs the model's slotting.
         c.features = FeatureScores {
@@ -234,9 +237,11 @@ fn reject_reason(
     // but can be exempted via `gate.gate_watch_playlist = false`.
     if cfg.gate.enabled
         && (c.source != CandidateSource::WatchPlaylist || cfg.gate.gate_watch_playlist)
-        && let Some(reason) = musicgate::non_music_reason(&c.song.title, &c.song.artist)
     {
-        return Some(reason);
+        let decision = musicgate::decide(&c.song.title, &c.song.artist, c.source, st.mode);
+        if decision.action == GateAction::Reject {
+            return decision.reason;
+        }
     }
     None
 }
@@ -262,9 +267,10 @@ fn block_gimmicks(kept: &mut Vec<Candidate>, st: &StationState, cfg: &RadioConfi
 /// post-hard-filter pool is healthy enough to spare the gimmicks. Shared by [`block_gimmicks`]
 /// and [`classify_pool`] so the live filter and the debug log agree on when gimmicks are dropped.
 fn gimmick_block_active(survivor_count: usize, st: &StationState, cfg: &RadioConfig) -> bool {
+    let profile = st.mode.profile(cfg);
     cfg.gate.enabled
         && (st.mode == RadioMode::Focused || cfg.gate.block_altered_versions)
-        && survivor_count >= GATE_MIN_POOL
+        && survivor_count >= profile.gate_min_pool
 }
 
 /// Keep the single best candidate per canonical key (highest provenance, then lowest rank).
@@ -287,6 +293,7 @@ fn raw_features(
     cfg: &RadioConfig,
     now: i64,
 ) -> RawFeatures {
+    let profile = st.mode.profile(cfg);
     let id = c.video_id();
     let cooc_aff = cooc.affinity(id, &st.recent_track_ids);
 
@@ -300,11 +307,22 @@ fn raw_features(
 
     // Behavioral artist affinity + a boost for favorite / seed artists.
     let mut seed_affinity = sig.artist_weight(&c.artist_key);
+    seed_affinity += st
+        .session_artist_bias
+        .get(&c.artist_key)
+        .copied()
+        .unwrap_or(0.0);
     if st.favorite_artist_keys.contains(&c.artist_key) {
         seed_affinity += 1.0;
     }
     if c.artist_key == st.seed_artist_key {
         seed_affinity += 0.5;
+    }
+    if st.temporary_familiarity_boost > 0.0
+        && (st.favorite_artist_keys.contains(&c.artist_key)
+            || sig.artist_weight(&c.artist_key) > 0.0)
+    {
+        seed_affinity += st.temporary_familiarity_boost;
     }
 
     // Novelty: unfamiliar (low play count) and not recently over-played.
@@ -315,12 +333,28 @@ fn raw_features(
         None => NEVER_PLAYED_DAYS,
     };
     let recency_of_play = recency_factor(days_since, cfg.recency_half_life_days);
-    let novelty = unfamiliarity * (1.0 - recency_of_play);
+    let novelty = (unfamiliarity * (1.0 - recency_of_play) + st.temporary_novelty_boost).max(0.0);
 
-    let continuation = c.source.provenance_weight() / (1.0 + c.source_rank as f32);
+    let continuation = c.source.provenance_weight() * profile.source_mix.prior(c.source)
+        / (1.0 + c.source_rank as f32);
     let completion = sig.completion_rate(id);
     let music_tier = musicgate::music_tier_score(&c.song.title, &c.song.artist);
-    let version_penalty = canonical::version_penalty(&c.song.title);
+    let version_penalty = version_penalty_for_mode(&c.song.title, profile.version_policy);
+    let gate = if cfg.gate.enabled {
+        musicgate::decide(&c.song.title, &c.song.artist, c.source, st.mode)
+    } else {
+        musicgate::MusicGateDecision {
+            action: GateAction::Keep,
+            reason: None,
+            risk: 0.0,
+            confidence: 0.0,
+        }
+    };
+    let gate_risk = if gate.action == GateAction::Demote {
+        gate.risk * gate.confidence.max(0.5)
+    } else {
+        0.0
+    };
 
     RawFeatures {
         cooc: cooc_aff,
@@ -330,7 +364,23 @@ fn raw_features(
         completion,
         music_tier,
         version_penalty,
+        gate_risk,
         transition,
+    }
+}
+
+fn version_penalty_for_mode(title: &str, policy: VersionPolicy) -> f32 {
+    let penalty = canonical::version_penalty(title);
+    match policy {
+        VersionPolicy::StrictCanonical => (penalty * 1.35).min(1.0),
+        VersionPolicy::Normal => penalty,
+        VersionPolicy::AllowDeepCuts => {
+            if musicgate::gimmick_reason(title).is_some() {
+                penalty
+            } else {
+                penalty * 0.45
+            }
+        }
     }
 }
 
@@ -388,6 +438,9 @@ mod tests {
             banned_track_ids: HashSet::new(),
             banned_artist_keys: HashSet::new(),
             favorite_artist_keys: HashSet::new(),
+            session_artist_bias: std::collections::HashMap::new(),
+            temporary_novelty_boost: 0.0,
+            temporary_familiarity_boost: 0.0,
         }
     }
 

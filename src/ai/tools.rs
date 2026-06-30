@@ -222,9 +222,14 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             let seed = str_arg(args, "seed")
                 .or_else(|| deps.ctx.current_track.clone())
                 .unwrap_or_else(|| "popular music".to_owned());
-            let songs = related_tracks(&seed, RELATED_COUNT, &HashSet::new())
-                .await
-                .unwrap_or_default();
+            let songs = related_tracks(
+                &seed,
+                RELATED_COUNT,
+                &HashSet::new(),
+                crate::radio::RadioMode::Balanced,
+            )
+            .await
+            .unwrap_or_default();
             cache_all(deps, &songs);
             let count = songs.len();
             // A vibe-shaped station carries an explore level and/or artists to avoid → persist it
@@ -256,9 +261,14 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             let seed = str_arg(args, "seed")
                 .or_else(|| deps.ctx.current_track.clone())
                 .unwrap_or_else(|| "popular music".to_owned());
-            let songs = related_tracks(&seed, RELATED_COUNT, &HashSet::new())
-                .await
-                .unwrap_or_default();
+            let songs = related_tracks(
+                &seed,
+                RELATED_COUNT,
+                &HashSet::new(),
+                crate::radio::RadioMode::Balanced,
+            )
+            .await
+            .unwrap_or_default();
             cache_all(deps, &songs);
             let labels: Vec<String> = songs.iter().map(fmt_song).collect();
             // Populating the pickable list is not a playback mutation → no side-effect flag.

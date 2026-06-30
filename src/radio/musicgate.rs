@@ -9,6 +9,24 @@
 //! to let a borderline track through over wrongly dropping a real song, and trusted channels
 //! (`"- Topic"`, VEVO) bypass the checks entirely.
 
+use crate::radio::candidate::CandidateSource;
+use crate::radio::config::RadioMode;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GateAction {
+    Keep,
+    Demote,
+    Reject,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MusicGateDecision {
+    pub action: GateAction,
+    pub reason: Option<&'static str>,
+    pub risk: f32,
+    pub confidence: f32,
+}
+
 /// Title keywords that mark a video as definitely non-music, with the reason tag returned on a
 /// hit. Matched as whole words (see [`title_has_word`]) so e.g. "Chain Reaction" (a real song)
 /// is NOT caught by "reaction". Words known to be dangerous as song-title substrings —
@@ -46,6 +64,38 @@ const NON_MUSIC_PHRASES: &[(&str, &str)] = &[
     ("first time hearing", "reaction video"),
     ("#shorts", "youtube shorts"),
     ("| shorts", "youtube shorts"),
+    ("리액션", "reaction video"),
+    ("처음 듣고 반응", "reaction video"),
+    ("처음 듣는", "reaction video"),
+    ("해설", "commentary"),
+    ("분석", "analysis"),
+    ("인터뷰", "interview"),
+    ("팟캐스트", "podcast"),
+    ("브이로그", "vlog"),
+    ("튜토리얼", "tutorial"),
+    ("リアクション", "reaction video"),
+    ("解説", "commentary"),
+    ("インタビュー", "interview"),
+    ("ポッドキャスト", "podcast"),
+];
+
+/// Softer risk markers that are too collision-prone for a global hard reject but useful for
+/// demoting or preflighting public YouTube search results.
+const RISK_PHRASES: &[(&str, &str, f32)] = &[
+    ("review", "review", 0.35),
+    ("commentary", "commentary", 0.50),
+    ("explained", "explainer", 0.45),
+    ("analysis", "analysis", 0.40),
+    ("news", "news", 0.35),
+    ("trailer", "trailer", 0.35),
+    ("lesson", "tutorial", 0.35),
+    ("top 10", "listicle", 0.45),
+    ("episode", "episode", 0.35),
+    ("podcast", "podcast", 0.75),
+    ("interview", "interview", 0.70),
+    ("reaction", "reaction video", 0.70),
+    ("リビュー", "review", 0.35),
+    ("レビュー", "review", 0.35),
 ];
 
 /// Gimmick / altered-version markers: re-uploads that aren't the real track. Distinctive
@@ -89,6 +139,93 @@ pub fn non_music_reason(title: &str, channel: &str) -> Option<&'static str> {
         return Some("podcast channel");
     }
     None
+}
+
+/// Full gate decision. Strong markers still reject, but public YouTube search candidates with
+/// weaker risk are demoted first so a sparse station is not starved by false positives.
+pub fn decide(
+    title: &str,
+    channel: &str,
+    source: CandidateSource,
+    mode: RadioMode,
+) -> MusicGateDecision {
+    if is_trusted_music_channel(channel) {
+        return MusicGateDecision {
+            action: GateAction::Keep,
+            reason: None,
+            risk: 0.0,
+            confidence: 0.95,
+        };
+    }
+    if let Some(reason) = non_music_reason(title, channel) {
+        return MusicGateDecision {
+            action: GateAction::Reject,
+            reason: Some(reason),
+            risk: 0.95,
+            confidence: 0.90,
+        };
+    }
+
+    let risk = non_music_risk_score(title, channel);
+    let music_tier = music_tier_score(title, channel);
+    let action = if source == CandidateSource::YtdlpRadio && risk >= 0.85 {
+        GateAction::Reject
+    } else if source == CandidateSource::YtdlpRadio && risk >= 0.55 && music_tier <= 0.0 {
+        match mode {
+            RadioMode::Focused => GateAction::Reject,
+            RadioMode::Balanced | RadioMode::Discovery => GateAction::Demote,
+        }
+    } else if risk >= 0.35 && music_tier <= 0.0 {
+        GateAction::Demote
+    } else {
+        GateAction::Keep
+    };
+
+    MusicGateDecision {
+        action,
+        reason: (action != GateAction::Keep).then_some(risk_reason(title, channel)),
+        risk,
+        confidence: risk.max(music_tier),
+    }
+}
+
+/// Risk score in [0,1] for borderline non-music. Kept separate from [`non_music_reason`] so the
+/// ranker can demote questionable public YouTube candidates without hard-dropping every one.
+pub fn non_music_risk_score(title: &str, channel: &str) -> f32 {
+    if is_trusted_music_channel(channel) {
+        return 0.0;
+    }
+    if non_music_reason(title, channel).is_some() {
+        return 0.95;
+    }
+    let t = title.to_lowercase();
+    let c = channel.to_lowercase();
+    let mut risk = 0.0f32;
+    for &(phrase, _, w) in RISK_PHRASES {
+        if t.contains(phrase) || c.contains(phrase) {
+            risk = risk.max(w);
+        }
+    }
+    if title_has_word(&c, "podcast") {
+        risk = risk.max(0.80);
+    }
+    if t.contains("1 hour") || t.contains("one hour") || t.contains("full album") {
+        risk = risk.max(0.50);
+    }
+    risk.min(1.0)
+}
+
+fn risk_reason(title: &str, channel: &str) -> &'static str {
+    if let Some(reason) = non_music_reason(title, channel) {
+        return reason;
+    }
+    let text = format!("{} {}", title.to_lowercase(), channel.to_lowercase());
+    for &(phrase, reason, _) in RISK_PHRASES {
+        if text.contains(phrase) {
+            return reason;
+        }
+    }
+    "non-music risk"
 }
 
 /// Gimmick / altered-version reject (karaoke / nightcore / 8D / sped-up / slowed+reverb).

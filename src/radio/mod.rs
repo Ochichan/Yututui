@@ -10,7 +10,7 @@ pub mod candidate;
 mod canonical;
 pub mod config;
 mod cooccurrence;
-mod musicgate;
+pub(crate) mod musicgate;
 pub mod pack;
 mod rerank;
 mod score;
@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::api::Song;
+use crate::radio::musicgate::GateAction;
 use crate::signals::Signals;
 
 pub use candidate::{Candidate, CandidateSource};
@@ -43,6 +44,11 @@ pub struct StationState {
     pub banned_artist_keys: HashSet<String>,
     /// Normalized artist keys the user has favorited (a seed-affinity boost).
     pub favorite_artist_keys: HashSet<String>,
+    /// Short-lived per-session artist nudges derived from recent radio outcomes.
+    pub session_artist_bias: HashMap<String, f32>,
+    /// Temporary novelty/familiarity nudges for skip-streak recovery.
+    pub temporary_novelty_boost: f32,
+    pub temporary_familiarity_boost: f32,
 }
 
 /// Run the full local pipeline — hard filter → normalized base score → MMR + cooldown →
@@ -113,6 +119,103 @@ pub fn merge_ai_picks(
     out
 }
 
+/// Confidence-aware version of [`merge_ai_picks`]. Low-confidence AI output is treated as a
+/// light nudge over the local engine instead of a full ordering replacement.
+pub fn merge_ai_picks_with_confidence(
+    ids: &[String],
+    shortlist: &[Song],
+    local_pick: &[Song],
+    n: usize,
+    conf: Option<f32>,
+) -> Vec<Song> {
+    let ai_slots = match conf {
+        Some(c) if c < 0.45 => n.div_ceil(3),
+        Some(c) if c < 0.75 => n.div_ceil(2),
+        _ => n,
+    };
+    let ai_first = merge_ai_picks(ids, shortlist, local_pick, ai_slots);
+    if ai_first.len() >= n {
+        return ai_first;
+    }
+    let ai_ids: Vec<String> = ai_first.iter().map(|s| s.video_id.clone()).collect();
+    merge_ai_picks(&ai_ids, shortlist, local_pick, n)
+}
+
+/// Last synchronous safety pass before radio picks are appended to the queue. The scoring pass
+/// already filtered candidates, but cached AI orders and low-context fallbacks can still benefit
+/// from a final cheap title/channel/duration check.
+pub fn sanitize_final_picks(
+    picks: Vec<Song>,
+    fallback: &[Song],
+    mode: RadioMode,
+    cfg: &RadioConfig,
+) -> Vec<Song> {
+    let target = picks.len();
+    let mut out = Vec::with_capacity(target);
+    let mut taken: HashSet<String> = HashSet::new();
+    for song in picks.iter().chain(fallback.iter()) {
+        if out.len() >= target {
+            break;
+        }
+        if taken.contains(&song.video_id) || reject_final_song(song, mode, cfg) {
+            continue;
+        }
+        taken.insert(song.video_id.clone());
+        out.push(song.clone());
+    }
+    out
+}
+
+fn reject_final_song(song: &Song, mode: RadioMode, cfg: &RadioConfig) -> bool {
+    if let Some(duration) = candidate::parse_duration_secs(&song.duration)
+        && (duration < cfg.min_duration_secs || duration > cfg.max_duration_secs)
+    {
+        return true;
+    }
+    if !cfg.gate.enabled {
+        return false;
+    }
+    let decision = musicgate::decide(&song.title, &song.artist, CandidateSource::YtdlpRadio, mode);
+    if decision.action == GateAction::Reject {
+        return true;
+    }
+    mode == RadioMode::Focused && musicgate::gimmick_reason(&song.title).is_some()
+}
+
+/// Whether the final radio picks contain a candidate risky enough to justify async metadata
+/// preflight before enqueueing. This keeps the common clean path synchronous while still giving
+/// public YouTube fallbacks a deeper check when title/channel/duration evidence is weak.
+pub fn final_preflight_needed(
+    picks: &[Song],
+    fallback: &[Song],
+    mode: RadioMode,
+    cfg: &RadioConfig,
+) -> bool {
+    picks
+        .iter()
+        .chain(fallback.iter())
+        .any(|song| needs_metadata_preflight(song, mode, cfg))
+}
+
+/// Cheap title/channel signal used by both the reducer and API actor to decide which final radio
+/// picks need a full yt-dlp metadata extraction.
+pub fn needs_metadata_preflight(song: &Song, mode: RadioMode, cfg: &RadioConfig) -> bool {
+    if !cfg.gate.enabled || song.youtube_id().is_none() || song.is_local() {
+        return false;
+    }
+    let decision = musicgate::decide(&song.title, &song.artist, CandidateSource::YtdlpRadio, mode);
+    if decision.action != GateAction::Keep {
+        return true;
+    }
+    if mode == RadioMode::Focused && musicgate::gimmick_reason(&song.title).is_some() {
+        return true;
+    }
+    let risk = musicgate::non_music_risk_score(&song.title, &song.artist);
+    let music_tier = musicgate::music_tier_score(&song.title, &song.artist);
+    let duration_unknown = candidate::parse_duration_secs(&song.duration).is_none();
+    risk >= 0.35 || (duration_unknown && music_tier <= 0.0 && risk >= 0.15)
+}
+
 /// Whether an autoplay refill is worth an AI rerank call. With `smart_gate` off it's always
 /// `true` (spend the call whenever the reranker is enabled). With it on, we still call when the
 /// listener is unsettled (a trailing skip streak) or when the local pick is *ambiguous* — the top
@@ -122,37 +225,96 @@ pub fn merge_ai_picks(
 pub fn should_call_ai(
     shortlist: &[Candidate],
     skip_streak: usize,
-    cfg: &config::AiRerankConfig,
+    cfg: &config::RadioConfig,
 ) -> bool {
-    if !cfg.smart_gate || skip_streak >= 1 {
+    if shortlist.len() < 2 {
+        return false;
+    }
+    let profile = cfg.mode.profile(cfg);
+    if !cfg.ai.smart_gate || profile.ai_always_call || skip_streak >= 1 {
+        return true;
+    }
+    if cfg.ai.ambiguity_gap >= 0.0 && source_entropy(shortlist) < 0.65 {
         return true;
     }
     match top_two_base_score_gap(shortlist) {
-        Some(gap) => gap < cfg.ambiguity_gap,
+        Some(gap) => gap < cfg.ai.ambiguity_gap,
         None => false,
     }
 }
 
-/// A stable key for caching an AI rerank's result. The same `(seed_artist, mode, recent ids,
-/// candidate set)` produces the same key, so a rapid identical refill can replay the cached
-/// ordering instead of spending another call. The candidate set is order-independent (sorted
-/// before hashing) because the shortlist's *contents*, not its incidental order, define the query.
-/// Uses a fixed-seed hasher (`DefaultHasher`) so the key is deterministic, not per-process random.
-pub fn ai_cache_key(
-    seed_artist: &str,
-    mode: RadioMode,
-    recent_ids: &[String],
-    candidate_ids: &[String],
-) -> u64 {
+pub struct AiCacheKeyParts<'a> {
+    pub seed_artist: &'a str,
+    pub mode: RadioMode,
+    pub recent_ids: &'a [String],
+    pub candidate_ids: &'a [String],
+    pub station_query: &'a str,
+    pub avoid_artist_keys: &'a [String],
+    pub recovery_line: Option<&'a str>,
+    pub skip_streak: usize,
+    pub profile_version: u32,
+    pub prompt_recipe_hash: u64,
+}
+
+/// A stable key for caching an AI rerank's result. The candidate set is order-independent
+/// (sorted before hashing), while station/recovery/profile inputs are included because they
+/// change what the same candidates mean.
+pub fn ai_cache_key(parts: AiCacheKeyParts<'_>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    seed_artist.hash(&mut h);
-    (mode as u8).hash(&mut h);
-    recent_ids.hash(&mut h);
-    let mut sorted: Vec<&String> = candidate_ids.iter().collect();
+    parts.seed_artist.hash(&mut h);
+    parts.mode.hash(&mut h);
+    parts.recent_ids.hash(&mut h);
+    parts.station_query.hash(&mut h);
+    parts.avoid_artist_keys.hash(&mut h);
+    parts.recovery_line.hash(&mut h);
+    parts.skip_streak.hash(&mut h);
+    parts.profile_version.hash(&mut h);
+    parts.prompt_recipe_hash.hash(&mut h);
+    let mut sorted: Vec<&String> = parts.candidate_ids.iter().collect();
     sorted.sort();
     sorted.hash(&mut h);
     h.finish()
+}
+
+pub fn ai_recipe_hash(recipe: config::AiSlotRecipe) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    recipe.familiar_min.hash(&mut h);
+    recipe.bridge_min.hash(&mut h);
+    recipe.discovery_min.hash(&mut h);
+    recipe.familiar_max.hash(&mut h);
+    recipe.discovery_max.hash(&mut h);
+    recipe.max_same_artist.hash(&mut h);
+    h.finish()
+}
+
+pub fn ai_roles_match_recipe(roles: &[Option<String>], mode: RadioMode, cfg: &RadioConfig) -> bool {
+    if roles.is_empty() {
+        return false;
+    }
+    let recipe = mode.profile(cfg).ai_recipe;
+    let required = recipe.familiar_min + recipe.bridge_min + recipe.discovery_min;
+    if roles.len() < required {
+        return true;
+    }
+    let familiar = roles
+        .iter()
+        .filter(|r| matches!(r.as_deref(), Some("core" | "stabilizer")))
+        .count();
+    let bridge = roles
+        .iter()
+        .filter(|r| matches!(r.as_deref(), Some("bridge" | "adjacent")))
+        .count();
+    let discovery = roles
+        .iter()
+        .filter(|r| matches!(r.as_deref(), Some("discovery")))
+        .count();
+    familiar >= recipe.familiar_min.min(roles.len())
+        && bridge >= recipe.bridge_min.min(roles.len())
+        && discovery >= recipe.discovery_min.min(roles.len())
+        && familiar <= recipe.familiar_max.max(recipe.familiar_min)
+        && discovery <= recipe.discovery_max.max(recipe.discovery_min)
 }
 
 /// The gap between the two highest `base_score`s in `cands`, or `None` when there are fewer than
@@ -170,6 +332,28 @@ fn top_two_base_score_gap(cands: &[Candidate]) -> Option<f32> {
         }
     }
     (seen >= 2).then_some(top - second)
+}
+
+fn source_entropy(cands: &[Candidate]) -> f32 {
+    if cands.is_empty() {
+        return 0.0;
+    }
+    let mut counts: HashMap<CandidateSource, usize> = HashMap::new();
+    for c in cands {
+        *counts.entry(c.source).or_default() += 1;
+    }
+    if counts.len() <= 1 {
+        return 0.0;
+    }
+    let n = cands.len() as f32;
+    let h = counts
+        .values()
+        .map(|&count| {
+            let p = count as f32 / n;
+            -p * p.ln()
+        })
+        .sum::<f32>();
+    h / (counts.len() as f32).ln()
 }
 
 /// Wrap provenance-tagged songs into ranking candidates. `source_rank` is each song's position
@@ -219,6 +403,9 @@ mod tests {
             banned_track_ids: HashSet::new(),
             banned_artist_keys: HashSet::new(),
             favorite_artist_keys: HashSet::new(),
+            session_artist_bias: HashMap::new(),
+            temporary_novelty_boost: 0.0,
+            temporary_familiarity_boost: 0.0,
         }
     }
 
@@ -407,26 +594,89 @@ mod tests {
 
     /// A scored candidate with a chosen `base_score` (the only field the gate reads).
     fn scored(id: &str, base: f32) -> Candidate {
-        let mut c = Candidate::from_song(song(id, "a"), CandidateSource::YtdlpRadio, 0);
+        scored_src(id, base, CandidateSource::YtdlpRadio)
+    }
+
+    fn scored_src(id: &str, base: f32, source: CandidateSource) -> Candidate {
+        let mut c = Candidate::from_song(song(id, "a"), source, 0);
         c.base_score = base;
         c
     }
 
+    fn test_cache_key(
+        seed_artist: &str,
+        mode: RadioMode,
+        recent_ids: &[String],
+        candidate_ids: &[String],
+    ) -> u64 {
+        ai_cache_key(AiCacheKeyParts {
+            seed_artist,
+            mode,
+            recent_ids,
+            candidate_ids,
+            station_query: "",
+            avoid_artist_keys: &[],
+            recovery_line: None,
+            skip_streak: 0,
+            profile_version: mode.profile(&RadioConfig::default()).profile_version,
+            prompt_recipe_hash: ai_recipe_hash(mode.profile(&RadioConfig::default()).ai_recipe),
+        })
+    }
+
     #[test]
     fn smart_gate_off_always_calls_the_model() {
-        let cfg = config::AiRerankConfig {
-            smart_gate: false,
+        let cfg = RadioConfig {
+            ai: config::AiRerankConfig {
+                smart_gate: false,
+                ..Default::default()
+            },
             ..Default::default()
         };
         // Even a runaway-clear local winner with a settled listener still spends the call.
-        let shortlist = vec![scored("a", 0.9), scored("b", 0.1)];
+        let shortlist = vec![
+            scored_src("a", 0.9, CandidateSource::WatchPlaylist),
+            scored("b", 0.1),
+        ];
         assert!(should_call_ai(&shortlist, 0, &cfg));
     }
 
     #[test]
+    fn final_preflight_needed_only_for_risky_public_candidates() {
+        let cfg = RadioConfig::default();
+        let official = Song::remote(
+            "official",
+            "Artist - Song (Official Audio)",
+            "Artist - Topic",
+            "3:10",
+        );
+        assert!(!final_preflight_needed(
+            std::slice::from_ref(&official),
+            &[],
+            RadioMode::Balanced,
+            &cfg
+        ));
+
+        let review = Song::remote(
+            "review",
+            "Artist Song review and analysis",
+            "Review Channel",
+            "3:10",
+        );
+        assert!(final_preflight_needed(
+            std::slice::from_ref(&review),
+            &[],
+            RadioMode::Balanced,
+            &cfg
+        ));
+    }
+
+    #[test]
     fn gate_calls_the_model_on_a_skip_streak_even_when_local_is_clear() {
-        let cfg = config::AiRerankConfig::default();
-        let shortlist = vec![scored("a", 0.9), scored("b", 0.1)]; // gap 0.8 >> ambiguity_gap
+        let cfg = RadioConfig::default();
+        let shortlist = vec![
+            scored_src("a", 0.9, CandidateSource::WatchPlaylist),
+            scored("b", 0.1),
+        ]; // gap 0.8 >> ambiguity_gap
         assert!(
             !should_call_ai(&shortlist, 0, &cfg),
             "settled + clear → gated"
@@ -439,19 +689,25 @@ mod tests {
 
     #[test]
     fn gate_skips_a_clear_winner_but_calls_on_an_ambiguous_top_two() {
-        let cfg = config::AiRerankConfig::default(); // ambiguity_gap 0.15
-        let clear = vec![scored("a", 0.80), scored("b", 0.50)]; // gap 0.30 → confident local
+        let cfg = RadioConfig::default(); // ambiguity_gap 0.15
+        let clear = vec![
+            scored_src("a", 0.80, CandidateSource::WatchPlaylist),
+            scored("b", 0.50),
+        ]; // gap 0.30 → confident local
         assert!(
             !should_call_ai(&clear, 0, &cfg),
             "clear local winner → gated"
         );
-        let close = vec![scored("a", 0.80), scored("b", 0.74)]; // gap 0.06 → ambiguous
+        let close = vec![
+            scored_src("a", 0.80, CandidateSource::WatchPlaylist),
+            scored("b", 0.74),
+        ]; // gap 0.06 → ambiguous
         assert!(should_call_ai(&close, 0, &cfg), "ambiguous top two → call");
     }
 
     #[test]
     fn gate_skips_when_there_is_nothing_to_rerank() {
-        let cfg = config::AiRerankConfig::default();
+        let cfg = RadioConfig::default();
         assert!(
             !should_call_ai(&[], 0, &cfg),
             "empty shortlist → nothing to do"
@@ -466,30 +722,33 @@ mod tests {
     fn ai_cache_key_is_stable_order_independent_and_query_sensitive() {
         let recent = vec!["r1".to_owned(), "r2".to_owned()];
         let cands = vec!["x".to_owned(), "y".to_owned(), "z".to_owned()];
-        let key = ai_cache_key("seed", RadioMode::Balanced, &recent, &cands);
+        let key = test_cache_key("seed", RadioMode::Balanced, &recent, &cands);
         // Same query → same key; candidate *order* doesn't matter (the set does).
         assert_eq!(
             key,
-            ai_cache_key("seed", RadioMode::Balanced, &recent, &cands)
+            test_cache_key("seed", RadioMode::Balanced, &recent, &cands)
         );
         let reordered = vec!["z".to_owned(), "x".to_owned(), "y".to_owned()];
         assert_eq!(
             key,
-            ai_cache_key("seed", RadioMode::Balanced, &recent, &reordered)
+            test_cache_key("seed", RadioMode::Balanced, &recent, &reordered)
         );
         // Every query dimension is part of the key.
         assert_ne!(
             key,
-            ai_cache_key("other", RadioMode::Balanced, &recent, &cands)
+            test_cache_key("other", RadioMode::Balanced, &recent, &cands)
         );
         assert_ne!(
             key,
-            ai_cache_key("seed", RadioMode::Discovery, &recent, &cands)
+            test_cache_key("seed", RadioMode::Discovery, &recent, &cands)
         );
-        assert_ne!(key, ai_cache_key("seed", RadioMode::Balanced, &[], &cands));
         assert_ne!(
             key,
-            ai_cache_key("seed", RadioMode::Balanced, &recent, &["x".to_owned()])
+            test_cache_key("seed", RadioMode::Balanced, &[], &cands)
+        );
+        assert_ne!(
+            key,
+            test_cache_key("seed", RadioMode::Balanced, &recent, &["x".to_owned()])
         );
     }
 }

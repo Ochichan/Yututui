@@ -592,8 +592,24 @@ async fn run(
                     seed,
                     seed_video_id,
                     exclude_ids,
+                    mode,
                 } => {
-                    api_handle.radio(seed, seed_video_id, exclude_ids, app::RADIO_POOL_COUNT);
+                    api_handle.radio(
+                        seed,
+                        seed_video_id,
+                        exclude_ids,
+                        app::RADIO_POOL_COUNT,
+                        mode,
+                    );
+                }
+                Cmd::RadioPreflight {
+                    seed_video_id,
+                    picks,
+                    fallback,
+                    mode,
+                    config,
+                } => {
+                    api_handle.radio_preflight(seed_video_id, picks, fallback, mode, config);
                 }
                 Cmd::SetAiModel(model) => {
                     if let Some(h) = &ai_handle {
