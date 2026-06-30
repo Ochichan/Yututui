@@ -29,7 +29,6 @@ use crate::lyrics::LyricLine;
 use crate::player::PlayerCmd;
 use crate::playlists::Playlists;
 use crate::queue::{Queue, QueueSnapshot};
-use crate::radio::{self, CandidateSource, Cooc, RadioMode, StationState};
 use crate::romanize::{RomanizeItem, RomanizedResult};
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::settings::{
@@ -37,6 +36,7 @@ use crate::settings::{
 };
 use crate::signals::{self, Signals};
 use crate::station::StationStore;
+use crate::streaming::{self, CandidateSource, Cooc, StationState, StreamingMode};
 use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
 
@@ -55,30 +55,30 @@ mod library_reducer;
 mod mouse;
 mod player;
 mod queue;
-mod radio_reducer;
 mod remote_reducer;
 mod romanize;
 mod search;
 mod settings_reducer;
 mod stream_metadata;
+mod streaming_reducer;
 
-/// Queue length at or below which the autoplay/radio hook tops up the queue.
+/// Queue length at or below which the autoplay/streaming hook tops up the queue.
 const AUTOPLAY_THRESHOLD: usize = 3;
-/// Number of related tracks to request from the non-DJ Gem radio fallback.
-pub(crate) const RADIO_FALLBACK_COUNT: usize = 8;
-/// Size of the raw candidate pool fetched for the local radio engine to rank. Larger than
+/// Number of related tracks to request from the non-DJ Gem streaming fallback.
+pub(crate) const STREAMING_FALLBACK_COUNT: usize = 8;
+/// Size of the raw candidate pool fetched for the local streaming engine to rank. Larger than
 /// the final pick count so scoring/diversity/cooldown have real choice.
-pub(crate) const RADIO_POOL_COUNT: usize = 40;
-/// How many recent history artists feed the radio cooldown window.
-const RADIO_RECENT_ARTISTS: usize = 12;
+pub(crate) const STREAMING_POOL_COUNT: usize = 40;
+/// How many recent history artists feed the streaming cooldown window.
+const STREAMING_RECENT_ARTISTS: usize = 12;
 /// How many ordered session outcomes (plays/skips/likes/dislikes) to retain for the DJ Gem
 /// reranker's recovery context. Small: the model only needs the recent arc.
 const SESSION_EVENTS_CAP: usize = 20;
 /// Minimum gap between autoplay top-up requests (avoids a request storm).
 const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
-/// Consecutive empty radio extends before autoplay disables itself (circuit breaker).
+/// Consecutive empty streaming extends before autoplay disables itself (circuit breaker).
 const AUTOPLAY_MAX_FAILURES: u8 = 3;
-/// How long a resolved DJ Gem rerank ordering stays replayable in [`RadioRuntime::ai_cache`]. Short:
+/// How long a resolved DJ Gem rerank ordering stays replayable in [`StreamingRuntime::ai_cache`]. Short:
 /// it only needs to catch rapid identical refills (e.g. skipping through a few tracks) before the
 /// candidate pool drifts and a fresh call is warranted anyway.
 const AI_CACHE_TTL: Duration = Duration::from_secs(600);
@@ -168,7 +168,7 @@ pub struct App {
         )>,
     >,
     /// Whether the "Why DJ Gem" overlay is showing. Opened by `Action::WhyAi` (`w`) when the last
-    /// autoplay-radio refill went through the DJ Gem reranker; lists why each track was chosen (slot
+    /// autoplay-streaming refill went through the DJ Gem reranker; lists why each track was chosen (slot
     /// role + reason codes + confidence). Esc / `w` / Back dismiss it, like the About card.
     pub why_ai_visible: bool,
 
@@ -190,9 +190,9 @@ pub struct App {
     /// the seek step) — the in-session working copy mpv's filter chain is built from, mirrored
     /// from the persisted `config` (see [`AudioEq`]).
     pub audio: AudioEq,
-    /// Auto-extend the queue with related tracks when it runs low (radio mode).
-    pub autoplay_radio: bool,
-    /// The two mutually-exclusive player status-line dropdowns (EQ preset + radio mode); both
+    /// Auto-extend the queue with related tracks when it runs low (streaming mode).
+    pub autoplay_streaming: bool,
+    /// The two mutually-exclusive player status-line dropdowns (EQ preset + streaming mode); both
     /// player-only and session-ephemeral (see [`Dropdowns`]).
     pub dropdowns: Dropdowns,
     /// Queue-window overlay state: open flag, selection cursor + anchor, on-screen rect
@@ -211,17 +211,17 @@ pub struct App {
     /// Latin-script title display overlay cache and in-flight requests.
     pub romanization: RomanizationRuntime,
 
-    // Radio runtime -----------------------------------------------------------
-    /// Radio autoplay runtime: cooldown clock, in-flight pool flag, a handed-off DJ Gem rerank,
+    // Streaming runtime -------------------------------------------------------
+    /// Streaming autoplay runtime: cooldown clock, in-flight pool flag, a handed-off DJ Gem rerank,
     /// and the empty-extend circuit-breaker counter.
-    pub radio: RadioRuntime,
+    pub streaming: StreamingRuntime,
     /// Consecutive mpv playback errors with no track playing in between, for the
     /// auto-skip circuit breaker (see [`MAX_CONSECUTIVE_PLAY_ERRORS`]).
     consecutive_play_errors: u8,
     /// The user's local playlists (the DJ Gem playlist tools read/write these).
     pub playlists: Playlists,
     /// The active natural-language station profile (explore level + avoided artists), distilled
-    /// from a `start_radio` vibe and persisted. Read live by [`App::build_station_state`].
+    /// from a `start_streaming` vibe and persisted. Read live by [`App::build_station_state`].
     pub station: StationStore,
 
     // Search ------------------------------------------------------------------
@@ -233,7 +233,7 @@ pub struct App {
     pub library: Library,
     /// Per-track preference signals (plays/skips/dislikes + raw play log + artist affinity),
     /// persisted separately from the library so `Song`'s shape stays unchanged. Loaded by
-    /// `main` after `new`; drives radio ranking and the ♥/✗ status-line toggles.
+    /// `main` after `new`; drives streaming ranking and the ♥/✗ status-line toggles.
     pub signals: Signals,
     /// Listening-session tracking (play count + last-start time) for skip-confidence; reset
     /// after a long idle gap (see [`Session`]).
@@ -326,7 +326,7 @@ impl App {
             video: Video::default(),
             anim_frame: 0,
             audio: AudioEq::default(),
-            autoplay_radio: false,
+            autoplay_streaming: false,
             dropdowns: Dropdowns::default(),
             queue_popup: QueuePopup::default(),
             config: Config::default(),
@@ -343,7 +343,7 @@ impl App {
                 focus: AiFocus::Input,
             },
             romanization: RomanizationRuntime::default(),
-            radio: RadioRuntime::default(),
+            streaming: StreamingRuntime::default(),
             consecutive_play_errors: 0,
             playlists: Playlists::default(),
             station: StationStore::default(),
@@ -386,7 +386,7 @@ impl App {
         self.audio.seek_seconds = cfg.effective_seek_seconds();
         self.queue.set_shuffle(cfg.effective_shuffle());
         self.queue.repeat = cfg.effective_repeat();
-        self.autoplay_radio = cfg.effective_autoplay_radio();
+        self.autoplay_streaming = cfg.effective_autoplay_streaming();
         self.ai.available = cfg.effective_ai_key().is_some();
         self.ai.model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
@@ -418,8 +418,11 @@ impl App {
         )
     }
 
-    fn search_config_for_radio_mode(mut search: SearchConfig, radio_mode: bool) -> SearchConfig {
-        if radio_mode {
+    fn search_config_for_radio_mode(
+        mut search: SearchConfig,
+        streaming_mode: bool,
+    ) -> SearchConfig {
+        if streaming_mode {
             search.youtube = false;
             search.soundcloud = false;
             search.audius = false;
@@ -487,7 +490,7 @@ impl App {
             RadioModeConfirm::Enter
         });
         self.dropdowns.eq_open = false;
-        self.dropdowns.radio_open = false;
+        self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
         self.dirty = true;
@@ -525,7 +528,7 @@ impl App {
         self.library_ui.tab = LibraryTab::RadioFavorites;
         self.clear_library_filter();
         self.dropdowns.eq_open = false;
-        self.dropdowns.radio_open = false;
+        self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
         let restore = self.radio_mode_queue.take();
         let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
@@ -572,8 +575,8 @@ impl App {
         self.queue_popup.open = false;
         self.queue_popup.cursor = 0;
         self.queue_popup.anchor = 0;
-        self.radio.pending = false;
-        self.radio.pending_rerank = None;
+        self.streaming.pending = false;
+        self.streaming.pending_rerank = None;
         self.ai.thinking = false;
         let mut cmds = self.load_song(None);
         self.art.force_clear_next_frame = true;
@@ -591,7 +594,7 @@ impl App {
     pub(in crate::app) fn sync_playback_modes_to_config(&mut self) {
         self.config.shuffle = Some(self.queue.shuffle);
         self.config.repeat = self.queue.repeat;
-        self.config.autoplay_radio = Some(self.autoplay_radio);
+        self.config.autoplay_streaming = Some(self.autoplay_streaming);
     }
 
     pub(in crate::app) fn save_playback_modes_cmd(&mut self) -> Cmd {
@@ -941,35 +944,35 @@ impl App {
                 }
                 self.prefetch.resolved.insert(video_id, stream_url);
             }
-            Msg::RadioResults {
+            Msg::StreamingResults {
                 seed_video_id,
                 candidates,
             } => {
-                self.radio.pending = false;
-                if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
+                self.streaming.pending = false;
+                if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
                     // With a key + reranker enabled, hand the model a diverse local shortlist to
                     // reorder (ids only); otherwise rank the pool purely locally. Either way the
                     // pool went through scoring + MMR + cooldown — never taken verbatim.
-                    if self.ai.available && self.config.radio.ai.enabled {
+                    if self.ai.available && self.config.streaming.ai.enabled {
                         return self.start_ai_rerank(&seed_video_id, candidates);
                     }
-                    let picks = self.plan_local_radio(&seed_video_id, candidates);
-                    return self.extend_sanitized_radio(&seed_video_id, picks, &[]);
+                    let picks = self.plan_local_streaming(&seed_video_id, candidates);
+                    return self.extend_sanitized_streaming(&seed_video_id, picks, &[]);
                 } else {
                     self.dirty = true;
                 }
             }
-            Msg::RadioPreflighted {
+            Msg::StreamingPreflighted {
                 seed_video_id,
                 songs,
             } => {
-                self.radio.pending = false;
-                if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
-                    return self.extend_queue_from_radio(songs);
+                self.streaming.pending = false;
+                if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
+                    return self.extend_queue_from_streaming(songs);
                 }
                 self.dirty = true;
             }
-            Msg::RadioAiPicks {
+            Msg::StreamingAiPicks {
                 seed_video_id,
                 picks,
                 conf,
@@ -981,20 +984,20 @@ impl App {
                 // match but the seed is no longer queued (the user skipped/cleared mid-think),
                 // the chain still drops the stale rerank without enqueuing.
                 let ours = self
-                    .radio
+                    .streaming
                     .pending_rerank
                     .as_ref()
                     .is_some_and(|p| p.seed_video_id == seed_video_id);
                 if ours
-                    && let Some(pending) = self.radio.pending_rerank.take()
-                    && self.autoplay_radio
+                    && let Some(pending) = self.streaming.pending_rerank.take()
+                    && self.autoplay_streaming
                     && self.queue.contains_video_id(&seed_video_id)
                 {
                     if let Some(conf) = conf {
                         tracing::debug!(
                             conf,
                             picks = picks.len(),
-                            "radio DJ Gem rerank confidence"
+                            "streaming DJ Gem rerank confidence"
                         );
                     }
                     // Resolve the model's opaque cids back to real tracks once, keeping its order. A
@@ -1024,24 +1027,27 @@ impl App {
                     let ids: Vec<String> = resolved.iter().map(|(vid, _)| vid.clone()).collect();
                     let roles: Vec<Option<String>> =
                         resolved.iter().map(|(_, pick)| pick.role.clone()).collect();
-                    let recipe_ok =
-                        radio::ai_roles_match_recipe(&roles, pending.mode, &self.config.radio);
+                    let recipe_ok = streaming::ai_roles_match_recipe(
+                        &roles,
+                        pending.mode,
+                        &self.config.streaming,
+                    );
                     let effective_conf = if recipe_ok {
                         conf
                     } else {
                         Some(conf.unwrap_or(0.35).min(0.40))
                     };
                     if !resolved.is_empty() {
-                        self.radio.last_explain = Some(RadioAiExplain {
+                        self.streaming.last_explain = Some(StreamingAiExplain {
                             conf: effective_conf,
                             picks: resolved.into_iter().map(|(_, p)| p).collect(),
                         });
                     }
-                    let picks = radio::merge_ai_picks_with_confidence(
+                    let picks = streaming::merge_ai_picks_with_confidence(
                         &ids,
                         &pending.shortlist,
                         &pending.local_pick,
-                        self.config.radio.ai.picks,
+                        self.config.streaming.ai.picks,
                         effective_conf,
                     );
                     // Cache the validated ordering so a rapid identical refill replays it without a
@@ -1049,18 +1055,22 @@ impl App {
                     if !ids.is_empty() && recipe_ok && effective_conf.unwrap_or(0.0) >= 0.45 {
                         self.ai_cache_store(pending.cache_key, ids);
                     }
-                    return self.extend_sanitized_radio(&seed_video_id, picks, &pending.local_pick);
+                    return self.extend_sanitized_streaming(
+                        &seed_video_id,
+                        picks,
+                        &pending.local_pick,
+                    );
                 }
             }
-            Msg::RadioError {
+            Msg::StreamingError {
                 seed_video_id,
                 error,
             } => {
-                self.radio.pending = false;
-                if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
-                    return self.note_radio_failure(format!(
+                self.streaming.pending = false;
+                if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
+                    return self.note_streaming_failure(format!(
                         "{}: {error}",
-                        t!("Autoplay radio failed", "자동재생 라디오 실패")
+                        t!("Autoplay streaming failed", "자동 스트리밍 실패")
                     ));
                 } else {
                     self.dirty = true;
@@ -1096,7 +1106,7 @@ impl App {
                 }
             }
             Msg::AiEnqueue(songs) => {
-                return self.extend_queue_from_radio(songs);
+                return self.extend_queue_from_streaming(songs);
             }
             Msg::AiSuggestions(songs) => {
                 self.ai.suggestions = songs;
@@ -1107,12 +1117,12 @@ impl App {
                 return self.request_romanization_for_songs(&suggestions);
             }
             Msg::AiSetAutoplay(on) => {
-                self.autoplay_radio = on;
+                self.autoplay_streaming = on;
                 self.dirty = true;
                 let mut cmds = vec![self.save_playback_modes_cmd()];
                 if on {
-                    self.radio.consecutive_failures = 0;
-                    // Same proactive top-up as the manual toggle (see Action::ToggleRadio).
+                    self.streaming.consecutive_failures = 0;
+                    // Same proactive top-up as the manual toggle (see Action::ToggleStreaming).
                     cmds.extend(self.maybe_autoplay_extend());
                 }
                 return cmds;
@@ -1122,7 +1132,7 @@ impl App {
                 explore,
                 avoid_artists,
             } => {
-                // Distill the vibe into engine knobs the local radio can actually act on:
+                // Distill the vibe into engine knobs the local streaming can actually act on:
                 // adventurousness (→ mode) and artists to keep out (→ banned_artist_keys, read
                 // live in `build_station_state`). Persist both so the station survives a restart.
                 let profile = crate::station::StationProfile::from_intent(
@@ -1130,7 +1140,7 @@ impl App {
                     explore.as_deref(),
                     &avoid_artists,
                 );
-                self.config.radio.mode = profile.explore.to_mode();
+                self.config.streaming.mode = profile.explore.to_mode();
                 self.station.active = Some(profile);
                 self.dirty = true;
                 return vec![
@@ -1179,7 +1189,7 @@ impl App {
                 // The off-path feedback summary landed (possibly empty on failure) — always clear
                 // the in-flight guard so the next streak can trigger again. Fold the avoid/boost
                 // into the active station and persist only when the avoid list actually changed.
-                self.radio.feedback_in_flight = false;
+                self.streaming.feedback_in_flight = false;
                 if let Some(profile) = self.station.active.as_mut()
                     && profile.apply_feedback(&down_artists, &boost_artists)
                 {
@@ -1217,7 +1227,7 @@ impl App {
     fn go_home(&mut self) -> Vec<Cmd> {
         self.help_visible = false;
         self.dropdowns.eq_open = false;
-        self.dropdowns.radio_open = false;
+        self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;
@@ -1263,7 +1273,7 @@ impl App {
     /// path so edits aren't lost; transient overlays are cleared.
     fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
         self.dropdowns.eq_open = false;
-        self.dropdowns.radio_open = false;
+        self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;

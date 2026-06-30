@@ -150,8 +150,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.dropdowns.eq_open {
         render_eq_dropdown(frame, app, inner);
     }
-    if app.dropdowns.radio_open {
-        render_radio_dropdown(frame, app, inner);
+    if app.dropdowns.streaming_open {
+        render_streaming_dropdown(frame, app, inner);
     }
     // The queue window draws last of all so it sits on top and its rects win.
     app.queue_popup.rect.set(None);
@@ -163,7 +163,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 /// The current track's tri-state rating glyph: 👍 liked, 👎 disliked, 🤔 neither. Language-neutral
 /// Unicode — all three are width-2, so the status line never shifts as the state changes — so the
 /// row reads identically in every UI language. `like` is favorite membership; `dislike` is the
-/// radio engine's hard-block flag — mutually exclusive, so one glyph covers both states, cycled by
+/// streaming engine's hard-block flag — mutually exclusive, so one glyph covers both states, cycled by
 /// [`Action::CycleRating`].
 fn rating_glyph(liked: bool, disliked: bool) -> &'static str {
     match (liked, disliked) {
@@ -195,7 +195,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Build the transport status-line as `(target, text)` segments from app state — split out
 /// from [`render_status_line`] so the conditional assembly (queue position, rating, shuffle /
-/// repeat, speed, EQ, normalize, radio mode, download tag) is unit-testable without a frame
+/// repeat, speed, EQ, normalize, streaming mode, download tag) is unit-testable without a frame
 /// buffer. A `None` target is a static label/spacing; spacing is its own label so a clickable
 /// segment's hit rect hugs just its text.
 fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)> {
@@ -264,15 +264,15 @@ fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)>
     if app.audio.normalize {
         parts.push((None, Cow::Owned(format!("    {}", t!("norm", "평준화")))));
     }
-    if app.autoplay_radio {
+    if app.autoplay_streaming {
         // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
         // mode dropdown — same affordance as the `eq:` label next to it.
         parts.push((None, Cow::Borrowed("    ")));
         parts.push((
-            Some(MouseTarget::RadioMenu),
+            Some(MouseTarget::StreamingMenu),
             Cow::Owned(format!(
-                "radio:{}",
-                app.config.radio.mode.label().to_lowercase()
+                "streaming:{}",
+                app.config.streaming.mode.label().to_lowercase()
             )),
         ));
     }
@@ -448,18 +448,18 @@ fn render_eq_dropdown(frame: &mut Frame, app: &App, area: Rect) {
     render_dropdown(frame, app, area, MouseTarget::EqMenu, " EQ ", &rows);
 }
 
-/// The radio-mode dropdown, anchored under the `radio:` label and listing the station modes
+/// The streaming-mode dropdown, anchored under the `streaming:` label and listing the station modes
 /// (the active one highlighted). Each row is a click target that switches the mode. Mirrors
 /// the `eq:` dropdown exactly.
-fn render_radio_dropdown(frame: &mut Frame, app: &App, area: Rect) {
-    let cur = app.config.radio.mode;
-    let rows: Vec<(String, bool, MouseTarget)> = crate::radio::RadioMode::CYCLE
+fn render_streaming_dropdown(frame: &mut Frame, app: &App, area: Rect) {
+    let cur = app.config.streaming.mode;
+    let rows: Vec<(String, bool, MouseTarget)> = crate::streaming::StreamingMode::CYCLE
         .iter()
         .map(|m| {
             (
                 m.label().to_owned(),
                 *m == cur,
-                MouseTarget::RadioSelect(*m),
+                MouseTarget::StreamingSelect(*m),
             )
         })
         .collect();
@@ -467,8 +467,8 @@ fn render_radio_dropdown(frame: &mut Frame, app: &App, area: Rect) {
         frame,
         app,
         area,
-        MouseTarget::RadioMenu,
-        t!(" Radio ", " 라디오 "),
+        MouseTarget::StreamingMenu,
+        t!(" Streaming ", " 스트리밍 "),
         &rows,
     );
 }
@@ -483,7 +483,7 @@ fn dropdown_width<'a>(labels: impl Iterator<Item = &'a str>) -> u16 {
         + 2
 }
 
-/// A compact status-line dropdown shared by the `eq:` and `radio:` labels. Anchored under the
+/// A compact status-line dropdown shared by the `eq:` and `streaming:` labels. Anchored under the
 /// label whose hit rect matches `anchor_target`; titled `title`; lists `rows` of
 /// `(label, is_active, click-target)`. The active row is a full-width highlight bar (no arrow
 /// gutter) so the box stays exactly as wide as the longest label. Drawn over whatever is

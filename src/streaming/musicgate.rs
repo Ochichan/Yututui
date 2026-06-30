@@ -1,6 +1,6 @@
 //! MusicGate: a rule-based content filter that keeps non-music videos (reactions, podcasts,
 //! tutorials, …) and gimmick re-uploads (karaoke / nightcore / 8D / sped-up / slowed+reverb)
-//! out of the radio candidate pool.
+//! out of the streaming candidate pool.
 //!
 //! No DJ Gem, no YouTube Data API, no `regex` — just lowercased token matching over the title and
 //! channel name, mirroring [`super::canonical::version_penalty`]. The only metadata available
@@ -9,8 +9,8 @@
 //! to let a borderline track through over wrongly dropping a real song, and trusted channels
 //! (`"- Topic"`, VEVO) bypass the checks entirely.
 
-use crate::radio::candidate::CandidateSource;
-use crate::radio::config::RadioMode;
+use crate::streaming::candidate::CandidateSource;
+use crate::streaming::config::StreamingMode;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GateAction {
@@ -147,7 +147,7 @@ pub fn decide(
     title: &str,
     channel: &str,
     source: CandidateSource,
-    mode: RadioMode,
+    mode: StreamingMode,
 ) -> MusicGateDecision {
     if is_trusted_music_channel(channel) {
         return MusicGateDecision {
@@ -168,12 +168,12 @@ pub fn decide(
 
     let risk = non_music_risk_score(title, channel);
     let music_tier = music_tier_score(title, channel);
-    let action = if source == CandidateSource::YtdlpRadio && risk >= 0.85 {
+    let action = if source == CandidateSource::YtdlpStreaming && risk >= 0.85 {
         GateAction::Reject
-    } else if source == CandidateSource::YtdlpRadio && risk >= 0.55 && music_tier <= 0.0 {
+    } else if source == CandidateSource::YtdlpStreaming && risk >= 0.55 && music_tier <= 0.0 {
         match mode {
-            RadioMode::Focused => GateAction::Reject,
-            RadioMode::Balanced | RadioMode::Discovery => GateAction::Demote,
+            StreamingMode::Focused => GateAction::Reject,
+            StreamingMode::Balanced | StreamingMode::Discovery => GateAction::Demote,
         }
     } else if risk >= 0.35 && music_tier <= 0.0 {
         GateAction::Demote

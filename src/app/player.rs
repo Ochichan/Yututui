@@ -193,11 +193,11 @@ impl App {
         ))]
     }
 
-    pub(in crate::app) fn select_radio_mode(&mut self, mode: RadioMode) -> Vec<Cmd> {
-        self.config.radio.mode = mode;
-        self.dropdowns.radio_open = false;
+    pub(in crate::app) fn select_streaming_mode(&mut self, mode: StreamingMode) -> Vec<Cmd> {
+        self.config.streaming.mode = mode;
+        self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
-        self.status.text = format!("{}: {}", t!("Radio", "라디오"), mode.label());
+        self.status.text = format!("{}: {}", t!("Streaming", "스트리밍"), mode.label());
         self.dirty = true;
         vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
     }
@@ -259,7 +259,7 @@ impl App {
             }
             // Cycle the current track's rating through one tri-state control: neutral → 👍 like
             // → 👎 dislike → neutral. `like` is favorite membership (library); `dislike` is the
-            // persistent flag the radio engine treats as a hard block. The two are mutually
+            // persistent flag the streaming engine treats as a hard block. The two are mutually
             // exclusive, so a single 🤔/👍/👎 glyph (and the `f` key / its click) covers both,
             // replacing the old separate ♥ favorite + ✗ dislike controls. Each leg nudges the
             // artist affinity the engine learns from, and a full cycle nets back to zero.
@@ -318,7 +318,7 @@ impl App {
                 // cursor, the multi-select anchor, and the scroll offset).
                 self.clear_library_filter();
                 self.dropdowns.eq_open = false;
-                self.dropdowns.radio_open = false;
+                self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = false;
                 self.dirty = true;
                 Vec::new()
@@ -366,7 +366,7 @@ impl App {
                 self.audio.preset = self.audio.preset.cycled();
                 self.audio.bands = self.audio.preset.gains();
                 self.dropdowns.eq_open = false;
-                self.dropdowns.radio_open = false;
+                self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = false;
                 self.status.text = format!("EQ: {}", self.audio.preset.label());
                 self.dirty = true;
@@ -402,7 +402,7 @@ impl App {
                 let search = self.search_config_for_mode();
                 self.search.source = search.normalized_source(self.search.source);
                 self.dropdowns.eq_open = false;
-                self.dropdowns.radio_open = false;
+                self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = false;
                 self.dirty = true;
                 Vec::new()
@@ -600,7 +600,7 @@ impl App {
         outcome: Outcome,
         completion: f32,
     ) {
-        let buf = &mut self.radio.session_events;
+        let buf = &mut self.streaming.session_events;
         buf.push_back(SessionEvent {
             artist_key: artist_key.to_owned(),
             outcome,
@@ -638,7 +638,7 @@ impl App {
     }
 
     /// Move to the next queue track (auto = end-of-track) and load it, or stop. Also runs
-    /// the autoplay/radio top-up check now that the queue has advanced.
+    /// the autoplay/streaming top-up check now that the queue has advanced.
     pub(in crate::app) fn advance(&mut self, auto: bool) -> Vec<Cmd> {
         let song = self.queue.next(auto).cloned();
         let mut cmds = self.load_song(song);
@@ -713,10 +713,10 @@ impl App {
                         });
                     }
                 }
-                // Start the autoplay-radio top-up as the track *starts* (not only at its end)
+                // Start the autoplay-streaming top-up as the track *starts* (not only at its end)
                 // so a low/single-song queue fetches its next tracks while this one still
                 // plays — closing the silent gap. Guarded + cooldown'd inside, and idempotent
-                // with the call in `advance` (the second one sees `radio.pending` and no-ops).
+                // with the call in `advance` (the second one sees `streaming.pending` and no-ops).
                 cmds.extend(self.maybe_autoplay_extend());
                 cmds.extend(self.request_romanization_for_songs(std::slice::from_ref(&song)));
                 cmds

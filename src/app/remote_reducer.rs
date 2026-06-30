@@ -45,7 +45,7 @@ impl App {
                 let cmds = self.on_player_action(Action::SeekForward);
                 (RemoteResponse::ok(self.now_playing_line()), cmds)
             }
-            RemoteCommand::Radio { state } => self.remote_set_radio(state),
+            RemoteCommand::Streaming { state } => self.remote_set_streaming(state),
             RemoteCommand::Status => (RemoteResponse::status(self.status_snapshot()), Vec::new()),
             RemoteCommand::Quit => {
                 let cmds = self.quit_app();
@@ -54,14 +54,14 @@ impl App {
         }
     }
 
-    /// Set/toggle autoplay radio, mirroring the `ToggleRadio` key handler (status toast +
+    /// Set/toggle autoplay streaming, mirroring the `ToggleStreaming` key handler (status toast +
     /// an immediate top-up when enabling, so a low queue doesn't gap before the next track).
-    fn remote_set_radio(&mut self, state: ToggleState) -> (RemoteResponse, Vec<Cmd>) {
-        let on = state.resolve(self.autoplay_radio);
-        self.autoplay_radio = on;
+    fn remote_set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<Cmd>) {
+        let on = state.resolve(self.autoplay_streaming);
+        self.autoplay_streaming = on;
         self.status.text = format!(
             "{}: {}",
-            t!("Autoplay radio", "자동재생 라디오"),
+            t!("Autoplay streaming", "자동 스트리밍"),
             if on { "✓" } else { "✗" }
         );
         self.dirty = true;
@@ -70,7 +70,7 @@ impl App {
             cmds.extend(self.maybe_autoplay_extend());
         }
         (
-            RemoteResponse::ok(format!("radio {}", if on { "on" } else { "off" })),
+            RemoteResponse::ok(format!("streaming {}", if on { "on" } else { "off" })),
             cmds,
         )
     }
@@ -118,7 +118,7 @@ impl App {
             volume: self.playback.volume,
             position: if total == 0 { 0 } else { position },
             total,
-            radio: self.autoplay_radio,
+            streaming: self.autoplay_streaming,
         }
     }
 }
@@ -160,26 +160,26 @@ mod tests {
     }
 
     #[test]
-    fn radio_on_off_toggle_set_autoplay_radio() {
+    fn streaming_on_off_toggle_set_autoplay_streaming() {
         let mut app = App::new(50);
         app.mode = Mode::Settings; // mode-independent
-        assert!(!app.autoplay_radio);
+        assert!(!app.autoplay_streaming);
 
-        let (resp, _) = app.apply_remote(RemoteCommand::Radio {
+        let (resp, _) = app.apply_remote(RemoteCommand::Streaming {
             state: ToggleState::On,
         });
         assert!(resp.ok);
-        assert!(app.autoplay_radio);
+        assert!(app.autoplay_streaming);
 
-        app.apply_remote(RemoteCommand::Radio {
+        app.apply_remote(RemoteCommand::Streaming {
             state: ToggleState::Off,
         });
-        assert!(!app.autoplay_radio);
+        assert!(!app.autoplay_streaming);
 
-        app.apply_remote(RemoteCommand::Radio {
+        app.apply_remote(RemoteCommand::Streaming {
             state: ToggleState::Toggle,
         });
-        assert!(app.autoplay_radio);
+        assert!(app.autoplay_streaming);
     }
 
     #[test]
@@ -202,15 +202,15 @@ mod tests {
     }
 
     #[test]
-    fn status_reports_queue_and_radio() {
+    fn status_reports_queue_and_streaming() {
         let mut app = two_track_app();
-        app.autoplay_radio = true;
+        app.autoplay_streaming = true;
         let (resp, cmds) = app.apply_remote(RemoteCommand::Status);
         assert!(cmds.is_empty());
         let snap = resp.status.expect("status snapshot present");
         assert_eq!(snap.total, 2);
         assert_eq!(snap.position, 1);
-        assert!(snap.radio);
+        assert!(snap.streaming);
         assert_eq!(snap.title.as_deref(), Some("Zero"));
     }
 }

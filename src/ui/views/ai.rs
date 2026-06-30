@@ -273,7 +273,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
             ))
             .style(app.theme.style(R::TextMuted)),
             Line::from(t!(
-                "  \"start a radio based on what's playing\"",
+                "  \"start streaming based on what's playing\"",
                 "  \"지금 나오는 곡으로 라디오 시작해줘\""
             ))
             .style(app.theme.style(R::TextMuted)),

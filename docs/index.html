@@ -4,17 +4,17 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>ytm-tui — YouTube Music in your terminal</title>
-<meta name="description" content="A fast, keyboard-driven YouTube Music client that lives in your terminal. DJ Gem radio, real album art, remote control, 11 themes. No browser, no ads. Rust + ratatui, MIT." />
+<meta name="description" content="A fast, keyboard-driven YouTube Music client that lives in your terminal. DJ Gem streaming, real album art, remote control, 11 themes. No browser, no ads. Rust + ratatui, MIT." />
 
 <!-- Open Graph / social -->
 <meta property="og:type" content="website" />
 <meta property="og:title" content="ytm-tui — YouTube Music in your terminal" />
-<meta property="og:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem radio, real album art, remote control. No browser, no ads." />
+<meta property="og:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, real album art, remote control. No browser, no ads." />
 <meta property="og:url" content="https://ochichan.github.io/ytm-tui/" />
 <meta property="og:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
 <meta name="twitter:card" content="summary" />
 <meta name="twitter:title" content="ytm-tui — YouTube Music in your terminal" />
-<meta name="twitter:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem radio, real album art, remote control." />
+<meta name="twitter:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, real album art, remote control." />
 <meta name="twitter:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
 
 <link rel="icon" type="image/png" href="ytm-tui.png" />
@@ -348,7 +348,7 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .status2 .chip { white-space: nowrap; }
 .status2 .state { color: var(--subtle); }
 .status2 .eq { color: var(--gold); }
-.status2 .radio { color: var(--iris); }
+.status2 .streaming { color: var(--iris); }
 
 .art2 {
   width: clamp(150px, 32vw, 208px); aspect-ratio: 1; border: 1px solid var(--line); border-radius: 6px;
@@ -492,7 +492,7 @@ kbd {
 }
 
 /* ============================================================
-   "Why these picks" band (DJ Gem radio spotlight)
+   "Why these picks" band (DJ Gem streaming spotlight)
    ============================================================ */
 .why-band { background: var(--surface); border-block: 1px solid var(--line); }
 .why-grid { display: grid; grid-template-columns: 1fr 1.1fr; gap: clamp(2rem, 5vw, 4rem); align-items: center; }
@@ -622,7 +622,7 @@ kbd {
     </div>
     <nav class="topbar__nav" aria-label="Sections">
       <a href="#features" data-i18n="nav.features">Features</a>
-      <a href="#radio" data-i18n="nav.radio">Radio</a>
+      <a href="#streaming" data-i18n="nav.streaming">Streaming</a>
       <a href="#install" data-i18n="nav.install">Install</a>
       <a href="#remote" data-i18n="nav.remote">Remote</a>
     </nav>
@@ -653,7 +653,7 @@ kbd {
     </h1>
   </div>
   <p class="hero__sub" data-i18n="hero.sub">
-    A fast, keyboard-driven YouTube Music client with DJ Gem radio, real album art, and remote control.
+    A fast, keyboard-driven YouTube Music client with DJ Gem streaming, real album art, and remote control.
     No browser tab quietly eating your RAM. No ads. No mouse required — though it's there if you miss it.
   </p>
   <div class="hero__cta">
@@ -716,7 +716,7 @@ kbd {
         <span class="chip">S:✗</span>
         <span class="chip">R:✗</span>
         <span class="chip eq">eq:Bass</span>
-        <span class="chip radio" id="d-radio">radio:✗</span>
+        <span class="chip streaming" id="d-streaming">streaming:✗</span>
       </div>
 
       <div class="art2" id="d-art"><span class="placeholder" aria-hidden="true">♪</span></div>
@@ -855,8 +855,8 @@ kbd {
   <div class="features-grid reveal">
     <article class="feature iri">
       <div class="feature__top"><kbd>Ctrl R</kbd></div>
-      <h3 class="display" data-i18n="f.radio.h">DJ Gem radio that reads the room</h3>
-      <p data-i18n-html="f.radio.p">Press <code>Ctrl+R</code> and ytm-tui becomes a station built around what you're hearing. A Gemini-powered <em>Queue Director</em> lines up songs that fit the mood — Focused, Balanced, or Discovery. Press <code>w</code> for the plain-language reasoning.</p>
+      <h3 class="display" data-i18n="f.streaming.h">DJ Gem streaming that reads the room</h3>
+      <p data-i18n-html="f.streaming.p">Press <code>Ctrl+R</code> and ytm-tui starts streaming built around what you're hearing. A Gemini-powered <em>Queue Director</em> lines up songs that fit the mood — Focused, Balanced, or Discovery. Press <code>w</code> for the plain-language reasoning.</p>
     </article>
 
     <article class="feature gol">
@@ -891,13 +891,13 @@ kbd {
   </div>
 </section>
 
-<!-- ===================== WHY (DJ Gem radio spotlight) ===================== -->
-<section class="why-band section" id="radio" aria-labelledby="why-h2">
+<!-- ===================== WHY (DJ Gem streaming spotlight) ===================== -->
+<section class="why-band section" id="streaming" aria-labelledby="why-h2">
   <div class="wrap why-grid">
     <div class="section-head reveal" style="margin-bottom:0">
-      <p class="eyebrow"><span class="dot">●</span> <span data-i18n="why.eyebrow">Radio with its reasons</span></p>
+      <p class="eyebrow"><span class="dot">●</span> <span data-i18n="why.eyebrow">Streaming with its reasons</span></p>
       <h2 class="display" id="why-h2" data-i18n="why.h2">It doesn't just autoplay. It can tell you why.</h2>
-      <p data-i18n-html="why.sub">Most players guess your next song and hope. ytm-tui's radio plans a <em>set</em> — an anchor, a bridge, a lift, a wind-down — then keeps the music flowing as your queue runs dry. Press <code>w</code> and it shows its work, in plain language, no math.</p>
+      <p data-i18n-html="why.sub">Most players guess your next song and hope. ytm-tui's streaming plans a <em>set</em> — an anchor, a bridge, a lift, a wind-down — then keeps the music flowing as your queue runs dry. Press <code>w</code> and it shows its work, in plain language, no math.</p>
     </div>
 
     <div class="why-card reveal" aria-label="Why these picks overlay">
@@ -1003,7 +1003,7 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
       <div class="remote-list">
         <div class="r"><code>ytt -r pp</code><span class="desc" data-i18n="rem.pp">Play / pause</span></div>
         <div class="r"><code>ytt -r next</code><span class="desc" data-i18n="rem.next">Skip to the next song</span></div>
-        <div class="r"><code>ytt -r radio on</code><span class="desc" data-i18n="rem.radio">Switch the endless radio on</span></div>
+        <div class="r"><code>ytt -r streaming on</code><span class="desc" data-i18n="rem.streaming">Switch endless streaming on</span></div>
         <div class="r"><code>ytt -r status</code><span class="desc" data-i18n="rem.status">What's playing right now?</span></div>
         <div class="r"><code>ytt -r quit</code><span class="desc" data-i18n="rem.quit">Stop the music and close ytt</span></div>
       </div>
@@ -1011,7 +1011,7 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
       <div class="remote-aside">
         <div class="statusline">
           <div style="color:var(--muted);margin-bottom:.4rem" data-i18n="rem.example">ytt -r status →</div>
-          <div><span class="st">[playing]</span> <b>クリスマスソング — back number</b> • vol 80% • 1/4 • radio on</div>
+          <div><span class="st">[playing]</span> <b>クリスマスソング — back number</b> • vol 80% • 1/4 • streaming on</div>
         </div>
         <div class="statusline">
           <div style="color:var(--muted);margin-bottom:.4rem" data-i18n="rem.wire"># wire it to your media keys (i3 / sway)</div>
@@ -1062,12 +1062,12 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
    ============================================================ */
 var KO = {
   "skip": "본문으로 건너뛰기",
-  "nav.features": "기능", "nav.radio": "라디오", "nav.install": "설치", "nav.remote": "원격 제어",
+  "nav.features": "기능", "nav.streaming": "스트리밍", "nav.install": "설치", "nav.remote": "원격 제어",
 
   "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
   "hero.h1a": "지금 재생 중 —",
   "hero.h1b": "터미널 안에서.",
-  "hero.sub": "빠르고 키보드로 다루는 유튜브 뮤직 클라이언트예요. DJ Gem 라디오, 진짜 앨범 아트, 원격 제어까지. 램을 야금야금 먹는 브라우저 탭도, 광고도 없죠. 마우스요? 없어도 되지만, 아쉬울까 봐 챙겨뒀어요.",
+  "hero.sub": "빠르고 키보드로 다루는 유튜브 뮤직 클라이언트예요. DJ Gem 스트리밍, 진짜 앨범 아트, 원격 제어까지. 램을 야금야금 먹는 브라우저 탭도, 광고도 없죠. 마우스요? 없어도 되지만, 아쉬울까 봐 챙겨뒀어요.",
   "hero.cta1": "ytm-tui 설치하기",
   "hero.cta2": "GitHub에서 별 주기",
   "copy": "복사",
@@ -1099,8 +1099,8 @@ var KO = {
   "feat.eyebrow": "핵심만 쏙",
   "feat.h2": "모든 기능이, 키 하나로",
   "feat.sub": "전부 키보드로, 전부 빠르게, 전부 원하는 대로 재설정할 수 있어요. <code>ytt</code> 한 번이면 이 모든 게 시작됩니다.",
-  "f.radio.h": "분위기를 읽는 DJ Gem 라디오",
-  "f.radio.p": "<code>Ctrl+R</code> 한 번이면 지금 듣는 곡을 중심으로 나만의 라디오가 시작돼요. Gemini 기반 <em>큐 디렉터</em>가 분위기에 맞는 곡을 골라 이어주죠 — Focused, Balanced, Discovery 모드 중에서. <code>w</code> 를 누르면 그 이유를 쉬운 말로 설명해 줍니다.",
+  "f.streaming.h": "분위기를 읽는 DJ Gem 스트리밍",
+  "f.streaming.p": "<code>Ctrl+R</code> 한 번이면 지금 듣는 곡을 중심으로 나만의 스트리밍이 시작돼요. Gemini 기반 <em>큐 디렉터</em>가 분위기에 맞는 곡을 골라 이어주죠 — Focused, Balanced, Discovery 모드 중에서. <code>w</code> 를 누르면 그 이유를 쉬운 말로 설명해 줍니다.",
   "f.art.h": "터미널 안에, 진짜 앨범 아트",
   "f.art.p": "네, 진짜 커버 이미지를 플레이어에 그대로 띄워줍니다 (지원하는 터미널에서요). 픽셀이 있을 거라곤 생각도 못 한 곳에 떡하니. 그 아래로는 싱크된 가사가 흘러가죠, 1인용 노래방처럼.",
   "f.remote.h": "어디서든 조종하기",
@@ -1112,9 +1112,9 @@ var KO = {
   "f.help.h": "단축키는 앱이 기억합니다",
   "f.help.p": "단축키가 가물가물하세요? <code>?</code> 를 누르면 화면별로 정리된 최신 치트시트가 떠요 — 내 언어로, 내가 바꾼 키 그대로. 한글 자모도 그대로 통해요: <code>ㅂ</code> = <code>q</code>.",
 
-  "why.eyebrow": "이유까지 말하는 라디오",
+  "why.eyebrow": "이유까지 말하는 스트리밍",
   "why.h2": "그냥 자동 재생이 아니에요. 왜 골랐는지도 말해주죠.",
-  "why.sub": "대부분의 플레이어는 다음 곡을 찍어놓고 잘 맞기만 바라죠. ytm-tui의 라디오는 <em>한 세트</em>를 통째로 설계합니다 — 기준 곡, 연결, 상승, 마무리까지 — 그리고 대기열이 비어갈 때마다 음악을 계속 채워줘요. <code>w</code> 를 누르면 복잡한 수식 없이 쉬운 말로 그 과정을 보여줍니다.",
+  "why.sub": "대부분의 플레이어는 다음 곡을 찍어놓고 잘 맞기만 바라죠. ytm-tui의 스트리밍은 <em>한 세트</em>를 통째로 설계합니다 — 기준 곡, 연결, 상승, 마무리까지 — 그리고 대기열이 비어갈 때마다 음악을 계속 채워줘요. <code>w</code> 를 누르면 복잡한 수식 없이 쉬운 말로 그 과정을 보여줍니다.",
   "why.card.title": "이 DJ Gem 선곡의 이유",
   "why.r1.role": "기준", "why.r1.reason": "검색한 템포를 잡아줍니다.",
   "why.r2.role": "연결", "why.r2.reason": "키는 유지, 드럼은 빼서 집중 모드로.",
@@ -1134,7 +1134,7 @@ var KO = {
   "rem.eyebrow": "원격 제어",
   "rem.h2": "하던 일을 멈추지 않고 조종하기",
   "rem.sub": "<code>ytt</code> 가 재생 중이면, 다른 터미널에서 — 또는 키보드의 미디어 키로 — 바로 조종할 수 있어요. 시킨 한 가지만 하고, 한 줄로 결과를 알려준 뒤, 비켜줍니다. 음악 화면은 깜빡이지도 않아요.",
-  "rem.pp": "재생 / 일시정지", "rem.next": "다음 곡으로", "rem.radio": "무한 라디오 켜기",
+  "rem.pp": "재생 / 일시정지", "rem.next": "다음 곡으로", "rem.streaming": "무한 스트리밍 켜기",
   "rem.status": "지금 뭐가 재생 중이지?", "rem.quit": "음악 멈추고 ytt 종료",
   "rem.example": "ytt -r status →",
   "rem.wire": "# 미디어 키에 연결 (i3 / sway)",
@@ -1150,12 +1150,12 @@ var KO = {
 
 var JA = {
   "skip": "本文へスキップ",
-  "nav.features": "機能", "nav.radio": "ラジオ", "nav.install": "インストール", "nav.remote": "リモート操作",
+  "nav.features": "機能", "nav.streaming": "ストリーミング", "nav.install": "インストール", "nav.remote": "リモート操作",
 
   "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
   "hero.h1a": "再生中 —",
   "hero.h1b": "ターミナルの中で。",
-  "hero.sub": "速くて、キーボードで操る YouTube Music クライアント。DJ Gem ラジオ、本物のアルバムアート、リモート操作まで。RAM をじわじわ食うブラウザのタブも、広告もなし。マウス？ なくても平気ですが、恋しくならないように用意してあります。",
+  "hero.sub": "速くて、キーボードで操る YouTube Music クライアント。DJ Gem ストリーミング、本物のアルバムアート、リモート操作まで。RAM をじわじわ食うブラウザのタブも、広告もなし。マウス？ なくても平気ですが、恋しくならないように用意してあります。",
   "hero.cta1": "ytm-tui をインストール",
   "hero.cta2": "GitHub でスターを付ける",
   "copy": "コピー",
@@ -1187,8 +1187,8 @@ var JA = {
   "feat.eyebrow": "おいしいところだけ",
   "feat.h2": "すべての機能が、キー一つで",
   "feat.sub": "全部キーボードで、全部速く、全部好きなように再設定できます。<code>ytt</code> と打てば、その瞬間からすべてが始まります。",
-  "f.radio.h": "空気を読む DJ Gem ラジオ",
-  "f.radio.p": "<code>Ctrl+R</code> を押せば、ytm-tui が今聴いている曲を中心にしたステーションに早変わり。Gemini 搭載の<em>キュー・ディレクター</em>が雰囲気に合う曲を並べてくれます — Focused、Balanced、Discovery の中から。<code>w</code> を押せば、その理由をやさしい言葉で説明します。",
+  "f.streaming.h": "空気を読む DJ Gem ストリーミング",
+  "f.streaming.p": "<code>Ctrl+R</code> を押せば、ytm-tui が今聴いている曲を中心にしたストリーミングに早変わり。Gemini 搭載の<em>キュー・ディレクター</em>が雰囲気に合う曲を並べてくれます — Focused、Balanced、Discovery の中から。<code>w</code> を押せば、その理由をやさしい言葉で説明します。",
   "f.art.h": "ターミナルの中に、本物のアルバムアート",
   "f.art.p": "そう、本物のカバー画像をプレイヤーにそのまま表示します（対応するターミナルで）。ピクセルなんてないと思っていた場所に、どんと。その下には同期した歌詞が流れます、一人カラオケみたいに。",
   "f.remote.h": "どこからでも操作",
@@ -1200,9 +1200,9 @@ var JA = {
   "f.help.h": "ショートカットはアプリが覚えています",
   "f.help.p": "ショートカットがうろ覚え？ <code>?</code> を押せば画面ごとに整理された最新のチートシートが表示されます — あなたの言語で、あなたが変えたキーのまま。ハングルの字母だってちゃんと通ります：<code>ㅂ</code> = <code>q</code>。",
 
-  "why.eyebrow": "理由まで語るラジオ",
+  "why.eyebrow": "理由まで語るストリーミング",
   "why.h2": "ただ自動再生するだけじゃない。なぜ選んだかも教えてくれる。",
-  "why.sub": "ほとんどのプレイヤーは次の曲を当てずっぽうで選んで、合うことを祈るだけ。ytm-tui のラジオは<em>ワンセット</em>をまるごと設計します — 基準の曲、つなぎ、盛り上げ、締め — そしてキューが空きそうになるたびに音楽を満たし続けます。<code>w</code> を押せば、難しい数式なしでやさしい言葉でその過程を見せてくれます。",
+  "why.sub": "ほとんどのプレイヤーは次の曲を当てずっぽうで選んで、合うことを祈るだけ。ytm-tui のストリーミングは<em>ワンセット</em>をまるごと設計します — 基準の曲、つなぎ、盛り上げ、締め — そしてキューが空きそうになるたびに音楽を満たし続けます。<code>w</code> を押せば、難しい数式なしでやさしい言葉でその過程を見せてくれます。",
   "why.card.title": "この DJ Gem 選曲の理由",
   "why.r1.role": "基準", "why.r1.reason": "検索したテンポを決めます。",
   "why.r2.role": "つなぎ", "why.r2.reason": "キーは保ったまま、ドラムを抜いて集中モードへ。",
@@ -1222,7 +1222,7 @@ var JA = {
   "rem.eyebrow": "リモート操作",
   "rem.h2": "作業を止めずに操作する",
   "rem.sub": "<code>ytt</code> が再生中なら、別のターミナルから — あるいはキーボードのメディアキーで — そのまま操作できます。頼んだ一つだけをこなして、一行で結果を伝え、すっと退きます。音楽画面はちらつきもしません。",
-  "rem.pp": "再生 / 一時停止", "rem.next": "次の曲へ", "rem.radio": "無限ラジオをオン",
+  "rem.pp": "再生 / 一時停止", "rem.next": "次の曲へ", "rem.streaming": "無限ストリーミングをオン",
   "rem.status": "今、何が再生中？", "rem.quit": "音楽を止めて ytt を終了",
   "rem.example": "ytt -r status →",
   "rem.wire": "# メディアキーに割り当て (i3 / sway)",
@@ -1363,7 +1363,7 @@ document.querySelectorAll(".tab-btn").forEach(function (tab) {
 
 /* ============================================================
    The living terminal — a faithful ytm-tui Player session
-   boot → play → ^R radio on → c opens Queue popup → advance → loop
+   boot → play → ^R streaming on → c opens Queue popup → advance → loop
    ============================================================ */
 var demo = (function () {
   var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1388,7 +1388,7 @@ var demo = (function () {
     playicon: document.getElementById("d-playicon"),
     state: document.getElementById("d-state"),
     pos: document.getElementById("d-pos"),
-    radio: document.getElementById("d-radio"),
+    streaming: document.getElementById("d-streaming"),
     art: document.getElementById("d-art"),
     queue: document.getElementById("d-queue"),
     qstate: document.getElementById("d-qstate"),
@@ -1445,7 +1445,7 @@ var demo = (function () {
     setTrack(0);
     els.state.textContent = L().playing; els.playicon.textContent = "‖";
     els.fill.style.width = "38%"; els.elapsed.textContent = "2:10";
-    els.radio.textContent = "radio:balanced";
+    els.streaming.textContent = "streaming:balanced";
     els.qpop.hidden = true;
   }
   function run() {
@@ -1455,18 +1455,18 @@ var demo = (function () {
     els.art.innerHTML = '<span class="placeholder" aria-hidden="true">♪</span>';
     els.fill.style.width = "0%"; els.elapsed.textContent = "0:00"; els.total.textContent = "0:00";
     els.state.textContent = ""; els.playicon.textContent = "‖"; els.pos.textContent = "";
-    els.radio.textContent = "radio:✗"; els.qpop.hidden = true; els.queue.innerHTML = ""; els.qstate.textContent = "";
+    els.streaming.textContent = "streaming:✗"; els.qpop.hidden = true; els.queue.innerHTML = ""; els.qstate.textContent = "";
 
     after(1100, play);
     function play() {
       setTrack(0);
       els.state.textContent = L().playing;
       raf = requestAnimationFrame(tick);
-      after(1700, radio);
+      after(1700, streaming);
     }
-    function radio() {
+    function streaming() {
       flashKey("^R");
-      after(480, function () { els.radio.textContent = "radio:balanced"; });
+      after(480, function () { els.streaming.textContent = "streaming:balanced"; });
       after(1500, queue);
     }
     function queue() {

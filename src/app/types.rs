@@ -126,29 +126,29 @@ pub enum Msg {
         video_id: String,
         stream_url: String,
     },
-    /// Related tracks returned by the non-DJ Gem radio fallback, each tagged with the source it
+    /// Related tracks returned by the non-DJ Gem streaming fallback, each tagged with the source it
     /// came from (real YTM watch-playlist vs anonymous yt-dlp search) so the local engine can
     /// weight provenance and prefer the better source on dedup.
-    RadioResults {
+    StreamingResults {
         seed_video_id: String,
         candidates: Vec<(Song, CandidateSource)>,
     },
-    /// Final radio picks after the API actor has run any needed metadata preflight. This is the
+    /// Final streaming picks after the API actor has run any needed metadata preflight. This is the
     /// last gate before enqueueing; it can drop risky public-YouTube candidates and top up from
     /// fallback picks.
-    RadioPreflighted {
+    StreamingPreflighted {
         seed_video_id: String,
         songs: Vec<Song>,
     },
-    /// The non-DJ Gem radio fallback failed to fetch related tracks.
-    RadioError {
+    /// The non-DJ Gem streaming fallback failed to fetch related tracks.
+    StreamingError {
         seed_video_id: String,
         error: String,
     },
     /// The DJ Gem reranker's chosen picks (best-first), or empty on any failure. Each pick is an
     /// opaque pack `cid`; the reducer resolves cids→tracks via the stashed `cid_map`, validates
     /// against the shortlist, and tops up from the local pick.
-    RadioAiPicks {
+    StreamingAiPicks {
         seed_video_id: String,
         picks: Vec<AiPick>,
         /// The model's self-reported confidence in [0,1], if it returned one.
@@ -164,13 +164,13 @@ pub enum Msg {
     AiError(String),
     /// Replace the queue with these tracks and start playing (play_music/play_playlist).
     AiPlayTracks(Vec<Song>),
-    /// Append these tracks to the queue (add_to_queue/start_radio).
+    /// Append these tracks to the queue (add_to_queue/start_streaming).
     AiEnqueue(Vec<Song>),
     /// Populate the pickable related-tracks list (get_suggestions).
     AiSuggestions(Vec<Song>),
-    /// Turn autoplay/radio on or off (start_radio/stop_radio).
+    /// Turn autoplay/streaming on or off (start_streaming/stop_streaming).
     AiSetAutoplay(bool),
-    /// Shape the active station from a free-text vibe (start_radio with explore/avoid hints):
+    /// Shape the active station from a free-text vibe (start_streaming with explore/avoid hints):
     /// set the adventurousness and the artists to keep out. `explore` is the model's raw string
     /// (tight/balanced/wide or a synonym), parsed leniently.
     AiSetStationProfile {
@@ -255,7 +255,7 @@ pub enum Cmd {
     SaveConfig(Box<Config>),
     /// Persist the local playlists to disk (after a DJ Gem playlist mutation).
     SavePlaylists,
-    /// Persist the active natural-language station profile to disk (after a vibe-shaped radio).
+    /// Persist the active natural-language station profile to disk (after vibe-shaped streaming).
     SaveStationProfile,
     /// Off-path: ask the assistant to distill a recent-feedback digest into artists to avoid /
     /// re-allow for the active station. The result returns as [`Msg::StationPatch`].
@@ -272,24 +272,24 @@ pub enum Cmd {
         prompt: String,
         context: Box<AiContext>,
     },
-    /// Ask the anonymous API/search actor for related tracks to keep radio going without DJ Gem.
-    RadioFallback {
+    /// Ask the anonymous API/search actor for related tracks to keep streaming going without DJ Gem.
+    StreamingFallback {
         seed: String,
         seed_video_id: String,
         exclude_ids: Vec<String>,
-        mode: RadioMode,
+        mode: StreamingMode,
     },
-    /// Ask the API actor to run a final metadata preflight on radio picks before enqueueing.
+    /// Ask the API actor to run a final metadata preflight on streaming picks before enqueueing.
     /// Only risky candidates trigger full yt-dlp extraction; clean picks pass through.
-    RadioPreflight {
+    StreamingPreflight {
         seed_video_id: String,
         picks: Vec<Song>,
         fallback: Vec<Song>,
-        mode: RadioMode,
-        config: radio::RadioConfig,
+        mode: StreamingMode,
+        config: streaming::StreamingConfig,
     },
     /// Hand a local candidate shortlist to the DJ Gem actor to rerank (ids only). The result
-    /// returns as [`Msg::RadioAiPicks`]; failure degrades to the stashed local pick.
+    /// returns as [`Msg::StreamingAiPicks`]; failure degrades to the stashed local pick.
     AiRerank {
         seed_video_id: String,
         prompt: String,
@@ -315,10 +315,10 @@ pub enum MouseTarget {
     EqMenu,
     /// Pick an EQ preset from the open dropdown.
     EqSelect(EqPreset),
-    /// Open/close the radio-mode dropdown on the player status line (clicking the `radio:` label).
-    RadioMenu,
-    /// Pick a radio mode from the open dropdown.
-    RadioSelect(RadioMode),
+    /// Open/close the streaming-mode dropdown on the player status line (clicking the `streaming:` label).
+    StreamingMenu,
+    /// Pick a streaming mode from the open dropdown.
+    StreamingSelect(StreamingMode),
     /// The player volume cluster (`vol - 50% +`). Clicks are ignored on the label/value,
     /// but wheel events over the cluster nudge volume.
     VolumeArea,
@@ -446,7 +446,7 @@ pub struct AiContext {
     pub playlists: Vec<PlaylistInfo>,
     /// Whether a YTM cookie is configured (gates authenticated related-tracks).
     pub authenticated: bool,
-    pub autoplay_radio: bool,
+    pub autoplay_streaming: bool,
 }
 
 /// A live radio stream's current ICY/metadata title, as exposed by mpv.
@@ -467,18 +467,18 @@ impl StreamNowPlaying {
     }
 }
 
-/// A radio rerank handed to the DJ Gem actor, kept until its `Msg::RadioAiPicks` returns. The
+/// A streaming rerank handed to the DJ Gem actor, kept until its `Msg::StreamingAiPicks` returns. The
 /// `shortlist` is the exact set the model was shown — every returned id is validated against
 /// it (so a hallucinated id is dropped) — and `local_pick` is the guaranteed fallback ordering
 /// the engine produced, used to top up any slots the DJ Gem left empty.
 pub(crate) struct PendingRerank {
     pub(crate) seed_video_id: String,
-    pub(crate) mode: RadioMode,
+    pub(crate) mode: StreamingMode,
     pub(crate) shortlist: Vec<Song>,
     pub(crate) local_pick: Vec<Song>,
     /// Maps each pack `cid` shown to the model back to its track's video id, so the DJ Gem's chosen
     /// cids can be resolved to playable tracks before validation.
-    pub(crate) cid_map: Vec<crate::radio::PackedCand>,
+    pub(crate) cid_map: Vec<crate::streaming::PackedCand>,
     /// Cache key for this rerank (hash of seed artist / mode / recent ids / candidate set), so the
     /// resolved ordering can be stored on return and replayed for a rapid identical refill.
     pub(crate) cache_key: u64,
@@ -493,19 +493,19 @@ pub struct AiPick {
     pub reasons: Vec<String>,
 }
 
-/// The resolved, human-readable explanation of the last DJ Gem radio rerank, shown by the "Why DJ Gem"
-/// overlay (the `w` key). Built when [`Msg::RadioAiPicks`] resolves — the model's opaque cids are
+/// The resolved, human-readable explanation of the last DJ Gem streaming rerank, shown by the "Why DJ Gem"
+/// overlay (the `w` key). Built when [`Msg::StreamingAiPicks`] resolves — the model's opaque cids are
 /// mapped back to real tracks (title + artist) while [`PendingRerank`] is still in hand — so the
 /// overlay can render it long after the pending rerank has been consumed.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct RadioAiExplain {
+pub(crate) struct StreamingAiExplain {
     /// The model's self-reported confidence in [0,1], if any.
     pub(crate) conf: Option<f32>,
     /// The picks the model chose, in its best-first order (hallucinated cids already dropped).
     pub(crate) picks: Vec<ExplainPick>,
 }
 
-/// One resolved pick in a [`RadioAiExplain`]: the track it landed on plus the model's stated
+/// One resolved pick in a [`StreamingAiExplain`]: the track it landed on plus the model's stated
 /// slot role and reason codes.
 #[derive(Debug, Clone)]
 pub(crate) struct ExplainPick {
@@ -518,7 +518,7 @@ pub(crate) struct ExplainPick {
 }
 
 /// One ordered listening-session outcome (newest pushed to the back of
-/// [`crate::app::RadioRuntime::session_events`]). Feeds the DJ Gem reranker's *recovery context* — a
+/// [`crate::app::StreamingRuntime::session_events`]). Feeds the DJ Gem reranker's *recovery context* — a
 /// skip → widen and avoid the skipped artist, a like → stay close — so the model reacts to the
 /// arc of the session, not just the aggregate per-track signals the engine already folds in.
 #[derive(Debug, Clone)]

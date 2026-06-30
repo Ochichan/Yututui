@@ -2,7 +2,7 @@
 //!
 //! Instead of a plain `video_id | title | artist` list, each candidate becomes one terse line
 //! of *evidence* — the per-feature scores the local engine already computed (see
-//! [`crate::radio::candidate::FeatureScores`]) as 0-100 integers, plus source and version —
+//! [`crate::streaming::candidate::FeatureScores`]) as 0-100 integers, plus source and version —
 //! under a short opaque `cid`. Two anti-bias measures matter for LLM rerankers:
 //!   * **Opaque ids**: a hashed base36 `cid` (not the score rank, not the video id), so the
 //!     model can't read "candidate 1 is best" off the id.
@@ -14,7 +14,7 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
-use crate::radio::candidate::Candidate;
+use crate::streaming::candidate::Candidate;
 
 /// A candidate's opaque pack id paired with the real video id it stands for. The reducer uses
 /// this to resolve the model's chosen `cid`s back to playable tracks.
@@ -147,15 +147,15 @@ fn clean(s: &str, max: usize) -> String {
         .to_owned()
 }
 
-fn source_tag(src: crate::radio::candidate::CandidateSource) -> &'static str {
-    use crate::radio::candidate::CandidateSource as S;
+fn source_tag(src: crate::streaming::candidate::CandidateSource) -> &'static str {
+    use crate::streaming::candidate::CandidateSource as S;
     match src {
-        S::WatchPlaylist => "ytm_radio",
+        S::WatchPlaylist => "ytm_continuation",
         S::ArtistTop => "artist_top",
         S::MoodPlaylist => "mood",
         S::LikedNeighbor => "liked",
         S::HistoryCooc => "cooc",
-        S::YtdlpRadio => "search",
+        S::YtdlpStreaming => "search",
     }
 }
 
@@ -180,12 +180,12 @@ fn version_label(title: &str) -> &'static str {
 mod tests {
     use super::*;
     use crate::api::Song;
-    use crate::radio::candidate::CandidateSource;
+    use crate::streaming::candidate::CandidateSource;
 
     fn cand(id: &str, title: &str, artist: &str, base: f32) -> Candidate {
         let mut c = Candidate::from_song(
             Song::remote(id, title, artist, "3:00"),
-            CandidateSource::YtdlpRadio,
+            CandidateSource::YtdlpStreaming,
             0,
         );
         c.base_score = base;

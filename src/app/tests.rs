@@ -168,11 +168,11 @@ fn ctrl_a_selects_then_backspace_clears_ai_input() {
 }
 
 #[test]
-fn radio_extend_resumes_playback_when_idle() {
+fn streaming_extend_resumes_playback_when_idle() {
     let mut app = App::new(100);
     app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
     app.prefetch.loaded_video_id = None; // the seed ended before this refill landed
-    let cmds = app.extend_queue_from_radio(vec![Song::remote("b", "B", "y", "2:00")]);
+    let cmds = app.extend_queue_from_streaming(vec![Song::remote("b", "B", "y", "2:00")]);
     assert!(
         load_url(&cmds).is_some(),
         "should resume by loading the new track"
@@ -181,11 +181,11 @@ fn radio_extend_resumes_playback_when_idle() {
 }
 
 #[test]
-fn radio_extend_prefetches_next_while_playing() {
+fn streaming_extend_prefetches_next_while_playing() {
     let mut app = App::new(100);
     app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
     app.prefetch.loaded_video_id = Some("a".to_owned()); // still playing the seed
-    let cmds = app.extend_queue_from_radio(vec![Song::remote("b", "B", "y", "2:00")]);
+    let cmds = app.extend_queue_from_streaming(vec![Song::remote("b", "B", "y", "2:00")]);
     assert!(
         load_url(&cmds).is_none(),
         "must not interrupt the playing track"
@@ -451,34 +451,32 @@ fn search_submit_stays_enter_when_common_confirm_is_remapped() {
 }
 
 #[test]
-fn search_enter_beats_enter_global_remap_but_other_screens_keep_it() {
-    let mut keymap = confirm_on_f5_keymap();
-    keymap
-        .rebind(
-            KeyContext::Global,
-            Action::ToggleHelp,
-            crate::keymap::parse_chord("enter").unwrap(),
-        )
-        .unwrap();
-
-    let mut app = App::new(100);
-    app.keymap = keymap.clone();
-    app.mode = Mode::Search;
-    app.search.input = "lofi".to_owned();
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(!app.help_visible);
-    match cmds.as_slice() {
-        [Cmd::Search { query, source, .. }] => {
-            assert_eq!(query, "lofi");
-            assert_eq!(*source, SearchSource::Youtube);
-        }
-        _ => panic!("expected a Search cmd"),
+fn settings_global_key_capture_rejects_player_overlap() {
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    for _ in 0..2 {
+        app.update(Msg::Key(key(KeyCode::Tab))); // -> Hotkeys tab
     }
+    assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Keys);
 
-    let mut player = App::new(100);
-    player.keymap = keymap;
-    assert!(player.update(Msg::Key(key(KeyCode::Enter))).is_empty());
-    assert!(player.help_visible);
+    let row = crate::keymap::editable_entries()
+        .iter()
+        .position(|entry| *entry == (KeyContext::Global, Action::ToggleHelp))
+        .expect("global help binding is editable");
+    app.settings.as_mut().unwrap().row = row;
+    app.update(Msg::Key(key(KeyCode::Enter))); // capture global.toggle_help
+    assert_eq!(
+        app.settings.as_ref().unwrap().capturing,
+        Some((KeyContext::Global, Action::ToggleHelp))
+    );
+
+    app.update(Msg::Key(key(KeyCode::Char('n')))); // Player next-track owns `n`.
+    let conflict = app
+        .key_conflict
+        .expect("global overlap should raise a conflict warning");
+    assert_eq!(conflict.ctx, KeyContext::Player);
+    assert_eq!(conflict.existing, Action::NextTrack);
+    assert_eq!(conflict.chord, crate::keymap::parse_chord("n").unwrap());
 }
 
 #[test]
@@ -1097,23 +1095,27 @@ fn speed_up_and_down_clamp_and_emit() {
 }
 
 #[test]
-fn ctrl_r_toggles_autoplay_radio() {
+fn ctrl_r_toggles_autoplay_streaming() {
     let mut app = app_playing(3, 0);
-    assert!(!app.autoplay_radio);
+    assert!(!app.autoplay_streaming);
     let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
-    assert!(app.autoplay_radio);
+    assert!(app.autoplay_streaming);
     assert_eq!(
-        save_config(&cmds).expect("a SaveConfig cmd").autoplay_radio,
+        save_config(&cmds)
+            .expect("a SaveConfig cmd")
+            .autoplay_streaming,
         Some(true)
     );
     // Plain `r` still cycles repeat (not the autoplay toggle).
     app.update(Msg::Key(key(KeyCode::Char('r'))));
-    assert!(app.autoplay_radio);
+    assert!(app.autoplay_streaming);
     assert_eq!(app.queue.repeat, crate::queue::Repeat::All);
     let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
-    assert!(!app.autoplay_radio);
+    assert!(!app.autoplay_streaming);
     assert_eq!(
-        save_config(&cmds).expect("a SaveConfig cmd").autoplay_radio,
+        save_config(&cmds)
+            .expect("a SaveConfig cmd")
+            .autoplay_streaming,
         Some(false)
     );
 }
@@ -1197,13 +1199,13 @@ fn radio_mode_switch_stops_playback_restores_cached_queues_and_themes() {
     app.theme.set_preset(crate::theme::ThemePreset::Midnight);
     app.config.theme = app.theme.clone();
     app.playback.paused = false;
-    app.radio.pending = true;
-    app.radio.pending_rerank = Some(PendingRerank {
+    app.streaming.pending = true;
+    app.streaming.pending_rerank = Some(PendingRerank {
         seed_video_id: "id1".to_owned(),
         shortlist: Vec::new(),
         local_pick: Vec::new(),
         cid_map: Vec::new(),
-        mode: crate::radio::config::RadioMode::Balanced,
+        mode: crate::streaming::config::StreamingMode::Balanced,
         cache_key: 42,
     });
 
@@ -1214,8 +1216,8 @@ fn radio_mode_switch_stops_playback_restores_cached_queues_and_themes() {
     assert!(app.queue.is_empty());
     assert!(app.playback.paused);
     assert!(load_url(&enter).is_none());
-    assert!(!app.radio.pending);
-    assert!(app.radio.pending_rerank.is_none());
+    assert!(!app.streaming.pending);
+    assert!(app.streaming.pending_rerank.is_none());
     assert_eq!(app.theme.preset, "dario");
 
     app.queue.set(
@@ -1379,15 +1381,19 @@ fn double_clicking_active_player_tab_confirms_radio_mode() {
 }
 
 #[test]
-fn autoplay_radio_does_not_extend_from_radio_browser_streams() {
+fn autoplay_streaming_does_not_extend_from_radio_browser_streams() {
     let mut app = App::new(100);
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
     app.queue.set(vec![radio_station("station-seed")], 0);
     app.mode = Mode::Player;
 
     let cmds = app.load_song(app.queue.current().cloned());
 
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::RadioFallback { .. })));
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::StreamingFallback { .. }))
+    );
     assert!(app.library.history.is_empty());
     assert_eq!(app.library.radios.len(), 1);
 }
@@ -1415,7 +1421,7 @@ fn apply_config_pushes_playback_settings() {
         seek_seconds: Some(30.0),
         shuffle: Some(true),
         repeat: crate::queue::Repeat::One,
-        autoplay_radio: Some(true),
+        autoplay_streaming: Some(true),
         ..crate::config::Config::default()
     };
     let mut app = App::new(100);
@@ -1427,7 +1433,7 @@ fn apply_config_pushes_playback_settings() {
     assert!((app.audio.seek_seconds - 30.0).abs() < 1e-9);
     assert!(app.queue.shuffle);
     assert_eq!(app.queue.repeat, crate::queue::Repeat::One);
-    assert!(app.autoplay_radio);
+    assert!(app.autoplay_streaming);
 }
 
 #[test]
@@ -1742,9 +1748,9 @@ fn transient_status_expires_after_ttl_and_restores_the_title() {
 }
 
 #[test]
-fn radio_mode_cycles_on_the_ai_tab_and_persists() {
+fn streaming_mode_cycles_on_the_ai_tab_and_persists() {
     let _guard = crate::i18n::lock_for_test();
-    use crate::radio::RadioMode;
+    use crate::streaming::StreamingMode;
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
     for _ in 0..4 {
@@ -1752,19 +1758,19 @@ fn radio_mode_cycles_on_the_ai_tab_and_persists() {
     }
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
     // Fields: AiEnabled(0), Model(1), ApiKey(2), RomanizedTitles(3), Clear cache(4),
-    // AutoplayRadio(5), RadioMode(6).
+    // AutoplayStreaming(5), StreamingMode(6).
     for _ in 0..6 {
         app.update(Msg::Key(key(KeyCode::Down)));
     }
     app.update(Msg::Key(key(KeyCode::Right))); // Balanced → Discovery
     assert_eq!(
-        app.settings.as_ref().unwrap().draft.radio_mode,
-        RadioMode::Discovery
+        app.settings.as_ref().unwrap().draft.streaming_mode,
+        StreamingMode::Discovery
     );
-    assert!(app.status.text.contains("Radio mode: Discovery"));
+    assert!(app.status.text.contains("Streaming mode: Discovery"));
     // Closing settings commits the draft into config + emits a save.
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
-    assert_eq!(app.config.radio.mode, RadioMode::Discovery);
+    assert_eq!(app.config.streaming.mode, StreamingMode::Discovery);
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
 }
 
@@ -2447,9 +2453,9 @@ fn ask_ai(cmds: &[Cmd]) -> Option<&str> {
     })
 }
 
-fn radio_fallback(cmds: &[Cmd]) -> Option<(&str, &str, &[String])> {
+fn streaming_fallback(cmds: &[Cmd]) -> Option<(&str, &str, &[String])> {
     cmds.iter().find_map(|c| match c {
-        Cmd::RadioFallback {
+        Cmd::StreamingFallback {
             seed,
             seed_video_id,
             exclude_ids,
@@ -2564,44 +2570,44 @@ fn ai_empty_chat_is_not_appended() {
 }
 
 #[test]
-fn ai_radio_circuit_breaker_disables_after_repeated_empties() {
+fn ai_streaming_circuit_breaker_disables_after_repeated_empties() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
     for _ in 0..AUTOPLAY_MAX_FAILURES {
         app.update(Msg::AiEnqueue(Vec::new())); // resolves nothing
     }
     assert!(
-        !app.autoplay_radio,
-        "radio disabled after repeated empty extends"
+        !app.autoplay_streaming,
+        "streaming disabled after repeated empty extends"
     );
-    assert!(app.status.text.contains("Autoplay radio stopped"));
+    assert!(app.status.text.contains("Autoplay streaming stopped"));
 }
 
 #[test]
 fn autoplay_extends_when_queue_runs_low() {
     let mut app = app_playing(2, 0); // remaining = 1 (<= threshold)
     app.ai.available = true;
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
     // A manual next advances and should fetch the candidate pool first (both DJ Gem and non-DJ Gem
     // paths share one pool; the DJ Gem reranks it once it returns).
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
     assert!(
-        radio_fallback(&cmds).is_some(),
+        streaming_fallback(&cmds).is_some(),
         "autoplay should fetch a candidate pool"
     );
     assert!(
         ask_ai(&cmds).is_none(),
-        "no free-form DJ Gem radio prompt anymore"
+        "no free-form DJ Gem streaming prompt anymore"
     );
-    assert!(app.radio.pending);
+    assert!(app.streaming.pending);
     assert!(
         !app.ai.thinking,
         "the rerank only starts once the pool returns"
     );
     // The cooldown / in-flight guard blocks an immediate second request.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
-    assert!(radio_fallback(&cmds).is_none());
+    assert!(streaming_fallback(&cmds).is_none());
 }
 
 #[test]
@@ -2629,7 +2635,7 @@ fn radio_tab_entries_do_not_feed_station_state() {
 }
 
 #[test]
-fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
+fn ai_streaming_hands_a_local_shortlist_to_the_reranker() {
     let mut app = app_playing(1, 0); // current id0 is already in history
     let current = app.queue.current().cloned().unwrap();
     app.library
@@ -2638,10 +2644,10 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
         .record_play(&Song::remote("prev1", "previous one", "artist a", "0:10"));
     app.library.record_play(&current); // current can be present in history; don't duplicate it.
     app.ai.available = true;
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
 
     // The fetched pool flows through the local engine; a diverse shortlist goes to the DJ Gem.
-    let cmds = app.update(Msg::RadioResults {
+    let cmds = app.update(Msg::StreamingResults {
         seed_video_id: "id0".to_owned(),
         candidates: vec![
             (
@@ -2650,7 +2656,7 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
             ),
             (
                 Song::remote("cand2", "Track Two", "band two", "3:10"),
-                CandidateSource::YtdlpRadio,
+                CandidateSource::YtdlpStreaming,
             ),
             (
                 Song::remote("cand3", "Track Three", "band three", "3:20"),
@@ -2662,7 +2668,7 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
     let (seed_id, prompt) = ai_rerank(&cmds).expect("a DJ Gem rerank command");
     assert_eq!(seed_id, "id0");
     // Compact protocol header + candidate pack.
-    assert!(prompt.contains("TASK|radio_next"));
+    assert!(prompt.contains("TASK|streaming_next"));
     assert!(prompt.contains("CANDS"));
     // Recent session context (current + the two previous tracks).
     assert!(prompt.contains("- Current: t0 — a"));
@@ -2678,10 +2684,10 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
     );
     assert!(app.ai.thinking, "the rerank is in flight");
     assert!(
-        app.radio.pending_rerank.is_some(),
+        app.streaming.pending_rerank.is_some(),
         "shortlist + local pick stashed for validation"
     );
-    assert!(!app.radio.pending, "the pool fetch is done");
+    assert!(!app.streaming.pending, "the pool fetch is done");
 }
 
 #[test]
@@ -2689,15 +2695,15 @@ fn smart_gate_skips_the_ai_call_and_enqueues_the_local_pick() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0); // current id0, remaining 0 → a refill is due
     app.ai.available = true;
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
     // smart_gate is on by default; a negative ambiguity gap forces the score-gap branch to read
     // as confident, so this test isolates the gated local path.
-    app.config.radio.ai.smart_gate = true;
-    app.config.radio.ai.ambiguity_gap = -1.0;
+    app.config.streaming.ai.smart_gate = true;
+    app.config.streaming.ai.ambiguity_gap = -1.0;
 
     let before = app.queue.len();
-    let src = CandidateSource::YtdlpRadio;
-    let cmds = app.update(Msg::RadioResults {
+    let src = CandidateSource::YtdlpStreaming;
+    let cmds = app.update(Msg::StreamingResults {
         seed_video_id: "id0".to_owned(),
         candidates: vec![
             (Song::remote("cand1", "Track One", "band one", "3:00"), src),
@@ -2718,7 +2724,7 @@ fn smart_gate_skips_the_ai_call_and_enqueues_the_local_pick() {
         "gated path never marks the assistant as thinking"
     );
     assert!(
-        app.radio.pending_rerank.is_none(),
+        app.streaming.pending_rerank.is_none(),
         "gated path stashes nothing to validate"
     );
     assert!(
@@ -2732,11 +2738,11 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0); // current id0
     app.ai.available = true;
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
     // Force the call through the gate so this exercises the cache, not the smart gate.
-    app.config.radio.ai.ambiguity_gap = 1.0;
+    app.config.streaming.ai.ambiguity_gap = 1.0;
 
-    let src = CandidateSource::YtdlpRadio;
+    let src = CandidateSource::YtdlpStreaming;
     let candidates = vec![
         (Song::remote("cand1", "Track One", "band one", "3:00"), src),
         (Song::remote("cand2", "Track Two", "band two", "3:10"), src),
@@ -2748,25 +2754,29 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
 
     // First refill misses the cache → a DJ Gem call goes out, the rerank is stashed, and (on the DJ Gem
     // path) the queue is left untouched, so the next refill recomputes the *same* cache key.
-    let cmds = app.update(Msg::RadioResults {
+    let cmds = app.update(Msg::StreamingResults {
         seed_video_id: "id0".to_owned(),
         candidates: candidates.clone(),
     });
     assert!(ai_rerank(&cmds).is_some(), "first refill spends a call");
-    let pending = app.radio.pending_rerank.as_ref().expect("rerank stashed");
+    let pending = app
+        .streaming
+        .pending_rerank
+        .as_ref()
+        .expect("rerank stashed");
     let key = pending.cache_key;
     let cached_id = pending.cid_map[0].video_id.clone(); // a real shortlist track
 
     // Seed the cache as if that rerank had resolved to `cached_id`, then clear the in-flight flags
     // (queue/history untouched → the next identical refill keys to the same entry).
     app.ai_cache_store(key, vec![cached_id.clone()]);
-    app.radio.pending_rerank = None;
+    app.streaming.pending_rerank = None;
     app.ai.thinking = false;
-    app.radio.pending = false;
-    app.radio.last_extend = None;
+    app.streaming.pending = false;
+    app.streaming.last_extend = None;
 
     // Second identical refill hits the cache → no call; the cached ordering is enqueued directly.
-    let cmds = app.update(Msg::RadioResults {
+    let cmds = app.update(Msg::StreamingResults {
         seed_video_id: "id0".to_owned(),
         candidates,
     });
@@ -2779,7 +2789,7 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
         "cache hit never marks the assistant as thinking"
     );
     assert!(
-        app.radio.pending_rerank.is_none(),
+        app.streaming.pending_rerank.is_none(),
         "cache hit stashes nothing to validate"
     );
     assert!(
@@ -2800,7 +2810,10 @@ fn ai_set_station_profile_applies_mode_and_avoids_artists() {
     });
 
     // The explore level drives the live engine mode, and the profile is stashed for persistence.
-    assert_eq!(app.config.radio.mode, crate::radio::RadioMode::Focused);
+    assert_eq!(
+        app.config.streaming.mode,
+        crate::streaming::StreamingMode::Focused
+    );
     assert_eq!(
         app.station.active.as_ref().expect("station stashed").query,
         "rainy day"
@@ -2819,7 +2832,7 @@ fn ai_set_station_profile_applies_mode_and_avoids_artists() {
 }
 
 #[test]
-fn a_plain_start_radio_without_hints_leaves_no_station() {
+fn a_plain_start_streaming_without_hints_leaves_no_station() {
     // The reducer only stamps a profile when the tool passes shaping hints; this asserts the
     // engine default holds when none are given (the tool simply omits the AiSetStationProfile msg).
     let app = app_playing(1, 0);
@@ -2836,7 +2849,7 @@ fn station_patch_folds_feedback_into_avoid_list_and_clears_inflight() {
         Some("wide"),
         &[],
     ));
-    app.radio.feedback_in_flight = true;
+    app.streaming.feedback_in_flight = true;
 
     let cmds = app.update(Msg::StationPatch {
         down_artists: vec!["Nickelback".to_owned()],
@@ -2845,7 +2858,7 @@ fn station_patch_folds_feedback_into_avoid_list_and_clears_inflight() {
 
     // The in-flight guard always clears so the next streak can fire again.
     assert!(
-        !app.radio.feedback_in_flight,
+        !app.streaming.feedback_in_flight,
         "in-flight guard cleared on patch"
     );
     // The down-voted artist is now avoided in every refill, and the change is persisted.
@@ -2866,7 +2879,7 @@ fn empty_station_patch_clears_inflight_without_persisting() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);
     app.station.active = Some(crate::station::StationProfile::from_intent("q", None, &[]));
-    app.radio.feedback_in_flight = true;
+    app.streaming.feedback_in_flight = true;
 
     // An empty patch (the off-path summary failed or found nothing) still clears the guard, but a
     // no-op change must not trigger a pointless save.
@@ -2874,7 +2887,7 @@ fn empty_station_patch_clears_inflight_without_persisting() {
         down_artists: vec![],
         boost_artists: vec![],
     });
-    assert!(!app.radio.feedback_in_flight);
+    assert!(!app.streaming.feedback_in_flight);
     assert!(
         !cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)),
         "no save on a no-op patch"
@@ -2902,7 +2915,7 @@ fn feedback_summary_fires_once_per_skip_streak_when_gated_open() {
         matches!(cmd, Some(Cmd::SummarizeFeedback { .. })),
         "streak + active station → summary"
     );
-    assert!(app.radio.feedback_in_flight);
+    assert!(app.streaming.feedback_in_flight);
     // A second call while one is in flight is a no-op (single-flight).
     assert!(
         app.maybe_summarize_feedback().is_none(),
@@ -2920,18 +2933,18 @@ fn feedback_summary_is_skipped_without_an_active_station() {
     }
     // No station to refine → nothing to learn, so no call (and no guard armed).
     assert!(app.maybe_summarize_feedback().is_none());
-    assert!(!app.radio.feedback_in_flight);
+    assert!(!app.streaming.feedback_in_flight);
 }
 
 #[test]
-fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
+fn streaming_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     let mut app = app_playing(2, 0); // queue id0 (current), id1
     app.ai.available = true;
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
     app.ai.thinking = true;
-    app.radio.pending_rerank = Some(PendingRerank {
+    app.streaming.pending_rerank = Some(PendingRerank {
         seed_video_id: "id0".to_owned(),
-        mode: crate::radio::RadioMode::Balanced,
+        mode: crate::streaming::StreamingMode::Balanced,
         shortlist: vec![
             Song::remote("s1", "S1", "a", "3:00"),
             Song::remote("s2", "S2", "b", "3:00"),
@@ -2941,11 +2954,11 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
             Song::remote("s1", "S1", "a", "3:00"),
         ],
         cid_map: vec![
-            crate::radio::PackedCand {
+            crate::streaming::PackedCand {
                 cid: "c1".to_owned(),
                 video_id: "s1".to_owned(),
             },
-            crate::radio::PackedCand {
+            crate::streaming::PackedCand {
                 cid: "c2".to_owned(),
                 video_id: "s2".to_owned(),
             },
@@ -2954,7 +2967,7 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     });
 
     // DJ Gem picks one valid cid + one hallucinated cid (dropped); the gap tops up from local.
-    app.update(Msg::RadioAiPicks {
+    app.update(Msg::StreamingAiPicks {
         seed_video_id: "id0".to_owned(),
         picks: vec![
             AiPick {
@@ -2972,7 +2985,7 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     });
 
     assert!(!app.ai.thinking, "rerank finished");
-    assert!(app.radio.pending_rerank.is_none(), "pending consumed");
+    assert!(app.streaming.pending_rerank.is_none(), "pending consumed");
     assert!(
         app.queue.contains_video_id("s1"),
         "valid DJ Gem id enqueued"
@@ -2988,17 +3001,17 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
 }
 
 #[test]
-fn radio_ai_picks_for_a_stale_seed_are_ignored() {
+fn streaming_ai_picks_for_a_stale_seed_are_ignored() {
     let mut app = app_playing(2, 0);
     app.ai.available = true;
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
     app.ai.thinking = true;
-    app.radio.pending_rerank = Some(PendingRerank {
+    app.streaming.pending_rerank = Some(PendingRerank {
         seed_video_id: "current-seed".to_owned(),
-        mode: crate::radio::RadioMode::Balanced,
+        mode: crate::streaming::StreamingMode::Balanced,
         shortlist: vec![Song::remote("s1", "S1", "a", "3:00")],
         local_pick: vec![Song::remote("s1", "S1", "a", "3:00")],
-        cid_map: vec![crate::radio::PackedCand {
+        cid_map: vec![crate::streaming::PackedCand {
             cid: "c1".to_owned(),
             video_id: "s1".to_owned(),
         }],
@@ -3006,7 +3019,7 @@ fn radio_ai_picks_for_a_stale_seed_are_ignored() {
     });
 
     // A result for a different (older) seed must not consume the in-flight rerank.
-    app.update(Msg::RadioAiPicks {
+    app.update(Msg::StreamingAiPicks {
         seed_video_id: "old-seed".to_owned(),
         picks: vec![AiPick {
             cid: "c1".to_owned(),
@@ -3016,7 +3029,7 @@ fn radio_ai_picks_for_a_stale_seed_are_ignored() {
         conf: None,
     });
     assert!(
-        app.radio.pending_rerank.is_some(),
+        app.streaming.pending_rerank.is_some(),
         "stale result leaves the current rerank intact"
     );
     assert!(!app.queue.contains_video_id("s1"));
@@ -3027,22 +3040,22 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0); // queue id0 (current), id1
     app.ai.available = true;
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
     app.ai.thinking = true;
-    app.radio.pending_rerank = Some(PendingRerank {
+    app.streaming.pending_rerank = Some(PendingRerank {
         seed_video_id: "id0".to_owned(),
-        mode: crate::radio::RadioMode::Balanced,
+        mode: crate::streaming::StreamingMode::Balanced,
         shortlist: vec![
             Song::remote("s1", "First Song", "Artist One", "3:00"),
             Song::remote("s2", "Second Song", "Artist Two", "3:00"),
         ],
         local_pick: vec![Song::remote("s2", "Second Song", "Artist Two", "3:00")],
         cid_map: vec![
-            crate::radio::PackedCand {
+            crate::streaming::PackedCand {
                 cid: "c1".to_owned(),
                 video_id: "s1".to_owned(),
             },
-            crate::radio::PackedCand {
+            crate::streaming::PackedCand {
                 cid: "c2".to_owned(),
                 video_id: "s2".to_owned(),
             },
@@ -3050,7 +3063,7 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
         cache_key: 0,
     });
 
-    app.update(Msg::RadioAiPicks {
+    app.update(Msg::StreamingAiPicks {
         seed_video_id: "id0".to_owned(),
         picks: vec![
             AiPick {
@@ -3069,7 +3082,7 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
 
     // The explanation is stashed, with cids resolved to real tracks in the model's order.
     let explain = app
-        .radio
+        .streaming
         .last_explain
         .as_ref()
         .expect("explanation stashed for the overlay");
@@ -3099,7 +3112,7 @@ fn why_ai_without_a_rerank_shows_a_note_not_an_overlay() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0);
     app.status.text.clear();
-    assert!(app.radio.last_explain.is_none());
+    assert!(app.streaming.last_explain.is_none());
 
     app.update(Msg::Key(key(KeyCode::Char('w'))));
     assert!(
@@ -3116,7 +3129,7 @@ fn why_ai_without_a_rerank_shows_a_note_not_an_overlay() {
 fn why_ai_overlay_renders_the_resolved_picks() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0);
-    app.radio.last_explain = Some(RadioAiExplain {
+    app.streaming.last_explain = Some(StreamingAiExplain {
         conf: Some(0.82),
         picks: vec![
             ExplainPick {
@@ -3155,9 +3168,9 @@ fn why_ai_overlay_renders_the_resolved_picks() {
 }
 
 #[test]
-fn autoplay_uses_radio_fallback_without_ai_key() {
+fn autoplay_uses_streaming_fallback_without_ai_key() {
     let mut app = app_playing(2, 0); // remaining = 1 (<= threshold)
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
     assert!(
@@ -3165,33 +3178,33 @@ fn autoplay_uses_radio_fallback_without_ai_key() {
         "no Gemini request without an API key"
     );
     let (seed, seed_video_id, exclude_ids) =
-        radio_fallback(&cmds).expect("a fallback radio command");
+        streaming_fallback(&cmds).expect("a fallback streaming command");
     assert_eq!(seed_video_id, "id1");
     assert!(seed.contains("t1"));
     assert!(exclude_ids.iter().any(|id| id == "id0"));
     assert!(exclude_ids.iter().any(|id| id == "id1"));
-    assert!(app.radio.pending);
+    assert!(app.streaming.pending);
 
     let cmds = app.maybe_autoplay_extend();
     assert!(
-        radio_fallback(&cmds).is_none(),
+        streaming_fallback(&cmds).is_none(),
         "pending fallback blocks duplicate requests"
     );
 }
 
 #[test]
-fn radio_results_run_through_local_engine_and_clear_pending() {
+fn streaming_results_run_through_local_engine_and_clear_pending() {
     let _guard = crate::i18n::lock_for_test();
     fastrand::seed(7);
     let mut app = app_playing(2, 0);
-    app.autoplay_radio = true;
-    app.radio.pending = true;
+    app.autoplay_streaming = true;
+    app.streaming.pending = true;
 
     // The local engine excludes the seed (id0) and the already-queued track (id1), dedups
     // the repeated id2, and ranks the rest. Distinct artists + normal durations keep the
     // two survivors out of the artist-cooldown / duration hard filters, so both enqueue.
-    let src = CandidateSource::YtdlpRadio;
-    app.update(Msg::RadioResults {
+    let src = CandidateSource::YtdlpStreaming;
+    app.update(Msg::StreamingResults {
         seed_video_id: "id0".to_owned(),
         candidates: vec![
             (Song::remote("id0", "current", "a", "3:00"), src), // == seed, dropped
@@ -3202,7 +3215,7 @@ fn radio_results_run_through_local_engine_and_clear_pending() {
         ],
     });
 
-    assert!(!app.radio.pending, "results clear the in-flight guard");
+    assert!(!app.streaming.pending, "results clear the in-flight guard");
     assert_eq!(
         app.queue.len(),
         4,
@@ -3214,22 +3227,22 @@ fn radio_results_run_through_local_engine_and_clear_pending() {
 }
 
 #[test]
-fn radio_error_uses_circuit_breaker() {
+fn streaming_error_uses_circuit_breaker() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
 
     for _ in 0..AUTOPLAY_MAX_FAILURES {
-        app.radio.pending = true;
-        app.update(Msg::RadioError {
+        app.streaming.pending = true;
+        app.update(Msg::StreamingError {
             seed_video_id: "id0".to_owned(),
             error: "yt-dlp failed".to_owned(),
         });
     }
 
-    assert!(!app.radio.pending);
-    assert!(!app.autoplay_radio);
-    assert!(app.status.text.contains("Autoplay radio stopped"));
+    assert!(!app.streaming.pending);
+    assert!(!app.autoplay_streaming);
+    assert!(app.status.text.contains("Autoplay streaming stopped"));
 }
 
 #[test]
@@ -5428,15 +5441,15 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     assert_eq!(app.art_overlay_mask(), 0);
     app.dropdowns.eq_open = true;
     assert_eq!(app.art_overlay_mask(), 1 << 0);
-    // Switch eq -> radio: the mask still changes even though some popup
+    // Switch eq -> streaming: the mask still changes even though some popup
     // stays open across the switch.
     app.dropdowns.eq_open = false;
-    app.dropdowns.radio_open = true;
+    app.dropdowns.streaming_open = true;
     assert_eq!(app.art_overlay_mask(), 1 << 1);
     // The queue window is a distinct bit, and can stack with a dropdown.
     app.queue_popup.open = true;
     assert_eq!(app.art_overlay_mask(), (1 << 1) | (1 << 2));
-    app.dropdowns.radio_open = false;
+    app.dropdowns.streaming_open = false;
     assert_eq!(app.art_overlay_mask(), 1 << 2);
     app.queue_popup.open = false;
     assert_eq!(app.art_overlay_mask(), 0);
@@ -5517,8 +5530,8 @@ fn named_overlay_transitions_request_one_full_clear_when_native_art_is_active() 
     fn set_eq(app: &mut App, open: bool) {
         app.dropdowns.eq_open = open;
     }
-    fn set_radio(app: &mut App, open: bool) {
-        app.dropdowns.radio_open = open;
+    fn set_streaming(app: &mut App, open: bool) {
+        app.dropdowns.streaming_open = open;
     }
     fn set_queue(app: &mut App, open: bool) {
         app.queue_popup.open = open;
@@ -5532,7 +5545,7 @@ fn named_overlay_transitions_request_one_full_clear_when_native_art_is_active() 
 
     for (name, set_open) in [
         ("eq dropdown", set_eq as fn(&mut App, bool)),
-        ("radio dropdown", set_radio),
+        ("streaming dropdown", set_streaming),
         ("queue popup", set_queue),
         ("about popup", set_about),
         ("why-ai popup", set_why_ai),
@@ -5693,8 +5706,8 @@ fn native_art_clear_under_player_overlays_requests_full_clear() {
     fn set_eq(app: &mut App, open: bool) {
         app.dropdowns.eq_open = open;
     }
-    fn set_radio(app: &mut App, open: bool) {
-        app.dropdowns.radio_open = open;
+    fn set_streaming(app: &mut App, open: bool) {
+        app.dropdowns.streaming_open = open;
     }
     fn set_help(app: &mut App, open: bool) {
         app.help_visible = open;
@@ -5705,7 +5718,7 @@ fn native_art_clear_under_player_overlays_requests_full_clear() {
 
     for (name, set_open) in [
         ("eq dropdown", set_eq as fn(&mut App, bool)),
-        ("radio dropdown", set_radio),
+        ("streaming dropdown", set_streaming),
         ("help overlay", set_help),
         ("about popup", set_about),
     ] {
@@ -5757,13 +5770,13 @@ fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
         dropdown_popup_rect(&eq, |t| matches!(t, MouseTarget::EqSelect(_))),
     );
 
-    let mut radio = app_playing(3, 0);
-    radio.autoplay_radio = true;
-    radio.dropdowns.radio_open = true;
-    let buf = render_app_buffer(&radio, player_area.width, player_area.height);
+    let mut streaming = app_playing(3, 0);
+    streaming.autoplay_streaming = true;
+    streaming.dropdowns.streaming_open = true;
+    let buf = render_app_buffer(&streaming, player_area.width, player_area.height);
     assert_opaque_rect(
         &buf,
-        dropdown_popup_rect(&radio, |t| matches!(t, MouseTarget::RadioSelect(_))),
+        dropdown_popup_rect(&streaming, |t| matches!(t, MouseTarget::StreamingSelect(_))),
     );
 
     let mut queue = app_playing(5, 0);
@@ -5782,7 +5795,7 @@ fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
     assert_opaque_rect(&buf, centered_fixed(modal_area, 60, 22));
 
     let mut why = app_playing(2, 0);
-    why.radio.last_explain = Some(RadioAiExplain {
+    why.streaming.last_explain = Some(StreamingAiExplain {
         conf: Some(0.82),
         picks: vec![
             ExplainPick {
@@ -6093,9 +6106,9 @@ fn search_mode_popup_does_not_replant_stale_album_art_placeholder() {
 }
 
 #[test]
-fn rendering_player_registers_radio_menu_when_autoplay_on() {
+fn rendering_player_registers_streaming_menu_when_autoplay_on() {
     let mut app = app_playing(2, 0);
-    app.autoplay_radio = true;
+    app.autoplay_streaming = true;
     let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
@@ -6104,32 +6117,32 @@ fn rendering_player_registers_radio_menu_when_autoplay_on() {
             .mouse_buttons
             .borrow()
             .iter()
-            .any(|b| b.target == MouseTarget::RadioMenu)
+            .any(|b| b.target == MouseTarget::StreamingMenu)
     );
 }
 
 #[test]
-fn radio_dropdown_renders_mode_rows_when_open() {
+fn streaming_dropdown_renders_mode_rows_when_open() {
     let mut app = app_playing(2, 0);
-    app.autoplay_radio = true;
-    app.dropdowns.radio_open = true;
+    app.autoplay_streaming = true;
+    app.dropdowns.streaming_open = true;
     let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
 
     let buttons = app.bridges.mouse_buttons.borrow();
-    for mode in crate::radio::RadioMode::CYCLE {
+    for mode in crate::streaming::StreamingMode::CYCLE {
         assert!(
             buttons
                 .iter()
-                .any(|b| b.target == MouseTarget::RadioSelect(mode)),
+                .any(|b| b.target == MouseTarget::StreamingSelect(mode)),
             "missing dropdown row for {mode:?}"
         );
     }
 }
 
 #[test]
-fn clicking_radio_label_closes_eq_and_opens_radio_dropdown() {
+fn clicking_streaming_label_closes_eq_and_opens_streaming_dropdown() {
     let mut app = app_playing(1, 0);
     // Open the EQ dropdown first to prove the two are mutually exclusive.
     app.dropdowns.eq_open = true;
@@ -6140,18 +6153,18 @@ fn clicking_radio_label_closes_eq_and_opens_radio_dropdown() {
             width: 14,
             height: 1,
         },
-        MouseTarget::RadioMenu,
+        MouseTarget::StreamingMenu,
     );
     assert!(app.update(Msg::MouseClick { col: 42, row: 4 }).is_empty());
-    assert!(app.dropdowns.radio_open);
+    assert!(app.dropdowns.streaming_open);
     assert!(!app.dropdowns.eq_open);
 }
 
 #[test]
-fn selecting_radio_mode_applies_and_persists() {
-    use crate::radio::RadioMode;
+fn selecting_streaming_mode_applies_and_persists() {
+    use crate::streaming::StreamingMode;
     let mut app = app_playing(1, 0);
-    app.dropdowns.radio_open = true;
+    app.dropdowns.streaming_open = true;
     app.register_mouse_button(
         Rect {
             x: 40,
@@ -6159,11 +6172,11 @@ fn selecting_radio_mode_applies_and_persists() {
             width: 9,
             height: 1,
         },
-        MouseTarget::RadioSelect(RadioMode::Discovery),
+        MouseTarget::StreamingSelect(StreamingMode::Discovery),
     );
     let cmds = app.update(Msg::MouseClick { col: 43, row: 6 });
-    assert_eq!(app.config.radio.mode, RadioMode::Discovery);
-    assert!(!app.dropdowns.radio_open);
+    assert_eq!(app.config.streaming.mode, StreamingMode::Discovery);
+    assert!(!app.dropdowns.streaming_open);
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
 }
 

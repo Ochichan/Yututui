@@ -195,7 +195,7 @@ mod tests {
             .iter()
             .find_map(|(title, rows)| (title == "Global").then_some(rows))
             .expect("global group");
-        assert!(global.contains(&("Ctrl+R".to_owned(), "Toggle autoplay radio".to_owned())));
+        assert!(global.contains(&("Ctrl+R".to_owned(), "Toggle streaming".to_owned())));
         assert!(!global.iter().any(|(_, label)| label == "Radio/Normal mode"));
     }
 

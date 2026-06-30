@@ -2,7 +2,7 @@
 //!
 //! Mirrors `youtube-music-cli`'s LLM service, adapted to this app's TEA architecture: the
 //! actor can't touch `App`, so tool side-effects flow back as [`crate::app::Msg`]s that
-//! `update()` applies. The model invokes tools (search, play, queue, radio, playlists);
+//! `update()` applies. The model invokes tools (search, play, queue, streaming, playlists);
 //! resolves run inside the actor via yt-dlp; mutations are reported back as intents.
 //!
 //! The loop (`converse`):
@@ -52,7 +52,7 @@ const RERANK_TEMPERATURE: f64 = 0.1;
 /// a tight cap truncates the JSON to `MAX_TOKENS` and loses the picks.
 const RERANK_MAX_TOKENS: u32 = 768;
 const RERANK_SYSTEM_PROMPT: &str = "\
-You are RadioNext, a JSON-only radio reranker for a music player.
+You are StreamingNext, a JSON-only streaming reranker for a music player.
 
 Input: a few header/context lines (TASK, RECIPE, POLICY, RULE, RECENT — the recent session, most recent last), \
 then a CANDS block with one candidate per line:
@@ -93,7 +93,7 @@ const FEEDBACK_TIMEOUT: Duration = Duration::from_secs(9);
 /// Two short string arrays — a tight cap is plenty.
 const FEEDBACK_MAX_TOKENS: u32 = 256;
 const FEEDBACK_SYSTEM_PROMPT: &str = "\
-You are StationTuner, a JSON-only feedback summarizer for a music radio station.
+You are StationTuner, a JSON-only feedback summarizer for a music streaming station.
 
 Input: a STATION line (the station's vibe), an optional ALREADY_AVOIDING line, and a SESSION \
 log of recent outcomes (played / liked / skipped / skipped_fast / disliked), most recent last. \
@@ -148,7 +148,7 @@ pub enum AiCmd {
         prompt: String,
         context: Box<AiContext>,
     },
-    /// One-shot radio rerank over a local candidate pack (the autoplay path); the model picks
+    /// One-shot streaming rerank over a local candidate pack (the autoplay path); the model picks
     /// opaque cids the reducer resolves back to tracks.
     Rerank {
         seed_video_id: String,
@@ -175,7 +175,7 @@ impl AiHandle {
         let _ = self.tx.send(AiCmd::Ask { prompt, context });
     }
 
-    /// Kick off a one-shot radio rerank; the result returns as [`Msg::RadioAiPicks`].
+    /// Kick off a one-shot streaming rerank; the result returns as [`Msg::StreamingAiPicks`].
     pub fn rerank(&self, seed_video_id: String, prompt: String) {
         let _ = self.tx.send(AiCmd::Rerank {
             seed_video_id,
@@ -417,7 +417,7 @@ impl AiActor {
         ));
     }
 
-    /// One-shot radio rerank. Always emits [`Msg::RadioAiPicks`]; the picks are empty on any
+    /// One-shot streaming rerank. Always emits [`Msg::StreamingAiPicks`]; the picks are empty on any
     /// failure (timeout, error, block, unparseable JSON), and the reducer then degrades to the
     /// local pick. The model can never invent a track — it picks opaque `cid`s, and the reducer
     /// resolves each one against the candidate pack this call was built from.
@@ -425,7 +425,7 @@ impl AiActor {
         let _guard = ThinkingGuard(self.msg_tx.clone());
         let req = build_rerank_request(&prompt);
         let (picks, conf) = self.rerank_call(&req).await.unwrap_or_default();
-        let _ = self.msg_tx.send(Msg::RadioAiPicks {
+        let _ = self.msg_tx.send(Msg::StreamingAiPicks {
             seed_video_id,
             picks,
             conf,
@@ -975,8 +975,8 @@ fn context_summary(ctx: &AiContext) -> String {
         s.push_str(&format!("- Playlists: {}\n", pls.join("; ")));
     }
     s.push_str(&format!(
-        "- Autoplay radio: {}\n",
-        if ctx.autoplay_radio { "on" } else { "off" }
+        "- Autoplay streaming: {}\n",
+        if ctx.autoplay_streaming { "on" } else { "off" }
     ));
     s.push_str(&format!(
         "- Signed in: {}\n",
@@ -1010,7 +1010,7 @@ mod tests {
                 count: 4,
             }],
             authenticated: true,
-            autoplay_radio: false,
+            autoplay_streaming: false,
         }
     }
 

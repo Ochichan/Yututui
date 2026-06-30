@@ -17,7 +17,6 @@ mod lyrics;
 mod player;
 mod playlists;
 mod queue;
-mod radio;
 mod remote;
 mod resolver;
 mod romanize;
@@ -25,6 +24,7 @@ mod search_source;
 mod settings;
 mod signals;
 mod station;
+mod streaming;
 mod theme;
 mod tui;
 mod ui;
@@ -878,28 +878,28 @@ async fn run(
                         });
                     }
                 }
-                Cmd::RadioFallback {
+                Cmd::StreamingFallback {
                     seed,
                     seed_video_id,
                     exclude_ids,
                     mode,
                 } => {
-                    api_handle.radio(
+                    api_handle.streaming(
                         seed,
                         seed_video_id,
                         exclude_ids,
-                        app::RADIO_POOL_COUNT,
+                        app::STREAMING_POOL_COUNT,
                         mode,
                     );
                 }
-                Cmd::RadioPreflight {
+                Cmd::StreamingPreflight {
                     seed_video_id,
                     picks,
                     fallback,
                     mode,
                     config,
                 } => {
-                    api_handle.radio_preflight(seed_video_id, picks, fallback, mode, config);
+                    api_handle.streaming_preflight(seed_video_id, picks, fallback, mode, config);
                 }
                 Cmd::SetAiModel(model) => {
                     if let Some(h) = &ai_handle {

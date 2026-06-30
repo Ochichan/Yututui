@@ -21,7 +21,7 @@ impl App {
     /// editable draft.
     pub(in crate::app) fn open_settings(&mut self) {
         self.dropdowns.eq_open = false;
-        self.dropdowns.radio_open = false;
+        self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
         let path_str = |p: &Option<std::path::PathBuf>| {
             p.as_ref()
@@ -39,8 +39,8 @@ impl App {
             seek_seconds: self.audio.seek_seconds,
             mouse_wheel_volume: self.config.effective_mouse_wheel_volume(),
             gapless: self.config.effective_gapless(),
-            autoplay_radio: self.autoplay_radio,
-            radio_mode: self.config.radio.mode,
+            autoplay_streaming: self.autoplay_streaming,
+            streaming_mode: self.config.streaming.mode,
             eq_preset: self.audio.preset,
             eq_bands: self.audio.bands,
             normalize: self.audio.normalize,
@@ -367,16 +367,20 @@ impl App {
                 s.draft.gapless = !s.draft.gapless;
                 Vec::new()
             }
-            Field::AutoplayRadio => {
+            Field::AutoplayStreaming => {
                 let s = self.settings_mut();
-                s.draft.autoplay_radio = !s.draft.autoplay_radio;
+                s.draft.autoplay_streaming = !s.draft.autoplay_streaming;
                 Vec::new()
             }
-            Field::RadioMode => {
+            Field::StreamingMode => {
                 let s = self.settings_mut();
-                let next = s.draft.radio_mode.cycled(dir >= 0);
-                s.draft.radio_mode = next;
-                self.status.text = format!("{}: {}", t!("Radio mode", "라디오 모드"), next.label());
+                let next = s.draft.streaming_mode.cycled(dir >= 0);
+                s.draft.streaming_mode = next;
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Streaming mode", "스트리밍 모드"),
+                    next.label()
+                );
                 Vec::new()
             }
             Field::Language => {
@@ -747,8 +751,8 @@ impl App {
             d.speed = def.effective_speed();
             d.seek_seconds = def.effective_seek_seconds();
             d.gapless = def.effective_gapless();
-            d.autoplay_radio = def.effective_autoplay_radio();
-            d.radio_mode = def.radio.mode;
+            d.autoplay_streaming = def.effective_autoplay_streaming();
+            d.streaming_mode = def.streaming.mode;
             d.eq_preset = def.eq_preset;
             d.eq_bands = def.effective_eq_bands();
             d.normalize = def.effective_normalize();
@@ -989,7 +993,7 @@ impl App {
         self.audio.bands = d.eq_bands;
         self.audio.preset = d.eq_preset;
         self.audio.normalize = d.normalize;
-        self.autoplay_radio = d.autoplay_radio;
+        self.autoplay_streaming = d.autoplay_streaming;
         let model_changed = self.ai.model != d.gemini_model;
         self.ai.model = d.gemini_model;
         let old_key = self.config.gemini_api_key.clone();

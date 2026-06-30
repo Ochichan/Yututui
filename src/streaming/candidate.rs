@@ -1,15 +1,15 @@
-//! A scored radio candidate: a playable [`Song`] plus provenance and the metadata the pure
+//! A scored streaming candidate: a playable [`Song`] plus provenance and the metadata the pure
 //! ranking core needs. Candidates are built from whatever source produced them (today only
-//! the anonymous yt-dlp radio search; authenticated sources land in a later stage).
+//! the anonymous yt-dlp streaming search; authenticated sources land in a later stage).
 
 use crate::api::Song;
-use crate::radio::canonical;
 use crate::signals;
+use crate::streaming::canonical;
 
-/// Where a candidate came from. Provenance is a ranking prior — the real YTM radio
-/// continuation is trusted most, a blind text search least.
+/// Where a candidate came from. Provenance is a ranking prior — the upstream YTM continuation
+/// is trusted most, a blind text search least.
 ///
-/// Only `YtdlpRadio` is produced today; the authenticated/local sources are wired by the
+/// Only `YtdlpStreaming` is produced today; the authenticated/local sources are wired by the
 /// candidate-fetch stage (v3). The `provenance_weight` table already ranks them all, so the
 /// variants are intentionally defined ahead of their producers.
 #[allow(
@@ -18,14 +18,14 @@ use crate::signals;
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CandidateSource {
-    /// The real YTM radio continuation (`get_watch_playlist_from_video_id`). Strongest.
+    /// The upstream YTM continuation (`get_watch_playlist_from_video_id`). Strongest.
     WatchPlaylist,
     /// An artist's top songs (rich metadata: plays/album/explicit).
     ArtistTop,
     /// A mood/genre playlist (carries a tag).
     MoodPlaylist,
-    /// Anonymous yt-dlp text search ("… radio/mix/similar"). Weakest.
-    YtdlpRadio,
+    /// Anonymous yt-dlp related-track text search. Weakest.
+    YtdlpStreaming,
     /// A neighbor from the local co-occurrence graph.
     HistoryCooc,
     /// A neighbor derived from favorites.
@@ -41,7 +41,7 @@ impl CandidateSource {
             CandidateSource::MoodPlaylist => 0.65,
             CandidateSource::LikedNeighbor => 0.60,
             CandidateSource::HistoryCooc => 0.55,
-            CandidateSource::YtdlpRadio => 0.45,
+            CandidateSource::YtdlpStreaming => 0.45,
         }
     }
 }
@@ -53,7 +53,7 @@ impl CandidateSource {
 /// until then. Emitted as 0-100 integers in the compact candidate pack.
 #[allow(
     dead_code,
-    reason = "read by the DJ Gem candidate pack builder in src/radio/pack.rs (A2/A3)"
+    reason = "read by the DJ Gem candidate pack builder in src/streaming/pack.rs (A2/A3)"
 )]
 #[derive(Debug, Clone, Default)]
 pub struct FeatureScores {
@@ -107,7 +107,7 @@ pub struct Candidate {
     /// scoring pass; default-zero until then.
     #[allow(
         dead_code,
-        reason = "read by the DJ Gem candidate pack builder in src/radio/pack.rs (A2/A3)"
+        reason = "read by the DJ Gem candidate pack builder in src/streaming/pack.rs (A2/A3)"
     )]
     pub features: FeatureScores,
 }
@@ -168,7 +168,7 @@ mod tests {
     fn from_song_derives_keys_and_duration() {
         let c = Candidate::from_song(
             song("v1", "My Song (Live)", "The Band", "3:45"),
-            CandidateSource::YtdlpRadio,
+            CandidateSource::YtdlpStreaming,
             2,
         );
         assert_eq!(c.artist_key, "the band");
@@ -185,7 +185,7 @@ mod tests {
     fn provenance_ranks_watch_playlist_over_text_search() {
         assert!(
             CandidateSource::WatchPlaylist.provenance_weight()
-                > CandidateSource::YtdlpRadio.provenance_weight()
+                > CandidateSource::YtdlpStreaming.provenance_weight()
         );
     }
 

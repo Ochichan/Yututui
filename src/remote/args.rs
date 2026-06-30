@@ -36,7 +36,8 @@ Commands:
   down, vol-down          Volume down
   back                    Seek backward
   fwd, forward            Seek forward
-  radio [on|off|toggle]   Toggle (or set) autoplay radio
+  streaming [on|off|toggle]
+                          Toggle (or set) autoplay streaming
   status, st              Print the current track / state
   quit                    Quit the running instance
 
@@ -47,7 +48,7 @@ Flags:
 
 Examples:
   ytt -r pp               # play / pause
-  ytt -r radio off        # turn autoplay radio off
+  ytt -r streaming off    # turn autoplay streaming off
   bindsym XF86AudioNext exec ytt -r next   # i3 / sway media key
 ";
 
@@ -80,7 +81,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
         "down" | "vol-down" | "voldown" => RemoteCommand::VolumeDown,
         "back" | "rewind" => RemoteCommand::SeekBack,
         "fwd" | "forward" | "ff" => RemoteCommand::SeekForward,
-        "radio" => {
+        "streaming" | "radio" => {
             let state = match rest.first().copied() {
                 None => ToggleState::Toggle,
                 Some("on" | "true" | "1") => ToggleState::On,
@@ -88,11 +89,11 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
                 Some("toggle") => ToggleState::Toggle,
                 Some(other) => {
                     return Err(ParseError::Invalid(format!(
-                        "radio: expected on|off|toggle, got `{other}`"
+                        "{verb}: expected on|off|toggle, got `{other}`"
                     )));
                 }
             };
-            RemoteCommand::Radio { state }
+            RemoteCommand::Streaming { state }
         }
         "status" | "st" => RemoteCommand::Status,
         "quit" | "exit" => RemoteCommand::Quit,
@@ -139,30 +140,40 @@ mod tests {
     }
 
     #[test]
-    fn radio_states() {
+    fn streaming_states() {
         assert_eq!(
-            cmd(&["radio"]),
-            RemoteCommand::Radio {
+            cmd(&["streaming"]),
+            RemoteCommand::Streaming {
                 state: ToggleState::Toggle
             }
         );
         assert_eq!(
-            cmd(&["radio", "on"]),
-            RemoteCommand::Radio {
+            cmd(&["streaming", "on"]),
+            RemoteCommand::Streaming {
                 state: ToggleState::On
             }
         );
         assert_eq!(
-            cmd(&["radio", "off"]),
-            RemoteCommand::Radio {
+            cmd(&["streaming", "off"]),
+            RemoteCommand::Streaming {
                 state: ToggleState::Off
             }
         );
     }
 
     #[test]
-    fn radio_bad_state_is_invalid() {
-        let owned = vec!["radio".to_string(), "loud".to_string()];
+    fn legacy_radio_alias_maps_to_streaming() {
+        assert_eq!(
+            cmd(&["radio", "on"]),
+            RemoteCommand::Streaming {
+                state: ToggleState::On
+            }
+        );
+    }
+
+    #[test]
+    fn streaming_bad_state_is_invalid() {
+        let owned = vec!["streaming".to_string(), "loud".to_string()];
         assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
     }
 

@@ -1,4 +1,4 @@
-//! The "Why DJ Gem" overlay: a small, centered card explaining the last autoplay-radio refill that
+//! The "Why DJ Gem" overlay: a small, centered card explaining the last autoplay-streaming refill that
 //! went through the Gemini reranker. For each pick it shows the slot role the model assigned
 //! (core / bridge / discovery / …), the track it landed on, and the evidence codes the model
 //! said it leaned on — so the DJ Gem's choices are inspectable rather than opaque. Opened with `w`
@@ -19,7 +19,7 @@ use crate::ui::text::truncate_to_width;
 
 /// Render the "Why DJ Gem" card as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(explain) = app.radio.last_explain.as_ref() else {
+    let Some(explain) = app.streaming.last_explain.as_ref() else {
         return;
     };
 
@@ -69,7 +69,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Draw the numbered pick list: each pick is a role badge + track line, with a muted reason line
 /// beneath it.
-fn draw_picks(frame: &mut Frame, app: &App, area: Rect, explain: &crate::app::RadioAiExplain) {
+fn draw_picks(frame: &mut Frame, app: &App, area: Rect, explain: &crate::app::StreamingAiExplain) {
     let width = area.width.saturating_sub(2) as usize;
     let role_style = crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD);
     let track_style = crate::ui::popup_style(app, R::HelpAction);

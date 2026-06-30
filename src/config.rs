@@ -15,8 +15,8 @@ use crate::ai::GeminiModel;
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
 use crate::queue::Repeat;
-use crate::radio::RadioConfig;
 use crate::search_source::SearchConfig;
+use crate::streaming::StreamingConfig;
 use crate::t;
 use crate::theme::{ThemeConfig, ThemePreset};
 
@@ -231,16 +231,18 @@ pub struct Config {
     pub shuffle: Option<bool>,
     /// Repeat mode.
     pub repeat: Repeat,
-    /// Auto-extend the queue with related tracks when it runs low. `None` → off.
-    pub autoplay_radio: Option<bool>,
+    /// Auto-extend the queue with related tracks when it runs low. `None` -> off.
+    #[serde(alias = "autoplay_radio")]
+    pub autoplay_streaming: Option<bool>,
     /// Auto-play the restored last track as soon as the app launches. `None` → off
     /// (opt-in; a fresh launch otherwise seeds the track paused and idle).
     pub autoplay_on_start: Option<bool>,
     /// Search source selection, enabled providers, and provider identifiers.
     pub search: SearchConfig,
-    /// Local radio engine tuning (scoring weights, diversity, cooldown). Defaults ship a
+    /// Local streaming engine tuning (scoring weights, diversity, cooldown). Defaults ship a
     /// single tuned `Balanced` profile; every field is `#[serde(default)]`.
-    pub radio: RadioConfig,
+    #[serde(alias = "radio")]
+    pub streaming: StreamingConfig,
 
     // Animations --------------------------------------------------------------
     /// Player-view eye-candy toggles (the Animations tab). All off by default; see
@@ -302,10 +304,10 @@ impl Default for Config {
             gapless: None,
             shuffle: None,
             repeat: Repeat::default(),
-            autoplay_radio: None,
+            autoplay_streaming: None,
             autoplay_on_start: None,
             search: SearchConfig::default(),
-            radio: RadioConfig::default(),
+            streaming: StreamingConfig::default(),
             animations: AnimationsConfig::default(),
             gemini_api_key: None,
             gemini_model: GeminiModel::default(),
@@ -458,9 +460,9 @@ impl Config {
         self.repeat
     }
 
-    /// Whether queue auto-extend (radio) is on (default off).
-    pub fn effective_autoplay_radio(&self) -> bool {
-        self.autoplay_radio.unwrap_or(false)
+    /// Whether queue auto-extend streaming is on (default off).
+    pub fn effective_autoplay_streaming(&self) -> bool {
+        self.autoplay_streaming.unwrap_or(false)
     }
 
     /// Whether to auto-play the restored track as soon as the app launches (default off).
@@ -673,10 +675,10 @@ mod tests {
             gapless: Some(false),
             shuffle: Some(true),
             repeat: Repeat::One,
-            autoplay_radio: Some(true),
+            autoplay_streaming: Some(true),
             autoplay_on_start: Some(true),
             search: SearchConfig::default(),
-            radio: RadioConfig::default(),
+            streaming: StreamingConfig::default(),
             animations: AnimationsConfig {
                 master: true,
                 rain: true,
@@ -708,7 +710,7 @@ mod tests {
         assert_eq!(back.gapless, Some(false));
         assert_eq!(back.shuffle, Some(true));
         assert_eq!(back.repeat, Repeat::One);
-        assert_eq!(back.autoplay_radio, Some(true));
+        assert_eq!(back.autoplay_streaming, Some(true));
         assert_eq!(back.autoplay_on_start, Some(true));
         assert_eq!(back.ai_enabled, Some(false));
         assert_eq!(back.romanized_titles, Some(true));
@@ -839,7 +841,7 @@ mod tests {
         assert!(d.effective_gapless());
         assert!(!d.effective_shuffle());
         assert_eq!(d.effective_repeat(), Repeat::Off);
-        assert!(!d.effective_autoplay_radio());
+        assert!(!d.effective_autoplay_streaming());
         assert!(!d.effective_autoplay_on_start());
 
         // Preset gains feed through when no hand-tuned bands are set.

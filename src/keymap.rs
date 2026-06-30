@@ -73,7 +73,7 @@ pub enum Action {
     // Search / DJ Gem results.
     FocusInput,
     // Global (active in any non-text-entry context).
-    ToggleRadio,
+    ToggleStreaming,
     ToggleRadioMode,
     ToggleHelp,
     ToggleAbout,
@@ -281,10 +281,10 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "입력창으로 이동",
     ),
     (
-        Action::ToggleRadio,
-        "toggle_radio",
-        "Toggle autoplay radio",
-        "자동재생 라디오 켜기 / 끄기",
+        Action::ToggleStreaming,
+        "toggle_streaming",
+        "Toggle streaming",
+        "스트리밍 켜기 / 끄기",
     ),
     (
         Action::ToggleRadioMode,
@@ -391,6 +391,9 @@ impl Action {
     }
 
     fn from_id(id: &str) -> Option<Action> {
+        if id == "toggle_radio" {
+            return Some(Action::ToggleStreaming);
+        }
         ACTION_META
             .iter()
             .find(|(_, i, ..)| *i == id)
@@ -706,7 +709,7 @@ impl KeyMap {
         self.bindings.get(&(ctx, chord)).copied()
     }
 
-    /// Resolve a `Global` action (help, radio), independent of the active screen.
+    /// Resolve a `Global` action (help, streaming), independent of the active screen.
     pub fn global_action(&self, chord: Chord) -> Option<Action> {
         self.bindings.get(&(KeyContext::Global, chord)).copied()
     }
@@ -730,25 +733,42 @@ impl KeyMap {
         self.labels.get(&(ctx, action)).copied()
     }
 
-    /// If `chord` is already used by a *different* action that would be active in `ctx`
-    /// (the context itself, the shared `Common` nav, or a `Global` binding), return the
-    /// [`Conflict`] describing it. Used to reject conflicting rebinds.
+    /// If `chord` is already used by a *different* action that would win in the same
+    /// routing scope, return the [`Conflict`] describing it. `Global` bindings are special:
+    /// because they are consulted before every screen handler, they may not overlap any
+    /// other context. Local contexts may shadow `Common` navigation, matching dispatch.
     fn conflict(&self, ctx: KeyContext, action: Action, chord: Chord) -> Option<Conflict> {
-        for c in [ctx, KeyContext::Common, KeyContext::Global] {
-            if let Some(&existing) = self.bindings.get(&(c, chord))
-                && existing != action
-            {
-                if allowed_common_shadow(ctx, action, c, existing, chord) {
-                    continue;
-                }
-                return Some(Conflict {
-                    ctx: c,
-                    existing,
-                    chord,
-                });
-            }
+        if ctx == KeyContext::Global {
+            return self.conflict_in_contexts(all_contexts(), action, chord);
         }
-        None
+
+        self.conflict_in_context(ctx, action, chord)
+            .or_else(|| self.conflict_in_context(KeyContext::Global, action, chord))
+    }
+
+    fn conflict_in_context(
+        &self,
+        ctx: KeyContext,
+        action: Action,
+        chord: Chord,
+    ) -> Option<Conflict> {
+        let existing = self.bindings.get(&(ctx, chord)).copied()?;
+        (existing != action).then_some(Conflict {
+            ctx,
+            existing,
+            chord,
+        })
+    }
+
+    fn conflict_in_contexts(
+        &self,
+        contexts: impl IntoIterator<Item = KeyContext>,
+        action: Action,
+        chord: Chord,
+    ) -> Option<Conflict> {
+        contexts
+            .into_iter()
+            .find_map(|ctx| self.conflict_in_context(ctx, action, chord))
     }
 
     /// Rebind `(ctx, action)` to `chord`. Rejects (returns the [`Conflict`]) if the chord
@@ -804,18 +824,8 @@ impl KeyMap {
     }
 }
 
-fn allowed_common_shadow(
-    ctx: KeyContext,
-    action: Action,
-    conflict_ctx: KeyContext,
-    existing: Action,
-    chord: Chord,
-) -> bool {
-    matches!(ctx, KeyContext::SearchInput | KeyContext::SearchResults)
-        && action == Action::ToggleSearchSourceMenu
-        && conflict_ctx == KeyContext::Common
-        && existing == Action::FocusNext
-        && chord == Chord::new(KeyCode::Tab, KeyModifiers::empty())
+fn all_contexts() -> impl Iterator<Item = KeyContext> {
+    CONTEXT_META.iter().map(|(ctx, ..)| *ctx)
 }
 
 fn linked_rebinds(ctx: KeyContext, action: Action) -> &'static [(KeyContext, Action)] {
@@ -891,7 +901,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Common, A::Back, ch('q')),
         // Global (active across screens; typeable globals are suppressed in text fields).
         (C::Global, A::Home, ctrl('h')),
-        (C::Global, A::ToggleRadio, ctrl('r')),
+        (C::Global, A::ToggleStreaming, ctrl('r')),
         (C::Global, A::ToggleHelp, ch('?')),
         (C::Global, A::ToggleAbout, key(KeyCode::F(1))),
         (C::Global, A::ToggleAnimations, ch('A')),
@@ -1720,7 +1730,7 @@ mod tests {
         );
         assert_eq!(
             km.global_action(ev(KeyCode::Char('ㄱ'), KeyModifiers::CONTROL)),
-            Some(Action::ToggleRadio)
+            Some(Action::ToggleStreaming)
         );
     }
 
@@ -1899,6 +1909,128 @@ mod tests {
             km.action(KeyContext::Player, parse_chord("space").unwrap()),
             None
         );
+    }
+
+    #[test]
+    fn local_rebind_can_shadow_common_navigation() {
+        let mut km = KeyMap::default();
+        let page_up = parse_chord("pageup").unwrap();
+
+        km.rebind(KeyContext::Player, Action::TogglePause, page_up)
+            .unwrap();
+
+        assert_eq!(
+            km.action(KeyContext::Player, page_up),
+            Some(Action::TogglePause)
+        );
+        assert_eq!(
+            km.action(KeyContext::Library, page_up),
+            Some(Action::PageUp)
+        );
+    }
+
+    #[test]
+    fn common_rebind_can_be_shadowed_by_player_binding() {
+        let mut km = KeyMap::default();
+        let n = parse_chord("n").unwrap();
+
+        km.rebind(KeyContext::Common, Action::PageDown, n).unwrap();
+
+        assert_eq!(km.action(KeyContext::Player, n), Some(Action::NextTrack));
+        assert_eq!(
+            km.action(KeyContext::SearchResults, n),
+            Some(Action::PageDown)
+        );
+    }
+
+    #[test]
+    fn non_global_rebind_rejects_global_conflict() {
+        let mut km = KeyMap::default();
+        let help = parse_chord("?").unwrap();
+
+        let err = km
+            .rebind(KeyContext::Common, Action::Confirm, help)
+            .unwrap_err();
+
+        assert_eq!(err.ctx, KeyContext::Global);
+        assert_eq!(err.existing, Action::ToggleHelp);
+        assert_eq!(err.chord, help);
+    }
+
+    #[test]
+    fn global_rebind_rejects_default_context_conflicts() {
+        for (ctx, existing, chord) in [
+            (
+                KeyContext::Global,
+                Action::Quit,
+                parse_chord("ctrl+q").unwrap(),
+            ),
+            (
+                KeyContext::Player,
+                Action::TogglePause,
+                parse_chord("space").unwrap(),
+            ),
+            (
+                KeyContext::Common,
+                Action::PageUp,
+                parse_chord("pageup").unwrap(),
+            ),
+            (
+                KeyContext::Library,
+                Action::LibraryFilter,
+                parse_chord("/").unwrap(),
+            ),
+            (
+                KeyContext::SearchInput,
+                Action::SelectAll,
+                parse_chord("ctrl+a").unwrap(),
+            ),
+        ] {
+            let mut km = KeyMap::default();
+            let err = km
+                .rebind(KeyContext::Global, Action::ToggleHelp, chord)
+                .unwrap_err();
+            assert_eq!(err.ctx, ctx);
+            assert_eq!(err.existing, existing);
+            assert_eq!(err.chord, chord);
+        }
+    }
+
+    #[test]
+    fn global_rebind_rejects_dynamically_bound_context_conflicts() {
+        for (ctx, action, chord) in [
+            (
+                KeyContext::Queue,
+                Action::QueueRemove,
+                parse_chord("f5").unwrap(),
+            ),
+            (
+                KeyContext::SearchResults,
+                Action::Enqueue,
+                parse_chord("f6").unwrap(),
+            ),
+            (
+                KeyContext::Settings,
+                Action::ChangeDecrease,
+                parse_chord("f7").unwrap(),
+            ),
+            (
+                KeyContext::AiInput,
+                Action::SelectAll,
+                parse_chord("f8").unwrap(),
+            ),
+        ] {
+            let mut km = KeyMap::default();
+            km.rebind(ctx, action, chord).unwrap();
+
+            let err = km
+                .rebind(KeyContext::Global, Action::ToggleHelp, chord)
+                .unwrap_err();
+
+            assert_eq!(err.ctx, ctx);
+            assert_eq!(err.existing, action);
+            assert_eq!(err.chord, chord);
+        }
     }
 
     #[test]

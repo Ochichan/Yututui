@@ -1,6 +1,6 @@
 //! Latin-script display names for tracks whose original metadata is hard to read in Retro mode.
 //!
-//! The original [`crate::api::Song`] title/artist are never mutated. Search, radio, downloads, and
+//! The original [`crate::api::Song`] title/artist are never mutated. Search, streaming, downloads, and
 //! lyrics keep using source metadata; this module only supplies a cached display overlay.
 
 use std::borrow::Cow;

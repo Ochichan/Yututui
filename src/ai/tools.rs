@@ -17,7 +17,7 @@ use crate::app::{AiContext, Msg};
 
 /// Default number of tracks a query resolves to when the model doesn't ask for a count.
 const DEFAULT_RESOLVE: usize = 1;
-/// How many related tracks radio / suggestions pull in.
+/// How many related tracks streaming / suggestions pull in.
 const RELATED_COUNT: usize = 8;
 /// Per-conversation tool-result cache cap.
 const TOOL_CACHE_MAX: usize = 999;
@@ -79,12 +79,12 @@ pub fn declarations() -> Vec<Value> {
             json!({ "type": "object", "properties": {} }),
         ),
         decl(
-            "start_radio",
-            "Start an endless radio: queue tracks related to a seed (defaults to the current track) and turn on autoplay so the queue keeps refilling. When the user describes a *vibe* (e.g. 'chill late-night drive, nothing too poppy'), also set `explore` to how adventurous the station should be and `avoid_artists` for anyone they want kept out — these shape every future refill, not just the first batch.",
+            "start_streaming",
+            "Start endless streaming: queue tracks related to a seed (defaults to the current track) and turn on autoplay so the queue keeps refilling. When the user describes a *vibe* (e.g. 'chill late-night drive, nothing too poppy'), also set `explore` to how adventurous the station should be and `avoid_artists` for anyone they want kept out — these shape every future refill, not just the first batch.",
             json!({
                 "type": "object",
                 "properties": {
-                    "seed": { "type": "string", "description": "Seed to base the radio on (an artist, song, or vibe). Defaults to what's playing." },
+                    "seed": { "type": "string", "description": "Seed to base streaming on (an artist, song, or vibe). Defaults to what's playing." },
                     "explore": {
                         "type": "string",
                         "enum": ["tight", "balanced", "wide"],
@@ -100,8 +100,8 @@ pub fn declarations() -> Vec<Value> {
             }),
         ),
         decl(
-            "stop_radio",
-            "Turn off autoplay radio (the queue stops auto-refilling).",
+            "stop_streaming",
+            "Turn off autoplay streaming (the queue stops auto-refilling).",
             json!({ "type": "object", "properties": {} }),
         ),
         decl(
@@ -220,7 +220,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             "remaining": deps.ctx.queue_remaining,
         }),
 
-        "start_radio" => {
+        "start_streaming" => {
             let seed = str_arg(args, "seed")
                 .or_else(|| deps.ctx.current_track.clone())
                 .unwrap_or_else(|| "popular music".to_owned());
@@ -228,14 +228,14 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
                 &seed,
                 RELATED_COUNT,
                 &HashSet::new(),
-                crate::radio::RadioMode::Balanced,
+                crate::streaming::StreamingMode::Balanced,
             )
             .await
             .unwrap_or_default();
             cache_all(deps, &songs);
             let count = songs.len();
             // A vibe-shaped station carries an explore level and/or artists to avoid → persist it
-            // as a profile the engine applies to every refill. A plain "start radio" (no shaping
+            // as a profile the engine applies to every refill. A plain "start streaming" (no shaping
             // hints) leaves any existing station untouched.
             let explore = str_arg(args, "explore");
             let avoid = str_list_arg(args, "avoid_artists");
@@ -254,7 +254,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             json!({ "started": true, "seed": seed, "queued": count, "explore": explore })
         }
 
-        "stop_radio" => {
+        "stop_streaming" => {
             send(deps, Msg::AiSetAutoplay(false));
             json!({ "stopped": true })
         }
@@ -267,7 +267,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
                 &seed,
                 RELATED_COUNT,
                 &HashSet::new(),
-                crate::radio::RadioMode::Balanced,
+                crate::streaming::StreamingMode::Balanced,
             )
             .await
             .unwrap_or_default();
@@ -446,12 +446,12 @@ mod tests {
     }
 
     #[test]
-    fn start_radio_advertises_vibe_shaping_params() {
+    fn start_streaming_advertises_vibe_shaping_params() {
         let decls = declarations();
         let sr = decls
             .iter()
-            .find(|d| d["name"] == "start_radio")
-            .expect("start_radio declared");
+            .find(|d| d["name"] == "start_streaming")
+            .expect("start_streaming declared");
         let props = &sr["parameters"]["properties"];
         assert!(props.get("explore").is_some(), "explore param advertised");
         assert!(
@@ -480,8 +480,8 @@ mod tests {
             "play_music",
             "add_to_queue",
             "get_queue",
-            "start_radio",
-            "stop_radio",
+            "start_streaming",
+            "stop_streaming",
             "get_suggestions",
             "get_user_playlists",
             "play_playlist",
@@ -506,7 +506,7 @@ mod tests {
             favorites: vec!["Fave — Artist".to_owned()],
             playlists: vec![],
             authenticated: false,
-            autoplay_radio: false,
+            autoplay_streaming: false,
         }
     }
 
@@ -580,7 +580,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_radio_emits_autoplay_off() {
+    async fn stop_streaming_emits_autoplay_off() {
         let ctx = ctx();
         let mut cache = HashMap::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -591,7 +591,7 @@ mod tests {
             msg_tx: &tx,
             side_effected: &mut side,
         };
-        execute_tool("stop_radio", &json!({}), &mut deps).await;
+        execute_tool("stop_streaming", &json!({}), &mut deps).await;
         assert!(matches!(rx.try_recv().unwrap(), Msg::AiSetAutoplay(false)));
     }
 }

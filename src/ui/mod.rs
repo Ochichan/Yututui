@@ -47,7 +47,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.about_visible {
         views::about::render(frame, app, area);
     }
-    // The "Why DJ Gem" card explains the last DJ Gem radio refill (`w`); also drawn on top.
+    // The "Why DJ Gem" card explains the last DJ Gem streaming refill (`w`); also drawn on top.
     if app.why_ai_visible {
         views::why_ai::render(frame, app, area);
     }

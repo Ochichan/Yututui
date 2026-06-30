@@ -169,7 +169,7 @@ impl App {
     /// graphics from ratatui's diff buffer.
     pub fn art_overlay_mask(&self) -> u16 {
         u8::from(self.dropdowns.eq_open) as u16
-            | ((self.dropdowns.radio_open as u16) << 1)
+            | ((self.dropdowns.streaming_open as u16) << 1)
             | ((self.queue_popup.open as u16) << 2)
             | ((self.help_visible as u16) << 3)
             | ((self.about_visible as u16) << 4)

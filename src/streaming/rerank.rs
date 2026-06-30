@@ -8,10 +8,10 @@
 //!   temperature, so identical seeds don't always yield an identical station.
 
 use crate::api::Song;
-use crate::radio::StationState;
-use crate::radio::candidate::Candidate;
-use crate::radio::config::{RadioConfig, SimWeights};
-use crate::radio::cooccurrence::Cooc;
+use crate::streaming::StationState;
+use crate::streaming::candidate::Candidate;
+use crate::streaming::config::{SimWeights, StreamingConfig};
+use crate::streaming::cooccurrence::Cooc;
 
 /// Select up to `n` tracks from the scored pool, applying MMR diversity, artist/album
 /// cooldown, and softmax sampling. Uses the global `fastrand` RNG (seed it for determinism
@@ -20,7 +20,7 @@ pub fn select(
     mut scored: Vec<Candidate>,
     st: &StationState,
     cooc: &Cooc,
-    cfg: &RadioConfig,
+    cfg: &StreamingConfig,
     n: usize,
 ) -> Vec<Song> {
     if n == 0 || scored.is_empty() {
@@ -95,7 +95,7 @@ pub fn mmr_topk(
     mut scored: Vec<Candidate>,
     st: &StationState,
     cooc: &Cooc,
-    cfg: &RadioConfig,
+    cfg: &StreamingConfig,
     k: usize,
 ) -> Vec<Candidate> {
     if k == 0 || scored.is_empty() {
@@ -204,13 +204,13 @@ fn softmax_sample(scores: &[f32], temp: f32) -> usize {
 mod tests {
     use super::*;
     use crate::api::Song;
-    use crate::radio::candidate::CandidateSource;
+    use crate::streaming::candidate::CandidateSource;
     use std::collections::HashSet;
 
     fn scored(id: &str, artist: &str, base: f32) -> Candidate {
         let mut c = Candidate::from_song(
             Song::remote(id, format!("t-{id}"), artist, "3:00"),
-            CandidateSource::YtdlpRadio,
+            CandidateSource::YtdlpStreaming,
             0,
         );
         c.base_score = base;
@@ -243,7 +243,7 @@ mod tests {
             pool,
             &station(),
             &Cooc::default(),
-            &RadioConfig::default(),
+            &StreamingConfig::default(),
             5,
         );
         assert_eq!(picks.len(), 5);
@@ -264,7 +264,7 @@ mod tests {
             pool,
             &station(),
             &Cooc::default(),
-            &RadioConfig::default(),
+            &StreamingConfig::default(),
             5,
         );
         // With gap 8 and 5 picks, "dominant" can appear at most once.
@@ -279,7 +279,7 @@ mod tests {
                 Vec::new(),
                 &station(),
                 &Cooc::default(),
-                &RadioConfig::default(),
+                &StreamingConfig::default(),
                 5
             )
             .is_empty()
@@ -290,7 +290,7 @@ mod tests {
                 pool,
                 &station(),
                 &Cooc::default(),
-                &RadioConfig::default(),
+                &StreamingConfig::default(),
                 0
             )
             .is_empty()
@@ -305,7 +305,7 @@ mod tests {
             pool,
             &station(),
             &Cooc::default(),
-            &RadioConfig::default(),
+            &StreamingConfig::default(),
             5,
         );
         assert_eq!(picks.len(), 2);
@@ -332,14 +332,14 @@ mod tests {
             pool.clone(),
             &station(),
             &Cooc::default(),
-            &RadioConfig::default(),
+            &StreamingConfig::default(),
             4,
         );
         let again = mmr_topk(
             pool,
             &station(),
             &Cooc::default(),
-            &RadioConfig::default(),
+            &StreamingConfig::default(),
             4,
         );
         let ids: Vec<&str> = first.iter().map(|c| c.video_id()).collect();
@@ -365,7 +365,7 @@ mod tests {
             pool,
             &station(),
             &Cooc::default(),
-            &RadioConfig::default(),
+            &StreamingConfig::default(),
             2,
         );
         let ids: Vec<&str> = picks.iter().map(|c| c.video_id()).collect();
@@ -383,7 +383,7 @@ mod tests {
                 Vec::new(),
                 &station(),
                 &Cooc::default(),
-                &RadioConfig::default(),
+                &StreamingConfig::default(),
                 4
             )
             .is_empty()
@@ -394,7 +394,7 @@ mod tests {
                 pool,
                 &station(),
                 &Cooc::default(),
-                &RadioConfig::default(),
+                &StreamingConfig::default(),
                 0
             )
             .is_empty()

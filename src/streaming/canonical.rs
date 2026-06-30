@@ -1,6 +1,6 @@
 //! Canonicalization helpers: a normalized `title + artist` key used to dedupe the same
 //! song arriving from multiple sources / in multiple uploads, plus a light penalty for
-//! non-canonical versions (live / remix / sped-up / cover) so a radio prefers the studio cut.
+//! non-canonical versions (live / remix / sped-up / cover) so streaming prefers the studio cut.
 
 /// Words that mark a non-primary version of a track. Matched case-insensitively against the
 /// title's bracketed/parenthetical qualifiers.

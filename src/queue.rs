@@ -160,7 +160,7 @@ impl Queue {
     }
 
     /// How many tracks remain *after* the current one in the play order. Drives the
-    /// autoplay/radio hook (extend when this runs low). Zero when empty or at the end.
+    /// autoplay/streaming hook (extend when this runs low). Zero when empty or at the end.
     pub fn remaining(&self) -> usize {
         self.order.len().saturating_sub(self.cursor + 1)
     }

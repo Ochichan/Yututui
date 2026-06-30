@@ -8,13 +8,13 @@
 
 use std::collections::HashSet;
 
-use crate::radio::StationState;
-use crate::radio::candidate::{Candidate, CandidateSource, FeatureScores};
-use crate::radio::canonical;
-use crate::radio::config::{RadioConfig, RadioMode, VersionPolicy};
-use crate::radio::cooccurrence::Cooc;
-use crate::radio::musicgate::{self, GateAction};
 use crate::signals::Signals;
+use crate::streaming::StationState;
+use crate::streaming::candidate::{Candidate, CandidateSource, FeatureScores};
+use crate::streaming::canonical;
+use crate::streaming::config::{StreamingConfig, StreamingMode, VersionPolicy};
+use crate::streaming::cooccurrence::Cooc;
+use crate::streaming::musicgate::{self, GateAction};
 
 const SECS_PER_DAY: f32 = 86_400.0;
 /// Days credited to a never-played track (so its recency factor is effectively zero).
@@ -46,7 +46,7 @@ pub fn filter_and_score(
     st: &StationState,
     sig: &Signals,
     cooc: &Cooc,
-    cfg: &RadioConfig,
+    cfg: &StreamingConfig,
     now: i64,
 ) -> Vec<Candidate> {
     let recent: HashSet<&str> = st.recent_track_ids.iter().map(String::as_str).collect();
@@ -99,7 +99,7 @@ pub fn filter_and_score(
     kept
 }
 
-/// A per-candidate verdict for the radio debug log: whether the candidate survived the gate, and
+/// A per-candidate verdict for the streaming debug log: whether the candidate survived the gate, and
 /// (when dropped) the reason. Built by [`classify_pool`].
 #[derive(Debug, Clone)]
 pub struct GateVerdict {
@@ -134,7 +134,7 @@ impl GateVerdict {
 }
 
 /// Explain the gate: classify every candidate through the same hard-filter → gimmick → dedup
-/// passes as [`filter_and_score`], returning one verdict per candidate. Used only for the radio
+/// passes as [`filter_and_score`], returning one verdict per candidate. Used only for the streaming
 /// debug log; the live pipeline still ranks via [`filter_and_score`]. The dedup pass keeps the
 /// first occurrence in pool order (rather than re-sorting by provenance as production does), so a
 /// `"duplicate"` verdict flags a collapsed copy without asserting which copy production keeps.
@@ -142,7 +142,7 @@ pub fn classify_pool(
     pool: &[Candidate],
     st: &StationState,
     sig: &Signals,
-    cfg: &RadioConfig,
+    cfg: &StreamingConfig,
 ) -> Vec<GateVerdict> {
     let recent: HashSet<&str> = st.recent_track_ids.iter().map(String::as_str).collect();
     let mut verdicts = Vec::with_capacity(pool.len());
@@ -191,7 +191,7 @@ fn passes(
     c: &Candidate,
     st: &StationState,
     sig: &Signals,
-    cfg: &RadioConfig,
+    cfg: &StreamingConfig,
     recent: &HashSet<&str>,
 ) -> bool {
     reject_reason(c, st, sig, cfg, recent).is_none()
@@ -199,12 +199,12 @@ fn passes(
 
 /// The first hard-filter reason `c` fails, or `None` if it clears them all. Single source of
 /// truth for the hard filter: [`passes`] is the boolean wrapper, [`classify_pool`] surfaces the
-/// reason for the radio debug log so the two can never drift.
+/// reason for the streaming debug log so the two can never drift.
 fn reject_reason(
     c: &Candidate,
     st: &StationState,
     sig: &Signals,
-    cfg: &RadioConfig,
+    cfg: &StreamingConfig,
     recent: &HashSet<&str>,
 ) -> Option<&'static str> {
     let id = c.video_id();
@@ -250,7 +250,7 @@ fn reject_reason(
 /// slowed+reverb). Mode-tied — always on in Focused, opt-in via `block_altered_versions`
 /// otherwise — and self-disabling when the pool is too thin to spare them (so it can never
 /// starve the station). Runs after the hard filter, before dedup.
-fn block_gimmicks(kept: &mut Vec<Candidate>, st: &StationState, cfg: &RadioConfig) {
+fn block_gimmicks(kept: &mut Vec<Candidate>, st: &StationState, cfg: &StreamingConfig) {
     if !gimmick_block_active(kept.len(), st, cfg) {
         return;
     }
@@ -266,10 +266,10 @@ fn block_gimmicks(kept: &mut Vec<Candidate>, st: &StationState, cfg: &RadioConfi
 /// Whether the gimmick reject is currently in force: gate on, mode/flag opts in, and the
 /// post-hard-filter pool is healthy enough to spare the gimmicks. Shared by [`block_gimmicks`]
 /// and [`classify_pool`] so the live filter and the debug log agree on when gimmicks are dropped.
-fn gimmick_block_active(survivor_count: usize, st: &StationState, cfg: &RadioConfig) -> bool {
+fn gimmick_block_active(survivor_count: usize, st: &StationState, cfg: &StreamingConfig) -> bool {
     let profile = st.mode.profile(cfg);
     cfg.gate.enabled
-        && (st.mode == RadioMode::Focused || cfg.gate.block_altered_versions)
+        && (st.mode == StreamingMode::Focused || cfg.gate.block_altered_versions)
         && survivor_count >= profile.gate_min_pool
 }
 
@@ -290,7 +290,7 @@ fn raw_features(
     st: &StationState,
     sig: &Signals,
     cooc: &Cooc,
-    cfg: &RadioConfig,
+    cfg: &StreamingConfig,
     now: i64,
 ) -> RawFeatures {
     let profile = st.mode.profile(cfg);
@@ -417,13 +417,13 @@ fn normalize(vals: &[f32]) -> Vec<f32> {
 mod tests {
     use super::*;
     use crate::api::Song;
-    use crate::radio::candidate::CandidateSource;
+    use crate::streaming::candidate::CandidateSource;
     use std::collections::VecDeque;
 
     fn cand(id: &str, title: &str, artist: &str, rank: usize) -> Candidate {
         Candidate::from_song(
             Song::remote(id, title, artist, "3:00"),
-            CandidateSource::YtdlpRadio,
+            CandidateSource::YtdlpStreaming,
             rank,
         )
     }
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn hard_filters_drop_disqualified_candidates() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let mut st = station("seed");
         st.banned_track_ids.insert("banned".to_owned());
         st.banned_artist_keys.insert("blocked".to_owned());
@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn dedup_keeps_one_per_canonical_key() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let st = station("seed");
         let pool = vec![
             cand("v1", "Hit Song (Official Video)", "Band", 3),
@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn co_occurrence_lifts_the_related_candidate() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let st = station("seed");
         // Build a graph where 'seed' is strongly followed by 'related'.
         let mut pl: VecDeque<(String, i64)> = VecDeque::new();
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn feature_scores_are_populated_and_in_range() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let st = station("seed");
         // A graph where 'seed' is strongly followed by 'related' so transition/cooc are non-flat.
         let mut pl: VecDeque<(String, i64)> = VecDeque::new();
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn never_played_is_more_novel_than_recently_overplayed() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let st = station("seed");
         let mut sig = Signals::default();
         // 'stale' was played a lot, just now.
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn music_tier_lifts_official_audio_over_plain_upload() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let st = station("seed");
         // Identical in every behavioral signal; only the title's "official audio" tier differs.
         // Distinct base titles so they don't collapse under canonical dedup.
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn musicgate_drops_non_music_titles() {
-        let cfg = RadioConfig::default(); // gate enabled by default
+        let cfg = StreamingConfig::default(); // gate enabled by default
         let st = station("seed");
         let pool = vec![
             cand("r", "Artist Reaction Video", "Some Channel", 0),
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn musicgate_disabled_keeps_non_music() {
-        let mut cfg = RadioConfig::default();
+        let mut cfg = StreamingConfig::default();
         cfg.gate.enabled = false;
         let st = station("seed");
         let pool = vec![cand("r", "Big Reaction Video", "Chan", 0)];
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn musicgate_exempts_watch_playlist_when_flag_off() {
-        let mut cfg = RadioConfig::default();
+        let mut cfg = StreamingConfig::default();
         cfg.gate.gate_watch_playlist = false;
         let st = station("seed");
         // Same non-music marker from both sources: the exempt WatchPlaylist copy survives,
@@ -611,7 +611,7 @@ mod tests {
         );
         let yt = Candidate::from_song(
             Song::remote("yt", "Other Vlog", "Y", "3:00"),
-            CandidateSource::YtdlpRadio,
+            CandidateSource::YtdlpStreaming,
             0,
         );
         let scored = filter_and_score(
@@ -628,9 +628,9 @@ mod tests {
 
     #[test]
     fn gimmick_blocking_drops_nightcore_in_focused_mode() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let mut st = station("seed");
-        st.mode = RadioMode::Focused;
+        st.mode = StreamingMode::Focused;
         // Pool large enough to clear GATE_MIN_POOL; one gimmick among real songs.
         let mut pool = vec![cand("ng", "Song (Nightcore)", "A", 0)];
         pool.extend(
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn gimmick_blocking_kept_in_balanced_mode() {
-        let cfg = RadioConfig::default(); // Balanced default, block_altered_versions = false
+        let cfg = StreamingConfig::default(); // Balanced default, block_altered_versions = false
         let st = station("seed");
         let mut pool = vec![cand("ng", "Song (Nightcore)", "A", 0)];
         pool.extend(
@@ -660,7 +660,7 @@ mod tests {
 
     #[test]
     fn classify_pool_labels_kept_and_rejected_with_reasons() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let st = station("seed");
         let pool = vec![
             cand("seed", "Seed", "a", 0),                   // == seed
@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn classify_pool_flags_canonical_duplicates() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let st = station("seed");
         let pool = vec![
             cand("a", "Hit Song", "Band", 0),
@@ -707,9 +707,9 @@ mod tests {
 
     #[test]
     fn gimmick_blocking_skipped_when_pool_starved() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let mut st = station("seed");
-        st.mode = RadioMode::Focused;
+        st.mode = StreamingMode::Focused;
         // Fewer than GATE_MIN_POOL candidates → gimmick blocking is skipped.
         let pool = vec![
             cand("ng1", "A (Nightcore)", "A", 0),

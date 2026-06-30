@@ -16,15 +16,15 @@ use ytmapi_rs::auth::BrowserToken;
 use ytmapi_rs::common::{VideoID, YoutubeID};
 
 use super::{PlayableRef, Song};
-use crate::radio::{self, RadioConfig, RadioMode};
 use crate::search_source::{SearchConfig, SearchSource};
+use crate::streaming::{self, StreamingConfig, StreamingMode};
 use crate::util::format;
 
 /// How many results a search returns, for both backends. The anonymous yt-dlp path asks
 /// for exactly this many; the authenticated path pages through continuations until it has
 /// at least this many (or runs out). Capped at 50 — `ytdlp_search` clamps to the same.
 const SEARCH_RESULT_LIMIT: usize = 50;
-const RADIO_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(8);
+const STREAMING_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(8);
 const PROVIDER_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// A YouTube Music client in one of two auth modes.
@@ -150,12 +150,12 @@ impl YtMusicApi {
         }
     }
 
-    /// The real YouTube Music radio continuation for a seed track
+    /// The upstream YouTube Music watch-playlist continuation for a seed track.
     /// (`get_watch_playlist_from_video_id`) — YTM's own "up next" mix, far better seeded than a
     /// blind text search. Authenticated uses the logged-in client; anonymous spins up an
     /// unauthenticated client (the query isn't login-gated, though YTM may still return nothing
     /// without a cookie — the caller treats an error/empty result as "fall back to yt-dlp").
-    pub(crate) async fn radio_continuation(&self, seed_video_id: &str) -> Result<Vec<Song>> {
+    pub(crate) async fn streaming_continuation(&self, seed_video_id: &str) -> Result<Vec<Song>> {
         let tracks = match self {
             Self::Browser(c) => c
                 .get_watch_playlist_from_video_id(VideoID::from_raw(seed_video_id))
@@ -224,18 +224,18 @@ async fn ytdlp_flat_search(
         .collect())
 }
 
-/// Best-effort related tracks for radio/autoplay without Gemini.
+/// Best-effort related tracks for streaming/autoplay without Gemini.
 ///
 /// There is no stable public recommendation API in the app today, so the anonymous
 /// fallback uses the same yt-dlp search boundary as normal anonymous search. It asks for
-/// common "radio/mix/similar" queries and de-dupes against the caller's exclusions.
+/// related-search query variants and de-dupes against the caller's exclusions.
 pub(crate) async fn related_tracks(
     seed: &str,
     limit: usize,
     excluded: &HashSet<String>,
-    mode: RadioMode,
+    mode: StreamingMode,
 ) -> Result<Vec<Song>> {
-    // Allow up to 50 so the local radio engine gets a real candidate pool to rank (the
+    // Allow up to 50 so the local streaming engine gets a real candidate pool to rank (the
     // engine, not this fetch, decides the final few picks).
     let limit = limit.clamp(1, 50);
     let mut out = Vec::with_capacity(limit);
@@ -243,7 +243,7 @@ pub(crate) async fn related_tracks(
     let mut had_success = false;
     let mut last_err = None;
 
-    for query in radio_queries(seed, mode) {
+    for query in streaming_queries(seed, mode) {
         let search_limit = (limit * 2).clamp(limit, 50);
         match ytdlp_search(&query, search_limit).await {
             Ok(songs) => {
@@ -269,14 +269,14 @@ pub(crate) async fn related_tracks(
     Ok(out)
 }
 
-/// Final radio safety pass for public-YouTube candidates. Cheap title/channel checks have
+/// Final streaming safety pass for public-YouTube candidates. Cheap title/channel checks have
 /// already run in the reducer; this only does full yt-dlp metadata extraction for candidates
 /// whose title/channel/duration made them risky, then tops up from fallback picks.
-pub(crate) async fn preflight_radio_picks(
+pub(crate) async fn preflight_streaming_picks(
     picks: Vec<Song>,
     fallback: Vec<Song>,
-    mode: RadioMode,
-    cfg: &RadioConfig,
+    mode: StreamingMode,
+    cfg: &StreamingConfig,
 ) -> Vec<Song> {
     let target = picks.len();
     let mut out = Vec::with_capacity(target);
@@ -289,11 +289,11 @@ pub(crate) async fn preflight_radio_picks(
         if !taken.insert(song.video_id.clone()) {
             continue;
         }
-        if radio::sanitize_final_picks(vec![song.clone()], &[], mode, cfg).is_empty() {
+        if streaming::sanitize_final_picks(vec![song.clone()], &[], mode, cfg).is_empty() {
             continue;
         }
-        if radio::needs_metadata_preflight(song, mode, cfg) {
-            let risk = radio::musicgate::non_music_risk_score(&song.title, &song.artist);
+        if streaming::needs_metadata_preflight(song, mode, cfg) {
+            let risk = streaming::musicgate::non_music_risk_score(&song.title, &song.artist);
             match song.youtube_id().map(enrich_video_meta) {
                 Some(fut) => match fut.await {
                     Ok(meta) => {
@@ -301,7 +301,7 @@ pub(crate) async fn preflight_radio_picks(
                             tracing::debug!(
                                 id = %song.video_id,
                                 title = %song.title,
-                                "radio preflight rejected candidate"
+                                "streaming preflight rejected candidate"
                             );
                             continue;
                         }
@@ -310,7 +310,7 @@ pub(crate) async fn preflight_radio_picks(
                         tracing::warn!(
                             id = %song.video_id,
                             error = %format!("{e:#}"),
-                            "radio preflight metadata lookup failed"
+                            "streaming preflight metadata lookup failed"
                         );
                         if risk >= 0.55 {
                             continue;
@@ -341,7 +341,7 @@ struct EnrichedVideoMeta {
 async fn enrich_video_meta(video_id: &str) -> Result<EnrichedVideoMeta> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
     let output = tokio::time::timeout(
-        RADIO_PREFLIGHT_TIMEOUT,
+        STREAMING_PREFLIGHT_TIMEOUT,
         tokio::process::Command::new("yt-dlp")
             .arg("--dump-single-json")
             .arg("--no-playlist")
@@ -389,7 +389,7 @@ fn json_bool(json: &serde_json::Value, keys: &[&str]) -> Option<bool> {
         .find_map(|key| json.get(key).and_then(serde_json::Value::as_bool))
 }
 
-fn reject_enriched(meta: &EnrichedVideoMeta, mode: RadioMode, cfg: &RadioConfig) -> bool {
+fn reject_enriched(meta: &EnrichedVideoMeta, mode: StreamingMode, cfg: &StreamingConfig) -> bool {
     if meta.is_live == Some(true) {
         return true;
     }
@@ -404,9 +404,9 @@ fn reject_enriched(meta: &EnrichedVideoMeta, mode: RadioMode, cfg: &RadioConfig)
     }
     if let Some(duration) = meta.duration_secs {
         let mode_max = match mode {
-            RadioMode::Focused => 8 * 60,
-            RadioMode::Balanced => 12 * 60,
-            RadioMode::Discovery => 15 * 60,
+            StreamingMode::Focused => 8 * 60,
+            StreamingMode::Balanced => 12 * 60,
+            StreamingMode::Discovery => 15 * 60,
         };
         let max_duration = cfg.max_duration_secs.min(mode_max);
         if duration < cfg.min_duration_secs || duration > max_duration {
@@ -417,35 +417,36 @@ fn reject_enriched(meta: &EnrichedVideoMeta, mode: RadioMode, cfg: &RadioConfig)
         Some(desc) if !desc.trim().is_empty() => format!("{} {}", meta.title, desc),
         _ => meta.title.clone(),
     };
-    let decision = radio::musicgate::decide(
+    let decision = streaming::musicgate::decide(
         &rich_title,
         &meta.channel,
-        radio::CandidateSource::YtdlpRadio,
+        streaming::CandidateSource::YtdlpStreaming,
         mode,
     );
-    if decision.action == radio::musicgate::GateAction::Reject {
+    if decision.action == streaming::musicgate::GateAction::Reject {
         return true;
     }
-    let risk = radio::musicgate::non_music_risk_score(&rich_title, &meta.channel);
-    let music_tier = radio::musicgate::music_tier_score(&meta.title, &meta.channel);
-    if mode == RadioMode::Focused && decision.action == radio::musicgate::GateAction::Demote {
+    let risk = streaming::musicgate::non_music_risk_score(&rich_title, &meta.channel);
+    let music_tier = streaming::musicgate::music_tier_score(&meta.title, &meta.channel);
+    if mode == StreamingMode::Focused && decision.action == streaming::musicgate::GateAction::Demote
+    {
         return true;
     }
     risk >= 0.70 && music_tier <= 0.0 && meta.was_live != Some(true)
 }
 
-fn radio_queries(seed: &str, mode: RadioMode) -> Vec<String> {
+fn streaming_queries(seed: &str, mode: StreamingMode) -> Vec<String> {
     let seed = seed.trim();
     if seed.is_empty() {
         return match mode {
-            RadioMode::Focused => vec![
+            StreamingMode::Focused => vec![
                 "popular songs official audio".to_owned(),
                 "popular music official video".to_owned(),
             ],
-            RadioMode::Balanced => {
+            StreamingMode::Balanced => {
                 vec!["popular music radio".to_owned(), "popular songs".to_owned()]
             }
-            RadioMode::Discovery => vec![
+            StreamingMode::Discovery => vec![
                 "new music similar songs".to_owned(),
                 "popular music radio".to_owned(),
                 "deep cuts songs".to_owned(),
@@ -453,27 +454,27 @@ fn radio_queries(seed: &str, mode: RadioMode) -> Vec<String> {
         };
     }
 
-    // Note: no "… mix" queries — those pull 1-hour compilations / megamixes that the radio
-    // engine then has to filter out. "… radio" / "… songs" surface individual tracks instead.
+    // Note: no "… mix" queries — those pull 1-hour compilations / megamixes that the streaming
+    // engine then has to filter out. The literal "… radio" search term surfaces individual tracks.
     let mut queries = Vec::new();
 
     if let Some((title, artist)) = split_seed(seed) {
         match mode {
-            RadioMode::Focused => {
+            StreamingMode::Focused => {
                 push_query(&mut queries, format!("{title} {artist} official audio"));
                 push_query(&mut queries, format!("{title} {artist} official video"));
                 push_query(&mut queries, format!("{artist} songs"));
                 push_query(&mut queries, format!("{artist} radio"));
                 push_query(&mut queries, format!("{title} {artist} song"));
             }
-            RadioMode::Balanced => {
+            StreamingMode::Balanced => {
                 push_query(&mut queries, format!("{seed} radio"));
                 push_query(&mut queries, format!("{artist} radio"));
                 push_query(&mut queries, format!("{artist} songs"));
                 push_query(&mut queries, format!("{artist} similar songs"));
                 push_query(&mut queries, format!("{title} {artist}"));
             }
-            RadioMode::Discovery => {
+            StreamingMode::Discovery => {
                 push_query(&mut queries, format!("{artist} similar songs"));
                 push_query(&mut queries, format!("{artist} artist radio"));
                 push_query(&mut queries, format!("{artist} deep cuts"));
@@ -484,17 +485,17 @@ fn radio_queries(seed: &str, mode: RadioMode) -> Vec<String> {
         }
     } else {
         match mode {
-            RadioMode::Focused => {
+            StreamingMode::Focused => {
                 push_query(&mut queries, format!("{seed} official audio"));
                 push_query(&mut queries, format!("{seed} official video"));
                 push_query(&mut queries, format!("{seed} song"));
             }
-            RadioMode::Balanced => {
+            StreamingMode::Balanced => {
                 push_query(&mut queries, format!("{seed} radio"));
                 push_query(&mut queries, format!("{seed} songs"));
                 push_query(&mut queries, format!("{seed} similar songs"));
             }
-            RadioMode::Discovery => {
+            StreamingMode::Discovery => {
                 push_query(&mut queries, format!("{seed} similar songs"));
                 push_query(&mut queries, format!("{seed} artist radio"));
                 push_query(&mut queries, format!("{seed} deep cuts"));
@@ -847,8 +848,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn radio_queries_expand_title_artist_seed() {
-        let queries = radio_queries("Song — Artist", RadioMode::Balanced);
+    fn streaming_queries_expand_title_artist_seed() {
+        let queries = streaming_queries("Song — Artist", StreamingMode::Balanced);
         assert_eq!(
             queries,
             vec![
@@ -864,8 +865,8 @@ mod tests {
     }
 
     #[test]
-    fn radio_queries_handle_plain_seed() {
-        let queries = radio_queries("lo-fi beats", RadioMode::Balanced);
+    fn streaming_queries_handle_plain_seed() {
+        let queries = streaming_queries("lo-fi beats", StreamingMode::Balanced);
         assert_eq!(
             queries,
             vec![
@@ -878,12 +879,12 @@ mod tests {
     }
 
     #[test]
-    fn radio_queries_are_mode_specific() {
-        let focused = radio_queries("Song — Artist", RadioMode::Focused);
+    fn streaming_queries_are_mode_specific() {
+        let focused = streaming_queries("Song — Artist", StreamingMode::Focused);
         assert_eq!(focused[0], "Song Artist official audio");
         assert!(focused.iter().any(|q| q.contains("official video")));
 
-        let discovery = radio_queries("Song — Artist", RadioMode::Discovery);
+        let discovery = streaming_queries("Song — Artist", StreamingMode::Discovery);
         assert_eq!(discovery[0], "Artist similar songs");
         assert!(discovery.iter().any(|q| q.contains("deep cuts")));
         assert!(!discovery.iter().any(|q| q.contains(" mix")));
@@ -891,7 +892,7 @@ mod tests {
 
     #[test]
     fn preflight_metadata_rejects_live_and_long_non_music() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let mut meta = EnrichedVideoMeta {
             title: "Episode 12 interview".to_owned(),
             channel: "Music Podcast".to_owned(),
@@ -902,7 +903,7 @@ mod tests {
             media_type: None,
             description: Some("conversation and commentary".to_owned()),
         };
-        assert!(reject_enriched(&meta, RadioMode::Balanced, &cfg));
+        assert!(reject_enriched(&meta, StreamingMode::Balanced, &cfg));
 
         meta = EnrichedVideoMeta {
             title: "Artist - Song".to_owned(),
@@ -914,12 +915,12 @@ mod tests {
             media_type: None,
             description: None,
         };
-        assert!(reject_enriched(&meta, RadioMode::Discovery, &cfg));
+        assert!(reject_enriched(&meta, StreamingMode::Discovery, &cfg));
     }
 
     #[test]
     fn preflight_metadata_keeps_trusted_music_track() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let meta = EnrichedVideoMeta {
             title: "Artist - Song (Official Audio)".to_owned(),
             channel: "Artist - Topic".to_owned(),
@@ -930,6 +931,6 @@ mod tests {
             media_type: None,
             description: None,
         };
-        assert!(!reject_enriched(&meta, RadioMode::Focused, &cfg));
+        assert!(!reject_enriched(&meta, StreamingMode::Focused, &cfg));
     }
 }

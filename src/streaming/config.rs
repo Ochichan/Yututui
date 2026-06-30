@@ -1,4 +1,4 @@
-//! Tunable parameters for the local radio engine, persisted under [`crate::config::Config`].
+//! Tunable parameters for the local streaming engine, persisted under [`crate::config::Config`].
 //!
 //! Only a single tuned `Balanced` profile ships today (the user-facing mode toggle is
 //! deferred), but the per-mode parameters live here so enabling it later is config-only.
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// How adventurous the station is. Drives MMR λ, sampling temperature, and artist spacing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub enum RadioMode {
+pub enum StreamingMode {
     /// Stay close to the seed (tight, relevance-dominant).
     Focused,
     /// The shipped default: a balance of familiarity and exploration.
@@ -18,20 +18,20 @@ pub enum RadioMode {
     Discovery,
 }
 
-impl RadioMode {
+impl StreamingMode {
     /// All modes in toggle order (the settings cycle steps through these).
-    pub const CYCLE: [RadioMode; 3] = [
-        RadioMode::Focused,
-        RadioMode::Balanced,
-        RadioMode::Discovery,
+    pub const CYCLE: [StreamingMode; 3] = [
+        StreamingMode::Focused,
+        StreamingMode::Balanced,
+        StreamingMode::Discovery,
     ];
 
     /// A short human label for the settings field and the player status line.
     pub fn label(self) -> &'static str {
         match self {
-            RadioMode::Focused => crate::t!("Focused", "집중"),
-            RadioMode::Balanced => crate::t!("Balanced", "균형"),
-            RadioMode::Discovery => crate::t!("Discovery", "발견"),
+            StreamingMode::Focused => crate::t!("Focused", "집중"),
+            StreamingMode::Balanced => crate::t!("Balanced", "균형"),
+            StreamingMode::Discovery => crate::t!("Discovery", "발견"),
         }
     }
 
@@ -48,13 +48,13 @@ impl RadioMode {
     }
 
     /// MMR relevance/diversity trade-off: higher = more relevance, less diversity. Tuned
-    /// down from typical playlist values because a *radio* wants more variety than a
+    /// down from typical playlist values because streaming wants more variety than a
     /// hand-built playlist (research: 0.55–0.65 reads best for stations).
     pub fn mmr_lambda(self) -> f32 {
         match self {
-            RadioMode::Focused => 0.70,
-            RadioMode::Balanced => 0.60,
-            RadioMode::Discovery => 0.50,
+            StreamingMode::Focused => 0.70,
+            StreamingMode::Balanced => 0.60,
+            StreamingMode::Discovery => 0.50,
         }
     }
 
@@ -62,28 +62,28 @@ impl RadioMode {
     /// [0,1]-normalized scores, so values this size give real (not near-greedy) sampling.
     pub fn temperature(self) -> f32 {
         match self {
-            RadioMode::Focused => 0.35,
-            RadioMode::Balanced => 0.50,
-            RadioMode::Discovery => 0.65,
+            StreamingMode::Focused => 0.35,
+            StreamingMode::Balanced => 0.50,
+            StreamingMode::Discovery => 0.65,
         }
     }
 
     /// Minimum number of other tracks between two by the same artist (cooldown).
     pub fn artist_gap(self) -> usize {
         match self {
-            RadioMode::Focused => 7,
-            RadioMode::Balanced => 8,
-            RadioMode::Discovery => 10,
+            StreamingMode::Focused => 7,
+            StreamingMode::Balanced => 8,
+            StreamingMode::Discovery => 10,
         }
     }
 
-    /// Fully-derived runtime policy for this mode. The persisted [`RadioConfig`] keeps the
+    /// Fully-derived runtime policy for this mode. The persisted [`StreamingConfig`] keeps the
     /// user-tunable defaults/backward compatibility; this profile is the single contract the
-    /// radio pipeline reads so a mode changes scoring, filtering, diversity, history, and DJ Gem
+    /// streaming pipeline reads so a mode changes scoring, filtering, diversity, history, and DJ Gem
     /// behavior together.
-    pub fn profile(self, base: &RadioConfig) -> ModeProfile {
+    pub fn profile(self, base: &StreamingConfig) -> ModeProfile {
         match self {
-            RadioMode::Focused => ModeProfile {
+            StreamingMode::Focused => ModeProfile {
                 weights: ScoreWeights {
                     cooccurrence: 0.50,
                     seed_affinity: 0.32,
@@ -114,7 +114,7 @@ impl RadioMode {
                 ai_always_call: false,
                 profile_version: 1,
             },
-            RadioMode::Balanced => ModeProfile {
+            StreamingMode::Balanced => ModeProfile {
                 weights: base.weights.clone(),
                 mmr_lambda: self.mmr_lambda(),
                 temperature: self.temperature(),
@@ -137,7 +137,7 @@ impl RadioMode {
                 ai_always_call: false,
                 profile_version: 1,
             },
-            RadioMode::Discovery => ModeProfile {
+            StreamingMode::Discovery => ModeProfile {
                 weights: ScoreWeights {
                     cooccurrence: 0.22,
                     seed_affinity: 0.12,
@@ -172,7 +172,7 @@ impl RadioMode {
     }
 }
 
-/// Runtime policy derived from a [`RadioMode`] plus the persisted base config.
+/// Runtime policy derived from a [`StreamingMode`] plus the persisted base config.
 #[derive(Debug, Clone)]
 pub struct ModeProfile {
     pub weights: ScoreWeights,
@@ -198,7 +198,7 @@ pub struct SourceMix {
     pub watch_playlist: f32,
     pub artist_top: f32,
     pub mood_playlist: f32,
-    pub ytdlp_radio: f32,
+    pub ytdlp_streaming: f32,
     pub history_cooc: f32,
     pub liked_neighbor: f32,
 }
@@ -209,7 +209,7 @@ impl SourceMix {
             watch_playlist: 1.20,
             artist_top: 1.15,
             mood_playlist: 0.80,
-            ytdlp_radio: 0.85,
+            ytdlp_streaming: 0.85,
             history_cooc: 1.05,
             liked_neighbor: 1.10,
         }
@@ -220,7 +220,7 @@ impl SourceMix {
             watch_playlist: 1.0,
             artist_top: 1.0,
             mood_playlist: 1.0,
-            ytdlp_radio: 1.0,
+            ytdlp_streaming: 1.0,
             history_cooc: 1.0,
             liked_neighbor: 1.0,
         }
@@ -231,7 +231,7 @@ impl SourceMix {
             watch_playlist: 0.85,
             artist_top: 0.80,
             mood_playlist: 1.20,
-            ytdlp_radio: 1.15,
+            ytdlp_streaming: 1.15,
             history_cooc: 1.10,
             liked_neighbor: 0.95,
         }
@@ -242,7 +242,7 @@ impl SourceMix {
             super::candidate::CandidateSource::WatchPlaylist => self.watch_playlist,
             super::candidate::CandidateSource::ArtistTop => self.artist_top,
             super::candidate::CandidateSource::MoodPlaylist => self.mood_playlist,
-            super::candidate::CandidateSource::YtdlpRadio => self.ytdlp_radio,
+            super::candidate::CandidateSource::YtdlpStreaming => self.ytdlp_streaming,
             super::candidate::CandidateSource::HistoryCooc => self.history_cooc,
             super::candidate::CandidateSource::LikedNeighbor => self.liked_neighbor,
         }
@@ -379,9 +379,9 @@ impl Default for AiRerankConfig {
 }
 
 /// The MusicGate: a rule-based content filter that keeps non-music videos (reactions,
-/// podcasts, tutorials, …) and gimmick re-uploads out of the radio candidate pool. The
+/// podcasts, tutorials, …) and gimmick re-uploads out of the streaming candidate pool. The
 /// non-music reject is always on (when `enabled`); the gimmick reject (karaoke / nightcore /
-/// 8D / sped-up / slowed+reverb) is mode-tied — forced in [`RadioMode::Focused`], opt-in via
+/// 8D / sped-up / slowed+reverb) is mode-tied — forced in [`StreamingMode::Focused`], opt-in via
 /// `block_altered_versions` otherwise — and self-disables when the pool would starve.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -391,7 +391,7 @@ pub struct MusicGateConfig {
     pub enabled: bool,
     /// Also apply the non-music hard-reject to `WatchPlaylist` candidates. Default true (the
     /// strong-reject list is conservative enough that it essentially never trips on YTM's own
-    /// curated radio); set false to fully exempt that pre-curated source.
+    /// curated upstream continuation); set false to fully exempt that pre-curated source.
     pub gate_watch_playlist: bool,
     /// Hard-reject gimmick versions (karaoke / nightcore / 8D / sped-up / slowed+reverb) in
     /// Balanced/Discovery too. Focused always blocks them regardless of this flag.
@@ -408,15 +408,15 @@ impl Default for MusicGateConfig {
     }
 }
 
-/// The full set of local-radio tuning knobs.
+/// The full set of local-streaming tuning knobs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RadioConfig {
+pub struct StreamingConfig {
     /// Active mode (only `Balanced` is surfaced today).
-    pub mode: RadioMode,
+    pub mode: StreamingMode,
     pub weights: ScoreWeights,
     pub sim_weights: SimWeights,
-    /// Same-album cooldown (independent of [`RadioMode::artist_gap`]).
+    /// Same-album cooldown (independent of [`StreamingMode::artist_gap`]).
     pub album_gap: usize,
     /// Softmax candidate pool: sample the final picks from the top-K scored candidates.
     pub sample_top_k: usize,
@@ -431,10 +431,10 @@ pub struct RadioConfig {
     pub gate: MusicGateConfig,
 }
 
-impl Default for RadioConfig {
+impl Default for StreamingConfig {
     fn default() -> Self {
         Self {
-            mode: RadioMode::Balanced,
+            mode: StreamingMode::Balanced,
             weights: ScoreWeights::default(),
             sim_weights: SimWeights::default(),
             album_gap: 5,
@@ -455,51 +455,60 @@ mod tests {
 
     #[test]
     fn default_mode_is_balanced() {
-        assert_eq!(RadioMode::default(), RadioMode::Balanced);
-        assert_eq!(RadioConfig::default().mode, RadioMode::Balanced);
+        assert_eq!(StreamingMode::default(), StreamingMode::Balanced);
+        assert_eq!(StreamingConfig::default().mode, StreamingMode::Balanced);
     }
 
     #[test]
     fn mode_cycles_through_all_three_both_ways() {
         let _guard = crate::i18n::lock_for_test();
-        assert_eq!(RadioMode::Balanced.cycled(true), RadioMode::Discovery);
-        assert_eq!(RadioMode::Discovery.cycled(true), RadioMode::Focused); // wraps
-        assert_eq!(RadioMode::Focused.cycled(false), RadioMode::Discovery); // wraps back
+        assert_eq!(
+            StreamingMode::Balanced.cycled(true),
+            StreamingMode::Discovery
+        );
+        assert_eq!(
+            StreamingMode::Discovery.cycled(true),
+            StreamingMode::Focused
+        ); // wraps
+        assert_eq!(
+            StreamingMode::Focused.cycled(false),
+            StreamingMode::Discovery
+        ); // wraps back
         // Every mode has a distinct, non-empty label (English default, asserted under lock).
-        let labels: Vec<&str> = RadioMode::CYCLE.iter().map(|m| m.label()).collect();
+        let labels: Vec<&str> = StreamingMode::CYCLE.iter().map(|m| m.label()).collect();
         assert_eq!(labels, vec!["Focused", "Balanced", "Discovery"]);
     }
 
     #[test]
     fn mode_params_are_ordered_by_adventurousness() {
         // More adventurous → lower λ (more diversity), higher temperature, wider artist gap.
-        assert!(RadioMode::Focused.mmr_lambda() > RadioMode::Discovery.mmr_lambda());
-        assert!(RadioMode::Focused.temperature() < RadioMode::Discovery.temperature());
-        assert!(RadioMode::Focused.artist_gap() < RadioMode::Discovery.artist_gap());
+        assert!(StreamingMode::Focused.mmr_lambda() > StreamingMode::Discovery.mmr_lambda());
+        assert!(StreamingMode::Focused.temperature() < StreamingMode::Discovery.temperature());
+        assert!(StreamingMode::Focused.artist_gap() < StreamingMode::Discovery.artist_gap());
     }
 
     #[test]
     fn config_round_trips_and_defaults_fill_missing() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let json = serde_json::to_string(&cfg).unwrap();
-        let back: RadioConfig = serde_json::from_str(&json).unwrap();
+        let back: StreamingConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.sample_top_k, cfg.sample_top_k);
         // A bare object fills every field from defaults.
-        let bare: RadioConfig = serde_json::from_str("{}").unwrap();
+        let bare: StreamingConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(bare.weights.cooccurrence, 0.40);
         assert_eq!(bare.cooc.window, 8);
     }
 
     #[test]
     fn musicgate_defaults_and_fill_missing() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         assert!(cfg.gate.enabled);
         assert!(cfg.gate.gate_watch_playlist);
         assert!(!cfg.gate.block_altered_versions);
         // Old configs (no `gate` key, or a partial one) fill from defaults.
-        let bare: RadioConfig = serde_json::from_str("{}").unwrap();
+        let bare: StreamingConfig = serde_json::from_str("{}").unwrap();
         assert!(bare.gate.enabled);
-        let partial: RadioConfig =
+        let partial: StreamingConfig =
             serde_json::from_str(r#"{"gate":{"block_altered_versions":true}}"#).unwrap();
         assert!(partial.gate.enabled, "missing sub-field fills from default");
         assert!(partial.gate.block_altered_versions);

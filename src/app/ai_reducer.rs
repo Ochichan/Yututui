@@ -10,7 +10,7 @@ impl App {
         self.mode = Mode::Ai;
         self.ai.focus = AiFocus::Input;
         self.dropdowns.eq_open = false;
-        self.dropdowns.radio_open = false;
+        self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
         self.ai.select_all = false;
         self.status.text.clear();
@@ -203,7 +203,7 @@ impl App {
                 })
                 .collect(),
             authenticated: self.authenticated,
-            autoplay_radio: self.autoplay_radio,
+            autoplay_streaming: self.autoplay_streaming,
         }
     }
 }

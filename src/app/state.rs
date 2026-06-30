@@ -93,8 +93,8 @@ pub struct Dropdowns {
     /// Whether the EQ-preset dropdown is showing (toggled by clicking the `eq:` label,
     /// dismissed by picking a preset or clicking elsewhere).
     pub eq_open: bool,
-    /// Whether the radio-mode dropdown is showing. Mutually exclusive with `eq_open`.
-    pub radio_open: bool,
+    /// Whether the streaming-mode dropdown is showing. Mutually exclusive with `eq_open`.
+    pub streaming_open: bool,
     /// Whether the search-source dropdown is showing.
     pub search_source_open: bool,
 }
@@ -274,32 +274,32 @@ pub struct ArtState {
     pub(in crate::app) overlay_refresh_clear_frames: u8,
 }
 
-/// Radio autoplay runtime: the cooldown clock, the in-flight pool flag, a handed-off DJ Gem
+/// Streaming autoplay runtime: the cooldown clock, the in-flight pool flag, a handed-off DJ Gem
 /// rerank awaiting its picks, and the empty-extend circuit-breaker counter.
 #[derive(Default)]
-pub struct RadioRuntime {
+pub struct StreamingRuntime {
     /// When the autoplay hook last fired a top-up request (for the cooldown).
     pub last_extend: Option<Instant>,
-    /// True while the radio candidate-pool fetch is in flight (both the DJ Gem and non-DJ Gem paths
+    /// True while the streaming candidate-pool fetch is in flight (both the DJ Gem and non-DJ Gem paths
     /// fetch the same pool first).
     pub pending: bool,
-    /// An DJ Gem rerank handed off to the assistant actor, awaiting its `Msg::RadioAiPicks`. Holds
+    /// An DJ Gem rerank handed off to the assistant actor, awaiting its `Msg::StreamingAiPicks`. Holds
     /// the shortlist (to validate the returned ids against) and the local pick (the fallback).
     pub pending_rerank: Option<PendingRerank>,
-    /// Consecutive empty radio extends, for the autoplay circuit breaker.
+    /// Consecutive empty streaming extends, for the autoplay circuit breaker.
     pub consecutive_failures: u8,
     /// The last DJ Gem rerank's resolved explanation (picks → role + reasons + confidence), stashed
-    /// when `Msg::RadioAiPicks` resolves so the "Why DJ Gem" overlay (`w`) can show why these tracks
+    /// when `Msg::StreamingAiPicks` resolves so the "Why DJ Gem" overlay (`w`) can show why these tracks
     /// were chosen. `None` until the first DJ Gem rerank lands.
-    pub last_explain: Option<RadioAiExplain>,
+    pub last_explain: Option<StreamingAiExplain>,
     /// Ordered recent listening outcomes (plays / skips / likes / dislikes), newest at the back,
     /// bounded to the last [`SESSION_EVENTS_CAP`]. Drives the reranker's recovery context.
     pub session_events: std::collections::VecDeque<SessionEvent>,
-    /// TTL cache of resolved DJ Gem rerank orderings, keyed by [`radio::ai_cache_key`]. Each value is
+    /// TTL cache of resolved DJ Gem rerank orderings, keyed by [`streaming::ai_cache_key`]. Each value is
     /// the DJ Gem's chosen `video_id` ordering plus when it was stored; a rapid identical refill
     /// replays it instead of spending another call. Pruned by TTL on every insert (stays tiny).
     pub ai_cache: HashMap<u64, (Vec<String>, Instant)>,
-    /// Cached co-occurrence graph keyed by [`Signals::play_log_generation`], so radio refills don't
+    /// Cached co-occurrence graph keyed by [`Signals::play_log_generation`], so streaming refills don't
     /// rebuild the same nested HashMap when listening history has not changed.
     pub cooc_cache: Option<(u64, Cooc)>,
     /// True while an off-path feedback summary is handed off to the assistant actor, awaiting its

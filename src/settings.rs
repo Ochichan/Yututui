@@ -17,8 +17,8 @@ use crate::config::{
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
 use crate::keymap::{Action, KeyContext, KeyMap};
-use crate::radio::RadioMode;
 use crate::search_source::SearchConfig;
+use crate::streaming::StreamingMode;
 use crate::t;
 use crate::theme::{ThemeConfig, ThemePreset, ThemeRole};
 
@@ -148,8 +148,8 @@ impl SettingsTab {
                 Field::ApiKey,
                 Field::RomanizedTitles,
                 Field::ClearRomanizedTitleCache,
-                Field::AutoplayRadio,
-                Field::RadioMode,
+                Field::AutoplayStreaming,
+                Field::StreamingMode,
             ],
             // The Keys tab is a list of remappable bindings, not `Field`s; it has its own
             // navigation and rendering paths (see `crate::keymap::editable_entries`).
@@ -220,9 +220,9 @@ pub enum Field {
     RomanizedTitles,
     /// Remove cached Latin-script display overlays without touching source metadata.
     ClearRomanizedTitleCache,
-    AutoplayRadio,
-    /// The radio station's adventurousness (Focused / Balanced / Discovery).
-    RadioMode,
+    AutoplayStreaming,
+    /// The streaming station's adventurousness (Focused / Balanced / Discovery).
+    StreamingMode,
     // Theme
     /// Linux basic TTY compatibility: English UI, Retro theme, and ASCII-safe rendering.
     RetroMode,
@@ -367,7 +367,7 @@ impl Field {
             | Field::SearchRadioBrowser
             | Field::MouseWheelVolume
             | Field::Gapless
-            | Field::AutoplayRadio
+            | Field::AutoplayStreaming
             | Field::Normalize
             | Field::AiEnabled
             | Field::RomanizedTitles
@@ -392,7 +392,7 @@ impl Field {
             | Field::EqPreset
             | Field::GeminiModel
             | Field::ThemePreset
-            | Field::RadioMode => FieldKind::Select,
+            | Field::StreamingMode => FieldKind::Select,
             Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
                 FieldKind::Slider
             }
@@ -454,8 +454,8 @@ impl Field {
             Field::SeekInterval => t!("Seek interval", "탐색 간격").to_owned(),
             Field::MouseWheelVolume => t!("Wheel volume", "휠 볼륨 조절").to_owned(),
             Field::Gapless => t!("Gapless (next launch)", "갭리스 (재시작 후 적용)").to_owned(),
-            Field::AutoplayRadio => t!("Autoplay radio", "자동재생 라디오").to_owned(),
-            Field::RadioMode => t!("Radio mode", "라디오 모드").to_owned(),
+            Field::AutoplayStreaming => t!("Autoplay streaming", "자동 스트리밍").to_owned(),
+            Field::StreamingMode => t!("Streaming mode", "스트리밍 모드").to_owned(),
             Field::EqPreset => t!("Preset", "프리셋").to_owned(),
             Field::Band(i) => format!("{:>5}", freq_label(i)),
             Field::Normalize => t!("Normalize (loudness)", "음량 평준화").to_owned(),
@@ -522,9 +522,9 @@ pub struct SettingsDraft {
     /// Whether wheel events over the player volume cluster nudge volume.
     pub mouse_wheel_volume: bool,
     pub gapless: bool,
-    pub autoplay_radio: bool,
-    /// The radio station's adventurousness (drives MMR λ, sampling temperature, artist spacing).
-    pub radio_mode: RadioMode,
+    pub autoplay_streaming: bool,
+    /// The streaming station's adventurousness (drives MMR λ, sampling temperature, artist spacing).
+    pub streaming_mode: StreamingMode,
     pub eq_preset: EqPreset,
     pub eq_bands: [f64; eq::BANDS],
     pub normalize: bool,
@@ -602,8 +602,8 @@ impl SettingsDraft {
                 t!("↵ press Enter", "↵ Enter로 실행").to_owned()
             }
             Field::Gapless => toggle_str(self.gapless),
-            Field::AutoplayRadio => toggle_str(self.autoplay_radio),
-            Field::RadioMode => self.radio_mode.label().to_owned(),
+            Field::AutoplayStreaming => toggle_str(self.autoplay_streaming),
+            Field::StreamingMode => self.streaming_mode.label().to_owned(),
             Field::EqPreset => self.eq_preset.label().to_owned(),
             Field::Band(i) => format!("{:+.0} dB", self.eq_bands[i]),
             Field::Normalize => toggle_str(self.normalize),
@@ -679,8 +679,8 @@ impl SettingsDraft {
         cfg.seek_seconds = Some(self.seek_seconds);
         cfg.mouse_wheel_volume = Some(self.mouse_wheel_volume);
         cfg.gapless = Some(self.gapless);
-        cfg.autoplay_radio = Some(self.autoplay_radio);
-        cfg.radio.mode = self.radio_mode;
+        cfg.autoplay_streaming = Some(self.autoplay_streaming);
+        cfg.streaming.mode = self.streaming_mode;
         cfg.eq_preset = self.eq_preset;
         // Store the explicit band array only when it diverges from the preset's gains, so
         // a plain preset choice stays compact in config.json.
@@ -811,8 +811,8 @@ mod tests {
             seek_seconds: 10.0,
             mouse_wheel_volume: true,
             gapless: true,
-            autoplay_radio: false,
-            radio_mode: RadioMode::Balanced,
+            autoplay_streaming: false,
+            streaming_mode: StreamingMode::Balanced,
             eq_preset: EqPreset::Flat,
             eq_bands: EqPreset::Flat.gains(),
             normalize: false,
@@ -989,7 +989,7 @@ mod tests {
     }
 
     #[test]
-    fn ai_tab_has_model_key_autoplay_and_radio_mode() {
+    fn ai_tab_has_model_key_autoplay_and_streaming_mode() {
         let _guard = crate::i18n::lock_for_test();
         let f = SettingsTab::Ai.fields();
         assert_eq!(
@@ -1000,8 +1000,8 @@ mod tests {
                 Field::ApiKey,
                 Field::RomanizedTitles,
                 Field::ClearRomanizedTitleCache,
-                Field::AutoplayRadio,
-                Field::RadioMode,
+                Field::AutoplayStreaming,
+                Field::StreamingMode,
             ]
         );
         assert_eq!(Field::AiEnabled.kind(), FieldKind::Toggle);
@@ -1019,10 +1019,10 @@ mod tests {
             base_draft().value_display(Field::ClearRomanizedTitleCache),
             "↵ press Enter"
         );
-        // The radio mode is a non-secret cycle field.
-        assert_eq!(Field::RadioMode.kind(), FieldKind::Select);
-        assert!(!Field::RadioMode.is_secret());
-        assert_eq!(base_draft().value_display(Field::RadioMode), "Balanced");
+        // The streaming mode is a non-secret cycle field.
+        assert_eq!(Field::StreamingMode.kind(), FieldKind::Select);
+        assert!(!Field::StreamingMode.is_secret());
+        assert_eq!(base_draft().value_display(Field::StreamingMode), "Balanced");
     }
 
     #[test]
@@ -1082,8 +1082,8 @@ mod tests {
             seek_seconds: 25.0,
             mouse_wheel_volume: false,
             gapless: false,
-            autoplay_radio: true,
-            radio_mode: RadioMode::Discovery,
+            autoplay_streaming: true,
+            streaming_mode: StreamingMode::Discovery,
             eq_preset: EqPreset::Custom,
             eq_bands: bands,
             normalize: true,
@@ -1124,8 +1124,8 @@ mod tests {
         assert_eq!(cfg.seek_seconds, Some(25.0));
         assert_eq!(cfg.mouse_wheel_volume, Some(false));
         assert_eq!(cfg.gapless, Some(false));
-        assert_eq!(cfg.autoplay_radio, Some(true));
-        assert_eq!(cfg.radio.mode, RadioMode::Discovery);
+        assert_eq!(cfg.autoplay_streaming, Some(true));
+        assert_eq!(cfg.streaming.mode, StreamingMode::Discovery);
         assert_eq!(cfg.eq_preset, EqPreset::Custom);
         assert_eq!(cfg.eq_bands, Some(bands));
         assert_eq!(cfg.normalize, Some(true));
@@ -1198,7 +1198,7 @@ mod tests {
             autoplay_on_start: true,
             speed: 1.5,
             gapless: false,
-            autoplay_radio: true,
+            autoplay_streaming: true,
             eq_preset: EqPreset::Custom,
             eq_bands: bands,
             normalize: true,

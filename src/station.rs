@@ -1,10 +1,10 @@
 //! Natural-language "station" profiles: a free-text vibe distilled (by the assistant, from a
-//! `start_radio` call) into the handful of engine knobs the local radio can actually act on.
+//! `start_streaming` call) into the handful of engine knobs the local streaming can actually act on.
 //!
 //! Honest scope: a [`crate::api::Song`] carries no genre / mood / audio-feature tags, so a
 //! profile never pretends to set "energy" or "valence". It maps to what *does* move the engine:
-//! adventurousness ([`Explore`] → [`RadioMode`]) and a set of artists to keep out (folded into
-//! [`crate::radio::StationState`]'s `banned_artist_keys`). Persisted to `<data dir>/station.json`,
+//! adventurousness ([`Explore`] → [`StreamingMode`]) and a set of artists to keep out (folded into
+//! [`crate::streaming::StationState`]'s `banned_artist_keys`). Persisted to `<data dir>/station.json`,
 //! mirroring [`crate::playlists`], so a later feedback pass can refine it.
 
 use std::fs;
@@ -12,10 +12,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::radio::RadioMode;
+use crate::streaming::StreamingMode;
 
 /// How adventurous the listener asked the station to be — a small, stable, model-facing scale
-/// that maps onto the engine's [`RadioMode`].
+/// that maps onto the engine's [`StreamingMode`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Explore {
@@ -30,11 +30,11 @@ pub enum Explore {
 
 impl Explore {
     /// The engine mode this explore level drives (λ / temperature / artist-gap live there).
-    pub fn to_mode(self) -> RadioMode {
+    pub fn to_mode(self) -> StreamingMode {
         match self {
-            Explore::Tight => RadioMode::Focused,
-            Explore::Balanced => RadioMode::Balanced,
-            Explore::Wide => RadioMode::Discovery,
+            Explore::Tight => StreamingMode::Focused,
+            Explore::Balanced => StreamingMode::Balanced,
+            Explore::Wide => StreamingMode::Discovery,
         }
     }
 
@@ -55,7 +55,7 @@ impl Explore {
 pub struct StationProfile {
     /// The seed / vibe the station was started from (for display + re-interpretation).
     pub query: String,
-    /// Adventurousness → [`RadioMode`].
+    /// Adventurousness → [`StreamingMode`].
     pub explore: Explore,
     /// Normalized artist keys to keep out of the station (folded into `banned_artist_keys`).
     #[serde(default)]
@@ -63,7 +63,7 @@ pub struct StationProfile {
 }
 
 impl StationProfile {
-    /// Build a profile from the assistant's raw `start_radio` arguments, normalizing the avoid
+    /// Build a profile from the assistant's raw `start_streaming` arguments, normalizing the avoid
     /// list to engine artist keys. `explore` is the model's (possibly absent) string; an
     /// absent / unrecognized value falls back to Balanced.
     pub fn from_intent(query: &str, explore: Option<&str>, avoid_artists: &[String]) -> Self {
@@ -77,7 +77,7 @@ impl StationProfile {
     /// Fold a feedback pass into the avoid list: artists the listener kept skipping
     /// (`down_artists`) are added; artists they warmed to (`boost_artists`) are removed. Both are
     /// normalized to engine keys. Deliberately conservative — it never touches the explore level,
-    /// since a handful of skips shouldn't silently flip (and persist) the station's radio mode.
+    /// since a handful of skips shouldn't silently flip (and persist) the station's streaming mode.
     /// Returns whether the avoid list actually changed (so the caller can skip a no-op save).
     pub fn apply_feedback(&mut self, down_artists: &[String], boost_artists: &[String]) -> bool {
         let before = self.avoid_artist_keys.clone();
@@ -96,7 +96,7 @@ impl StationProfile {
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StationStore {
-    /// The active station, if one was started from a vibe (None → plain seed-based radio).
+    /// The active station, if one was started from a vibe (None -> plain seed-based streaming).
     pub active: Option<StationProfile>,
 }
 
@@ -157,9 +157,9 @@ mod tests {
 
     #[test]
     fn explore_maps_to_engine_modes() {
-        assert_eq!(Explore::Tight.to_mode(), RadioMode::Focused);
-        assert_eq!(Explore::Balanced.to_mode(), RadioMode::Balanced);
-        assert_eq!(Explore::Wide.to_mode(), RadioMode::Discovery);
+        assert_eq!(Explore::Tight.to_mode(), StreamingMode::Focused);
+        assert_eq!(Explore::Balanced.to_mode(), StreamingMode::Balanced);
+        assert_eq!(Explore::Wide.to_mode(), StreamingMode::Discovery);
     }
 
     #[test]

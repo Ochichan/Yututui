@@ -1,6 +1,6 @@
 //! Per-track preference signals: a sidecar to the library recording how the user actually
 //! engages with tracks — plays, completions, skips, dislikes — plus the raw play sequence
-//! and a learned per-artist affinity. The radio engine reads these to rank candidates.
+//! and a learned per-artist affinity. The streaming engine reads these to rank candidates.
 //!
 //! Capturing them is additive and backward-compatible: an absent/corrupt `signals.json`
 //! loads to empty, and `Song`'s persisted shape is untouched (this is keyed by `video_id`
@@ -35,7 +35,7 @@ const ARTIST_WEIGHT_MIN: f32 = -2.0;
 const ARTIST_WEIGHT_MAX: f32 = 2.0;
 
 // Artist-affinity deltas (small; they accumulate across many sessions). Written now so the
-// radio engine has history to rank on once it reads them.
+// streaming engine has history to rank on once it reads them.
 const LIKE_DELTA: f32 = 0.30;
 const FULL_PLAY_DELTA: f32 = 0.05;
 const DISLIKE_DELTA: f32 = 0.60;
@@ -58,7 +58,7 @@ struct TrackSignals {
     last_played_at: i64,
     /// Fraction (0..1) of the most recent play.
     last_completion: f32,
-    /// Explicit user dislike: the radio engine treats this as a hard block.
+    /// Explicit user dislike: the streaming engine treats this as a hard block.
     disliked: bool,
 }
 
@@ -116,7 +116,7 @@ impl Signals {
         &self.play_log
     }
 
-    /// Monotonic in-memory version for radio caches derived from [`Self::play_log`].
+    /// Monotonic in-memory version for streaming caches derived from [`Self::play_log`].
     pub fn play_log_generation(&self) -> u64 {
         self.play_log_generation
     }
@@ -269,7 +269,7 @@ fn skip_penalty(completion: f32) -> f32 {
 }
 
 /// Normalize an artist string into a stable key for the affinity map (case/whitespace-
-/// insensitive). Kept simple here; richer canonicalization lands with the radio engine.
+/// insensitive). Kept simple here; richer canonicalization lands with the streaming engine.
 pub fn normalize_artist(artist: &str) -> String {
     artist
         .split_whitespace()

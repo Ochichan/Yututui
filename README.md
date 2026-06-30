@@ -4,7 +4,7 @@
 
 ### [▶ Live demo & feature tour → ochichan.github.io/ytm-tui](https://ochichan.github.io/ytm-tui/)
 
-YouTube Music in your terminal. Fast, keyboard-driven, no browser tab eating your RAM, no ads. DJ Gem radio, real album art, and remote control — all from a three-letter command: `ytt`.
+YouTube Music in your terminal. Fast, keyboard-driven, no browser tab eating your RAM, no ads. DJ Gem streaming, real album art, and remote control — all from a three-letter command: `ytt`.
 
 Rust + ratatui. MIT.
 
@@ -49,7 +49,7 @@ That's it. Music.
 
 ## What it does
 
-- **DJ Gem radio** — press **`Ctrl+R`** and it builds an endless station around what you're hearing. Three moods: Focused, Balanced, Discovery. Press **`w`** to see, in plain language, why it picked each song.
+- **DJ Gem streaming** — press **`Ctrl+R`** and it builds an endless station around what you're hearing. Three moods: Focused, Balanced, Discovery. Press **`w`** to see, in plain language, why it picked each song.
 - **Real album art** — actual cover images drawn right in the Player, on terminals that support them. Time-synced lyrics scroll underneath (**`Shift+L`**).
 - **Remote control** — drive it from another terminal or your media keys: `ytt -r pp`, `ytt -r next`, `ytt -r status`.
 - **Search · Library · Queue** — **`s`** to search, **`l`** for your library (favorites, history, downloads), **`c`** for the queue.
@@ -78,7 +78,7 @@ Press **`?`** in the app for the complete, live cheat sheet — it reflects *you
 | `c` | Queue |
 | `f` | Favorite / rate |
 | `d` | Download |
-| `Ctrl+R` | Toggle DJ Gem radio |
+| `Ctrl+R` | Toggle DJ Gem streaming |
 | `Shift+L` | Lyrics |
 | `g` | DJ Gem assistant |
 | `w` | Why DJ Gem picked these |
@@ -97,7 +97,7 @@ Once `ytt` is playing, control it from another terminal — or your media keys �
 ```sh
 ytt -r pp          # play / pause
 ytt -r next        # next song
-ytt -r radio on    # turn the radio on
+ytt -r streaming on    # turn streaming on
 ytt -r status      # one-line "now playing"
 ytt -r quit        # stop and close
 ```

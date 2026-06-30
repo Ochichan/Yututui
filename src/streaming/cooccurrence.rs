@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 
-use crate::radio::config::CoocConfig;
+use crate::streaming::config::CoocConfig;
 
 /// A directed SPPMI graph: `edges[a][b]` is the affinity of playing `b` given `a`.
 #[derive(Debug, Default)]

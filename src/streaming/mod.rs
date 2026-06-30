@@ -1,4 +1,4 @@
-//! The local radio engine: turn a pool of playable candidates into the next few tracks
+//! The local streaming engine: turn a pool of playable candidates into the next few tracks
 //! using only locally-computable signals — co-occurrence, learned affinity, novelty,
 //! provenance, completion — plus MMR diversity, artist/album cooldown, and softmax sampling.
 //!
@@ -19,11 +19,11 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::api::Song;
-use crate::radio::musicgate::GateAction;
 use crate::signals::Signals;
+use crate::streaming::musicgate::GateAction;
 
 pub use candidate::{Candidate, CandidateSource};
-pub use config::{RadioConfig, RadioMode};
+pub use config::{StreamingConfig, StreamingMode};
 pub use cooccurrence::Cooc;
 pub use pack::PackedCand;
 pub use score::{GateVerdict, classify_pool};
@@ -33,7 +33,7 @@ pub use score::{GateVerdict, classify_pool};
 /// blocks/favorites.
 #[derive(Debug, Clone)]
 pub struct StationState {
-    pub mode: RadioMode,
+    pub mode: StreamingMode,
     pub seed_video_id: String,
     pub seed_artist_key: String,
     /// Recently-played track ids (queue + history tail), most-recent last.
@@ -44,7 +44,7 @@ pub struct StationState {
     pub banned_artist_keys: HashSet<String>,
     /// Normalized artist keys the user has favorited (a seed-affinity boost).
     pub favorite_artist_keys: HashSet<String>,
-    /// Short-lived per-session artist nudges derived from recent radio outcomes.
+    /// Short-lived per-session artist nudges derived from recent streaming outcomes.
     pub session_artist_bias: HashMap<String, f32>,
     /// Temporary novelty/familiarity nudges for skip-streak recovery.
     pub temporary_novelty_boost: f32,
@@ -52,14 +52,14 @@ pub struct StationState {
 }
 
 /// Run the full local pipeline — hard filter → normalized base score → MMR + cooldown →
-/// softmax sample — and return up to `n` picks. The guaranteed-available radio path; also
+/// softmax sample — and return up to `n` picks. The guaranteed-available streaming path; also
 /// the fallback when a DJ Gem rerank is unavailable.
 pub fn plan_local(
     pool: Vec<Candidate>,
     st: &StationState,
     sig: &Signals,
     cooc: &Cooc,
-    cfg: &RadioConfig,
+    cfg: &StreamingConfig,
     n: usize,
     now: i64,
 ) -> Vec<Song> {
@@ -75,7 +75,7 @@ pub fn shortlist_for_ai(
     st: &StationState,
     sig: &Signals,
     cooc: &Cooc,
-    cfg: &RadioConfig,
+    cfg: &StreamingConfig,
     k: usize,
     now: i64,
 ) -> Vec<Candidate> {
@@ -141,14 +141,14 @@ pub fn merge_ai_picks_with_confidence(
     merge_ai_picks(&ai_ids, shortlist, local_pick, n)
 }
 
-/// Last synchronous safety pass before radio picks are appended to the queue. The scoring pass
+/// Last synchronous safety pass before streaming picks are appended to the queue. The scoring pass
 /// already filtered candidates, but cached DJ Gem orders and low-context fallbacks can still benefit
 /// from a final cheap title/channel/duration check.
 pub fn sanitize_final_picks(
     picks: Vec<Song>,
     fallback: &[Song],
-    mode: RadioMode,
-    cfg: &RadioConfig,
+    mode: StreamingMode,
+    cfg: &StreamingConfig,
 ) -> Vec<Song> {
     let target = picks.len();
     let mut out = Vec::with_capacity(target);
@@ -166,7 +166,7 @@ pub fn sanitize_final_picks(
     out
 }
 
-fn reject_final_song(song: &Song, mode: RadioMode, cfg: &RadioConfig) -> bool {
+fn reject_final_song(song: &Song, mode: StreamingMode, cfg: &StreamingConfig) -> bool {
     if let Some(duration) = candidate::parse_duration_secs(&song.duration)
         && (duration < cfg.min_duration_secs || duration > cfg.max_duration_secs)
     {
@@ -175,21 +175,26 @@ fn reject_final_song(song: &Song, mode: RadioMode, cfg: &RadioConfig) -> bool {
     if !cfg.gate.enabled {
         return false;
     }
-    let decision = musicgate::decide(&song.title, &song.artist, CandidateSource::YtdlpRadio, mode);
+    let decision = musicgate::decide(
+        &song.title,
+        &song.artist,
+        CandidateSource::YtdlpStreaming,
+        mode,
+    );
     if decision.action == GateAction::Reject {
         return true;
     }
-    mode == RadioMode::Focused && musicgate::gimmick_reason(&song.title).is_some()
+    mode == StreamingMode::Focused && musicgate::gimmick_reason(&song.title).is_some()
 }
 
-/// Whether the final radio picks contain a candidate risky enough to justify async metadata
+/// Whether the final streaming picks contain a candidate risky enough to justify async metadata
 /// preflight before enqueueing. This keeps the common clean path synchronous while still giving
 /// public YouTube fallbacks a deeper check when title/channel/duration evidence is weak.
 pub fn final_preflight_needed(
     picks: &[Song],
     fallback: &[Song],
-    mode: RadioMode,
-    cfg: &RadioConfig,
+    mode: StreamingMode,
+    cfg: &StreamingConfig,
 ) -> bool {
     picks
         .iter()
@@ -197,17 +202,22 @@ pub fn final_preflight_needed(
         .any(|song| needs_metadata_preflight(song, mode, cfg))
 }
 
-/// Cheap title/channel signal used by both the reducer and API actor to decide which final radio
+/// Cheap title/channel signal used by both the reducer and API actor to decide which final streaming
 /// picks need a full yt-dlp metadata extraction.
-pub fn needs_metadata_preflight(song: &Song, mode: RadioMode, cfg: &RadioConfig) -> bool {
+pub fn needs_metadata_preflight(song: &Song, mode: StreamingMode, cfg: &StreamingConfig) -> bool {
     if !cfg.gate.enabled || song.youtube_id().is_none() || song.is_local() {
         return false;
     }
-    let decision = musicgate::decide(&song.title, &song.artist, CandidateSource::YtdlpRadio, mode);
+    let decision = musicgate::decide(
+        &song.title,
+        &song.artist,
+        CandidateSource::YtdlpStreaming,
+        mode,
+    );
     if decision.action != GateAction::Keep {
         return true;
     }
-    if mode == RadioMode::Focused && musicgate::gimmick_reason(&song.title).is_some() {
+    if mode == StreamingMode::Focused && musicgate::gimmick_reason(&song.title).is_some() {
         return true;
     }
     let risk = musicgate::non_music_risk_score(&song.title, &song.artist);
@@ -225,7 +235,7 @@ pub fn needs_metadata_preflight(song: &Song, mode: RadioMode, cfg: &RadioConfig)
 pub fn should_call_ai(
     shortlist: &[Candidate],
     skip_streak: usize,
-    cfg: &config::RadioConfig,
+    cfg: &config::StreamingConfig,
 ) -> bool {
     if shortlist.len() < 2 {
         return false;
@@ -245,7 +255,7 @@ pub fn should_call_ai(
 
 pub struct AiCacheKeyParts<'a> {
     pub seed_artist: &'a str,
-    pub mode: RadioMode,
+    pub mode: StreamingMode,
     pub recent_ids: &'a [String],
     pub candidate_ids: &'a [String],
     pub station_query: &'a str,
@@ -289,7 +299,11 @@ pub fn ai_recipe_hash(recipe: config::AiSlotRecipe) -> u64 {
     h.finish()
 }
 
-pub fn ai_roles_match_recipe(roles: &[Option<String>], mode: RadioMode, cfg: &RadioConfig) -> bool {
+pub fn ai_roles_match_recipe(
+    roles: &[Option<String>],
+    mode: StreamingMode,
+    cfg: &StreamingConfig,
+) -> bool {
     if roles.is_empty() {
         return false;
     }
@@ -395,7 +409,7 @@ mod tests {
 
     fn station(seed: &str) -> StationState {
         StationState {
-            mode: RadioMode::Balanced,
+            mode: StreamingMode::Balanced,
             seed_video_id: seed.to_owned(),
             seed_artist_key: "seed artist".to_owned(),
             recent_track_ids: vec![seed.to_owned()],
@@ -412,14 +426,14 @@ mod tests {
     #[test]
     fn plan_local_filters_and_returns_requested_count() {
         fastrand::seed(42);
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let mut st = station("seed");
         st.banned_track_ids.insert("blocked".to_owned());
 
         // A pool with the seed, a blocked track, and several playable distinct-artist tracks.
         let mut songs = vec![song("seed", "seed artist"), song("blocked", "x")];
         songs.extend((0..12).map(|i| song(&format!("c{i}"), &format!("artist{i}"))));
-        let pool = pool_from_songs(songs, CandidateSource::YtdlpRadio);
+        let pool = pool_from_songs(songs, CandidateSource::YtdlpStreaming);
 
         let picks = plan_local(
             pool,
@@ -438,7 +452,7 @@ mod tests {
 
     #[test]
     fn plan_local_surfaces_a_co_occurring_track_far_above_chance() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let st = station("seed");
 
         // 'partner' strongly follows 'seed' in the raw play log.
@@ -451,7 +465,7 @@ mod tests {
 
         let mut songs = vec![song("partner", "partner artist")];
         songs.extend((0..10).map(|i| song(&format!("f{i}"), &format!("filler{i}"))));
-        let pool = pool_from_songs(songs, CandidateSource::YtdlpRadio);
+        let pool = pool_from_songs(songs, CandidateSource::YtdlpStreaming);
 
         // The final pick is softmax-sampled (intentionally exploratory), so a single seed is
         // brittle. Assert the aggregate instead: across many seeded trials the co-occurring
@@ -481,9 +495,9 @@ mod tests {
     fn pool_from_tagged_ranks_each_source_independently() {
         let tagged = vec![
             (song("w0", "a"), CandidateSource::WatchPlaylist),
-            (song("y0", "b"), CandidateSource::YtdlpRadio),
+            (song("y0", "b"), CandidateSource::YtdlpStreaming),
             (song("w1", "c"), CandidateSource::WatchPlaylist),
-            (song("y1", "d"), CandidateSource::YtdlpRadio),
+            (song("y1", "d"), CandidateSource::YtdlpStreaming),
             (song("w2", "e"), CandidateSource::WatchPlaylist),
         ];
         let pool = pool_from_tagged(tagged);
@@ -501,12 +515,12 @@ mod tests {
     #[test]
     fn watch_playlist_wins_dedup_over_ytdlp_for_same_track() {
         // Same canonical key from two sources → the higher-provenance WatchPlaylist copy survives.
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let st = station("seed");
         let tagged = vec![
             (
                 Song::remote("yt", "Hit Song", "Band", "3:00"),
-                CandidateSource::YtdlpRadio,
+                CandidateSource::YtdlpStreaming,
             ),
             (
                 Song::remote("wp", "Hit Song", "Band", "3:00"),
@@ -527,7 +541,7 @@ mod tests {
             &station("seed"),
             &Signals::default(),
             &Cooc::default(),
-            &RadioConfig::default(),
+            &StreamingConfig::default(),
             5,
             0,
         );
@@ -536,13 +550,13 @@ mod tests {
 
     #[test]
     fn shortlist_for_ai_returns_filtered_diverse_topk() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let mut st = station("seed");
         st.banned_track_ids.insert("blocked".to_owned());
 
         let mut songs = vec![song("seed", "seed artist"), song("blocked", "x")];
         songs.extend((0..12).map(|i| song(&format!("c{i}"), &format!("artist{i}"))));
-        let pool = pool_from_songs(songs, CandidateSource::YtdlpRadio);
+        let pool = pool_from_songs(songs, CandidateSource::YtdlpStreaming);
 
         let shortlist = shortlist_for_ai(
             pool,
@@ -594,7 +608,7 @@ mod tests {
 
     /// A scored candidate with a chosen `base_score` (the only field the gate reads).
     fn scored(id: &str, base: f32) -> Candidate {
-        scored_src(id, base, CandidateSource::YtdlpRadio)
+        scored_src(id, base, CandidateSource::YtdlpStreaming)
     }
 
     fn scored_src(id: &str, base: f32, source: CandidateSource) -> Candidate {
@@ -605,7 +619,7 @@ mod tests {
 
     fn test_cache_key(
         seed_artist: &str,
-        mode: RadioMode,
+        mode: StreamingMode,
         recent_ids: &[String],
         candidate_ids: &[String],
     ) -> u64 {
@@ -618,14 +632,14 @@ mod tests {
             avoid_artist_keys: &[],
             recovery_line: None,
             skip_streak: 0,
-            profile_version: mode.profile(&RadioConfig::default()).profile_version,
-            prompt_recipe_hash: ai_recipe_hash(mode.profile(&RadioConfig::default()).ai_recipe),
+            profile_version: mode.profile(&StreamingConfig::default()).profile_version,
+            prompt_recipe_hash: ai_recipe_hash(mode.profile(&StreamingConfig::default()).ai_recipe),
         })
     }
 
     #[test]
     fn smart_gate_off_always_calls_the_model() {
-        let cfg = RadioConfig {
+        let cfg = StreamingConfig {
             ai: config::AiRerankConfig {
                 smart_gate: false,
                 ..Default::default()
@@ -642,7 +656,7 @@ mod tests {
 
     #[test]
     fn final_preflight_needed_only_for_risky_public_candidates() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let official = Song::remote(
             "official",
             "Artist - Song (Official Audio)",
@@ -652,7 +666,7 @@ mod tests {
         assert!(!final_preflight_needed(
             std::slice::from_ref(&official),
             &[],
-            RadioMode::Balanced,
+            StreamingMode::Balanced,
             &cfg
         ));
 
@@ -665,14 +679,14 @@ mod tests {
         assert!(final_preflight_needed(
             std::slice::from_ref(&review),
             &[],
-            RadioMode::Balanced,
+            StreamingMode::Balanced,
             &cfg
         ));
     }
 
     #[test]
     fn gate_calls_the_model_on_a_skip_streak_even_when_local_is_clear() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         let shortlist = vec![
             scored_src("a", 0.9, CandidateSource::WatchPlaylist),
             scored("b", 0.1),
@@ -689,7 +703,7 @@ mod tests {
 
     #[test]
     fn gate_skips_a_clear_winner_but_calls_on_an_ambiguous_top_two() {
-        let cfg = RadioConfig::default(); // ambiguity_gap 0.15
+        let cfg = StreamingConfig::default(); // ambiguity_gap 0.15
         let clear = vec![
             scored_src("a", 0.80, CandidateSource::WatchPlaylist),
             scored("b", 0.50),
@@ -707,7 +721,7 @@ mod tests {
 
     #[test]
     fn gate_skips_when_there_is_nothing_to_rerank() {
-        let cfg = RadioConfig::default();
+        let cfg = StreamingConfig::default();
         assert!(
             !should_call_ai(&[], 0, &cfg),
             "empty shortlist → nothing to do"
@@ -722,33 +736,33 @@ mod tests {
     fn ai_cache_key_is_stable_order_independent_and_query_sensitive() {
         let recent = vec!["r1".to_owned(), "r2".to_owned()];
         let cands = vec!["x".to_owned(), "y".to_owned(), "z".to_owned()];
-        let key = test_cache_key("seed", RadioMode::Balanced, &recent, &cands);
+        let key = test_cache_key("seed", StreamingMode::Balanced, &recent, &cands);
         // Same query → same key; candidate *order* doesn't matter (the set does).
         assert_eq!(
             key,
-            test_cache_key("seed", RadioMode::Balanced, &recent, &cands)
+            test_cache_key("seed", StreamingMode::Balanced, &recent, &cands)
         );
         let reordered = vec!["z".to_owned(), "x".to_owned(), "y".to_owned()];
         assert_eq!(
             key,
-            test_cache_key("seed", RadioMode::Balanced, &recent, &reordered)
+            test_cache_key("seed", StreamingMode::Balanced, &recent, &reordered)
         );
         // Every query dimension is part of the key.
         assert_ne!(
             key,
-            test_cache_key("other", RadioMode::Balanced, &recent, &cands)
+            test_cache_key("other", StreamingMode::Balanced, &recent, &cands)
         );
         assert_ne!(
             key,
-            test_cache_key("seed", RadioMode::Discovery, &recent, &cands)
+            test_cache_key("seed", StreamingMode::Discovery, &recent, &cands)
         );
         assert_ne!(
             key,
-            test_cache_key("seed", RadioMode::Balanced, &[], &cands)
+            test_cache_key("seed", StreamingMode::Balanced, &[], &cands)
         );
         assert_ne!(
             key,
-            test_cache_key("seed", RadioMode::Balanced, &recent, &["x".to_owned()])
+            test_cache_key("seed", StreamingMode::Balanced, &recent, &["x".to_owned()])
         );
     }
 }

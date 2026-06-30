@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Bumped on any breaking change to the request/response shape. The server rejects a
 /// mismatch with `bad_version`, so an old client against a new server fails loudly
 /// instead of misbehaving.
-pub const PROTOCOL_VERSION: u8 = 1;
+pub const PROTOCOL_VERSION: u8 = 2;
 
 /// A semantic player command. Applied through the same reducer path a keypress uses, so
 /// it works regardless of the TUI's current input mode (Search text entry, Settings, …).
@@ -24,7 +24,10 @@ pub enum RemoteCommand {
     VolumeDown,
     SeekBack,
     SeekForward,
-    Radio { state: ToggleState },
+    #[serde(alias = "radio")]
+    Streaming {
+        state: ToggleState,
+    },
     Status,
     Quit,
 }
@@ -113,7 +116,8 @@ pub struct StatusSnapshot {
     /// 1-based position of the current track in the queue; `0` when the queue is empty.
     pub position: usize,
     pub total: usize,
-    pub radio: bool,
+    #[serde(alias = "radio")]
+    pub streaming: bool,
 }
 
 impl StatusSnapshot {
@@ -130,8 +134,12 @@ impl StatusSnapshot {
         } else {
             String::new()
         };
-        let radio = if self.radio { "  •  radio on" } else { "" };
-        format!("[{state}] {track}  •  vol {}%{pos}{radio}", self.volume)
+        let streaming = if self.streaming {
+            "  •  streaming on"
+        } else {
+            ""
+        };
+        format!("[{state}] {track}  •  vol {}%{pos}{streaming}", self.volume)
     }
 }
 
@@ -163,7 +171,7 @@ mod tests {
         let req = RemoteRequest {
             version: PROTOCOL_VERSION,
             token: "abc".to_string(),
-            command: RemoteCommand::Radio {
+            command: RemoteCommand::Streaming {
                 state: ToggleState::On,
             },
         };
@@ -171,7 +179,7 @@ mod tests {
         let back: RemoteRequest = serde_json::from_str(&line).unwrap();
         assert_eq!(
             back.command,
-            RemoteCommand::Radio {
+            RemoteCommand::Streaming {
                 state: ToggleState::On
             }
         );
@@ -202,7 +210,7 @@ mod tests {
             volume: 80,
             position: 0,
             total: 0,
-            radio: false,
+            streaming: false,
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));

@@ -142,9 +142,9 @@ impl App {
             return Vec::new();
         }
 
-        // Global shortcuts (help, radio). Suppressed only when a *typeable* key would feed
+        // Global shortcuts (help, streaming). Suppressed only when a *typeable* key would feed
         // a focused text field — so `?` types into the search box but opens help elsewhere,
-        // while Ctrl-based globals (radio) keep working everywhere as before.
+        // while Ctrl-based globals (streaming) keep working everywhere as before.
         if !(self.in_text_entry() && chord.is_typeable())
             && let Some(action) = self.keymap.global_action(chord)
         {
@@ -162,12 +162,12 @@ impl App {
                 Action::WhyAi => {
                     // Only worth an overlay if a prior DJ Gem rerank left something to explain;
                     // otherwise nudge the user with a transient note instead of an empty card.
-                    if self.radio.last_explain.is_some() {
+                    if self.streaming.last_explain.is_some() {
                         self.why_ai_visible = true;
                     } else {
                         self.status.kind = StatusKind::Info;
                         self.status.text = t!(
-                            "No DJ Gem radio picks to explain yet.",
+                            "No DJ Gem streaming picks to explain yet.",
                             "아직 설명할 DJ Gem 라디오 선곡이 없어요."
                         )
                         .to_owned();
@@ -176,18 +176,22 @@ impl App {
                     return Vec::new();
                 }
                 Action::ToggleAnimations => return self.toggle_animations(),
-                Action::ToggleRadio => {
-                    self.autoplay_radio = !self.autoplay_radio;
+                Action::ToggleStreaming => {
+                    self.autoplay_streaming = !self.autoplay_streaming;
                     self.status.text = format!(
                         "{}: {}",
-                        t!("Autoplay radio", "자동재생 라디오"),
-                        if self.autoplay_radio { "✓" } else { "✗" }
+                        t!("Autoplay streaming", "자동 스트리밍"),
+                        if self.autoplay_streaming {
+                            "✓"
+                        } else {
+                            "✗"
+                        }
                     );
                     self.dirty = true;
                     let mut cmds = vec![self.save_playback_modes_cmd()];
                     // Kick off the top-up now (not at end-of-track) so a low/single-song queue
                     // has the next tracks queued before the current one ends — no silent gap.
-                    if self.autoplay_radio {
+                    if self.autoplay_streaming {
                         cmds.extend(self.maybe_autoplay_extend());
                     }
                     return cmds;

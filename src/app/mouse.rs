@@ -136,10 +136,12 @@ impl App {
         }
         // A click that missed every button dismisses an open dropdown (modal-style), so the same
         // click doesn't also seek.
-        if self.dropdowns.eq_open || self.dropdowns.radio_open || self.dropdowns.search_source_open
+        if self.dropdowns.eq_open
+            || self.dropdowns.streaming_open
+            || self.dropdowns.search_source_open
         {
             self.dropdowns.eq_open = false;
-            self.dropdowns.radio_open = false;
+            self.dropdowns.streaming_open = false;
             self.dropdowns.search_source_open = false;
             self.dirty = true;
             return Vec::new();
@@ -176,9 +178,9 @@ impl App {
                 self.on_player_action(action)
             }
             MouseTarget::Player(_) => Vec::new(),
-            // Toggle the EQ dropdown by clicking its `eq:` label (closes the radio one).
+            // Toggle the EQ dropdown by clicking its `eq:` label (closes the streaming one).
             MouseTarget::EqMenu if self.mode == Mode::Player => {
-                self.dropdowns.radio_open = false;
+                self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = false;
                 self.dropdowns.eq_open = !self.dropdowns.eq_open;
                 self.dirty = true;
@@ -190,20 +192,20 @@ impl App {
                 self.select_eq_preset(preset)
             }
             MouseTarget::EqSelect(_) => Vec::new(),
-            // Toggle the radio-mode dropdown by clicking its `radio:` label (closes the EQ one).
-            MouseTarget::RadioMenu if self.mode == Mode::Player => {
+            // Toggle the streaming-mode dropdown by clicking its `streaming:` label (closes the EQ one).
+            MouseTarget::StreamingMenu if self.mode == Mode::Player => {
                 self.dropdowns.eq_open = false;
                 self.dropdowns.search_source_open = false;
-                self.dropdowns.radio_open = !self.dropdowns.radio_open;
+                self.dropdowns.streaming_open = !self.dropdowns.streaming_open;
                 self.dirty = true;
                 Vec::new()
             }
-            MouseTarget::RadioMenu => Vec::new(),
-            // Pick a radio mode from the open dropdown.
-            MouseTarget::RadioSelect(mode) if self.mode == Mode::Player => {
-                self.select_radio_mode(mode)
+            MouseTarget::StreamingMenu => Vec::new(),
+            // Pick a streaming mode from the open dropdown.
+            MouseTarget::StreamingSelect(mode) if self.mode == Mode::Player => {
+                self.select_streaming_mode(mode)
             }
-            MouseTarget::RadioSelect(_) => Vec::new(),
+            MouseTarget::StreamingSelect(_) => Vec::new(),
             MouseTarget::VolumeArea => Vec::new(),
             // Nav bar: switch screens from anywhere.
             MouseTarget::Nav(mode) => self.navigate_to(mode),
@@ -220,7 +222,7 @@ impl App {
             MouseTarget::SearchInput => Vec::new(),
             MouseTarget::SearchSourceMenu if self.mode == Mode::Search => {
                 self.dropdowns.eq_open = false;
-                self.dropdowns.radio_open = false;
+                self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = !self.dropdowns.search_source_open;
                 self.dirty = true;
                 Vec::new()

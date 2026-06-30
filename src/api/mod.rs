@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::app::Msg;
-use crate::radio::{CandidateSource, RadioConfig, RadioMode};
 use crate::search_source::{SearchConfig, SearchSource};
+use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
 
-const RADIO_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// A search result track, trimmed to what the UI needs. Serializable so the local
 /// library (favorites/history) can persist tracks verbatim. `local_path` is set only for
@@ -292,19 +292,19 @@ pub enum ApiCmd {
         source: SearchSource,
         config: SearchConfig,
     },
-    Radio {
+    Streaming {
         seed: String,
         seed_video_id: String,
         exclude_ids: Vec<String>,
         limit: usize,
-        mode: RadioMode,
+        mode: StreamingMode,
     },
-    RadioPreflight {
+    StreamingPreflight {
         seed_video_id: String,
         picks: Vec<Song>,
         fallback: Vec<Song>,
-        mode: RadioMode,
-        config: RadioConfig,
+        mode: StreamingMode,
+        config: StreamingConfig,
     },
 }
 
@@ -322,15 +322,15 @@ impl ApiHandle {
         });
     }
 
-    pub fn radio(
+    pub fn streaming(
         &self,
         seed: impl Into<String>,
         seed_video_id: impl Into<String>,
         exclude_ids: Vec<String>,
         limit: usize,
-        mode: RadioMode,
+        mode: StreamingMode,
     ) {
-        let _ = self.tx.send(ApiCmd::Radio {
+        let _ = self.tx.send(ApiCmd::Streaming {
             seed: seed.into(),
             seed_video_id: seed_video_id.into(),
             exclude_ids,
@@ -339,15 +339,15 @@ impl ApiHandle {
         });
     }
 
-    pub fn radio_preflight(
+    pub fn streaming_preflight(
         &self,
         seed_video_id: impl Into<String>,
         picks: Vec<Song>,
         fallback: Vec<Song>,
-        mode: RadioMode,
-        config: RadioConfig,
+        mode: StreamingMode,
+        config: StreamingConfig,
     ) {
-        let _ = self.tx.send(ApiCmd::RadioPreflight {
+        let _ = self.tx.send(ApiCmd::StreamingPreflight {
             seed_video_id: seed_video_id.into(),
             picks,
             fallback,
@@ -392,7 +392,8 @@ async fn run_actor(
     mut rx: UnboundedReceiver<ApiCmd>,
     msg_tx: UnboundedSender<Msg>,
 ) {
-    let mut radio_ytdlp_cache: HashMap<(String, RadioMode), (Instant, Vec<Song>)> = HashMap::new();
+    let mut streaming_ytdlp_cache: HashMap<(String, StreamingMode), (Instant, Vec<Song>)> =
+        HashMap::new();
     while let Some(cmd) = rx.recv().await {
         match cmd {
             ApiCmd::Search {
@@ -419,7 +420,7 @@ async fn run_actor(
                 };
                 let _ = msg_tx.send(msg);
             }
-            ApiCmd::Radio {
+            ApiCmd::Streaming {
                 seed,
                 seed_video_id,
                 exclude_ids,
@@ -427,12 +428,12 @@ async fn run_actor(
                 mode,
             } => {
                 // Build one pool from two sources, tagged by provenance so the local engine can
-                // weight them: YTM's own radio continuation first (best), then yt-dlp text search
+                // weight them: YTM's own watch-playlist continuation first (best), then yt-dlp text search
                 // to top up. `seen` carries the caller's exclusions and dedups across sources.
                 let mut seen: HashSet<String> = exclude_ids.into_iter().collect();
                 let mut candidates: Vec<(Song, CandidateSource)> = Vec::new();
 
-                match api.radio_continuation(&seed_video_id).await {
+                match api.streaming_continuation(&seed_video_id).await {
                     Ok(songs) => {
                         for s in songs {
                             if seen.insert(s.video_id.clone()) {
@@ -441,23 +442,25 @@ async fn run_actor(
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(error = %format!("{e:#}"), "watch-playlist radio unavailable; using yt-dlp only");
+                        tracing::warn!(error = %format!("{e:#}"), "watch-playlist streaming unavailable; using yt-dlp only");
                     }
                 }
 
-                // Top up the remainder from yt-dlp (skip entirely if the real radio already filled
+                // Top up the remainder from yt-dlp (skip entirely if the continuation already filled
                 // the pool). Only this source's failure can fail the whole request.
                 let want = limit.saturating_sub(candidates.len());
                 let mut ytdlp_err = None;
                 if want > 0 {
                     let now = Instant::now();
-                    radio_ytdlp_cache.retain(|_, (stored, _)| {
-                        now.duration_since(*stored) < RADIO_YTDLP_CACHE_TTL
+                    streaming_ytdlp_cache.retain(|_, (stored, _)| {
+                        now.duration_since(*stored) < STREAMING_YTDLP_CACHE_TTL
                     });
                     let cache_key = (seed.clone(), mode);
-                    let cached = radio_ytdlp_cache
+                    let cached = streaming_ytdlp_cache
                         .get(&cache_key)
-                        .filter(|(stored, _)| now.duration_since(*stored) < RADIO_YTDLP_CACHE_TTL)
+                        .filter(|(stored, _)| {
+                            now.duration_since(*stored) < STREAMING_YTDLP_CACHE_TTL
+                        })
                         .map(|(_, songs)| songs.clone());
                     let ytdlp_pool = match cached {
                         Some(songs) => Ok(songs),
@@ -465,7 +468,7 @@ async fn run_actor(
                             let empty = HashSet::new();
                             match ytmusic::related_tracks(&seed, limit, &empty, mode).await {
                                 Ok(songs) => {
-                                    radio_ytdlp_cache.insert(cache_key, (now, songs.clone()));
+                                    streaming_ytdlp_cache.insert(cache_key, (now, songs.clone()));
                                     Ok(songs)
                                 }
                                 Err(e) => Err(e),
@@ -476,7 +479,7 @@ async fn run_actor(
                         Ok(songs) => {
                             for s in songs {
                                 if seen.insert(s.video_id.clone()) {
-                                    candidates.push((s, CandidateSource::YtdlpRadio));
+                                    candidates.push((s, CandidateSource::YtdlpStreaming));
                                     if candidates.len() >= limit {
                                         break;
                                     }
@@ -491,29 +494,30 @@ async fn run_actor(
                     let error = ytdlp_err
                         .map(|e| format!("{e:#}"))
                         .unwrap_or_else(|| "no related tracks found".to_owned());
-                    tracing::warn!(seed = %seed, %error, "radio search yielded nothing");
-                    Msg::RadioError {
+                    tracing::warn!(seed = %seed, %error, "streaming search yielded nothing");
+                    Msg::StreamingError {
                         seed_video_id,
                         error,
                     }
                 } else {
-                    tracing::info!(count = candidates.len(), seed = %seed, "radio results");
-                    Msg::RadioResults {
+                    tracing::info!(count = candidates.len(), seed = %seed, "streaming results");
+                    Msg::StreamingResults {
                         seed_video_id,
                         candidates,
                     }
                 };
                 let _ = msg_tx.send(msg);
             }
-            ApiCmd::RadioPreflight {
+            ApiCmd::StreamingPreflight {
                 seed_video_id,
                 picks,
                 fallback,
                 mode,
                 config,
             } => {
-                let songs = ytmusic::preflight_radio_picks(picks, fallback, mode, &config).await;
-                let _ = msg_tx.send(Msg::RadioPreflighted {
+                let songs =
+                    ytmusic::preflight_streaming_picks(picks, fallback, mode, &config).await;
+                let _ = msg_tx.send(Msg::StreamingPreflighted {
                     seed_video_id,
                     songs,
                 });
