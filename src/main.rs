@@ -515,6 +515,10 @@ fn draw_app_frame(
     res
 }
 
+fn finish_draw_cycle(app: &mut App) {
+    app.dirty = app.clear_before_draw_pending();
+}
+
 async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     cfg: config::Config,
@@ -718,6 +722,15 @@ async fn run(
     let _remote_guard = remote.map(|server| server.start(worker_tx.clone()));
 
     while !app.should_quit {
+        if app.dirty {
+            draw_app_frame(terminal, &mut app, &mut perf)?;
+            finish_draw_cycle(&mut app);
+            perf.maybe_log(&app);
+            if app.dirty {
+                continue;
+            }
+        }
+
         // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
         // a low-rate redraw scrubs IME preedit text that some terminals paint without
         // sending an input event to the app.
@@ -774,14 +787,14 @@ async fn run(
                 }
                 if app.dirty {
                     draw_app_frame(terminal, &mut app, &mut perf)?;
-                    app.dirty = false;
+                    finish_draw_cycle(&mut app);
                     perf.maybe_log(&app);
                 }
                 continue;
             },
             _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
                 draw_app_frame(terminal, &mut app, &mut perf)?;
-                app.dirty = false;
+                finish_draw_cycle(&mut app);
                 perf.maybe_log(&app);
                 continue;
             },
@@ -926,7 +939,7 @@ async fn run(
 
         if app.dirty {
             draw_app_frame(terminal, &mut app, &mut perf)?;
-            app.dirty = false;
+            finish_draw_cycle(&mut app);
         }
         perf.maybe_log(&app);
     }

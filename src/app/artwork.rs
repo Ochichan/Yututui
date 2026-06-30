@@ -2,6 +2,8 @@
 
 use super::*;
 
+const ART_REFRESH_OVERLAY_CLEAR_FRAMES: u8 = 3;
+
 impl App {
     pub(crate) fn set_art_resize_tx(
         &mut self,
@@ -190,8 +192,7 @@ impl App {
         let previous = self.art.overlay_mask;
         self.art.overlay_mask = next;
         if self.native_art_active() || self.native_about_icon_touched(previous, next) {
-            self.art.force_clear_next_frame = true;
-            self.dirty = true;
+            self.request_native_image_clear();
             tracing::debug!(
                 previous,
                 next,
@@ -200,9 +201,36 @@ impl App {
         }
     }
 
-    /// Consume the one-shot full-redraw request set by [`Self::sync_art_overlay_state`].
+    fn request_native_image_clear(&mut self) {
+        self.art.force_clear_next_frame = true;
+        self.dirty = true;
+    }
+
+    fn reinforce_overlay_for_art_refresh(&mut self) {
+        if self.art.overlay_mask == 0 || !self.native_image_protocol_selected() {
+            return;
+        }
+        self.art.overlay_refresh_clear_frames = self
+            .art
+            .overlay_refresh_clear_frames
+            .max(ART_REFRESH_OVERLAY_CLEAR_FRAMES.saturating_sub(1));
+        self.request_native_image_clear();
+    }
+
+    /// Consume a full-redraw request set by native image / overlay synchronization.
     pub fn take_clear_before_draw(&mut self) -> bool {
-        std::mem::take(&mut self.art.force_clear_next_frame)
+        if std::mem::take(&mut self.art.force_clear_next_frame) {
+            return true;
+        }
+        if self.art.overlay_refresh_clear_frames > 0 {
+            self.art.overlay_refresh_clear_frames -= 1;
+            return true;
+        }
+        false
+    }
+
+    pub fn clear_before_draw_pending(&self) -> bool {
+        self.art.force_clear_next_frame || self.art.overlay_refresh_clear_frames > 0
     }
 
     /// Turn a decoded image into a render-ready protocol (or clear when there's none / no
@@ -218,19 +246,21 @@ impl App {
                 ));
                 self.art.source = Some(img);
                 self.art.video_id = Some(video_id);
-                if self.art.overlay_mask != 0 && self.native_art_active() {
-                    self.art.force_clear_next_frame = true;
-                    self.dirty = true;
-                }
+                self.reinforce_overlay_for_art_refresh();
             }
             _ => self.clear_artwork(),
         }
     }
 
     pub(in crate::app) fn apply_artwork_resize(&mut self, response: ResizeResponse) {
-        if let Some(proto) = self.art.protocol.borrow_mut().as_mut()
-            && proto.update_resized_protocol(response)
-        {
+        let updated = {
+            let mut protocol = self.art.protocol.borrow_mut();
+            protocol
+                .as_mut()
+                .is_some_and(|proto| proto.update_resized_protocol(response))
+        };
+        if updated {
+            self.reinforce_overlay_for_art_refresh();
             self.dirty = true;
         }
     }
@@ -244,8 +274,7 @@ impl App {
         self.art.dims = (0, 0);
         self.art.loading = false;
         if had_native_art_under_overlay {
-            self.art.force_clear_next_frame = true;
-            self.dirty = true;
+            self.reinforce_overlay_for_art_refresh();
         }
     }
 

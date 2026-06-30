@@ -256,6 +256,10 @@ pub struct ArtState {
     /// Kept in art state because the expensive clear is only needed to resync native terminal
     /// graphics after an overlay or screen transition has covered album art or the About icon.
     pub(in crate::app) force_clear_next_frame: bool,
+    /// Extra clear/redraw frames after native album art is refreshed while an overlay is visible.
+    /// Windows Terminal can composite the graphics payload one frame after the text overlay, so the
+    /// overlay needs a short reinforcement burst rather than a single clear.
+    pub(in crate::app) overlay_refresh_clear_frames: u8,
 }
 
 /// Radio autoplay runtime: the cooldown clock, the in-flight pool flag, a handed-off AI

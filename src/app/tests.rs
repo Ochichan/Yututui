@@ -4808,7 +4808,29 @@ fn make_test_art_active(app: &mut App, protocol: ratatui_image::picker::Protocol
     app.set_artwork(video_id, Some(image::DynamicImage::new_rgba8(32, 32)));
     app.art.overlay_mask = app.art_overlay_mask();
     app.art.force_clear_next_frame = false;
+    app.art.overlay_refresh_clear_frames = 0;
     app.dirty = false;
+}
+
+fn assert_art_refresh_clear_burst(app: &mut App, context: &str) {
+    for frame in 1..=3 {
+        assert!(
+            app.clear_before_draw_pending(),
+            "{context}: pending flag should keep redraw loop awake before frame {frame}"
+        );
+        assert!(
+            app.take_clear_before_draw(),
+            "{context}: expected reinforced clear frame {frame}"
+        );
+    }
+    assert!(
+        !app.clear_before_draw_pending(),
+        "{context}: pending flag should drop after the burst"
+    );
+    assert!(
+        !app.take_clear_before_draw(),
+        "{context}: reinforced clear burst should be short"
+    );
 }
 
 #[test]
@@ -4907,7 +4929,36 @@ fn artwork_arriving_under_overlay_requests_full_clear() {
 
     let video_id = app.queue.current().unwrap().video_id.clone();
     app.set_artwork(video_id, Some(image::DynamicImage::new_rgba8(32, 32)));
-    assert!(app.take_clear_before_draw());
+    assert_art_refresh_clear_burst(&mut app, "artwork arriving under overlay");
+}
+
+#[test]
+fn artwork_resize_completion_under_overlay_reinforces_overlay() {
+    let mut app = app_playing(1, 0);
+    let mut picker = ratatui_image::picker::Picker::halfblocks();
+    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Sixel);
+    app.config.album_art = Some(true);
+    app.art.picker = Some(picker);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.set_art_resize_tx(tx);
+
+    let video_id = app.queue.current().unwrap().video_id.clone();
+    app.set_artwork(video_id, Some(image::DynamicImage::new_rgba8(32, 32)));
+    app.queue_popup.open = true;
+    app.update(Msg::Resize);
+    assert!(app.take_clear_before_draw(), "opening overlay clears once");
+    assert!(
+        !app.take_clear_before_draw(),
+        "overlay opening stays one-shot"
+    );
+
+    render_app(&app);
+    let request = rx
+        .try_recv()
+        .expect("rendering pending artwork should request resize/encode");
+    app.apply_artwork_resize(request.resize_encode().unwrap());
+
+    assert_art_refresh_clear_burst(&mut app, "artwork resize completion under overlay");
 }
 
 #[test]
@@ -4932,9 +4983,9 @@ fn current_queue_delete_under_overlay_requests_clear_for_removed_native_art() {
         c,
         Cmd::FetchArtwork { video_id, .. } if video_id == "id1"
     )));
-    assert!(
-        app.take_clear_before_draw(),
-        "removing the visible native art under the queue popup must clear before redraw"
+    assert_art_refresh_clear_burst(
+        &mut app,
+        "removing the visible native art under the queue popup",
     );
 }
 
@@ -4955,10 +5006,7 @@ fn deleting_last_queue_track_under_overlay_clears_native_art() {
     assert!(cmds.is_empty());
     assert!(app.queue.is_empty());
     assert!(!app.art_active());
-    assert!(
-        app.take_clear_before_draw(),
-        "emptying the queue still has to erase the old native art"
-    );
+    assert_art_refresh_clear_burst(&mut app, "emptying the queue under overlay");
 }
 
 #[test]
@@ -4999,10 +5047,7 @@ fn native_art_clear_under_player_overlays_requests_full_clear() {
             c,
             Cmd::FetchArtwork { video_id, .. } if video_id == "id1"
         )));
-        assert!(
-            app.take_clear_before_draw(),
-            "{name}: track change must clear removed native art before redraw"
-        );
+        assert_art_refresh_clear_burst(&mut app, &format!("{name}: track change under overlay"));
     }
 }
 
@@ -5013,6 +5058,7 @@ fn clearing_halfblocks_art_under_overlay_does_not_request_native_clear() {
     app.queue_popup.open = true;
     app.art.overlay_mask = app.art_overlay_mask();
     app.art.force_clear_next_frame = false;
+    app.art.overlay_refresh_clear_frames = 0;
     app.dirty = false;
 
     let _ = app.remove_queue_range(0, 0);
