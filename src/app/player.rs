@@ -185,6 +185,7 @@ impl App {
         self.audio.preset = preset;
         self.audio.bands = preset.gains();
         self.dropdowns.eq_open = false;
+        self.dropdowns.search_source_open = false;
         self.status.text = format!("EQ: {}", preset.label());
         self.dirty = true;
         vec![Cmd::Player(PlayerCmd::SetAudioFilter(
@@ -195,6 +196,7 @@ impl App {
     pub(in crate::app) fn select_radio_mode(&mut self, mode: RadioMode) -> Vec<Cmd> {
         self.config.radio.mode = mode;
         self.dropdowns.radio_open = false;
+        self.dropdowns.search_source_open = false;
         self.status.text = format!("{}: {}", t!("Radio", "라디오"), mode.label());
         self.dirty = true;
         vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
@@ -308,6 +310,7 @@ impl App {
                 self.clear_library_filter();
                 self.dropdowns.eq_open = false;
                 self.dropdowns.radio_open = false;
+                self.dropdowns.search_source_open = false;
                 self.dirty = true;
                 Vec::new()
             }
@@ -348,6 +351,7 @@ impl App {
                 self.audio.bands = self.audio.preset.gains();
                 self.dropdowns.eq_open = false;
                 self.dropdowns.radio_open = false;
+                self.dropdowns.search_source_open = false;
                 self.status.text = format!("EQ: {}", self.audio.preset.label());
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetAudioFilter(
@@ -381,6 +385,7 @@ impl App {
                 self.search.focus = SearchFocus::Input;
                 self.dropdowns.eq_open = false;
                 self.dropdowns.radio_open = false;
+                self.dropdowns.search_source_open = false;
                 self.dirty = true;
                 Vec::new()
             }
@@ -668,10 +673,9 @@ impl App {
                 }
                 // Prefetch the upcoming track's stream so the next skip is instant.
                 if let Some(next) = self.queue.peek_next()
-                    && !next.is_local()
+                    && let Some(watch_url) = next.prefetch_target()
                 {
                     let video_id = next.video_id.clone();
-                    let watch_url = next.watch_url();
                     if !self.prefetch.resolved.contains_key(&video_id) {
                         cmds.push(Cmd::Resolve {
                             video_id,

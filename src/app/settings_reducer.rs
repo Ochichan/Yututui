@@ -22,6 +22,7 @@ impl App {
     pub(in crate::app) fn open_settings(&mut self) {
         self.dropdowns.eq_open = false;
         self.dropdowns.radio_open = false;
+        self.dropdowns.search_source_open = false;
         let path_str = |p: &Option<std::path::PathBuf>| {
             p.as_ref()
                 .map(|p| p.display().to_string())
@@ -30,6 +31,7 @@ impl App {
         let draft = SettingsDraft {
             cookies_file: path_str(&self.config.cookies_file),
             download_dir: path_str(&self.config.download_dir),
+            search: self.config.effective_search(),
             mouse: self.config.effective_mouse(),
             album_art: self.config.effective_album_art(),
             autoplay_on_start: self.config.effective_autoplay_on_start(),
@@ -50,7 +52,8 @@ impl App {
             gemini_api_key: self.config.gemini_api_key.clone().unwrap_or_default(),
             ai_enabled: self.config.effective_ai_enabled(),
             theme: self.theme.clone(),
-            language: self.config.language,
+            retro_mode: self.config.effective_retro_mode(),
+            language: self.config.effective_language(),
             animations: self.config.animations,
         };
         self.settings = Some(Box::new(SettingsState {
@@ -63,7 +66,7 @@ impl App {
             capturing: None,
         }));
         self.mode = Mode::Settings;
-        self.confirm_reset_all = false;
+        self.pending_settings_confirm = None;
         self.status.text.clear();
         // Start every Settings session at the top; clear any offset left from a prior session.
         self.bridges.reset_settings_scroll();
@@ -302,6 +305,61 @@ impl App {
                 s.draft.autoplay_on_start = !s.draft.autoplay_on_start;
                 Vec::new()
             }
+            Field::SearchSource => {
+                let s = self.settings_mut();
+                s.draft.search.source = s
+                    .draft
+                    .search
+                    .cycled_source(s.draft.search.source, dir >= 0);
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Search source", "검색 소스"),
+                    s.draft.search.source.label()
+                );
+                Vec::new()
+            }
+            Field::SearchYoutube => {
+                let s = self.settings_mut();
+                let next = !s.draft.search.youtube;
+                s.draft.search.set_enabled(SearchSource::Youtube, next);
+                Vec::new()
+            }
+            Field::SearchSoundCloud => {
+                let s = self.settings_mut();
+                let next = !s.draft.search.soundcloud;
+                s.draft.search.set_enabled(SearchSource::SoundCloud, next);
+                Vec::new()
+            }
+            Field::SearchAudius => {
+                let s = self.settings_mut();
+                let next = !s.draft.search.audius;
+                s.draft.search.set_enabled(SearchSource::Audius, next);
+                Vec::new()
+            }
+            Field::SearchJamendo => {
+                let s = self.settings_mut();
+                let next = !s.draft.search.jamendo;
+                s.draft.search.set_enabled(SearchSource::Jamendo, next);
+                Vec::new()
+            }
+            Field::SearchInternetArchive => {
+                let s = self.settings_mut();
+                let next = !s.draft.search.internet_archive;
+                s.draft
+                    .search
+                    .set_enabled(SearchSource::InternetArchive, next);
+                Vec::new()
+            }
+            Field::SearchRadioBrowser => {
+                let s = self.settings_mut();
+                let next = !s.draft.search.radio_browser;
+                s.draft.search.set_enabled(SearchSource::RadioBrowser, next);
+                Vec::new()
+            }
+            Field::RetroMode => {
+                self.settings_request_confirm(SettingsConfirm::RetroMode);
+                Vec::new()
+            }
             Field::Gapless => {
                 let s = self.settings_mut();
                 s.draft.gapless = !s.draft.gapless;
@@ -321,6 +379,16 @@ impl App {
             }
             Field::Language => {
                 let s = self.settings_mut();
+                if s.draft.retro_mode {
+                    s.draft.language = crate::i18n::Language::English;
+                    crate::i18n::set_language(crate::i18n::Language::English);
+                    self.status.text = t!(
+                        "Retro mode keeps the UI in English",
+                        "레트로 모드는 UI를 영어로 유지합니다"
+                    )
+                    .to_owned();
+                    return Vec::new();
+                }
                 let next = s.draft.language.cycled(dir >= 0);
                 s.draft.language = next;
                 // Apply live so the whole UI — including this settings screen — re-renders in
@@ -407,6 +475,16 @@ impl App {
             }
             Field::ThemePreset => {
                 let s = self.settings_mut();
+                if s.draft.retro_mode {
+                    s.draft.theme.set_preset(crate::theme::ThemePreset::Retro);
+                    self.theme = s.draft.theme.normalized();
+                    self.status.text = t!(
+                        "Retro mode keeps the Retro theme",
+                        "레트로 모드는 레트로 테마를 유지합니다"
+                    )
+                    .to_owned();
+                    return Vec::new();
+                }
                 let next = s.draft.theme.preset_enum().stepped(dir);
                 s.draft.theme.set_preset(next);
                 self.theme = s.draft.theme.normalized();
@@ -456,6 +534,8 @@ impl App {
             // value to nudge — Enter activates it (see `settings_activate`).
             Field::CookiesFile
             | Field::DownloadDir
+            | Field::AudiusAppName
+            | Field::JamendoClientId
             | Field::ApiKey
             | Field::ThemeColor(_)
             | Field::ResetKeybindings
@@ -522,6 +602,12 @@ impl App {
                 if let Field::ThemeColor(role) = field {
                     st.draft.theme.ensure_override_for_edit(role);
                 }
+                if field == Field::AudiusAppName && st.draft.search.audius_app_name.is_none() {
+                    st.draft.search.audius_app_name = Some(String::new());
+                }
+                if field == Field::JamendoClientId && st.draft.search.jamendo_client_id.is_none() {
+                    st.draft.search.jamendo_client_id = Some(String::new());
+                }
                 // A secret field (the API key) is masked, so editing in place is blind —
                 // appending to the hidden value silently corrupts it. Start fresh: clear
                 // the buffer so the user types/pastes a whole new key, but remember the
@@ -538,20 +624,59 @@ impl App {
                 Vec::new()
             }
             FieldKind::Toggle => self.settings_change(1),
-            FieldKind::Button => {
-                match field {
-                    Field::ResetKeybindings => self.settings_reset_keybindings(),
-                    Field::ResetAll => {
-                        // Gate the destructive reset behind an explicit confirmation modal.
-                        self.confirm_reset_all = true;
-                        self.dirty = true;
-                        Vec::new()
-                    }
-                    _ => Vec::new(),
+            FieldKind::Button => match field {
+                Field::ResetKeybindings => {
+                    self.settings_request_confirm(SettingsConfirm::ResetKeybindings);
+                    Vec::new()
                 }
-            }
+                Field::ResetAll => {
+                    self.settings_request_confirm(SettingsConfirm::ResetAll);
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         }
+    }
+
+    pub(in crate::app) fn settings_request_confirm(&mut self, confirm: SettingsConfirm) {
+        self.pending_settings_confirm = Some(confirm);
+        self.status.text.clear();
+        self.dirty = true;
+    }
+
+    pub(in crate::app) fn settings_apply_confirm(&mut self, confirm: SettingsConfirm) -> Vec<Cmd> {
+        self.pending_settings_confirm = None;
+        match confirm {
+            SettingsConfirm::RetroMode => {
+                self.settings_toggle_retro_mode();
+                Vec::new()
+            }
+            SettingsConfirm::ResetKeybindings => self.settings_reset_keybindings(),
+            SettingsConfirm::ResetAll => self.settings_reset_all(),
+        }
+    }
+
+    pub(in crate::app) fn settings_toggle_retro_mode(&mut self) {
+        let Some(st) = self.settings.as_mut() else {
+            return;
+        };
+        st.draft.retro_mode = !st.draft.retro_mode;
+        if st.draft.retro_mode {
+            st.draft.theme = crate::theme::ThemeConfig::default();
+            st.draft.theme.set_preset(crate::theme::ThemePreset::Retro);
+            st.draft.language = crate::i18n::Language::English;
+            self.theme = st.draft.theme.normalized();
+            crate::i18n::set_language(crate::i18n::Language::English);
+            self.status.text = t!(
+                "Retro mode enabled: English + Retro theme",
+                "레트로 모드 켜짐: 영어 + 레트로 테마"
+            )
+            .to_owned();
+        } else {
+            self.status.text = t!("Retro mode disabled", "레트로 모드 꺼짐").to_owned();
+        }
+        self.dirty = true;
     }
 
     /// Restore only the working keymap in Settings to built-in defaults. Like individual
@@ -584,6 +709,7 @@ impl App {
             let d = &mut st.draft;
             d.cookies_file = String::new();
             d.download_dir = String::new();
+            d.search = def.effective_search();
             d.mouse = def.effective_mouse();
             d.album_art = def.effective_album_art();
             d.autoplay_on_start = def.effective_autoplay_on_start();
@@ -599,6 +725,7 @@ impl App {
             d.gemini_api_key = String::new();
             d.ai_enabled = def.effective_ai_enabled(); // back to on (don't strand AI off)
             d.theme = def.effective_theme();
+            d.retro_mode = def.effective_retro_mode();
             d.language = def.effective_language();
             d.animations = def.animations; // all effects off (the lightweight default)
             st.keymap = KeyMap::default();
@@ -686,6 +813,23 @@ impl App {
                     settings::blank_to_none(&value).map(std::path::PathBuf::from);
                 self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
+            Field::AudiusAppName => {
+                self.config.search.audius_app_name = settings::blank_to_none(&value);
+                if let Some(st) = self.settings.as_mut() {
+                    st.draft.search.audius_app_name = self.config.search.audius_app_name.clone();
+                    st.draft.search = st.draft.search.clone().normalized();
+                }
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+            }
+            Field::JamendoClientId => {
+                self.config.search.jamendo_client_id = settings::blank_to_none(&value);
+                if let Some(st) = self.settings.as_mut() {
+                    st.draft.search.jamendo_client_id =
+                        self.config.search.jamendo_client_id.clone();
+                    st.draft.search = st.draft.search.clone().normalized();
+                }
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+            }
             Field::DownloadDir => {
                 let old_dir = self.config.effective_download_dir();
                 self.config.download_dir =
@@ -761,6 +905,8 @@ impl App {
         match st.current_field()? {
             Field::CookiesFile => Some(&mut st.draft.cookies_file),
             Field::DownloadDir => Some(&mut st.draft.download_dir),
+            Field::AudiusAppName => st.draft.search.audius_app_name.as_mut(),
+            Field::JamendoClientId => st.draft.search.jamendo_client_id.as_mut(),
             Field::ApiKey => Some(&mut st.draft.gemini_api_key),
             Field::ThemeColor(role) => st.draft.theme.overrides.get_mut(role.id()),
             _ => None,
@@ -786,7 +932,7 @@ impl App {
     /// Leave the settings screen, copying the draft into live state + config and
     /// persisting it. This keeps `q`/Esc from silently discarding changed settings.
     pub(in crate::app) fn close_settings(&mut self) -> Vec<Cmd> {
-        self.confirm_reset_all = false;
+        self.pending_settings_confirm = None;
         let Some(st) = self.settings.take() else {
             self.mode = Mode::Player;
             self.dirty = true;
@@ -807,6 +953,7 @@ impl App {
         let old_ai_enabled = self.config.effective_ai_enabled();
         let old_download_dir = self.config.effective_download_dir();
         d.apply_to(&mut self.config);
+        self.search.source = self.config.effective_search().source;
         // Commit the edited keybindings (live + persisted as compact overrides).
         self.keymap = st.keymap.clone();
         self.config.keybindings = self.keymap.to_overrides();

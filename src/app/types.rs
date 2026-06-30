@@ -77,10 +77,14 @@ pub enum Msg {
     /// Search returned results (possibly empty) for `query`.
     SearchResults {
         query: String,
+        source: SearchSource,
         songs: Vec<Song>,
     },
     /// Search failed.
-    SearchError(String),
+    SearchError {
+        source: SearchSource,
+        error: String,
+    },
     /// Download folder scan completed.
     DownloadsScanned(Vec<Song>),
     /// Synced lyrics for `video_id` (empty `lines` = none found).
@@ -196,7 +200,11 @@ pub enum Msg {
 /// Side effects the reducer asks the run loop to perform.
 pub enum Cmd {
     Player(PlayerCmd),
-    Search(String),
+    Search {
+        query: String,
+        source: SearchSource,
+        config: SearchConfig,
+    },
     /// Persist the library (favorites/history) to disk.
     SaveLibrary,
     /// Persist the downloads manifest (completed downloads' YouTube identity) to disk.
@@ -294,6 +302,10 @@ pub enum MouseTarget {
     Nav(Mode),
     /// The search bar's submit button.
     SearchSubmit,
+    /// Open/close the search-source dropdown.
+    SearchSourceMenu,
+    /// Pick a source from the search-source dropdown.
+    SearchSourceSelect(SearchSource),
     /// A Library tab header.
     LibraryTab(LibraryTab),
     /// A Settings tab header, by index into [`SettingsTab::ALL`].
@@ -327,6 +339,10 @@ pub enum MouseTarget {
     ConfirmDelete,
     /// Cancel button on the "delete downloaded files" modal.
     CancelDelete,
+    /// Confirm button on a Settings confirmation modal.
+    ConfirmSettings,
+    /// Cancel button on a Settings confirmation modal.
+    CancelSettings,
     /// The `ytm-tui` brand label at the top-left of the nav bar — opens the About card.
     AboutTitle,
     /// The GitHub link inside the About card — opens the repo in the system browser.

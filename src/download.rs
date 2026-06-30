@@ -89,7 +89,7 @@ async fn run_download(
     std::fs::create_dir_all(dir).with_context(|| format!("create download dir {dir:?}"))?;
 
     let mut cmd = Command::new("yt-dlp");
-    cmd.arg(song.watch_url())
+    cmd.arg(song.playback_target())
         .args(["-f", "bestaudio", "-x", "--audio-format", "m4a"])
         .args([
             "--embed-metadata",

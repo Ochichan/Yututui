@@ -30,7 +30,10 @@ use crate::player::PlayerCmd;
 use crate::playlists::Playlists;
 use crate::queue::Queue;
 use crate::radio::{self, CandidateSource, Cooc, RadioMode, StationState};
-use crate::settings::{self, Field, FieldKind, SettingsDraft, SettingsState, SettingsTab};
+use crate::search_source::{SearchConfig, SearchSource};
+use crate::settings::{
+    self, Field, FieldKind, SettingsConfirm, SettingsDraft, SettingsState, SettingsTab,
+};
 use crate::signals::{self, Signals};
 use crate::station::StationStore;
 use crate::t;
@@ -129,9 +132,9 @@ pub struct App {
     /// A pending keybinding-conflict warning (Keys tab). When set, a modal popup is shown
     /// and the next key/click dismisses it; the attempted rebind is left unchanged.
     pub key_conflict: Option<Conflict>,
-    /// Whether the "reset all settings" confirmation modal (General tab) is showing. Enter/`y`
-    /// confirms (resets the draft to defaults); any other key / a click cancels.
-    pub confirm_reset_all: bool,
+    /// A pending destructive/settings-wide confirmation. Enter/`y` confirms; Esc/`n` or the
+    /// Cancel button backs out before the key can leak through to the settings list.
+    pub pending_settings_confirm: Option<SettingsConfirm>,
     /// Whether the About card overlay is showing. Opened by clicking the `ytm-tui` brand in the
     /// nav bar or via `Action::ToggleAbout` (F1); any key/click (other than the GitHub link)
     /// dismisses it.
@@ -284,7 +287,7 @@ impl App {
             theme: ThemeConfig::default(),
             help_visible: false,
             key_conflict: None,
-            confirm_reset_all: false,
+            pending_settings_confirm: None,
             about_visible: false,
             about_icon: RefCell::new(None),
             why_ai_visible: false,
@@ -320,6 +323,7 @@ impl App {
             station: StationStore::default(),
             search: SearchState {
                 input: String::new(),
+                source: SearchSource::Youtube,
                 select_all: false,
                 focus: SearchFocus::Input,
                 results: Vec::new(),
@@ -359,11 +363,21 @@ impl App {
         self.ai.model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
         self.theme = cfg.effective_theme();
+        self.search.source = cfg.effective_search().source;
         // Keep the process-wide UI language in sync with the applied config (this is the
         // central apply path, called at startup and after a settings save).
         crate::i18n::set_language(cfg.effective_language());
         // Keep the full config so the settings screen can persist the whole file.
         self.config = cfg.clone();
+    }
+
+    /// Live retro-mode flag. While Settings is open, the draft is what the user is looking at,
+    /// so render from it before the value is committed to config on close.
+    pub fn retro_mode(&self) -> bool {
+        self.settings.as_ref().map_or_else(
+            || self.config.effective_retro_mode(),
+            |s| s.draft.retro_mode,
+        )
     }
 
     /// Seed the player with the last locally recorded track, without starting playback.
@@ -554,8 +568,14 @@ impl App {
                 };
                 self.dirty = true;
             }
-            Msg::SearchResults { query, songs } => {
-                if self.search.searching && query != self.search.input.trim() {
+            Msg::SearchResults {
+                query,
+                source,
+                songs,
+            } => {
+                if self.search.searching
+                    && (query != self.search.input.trim() || source != self.search.source)
+                {
                     return Vec::new();
                 }
                 self.search.searching = false;
@@ -575,9 +595,12 @@ impl App {
                 }
                 self.dirty = true;
             }
-            Msg::SearchError(e) => {
+            Msg::SearchError { source, error } => {
+                if source != self.search.source {
+                    return Vec::new();
+                }
                 self.search.searching = false;
-                self.status.text = format!("{}: {e}", t!("Search error", "검색 오류"));
+                self.status.text = format!("{}: {error}", t!("Search error", "검색 오류"));
                 self.dirty = true;
             }
             Msg::DownloadsScanned(songs) => {
@@ -911,6 +934,7 @@ impl App {
         self.help_visible = false;
         self.dropdowns.eq_open = false;
         self.dropdowns.radio_open = false;
+        self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
@@ -956,6 +980,7 @@ impl App {
     fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
         self.dropdowns.eq_open = false;
         self.dropdowns.radio_open = false;
+        self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;
         // Any navigation deselects: a Ctrl+A highlight must not survive a screen change.

@@ -20,6 +20,7 @@ mod queue;
 mod radio;
 mod remote;
 mod resolver;
+mod search_source;
 mod settings;
 mod signals;
 mod station;
@@ -607,7 +608,11 @@ async fn run(
                         p.send(pc);
                     }
                 }
-                Cmd::Search(query) => api_handle.search(query),
+                Cmd::Search {
+                    query,
+                    source,
+                    config,
+                } => api_handle.search(query, source, config),
                 Cmd::SaveLibrary => {
                     if let Err(e) = app.library.save() {
                         tracing::warn!(error = %e, "failed to save library");

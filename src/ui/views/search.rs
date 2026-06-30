@@ -9,6 +9,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget, ScrollSurface, SearchFocus, StatusKind};
 use crate::t;
@@ -66,22 +67,25 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     render_results(frame, app, rows[2]);
 
     buttons::render_help_button(frame, app, rows[3]);
+    if app.dropdowns.search_source_open {
+        render_source_dropdown(frame, app, inner);
+    }
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
-    // A magnifying-glass icon on the left, the input box in the middle, and a themed Search
-    // button on the right — symmetric search affordances on either side of the query.
+    // A source chip on the left, the input box in the middle, and a themed Search button on
+    // the right. Enter and the button submit; the chip changes the provider.
     let cols = Layout::horizontal([
-        Constraint::Length(SEARCH_ICON_W),
+        Constraint::Length(SEARCH_SOURCE_W),
         Constraint::Min(0),
         Constraint::Length(SEARCH_BTN_W),
     ])
     .split(area);
-    let icon_area = cols[0];
+    let source_area = cols[0];
     let input_area = cols[1];
     let button_area = cols[2];
 
-    render_search_icon(frame, app, icon_area);
+    render_source_chip(frame, app, source_area);
 
     let focused = app.search.focus == SearchFocus::Input;
     let border = if focused {
@@ -91,9 +95,17 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     };
     // Make it obvious when we're not signed in (anonymous = search + public play only).
     let title = if app.authenticated {
-        t!(" Search ", " 검색 ")
+        if crate::i18n::is_korean() {
+            format!(" 검색 · {} ", app.search.source.code())
+        } else {
+            format!(" Search · {} ", app.search.source.code())
+        }
     } else {
-        t!(" Search · anonymous ", " 검색 · 익명 ")
+        if crate::i18n::is_korean() {
+            format!(" 검색 · 익명 · {} ", app.search.source.code())
+        } else {
+            format!(" Search · anonymous · {} ", app.search.source.code())
+        }
     };
     let block = Block::default()
         .title(title)
@@ -120,27 +132,26 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     render_search_button(frame, app, button_area);
 }
 
-/// Width of the left magnifying-glass icon cluster (border + a single centered glyph).
-const SEARCH_ICON_W: u16 = 4;
+/// Width of the left source chip cluster (border + `ALL▾`).
+const SEARCH_SOURCE_W: u16 = 6;
 
 /// Width of the Search button cluster (border + " Search ").
 const SEARCH_BTN_W: u16 = 10;
 
-/// The magnifying-glass (⌕) icon to the left of the input box. A text-style glyph (width 1)
-/// for terminal-safe rendering; bordered to mirror the Search button on the right. Clicking it
-/// submits the query, the same as the Search button or Enter.
-fn render_search_icon(frame: &mut Frame, app: &App, area: Rect) {
+/// The source chip to the left of the input box. Clicking it opens the provider dropdown.
+fn render_source_chip(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderMuted))
         .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let icon = Line::from("⌕")
+    let label = format!("{}▾", app.search.source.code());
+    let chip = Line::from(label)
         .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
         .alignment(Alignment::Center);
-    frame.render_widget(Paragraph::new(icon), inner);
-    app.register_mouse_button(area, MouseTarget::SearchSubmit);
+    frame.render_widget(Paragraph::new(chip), inner);
+    app.register_mouse_button(area, MouseTarget::SearchSourceMenu);
 }
 
 /// The themed Search button next to the input box: clicking it submits the query, the same
@@ -180,10 +191,14 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 ""
             };
+            let source = format!("[{}] ", s.source.code());
             let line = if s.duration.is_empty() {
-                format!("{heart}{} — {}", s.title, s.artist)
+                format!("{source}{heart}{} — {}", s.title, s.artist)
             } else {
-                format!("{heart}{} — {}  ({})", s.title, s.artist, s.duration)
+                format!(
+                    "{source}{heart}{} — {}  ({})",
+                    s.title, s.artist, s.duration
+                )
             };
             ListItem::new(line).style(app.theme.style(R::TextPrimary))
         })
@@ -239,4 +254,109 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         state.offset(),
         area.height as usize,
     );
+}
+
+fn render_source_dropdown(frame: &mut Frame, app: &App, area: Rect) {
+    let rows: Vec<(String, bool, MouseTarget)> = app
+        .config
+        .effective_search()
+        .selectable_sources()
+        .into_iter()
+        .map(|source| {
+            (
+                format!("{}  {}", source.code(), source.label()),
+                source == app.search.source,
+                MouseTarget::SearchSourceSelect(source),
+            )
+        })
+        .collect();
+    render_dropdown(
+        frame,
+        app,
+        area,
+        MouseTarget::SearchSourceMenu,
+        t!(" Source ", " 소스 "),
+        &rows,
+    );
+}
+
+fn dropdown_width<'a>(labels: impl Iterator<Item = &'a str>) -> u16 {
+    labels
+        .map(|l| UnicodeWidthStr::width(l) as u16)
+        .max()
+        .unwrap_or(0)
+        + 1
+        + 2
+}
+
+fn render_dropdown(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    anchor_target: MouseTarget,
+    title: &str,
+    rows: &[(String, bool, MouseTarget)],
+) {
+    let Some(anchor) = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .find(|b| b.target == anchor_target)
+        .map(|b| b.rect)
+    else {
+        return;
+    };
+
+    let box_w = dropdown_width(rows.iter().map(|(l, _, _)| l.as_str()));
+    let box_h = rows.len() as u16 + 2;
+    let x = anchor.x.min(area.right().saturating_sub(box_w));
+    let y = (anchor.y + 1).min(area.bottom().saturating_sub(box_h));
+    let popup = Rect {
+        x,
+        y,
+        width: box_w,
+        height: box_h,
+    }
+    .intersection(area);
+    if popup.is_empty() {
+        return;
+    }
+
+    crate::ui::render_popup_background(frame, app, popup);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let list = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    for (i, (label, active, target)) in rows.iter().enumerate() {
+        let i = i as u16;
+        if i >= list.height {
+            break;
+        }
+        let row = Rect {
+            x: list.x,
+            y: list.y + i,
+            width: list.width,
+            height: 1,
+        };
+        let mut text = format!(" {label}");
+        let pad = (list.width as usize).saturating_sub(UnicodeWidthStr::width(text.as_str()));
+        text.push_str(&" ".repeat(pad));
+        let style = if *active {
+            Style::default()
+                .fg(app.theme.color(R::SelectionFg))
+                .bg(app.theme.color(R::SelectionBg))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            app.theme.style(R::TextPrimary)
+        };
+        frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
+        app.register_mouse_button(row, *target);
+    }
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }

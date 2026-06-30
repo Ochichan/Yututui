@@ -23,6 +23,9 @@ impl App {
     }
 
     pub(in crate::app) fn on_key_search(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        if self.dropdowns.search_source_open {
+            return self.on_key_search_source_menu(k);
+        }
         match self.search.focus {
             SearchFocus::Input => {
                 // Ctrl+A selects the whole query (desktop-style); idempotent re-select.
@@ -33,6 +36,12 @@ impl App {
                     self.search.select_all = !self.search.input.is_empty();
                     self.dirty = true;
                     return Vec::new();
+                }
+                if matches!(
+                    self.keymap.action(KeyContext::SearchInput, k.into()),
+                    Some(Action::ToggleSearchSourceMenu)
+                ) {
+                    return self.toggle_search_source_menu();
                 }
                 // With the query selected, the next key consumes the selection: a character
                 // replaces it, Backspace clears it, anything else just deselects + falls through.
@@ -54,10 +63,19 @@ impl App {
                         return Vec::new();
                     }
                 }
+                let chord = Chord::from(k);
+                if matches!(
+                    self.keymap.context_action(KeyContext::SearchInput, chord),
+                    Some(Action::FocusPrev)
+                ) && !self.search.results.is_empty()
+                {
+                    self.search.focus = SearchFocus::Results;
+                    self.dirty = true;
+                    return Vec::new();
+                }
                 if k.code == KeyCode::Enter {
                     return self.submit_search_query();
                 }
-                let chord = Chord::from(k);
                 if chord.is_typeable()
                     && let KeyCode::Char(c) = k.code
                 {
@@ -66,6 +84,9 @@ impl App {
                     return Vec::new();
                 }
                 match self.keymap.action(KeyContext::SearchInput, k.into()) {
+                    Some(Action::ToggleSearchSourceMenu) => {
+                        return self.toggle_search_source_menu();
+                    }
                     Some(Action::Back) => {
                         self.mode = Mode::Player;
                         self.dirty = true;
@@ -90,7 +111,19 @@ impl App {
                 Some(song) => self.play_now(song),
                 None => Vec::new(),
             },
+            SearchFocus::Results
+                if matches!(
+                    self.keymap
+                        .context_action(KeyContext::SearchResults, k.into()),
+                    Some(Action::FocusPrev)
+                ) =>
+            {
+                self.search.focus = SearchFocus::Input;
+                self.dirty = true;
+                Vec::new()
+            }
             SearchFocus::Results => match self.keymap.action(KeyContext::SearchResults, k.into()) {
+                Some(Action::ToggleSearchSourceMenu) => self.toggle_search_source_menu(),
                 // `\` adds the highlighted result to the queue without interrupting playback.
                 Some(Action::Enqueue) => match self.selected_search_song() {
                     Some(song) => self.enqueue(song),
@@ -160,6 +193,41 @@ impl App {
         }
     }
 
+    fn on_key_search_source_menu(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        let chord = Chord::from(k);
+        let ctx = match self.search.focus {
+            SearchFocus::Input => KeyContext::SearchInput,
+            SearchFocus::Results => KeyContext::SearchResults,
+        };
+        let action = self
+            .keymap
+            .action(ctx, chord)
+            .or_else(|| self.keymap.action(KeyContext::Common, chord));
+
+        match action {
+            Some(Action::ToggleSearchSourceMenu)
+            | Some(Action::Confirm)
+            | Some(Action::Back)
+            | Some(Action::FocusInput) => {
+                self.dropdowns.search_source_open = false;
+                self.dirty = true;
+                Vec::new()
+            }
+            Some(Action::MoveUp) | Some(Action::FocusPrev) => self.cycle_search_source(false),
+            Some(Action::MoveDown) | Some(Action::FocusNext) => self.cycle_search_source(true),
+            _ => match k.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.dropdowns.search_source_open = false;
+                    self.dirty = true;
+                    Vec::new()
+                }
+                KeyCode::Left | KeyCode::Up | KeyCode::BackTab => self.cycle_search_source(false),
+                KeyCode::Right | KeyCode::Down | KeyCode::Tab => self.cycle_search_source(true),
+                _ => Vec::new(),
+            },
+        }
+    }
+
     pub(in crate::app) fn submit_search_query(&mut self) -> Vec<Cmd> {
         self.search.select_all = false;
         let q = self.search.input.trim().to_owned();
@@ -167,9 +235,49 @@ impl App {
         if q.is_empty() {
             Vec::new()
         } else {
+            let config = self.config.effective_search();
+            let source = config.normalized_source(self.search.source);
+            self.search.source = source;
             self.search.searching = true;
             self.status.text.clear();
-            vec![Cmd::Search(q)]
+            vec![Cmd::Search {
+                query: q,
+                source,
+                config,
+            }]
         }
+    }
+
+    pub(in crate::app) fn select_search_source(&mut self, source: SearchSource) -> Vec<Cmd> {
+        self.set_search_source(source, true)
+    }
+
+    pub(in crate::app) fn toggle_search_source_menu(&mut self) -> Vec<Cmd> {
+        let config = self.config.effective_search();
+        self.search.source = config.normalized_source(self.search.source);
+        self.dropdowns.search_source_open = !self.dropdowns.search_source_open;
+        self.dirty = true;
+        Vec::new()
+    }
+
+    pub(in crate::app) fn cycle_search_source(&mut self, forward: bool) -> Vec<Cmd> {
+        let search = self.config.effective_search();
+        let source = search.cycled_source(self.search.source, forward);
+        self.set_search_source(source, false)
+    }
+
+    fn set_search_source(&mut self, source: SearchSource, close_menu: bool) -> Vec<Cmd> {
+        let mut search = self.config.effective_search();
+        let source = search.normalized_source(source);
+        search.source = source;
+        self.search.source = source;
+        self.config.search = search;
+        if close_menu {
+            self.dropdowns.search_source_open = false;
+        }
+        self.status.kind = StatusKind::Info;
+        self.status.text = format!("{}: {}", t!("Search source", "검색 소스"), source.label());
+        self.dirty = true;
+        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
     }
 }

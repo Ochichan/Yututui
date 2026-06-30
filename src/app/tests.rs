@@ -340,30 +340,76 @@ fn enter_in_search_emits_search_cmd() {
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(app.search.searching);
     match cmds.as_slice() {
-        [Cmd::Search(q)] => assert_eq!(q, "lofi"),
+        [
+            Cmd::Search {
+                query,
+                source,
+                config,
+            },
+        ] => {
+            assert_eq!(query, "lofi");
+            assert_eq!(*source, SearchSource::Youtube);
+            assert_eq!(config.source, SearchSource::Youtube);
+        }
         _ => panic!("expected a Search cmd"),
     }
 }
 
 #[test]
-fn remapped_open_search_key_focuses_search_input_from_results() {
+fn ctrl_s_opens_search_source_menu_and_cycles_source() {
+    let mut app = App::new(100);
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('s'))));
+    assert!(cmds.is_empty());
+    assert!(app.dropdowns.search_source_open);
+    assert_eq!(app.search.source, SearchSource::Youtube);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Down)));
+    assert!(app.dropdowns.search_source_open);
+    assert_eq!(app.search.source, SearchSource::SoundCloud);
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::SaveConfig(cfg)] if cfg.search.source == SearchSource::SoundCloud
+    ));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(cmds.is_empty());
+    assert!(!app.dropdowns.search_source_open);
+}
+
+#[test]
+fn shift_tab_toggles_search_focus_between_input_and_results() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.search.results = songs(1);
+    app.search.focus = SearchFocus::Results;
+    app.update(Msg::Key(key(KeyCode::BackTab)));
+    assert_eq!(app.search.focus, SearchFocus::Input);
+
+    app.update(Msg::Key(key(KeyCode::BackTab)));
+    assert_eq!(app.search.focus, SearchFocus::Results);
+}
+
+#[test]
+fn remapped_search_focus_toggle_updates_both_directions() {
     let mut app = App::new(100);
     app.keymap
         .rebind(
-            KeyContext::Player,
-            Action::OpenSearch,
-            crate::keymap::parse_chord("E").unwrap(),
+            KeyContext::SearchResults,
+            Action::FocusPrev,
+            crate::keymap::parse_chord("f5").unwrap(),
         )
         .unwrap();
 
-    app.update(Msg::Key(key(KeyCode::Char('E'))));
-    assert_eq!(app.mode, Mode::Search);
-    assert_eq!(app.search.focus, SearchFocus::Input);
-
+    app.mode = Mode::Search;
     app.search.results = songs(1);
     app.search.focus = SearchFocus::Results;
-    app.update(Msg::Key(key(KeyCode::Char('E'))));
+    app.update(Msg::Key(key(KeyCode::F(5))));
     assert_eq!(app.search.focus, SearchFocus::Input);
+
+    app.update(Msg::Key(key(KeyCode::F(5))));
+    assert_eq!(app.search.focus, SearchFocus::Results);
 }
 
 #[test]
@@ -382,7 +428,10 @@ fn search_submit_stays_enter_when_common_confirm_is_remapped() {
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(app.search.searching);
     match cmds.as_slice() {
-        [Cmd::Search(q)] => assert_eq!(q, "lofi"),
+        [Cmd::Search { query, source, .. }] => {
+            assert_eq!(query, "lofi");
+            assert_eq!(*source, SearchSource::Youtube);
+        }
         _ => panic!("expected a Search cmd"),
     }
 }
@@ -405,7 +454,10 @@ fn search_enter_beats_enter_global_remap_but_other_screens_keep_it() {
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(!app.help_visible);
     match cmds.as_slice() {
-        [Cmd::Search(q)] => assert_eq!(q, "lofi"),
+        [Cmd::Search { query, source, .. }] => {
+            assert_eq!(query, "lofi");
+            assert_eq!(*source, SearchSource::Youtube);
+        }
         _ => panic!("expected a Search cmd"),
     }
 
@@ -421,6 +473,7 @@ fn results_then_enter_plays_and_returns_to_player() {
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
         query: "x".to_owned(),
+        source: SearchSource::Youtube,
         songs: vec![Song::remote("abc123", "Song", "Artist", "3:00")],
     });
     assert_eq!(app.search.focus, SearchFocus::Results);
@@ -435,6 +488,7 @@ fn enter_on_search_result_queues_only_the_selected_song() {
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
         query: "x".to_owned(),
+        source: SearchSource::Youtube,
         songs: vec![
             Song::remote("id0", "Zero", "A", "3:00"),
             Song::remote("id1", "One", "B", "3:00"),
@@ -462,6 +516,7 @@ fn enter_on_search_result_plays_now_keeping_the_queue() {
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
         query: "x".to_owned(),
+        source: SearchSource::Youtube,
         songs: vec![Song::remote("new9", "New", "Z", "3:00")],
     });
     app.search.focus = SearchFocus::Results;
@@ -491,6 +546,7 @@ fn backslash_on_search_result_enqueues_without_interrupting() {
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
         query: "x".to_owned(),
+        source: SearchSource::Youtube,
         songs: vec![Song::remote("new9", "New", "Z", "3:00")],
     });
     app.search.focus = SearchFocus::Results;
@@ -665,6 +721,7 @@ fn right_click_on_a_search_row_adds_it_to_the_queue() {
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
         query: "x".to_owned(),
+        source: SearchSource::Youtube,
         songs: vec![
             Song::remote("r0", "R0", "A", "3:00"),
             Song::remote("r1", "R1", "B", "3:00"),
@@ -1378,6 +1435,12 @@ fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
     focus_reset_keybindings(&mut app);
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(cmds.is_empty());
+    assert_eq!(
+        app.pending_settings_confirm,
+        Some(SettingsConfirm::ResetKeybindings)
+    );
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('y'))));
+    assert!(cmds.is_empty());
     assert_eq!(app.status.text, "Keybindings reset to defaults");
 
     let draft_keymap = &app.settings.as_ref().unwrap().keymap;
@@ -1429,11 +1492,14 @@ fn reset_all_button_confirms_then_restores_defaults() {
     }
     // Enter opens the confirmation modal (does not reset yet).
     app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(app.confirm_reset_all);
+    assert_eq!(
+        app.pending_settings_confirm,
+        Some(SettingsConfirm::ResetAll)
+    );
     assert!((app.settings.as_ref().unwrap().draft.speed - 1.8).abs() < 1e-9);
     // `y` confirms → every draft value is back to its default.
     app.update(Msg::Key(key(KeyCode::Char('y'))));
-    assert!(!app.confirm_reset_all);
+    assert!(app.pending_settings_confirm.is_none());
     let d = &app.settings.as_ref().unwrap().draft;
     assert!((d.speed - 1.0).abs() < 1e-9);
     assert!((d.seek_seconds - 10.0).abs() < 1e-9);
@@ -1446,9 +1512,12 @@ fn reset_all_button_cancel_leaves_settings_untouched() {
     focus_reset_all(&mut app);
     app.settings.as_mut().unwrap().draft.speed = 1.8;
     app.update(Msg::Key(key(KeyCode::Enter))); // open modal
-    assert!(app.confirm_reset_all);
+    assert_eq!(
+        app.pending_settings_confirm,
+        Some(SettingsConfirm::ResetAll)
+    );
     app.update(Msg::Key(key(KeyCode::Esc))); // anything but Enter/`y` cancels
-    assert!(!app.confirm_reset_all);
+    assert!(app.pending_settings_confirm.is_none());
     assert!((app.settings.as_ref().unwrap().draft.speed - 1.8).abs() < 1e-9);
 }
 
@@ -1461,6 +1530,7 @@ fn settings_theme_persists_when_closed_with_back() {
     }
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Graphics);
 
+    app.update(Msg::Key(key(KeyCode::Down))); // row 1 = ThemePreset
     app.update(Msg::Key(key(KeyCode::Right))); // Default -> Midnight
     assert_eq!(app.theme.preset, "midnight");
 
@@ -1481,8 +1551,8 @@ fn settings_color_overrides_persist_when_quitting() {
     {
         let st = app.settings.as_mut().unwrap();
         st.tab = SettingsTab::Graphics;
-        // ThemeColor rows start at field index 2 (after ThemePreset and BackgroundNone).
-        st.row = 2 + crate::theme::ThemeRole::ALL
+        // ThemeColor rows start at field index 3 (after RetroMode, ThemePreset, BackgroundNone).
+        st.row = 3 + crate::theme::ThemeRole::ALL
             .iter()
             .position(|&r| r == role)
             .unwrap();
@@ -1617,7 +1687,14 @@ fn settings_preset_selector_snaps_from_custom_to_flat() {
 fn settings_text_field_edits_path_buffer() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General); row 0 = language
-    app.update(Msg::Key(key(KeyCode::Down))); // row 1 = cookies file
+    let cookies_row = SettingsTab::General
+        .fields()
+        .iter()
+        .position(|f| *f == Field::CookiesFile)
+        .expect("cookies file field");
+    for _ in 0..cookies_row {
+        app.update(Msg::Key(key(KeyCode::Down)));
+    }
     app.update(Msg::Key(key(KeyCode::Enter))); // enter text-edit mode
     assert!(app.settings.as_ref().unwrap().editing_text);
     for c in "/x.txt".chars() {
@@ -3031,6 +3108,8 @@ fn bare_local(path: &str, title: &str) -> Song {
         title: title.to_owned(),
         artist: "Local file".to_owned(),
         duration: String::new(),
+        source: SearchSource::Youtube,
+        playable: None,
         local_path: Some(PathBuf::from(path)),
         yt_video_id: None,
     }
@@ -4439,24 +4518,28 @@ fn rendering_settings_registers_clickable_controls() {
             .collect()
     };
 
-    // Graphics: a Select (ThemePreset, field 0), a Toggle (BackgroundNone, field 1), and a
-    // Text color row (first ThemeColor, field 2).
+    // Graphics: a Toggle (RetroMode, field 0), a Select (ThemePreset, field 1), a Toggle
+    // (BackgroundNone, field 2), and a Text color row (first ThemeColor, field 3).
     let g = render_targets(SettingsTab::Graphics);
     let has = |ts: &[MouseTarget], t: MouseTarget| ts.contains(&t);
     assert!(
-        has(&g, MouseTarget::SettingsChange { row: 0, delta: -1 }),
+        has(&g, MouseTarget::SettingsChange { row: 0, delta: 1 }),
+        "retro mode toggle"
+    );
+    assert!(
+        has(&g, MouseTarget::SettingsChange { row: 1, delta: -1 }),
         "preset ‹ arrow"
     );
     assert!(
-        has(&g, MouseTarget::SettingsChange { row: 0, delta: 1 }),
+        has(&g, MouseTarget::SettingsChange { row: 1, delta: 1 }),
         "preset › arrow"
     );
     assert!(
-        has(&g, MouseTarget::SettingsChange { row: 1, delta: 1 }),
+        has(&g, MouseTarget::SettingsChange { row: 2, delta: 1 }),
         "background toggle"
     );
     assert!(
-        has(&g, MouseTarget::SettingsActivate(2)),
+        has(&g, MouseTarget::SettingsActivate(3)),
         "color row enters hex editor"
     );
     // Headers are render-only — a click on one falls through to nothing, never a field.
@@ -4524,19 +4607,21 @@ fn settings_control_hit_rects_land_on_their_glyphs() {
         "›",
         "speed increase lands on ›"
     );
-    // ThemePreset (Graphics field 0): a Select, so the arrows are < >.
+    // ThemePreset (Graphics field 1): a Select, so the arrows are < >.
+    let theme_dec = MouseTarget::SettingsChange { row: 1, delta: -1 };
+    let theme_inc = MouseTarget::SettingsChange { row: 1, delta: 1 };
     assert_eq!(
-        cell_at(SettingsTab::Graphics, dec),
+        cell_at(SettingsTab::Graphics, theme_dec),
         "<",
         "preset decrease lands on <"
     );
     assert_eq!(
-        cell_at(SettingsTab::Graphics, inc),
+        cell_at(SettingsTab::Graphics, theme_inc),
         ">",
         "preset increase lands on >"
     );
-    // BackgroundNone (Graphics field 1): a Toggle, rect over the [ ] / [x] checkbox.
-    let toggle = MouseTarget::SettingsChange { row: 1, delta: 1 };
+    // BackgroundNone (Graphics field 2): a Toggle, rect over the [ ] / [x] checkbox.
+    let toggle = MouseTarget::SettingsChange { row: 2, delta: 1 };
     assert_eq!(
         cell_at(SettingsTab::Graphics, toggle),
         "[",
@@ -4670,9 +4755,9 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     });
     assert_eq!(app.art_overlay_mask(), 1 << 6);
     app.key_conflict = None;
-    app.confirm_reset_all = true;
+    app.pending_settings_confirm = Some(SettingsConfirm::ResetAll);
     assert_eq!(app.art_overlay_mask(), 1 << 7);
-    app.confirm_reset_all = false;
+    app.pending_settings_confirm = None;
     app.library_ui.confirm_delete = Some(vec![std::path::PathBuf::from("track.mp3")]);
     assert_eq!(app.art_overlay_mask(), 1 << 8);
     app.library_ui.confirm_delete = None;
@@ -4868,7 +4953,7 @@ fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
     assert_opaque_rect(&buf, centered_fixed(modal_area, 54, 9));
 
     let mut reset = app_playing(1, 0);
-    reset.confirm_reset_all = true;
+    reset.pending_settings_confirm = Some(SettingsConfirm::ResetAll);
     let buf = render_app_buffer(&reset, modal_area.width, modal_area.height);
     assert_opaque_rect(&buf, centered_fixed(modal_area, 56, 9));
 
@@ -5274,7 +5359,11 @@ fn clicking_the_search_button_submits_the_query() {
     app.search.input = "lofi beats".to_owned();
     let cmds = click_target(&mut app, MouseTarget::SearchSubmit);
     assert!(app.search.searching);
-    assert!(matches!(cmds.as_slice(), [Cmd::Search(q)] if q == "lofi beats"));
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Search { query, source, .. }]
+            if query == "lofi beats" && *source == SearchSource::Youtube
+    ));
 }
 
 #[test]

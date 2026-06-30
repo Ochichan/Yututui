@@ -140,6 +140,8 @@ mod tests {
             Some(&("Enter".to_owned(), "Search".to_owned()))
         );
         assert!(search_box.contains(&("^a".to_owned(), "Select all".to_owned())));
+        assert!(search_box.contains(&("^s".to_owned(), "Open source menu".to_owned())));
+        assert!(search_box.contains(&("⇧Tab".to_owned(), "Focus search results".to_owned())));
 
         let ai_box = groups
             .iter()
@@ -159,7 +161,9 @@ mod tests {
             search_results.first(),
             Some(&("Enter".to_owned(), "Play selected".to_owned()))
         );
-        // `\` adds to the queue, listed right after the fixed Enter→Play row.
+        assert!(search_results.contains(&("⇧Tab".to_owned(), "Focus search box".to_owned())));
+        assert!(search_results.contains(&("^s".to_owned(), "Open source menu".to_owned())));
+        // `\` adds to the queue.
         assert!(search_results.contains(&("\\".to_owned(), "Add to queue".to_owned())));
     }
 

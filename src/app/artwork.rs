@@ -172,7 +172,7 @@ impl App {
             | ((self.about_visible as u16) << 4)
             | ((self.why_ai_visible as u16) << 5)
             | ((self.key_conflict.is_some() as u16) << 6)
-            | ((self.confirm_reset_all as u16) << 7)
+            | ((self.pending_settings_confirm.is_some() as u16) << 7)
             | ((self.library_ui.confirm_delete.is_some() as u16) << 8)
             | ((!matches!(self.mode, Mode::Player) as u16) << 9)
     }
@@ -252,7 +252,7 @@ impl App {
         Some(match &song.local_path {
             Some(path) => ArtSource::Local(path.clone()),
             None => ArtSource::Remote {
-                video_id: song.video_id.clone(),
+                video_id: song.youtube_id()?.to_owned(),
             },
         })
     }

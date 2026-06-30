@@ -410,10 +410,9 @@ impl App {
         // instant (mirrors load_song's peek-next prefetch).
         let mut cmds = Vec::new();
         if let Some(next) = self.queue.peek_next()
-            && !next.is_local()
+            && let Some(watch_url) = next.prefetch_target()
         {
             let video_id = next.video_id.clone();
-            let watch_url = next.watch_url();
             if !self.prefetch.resolved.contains_key(&video_id) {
                 cmds.push(Cmd::Resolve {
                     video_id,

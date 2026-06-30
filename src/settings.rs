@@ -18,8 +18,9 @@ use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
 use crate::keymap::{Action, KeyContext, KeyMap};
 use crate::radio::RadioMode;
+use crate::search_source::SearchConfig;
 use crate::t;
-use crate::theme::{ThemeConfig, ThemeRole};
+use crate::theme::{ThemeConfig, ThemePreset, ThemeRole};
 
 /// Per-band gain limits and keyboard step (dB), for the EQ sliders.
 pub const BAND_GAIN_MIN: f64 = -12.0;
@@ -87,6 +88,15 @@ impl SettingsTab {
         match self {
             SettingsTab::General => vec![
                 Field::Language,
+                Field::SearchSource,
+                Field::SearchYoutube,
+                Field::SearchSoundCloud,
+                Field::SearchAudius,
+                Field::AudiusAppName,
+                Field::SearchJamendo,
+                Field::JamendoClientId,
+                Field::SearchInternetArchive,
+                Field::SearchRadioBrowser,
                 Field::CookiesFile,
                 Field::DownloadDir,
                 Field::Mouse,
@@ -111,7 +121,7 @@ impl SettingsTab {
             // Theme (preset + transparent-bg toggle), then every color role, then the
             // animation toggles (master kill-switch first, then per-element effects).
             SettingsTab::Graphics => {
-                let mut f = vec![Field::ThemePreset, Field::BackgroundNone];
+                let mut f = vec![Field::RetroMode, Field::ThemePreset, Field::BackgroundNone];
                 f.extend(ThemeRole::ALL.iter().copied().map(Field::ThemeColor));
                 f.extend([
                     Field::AnimMaster,
@@ -155,7 +165,7 @@ impl SettingsTab {
                 (t!("EQ", "EQ"), eq::BANDS + 2),
             ],
             SettingsTab::Graphics => vec![
-                (t!("Theme", "테마"), 2),
+                (t!("Theme", "테마"), 3),
                 (t!("Colors", "색상"), ThemeRole::ALL.len()),
                 (t!("Animations", "애니메이션"), 15),
             ],
@@ -170,6 +180,16 @@ pub enum Field {
     // General
     /// The UI language (English / 한국어), cycled like any other Select field.
     Language,
+    /// Default source selected in the search box.
+    SearchSource,
+    SearchYoutube,
+    SearchSoundCloud,
+    SearchAudius,
+    AudiusAppName,
+    SearchJamendo,
+    JamendoClientId,
+    SearchInternetArchive,
+    SearchRadioBrowser,
     CookiesFile,
     DownloadDir,
     Mouse,
@@ -198,6 +218,8 @@ pub enum Field {
     /// The radio station's adventurousness (Focused / Balanced / Discovery).
     RadioMode,
     // Theme
+    /// Linux basic TTY compatibility: English UI, Retro theme, and ASCII-safe rendering.
+    RetroMode,
     ThemePreset,
     /// Toggle the background to "no color" (transparent), letting the terminal show through.
     BackgroundNone,
@@ -241,20 +263,94 @@ pub enum FieldKind {
     Button,
 }
 
+/// Settings actions that require an explicit confirmation before mutating the draft.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsConfirm {
+    RetroMode,
+    ResetKeybindings,
+    ResetAll,
+}
+
+impl SettingsConfirm {
+    pub fn title(self) -> &'static str {
+        match self {
+            SettingsConfirm::RetroMode => t!(" Confirm retro mode ", " 레트로 모드 확인 "),
+            SettingsConfirm::ResetKeybindings => {
+                t!(" Confirm reset keybindings ", " 단축키 초기화 확인 ")
+            }
+            SettingsConfirm::ResetAll => {
+                t!(" Confirm reset all settings ", " 모든 설정 초기화 확인 ")
+            }
+        }
+    }
+
+    pub fn prompt(self, enabling: bool) -> &'static str {
+        match self {
+            SettingsConfirm::RetroMode if enabling => {
+                t!("Enable Retro mode?", "레트로 모드를 켤까요?")
+            }
+            SettingsConfirm::RetroMode => t!("Disable Retro mode?", "레트로 모드를 끌까요?"),
+            SettingsConfirm::ResetKeybindings => {
+                t!(
+                    "Reset every keybinding to default?",
+                    "모든 단축키를 기본값으로 되돌릴까요?"
+                )
+            }
+            SettingsConfirm::ResetAll => {
+                t!(
+                    "Restore every setting to its default?",
+                    "모든 설정을 기본값으로 되돌릴까요?"
+                )
+            }
+        }
+    }
+
+    pub fn detail(self, enabling: bool) -> &'static str {
+        match self {
+            SettingsConfirm::RetroMode if enabling => t!(
+                "This switches the UI to English and the Retro theme.",
+                "UI가 영어와 레트로 테마로 전환됩니다."
+            ),
+            SettingsConfirm::RetroMode => t!(
+                "Theme and language stay as they are until changed.",
+                "테마와 언어는 직접 바꾸기 전까지 유지됩니다."
+            ),
+            SettingsConfirm::ResetKeybindings => t!(
+                "The edited keymap will be replaced in this settings draft.",
+                "현재 설정 초안의 단축키가 모두 교체됩니다."
+            ),
+            SettingsConfirm::ResetAll => t!(
+                "Keybindings, theme, language, and API key included.",
+                "단축키, 테마, 언어, API 키 포함."
+            ),
+        }
+    }
+}
+
 impl Field {
     pub fn kind(self) -> FieldKind {
         match self {
-            Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => {
-                FieldKind::Text
-            }
+            Field::CookiesFile
+            | Field::DownloadDir
+            | Field::AudiusAppName
+            | Field::JamendoClientId
+            | Field::ApiKey
+            | Field::ThemeColor(_) => FieldKind::Text,
             Field::Mouse
             | Field::AlbumArt
             | Field::AutoplayOnStart
+            | Field::SearchYoutube
+            | Field::SearchSoundCloud
+            | Field::SearchAudius
+            | Field::SearchJamendo
+            | Field::SearchInternetArchive
+            | Field::SearchRadioBrowser
             | Field::MouseWheelVolume
             | Field::Gapless
             | Field::AutoplayRadio
             | Field::Normalize
             | Field::AiEnabled
+            | Field::RetroMode
             | Field::BackgroundNone
             | Field::AnimPauseUnfocused
             | Field::AnimMaster
@@ -271,6 +367,7 @@ impl Field {
             | Field::AnimStarfield
             | Field::AnimBounce => FieldKind::Toggle,
             Field::Language
+            | Field::SearchSource
             | Field::EqPreset
             | Field::GeminiModel
             | Field::ThemePreset
@@ -308,6 +405,19 @@ impl Field {
     pub fn label(self) -> String {
         match self {
             Field::Language => t!("Language", "언어").to_owned(),
+            Field::SearchSource => t!("Search source", "검색 소스").to_owned(),
+            Field::SearchYoutube => t!("Source: YouTube", "소스: YouTube").to_owned(),
+            Field::SearchSoundCloud => t!("Source: SoundCloud", "소스: SoundCloud").to_owned(),
+            Field::SearchAudius => t!("Source: Audius", "소스: Audius").to_owned(),
+            Field::AudiusAppName => t!("Audius app name", "Audius 앱 이름").to_owned(),
+            Field::SearchJamendo => t!("Source: Jamendo", "소스: Jamendo").to_owned(),
+            Field::JamendoClientId => t!("Jamendo client_id", "Jamendo client_id").to_owned(),
+            Field::SearchInternetArchive => {
+                t!("Source: Internet Archive", "소스: Internet Archive").to_owned()
+            }
+            Field::SearchRadioBrowser => {
+                t!("Source: Radio Browser", "소스: Radio Browser").to_owned()
+            }
             Field::CookiesFile => t!("Cookies file", "쿠키 파일").to_owned(),
             Field::DownloadDir => t!("Download dir", "다운로드 폴더").to_owned(),
             Field::Mouse => t!("Mouse (next launch)", "마우스 (재시작 후 적용)").to_owned(),
@@ -329,6 +439,7 @@ impl Field {
             Field::AiEnabled => t!("Enable AI", "AI 사용").to_owned(),
             Field::GeminiModel => t!("Model", "모델").to_owned(),
             Field::ApiKey => t!("API key", "API 키").to_owned(),
+            Field::RetroMode => t!("Retro mode", "레트로 모드").to_owned(),
             Field::ThemePreset => t!("Preset", "프리셋").to_owned(),
             Field::BackgroundNone => t!("Background: None", "배경 없음").to_owned(),
             Field::ThemeColor(role) => role.label().to_owned(),
@@ -374,6 +485,7 @@ pub fn freq_label(i: usize) -> String {
 pub struct SettingsDraft {
     pub cookies_file: String,
     pub download_dir: String,
+    pub search: SearchConfig,
     pub mouse: bool,
     pub album_art: bool,
     pub autoplay_on_start: bool,
@@ -396,6 +508,8 @@ pub struct SettingsDraft {
     pub ai_enabled: bool,
     /// Color theme preset plus role overrides.
     pub theme: ThemeConfig,
+    /// Linux basic TTY compatibility: English UI + Retro theme + ASCII-safe rendering.
+    pub retro_mode: bool,
     /// UI language. Applied live (via [`crate::i18n::set_language`]) as the user cycles the
     /// dropdown, and persisted on close.
     pub language: Language,
@@ -411,6 +525,23 @@ impl SettingsDraft {
             // Each language names itself, so this value is the same regardless of the active
             // UI language (English / 한국어).
             Field::Language => self.language.native_name().to_owned(),
+            Field::SearchSource => self.search.source.label().to_owned(),
+            Field::SearchYoutube => toggle_str(self.search.youtube),
+            Field::SearchSoundCloud => toggle_str(self.search.soundcloud),
+            Field::SearchAudius => toggle_str(self.search.audius),
+            Field::AudiusAppName => self
+                .search
+                .audius_app_name
+                .clone()
+                .unwrap_or_else(|| t!("(default: ytm-tui)", "(기본값: ytm-tui)").to_owned()),
+            Field::SearchJamendo => toggle_str(self.search.jamendo),
+            Field::JamendoClientId => self
+                .search
+                .jamendo_client_id
+                .clone()
+                .unwrap_or_else(|| t!("(none)", "(없음)").to_owned()),
+            Field::SearchInternetArchive => toggle_str(self.search.internet_archive),
+            Field::SearchRadioBrowser => toggle_str(self.search.radio_browser),
             Field::CookiesFile => {
                 if self.cookies_file.is_empty() {
                     default_cookies_file()
@@ -449,6 +580,7 @@ impl SettingsDraft {
             Field::Normalize => toggle_str(self.normalize),
             Field::AiEnabled => toggle_str(self.ai_enabled),
             Field::GeminiModel => self.gemini_model.label().to_owned(),
+            Field::RetroMode => toggle_str(self.retro_mode),
             Field::ThemePreset => self.theme.preset_enum().label().to_owned(),
             Field::BackgroundNone => {
                 toggle_str(self.theme.is_role_transparent(ThemeRole::Background))
@@ -496,6 +628,8 @@ impl SettingsDraft {
         match field {
             Field::CookiesFile => Some(&self.cookies_file),
             Field::DownloadDir => Some(&self.download_dir),
+            Field::AudiusAppName => self.search.audius_app_name.as_deref(),
+            Field::JamendoClientId => self.search.jamendo_client_id.as_deref(),
             Field::ApiKey => Some(&self.gemini_api_key),
             Field::ThemeColor(role) => self.theme.overrides.get(role.id()).map(String::as_str),
             _ => None,
@@ -507,6 +641,7 @@ impl SettingsDraft {
     pub fn apply_to(&self, cfg: &mut Config) {
         cfg.cookies_file = blank_to_none(&self.cookies_file).map(PathBuf::from);
         cfg.download_dir = blank_to_none(&self.download_dir).map(PathBuf::from);
+        cfg.search = self.search.clone().normalized();
         cfg.mouse = Some(self.mouse);
         cfg.album_art = Some(self.album_art);
         cfg.autoplay_on_start = Some(self.autoplay_on_start);
@@ -528,8 +663,16 @@ impl SettingsDraft {
         cfg.gemini_model = self.gemini_model;
         cfg.gemini_api_key = blank_to_none(&self.gemini_api_key);
         cfg.ai_enabled = Some(self.ai_enabled);
-        cfg.theme = self.theme.normalized();
-        cfg.language = self.language;
+        cfg.retro_mode = self.retro_mode;
+        if self.retro_mode {
+            let mut retro = ThemeConfig::default();
+            retro.set_preset(ThemePreset::Retro);
+            cfg.theme = retro;
+            cfg.language = Language::English;
+        } else {
+            cfg.theme = self.theme.normalized();
+            cfg.language = self.language;
+        }
         cfg.animations = self.animations;
     }
 }
@@ -613,12 +756,14 @@ pub fn clamp_seek_seconds(s: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search_source::SearchSource;
 
     /// A neutral draft the value/apply tests can tweak one field at a time.
     fn base_draft() -> SettingsDraft {
         SettingsDraft {
             cookies_file: String::new(),
             download_dir: String::new(),
+            search: SearchConfig::default(),
             mouse: true,
             album_art: false,
             autoplay_on_start: false,
@@ -635,6 +780,7 @@ mod tests {
             gemini_api_key: String::new(),
             ai_enabled: true,
             theme: ThemeConfig::default(),
+            retro_mode: false,
             language: Language::English,
             animations: AnimationsConfig::default(),
         }
@@ -655,12 +801,14 @@ mod tests {
         let _guard = crate::i18n::lock_for_test();
         let f = SettingsTab::Graphics.fields();
         // ThemePreset + BackgroundNone + every color role + 15 animation fields
+        // plus the RetroMode fallback toggle.
         // (master enable + fps slider + pause-when-unfocused toggle + 12 per-effect toggles).
-        assert_eq!(f.len(), 2 + ThemeRole::ALL.len() + 15);
-        assert_eq!(f[0], Field::ThemePreset);
-        assert_eq!(f[1], Field::BackgroundNone);
-        assert!(matches!(f[2], Field::ThemeColor(_)));
-        let anim_start = 2 + ThemeRole::ALL.len();
+        assert_eq!(f.len(), 3 + ThemeRole::ALL.len() + 15);
+        assert_eq!(f[0], Field::RetroMode);
+        assert_eq!(f[1], Field::ThemePreset);
+        assert_eq!(f[2], Field::BackgroundNone);
+        assert!(matches!(f[3], Field::ThemeColor(_)));
+        let anim_start = 3 + ThemeRole::ALL.len();
         assert_eq!(f[anim_start], Field::AnimMaster);
         // The fps slider sits right after the master enable; it's the one non-toggle here.
         assert_eq!(f[anim_start + 1], Field::AnimFps);
@@ -754,13 +902,22 @@ mod tests {
     }
 
     #[test]
-    fn general_tab_has_autoplay_on_start_toggle() {
+    fn general_tab_has_search_options_and_autoplay_toggle() {
         let _guard = crate::i18n::lock_for_test();
         let f = SettingsTab::General.fields();
         assert_eq!(
             f,
             vec![
                 Field::Language,
+                Field::SearchSource,
+                Field::SearchYoutube,
+                Field::SearchSoundCloud,
+                Field::SearchAudius,
+                Field::AudiusAppName,
+                Field::SearchJamendo,
+                Field::JamendoClientId,
+                Field::SearchInternetArchive,
+                Field::SearchRadioBrowser,
                 Field::CookiesFile,
                 Field::DownloadDir,
                 Field::Mouse,
@@ -772,6 +929,9 @@ mod tests {
         );
         assert_eq!(Field::ResetKeybindings.kind(), FieldKind::Button);
         assert_eq!(Field::ResetAll.kind(), FieldKind::Button);
+        assert_eq!(Field::SearchSource.kind(), FieldKind::Select);
+        assert_eq!(Field::SearchSoundCloud.kind(), FieldKind::Toggle);
+        assert_eq!(Field::JamendoClientId.kind(), FieldKind::Text);
         assert_eq!(Field::AutoplayOnStart.kind(), FieldKind::Toggle);
         assert_eq!(Field::AlbumArt.kind(), FieldKind::Toggle);
         // Off by default, and the toggle renders as an empty checkbox.
@@ -780,6 +940,9 @@ mod tests {
             draft.value_display(Field::ResetKeybindings),
             "↵ press Enter"
         );
+        assert_eq!(draft.value_display(Field::SearchSource), "YouTube");
+        assert_eq!(draft.value_display(Field::SearchSoundCloud), "[x]");
+        assert_eq!(draft.value_display(Field::JamendoClientId), "(none)");
         assert!(!draft.autoplay_on_start);
         assert_eq!(draft.value_display(Field::AutoplayOnStart), "[ ]");
     }
@@ -814,9 +977,11 @@ mod tests {
 
     #[test]
     fn theme_and_colors_are_editable_and_persistent() {
-        // Theme preset + transparent-bg toggle lead the Graphics tab; the color roles follow.
+        // Retro mode + theme preset + transparent-bg toggle lead the Graphics tab; colors follow.
         let f = SettingsTab::Graphics.fields();
-        assert_eq!(f[0], Field::ThemePreset);
+        assert_eq!(f[0], Field::RetroMode);
+        assert_eq!(f[1], Field::ThemePreset);
+        assert_eq!(f[2], Field::BackgroundNone);
         let color_fields: Vec<Field> = f
             .into_iter()
             .filter(|fld| matches!(fld, Field::ThemeColor(_)))
@@ -855,6 +1020,11 @@ mod tests {
         let draft = SettingsDraft {
             cookies_file: "/tmp/cookies.txt".to_owned(),
             download_dir: "/tmp/downloads".to_owned(),
+            search: SearchConfig {
+                source: SearchSource::SoundCloud,
+                jamendo_client_id: Some("jam-id".to_owned()),
+                ..SearchConfig::default()
+            },
             mouse: false,
             album_art: true,
             autoplay_on_start: true,
@@ -871,6 +1041,7 @@ mod tests {
             gemini_api_key: "  AIzaPersist  ".to_owned(),
             ai_enabled: false,
             theme,
+            retro_mode: false,
             language: Language::Korean,
             animations: AnimationsConfig {
                 master: true,
@@ -892,6 +1063,8 @@ mod tests {
         assert!(!cfg.animations.pause_unfocused);
         assert_eq!(cfg.cookies_file, Some(PathBuf::from("/tmp/cookies.txt")));
         assert_eq!(cfg.download_dir, Some(PathBuf::from("/tmp/downloads")));
+        assert_eq!(cfg.search.source, SearchSource::SoundCloud);
+        assert_eq!(cfg.search.jamendo_client_id.as_deref(), Some("jam-id"));
         assert_eq!(cfg.mouse, Some(false));
         assert_eq!(cfg.album_art, Some(true));
         assert_eq!(cfg.autoplay_on_start, Some(true));

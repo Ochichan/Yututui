@@ -15,8 +15,9 @@ use crate::ai::GeminiModel;
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
 use crate::radio::RadioConfig;
+use crate::search_source::SearchConfig;
 use crate::t;
-use crate::theme::ThemeConfig;
+use crate::theme::{ThemeConfig, ThemePreset};
 
 /// Clamp range for playback speed (matches the `>`/`<` controls and the settings slider).
 pub const SPEED_MIN: f64 = 0.5;
@@ -230,6 +231,8 @@ pub struct Config {
     /// Auto-play the restored last track as soon as the app launches. `None` → off
     /// (opt-in; a fresh launch otherwise seeds the track paused and idle).
     pub autoplay_on_start: Option<bool>,
+    /// Search source selection, enabled providers, and provider identifiers.
+    pub search: SearchConfig,
     /// Local radio engine tuning (scoring weights, diversity, cooldown). Defaults ship a
     /// single tuned `Balanced` profile; every field is `#[serde(default)]`.
     pub radio: RadioConfig,
@@ -251,6 +254,8 @@ pub struct Config {
     // Theme -------------------------------------------------------------------
     /// Color theme preset plus per-role `#RRGGBB` overrides.
     pub theme: ThemeConfig,
+    /// Linux basic TTY compatibility mode: English UI, Retro theme, ASCII-safe rendering.
+    pub retro_mode: bool,
 
     // Localization ------------------------------------------------------------
     /// UI language. `English` is the default; switching it re-renders every label, button,
@@ -288,12 +293,14 @@ impl Default for Config {
             gapless: None,
             autoplay_radio: None,
             autoplay_on_start: None,
+            search: SearchConfig::default(),
             radio: RadioConfig::default(),
             animations: AnimationsConfig::default(),
             gemini_api_key: None,
             gemini_model: GeminiModel::default(),
             ai_enabled: None,
             theme: ThemeConfig::default(),
+            retro_mode: false,
             language: Language::default(),
             keybindings: std::collections::BTreeMap::new(),
             video_layout: VideoOverlay::default(),
@@ -439,6 +446,11 @@ impl Config {
         self.autoplay_on_start.unwrap_or(false)
     }
 
+    /// Search provider settings with a valid selected source.
+    pub fn effective_search(&self) -> SearchConfig {
+        self.search.clone().normalized()
+    }
+
     /// The Gemini API key to use. The `GEMINI_API_KEY` env var wins over the config
     /// value; whitespace is trimmed and an empty result is treated as unset (`None`).
     pub fn effective_gemini_api_key(&self) -> Option<String> {
@@ -478,12 +490,27 @@ impl Config {
 
     /// The normalized theme config to apply at runtime.
     pub fn effective_theme(&self) -> ThemeConfig {
-        self.theme.normalized()
+        if self.retro_mode {
+            let mut theme = ThemeConfig::default();
+            theme.set_preset(ThemePreset::Retro);
+            theme
+        } else {
+            self.theme.normalized()
+        }
     }
 
     /// The UI language to apply at runtime (default English).
     pub fn effective_language(&self) -> Language {
-        self.language
+        if self.retro_mode {
+            Language::English
+        } else {
+            self.language
+        }
+    }
+
+    /// Whether Linux basic TTY compatibility mode is active (default off).
+    pub fn effective_retro_mode(&self) -> bool {
+        self.retro_mode
     }
 }
 
@@ -609,6 +636,7 @@ mod tests {
             gapless: Some(false),
             autoplay_radio: Some(true),
             autoplay_on_start: Some(true),
+            search: SearchConfig::default(),
             radio: RadioConfig::default(),
             animations: AnimationsConfig {
                 master: true,
@@ -619,6 +647,7 @@ mod tests {
             gemini_model: GeminiModel::Latest,
             ai_enabled: Some(false),
             theme,
+            retro_mode: true,
             language: Language::Korean,
             keybindings: std::collections::BTreeMap::new(),
             video_layout: VideoOverlay::Large,
@@ -645,6 +674,7 @@ mod tests {
         assert!(!back.animations.donut);
         assert_eq!(back.gemini_api_key.as_deref(), Some("AIzaSecret"));
         assert_eq!(back.gemini_model, GeminiModel::Latest);
+        assert!(back.retro_mode);
         assert_eq!(back.video_layout, VideoOverlay::Large);
         assert_eq!(back.theme.preset, "midnight");
         assert_eq!(

@@ -49,6 +49,9 @@ impl ThemeConfig {
     }
 
     pub fn color(&self, role: ThemeRole) -> Color {
+        if self.preset_enum() == ThemePreset::Retro && !self.overrides.contains_key(role.id()) {
+            return role.retro_color();
+        }
         let value = self.effective_hex(role);
         if is_transparent(&value) {
             Color::Reset
@@ -114,6 +117,7 @@ impl ThemeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemePreset {
     Default,
+    Retro,
     Midnight,
     Light,
     HighContrast,
@@ -127,7 +131,7 @@ pub enum ThemePreset {
 }
 
 impl ThemePreset {
-    pub const ALL: [ThemePreset; 11] = [
+    pub const ALL: [ThemePreset; 12] = [
         ThemePreset::Default,
         ThemePreset::Midnight,
         ThemePreset::Light,
@@ -139,11 +143,13 @@ impl ThemePreset {
         ThemePreset::TokyoNight,
         ThemePreset::Solarized,
         ThemePreset::RosePine,
+        ThemePreset::Retro,
     ];
 
     pub fn id(self) -> &'static str {
         match self {
             ThemePreset::Default => "default",
+            ThemePreset::Retro => "retro",
             ThemePreset::Midnight => "midnight",
             ThemePreset::Light => "light",
             ThemePreset::HighContrast => "high_contrast",
@@ -160,6 +166,7 @@ impl ThemePreset {
     pub fn label(self) -> &'static str {
         match self {
             ThemePreset::Default => "Default",
+            ThemePreset::Retro => "Retro",
             ThemePreset::Midnight => "Midnight",
             ThemePreset::Light => "Light",
             ThemePreset::HighContrast => "High Contrast",
@@ -394,9 +401,43 @@ impl ThemeRole {
         }
     }
 
+    fn retro_color(self) -> Color {
+        match self {
+            ThemeRole::Background | ThemeRole::TextInverse | ThemeRole::SelectionFg => Color::Black,
+            ThemeRole::TextPrimary
+            | ThemeRole::TextSubtle
+            | ThemeRole::AccentAlt
+            | ThemeRole::SelectionBg
+            | ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => Color::Gray,
+            ThemeRole::TextMuted | ThemeRole::SettingsLabel => Color::DarkGray,
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
+            | ThemeRole::SettingsGroup
+            | ThemeRole::GaugeFilled
+            | ThemeRole::Success
+            | ThemeRole::AiAssistant => Color::Green,
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
+            | ThemeRole::SelectionInactiveBg => Color::Blue,
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => Color::Yellow,
+            ThemeRole::Error | ThemeRole::AiError => Color::Red,
+        }
+    }
+
     pub fn default_hex(self, preset: ThemePreset) -> &'static str {
         match preset {
             ThemePreset::Default => self.default_dark(),
+            ThemePreset::Retro => self.retro(),
             ThemePreset::Midnight => self.midnight(),
             ThemePreset::Light => self.light(),
             ThemePreset::HighContrast => self.high_contrast(),
@@ -447,6 +488,40 @@ impl ThemeRole {
             | ThemeRole::SettingsValue
             | ThemeRole::HelpAction => "#CDD6F4",
             ThemeRole::SettingsLabel => "#A6ADC8",
+        }
+    }
+
+    fn retro(self) -> &'static str {
+        match self {
+            ThemeRole::Background => "#000000",
+            ThemeRole::TextPrimary => "#C0C0C0",
+            ThemeRole::TextMuted => "#808080",
+            ThemeRole::TextSubtle => "#C0C0C0",
+            ThemeRole::TextInverse => "#000000",
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
+            | ThemeRole::SettingsGroup
+            | ThemeRole::GaugeFilled => "#00AA00",
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
+            | ThemeRole::SelectionInactiveBg => "#0000AA",
+            ThemeRole::AccentAlt | ThemeRole::SelectionBg => "#AAAAAA",
+            ThemeRole::Success | ThemeRole::AiAssistant => "#00AA00",
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#AA5500",
+            ThemeRole::Error | ThemeRole::AiError => "#AA0000",
+            ThemeRole::SelectionFg => "#000000",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#C0C0C0",
+            ThemeRole::SettingsLabel => "#808080",
         }
     }
 

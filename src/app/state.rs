@@ -86,8 +86,8 @@ pub struct Status {
     pub kind: StatusKind,
 }
 
-/// The two mutually-exclusive click-to-open dropdowns on the player status line (EQ preset
-/// and radio mode). Opening one closes the other; both are player-only and session-ephemeral.
+/// Click-to-open dropdowns. The player status-line menus are mutually exclusive; the search
+/// source menu is separate but shares the same modal dismissal path.
 #[derive(Default)]
 pub struct Dropdowns {
     /// Whether the EQ-preset dropdown is showing (toggled by clicking the `eq:` label,
@@ -95,6 +95,8 @@ pub struct Dropdowns {
     pub eq_open: bool,
     /// Whether the radio-mode dropdown is showing. Mutually exclusive with `eq_open`.
     pub radio_open: bool,
+    /// Whether the search-source dropdown is showing.
+    pub search_source_open: bool,
 }
 
 /// Listening-session tracking for skip-confidence: how many tracks have started this session
@@ -180,6 +182,8 @@ pub struct Lyrics {
 pub struct SearchState {
     /// The search query being typed.
     pub input: String,
+    /// The source currently selected in the search box.
+    pub source: SearchSource,
     /// Whether Ctrl+A has selected the whole query (desktop-style: the next edit
     /// replaces or clears it). Reset on any consuming keypress.
     pub select_all: bool,

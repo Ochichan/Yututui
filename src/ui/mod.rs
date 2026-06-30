@@ -2,6 +2,7 @@
 
 pub mod anim;
 pub mod buttons;
+pub mod retro;
 pub mod scroll;
 pub mod text;
 pub mod views;
@@ -48,14 +49,15 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(conflict) = &app.key_conflict {
         views::settings::render_conflict(frame, app, area, conflict);
     }
-    // The "reset all settings" confirmation is likewise modal.
-    if app.confirm_reset_all {
-        views::settings::render_confirm_reset(frame, app, area);
+    // Settings confirmations are likewise modal.
+    if let Some(confirm) = app.pending_settings_confirm {
+        views::settings::render_confirm(frame, app, area, confirm);
     }
     // Deleting downloaded files is modal and irreversible — drawn last so its buttons win.
     if app.library_ui.confirm_delete.is_some() {
         views::library::render_confirm_delete(frame, app, area);
     }
+    retro::scrub_frame(frame, app);
 }
 
 pub fn popup_bg(app: &App) -> Color {

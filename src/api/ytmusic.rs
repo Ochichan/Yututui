@@ -15,8 +15,9 @@ use ytmapi_rs::YtMusic;
 use ytmapi_rs::auth::BrowserToken;
 use ytmapi_rs::common::{VideoID, YoutubeID};
 
-use super::Song;
+use super::{PlayableRef, Song};
 use crate::radio::{self, RadioConfig, RadioMode};
+use crate::search_source::{SearchConfig, SearchSource};
 use crate::util::format;
 
 /// How many results a search returns, for both backends. The anonymous yt-dlp path asks
@@ -24,6 +25,7 @@ use crate::util::format;
 /// at least this many (or runs out). Capped at 50 — `ytdlp_search` clamps to the same.
 const SEARCH_RESULT_LIMIT: usize = 50;
 const RADIO_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(8);
+const PROVIDER_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// A YouTube Music client in one of two auth modes.
 pub enum YtMusicApi {
@@ -42,7 +44,76 @@ impl YtMusicApi {
 
     /// Search for songs matching `query`, using the backend for this mode. Returns up to
     /// [`SEARCH_RESULT_LIMIT`] tracks.
-    pub async fn search_songs(&self, query: &str) -> Result<Vec<Song>> {
+    pub async fn search_songs(
+        &self,
+        query: &str,
+        source: SearchSource,
+        config: &SearchConfig,
+    ) -> Result<Vec<Song>> {
+        match source {
+            SearchSource::All => self.search_all_sources(query, config).await,
+            source => self.search_one_source(query, source, config).await,
+        }
+    }
+
+    async fn search_all_sources(&self, query: &str, config: &SearchConfig) -> Result<Vec<Song>> {
+        let mut songs = Vec::new();
+        let mut seen = HashSet::new();
+        let mut errors = Vec::new();
+        for source in config.enabled_sources() {
+            match self.search_one_source(query, source, config).await {
+                Ok(results) => {
+                    for song in results {
+                        if seen.insert(song.video_id.clone()) {
+                            songs.push(song);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(source = %source.code(), error = %format!("{e:#}"), "source search failed");
+                    errors.push(format!("{}: {e:#}", source.code()));
+                }
+            }
+            if songs.len() >= SEARCH_RESULT_LIMIT {
+                songs.truncate(SEARCH_RESULT_LIMIT);
+                break;
+            }
+        }
+        if songs.is_empty() && !errors.is_empty() {
+            bail!("all enabled sources failed ({})", errors.join("; "));
+        }
+        Ok(songs)
+    }
+
+    async fn search_one_source(
+        &self,
+        query: &str,
+        source: SearchSource,
+        config: &SearchConfig,
+    ) -> Result<Vec<Song>> {
+        if !config.is_enabled(source) {
+            bail!("{} is disabled in Settings → General", source.label());
+        }
+        match source {
+            SearchSource::Youtube => self.search_youtube(query).await,
+            SearchSource::SoundCloud => {
+                ytdlp_flat_search(
+                    SearchSource::SoundCloud,
+                    "scsearch",
+                    query,
+                    SEARCH_RESULT_LIMIT,
+                )
+                .await
+            }
+            SearchSource::Audius => audius_search(query, config, SEARCH_RESULT_LIMIT).await,
+            SearchSource::Jamendo => jamendo_search(query, config, SEARCH_RESULT_LIMIT).await,
+            SearchSource::InternetArchive => archive_search(query, SEARCH_RESULT_LIMIT).await,
+            SearchSource::RadioBrowser => radio_browser_search(query, SEARCH_RESULT_LIMIT).await,
+            SearchSource::All => bail!("internal error: nested ALL source search"),
+        }
+    }
+
+    async fn search_youtube(&self, query: &str) -> Result<Vec<Song>> {
         match self {
             // The simplified `search_songs` wrapper only fetches the first page (~20). Drive
             // the continuation stream directly so we can collect up to SEARCH_RESULT_LIMIT,
@@ -111,8 +182,22 @@ impl YtMusicApi {
 /// Shared with the AI assistant actor, which resolves the model's tool queries the same
 /// way (public YouTube, no auth) — hence `pub(crate)` and a caller-chosen `limit`.
 pub(crate) async fn ytdlp_search(query: &str, limit: usize) -> Result<Vec<Song>> {
+    ytdlp_flat_search(SearchSource::Youtube, "ytsearch", query, limit).await
+}
+
+async fn ytdlp_flat_search(
+    source: SearchSource,
+    prefix: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<Song>> {
     let limit = limit.clamp(1, 50);
     let spec = format!("ytsearch{limit}:{query}");
+    let spec = if prefix == "ytsearch" {
+        spec
+    } else {
+        format!("{prefix}{limit}:{query}")
+    };
     let output = tokio::process::Command::new("yt-dlp")
         .arg(&spec)
         .arg("--flat-playlist")
@@ -133,7 +218,10 @@ pub(crate) async fn ytdlp_search(query: &str, limit: usize) -> Result<Vec<Song>>
         .and_then(|e| e.as_array())
         .map(Vec::as_slice)
         .unwrap_or_default();
-    Ok(entries.iter().filter_map(parse_entry).collect())
+    Ok(entries
+        .iter()
+        .filter_map(|entry| parse_ytdlp_entry(source, entry))
+        .collect())
 }
 
 /// Best-effort related tracks for radio/autoplay without Gemini.
@@ -434,9 +522,167 @@ fn push_query(queries: &mut Vec<String>, query: String) {
     }
 }
 
+async fn audius_search(query: &str, config: &SearchConfig, limit: usize) -> Result<Vec<Song>> {
+    let app_name = config.effective_audius_app_name();
+    let client = provider_client()?;
+    let limit = limit.clamp(1, 50).to_string();
+    let json: serde_json::Value = client
+        .get("https://discoveryprovider.audius.co/v1/tracks/search")
+        .query(&[
+            ("query", query),
+            ("app_name", app_name.as_str()),
+            ("limit", limit.as_str()),
+        ])
+        .send()
+        .await
+        .context("Audius search request failed")?
+        .error_for_status()
+        .context("Audius search returned an error")?
+        .json()
+        .await
+        .context("could not parse Audius search response")?;
+    let entries = json
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    Ok(entries
+        .iter()
+        .filter_map(|entry| parse_audius_track(entry, &app_name))
+        .collect())
+}
+
+async fn jamendo_search(query: &str, config: &SearchConfig, limit: usize) -> Result<Vec<Song>> {
+    let Some(client_id) = config.jamendo_client_id() else {
+        bail!("Jamendo client_id is missing. Add it in Settings → General.");
+    };
+    let client = provider_client()?;
+    let limit = limit.clamp(1, 50).to_string();
+    let json: serde_json::Value = client
+        .get("https://api.jamendo.com/v3.0/tracks/")
+        .query(&[
+            ("client_id", client_id),
+            ("format", "json"),
+            ("limit", limit.as_str()),
+            ("namesearch", query),
+            ("audioformat", "mp32"),
+        ])
+        .send()
+        .await
+        .context("Jamendo search request failed")?
+        .error_for_status()
+        .context("Jamendo search returned an error")?
+        .json()
+        .await
+        .context("could not parse Jamendo search response")?;
+    if json
+        .pointer("/headers/status")
+        .and_then(serde_json::Value::as_str)
+        == Some("failed")
+    {
+        let msg = json
+            .pointer("/headers/error_message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Jamendo API error");
+        bail!("{msg}");
+    }
+    let entries = json
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    Ok(entries.iter().filter_map(parse_jamendo_track).collect())
+}
+
+async fn archive_search(query: &str, limit: usize) -> Result<Vec<Song>> {
+    let client = provider_client()?;
+    let rows = limit.clamp(1, 20).to_string();
+    let q = format!("{query} AND mediatype:audio");
+    let json: serde_json::Value = client
+        .get("https://archive.org/advancedsearch.php")
+        .query(&[
+            ("q", q.as_str()),
+            ("fl[]", "identifier"),
+            ("fl[]", "title"),
+            ("fl[]", "creator"),
+            ("rows", rows.as_str()),
+            ("page", "1"),
+            ("output", "json"),
+        ])
+        .send()
+        .await
+        .context("Internet Archive search request failed")?
+        .error_for_status()
+        .context("Internet Archive search returned an error")?
+        .json()
+        .await
+        .context("could not parse Internet Archive search response")?;
+    let docs = json
+        .pointer("/response/docs")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for doc in docs {
+        let Some(identifier) = json_string(doc, &["identifier"]) else {
+            continue;
+        };
+        let title = json_string(doc, &["title"]).unwrap_or_else(|| identifier.clone());
+        let artist = json_string(doc, &["creator"]).unwrap_or_default();
+        if let Some((file, duration)) = archive_audio_file(&client, &identifier).await {
+            let url = archive_file_url(&identifier, &file);
+            out.push(Song::from_source(
+                SearchSource::InternetArchive,
+                format!("{identifier}:{file}"),
+                title,
+                artist,
+                duration.unwrap_or_default(),
+                PlayableRef::ArchiveFile {
+                    identifier,
+                    file,
+                    url,
+                },
+            ));
+        }
+    }
+    Ok(out)
+}
+
+async fn radio_browser_search(query: &str, limit: usize) -> Result<Vec<Song>> {
+    let client = provider_client()?;
+    let limit = limit.clamp(1, 50).to_string();
+    let json: serde_json::Value = client
+        .get("https://de1.api.radio-browser.info/json/stations/search")
+        .query(&[
+            ("name", query),
+            ("limit", limit.as_str()),
+            ("hidebroken", "true"),
+            ("order", "clickcount"),
+            ("reverse", "true"),
+        ])
+        .send()
+        .await
+        .context("Radio Browser search request failed")?
+        .error_for_status()
+        .context("Radio Browser search returned an error")?
+        .json()
+        .await
+        .context("could not parse Radio Browser search response")?;
+    let entries = json.as_array().map(Vec::as_slice).unwrap_or_default();
+    Ok(entries.iter().filter_map(parse_radio_station).collect())
+}
+
+fn provider_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(PROVIDER_SEARCH_TIMEOUT)
+        .user_agent(format!("ytm-tui/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("build provider HTTP client")
+}
+
 /// Map one yt-dlp flat-playlist entry to a [`Song`]. Skips entries without an id.
-fn parse_entry(e: &serde_json::Value) -> Option<Song> {
-    let video_id = e.get("id")?.as_str()?.to_owned();
+fn parse_ytdlp_entry(source: SearchSource, e: &serde_json::Value) -> Option<Song> {
+    let id = e.get("id")?.as_str()?.to_owned();
     let title = e
         .get("title")
         .and_then(|t| t.as_str())
@@ -453,7 +699,147 @@ fn parse_entry(e: &serde_json::Value) -> Option<Song> {
         .and_then(serde_json::Value::as_f64)
         .map(format::time)
         .unwrap_or_default();
-    Some(Song::remote(video_id, title, artist, duration))
+    if source == SearchSource::Youtube {
+        return Some(Song::remote(id, title, artist, duration));
+    }
+    let url = e
+        .get("webpage_url")
+        .or_else(|| e.get("url"))
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
+    Some(Song::from_source(
+        source,
+        id,
+        title,
+        artist,
+        duration,
+        PlayableRef::YtdlpUrl { source, url },
+    ))
+}
+
+fn parse_audius_track(e: &serde_json::Value, app_name: &str) -> Option<Song> {
+    let id = e.get("id")?.as_str()?.to_owned();
+    let title = json_string(e, &["title"]).unwrap_or_else(|| "Unknown".to_owned());
+    let artist = e
+        .get("user")
+        .and_then(|u| json_string(u, &["name", "handle"]))
+        .unwrap_or_default();
+    let duration = e
+        .get("duration")
+        .and_then(serde_json::Value::as_f64)
+        .map(format::time)
+        .unwrap_or_default();
+    Some(Song::from_source(
+        SearchSource::Audius,
+        id.clone(),
+        title,
+        artist,
+        duration,
+        PlayableRef::AudiusTrackId {
+            id,
+            app_name: app_name.to_owned(),
+        },
+    ))
+}
+
+fn parse_jamendo_track(e: &serde_json::Value) -> Option<Song> {
+    let id = json_string(e, &["id"])?;
+    let url = json_string(e, &["audio"])?;
+    let title = json_string(e, &["name"]).unwrap_or_else(|| "Unknown".to_owned());
+    let artist = json_string(e, &["artist_name"]).unwrap_or_default();
+    let duration = e
+        .get("duration")
+        .and_then(serde_json::Value::as_f64)
+        .map(format::time)
+        .unwrap_or_default();
+    Some(Song::from_source(
+        SearchSource::Jamendo,
+        id.clone(),
+        title,
+        artist,
+        duration,
+        PlayableRef::JamendoTrackId { id, url },
+    ))
+}
+
+fn parse_radio_station(e: &serde_json::Value) -> Option<Song> {
+    let id = json_string(e, &["stationuuid"])?;
+    let url = json_string(e, &["url_resolved"]).or_else(|| json_string(e, &["url"]))?;
+    let title = json_string(e, &["name"]).unwrap_or_else(|| "Unknown station".to_owned());
+    let codec = json_string(e, &["codec"]).unwrap_or_default();
+    let bitrate = e
+        .get("bitrate")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|b| *b > 0)
+        .map(|b| format!("{b}k"))
+        .unwrap_or_default();
+    let country = json_string(e, &["country"]).unwrap_or_default();
+    let artist = [country.as_str(), codec.as_str(), bitrate.as_str()]
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" / ");
+    Some(Song::from_source(
+        SearchSource::RadioBrowser,
+        id,
+        title,
+        artist,
+        String::new(),
+        PlayableRef::RadioStream { url },
+    ))
+}
+
+async fn archive_audio_file(
+    client: &reqwest::Client,
+    identifier: &str,
+) -> Option<(String, Option<String>)> {
+    let url = format!("https://archive.org/metadata/{identifier}");
+    let json: serde_json::Value = client.get(url).send().await.ok()?.json().await.ok()?;
+    let files = json.get("files")?.as_array()?;
+    files
+        .iter()
+        .filter_map(|file| {
+            let name = json_string(file, &["name"])?;
+            let lower = name.to_ascii_lowercase();
+            let format_name = json_string(file, &["format"])
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let playable = ["mp3", "m4a", "ogg", "opus", "flac"]
+                .iter()
+                .any(|ext| lower.ends_with(&format!(".{ext}")))
+                || ["mp3", "mpeg", "ogg", "flac", "opus", "audio"]
+                    .iter()
+                    .any(|needle| format_name.contains(needle));
+            if !playable {
+                return None;
+            }
+            let duration = json_string(file, &["length"]).and_then(|s| {
+                s.parse::<f64>()
+                    .ok()
+                    .filter(|d| d.is_finite() && *d > 0.0)
+                    .map(format::time)
+            });
+            let rank = if lower.ends_with(".mp3") {
+                0
+            } else if lower.ends_with(".m4a") {
+                1
+            } else if lower.ends_with(".ogg") || lower.ends_with(".opus") {
+                2
+            } else {
+                3
+            };
+            Some((rank, name, duration))
+        })
+        .min_by_key(|(rank, _, _)| *rank)
+        .map(|(_, name, duration)| (name, duration))
+}
+
+fn archive_file_url(identifier: &str, file: &str) -> String {
+    let mut url = reqwest::Url::parse("https://archive.org/download/").unwrap();
+    if let Ok(mut segments) = url.path_segments_mut() {
+        segments.push(identifier).push(file);
+    }
+    url.to_string()
 }
 
 #[cfg(test)]

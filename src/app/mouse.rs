@@ -41,11 +41,19 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        // A click cancels the reset-all confirmation (never confirms — that needs Enter/`y`).
-        if self.confirm_reset_all {
-            self.confirm_reset_all = false;
-            self.dirty = true;
-            return Vec::new();
+        // Settings confirmations are modal: only their Confirm/Cancel buttons act; a click
+        // anywhere else backs out without changing the draft.
+        if self.pending_settings_confirm.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(t @ (MouseTarget::ConfirmSettings | MouseTarget::CancelSettings)) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.pending_settings_confirm = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
         }
         // The download-delete confirmation is modal: only its own Delete/Cancel buttons act;
         // a click anywhere else backs out without touching any files.
@@ -112,11 +120,13 @@ impl App {
             }
             return self.on_mouse_target(region.target);
         }
-        // A click that missed every button dismisses an open status-line dropdown (modal-style),
-        // so the same click doesn't also seek.
-        if self.dropdowns.eq_open || self.dropdowns.radio_open {
+        // A click that missed every button dismisses an open dropdown (modal-style), so the same
+        // click doesn't also seek.
+        if self.dropdowns.eq_open || self.dropdowns.radio_open || self.dropdowns.search_source_open
+        {
             self.dropdowns.eq_open = false;
             self.dropdowns.radio_open = false;
+            self.dropdowns.search_source_open = false;
             self.dirty = true;
             return Vec::new();
         }
@@ -155,6 +165,7 @@ impl App {
             // Toggle the EQ dropdown by clicking its `eq:` label (closes the radio one).
             MouseTarget::EqMenu if self.mode == Mode::Player => {
                 self.dropdowns.radio_open = false;
+                self.dropdowns.search_source_open = false;
                 self.dropdowns.eq_open = !self.dropdowns.eq_open;
                 self.dirty = true;
                 Vec::new()
@@ -168,6 +179,7 @@ impl App {
             // Toggle the radio-mode dropdown by clicking its `radio:` label (closes the EQ one).
             MouseTarget::RadioMenu if self.mode == Mode::Player => {
                 self.dropdowns.eq_open = false;
+                self.dropdowns.search_source_open = false;
                 self.dropdowns.radio_open = !self.dropdowns.radio_open;
                 self.dirty = true;
                 Vec::new()
@@ -184,6 +196,18 @@ impl App {
             // Search bar submit button.
             MouseTarget::SearchSubmit if self.mode == Mode::Search => self.submit_search_query(),
             MouseTarget::SearchSubmit => Vec::new(),
+            MouseTarget::SearchSourceMenu if self.mode == Mode::Search => {
+                self.dropdowns.eq_open = false;
+                self.dropdowns.radio_open = false;
+                self.dropdowns.search_source_open = !self.dropdowns.search_source_open;
+                self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::SearchSourceMenu => Vec::new(),
+            MouseTarget::SearchSourceSelect(source) if self.mode == Mode::Search => {
+                self.select_search_source(source)
+            }
+            MouseTarget::SearchSourceSelect(_) => Vec::new(),
             // Library tab header.
             MouseTarget::LibraryTab(tab) if self.mode == Mode::Library => {
                 self.library_ui.tab = tab;
@@ -251,6 +275,17 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            MouseTarget::ConfirmSettings => {
+                let Some(confirm) = self.pending_settings_confirm.take() else {
+                    return Vec::new();
+                };
+                self.settings_apply_confirm(confirm)
+            }
+            MouseTarget::CancelSettings => {
+                self.pending_settings_confirm = None;
+                self.dirty = true;
+                Vec::new()
+            }
             // Click the `ytm-tui` brand to open the About card.
             MouseTarget::AboutTitle => {
                 self.about_visible = true;
@@ -279,7 +314,7 @@ impl App {
         if self.help_visible
             || self.about_visible
             || self.key_conflict.is_some()
-            || self.confirm_reset_all
+            || self.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
         {
             return self.on_mouse_click(col, row);
@@ -576,7 +611,7 @@ impl App {
         if self.help_visible
             || self.about_visible
             || self.key_conflict.is_some()
-            || self.confirm_reset_all
+            || self.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.queue_popup.open
         {

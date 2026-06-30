@@ -13,6 +13,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::app::Msg;
 use crate::radio::{CandidateSource, RadioConfig, RadioMode};
+use crate::search_source::{SearchConfig, SearchSource};
 
 const RADIO_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
@@ -26,6 +27,12 @@ pub struct Song {
     pub artist: String,
     /// Pre-formatted duration string (e.g. "3:45").
     pub duration: String,
+    /// The provider this result came from. Defaults to YouTube for old persisted JSON.
+    #[serde(default, skip_serializing_if = "SearchSource::is_youtube")]
+    pub source: SearchSource,
+    /// Non-YouTube playback target. Old/pure YouTube tracks omit it and use `video_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playable: Option<PlayableRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_path: Option<PathBuf>,
     /// The original YouTube video ID, preserved when a catalog track is downloaded and its
@@ -33,6 +40,39 @@ pub struct Song {
     /// tracks (whose `video_id` is already the YouTube ID). Old persisted JSON omits it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yt_video_id: Option<String>,
+}
+
+/// How a non-local track should be handed to mpv/yt-dlp.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PlayableRef {
+    YoutubeVideo {
+        id: String,
+    },
+    DirectUrl {
+        source: SearchSource,
+        url: String,
+    },
+    YtdlpUrl {
+        source: SearchSource,
+        url: String,
+    },
+    AudiusTrackId {
+        id: String,
+        app_name: String,
+    },
+    JamendoTrackId {
+        id: String,
+        url: String,
+    },
+    ArchiveFile {
+        identifier: String,
+        file: String,
+        url: String,
+    },
+    RadioStream {
+        url: String,
+    },
 }
 
 impl Song {
@@ -47,6 +87,34 @@ impl Song {
             title: title.into(),
             artist: artist.into(),
             duration: duration.into(),
+            source: SearchSource::Youtube,
+            playable: None,
+            local_path: None,
+            yt_video_id: None,
+        }
+    }
+
+    pub fn from_source(
+        source: SearchSource,
+        source_id: impl Into<String>,
+        title: impl Into<String>,
+        artist: impl Into<String>,
+        duration: impl Into<String>,
+        playable: PlayableRef,
+    ) -> Self {
+        let source_id = source_id.into();
+        let video_id = if source == SearchSource::Youtube {
+            source_id
+        } else {
+            format!("{}:{source_id}", source.id_prefix())
+        };
+        Self {
+            video_id,
+            title: title.into(),
+            artist: artist.into(),
+            duration: duration.into(),
+            source,
+            playable: Some(playable),
             local_path: None,
             yt_video_id: None,
         }
@@ -74,6 +142,8 @@ impl Song {
             title,
             artist: "Local file".to_owned(),
             duration: String::new(),
+            source: SearchSource::Youtube,
+            playable: None,
             local_path: Some(path),
             yt_video_id,
         }
@@ -104,6 +174,8 @@ impl Song {
             title: self.title.clone(),
             artist: self.artist.clone(),
             duration: self.duration.clone(),
+            source: self.source,
+            playable: self.playable.clone(),
             local_path: Some(path),
             yt_video_id: self.youtube_id().map(str::to_owned),
         }
@@ -128,6 +200,9 @@ impl Song {
         if let Some(id) = self.yt_video_id.as_deref() {
             return Some(id);
         }
+        if self.local_path.is_some() || self.source != SearchSource::Youtube {
+            return None;
+        }
         (!self.video_id.starts_with("local:")).then_some(self.video_id.as_str())
     }
 
@@ -145,15 +220,55 @@ impl Song {
             .unwrap_or_else(|| self.watch_url())
     }
 
-    /// A watch URL mpv/yt-dlp can resolve and play for catalog tracks.
+    /// A URL mpv/yt-dlp can resolve and play for catalog tracks.
     pub fn watch_url(&self) -> String {
-        format!("https://music.youtube.com/watch?v={}", self.video_id)
+        match &self.playable {
+            Some(PlayableRef::YoutubeVideo { id }) => {
+                format!("https://music.youtube.com/watch?v={id}")
+            }
+            Some(PlayableRef::DirectUrl { url, .. })
+            | Some(PlayableRef::YtdlpUrl { url, .. })
+            | Some(PlayableRef::JamendoTrackId { url, .. })
+            | Some(PlayableRef::ArchiveFile { url, .. })
+            | Some(PlayableRef::RadioStream { url }) => url.clone(),
+            Some(PlayableRef::AudiusTrackId { id, app_name }) => audius_stream_url(id, app_name),
+            None => format!("https://music.youtube.com/watch?v={}", self.video_id),
+        }
+    }
+
+    /// Direct streams/radio URLs do not benefit from yt-dlp pre-resolution. YouTube and
+    /// yt-dlp-backed sources do, so the skip-ahead resolver can ask only for those.
+    pub fn prefetch_target(&self) -> Option<String> {
+        if self.is_local() {
+            return None;
+        }
+        match &self.playable {
+            Some(PlayableRef::DirectUrl { .. })
+            | Some(PlayableRef::JamendoTrackId { .. })
+            | Some(PlayableRef::ArchiveFile { .. })
+            | Some(PlayableRef::RadioStream { .. }) => None,
+            Some(PlayableRef::YoutubeVideo { .. })
+            | Some(PlayableRef::YtdlpUrl { .. })
+            | Some(PlayableRef::AudiusTrackId { .. })
+            | None => Some(self.watch_url()),
+        }
     }
 
     fn local_id(path: &Path) -> String {
         let stable = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         format!("local:{}", stable.to_string_lossy())
     }
+}
+
+fn audius_stream_url(id: &str, app_name: &str) -> String {
+    reqwest::Url::parse_with_params(
+        &format!("https://discoveryprovider.audius.co/v1/tracks/{id}/stream"),
+        &[("app_name", app_name)],
+    )
+    .map(|u| u.to_string())
+    .unwrap_or_else(|_| {
+        format!("https://discoveryprovider.audius.co/v1/tracks/{id}/stream?app_name={app_name}")
+    })
 }
 
 /// Which auth mode the live API client ended up in.
@@ -165,7 +280,11 @@ pub enum ApiMode {
 
 /// Commands the reducer sends to the API actor.
 pub enum ApiCmd {
-    Search(String),
+    Search {
+        query: String,
+        source: SearchSource,
+        config: SearchConfig,
+    },
     Radio {
         seed: String,
         seed_video_id: String,
@@ -188,8 +307,12 @@ pub struct ApiHandle {
 }
 
 impl ApiHandle {
-    pub fn search(&self, query: impl Into<String>) {
-        let _ = self.tx.send(ApiCmd::Search(query.into()));
+    pub fn search(&self, query: impl Into<String>, source: SearchSource, config: SearchConfig) {
+        let _ = self.tx.send(ApiCmd::Search {
+            query: query.into(),
+            source,
+            config,
+        });
     }
 
     pub fn radio(
@@ -256,15 +379,26 @@ async fn run_actor(
     let mut radio_ytdlp_cache: HashMap<(String, RadioMode), (Instant, Vec<Song>)> = HashMap::new();
     while let Some(cmd) = rx.recv().await {
         match cmd {
-            ApiCmd::Search(query) => {
-                let msg = match api.search_songs(&query).await {
+            ApiCmd::Search {
+                query,
+                source,
+                config,
+            } => {
+                let msg = match api.search_songs(&query, source, &config).await {
                     Ok(songs) => {
-                        tracing::info!(count = songs.len(), query = %query, "search results");
-                        Msg::SearchResults { query, songs }
+                        tracing::info!(count = songs.len(), query = %query, source = %source.code(), "search results");
+                        Msg::SearchResults {
+                            query,
+                            source,
+                            songs,
+                        }
                     }
                     Err(e) => {
-                        tracing::warn!(error = %format!("{e:#}"), "search failed");
-                        Msg::SearchError(format!("{e:#}"))
+                        tracing::warn!(source = %source.code(), error = %format!("{e:#}"), "search failed");
+                        Msg::SearchError {
+                            source,
+                            error: format!("{e:#}"),
+                        }
                     }
                 };
                 let _ = msg_tx.send(msg);

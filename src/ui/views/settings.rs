@@ -13,7 +13,7 @@ use crate::app::{App, MouseTarget, ScrollSurface};
 use crate::config::{FPS_MAX, FPS_MIN, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
 use crate::keymap::{self, Action, Conflict, KeyContext};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
-use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
+use crate::settings::{Field, FieldKind, SettingsConfirm, SettingsState, SettingsTab};
 use crate::t;
 use crate::theme::ThemeConfig;
 use crate::theme::ThemeRole as R;
@@ -386,7 +386,10 @@ fn field_value_text(st: &SettingsState, field: Field, focused: bool) -> String {
             format!("{}▏", "•".repeat(len))
         }
         // Show the live edit buffer with a caret for the focused path field.
-        (Field::CookiesFile | Field::DownloadDir, _) if focused && st.editing_text => {
+        (
+            Field::CookiesFile | Field::DownloadDir | Field::AudiusAppName | Field::JamendoClientId,
+            _,
+        ) if focused && st.editing_text => {
             format!("{}▏", st.draft.text_value(field).unwrap_or_default())
         }
         (Field::Speed, _) => slider_str(
@@ -693,53 +696,60 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
-/// A modal confirmation for the "reset all settings" button. Resetting wipes every setting
-/// (keybindings, theme, API key included) and the screen always persists on close, so the
-/// destructive action is gated behind an explicit yes/no rather than a single keypress.
-pub fn render_confirm_reset(frame: &mut Frame, app: &App, area: Rect) {
+/// A modal confirmation for settings actions that have broad side effects.
+pub fn render_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: SettingsConfirm) {
     let popup = centered_fixed(area, 56, 9);
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
-        .title(t!(" ⚠ Reset all settings ", " ⚠ 모든 설정 초기화 "))
+        .title(confirm.title())
         .borders(Borders::ALL)
-        .border_style(crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD))
+        .border_style(crate::ui::popup_style(app, R::Warning).add_modifier(Modifier::BOLD))
         .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(t!(
-            "Restore every setting to its default?",
-            "모든 설정을 기본값으로 되돌릴까요?"
-        )),
-        Line::from(Span::styled(
-            t!(
-                "Keybindings, theme, and API key included.",
-                "단축키, 테마, API 키 포함."
-            ),
-            crate::ui::popup_style(app, R::TextMuted),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "Enter / y",
-                crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(t!(" reset    ", " 초기화    ")),
-            Span::styled(
-                "Esc",
-                crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(t!(" cancel", " 취소")),
-        ]),
-    ];
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .split(inner);
+    let enabling_retro = app.settings.as_ref().is_some_and(|s| !s.draft.retro_mode);
     frame.render_widget(
-        Paragraph::new(lines)
+        Paragraph::new(confirm.prompt(enabling_retro))
             .alignment(Alignment::Center)
             .style(crate::ui::popup_style(app, R::TextPrimary)),
-        inner,
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(confirm.detail(enabling_retro))
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::TextMuted)),
+        rows[2],
+    );
+
+    let segs = [
+        buttons::Seg::button(
+            MouseTarget::ConfirmSettings,
+            t!(" Confirm (Enter) ", " 확인 (Enter) "),
+        ),
+        buttons::Seg::label("    "),
+        buttons::Seg::button(
+            MouseTarget::CancelSettings,
+            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+        ),
+    ];
+    buttons::render_segments(
+        frame,
+        app,
+        rows[4],
+        &segs,
+        crate::ui::popup_style(app, R::Warning).add_modifier(Modifier::BOLD),
+        crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+        Alignment::Center,
     );
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);

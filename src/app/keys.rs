@@ -22,15 +22,14 @@ impl App {
             return Vec::new();
         }
 
-        // The "reset all settings" confirmation is modal: Enter or `y` confirms, anything
-        // else cancels. Handle it here so the key can't leak through to the settings list.
-        if self.confirm_reset_all {
-            self.confirm_reset_all = false;
+        // Settings confirmations are modal: Enter or `y` confirms, anything else cancels.
+        // Handle it here so the key can't leak through to the settings list.
+        if let Some(confirm) = self.pending_settings_confirm.take() {
             self.dirty = true;
             let confirmed = k.code == KeyCode::Enter
                 || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
             return if confirmed {
-                self.settings_reset_all()
+                self.settings_apply_confirm(confirm)
             } else {
                 Vec::new()
             };

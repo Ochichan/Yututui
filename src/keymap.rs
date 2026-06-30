@@ -59,6 +59,7 @@ pub enum Action {
     FocusPrev,
     DeleteChar,
     SelectAll,
+    ToggleSearchSourceMenu,
     // Queue window.
     QueueRemove,
     // Library list.
@@ -225,6 +226,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     ),
     (Action::SelectAll, "select_all", "Select all", "전체 선택"),
     (
+        Action::ToggleSearchSourceMenu,
+        "toggle_search_source_menu",
+        "Search source menu",
+        "검색 소스 메뉴",
+    ),
+    (
         Action::QueueRemove,
         "queue_remove",
         "Remove from queue",
@@ -350,8 +357,18 @@ impl Action {
             (KeyContext::Queue, Action::Confirm) => t!("Play / jump to track", "곡 재생 / 이동"),
             (KeyContext::Queue, Action::Back) => t!("Close queue", "대기열 닫기"),
             (KeyContext::SearchInput, Action::Confirm) => t!("Search", "검색"),
+            (KeyContext::SearchInput, Action::ToggleSearchSourceMenu)
+            | (KeyContext::SearchResults, Action::ToggleSearchSourceMenu) => {
+                t!("Open source menu", "소스 메뉴 열기")
+            }
             (KeyContext::AiInput, Action::Confirm) => t!("Send", "보내기"),
             (KeyContext::SearchResults, Action::Confirm) => t!("Play selected", "선택 항목 재생"),
+            (KeyContext::SearchInput, Action::FocusPrev) => {
+                t!("Focus search results", "검색 결과로 이동")
+            }
+            (KeyContext::SearchResults, Action::FocusPrev) => {
+                t!("Focus search box", "검색창으로 이동")
+            }
             (KeyContext::SearchResults, Action::Back) => {
                 t!("Close Search Results", "검색 결과 닫기")
             }
@@ -563,12 +580,7 @@ pub struct KeyMap {
 
 impl Default for KeyMap {
     fn default() -> Self {
-        Self::from_labels(
-            default_bindings()
-                .into_iter()
-                .map(|(c, a, ch)| ((c, a), ch))
-                .collect(),
-        )
+        Self::from_overrides(&BTreeMap::new())
     }
 }
 
@@ -609,9 +621,9 @@ impl KeyMap {
             };
             labels.insert((ctx, action), chord);
         }
-        // Older configs may only have `player.open_search` remapped. Mirror that key into
-        // Search results so the same search key returns focus to the query box there, unless
-        // the results binding was explicitly customized.
+        // Preserve the old Search-results shortcut as an unlisted compatibility binding:
+        // the Player search key also focuses the query box from results. The new advertised
+        // bidirectional binding is SearchInput/SearchResults FocusPrev (Shift+Tab).
         if !overrides.contains_key("search_results.focus_input")
             && let Some(&chord) = labels.get(&(KeyContext::Player, Action::OpenSearch))
         {
@@ -643,6 +655,13 @@ impl KeyMap {
             .get(&(ctx, chord))
             .or_else(|| self.bindings.get(&(KeyContext::Common, chord)))
             .copied()
+    }
+
+    /// Resolve only bindings declared directly on `ctx`, without the shared `Common`
+    /// fallback. Text/list hybrids use this when a context-specific key intentionally
+    /// shadows a common navigation key.
+    pub fn context_action(&self, ctx: KeyContext, chord: Chord) -> Option<Action> {
+        self.bindings.get(&(ctx, chord)).copied()
     }
 
     /// Resolve a `Global` action (help, radio), independent of the active screen.
@@ -743,6 +762,18 @@ fn linked_rebinds(ctx: KeyContext, action: Action) -> &'static [(KeyContext, Act
         (KeyContext::Player, Action::OpenSearch) => {
             &[(KeyContext::SearchResults, Action::FocusInput)]
         }
+        (KeyContext::SearchInput, Action::FocusPrev) => {
+            &[(KeyContext::SearchResults, Action::FocusPrev)]
+        }
+        (KeyContext::SearchResults, Action::FocusPrev) => {
+            &[(KeyContext::SearchInput, Action::FocusPrev)]
+        }
+        (KeyContext::SearchInput, Action::ToggleSearchSourceMenu) => {
+            &[(KeyContext::SearchResults, Action::ToggleSearchSourceMenu)]
+        }
+        (KeyContext::SearchResults, Action::ToggleSearchSourceMenu) => {
+            &[(KeyContext::SearchInput, Action::ToggleSearchSourceMenu)]
+        }
         _ => &[],
     }
 }
@@ -818,12 +849,15 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Queue, A::Back, ch('q')),
         // Search box (text entry; Enter→search is handled in the input handler).
         (C::SearchInput, A::SelectAll, ctrl('a')),
+        (C::SearchInput, A::ToggleSearchSourceMenu, ctrl('s')),
+        (C::SearchInput, A::FocusPrev, key(KeyCode::BackTab)),
         // Search results list commands (Enter→play is fixed to the physical key in the
         // handler, so it's not listed here; the cheat-sheet shows it as a fixed row).
+        (C::SearchResults, A::FocusPrev, key(KeyCode::BackTab)),
+        (C::SearchResults, A::ToggleSearchSourceMenu, ctrl('s')),
         (C::SearchResults, A::Enqueue, ch('\\')),
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('d')),
-        (C::SearchResults, A::FocusInput, ch('/')),
         (C::SearchResults, A::Back, ch('q')),
         // AI box (text entry; Enter→send is handled in the input handler).
         (C::AiInput, A::SelectAll, ctrl('a')),
@@ -1309,6 +1343,14 @@ mod tests {
             "Play selected"
         );
         assert_eq!(
+            Action::FocusPrev.human_label_for(KeyContext::SearchInput),
+            "Focus search results"
+        );
+        assert_eq!(
+            Action::FocusPrev.human_label_for(KeyContext::SearchResults),
+            "Focus search box"
+        );
+        assert_eq!(
             Action::Back.human_label_for(KeyContext::SearchResults),
             "Close Search Results"
         );
@@ -1341,6 +1383,22 @@ mod tests {
         assert_eq!(
             km.action(KeyContext::SearchResults, parse_chord("\\").unwrap()),
             Some(Action::Enqueue)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchInput, parse_chord("backtab").unwrap()),
+            Some(Action::FocusPrev)
+        );
+        assert_eq!(
+            km.context_action(KeyContext::SearchInput, parse_chord("backtab").unwrap()),
+            Some(Action::FocusPrev)
+        );
+        assert_eq!(
+            km.context_action(KeyContext::SearchResults, parse_chord("backtab").unwrap()),
+            Some(Action::FocusPrev)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, parse_chord("/").unwrap()),
+            Some(Action::FocusInput)
         );
         // The unified play/queue labels read consistently across both surfaces.
         assert_eq!(
@@ -1439,60 +1497,60 @@ mod tests {
     }
 
     #[test]
-    fn rebinding_open_search_also_moves_search_results_focus_input() {
+    fn rebinding_search_focus_toggle_updates_both_search_contexts() {
         let mut km = KeyMap::default();
-        let e_upper = parse_chord("E").unwrap();
-        km.rebind(KeyContext::Player, Action::OpenSearch, e_upper)
+        let f5 = parse_chord("f5").unwrap();
+        km.rebind(KeyContext::SearchResults, Action::FocusPrev, f5)
             .unwrap();
 
         assert_eq!(
-            km.action(KeyContext::Player, e_upper),
-            Some(Action::OpenSearch)
+            km.context_action(KeyContext::SearchResults, f5),
+            Some(Action::FocusPrev)
         );
         assert_eq!(
-            km.action(KeyContext::SearchResults, e_upper),
-            Some(Action::FocusInput)
+            km.context_action(KeyContext::SearchInput, f5),
+            Some(Action::FocusPrev)
         );
         assert_eq!(
-            km.action(KeyContext::SearchResults, parse_chord("/").unwrap()),
+            km.context_action(KeyContext::SearchResults, parse_chord("backtab").unwrap()),
+            None
+        );
+        assert_eq!(
+            km.context_action(KeyContext::SearchInput, parse_chord("backtab").unwrap()),
             None
         );
 
         let overrides = km.to_overrides();
         assert_eq!(
-            overrides.get("player.open_search").map(String::as_str),
-            Some("E")
+            overrides
+                .get("search_results.focus_prev")
+                .map(String::as_str),
+            Some("f5")
         );
         assert_eq!(
-            overrides
-                .get("search_results.focus_input")
-                .map(String::as_str),
-            Some("E")
+            overrides.get("search_input.focus_prev").map(String::as_str),
+            Some("f5")
         );
     }
 
     #[test]
-    fn open_search_rebind_rejects_search_results_focus_conflict() {
+    fn search_focus_toggle_rebind_rejects_conflicts_on_either_side() {
         let mut km = KeyMap::default();
-        let enqueue = parse_chord("\\").unwrap();
+        let select_all = parse_chord("ctrl+a").unwrap();
         let err = km
-            .rebind(KeyContext::Player, Action::OpenSearch, enqueue)
+            .rebind(KeyContext::SearchResults, Action::FocusPrev, select_all)
             .unwrap_err();
 
-        assert_eq!(err.ctx, KeyContext::SearchResults);
-        assert_eq!(err.existing, Action::Enqueue);
-        assert_eq!(err.chord, enqueue);
+        assert_eq!(err.ctx, KeyContext::SearchInput);
+        assert_eq!(err.existing, Action::SelectAll);
+        assert_eq!(err.chord, select_all);
         assert_eq!(
-            km.action(KeyContext::Player, parse_chord("/").unwrap()),
-            Some(Action::OpenSearch)
+            km.context_action(KeyContext::SearchInput, parse_chord("backtab").unwrap()),
+            Some(Action::FocusPrev)
         );
         assert_eq!(
-            km.action(KeyContext::SearchResults, parse_chord("/").unwrap()),
-            Some(Action::FocusInput)
-        );
-        assert_eq!(
-            km.action(KeyContext::SearchResults, enqueue),
-            Some(Action::Enqueue)
+            km.context_action(KeyContext::SearchResults, parse_chord("backtab").unwrap()),
+            Some(Action::FocusPrev)
         );
     }
 
@@ -1522,7 +1580,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_open_search_override_mirrors_to_search_results_focus_input() {
+    fn legacy_open_search_override_still_focuses_search_input() {
         let mut o = BTreeMap::new();
         o.insert("player.open_search".to_owned(), "E".to_owned());
         let km = KeyMap::from_overrides(&o);
@@ -1530,6 +1588,10 @@ mod tests {
         assert_eq!(
             km.action(KeyContext::Player, parse_chord("E").unwrap()),
             Some(Action::OpenSearch)
+        );
+        assert_eq!(
+            km.context_action(KeyContext::SearchResults, parse_chord("backtab").unwrap()),
+            Some(Action::FocusPrev)
         );
         assert_eq!(
             km.action(KeyContext::SearchResults, parse_chord("E").unwrap()),
@@ -1538,23 +1600,18 @@ mod tests {
     }
 
     #[test]
-    fn explicit_search_results_focus_input_override_is_respected() {
+    fn legacy_search_results_focus_input_override_is_respected() {
         let mut o = BTreeMap::new();
-        o.insert("player.open_search".to_owned(), "E".to_owned());
         o.insert("search_results.focus_input".to_owned(), "I".to_owned());
         let km = KeyMap::from_overrides(&o);
 
-        assert_eq!(
-            km.action(KeyContext::Player, parse_chord("E").unwrap()),
-            Some(Action::OpenSearch)
-        );
         assert_eq!(
             km.action(KeyContext::SearchResults, parse_chord("I").unwrap()),
             Some(Action::FocusInput)
         );
         assert_eq!(
-            km.action(KeyContext::SearchResults, parse_chord("E").unwrap()),
-            None
+            km.context_action(KeyContext::SearchResults, parse_chord("backtab").unwrap()),
+            Some(Action::FocusPrev)
         );
     }
 
