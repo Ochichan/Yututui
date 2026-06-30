@@ -409,7 +409,12 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_list_scrollbar(
         frame,
         app,
-        list,
+        Rect {
+            x: list.right(),
+            y: list.y,
+            width: 1,
+            height: list.height,
+        },
         ScrollSurface::Queue,
         total_len,
         start,

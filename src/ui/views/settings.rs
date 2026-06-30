@@ -499,7 +499,12 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     buttons::render_list_scrollbar(
         frame,
         app,
-        area,
+        Rect {
+            x: area.right(),
+            y: area.y,
+            width: 1,
+            height: area.height,
+        },
         ScrollSurface::Settings,
         len,
         offset,

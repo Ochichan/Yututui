@@ -19,6 +19,9 @@ pub struct Translator {
     held_modifiers: KeyModifiers,
     /// The most recent left-button press (time + cell), for double-click detection.
     last_left_down: Option<(Instant, u16, u16)>,
+    /// Whether a left-button press has not yet been released. Some terminals report motion
+    /// during a press as `Moved` rather than `Drag`, so keep enough state to preserve dragging.
+    left_down: bool,
 }
 
 impl Default for Translator {
@@ -26,6 +29,7 @@ impl Default for Translator {
         Self {
             held_modifiers: KeyModifiers::NONE,
             last_left_down: None,
+            left_down: false,
         }
     }
 }
@@ -48,6 +52,7 @@ impl Translator {
             // press at the same cell within the double-click window plays a song row /
             // queue entry instead of merely selecting it.
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
+                self.left_down = true;
                 Some(self.classify_left_down(m.column, m.row))
             }
             // A right-button press adds the song row under the pointer to the queue.
@@ -64,7 +69,14 @@ impl Translator {
                     row: m.row,
                 })
             }
+            Event::Mouse(m) if m.kind == MouseEventKind::Moved && self.left_down => {
+                Some(Msg::MouseDrag {
+                    col: m.column,
+                    row: m.row,
+                })
+            }
             Event::Mouse(m) if m.kind == MouseEventKind::Up(MouseButton::Left) => {
+                self.left_down = false;
                 Some(Msg::MouseLeftUp)
             }
             // Wheel scroll moves the active list's viewport, or nudges volume over the
@@ -222,6 +234,44 @@ mod tests {
             t.translate(ev),
             Some(Msg::MouseDrag { col: 7, row: 3 })
         ));
+    }
+
+    #[test]
+    fn moved_while_left_button_is_down_becomes_a_drag_message() {
+        let mut t = Translator::default();
+        let moved = |column, row| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Moved,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert!(t.translate(moved(7, 3)).is_none());
+
+        assert!(matches!(
+            t.translate(Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 7,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Some(Msg::MouseClick { .. })
+        ));
+        assert!(matches!(
+            t.translate(moved(8, 4)),
+            Some(Msg::MouseDrag { col: 8, row: 4 })
+        ));
+        assert!(matches!(
+            t.translate(Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 8,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Some(Msg::MouseLeftUp)
+        ));
+        assert!(t.translate(moved(9, 5)).is_none());
     }
 
     #[test]

@@ -122,8 +122,8 @@ pub struct ScrollbarThumb {
 /// Browser-style scrollbar geometry for a list viewport.
 ///
 /// `position` is the first visible row and therefore ranges over `0..=content_len -
-/// viewport`. The thumb start uses that same scrollable range, so when the page reaches its
-/// final offset the thumb reaches the end of the track too.
+/// viewport`. The thumb's top edge is placed from that row's position in the whole content,
+/// then clamped so the final page still reaches the end of the track.
 pub fn scrollbar_thumb(
     content_len: usize,
     viewport: usize,
@@ -135,17 +135,15 @@ pub fn scrollbar_thumb(
     }
     let track = track_len as usize;
     let max_offset = content_len - viewport;
-    let thumb_len =
-        ((viewport.saturating_mul(track) + content_len / 2) / content_len).clamp(1, track);
+    let thumb_len = viewport
+        .saturating_mul(track)
+        .div_ceil(content_len)
+        .clamp(1, track);
     let travel = track.saturating_sub(thumb_len);
-    let start = if travel == 0 {
-        0
-    } else {
-        let pos = position.min(max_offset);
-        (pos.saturating_mul(travel) + max_offset / 2) / max_offset
-    };
+    let pos = position.min(max_offset);
+    let start = pos.saturating_mul(track) / content_len;
     Some(ScrollbarThumb {
-        start: start as u16,
+        start: start.min(travel) as u16,
         len: thumb_len as u16,
     })
 }
@@ -174,7 +172,13 @@ pub fn offset_from_scrollbar_row(
     let grab = (grab as usize).min(thumb_len.saturating_sub(1));
     let row = (row as usize).min(track.saturating_sub(1));
     let thumb_start = row.saturating_sub(grab).min(travel);
-    (thumb_start.saturating_mul(max_offset) + travel / 2) / travel
+    if thumb_start == travel {
+        return max_offset;
+    }
+    (thumb_start.saturating_mul(content_len) + track / 2)
+        .checked_div(track)
+        .unwrap_or(0)
+        .min(max_offset)
 }
 
 /// The smallest offset shift from `offset` that brings `cursor` within `scrolloff` rows of
@@ -344,9 +348,19 @@ mod tests {
     }
 
     #[test]
+    fn scrollbar_thumb_top_tracks_whole_content_position() {
+        let thumb = scrollbar_thumb(40, 10, 12, 12).unwrap();
+        assert_eq!(
+            thumb.start, 3,
+            "first visible row 12/40 should map through the whole 12-row track"
+        );
+    }
+
+    #[test]
     fn scrollbar_track_row_maps_back_to_scroll_offset() {
         assert_eq!(offset_from_scrollbar_row(0, 0, 40, 15, 15), 0);
         assert_eq!(offset_from_scrollbar_row(14, 0, 40, 15, 15), 25);
+        assert_eq!(offset_from_scrollbar_row(3, 0, 40, 10, 12), 10);
 
         let thumb = scrollbar_thumb(40, 15, 15, 0).unwrap();
         let center_grab = thumb.len / 2;

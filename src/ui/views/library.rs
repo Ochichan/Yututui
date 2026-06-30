@@ -252,7 +252,12 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
     buttons::render_list_scrollbar(
         frame,
         app,
-        area,
+        Rect {
+            x: area.right(),
+            y: area.y,
+            width: 1,
+            height: area.height,
+        },
         ScrollSurface::Library,
         len,
         start,

@@ -4111,6 +4111,72 @@ fn dragging_library_scrollbar_moves_the_viewport() {
     );
 }
 
+#[test]
+fn dragging_search_scrollbar_moves_the_viewport() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.search.results = songs(40);
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let bar = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .find(|b| b.target == MouseTarget::Scrollbar(ScrollSurface::Search))
+        .map(|b| b.rect)
+        .expect("rendered search scrollbar rect");
+
+    app.update(Msg::MouseClick {
+        col: bar.x,
+        row: bar.y,
+    });
+    app.update(Msg::MouseDrag {
+        col: bar.x,
+        row: bar.y + bar.height - 1,
+    });
+
+    assert_eq!(
+        app.bridges.search_scroll.offset(),
+        app.search.results.len() - app.bridges.search_scroll.viewport()
+    );
+}
+
+#[test]
+fn ai_suggestions_scrollbar_renders_inside_borderless_list() {
+    let mut app = App::new(100);
+    app.mode = Mode::Ai;
+    app.ai.messages.push(AiMessage {
+        role: AiRole::User,
+        text: "hide onboarding art".to_owned(),
+    });
+    app.ai.suggestions = songs(20);
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let bar = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .find(|b| b.target == MouseTarget::Scrollbar(ScrollSurface::AiSuggestions))
+        .map(|b| b.rect)
+        .expect("rendered AI suggestions scrollbar rect");
+    let buf = terminal.backend().buffer();
+
+    assert!(bar.x < 80, "scrollbar should not be registered off-screen");
+    assert!(
+        (bar.y..bar.y + bar.height).any(|y| {
+            buf.cell((bar.x, y))
+                .is_some_and(|c| matches!(c.symbol(), "█" | "│"))
+        }),
+        "scrollbar should be drawn at its registered hit rect"
+    );
+}
+
 fn assert_centered_in(rect: Rect, container: Rect) {
     let left = rect.x.saturating_sub(container.x);
     let right = container

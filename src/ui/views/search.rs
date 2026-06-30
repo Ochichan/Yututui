@@ -228,7 +228,12 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_list_scrollbar(
         frame,
         app,
-        area,
+        Rect {
+            x: area.right(),
+            y: area.y,
+            width: 1,
+            height: area.height,
+        },
         ScrollSurface::Search,
         len,
         state.offset(),

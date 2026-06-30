@@ -389,7 +389,12 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_list_scrollbar(
         frame,
         app,
-        inner,
+        Rect {
+            x: inner.x.saturating_add(inner.width.saturating_sub(1)),
+            y: inner.y,
+            width: 1,
+            height: inner.height,
+        },
         ScrollSurface::AiSuggestions,
         len,
         state.offset(),

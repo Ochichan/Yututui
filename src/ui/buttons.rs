@@ -242,38 +242,39 @@ pub fn register_list_rows(
     }
 }
 
-/// Draw a vertical scrollbar on the right border of `list_area`, but only when the content
+/// Draw a vertical scrollbar on `track`, but only when the content
 /// overflows the viewport. `position` is the scroll offset (the first visible row), so the
 /// thumb tracks the viewport through the list and reaches both ends. A no-op when everything
-/// fits.
-///
-/// `list_area` spans the bordered view's inner width, so `list_area.right()` is the block's
-/// right border column — the scrollbar replaces that border segment and never clips a row.
+/// fits. The caller decides whether `track` is a right border column or the final in-list
+/// column for borderless list regions.
 pub fn render_list_scrollbar(
     frame: &mut Frame,
     app: &App,
-    list_area: Rect,
+    track: Rect,
     surface: ScrollSurface,
     content_len: usize,
     position: usize,
     viewport: usize,
 ) {
+    if track.width == 0 || track.height == 0 {
+        return;
+    }
     let Some(thumb) =
-        crate::ui::scroll::scrollbar_thumb(content_len, viewport, list_area.height, position)
+        crate::ui::scroll::scrollbar_thumb(content_len, viewport, track.height, position)
     else {
         return;
     };
     let bar = Rect {
-        x: list_area.right(),
-        y: list_area.y,
+        x: track.x,
+        y: track.y,
         width: 1,
-        height: list_area.height,
+        height: track.height,
     };
     app.register_mouse_button(bar, MouseTarget::Scrollbar(surface));
 
     let thumb_start = thumb.start;
     let thumb_end = thumb.start.saturating_add(thumb.len);
-    for row in 0..list_area.height {
+    for row in 0..bar.height {
         let is_thumb = row >= thumb_start && row < thumb_end;
         let (symbol, style) = if is_thumb {
             ("█", app.theme.style(R::Accent))
