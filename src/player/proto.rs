@@ -52,6 +52,11 @@ pub fn cmd_loadfile(url: &str, mode: &str, request_id: u64) -> String {
     json!({ "command": ["loadfile", url, mode], "request_id": request_id }).to_string()
 }
 
+/// `stop` — stop the current file.
+pub fn cmd_stop(request_id: u64) -> String {
+    json!({ "command": ["stop"], "request_id": request_id }).to_string()
+}
+
 /// `observe_property <id> <name>` — subscribe to property-change events.
 pub fn cmd_observe(id: u64, name: &str) -> String {
     json!({ "command": ["observe_property", id, name], "request_id": id }).to_string()

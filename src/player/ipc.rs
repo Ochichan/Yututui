@@ -76,6 +76,10 @@ pub async fn run_actor(
                             last_sent_time_sec = None;
                             proto::cmd_loadfile(&url, "replace", request_id)
                         },
+                        PlayerCmd::Stop => {
+                            last_sent_time_sec = None;
+                            proto::cmd_stop(request_id)
+                        },
                         PlayerCmd::CyclePause => proto::cmd_cycle("pause", request_id),
                         PlayerCmd::SeekRelative(secs) => proto::cmd_seek_relative(secs, request_id),
                         PlayerCmd::SeekAbsolute(secs) => proto::cmd_seek_absolute(secs, request_id),

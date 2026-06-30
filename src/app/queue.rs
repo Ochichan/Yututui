@@ -34,9 +34,31 @@ impl App {
     }
 
     /// Remove queue order positions `lo..=hi`, high-to-low so positions stay valid as
-    /// earlier ones drop. Reloads the playing track if it was among them (or stops on an
-    /// emptied queue), and clamps/closes the window's selection.
+    /// earlier ones drop. If the playing track was removed, loads the next surviving track
+    /// after the removed range, wraps only under repeat-all, or stops when no next track
+    /// exists. Also clamps/closes the window's selection.
     pub(in crate::app) fn remove_queue_range(&mut self, lo: usize, hi: usize) -> Vec<Cmd> {
+        let len_before = self.queue.len();
+        if len_before == 0 || lo > hi {
+            return Vec::new();
+        }
+        let lo = lo.min(len_before - 1);
+        let hi = hi.min(len_before - 1);
+        let current_pos = self.queue.cursor_pos();
+        let removed_current = lo <= current_pos && current_pos <= hi;
+        let removed_count = hi - lo + 1;
+        let next_pos_after_removal = if removed_current && removed_count < len_before {
+            if hi + 1 < len_before {
+                Some(lo)
+            } else if self.queue.repeat == crate::queue::Repeat::All {
+                Some(0)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let mut current_changed = false;
         for pos in (lo..=hi).rev() {
             if let Some(changed) = self.queue.remove_at(pos) {
@@ -55,8 +77,14 @@ impl App {
         }
         self.dirty = true;
         if current_changed {
-            let song = self.queue.current().cloned();
-            self.load_song(song)
+            if let Some(pos) = next_pos_after_removal {
+                let song = self.queue.goto(pos).cloned();
+                self.load_song(song)
+            } else {
+                let mut cmds = self.load_song(None);
+                cmds.push(Cmd::Player(PlayerCmd::Stop));
+                cmds
+            }
         } else {
             Vec::new()
         }

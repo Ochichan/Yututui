@@ -358,11 +358,17 @@ impl Action {
     /// A human-readable label when the same action needs screen-specific wording.
     pub fn human_label_for(self, ctx: KeyContext) -> &'static str {
         match (ctx, self) {
+            (KeyContext::Player, Action::QueueRemove) => {
+                t!("Remove current from queue", "현재 곡 큐에서 제거")
+            }
             (KeyContext::Library, Action::Confirm) => t!("Play selected", "선택 항목 재생"),
             (KeyContext::Library, Action::Back) => t!("Close Library", "라이브러리 닫기"),
             (KeyContext::Library, Action::LibraryRemove) => t!("Remove / delete", "제거 / 삭제"),
             (KeyContext::Queue, Action::Confirm) => t!("Play / jump to track", "곡 재생 / 이동"),
             (KeyContext::Queue, Action::Back) => t!("Close queue", "대기열 닫기"),
+            (KeyContext::Queue, Action::QueueRemove) => {
+                t!("Remove selected from queue", "선택 곡 큐에서 제거")
+            }
             (KeyContext::SearchInput, Action::Confirm) => t!("Search", "검색"),
             (KeyContext::SearchInput, Action::ToggleSearchSourceMenu)
             | (KeyContext::SearchResults, Action::ToggleSearchSourceMenu) => {
@@ -849,6 +855,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::CycleRating, ch('f')),
         (C::Player, A::OpenLibrary, ch('l')),
         (C::Player, A::OpenQueue, ch('c')),
+        (C::Player, A::QueueRemove, key(KeyCode::Delete)),
         (C::Player, A::ToggleLyrics, ch('L')),
         (C::Player, A::Download, ch('d')),
         (C::Player, A::ToggleShuffle, ch('S')),
@@ -1335,6 +1342,10 @@ mod tests {
             Some(Action::ToggleLyrics)
         );
         assert_eq!(
+            km.action(KeyContext::Player, parse_chord("delete").unwrap()),
+            Some(Action::QueueRemove)
+        );
+        assert_eq!(
             km.action(KeyContext::Player, parse_chord("q").unwrap()),
             Some(Action::Back)
         );
@@ -1486,6 +1497,14 @@ mod tests {
         assert_eq!(
             Action::SettingsCancel.human_label_for(KeyContext::Settings),
             "Save + quit"
+        );
+        assert_eq!(
+            Action::QueueRemove.human_label_for(KeyContext::Player),
+            "Remove current from queue"
+        );
+        assert_eq!(
+            Action::QueueRemove.human_label_for(KeyContext::Queue),
+            "Remove selected from queue"
         );
         assert_eq!(Action::Quit.human_label_for(KeyContext::Global), "Quit");
         assert_eq!(Action::Home.human_label_for(KeyContext::Global), "Go home");
@@ -1800,6 +1819,10 @@ mod tests {
     #[test]
     fn editable_entries_cover_every_binding() {
         assert_eq!(editable_entries().len(), default_bindings().len());
+        assert!(
+            editable_entries().contains(&(KeyContext::Player, Action::QueueRemove)),
+            "Settings > Keys should list the player delete binding"
+        );
         // Every action has a stable id and label.
         for (_, action, _) in default_bindings() {
             assert_ne!(action.id(), "?");

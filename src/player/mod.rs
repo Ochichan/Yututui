@@ -23,6 +23,8 @@ use crate::app::Msg;
 pub enum PlayerCmd {
     /// Resolve nothing — load this (already-playable) URL and start it.
     Load(String),
+    /// Stop the current mpv file without advancing mpv's own playlist.
+    Stop,
     /// Toggle pause/resume.
     CyclePause,
     /// Seek by a relative number of seconds (negative = backward).

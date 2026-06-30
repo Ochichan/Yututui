@@ -51,6 +51,11 @@ fn load_url(cmds: &[Cmd]) -> Option<&str> {
     })
 }
 
+fn has_stop(cmds: &[Cmd]) -> bool {
+    cmds.iter()
+        .any(|c| matches!(c, Cmd::Player(PlayerCmd::Stop)))
+}
+
 #[test]
 fn q_is_back_in_player_mode_without_quitting() {
     let mut app = App::new(100);
@@ -931,6 +936,21 @@ fn n_advances_and_p_goes_back() {
     assert_eq!(current(&app), "id1");
     app.update(Msg::Key(key(KeyCode::Char('p'))));
     assert_eq!(current(&app), "id0");
+}
+
+#[test]
+fn delete_on_player_removes_current_and_loads_next() {
+    let mut app = app_playing(3, 0);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(current(&app), "id1");
+    assert!(
+        app.queue.ordered().iter().all(|s| s.video_id != "id0"),
+        "deleted current track should be removed from the queue"
+    );
+    assert!(load_url(&cmds).expect("load of next track").contains("id1"));
 }
 
 #[test]
@@ -5341,7 +5361,7 @@ fn deleting_last_queue_track_under_overlay_clears_native_art() {
     app.dirty = false;
 
     let cmds = app.remove_queue_range(0, 0);
-    assert!(cmds.is_empty());
+    assert!(has_stop(&cmds));
     assert!(app.queue.is_empty());
     assert!(!app.art_active());
     assert_art_refresh_clear_burst(&mut app, "emptying the queue under overlay");
@@ -6152,6 +6172,61 @@ fn drag_selects_a_range_then_delete_removes_all_of_it() {
         .map(|s| s.video_id.as_str())
         .collect();
     assert_eq!(ids, vec!["id3", "id4"]);
+}
+
+#[test]
+fn queue_delete_current_range_loads_next_after_removed_range() {
+    let mut app = app_playing(5, 1);
+    app.update(Msg::Key(key(KeyCode::Char('c'))));
+    app.queue_popup.anchor = 1;
+    app.queue_popup.cursor = 3;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(current(&app), "id4");
+    assert!(load_url(&cmds).expect("load of next track").contains("id4"));
+    let ids: Vec<&str> = app
+        .queue
+        .ordered()
+        .iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["id0", "id4"]);
+}
+
+#[test]
+fn queue_delete_current_tail_range_stops_when_no_next_exists() {
+    let mut app = app_playing(3, 1);
+    app.update(Msg::Key(key(KeyCode::Char('c'))));
+    app.queue_popup.anchor = 1;
+    app.queue_popup.cursor = 2;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+
+    assert_eq!(app.queue.len(), 1);
+    assert_eq!(current(&app), "id0");
+    assert!(load_url(&cmds).is_none());
+    assert!(has_stop(&cmds), "mpv should stop the deleted current track");
+    assert_eq!(app.prefetch.loaded_video_id, None);
+    assert!(app.playback.paused);
+}
+
+#[test]
+fn queue_delete_current_tail_wraps_under_repeat_all() {
+    let mut app = app_playing(3, 2);
+    app.queue.repeat = crate::queue::Repeat::All;
+    app.update(Msg::Key(key(KeyCode::Char('c'))));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
+
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(current(&app), "id0");
+    assert!(
+        load_url(&cmds)
+            .expect("load of wrapped track")
+            .contains("id0")
+    );
 }
 
 #[test]

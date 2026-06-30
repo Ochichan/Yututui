@@ -326,6 +326,13 @@ impl App {
                 self.open_queue_popup();
                 Vec::new()
             }
+            Action::QueueRemove => {
+                if self.queue.is_empty() {
+                    Vec::new()
+                } else {
+                    self.remove_queue_range(self.queue.cursor_pos(), self.queue.cursor_pos())
+                }
+            }
             // Toggle the lyrics panel; fetch on first open for the current track.
             Action::ToggleLyrics => {
                 self.lyrics.visible = !self.lyrics.visible;
