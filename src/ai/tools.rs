@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::Song;
-use crate::api::ytmusic::{related_tracks, ytdlp_search};
+use crate::api::ytmusic::{related_tracks_from_source, ytdlp_search};
 use crate::app::{AiContext, Msg};
 
 /// Default number of tracks a query resolves to when the model doesn't ask for a count.
@@ -224,14 +224,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             let seed = str_arg(args, "seed")
                 .or_else(|| deps.ctx.current_track.clone())
                 .unwrap_or_else(|| "popular music".to_owned());
-            let songs = related_tracks(
-                &seed,
-                RELATED_COUNT,
-                &HashSet::new(),
-                crate::streaming::StreamingMode::Balanced,
-            )
-            .await
-            .unwrap_or_default();
+            let songs = tool_related_tracks(&seed, RELATED_COUNT, deps.ctx).await;
             cache_all(deps, &songs);
             let count = songs.len();
             // A vibe-shaped station carries an explore level and/or artists to avoid → persist it
@@ -263,14 +256,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             let seed = str_arg(args, "seed")
                 .or_else(|| deps.ctx.current_track.clone())
                 .unwrap_or_else(|| "popular music".to_owned());
-            let songs = related_tracks(
-                &seed,
-                RELATED_COUNT,
-                &HashSet::new(),
-                crate::streaming::StreamingMode::Balanced,
-            )
-            .await
-            .unwrap_or_default();
+            let songs = tool_related_tracks(&seed, RELATED_COUNT, deps.ctx).await;
             cache_all(deps, &songs);
             let labels: Vec<String> = songs.iter().map(fmt_song).collect();
             // Populating the pickable list is not a playback mutation → no side-effect flag.
@@ -331,6 +317,54 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
 
         other => err(&format!("unknown tool: {other}")),
     }
+}
+
+async fn tool_related_tracks(seed: &str, limit: usize, ctx: &AiContext) -> Vec<Song> {
+    let config = ctx.search.clone().normalized();
+    let source = config.normalized_streaming_source(config.streaming_source);
+    let selected_sources = if source == crate::search_source::SearchSource::All {
+        config.streaming_enabled_sources()
+    } else {
+        vec![source]
+    };
+    let per_source_limit = if source == crate::search_source::SearchSource::All {
+        (limit / selected_sources.len().max(1)).max(4).min(limit)
+    } else {
+        limit
+    };
+    let mut out = Vec::with_capacity(limit);
+    let mut emitted_ids = HashSet::new();
+    for source in selected_sources {
+        if out.len() >= limit {
+            break;
+        }
+        let source_limit = if config.streaming_source == crate::search_source::SearchSource::All {
+            per_source_limit
+        } else {
+            limit.saturating_sub(out.len())
+        };
+        let Ok(songs) = related_tracks_from_source(
+            seed,
+            source,
+            &config,
+            source_limit,
+            &emitted_ids,
+            crate::streaming::StreamingMode::Balanced,
+        )
+        .await
+        else {
+            continue;
+        };
+        for song in songs {
+            if emitted_ids.insert(song.video_id.clone()) {
+                out.push(song);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Resolve a tool's track argument(s) to concrete songs: a `videoIds` list, a single
@@ -505,6 +539,7 @@ mod tests {
             recent_history: vec![],
             favorites: vec!["Fave — Artist".to_owned()],
             playlists: vec![],
+            search: crate::search_source::SearchConfig::default(),
             authenticated: false,
             autoplay_streaming: false,
         }

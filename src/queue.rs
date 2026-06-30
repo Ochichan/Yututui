@@ -193,6 +193,36 @@ impl Queue {
         added
     }
 
+    /// Insert `more` immediately after the current track without moving the cursor. This powers
+    /// the optional "enqueue as next" mode: playback keeps going, but the first inserted song is
+    /// what `next` will reach. Into an empty queue it behaves like [`extend`](Self::extend).
+    /// Shuffle-agnostic: the inserted block stays directly after the current track so the
+    /// "next" promise holds even while shuffle is enabled.
+    pub fn insert_next_many(&mut self, more: Vec<Song>) -> usize {
+        let free = MAX.saturating_sub(self.songs.len());
+        if free == 0 {
+            return 0;
+        }
+        let old_len = self.songs.len();
+        let more: Vec<Song> = more.into_iter().take(free).collect();
+        if more.is_empty() {
+            return 0;
+        }
+        let added = more.len();
+        self.songs.extend(more);
+        let new_indices = old_len..old_len + added;
+        if self.order.is_empty() {
+            self.order.extend(new_indices);
+            self.cursor = 0;
+        } else {
+            let at = self.cursor + 1;
+            for (offset, idx) in new_indices.enumerate() {
+                self.order.insert(at + offset, idx);
+            }
+        }
+        added
+    }
+
     /// Insert `song` immediately after the current track in the play order and make it the
     /// new current — "play this now" without disturbing the rest of the queue, which resumes
     /// after this track ends. Into an empty queue it simply becomes the sole track. Returns
@@ -651,6 +681,44 @@ mod tests {
         let mut seen = q.order.clone();
         seen.sort_unstable();
         assert_eq!(seen, (0..7).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn insert_next_many_places_tracks_after_current_without_jumping() {
+        let mut q = Queue::default();
+        q.set(songs(4), 1); // queue 0,1,2,3 — playing "1"
+        let added = q.insert_next_many(vec![song("x"), song("y")]);
+        assert_eq!(added, 2);
+        assert_eq!(id(&q), "1");
+        let ids: Vec<&str> = q.ordered().iter().map(|s| s.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["0", "1", "x", "y", "2", "3"]);
+        assert_eq!(q.next(false).unwrap().video_id, "x");
+    }
+
+    #[test]
+    fn insert_next_many_into_empty_makes_first_track_current() {
+        let mut q = Queue::default();
+        let added = q.insert_next_many(vec![song("solo")]);
+        assert_eq!(added, 1);
+        assert_eq!(id(&q), "solo");
+        assert_eq!(q.position(), (1, 1));
+    }
+
+    #[test]
+    fn insert_next_many_under_shuffle_stays_a_permutation_and_next() {
+        let mut q = Queue::default();
+        q.set(songs(5), 2);
+        q.rng = fastrand::Rng::with_seed(99);
+        q.toggle_shuffle();
+        let current = id(&q).to_owned();
+        let at = q.cursor_pos();
+        q.insert_next_many(vec![song("z")]);
+        assert_eq!(id(&q), current);
+        assert_eq!(q.ordered()[at + 1].video_id, "z");
+        let mut seen = q.order.clone();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..6).collect::<Vec<_>>());
+        assert!(q.order.iter().all(|&i| i < q.songs.len()));
     }
 
     #[test]

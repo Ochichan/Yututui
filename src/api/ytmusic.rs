@@ -189,6 +189,26 @@ pub(crate) async fn ytdlp_search(query: &str, limit: usize) -> Result<Vec<Song>>
     ytdlp_flat_search(SearchSource::Youtube, "ytsearch", query, limit).await
 }
 
+async fn search_external_source(
+    source: SearchSource,
+    query: &str,
+    config: &SearchConfig,
+    limit: usize,
+) -> Result<Vec<Song>> {
+    match source {
+        SearchSource::SoundCloud => {
+            ytdlp_flat_search(SearchSource::SoundCloud, "scsearch", query, limit).await
+        }
+        SearchSource::Audius => audius_search(query, config, limit).await,
+        SearchSource::Jamendo => jamendo_search(query, config, limit).await,
+        SearchSource::InternetArchive => archive_search(query, limit).await,
+        SearchSource::Youtube => ytdlp_search(query, limit).await,
+        SearchSource::RadioBrowser | SearchSource::All => {
+            bail!("{} is not a track recommendation source", source.label())
+        }
+    }
+}
+
 async fn ytdlp_flat_search(
     source: SearchSource,
     prefix: &str,
@@ -243,7 +263,7 @@ pub(crate) async fn related_tracks(
     // engine, not this fetch, decides the final few picks).
     let limit = limit.clamp(1, 50);
     let mut out = Vec::with_capacity(limit);
-    let mut seen = excluded.clone();
+    let mut accepted_ids = excluded.clone();
     let mut had_success = false;
     let mut last_err = None;
 
@@ -253,7 +273,7 @@ pub(crate) async fn related_tracks(
             Ok(songs) => {
                 had_success = true;
                 for song in songs {
-                    if seen.insert(song.video_id.clone()) {
+                    if accepted_ids.insert(song.video_id.clone()) {
                         out.push(song);
                         if out.len() >= limit {
                             return Ok(out);
@@ -271,6 +291,67 @@ pub(crate) async fn related_tracks(
         return Err(e).context("related-track search failed");
     }
     Ok(out)
+}
+
+/// Related-track search through one configured Search-screen source.
+///
+/// This is intentionally search-based rather than a provider-specific recommendation API: the app
+/// already has playable search adapters for these sources, while recommendation endpoints differ
+/// wildly by provider or do not exist. The local streaming engine still ranks and filters the
+/// merged pool before anything is queued.
+pub(crate) async fn related_tracks_from_source(
+    seed: &str,
+    source: SearchSource,
+    config: &SearchConfig,
+    limit: usize,
+    excluded: &HashSet<String>,
+    mode: StreamingMode,
+) -> Result<Vec<Song>> {
+    match source {
+        SearchSource::Youtube => related_tracks(seed, limit, excluded, mode).await,
+        SearchSource::SoundCloud
+        | SearchSource::Audius
+        | SearchSource::Jamendo
+        | SearchSource::InternetArchive => {
+            if !config.is_enabled(source) {
+                bail!("{} is disabled in Settings → General", source.label());
+            }
+            let limit = limit.clamp(1, 50);
+            let mut out = Vec::with_capacity(limit);
+            let mut accepted_ids = excluded.clone();
+            let mut had_success = false;
+            let mut last_err = None;
+
+            for query in streaming_queries(seed, mode) {
+                let search_limit = (limit * 2).clamp(limit, 50);
+                match search_external_source(source, &query, config, search_limit).await {
+                    Ok(songs) => {
+                        had_success = true;
+                        for song in songs {
+                            if accepted_ids.insert(song.video_id.clone()) {
+                                out.push(song);
+                                if out.len() >= limit {
+                                    return Ok(out);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        last_err = Some(e);
+                    }
+                }
+            }
+
+            if !had_success && let Some(e) = last_err {
+                return Err(e).context("provider related-track search failed");
+            }
+            Ok(out)
+        }
+        SearchSource::RadioBrowser => {
+            bail!("Radio Browser streams are not used for track recommendations")
+        }
+        SearchSource::All => bail!("internal error: nested ALL streaming source search"),
+    }
 }
 
 /// Final streaming safety pass for public-YouTube candidates. Cheap title/channel checks have

@@ -1009,6 +1009,7 @@ mod tests {
                 name: "Mix".to_owned(),
                 count: 4,
             }],
+            search: crate::search_source::SearchConfig::default(),
             authenticated: true,
             autoplay_streaming: false,
         }

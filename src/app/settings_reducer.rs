@@ -35,6 +35,7 @@ impl App {
             mouse: self.config.effective_mouse(),
             album_art: self.config.effective_album_art(),
             autoplay_on_start: self.config.effective_autoplay_on_start(),
+            enqueue_next: self.config.effective_enqueue_next(),
             speed: self.playback.speed,
             seek_seconds: self.audio.seek_seconds,
             mouse_wheel_volume: self.config.effective_mouse_wheel_volume(),
@@ -307,6 +308,11 @@ impl App {
                 s.draft.autoplay_on_start = !s.draft.autoplay_on_start;
                 Vec::new()
             }
+            Field::EnqueueNext => {
+                let s = self.settings_mut();
+                s.draft.enqueue_next = !s.draft.enqueue_next;
+                Vec::new()
+            }
             Field::SearchSource => {
                 let s = self.settings_mut();
                 s.draft.search.source = s
@@ -317,6 +323,22 @@ impl App {
                     "{}: {}",
                     t!("Search source", "검색 소스"),
                     s.draft.search.source.label()
+                );
+                Vec::new()
+            }
+            Field::StreamingSource => {
+                let s = self.settings_mut();
+                s.draft.search.streaming_source = s
+                    .draft
+                    .search
+                    .cycled_streaming_source(s.draft.search.streaming_source, dir >= 0);
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Streaming source", "추천 소스"),
+                    s.draft
+                        .search
+                        .normalized_streaming_source(s.draft.search.streaming_source)
+                        .label()
                 );
                 Vec::new()
             }
@@ -748,6 +770,7 @@ impl App {
             d.mouse = def.effective_mouse();
             d.album_art = def.effective_album_art();
             d.autoplay_on_start = def.effective_autoplay_on_start();
+            d.enqueue_next = def.effective_enqueue_next();
             d.speed = def.effective_speed();
             d.seek_seconds = def.effective_seek_seconds();
             d.gapless = def.effective_gapless();

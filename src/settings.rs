@@ -89,6 +89,7 @@ impl SettingsTab {
             SettingsTab::General => vec![
                 Field::Language,
                 Field::SearchSource,
+                Field::StreamingSource,
                 Field::SearchYoutube,
                 Field::SearchSoundCloud,
                 Field::SearchAudius,
@@ -102,6 +103,7 @@ impl SettingsTab {
                 Field::Mouse,
                 Field::AlbumArt,
                 Field::AutoplayOnStart,
+                Field::EnqueueNext,
                 Field::ResetKeybindings,
                 Field::ResetAll,
             ],
@@ -184,6 +186,8 @@ pub enum Field {
     Language,
     /// Default source selected in the search box.
     SearchSource,
+    /// Source used for autoplay/DJ Gem streaming candidate search.
+    StreamingSource,
     SearchYoutube,
     SearchSoundCloud,
     SearchAudius,
@@ -197,6 +201,8 @@ pub enum Field {
     Mouse,
     AlbumArt,
     AutoplayOnStart,
+    /// Manual "add to queue" inserts immediately after the current track instead of at the end.
+    EnqueueNext,
     /// A button (not a value): restores all keybindings to their built-in defaults.
     ResetKeybindings,
     /// A button (not a value): activates "reset every setting to defaults".
@@ -359,6 +365,7 @@ impl Field {
             Field::Mouse
             | Field::AlbumArt
             | Field::AutoplayOnStart
+            | Field::EnqueueNext
             | Field::SearchYoutube
             | Field::SearchSoundCloud
             | Field::SearchAudius
@@ -389,6 +396,7 @@ impl Field {
             | Field::AnimBounce => FieldKind::Toggle,
             Field::Language
             | Field::SearchSource
+            | Field::StreamingSource
             | Field::EqPreset
             | Field::GeminiModel
             | Field::ThemePreset
@@ -429,6 +437,7 @@ impl Field {
         match self {
             Field::Language => t!("Language", "언어").to_owned(),
             Field::SearchSource => t!("Search source", "검색 소스").to_owned(),
+            Field::StreamingSource => t!("Streaming source", "추천 소스").to_owned(),
             Field::SearchYoutube => t!("Source: YouTube", "소스: YouTube").to_owned(),
             Field::SearchSoundCloud => t!("Source: SoundCloud", "소스: SoundCloud").to_owned(),
             Field::SearchAudius => t!("Source: Audius", "소스: Audius").to_owned(),
@@ -448,6 +457,7 @@ impl Field {
                 t!("Album art (next launch)", "앨범 아트 (재시작 후 적용)").to_owned()
             }
             Field::AutoplayOnStart => t!("Autoplay on launch", "앱 시작 시 자동재생").to_owned(),
+            Field::EnqueueNext => t!("Enqueue as next", "큐 추가: 다음 곡").to_owned(),
             Field::ResetKeybindings => t!("Reset keybindings", "단축키 초기화").to_owned(),
             Field::ResetAll => t!("Reset all settings", "모든 설정 초기화").to_owned(),
             Field::Speed => t!("Playback speed", "재생 속도").to_owned(),
@@ -516,6 +526,7 @@ pub struct SettingsDraft {
     pub mouse: bool,
     pub album_art: bool,
     pub autoplay_on_start: bool,
+    pub enqueue_next: bool,
     pub speed: f64,
     /// Seek step (seconds) for the seek-back/-forward keys.
     pub seek_seconds: f64,
@@ -555,6 +566,11 @@ impl SettingsDraft {
             // UI language (English / 한국어).
             Field::Language => self.language.native_name().to_owned(),
             Field::SearchSource => self.search.source.label().to_owned(),
+            Field::StreamingSource => self
+                .search
+                .normalized_streaming_source(self.search.streaming_source)
+                .label()
+                .to_owned(),
             Field::SearchYoutube => toggle_str(self.search.youtube),
             Field::SearchSoundCloud => toggle_str(self.search.soundcloud),
             Field::SearchAudius => toggle_str(self.search.audius),
@@ -594,6 +610,7 @@ impl SettingsDraft {
             Field::Mouse => toggle_str(self.mouse),
             Field::AlbumArt => toggle_str(self.album_art),
             Field::AutoplayOnStart => toggle_str(self.autoplay_on_start),
+            Field::EnqueueNext => toggle_str(self.enqueue_next),
             Field::Speed => format!("{:.1}x", self.speed),
             Field::SeekInterval => format!("{:.0}s", self.seek_seconds),
             Field::MouseWheelVolume => toggle_str(self.mouse_wheel_volume),
@@ -675,6 +692,7 @@ impl SettingsDraft {
         cfg.mouse = Some(self.mouse);
         cfg.album_art = Some(self.album_art);
         cfg.autoplay_on_start = Some(self.autoplay_on_start);
+        cfg.enqueue_next = Some(self.enqueue_next);
         cfg.speed = Some(self.speed);
         cfg.seek_seconds = Some(self.seek_seconds);
         cfg.mouse_wheel_volume = Some(self.mouse_wheel_volume);
@@ -807,6 +825,7 @@ mod tests {
             mouse: true,
             album_art: false,
             autoplay_on_start: false,
+            enqueue_next: false,
             speed: 1.0,
             seek_seconds: 10.0,
             mouse_wheel_volume: true,
@@ -951,6 +970,7 @@ mod tests {
             vec![
                 Field::Language,
                 Field::SearchSource,
+                Field::StreamingSource,
                 Field::SearchYoutube,
                 Field::SearchSoundCloud,
                 Field::SearchAudius,
@@ -964,6 +984,7 @@ mod tests {
                 Field::Mouse,
                 Field::AlbumArt,
                 Field::AutoplayOnStart,
+                Field::EnqueueNext,
                 Field::ResetKeybindings,
                 Field::ResetAll,
             ]
@@ -971,9 +992,11 @@ mod tests {
         assert_eq!(Field::ResetKeybindings.kind(), FieldKind::Button);
         assert_eq!(Field::ResetAll.kind(), FieldKind::Button);
         assert_eq!(Field::SearchSource.kind(), FieldKind::Select);
+        assert_eq!(Field::StreamingSource.kind(), FieldKind::Select);
         assert_eq!(Field::SearchSoundCloud.kind(), FieldKind::Toggle);
         assert_eq!(Field::JamendoClientId.kind(), FieldKind::Text);
         assert_eq!(Field::AutoplayOnStart.kind(), FieldKind::Toggle);
+        assert_eq!(Field::EnqueueNext.kind(), FieldKind::Toggle);
         assert_eq!(Field::AlbumArt.kind(), FieldKind::Toggle);
         // Off by default, and the toggle renders as an empty checkbox.
         let draft = base_draft();
@@ -982,10 +1005,13 @@ mod tests {
             "↵ press Enter"
         );
         assert_eq!(draft.value_display(Field::SearchSource), "YouTube");
+        assert_eq!(draft.value_display(Field::StreamingSource), "YouTube");
         assert_eq!(draft.value_display(Field::SearchSoundCloud), "[x]");
         assert_eq!(draft.value_display(Field::JamendoClientId), "(none)");
         assert!(!draft.autoplay_on_start);
         assert_eq!(draft.value_display(Field::AutoplayOnStart), "[ ]");
+        assert!(!draft.enqueue_next);
+        assert_eq!(draft.value_display(Field::EnqueueNext), "[ ]");
     }
 
     #[test]
@@ -1072,12 +1098,14 @@ mod tests {
             download_dir: "/tmp/downloads".to_owned(),
             search: SearchConfig {
                 source: SearchSource::SoundCloud,
+                streaming_source: SearchSource::All,
                 jamendo_client_id: Some("jam-id".to_owned()),
                 ..SearchConfig::default()
             },
             mouse: false,
             album_art: true,
             autoplay_on_start: true,
+            enqueue_next: true,
             speed: 1.7,
             seek_seconds: 25.0,
             mouse_wheel_volume: false,
@@ -1116,10 +1144,12 @@ mod tests {
         assert_eq!(cfg.cookies_file, Some(PathBuf::from("/tmp/cookies.txt")));
         assert_eq!(cfg.download_dir, Some(PathBuf::from("/tmp/downloads")));
         assert_eq!(cfg.search.source, SearchSource::SoundCloud);
+        assert_eq!(cfg.search.streaming_source, SearchSource::All);
         assert_eq!(cfg.search.jamendo_client_id.as_deref(), Some("jam-id"));
         assert_eq!(cfg.mouse, Some(false));
         assert_eq!(cfg.album_art, Some(true));
         assert_eq!(cfg.autoplay_on_start, Some(true));
+        assert_eq!(cfg.enqueue_next, Some(true));
         assert_eq!(cfg.speed, Some(1.7));
         assert_eq!(cfg.seek_seconds, Some(25.0));
         assert_eq!(cfg.mouse_wheel_volume, Some(false));

@@ -488,16 +488,17 @@ impl App {
         cmds
     }
 
-    /// Append `song` to the end of the queue without interrupting playback — the unified `\` /
-    /// right-click "add to queue" gesture in the Library and Search results. If nothing is
-    /// currently playing we jump to it and start; if a track is already playing we simply
-    /// enqueue it (no interruption) and confirm with a toast.
+    /// Add `song` to the queue without interrupting playback — the unified `\` / right-click
+    /// gesture in the Library and Search results. By default this appends to the end; when the
+    /// "enqueue as next" setting is on, it inserts immediately after the current track.
+    /// If nothing is currently playing we jump to it and start.
     pub(in crate::app) fn enqueue(&mut self, song: Song) -> Vec<Cmd> {
         self.enqueue_many(vec![song])
     }
 
-    /// Append several tracks to the end of the queue without interrupting playback. If idle,
-    /// start the first appended track.
+    /// Add several tracks to the queue without interrupting playback. If idle, start the first
+    /// added track; otherwise append to the end or insert after the current track according to
+    /// the user's enqueue policy.
     pub(in crate::app) fn enqueue_many(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
         if songs.is_empty() {
             return Vec::new();
@@ -506,7 +507,12 @@ impl App {
         let requested = songs.len();
         let old_len = self.queue.len();
         let was_idle = self.prefetch.loaded_video_id.is_none();
-        let added = self.queue.extend(songs);
+        let enqueue_next = self.config.effective_enqueue_next() && !was_idle;
+        let added = if enqueue_next {
+            self.queue.insert_next_many(songs)
+        } else {
+            self.queue.extend(songs)
+        };
         if added == 0 {
             self.status.kind = StatusKind::Error;
             self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
@@ -526,10 +532,21 @@ impl App {
         }
         let cmds = self.request_romanization_for_songs(&queued_songs);
         let first_title = self.display_title(&queued_songs[0]).into_owned();
-        // A track is already playing → just queue it up behind the rest, no interruption.
+        // A track is already playing → queue it by policy, with no interruption.
         self.status.kind = StatusKind::Info;
         self.status.text = if requested == 1 && added == 1 {
-            format!("{} {}", t!("Added to queue:", "큐에 추가:"), first_title)
+            let prefix = if enqueue_next {
+                t!("Added next:", "다음 곡으로 추가:")
+            } else {
+                t!("Added to queue:", "큐에 추가:")
+            };
+            format!("{prefix} {first_title}")
+        } else if enqueue_next {
+            format!(
+                "{} {}",
+                added,
+                t!("tracks added next", "곡을 다음 곡으로 추가")
+            )
         } else {
             format!(
                 "{} {}",

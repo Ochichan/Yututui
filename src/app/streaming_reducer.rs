@@ -47,6 +47,7 @@ impl App {
             seed_video_id,
             exclude_ids,
             mode: self.config.streaming.mode,
+            config: self.config.effective_search(),
         }]
     }
 

@@ -71,6 +71,11 @@ impl SearchSource {
 pub struct SearchConfig {
     /// The source selected by default in the search box.
     pub source: SearchSource,
+    /// The source used to fetch autoplay/DJ Gem streaming candidates.
+    ///
+    /// Radio Browser entries are live streams rather than tracks, so normalization keeps
+    /// `RadioBrowser` out of this setting even if it is enabled for the Search screen.
+    pub streaming_source: SearchSource,
     pub youtube: bool,
     pub soundcloud: bool,
     pub audius: bool,
@@ -87,6 +92,7 @@ impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             source: SearchSource::Youtube,
+            streaming_source: SearchSource::Youtube,
             youtube: true,
             soundcloud: true,
             audius: true,
@@ -123,6 +129,7 @@ impl SearchConfig {
             SearchSource::All => {}
         }
         self.source = self.normalized_source(self.source);
+        self.streaming_source = self.normalized_streaming_source(self.streaming_source);
     }
 
     pub fn enabled_sources(&self) -> Vec<SearchSource> {
@@ -134,6 +141,24 @@ impl SearchConfig {
 
     pub fn selectable_sources(&self) -> Vec<SearchSource> {
         let mut sources = self.enabled_sources();
+        if sources.len() > 1 {
+            sources.push(SearchSource::All);
+        }
+        if sources.is_empty() {
+            sources.push(SearchSource::Youtube);
+        }
+        sources
+    }
+
+    pub fn streaming_enabled_sources(&self) -> Vec<SearchSource> {
+        self.enabled_sources()
+            .into_iter()
+            .filter(|source| *source != SearchSource::RadioBrowser)
+            .collect()
+    }
+
+    pub fn selectable_streaming_sources(&self) -> Vec<SearchSource> {
+        let mut sources = self.streaming_enabled_sources();
         if sources.len() > 1 {
             sources.push(SearchSource::All);
         }
@@ -164,6 +189,27 @@ impl SearchConfig {
         }
     }
 
+    pub fn normalized_streaming_source(&self, source: SearchSource) -> SearchSource {
+        if source == SearchSource::All {
+            return if self.streaming_enabled_sources().len() > 1 {
+                SearchSource::All
+            } else {
+                self.streaming_enabled_sources()
+                    .into_iter()
+                    .next()
+                    .unwrap_or(SearchSource::Youtube)
+            };
+        }
+        if source != SearchSource::RadioBrowser && self.is_enabled(source) {
+            source
+        } else {
+            self.streaming_enabled_sources()
+                .into_iter()
+                .next()
+                .unwrap_or(SearchSource::Youtube)
+        }
+    }
+
     pub fn cycled_source(&self, current: SearchSource, forward: bool) -> SearchSource {
         let sources = self.selectable_sources();
         let i = sources.iter().position(|&s| s == current).unwrap_or(0);
@@ -179,8 +225,24 @@ impl SearchConfig {
         sources[j]
     }
 
+    pub fn cycled_streaming_source(&self, current: SearchSource, forward: bool) -> SearchSource {
+        let sources = self.selectable_streaming_sources();
+        let i = sources.iter().position(|&s| s == current).unwrap_or(0);
+        let n = sources.len();
+        if n == 0 {
+            return SearchSource::Youtube;
+        }
+        let j = if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        };
+        sources[j]
+    }
+
     pub fn normalized(mut self) -> Self {
         self.source = self.normalized_source(self.source);
+        self.streaming_source = self.normalized_streaming_source(self.streaming_source);
         self.audius_app_name = trim_to_option(self.audius_app_name.as_deref());
         self.jamendo_client_id = trim_to_option(self.jamendo_client_id.as_deref());
         self
@@ -207,4 +269,41 @@ fn trim_to_option(s: Option<&str>) -> Option<String> {
     s.map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streaming_sources_exclude_radio_browser() {
+        let cfg = SearchConfig::default();
+
+        assert!(cfg.enabled_sources().contains(&SearchSource::RadioBrowser));
+        assert!(
+            !cfg.streaming_enabled_sources()
+                .contains(&SearchSource::RadioBrowser)
+        );
+        assert!(
+            !cfg.selectable_streaming_sources()
+                .contains(&SearchSource::RadioBrowser)
+        );
+    }
+
+    #[test]
+    fn radio_browser_streaming_source_normalizes_to_track_source() {
+        let cfg = SearchConfig {
+            streaming_source: SearchSource::RadioBrowser,
+            youtube: false,
+            soundcloud: true,
+            audius: false,
+            jamendo: false,
+            internet_archive: false,
+            radio_browser: true,
+            ..SearchConfig::default()
+        }
+        .normalized();
+
+        assert_eq!(cfg.streaming_source, SearchSource::SoundCloud);
+    }
 }

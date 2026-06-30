@@ -233,6 +233,9 @@ pub struct Config {
     pub shuffle: Option<bool>,
     /// Repeat mode.
     pub repeat: Repeat,
+    /// Add manually enqueued tracks immediately after the current track instead of the queue end.
+    /// `None` → off, preserving the historical append-to-end behavior.
+    pub enqueue_next: Option<bool>,
     /// Auto-extend the queue with related tracks when it runs low. `None` -> off.
     #[serde(alias = "autoplay_radio")]
     pub autoplay_streaming: Option<bool>,
@@ -306,6 +309,7 @@ impl Default for Config {
             gapless: None,
             shuffle: None,
             repeat: Repeat::default(),
+            enqueue_next: None,
             autoplay_streaming: None,
             autoplay_on_start: None,
             search: SearchConfig::default(),
@@ -454,6 +458,11 @@ impl Config {
     /// The repeat mode (default off).
     pub fn effective_repeat(&self) -> Repeat {
         self.repeat
+    }
+
+    /// Whether manual enqueue inserts tracks immediately after the current track (default off).
+    pub fn effective_enqueue_next(&self) -> bool {
+        self.enqueue_next.unwrap_or(false)
     }
 
     /// Whether queue auto-extend streaming is on (default off).
@@ -671,6 +680,7 @@ mod tests {
             gapless: Some(false),
             shuffle: Some(true),
             repeat: Repeat::One,
+            enqueue_next: Some(true),
             autoplay_streaming: Some(true),
             autoplay_on_start: Some(true),
             search: SearchConfig::default(),
@@ -706,6 +716,7 @@ mod tests {
         assert_eq!(back.gapless, Some(false));
         assert_eq!(back.shuffle, Some(true));
         assert_eq!(back.repeat, Repeat::One);
+        assert_eq!(back.enqueue_next, Some(true));
         assert_eq!(back.autoplay_streaming, Some(true));
         assert_eq!(back.autoplay_on_start, Some(true));
         assert_eq!(back.ai_enabled, Some(false));
@@ -837,6 +848,7 @@ mod tests {
         assert!(d.effective_gapless());
         assert!(!d.effective_shuffle());
         assert_eq!(d.effective_repeat(), Repeat::Off);
+        assert!(!d.effective_enqueue_next());
         assert!(!d.effective_autoplay_streaming());
         assert!(!d.effective_autoplay_on_start());
 
@@ -871,6 +883,12 @@ mod tests {
             ..Config::default()
         };
         assert!(!wheel_off.effective_mouse_wheel_volume());
+
+        let enqueue_next = Config {
+            enqueue_next: Some(true),
+            ..Config::default()
+        };
+        assert!(enqueue_next.effective_enqueue_next());
     }
 
     #[test]

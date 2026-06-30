@@ -883,6 +883,7 @@ async fn run(
                     seed_video_id,
                     exclude_ids,
                     mode,
+                    config,
                 } => {
                     api_handle.streaming(
                         seed,
@@ -890,6 +891,7 @@ async fn run(
                         exclude_ids,
                         app::STREAMING_POOL_COUNT,
                         mode,
+                        config,
                     );
                 }
                 Cmd::StreamingPreflight {

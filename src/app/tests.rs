@@ -646,6 +646,52 @@ fn backslash_on_library_enqueues_selected_song_without_interrupting() {
 }
 
 #[test]
+fn enqueue_defaults_to_appending_at_the_queue_end() {
+    let mut app = app_playing(3, 0);
+    app.library
+        .record_play(&Song::remote("lib9", "Lib Nine", "Z", "3:00"));
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::History;
+    app.library_ui.selected = 0;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('\\'))));
+
+    assert!(load_url(&cmds).is_none());
+    assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("id0"));
+    let ids: Vec<&str> = app
+        .queue
+        .ordered()
+        .iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["id0", "id1", "id2", "lib9"]);
+}
+
+#[test]
+fn enqueue_next_setting_inserts_after_the_current_track() {
+    let mut app = app_playing(3, 0);
+    app.config.enqueue_next = Some(true);
+    app.library
+        .record_play(&Song::remote("lib9", "Lib Nine", "Z", "3:00"));
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::History;
+    app.library_ui.selected = 0;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('\\'))));
+
+    assert!(load_url(&cmds).is_none());
+    assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("id0"));
+    let ids: Vec<&str> = app
+        .queue
+        .ordered()
+        .iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["id0", "lib9", "id1", "id2"]);
+    assert_eq!(app.status.kind, StatusKind::Info);
+}
+
+#[test]
 fn enter_on_library_drag_selection_plays_all_selected_tracks() {
     let mut app = app_playing(2, 0);
     app.library.favorites = vec![
@@ -1327,6 +1373,25 @@ fn radio_mode_theme_edits_do_not_overwrite_normal_config_theme() {
 }
 
 #[test]
+fn settings_enqueue_next_toggle_persists_on_close() {
+    let mut app = App::new(100);
+    app.open_settings();
+    let row = SettingsTab::General
+        .fields()
+        .iter()
+        .position(|f| *f == Field::EnqueueNext)
+        .expect("enqueue-next setting");
+    app.settings.as_mut().unwrap().row = row;
+
+    app.settings_change(1);
+    assert!(app.settings.as_ref().unwrap().draft.enqueue_next);
+    let cmds = app.close_settings();
+
+    assert!(app.config.effective_enqueue_next());
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+}
+
+#[test]
 fn radio_mode_nav_labels_player_as_radio_without_shifting_tabs() {
     let mut app = App::new(100);
 
@@ -1386,6 +1451,54 @@ fn radio_mode_nav_labels_player_as_radio_without_shifting_tabs() {
             .iter()
             .any(|b| b.target == MouseTarget::Nav(Mode::Ai)),
         "DJ Gem tab stays visible in Radio mode"
+    );
+}
+
+#[test]
+fn radio_mode_renders_custom_radio_art() {
+    let mut app = App::new(100);
+
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    let radio = render_app_buffer(&app, 80, 24);
+    let radio_text: String = radio
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+
+    assert!(
+        radio_text.contains("⢸⣿⣿⣉⣉⣉⣹⣿"),
+        "radio mode should render the custom radio art"
+    );
+}
+
+#[test]
+fn radio_separator_renders_only_in_radio_mode() {
+    let mut app = app_playing(1, 0);
+    make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Halfblocks);
+
+    let normal = render_app_buffer(&app, 100, 36);
+    let normal_text: String = normal
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+    assert!(
+        !normal_text.contains("♫♪.ılılı"),
+        "normal player mode should not render the radio separator"
+    );
+
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    let radio = render_app_buffer(&app, 80, 24);
+    let radio_text: String = radio
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+
+    assert!(
+        radio_text.contains("♫♪.ılılı"),
+        "radio mode should render the separator inside the player border"
     );
 }
 
@@ -1793,6 +1906,27 @@ fn streaming_mode_cycles_on_the_ai_tab_and_persists() {
     // Closing settings commits the draft into config + emits a save.
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
     assert_eq!(app.config.streaming.mode, StreamingMode::Discovery);
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+}
+
+#[test]
+fn streaming_source_cycles_on_general_tab_and_persists() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
+    assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General);
+    // Fields: Language(0), SearchSource(1), StreamingSource(2).
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Down)));
+    app.update(Msg::Key(key(KeyCode::Right))); // YouTube -> SoundCloud
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.search.streaming_source,
+        SearchSource::SoundCloud
+    );
+    assert!(app.status.text.contains("Streaming source: SoundCloud"));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert_eq!(app.config.search.streaming_source, SearchSource::SoundCloud);
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
 }
 

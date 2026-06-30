@@ -700,17 +700,57 @@ fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn render_art_animation_separator(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    const MOTIF: &str = "♫♪.ılılıll|̲̅●̲̅|̲̅=̲̅|̲̅●̲̅|llılılı.♫♪";
+    let width = usize::from(area.width);
+    let mut line = String::new();
+    while UnicodeWidthStr::width(line.as_str()) < width {
+        line.push_str(MOTIF);
+    }
+    let line = crate::ui::text::pad_to_width(
+        &crate::ui::text::truncate_owned_to_width(line, width),
+        width,
+    );
+    frame.render_widget(
+        Paragraph::new(
+            Line::from(line)
+                .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
+                .alignment(Alignment::Center),
+        ),
+        area,
+    );
+}
+
 fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {
     let after_gap = area.height.saturating_sub(ART_TOP_GAP);
     let cap = if app.lyrics.visible {
         after_gap.saturating_sub(MIN_LYRICS_ROWS).min(12)
     } else {
-        after_gap.min(14)
+        after_gap.saturating_sub(ART_LYRICS_GAP).min(15)
     };
     let band = art_band(area, ART_TOP_GAP, cap);
     match draw_radio_ascii(frame, app, band) {
-        Some(radio) if app.lyrics.visible => {
-            let lyrics_y = radio.bottom().saturating_add(ART_LYRICS_GAP);
+        Some(radio) => {
+            let separator_y = radio.bottom();
+            if separator_y < area.bottom() {
+                render_art_animation_separator(
+                    frame,
+                    app,
+                    Rect {
+                        x: area.x,
+                        y: separator_y,
+                        width: area.width,
+                        height: 1,
+                    },
+                );
+            }
+            if !app.lyrics.visible {
+                return;
+            }
+            let lyrics_y = separator_y.saturating_add(ART_LYRICS_GAP);
             let lyrics_area = Rect {
                 x: area.x,
                 y: lyrics_y,
@@ -729,25 +769,31 @@ fn draw_radio_ascii(frame: &mut Frame, app: &App, area: Rect) -> Option<Rect> {
         return None;
     }
     const LARGE: &[&str] = &[
-        "          .----------------.",
-        "         / .--------------. \\",
-        "        / /     RADIO      \\ \\",
-        "       | |   .---------.   | |",
-        "       | |   |  .---.  |   | |",
-        "       | |   |  |   |  |   | |",
-        "       | |   '---------'   | |",
-        "       | |  o   o   o   o  | |",
-        "        \\ \\  ~~~~~~~~~~~  / /",
-        "         \\ '--------------' /",
-        "          '------.  .------'",
-        "                 |__|       ",
+        "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⠀⠀⠀⠀⠀⠀⠀⠀",
+        "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⡟⠷⣶⣤⠀⠀⠀⠀⠀",
+        "⠀⠀⠀⢸⠟⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣼⡇⢀⣸⡇⠀⠀⠀⠀⠀",
+        "⠀⠀⠀⠘⣧⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⠿⠿⠻⣿⣿⡿⠀⠀⠀⠀⠀",
+        "⠀⠀⠀⣾⣿⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+        "⠀⠀⠀⠈⠉⠀⠀⠀⠀⣿⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+        "⠀⢀⣀⣀⣀⣀⣀⣀⣀⣉⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣉⣀⣀⣀⣀⣀⣀⣀⡀⠀",
+        "⠀⢸⣿⣿⣉⣉⣉⣹⣿⣿⣏⣉⣉⣉⣉⣉⣉⣉⣉⣹⣿⣿⣏⣉⣉⣉⣿⣿⡇⠀",
+        "⠀⢸⣿⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣿⡇⠀",
+        "⠀⢸⣿⡿⠋⣉⣭⣍⡙⢿⣿⡏⢉⣭⣭⣭⣭⡉⢹⣿⡿⢋⣩⣭⣉⠙⢿⣿⡇⠀",
+        "⠀⢸⡟⢠⣾⠟⠛⠻⣿⣆⠹⡇⢸⣿⣿⣿⣿⡇⢸⠏⣰⣿⠟⠛⠻⣷⡄⢻⡇⠀",
+        "⠀⢸⡇⢸⣿⡀⠛⢀⣿⡿⢀⣧⣤⣤⣤⣤⣤⣤⣼⡀⢿⣿⡀⠛⢀⣿⡇⢸⡇⠀",
+        "⠀⢸⣿⣄⠙⠿⣿⡿⠟⣡⣾⣿⡏⢹⡏⢹⡏⢹⣿⣷⣌⠻⢿⣿⠿⠋⣠⣿⡇⠀",
+        "⠀⠸⠿⠿⠷⠶⠶⠶⠾⠿⠿⠿⠿⠾⠿⠿⠷⠿⠿⠿⠿⠷⠶⠶⠶⠾⠿⠿⠇⠀",
+        "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
     ];
     const SMALL: &[&str] = &[
-        "  .----------.  ",
-        " /   RADIO   \\ ",
-        "|  o  ===  o  |",
-        "|  [_______]  |",
-        " \\__________/ ",
+        "⠀⢀⣀⣀⣀⣀⣀⣀⣀⣉⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣉⣀⣀⣀⣀⣀⣀⣀⡀⠀",
+        "⠀⢸⣿⣿⣉⣉⣉⣹⣿⣿⣏⣉⣉⣉⣉⣉⣉⣉⣉⣹⣿⣿⣏⣉⣉⣉⣿⣿⡇⠀",
+        "⠀⢸⣿⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣉⣿⡇⠀",
+        "⠀⢸⣿⡿⠋⣉⣭⣍⡙⢿⣿⡏⢉⣭⣭⣭⣭⡉⢹⣿⡿⢋⣩⣭⣉⠙⢿⣿⡇⠀",
+        "⠀⢸⡟⢠⣾⠟⠛⠻⣿⣆⠹⡇⢸⣿⣿⣿⣿⡇⢸⠏⣰⣿⠟⠛⠻⣷⡄⢻⡇⠀",
+        "⠀⢸⡇⢸⣿⡀⠛⢀⣿⡿⢀⣧⣤⣤⣤⣤⣤⣤⣼⡀⢿⣿⡀⠛⢀⣿⡇⢸⡇⠀",
+        "⠀⢸⣿⣄⠙⠿⣿⡿⠟⣡⣾⣿⡏⢹⡏⢹⡏⢹⣿⣷⣌⠻⢿⣿⠿⠋⣠⣿⡇⠀",
+        "⠀⠸⠿⠿⠷⠶⠶⠶⠾⠿⠿⠿⠿⠾⠿⠿⠷⠿⠿⠿⠿⠷⠶⠶⠶⠾⠿⠿⠇⠀",
     ];
     let art = if area.width >= 34 && area.height >= LARGE.len() as u16 {
         LARGE

@@ -234,11 +234,13 @@ impl Song {
             Some(PlayableRef::YoutubeVideo { id }) => {
                 format!("https://music.youtube.com/watch?v={id}")
             }
-            Some(PlayableRef::DirectUrl { url, .. })
-            | Some(PlayableRef::YtdlpUrl { url, .. })
-            | Some(PlayableRef::JamendoTrackId { url, .. })
-            | Some(PlayableRef::ArchiveFile { url, .. })
-            | Some(PlayableRef::RadioStream { url }) => url.clone(),
+            Some(
+                PlayableRef::DirectUrl { url, .. }
+                | PlayableRef::YtdlpUrl { url, .. }
+                | PlayableRef::JamendoTrackId { url, .. }
+                | PlayableRef::ArchiveFile { url, .. }
+                | PlayableRef::RadioStream { url },
+            ) => url.clone(),
             Some(PlayableRef::AudiusTrackId { id, app_name }) => audius_stream_url(id, app_name),
             None => format!("https://music.youtube.com/watch?v={}", self.video_id),
         }
@@ -299,6 +301,7 @@ pub enum ApiCmd {
         exclude_ids: Vec<String>,
         limit: usize,
         mode: StreamingMode,
+        config: SearchConfig,
     },
     StreamingPreflight {
         seed_video_id: String,
@@ -330,6 +333,7 @@ impl ApiHandle {
         exclude_ids: Vec<String>,
         limit: usize,
         mode: StreamingMode,
+        config: SearchConfig,
     ) {
         let _ = self.tx.send(ApiCmd::Streaming {
             seed: seed.into(),
@@ -337,6 +341,7 @@ impl ApiHandle {
             exclude_ids,
             limit,
             mode,
+            config,
         });
     }
 
@@ -393,8 +398,10 @@ async fn run_actor(
     mut rx: UnboundedReceiver<ApiCmd>,
     msg_tx: UnboundedSender<Msg>,
 ) {
-    let mut streaming_ytdlp_cache: HashMap<(String, StreamingMode), (Instant, Vec<Song>)> =
-        HashMap::new();
+    let mut streaming_ytdlp_cache: HashMap<
+        (String, StreamingMode, SearchSource),
+        (Instant, Vec<Song>),
+    > = HashMap::new();
     while let Some(cmd) = rx.recv().await {
         match cmd {
             ApiCmd::Search {
@@ -425,74 +432,136 @@ async fn run_actor(
                 exclude_ids,
                 limit,
                 mode,
+                config,
             } => {
-                // Build one pool from two sources, tagged by provenance so the local engine can
-                // weight them: YTM's own watch-playlist continuation first (best), then yt-dlp text search
-                // to top up. `seen` carries the caller's exclusions and dedups across sources.
-                let mut seen: HashSet<String> = exclude_ids.into_iter().collect();
+                // Build one pool from the configured streaming source(s), tagged by provenance so
+                // the local engine can weight them. YouTube gets the strongest source first:
+                // YTM's own watch-playlist continuation, then search-based top-up. Other providers
+                // use their Search-screen backends with the same seed query variants.
+                let config = config.normalized();
+                let streaming_source = config.normalized_streaming_source(config.streaming_source);
+                let selected_sources = if streaming_source == SearchSource::All {
+                    config.streaming_enabled_sources()
+                } else {
+                    vec![streaming_source]
+                };
+                let per_source_limit = if streaming_source == SearchSource::All {
+                    (limit / selected_sources.len().max(1)).max(4).min(limit)
+                } else {
+                    limit
+                };
+                let mut candidate_ids: HashSet<String> = exclude_ids.into_iter().collect();
                 let mut candidates: Vec<(Song, CandidateSource)> = Vec::new();
+                let mut errors = Vec::new();
 
-                match api.streaming_continuation(&seed_video_id).await {
-                    Ok(songs) => {
-                        for s in songs {
-                            if seen.insert(s.video_id.clone()) {
-                                candidates.push((s, CandidateSource::WatchPlaylist));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %sanitize::sanitize_error_text(format!("{e:#}")), "watch-playlist streaming unavailable; using yt-dlp only");
-                    }
-                }
-
-                // Top up the remainder from yt-dlp (skip entirely if the continuation already filled
-                // the pool). Only this source's failure can fail the whole request.
-                let want = limit.saturating_sub(candidates.len());
-                let mut ytdlp_err = None;
-                if want > 0 {
-                    let now = Instant::now();
-                    streaming_ytdlp_cache.retain(|_, (stored, _)| {
-                        now.duration_since(*stored) < STREAMING_YTDLP_CACHE_TTL
-                    });
-                    let cache_key = (seed.clone(), mode);
-                    let cached = streaming_ytdlp_cache
-                        .get(&cache_key)
-                        .filter(|(stored, _)| {
-                            now.duration_since(*stored) < STREAMING_YTDLP_CACHE_TTL
-                        })
-                        .map(|(_, songs)| songs.clone());
-                    let ytdlp_pool = match cached {
-                        Some(songs) => Ok(songs),
-                        None => {
-                            let empty = HashSet::new();
-                            match ytmusic::related_tracks(&seed, limit, &empty, mode).await {
-                                Ok(songs) => {
-                                    streaming_ytdlp_cache.insert(cache_key, (now, songs.clone()));
-                                    Ok(songs)
-                                }
-                                Err(e) => Err(e),
-                            }
-                        }
-                    };
-                    match ytdlp_pool {
+                if selected_sources.contains(&SearchSource::Youtube) {
+                    let mut yt_added = 0usize;
+                    match api.streaming_continuation(&seed_video_id).await {
                         Ok(songs) => {
                             for s in songs {
-                                if seen.insert(s.video_id.clone()) {
-                                    candidates.push((s, CandidateSource::YtdlpStreaming));
-                                    if candidates.len() >= limit {
+                                if candidate_ids.insert(s.video_id.clone()) {
+                                    candidates.push((s, CandidateSource::WatchPlaylist));
+                                    yt_added += 1;
+                                    if yt_added >= per_source_limit || candidates.len() >= limit {
                                         break;
                                     }
                                 }
                             }
                         }
-                        Err(e) => ytdlp_err = Some(e),
+                        Err(e) => {
+                            tracing::warn!(error = %sanitize::sanitize_error_text(format!("{e:#}")), "watch-playlist streaming unavailable; using search top-up");
+                        }
+                    }
+
+                    let want = if streaming_source == SearchSource::All {
+                        per_source_limit.saturating_sub(yt_added)
+                    } else {
+                        limit.saturating_sub(candidates.len())
+                    };
+                    if want > 0 && candidates.len() < limit {
+                        match cached_related_tracks(
+                            &mut streaming_ytdlp_cache,
+                            &seed,
+                            SearchSource::Youtube,
+                            &config,
+                            want,
+                            mode,
+                        )
+                        .await
+                        {
+                            Ok(songs) => {
+                                let mut added = 0usize;
+                                for s in songs {
+                                    if candidate_ids.insert(s.video_id.clone()) {
+                                        candidates.push((s, CandidateSource::YtdlpStreaming));
+                                        added += 1;
+                                        if added >= want || candidates.len() >= limit {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => errors.push(format!(
+                                "{}: {}",
+                                SearchSource::Youtube.code(),
+                                sanitize::sanitize_error_text(format!("{e:#}"))
+                            )),
+                        }
+                    }
+                }
+
+                for source in selected_sources
+                    .iter()
+                    .copied()
+                    .filter(|source| *source != SearchSource::Youtube)
+                {
+                    if candidates.len() >= limit {
+                        break;
+                    }
+                    let source_limit = if streaming_source == SearchSource::All {
+                        per_source_limit
+                    } else {
+                        limit.saturating_sub(candidates.len())
+                    };
+                    if source_limit == 0 {
+                        continue;
+                    }
+                    match cached_related_tracks(
+                        &mut streaming_ytdlp_cache,
+                        &seed,
+                        source,
+                        &config,
+                        source_limit,
+                        mode,
+                    )
+                    .await
+                    {
+                        Ok(songs) => {
+                            let mut added = 0usize;
+                            for s in songs {
+                                if candidate_ids.insert(s.video_id.clone()) {
+                                    candidates.push((s, CandidateSource::YtdlpStreaming));
+                                    added += 1;
+                                    if added >= source_limit || candidates.len() >= limit {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => errors.push(format!(
+                            "{}: {}",
+                            source.code(),
+                            sanitize::sanitize_error_text(format!("{e:#}"))
+                        )),
                     }
                 }
 
                 let msg = if candidates.is_empty() {
-                    let error = ytdlp_err
-                        .map(|e| sanitize::sanitize_error_text(format!("{e:#}")))
-                        .unwrap_or_else(|| "no related tracks found".to_owned());
+                    let error = if errors.is_empty() {
+                        "no related tracks found".to_owned()
+                    } else {
+                        errors.join("; ")
+                    };
                     tracing::warn!(seed = %seed, %error, "streaming search yielded nothing");
                     Msg::StreamingError {
                         seed_video_id,
@@ -523,4 +592,29 @@ async fn run_actor(
             }
         }
     }
+}
+
+async fn cached_related_tracks(
+    cache: &mut HashMap<(String, StreamingMode, SearchSource), (Instant, Vec<Song>)>,
+    seed: &str,
+    source: SearchSource,
+    config: &SearchConfig,
+    limit: usize,
+    mode: StreamingMode,
+) -> anyhow::Result<Vec<Song>> {
+    let now = Instant::now();
+    cache.retain(|_, (stored, _)| now.duration_since(*stored) < STREAMING_YTDLP_CACHE_TTL);
+    let cache_key = (seed.to_owned(), mode, source);
+    if let Some(songs) = cache
+        .get(&cache_key)
+        .filter(|(stored, _)| now.duration_since(*stored) < STREAMING_YTDLP_CACHE_TTL)
+        .map(|(_, songs)| songs.clone())
+    {
+        return Ok(songs);
+    }
+    let empty = HashSet::new();
+    let songs =
+        ytmusic::related_tracks_from_source(seed, source, config, limit, &empty, mode).await?;
+    cache.insert(cache_key, (now, songs.clone()));
+    Ok(songs)
 }

@@ -202,6 +202,7 @@ impl App {
                     count: p.songs.len(),
                 })
                 .collect(),
+            search: self.config.effective_search(),
             authenticated: self.authenticated,
             autoplay_streaming: self.autoplay_streaming,
         }

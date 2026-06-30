@@ -278,6 +278,7 @@ pub enum Cmd {
         seed_video_id: String,
         exclude_ids: Vec<String>,
         mode: StreamingMode,
+        config: SearchConfig,
     },
     /// Ask the API actor to run a final metadata preflight on streaming picks before enqueueing.
     /// Only risky candidates trigger full yt-dlp extraction; clean picks pass through.
@@ -446,6 +447,8 @@ pub struct AiContext {
     pub favorites: Vec<String>,
     /// The user's local playlists (names + counts; tracks fetched on demand).
     pub playlists: Vec<PlaylistInfo>,
+    /// Search/source settings used by DJ Gem streaming tools.
+    pub search: SearchConfig,
     /// Whether a YTM cookie is configured (gates authenticated related-tracks).
     pub authenticated: bool,
     pub autoplay_streaming: bool,
