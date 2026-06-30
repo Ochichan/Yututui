@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | 
 ytt
 ```
 
-1. Press **`/`**, type a song, hit **`Enter`**.
+1. Press **`s`**, type a song, hit **`Enter`**.
 2. Move with **`↑`/`↓`**, press **`Enter`** to play.
 3. Press **`?`** anytime for the full, always-current key list.
 
@@ -52,7 +52,7 @@ That's it. Music.
 - **AI radio** — press **`Ctrl+R`** and it builds an endless station around what you're hearing. Three moods: Focused, Balanced, Discovery. Press **`w`** to see, in plain language, why it picked each song.
 - **Real album art** — actual cover images drawn right in the Player, on terminals that support them. Time-synced lyrics scroll underneath (**`Shift+L`**).
 - **Remote control** — drive it from another terminal or your media keys: `ytt -r pp`, `ytt -r next`, `ytt -r status`.
-- **Search · Library · Queue** — **`/`** to search, **`l`** for your library (favorites, history, downloads), **`c`** for the queue.
+- **Search · Library · Queue** — **`s`** to search, **`l`** for your library (favorites, history, downloads), **`c`** for the queue.
 - **Yours to tweak** — 11 themes, every color editable in hex, every key rebindable, a 10-band EQ, and animations from a calm still screen to a spinning ASCII donut.
 - **AI assistant** *(optional)* — press **`a`** and ask in plain words: *"play some lo-fi", "queue three upbeat songs"*. Needs a free Google Gemini key; everything else works without it.
 - **Downloads** — press **`d`** to save a song and play it offline.
@@ -71,7 +71,8 @@ Press **`?`** in the app for the complete, live cheat sheet — it reflects *you
 | `←` / `→` | Seek back / forward |
 | `↑` / `↓` | Volume up / down |
 | `n` / `p` | Next / previous |
-| `/` | Search |
+| `s` | Search |
+| `Shift+S` | Shuffle |
 | `l` | Library |
 | `c` | Queue |
 | `f` | Favorite / rate |

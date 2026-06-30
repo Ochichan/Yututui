@@ -358,6 +358,8 @@ impl App {
         self.audio.normalize = cfg.effective_normalize();
         self.playback.speed = cfg.effective_speed();
         self.audio.seek_seconds = cfg.effective_seek_seconds();
+        self.queue.set_shuffle(cfg.effective_shuffle());
+        self.queue.repeat = cfg.effective_repeat();
         self.autoplay_radio = cfg.effective_autoplay_radio();
         self.ai.available = cfg.effective_ai_key().is_some();
         self.ai.model = cfg.effective_gemini_model();
@@ -369,6 +371,17 @@ impl App {
         crate::i18n::set_language(cfg.effective_language());
         // Keep the full config so the settings screen can persist the whole file.
         self.config = cfg.clone();
+    }
+
+    pub(in crate::app) fn sync_playback_modes_to_config(&mut self) {
+        self.config.shuffle = Some(self.queue.shuffle);
+        self.config.repeat = self.queue.repeat;
+        self.config.autoplay_radio = Some(self.autoplay_radio);
+    }
+
+    pub(in crate::app) fn save_playback_modes_cmd(&mut self) -> Cmd {
+        self.sync_playback_modes_to_config();
+        Cmd::SaveConfig(Box::new(self.config.clone()))
     }
 
     /// Live retro-mode flag. While Settings is open, the draft is what the user is looking at,
@@ -806,7 +819,7 @@ impl App {
             } => {
                 self.radio.pending = false;
                 if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
-                    self.note_radio_failure(format!(
+                    return self.note_radio_failure(format!(
                         "{}: {error}",
                         t!("Autoplay radio failed", "자동재생 라디오 실패")
                     ));
@@ -852,11 +865,13 @@ impl App {
             Msg::AiSetAutoplay(on) => {
                 self.autoplay_radio = on;
                 self.dirty = true;
+                let mut cmds = vec![self.save_playback_modes_cmd()];
                 if on {
                     self.radio.consecutive_failures = 0;
                     // Same proactive top-up as the manual toggle (see Action::ToggleRadio).
-                    return self.maybe_autoplay_extend();
+                    cmds.extend(self.maybe_autoplay_extend());
                 }
+                return cmds;
             }
             Msg::AiSetStationProfile {
                 query,

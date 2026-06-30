@@ -82,7 +82,7 @@ fn korean_ctrl_c_still_quits() {
 #[test]
 fn ctrl_a_selects_then_backspace_clears_search_input() {
     let mut app = App::new(100);
-    app.update(Msg::Key(key(KeyCode::Char('/')))); // open search (input focused)
+    app.update(Msg::Key(key(KeyCode::Char('s')))); // open search (input focused)
     assert_eq!(app.mode, Mode::Search);
     for c in "lofi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
@@ -99,7 +99,7 @@ fn ctrl_a_selects_then_backspace_clears_search_input() {
 #[test]
 fn ctrl_a_then_typing_replaces_search_input() {
     let mut app = App::new(100);
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
     for c in "lofi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
@@ -114,7 +114,7 @@ fn navigating_away_clears_a_pending_select_all_highlight() {
     let mut app = App::new(100);
     // Search box: select the whole query, then leave via Ctrl+H (a global nav action that's
     // resolved before the input handler's own deselect runs).
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
     for c in "lofi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
@@ -295,9 +295,9 @@ fn time_pos_redraws_only_on_second_change() {
 }
 
 #[test]
-fn slash_enters_search_and_q_is_typed_not_quit() {
+fn s_enters_search_and_q_is_typed_not_quit() {
     let mut app = App::new(100);
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
     assert_eq!(app.mode, Mode::Search);
     app.update(Msg::Key(key(KeyCode::Char('q'))));
     assert!(!app.should_quit);
@@ -307,7 +307,7 @@ fn slash_enters_search_and_q_is_typed_not_quit() {
 #[test]
 fn korean_letters_still_type_in_search_input() {
     let mut app = App::new(100);
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
     assert_eq!(app.mode, Mode::Search);
     app.update(Msg::Key(key(KeyCode::Char('ㅂ'))));
     assert!(!app.should_quit);
@@ -326,14 +326,14 @@ fn korean_shortcut_key_redraws_even_when_unhandled() {
 fn ime_preedit_scrub_is_disabled_in_text_entry() {
     let mut app = App::new(100);
     assert!(app.should_scrub_ime_preedit());
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
     assert!(!app.should_scrub_ime_preedit());
 }
 
 #[test]
 fn enter_in_search_emits_search_cmd() {
     let mut app = App::new(100);
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
     for c in "lofi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
@@ -358,7 +358,7 @@ fn enter_in_search_emits_search_cmd() {
 #[test]
 fn tab_opens_search_source_menu_and_cycles_source() {
     let mut app = App::new(100);
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
 
     let cmds = app.update(Msg::Key(key(KeyCode::Tab)));
     assert!(cmds.is_empty());
@@ -416,7 +416,7 @@ fn remapped_search_focus_toggle_updates_both_directions() {
 fn search_submit_stays_enter_when_common_confirm_is_remapped() {
     let mut app = App::new(100);
     app.keymap = confirm_on_f5_keymap();
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
     for c in "lofi".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
@@ -778,7 +778,7 @@ fn ctrl_q_quits_from_search_results() {
 #[test]
 fn ctrl_h_goes_home_from_search_input_without_typing() {
     let mut app = App::new(100);
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
     app.search.input = "abc".to_owned();
     app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
     assert_eq!(app.mode, Mode::Player);
@@ -912,14 +912,28 @@ fn n_advances_and_p_goes_back() {
 }
 
 #[test]
-fn r_cycles_repeat_and_s_toggles_shuffle() {
+fn r_cycles_repeat_and_persists() {
     let mut app = app_playing(3, 0);
     assert_eq!(app.queue.repeat, crate::queue::Repeat::Off);
-    app.update(Msg::Key(key(KeyCode::Char('r'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
     assert_eq!(app.queue.repeat, crate::queue::Repeat::All);
+    let saved = save_config(&cmds).expect("a SaveConfig cmd");
+    assert_eq!(saved.repeat, crate::queue::Repeat::All);
+}
+
+#[test]
+fn s_enters_search_and_shift_s_toggles_shuffle() {
+    let mut app = app_playing(3, 0);
     assert!(!app.queue.shuffle);
     app.update(Msg::Key(key(KeyCode::Char('s'))));
+    assert_eq!(app.mode, Mode::Search);
+    assert!(!app.queue.shuffle);
+
+    let mut app = app_playing(3, 0);
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('S'))));
     assert!(app.queue.shuffle);
+    let saved = save_config(&cmds).expect("a SaveConfig cmd");
+    assert_eq!(saved.shuffle, Some(true));
     // Shuffle keeps the current track current.
     assert_eq!(current(&app), "id0");
 }
@@ -979,14 +993,22 @@ fn speed_up_and_down_clamp_and_emit() {
 fn ctrl_r_toggles_autoplay_radio() {
     let mut app = app_playing(3, 0);
     assert!(!app.autoplay_radio);
-    app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
     assert!(app.autoplay_radio);
+    assert_eq!(
+        save_config(&cmds).expect("a SaveConfig cmd").autoplay_radio,
+        Some(true)
+    );
     // Plain `r` still cycles repeat (not the autoplay toggle).
     app.update(Msg::Key(key(KeyCode::Char('r'))));
     assert!(app.autoplay_radio);
     assert_eq!(app.queue.repeat, crate::queue::Repeat::All);
-    app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
     assert!(!app.autoplay_radio);
+    assert_eq!(
+        save_config(&cmds).expect("a SaveConfig cmd").autoplay_radio,
+        Some(false)
+    );
 }
 
 #[test]
@@ -1010,6 +1032,8 @@ fn apply_config_pushes_playback_settings() {
         normalize: Some(true),
         speed: Some(1.5),
         seek_seconds: Some(30.0),
+        shuffle: Some(true),
+        repeat: crate::queue::Repeat::One,
         autoplay_radio: Some(true),
         ..crate::config::Config::default()
     };
@@ -1020,6 +1044,8 @@ fn apply_config_pushes_playback_settings() {
     assert!(app.audio.normalize);
     assert!((app.playback.speed - 1.5).abs() < 1e-9);
     assert!((app.audio.seek_seconds - 30.0).abs() < 1e-9);
+    assert!(app.queue.shuffle);
+    assert_eq!(app.queue.repeat, crate::queue::Repeat::One);
     assert!(app.autoplay_radio);
 }
 

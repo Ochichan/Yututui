@@ -382,14 +382,13 @@ impl App {
     pub(in crate::app) fn extend_queue_from_radio(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
         let added = self.queue.extend(songs);
         if added == 0 {
-            self.note_radio_failure(
+            return self.note_radio_failure(
                 t!(
                     "Autoplay radio found no new tracks",
                     "자동재생 라디오가 새 곡을 찾지 못했어요"
                 )
                 .to_owned(),
             );
-            return Vec::new();
         }
         self.radio.consecutive_failures = 0;
         self.status.text = if crate::i18n::is_korean() {
@@ -423,11 +422,13 @@ impl App {
         cmds
     }
 
-    pub(in crate::app) fn note_radio_failure(&mut self, status: String) {
+    pub(in crate::app) fn note_radio_failure(&mut self, status: String) -> Vec<Cmd> {
+        let mut disabled = false;
         if self.autoplay_radio {
             self.radio.consecutive_failures = self.radio.consecutive_failures.saturating_add(1);
             if self.radio.consecutive_failures >= AUTOPLAY_MAX_FAILURES {
                 self.autoplay_radio = false;
+                disabled = true;
                 self.radio.pending = false;
                 self.status.text = t!(
                     "Autoplay radio stopped (no related tracks found)",
@@ -439,6 +440,11 @@ impl App {
             }
         }
         self.dirty = true;
+        if disabled {
+            vec![self.save_playback_modes_cmd()]
+        } else {
+            Vec::new()
+        }
     }
 
     pub(in crate::app) fn radio_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {

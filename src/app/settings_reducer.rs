@@ -964,6 +964,7 @@ impl App {
         // Volume controls change the live value in place; fold it in so a save
         // doesn't persist the stale startup value.
         self.config.volume = self.playback.volume;
+        self.sync_playback_modes_to_config();
         self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
         // Re-assert the committed audio chain before persisting: the draft was
         // previewing live, but a track change mid-edit (EOF auto-advance) would have

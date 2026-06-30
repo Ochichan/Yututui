@@ -171,12 +171,13 @@ impl App {
                         if self.autoplay_radio { "✓" } else { "✗" }
                     );
                     self.dirty = true;
+                    let mut cmds = vec![self.save_playback_modes_cmd()];
                     // Kick off the top-up now (not at end-of-track) so a low/single-song queue
                     // has the next tracks queued before the current one ends — no silent gap.
                     if self.autoplay_radio {
-                        return self.maybe_autoplay_extend();
+                        cmds.extend(self.maybe_autoplay_extend());
                     }
-                    return Vec::new();
+                    return cmds;
                 }
                 Action::Quit => {
                     return self.quit_app();

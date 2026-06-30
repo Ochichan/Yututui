@@ -65,11 +65,10 @@ impl App {
             if on { "✓" } else { "✗" }
         );
         self.dirty = true;
-        let cmds = if on {
-            self.maybe_autoplay_extend()
-        } else {
-            Vec::new()
-        };
+        let mut cmds = vec![self.save_playback_modes_cmd()];
+        if on {
+            cmds.extend(self.maybe_autoplay_extend());
+        }
         (
             RemoteResponse::ok(format!("radio {}", if on { "on" } else { "off" })),
             cmds,

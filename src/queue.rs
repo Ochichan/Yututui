@@ -8,12 +8,14 @@
 //! pure index manipulation — easy to reason about and unit-test.
 
 use crate::api::Song;
+use serde::{Deserialize, Serialize};
 
 /// Hard cap on queued tracks (priority #1: bounded memory).
 const MAX: usize = 999;
 
 /// Repeat mode, cycled by the `r` key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Repeat {
     #[default]
     Off,
@@ -301,7 +303,15 @@ impl Queue {
 
     /// Toggle shuffle, keeping the current track current.
     pub fn toggle_shuffle(&mut self) {
-        self.shuffle = !self.shuffle;
+        self.set_shuffle(!self.shuffle);
+    }
+
+    /// Set shuffle explicitly, keeping the current track current.
+    pub fn set_shuffle(&mut self, shuffle: bool) {
+        if self.shuffle == shuffle {
+            return;
+        }
+        self.shuffle = shuffle;
         if let Some(&current_idx) = self.order.get(self.cursor) {
             self.rebuild_order(current_idx);
         }

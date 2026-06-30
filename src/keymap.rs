@@ -817,7 +817,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::OpenQueue, ch('c')),
         (C::Player, A::ToggleLyrics, ch('L')),
         (C::Player, A::Download, ch('d')),
-        (C::Player, A::ToggleShuffle, ch('s')),
+        (C::Player, A::ToggleShuffle, ch('S')),
         (C::Player, A::CycleRepeat, ch('r')),
         (C::Player, A::CycleEq, ch('e')),
         (C::Player, A::ToggleNormalize, ch('N')),
@@ -825,7 +825,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::SpeedDown, ch('<')),
         (C::Player, A::OpenSettings, ch(',')),
         (C::Player, A::OpenAi, ch('a')),
-        (C::Player, A::OpenSearch, ch('/')),
+        (C::Player, A::OpenSearch, ch('s')),
         (C::Player, A::CopyLink, ch('y')),
         (C::Player, A::PlayVideo, ch('v')),
         (C::Player, A::ToggleVideoLayout, ch('V')),
@@ -1219,6 +1219,14 @@ mod tests {
             Some(Action::NextTrack)
         );
         assert_eq!(
+            km.action(KeyContext::Player, parse_chord("s").unwrap()),
+            Some(Action::OpenSearch)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("S").unwrap()),
+            Some(Action::ToggleShuffle)
+        );
+        assert_eq!(
             km.action(KeyContext::Player, parse_chord("l").unwrap()),
             Some(Action::OpenLibrary)
         );
@@ -1418,7 +1426,7 @@ mod tests {
             Some(Action::FocusPrev)
         );
         assert_eq!(
-            km.action(KeyContext::SearchResults, parse_chord("/").unwrap()),
+            km.action(KeyContext::SearchResults, parse_chord("s").unwrap()),
             Some(Action::FocusInput)
         );
         // The unified play/queue labels read consistently across both surfaces.

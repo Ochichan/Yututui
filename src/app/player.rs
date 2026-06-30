@@ -338,12 +338,12 @@ impl App {
             Action::ToggleShuffle => {
                 self.queue.toggle_shuffle();
                 self.dirty = true;
-                Vec::new()
+                vec![self.save_playback_modes_cmd()]
             }
             Action::CycleRepeat => {
                 self.queue.cycle_repeat();
                 self.dirty = true;
-                Vec::new()
+                vec![self.save_playback_modes_cmd()]
             }
             // Cycle the EQ preset and apply it immediately.
             Action::CycleEq => {

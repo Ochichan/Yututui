@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::ai::GeminiModel;
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
+use crate::queue::Repeat;
 use crate::radio::RadioConfig;
 use crate::search_source::SearchConfig;
 use crate::t;
@@ -226,6 +227,10 @@ pub struct Config {
     pub mouse_wheel_volume: Option<bool>,
     /// Gapless playback. `None` → on. Takes effect at the next launch (an mpv flag).
     pub gapless: Option<bool>,
+    /// Shuffle playback order. `None` → off.
+    pub shuffle: Option<bool>,
+    /// Repeat mode.
+    pub repeat: Repeat,
     /// Auto-extend the queue with related tracks when it runs low. `None` → off.
     pub autoplay_radio: Option<bool>,
     /// Auto-play the restored last track as soon as the app launches. `None` → off
@@ -291,6 +296,8 @@ impl Default for Config {
             seek_seconds: None,
             mouse_wheel_volume: None,
             gapless: None,
+            shuffle: None,
+            repeat: Repeat::default(),
             autoplay_radio: None,
             autoplay_on_start: None,
             search: SearchConfig::default(),
@@ -434,6 +441,16 @@ impl Config {
     /// Whether gapless playback is on (default on).
     pub fn effective_gapless(&self) -> bool {
         self.gapless.unwrap_or(true)
+    }
+
+    /// Whether queue shuffle is on (default off).
+    pub fn effective_shuffle(&self) -> bool {
+        self.shuffle.unwrap_or(false)
+    }
+
+    /// The repeat mode (default off).
+    pub fn effective_repeat(&self) -> Repeat {
+        self.repeat
     }
 
     /// Whether queue auto-extend (radio) is on (default off).
@@ -634,6 +651,8 @@ mod tests {
             seek_seconds: Some(15.0),
             mouse_wheel_volume: Some(false),
             gapless: Some(false),
+            shuffle: Some(true),
+            repeat: Repeat::One,
             autoplay_radio: Some(true),
             autoplay_on_start: Some(true),
             search: SearchConfig::default(),
@@ -666,6 +685,8 @@ mod tests {
         assert_eq!(back.seek_seconds, Some(15.0));
         assert_eq!(back.mouse_wheel_volume, Some(false));
         assert_eq!(back.gapless, Some(false));
+        assert_eq!(back.shuffle, Some(true));
+        assert_eq!(back.repeat, Repeat::One);
         assert_eq!(back.autoplay_radio, Some(true));
         assert_eq!(back.autoplay_on_start, Some(true));
         assert_eq!(back.ai_enabled, Some(false));
@@ -794,6 +815,8 @@ mod tests {
         assert_eq!(d.effective_seek_seconds(), SEEK_SECONDS_DEFAULT);
         assert!(d.effective_mouse_wheel_volume());
         assert!(d.effective_gapless());
+        assert!(!d.effective_shuffle());
+        assert_eq!(d.effective_repeat(), Repeat::Off);
         assert!(!d.effective_autoplay_radio());
         assert!(!d.effective_autoplay_on_start());
 
