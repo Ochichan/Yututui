@@ -135,7 +135,11 @@ pub fn title_line(
         let style = if a.heart {
             let t = wave(f, 28);
             Style::default()
-                .fg(lerp_color(app.theme.color(R::Error), app.theme.color(R::AccentAlt), t))
+                .fg(lerp_color(
+                    app.theme.color(R::Error),
+                    app.theme.color(R::AccentAlt),
+                    t,
+                ))
                 .add_modifier(Modifier::BOLD)
         } else {
             app.theme.style(R::TextPrimary).add_modifier(Modifier::BOLD)
@@ -171,13 +175,18 @@ pub fn title_line(
             let b = (1.0 - d / 3.0).clamp(0.0, 1.0);
             spans.push(Span::styled(
                 ch.to_string(),
-                Style::default().fg(lerp_color(base, bright, b)).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(lerp_color(base, bright, b))
+                    .add_modifier(Modifier::BOLD),
             ));
             col += UnicodeWidthChar::width(ch).unwrap_or(1) as f64;
         }
     } else {
         // Heart-only: the body stays exactly as the plain path would render it.
-        spans.push(Span::styled(body, app.theme.style(R::TextPrimary).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(
+            body,
+            app.theme.style(R::TextPrimary).add_modifier(Modifier::BOLD),
+        ));
     }
 
     Some(Line::from(spans).alignment(Alignment::Center))
@@ -191,7 +200,11 @@ pub fn border_style(app: &App, base: Style) -> Style {
         return base;
     }
     let t = wave(app.anim_frame(), 90);
-    base.fg(lerp_color(app.theme.color(R::BorderPrimary), app.theme.color(R::Accent), t))
+    base.fg(lerp_color(
+        app.theme.color(R::BorderPrimary),
+        app.theme.color(R::Accent),
+        t,
+    ))
 }
 
 /// The transport-controls style, pulsing between the control colour and the alt-accent when the
@@ -202,7 +215,11 @@ pub fn controls_style(app: &App, base: Style) -> Style {
         return base;
     }
     let t = wave(app.anim_frame(), 36);
-    base.fg(lerp_color(app.theme.color(R::PlayerControl), app.theme.color(R::AccentAlt), t))
+    base.fg(lerp_color(
+        app.theme.color(R::PlayerControl),
+        app.theme.color(R::AccentAlt),
+        t,
+    ))
 }
 
 /// A short braille spinner glyph for the front of the status line, or `None` when the `spinner`
@@ -337,7 +354,13 @@ fn rain(frame: &mut Frame, _app: &App, zone: Rect, f: u64) {
                 let len = 4 + u64::from(hash32(col.wrapping_mul(2_654_435_761)) % h_mod);
                 let period = h + len + 3;
                 let offset = u64::from(hash32(col ^ 0x9E37_79B9)) % period;
-                scratch.columns.push(RainColumn { col, speed, len, period, offset });
+                scratch.columns.push(RainColumn {
+                    col,
+                    speed,
+                    len,
+                    period,
+                    offset,
+                });
             }
         }
 
@@ -355,7 +378,11 @@ fn rain(frame: &mut Frame, _app: &App, zone: Rect, f: u64) {
                 }
                 let y = zone.top() + row as u16;
                 let g = RAIN_GLYPHS[(hash32(
-                    column.col.wrapping_mul(31).wrapping_add(row).wrapping_add(f / 6),
+                    column
+                        .col
+                        .wrapping_mul(31)
+                        .wrapping_add(row)
+                        .wrapping_add(f / 6),
                 ) as usize)
                     % RAIN_GLYPHS.len()];
                 let color = if k == 0 {
@@ -445,7 +472,11 @@ fn visualizer(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
     let row_styles: [Style; 8] = std::array::from_fn(|i| {
         let row = i as u16;
         if row < strip {
-            Style::default().fg(lerp_color(filled, accent, f64::from(row + 1) / f64::from(strip)))
+            Style::default().fg(lerp_color(
+                filled,
+                accent,
+                f64::from(row + 1) / f64::from(strip),
+            ))
         } else {
             Style::default()
         }
@@ -607,7 +638,13 @@ fn bounce(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
         if cx < i64::from(zone.left()) || cx >= right {
             continue;
         }
-        put_char(buf, cx as u16, y as u16, ch, Style::default().fg(color).add_modifier(Modifier::BOLD));
+        put_char(
+            buf,
+            cx as u16,
+            y as u16,
+            ch,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        );
     }
 }
 
@@ -627,7 +664,9 @@ mod tests {
         assert!(title_line(&app, "Title", "Artist", true, 40).is_none());
         assert!(spinner_prefix(&app).is_none());
         assert!(eq_bars(&app).is_none());
-        let base = Style::default().fg(Color::Rgb(1, 2, 3)).add_modifier(Modifier::BOLD);
+        let base = Style::default()
+            .fg(Color::Rgb(1, 2, 3))
+            .add_modifier(Modifier::BOLD);
         assert_eq!(border_style(&app, base), base);
         assert_eq!(controls_style(&app, base), base);
     }

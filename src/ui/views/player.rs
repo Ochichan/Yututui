@@ -266,7 +266,10 @@ fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)>
         parts.push((None, Cow::Borrowed("    ")));
         parts.push((
             Some(MouseTarget::RadioMenu),
-            Cow::Owned(format!("radio:{}", app.config.radio.mode.label().to_lowercase())),
+            Cow::Owned(format!(
+                "radio:{}",
+                app.config.radio.mode.label().to_lowercase()
+            )),
         ));
     }
     // Download indicator for the current track, if one is in flight or finished.
@@ -574,7 +577,10 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
         Seg::label(&vol),
         Seg::button(MouseTarget::Player(Action::VolUp), " + "),
     ];
-    let widths: Vec<u16> = segments.iter().map(|s| buttons::text_width(s.text)).collect();
+    let widths: Vec<u16> = segments
+        .iter()
+        .map(|s| buttons::text_width(s.text))
+        .collect();
     let total = widths.iter().copied().sum::<u16>();
     let volume_offset = widths[..6].iter().copied().sum::<u16>();
     let volume_width = widths[6..].iter().copied().sum::<u16>();
@@ -585,7 +591,12 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
         0
     };
     app.register_mouse_button(
-        Rect { x, y: area.y, width, height: area.height.min(1) },
+        Rect {
+            x,
+            y: area.y,
+            width,
+            height: area.height.min(1),
+        },
         MouseTarget::VolumeArea,
     );
     let controls = crate::ui::anim::controls_style(

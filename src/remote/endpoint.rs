@@ -39,8 +39,16 @@ fn user_tag() -> String {
     let raw = std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_default();
-    let tag: String = raw.chars().filter(|c| c.is_ascii_alphanumeric()).take(16).collect();
-    if tag.is_empty() { "default".to_string() } else { tag }
+    let tag: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(16)
+        .collect();
+    if tag.is_empty() {
+        "default".to_string()
+    } else {
+        tag
+    }
 }
 
 /// The primary control-socket endpoint name (Unix path / Windows pipe name).
@@ -140,8 +148,16 @@ mod tests {
         // endpoint is the longer of the two, so it's the one that matters most.
         #[cfg(unix)]
         {
-            assert!(primary.len() < 104, "endpoint too long: {primary} ({} bytes)", primary.len());
-            assert!(alt.len() < 104, "alt endpoint too long: {alt} ({} bytes)", alt.len());
+            assert!(
+                primary.len() < 104,
+                "endpoint too long: {primary} ({} bytes)",
+                primary.len()
+            );
+            assert!(
+                alt.len() < 104,
+                "alt endpoint too long: {alt} ({} bytes)",
+                alt.len()
+            );
         }
     }
 

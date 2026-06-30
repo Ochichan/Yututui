@@ -22,7 +22,11 @@ pub enum GeminiModel {
 
 impl GeminiModel {
     /// Order the settings AI tab cycles through with ←/→.
-    pub const CYCLE: [GeminiModel; 3] = [GeminiModel::Flash, GeminiModel::FlashLite, GeminiModel::Latest];
+    pub const CYCLE: [GeminiModel; 3] = [
+        GeminiModel::Flash,
+        GeminiModel::FlashLite,
+        GeminiModel::Latest,
+    ];
 
     /// The Gemini REST model id used in the request path.
     pub fn api_id(self) -> &'static str {
@@ -55,7 +59,11 @@ impl GeminiModel {
     pub fn cycled(self, forward: bool) -> Self {
         let i = Self::CYCLE.iter().position(|&m| m == self).unwrap_or(0);
         let n = Self::CYCLE.len();
-        let j = if forward { (i + 1) % n } else { (i + n - 1) % n };
+        let j = if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        };
         Self::CYCLE[j]
     }
 }
@@ -85,7 +93,10 @@ mod tests {
 
     #[test]
     fn serializes_snake_case() {
-        assert_eq!(serde_json::to_string(&GeminiModel::FlashLite).unwrap(), "\"flash_lite\"");
+        assert_eq!(
+            serde_json::to_string(&GeminiModel::FlashLite).unwrap(),
+            "\"flash_lite\""
+        );
         let back: GeminiModel = serde_json::from_str("\"latest\"").unwrap();
         assert_eq!(back, GeminiModel::Latest);
     }

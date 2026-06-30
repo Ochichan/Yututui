@@ -12,7 +12,10 @@ use crate::remote::proto::{RemoteCommand, RemoteResponse, StatusSnapshot, Toggle
 impl App {
     /// Apply one remote command and return `(response, side-effect commands)`. The commands
     /// flow through the normal run-loop dispatch exactly as a keypress's would.
-    pub(in crate::app) fn apply_remote(&mut self, cmd: RemoteCommand) -> (RemoteResponse, Vec<Cmd>) {
+    pub(in crate::app) fn apply_remote(
+        &mut self,
+        cmd: RemoteCommand,
+    ) -> (RemoteResponse, Vec<Cmd>) {
         match cmd {
             RemoteCommand::Next => {
                 let cmds = self.on_player_action(Action::NextTrack);
@@ -62,8 +65,15 @@ impl App {
             if on { "✓" } else { "✗" }
         );
         self.dirty = true;
-        let cmds = if on { self.maybe_autoplay_extend() } else { Vec::new() };
-        (RemoteResponse::ok(format!("radio {}", if on { "on" } else { "off" })), cmds)
+        let cmds = if on {
+            self.maybe_autoplay_extend()
+        } else {
+            Vec::new()
+        };
+        (
+            RemoteResponse::ok(format!("radio {}", if on { "on" } else { "off" })),
+            cmds,
+        )
     }
 
     /// A transport response: the now-playing line on success, or `queue_empty` when nothing
@@ -84,7 +94,11 @@ impl App {
     }
 
     fn pause_line(&self) -> String {
-        let state = if self.playback.paused { "paused" } else { "playing" };
+        let state = if self.playback.paused {
+            "paused"
+        } else {
+            "playing"
+        };
         match self.queue.current() {
             Some(s) => format!("{state}: {} — {}", s.title, s.artist),
             None => state.to_string(),
@@ -152,14 +166,20 @@ mod tests {
         app.mode = Mode::Settings; // mode-independent
         assert!(!app.autoplay_radio);
 
-        let (resp, _) = app.apply_remote(RemoteCommand::Radio { state: ToggleState::On });
+        let (resp, _) = app.apply_remote(RemoteCommand::Radio {
+            state: ToggleState::On,
+        });
         assert!(resp.ok);
         assert!(app.autoplay_radio);
 
-        app.apply_remote(RemoteCommand::Radio { state: ToggleState::Off });
+        app.apply_remote(RemoteCommand::Radio {
+            state: ToggleState::Off,
+        });
         assert!(!app.autoplay_radio);
 
-        app.apply_remote(RemoteCommand::Radio { state: ToggleState::Toggle });
+        app.apply_remote(RemoteCommand::Radio {
+            state: ToggleState::Toggle,
+        });
         assert!(app.autoplay_radio);
     }
 

@@ -257,7 +257,10 @@ pub fn reap_orphans(dir: &Path) {
         && proc_.name().to_string_lossy().to_lowercase().contains("mpv")
     {
         proc_.kill();
-        tracing::warn!(mpv_pid = record.mpv_pid, "reaped orphaned mpv from a prior run");
+        tracing::warn!(
+            mpv_pid = record.mpv_pid,
+            "reaped orphaned mpv from a prior run"
+        );
     }
 
     let _ = std::fs::remove_file(&path);

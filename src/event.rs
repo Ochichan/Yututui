@@ -74,13 +74,11 @@ impl Translator {
                 col: m.column,
                 row: m.row,
             }),
-            Event::Mouse(m) if m.kind == MouseEventKind::ScrollDown => {
-                Some(Msg::MouseScroll {
-                    up: false,
-                    col: m.column,
-                    row: m.row,
-                })
-            }
+            Event::Mouse(m) if m.kind == MouseEventKind::ScrollDown => Some(Msg::MouseScroll {
+                up: false,
+                col: m.column,
+                row: m.row,
+            }),
             Event::Resize(_, _) => Some(Msg::Resize),
             // Terminal focus in/out (DECSET ?1004, enabled in `tui::init`). Lets the reducer
             // park animations while the window is hidden/behind another. A spurious startup
@@ -102,7 +100,11 @@ impl Translator {
             c == col && r == row && now.duration_since(t) <= DOUBLE_CLICK_WINDOW
         });
         // Reset after a double so a third quick press starts a fresh single click.
-        self.last_left_down = if is_double { None } else { Some((now, col, row)) };
+        self.last_left_down = if is_double {
+            None
+        } else {
+            Some((now, col, row))
+        };
         if is_double {
             Msg::MouseDoubleClick { col, row }
         } else {
@@ -191,7 +193,10 @@ mod tests {
     fn slow_or_moved_presses_stay_single_clicks() {
         let mut t = Translator::default();
         let t0 = Instant::now();
-        assert!(matches!(t.classify_left_down_at(t0, 10, 5), Msg::MouseClick { .. }));
+        assert!(matches!(
+            t.classify_left_down_at(t0, 10, 5),
+            Msg::MouseClick { .. }
+        ));
         // Too slow.
         assert!(matches!(
             t.classify_left_down_at(t0 + Duration::from_millis(600), 10, 5),
@@ -213,7 +218,10 @@ mod tests {
             row: 3,
             modifiers: KeyModifiers::NONE,
         });
-        assert!(matches!(t.translate(ev), Some(Msg::MouseDrag { col: 7, row: 3 })));
+        assert!(matches!(
+            t.translate(ev),
+            Some(Msg::MouseDrag { col: 7, row: 3 })
+        ));
     }
 
     #[test]
@@ -241,11 +249,19 @@ mod tests {
         };
         assert!(matches!(
             t.translate(wheel(MouseEventKind::ScrollUp)),
-            Some(Msg::MouseScroll { up: true, col: 4, row: 9 })
+            Some(Msg::MouseScroll {
+                up: true,
+                col: 4,
+                row: 9
+            })
         ));
         assert!(matches!(
             t.translate(wheel(MouseEventKind::ScrollDown)),
-            Some(Msg::MouseScroll { up: false, col: 4, row: 9 })
+            Some(Msg::MouseScroll {
+                up: false,
+                col: 4,
+                row: 9
+            })
         ));
     }
 

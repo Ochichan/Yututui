@@ -26,7 +26,10 @@ impl App {
         match self.search.focus {
             SearchFocus::Input => {
                 // Ctrl+A selects the whole query (desktop-style); idempotent re-select.
-                if matches!(self.keymap.action(KeyContext::SearchInput, k.into()), Some(Action::SelectAll)) {
+                if matches!(
+                    self.keymap.action(KeyContext::SearchInput, k.into()),
+                    Some(Action::SelectAll)
+                ) {
                     self.search.select_all = !self.search.input.is_empty();
                     self.dirty = true;
                     return Vec::new();
@@ -43,7 +46,10 @@ impl App {
                         self.search.input.push(c);
                         return Vec::new();
                     }
-                    if matches!(self.keymap.action(KeyContext::SearchInput, k.into()), Some(Action::DeleteChar)) {
+                    if matches!(
+                        self.keymap.action(KeyContext::SearchInput, k.into()),
+                        Some(Action::DeleteChar)
+                    ) {
                         self.search.input.clear();
                         return Vec::new();
                     }

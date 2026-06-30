@@ -273,7 +273,9 @@ async fn run_actor(
                 let mut ytdlp_err = None;
                 if want > 0 {
                     let now = Instant::now();
-                    radio_ytdlp_cache.retain(|_, (stored, _)| now.duration_since(*stored) < RADIO_YTDLP_CACHE_TTL);
+                    radio_ytdlp_cache.retain(|_, (stored, _)| {
+                        now.duration_since(*stored) < RADIO_YTDLP_CACHE_TTL
+                    });
                     let cached = radio_ytdlp_cache
                         .get(&seed)
                         .filter(|(stored, _)| now.duration_since(*stored) < RADIO_YTDLP_CACHE_TTL)
@@ -311,10 +313,16 @@ async fn run_actor(
                         .map(|e| format!("{e:#}"))
                         .unwrap_or_else(|| "no related tracks found".to_owned());
                     tracing::warn!(seed = %seed, %error, "radio search yielded nothing");
-                    Msg::RadioError { seed_video_id, error }
+                    Msg::RadioError {
+                        seed_video_id,
+                        error,
+                    }
                 } else {
                     tracing::info!(count = candidates.len(), seed = %seed, "radio results");
-                    Msg::RadioResults { seed_video_id, candidates }
+                    Msg::RadioResults {
+                        seed_video_id,
+                        candidates,
+                    }
                 };
                 let _ = msg_tx.send(msg);
             }

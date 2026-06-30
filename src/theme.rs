@@ -66,7 +66,10 @@ impl ThemeConfig {
     pub fn set_override(&mut self, role: ThemeRole, value: &str) -> Result<(), String> {
         let Some(canonical) = normalize_value(value) else {
             return Err(if crate::i18n::is_korean() {
-                format!("{} 색상이 올바르지 않습니다: #RRGGBB 또는 none 사용", role.label())
+                format!(
+                    "{} 색상이 올바르지 않습니다: #RRGGBB 또는 none 사용",
+                    role.label()
+                )
             } else {
                 format!("Invalid color for {}: use #RRGGBB or none", role.label())
             });
@@ -319,7 +322,9 @@ impl ThemeRole {
             ThemeRole::SelectionFg => t!("Selection text", "선택 텍스트"),
             ThemeRole::SelectionBg => t!("Selection background", "선택 배경"),
             ThemeRole::SelectionInactiveFg => t!("Inactive selection text", "비활성 선택 텍스트"),
-            ThemeRole::SelectionInactiveBg => t!("Inactive selection background", "비활성 선택 배경"),
+            ThemeRole::SelectionInactiveBg => {
+                t!("Inactive selection background", "비활성 선택 배경")
+            }
             ThemeRole::GaugeFilled => t!("Seekbar filled", "탐색바 채움"),
             ThemeRole::GaugeEmpty => t!("Seekbar empty", "탐색바 빈 부분"),
             ThemeRole::PlayerControl => t!("Player controls", "플레이어 컨트롤"),
@@ -347,8 +352,12 @@ impl ThemeRole {
             ThemeRole::TextMuted => t!("quiet hints and empty states", "조용한 힌트와 빈 상태"),
             ThemeRole::TextSubtle => t!("secondary labels", "보조 라벨"),
             ThemeRole::TextInverse => t!("text drawn on accent fills", "강조 채움 위 텍스트"),
-            ThemeRole::BorderPrimary => t!("main screen and popup borders", "주 화면 및 팝업 테두리"),
-            ThemeRole::BorderFocused => t!("focused input/list borders", "포커스된 입력/목록 테두리"),
+            ThemeRole::BorderPrimary => {
+                t!("main screen and popup borders", "주 화면 및 팝업 테두리")
+            }
+            ThemeRole::BorderFocused => {
+                t!("focused input/list borders", "포커스된 입력/목록 테두리")
+            }
             ThemeRole::BorderMuted => t!("inactive input/list borders", "비활성 입력/목록 테두리"),
             ThemeRole::Accent => t!("cyan-style emphasis", "청록 계열 강조"),
             ThemeRole::AccentAlt => t!("magenta-style emphasis", "자홍 계열 강조"),
@@ -356,8 +365,12 @@ impl ThemeRole {
             ThemeRole::Warning => t!("warnings and loading", "경고 및 로딩"),
             ThemeRole::Error => t!("errors", "오류"),
             ThemeRole::SelectionFg => t!("focused selected row text", "포커스된 선택 행 텍스트"),
-            ThemeRole::SelectionBg => t!("focused selected row background", "포커스된 선택 행 배경"),
-            ThemeRole::SelectionInactiveFg => t!("unfocused selected row text", "비포커스 선택 행 텍스트"),
+            ThemeRole::SelectionBg => {
+                t!("focused selected row background", "포커스된 선택 행 배경")
+            }
+            ThemeRole::SelectionInactiveFg => {
+                t!("unfocused selected row text", "비포커스 선택 행 텍스트")
+            }
             ThemeRole::SelectionInactiveBg => {
                 t!("unfocused selected row background", "비포커스 선택 행 배경")
             }
@@ -410,19 +423,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#7F849C",
             ThemeRole::TextSubtle => "#A6ADC8",
             ThemeRole::TextInverse => "#1E1E2E",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#CBA6F7",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#45475A",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#89DCEB",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#A6E3A1",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#F9E2AF",
             ThemeRole::Error | ThemeRole::AiError => "#F38BA8",
             ThemeRole::SelectionFg => "#1E1E2E",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#CDD6F4",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#CDD6F4",
             ThemeRole::SettingsLabel => "#A6ADC8",
         }
     }
@@ -435,19 +458,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#7689A3",
             ThemeRole::TextSubtle => "#94A3B8",
             ThemeRole::TextInverse => "#07111F",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#F472B6",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#243044",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#38BDF8",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#22C55E",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#FACC15",
             ThemeRole::Error | ThemeRole::AiError => "#FB7185",
             ThemeRole::SelectionFg => "#0B1020",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#E6EDF7",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#E6EDF7",
             ThemeRole::SettingsLabel => "#94A3B8",
         }
     }
@@ -459,19 +492,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#6B7280",
             ThemeRole::TextSubtle => "#4B5563",
             ThemeRole::TextInverse => "#FFFFFF",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#C026D3",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#D1D5DB",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#0284C7",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#15803D",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#A16207",
             ThemeRole::Error | ThemeRole::AiError => "#DC2626",
             ThemeRole::SelectionFg => "#FFFFFF",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#16181D",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#16181D",
             ThemeRole::SettingsLabel => "#4B5563",
         }
     }
@@ -483,19 +526,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#BDBDBD",
             ThemeRole::TextSubtle => "#E0E0E0",
             ThemeRole::TextInverse => "#000000",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#FFFF00",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#404040",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#00FFFF",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#00FF00",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#FFFF00",
             ThemeRole::Error | ThemeRole::AiError => "#FF4040",
             ThemeRole::SelectionFg => "#000000",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#FFFFFF",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#FFFFFF",
             ThemeRole::SettingsLabel => "#E0E0E0",
         }
     }
@@ -507,19 +560,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#4E8F68",
             ThemeRole::TextSubtle => "#78B88F",
             ThemeRole::TextInverse => "#001A10",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#00FF66",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#134A2C",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#7CFF9B",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#00FF66",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#D6FF5C",
             ThemeRole::Error | ThemeRole::AiError => "#FF5C7A",
             ThemeRole::SelectionFg => "#001A10",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#D7FFE4",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#D7FFE4",
             ThemeRole::SettingsLabel => "#78B88F",
         }
     }
@@ -532,19 +595,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#928374",
             ThemeRole::TextSubtle => "#A89984",
             ThemeRole::TextInverse => "#282828",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#D3869B",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#504945",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#8EC07C",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#B8BB26",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#FABD2F",
             ThemeRole::Error | ThemeRole::AiError => "#FB4934",
             ThemeRole::SelectionFg => "#282828",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#EBDBB2",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#EBDBB2",
             ThemeRole::SettingsLabel => "#A89984",
         }
     }
@@ -557,19 +630,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#616E88",
             ThemeRole::TextSubtle => "#D8DEE9",
             ThemeRole::TextInverse => "#2E3440",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#B48EAD",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#434C5E",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#88C0D0",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#A3BE8C",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#EBCB8B",
             ThemeRole::Error | ThemeRole::AiError => "#BF616A",
             ThemeRole::SelectionFg => "#2E3440",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#ECEFF4",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#ECEFF4",
             ThemeRole::SettingsLabel => "#D8DEE9",
         }
     }
@@ -582,19 +665,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#6272A4",
             ThemeRole::TextSubtle => "#9EA2C9",
             ThemeRole::TextInverse => "#282A36",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#FF79C6",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#44475A",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#8BE9FD",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#50FA7B",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#F1FA8C",
             ThemeRole::Error | ThemeRole::AiError => "#FF5555",
             ThemeRole::SelectionFg => "#282A36",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#F8F8F2",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#F8F8F2",
             ThemeRole::SettingsLabel => "#9EA2C9",
         }
     }
@@ -607,19 +700,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#565F89",
             ThemeRole::TextSubtle => "#A9B1D6",
             ThemeRole::TextInverse => "#1A1B26",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#BB9AF7",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#3B4261",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#7DCFFF",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#9ECE6A",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#E0AF68",
             ThemeRole::Error | ThemeRole::AiError => "#F7768E",
             ThemeRole::SelectionFg => "#1A1B26",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#C0CAF5",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#C0CAF5",
             ThemeRole::SettingsLabel => "#A9B1D6",
         }
     }
@@ -632,19 +735,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#586E75",
             ThemeRole::TextSubtle => "#839496",
             ThemeRole::TextInverse => "#002B36",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#D33682",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#073642",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#2AA198",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#859900",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#B58900",
             ThemeRole::Error | ThemeRole::AiError => "#DC322F",
             ThemeRole::SelectionFg => "#002B36",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#93A1A1",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#93A1A1",
             ThemeRole::SettingsLabel => "#839496",
         }
     }
@@ -657,19 +770,29 @@ impl ThemeRole {
             ThemeRole::TextMuted => "#6E6A86",
             ThemeRole::TextSubtle => "#908CAA",
             ThemeRole::TextInverse => "#191724",
-            ThemeRole::BorderPrimary | ThemeRole::BorderFocused | ThemeRole::AccentAlt
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::AccentAlt
             | ThemeRole::SelectionBg => "#C4A7E7",
-            ThemeRole::BorderMuted | ThemeRole::GaugeEmpty | ThemeRole::LyricsDim
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
             | ThemeRole::SelectionInactiveBg => "#403D52",
-            ThemeRole::Accent | ThemeRole::PlayerLabel | ThemeRole::HelpGroup
-            | ThemeRole::SettingsValueFocused | ThemeRole::AiUser | ThemeRole::LyricsCurrent
+            ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
             | ThemeRole::SettingsGroup => "#9CCFD8",
             ThemeRole::Success | ThemeRole::GaugeFilled | ThemeRole::AiAssistant => "#31748F",
             ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#F6C177",
             ThemeRole::Error | ThemeRole::AiError => "#EB6F92",
             ThemeRole::SelectionFg => "#191724",
-            ThemeRole::SelectionInactiveFg | ThemeRole::PlayerControl
-            | ThemeRole::SettingsValue | ThemeRole::HelpAction => "#E0DEF4",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#E0DEF4",
             ThemeRole::SettingsLabel => "#908CAA",
         }
     }
@@ -735,7 +858,8 @@ mod tests {
         assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#CBA6F7");
         cfg.set_preset(ThemePreset::Light);
         assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#C026D3");
-        cfg.set_override(ThemeRole::BorderPrimary, "#123456").unwrap();
+        cfg.set_override(ThemeRole::BorderPrimary, "#123456")
+            .unwrap();
         assert_eq!(cfg.effective_hex(ThemeRole::BorderPrimary), "#123456");
     }
 
@@ -770,17 +894,23 @@ mod tests {
         assert!(cfg.is_role_transparent(ThemeRole::Background));
         assert_eq!(cfg.color(ThemeRole::Background), Color::Reset);
         // "transparent" / "-" are accepted spellings too.
-        cfg.set_override(ThemeRole::Background, "TRANSPARENT").unwrap();
+        cfg.set_override(ThemeRole::Background, "TRANSPARENT")
+            .unwrap();
         assert_eq!(cfg.effective_hex(ThemeRole::Background), "none");
     }
 
     #[test]
     fn invalid_overrides_are_dropped_when_normalized() {
         let mut cfg = ThemeConfig::default();
-        cfg.overrides.insert("border_primary".to_owned(), "not-a-color".to_owned());
-        cfg.overrides.insert("text_primary".to_owned(), "#eeeeee".to_owned());
+        cfg.overrides
+            .insert("border_primary".to_owned(), "not-a-color".to_owned());
+        cfg.overrides
+            .insert("text_primary".to_owned(), "#eeeeee".to_owned());
         let normalized = cfg.normalized();
         assert_eq!(normalized.overrides.get("border_primary"), None);
-        assert_eq!(normalized.overrides.get("text_primary").map(String::as_str), Some("#EEEEEE"));
+        assert_eq!(
+            normalized.overrides.get("text_primary").map(String::as_str),
+            Some("#EEEEEE")
+        );
     }
 }

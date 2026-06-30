@@ -28,7 +28,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_nav(
         frame,
         app,
-        Rect { x: inner.x, y: area.y, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: area.y,
+            width: inner.width,
+            height: 1,
+        },
     );
 
     let rows = Layout::vertical([
@@ -79,7 +84,11 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     render_search_icon(frame, app, icon_area);
 
     let focused = app.search.focus == SearchFocus::Input;
-    let border = if focused { R::BorderFocused } else { R::BorderMuted };
+    let border = if focused {
+        R::BorderFocused
+    } else {
+        R::BorderMuted
+    };
     // Make it obvious when we're not signed in (anonymous = search + public play only).
     let title = if app.authenticated {
         t!(" Search ", " 검색 ")
@@ -162,10 +171,15 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
 
     let focused = app.search.focus == SearchFocus::Results;
     let items: Vec<ListItem> = app
-        .search.results
+        .search
+        .results
         .iter()
         .map(|s| {
-            let heart = if app.library.is_favorite(&s.video_id) { "♥ " } else { "" };
+            let heart = if app.library.is_favorite(&s.video_id) {
+                "♥ "
+            } else {
+                ""
+            };
             let line = if s.duration.is_empty() {
                 format!("{heart}{} — {}", s.title, s.artist)
             } else {

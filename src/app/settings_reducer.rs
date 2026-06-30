@@ -168,7 +168,11 @@ impl App {
             && let Some(st) = self.settings.as_mut()
         {
             st.capturing = Some(entry);
-            self.status.text = t!("Press a key to bind (Esc to cancel)…", "바인딩할 키를 누르세요 (Esc로 취소)…").to_owned();
+            self.status.text = t!(
+                "Press a key to bind (Esc to cancel)…",
+                "바인딩할 키를 누르세요 (Esc로 취소)…"
+            )
+            .to_owned();
             self.dirty = true;
         }
     }
@@ -234,7 +238,8 @@ impl App {
     }
 
     pub(in crate::app) fn settings_reset_color(&mut self) {
-        let Some(Field::ThemeColor(role)) = self.settings.as_ref().and_then(|s| s.current_field()) else {
+        let Some(Field::ThemeColor(role)) = self.settings.as_ref().and_then(|s| s.current_field())
+        else {
             return;
         };
         if let Some(st) = self.settings.as_mut() {
@@ -321,8 +326,7 @@ impl App {
                 // Apply live so the whole UI — including this settings screen — re-renders in
                 // the new language on the next frame; `close_settings` persists it.
                 crate::i18n::set_language(next);
-                self.status.text =
-                    format!("{}: {}", t!("Language", "언어"), next.native_name());
+                self.status.text = format!("{}: {}", t!("Language", "언어"), next.native_name());
                 Vec::new()
             }
             Field::Normalize => {
@@ -351,8 +355,12 @@ impl App {
             }
             Field::AnimFps => {
                 let s = self.settings_mut();
-                let next = (i32::from(s.draft.animations.fps) + dir * i32::from(settings::ANIM_FPS_STEP))
-                    .clamp(i32::from(crate::config::FPS_MIN), i32::from(crate::config::FPS_MAX));
+                let next = (i32::from(s.draft.animations.fps)
+                    + dir * i32::from(settings::ANIM_FPS_STEP))
+                .clamp(
+                    i32::from(crate::config::FPS_MIN),
+                    i32::from(crate::config::FPS_MAX),
+                );
                 s.draft.animations.fps = next as u16;
                 // Stored only — the main loop rebuilds the animation-tick interval from the saved
                 // rate when Settings closes (it reads `config.animations.effective_fps()`).
@@ -446,8 +454,12 @@ impl App {
             }
             // Text fields ignore ←/→; Enter starts editing instead. The reset button has no
             // value to nudge — Enter activates it (see `settings_activate`).
-            Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_)
-            | Field::ResetKeybindings | Field::ResetAll => Vec::new(),
+            Field::CookiesFile
+            | Field::DownloadDir
+            | Field::ApiKey
+            | Field::ThemeColor(_)
+            | Field::ResetKeybindings
+            | Field::ResetAll => Vec::new(),
         }
     }
 
@@ -550,7 +562,11 @@ impl App {
         };
         st.keymap = KeyMap::default();
         st.capturing = None;
-        self.status.text = t!("Keybindings reset to defaults", "단축키를 기본값으로 되돌렸어요").to_owned();
+        self.status.text = t!(
+            "Keybindings reset to defaults",
+            "단축키를 기본값으로 되돌렸어요"
+        )
+        .to_owned();
         self.dirty = true;
         Vec::new()
     }
@@ -594,7 +610,11 @@ impl App {
             self.theme = st.draft.theme.normalized();
             crate::i18n::set_language(st.draft.language);
         }
-        self.status.text = t!("All settings reset to defaults", "모든 설정을 기본값으로 되돌렸어요").to_owned();
+        self.status.text = t!(
+            "All settings reset to defaults",
+            "모든 설정을 기본값으로 되돌렸어요"
+        )
+        .to_owned();
         self.dirty = true;
         let mut cmds = self.settings_apply_speed();
         cmds.extend(self.settings_apply_af());
@@ -687,7 +707,11 @@ impl App {
                     // draft should spawn it now). `close_settings` reconciles the final state.
                     let ai_on = self.settings.as_ref().is_some_and(|s| s.draft.ai_enabled);
                     cmds.push(Cmd::ReloadAi {
-                        key: if ai_on { self.config.effective_gemini_api_key() } else { None },
+                        key: if ai_on {
+                            self.config.effective_gemini_api_key()
+                        } else {
+                            None
+                        },
                         model: self.ai.model,
                     });
                 }
@@ -835,9 +859,11 @@ impl App {
             && let Some(source) = self.artwork_source(&song)
         {
             self.art.loading = true;
-            cmds.push(Cmd::FetchArtwork { video_id: song.video_id.clone(), source });
+            cmds.push(Cmd::FetchArtwork {
+                video_id: song.video_id.clone(),
+                source,
+            });
         }
         cmds
     }
-
 }

@@ -414,7 +414,9 @@ impl Config {
 
     /// Seek step in seconds, clamped to the supported range (default 10s).
     pub fn effective_seek_seconds(&self) -> f64 {
-        self.seek_seconds.unwrap_or(SEEK_SECONDS_DEFAULT).clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
+        self.seek_seconds
+            .unwrap_or(SEEK_SECONDS_DEFAULT)
+            .clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
     }
 
     /// Whether the mouse wheel changes volume over the player volume cluster (default on).
@@ -512,8 +514,7 @@ fn ytm_dir_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
 }
 
 fn config_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui")
-        .map(|d| d.config_dir().join("config.json"))
+    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.config_dir().join("config.json"))
 }
 
 fn old_config_path() -> Option<PathBuf> {
@@ -539,7 +540,9 @@ fn import_old_from(path: &std::path::Path, cfg: &mut Config) {
     {
         cfg.cookie = Some(c.to_owned());
     }
-    if let Some(d) = json.get("downloadDirectory").and_then(serde_json::Value::as_str)
+    if let Some(d) = json
+        .get("downloadDirectory")
+        .and_then(serde_json::Value::as_str)
         && !d.is_empty()
     {
         cfg.download_dir = Some(PathBuf::from(d));
@@ -607,7 +610,11 @@ mod tests {
             autoplay_radio: Some(true),
             autoplay_on_start: Some(true),
             radio: RadioConfig::default(),
-            animations: AnimationsConfig { master: true, rain: true, ..Default::default() },
+            animations: AnimationsConfig {
+                master: true,
+                rain: true,
+                ..Default::default()
+            },
             gemini_api_key: Some("AIzaSecret".to_owned()),
             gemini_model: GeminiModel::Latest,
             ai_enabled: Some(false),
@@ -641,7 +648,10 @@ mod tests {
         assert_eq!(back.video_layout, VideoOverlay::Large);
         assert_eq!(back.theme.preset, "midnight");
         assert_eq!(
-            back.theme.overrides.get("border_primary").map(String::as_str),
+            back.theme
+                .overrides
+                .get("border_primary")
+                .map(String::as_str),
             Some("#123456")
         );
     }
@@ -652,10 +662,23 @@ mod tests {
 
         // Rebind a key, then capture it the way `close_settings` does on save.
         let mut km = KeyMap::default();
-        km.rebind(KeyContext::Player, Action::TogglePause, parse_chord("P").unwrap()).unwrap();
-        let cfg = Config { keybindings: km.to_overrides(), ..Config::default() };
+        km.rebind(
+            KeyContext::Player,
+            Action::TogglePause,
+            parse_chord("P").unwrap(),
+        )
+        .unwrap();
+        let cfg = Config {
+            keybindings: km.to_overrides(),
+            ..Config::default()
+        };
         // Only the diff from defaults is persisted.
-        assert_eq!(cfg.keybindings.get("player.toggle_pause").map(String::as_str), Some("P"));
+        assert_eq!(
+            cfg.keybindings
+                .get("player.toggle_pause")
+                .map(String::as_str),
+            Some("P")
+        );
 
         // Round-trip through the exact serde path `Config::save`/`load` use (write JSON,
         // read it back) — proving the override survives a restart.
@@ -664,21 +687,36 @@ mod tests {
 
         // On next launch the persisted override rebuilds into the live keymap.
         let restored = KeyMap::from_config(&back);
-        assert_eq!(restored.action(KeyContext::Player, parse_chord("P").unwrap()), Some(Action::TogglePause));
-        assert_eq!(restored.action(KeyContext::Player, parse_chord("space").unwrap()), None);
+        assert_eq!(
+            restored.action(KeyContext::Player, parse_chord("P").unwrap()),
+            Some(Action::TogglePause)
+        );
+        assert_eq!(
+            restored.action(KeyContext::Player, parse_chord("space").unwrap()),
+            None
+        );
     }
 
     #[test]
     fn gemini_key_env_overrides_config() {
-        let cfg = Config { gemini_api_key: Some("from_config".to_owned()), ..Config::default() };
+        let cfg = Config {
+            gemini_api_key: Some("from_config".to_owned()),
+            ..Config::default()
+        };
         // SAFETY: single-threaded test; set+unset around the calls.
         unsafe { std::env::set_var("GEMINI_API_KEY", "  from_env  ") };
         assert_eq!(cfg.effective_gemini_api_key().as_deref(), Some("from_env"));
         unsafe { std::env::remove_var("GEMINI_API_KEY") };
-        assert_eq!(cfg.effective_gemini_api_key().as_deref(), Some("from_config"));
+        assert_eq!(
+            cfg.effective_gemini_api_key().as_deref(),
+            Some("from_config")
+        );
 
         // Empty/whitespace key reads as unset.
-        let blank = Config { gemini_api_key: Some("   ".to_owned()), ..Config::default() };
+        let blank = Config {
+            gemini_api_key: Some("   ".to_owned()),
+            ..Config::default()
+        };
         assert_eq!(blank.effective_gemini_api_key(), None);
     }
 
@@ -706,9 +744,15 @@ mod tests {
         assert!(on.effective_ai_enabled());
         assert_eq!(on.effective_ai_key(), on.effective_gemini_api_key());
 
-        let default_on = Config { ai_enabled: None, ..Config::default() };
+        let default_on = Config {
+            ai_enabled: None,
+            ..Config::default()
+        };
         assert!(default_on.effective_ai_enabled()); // unset defaults to on
-        assert_eq!(default_on.effective_ai_key(), default_on.effective_gemini_api_key());
+        assert_eq!(
+            default_on.effective_ai_key(),
+            default_on.effective_gemini_api_key()
+        );
     }
 
     #[test]
@@ -724,34 +768,55 @@ mod tests {
         assert!(!d.effective_autoplay_on_start());
 
         // Preset gains feed through when no hand-tuned bands are set.
-        let preset = Config { eq_preset: EqPreset::BassBoost, ..Config::default() };
+        let preset = Config {
+            eq_preset: EqPreset::BassBoost,
+            ..Config::default()
+        };
         assert_eq!(preset.effective_eq_bands(), EqPreset::BassBoost.gains());
 
         // Speed is clamped to the supported range.
-        let fast = Config { speed: Some(9.0), ..Config::default() };
+        let fast = Config {
+            speed: Some(9.0),
+            ..Config::default()
+        };
         assert_eq!(fast.effective_speed(), SPEED_MAX);
 
         // Seek step is clamped to its supported range too.
-        let big = Config { seek_seconds: Some(999.0), ..Config::default() };
+        let big = Config {
+            seek_seconds: Some(999.0),
+            ..Config::default()
+        };
         assert_eq!(big.effective_seek_seconds(), SEEK_SECONDS_MAX);
-        let tiny = Config { seek_seconds: Some(0.0), ..Config::default() };
+        let tiny = Config {
+            seek_seconds: Some(0.0),
+            ..Config::default()
+        };
         assert_eq!(tiny.effective_seek_seconds(), SEEK_SECONDS_MIN);
 
-        let wheel_off = Config { mouse_wheel_volume: Some(false), ..Config::default() };
+        let wheel_off = Config {
+            mouse_wheel_volume: Some(false),
+            ..Config::default()
+        };
         assert!(!wheel_off.effective_mouse_wheel_volume());
     }
 
     #[test]
     fn mouse_enabled_by_default_and_overridable() {
         assert!(Config::default().effective_mouse());
-        let off = Config { mouse: Some(false), ..Config::default() };
+        let off = Config {
+            mouse: Some(false),
+            ..Config::default()
+        };
         assert!(!off.effective_mouse());
     }
 
     #[test]
     fn album_art_off_by_default_and_overridable() {
         assert!(!Config::default().effective_album_art()); // opt-in
-        let on = Config { album_art: Some(true), ..Config::default() };
+        let on = Config {
+            album_art: Some(true),
+            ..Config::default()
+        };
         assert!(on.effective_album_art());
     }
 
@@ -769,16 +834,26 @@ mod tests {
         assert!(!a.active());
 
         // An effect on but master off → inactive (global kill-switch wins).
-        let effect_only = AnimationsConfig { rain: true, ..Default::default() };
+        let effect_only = AnimationsConfig {
+            rain: true,
+            ..Default::default()
+        };
         assert!(effect_only.any_effect());
         assert!(!effect_only.active());
 
         // Master on but no effect → still inactive (nothing to draw).
-        let master_only = AnimationsConfig { master: true, ..Default::default() };
+        let master_only = AnimationsConfig {
+            master: true,
+            ..Default::default()
+        };
         assert!(!master_only.active());
 
         // Master + an effect → active.
-        let on = AnimationsConfig { master: true, donut: true, ..Default::default() };
+        let on = AnimationsConfig {
+            master: true,
+            donut: true,
+            ..Default::default()
+        };
         assert!(on.active());
 
         // A missing "animations" key forward-migrates to all-off.
@@ -844,10 +919,22 @@ mod tests {
             Config::default().effective_download_concurrency(),
             DOWNLOAD_CONCURRENCY_DEFAULT
         );
-        let high = Config { download_concurrency: Some(99), ..Config::default() };
-        assert_eq!(high.effective_download_concurrency(), DOWNLOAD_CONCURRENCY_MAX);
-        let zero = Config { download_concurrency: Some(0), ..Config::default() };
-        assert_eq!(zero.effective_download_concurrency(), DOWNLOAD_CONCURRENCY_MIN);
+        let high = Config {
+            download_concurrency: Some(99),
+            ..Config::default()
+        };
+        assert_eq!(
+            high.effective_download_concurrency(),
+            DOWNLOAD_CONCURRENCY_MAX
+        );
+        let zero = Config {
+            download_concurrency: Some(0),
+            ..Config::default()
+        };
+        assert_eq!(
+            zero.effective_download_concurrency(),
+            DOWNLOAD_CONCURRENCY_MIN
+        );
 
         unsafe { std::env::set_var("YTM_DOWNLOAD_CONCURRENCY", "99") };
         assert_eq!(
@@ -855,7 +942,10 @@ mod tests {
             DOWNLOAD_CONCURRENCY_MAX
         );
         unsafe { std::env::set_var("YTM_DOWNLOAD_CONCURRENCY", "not-a-number") };
-        let configured = Config { download_concurrency: Some(1), ..Config::default() };
+        let configured = Config {
+            download_concurrency: Some(1),
+            ..Config::default()
+        };
         assert_eq!(configured.effective_download_concurrency(), 1);
 
         match old {

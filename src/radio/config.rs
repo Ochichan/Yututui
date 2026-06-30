@@ -20,8 +20,11 @@ pub enum RadioMode {
 
 impl RadioMode {
     /// All modes in toggle order (the settings cycle steps through these).
-    pub const CYCLE: [RadioMode; 3] =
-        [RadioMode::Focused, RadioMode::Balanced, RadioMode::Discovery];
+    pub const CYCLE: [RadioMode; 3] = [
+        RadioMode::Focused,
+        RadioMode::Balanced,
+        RadioMode::Discovery,
+    ];
 
     /// A short human label for the settings field and the player status line.
     pub fn label(self) -> &'static str {
@@ -36,7 +39,11 @@ impl RadioMode {
     pub fn cycled(self, forward: bool) -> Self {
         let i = Self::CYCLE.iter().position(|&m| m == self).unwrap_or(1);
         let n = Self::CYCLE.len();
-        let j = if forward { (i + 1) % n } else { (i + n - 1) % n };
+        let j = if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        };
         Self::CYCLE[j]
     }
 
@@ -114,7 +121,11 @@ pub struct SimWeights {
 
 impl Default for SimWeights {
     fn default() -> Self {
-        Self { cooc: 0.60, artist: 0.30, album: 0.10 }
+        Self {
+            cooc: 0.60,
+            artist: 0.30,
+            album: 0.10,
+        }
     }
 }
 
@@ -136,7 +147,13 @@ pub struct CoocConfig {
 
 impl Default for CoocConfig {
     fn default() -> Self {
-        Self { window: 8, sppmi_k: 1.0, reverse: 0.6, session_gap_min: 20, session_max: 10 }
+        Self {
+            window: 8,
+            sppmi_k: 1.0,
+            reverse: 0.6,
+            session_gap_min: 20,
+            session_max: 10,
+        }
     }
 }
 
@@ -163,7 +180,13 @@ pub struct AiRerankConfig {
 
 impl Default for AiRerankConfig {
     fn default() -> Self {
-        Self { enabled: true, shortlist: 12, picks: 8, smart_gate: true, ambiguity_gap: 0.15 }
+        Self {
+            enabled: true,
+            shortlist: 12,
+            picks: 8,
+            smart_gate: true,
+            ambiguity_gap: 0.15,
+        }
     }
 }
 
@@ -189,7 +212,11 @@ pub struct MusicGateConfig {
 
 impl Default for MusicGateConfig {
     fn default() -> Self {
-        Self { enabled: true, gate_watch_playlist: true, block_altered_versions: false }
+        Self {
+            enabled: true,
+            gate_watch_playlist: true,
+            block_altered_versions: false,
+        }
     }
 }
 

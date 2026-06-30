@@ -71,7 +71,9 @@ impl App {
             // Plain typed characters extend the query; ignore Ctrl/Alt combos (e.g. Ctrl+R for
             // radio is already handled as a global before we get here).
             KeyCode::Char(c)
-                if !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !k
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 self.library_ui.filter_query.push(c);
                 self.after_library_filter_change();

@@ -54,7 +54,11 @@ where
 
 /// Draw one frame, using synchronized update only when the caller expects large image/canvas
 /// damage. This keeps ordinary one-line redraws from emitting DECSET ?2026 wrappers.
-pub fn draw_frame<F>(terminal: &mut DefaultTerminal, synchronized: bool, render: F) -> io::Result<()>
+pub fn draw_frame<F>(
+    terminal: &mut DefaultTerminal,
+    synchronized: bool,
+    render: F,
+) -> io::Result<()>
 where
     F: FnOnce(&mut Frame),
 {

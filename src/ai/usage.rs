@@ -60,7 +60,9 @@ impl AiUsageRecord {
     ) -> Self {
         let u = usage.cloned().unwrap_or_default();
         let input = u.prompt_token_count;
-        let output = u.candidates_token_count.saturating_add(u.thoughts_token_count);
+        let output = u
+            .candidates_token_count
+            .saturating_add(u.thoughts_token_count);
         let (in_price, out_price) = price_per_million(model);
         let est_cost_usd = (input as f64 / 1e6) * in_price + (output as f64 / 1e6) * out_price;
         Self {
@@ -123,7 +125,15 @@ mod tests {
             thoughts_token_count: 0,
             cached_content_token_count: 0,
         };
-        let r = AiUsageRecord::new("rerank", GeminiModel::FlashLite, Some(&usage), 12, true, 5, false);
+        let r = AiUsageRecord::new(
+            "rerank",
+            GeminiModel::FlashLite,
+            Some(&usage),
+            12,
+            true,
+            5,
+            false,
+        );
         // 1M input * $0.10 + 1M output * $0.40 = $0.50.
         assert!((r.est_cost_usd - 0.50).abs() < 1e-9);
         assert_eq!(r.input_tokens, 1_000_000);

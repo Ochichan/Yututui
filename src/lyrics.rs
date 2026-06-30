@@ -40,10 +40,17 @@ pub fn parse_lrc(raw: &str) -> Vec<LyricLine> {
         }
         let text = rest.trim().to_owned();
         for t in stamps {
-            out.push(LyricLine { time: t, text: text.clone() });
+            out.push(LyricLine {
+                time: t,
+                text: text.clone(),
+            });
         }
     }
-    out.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        a.time
+            .partial_cmp(&b.time)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 
@@ -65,7 +72,11 @@ pub fn current_index(lines: &[LyricLine], pos: f64) -> Option<usize> {
 // --- Actor ------------------------------------------------------------------
 
 pub enum LyricsCmd {
-    Fetch { video_id: String, artist: String, title: String },
+    Fetch {
+        video_id: String,
+        artist: String,
+        title: String,
+    },
 }
 
 pub struct LyricsHandle {
@@ -74,7 +85,11 @@ pub struct LyricsHandle {
 
 impl LyricsHandle {
     pub fn fetch(&self, video_id: String, artist: String, title: String) {
-        let _ = self.tx.send(LyricsCmd::Fetch { video_id, artist, title });
+        let _ = self.tx.send(LyricsCmd::Fetch {
+            video_id,
+            artist,
+            title,
+        });
     }
 }
 
@@ -92,7 +107,12 @@ async fn run_actor(mut rx: UnboundedReceiver<LyricsCmd>, msg_tx: UnboundedSender
         .unwrap_or_else(|_| reqwest::Client::new());
     let mut cache: HashMap<String, Vec<LyricLine>> = HashMap::new();
 
-    while let Some(LyricsCmd::Fetch { video_id, artist, title }) = rx.recv().await {
+    while let Some(LyricsCmd::Fetch {
+        video_id,
+        artist,
+        title,
+    }) = rx.recv().await
+    {
         let lines = if let Some(cached) = cache.get(&video_id) {
             cached.clone()
         } else {

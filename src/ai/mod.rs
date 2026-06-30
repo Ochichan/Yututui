@@ -117,10 +117,16 @@ Never fabricate tool results or videoIds you haven't seen.";
 
 /// Commands sent to the AI actor.
 pub enum AiCmd {
-    Ask { prompt: String, context: Box<AiContext> },
+    Ask {
+        prompt: String,
+        context: Box<AiContext>,
+    },
     /// One-shot radio rerank over a local candidate pack (the autoplay path); the model picks
     /// opaque cids the reducer resolves back to tracks.
-    Rerank { seed_video_id: String, prompt: String },
+    Rerank {
+        seed_video_id: String,
+        prompt: String,
+    },
     /// Off-path: distill a recent-feedback digest into station avoid/boost artists.
     SummarizeFeedback { digest: String },
     /// Switch the model used for subsequent requests (settings save).
@@ -139,7 +145,10 @@ impl AiHandle {
 
     /// Kick off a one-shot radio rerank; the result returns as [`Msg::RadioAiPicks`].
     pub fn rerank(&self, seed_video_id: String, prompt: String) {
-        let _ = self.tx.send(AiCmd::Rerank { seed_video_id, prompt });
+        let _ = self.tx.send(AiCmd::Rerank {
+            seed_video_id,
+            prompt,
+        });
     }
 
     /// Kick off an off-path feedback summary; the result returns as [`Msg::StationPatch`].
@@ -158,7 +167,12 @@ impl AiHandle {
 pub fn spawn(api_key: &str, model: GeminiModel, msg_tx: UnboundedSender<Msg>) -> Option<AiHandle> {
     let client = GeminiClient::new(api_key).ok()?;
     let (tx, rx) = mpsc::unbounded_channel();
-    let actor = AiActor { client, model, msg_tx, call_times: VecDeque::new() };
+    let actor = AiActor {
+        client,
+        model,
+        msg_tx,
+        call_times: VecDeque::new(),
+    };
     tokio::spawn(actor.run(rx));
     Some(AiHandle { tx })
 }
@@ -186,9 +200,10 @@ impl AiActor {
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 AiCmd::Ask { prompt, context } => self.converse(prompt, *context).await,
-                AiCmd::Rerank { seed_video_id, prompt } => {
-                    self.rerank(seed_video_id, prompt).await
-                }
+                AiCmd::Rerank {
+                    seed_video_id,
+                    prompt,
+                } => self.rerank(seed_video_id, prompt).await,
                 AiCmd::SummarizeFeedback { digest } => self.summarize_feedback(digest).await,
                 AiCmd::SetModel(model) => self.model = model,
             }
@@ -250,11 +265,16 @@ impl AiActor {
         // When the UI is set to Korean, steer replies to Korean explicitly — the base prompt
         // only says "reply in the user's language", which leaves English prompts ambiguous.
         let system_text = if crate::i18n::is_korean() {
-            format!("{SYSTEM_PROMPT}\n\nRespond in Korean (한국어) regardless of the language the user writes in.")
+            format!(
+                "{SYSTEM_PROMPT}\n\nRespond in Korean (한국어) regardless of the language the user writes in."
+            )
         } else {
             SYSTEM_PROMPT.to_owned()
         };
-        let system = Content { role: None, parts: vec![Part::text(system_text)] };
+        let system = Content {
+            role: None,
+            parts: vec![Part::text(system_text)],
+        };
         let decls = tools::declarations();
         let gen_cfg = GenerationConfig {
             temperature: Some(0.7),
@@ -272,7 +292,9 @@ impl AiActor {
             let req = GenerateContentRequest {
                 contents: contents.clone(),
                 system_instruction: Some(system.clone()),
-                tools: Some(vec![Tool { function_declarations: decls.clone() }]),
+                tools: Some(vec![Tool {
+                    function_declarations: decls.clone(),
+                }]),
                 generation_config: Some(gen_cfg.clone()),
             };
 
@@ -302,9 +324,10 @@ impl AiActor {
                 return;
             }
             let Some(content) = resp.content().cloned() else {
-                let _ = self
-                    .msg_tx
-                    .send(Msg::AiError(crate::t!("Empty response from Gemini.", "Gemini 응답이 비어 있어요.").to_owned()));
+                let _ = self.msg_tx.send(Msg::AiError(
+                    crate::t!("Empty response from Gemini.", "Gemini 응답이 비어 있어요.")
+                        .to_owned(),
+                ));
                 return;
             };
 
@@ -363,14 +386,21 @@ impl AiActor {
         let _guard = ThinkingGuard(self.msg_tx.clone());
         let req = build_rerank_request(&prompt);
         let (picks, conf) = self.rerank_call(&req).await.unwrap_or_default();
-        let _ = self.msg_tx.send(Msg::RadioAiPicks { seed_video_id, picks, conf });
+        let _ = self.msg_tx.send(Msg::RadioAiPicks {
+            seed_video_id,
+            picks,
+            conf,
+        });
     }
 
     /// Run the reranker model chain (Flash-Lite → Flash), each under a hard timeout. Returns the
     /// parsed picks (and overall confidence), or `None` ("use the local fallback") on a timeout, a
     /// transient error once the chain is exhausted, a block/early-stop finish, or unparseable JSON
     /// — none of which we retry (the local pick is already a good answer).
-    async fn rerank_call(&mut self, req: &GenerateContentRequest) -> Option<(Vec<AiPick>, Option<f32>)> {
+    async fn rerank_call(
+        &mut self,
+        req: &GenerateContentRequest,
+    ) -> Option<(Vec<AiPick>, Option<f32>)> {
         const CHAIN: [GeminiModel; 2] = [GeminiModel::FlashLite, GeminiModel::Flash];
         for (i, &model) in CHAIN.iter().enumerate() {
             self.throttle().await;
@@ -386,24 +416,45 @@ impl AiActor {
                     return None;
                 }
                 Err(_) => {
-                    tracing::warn!(timeout_s = RERANK_TIMEOUT.as_secs(), "rerank timed out → local fallback");
+                    tracing::warn!(
+                        timeout_s = RERANK_TIMEOUT.as_secs(),
+                        "rerank timed out → local fallback"
+                    );
                     return None;
                 }
             };
             let latency_ms = started.elapsed().as_millis() as u64;
             if let Some(reason) = resp.block_reason() {
                 usage::append(&usage::AiUsageRecord::new(
-                    "rerank", model, resp.usage(), latency_ms, false, 0, true,
+                    "rerank",
+                    model,
+                    resp.usage(),
+                    latency_ms,
+                    false,
+                    0,
+                    true,
                 ));
                 tracing::warn!(reason, "rerank blocked → local fallback");
                 return None;
             }
             // A truncated/safety stop yields no usable JSON — fall back rather than retry.
-            if matches!(resp.finish_reason(), Some("MAX_TOKENS" | "SAFETY" | "RECITATION")) {
+            if matches!(
+                resp.finish_reason(),
+                Some("MAX_TOKENS" | "SAFETY" | "RECITATION")
+            ) {
                 usage::append(&usage::AiUsageRecord::new(
-                    "rerank", model, resp.usage(), latency_ms, false, 0, true,
+                    "rerank",
+                    model,
+                    resp.usage(),
+                    latency_ms,
+                    false,
+                    0,
+                    true,
                 ));
-                tracing::warn!(finish = resp.finish_reason(), "rerank stopped early → local fallback");
+                tracing::warn!(
+                    finish = resp.finish_reason(),
+                    "rerank stopped early → local fallback"
+                );
                 return None;
             }
             let text = resp.content().map(Content::joined_text).unwrap_or_default();
@@ -429,14 +480,20 @@ impl AiActor {
     async fn summarize_feedback(&mut self, digest: String) {
         let req = build_feedback_request(&digest);
         let (down_artists, boost_artists) = self.feedback_call(&req).await.unwrap_or_default();
-        let _ = self.msg_tx.send(Msg::StationPatch { down_artists, boost_artists });
+        let _ = self.msg_tx.send(Msg::StationPatch {
+            down_artists,
+            boost_artists,
+        });
     }
 
     /// Run the feedback model chain (Flash-Lite → Flash) under a hard timeout. Mirrors
     /// [`Self::rerank_call`]: returns `None` (→ empty patch, a no-op) on timeout, exhausted error,
     /// block/early-stop, or unparseable JSON. None of these retry — a missed summary just means the
     /// station learns nothing this round, which is harmless.
-    async fn feedback_call(&mut self, req: &GenerateContentRequest) -> Option<(Vec<String>, Vec<String>)> {
+    async fn feedback_call(
+        &mut self,
+        req: &GenerateContentRequest,
+    ) -> Option<(Vec<String>, Vec<String>)> {
         const CHAIN: [GeminiModel; 2] = [GeminiModel::FlashLite, GeminiModel::Flash];
         for (i, &model) in CHAIN.iter().enumerate() {
             self.throttle().await;
@@ -452,23 +509,44 @@ impl AiActor {
                     return None;
                 }
                 Err(_) => {
-                    tracing::warn!(timeout_s = FEEDBACK_TIMEOUT.as_secs(), "feedback summary timed out → no patch");
+                    tracing::warn!(
+                        timeout_s = FEEDBACK_TIMEOUT.as_secs(),
+                        "feedback summary timed out → no patch"
+                    );
                     return None;
                 }
             };
             let latency_ms = started.elapsed().as_millis() as u64;
             if let Some(reason) = resp.block_reason() {
                 usage::append(&usage::AiUsageRecord::new(
-                    "feedback", model, resp.usage(), latency_ms, false, 0, true,
+                    "feedback",
+                    model,
+                    resp.usage(),
+                    latency_ms,
+                    false,
+                    0,
+                    true,
                 ));
                 tracing::warn!(reason, "feedback summary blocked → no patch");
                 return None;
             }
-            if matches!(resp.finish_reason(), Some("MAX_TOKENS" | "SAFETY" | "RECITATION")) {
+            if matches!(
+                resp.finish_reason(),
+                Some("MAX_TOKENS" | "SAFETY" | "RECITATION")
+            ) {
                 usage::append(&usage::AiUsageRecord::new(
-                    "feedback", model, resp.usage(), latency_ms, false, 0, true,
+                    "feedback",
+                    model,
+                    resp.usage(),
+                    latency_ms,
+                    false,
+                    0,
+                    true,
                 ));
-                tracing::warn!(finish = resp.finish_reason(), "feedback summary stopped early → no patch");
+                tracing::warn!(
+                    finish = resp.finish_reason(),
+                    "feedback summary stopped early → no patch"
+                );
                 return None;
             }
             let text = resp.content().map(Content::joined_text).unwrap_or_default();
@@ -531,7 +609,12 @@ fn parse_feedback_patch(text: &str) -> Option<(Vec<String>, Vec<String>)> {
             .and_then(serde_json::Value::as_array)
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|x| x.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned))
+                    .filter_map(|x| {
+                        x.as_str()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -594,18 +677,27 @@ fn parse_rerank_picks(text: &str) -> Option<(Vec<AiPick>, Option<f32>)> {
     }
     let roles = v.get("roles").and_then(serde_json::Value::as_array);
     let reasons = v.get("reasons").and_then(serde_json::Value::as_array);
-    let conf = v.get("conf").and_then(serde_json::Value::as_f64).map(|c| c as f32);
+    let conf = v
+        .get("conf")
+        .and_then(serde_json::Value::as_f64)
+        .map(|c| c as f32);
 
     let picks = ids
         .into_iter()
         .enumerate()
         .map(|(i, cid)| {
-            let role =
-                roles.and_then(|r| r.get(i)).and_then(|x| x.as_str()).map(str::to_owned);
+            let role = roles
+                .and_then(|r| r.get(i))
+                .and_then(|x| x.as_str())
+                .map(str::to_owned);
             let reasons = reasons
                 .and_then(|r| r.get(i))
                 .and_then(serde_json::Value::as_array)
-                .map(|arr| arr.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(str::to_owned))
+                        .collect()
+                })
                 .unwrap_or_default();
             AiPick { cid, role, reasons }
         })
@@ -616,30 +708,56 @@ fn parse_rerank_picks(text: &str) -> Option<(Vec<AiPick>, Option<f32>)> {
 /// Strip a leading/trailing ```` ```json ```` / ```` ``` ```` fence if the model wrapped its
 /// JSON despite the JSON mime type.
 fn strip_code_fence(s: &str) -> &str {
-    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")).unwrap_or(s);
+    let s = s
+        .strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .unwrap_or(s);
     s.strip_suffix("```").unwrap_or(s).trim()
 }
 
 /// A compact, human-readable snapshot of player state for the model's first turn.
 fn context_summary(ctx: &AiContext) -> String {
     let mut s = String::from("Current player state:\n");
-    s.push_str(&format!("- Now playing: {}\n", ctx.current_track.as_deref().unwrap_or("nothing")));
+    s.push_str(&format!(
+        "- Now playing: {}\n",
+        ctx.current_track.as_deref().unwrap_or("nothing")
+    ));
     if !ctx.queue_upcoming.is_empty() {
         s.push_str(&format!("- Up next: {}\n", ctx.queue_upcoming.join("; ")));
     }
-    s.push_str(&format!("- Queue: {} track(s), {} remaining\n", ctx.queue_len, ctx.queue_remaining));
+    s.push_str(&format!(
+        "- Queue: {} track(s), {} remaining\n",
+        ctx.queue_len, ctx.queue_remaining
+    ));
     if !ctx.recent_history.is_empty() {
-        s.push_str(&format!("- Recently played: {}\n", ctx.recent_history.join("; ")));
+        s.push_str(&format!(
+            "- Recently played: {}\n",
+            ctx.recent_history.join("; ")
+        ));
     }
     if !ctx.favorites.is_empty() {
         s.push_str(&format!("- Favorites: {}\n", ctx.favorites.join("; ")));
     }
     if !ctx.playlists.is_empty() {
-        let pls: Vec<String> = ctx.playlists.iter().map(|p| format!("{} ({})", p.name, p.count)).collect();
+        let pls: Vec<String> = ctx
+            .playlists
+            .iter()
+            .map(|p| format!("{} ({})", p.name, p.count))
+            .collect();
         s.push_str(&format!("- Playlists: {}\n", pls.join("; ")));
     }
-    s.push_str(&format!("- Autoplay radio: {}\n", if ctx.autoplay_radio { "on" } else { "off" }));
-    s.push_str(&format!("- Signed in: {}\n", if ctx.authenticated { "yes" } else { "no (anonymous)" }));
+    s.push_str(&format!(
+        "- Autoplay radio: {}\n",
+        if ctx.autoplay_radio { "on" } else { "off" }
+    ));
+    s.push_str(&format!(
+        "- Signed in: {}\n",
+        if ctx.authenticated {
+            "yes"
+        } else {
+            "no (anonymous)"
+        }
+    ));
     s
 }
 
@@ -656,7 +774,11 @@ mod tests {
             queue_remaining: 2,
             recent_history: vec!["Old — Artist".to_owned()],
             favorites: vec!["Fave — Artist".to_owned()],
-            playlists: vec![PlaylistInfo { id: "mix".to_owned(), name: "Mix".to_owned(), count: 4 }],
+            playlists: vec![PlaylistInfo {
+                id: "mix".to_owned(),
+                name: "Mix".to_owned(),
+                count: 4,
+            }],
             authenticated: true,
             autoplay_radio: false,
         }
@@ -678,7 +800,11 @@ mod tests {
         assert_eq!(cids, vec!["a", "b", "c"]);
         assert_eq!(conf, Some(0.9));
         // roles/reasons absent → defaulted, not an error.
-        assert!(picks.iter().all(|p| p.role.is_none() && p.reasons.is_empty()));
+        assert!(
+            picks
+                .iter()
+                .all(|p| p.role.is_none() && p.reasons.is_empty())
+        );
     }
 
     #[test]
@@ -702,7 +828,10 @@ mod tests {
     #[test]
     fn parse_rerank_picks_rejects_garbage_and_empty() {
         assert!(parse_rerank_picks("not json").is_none());
-        assert!(parse_rerank_picks(r#"{"ids":[]}"#).is_none(), "empty ids → fall back to local");
+        assert!(
+            parse_rerank_picks(r#"{"ids":[]}"#).is_none(),
+            "empty ids → fall back to local"
+        );
         assert!(parse_rerank_picks(r#"{"other":1}"#).is_none());
     }
 
@@ -723,9 +852,10 @@ mod tests {
 
     #[test]
     fn parse_feedback_patch_reads_both_arrays_and_trims_blanks() {
-        let (down, boost) =
-            parse_feedback_patch(r#"{"down_artists":["Nickelback"," "],"boost_artists":["  ABBA "]}"#)
-                .unwrap();
+        let (down, boost) = parse_feedback_patch(
+            r#"{"down_artists":["Nickelback"," "],"boost_artists":["  ABBA "]}"#,
+        )
+        .unwrap();
         assert_eq!(down, vec!["Nickelback"]);
         assert_eq!(boost, vec!["ABBA"], "names are trimmed and blanks dropped");
     }
@@ -740,17 +870,22 @@ mod tests {
 
     #[test]
     fn parse_feedback_patch_tolerates_a_code_fence_and_rejects_garbage() {
-        let (down, _) =
-            parse_feedback_patch("```json\n{\"down_artists\":[\"X\"]}\n```").unwrap();
+        let (down, _) = parse_feedback_patch("```json\n{\"down_artists\":[\"X\"]}\n```").unwrap();
         assert_eq!(down, vec!["X"]);
         assert!(parse_feedback_patch("not json").is_none());
-        assert!(parse_feedback_patch("[1,2,3]").is_none(), "a non-object is unusable");
+        assert!(
+            parse_feedback_patch("[1,2,3]").is_none(),
+            "a non-object is unusable"
+        );
     }
 
     #[test]
     fn feedback_request_is_json_only_with_thinking_off_and_no_tools() {
         let req = build_feedback_request("STATION|...\nSESSION|...");
-        assert!(req.tools.is_none(), "feedback summary must not expose tools");
+        assert!(
+            req.tools.is_none(),
+            "feedback summary must not expose tools"
+        );
         let v = serde_json::to_value(&req).unwrap();
         let gc = &v["generationConfig"];
         assert_eq!(gc["responseMimeType"], "application/json");

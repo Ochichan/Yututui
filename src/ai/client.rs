@@ -166,7 +166,10 @@ pub struct PromptFeedback {
 
 impl Part {
     pub fn text(s: impl Into<String>) -> Self {
-        Part { text: Some(s.into()), ..Default::default() }
+        Part {
+            text: Some(s.into()),
+            ..Default::default()
+        }
     }
 
     pub fn function_response(name: impl Into<String>, result: serde_json::Value) -> Self {
@@ -182,17 +185,27 @@ impl Part {
 
 impl Content {
     pub fn user(parts: Vec<Part>) -> Self {
-        Content { role: Some("user".to_owned()), parts }
+        Content {
+            role: Some("user".to_owned()),
+            parts,
+        }
     }
 
     /// Concatenated text across all `text` parts.
     pub fn joined_text(&self) -> String {
-        self.parts.iter().filter_map(|p| p.text.as_deref()).collect::<Vec<_>>().join("")
+        self.parts
+            .iter()
+            .filter_map(|p| p.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("")
     }
 
     /// All `functionCall` parts in order.
     pub fn function_calls(&self) -> Vec<&FunctionCall> {
-        self.parts.iter().filter_map(|p| p.function_call.as_ref()).collect()
+        self.parts
+            .iter()
+            .filter_map(|p| p.function_call.as_ref())
+            .collect()
     }
 }
 
@@ -254,7 +267,10 @@ impl std::error::Error for GeminiError {}
 impl GeminiError {
     /// Whether trying a fallback model could help (vs. a key/usage problem that won't).
     pub fn is_model_fallbackable(&self) -> bool {
-        matches!(self, GeminiError::ModelNotFound | GeminiError::Server(_) | GeminiError::RateLimited)
+        matches!(
+            self,
+            GeminiError::ModelNotFound | GeminiError::Server(_) | GeminiError::RateLimited
+        )
     }
 }
 
@@ -332,7 +348,12 @@ impl GeminiClient {
                             }
                             sleep(server_backoff(attempt)).await;
                         }
-                        _ => return Err(GeminiError::Http(format!("HTTP {code}: {}", truncate(&body)))),
+                        _ => {
+                            return Err(GeminiError::Http(format!(
+                                "HTTP {code}: {}",
+                                truncate(&body)
+                            )));
+                        }
                     }
                 }
                 Err(e) => {
@@ -395,8 +416,13 @@ mod tests {
     fn request_serializes_with_camelcase_keys() {
         let req = GenerateContentRequest {
             contents: vec![Content::user(vec![Part::text("hi")])],
-            system_instruction: Some(Content { role: None, parts: vec![Part::text("be brief")] }),
-            tools: Some(vec![Tool { function_declarations: vec![serde_json::json!({"name": "x"})] }]),
+            system_instruction: Some(Content {
+                role: None,
+                parts: vec![Part::text("be brief")],
+            }),
+            tools: Some(vec![Tool {
+                function_declarations: vec![serde_json::json!({"name": "x"})],
+            }]),
             generation_config: Some(GenerationConfig {
                 temperature: Some(0.7),
                 max_output_tokens: Some(1024),

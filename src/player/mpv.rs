@@ -44,7 +44,11 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
         .arg("--no-config")
         // Don't decode embedded cover art into a video track — pure audio engine.
         .arg("--audio-display=no")
-        .arg(if gapless { "--gapless-audio=yes" } else { "--gapless-audio=no" })
+        .arg(if gapless {
+            "--gapless-audio=yes"
+        } else {
+            "--gapless-audio=no"
+        })
         // Bound the streaming cache: mpv's default forward demuxer cache is 150 MiB,
         // which would balloon RAM on long tracks. ~40 MiB total is plenty of audio
         // buffering while keeping us honest on priority #1 (low RAM).

@@ -79,9 +79,7 @@ fn draw_icon(frame: &mut Frame, app: &App, band: Rect) {
 /// row) whenever the card toggles — the same dance the eq/radio/queue popups already rely on.
 fn ensure_icon(app: &App) {
     let needs_build = app.about_icon.borrow().is_none();
-    if needs_build
-        && let Ok(img) = image::load_from_memory(ICON_PNG)
-    {
+    if needs_build && let Ok(img) = image::load_from_memory(ICON_PNG) {
         let proto = match app.art.picker.as_ref() {
             Some(picker) => picker.new_resize_protocol(img),
             None => Picker::halfblocks().new_resize_protocol(img),
@@ -105,18 +103,29 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
 
     // Name + version.
     let name = Line::from(vec![
-        Span::styled("ytm-tui", app.theme.style(R::Accent).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  v{}", env!("CARGO_PKG_VERSION")), app.theme.style(R::TextMuted)),
+        Span::styled(
+            "ytm-tui",
+            app.theme.style(R::Accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  v{}", env!("CARGO_PKG_VERSION")),
+            app.theme.style(R::TextMuted),
+        ),
     ]);
     frame.render_widget(Paragraph::new(name).alignment(Alignment::Center), rows[0]);
 
     // Description.
     let desc = vec![
-        Line::from(t!("A YouTube Music player that lives", "터미널에서 바로 실행되는")),
+        Line::from(t!(
+            "A YouTube Music player that lives",
+            "터미널에서 바로 실행되는"
+        )),
         Line::from(t!("inside your terminal.", "YouTube Music 플레이어.")),
     ];
     frame.render_widget(
-        Paragraph::new(desc).alignment(Alignment::Center).style(app.theme.style(R::TextMuted)),
+        Paragraph::new(desc)
+            .alignment(Alignment::Center)
+            .style(app.theme.style(R::TextMuted)),
         rows[1],
     );
 
@@ -144,12 +153,23 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
 
     // GitHub row: the URL is a real click target that opens the repo in the system browser. The
     // leading label is padded to line its value up with the rows above (`  ` + 9-wide key).
-    let link_style = app.theme.style(R::Accent).add_modifier(Modifier::UNDERLINED);
+    let link_style = app
+        .theme
+        .style(R::Accent)
+        .add_modifier(Modifier::UNDERLINED);
     let segs = [
         Seg::label("  GitHub   "),
         Seg::button(MouseTarget::AboutLink, GITHUB_LABEL),
     ];
-    buttons::render_segments(frame, app, rows[4], &segs, link_style, key_style, Alignment::Left);
+    buttons::render_segments(
+        frame,
+        app,
+        rows[4],
+        &segs,
+        link_style,
+        key_style,
+        Alignment::Left,
+    );
 
     // Close hint.
     let hint = Line::from(t!(
@@ -157,7 +177,9 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
         "F1 / Esc 닫기 · 링크를 클릭해 열기 ↗"
     ));
     frame.render_widget(
-        Paragraph::new(hint).alignment(Alignment::Center).style(app.theme.style(R::TextMuted)),
+        Paragraph::new(hint)
+            .alignment(Alignment::Center)
+            .style(app.theme.style(R::TextMuted)),
         rows[6],
     );
 }

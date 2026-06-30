@@ -31,7 +31,8 @@ pub async fn connect_retry(path: &str) -> io::Result<Stream> {
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "mpv IPC connect timed out")))
+    Err(last_err
+        .unwrap_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "mpv IPC connect timed out")))
 }
 
 /// Drive one mpv connection: subscribe to progress properties, then loop forwarding
@@ -43,7 +44,12 @@ pub async fn run_actor(
     msg_tx: UnboundedSender<Msg>,
 ) {
     // Subscribe to the properties the player view needs. IDs are arbitrary but stable.
-    for (id, prop) in [(1u64, "time-pos"), (2, "duration"), (3, "pause"), (4, "volume")] {
+    for (id, prop) in [
+        (1u64, "time-pos"),
+        (2, "duration"),
+        (3, "pause"),
+        (4, "volume"),
+    ] {
         if let Err(e) = write_json(&conn, &proto::cmd_observe(id, prop)).await {
             tracing::warn!(error = %e, property = prop, "failed to observe mpv property");
         }

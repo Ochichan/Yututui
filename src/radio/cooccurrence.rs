@@ -28,7 +28,10 @@ impl Cooc {
         // Weighted co-occurrence counts: co[a][b].
         let mut co: HashMap<String, HashMap<String, f32>> = HashMap::new();
         let add = |co: &mut HashMap<String, HashMap<String, f32>>, a: &str, b: &str, w: f32| {
-            *co.entry(a.to_owned()).or_default().entry(b.to_owned()).or_insert(0.0) += w;
+            *co.entry(a.to_owned())
+                .or_default()
+                .entry(b.to_owned())
+                .or_insert(0.0) += w;
         };
 
         // Walk sessions: a session breaks on a long idle gap or once it reaches session_max.
@@ -97,13 +100,20 @@ impl Cooc {
 
     /// The SPPMI affinity of playing `b` given `a` (0 if unknown).
     pub fn weight(&self, a: &str, b: &str) -> f32 {
-        self.edges.get(a).and_then(|m| m.get(b)).copied().unwrap_or(0.0)
+        self.edges
+            .get(a)
+            .and_then(|m| m.get(b))
+            .copied()
+            .unwrap_or(0.0)
     }
 
     /// Affinity of candidate `id` to a set of recent context tracks: the strongest forward
     /// edge from any context track into `id` (context played first → `id` follows).
     pub fn affinity(&self, id: &str, context: &[String]) -> f32 {
-        context.iter().map(|c| self.weight(c, id)).fold(0.0, f32::max)
+        context
+            .iter()
+            .map(|c| self.weight(c, id))
+            .fold(0.0, f32::max)
     }
 
     #[cfg(test)]
@@ -127,9 +137,12 @@ mod tests {
         // forward edge is NOT guaranteed ≥ the reverse — only that co-occurring pairs are > 0.)
         let cfg = CoocConfig::default();
         let pl = log(&[
-            ("a", 0), ("b", 10),
-            ("a", 100), ("b", 110),
-            ("a", 200), ("b", 210),
+            ("a", 0),
+            ("b", 10),
+            ("a", 100),
+            ("b", 110),
+            ("a", 200),
+            ("b", 210),
         ]);
         let c = Cooc::build(&pl, &cfg);
         assert!(c.weight("a", "b") > 0.0);
@@ -149,7 +162,10 @@ mod tests {
 
     #[test]
     fn window_bounds_co_occurrence() {
-        let cfg = CoocConfig { window: 1, ..CoocConfig::default() };
+        let cfg = CoocConfig {
+            window: 1,
+            ..CoocConfig::default()
+        };
         // Within one session: a,b,c. window=1 → a-b and b-c pair, but a-c do not.
         let pl = log(&[("a", 0), ("b", 10), ("c", 20)]);
         let c = Cooc::build(&pl, &cfg);
@@ -166,7 +182,10 @@ mod tests {
         let direct = c.weight("seed", "target");
         assert!(direct > 0.0);
         // affinity over a context containing the seed equals the seed→target edge.
-        assert_eq!(c.affinity("target", &["seed".to_owned(), "other".to_owned()]), direct);
+        assert_eq!(
+            c.affinity("target", &["seed".to_owned(), "other".to_owned()]),
+            direct
+        );
     }
 
     #[test]

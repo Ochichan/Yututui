@@ -58,8 +58,12 @@ fn main() -> Result<()> {
                 println!("Launch the terminal YouTube Music player.");
                 println!();
                 println!("Options:");
-                println!("  -r, --remote <command>   Send a command to a running instance (see `ytt -r --help`)");
-                println!("      --new-instance       Start a second player even if one is already running");
+                println!(
+                    "  -r, --remote <command>   Send a command to a running instance (see `ytt -r --help`)"
+                );
+                println!(
+                    "      --new-instance       Start a second player even if one is already running"
+                );
                 println!("  -V, --version            Print version and exit");
                 println!("  -h, --help               Print this help and exit");
                 return Ok(());
@@ -254,7 +258,9 @@ fn draw_app_frame(
     perf: &mut PerfStats,
 ) -> std::io::Result<()> {
     let start = perf.enabled.then(Instant::now);
-    let res = tui::draw_frame(terminal, app.synchronized_draw_active(), |f| ui::render(f, app));
+    let res = tui::draw_frame(terminal, app.synchronized_draw_active(), |f| {
+        ui::render(f, app)
+    });
     if res.is_ok()
         && let Some(start) = start
     {
@@ -395,7 +401,10 @@ async fn run(
             tracing::error!(error = %e, "failed to start mpv");
             // Keep the richer preflight hint if we already set one.
             if app.status.text.is_empty() {
-                app.status.text = format!("{}: {e}", crate::t!("mpv unavailable", "mpv를 사용할 수 없음"));
+                app.status.text = format!(
+                    "{}: {e}",
+                    crate::t!("mpv unavailable", "mpv를 사용할 수 없음")
+                );
             }
             _mpv_guard = None;
         }
@@ -572,7 +581,10 @@ async fn run(
                         h.ask(prompt, context);
                     }
                 }
-                Cmd::AiRerank { seed_video_id, prompt } => {
+                Cmd::AiRerank {
+                    seed_video_id,
+                    prompt,
+                } => {
                     if let Some(h) = &ai_handle {
                         h.rerank(seed_video_id, prompt);
                     }

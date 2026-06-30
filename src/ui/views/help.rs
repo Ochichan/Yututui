@@ -27,10 +27,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, popup);
 
     // Split into two columns so the full list fits without scrolling on most terminals.
-    let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
+    let cols =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
     let (left, right) = build_columns(app);
-    frame.render_widget(Paragraph::new(left).style(app.theme.style(R::TextPrimary)), cols[0]);
-    frame.render_widget(Paragraph::new(right).style(app.theme.style(R::TextPrimary)), cols[1]);
+    frame.render_widget(
+        Paragraph::new(left).style(app.theme.style(R::TextPrimary)),
+        cols[0],
+    );
+    frame.render_widget(
+        Paragraph::new(right).style(app.theme.style(R::TextPrimary)),
+        cols[1],
+    );
 }
 
 /// Build the cheat-sheet lines, split across two columns at a group boundary.
@@ -44,7 +51,11 @@ fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
     let mut placed = 0usize;
     for (title, rows) in groups {
         // Once the left column holds roughly half the rows, spill into the right one.
-        let col = if placed * 2 < total { &mut left } else { &mut right };
+        let col = if placed * 2 < total {
+            &mut left
+        } else {
+            &mut right
+        };
         col.push(Line::from(Span::styled(
             title,
             app.theme.style(R::HelpGroup).add_modifier(Modifier::BOLD),
@@ -119,14 +130,20 @@ mod tests {
             .find_map(|(title, rows)| (title == "Search box").then_some(rows))
             .expect("search box group");
         // Enter→Search is a fixed row at the top; the keymap-driven rows follow it.
-        assert_eq!(search_box.first(), Some(&("Enter".to_owned(), "Search".to_owned())));
+        assert_eq!(
+            search_box.first(),
+            Some(&("Enter".to_owned(), "Search".to_owned()))
+        );
         assert!(search_box.contains(&("^a".to_owned(), "Select all".to_owned())));
 
         let ai_box = groups
             .iter()
             .find_map(|(title, rows)| (title == "AI box").then_some(rows))
             .expect("ai box group");
-        assert_eq!(ai_box.first(), Some(&("Enter".to_owned(), "Send".to_owned())));
+        assert_eq!(
+            ai_box.first(),
+            Some(&("Enter".to_owned(), "Send".to_owned()))
+        );
         assert!(ai_box.contains(&("^a".to_owned(), "Select all".to_owned())));
 
         let search_results = groups

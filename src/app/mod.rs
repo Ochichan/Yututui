@@ -24,16 +24,16 @@ use crate::config::{Config, SPEED_MAX, SPEED_MIN};
 use crate::downloads::DownloadStore;
 use crate::eq::{self, EqPreset};
 use crate::keymap::{Action, Chord, Conflict, KeyContext, KeyMap};
-use crate::t;
 use crate::library::Library;
 use crate::lyrics::LyricLine;
 use crate::player::PlayerCmd;
 use crate::playlists::Playlists;
-use crate::station::StationStore;
 use crate::queue::Queue;
 use crate::radio::{self, CandidateSource, Cooc, RadioMode, StationState};
 use crate::settings::{self, Field, FieldKind, SettingsDraft, SettingsState, SettingsTab};
 use crate::signals::{self, Signals};
+use crate::station::StationStore;
+use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
 
 mod types;
@@ -395,7 +395,6 @@ impl App {
         self.load_song(song)
     }
 
-
     /// The reducer: apply one message, returning effects for the run loop to dispatch.
     /// Reducer entry point. Wraps [`Self::dispatch`] to centrally track when a transient
     /// `status` notification is set or cleared (any of the ~40 `self.status.text = …` sites), so
@@ -411,8 +410,11 @@ impl App {
         self.status.kind = StatusKind::Error;
         let cmds = self.dispatch(msg);
         if self.status.text != status_before {
-            self.status.set_at =
-                if self.status.text.is_empty() { None } else { Some(Instant::now()) };
+            self.status.set_at = if self.status.text.is_empty() {
+                None
+            } else {
+                Some(Instant::now())
+            };
         } else {
             // Text unchanged this turn — keep the color the still-showing message already had.
             self.status.kind = kind_before;
@@ -527,7 +529,11 @@ impl App {
                 {
                     // `advance(false)` always moves on (ignores repeat-one), unlike an EOF.
                     let cmds = self.advance(false);
-                    self.status.text = t!("⚠ Track unavailable — skipped to next", "⚠ 재생할 수 없는 곡 — 다음 곡으로 건너뜀").to_owned();
+                    self.status.text = t!(
+                        "⚠ Track unavailable — skipped to next",
+                        "⚠ 재생할 수 없는 곡 — 다음 곡으로 건너뜀"
+                    )
+                    .to_owned();
                     self.dirty = true;
                     return cmds;
                 }
@@ -599,16 +605,21 @@ impl App {
                     Some(DownloadState::Running(prev)) if *prev == percent
                 );
                 if changed {
-                    self.downloads.active.insert(video_id, DownloadState::Running(percent));
+                    self.downloads
+                        .active
+                        .insert(video_id, DownloadState::Running(percent));
                     self.dirty = true;
                 }
             }
             Msg::DownloadDone { video_id, path } => {
-                self.downloads.active.insert(video_id.clone(), DownloadState::Done);
+                self.downloads
+                    .active
+                    .insert(video_id.clone(), DownloadState::Done);
                 let saved = !path.trim().is_empty();
                 if saved {
                     let local = self
-                        .downloads.sources
+                        .downloads
+                        .sources
                         .remove(&video_id)
                         .map(|source| source.with_local_path(PathBuf::from(&path)))
                         .unwrap_or_else(|| Song::local_file(PathBuf::from(&path)));
@@ -624,7 +635,8 @@ impl App {
                 }
             }
             Msg::DownloadError { video_id, error } => {
-                self.downloads.active
+                self.downloads
+                    .active
                     .insert(video_id.clone(), DownloadState::Failed);
                 self.downloads.sources.remove(&video_id);
                 self.status.text = format!("{}: {error}", t!("Download failed", "다운로드 실패"));
@@ -658,7 +670,11 @@ impl App {
                     self.dirty = true;
                 }
             }
-            Msg::RadioAiPicks { seed_video_id, picks, conf } => {
+            Msg::RadioAiPicks {
+                seed_video_id,
+                picks,
+                conf,
+            } => {
                 self.ai.thinking = false;
                 self.dirty = true;
                 // Only consume `pending_rerank` when this result is for it (a stale/duplicate
@@ -666,7 +682,8 @@ impl App {
                 // match but the seed is no longer queued (the user skipped/cleared mid-think),
                 // the chain still drops the stale rerank without enqueuing.
                 let ours = self
-                    .radio.pending_rerank
+                    .radio
+                    .pending_rerank
                     .as_ref()
                     .is_some_and(|p| p.seed_video_id == seed_video_id);
                 if ours
@@ -685,7 +702,12 @@ impl App {
                     let resolved: Vec<(String, ExplainPick)> = picks
                         .iter()
                         .filter_map(|p| {
-                            let vid = pending.cid_map.iter().find(|m| m.cid == p.cid)?.video_id.clone();
+                            let vid = pending
+                                .cid_map
+                                .iter()
+                                .find(|m| m.cid == p.cid)?
+                                .video_id
+                                .clone();
                             let song = pending.shortlist.iter().find(|s| s.video_id == vid)?;
                             let pick = ExplainPick {
                                 title: song.title.clone(),
@@ -723,7 +745,10 @@ impl App {
             } => {
                 self.radio.pending = false;
                 if self.autoplay_radio && self.queue.contains_video_id(&seed_video_id) {
-                    self.note_radio_failure(format!("{}: {error}", t!("Autoplay radio failed", "자동재생 라디오 실패")));
+                    self.note_radio_failure(format!(
+                        "{}: {error}",
+                        t!("Autoplay radio failed", "자동재생 라디오 실패")
+                    ));
                 } else {
                     self.dirty = true;
                 }
@@ -780,12 +805,18 @@ impl App {
                 // Distill the vibe into engine knobs the local radio can actually act on:
                 // adventurousness (→ mode) and artists to keep out (→ banned_artist_keys, read
                 // live in `build_station_state`). Persist both so the station survives a restart.
-                let profile =
-                    crate::station::StationProfile::from_intent(&query, explore.as_deref(), &avoid_artists);
+                let profile = crate::station::StationProfile::from_intent(
+                    &query,
+                    explore.as_deref(),
+                    &avoid_artists,
+                );
                 self.config.radio.mode = profile.explore.to_mode();
                 self.station.active = Some(profile);
                 self.dirty = true;
-                return vec![Cmd::SaveStationProfile, Cmd::SaveConfig(Box::new(self.config.clone()))];
+                return vec![
+                    Cmd::SaveStationProfile,
+                    Cmd::SaveConfig(Box::new(self.config.clone())),
+                ];
             }
             Msg::AiCreatePlaylist(name) => {
                 if self.playlists.create(&name).is_some() {
@@ -818,7 +849,10 @@ impl App {
                     return self.load_song(song);
                 }
             }
-            Msg::StationPatch { down_artists, boost_artists } => {
+            Msg::StationPatch {
+                down_artists,
+                boost_artists,
+            } => {
                 // The off-path feedback summary landed (possibly empty on failure) — always clear
                 // the in-flight guard so the next streak can trigger again. Fold the avoid/boost
                 // into the active station and persist only when the avoid list actually changed.
@@ -834,7 +868,6 @@ impl App {
         Vec::new()
     }
 
-
     /// The single footer hint shown across every view: just the live chord that opens the
     /// `?` cheat-sheet (which already lists every binding for every screen). Built from the
     /// keymap so remapping "toggle help" updates the hint in lock-step.
@@ -844,7 +877,6 @@ impl App {
             self.keymap.label(KeyContext::Global, Action::ToggleHelp)
         )
     }
-
 
     /// Return to the player/home screen from any mode. Settings use the normal close path
     /// so draft values and keybinding changes are not silently discarded.
@@ -879,15 +911,17 @@ impl App {
         cmds
     }
 
-
     /// How many rows a PageUp/PageDown moves: a screenful of the active list less one row
     /// of context overlap. Falls back to [`DEFAULT_PAGE_ROWS`] before the first render
     /// records the viewport height.
     fn page_step(&self) -> usize {
         let rows = self.bridges.list_viewport_rows.get() as usize;
-        if rows <= 1 { DEFAULT_PAGE_ROWS } else { rows - 1 }
+        if rows <= 1 {
+            DEFAULT_PAGE_ROWS
+        } else {
+            rows - 1
+        }
     }
-
 
     /// Switch screens from a nav-bar click — the mouse equivalent of the `Open*` keys, but
     /// reachable from any screen. Leaving Settings commits the draft via the normal close
@@ -964,8 +998,6 @@ impl App {
             self.dirty = true;
         }
     }
-
-
 }
 
 /// Build the lyrics-fetch effect for `song`.
@@ -1011,7 +1043,11 @@ fn open_in_browser(url: &str) {
         c.arg(url);
         c
     };
-    let _ = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    let _ = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 /// Copy `text` to the system clipboard, fire-and-forget. Mirrors `open_in_browser`: spawns the
@@ -1024,7 +1060,12 @@ fn copy_to_clipboard(text: &str) {
     use std::process::{Command, Stdio};
 
     fn pipe(cmd: &mut Command, text: &str) -> bool {
-        match cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        match cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
             Ok(mut child) => {
                 if let Some(mut stdin) = child.stdin.take() {
                     let _ = stdin.write_all(text.as_bytes());
@@ -1040,7 +1081,10 @@ fn copy_to_clipboard(text: &str) {
     } else if cfg!(target_os = "windows") {
         pipe(&mut Command::new("clip"), text);
     } else if !pipe(&mut Command::new("wl-copy"), text)
-        && !pipe(Command::new("xclip").args(["-selection", "clipboard"]), text)
+        && !pipe(
+            Command::new("xclip").args(["-selection", "clipboard"]),
+            text,
+        )
     {
         pipe(Command::new("xsel").arg("-ib"), text);
     }
@@ -1062,9 +1106,14 @@ fn spawn_video_overlay(
         cmd.arg(arg);
     }
     if let Some(path) = cookies {
-        cmd.arg(format!("--ytdl-raw-options-append=cookies={}", path.display()));
+        cmd.arg(format!(
+            "--ytdl-raw-options-append=cookies={}",
+            path.display()
+        ));
     }
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

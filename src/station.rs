@@ -178,12 +178,19 @@ mod tests {
         let p = StationProfile::from_intent(
             "  late night drive  ",
             Some("wide"),
-            &["The Beatles".to_owned(), "the  beatles".to_owned(), "  ".to_owned()],
+            &[
+                "The Beatles".to_owned(),
+                "the  beatles".to_owned(),
+                "  ".to_owned(),
+            ],
         );
         assert_eq!(p.query, "late night drive");
         assert_eq!(p.explore, Explore::Wide);
         // Case/space-collapsed to one key; the blank is dropped.
-        assert_eq!(p.avoid_artist_keys, vec![crate::signals::normalize_artist("The Beatles")]);
+        assert_eq!(
+            p.avoid_artist_keys,
+            vec![crate::signals::normalize_artist("The Beatles")]
+        );
     }
 
     #[test]
@@ -207,7 +214,10 @@ mod tests {
             &["Already Avoided".to_owned()],
         );
         assert!(changed, "the avoid list changed");
-        assert_eq!(p.avoid_artist_keys, vec![crate::signals::normalize_artist("Nickelback")]);
+        assert_eq!(
+            p.avoid_artist_keys,
+            vec![crate::signals::normalize_artist("Nickelback")]
+        );
         // It never touches the explore level (no surprise mode flips).
         assert_eq!(p.explore, Explore::Balanced);
         // A no-op pass reports no change.

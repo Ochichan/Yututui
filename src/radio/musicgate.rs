@@ -96,7 +96,10 @@ pub fn non_music_reason(title: &str, channel: &str) -> Option<&'static str> {
 /// applies them when the pool is healthy enough to spare them (never starving the station).
 pub fn gimmick_reason(title: &str) -> Option<&'static str> {
     let t = title.to_lowercase();
-    GIMMICK_MARKERS.iter().find(|(m, _)| t.contains(m)).map(|&(_, reason)| reason)
+    GIMMICK_MARKERS
+        .iter()
+        .find(|(m, _)| t.contains(m))
+        .map(|&(_, reason)| reason)
 }
 
 /// A positive [0,1] "this is real, official music" signal from the title + channel. Used as a
@@ -108,10 +111,21 @@ pub fn music_tier_score(title: &str, channel: &str) -> f32 {
         return 1.0;
     }
     let t = title.to_lowercase();
-    const STRONG: &[&str] =
-        &["official audio", "official music video", "official video", "official mv"];
-    const WEAK: &[&str] =
-        &["official", "music video", "lyric video", "lyrics", "visualizer", "m/v", " mv"];
+    const STRONG: &[&str] = &[
+        "official audio",
+        "official music video",
+        "official video",
+        "official mv",
+    ];
+    const WEAK: &[&str] = &[
+        "official",
+        "music video",
+        "lyric video",
+        "lyrics",
+        "visualizer",
+        "m/v",
+        " mv",
+    ];
     if STRONG.iter().any(|m| t.contains(m)) {
         0.7
     } else if WEAK.iter().any(|m| t.contains(m)) {
@@ -154,8 +168,14 @@ mod tests {
 
     #[test]
     fn rejects_reaction_video() {
-        assert_eq!(non_music_reason("Artist - Song (Reaction)", "Reactor"), Some("reaction video"));
-        assert_eq!(non_music_reason("My reaction to this", "X"), Some("reaction video"));
+        assert_eq!(
+            non_music_reason("Artist - Song (Reaction)", "Reactor"),
+            Some("reaction video")
+        );
+        assert_eq!(
+            non_music_reason("My reaction to this", "X"),
+            Some("reaction video")
+        );
     }
 
     #[test]
@@ -168,21 +188,36 @@ mod tests {
 
     #[test]
     fn rejects_podcast_in_title_and_channel() {
-        assert_eq!(non_music_reason("The Joe Show Podcast #12", "Some Channel"), Some("podcast"));
-        assert_eq!(non_music_reason("Episode 5", "The Music Podcast"), Some("podcast channel"));
+        assert_eq!(
+            non_music_reason("The Joe Show Podcast #12", "Some Channel"),
+            Some("podcast")
+        );
+        assert_eq!(
+            non_music_reason("Episode 5", "The Music Podcast"),
+            Some("podcast channel")
+        );
     }
 
     #[test]
     fn rejects_tutorial_interview_vlog() {
-        assert_eq!(non_music_reason("Guitar Tutorial for Beginners", "X"), Some("tutorial"));
+        assert_eq!(
+            non_music_reason("Guitar Tutorial for Beginners", "X"),
+            Some("tutorial")
+        );
         assert_eq!(non_music_reason("How to play piano", "X"), Some("tutorial"));
-        assert_eq!(non_music_reason("Exclusive Interview", "X"), Some("interview"));
+        assert_eq!(
+            non_music_reason("Exclusive Interview", "X"),
+            Some("interview")
+        );
         assert_eq!(non_music_reason("Tour Vlog day 3", "X"), Some("vlog"));
     }
 
     #[test]
     fn rejects_shorts() {
-        assert_eq!(non_music_reason("Cool dance #shorts", "X"), Some("youtube shorts"));
+        assert_eq!(
+            non_music_reason("Cool dance #shorts", "X"),
+            Some("youtube shorts")
+        );
     }
 
     #[test]
@@ -197,10 +232,10 @@ mod tests {
         let titles = [
             ("Bohemian Rhapsody", "Queen"),
             ("Everything", "The Black Skirts"),
-            ("News", "Paramore"),       // "news" deliberately excluded
-            ("Under Review", "Band"),   // "review" deliberately excluded
-            ("Live Forever", "Oasis"),  // "live" stays soft, not a hard reject
-            ("Editorial", "Artist"),    // "edit" deliberately excluded
+            ("News", "Paramore"),      // "news" deliberately excluded
+            ("Under Review", "Band"),  // "review" deliberately excluded
+            ("Live Forever", "Oasis"), // "live" stays soft, not a hard reject
+            ("Editorial", "Artist"),   // "edit" deliberately excluded
         ];
         for (t, c) in titles {
             assert_eq!(non_music_reason(t, c), None, "{t} should pass");
@@ -211,7 +246,10 @@ mod tests {
     fn gimmick_rejects_altered_versions() {
         assert_eq!(gimmick_reason("Song (Nightcore)"), Some("nightcore"));
         assert_eq!(gimmick_reason("Song (Sped Up)"), Some("sped up"));
-        assert_eq!(gimmick_reason("Song (Slowed + Reverb)"), Some("slowed reverb"));
+        assert_eq!(
+            gimmick_reason("Song (Slowed + Reverb)"),
+            Some("slowed reverb")
+        );
         assert_eq!(gimmick_reason("Song (Karaoke Version)"), Some("karaoke"));
         assert_eq!(gimmick_reason("Song (8D Audio)"), Some("8d audio"));
     }

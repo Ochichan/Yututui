@@ -33,7 +33,11 @@ impl App {
         let exclude_ids = self.radio_exclude_ids(&seed_video_id);
         self.radio.last_extend = Some(Instant::now());
         self.radio.pending = true;
-        self.status.text = t!("Autoplay radio: finding related tracks", "자동재생 라디오: 관련 곡을 찾는 중").to_owned();
+        self.status.text = t!(
+            "Autoplay radio: finding related tracks",
+            "자동재생 라디오: 관련 곡을 찾는 중"
+        )
+        .to_owned();
         self.dirty = true;
         vec![Cmd::RadioFallback {
             seed,
@@ -53,7 +57,12 @@ impl App {
     ) -> Vec<Cmd> {
         let st = self.build_station_state(seed_video_id);
         self.ensure_cooc_cache();
-        let cooc = &self.radio.cooc_cache.as_ref().expect("cooc cache populated").1;
+        let cooc = &self
+            .radio
+            .cooc_cache
+            .as_ref()
+            .expect("cooc cache populated")
+            .1;
         let pool = radio::pool_from_tagged(candidates);
         self.log_radio_gate(&st, &pool);
         let now = signals::unix_now();
@@ -91,8 +100,12 @@ impl App {
         // set) replays the last resolved ordering instead of spending another call. Keyed on the
         // query, valued by the AI's chosen video ids (re-validated through `merge_ai_picks`).
         let cand_ids: Vec<String> = shortlist.iter().map(|c| c.video_id().to_owned()).collect();
-        let cache_key =
-            radio::ai_cache_key(&st.seed_artist_key, st.mode, &st.recent_track_ids, &cand_ids);
+        let cache_key = radio::ai_cache_key(
+            &st.seed_artist_key,
+            st.mode,
+            &st.recent_track_ids,
+            &cand_ids,
+        );
         if let Some(cached_ids) = self.ai_cache_lookup(cache_key) {
             tracing::debug!("radio AI cache hit → replaying cached order");
             let shortlist_songs: Vec<Song> = shortlist.iter().map(|c| c.song.clone()).collect();
@@ -114,7 +127,11 @@ impl App {
             cache_key,
         });
         self.ai.thinking = true;
-        self.status.text = t!("Autoplay radio: AI reranking", "자동재생 라디오: AI가 순위를 매기는 중").to_owned();
+        self.status.text = t!(
+            "Autoplay radio: AI reranking",
+            "자동재생 라디오: AI가 순위를 매기는 중"
+        )
+        .to_owned();
         self.dirty = true;
         vec![Cmd::AiRerank {
             seed_video_id: seed_video_id.to_owned(),
@@ -133,7 +150,9 @@ impl App {
 
     /// Store a resolved AI rerank ordering, pruning expired entries first so the map stays tiny.
     pub(in crate::app) fn ai_cache_store(&mut self, key: u64, ids: Vec<String>) {
-        self.radio.ai_cache.retain(|_, (_, at)| at.elapsed() < AI_CACHE_TTL);
+        self.radio
+            .ai_cache
+            .retain(|_, (_, at)| at.elapsed() < AI_CACHE_TTL);
         self.radio.ai_cache.insert(key, (ids, Instant::now()));
     }
 
@@ -188,15 +207,21 @@ impl App {
     /// after a skip, stay close after a like, recover after a streak.
     pub(in crate::app) fn radio_recovery_line(&self) -> Option<String> {
         let events = &self.radio.session_events;
-        let last_skip =
-            events.iter().rev().find(|e| matches!(e.outcome, Outcome::Skip | Outcome::QuickSkip));
+        let last_skip = events
+            .iter()
+            .rev()
+            .find(|e| matches!(e.outcome, Outcome::Skip | Outcome::QuickSkip));
         let last_like = events.iter().rev().find(|e| e.outcome == Outcome::Like);
         let last_dislike = events.iter().rev().find(|e| e.outcome == Outcome::Dislike);
         let streak = self.radio_skip_streak();
 
         let mut parts: Vec<String> = Vec::new();
         if let Some(s) = last_skip {
-            let quick = if s.outcome == Outcome::QuickSkip { ",quick" } else { "" };
+            let quick = if s.outcome == Outcome::QuickSkip {
+                ",quick"
+            } else {
+                ""
+            };
             parts.push(format!(
                 "last_skip={}({}%{quick})",
                 s.artist_key,
@@ -262,9 +287,15 @@ impl App {
             return None;
         }
         let mut s = String::new();
-        s.push_str(&format!("STATION|vibe={}|explore={:?}\n", profile.query, profile.explore));
+        s.push_str(&format!(
+            "STATION|vibe={}|explore={:?}\n",
+            profile.query, profile.explore
+        ));
         if !profile.avoid_artist_keys.is_empty() {
-            s.push_str(&format!("ALREADY_AVOIDING|{}\n", profile.avoid_artist_keys.join(",")));
+            s.push_str(&format!(
+                "ALREADY_AVOIDING|{}\n",
+                profile.avoid_artist_keys.join(",")
+            ));
         }
         s.push_str("SESSION (oldest first):\n");
         for e in &self.radio.session_events {
@@ -280,7 +311,10 @@ impl App {
         Some(s)
     }
 
-    pub(in crate::app) fn radio_context_labels(&self, current: &Song) -> Vec<(&'static str, String)> {
+    pub(in crate::app) fn radio_context_labels(
+        &self,
+        current: &Song,
+    ) -> Vec<(&'static str, String)> {
         let mut seen = HashSet::new();
         seen.insert(current.video_id.clone());
         let mut labels = vec![("Current", song_label(current))];
@@ -306,7 +340,11 @@ impl App {
         let added = self.queue.extend(songs);
         if added == 0 {
             self.note_radio_failure(
-                t!("Autoplay radio found no new tracks", "자동재생 라디오가 새 곡을 찾지 못했어요").to_owned(),
+                t!(
+                    "Autoplay radio found no new tracks",
+                    "자동재생 라디오가 새 곡을 찾지 못했어요"
+                )
+                .to_owned(),
             );
             return Vec::new();
         }
@@ -334,7 +372,10 @@ impl App {
             let video_id = next.video_id.clone();
             let watch_url = next.watch_url();
             if !self.prefetch.resolved.contains_key(&video_id) {
-                cmds.push(Cmd::Resolve { video_id, watch_url });
+                cmds.push(Cmd::Resolve {
+                    video_id,
+                    watch_url,
+                });
             }
         }
         cmds
@@ -377,7 +418,12 @@ impl App {
     ) -> Vec<Song> {
         let st = self.build_station_state(seed_video_id);
         self.ensure_cooc_cache();
-        let cooc = &self.radio.cooc_cache.as_ref().expect("cooc cache populated").1;
+        let cooc = &self
+            .radio
+            .cooc_cache
+            .as_ref()
+            .expect("cooc cache populated")
+            .1;
         let pool = radio::pool_from_tagged(candidates);
         self.log_radio_gate(&st, &pool);
         radio::plan_local(
@@ -422,14 +468,22 @@ impl App {
         let kept = verdicts.iter().filter(|v| v.kept).count();
         let dropped = verdicts.len() - kept;
         if dropped == 0 {
-            tracing::info!(pool = verdicts.len(), kept, "radio gate: every candidate passed");
+            tracing::info!(
+                pool = verdicts.len(),
+                kept,
+                "radio gate: every candidate passed"
+            );
             return;
         }
         let mut reasons: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
         for v in verdicts.iter().filter(|v| !v.kept) {
             *reasons.entry(v.reason).or_default() += 1;
         }
-        let summary = reasons.iter().map(|(r, n)| format!("{r}×{n}")).collect::<Vec<_>>().join(", ");
+        let summary = reasons
+            .iter()
+            .map(|(r, n)| format!("{r}×{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         tracing::info!(pool = verdicts.len(), kept, dropped, %summary, "radio gate filtered the pool");
         if tracing::enabled!(tracing::Level::DEBUG) {
             for v in verdicts.iter().filter(|v| !v.kept) {
@@ -505,5 +559,4 @@ impl App {
             .map(|s| signals::normalize_artist(&s.artist))
             .unwrap_or_default()
     }
-
 }

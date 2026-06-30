@@ -19,7 +19,9 @@ use crate::ui::text::truncate_to_width;
 
 /// Render the "Why AI" card as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(explain) = app.radio.last_explain.as_ref() else { return };
+    let Some(explain) = app.radio.last_explain.as_ref() else {
+        return;
+    };
 
     // One row per pick (role + track) plus a muted reasons row beneath it; clamp to the screen.
     let body_rows = (explain.picks.len() as u16) * 2;
@@ -28,7 +30,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let title = match explain.conf {
-        Some(c) => format!(" {} · {:.0}% ", t!("Why these AI picks", "AI 선곡 이유"), (c * 100.0).round()),
+        Some(c) => format!(
+            " {} · {:.0}% ",
+            t!("Why these AI picks", "AI 선곡 이유"),
+            (c * 100.0).round()
+        ),
         None => format!(" {} ", t!("Why these AI picks", "AI 선곡 이유")),
     };
     let block = Block::default()
@@ -68,7 +74,10 @@ fn draw_picks(frame: &mut Frame, app: &App, area: Rect, explain: &crate::app::Ra
     let mut lines: Vec<Line> = Vec::with_capacity(explain.picks.len() * 2);
     for (i, p) in explain.picks.iter().enumerate() {
         let role = p.role.as_deref().map(role_label).unwrap_or("·");
-        let track = truncate_to_width(&format!("{} — {}", p.title, p.artist), width.saturating_sub(12));
+        let track = truncate_to_width(
+            &format!("{} — {}", p.title, p.artist),
+            width.saturating_sub(12),
+        );
         lines.push(Line::from(vec![
             Span::styled(format!("{:>2}. ", i + 1), reason_style),
             Span::styled(format!("[{role}] "), role_style),
@@ -77,10 +86,17 @@ fn draw_picks(frame: &mut Frame, app: &App, area: Rect, explain: &crate::app::Ra
         let reasons = if p.reasons.is_empty() {
             t!("(no reasons given)", "(이유 없음)").to_owned()
         } else {
-            p.reasons.iter().map(|c| reason_label(c)).collect::<Vec<_>>().join(", ")
+            p.reasons
+                .iter()
+                .map(|c| reason_label(c))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         lines.push(Line::from(Span::styled(
-            format!("      {}", truncate_to_width(&reasons, width.saturating_sub(6))),
+            format!(
+                "      {}",
+                truncate_to_width(&reasons, width.saturating_sub(6))
+            ),
             reason_style,
         )));
     }

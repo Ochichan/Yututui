@@ -121,7 +121,10 @@ fn navigating_away_clears_a_pending_select_all_highlight() {
     app.update(Msg::Key(ctrl(KeyCode::Char('a'))));
     assert!(app.search.select_all);
     app.update(Msg::Key(ctrl(KeyCode::Char('h')))); // go home
-    assert!(!app.search.select_all, "highlight must not survive leaving the screen");
+    assert!(
+        !app.search.select_all,
+        "highlight must not survive leaving the screen"
+    );
 
     // AI box: same story — select all, leave, flag cleared so it can't reappear highlighted.
     app.update(Msg::Key(key(KeyCode::Char('a')))); // enter AI
@@ -156,7 +159,10 @@ fn radio_extend_resumes_playback_when_idle() {
     app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
     app.prefetch.loaded_video_id = None; // the seed ended before this refill landed
     let cmds = app.extend_queue_from_radio(vec![Song::remote("b", "B", "y", "2:00")]);
-    assert!(load_url(&cmds).is_some(), "should resume by loading the new track");
+    assert!(
+        load_url(&cmds).is_some(),
+        "should resume by loading the new track"
+    );
     assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("b"));
 }
 
@@ -166,7 +172,10 @@ fn radio_extend_prefetches_next_while_playing() {
     app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
     app.prefetch.loaded_video_id = Some("a".to_owned()); // still playing the seed
     let cmds = app.extend_queue_from_radio(vec![Song::remote("b", "B", "y", "2:00")]);
-    assert!(load_url(&cmds).is_none(), "must not interrupt the playing track");
+    assert!(
+        load_url(&cmds).is_none(),
+        "must not interrupt the playing track"
+    );
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Cmd::Resolve { video_id, .. } if video_id == "b")),
@@ -501,8 +510,10 @@ fn enter_on_library_plays_selected_song_keeping_the_queue() {
     let mut app = app_playing(2, 0);
     let before_len = app.queue.len();
     // Library has a couple of history tracks; open it and select the top one.
-    app.library.record_play(&Song::remote("lib0", "Lib Zero", "A", "3:00"));
-    app.library.record_play(&Song::remote("lib1", "Lib One", "B", "3:00"));
+    app.library
+        .record_play(&Song::remote("lib0", "Lib Zero", "A", "3:00"));
+    app.library
+        .record_play(&Song::remote("lib1", "Lib One", "B", "3:00"));
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::History;
     app.library_ui.selected = 0;
@@ -512,7 +523,10 @@ fn enter_on_library_plays_selected_song_keeping_the_queue() {
     // The picked track plays immediately and we jump to the Player…
     assert_eq!(app.mode, Mode::Player);
     assert!(load_url(&cmds).is_some());
-    assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some(target.as_str()));
+    assert_eq!(
+        app.prefetch.loaded_video_id.as_deref(),
+        Some(target.as_str())
+    );
     // …and the existing queue is preserved (grew by one, originals kept — not wiped).
     assert_eq!(app.queue.len(), before_len + 1);
     for kept in ["id0", "id1"] {
@@ -525,7 +539,8 @@ fn backslash_on_library_enqueues_selected_song_without_interrupting() {
     let mut app = app_playing(2, 0);
     let before_len = app.queue.len();
     let playing = app.prefetch.loaded_video_id.clone();
-    app.library.record_play(&Song::remote("lib9", "Lib Nine", "Z", "3:00"));
+    app.library
+        .record_play(&Song::remote("lib9", "Lib Nine", "Z", "3:00"));
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::History;
     app.library_ui.selected = 0;
@@ -561,7 +576,12 @@ fn enter_on_library_drag_selection_plays_all_selected_tracks() {
     assert!(load_url(&cmds).expect("a Load cmd").contains("f0"));
     assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("f0"));
     assert_eq!(app.queue.len(), before_len + 3);
-    let ids: Vec<&str> = app.queue.ordered().iter().map(|s| s.video_id.as_str()).collect();
+    let ids: Vec<&str> = app
+        .queue
+        .ordered()
+        .iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
     assert_eq!(&ids[1..4], &["f0", "f1", "f2"]);
 }
 
@@ -644,7 +664,10 @@ fn right_click_on_a_search_row_adds_it_to_the_queue() {
         .map(|b| b.rect)
         .expect("a rendered search row rect");
 
-    let cmds = app.update(Msg::MouseRightClick { col: row1.x, row: row1.y });
+    let cmds = app.update(Msg::MouseRightClick {
+        col: row1.x,
+        row: row1.y,
+    });
     // The row got selected and enqueued without interrupting playback.
     assert_eq!(app.search.selected, 1);
     assert!(load_url(&cmds).is_none());
@@ -925,7 +948,10 @@ fn apply_config_pushes_playback_settings() {
 #[test]
 fn seek_keys_use_the_configured_interval() {
     let mut app = app_playing(1, 0);
-    app.apply_config(&crate::config::Config { seek_seconds: Some(30.0), ..Default::default() });
+    app.apply_config(&crate::config::Config {
+        seek_seconds: Some(30.0),
+        ..Default::default()
+    });
     // Forward (→) jumps +interval, backward (←) jumps −interval.
     match app.update(Msg::Key(key(KeyCode::Right))).as_slice() {
         [Cmd::Player(PlayerCmd::SeekRelative(s))] => assert!((*s - 30.0).abs() < 1e-9),
@@ -953,7 +979,10 @@ fn losing_terminal_focus_parks_animations_then_regaining_resumes() {
     // Master + one effect on → animations are logically running.
     app.config.animations.master = true;
     app.config.animations.rain = true;
-    assert!(app.config.animations.pause_unfocused, "pause_unfocused defaults on");
+    assert!(
+        app.config.animations.pause_unfocused,
+        "pause_unfocused defaults on"
+    );
     // Focused by default (the safe state for terminals that never report focus) → clock runs.
     assert!(app.focused);
     assert!(app.animation_active());
@@ -967,7 +996,10 @@ fn losing_terminal_focus_parks_animations_then_regaining_resumes() {
     // Opting out keeps animating even while unfocused.
     app.config.animations.pause_unfocused = false;
     app.update(Msg::Focus(false));
-    assert!(app.animation_active(), "pause_unfocused=false should keep animating unfocused");
+    assert!(
+        app.animation_active(),
+        "pause_unfocused=false should keep animating unfocused"
+    );
 }
 
 #[test]
@@ -1022,12 +1054,18 @@ fn toggling_animations_while_settings_open_survives_close() {
     // Toggle via the shared path (what both the `A` key and the ✨ click call).
     let cmds = app.toggle_animations();
     assert!(app.config.animations.master);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))), "toggle persists");
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))),
+        "toggle persists"
+    );
     // The draft must mirror the flip; otherwise close commits the stale (off) draft over it.
     assert!(app.settings.as_ref().unwrap().draft.animations.master);
     // Closing settings commits the draft → config; the toggle must stick, not revert.
     app.close_settings();
-    assert!(app.config.animations.master, "close_settings must not revert the toggle");
+    assert!(
+        app.config.animations.master,
+        "close_settings must not revert the toggle"
+    );
 }
 
 #[test]
@@ -1065,20 +1103,32 @@ fn transient_status_expires_after_ttl_and_restores_the_title() {
     // A notification covers the title and arms the expiry timer.
     app.update(Msg::Key(key(KeyCode::Char('N')))); // toggle normalize → sets status
     assert!(!app.status.text.is_empty(), "an action should set a status");
-    assert!(app.status_visible(), "a non-empty status arms the expiry tick");
+    assert!(
+        app.status_visible(),
+        "a non-empty status arms the expiry tick"
+    );
 
     // Before the TTL elapses, a tick is a no-op — the notification stays.
     app.update(Msg::StatusTick);
-    assert!(!app.status.text.is_empty(), "status persists until the TTL elapses");
+    assert!(
+        !app.status.text.is_empty(),
+        "status persists until the TTL elapses"
+    );
     assert!(app.status_visible());
 
     // Backdate the timer past the TTL; the next tick clears it and restores the title.
     app.status.set_at = Some(Instant::now() - STATUS_TTL - Duration::from_millis(1));
     app.dirty = false; // so the assertion below proves the clear requested the redraw
     app.update(Msg::StatusTick);
-    assert!(app.status.text.is_empty(), "status auto-clears after the TTL");
+    assert!(
+        app.status.text.is_empty(),
+        "status auto-clears after the TTL"
+    );
     assert!(!app.status_visible(), "expiry disarms the tick");
-    assert!(app.dirty, "clearing the status requests a redraw of the title");
+    assert!(
+        app.dirty,
+        "clearing the status requests a redraw of the title"
+    );
 }
 
 #[test]
@@ -1096,7 +1146,10 @@ fn radio_mode_cycles_on_the_ai_tab_and_persists() {
         app.update(Msg::Key(key(KeyCode::Down)));
     }
     app.update(Msg::Key(key(KeyCode::Right))); // Balanced → Discovery
-    assert_eq!(app.settings.as_ref().unwrap().draft.radio_mode, RadioMode::Discovery);
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.radio_mode,
+        RadioMode::Discovery
+    );
     assert!(app.status.text.contains("Radio mode: Discovery"));
     // Closing settings commits the draft into config + emits a save.
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
@@ -1151,14 +1204,19 @@ fn settings_key_capture_conflict_raises_modal_warning() {
     // `q` is already Back in Player → a conflict warning pops instead of silently
     // dropping the rebind, and it names the offending chord, action, and context.
     app.update(Msg::Key(key(KeyCode::Char('q'))));
-    let conflict = app.key_conflict.expect("a conflict warning should be raised");
+    let conflict = app
+        .key_conflict
+        .expect("a conflict warning should be raised");
     assert_eq!(conflict.existing, Action::Back);
     assert_eq!(conflict.ctx, KeyContext::Player);
     assert_eq!(conflict.chord, crate::keymap::parse_chord("q").unwrap());
     // The binding was left untouched: space still toggles pause, `q` still means Back.
     let km = &app.settings.as_ref().unwrap().keymap;
     assert_eq!(
-        km.action(KeyContext::Player, crate::keymap::parse_chord("space").unwrap()),
+        km.action(
+            KeyContext::Player,
+            crate::keymap::parse_chord("space").unwrap()
+        ),
         Some(Action::TogglePause)
     );
     assert_eq!(
@@ -1169,7 +1227,10 @@ fn settings_key_capture_conflict_raises_modal_warning() {
     // The popup is modal: the next key only dismisses it (here `q` does NOT save+quit).
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
     assert!(app.key_conflict.is_none());
-    assert!(save_config(&cmds).is_none(), "dismiss key must be swallowed, not saved");
+    assert!(
+        save_config(&cmds).is_none(),
+        "dismiss key must be swallowed, not saved"
+    );
     assert!(app.settings.is_some(), "settings stayed open after dismiss");
 }
 
@@ -1179,7 +1240,10 @@ fn focus_reset_all(app: &mut App) {
     for _ in 0..SettingsTab::General.fields().len() - 1 {
         app.update(Msg::Key(key(KeyCode::Down)));
     }
-    assert_eq!(app.settings.as_ref().unwrap().current_field(), Some(Field::ResetAll));
+    assert_eq!(
+        app.settings.as_ref().unwrap().current_field(),
+        Some(Field::ResetAll)
+    );
 }
 
 /// Move the General-tab cursor onto the Reset-keybindings button.
@@ -1352,7 +1416,10 @@ fn settings_close_applies_and_persists() {
     );
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
     assert_eq!(app.mode, Mode::Player);
-    assert!((app.playback.speed - 1.1).abs() < 1e-9, "speed applied on close");
+    assert!(
+        (app.playback.speed - 1.1).abs() < 1e-9,
+        "speed applied on close"
+    );
     let saved = save_config(&cmds).expect("a SaveConfig cmd");
     assert_eq!(saved.speed, Some(1.1));
 }
@@ -1365,7 +1432,10 @@ fn settings_close_persists_live_audio() {
     app.update(Msg::Key(key(KeyCode::Right))); // draft speed -> 1.1
     let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // save+quit
     assert_eq!(app.mode, Mode::Player);
-    assert!((app.playback.speed - 1.1).abs() < 1e-9, "speed persisted on close");
+    assert!(
+        (app.playback.speed - 1.1).abs() < 1e-9,
+        "speed persisted on close"
+    );
     assert_eq!(
         save_config(&cmds).expect("a SaveConfig cmd").speed,
         Some(1.1)
@@ -1638,7 +1708,10 @@ fn clicking_away_from_secret_editor_keeps_the_saved_key() {
 
     // And it survives the save-on-close.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
-    assert_eq!(save_config(&cmds).unwrap().gemini_api_key.as_deref(), Some("KEEPME"));
+    assert_eq!(
+        save_config(&cmds).unwrap().gemini_api_key.as_deref(),
+        Some("KEEPME")
+    );
 }
 
 #[test]
@@ -1672,7 +1745,11 @@ fn radio_fallback(cmds: &[Cmd]) -> Option<(&str, &str, &[String])> {
             seed,
             seed_video_id,
             exclude_ids,
-        } => Some((seed.as_str(), seed_video_id.as_str(), exclude_ids.as_slice())),
+        } => Some((
+            seed.as_str(),
+            seed_video_id.as_str(),
+            exclude_ids.as_slice(),
+        )),
         _ => None,
     })
 }
@@ -1680,9 +1757,10 @@ fn radio_fallback(cmds: &[Cmd]) -> Option<(&str, &str, &[String])> {
 /// The `(seed_video_id, prompt)` of the `AiRerank` command among `cmds`, if any.
 fn ai_rerank(cmds: &[Cmd]) -> Option<(&str, &str)> {
     cmds.iter().find_map(|c| match c {
-        Cmd::AiRerank { seed_video_id, prompt } => {
-            Some((seed_video_id.as_str(), prompt.as_str()))
-        }
+        Cmd::AiRerank {
+            seed_video_id,
+            prompt,
+        } => Some((seed_video_id.as_str(), prompt.as_str())),
         _ => None,
     })
 }
@@ -1713,7 +1791,8 @@ fn ai_submit_without_key_shows_onboarding_error() {
     // Transcript holds the user prompt plus an error line.
     assert_eq!(app.ai.messages.last().unwrap().role, AiRole::Error);
     assert!(
-        app.ai.messages
+        app.ai
+            .messages
             .iter()
             .any(|m| m.role == AiRole::User && m.text == "play jazz")
     );
@@ -1802,9 +1881,15 @@ fn autoplay_extends_when_queue_runs_low() {
         radio_fallback(&cmds).is_some(),
         "autoplay should fetch a candidate pool"
     );
-    assert!(ask_ai(&cmds).is_none(), "no free-form AI radio prompt anymore");
+    assert!(
+        ask_ai(&cmds).is_none(),
+        "no free-form AI radio prompt anymore"
+    );
     assert!(app.radio.pending);
-    assert!(!app.ai.thinking, "the rerank only starts once the pool returns");
+    assert!(
+        !app.ai.thinking,
+        "the rerank only starts once the pool returns"
+    );
     // The cooldown / in-flight guard blocks an immediate second request.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
     assert!(radio_fallback(&cmds).is_none());
@@ -1829,7 +1914,10 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
         candidates: vec![
             (Song::remote("cand1", "Track One", "band one", "3:00"), src),
             (Song::remote("cand2", "Track Two", "band two", "3:10"), src),
-            (Song::remote("cand3", "Track Three", "band three", "3:20"), src),
+            (
+                Song::remote("cand3", "Track Three", "band three", "3:20"),
+                src,
+            ),
         ],
     });
 
@@ -1846,9 +1934,15 @@ fn ai_radio_hands_a_local_shortlist_to_the_reranker() {
     // model can't read rank off them.
     assert!(prompt.contains("Track One"));
     assert!(prompt.contains("Track Two"));
-    assert!(!prompt.contains("cand1"), "raw video ids must not leak into the pack");
+    assert!(
+        !prompt.contains("cand1"),
+        "raw video ids must not leak into the pack"
+    );
     assert!(app.ai.thinking, "the rerank is in flight");
-    assert!(app.radio.pending_rerank.is_some(), "shortlist + local pick stashed for validation");
+    assert!(
+        app.radio.pending_rerank.is_some(),
+        "shortlist + local pick stashed for validation"
+    );
     assert!(!app.radio.pending, "the pool fetch is done");
 }
 
@@ -1870,14 +1964,29 @@ fn smart_gate_skips_the_ai_call_and_enqueues_the_local_pick() {
         candidates: vec![
             (Song::remote("cand1", "Track One", "band one", "3:00"), src),
             (Song::remote("cand2", "Track Two", "band two", "3:10"), src),
-            (Song::remote("cand3", "Track Three", "band three", "3:20"), src),
+            (
+                Song::remote("cand3", "Track Three", "band three", "3:20"),
+                src,
+            ),
         ],
     });
 
-    assert!(ai_rerank(&cmds).is_none(), "gated: no AI rerank command spent");
-    assert!(!app.ai.thinking, "gated path never marks the assistant as thinking");
-    assert!(app.radio.pending_rerank.is_none(), "gated path stashes nothing to validate");
-    assert!(app.queue.len() > before, "gated refill enqueues the local pick directly");
+    assert!(
+        ai_rerank(&cmds).is_none(),
+        "gated: no AI rerank command spent"
+    );
+    assert!(
+        !app.ai.thinking,
+        "gated path never marks the assistant as thinking"
+    );
+    assert!(
+        app.radio.pending_rerank.is_none(),
+        "gated path stashes nothing to validate"
+    );
+    assert!(
+        app.queue.len() > before,
+        "gated refill enqueues the local pick directly"
+    );
 }
 
 #[test]
@@ -1893,7 +2002,10 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
     let candidates = vec![
         (Song::remote("cand1", "Track One", "band one", "3:00"), src),
         (Song::remote("cand2", "Track Two", "band two", "3:10"), src),
-        (Song::remote("cand3", "Track Three", "band three", "3:20"), src),
+        (
+            Song::remote("cand3", "Track Three", "band three", "3:20"),
+            src,
+        ),
     ];
 
     // First refill misses the cache → an AI call goes out, the rerank is stashed, and (on the AI
@@ -1921,9 +2033,18 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
         candidates,
     });
     assert!(ai_rerank(&cmds).is_none(), "cache hit: no second AI call");
-    assert!(!app.ai.thinking, "cache hit never marks the assistant as thinking");
-    assert!(app.radio.pending_rerank.is_none(), "cache hit stashes nothing to validate");
-    assert!(app.queue.contains_video_id(&cached_id), "cached ordering enqueued");
+    assert!(
+        !app.ai.thinking,
+        "cache hit never marks the assistant as thinking"
+    );
+    assert!(
+        app.radio.pending_rerank.is_none(),
+        "cache hit stashes nothing to validate"
+    );
+    assert!(
+        app.queue.contains_video_id(&cached_id),
+        "cached ordering enqueued"
+    );
 }
 
 #[test]
@@ -1939,7 +2060,10 @@ fn ai_set_station_profile_applies_mode_and_avoids_artists() {
 
     // The explore level drives the live engine mode, and the profile is stashed for persistence.
     assert_eq!(app.config.radio.mode, crate::radio::RadioMode::Focused);
-    assert_eq!(app.station.active.as_ref().expect("station stashed").query, "rainy day");
+    assert_eq!(
+        app.station.active.as_ref().expect("station stashed").query,
+        "rainy day"
+    );
     // Both the station and the (now-mode-changed) config are persisted.
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)));
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
@@ -1947,7 +2071,10 @@ fn ai_set_station_profile_applies_mode_and_avoids_artists() {
     // The avoided artist flows into the station state every refill reads.
     let st = app.build_station_state("id0");
     let want = crate::signals::normalize_artist("Nickelback");
-    assert!(st.banned_artist_keys.contains(&want), "avoided artist is banned in refills");
+    assert!(
+        st.banned_artist_keys.contains(&want),
+        "avoided artist is banned in refills"
+    );
 }
 
 #[test]
@@ -1963,7 +2090,11 @@ fn a_plain_start_radio_without_hints_leaves_no_station() {
 fn station_patch_folds_feedback_into_avoid_list_and_clears_inflight() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);
-    app.station.active = Some(crate::station::StationProfile::from_intent("late night", Some("wide"), &[]));
+    app.station.active = Some(crate::station::StationProfile::from_intent(
+        "late night",
+        Some("wide"),
+        &[],
+    ));
     app.radio.feedback_in_flight = true;
 
     let cmds = app.update(Msg::StationPatch {
@@ -1972,10 +2103,20 @@ fn station_patch_folds_feedback_into_avoid_list_and_clears_inflight() {
     });
 
     // The in-flight guard always clears so the next streak can fire again.
-    assert!(!app.radio.feedback_in_flight, "in-flight guard cleared on patch");
+    assert!(
+        !app.radio.feedback_in_flight,
+        "in-flight guard cleared on patch"
+    );
     // The down-voted artist is now avoided in every refill, and the change is persisted.
     let want = crate::signals::normalize_artist("Nickelback");
-    assert!(app.station.active.as_ref().unwrap().avoid_artist_keys.contains(&want));
+    assert!(
+        app.station
+            .active
+            .as_ref()
+            .unwrap()
+            .avoid_artist_keys
+            .contains(&want)
+    );
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)));
 }
 
@@ -1988,9 +2129,15 @@ fn empty_station_patch_clears_inflight_without_persisting() {
 
     // An empty patch (the off-path summary failed or found nothing) still clears the guard, but a
     // no-op change must not trigger a pointless save.
-    let cmds = app.update(Msg::StationPatch { down_artists: vec![], boost_artists: vec![] });
+    let cmds = app.update(Msg::StationPatch {
+        down_artists: vec![],
+        boost_artists: vec![],
+    });
     assert!(!app.radio.feedback_in_flight);
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)), "no save on a no-op patch");
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)),
+        "no save on a no-op patch"
+    );
 }
 
 #[test]
@@ -1998,7 +2145,11 @@ fn feedback_summary_fires_once_per_skip_streak_when_gated_open() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);
     app.ai.available = true;
-    app.station.active = Some(crate::station::StationProfile::from_intent("drive", Some("balanced"), &[]));
+    app.station.active = Some(crate::station::StationProfile::from_intent(
+        "drive",
+        Some("balanced"),
+        &[],
+    ));
     // A trailing skip streak at the trigger threshold (FEEDBACK_STREAK = 3).
     for _ in 0..3 {
         app.record_session_event("some artist", Outcome::QuickSkip, 0.05);
@@ -2006,10 +2157,16 @@ fn feedback_summary_fires_once_per_skip_streak_when_gated_open() {
 
     // First call past the gate: dispatches a summary and arms the in-flight guard.
     let cmd = app.maybe_summarize_feedback();
-    assert!(matches!(cmd, Some(Cmd::SummarizeFeedback { .. })), "streak + active station → summary");
+    assert!(
+        matches!(cmd, Some(Cmd::SummarizeFeedback { .. })),
+        "streak + active station → summary"
+    );
     assert!(app.radio.feedback_in_flight);
     // A second call while one is in flight is a no-op (single-flight).
-    assert!(app.maybe_summarize_feedback().is_none(), "in-flight guard suppresses duplicates");
+    assert!(
+        app.maybe_summarize_feedback().is_none(),
+        "in-flight guard suppresses duplicates"
+    );
 }
 
 #[test]
@@ -2042,8 +2199,14 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
             Song::remote("s1", "S1", "a", "3:00"),
         ],
         cid_map: vec![
-            crate::radio::PackedCand { cid: "c1".to_owned(), video_id: "s1".to_owned() },
-            crate::radio::PackedCand { cid: "c2".to_owned(), video_id: "s2".to_owned() },
+            crate::radio::PackedCand {
+                cid: "c1".to_owned(),
+                video_id: "s1".to_owned(),
+            },
+            crate::radio::PackedCand {
+                cid: "c2".to_owned(),
+                video_id: "s2".to_owned(),
+            },
         ],
         cache_key: 0,
     });
@@ -2052,8 +2215,16 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     app.update(Msg::RadioAiPicks {
         seed_video_id: "id0".to_owned(),
         picks: vec![
-            AiPick { cid: "c1".to_owned(), role: Some("core".to_owned()), reasons: vec!["u".to_owned()] },
-            AiPick { cid: "HALLUCINATED".to_owned(), role: None, reasons: vec![] },
+            AiPick {
+                cid: "c1".to_owned(),
+                role: Some("core".to_owned()),
+                reasons: vec!["u".to_owned()],
+            },
+            AiPick {
+                cid: "HALLUCINATED".to_owned(),
+                role: None,
+                reasons: vec![],
+            },
         ],
         conf: Some(0.8),
     });
@@ -2061,8 +2232,14 @@ fn radio_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     assert!(!app.ai.thinking, "rerank finished");
     assert!(app.radio.pending_rerank.is_none(), "pending consumed");
     assert!(app.queue.contains_video_id("s1"), "valid AI id enqueued");
-    assert!(app.queue.contains_video_id("s2"), "topped up from local pick");
-    assert!(!app.queue.contains_video_id("HALLUCINATED"), "hallucinated id dropped");
+    assert!(
+        app.queue.contains_video_id("s2"),
+        "topped up from local pick"
+    );
+    assert!(
+        !app.queue.contains_video_id("HALLUCINATED"),
+        "hallucinated id dropped"
+    );
 }
 
 #[test]
@@ -2075,17 +2252,27 @@ fn radio_ai_picks_for_a_stale_seed_are_ignored() {
         seed_video_id: "current-seed".to_owned(),
         shortlist: vec![Song::remote("s1", "S1", "a", "3:00")],
         local_pick: vec![Song::remote("s1", "S1", "a", "3:00")],
-        cid_map: vec![crate::radio::PackedCand { cid: "c1".to_owned(), video_id: "s1".to_owned() }],
+        cid_map: vec![crate::radio::PackedCand {
+            cid: "c1".to_owned(),
+            video_id: "s1".to_owned(),
+        }],
         cache_key: 0,
     });
 
     // A result for a different (older) seed must not consume the in-flight rerank.
     app.update(Msg::RadioAiPicks {
         seed_video_id: "old-seed".to_owned(),
-        picks: vec![AiPick { cid: "c1".to_owned(), role: None, reasons: vec![] }],
+        picks: vec![AiPick {
+            cid: "c1".to_owned(),
+            role: None,
+            reasons: vec![],
+        }],
         conf: None,
     });
-    assert!(app.radio.pending_rerank.is_some(), "stale result leaves the current rerank intact");
+    assert!(
+        app.radio.pending_rerank.is_some(),
+        "stale result leaves the current rerank intact"
+    );
     assert!(!app.queue.contains_video_id("s1"));
 }
 
@@ -2104,8 +2291,14 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
         ],
         local_pick: vec![Song::remote("s2", "Second Song", "Artist Two", "3:00")],
         cid_map: vec![
-            crate::radio::PackedCand { cid: "c1".to_owned(), video_id: "s1".to_owned() },
-            crate::radio::PackedCand { cid: "c2".to_owned(), video_id: "s2".to_owned() },
+            crate::radio::PackedCand {
+                cid: "c1".to_owned(),
+                video_id: "s1".to_owned(),
+            },
+            crate::radio::PackedCand {
+                cid: "c2".to_owned(),
+                video_id: "s2".to_owned(),
+            },
         ],
         cache_key: 0,
     });
@@ -2118,13 +2311,21 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
                 role: Some("bridge".to_owned()),
                 reasons: vec!["tr".to_owned(), "u".to_owned()],
             },
-            AiPick { cid: "c2".to_owned(), role: Some("core".to_owned()), reasons: vec!["co".to_owned()] },
+            AiPick {
+                cid: "c2".to_owned(),
+                role: Some("core".to_owned()),
+                reasons: vec!["co".to_owned()],
+            },
         ],
         conf: Some(0.75),
     });
 
     // The explanation is stashed, with cids resolved to real tracks in the model's order.
-    let explain = app.radio.last_explain.as_ref().expect("explanation stashed for the overlay");
+    let explain = app
+        .radio
+        .last_explain
+        .as_ref()
+        .expect("explanation stashed for the overlay");
     assert_eq!(explain.conf, Some(0.75));
     assert_eq!(explain.picks.len(), 2);
     assert_eq!(explain.picks[0].title, "First Song");
@@ -2149,8 +2350,14 @@ fn why_ai_without_a_rerank_shows_a_note_not_an_overlay() {
     assert!(app.radio.last_explain.is_none());
 
     app.update(Msg::Key(key(KeyCode::Char('w'))));
-    assert!(!app.why_ai_visible, "no overlay opens without a prior AI rerank");
-    assert!(!app.status.text.is_empty(), "a transient note is shown instead");
+    assert!(
+        !app.why_ai_visible,
+        "no overlay opens without a prior AI rerank"
+    );
+    assert!(
+        !app.status.text.is_empty(),
+        "a transient note is shown instead"
+    );
 }
 
 #[test]
@@ -2180,9 +2387,19 @@ fn why_ai_overlay_renders_the_resolved_picks() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap(); // must not panic
     let buf = terminal.backend().buffer().clone();
-    let text: String = buf.content().iter().map(|c| c.symbol().to_owned()).collect();
-    assert!(text.contains("Bridge Track"), "overlay shows the first resolved track");
-    assert!(text.contains("Core Track"), "overlay shows the second resolved track");
+    let text: String = buf
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+    assert!(
+        text.contains("Bridge Track"),
+        "overlay shows the first resolved track"
+    );
+    assert!(
+        text.contains("Core Track"),
+        "overlay shows the second resolved track"
+    );
 }
 
 #[test]
@@ -2191,8 +2408,12 @@ fn autoplay_uses_radio_fallback_without_ai_key() {
     app.autoplay_radio = true;
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
-    assert!(ask_ai(&cmds).is_none(), "no Gemini request without an API key");
-    let (seed, seed_video_id, exclude_ids) = radio_fallback(&cmds).expect("a fallback radio command");
+    assert!(
+        ask_ai(&cmds).is_none(),
+        "no Gemini request without an API key"
+    );
+    let (seed, seed_video_id, exclude_ids) =
+        radio_fallback(&cmds).expect("a fallback radio command");
     assert_eq!(seed_video_id, "id1");
     assert!(seed.contains("t1"));
     assert!(exclude_ids.iter().any(|id| id == "id0"));
@@ -2230,7 +2451,11 @@ fn radio_results_run_through_local_engine_and_clear_pending() {
     });
 
     assert!(!app.radio.pending, "results clear the in-flight guard");
-    assert_eq!(app.queue.len(), 4, "two new tracks added to the queue of two");
+    assert_eq!(
+        app.queue.len(),
+        4,
+        "two new tracks added to the queue of two"
+    );
     assert!(app.queue.contains_video_id("id2"));
     assert!(app.queue.contains_video_id("id3"));
     assert!(app.status.text.contains("Queued 2"));
@@ -2573,7 +2798,12 @@ fn delete_after_navigating_then_filtering_removes_only_the_cursor_row() {
     app.update(Msg::Key(key(KeyCode::Enter))); // commit
 
     app.update(Msg::Key(key(KeyCode::Delete)));
-    let ids: Vec<&str> = app.library.favorites.iter().map(|s| s.video_id.as_str()).collect();
+    let ids: Vec<&str> = app
+        .library
+        .favorites
+        .iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
     assert_eq!(ids, vec!["b", "c", "d"]); // only the cursor row (Alpha) went, not a range
 }
 
@@ -2663,15 +2893,20 @@ fn copy_link_copies_youtube_url_for_remote_track() {
     assert_eq!(app.status.kind, StatusKind::Info);
     assert_eq!(
         app.status.text,
-        t!("✓ Link copied to clipboard", "✓ 링크가 클립보드에 복사됐어요")
+        t!(
+            "✓ Link copied to clipboard",
+            "✓ 링크가 클립보드에 복사됐어요"
+        )
     );
 }
 
 #[test]
 fn copy_link_warns_for_local_only_track() {
     let mut app = App::new(100);
-    app.queue
-        .set(vec![Song::local_file(PathBuf::from("/tmp/copylink-local.m4a"))], 0);
+    app.queue.set(
+        vec![Song::local_file(PathBuf::from("/tmp/copylink-local.m4a"))],
+        0,
+    );
     app.mode = Mode::Player;
     app.update(Msg::Key(key(KeyCode::Char('y'))));
     assert_ne!(app.status.kind, StatusKind::Info);
@@ -2756,11 +2991,20 @@ fn copy_link_recovers_id_from_filename_for_bare_local_track() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = App::new(100);
     // A bare queue entry (no yt id) whose on-disk file carries the `[id]` tag.
-    app.queue
-        .set(vec![bare_local("/tmp/Great Song [dQw4w9WgXcQ].m4a", "Great Song")], 0);
+    app.queue.set(
+        vec![bare_local(
+            "/tmp/Great Song [dQw4w9WgXcQ].m4a",
+            "Great Song",
+        )],
+        0,
+    );
     app.mode = Mode::Player;
     app.update(Msg::Key(key(KeyCode::Char('y'))));
-    assert_eq!(app.status.kind, StatusKind::Info, "id recovered from filename");
+    assert_eq!(
+        app.status.kind,
+        StatusKind::Info,
+        "id recovered from filename"
+    );
 }
 
 #[test]
@@ -2768,10 +3012,15 @@ fn copy_link_recovers_id_via_title_match_against_favorites() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = App::new(100);
     app.library.favorites = vec![Song::remote("favmatch1234", "My Tune", "A", "3:00")];
-    app.queue.set(vec![bare_local("/tmp/plain.m4a", "My Tune")], 0);
+    app.queue
+        .set(vec![bare_local("/tmp/plain.m4a", "My Tune")], 0);
     app.mode = Mode::Player;
     app.update(Msg::Key(key(KeyCode::Char('y'))));
-    assert_eq!(app.status.kind, StatusKind::Info, "id recovered by title match");
+    assert_eq!(
+        app.status.kind,
+        StatusKind::Info,
+        "id recovered by title match"
+    );
 }
 
 #[test]
@@ -2782,20 +3031,26 @@ fn copy_link_works_on_all_tab_when_history_holds_a_bare_local_entry() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = App::new(100);
     let path = "/tmp/Shared [dQw4w9WgXcQ].m4a";
-    app.library
-        .history
-        .push_front(bare_local(path, "Shared")); // pre-fix play, wins All-tab dedup
-    app.library_ui.downloaded = vec![bare_local(path, "Shared").with_yt_id("dQw4w9WgXcQ".to_owned())];
+    app.library.history.push_front(bare_local(path, "Shared")); // pre-fix play, wins All-tab dedup
+    app.library_ui.downloaded =
+        vec![bare_local(path, "Shared").with_yt_id("dQw4w9WgXcQ".to_owned())];
 
     app.update(Msg::Key(key(KeyCode::Char('l')))); // Library, All tab
     assert_eq!(app.library_ui.tab, LibraryTab::All);
     let cmds = app.update(Msg::Key(key(KeyCode::Enter))); // play the All-tab current row
     assert_eq!(app.mode, Mode::Player);
     assert!(load_url(&cmds).is_some());
-    assert!(app.queue.current().unwrap().youtube_id().is_none(), "the bare history entry plays");
+    assert!(
+        app.queue.current().unwrap().youtube_id().is_none(),
+        "the bare history entry plays"
+    );
 
     app.update(Msg::Key(key(KeyCode::Char('y'))));
-    assert_eq!(app.status.kind, StatusKind::Info, "copy still recovers the YouTube URL");
+    assert_eq!(
+        app.status.kind,
+        StatusKind::Info,
+        "copy still recovers the YouTube URL"
+    );
 }
 
 #[test]
@@ -2813,7 +3068,10 @@ fn download_done_records_manifest_and_saves() {
         cmds.iter().any(|c| matches!(c, Cmd::SaveDownloads)),
         "a completed download persists the manifest"
     );
-    assert_eq!(app.library_ui.downloaded[0].youtube_id(), Some("dQw4w9WgXcQ"));
+    assert_eq!(
+        app.library_ui.downloaded[0].youtube_id(),
+        Some("dQw4w9WgXcQ")
+    );
     // The manifest remembers it: a later bare scan of the same file re-enriches.
     let vid = app.library_ui.downloaded[0].video_id.clone();
     let scanned = Song {
@@ -2862,16 +3120,24 @@ fn open_library_tab(app: &mut App, tab: LibraryTab) {
 #[test]
 fn library_delete_range_removes_from_favorites() {
     let mut app = App::new(100);
-    app.library.toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
-    app.library.toggle_favorite(&Song::remote("b", "tb", "x", "0:10"));
-    app.library.toggle_favorite(&Song::remote("c", "tc", "x", "0:10")); // [c, b, a]
+    app.library
+        .toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
+    app.library
+        .toggle_favorite(&Song::remote("b", "tb", "x", "0:10"));
+    app.library
+        .toggle_favorite(&Song::remote("c", "tc", "x", "0:10")); // [c, b, a]
     open_library_tab(&mut app, LibraryTab::Favorites);
     // Cursor on row 0, drag-anchor on row 1: the selection spans rows 0..=1 (c, b).
     app.library_ui.selected = 0;
     app.library_ui.anchor = 1;
     let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
-    let ids: Vec<&str> = app.library.favorites.iter().map(|s| s.video_id.as_str()).collect();
+    let ids: Vec<&str> = app
+        .library
+        .favorites
+        .iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
     assert_eq!(ids, vec!["a"]);
     assert_eq!(app.library_ui.selected, 0);
 }
@@ -2879,15 +3145,23 @@ fn library_delete_range_removes_from_favorites() {
 #[test]
 fn library_delete_range_removes_from_history() {
     let mut app = App::new(100);
-    app.library.record_play(&Song::remote("a", "ta", "x", "0:10"));
-    app.library.record_play(&Song::remote("b", "tb", "x", "0:10"));
-    app.library.record_play(&Song::remote("c", "tc", "x", "0:10")); // front->back: c, b, a
+    app.library
+        .record_play(&Song::remote("a", "ta", "x", "0:10"));
+    app.library
+        .record_play(&Song::remote("b", "tb", "x", "0:10"));
+    app.library
+        .record_play(&Song::remote("c", "tc", "x", "0:10")); // front->back: c, b, a
     open_library_tab(&mut app, LibraryTab::History);
     app.library_ui.selected = 1;
     app.library_ui.anchor = 2; // rows 1..=2 = b, a
     let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
-    let ids: Vec<&str> = app.library.history.iter().map(|s| s.video_id.as_str()).collect();
+    let ids: Vec<&str> = app
+        .library
+        .history
+        .iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
     assert_eq!(ids, vec!["c"]);
 }
 
@@ -2895,7 +3169,12 @@ fn library_delete_range_removes_from_history() {
 fn library_page_and_jump_keys_move_the_cursor() {
     let mut app = App::new(100);
     for i in 0..30 {
-        app.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
+        app.library.record_play(&Song::remote(
+            format!("id{i}"),
+            format!("t{i}"),
+            "x",
+            "0:10",
+        ));
     }
     open_library_tab(&mut app, LibraryTab::History);
     let len = app.library_len();
@@ -2946,18 +3225,43 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
     // the viewport (normally a render's job) and reads the honored offset back.
     let mut app = App::new(100);
     for i in 0..20 {
-        app.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
+        app.library.record_play(&Song::remote(
+            format!("id{i}"),
+            format!("t{i}"),
+            "x",
+            "0:10",
+        ));
     }
     open_library_tab(&mut app, LibraryTab::History);
     app.library_ui.selected = 0;
     let len = app.library_len();
-    app.bridges.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF);
+    app.bridges
+        .library_scroll
+        .resolve(app.library_ui.selected, 10, len, SCROLLOFF);
 
-    app.update(Msg::MouseScroll { up: false, col: 0, row: 0 });
+    app.update(Msg::MouseScroll {
+        up: false,
+        col: 0,
+        row: 0,
+    });
     assert_eq!(app.library_ui.selected, 0); // selection untouched by the wheel
-    assert_eq!(app.bridges.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF), 3);
-    app.update(Msg::MouseScroll { up: true, col: 0, row: 0 });
-    assert_eq!(app.bridges.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF), 0); // clamped at top
+    assert_eq!(
+        app.bridges
+            .library_scroll
+            .resolve(app.library_ui.selected, 10, len, SCROLLOFF),
+        3
+    );
+    app.update(Msg::MouseScroll {
+        up: true,
+        col: 0,
+        row: 0,
+    });
+    assert_eq!(
+        app.bridges
+            .library_scroll
+            .resolve(app.library_ui.selected, 10, len, SCROLLOFF),
+        0
+    ); // clamped at top
 
     // Search: same decoupling, clamped at the last page.
     let mut app = App::new(100);
@@ -2966,12 +3270,32 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
     app.search.results = songs(20);
     app.search.selected = 19;
     let len = app.search.results.len();
-    app.bridges.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF); // offset -> last page (10)
-    app.update(Msg::MouseScroll { up: false, col: 0, row: 0 });
+    app.bridges
+        .search_scroll
+        .resolve(app.search.selected, 10, len, SCROLLOFF); // offset -> last page (10)
+    app.update(Msg::MouseScroll {
+        up: false,
+        col: 0,
+        row: 0,
+    });
     assert_eq!(app.search.selected, 19); // selection untouched
-    assert_eq!(app.bridges.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF), 10); // clamped at end
-    app.update(Msg::MouseScroll { up: true, col: 0, row: 0 });
-    assert_eq!(app.bridges.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF), 7);
+    assert_eq!(
+        app.bridges
+            .search_scroll
+            .resolve(app.search.selected, 10, len, SCROLLOFF),
+        10
+    ); // clamped at end
+    app.update(Msg::MouseScroll {
+        up: true,
+        col: 0,
+        row: 0,
+    });
+    assert_eq!(
+        app.bridges
+            .search_scroll
+            .resolve(app.search.selected, 10, len, SCROLLOFF),
+        7
+    );
 }
 
 #[test]
@@ -2983,10 +3307,21 @@ fn settings_click_on_a_visible_row_does_not_scroll() {
     app.open_settings();
     // Render of a long tab scrolled well down: focus display row 30 in a viewport of 10.
     let off = app.bridges.settings_scroll.resolve(30, 10, 40, 0);
-    assert!((off..off + 10).contains(&30), "row 30 is visible at offset {off}");
+    assert!(
+        (off..off + 10).contains(&30),
+        "row 30 is visible at offset {off}"
+    );
     // A click lands on the topmost visible row, then the bottommost: neither moves the offset.
-    assert_eq!(app.bridges.settings_scroll.resolve(off, 10, 40, 0), off, "top row click stays");
-    assert_eq!(app.bridges.settings_scroll.resolve(off + 9, 10, 40, 0), off, "bottom row click stays");
+    assert_eq!(
+        app.bridges.settings_scroll.resolve(off, 10, 40, 0),
+        off,
+        "top row click stays"
+    );
+    assert_eq!(
+        app.bridges.settings_scroll.resolve(off + 9, 10, 40, 0),
+        off,
+        "bottom row click stays"
+    );
 }
 
 #[test]
@@ -3003,8 +3338,16 @@ fn settings_scroll_resets_on_tab_switch() {
 
     app.settings_switch_tab(true);
 
-    assert_eq!(app.bridges.settings_scroll.resolve(0, 10, 50, 0), 0, "field list resets to top");
-    assert_eq!(app.bridges.settings_keys_scroll[0].resolve(0, 5, 30, 0), 0, "keys column resets");
+    assert_eq!(
+        app.bridges.settings_scroll.resolve(0, 10, 50, 0),
+        0,
+        "field list resets to top"
+    );
+    assert_eq!(
+        app.bridges.settings_keys_scroll[0].resolve(0, 5, 30, 0),
+        0,
+        "keys column resets"
+    );
 }
 
 #[test]
@@ -3016,7 +3359,11 @@ fn settings_scroll_resets_on_reopen() {
     assert_eq!(app.bridges.settings_scroll.resolve(0, 10, 50, 0), 5);
     app.close_settings();
     app.open_settings();
-    assert_eq!(app.bridges.settings_scroll.resolve(0, 10, 50, 0), 0, "reopening resets the offset");
+    assert_eq!(
+        app.bridges.settings_scroll.resolve(0, 10, 50, 0),
+        0,
+        "reopening resets the offset"
+    );
 }
 
 #[test]
@@ -3026,15 +3373,24 @@ fn liststate_select_none_resets_offset_so_keys_columns_must_guard_it() {
     // offset, so calling it on the unfocused column would discard the pre-seeded scroll.
     let mut state = ratatui::widgets::ListState::default().with_offset(5);
     state.select(Some(3));
-    assert_eq!(state.offset(), 5, "select(Some) keeps the pre-seeded offset");
+    assert_eq!(
+        state.offset(),
+        5,
+        "select(Some) keeps the pre-seeded offset"
+    );
     state.select(None);
-    assert_eq!(state.offset(), 0, "select(None) resets the offset — why the unfocused column skips it");
+    assert_eq!(
+        state.offset(),
+        0,
+        "select(None) resets the offset — why the unfocused column skips it"
+    );
 }
 
 #[test]
 fn library_delete_is_disabled_in_all_tab() {
     let mut app = App::new(100);
-    app.library.toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
+    app.library
+        .toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
     app.update(Msg::Key(key(KeyCode::Char('l'))));
     assert_eq!(app.library_ui.tab, LibraryTab::All);
     let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
@@ -3045,7 +3401,8 @@ fn library_delete_is_disabled_in_all_tab() {
 #[test]
 fn library_all_dedups_same_title_across_collections() {
     let mut app = App::new(100);
-    app.library.toggle_favorite(&Song::remote("yt1", "Song", "Artist", "3:00"));
+    app.library
+        .toggle_favorite(&Song::remote("yt1", "Song", "Artist", "3:00"));
     // A downloaded file named after the same track (`Song.m4a` -> title "Song").
     app.library_ui.downloaded = vec![Song::local_file(PathBuf::from("/tmp/Song.m4a"))];
     app.update(Msg::Key(key(KeyCode::Char('l'))));
@@ -3093,9 +3450,12 @@ fn downloads_delete_cancel_keeps_file() {
 #[test]
 fn library_mouse_drag_selects_range_then_delete_removes_it() {
     let mut app = App::new(100);
-    app.library.toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
-    app.library.toggle_favorite(&Song::remote("b", "tb", "x", "0:10"));
-    app.library.toggle_favorite(&Song::remote("c", "tc", "x", "0:10")); // [c, b, a]
+    app.library
+        .toggle_favorite(&Song::remote("a", "ta", "x", "0:10"));
+    app.library
+        .toggle_favorite(&Song::remote("b", "tb", "x", "0:10"));
+    app.library
+        .toggle_favorite(&Song::remote("c", "tc", "x", "0:10")); // [c, b, a]
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::Favorites;
 
@@ -3104,7 +3464,8 @@ fn library_mouse_drag_selects_range_then_delete_removes_it() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let row_rect = |i: usize| {
-        app.bridges.mouse_buttons
+        app.bridges
+            .mouse_buttons
             .borrow()
             .iter()
             .find(|b| b.target == MouseTarget::ListRow(i))
@@ -3115,9 +3476,15 @@ fn library_mouse_drag_selects_range_then_delete_removes_it() {
     let r2 = row_rect(2);
 
     // Click row 0 (anchors the range), then drag onto row 2 (extends it).
-    app.update(Msg::MouseClick { col: r0.x, row: r0.y });
+    app.update(Msg::MouseClick {
+        col: r0.x,
+        row: r0.y,
+    });
     assert_eq!((app.library_ui.selected, app.library_ui.anchor), (0, 0));
-    app.update(Msg::MouseDrag { col: r2.x, row: r2.y });
+    app.update(Msg::MouseDrag {
+        col: r2.x,
+        row: r2.y,
+    });
     assert_eq!((app.library_ui.selected, app.library_ui.anchor), (2, 0));
 
     // Delete removes the whole selected 0..=2 range.
@@ -3194,7 +3561,12 @@ fn lyrics_result_stored_only_for_current_track() {
         video_id: "id0".to_owned(),
         lines: lyric_lines(),
     });
-    assert!(app.lyrics.track.as_ref().is_some_and(|l| l.lines.len() == 2));
+    assert!(
+        app.lyrics
+            .track
+            .as_ref()
+            .is_some_and(|l| l.lines.len() == 2)
+    );
     // A late result for a different track is ignored.
     app.update(Msg::LyricsResult {
         video_id: "stale".to_owned(),
@@ -3275,7 +3647,10 @@ fn local_track_uses_local_art_source() {
     app.config.album_art = Some(true);
     app.art.picker = Some(Picker::halfblocks());
     let song = Song::local_file(std::path::PathBuf::from("/music/song.m4a"));
-    assert!(matches!(app.artwork_source(&song), Some(ArtSource::Local(_))));
+    assert!(matches!(
+        app.artwork_source(&song),
+        Some(ArtSource::Local(_))
+    ));
 }
 
 #[test]
@@ -3283,7 +3658,12 @@ fn art_fit_rect_centers_by_aspect() {
     let mut app = App::new(100);
     app.art.picker = Some(Picker::halfblocks()); // font cell 10x20 px
     app.art.dims = (100, 100); // square source
-    let r = app.art_fit_rect(Rect { x: 0, y: 0, width: 40, height: 40 });
+    let r = app.art_fit_rect(Rect {
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 40,
+    });
     // Cells are 1:2 (10×20px), so a square cover spans the full width but only half the
     // height, centered vertically in the box.
     assert_eq!((r.width, r.height), (40, 20));
@@ -3300,7 +3680,10 @@ fn d_starts_download_of_current_track() {
         [Cmd::Download(song)] => assert_eq!(song.video_id, "id0"),
         _ => panic!("expected a Download cmd"),
     }
-    assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Running(0)));
+    assert_eq!(
+        app.downloads.active.get("id0"),
+        Some(&DownloadState::Running(0))
+    );
 }
 
 #[test]
@@ -3323,7 +3706,10 @@ fn download_progress_and_done_update_state() {
         video_id: "id0".to_owned(),
         percent: 42.6,
     });
-    assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Running(43)));
+    assert_eq!(
+        app.downloads.active.get("id0"),
+        Some(&DownloadState::Running(43))
+    );
     app.update(Msg::DownloadDone {
         video_id: "id0".to_owned(),
         path: "/tmp/x.m4a".to_owned(),
@@ -3341,7 +3727,10 @@ fn download_error_marks_failed() {
         video_id: "id0".to_owned(),
         error: "boom".to_owned(),
     });
-    assert_eq!(app.downloads.active.get("id0"), Some(&DownloadState::Failed));
+    assert_eq!(
+        app.downloads.active.get("id0"),
+        Some(&DownloadState::Failed)
+    );
     assert!(app.status.text.contains("boom"));
 }
 
@@ -3489,14 +3878,22 @@ fn wheel_over_volume_cluster_adjusts_volume_when_enabled() {
         MouseTarget::VolumeArea,
     );
 
-    let cmds = app.update(Msg::MouseScroll { up: true, col: 25, row: 4 });
+    let cmds = app.update(Msg::MouseScroll {
+        up: true,
+        col: 25,
+        row: 4,
+    });
     assert_eq!(app.playback.volume, 45);
     assert!(matches!(
         cmds.as_slice(),
         [Cmd::Player(PlayerCmd::SetVolume(45))]
     ));
 
-    let cmds = app.update(Msg::MouseScroll { up: false, col: 25, row: 4 });
+    let cmds = app.update(Msg::MouseScroll {
+        up: false,
+        col: 25,
+        row: 4,
+    });
     assert_eq!(app.playback.volume, 40);
     assert!(matches!(
         cmds.as_slice(),
@@ -3519,7 +3916,11 @@ fn wheel_volume_setting_can_disable_volume_scroll() {
         MouseTarget::VolumeArea,
     );
 
-    let cmds = app.update(Msg::MouseScroll { up: true, col: 25, row: 4 });
+    let cmds = app.update(Msg::MouseScroll {
+        up: true,
+        col: 25,
+        row: 4,
+    });
     assert!(cmds.is_empty());
     assert_eq!(app.playback.volume, 40);
 }
@@ -3589,7 +3990,8 @@ fn rendered_help_button(app: &App, width: u16, height: u16) -> MouseButtonRegion
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, app)).unwrap();
 
-    app.bridges.mouse_buttons
+    app.bridges
+        .mouse_buttons
         .borrow()
         .iter()
         .find(|b| b.target == MouseTarget::Global(Action::ToggleHelp))
@@ -3611,25 +4013,43 @@ fn library_scrollbar_shows_only_when_the_list_overflows() {
 
     let mut overflow = App::new(100);
     for i in 0..40 {
-        overflow.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
+        overflow.library.record_play(&Song::remote(
+            format!("id{i}"),
+            format!("t{i}"),
+            "x",
+            "0:10",
+        ));
     }
     overflow.mode = Mode::Library;
     overflow.library_ui.tab = LibraryTab::History;
-    assert!(has_thumb(&overflow), "a long list should show a scrollbar thumb");
+    assert!(
+        has_thumb(&overflow),
+        "a long list should show a scrollbar thumb"
+    );
 
     let mut fits = App::new(100);
-    fits.library.record_play(&Song::remote("a", "ta", "x", "0:10"));
-    fits.library.record_play(&Song::remote("b", "tb", "x", "0:10"));
+    fits.library
+        .record_play(&Song::remote("a", "ta", "x", "0:10"));
+    fits.library
+        .record_play(&Song::remote("b", "tb", "x", "0:10"));
     fits.mode = Mode::Library;
     fits.library_ui.tab = LibraryTab::History;
-    assert!(!has_thumb(&fits), "a short list should not show a scrollbar");
+    assert!(
+        !has_thumb(&fits),
+        "a short list should not show a scrollbar"
+    );
 }
 
 #[test]
 fn library_scrollbar_thumb_tracks_the_actual_page_offset() {
     let mut app = App::new(100);
     for i in 0..40 {
-        app.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
+        app.library.record_play(&Song::remote(
+            format!("id{i}"),
+            format!("t{i}"),
+            "x",
+            "0:10",
+        ));
     }
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::History;
@@ -3654,7 +4074,12 @@ fn library_scrollbar_thumb_tracks_the_actual_page_offset() {
 fn dragging_library_scrollbar_moves_the_viewport() {
     let mut app = App::new(100);
     for i in 0..40 {
-        app.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
+        app.library.record_play(&Song::remote(
+            format!("id{i}"),
+            format!("t{i}"),
+            "x",
+            "0:10",
+        ));
     }
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::History;
@@ -3671,7 +4096,10 @@ fn dragging_library_scrollbar_moves_the_viewport() {
         .map(|b| b.rect)
         .expect("rendered library scrollbar rect");
 
-    app.update(Msg::MouseClick { col: bar.x, row: bar.y });
+    app.update(Msg::MouseClick {
+        col: bar.x,
+        row: bar.y,
+    });
     app.update(Msg::MouseDrag {
         col: bar.x,
         row: bar.y + bar.height - 1,
@@ -3689,7 +4117,10 @@ fn assert_centered_in(rect: Rect, container: Rect) {
         .x
         .saturating_add(container.width)
         .saturating_sub(rect.x.saturating_add(rect.width));
-    assert_eq!(left, right, "help button should be centered in {container:?}");
+    assert_eq!(
+        left, right,
+        "help button should be centered in {container:?}"
+    );
 }
 
 #[test]
@@ -3830,23 +4261,46 @@ fn rendering_settings_registers_clickable_controls() {
         let backend = TestBackend::new(80, 32);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
-        app.bridges.mouse_buttons.borrow().iter().map(|b| b.target).collect()
+        app.bridges
+            .mouse_buttons
+            .borrow()
+            .iter()
+            .map(|b| b.target)
+            .collect()
     };
 
     // Graphics: a Select (ThemePreset, field 0), a Toggle (BackgroundNone, field 1), and a
     // Text color row (first ThemeColor, field 2).
     let g = render_targets(SettingsTab::Graphics);
     let has = |ts: &[MouseTarget], t: MouseTarget| ts.contains(&t);
-    assert!(has(&g, MouseTarget::SettingsChange { row: 0, delta: -1 }), "preset ‹ arrow");
-    assert!(has(&g, MouseTarget::SettingsChange { row: 0, delta: 1 }), "preset › arrow");
-    assert!(has(&g, MouseTarget::SettingsChange { row: 1, delta: 1 }), "background toggle");
-    assert!(has(&g, MouseTarget::SettingsActivate(2)), "color row enters hex editor");
+    assert!(
+        has(&g, MouseTarget::SettingsChange { row: 0, delta: -1 }),
+        "preset ‹ arrow"
+    );
+    assert!(
+        has(&g, MouseTarget::SettingsChange { row: 0, delta: 1 }),
+        "preset › arrow"
+    );
+    assert!(
+        has(&g, MouseTarget::SettingsChange { row: 1, delta: 1 }),
+        "background toggle"
+    );
+    assert!(
+        has(&g, MouseTarget::SettingsActivate(2)),
+        "color row enters hex editor"
+    );
     // Headers are render-only — a click on one falls through to nothing, never a field.
 
     // Playback leads with the Speed slider (field 0): its ‹ › step arrows are click targets.
     let p = render_targets(SettingsTab::Playback);
-    assert!(has(&p, MouseTarget::SettingsChange { row: 0, delta: -1 }), "speed ‹ arrow");
-    assert!(has(&p, MouseTarget::SettingsChange { row: 0, delta: 1 }), "speed › arrow");
+    assert!(
+        has(&p, MouseTarget::SettingsChange { row: 0, delta: -1 }),
+        "speed ‹ arrow"
+    );
+    assert!(
+        has(&p, MouseTarget::SettingsChange { row: 0, delta: 1 }),
+        "speed › arrow"
+    );
 
     // General's Reset buttons (no value) activate on click.
     let general = render_targets(SettingsTab::General);
@@ -3855,7 +4309,10 @@ fn rendering_settings_registers_clickable_controls() {
         .iter()
         .position(|f| *f == Field::ResetAll)
         .unwrap();
-    assert!(has(&general, MouseTarget::SettingsActivate(reset_all)), "reset-all button");
+    assert!(
+        has(&general, MouseTarget::SettingsActivate(reset_all)),
+        "reset-all button"
+    );
 }
 
 #[test]
@@ -3871,27 +4328,50 @@ fn settings_control_hit_rects_land_on_their_glyphs() {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
         let rect = app
-            .bridges.mouse_buttons
+            .bridges
+            .mouse_buttons
             .borrow()
             .iter()
             .find(|b| b.target == want)
             .map(|b| b.rect)
             .unwrap_or_else(|| panic!("no rect registered for {want:?}"));
         let buf = terminal.backend().buffer().clone();
-        buf.cell((rect.x, rect.y)).map(|c| c.symbol().to_owned()).unwrap_or_default()
+        buf.cell((rect.x, rect.y))
+            .map(|c| c.symbol().to_owned())
+            .unwrap_or_default()
     };
 
     // Speed slider (Playback field 0): the −/+ rects sit on the ‹ › step arrows.
     let dec = MouseTarget::SettingsChange { row: 0, delta: -1 };
     let inc = MouseTarget::SettingsChange { row: 0, delta: 1 };
-    assert_eq!(cell_at(SettingsTab::Playback, dec), "‹", "speed decrease lands on ‹");
-    assert_eq!(cell_at(SettingsTab::Playback, inc), "›", "speed increase lands on ›");
+    assert_eq!(
+        cell_at(SettingsTab::Playback, dec),
+        "‹",
+        "speed decrease lands on ‹"
+    );
+    assert_eq!(
+        cell_at(SettingsTab::Playback, inc),
+        "›",
+        "speed increase lands on ›"
+    );
     // ThemePreset (Graphics field 0): a Select, so the arrows are < >.
-    assert_eq!(cell_at(SettingsTab::Graphics, dec), "<", "preset decrease lands on <");
-    assert_eq!(cell_at(SettingsTab::Graphics, inc), ">", "preset increase lands on >");
+    assert_eq!(
+        cell_at(SettingsTab::Graphics, dec),
+        "<",
+        "preset decrease lands on <"
+    );
+    assert_eq!(
+        cell_at(SettingsTab::Graphics, inc),
+        ">",
+        "preset increase lands on >"
+    );
     // BackgroundNone (Graphics field 1): a Toggle, rect over the [ ] / [x] checkbox.
     let toggle = MouseTarget::SettingsChange { row: 1, delta: 1 };
-    assert_eq!(cell_at(SettingsTab::Graphics, toggle), "[", "background toggle lands on [");
+    assert_eq!(
+        cell_at(SettingsTab::Graphics, toggle),
+        "[",
+        "background toggle lands on ["
+    );
 }
 
 #[test]
@@ -4018,7 +4498,8 @@ fn rendering_player_registers_radio_menu_when_autoplay_on() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     assert!(
-        app.bridges.mouse_buttons
+        app.bridges
+            .mouse_buttons
             .borrow()
             .iter()
             .any(|b| b.target == MouseTarget::RadioMenu)
@@ -4096,7 +4577,8 @@ fn render_app(app: &App) {
 
 /// The center cell of the hit rect registered for `target` in the last render.
 fn button_center(app: &App, target: MouseTarget) -> (u16, u16) {
-    app.bridges.mouse_buttons
+    app.bridges
+        .mouse_buttons
         .borrow()
         .iter()
         .find(|b| b.target == target)
@@ -4113,12 +4595,24 @@ fn click_target(app: &mut App, target: MouseTarget) -> Vec<Cmd> {
 
 #[test]
 fn every_screen_renders_the_nav_bar() {
-    for mode in [Mode::Player, Mode::Search, Mode::Library, Mode::Settings, Mode::Ai] {
+    for mode in [
+        Mode::Player,
+        Mode::Search,
+        Mode::Library,
+        Mode::Settings,
+        Mode::Ai,
+    ] {
         let mut app = app_playing(1, 0);
         app.navigate_to(mode);
         render_app(&app);
         let buttons = app.bridges.mouse_buttons.borrow();
-        for nav in [Mode::Player, Mode::Search, Mode::Library, Mode::Settings, Mode::Ai] {
+        for nav in [
+            Mode::Player,
+            Mode::Search,
+            Mode::Library,
+            Mode::Settings,
+            Mode::Ai,
+        ] {
             assert!(
                 buttons.iter().any(|b| b.target == MouseTarget::Nav(nav)),
                 "screen {mode:?} is missing nav item {nav:?}"
@@ -4256,7 +4750,12 @@ fn drag_selects_a_range_then_delete_removes_all_of_it() {
     // The Delete key removes the whole selected range at once.
     app.update(Msg::Key(key(KeyCode::Delete)));
     assert_eq!(app.queue.len(), 2);
-    let ids: Vec<&str> = app.queue.ordered().iter().map(|s| s.video_id.as_str()).collect();
+    let ids: Vec<&str> = app
+        .queue
+        .ordered()
+        .iter()
+        .map(|s| s.video_id.as_str())
+        .collect();
     assert_eq!(ids, vec!["id3", "id4"]);
 }
 

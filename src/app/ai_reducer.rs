@@ -20,7 +20,10 @@ impl App {
         match self.ai.focus {
             AiFocus::Input => {
                 // Ctrl+A selects the whole prompt (desktop-style); idempotent re-select.
-                if matches!(self.keymap.action(KeyContext::AiInput, k.into()), Some(Action::SelectAll)) {
+                if matches!(
+                    self.keymap.action(KeyContext::AiInput, k.into()),
+                    Some(Action::SelectAll)
+                ) {
                     self.ai.select_all = !self.ai.input.is_empty();
                     self.dirty = true;
                     return Vec::new();
@@ -37,7 +40,10 @@ impl App {
                         self.ai.input.push(c);
                         return Vec::new();
                     }
-                    if matches!(self.keymap.action(KeyContext::AiInput, k.into()), Some(Action::DeleteChar)) {
+                    if matches!(
+                        self.keymap.action(KeyContext::AiInput, k.into()),
+                        Some(Action::DeleteChar)
+                    ) {
                         self.ai.input.clear();
                         return Vec::new();
                     }
@@ -143,7 +149,8 @@ impl App {
             return Vec::new();
         }
         let start = self
-            .ai.suggestions_selected
+            .ai
+            .suggestions_selected
             .min(self.ai.suggestions.len() - 1);
         self.queue.set(self.ai.suggestions.clone(), start);
         self.status.text.clear();
@@ -184,5 +191,4 @@ impl App {
             autoplay_radio: self.autoplay_radio,
         }
     }
-
 }

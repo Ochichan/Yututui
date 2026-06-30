@@ -284,7 +284,10 @@ pub enum MouseTarget {
     /// A clickable value control on a Settings field row — the checkbox of a toggle or the
     /// `<` / `>` arrow of a Select/Slider. Carries the field-row index and the nudge direction,
     /// so a click is the mouse equivalent of ←/→ on that row.
-    SettingsChange { row: usize, delta: i32 },
+    SettingsChange {
+        row: usize,
+        delta: i32,
+    },
     /// A clickable Settings button or text value, by field-row index — enters edit mode (text)
     /// or fires the action (button); the mouse equivalent of Enter on that row.
     SettingsActivate(usize),

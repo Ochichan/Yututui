@@ -35,7 +35,11 @@ pub enum PlayerCmd {
     /// string clears all filters.
     SetAudioFilter(String),
     /// Nudge one labeled filter live (e.g. `@eqN` gain) without rebuilding the chain.
-    AfCommand { label: String, param: String, value: String },
+    AfCommand {
+        label: String,
+        param: String,
+        value: String,
+    },
     /// Set an arbitrary mpv property (e.g. `speed`).
     SetProperty { name: String, value: Value },
 }

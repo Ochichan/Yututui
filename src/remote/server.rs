@@ -14,10 +14,10 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
+use interprocess::local_socket::tokio::Listener;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::{GenericFilePath, ListenerOptions};
-use interprocess::local_socket::tokio::Listener;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
@@ -77,7 +77,10 @@ impl RemoteServer {
             // find us, so remote control is effectively off this run — log and degrade.
             tracing::warn!(error = %e, "remote: could not write instance descriptor; no remote control");
         }
-        InstanceGuard { socket: self.endpoint, owns_instance_file: self.owns_instance_file }
+        InstanceGuard {
+            socket: self.endpoint,
+            owns_instance_file: self.owns_instance_file,
+        }
     }
 }
 
@@ -110,7 +113,10 @@ async fn probe_alive(endpoint_name: &str) -> bool {
     let Ok(name) = endpoint_name.to_fs_name::<GenericFilePath>() else {
         return false;
     };
-    matches!(timeout(PROBE_TIMEOUT, Stream::connect(name)).await, Ok(Ok(_)))
+    matches!(
+        timeout(PROBE_TIMEOUT, Stream::connect(name)).await,
+        Ok(Ok(_))
+    )
 }
 
 /// Bind a tokio listener on `endpoint_name`.
@@ -122,7 +128,10 @@ async fn probe_alive(endpoint_name: &str) -> bool {
 /// unlink the *new* instance's socket. [`InstanceGuard`] is the single cleanup path instead.
 fn bind(endpoint_name: &str) -> io::Result<Listener> {
     let name = endpoint_name.to_fs_name::<GenericFilePath>()?;
-    ListenerOptions::new().name(name).reclaim_name(false).create_tokio()
+    ListenerOptions::new()
+        .name(name)
+        .reclaim_name(false)
+        .create_tokio()
 }
 
 /// Decide whether to run as the controllable instance, and bind the socket if so.
@@ -197,7 +206,10 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
 
 fn now_unix() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Accept connections forever, handling each on its own task.

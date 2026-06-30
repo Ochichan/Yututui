@@ -87,28 +87,103 @@ pub enum Action {
 /// cheat-sheet), in a single table so they never fall out of sync. The `id` is never
 /// translated — it is the persisted config key.
 const ACTION_META: &[(Action, &str, &str, &str)] = &[
-    (Action::TogglePause, "toggle_pause", "Play / pause", "재생 / 일시정지"),
+    (
+        Action::TogglePause,
+        "toggle_pause",
+        "Play / pause",
+        "재생 / 일시정지",
+    ),
     (Action::SeekBack, "seek_back", "Seek backward", "뒤로 이동"),
-    (Action::SeekForward, "seek_forward", "Seek forward", "앞으로 이동"),
+    (
+        Action::SeekForward,
+        "seek_forward",
+        "Seek forward",
+        "앞으로 이동",
+    ),
     (Action::VolUp, "vol_up", "Volume up", "볼륨 올리기"),
     (Action::VolDown, "vol_down", "Volume down", "볼륨 내리기"),
     (Action::NextTrack, "next_track", "Next track", "다음 곡"),
     (Action::PrevTrack, "prev_track", "Previous track", "이전 곡"),
-    (Action::Favorite, "favorite", "Favorite / unfavorite", "즐겨찾기 추가 / 해제"),
-    (Action::CycleRating, "cycle_rating", "Rate: like / dislike", "평가: 좋아요 / 싫어요"),
-    (Action::OpenLibrary, "open_library", "Open library", "라이브러리 열기"),
+    (
+        Action::Favorite,
+        "favorite",
+        "Favorite / unfavorite",
+        "즐겨찾기 추가 / 해제",
+    ),
+    (
+        Action::CycleRating,
+        "cycle_rating",
+        "Rate: like / dislike",
+        "평가: 좋아요 / 싫어요",
+    ),
+    (
+        Action::OpenLibrary,
+        "open_library",
+        "Open library",
+        "라이브러리 열기",
+    ),
     (Action::OpenQueue, "open_queue", "Open queue", "대기열 열기"),
-    (Action::ToggleLyrics, "toggle_lyrics", "Toggle lyrics", "가사 켜기 / 끄기"),
-    (Action::Download, "download", "Download track", "곡 다운로드"),
-    (Action::ToggleShuffle, "toggle_shuffle", "Toggle shuffle", "셔플 켜기 / 끄기"),
-    (Action::CycleRepeat, "cycle_repeat", "Cycle repeat", "반복 모드 전환"),
-    (Action::CycleEq, "cycle_eq", "Cycle EQ preset", "EQ 프리셋 전환"),
-    (Action::ToggleNormalize, "toggle_normalize", "Toggle normalization", "음량 평준화 켜기 / 끄기"),
+    (
+        Action::ToggleLyrics,
+        "toggle_lyrics",
+        "Toggle lyrics",
+        "가사 켜기 / 끄기",
+    ),
+    (
+        Action::Download,
+        "download",
+        "Download track",
+        "곡 다운로드",
+    ),
+    (
+        Action::ToggleShuffle,
+        "toggle_shuffle",
+        "Toggle shuffle",
+        "셔플 켜기 / 끄기",
+    ),
+    (
+        Action::CycleRepeat,
+        "cycle_repeat",
+        "Cycle repeat",
+        "반복 모드 전환",
+    ),
+    (
+        Action::CycleEq,
+        "cycle_eq",
+        "Cycle EQ preset",
+        "EQ 프리셋 전환",
+    ),
+    (
+        Action::ToggleNormalize,
+        "toggle_normalize",
+        "Toggle normalization",
+        "음량 평준화 켜기 / 끄기",
+    ),
     (Action::SpeedUp, "speed_up", "Speed up", "재생 속도 올리기"),
-    (Action::SpeedDown, "speed_down", "Speed down", "재생 속도 내리기"),
-    (Action::OpenSettings, "open_settings", "Open settings", "설정 열기"),
-    (Action::OpenAi, "open_ai", "Open AI assistant", "AI 어시스턴트 열기"),
-    (Action::OpenSearch, "open_search", "Open search", "검색 열기"),
+    (
+        Action::SpeedDown,
+        "speed_down",
+        "Speed down",
+        "재생 속도 내리기",
+    ),
+    (
+        Action::OpenSettings,
+        "open_settings",
+        "Open settings",
+        "설정 열기",
+    ),
+    (
+        Action::OpenAi,
+        "open_ai",
+        "Open AI assistant",
+        "AI 어시스턴트 열기",
+    ),
+    (
+        Action::OpenSearch,
+        "open_search",
+        "Open search",
+        "검색 열기",
+    ),
     (Action::Quit, "quit", "Quit", "종료"),
     (Action::Home, "home", "Go home", "홈으로"),
     (Action::MoveUp, "move_up", "Move up", "위로 이동"),
@@ -116,36 +191,145 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (Action::PageUp, "page_up", "Page up", "페이지 위로"),
     (Action::PageDown, "page_down", "Page down", "페이지 아래로"),
     (Action::JumpTop, "jump_top", "Jump to top", "맨 위로"),
-    (Action::JumpBottom, "jump_bottom", "Jump to bottom", "맨 아래로"),
-    (Action::Confirm, "confirm", "Confirm / select", "확인 / 선택"),
+    (
+        Action::JumpBottom,
+        "jump_bottom",
+        "Jump to bottom",
+        "맨 아래로",
+    ),
+    (
+        Action::Confirm,
+        "confirm",
+        "Confirm / select",
+        "확인 / 선택",
+    ),
     (Action::Enqueue, "enqueue", "Add to queue", "큐에 추가"),
     (Action::Back, "back", "Back / close", "뒤로 / 닫기"),
-    (Action::FocusNext, "focus_next", "Next tab / focus", "다음 탭 / 포커스"),
-    (Action::FocusPrev, "focus_prev", "Previous tab / focus", "이전 탭 / 포커스"),
-    (Action::DeleteChar, "delete_char", "Delete character", "문자 삭제"),
+    (
+        Action::FocusNext,
+        "focus_next",
+        "Next tab / focus",
+        "다음 탭 / 포커스",
+    ),
+    (
+        Action::FocusPrev,
+        "focus_prev",
+        "Previous tab / focus",
+        "이전 탭 / 포커스",
+    ),
+    (
+        Action::DeleteChar,
+        "delete_char",
+        "Delete character",
+        "문자 삭제",
+    ),
     (Action::SelectAll, "select_all", "Select all", "전체 선택"),
-    (Action::QueueRemove, "queue_remove", "Remove from queue", "대기열에서 제거"),
-    (Action::LibraryRemove, "library_remove", "Remove / delete", "제거 / 삭제"),
-    (Action::LibraryFilter, "library_filter", "Filter library", "라이브러리 필터"),
-    (Action::PlayAll, "play_all", "Play whole tab", "탭 전체 재생"),
-    (Action::SettingsCancel, "settings_cancel", "Close settings", "설정 저장 후 닫기"),
-    (Action::ChangeDecrease, "change_decrease", "Decrease value", "값 낮추기"),
-    (Action::ChangeIncrease, "change_increase", "Increase value", "값 높이기"),
-    (Action::FocusInput, "focus_input", "Focus input box", "입력창으로 이동"),
-    (Action::ToggleRadio, "toggle_radio", "Toggle autoplay radio", "자동재생 라디오 켜기 / 끄기"),
-    (Action::ToggleHelp, "toggle_help", "Toggle help", "도움말 켜기 / 끄기"),
-    (Action::ToggleAbout, "toggle_about", "About ytm-tui", "ytm-tui 정보"),
-    (Action::ToggleAnimations, "toggle_animations", "Toggle animations", "애니메이션 켜기 / 끄기"),
-    (Action::WhyAi, "why_ai", "Why these AI picks", "AI 선곡 이유 보기"),
-    (Action::CopyLink, "copy_link", "Copy track link", "트랙 링크 복사"),
-    (Action::PlayVideo, "play_video", "Video overlay (mpv)", "영상 오버레이 (mpv)"),
-    (Action::ToggleVideoLayout, "toggle_video_layout", "Video size / position", "영상 크기 / 위치"),
+    (
+        Action::QueueRemove,
+        "queue_remove",
+        "Remove from queue",
+        "대기열에서 제거",
+    ),
+    (
+        Action::LibraryRemove,
+        "library_remove",
+        "Remove / delete",
+        "제거 / 삭제",
+    ),
+    (
+        Action::LibraryFilter,
+        "library_filter",
+        "Filter library",
+        "라이브러리 필터",
+    ),
+    (
+        Action::PlayAll,
+        "play_all",
+        "Play whole tab",
+        "탭 전체 재생",
+    ),
+    (
+        Action::SettingsCancel,
+        "settings_cancel",
+        "Close settings",
+        "설정 저장 후 닫기",
+    ),
+    (
+        Action::ChangeDecrease,
+        "change_decrease",
+        "Decrease value",
+        "값 낮추기",
+    ),
+    (
+        Action::ChangeIncrease,
+        "change_increase",
+        "Increase value",
+        "값 높이기",
+    ),
+    (
+        Action::FocusInput,
+        "focus_input",
+        "Focus input box",
+        "입력창으로 이동",
+    ),
+    (
+        Action::ToggleRadio,
+        "toggle_radio",
+        "Toggle autoplay radio",
+        "자동재생 라디오 켜기 / 끄기",
+    ),
+    (
+        Action::ToggleHelp,
+        "toggle_help",
+        "Toggle help",
+        "도움말 켜기 / 끄기",
+    ),
+    (
+        Action::ToggleAbout,
+        "toggle_about",
+        "About ytm-tui",
+        "ytm-tui 정보",
+    ),
+    (
+        Action::ToggleAnimations,
+        "toggle_animations",
+        "Toggle animations",
+        "애니메이션 켜기 / 끄기",
+    ),
+    (
+        Action::WhyAi,
+        "why_ai",
+        "Why these AI picks",
+        "AI 선곡 이유 보기",
+    ),
+    (
+        Action::CopyLink,
+        "copy_link",
+        "Copy track link",
+        "트랙 링크 복사",
+    ),
+    (
+        Action::PlayVideo,
+        "play_video",
+        "Video overlay (mpv)",
+        "영상 오버레이 (mpv)",
+    ),
+    (
+        Action::ToggleVideoLayout,
+        "toggle_video_layout",
+        "Video size / position",
+        "영상 크기 / 위치",
+    ),
 ];
 
 impl Action {
     /// The stable identifier used in `config.json` keys.
     pub fn id(self) -> &'static str {
-        ACTION_META.iter().find(|(a, ..)| *a == self).map(|(_, id, ..)| *id).unwrap_or("?")
+        ACTION_META
+            .iter()
+            .find(|(a, ..)| *a == self)
+            .map(|(_, id, ..)| *id)
+            .unwrap_or("?")
     }
 
     /// A human-readable name for the editor / cheat-sheet, in the active UI language.
@@ -168,14 +352,19 @@ impl Action {
             (KeyContext::SearchInput, Action::Confirm) => t!("Search", "검색"),
             (KeyContext::AiInput, Action::Confirm) => t!("Send", "보내기"),
             (KeyContext::SearchResults, Action::Confirm) => t!("Play selected", "선택 항목 재생"),
-            (KeyContext::SearchResults, Action::Back) => t!("Close Search Results", "검색 결과 닫기"),
+            (KeyContext::SearchResults, Action::Back) => {
+                t!("Close Search Results", "검색 결과 닫기")
+            }
             (KeyContext::Settings, Action::SettingsCancel) => t!("Save + quit", "저장하고 닫기"),
             _ => self.human_label(),
         }
     }
 
     fn from_id(id: &str) -> Option<Action> {
-        ACTION_META.iter().find(|(_, i, ..)| *i == id).map(|(a, ..)| *a)
+        ACTION_META
+            .iter()
+            .find(|(_, i, ..)| *i == id)
+            .map(|(a, ..)| *a)
     }
 }
 
@@ -198,20 +387,44 @@ pub enum KeyContext {
 
 const CONTEXT_META: &[(KeyContext, &str, &str, &str)] = &[
     (KeyContext::Player, "player", "Player", "플레이어"),
-    (KeyContext::Common, "common", "Navigation (all screens)", "탐색 (모든 화면)"),
+    (
+        KeyContext::Common,
+        "common",
+        "Navigation (all screens)",
+        "탐색 (모든 화면)",
+    ),
     (KeyContext::Global, "global", "Global", "전역"),
     (KeyContext::Library, "library", "Library", "라이브러리"),
     (KeyContext::Queue, "queue", "Queue window", "대기열 창"),
-    (KeyContext::SearchInput, "search_input", "Search box", "검색창"),
-    (KeyContext::SearchResults, "search_results", "Search results", "검색 결과"),
+    (
+        KeyContext::SearchInput,
+        "search_input",
+        "Search box",
+        "검색창",
+    ),
+    (
+        KeyContext::SearchResults,
+        "search_results",
+        "Search results",
+        "검색 결과",
+    ),
     (KeyContext::Settings, "settings", "Settings", "설정"),
     (KeyContext::AiInput, "ai_input", "AI box", "AI 입력창"),
-    (KeyContext::AiSuggestions, "ai_suggestions", "AI results", "AI 결과"),
+    (
+        KeyContext::AiSuggestions,
+        "ai_suggestions",
+        "AI results",
+        "AI 결과",
+    ),
 ];
 
 impl KeyContext {
     pub fn id(self) -> &'static str {
-        CONTEXT_META.iter().find(|(c, ..)| *c == self).map(|(_, id, ..)| *id).unwrap_or("?")
+        CONTEXT_META
+            .iter()
+            .find(|(c, ..)| *c == self)
+            .map(|(_, id, ..)| *id)
+            .unwrap_or("?")
     }
 
     /// The group title for the help cheat-sheet / Keys tab, in the active UI language.
@@ -224,7 +437,10 @@ impl KeyContext {
     }
 
     fn from_id(id: &str) -> Option<KeyContext> {
-        CONTEXT_META.iter().find(|(_, i, ..)| *i == id).map(|(c, ..)| *c)
+        CONTEXT_META
+            .iter()
+            .find(|(_, i, ..)| *i == id)
+            .map(|(c, ..)| *c)
     }
 }
 
@@ -347,7 +563,12 @@ pub struct KeyMap {
 
 impl Default for KeyMap {
     fn default() -> Self {
-        Self::from_labels(default_bindings().into_iter().map(|(c, a, ch)| ((c, a), ch)).collect())
+        Self::from_labels(
+            default_bindings()
+                .into_iter()
+                .map(|(c, a, ch)| ((c, a), ch))
+                .collect(),
+        )
     }
 }
 
@@ -363,8 +584,10 @@ impl KeyMap {
 
     /// Build from persisted overrides layered over the built-in defaults.
     pub fn from_overrides(overrides: &BTreeMap<String, String>) -> Self {
-        let mut labels: HashMap<(KeyContext, Action), Chord> =
-            default_bindings().into_iter().map(|(c, a, ch)| ((c, a), ch)).collect();
+        let mut labels: HashMap<(KeyContext, Action), Chord> = default_bindings()
+            .into_iter()
+            .map(|(c, a, ch)| ((c, a), ch))
+            .collect();
         for (key, val) in overrides {
             let Some((ctx_id, action_id)) = key.split_once('.') else {
                 tracing::warn!(key, "ignoring malformed keybinding override");
@@ -432,7 +655,11 @@ impl KeyMap {
             if let Some(&existing) = self.bindings.get(&(c, chord))
                 && existing != action
             {
-                return Some(Conflict { ctx: c, existing, chord });
+                return Some(Conflict {
+                    ctx: c,
+                    existing,
+                    chord,
+                });
             }
         }
         None
@@ -440,7 +667,12 @@ impl KeyMap {
 
     /// Rebind `(ctx, action)` to `chord`. Rejects (returns the [`Conflict`]) if the chord
     /// is already in use; otherwise drops the action's old chord and installs the new.
-    pub fn rebind(&mut self, ctx: KeyContext, action: Action, chord: Chord) -> Result<(), Conflict> {
+    pub fn rebind(
+        &mut self,
+        ctx: KeyContext,
+        action: Action,
+        chord: Chord,
+    ) -> Result<(), Conflict> {
         if let Some(conflict) = self.conflict(ctx, action, chord) {
             return Err(conflict);
         }
@@ -468,7 +700,10 @@ impl KeyMap {
         for (ctx, action, def) in default_bindings() {
             let cur = self.labels.get(&(ctx, action)).copied().unwrap_or(def);
             if cur != def {
-                out.insert(format!("{}.{}", ctx.id(), action.id()), chord_to_config(cur));
+                out.insert(
+                    format!("{}.{}", ctx.id(), action.id()),
+                    chord_to_config(cur),
+                );
             }
         }
         out
@@ -564,7 +799,10 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
 
 /// The default chord for `(ctx, action)`, if it has one.
 fn default_chord(ctx: KeyContext, action: Action) -> Option<Chord> {
-    default_bindings().into_iter().find(|(c, a, _)| *c == ctx && *a == action).map(|(.., ch)| ch)
+    default_bindings()
+        .into_iter()
+        .find(|(c, a, _)| *c == ctx && *a == action)
+        .map(|(.., ch)| ch)
 }
 
 /// The editable bindings grouped by context, in display order, for the editor and the
@@ -583,7 +821,10 @@ pub fn groups() -> Vec<(KeyContext, Vec<Action>)> {
 /// A flat, header-free list of every editable `(context, action)`, in display order. The
 /// Keys-tab cursor indexes directly into this.
 pub fn editable_entries() -> Vec<(KeyContext, Action)> {
-    default_bindings().into_iter().map(|(c, a, _)| (c, a)).collect()
+    default_bindings()
+        .into_iter()
+        .map(|(c, a, _)| (c, a))
+        .collect()
 }
 
 /// Parse a config chord string like `"space"`, `"ctrl+n"`, `"L"`, `">"` into a [`Chord`].
@@ -608,7 +849,9 @@ pub fn parse_chord(s: &str) -> Option<Chord> {
 }
 
 fn strip_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    if s.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix)) {
+    if s.get(..prefix.len())
+        .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+    {
         Some(&s[prefix.len()..])
     } else {
         None
@@ -743,7 +986,10 @@ mod tests {
     #[test]
     fn space_formats_as_symbol() {
         assert_eq!(format_chord(parse_chord("space").unwrap()), "␣");
-        assert_eq!(chord_to_config(Chord::new(KeyCode::Char(' '), KeyModifiers::empty())), "space");
+        assert_eq!(
+            chord_to_config(Chord::new(KeyCode::Char(' '), KeyModifiers::empty())),
+            "space"
+        );
     }
 
     #[test]
@@ -760,9 +1006,16 @@ mod tests {
 
     #[test]
     fn parse_format_round_trip() {
-        for s in ["space", "ctrl+n", "ctrl+q", "ctrl+h", "L", ">", "/", "?", "enter", "esc", "backtab", "f5"] {
+        for s in [
+            "space", "ctrl+n", "ctrl+q", "ctrl+h", "L", ">", "/", "?", "enter", "esc", "backtab",
+            "f5",
+        ] {
             let chord = parse_chord(s).unwrap();
-            assert_eq!(parse_chord(&chord_to_config(chord)).unwrap(), chord, "round trip {s}");
+            assert_eq!(
+                parse_chord(&chord_to_config(chord)).unwrap(),
+                chord,
+                "round trip {s}"
+            );
         }
     }
 
@@ -773,7 +1026,10 @@ mod tests {
         let b = ev(KeyCode::Char('L'), KeyModifiers::empty());
         assert_eq!(a, b);
         // Shift+Tab collapses to BackTab.
-        assert_eq!(ev(KeyCode::Tab, KeyModifiers::SHIFT), ev(KeyCode::BackTab, KeyModifiers::empty()));
+        assert_eq!(
+            ev(KeyCode::Tab, KeyModifiers::SHIFT),
+            ev(KeyCode::BackTab, KeyModifiers::empty())
+        );
     }
 
     #[test]
@@ -782,18 +1038,42 @@ mod tests {
             ev(KeyCode::Char('Q'), KeyModifiers::CONTROL),
             ev(KeyCode::Char('q'), KeyModifiers::CONTROL)
         );
-        assert_eq!(chord_to_config(ev(KeyCode::Char('Q'), KeyModifiers::CONTROL)), "ctrl+q");
+        assert_eq!(
+            chord_to_config(ev(KeyCode::Char('Q'), KeyModifiers::CONTROL)),
+            "ctrl+q"
+        );
     }
 
     #[test]
     fn korean_2set_keys_normalize_to_qwerty() {
-        assert_eq!(ev(KeyCode::Char('ㅂ'), KeyModifiers::empty()), parse_chord("q").unwrap());
-        assert_eq!(ev(KeyCode::Char('ㅂ'), KeyModifiers::CONTROL), parse_chord("ctrl+q").unwrap());
-        assert_eq!(ev(KeyCode::Char('ㄱ'), KeyModifiers::CONTROL), parse_chord("ctrl+r").unwrap());
-        assert_eq!(ev(KeyCode::Char('ㅂ'), KeyModifiers::ALT), parse_chord("alt+q").unwrap());
-        assert_eq!(ev(KeyCode::Char('ㅣ'), KeyModifiers::SHIFT), parse_chord("L").unwrap());
-        assert_eq!(ev(KeyCode::Char('ㅇ'), KeyModifiers::SHIFT), parse_chord("D").unwrap());
-        assert_eq!(ev(KeyCode::Char('ㅆ'), KeyModifiers::empty()), parse_chord("T").unwrap());
+        assert_eq!(
+            ev(KeyCode::Char('ㅂ'), KeyModifiers::empty()),
+            parse_chord("q").unwrap()
+        );
+        assert_eq!(
+            ev(KeyCode::Char('ㅂ'), KeyModifiers::CONTROL),
+            parse_chord("ctrl+q").unwrap()
+        );
+        assert_eq!(
+            ev(KeyCode::Char('ㄱ'), KeyModifiers::CONTROL),
+            parse_chord("ctrl+r").unwrap()
+        );
+        assert_eq!(
+            ev(KeyCode::Char('ㅂ'), KeyModifiers::ALT),
+            parse_chord("alt+q").unwrap()
+        );
+        assert_eq!(
+            ev(KeyCode::Char('ㅣ'), KeyModifiers::SHIFT),
+            parse_chord("L").unwrap()
+        );
+        assert_eq!(
+            ev(KeyCode::Char('ㅇ'), KeyModifiers::SHIFT),
+            parse_chord("D").unwrap()
+        );
+        assert_eq!(
+            ev(KeyCode::Char('ㅆ'), KeyModifiers::empty()),
+            parse_chord("T").unwrap()
+        );
     }
 
     #[test]
@@ -830,21 +1110,63 @@ mod tests {
     #[test]
     fn defaults_resolve_to_actions() {
         let km = KeyMap::default();
-        assert_eq!(km.action(KeyContext::Player, parse_chord("space").unwrap()), Some(Action::TogglePause));
-        assert_eq!(km.action(KeyContext::Player, parse_chord("up").unwrap()), Some(Action::VolUp));
-        assert_eq!(km.action(KeyContext::Player, parse_chord("down").unwrap()), Some(Action::VolDown));
-        assert_eq!(km.action(KeyContext::Player, parse_chord("n").unwrap()), Some(Action::NextTrack));
-        assert_eq!(km.action(KeyContext::Player, parse_chord("l").unwrap()), Some(Action::OpenLibrary));
-        assert_eq!(km.action(KeyContext::Player, parse_chord("L").unwrap()), Some(Action::ToggleLyrics));
-        assert_eq!(km.action(KeyContext::Player, parse_chord("q").unwrap()), Some(Action::Back));
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("space").unwrap()),
+            Some(Action::TogglePause)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("up").unwrap()),
+            Some(Action::VolUp)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("down").unwrap()),
+            Some(Action::VolDown)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("n").unwrap()),
+            Some(Action::NextTrack)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("l").unwrap()),
+            Some(Action::OpenLibrary)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("L").unwrap()),
+            Some(Action::ToggleLyrics)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("q").unwrap()),
+            Some(Action::Back)
+        );
         // Common nav falls through in a list context.
-        assert_eq!(km.action(KeyContext::Library, parse_chord("up").unwrap()), Some(Action::MoveUp));
-        assert_eq!(km.action(KeyContext::Library, parse_chord("down").unwrap()), Some(Action::MoveDown));
-        assert_eq!(km.action(KeyContext::Library, parse_chord("q").unwrap()), Some(Action::Back));
-        assert_eq!(km.action(KeyContext::SearchResults, parse_chord("q").unwrap()), Some(Action::Back));
-        assert_eq!(km.global_action(parse_chord("ctrl+q").unwrap()), Some(Action::Quit));
-        assert_eq!(km.global_action(parse_chord("ctrl+h").unwrap()), Some(Action::Home));
-        assert_eq!(km.global_action(parse_chord("?").unwrap()), Some(Action::ToggleHelp));
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("up").unwrap()),
+            Some(Action::MoveUp)
+        );
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("down").unwrap()),
+            Some(Action::MoveDown)
+        );
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("q").unwrap()),
+            Some(Action::Back)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, parse_chord("q").unwrap()),
+            Some(Action::Back)
+        );
+        assert_eq!(
+            km.global_action(parse_chord("ctrl+q").unwrap()),
+            Some(Action::Quit)
+        );
+        assert_eq!(
+            km.global_action(parse_chord("ctrl+h").unwrap()),
+            Some(Action::Home)
+        );
+        assert_eq!(
+            km.global_action(parse_chord("?").unwrap()),
+            Some(Action::ToggleHelp)
+        );
     }
 
     #[test]
@@ -853,13 +1175,30 @@ mod tests {
         // The four new nav primitives live in Common, so they fall through into any list
         // context (Library, Search results, …) and onto their standard physical keys.
         for ctx in [KeyContext::Library, KeyContext::SearchResults] {
-            assert_eq!(km.action(ctx, parse_chord("pageup").unwrap()), Some(Action::PageUp));
-            assert_eq!(km.action(ctx, parse_chord("pagedown").unwrap()), Some(Action::PageDown));
-            assert_eq!(km.action(ctx, parse_chord("home").unwrap()), Some(Action::JumpTop));
-            assert_eq!(km.action(ctx, parse_chord("end").unwrap()), Some(Action::JumpBottom));
+            assert_eq!(
+                km.action(ctx, parse_chord("pageup").unwrap()),
+                Some(Action::PageUp)
+            );
+            assert_eq!(
+                km.action(ctx, parse_chord("pagedown").unwrap()),
+                Some(Action::PageDown)
+            );
+            assert_eq!(
+                km.action(ctx, parse_chord("home").unwrap()),
+                Some(Action::JumpTop)
+            );
+            assert_eq!(
+                km.action(ctx, parse_chord("end").unwrap()),
+                Some(Action::JumpBottom)
+            );
         }
         // They round-trip through ids/labels like every other action.
-        for a in [Action::PageUp, Action::PageDown, Action::JumpTop, Action::JumpBottom] {
+        for a in [
+            Action::PageUp,
+            Action::PageDown,
+            Action::JumpTop,
+            Action::JumpBottom,
+        ] {
             assert_ne!(a.id(), "?");
             assert_ne!(a.human_label(), "?");
         }
@@ -868,21 +1207,39 @@ mod tests {
     #[test]
     fn korean_2set_keys_resolve_default_actions() {
         let km = KeyMap::default();
-        assert_eq!(km.action(KeyContext::Player, ev(KeyCode::Char('ㅂ'), KeyModifiers::empty())), Some(Action::Back));
         assert_eq!(
-            km.action(KeyContext::Player, ev(KeyCode::Char('ㅣ'), KeyModifiers::empty())),
+            km.action(
+                KeyContext::Player,
+                ev(KeyCode::Char('ㅂ'), KeyModifiers::empty())
+            ),
+            Some(Action::Back)
+        );
+        assert_eq!(
+            km.action(
+                KeyContext::Player,
+                ev(KeyCode::Char('ㅣ'), KeyModifiers::empty())
+            ),
             Some(Action::OpenLibrary)
         );
         assert_eq!(
-            km.action(KeyContext::Player, ev(KeyCode::Char('ㅣ'), KeyModifiers::SHIFT)),
+            km.action(
+                KeyContext::Player,
+                ev(KeyCode::Char('ㅣ'), KeyModifiers::SHIFT)
+            ),
             Some(Action::ToggleLyrics)
         );
         assert_eq!(
-            km.action(KeyContext::Player, ev(KeyCode::Char('ㅇ'), KeyModifiers::empty())),
+            km.action(
+                KeyContext::Player,
+                ev(KeyCode::Char('ㅇ'), KeyModifiers::empty())
+            ),
             Some(Action::Download)
         );
         assert_eq!(
-            km.action(KeyContext::SearchResults, ev(KeyCode::Char('ㅂ'), KeyModifiers::empty())),
+            km.action(
+                KeyContext::SearchResults,
+                ev(KeyCode::Char('ㅂ'), KeyModifiers::empty())
+            ),
             Some(Action::Back)
         );
         assert_eq!(
@@ -902,14 +1259,26 @@ mod tests {
     #[test]
     fn contextual_labels_describe_close_and_global_targets() {
         let _guard = crate::i18n::lock_for_test();
-        assert_eq!(Action::Back.human_label_for(KeyContext::Library), "Close Library");
-        assert_eq!(Action::Confirm.human_label_for(KeyContext::SearchInput), "Search");
+        assert_eq!(
+            Action::Back.human_label_for(KeyContext::Library),
+            "Close Library"
+        );
+        assert_eq!(
+            Action::Confirm.human_label_for(KeyContext::SearchInput),
+            "Search"
+        );
         assert_eq!(
             Action::Confirm.human_label_for(KeyContext::SearchResults),
             "Play selected"
         );
-        assert_eq!(Action::Back.human_label_for(KeyContext::SearchResults), "Close Search Results");
-        assert_eq!(Action::SettingsCancel.human_label_for(KeyContext::Settings), "Save + quit");
+        assert_eq!(
+            Action::Back.human_label_for(KeyContext::SearchResults),
+            "Close Search Results"
+        );
+        assert_eq!(
+            Action::SettingsCancel.human_label_for(KeyContext::Settings),
+            "Save + quit"
+        );
         assert_eq!(Action::Quit.human_label_for(KeyContext::Global), "Quit");
         assert_eq!(Action::Home.human_label_for(KeyContext::Global), "Go home");
     }
@@ -919,13 +1288,28 @@ mod tests {
         let _guard = crate::i18n::lock_for_test();
         let km = KeyMap::default();
         // Library: Enter = play selected, `\` = add to queue, `P` = play the whole tab.
-        assert_eq!(km.action(KeyContext::Library, parse_chord("enter").unwrap()), Some(Action::Confirm));
-        assert_eq!(km.action(KeyContext::Library, parse_chord("\\").unwrap()), Some(Action::Enqueue));
-        assert_eq!(km.action(KeyContext::Library, parse_chord("P").unwrap()), Some(Action::PlayAll));
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("enter").unwrap()),
+            Some(Action::Confirm)
+        );
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("\\").unwrap()),
+            Some(Action::Enqueue)
+        );
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("P").unwrap()),
+            Some(Action::PlayAll)
+        );
         // Search results: `\` = add to queue (Enter stays fixed in the handler, not the keymap).
-        assert_eq!(km.action(KeyContext::SearchResults, parse_chord("\\").unwrap()), Some(Action::Enqueue));
+        assert_eq!(
+            km.action(KeyContext::SearchResults, parse_chord("\\").unwrap()),
+            Some(Action::Enqueue)
+        );
         // The unified play/queue labels read consistently across both surfaces.
-        assert_eq!(Action::Confirm.human_label_for(KeyContext::Library), "Play selected");
+        assert_eq!(
+            Action::Confirm.human_label_for(KeyContext::Library),
+            "Play selected"
+        );
         assert_eq!(Action::Enqueue.human_label(), "Add to queue");
         assert_eq!(Action::PlayAll.human_label(), "Play whole tab");
     }
@@ -942,12 +1326,18 @@ mod tests {
     #[test]
     fn settings_has_no_standalone_save_binding() {
         let km = KeyMap::default();
-        assert_eq!(km.action(KeyContext::Settings, parse_chord("s").unwrap()), None);
+        assert_eq!(
+            km.action(KeyContext::Settings, parse_chord("s").unwrap()),
+            None
+        );
 
         let mut o = BTreeMap::new();
         o.insert("settings.settings_save".to_owned(), "S".to_owned());
         let km = KeyMap::from_overrides(&o);
-        assert_eq!(km.action(KeyContext::Settings, parse_chord("S").unwrap()), None);
+        assert_eq!(
+            km.action(KeyContext::Settings, parse_chord("S").unwrap()),
+            None
+        );
     }
 
     #[test]
@@ -962,8 +1352,14 @@ mod tests {
     fn ctrl_a_selects_all_in_text_inputs() {
         let km = KeyMap::default();
         let ctrl_a = parse_chord("ctrl+a").unwrap();
-        assert_eq!(km.action(KeyContext::SearchInput, ctrl_a), Some(Action::SelectAll));
-        assert_eq!(km.action(KeyContext::AiInput, ctrl_a), Some(Action::SelectAll));
+        assert_eq!(
+            km.action(KeyContext::SearchInput, ctrl_a),
+            Some(Action::SelectAll)
+        );
+        assert_eq!(
+            km.action(KeyContext::AiInput, ctrl_a),
+            Some(Action::SelectAll)
+        );
         // Ctrl+A isn't a typed character, so it won't leak into the field as text.
         assert!(!ctrl_a.is_typeable());
     }
@@ -974,12 +1370,17 @@ mod tests {
         // `q` is already Back in Player → binding TogglePause to it is rejected, and the
         // rejection names the offending chord, the action holding it, and where.
         let q = parse_chord("q").unwrap();
-        let err = km.rebind(KeyContext::Player, Action::TogglePause, q).unwrap_err();
+        let err = km
+            .rebind(KeyContext::Player, Action::TogglePause, q)
+            .unwrap_err();
         assert_eq!(err.existing, Action::Back);
         assert_eq!(err.chord, q);
         assert_eq!(err.ctx, KeyContext::Player);
         // Space is still pause; q is still back/close.
-        assert_eq!(km.action(KeyContext::Player, parse_chord("space").unwrap()), Some(Action::TogglePause));
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("space").unwrap()),
+            Some(Action::TogglePause)
+        );
         assert_eq!(km.action(KeyContext::Player, q), Some(Action::Back));
     }
 
@@ -987,31 +1388,58 @@ mod tests {
     fn rebind_moves_binding() {
         let mut km = KeyMap::default();
         let p_upper = parse_chord("P").unwrap();
-        km.rebind(KeyContext::Player, Action::TogglePause, p_upper).unwrap();
-        assert_eq!(km.action(KeyContext::Player, p_upper), Some(Action::TogglePause));
+        km.rebind(KeyContext::Player, Action::TogglePause, p_upper)
+            .unwrap();
+        assert_eq!(
+            km.action(KeyContext::Player, p_upper),
+            Some(Action::TogglePause)
+        );
         // The old space binding is gone.
-        assert_eq!(km.action(KeyContext::Player, parse_chord("space").unwrap()), None);
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("space").unwrap()),
+            None
+        );
     }
 
     #[test]
     fn overrides_round_trip() {
         let mut km = KeyMap::default();
-        km.rebind(KeyContext::Player, Action::TogglePause, parse_chord("P").unwrap()).unwrap();
+        km.rebind(
+            KeyContext::Player,
+            Action::TogglePause,
+            parse_chord("P").unwrap(),
+        )
+        .unwrap();
         let overrides = km.to_overrides();
-        assert_eq!(overrides.get("player.toggle_pause").map(String::as_str), Some("P"));
+        assert_eq!(
+            overrides.get("player.toggle_pause").map(String::as_str),
+            Some("P")
+        );
         let restored = KeyMap::from_overrides(&overrides);
-        assert_eq!(restored.action(KeyContext::Player, parse_chord("P").unwrap()), Some(Action::TogglePause));
-        assert_eq!(restored.action(KeyContext::Player, parse_chord("space").unwrap()), None);
+        assert_eq!(
+            restored.action(KeyContext::Player, parse_chord("P").unwrap()),
+            Some(Action::TogglePause)
+        );
+        assert_eq!(
+            restored.action(KeyContext::Player, parse_chord("space").unwrap()),
+            None
+        );
     }
 
     #[test]
     fn unknown_overrides_are_ignored() {
         let mut o = BTreeMap::new();
         o.insert("bogus.thing".to_owned(), "x".to_owned());
-        o.insert("player.toggle_pause".to_owned(), "not a real chord!!".to_owned());
+        o.insert(
+            "player.toggle_pause".to_owned(),
+            "not a real chord!!".to_owned(),
+        );
         // Falls back to defaults; doesn't panic.
         let km = KeyMap::from_overrides(&o);
-        assert_eq!(km.action(KeyContext::Player, parse_chord("space").unwrap()), Some(Action::TogglePause));
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("space").unwrap()),
+            Some(Action::TogglePause)
+        );
     }
 
     #[test]

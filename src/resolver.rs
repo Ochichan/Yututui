@@ -32,7 +32,10 @@ pub struct ResolverHandle {
 
 impl ResolverHandle {
     pub fn resolve(&self, video_id: String, watch_url: String) {
-        let _ = self.tx.send(ResolveCmd::Resolve { video_id, watch_url });
+        let _ = self.tx.send(ResolveCmd::Resolve {
+            video_id,
+            watch_url,
+        });
     }
 }
 
@@ -42,8 +45,15 @@ pub fn spawn(msg_tx: UnboundedSender<Msg>, cookies: Option<PathBuf>) -> Resolver
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let in_flight = Arc::new(Mutex::new(HashSet::<String>::new()));
     tokio::spawn(async move {
-        while let Some(ResolveCmd::Resolve { video_id, watch_url }) = rx.recv().await {
-            if !in_flight.lock().is_ok_and(|mut ids| ids.insert(video_id.clone())) {
+        while let Some(ResolveCmd::Resolve {
+            video_id,
+            watch_url,
+        }) = rx.recv().await
+        {
+            if !in_flight
+                .lock()
+                .is_ok_and(|mut ids| ids.insert(video_id.clone()))
+            {
                 tracing::debug!(video_id = %video_id, "prefetch already in flight");
                 continue;
             }
@@ -80,15 +90,23 @@ pub fn spawn(msg_tx: UnboundedSender<Msg>, cookies: Option<PathBuf>) -> Resolver
 /// Resolve a watch URL to a direct audio stream URL via `yt-dlp -g`.
 async fn resolve_url(watch_url: &str, cookies: Option<&std::path::Path>) -> Option<String> {
     let mut cmd = Command::new("yt-dlp");
-    cmd.args(["-f", "bestaudio", "-g", "--no-playlist"]).arg(watch_url);
+    cmd.args(["-f", "bestaudio", "-g", "--no-playlist"])
+        .arg(watch_url);
     if let Some(c) = cookies {
         cmd.arg("--cookies").arg(c);
     }
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     let out = cmd.output().await.ok()?;
     if !out.status.success() {
         return None;
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout.lines().next().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned)
+    stdout
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
 }

@@ -103,7 +103,11 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
         }
     };
 
-    Ok(Parsed { command, quiet, json })
+    Ok(Parsed {
+        command,
+        quiet,
+        json,
+    })
 }
 
 #[cfg(test)]
@@ -136,9 +140,24 @@ mod tests {
 
     #[test]
     fn radio_states() {
-        assert_eq!(cmd(&["radio"]), RemoteCommand::Radio { state: ToggleState::Toggle });
-        assert_eq!(cmd(&["radio", "on"]), RemoteCommand::Radio { state: ToggleState::On });
-        assert_eq!(cmd(&["radio", "off"]), RemoteCommand::Radio { state: ToggleState::Off });
+        assert_eq!(
+            cmd(&["radio"]),
+            RemoteCommand::Radio {
+                state: ToggleState::Toggle
+            }
+        );
+        assert_eq!(
+            cmd(&["radio", "on"]),
+            RemoteCommand::Radio {
+                state: ToggleState::On
+            }
+        );
+        assert_eq!(
+            cmd(&["radio", "off"]),
+            RemoteCommand::Radio {
+                state: ToggleState::Off
+            }
+        );
     }
 
     #[test]
@@ -156,13 +175,18 @@ mod tests {
     #[test]
     fn empty_and_help_are_usage() {
         assert!(matches!(parse(&[]), Err(ParseError::Usage(_))));
-        assert!(matches!(parse(&["--help".to_string()]), Err(ParseError::Usage(_))));
+        assert!(matches!(
+            parse(&["--help".to_string()]),
+            Err(ParseError::Usage(_))
+        ));
     }
 
     #[test]
     fn flags_parse_in_any_position() {
-        let owned: Vec<String> =
-            ["-q", "next", "--json"].iter().map(|s| s.to_string()).collect();
+        let owned: Vec<String> = ["-q", "next", "--json"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let p = parse(&owned).unwrap_or_else(|_| panic!("should parse"));
         assert_eq!(p.command, RemoteCommand::Next);
         assert!(p.quiet);

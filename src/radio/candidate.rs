@@ -12,7 +12,10 @@ use crate::signals;
 /// Only `YtdlpRadio` is produced today; the authenticated/local sources are wired by the
 /// candidate-fetch stage (v3). The `provenance_weight` table already ranks them all, so the
 /// variants are intentionally defined ahead of their producers.
-#[allow(dead_code, reason = "ArtistTop/MoodPlaylist/HistoryCooc/LikedNeighbor not yet sourced")]
+#[allow(
+    dead_code,
+    reason = "ArtistTop/MoodPlaylist/HistoryCooc/LikedNeighbor not yet sourced"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CandidateSource {
     /// The real YTM radio continuation (`get_watch_playlist_from_video_id`). Strongest.
@@ -48,7 +51,10 @@ impl CandidateSource {
 /// [0,1] (`music_tier`/`version_penalty` are the raw [0,1] signals; the rest are min-max
 /// normalized across the batch). Filled by [`super::score::filter_and_score`]; default-zero
 /// until then. Emitted as 0-100 integers in the compact candidate pack.
-#[allow(dead_code, reason = "read by the AI candidate pack builder in src/radio/pack.rs (A2/A3)")]
+#[allow(
+    dead_code,
+    reason = "read by the AI candidate pack builder in src/radio/pack.rs (A2/A3)"
+)]
 #[derive(Debug, Clone, Default)]
 pub struct FeatureScores {
     pub cooc: f32,
@@ -79,18 +85,30 @@ pub struct Candidate {
     pub album: Option<String>,
     // Rich metadata only the authenticated sources provide; populated + read by the scoring
     // pass in v3. Defined now so the candidate shape is stable across stages.
-    #[allow(dead_code, reason = "populated and scored once authenticated sources land (v3)")]
+    #[allow(
+        dead_code,
+        reason = "populated and scored once authenticated sources land (v3)"
+    )]
     pub plays: Option<u64>,
-    #[allow(dead_code, reason = "populated and scored once authenticated sources land (v3)")]
+    #[allow(
+        dead_code,
+        reason = "populated and scored once authenticated sources land (v3)"
+    )]
     pub explicit: Option<bool>,
-    #[allow(dead_code, reason = "populated and scored once authenticated sources land (v3)")]
+    #[allow(
+        dead_code,
+        reason = "populated and scored once authenticated sources land (v3)"
+    )]
     pub mood_tag: Option<String>,
     pub duration_secs: Option<u32>,
     pub base_score: f32,
     pub novelty: f32,
     /// Per-feature evidence for the AI reranker (see [`FeatureScores`]). Filled by the
     /// scoring pass; default-zero until then.
-    #[allow(dead_code, reason = "read by the AI candidate pack builder in src/radio/pack.rs (A2/A3)")]
+    #[allow(
+        dead_code,
+        reason = "read by the AI candidate pack builder in src/radio/pack.rs (A2/A3)"
+    )]
     pub features: FeatureScores,
 }
 

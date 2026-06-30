@@ -3,7 +3,10 @@
 use super::*;
 
 impl App {
-    pub(crate) fn set_art_resize_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<ResizeRequest>) {
+    pub(crate) fn set_art_resize_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<ResizeRequest>,
+    ) {
         self.art.resize_tx = Some(tx);
     }
 
@@ -178,8 +181,10 @@ impl App {
             self.art.picker.as_ref(),
             self.art.resize_tx.as_ref(),
         ) {
-            *self.art.protocol.borrow_mut() =
-                Some(ThreadProtocol::new(tx.clone(), Some(picker.new_resize_protocol(img.clone()))));
+            *self.art.protocol.borrow_mut() = Some(ThreadProtocol::new(
+                tx.clone(),
+                Some(picker.new_resize_protocol(img.clone())),
+            ));
         }
     }
 
@@ -191,8 +196,10 @@ impl App {
             (Some(img), Some(picker)) if self.art.resize_tx.is_some() => {
                 self.art.dims = (img.width(), img.height());
                 let tx = self.art.resize_tx.as_ref().expect("checked above").clone();
-                *self.art.protocol.borrow_mut() =
-                    Some(ThreadProtocol::new(tx, Some(picker.new_resize_protocol(img.clone()))));
+                *self.art.protocol.borrow_mut() = Some(ThreadProtocol::new(
+                    tx,
+                    Some(picker.new_resize_protocol(img.clone())),
+                ));
                 self.art.source = Some(img);
                 self.art.video_id = Some(video_id);
             }
@@ -224,7 +231,9 @@ impl App {
         }
         Some(match &song.local_path {
             Some(path) => ArtSource::Local(path.clone()),
-            None => ArtSource::Remote { video_id: song.video_id.clone() },
+            None => ArtSource::Remote {
+                video_id: song.video_id.clone(),
+            },
         })
     }
 
@@ -242,8 +251,10 @@ impl App {
         let avail_w = f64::from(area.width) * f64::from(font.width);
         let avail_h = f64::from(area.height) * f64::from(font.height);
         let scale = (avail_w / f64::from(iw)).min(avail_h / f64::from(ih));
-        let w = (((f64::from(iw) * scale) / f64::from(font.width)).round() as u16).clamp(1, area.width);
-        let h = (((f64::from(ih) * scale) / f64::from(font.height)).round() as u16).clamp(1, area.height);
+        let w =
+            (((f64::from(iw) * scale) / f64::from(font.width)).round() as u16).clamp(1, area.width);
+        let h = (((f64::from(ih) * scale) / f64::from(font.height)).round() as u16)
+            .clamp(1, area.height);
         Rect {
             x: area.x + (area.width - w) / 2,
             y: area.y + (area.height - h) / 2,

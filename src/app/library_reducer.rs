@@ -115,7 +115,11 @@ impl App {
         if lo >= songs.len() {
             return Vec::new();
         }
-        let hi = self.library_ui.selected.max(self.library_ui.anchor).min(songs.len() - 1);
+        let hi = self
+            .library_ui
+            .selected
+            .max(self.library_ui.anchor)
+            .min(songs.len() - 1);
         songs[lo..=hi].to_vec()
     }
 
@@ -214,7 +218,8 @@ impl App {
                 tracing::warn!(?path, error = %err, "failed to delete downloaded file");
             }
         }
-        self.library_ui.downloaded
+        self.library_ui
+            .downloaded
             .retain(|song| song.local_path.as_ref().is_none_or(|p| !paths.contains(p)));
         // Forget the deleted files in the persisted manifest too, so they don't linger.
         self.download_store.remove_paths(&paths);
@@ -232,5 +237,4 @@ impl App {
         self.library_ui.selected = self.library_ui.selected.min(last);
         self.library_ui.anchor = self.library_ui.anchor.min(last);
     }
-
 }

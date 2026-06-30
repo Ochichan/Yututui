@@ -45,15 +45,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_nav(
         frame,
         app,
-        Rect { x: inner.x, y: area.y, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: area.y,
+            width: inner.width,
+            height: 1,
+        },
     );
 
     let rows = Layout::vertical([
-        Constraint::Length(2),                // reserved top band (aligns with Settings/Library)
-        Constraint::Min(0),                   // transcript
+        Constraint::Length(2), // reserved top band (aligns with Settings/Library)
+        Constraint::Min(0),    // transcript
         Constraint::Length(suggestions_rows), // suggestions (0 when none)
-        Constraint::Length(3),                // input box
-        Constraint::Length(1),                // help
+        Constraint::Length(3), // input box
+        Constraint::Length(1), // help
     ])
     .split(inner);
 
@@ -99,7 +104,11 @@ fn render_mascot(frame: &mut Frame, app: &App, inner: Rect) {
 
     // ~3 fps groove: advance one pose every 10 ticks of the 30 fps clock. Held at 0 (resting)
     // unless a track is actually playing — see `App::ai_mascot_active`.
-    let pose: u64 = if app.ai_mascot_active() { (app.anim_frame() / 10) % 4 } else { 0 };
+    let pose: u64 = if app.ai_mascot_active() {
+        (app.anim_frame() / 10) % 4
+    } else {
+        0
+    };
 
     // Per-pose look: blinking/sparkling eyes, mouth shape, a bobbing music note, ear tint, and the
     // row the raised V-sign hand currently rides (7→5→6→8 makes the arm pump up and down).
@@ -155,7 +164,11 @@ fn render_mascot(frame: &mut Frame, app: &App, inner: Rect) {
             sp("   │  ", blue),
         ]),
         // Row 4: smile.
-        Line::from(vec![sp("  │     ╰", blue), sp(mouth, pink), sp("╯     │  ", blue)]),
+        Line::from(vec![
+            sp("  │     ╰", blue),
+            sp(mouth, pink),
+            sp("╯     │  ", blue),
+        ]),
         // Row 5: chin (V-sign hand when arm is fully up).
         Line::from(vec![sp("  ╰──────┬──────╯", blue), tail(5)]),
         // Row 6: shoulders / collar (V-sign hand mid-raise).
@@ -202,7 +215,12 @@ fn render_mascot(frame: &mut Frame, app: &App, inner: Rect) {
     // Nudge in from the right edge toward center, but never over the welcome text.
     let free_w = inner.width - ART_W;
     let x = inner.x + (free_w * 3 / 4).max(TEXT_W);
-    let art_rect = Rect { x, y: inner.y + 1, width: ART_W, height: ART_H };
+    let art_rect = Rect {
+        x,
+        y: inner.y + 1,
+        width: ART_W,
+        height: ART_H,
+    };
     frame.render_widget(Paragraph::new(lines), art_rect);
 }
 
@@ -219,11 +237,18 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     if !app.ai.available && app.ai.messages.is_empty() {
         let lines = vec![
             Line::from(
-                t!("AI assistant — control playback in plain language.", "AI 어시스턴트 — 평범한 말로 재생을 제어하세요.").bold(),
+                t!(
+                    "AI assistant — control playback in plain language.",
+                    "AI 어시스턴트 — 평범한 말로 재생을 제어하세요."
+                )
+                .bold(),
             ),
             Line::from(""),
-            Line::from(t!("No Gemini API key is configured.", "Gemini API 키가 설정되지 않았어요."))
-                .style(app.theme.style(R::Warning)),
+            Line::from(t!(
+                "No Gemini API key is configured.",
+                "Gemini API 키가 설정되지 않았어요."
+            ))
+            .style(app.theme.style(R::Warning)),
             Line::from(t!(
                 "Add one in Settings (press , then the AI tab),",
                 "설정에서 추가하거나 ( , 를 누른 뒤 AI 탭),"
@@ -235,10 +260,18 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
             ))
             .style(app.theme.style(R::TextPrimary)),
             Line::from(""),
-            Line::from(t!("Then ask things like:", "그런 다음 이렇게 물어보세요:")).style(app.theme.style(R::TextMuted)),
-            Line::from(t!("  \"play some lo-fi beats\"", "  \"로파이 음악 좀 틀어줘\"")).style(app.theme.style(R::TextMuted)),
-            Line::from(t!("  \"queue three upbeat songs\"", "  \"신나는 곡 세 개 대기열에 넣어줘\""))
+            Line::from(t!("Then ask things like:", "그런 다음 이렇게 물어보세요:"))
                 .style(app.theme.style(R::TextMuted)),
+            Line::from(t!(
+                "  \"play some lo-fi beats\"",
+                "  \"로파이 음악 좀 틀어줘\""
+            ))
+            .style(app.theme.style(R::TextMuted)),
+            Line::from(t!(
+                "  \"queue three upbeat songs\"",
+                "  \"신나는 곡 세 개 대기열에 넣어줘\""
+            ))
+            .style(app.theme.style(R::TextMuted)),
             Line::from(t!(
                 "  \"start a radio based on what's playing\"",
                 "  \"지금 나오는 곡으로 라디오 시작해줘\""
@@ -265,7 +298,10 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(format!("{prefix}{}", m.text)).style(app.theme.style(role)));
     }
     if app.ai.thinking {
-        lines.push(Line::from(t!("ai  …thinking", "ai    …생각 중").to_owned()).style(app.theme.style(R::AiThinking)));
+        lines.push(
+            Line::from(t!("ai  …thinking", "ai    …생각 중").to_owned())
+                .style(app.theme.style(R::AiThinking)),
+        );
     }
     if lines.is_empty() {
         lines.push(
@@ -280,14 +316,20 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     // Keep the latest content visible: scroll so the last lines sit at the bottom.
     let scroll = lines.len().saturating_sub(height) as u16;
     frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((scroll, 0)),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
         area,
     );
 }
 
 fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.ai.focus == AiFocus::Suggestions;
-    let border = if focused { R::BorderFocused } else { R::BorderMuted };
+    let border = if focused {
+        R::BorderFocused
+    } else {
+        R::BorderMuted
+    };
     let block = Block::default()
         .title(t!(" Suggestions ", " 추천 곡 "))
         .borders(Borders::TOP)
@@ -297,11 +339,17 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let items: Vec<ListItem> = app
-        .ai.suggestions
+        .ai
+        .suggestions
         .iter()
         .map(|s| {
-            let heart = if app.library.is_favorite(&s.video_id) { "♥ " } else { "" };
-            ListItem::new(format!("{heart}{} — {}", s.title, s.artist)).style(app.theme.style(R::TextPrimary))
+            let heart = if app.library.is_favorite(&s.video_id) {
+                "♥ "
+            } else {
+                ""
+            };
+            ListItem::new(format!("{heart}{} — {}", s.title, s.artist))
+                .style(app.theme.style(R::TextPrimary))
         })
         .collect();
 
@@ -315,7 +363,10 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
             .fg(app.theme.color(R::SelectionInactiveFg))
             .bg(app.theme.color(R::SelectionInactiveBg))
     };
-    let list = List::new(items).style(app.theme.style(R::TextPrimary)).highlight_style(highlight).highlight_symbol("▶ ");
+    let list = List::new(items)
+        .style(app.theme.style(R::TextPrimary))
+        .highlight_style(highlight)
+        .highlight_symbol("▶ ");
 
     // The wheel scrolls this viewport freely; the render keeps a keyboard-moved cursor on
     // screen with a margin (see `ui::scroll`). Only highlight the selection while visible.
@@ -348,7 +399,11 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.ai.focus == AiFocus::Input;
-    let border = if focused { R::BorderFocused } else { R::BorderMuted };
+    let border = if focused {
+        R::BorderFocused
+    } else {
+        R::BorderMuted
+    };
     let block = Block::default()
         .title(t!(" Ask ", " 질문 "))
         .borders(Borders::ALL)

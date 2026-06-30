@@ -27,7 +27,14 @@ pub fn run() -> i32 {
     println!();
 
     // 1) External tools.
-    println!("{}", if kr { "외부 도구" } else { "External tools" });
+    println!(
+        "{}",
+        if kr {
+            "외부 도구"
+        } else {
+            "External tools"
+        }
+    );
     for &(bin, need) in deps::TOOLS {
         let role = tool_role(bin, kr);
         if deps::on_path(bin) {
@@ -61,7 +68,11 @@ pub fn run() -> i32 {
     {
         println!(
             "{}",
-            if kr { "리눅스 도우미 (선택)" } else { "Linux helpers (optional)" }
+            if kr {
+                "리눅스 도우미 (선택)"
+            } else {
+                "Linux helpers (optional)"
+            }
         );
         let mark = |present: bool| if present { "✓" } else { "✗" };
         println!("  {} xdg-open", mark(deps::on_path("xdg-open")));

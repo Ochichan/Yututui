@@ -74,12 +74,22 @@ pub struct RemoteResponse {
 impl RemoteResponse {
     /// A success carrying a human stdout line.
     pub fn ok(message: String) -> Self {
-        Self { ok: true, reason: Some("ok".to_string()), message: Some(message), status: None }
+        Self {
+            ok: true,
+            reason: Some("ok".to_string()),
+            message: Some(message),
+            status: None,
+        }
     }
 
     /// A semantic rejection carrying a stable machine code.
     pub fn err(reason: &str) -> Self {
-        Self { ok: false, reason: Some(reason.to_string()), message: None, status: None }
+        Self {
+            ok: false,
+            reason: Some(reason.to_string()),
+            message: None,
+            status: None,
+        }
     }
 
     /// A `status` success: the snapshot plus its one-line human rendering.
@@ -153,11 +163,18 @@ mod tests {
         let req = RemoteRequest {
             version: PROTOCOL_VERSION,
             token: "abc".to_string(),
-            command: RemoteCommand::Radio { state: ToggleState::On },
+            command: RemoteCommand::Radio {
+                state: ToggleState::On,
+            },
         };
         let line = serde_json::to_string(&req).unwrap();
         let back: RemoteRequest = serde_json::from_str(&line).unwrap();
-        assert_eq!(back.command, RemoteCommand::Radio { state: ToggleState::On });
+        assert_eq!(
+            back.command,
+            RemoteCommand::Radio {
+                state: ToggleState::On
+            }
+        );
         assert_eq!(back.version, PROTOCOL_VERSION);
     }
 

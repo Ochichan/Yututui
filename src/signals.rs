@@ -204,7 +204,14 @@ impl Signals {
         entry.disliked = !entry.disliked;
         entry.last_played_at = now;
         let disliked = entry.disliked;
-        self.bump_artist(artist_key, if disliked { -DISLIKE_DELTA } else { DISLIKE_DELTA });
+        self.bump_artist(
+            artist_key,
+            if disliked {
+                -DISLIKE_DELTA
+            } else {
+                DISLIKE_DELTA
+            },
+        );
         self.enforce_caps();
         disliked
     }
@@ -221,7 +228,10 @@ impl Signals {
         if artist_key.is_empty() {
             return;
         }
-        let w = self.artist_weight.entry(artist_key.to_owned()).or_insert(0.0);
+        let w = self
+            .artist_weight
+            .entry(artist_key.to_owned())
+            .or_insert(0.0);
         *w = (*w + delta).clamp(ARTIST_WEIGHT_MIN, ARTIST_WEIGHT_MAX);
     }
 
@@ -261,12 +271,19 @@ fn skip_penalty(completion: f32) -> f32 {
 /// Normalize an artist string into a stable key for the affinity map (case/whitespace-
 /// insensitive). Kept simple here; richer canonicalization lands with the radio engine.
 pub fn normalize_artist(artist: &str) -> String {
-    artist.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    artist
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Current unix time in seconds (saturating to 0 before the epoch / on clock errors).
 pub fn unix_now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn signals_path() -> Option<PathBuf> {
@@ -406,7 +423,10 @@ mod tests {
         }
         assert_eq!(s.play_log.len(), PLAY_LOG_MAX);
         // Oldest evicted; the most recent survives.
-        assert_eq!(s.play_log.back().unwrap().0, format!("t{}", PLAY_LOG_MAX + 24));
+        assert_eq!(
+            s.play_log.back().unwrap().0,
+            format!("t{}", PLAY_LOG_MAX + 24)
+        );
     }
 
     #[test]

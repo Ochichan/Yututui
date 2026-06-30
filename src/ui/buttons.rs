@@ -40,7 +40,10 @@ pub struct Seg<'a> {
 
 impl<'a> Seg<'a> {
     pub fn button(target: MouseTarget, text: &'a str) -> Self {
-        Self { target: Some(target), text }
+        Self {
+            target: Some(target),
+            text,
+        }
     }
 
     pub fn label(text: &'a str) -> Self {
@@ -83,7 +86,12 @@ pub fn render_segments(
     for (seg, width) in segments.iter().zip(widths) {
         let style = if let Some(target) = seg.target {
             app.register_mouse_button(
-                Rect { x, y: area.y, width, height: area.height.min(1) },
+                Rect {
+                    x,
+                    y: area.y,
+                    width,
+                    height: area.height.min(1),
+                },
                 target,
             );
             button_style
@@ -103,8 +111,13 @@ pub fn render_segments(
 /// muted, and each tab is a click target that switches screens. Left-aligned, no box chrome
 /// — it reads like a tab strip, consistent with the in-line "text is the button" controls.
 pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
-    const ITEMS: [Mode; 5] =
-        [Mode::Player, Mode::Search, Mode::Library, Mode::Settings, Mode::Ai];
+    const ITEMS: [Mode; 5] = [
+        Mode::Player,
+        Mode::Search,
+        Mode::Library,
+        Mode::Settings,
+        Mode::Ai,
+    ];
     const GAP: &str = "  ";
     const BRAND: &str = "ytm-tui";
     const SEP: &str = " │ ";
@@ -132,9 +145,18 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     // so the brand and tabs never shift between states. The hit rect is published in both states,
     // so clicking the blank slot turns animations back on. Color emoji ignore SGR fg on many
     // terminals, so the on/off signal is the glyph itself (✨ vs blank), not its color.
-    let spark = if app.animations().master { "✨" } else { MARGIN };
+    let spark = if app.animations().master {
+        "✨"
+    } else {
+        MARGIN
+    };
     app.register_mouse_button(
-        Rect { x, y: area.y, width: text_width(MARGIN), height: area.height.min(1) },
+        Rect {
+            x,
+            y: area.y,
+            width: text_width(MARGIN),
+            height: area.height.min(1),
+        },
         MouseTarget::Global(Action::ToggleAnimations),
     );
     spans.push(Span::styled(spark, brand));
@@ -142,7 +164,12 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
 
     // The brand doubles as a click target that opens the About card.
     app.register_mouse_button(
-        Rect { x, y: area.y, width: text_width(BRAND), height: area.height.min(1) },
+        Rect {
+            x,
+            y: area.y,
+            width: text_width(BRAND),
+            height: area.height.min(1),
+        },
         MouseTarget::AboutTitle,
     );
     spans.push(Span::styled(BRAND, brand));
@@ -158,7 +185,12 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
         let label = nav_label(*mode);
         let w = text_width(label).saturating_add(2);
         app.register_mouse_button(
-            Rect { x, y: area.y, width: w, height: area.height.min(1) },
+            Rect {
+                x,
+                y: area.y,
+                width: w,
+                height: area.height.min(1),
+            },
             MouseTarget::Nav(*mode),
         );
         let style = if app.mode == *mode { active } else { muted };
@@ -172,7 +204,10 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     spans.push(Span::raw(END_PAD));
     x = x.saturating_add(text_width(END_PAD));
     let used = x.saturating_sub(area.x).min(area.width);
-    let strip = Rect { width: used, ..area };
+    let strip = Rect {
+        width: used,
+        ..area
+    };
     frame.render_widget(Paragraph::new(Line::from(spans)), strip);
 }
 
@@ -195,7 +230,12 @@ pub fn register_list_rows(
         }
         if let Some(logical) = index_of(item) {
             app.register_mouse_button(
-                Rect { x: area.x, y: area.y + vis, width: area.width, height: 1 },
+                Rect {
+                    x: area.x,
+                    y: area.y + vis,
+                    width: area.width,
+                    height: 1,
+                },
                 MouseTarget::ListRow(logical),
             );
         }
@@ -223,7 +263,12 @@ pub fn render_list_scrollbar(
     else {
         return;
     };
-    let bar = Rect { x: list_area.right(), y: list_area.y, width: 1, height: list_area.height };
+    let bar = Rect {
+        x: list_area.right(),
+        y: list_area.y,
+        width: 1,
+        height: list_area.height,
+    };
     app.register_mouse_button(bar, MouseTarget::Scrollbar(surface));
 
     let thumb_start = thumb.start;
@@ -237,7 +282,12 @@ pub fn render_list_scrollbar(
         };
         frame.render_widget(
             Paragraph::new(Line::from(symbol).style(style)),
-            Rect { x: bar.x, y: bar.y + row, width: 1, height: 1 },
+            Rect {
+                x: bar.x,
+                y: bar.y + row,
+                width: 1,
+                height: 1,
+            },
         );
     }
 }
@@ -246,7 +296,10 @@ pub fn render_list_scrollbar(
 /// status-bar hint, not a button. Shared by every screen's footer.
 pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
     let label = app.help_footer();
-    let segs = [Seg::button(MouseTarget::Global(Action::ToggleHelp), label.as_str())];
+    let segs = [Seg::button(
+        MouseTarget::Global(Action::ToggleHelp),
+        label.as_str(),
+    )];
     let hint = app.theme.style(R::TextMuted);
     render_segments(frame, app, area, &segs, hint, hint, Alignment::Center);
 }

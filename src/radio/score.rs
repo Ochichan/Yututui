@@ -9,8 +9,8 @@
 use std::collections::HashSet;
 
 use crate::radio::StationState;
-use crate::radio::canonical;
 use crate::radio::candidate::{Candidate, CandidateSource, FeatureScores};
+use crate::radio::canonical;
 use crate::radio::config::{RadioConfig, RadioMode};
 use crate::radio::cooccurrence::Cooc;
 use crate::radio::musicgate;
@@ -49,16 +49,20 @@ pub fn filter_and_score(
     now: i64,
 ) -> Vec<Candidate> {
     let recent: HashSet<&str> = st.recent_track_ids.iter().map(String::as_str).collect();
-    let mut kept: Vec<Candidate> =
-        pool.into_iter().filter(|c| passes(c, st, sig, cfg, &recent)).collect();
+    let mut kept: Vec<Candidate> = pool
+        .into_iter()
+        .filter(|c| passes(c, st, sig, cfg, &recent))
+        .collect();
     block_gimmicks(&mut kept, st, cfg);
     dedup_by_canonical(&mut kept);
     if kept.is_empty() {
         return kept;
     }
 
-    let feats: Vec<RawFeatures> =
-        kept.iter().map(|c| raw_features(c, st, sig, cooc, cfg, now)).collect();
+    let feats: Vec<RawFeatures> = kept
+        .iter()
+        .map(|c| raw_features(c, st, sig, cooc, cfg, now))
+        .collect();
     let cooc_n = normalize(&column(&feats, |f| f.cooc));
     let aff_n = normalize(&column(&feats, |f| f.seed_affinity));
     let nov_n = normalize(&column(&feats, |f| f.novelty));
@@ -151,7 +155,9 @@ pub fn classify_pool(
 
     // Phase 2: gimmick reject (only when in force and not pool-starving — mirrors `block_gimmicks`).
     if gimmick_block_active(survivors.len(), st, cfg)
-        && survivors.iter().any(|c| musicgate::gimmick_reason(&c.song.title).is_none())
+        && survivors
+            .iter()
+            .any(|c| musicgate::gimmick_reason(&c.song.title).is_none())
     {
         let mut kept_survivors = Vec::with_capacity(survivors.len());
         for c in survivors {
@@ -244,7 +250,10 @@ fn block_gimmicks(kept: &mut Vec<Candidate>, st: &StationState, cfg: &RadioConfi
         return;
     }
     // Never let gimmick-blocking empty the pool — keep them all if nothing else survives.
-    if kept.iter().any(|c| musicgate::gimmick_reason(&c.song.title).is_none()) {
+    if kept
+        .iter()
+        .any(|c| musicgate::gimmick_reason(&c.song.title).is_none())
+    {
         kept.retain(|c| musicgate::gimmick_reason(&c.song.title).is_none());
     }
 }
@@ -392,12 +401,12 @@ mod tests {
         sig.toggle_dislike("hated", "z", 0);
 
         let pool = vec![
-            cand("seed", "Seed", "a", 0),        // == seed
-            cand("banned", "B", "a", 0),         // banned id
-            cand("hated", "H", "a", 0),          // disliked
+            cand("seed", "Seed", "a", 0),         // == seed
+            cand("banned", "B", "a", 0),          // banned id
+            cand("hated", "H", "a", 0),           // disliked
             cand("byblocked", "X", "Blocked", 0), // banned artist
-            cand("tiny", "Skit", "a", 0),        // too short (set below)
-            cand("ok", "Good", "a", 0),          // survives
+            cand("tiny", "Skit", "a", 0),         // too short (set below)
+            cand("ok", "Good", "a", 0),           // survives
         ];
         // Make "tiny" too short.
         let mut pool = pool;
@@ -506,7 +515,10 @@ mod tests {
         let scored = filter_and_score(pool, &st, &Signals::default(), &Cooc::default(), &cfg, 0);
         let off = scored.iter().find(|c| c.video_id() == "off").unwrap();
         let plain = scored.iter().find(|c| c.video_id() == "plain").unwrap();
-        assert!(off.base_score > plain.base_score, "official-audio tier outranks a plain upload");
+        assert!(
+            off.base_score > plain.base_score,
+            "official-audio tier outranks a plain upload"
+        );
     }
 
     #[test]
@@ -549,8 +561,14 @@ mod tests {
             CandidateSource::YtdlpRadio,
             0,
         );
-        let scored =
-            filter_and_score(vec![wp, yt], &st, &Signals::default(), &Cooc::default(), &cfg, 0);
+        let scored = filter_and_score(
+            vec![wp, yt],
+            &st,
+            &Signals::default(),
+            &Cooc::default(),
+            &cfg,
+            0,
+        );
         let ids: Vec<&str> = scored.iter().map(Candidate::video_id).collect();
         assert_eq!(ids, vec!["wp"]);
     }
@@ -562,7 +580,9 @@ mod tests {
         st.mode = RadioMode::Focused;
         // Pool large enough to clear GATE_MIN_POOL; one gimmick among real songs.
         let mut pool = vec![cand("ng", "Song (Nightcore)", "A", 0)];
-        pool.extend((0..7).map(|i| cand(&format!("s{i}"), &format!("Track {i}"), &format!("B{i}"), 0)));
+        pool.extend(
+            (0..7).map(|i| cand(&format!("s{i}"), &format!("Track {i}"), &format!("B{i}"), 0)),
+        );
         let scored = filter_and_score(pool, &st, &Signals::default(), &Cooc::default(), &cfg, 0);
         let ids: Vec<&str> = scored.iter().map(Candidate::video_id).collect();
         assert!(!ids.contains(&"ng"), "nightcore dropped in Focused mode");
@@ -574,10 +594,15 @@ mod tests {
         let cfg = RadioConfig::default(); // Balanced default, block_altered_versions = false
         let st = station("seed");
         let mut pool = vec![cand("ng", "Song (Nightcore)", "A", 0)];
-        pool.extend((0..7).map(|i| cand(&format!("s{i}"), &format!("Track {i}"), &format!("B{i}"), 0)));
+        pool.extend(
+            (0..7).map(|i| cand(&format!("s{i}"), &format!("Track {i}"), &format!("B{i}"), 0)),
+        );
         let scored = filter_and_score(pool, &st, &Signals::default(), &Cooc::default(), &cfg, 0);
         let ids: Vec<&str> = scored.iter().map(Candidate::video_id).collect();
-        assert!(ids.contains(&"ng"), "gimmicks kept in Balanced (soft-penalized, not gated)");
+        assert!(
+            ids.contains(&"ng"),
+            "gimmicks kept in Balanced (soft-penalized, not gated)"
+        );
     }
 
     #[test]
@@ -591,7 +616,11 @@ mod tests {
         ];
         let verdicts = classify_pool(&pool, &st, &Signals::default(), &cfg);
         let by_id = |id: &str| verdicts.iter().find(|v| v.video_id == id).unwrap();
-        assert_eq!(verdicts.len(), pool.len(), "exactly one verdict per candidate");
+        assert_eq!(
+            verdicts.len(),
+            pool.len(),
+            "exactly one verdict per candidate"
+        );
         assert!(!by_id("seed").kept);
         assert_eq!(by_id("seed").reason, "seed");
         assert!(!by_id("react").kept);
@@ -609,9 +638,16 @@ mod tests {
             cand("b", "Hit Song (Official Video)", "Band", 1), // same canonical key
         ];
         let verdicts = classify_pool(&pool, &st, &Signals::default(), &cfg);
-        let kept: Vec<&str> = verdicts.iter().filter(|v| v.kept).map(|v| v.video_id.as_str()).collect();
-        let dups: Vec<&str> =
-            verdicts.iter().filter(|v| v.reason == "duplicate").map(|v| v.video_id.as_str()).collect();
+        let kept: Vec<&str> = verdicts
+            .iter()
+            .filter(|v| v.kept)
+            .map(|v| v.video_id.as_str())
+            .collect();
+        let dups: Vec<&str> = verdicts
+            .iter()
+            .filter(|v| v.reason == "duplicate")
+            .map(|v| v.video_id.as_str())
+            .collect();
         assert_eq!(kept, vec!["a"]);
         assert_eq!(dups, vec!["b"]);
     }
@@ -622,7 +658,10 @@ mod tests {
         let mut st = station("seed");
         st.mode = RadioMode::Focused;
         // Fewer than GATE_MIN_POOL candidates → gimmick blocking is skipped.
-        let pool = vec![cand("ng1", "A (Nightcore)", "A", 0), cand("ng2", "B (Karaoke)", "B", 0)];
+        let pool = vec![
+            cand("ng1", "A (Nightcore)", "A", 0),
+            cand("ng2", "B (Karaoke)", "B", 0),
+        ];
         let scored = filter_and_score(pool, &st, &Signals::default(), &Cooc::default(), &cfg, 0);
         assert_eq!(scored.len(), 2, "gimmicks kept when the pool would starve");
     }

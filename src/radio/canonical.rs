@@ -5,8 +5,22 @@
 /// Words that mark a non-primary version of a track. Matched case-insensitively against the
 /// title's bracketed/parenthetical qualifiers.
 const VERSION_MARKERS: &[&str] = &[
-    "live", "remix", "sped up", "sped-up", "slowed", "reverb", "cover", "karaoke",
-    "instrumental", "acoustic", "8d", "nightcore", "mashup", "edit", "bootleg", "demo",
+    "live",
+    "remix",
+    "sped up",
+    "sped-up",
+    "slowed",
+    "reverb",
+    "cover",
+    "karaoke",
+    "instrumental",
+    "acoustic",
+    "8d",
+    "nightcore",
+    "mashup",
+    "edit",
+    "bootleg",
+    "demo",
 ];
 
 /// A stable, comparison-friendly key for a track: lowercased title+artist with bracketed
@@ -20,7 +34,10 @@ pub fn canonical_key(title: &str, artist: &str) -> String {
 /// studio title; higher = more clearly an alternate cut a station should de-prioritize.
 pub fn version_penalty(title: &str) -> f32 {
     let lower = title.to_lowercase();
-    let hits = VERSION_MARKERS.iter().filter(|m| lower.contains(*m)).count();
+    let hits = VERSION_MARKERS
+        .iter()
+        .filter(|m| lower.contains(*m))
+        .count();
     (hits as f32 * 0.5).min(1.0)
 }
 
@@ -43,7 +60,13 @@ fn normalize_title(title: &str) -> String {
 fn normalize_token(s: &str) -> String {
     let cleaned: String = s
         .chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
         .collect();
     cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -74,7 +97,9 @@ mod tests {
     fn version_markers_are_penalized() {
         assert_eq!(version_penalty("Song"), 0.0);
         assert!(version_penalty("Song (Live)") > 0.0);
-        assert!(version_penalty("Song (Live at Wembley) [Remix]") >= version_penalty("Song (Live)"));
+        assert!(
+            version_penalty("Song (Live at Wembley) [Remix]") >= version_penalty("Song (Live)")
+        );
         assert!(version_penalty("Song (Sped Up)") > 0.0);
     }
 }

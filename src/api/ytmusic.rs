@@ -171,9 +171,7 @@ pub(crate) async fn related_tracks(
         }
     }
 
-    if !had_success
-        && let Some(e) = last_err
-    {
+    if !had_success && let Some(e) = last_err {
         return Err(e).context("related-track search failed");
     }
     Ok(out)
@@ -182,10 +180,7 @@ pub(crate) async fn related_tracks(
 fn radio_queries(seed: &str) -> Vec<String> {
     let seed = seed.trim();
     if seed.is_empty() {
-        return vec![
-            "popular music radio".to_owned(),
-            "popular songs".to_owned(),
-        ];
+        return vec!["popular music radio".to_owned(), "popular songs".to_owned()];
     }
 
     // Note: no "… mix" queries — those pull 1-hour compilations / megamixes that the radio

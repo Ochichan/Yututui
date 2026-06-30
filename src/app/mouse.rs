@@ -12,7 +12,8 @@ impl App {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        self.bridges.mouse_buttons
+        self.bridges
+            .mouse_buttons
             .borrow_mut()
             .push(MouseButtonRegion { rect, target });
     }
@@ -22,7 +23,8 @@ impl App {
     }
 
     pub(in crate::app) fn mouse_region_at(&self, col: u16, row: u16) -> Option<MouseButtonRegion> {
-        self.bridges.mouse_buttons
+        self.bridges
+            .mouse_buttons
             .borrow()
             .iter()
             .rev()
@@ -78,7 +80,11 @@ impl App {
         // and inside it only its own rows / `✗` buttons act — underlying player buttons are
         // ignored so a click landing on the player beneath the popup doesn't leak through.
         if self.queue_popup.open {
-            let inside = self.queue_popup.rect.get().is_some_and(|r| rect_contains(r, col, row));
+            let inside = self
+                .queue_popup
+                .rect
+                .get()
+                .is_some_and(|r| rect_contains(r, col, row));
             if !inside {
                 self.queue_popup.open = false;
                 self.drag_selection = None;
@@ -254,7 +260,11 @@ impl App {
             // Click the GitHub link inside the About card to open the repo in the browser.
             MouseTarget::AboutLink => {
                 open_in_browser(crate::ui::views::about::GITHUB_URL);
-                self.status.text = t!("Opening GitHub in your browser…", "브라우저에서 GitHub을 여는 중…").to_owned();
+                self.status.text = t!(
+                    "Opening GitHub in your browser…",
+                    "브라우저에서 GitHub을 여는 중…"
+                )
+                .to_owned();
                 self.dirty = true;
                 Vec::new()
             }
@@ -275,7 +285,11 @@ impl App {
             return self.on_mouse_click(col, row);
         }
         if self.queue_popup.open {
-            let inside = self.queue_popup.rect.get().is_some_and(|r| rect_contains(r, col, row));
+            let inside = self
+                .queue_popup
+                .rect
+                .get()
+                .is_some_and(|r| rect_contains(r, col, row));
             if inside {
                 if let Some(MouseTarget::QueueRow(i)) = self.mouse_target_at(col, row) {
                     return self.queue_popup_play(i);
@@ -335,16 +349,13 @@ impl App {
         Vec::new()
     }
 
-    fn on_scrollbar_press(
-        &mut self,
-        surface: ScrollSurface,
-        rect: Rect,
-        row: u16,
-    ) -> Vec<Cmd> {
+    fn on_scrollbar_press(&mut self, surface: ScrollSurface, rect: Rect, row: u16) -> Vec<Cmd> {
         let Some((content_len, viewport, position)) = self.scrollbar_snapshot(surface) else {
             return Vec::new();
         };
-        let track_row = row.saturating_sub(rect.y).min(rect.height.saturating_sub(1));
+        let track_row = row
+            .saturating_sub(rect.y)
+            .min(rect.height.saturating_sub(1));
         let Some(thumb) =
             crate::ui::scroll::scrollbar_thumb(content_len, viewport, rect.height, position)
         else {
@@ -438,7 +449,10 @@ impl App {
 
     fn drag_anchor(&mut self, surface: DragSurface, row: usize) -> usize {
         match self.drag_selection {
-            Some(DragSelection { surface: active, anchor }) if active == surface => anchor,
+            Some(DragSelection {
+                surface: active,
+                anchor,
+            }) if active == surface => anchor,
             _ => {
                 self.drag_selection = Some(DragSelection {
                     surface,
@@ -466,8 +480,7 @@ impl App {
             && matches!(
                 self.mouse_target_at(col, row),
                 Some(
-                    MouseTarget::VolumeArea
-                        | MouseTarget::Player(Action::VolDown | Action::VolUp)
+                    MouseTarget::VolumeArea | MouseTarget::Player(Action::VolDown | Action::VolUp)
                 )
             )
         {
@@ -480,11 +493,15 @@ impl App {
                 self.dirty = true;
             }
             Mode::Search => {
-                self.bridges.search_scroll.wheel(up, n, self.search.results.len());
+                self.bridges
+                    .search_scroll
+                    .wheel(up, n, self.search.results.len());
                 self.dirty = true;
             }
             Mode::Ai => {
-                self.bridges.ai_scroll.wheel(up, n, self.ai.suggestions.len());
+                self.bridges
+                    .ai_scroll
+                    .wheel(up, n, self.ai.suggestions.len());
                 self.dirty = true;
             }
             // Settings is an interactive form, not a browse list, so the wheel keeps walking

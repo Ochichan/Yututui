@@ -20,7 +20,8 @@ fn main() {
         .to_string()
         .replace('\\', "/");
     let rc = out_dir.join("ytm-tui.rc");
-    std::fs::write(&rc, format!("1 ICON \"{icon}\"\n")).expect("failed to write Windows resource script");
+    std::fs::write(&rc, format!("1 ICON \"{icon}\"\n"))
+        .expect("failed to write Windows resource script");
 
     embed_resource::compile(&rc, embed_resource::NONE)
         .manifest_required()

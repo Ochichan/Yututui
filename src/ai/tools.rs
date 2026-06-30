@@ -423,19 +423,33 @@ mod tests {
     #[test]
     fn str_list_arg_trims_drops_blanks_and_non_strings() {
         let args = json!({ "avoid_artists": ["  A  ", "", "B", 7, "  "] });
-        assert_eq!(str_list_arg(&args, "avoid_artists"), vec!["A".to_owned(), "B".to_owned()]);
+        assert_eq!(
+            str_list_arg(&args, "avoid_artists"),
+            vec!["A".to_owned(), "B".to_owned()]
+        );
         assert!(str_list_arg(&args, "missing").is_empty());
-        assert!(str_list_arg(&json!({ "avoid_artists": "notanarray" }), "avoid_artists").is_empty());
+        assert!(
+            str_list_arg(&json!({ "avoid_artists": "notanarray" }), "avoid_artists").is_empty()
+        );
     }
 
     #[test]
     fn start_radio_advertises_vibe_shaping_params() {
         let decls = declarations();
-        let sr = decls.iter().find(|d| d["name"] == "start_radio").expect("start_radio declared");
+        let sr = decls
+            .iter()
+            .find(|d| d["name"] == "start_radio")
+            .expect("start_radio declared");
         let props = &sr["parameters"]["properties"];
         assert!(props.get("explore").is_some(), "explore param advertised");
-        assert!(props.get("avoid_artists").is_some(), "avoid_artists param advertised");
-        assert_eq!(props["explore"]["enum"][0], "tight", "explore is a constrained enum");
+        assert!(
+            props.get("avoid_artists").is_some(),
+            "avoid_artists param advertised"
+        );
+        assert_eq!(
+            props["explore"]["enum"][0], "tight",
+            "explore is a constrained enum"
+        );
     }
 
     #[test]

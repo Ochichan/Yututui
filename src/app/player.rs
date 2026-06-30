@@ -12,7 +12,8 @@ impl App {
     /// Change playback speed by `delta`, clamped and rounded to one decimal, and emit the
     /// `set_property speed` command.
     pub(in crate::app) fn adjust_speed(&mut self, delta: f64) -> Vec<Cmd> {
-        self.playback.speed = (((self.playback.speed + delta) * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX);
+        self.playback.speed =
+            (((self.playback.speed + delta) * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX);
         self.status.text = format!("{}: {:.1}x", t!("Speed", "재생 속도"), self.playback.speed);
         self.dirty = true;
         vec![Cmd::Player(PlayerCmd::SetProperty {
@@ -114,10 +115,12 @@ impl App {
                         }));
                     }
                     self.status.kind = StatusKind::Info;
-                    self.status.text = t!("Opening video in mpv…", "mpv에서 영상을 여는 중…").to_owned();
+                    self.status.text =
+                        t!("Opening video in mpv…", "mpv에서 영상을 여는 중…").to_owned();
                 }
                 None => {
-                    self.status.text = t!("Failed to launch mpv", "mpv 실행에 실패했습니다").to_owned();
+                    self.status.text =
+                        t!("Failed to launch mpv", "mpv 실행에 실패했습니다").to_owned();
                 }
             }
         } else {
@@ -224,8 +227,12 @@ impl App {
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::CyclePause)]
             }
-            Action::SeekBack => vec![Cmd::Player(PlayerCmd::SeekRelative(-self.audio.seek_seconds))],
-            Action::SeekForward => vec![Cmd::Player(PlayerCmd::SeekRelative(self.audio.seek_seconds))],
+            Action::SeekBack => vec![Cmd::Player(PlayerCmd::SeekRelative(
+                -self.audio.seek_seconds,
+            ))],
+            Action::SeekForward => vec![Cmd::Player(PlayerCmd::SeekRelative(
+                self.audio.seek_seconds,
+            ))],
             Action::VolUp => {
                 self.playback.volume = (self.playback.volume + VOLUME_STEP).min(VOLUME_MAX);
                 self.dirty = true;
@@ -263,7 +270,8 @@ impl App {
                         // neutral → like: add to favorites, lift the artist affinity.
                         (false, false) => {
                             let now_fav = self.library.toggle_favorite(&song);
-                            self.signals.record_like(&song.video_id, &artist_key, now_fav, now);
+                            self.signals
+                                .record_like(&song.video_id, &artist_key, now_fav, now);
                             let comp = self.playback_completion();
                             self.record_session_event(&artist_key, Outcome::Like, comp);
                             self.dirty = true;
@@ -273,8 +281,10 @@ impl App {
                         // the dislike flag (which pushes the affinity down).
                         (true, _) => {
                             self.library.toggle_favorite(&song);
-                            self.signals.record_like(&song.video_id, &artist_key, false, now);
-                            self.signals.toggle_dislike(&song.video_id, &artist_key, now);
+                            self.signals
+                                .record_like(&song.video_id, &artist_key, false, now);
+                            self.signals
+                                .toggle_dislike(&song.video_id, &artist_key, now);
                             let comp = self.playback_completion();
                             self.record_session_event(&artist_key, Outcome::Dislike, comp);
                             self.dirty = true;
@@ -282,7 +292,8 @@ impl App {
                         }
                         // dislike → neutral: clear the flag, restoring the affinity it pushed down.
                         (false, true) => {
-                            self.signals.toggle_dislike(&song.video_id, &artist_key, now);
+                            self.signals
+                                .toggle_dislike(&song.video_id, &artist_key, now);
                             self.dirty = true;
                             return vec![Cmd::SaveSignals];
                         }
@@ -390,8 +401,11 @@ impl App {
                     Some(url) => {
                         copy_to_clipboard(&url);
                         self.status.kind = StatusKind::Info;
-                        self.status.text =
-                            t!("✓ Link copied to clipboard", "✓ 링크가 클립보드에 복사됐어요").to_owned();
+                        self.status.text = t!(
+                            "✓ Link copied to clipboard",
+                            "✓ 링크가 클립보드에 복사됐어요"
+                        )
+                        .to_owned();
                         self.dirty = true;
                     }
                     None if had_track => {
@@ -418,7 +432,16 @@ impl App {
     /// Into an empty queue it just becomes the sole track. This is the unified Enter / double-
     /// click "play" gesture in both the Library and the Search results.
     pub(in crate::app) fn play_now(&mut self, song: Song) -> Vec<Cmd> {
-        self.play_now_many(vec![song])
+        if !self.queue.play_now(song) {
+            self.status.kind = StatusKind::Error;
+            self.status.text = t!("Queue is full", "큐가 가득 찼어요").to_string();
+            self.dirty = true;
+            return Vec::new();
+        }
+        self.mode = Mode::Player;
+        self.status.text.clear();
+        let song = self.queue.current().cloned();
+        self.load_song(song)
     }
 
     /// Play several tracks now without wiping the queue: insert them immediately after the
@@ -466,7 +489,8 @@ impl App {
         }
         if was_idle {
             // Nothing was playing → jump to the first track we just appended and start it.
-            self.queue.goto(old_len.min(self.queue.len().saturating_sub(1)));
+            self.queue
+                .goto(old_len.min(self.queue.len().saturating_sub(1)));
             self.mode = Mode::Player;
             self.status.text.clear();
             let song = self.queue.current().cloned();
@@ -477,7 +501,11 @@ impl App {
         self.status.text = if requested == 1 && added == 1 {
             format!("{} {}", t!("Added to queue:", "큐에 추가:"), first_title)
         } else {
-            format!("{} {}", added, t!("tracks added to queue", "곡을 큐에 추가"))
+            format!(
+                "{} {}",
+                added,
+                t!("tracks added to queue", "곡을 큐에 추가")
+            )
         };
         self.dirty = true;
         Vec::new()
@@ -495,12 +523,14 @@ impl App {
         let artist_key = signals::normalize_artist(&song.artist);
         let now = signals::unix_now();
         if full {
-            self.signals.record_play(&song.video_id, &artist_key, 1.0, now);
+            self.signals
+                .record_play(&song.video_id, &artist_key, 1.0, now);
             self.record_session_event(&artist_key, Outcome::FullPlay, 1.0);
         } else {
             let completion = self.playback_completion();
             let scale = self.skip_feedback_scale();
-            self.signals.record_skip(&song.video_id, &artist_key, completion, now, scale);
+            self.signals
+                .record_skip(&song.video_id, &artist_key, completion, now, scale);
             // A skip below the strong threshold is a near-instant bail — a louder "wrong way"
             // cue for the reranker than an ordinary skip.
             let outcome = if completion < signals::STRONG_SKIP_FRAC {
@@ -563,7 +593,11 @@ impl App {
     /// otherwise this is the next track in the current one. Feeds [`Self::skip_feedback_scale`].
     pub(in crate::app) fn note_session_activity(&mut self) {
         let now = signals::unix_now();
-        if self.session.last_activity_at.is_some_and(|prev| now - prev > SESSION_GAP_SECS) {
+        if self
+            .session
+            .last_activity_at
+            .is_some_and(|prev| now - prev > SESSION_GAP_SECS)
+        {
             self.session.plays = 0;
         }
         self.session.plays = self.session.plays.saturating_add(1);
@@ -601,7 +635,8 @@ impl App {
                 let prefetched = self.prefetch.resolved.contains_key(&song.video_id);
                 self.prefetch.last_load_prefetched = prefetched;
                 let url = self
-                    .prefetch.resolved
+                    .prefetch
+                    .resolved
                     .get(&song.video_id)
                     .cloned()
                     .unwrap_or_else(|| song.playback_target());
@@ -663,9 +698,9 @@ impl App {
     }
 
     pub(in crate::app) fn current_needs_load(&self) -> bool {
-        self.queue
-            .current()
-            .is_some_and(|song| self.prefetch.loaded_video_id.as_deref() != Some(song.video_id.as_str()))
+        self.queue.current().is_some_and(|song| {
+            self.prefetch.loaded_video_id.as_deref() != Some(song.video_id.as_str())
+        })
     }
 
     /// Whether we lack lyrics for the current track (so a fetch is warranted).

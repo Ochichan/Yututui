@@ -118,7 +118,10 @@ mod tests {
 
     #[test]
     fn normalize_only_emits_dynaudnorm() {
-        assert_eq!(build_af_string(&[0.0; BANDS], true).as_deref(), Some("dynaudnorm"));
+        assert_eq!(
+            build_af_string(&[0.0; BANDS], true).as_deref(),
+            Some("dynaudnorm")
+        );
     }
 
     #[test]
@@ -128,7 +131,10 @@ mod tests {
         let af = build_af_string(&bands, false).unwrap();
         // All ten labels present so af-command can target any band later.
         for i in 0..BANDS {
-            assert!(af.contains(&format!("@eq{i}:")), "missing label eq{i} in {af}");
+            assert!(
+                af.contains(&format!("@eq{i}:")),
+                "missing label eq{i} in {af}"
+            );
         }
         assert!(af.contains("f=31:width_type=o:width=2:g=5"));
         assert!(af.contains("f=62:width_type=o:width=2:g=0"));

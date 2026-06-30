@@ -6,14 +6,16 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph,
+};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget, ScrollSurface};
-use crate::keymap::{self, Action, Conflict, KeyContext};
-use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
-use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
 use crate::config::{FPS_MAX, FPS_MIN, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
+use crate::keymap::{self, Action, Conflict, KeyContext};
+use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
+use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
 use crate::t;
 use crate::theme::ThemeConfig;
 use crate::theme::ThemeRole as R;
@@ -38,7 +40,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_nav(
         frame,
         app,
-        Rect { x: inner.x, y: area.y, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: area.y,
+            width: inner.width,
+            height: 1,
+        },
     );
 
     let rows = Layout::vertical([
@@ -141,7 +148,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             k(Action::SettingsCancel),
         )
     };
-    frame.render_widget(Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))), rows[3]);
+    frame.render_widget(
+        Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))),
+        rows[3],
+    );
 }
 
 /// The Keys tab: a scrollable list of every remappable binding, grouped by context. The
@@ -185,14 +195,21 @@ fn render_keys(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
         // A 2-cell gutter between the columns keeps the left labels off the right block.
         let col = columns[ci];
         let col = if ci == 0 {
-            Rect { width: col.width.saturating_sub(2), ..col }
+            Rect {
+                width: col.width.saturating_sub(2),
+                ..col
+            }
         } else {
             col
         };
         let len = items.len();
         let list = List::new(items)
             .style(theme.style(R::TextPrimary))
-            .highlight_style(theme.style(R::SettingsValueFocused).add_modifier(Modifier::BOLD))
+            .highlight_style(
+                theme
+                    .style(R::SettingsValueFocused)
+                    .add_modifier(Modifier::BOLD),
+            )
             .highlight_symbol("▶ ")
             // Reserve the marker gutter in both columns (even the one with no selection) so
             // their rows line up — the focused column would otherwise shift 2 cells left.
@@ -263,9 +280,15 @@ fn build_keys_column(
             let key = if st.capturing == Some((c, action)) {
                 t!("<press a key…>", "<키 입력 대기…>").to_owned()
             } else {
-                st.keymap.chord(c, action).map_or_else(|| "—".to_owned(), keymap::format_chord)
+                st.keymap
+                    .chord(c, action)
+                    .map_or_else(|| "—".to_owned(), keymap::format_chord)
             };
-            let key_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
+            let key_role = if focused {
+                R::SettingsValueFocused
+            } else {
+                R::SettingsValue
+            };
             // Bindings indent one step in from their group header for a clear hierarchy.
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(
@@ -293,7 +316,11 @@ fn render_tabs(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     const DIVIDER: &str = " ";
     let mut spans = Vec::new();
     let mut x = area.x;
-    for (i, t) in crate::settings::SettingsTab::ALL.iter().copied().enumerate() {
+    for (i, t) in crate::settings::SettingsTab::ALL
+        .iter()
+        .copied()
+        .enumerate()
+    {
         if i > 0 {
             spans.push(Span::styled(DIVIDER, muted));
             x = x.saturating_add(buttons::text_width(DIVIDER));
@@ -301,7 +328,12 @@ fn render_tabs(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
         let label = format!(" {} ", t.label());
         let w = buttons::text_width(&label);
         app.register_mouse_button(
-            Rect { x, y: area.y, width: w, height: 1 },
+            Rect {
+                x,
+                y: area.y,
+                width: w,
+                height: 1,
+            },
             MouseTarget::SettingsTab(i),
         );
         x = x.saturating_add(w);
@@ -332,7 +364,11 @@ fn other_label_width(tab: SettingsTab) -> usize {
 /// Width of the label column for color-role rows (the widest role label by display width, so
 /// two-cell Korean labels still line the swatch/hex/description columns up).
 fn color_label_width() -> usize {
-    R::ALL.iter().map(|r| UnicodeWidthStr::width(r.label())).max().unwrap_or(22)
+    R::ALL
+        .iter()
+        .map(|r| UnicodeWidthStr::width(r.label()))
+        .max()
+        .unwrap_or(22)
 }
 
 /// A slider value as it appears in a row: `‹ {bar}  {num} ›`. The `‹`/`›` are the clickable
@@ -355,9 +391,10 @@ fn field_value_text(st: &SettingsState, field: Field, focused: bool) -> String {
         (Field::CookiesFile | Field::DownloadDir, _) if focused && st.editing_text => {
             format!("{}▏", st.draft.text_value(field).unwrap_or_default())
         }
-        (Field::Speed, _) => {
-            slider_str(&bar(st.draft.speed, SPEED_MIN, SPEED_MAX), &format!("{:.1}x", st.draft.speed))
-        }
+        (Field::Speed, _) => slider_str(
+            &bar(st.draft.speed, SPEED_MIN, SPEED_MAX),
+            &format!("{:.1}x", st.draft.speed),
+        ),
         (Field::SeekInterval, _) => slider_str(
             &bar(st.draft.seek_seconds, SEEK_SECONDS_MIN, SEEK_SECONDS_MAX),
             &format!("{:.0}s", st.draft.seek_seconds),
@@ -427,7 +464,11 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     let len = items.len();
     let list = List::new(items)
         .style(theme.style(R::TextPrimary))
-        .highlight_style(theme.style(R::SettingsValueFocused).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            theme
+                .style(R::SettingsValueFocused)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol(HL_SYMBOL)
         // Reserve the marker gutter on every row so control hit-rects sit at a fixed x.
         .highlight_spacing(HighlightSpacing::Always);
@@ -438,7 +479,10 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     // `scrolloff = 0` means an already-visible cursor never moves the offset; keyboard nav past
     // an edge still scrolls by one. The resolved offset always keeps `selected` on-screen, so
     // the highlight is set unconditionally.
-    let offset = app.bridges.settings_scroll.resolve(selected, area.height, len, 0);
+    let offset = app
+        .bridges
+        .settings_scroll
+        .resolve(selected, area.height, len, 0);
     let mut state = ListState::default().with_offset(offset);
     state.select(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
@@ -486,7 +530,15 @@ fn register_field_controls(
         if w == 0 || x >= right {
             return;
         }
-        app.register_mouse_button(Rect { x, y, width: w.min(right - x), height: 1 }, target);
+        app.register_mouse_button(
+            Rect {
+                x,
+                y,
+                width: w.min(right - x),
+                height: 1,
+            },
+            target,
+        );
     };
 
     for vis in 0..area.height {
@@ -541,7 +593,11 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
         } else {
             st.draft.value_display(field)
         };
-        let value_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
+        let value_role = if focused {
+            R::SettingsValueFocused
+        } else {
+            R::SettingsValue
+        };
         // Transparent roles have no fill — show a hatched marker so it reads as "terminal
         // background shows through" rather than a missing/black swatch.
         let swatch = if theme.is_role_transparent(role) {
@@ -563,7 +619,11 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
     // shared `field_value_text`, so the click-target math stays in lockstep with the glyphs.
     let label = pad_to_width(&field.label(), other_label_width(st.tab));
     let value = field_value_text(st, field, focused);
-    let value_role = if focused { R::SettingsValueFocused } else { R::SettingsValue };
+    let value_role = if focused {
+        R::SettingsValueFocused
+    } else {
+        R::SettingsValue
+    };
     ListItem::new(Line::from(vec![
         Span::styled(label, theme.style(R::SettingsLabel)),
         Span::styled(value, theme.style(value_role)),
@@ -599,18 +659,26 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
             Span::raw(t!(" is already bound to", " 은(는) 이미 사용 중")),
         ]),
         Line::from(Span::styled(
-            format!("\u{201c}{}\u{201d}", conflict.existing.human_label_for(conflict.ctx)),
+            format!(
+                "\u{201c}{}\u{201d}",
+                conflict.existing.human_label_for(conflict.ctx)
+            ),
             theme.style(R::Accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(where_line, theme.style(R::TextMuted))),
         Line::from(""),
         Line::from(Span::styled(
-            t!("Binding unchanged · press any key", "단축키 변경 안 됨 · 아무 키나 누르세요"),
+            t!(
+                "Binding unchanged · press any key",
+                "단축키 변경 안 됨 · 아무 키나 누르세요"
+            ),
             theme.style(R::TextMuted),
         )),
     ];
     frame.render_widget(
-        Paragraph::new(lines).alignment(Alignment::Center).style(theme.style(R::TextPrimary)),
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .style(theme.style(R::TextPrimary)),
         inner,
     );
 }
@@ -633,21 +701,32 @@ pub fn render_confirm_reset(frame: &mut Frame, app: &App, area: Rect) {
 
     let lines = vec![
         Line::from(""),
-        Line::from(t!("Restore every setting to its default?", "모든 설정을 기본값으로 되돌릴까요?")),
+        Line::from(t!(
+            "Restore every setting to its default?",
+            "모든 설정을 기본값으로 되돌릴까요?"
+        )),
         Line::from(Span::styled(
-            t!("Keybindings, theme, and API key included.", "단축키, 테마, API 키 포함."),
+            t!(
+                "Keybindings, theme, and API key included.",
+                "단축키, 테마, API 키 포함."
+            ),
             theme.style(R::TextMuted),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("Enter / y", theme.style(R::Error).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Enter / y",
+                theme.style(R::Error).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(t!(" reset    ", " 초기화    ")),
             Span::styled("Esc", theme.style(R::Accent).add_modifier(Modifier::BOLD)),
             Span::raw(t!(" cancel", " 취소")),
         ]),
     ];
     frame.render_widget(
-        Paragraph::new(lines).alignment(Alignment::Center).style(theme.style(R::TextPrimary)),
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .style(theme.style(R::TextPrimary)),
         inner,
     );
 }
@@ -667,7 +746,11 @@ fn centered_fixed(area: Rect, w: u16, h: u16) -> Rect {
 /// A compact 11-cell slider bar with a marker at `value`'s position in `[min, max]`.
 fn bar(value: f64, min: f64, max: f64) -> String {
     const WIDTH: usize = 11;
-    let frac = if max > min { ((value - min) / (max - min)).clamp(0.0, 1.0) } else { 0.0 };
+    let frac = if max > min {
+        ((value - min) / (max - min)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let pos = (frac * (WIDTH - 1) as f64).round() as usize;
     let mut s = String::with_capacity(WIDTH);
     for i in 0..WIDTH {

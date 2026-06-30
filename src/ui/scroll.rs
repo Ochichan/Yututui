@@ -50,7 +50,11 @@ impl ScrollState {
         }
         let max = len.saturating_sub(viewport);
         let cur = self.offset.get();
-        let next = if up { cur.saturating_sub(delta) } else { (cur + delta).min(max) };
+        let next = if up {
+            cur.saturating_sub(delta)
+        } else {
+            (cur + delta).min(max)
+        };
         self.offset.set(next);
     }
 
@@ -131,8 +135,8 @@ pub fn scrollbar_thumb(
     }
     let track = track_len as usize;
     let max_offset = content_len - viewport;
-    let thumb_len = ((viewport.saturating_mul(track) + content_len / 2) / content_len)
-        .clamp(1, track);
+    let thumb_len =
+        ((viewport.saturating_mul(track) + content_len / 2) / content_len).clamp(1, track);
     let travel = track.saturating_sub(thumb_len);
     let start = if travel == 0 {
         0
@@ -140,7 +144,10 @@ pub fn scrollbar_thumb(
         let pos = position.min(max_offset);
         (pos.saturating_mul(travel) + max_offset / 2) / max_offset
     };
-    Some(ScrollbarThumb { start: start as u16, len: thumb_len as u16 })
+    Some(ScrollbarThumb {
+        start: start as u16,
+        len: thumb_len as u16,
+    })
 }
 
 /// Convert a row within a scrollbar track back into a list offset.
@@ -230,7 +237,12 @@ mod tests {
         // Cursor 50, offset far away -> land so 50 sits >= SO from each edge.
         let off = scroll_to_cursor(0, 50, 10, 100, SO);
         assert!(50 >= off + SO, "top margin: cursor {} offset {}", 50, off);
-        assert!(50 <= off + 10 - 1 - SO, "bottom margin: cursor {} offset {}", 50, off);
+        assert!(
+            50 <= off + 10 - 1 - SO,
+            "bottom margin: cursor {} offset {}",
+            50,
+            off
+        );
     }
 
     #[test]
@@ -300,7 +312,10 @@ mod tests {
         let s = ScrollState::default();
         for cursor in [30usize, 0, 49, 25] {
             let off = s.resolve(cursor, 10, 50, 0);
-            assert!(cursor >= off && cursor < off + 10, "cursor {cursor} not visible at off {off}");
+            assert!(
+                cursor >= off && cursor < off + 10,
+                "cursor {cursor} not visible at off {off}"
+            );
         }
     }
 

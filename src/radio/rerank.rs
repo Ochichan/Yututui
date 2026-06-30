@@ -47,17 +47,31 @@ pub fn select(
         let mmr: Vec<f32> = remaining
             .iter()
             .map(|c| {
-                let diversity =
-                    selected.iter().map(|s| similarity(c, s, cooc, simw)).fold(0.0, f32::max);
+                let diversity = selected
+                    .iter()
+                    .map(|s| similarity(c, s, cooc, simw))
+                    .fold(0.0, f32::max);
                 lambda * c.base_score - (1.0 - lambda) * diversity
             })
             .collect();
 
         // Prefer candidates that clear the cooldown; relax only if every one violates it.
         let eligible: Vec<usize> = (0..remaining.len())
-            .filter(|&i| cooldown_ok(&remaining[i], &artist_window, artist_gap, &album_window, album_gap))
+            .filter(|&i| {
+                cooldown_ok(
+                    &remaining[i],
+                    &artist_window,
+                    artist_gap,
+                    &album_window,
+                    album_gap,
+                )
+            })
             .collect();
-        let pool: Vec<usize> = if eligible.is_empty() { (0..remaining.len()).collect() } else { eligible };
+        let pool: Vec<usize> = if eligible.is_empty() {
+            (0..remaining.len()).collect()
+        } else {
+            eligible
+        };
 
         let scores: Vec<f32> = pool.iter().map(|&i| mmr[i]).collect();
         let idx = pool[softmax_sample(&scores, temp)];
@@ -98,8 +112,10 @@ pub fn mmr_topk(
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                let diversity =
-                    selected.iter().map(|s| similarity(c, s, cooc, simw)).fold(0.0, f32::max);
+                let diversity = selected
+                    .iter()
+                    .map(|s| similarity(c, s, cooc, simw))
+                    .fold(0.0, f32::max);
                 (i, lambda * c.base_score - (1.0 - lambda) * diversity)
             })
             .max_by(|a, b| a.1.total_cmp(&b.1))
@@ -113,9 +129,15 @@ pub fn mmr_topk(
 /// Behavioral + metadata similarity in [0,1] (weights sum to 1). Title-token overlap is
 /// intentionally excluded as noisy; co-occurrence is the primary signal.
 fn similarity(a: &Candidate, b: &Candidate, cooc: &Cooc, simw: &SimWeights) -> f32 {
-    let w = cooc.weight(a.video_id(), b.video_id()).max(cooc.weight(b.video_id(), a.video_id()));
+    let w = cooc
+        .weight(a.video_id(), b.video_id())
+        .max(cooc.weight(b.video_id(), a.video_id()));
     let cooc_sim = 1.0 - 1.0 / (1.0 + w); // 0 when unrelated, →1 as affinity grows
-    let artist_sim = if a.artist_key == b.artist_key { 1.0 } else { 0.0 };
+    let artist_sim = if a.artist_key == b.artist_key {
+        1.0
+    } else {
+        0.0
+    };
     let album_sim = match (&a.album, &b.album) {
         (Some(x), Some(y)) if x == y => 1.0,
         _ => 0.0,
@@ -131,12 +153,22 @@ fn cooldown_ok(
     album_window: &[String],
     album_gap: usize,
 ) -> bool {
-    if artist_gap > 0 && artist_window.iter().rev().take(artist_gap).any(|a| a == &c.artist_key) {
+    if artist_gap > 0
+        && artist_window
+            .iter()
+            .rev()
+            .take(artist_gap)
+            .any(|a| a == &c.artist_key)
+    {
         return false;
     }
     if album_gap > 0
         && let Some(album) = &c.album
-        && album_window.iter().rev().take(album_gap).any(|a| a == album)
+        && album_window
+            .iter()
+            .rev()
+            .take(album_gap)
+            .any(|a| a == album)
     {
         return false;
     }
@@ -199,9 +231,16 @@ mod tests {
     #[test]
     fn returns_requested_count_when_pool_is_large_enough() {
         fastrand::seed(1);
-        let pool: Vec<Candidate> =
-            (0..10).map(|i| scored(&format!("v{i}"), &format!("a{i}"), 1.0 - i as f32 * 0.05)).collect();
-        let picks = select(pool, &station(), &Cooc::default(), &RadioConfig::default(), 5);
+        let pool: Vec<Candidate> = (0..10)
+            .map(|i| scored(&format!("v{i}"), &format!("a{i}"), 1.0 - i as f32 * 0.05))
+            .collect();
+        let picks = select(
+            pool,
+            &station(),
+            &Cooc::default(),
+            &RadioConfig::default(),
+            5,
+        );
         assert_eq!(picks.len(), 5);
         // No duplicate ids.
         let unique: HashSet<&str> = picks.iter().map(|s| s.video_id.as_str()).collect();
@@ -212,10 +251,17 @@ mod tests {
     fn artist_cooldown_spaces_same_artist_picks() {
         fastrand::seed(7);
         // Five tracks by "dominant" (high score) + plenty of alternatives.
-        let mut pool: Vec<Candidate> =
-            (0..5).map(|i| scored(&format!("d{i}"), "dominant", 1.0)).collect();
+        let mut pool: Vec<Candidate> = (0..5)
+            .map(|i| scored(&format!("d{i}"), "dominant", 1.0))
+            .collect();
         pool.extend((0..15).map(|i| scored(&format!("o{i}"), &format!("other{i}"), 0.9)));
-        let picks = select(pool, &station(), &Cooc::default(), &RadioConfig::default(), 5);
+        let picks = select(
+            pool,
+            &station(),
+            &Cooc::default(),
+            &RadioConfig::default(),
+            5,
+        );
         // With gap 8 and 5 picks, "dominant" can appear at most once.
         let dominant = picks.iter().filter(|s| s.artist == "dominant").count();
         assert!(dominant <= 1, "artist clumped: {dominant} dominant picks");
@@ -223,16 +269,40 @@ mod tests {
 
     #[test]
     fn empty_or_zero_n_returns_empty() {
-        assert!(select(Vec::new(), &station(), &Cooc::default(), &RadioConfig::default(), 5).is_empty());
+        assert!(
+            select(
+                Vec::new(),
+                &station(),
+                &Cooc::default(),
+                &RadioConfig::default(),
+                5
+            )
+            .is_empty()
+        );
         let pool = vec![scored("v0", "a", 1.0)];
-        assert!(select(pool, &station(), &Cooc::default(), &RadioConfig::default(), 0).is_empty());
+        assert!(
+            select(
+                pool,
+                &station(),
+                &Cooc::default(),
+                &RadioConfig::default(),
+                0
+            )
+            .is_empty()
+        );
     }
 
     #[test]
     fn fewer_candidates_than_requested_returns_all() {
         fastrand::seed(3);
         let pool = vec![scored("v0", "a", 1.0), scored("v1", "b", 0.9)];
-        let picks = select(pool, &station(), &Cooc::default(), &RadioConfig::default(), 5);
+        let picks = select(
+            pool,
+            &station(),
+            &Cooc::default(),
+            &RadioConfig::default(),
+            5,
+        );
         assert_eq!(picks.len(), 2);
     }
 
@@ -250,14 +320,31 @@ mod tests {
     fn mmr_topk_is_deterministic_and_relevance_led() {
         // Distinct artists so diversity never penalizes; top-k must be the highest base scores,
         // in order, with no RNG dependence.
-        let pool: Vec<Candidate> =
-            (0..10).map(|i| scored(&format!("v{i}"), &format!("a{i}"), 1.0 - i as f32 * 0.05)).collect();
-        let first = mmr_topk(pool.clone(), &station(), &Cooc::default(), &RadioConfig::default(), 4);
-        let again = mmr_topk(pool, &station(), &Cooc::default(), &RadioConfig::default(), 4);
+        let pool: Vec<Candidate> = (0..10)
+            .map(|i| scored(&format!("v{i}"), &format!("a{i}"), 1.0 - i as f32 * 0.05))
+            .collect();
+        let first = mmr_topk(
+            pool.clone(),
+            &station(),
+            &Cooc::default(),
+            &RadioConfig::default(),
+            4,
+        );
+        let again = mmr_topk(
+            pool,
+            &station(),
+            &Cooc::default(),
+            &RadioConfig::default(),
+            4,
+        );
         let ids: Vec<&str> = first.iter().map(|c| c.video_id()).collect();
         let ids2: Vec<&str> = again.iter().map(|c| c.video_id()).collect();
         assert_eq!(ids, ids2, "no softmax → identical every call");
-        assert_eq!(ids, vec!["v0", "v1", "v2", "v3"], "leads with the strongest base scores");
+        assert_eq!(
+            ids,
+            vec!["v0", "v1", "v2", "v3"],
+            "leads with the strongest base scores"
+        );
     }
 
     #[test]
@@ -269,15 +356,43 @@ mod tests {
             scored("dup2", "same", 0.98),
             scored("div", "other", 0.95),
         ];
-        let picks = mmr_topk(pool, &station(), &Cooc::default(), &RadioConfig::default(), 2);
+        let picks = mmr_topk(
+            pool,
+            &station(),
+            &Cooc::default(),
+            &RadioConfig::default(),
+            2,
+        );
         let ids: Vec<&str> = picks.iter().map(|c| c.video_id()).collect();
-        assert_eq!(ids, vec!["dup1", "div"], "diverse track beats the redundant same-artist one");
+        assert_eq!(
+            ids,
+            vec!["dup1", "div"],
+            "diverse track beats the redundant same-artist one"
+        );
     }
 
     #[test]
     fn mmr_topk_empty_or_zero_k_is_empty() {
-        assert!(mmr_topk(Vec::new(), &station(), &Cooc::default(), &RadioConfig::default(), 4).is_empty());
+        assert!(
+            mmr_topk(
+                Vec::new(),
+                &station(),
+                &Cooc::default(),
+                &RadioConfig::default(),
+                4
+            )
+            .is_empty()
+        );
         let pool = vec![scored("v0", "a", 1.0)];
-        assert!(mmr_topk(pool, &station(), &Cooc::default(), &RadioConfig::default(), 0).is_empty());
+        assert!(
+            mmr_topk(
+                pool,
+                &station(),
+                &Cooc::default(),
+                &RadioConfig::default(),
+                0
+            )
+            .is_empty()
+        );
     }
 }

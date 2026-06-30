@@ -38,7 +38,11 @@ impl Language {
     pub fn cycled(self, forward: bool) -> Self {
         let i = Self::CYCLE.iter().position(|&l| l == self).unwrap_or(0);
         let n = Self::CYCLE.len();
-        let j = if forward { (i + 1) % n } else { (i + n - 1) % n };
+        let j = if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        };
         Self::CYCLE[j]
     }
 
@@ -111,7 +115,10 @@ mod tests {
 
     #[test]
     fn serde_uses_snake_case_tags() {
-        assert_eq!(serde_json::to_string(&Language::Korean).unwrap(), "\"korean\"");
+        assert_eq!(
+            serde_json::to_string(&Language::Korean).unwrap(),
+            "\"korean\""
+        );
         let back: Language = serde_json::from_str("\"english\"").unwrap();
         assert_eq!(back, Language::English);
     }

@@ -51,7 +51,10 @@ pub fn build_cands_block(shortlist: &[Candidate], seed: &str) -> (String, Vec<Pa
             m = pct(f.music_tier),
             ver = version_label(&c.song.title),
         ));
-        map.push(PackedCand { cid, video_id: c.video_id().to_owned() });
+        map.push(PackedCand {
+            cid,
+            video_id: c.video_id().to_owned(),
+        });
     }
     (s, map)
 }
@@ -95,7 +98,11 @@ fn interleaved_order(shortlist: &[Candidate], seed: &str) -> Vec<usize> {
 /// rare collision).
 fn unique_cid(video_id: &str, taken: &mut HashSet<String>) -> String {
     for k in 0..64 {
-        let key = if k == 0 { video_id.to_owned() } else { format!("{video_id}#{k}") };
+        let key = if k == 0 {
+            video_id.to_owned()
+        } else {
+            format!("{video_id}#{k}")
+        };
         let cid = base36(hash64(&key), 3);
         if taken.insert(cid.clone()) {
             return cid;
@@ -132,7 +139,12 @@ fn pct(x: f32) -> i32 {
 
 /// Strip the line-protocol delimiter / newlines and truncate, so a title can't break the pack.
 fn clean(s: &str, max: usize) -> String {
-    s.chars().take(max).collect::<String>().replace(['|', '\n', '\r'], " ").trim().to_owned()
+    s.chars()
+        .take(max)
+        .collect::<String>()
+        .replace(['|', '\n', '\r'], " ")
+        .trim()
+        .to_owned()
 }
 
 fn source_tag(src: crate::radio::candidate::CandidateSource) -> &'static str {
@@ -182,8 +194,16 @@ mod tests {
 
     #[test]
     fn every_candidate_appears_with_a_unique_cid() {
-        let pool: Vec<Candidate> =
-            (0..12).map(|i| cand(&format!("vid{i}"), &format!("Title {i}"), &format!("Artist {i}"), i as f32)).collect();
+        let pool: Vec<Candidate> = (0..12)
+            .map(|i| {
+                cand(
+                    &format!("vid{i}"),
+                    &format!("Title {i}"),
+                    &format!("Artist {i}"),
+                    i as f32,
+                )
+            })
+            .collect();
         let (block, map) = build_cands_block(&pool, "seed");
 
         assert_eq!(map.len(), pool.len());
@@ -201,8 +221,16 @@ mod tests {
 
     #[test]
     fn order_is_deterministic_for_a_given_seed() {
-        let pool: Vec<Candidate> =
-            (0..9).map(|i| cand(&format!("v{i}"), &format!("T{i}"), &format!("A{i}"), (9 - i) as f32)).collect();
+        let pool: Vec<Candidate> = (0..9)
+            .map(|i| {
+                cand(
+                    &format!("v{i}"),
+                    &format!("T{i}"),
+                    &format!("A{i}"),
+                    (9 - i) as f32,
+                )
+            })
+            .collect();
         let (a, _) = build_cands_block(&pool, "seed-x");
         let (b, _) = build_cands_block(&pool, "seed-x");
         assert_eq!(a, b, "same input + seed → identical pack");
@@ -212,14 +240,25 @@ mod tests {
     fn pack_does_not_emit_in_descending_score_order() {
         // base_score strictly increasing with index; the emitted order must not be the plain
         // score sort (interleaving breaks the position-bias signal).
-        let pool: Vec<Candidate> =
-            (0..9).map(|i| cand(&format!("v{i}"), &format!("T{i}"), &format!("A{i}"), i as f32)).collect();
+        let pool: Vec<Candidate> = (0..9)
+            .map(|i| {
+                cand(
+                    &format!("v{i}"),
+                    &format!("T{i}"),
+                    &format!("A{i}"),
+                    i as f32,
+                )
+            })
+            .collect();
         let (block, map) = build_cands_block(&pool, "seed");
         // The first emitted candidate should not always be the single highest base_score one.
         // (With interleaving, the top-bucket leader is shuffled, so v8 rarely lands first.)
         let first_cid = block.lines().nth(1).unwrap().split('|').next().unwrap();
         let first_vid = &map.iter().find(|p| p.cid == first_cid).unwrap().video_id;
-        assert_ne!(first_vid, "v8", "highest score should not deterministically lead");
+        assert_ne!(
+            first_vid, "v8",
+            "highest score should not deterministically lead"
+        );
     }
 
     #[test]
@@ -233,7 +272,14 @@ mod tests {
         // The pipe inside the title was stripped so it can't break the protocol: the line must
         // have exactly the 12 fields' worth of delimiters (11 pipes), not one extra.
         let line = block.lines().nth(1).unwrap();
-        assert_eq!(line.matches('|').count(), 11, "title pipe must not leak as a delimiter");
-        assert!(!line.contains("t=Song |"), "raw pipe must be stripped from the title");
+        assert_eq!(
+            line.matches('|').count(),
+            11,
+            "title pipe must not leak as a delimiter"
+        );
+        assert!(
+            !line.contains("t=Song |"),
+            "raw pipe must be stripped from the title"
+        );
     }
 }

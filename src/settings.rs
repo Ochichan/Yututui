@@ -73,7 +73,11 @@ impl SettingsTab {
     pub fn stepped(self, forward: bool) -> Self {
         let n = Self::ALL.len();
         let i = self.index();
-        let j = if forward { (i + 1) % n } else { (i + n - 1) % n };
+        let j = if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        };
         Self::ALL[j]
     }
 
@@ -240,14 +244,31 @@ pub enum FieldKind {
 impl Field {
     pub fn kind(self) -> FieldKind {
         match self {
-            Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => FieldKind::Text,
-            Field::Mouse | Field::AlbumArt | Field::AutoplayOnStart | Field::MouseWheelVolume
+            Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => {
+                FieldKind::Text
+            }
+            Field::Mouse
+            | Field::AlbumArt
+            | Field::AutoplayOnStart
+            | Field::MouseWheelVolume
             | Field::Gapless
-            | Field::AutoplayRadio | Field::Normalize | Field::AiEnabled | Field::BackgroundNone
+            | Field::AutoplayRadio
+            | Field::Normalize
+            | Field::AiEnabled
+            | Field::BackgroundNone
             | Field::AnimPauseUnfocused
-            | Field::AnimMaster | Field::AnimTitle | Field::AnimHeart | Field::AnimSeekbar
-            | Field::AnimSpinner | Field::AnimEqBars | Field::AnimControls | Field::AnimBorder
-            | Field::AnimRain | Field::AnimDonut | Field::AnimVisualizer | Field::AnimStarfield
+            | Field::AnimMaster
+            | Field::AnimTitle
+            | Field::AnimHeart
+            | Field::AnimSeekbar
+            | Field::AnimSpinner
+            | Field::AnimEqBars
+            | Field::AnimControls
+            | Field::AnimBorder
+            | Field::AnimRain
+            | Field::AnimDonut
+            | Field::AnimVisualizer
+            | Field::AnimStarfield
             | Field::AnimBounce => FieldKind::Toggle,
             Field::Language
             | Field::EqPreset
@@ -290,7 +311,9 @@ impl Field {
             Field::CookiesFile => t!("Cookies file", "쿠키 파일").to_owned(),
             Field::DownloadDir => t!("Download dir", "다운로드 폴더").to_owned(),
             Field::Mouse => t!("Mouse (next launch)", "마우스 (재시작 후 적용)").to_owned(),
-            Field::AlbumArt => t!("Album art (next launch)", "앨범 아트 (재시작 후 적용)").to_owned(),
+            Field::AlbumArt => {
+                t!("Album art (next launch)", "앨범 아트 (재시작 후 적용)").to_owned()
+            }
             Field::AutoplayOnStart => t!("Autoplay on launch", "앱 시작 시 자동재생").to_owned(),
             Field::ResetKeybindings => t!("Reset keybindings", "단축키 초기화").to_owned(),
             Field::ResetAll => t!("Reset all settings", "모든 설정 초기화").to_owned(),
@@ -496,7 +519,11 @@ impl SettingsDraft {
         cfg.eq_preset = self.eq_preset;
         // Store the explicit band array only when it diverges from the preset's gains, so
         // a plain preset choice stays compact in config.json.
-        cfg.eq_bands = if self.eq_bands == self.eq_preset.gains() { None } else { Some(self.eq_bands) };
+        cfg.eq_bands = if self.eq_bands == self.eq_preset.gains() {
+            None
+        } else {
+            Some(self.eq_bands)
+        };
         cfg.normalize = Some(self.normalize);
         cfg.gemini_model = self.gemini_model;
         cfg.gemini_api_key = blank_to_none(&self.gemini_api_key);
@@ -545,17 +572,27 @@ impl SettingsState {
     /// "is this a color row?" check) stay sound.
     pub fn current_field(&self) -> Option<Field> {
         let fields = self.tab.fields();
-        fields.get(self.row.min(fields.len().saturating_sub(1))).copied()
+        fields
+            .get(self.row.min(fields.len().saturating_sub(1)))
+            .copied()
     }
 }
 
 fn toggle_str(on: bool) -> String {
-    if on { "[x]".to_owned() } else { "[ ]".to_owned() }
+    if on {
+        "[x]".to_owned()
+    } else {
+        "[ ]".to_owned()
+    }
 }
 
 pub(crate) fn blank_to_none(s: &str) -> Option<String> {
     let t = s.trim();
-    if t.is_empty() { None } else { Some(t.to_owned()) }
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_owned())
+    }
 }
 
 /// Clamp a band gain to range and round to a whole dB.
@@ -636,7 +673,11 @@ mod tests {
         );
 
         // Section counts partition the field list exactly.
-        let total: usize = SettingsTab::Graphics.sections().iter().map(|(_, n)| n).sum();
+        let total: usize = SettingsTab::Graphics
+            .sections()
+            .iter()
+            .map(|(_, n)| n)
+            .sum();
         assert_eq!(total, f.len());
 
         // Default draft: every animation toggle reads as off.
@@ -659,7 +700,11 @@ mod tests {
         assert!(cfg.animations.active());
 
         // Non-animation fields map to no flag.
-        assert!(Field::Mouse.anim_flag(&mut AnimationsConfig::default()).is_none());
+        assert!(
+            Field::Mouse
+                .anim_flag(&mut AnimationsConfig::default())
+                .is_none()
+        );
     }
 
     #[test]
@@ -672,12 +717,19 @@ mod tests {
         assert!(!draft.theme.is_role_transparent(ThemeRole::Background));
         assert_eq!(draft.value_display(Field::BackgroundNone), "[ ]");
         // Forcing the override transparent flips the toggle on and persists.
-        draft.theme.set_override(ThemeRole::Background, crate::theme::TRANSPARENT).unwrap();
+        draft
+            .theme
+            .set_override(ThemeRole::Background, crate::theme::TRANSPARENT)
+            .unwrap();
         assert!(draft.theme.is_role_transparent(ThemeRole::Background));
         assert_eq!(draft.value_display(Field::BackgroundNone), "[x]");
         let mut cfg = Config::default();
         draft.apply_to(&mut cfg);
-        assert!(cfg.theme.normalized().is_role_transparent(ThemeRole::Background));
+        assert!(
+            cfg.theme
+                .normalized()
+                .is_role_transparent(ThemeRole::Background)
+        );
     }
 
     #[test]
@@ -693,7 +745,11 @@ mod tests {
         assert_eq!(f[4 + eq::BANDS + 1], Field::Normalize);
         assert_eq!(Field::MouseWheelVolume.kind(), FieldKind::Toggle);
         assert_eq!(base_draft().value_display(Field::MouseWheelVolume), "[x]");
-        let total: usize = SettingsTab::Playback.sections().iter().map(|(_, n)| n).sum();
+        let total: usize = SettingsTab::Playback
+            .sections()
+            .iter()
+            .map(|(_, n)| n)
+            .sum();
         assert_eq!(total, f.len());
     }
 
@@ -720,7 +776,10 @@ mod tests {
         assert_eq!(Field::AlbumArt.kind(), FieldKind::Toggle);
         // Off by default, and the toggle renders as an empty checkbox.
         let draft = base_draft();
-        assert_eq!(draft.value_display(Field::ResetKeybindings), "↵ press Enter");
+        assert_eq!(
+            draft.value_display(Field::ResetKeybindings),
+            "↵ press Enter"
+        );
         assert!(!draft.autoplay_on_start);
         assert_eq!(draft.value_display(Field::AutoplayOnStart), "[ ]");
     }
@@ -758,18 +817,29 @@ mod tests {
         // Theme preset + transparent-bg toggle lead the Graphics tab; the color roles follow.
         let f = SettingsTab::Graphics.fields();
         assert_eq!(f[0], Field::ThemePreset);
-        let color_fields: Vec<Field> =
-            f.into_iter().filter(|fld| matches!(fld, Field::ThemeColor(_))).collect();
+        let color_fields: Vec<Field> = f
+            .into_iter()
+            .filter(|fld| matches!(fld, Field::ThemeColor(_)))
+            .collect();
         assert_eq!(color_fields.len(), ThemeRole::ALL.len());
-        assert!(matches!(color_fields[0], Field::ThemeColor(ThemeRole::Background)));
+        assert!(matches!(
+            color_fields[0],
+            Field::ThemeColor(ThemeRole::Background)
+        ));
 
         let mut draft = base_draft();
         draft.theme.set_preset(crate::theme::ThemePreset::Midnight);
-        draft.theme.set_override(ThemeRole::Accent, "#123456").unwrap();
+        draft
+            .theme
+            .set_override(ThemeRole::Accent, "#123456")
+            .unwrap();
         let mut cfg = Config::default();
         draft.apply_to(&mut cfg);
         assert_eq!(cfg.theme.preset, "midnight");
-        assert_eq!(cfg.theme.overrides.get("accent").map(String::as_str), Some("#123456"));
+        assert_eq!(
+            cfg.theme.overrides.get("accent").map(String::as_str),
+            Some("#123456")
+        );
     }
 
     #[test]
@@ -778,7 +848,9 @@ mod tests {
         bands[2] = 4.0;
         let mut theme = ThemeConfig::default();
         theme.set_preset(crate::theme::ThemePreset::HighContrast);
-        theme.set_override(ThemeRole::BorderPrimary, "#123456").unwrap();
+        theme
+            .set_override(ThemeRole::BorderPrimary, "#123456")
+            .unwrap();
 
         let draft = SettingsDraft {
             cookies_file: "/tmp/cookies.txt".to_owned(),
@@ -836,7 +908,10 @@ mod tests {
         assert_eq!(cfg.gemini_api_key.as_deref(), Some("AIzaPersist"));
         assert_eq!(cfg.theme.preset, "high_contrast");
         assert_eq!(
-            cfg.theme.overrides.get("border_primary").map(String::as_str),
+            cfg.theme
+                .overrides
+                .get("border_primary")
+                .map(String::as_str),
             Some("#123456")
         );
     }

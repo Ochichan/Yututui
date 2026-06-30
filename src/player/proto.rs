@@ -14,7 +14,10 @@ pub enum MpvIncoming {
     /// Playback of the current file ended; `reason` is mpv's `end-file` reason
     /// (`eof`, `stop`, `error`, `quit`, ...). `file_error` is mpv's error detail, present
     /// only when `reason` is `error` (e.g. "Failed to open", "Unrecognized file format").
-    EndFile { reason: String, file_error: Option<String> },
+    EndFile {
+        reason: String,
+        file_error: Option<String>,
+    },
     /// A command reply or an event we don't act on.
     Other,
 }
@@ -34,7 +37,10 @@ pub fn parse_line(line: &str) -> Option<MpvIncoming> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            let file_error = v.get("file_error").and_then(Value::as_str).map(str::to_owned);
+            let file_error = v
+                .get("file_error")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             Some(MpvIncoming::EndFile { reason, file_error })
         }
         _ => Some(MpvIncoming::Other),

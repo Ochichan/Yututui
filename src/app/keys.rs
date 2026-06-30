@@ -29,7 +29,11 @@ impl App {
             self.dirty = true;
             let confirmed = k.code == KeyCode::Enter
                 || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
-            return if confirmed { self.settings_reset_all() } else { Vec::new() };
+            return if confirmed {
+                self.settings_reset_all()
+            } else {
+                Vec::new()
+            };
         }
 
         // Deleting downloaded files is irreversible, so it's gated behind the same modal:
@@ -77,7 +81,10 @@ impl App {
             }
             let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleHelp))
                 || k.code == KeyCode::Esc
-                || matches!(self.keymap.action(KeyContext::Common, chord), Some(Action::Back));
+                || matches!(
+                    self.keymap.action(KeyContext::Common, chord),
+                    Some(Action::Back)
+                );
             if close {
                 self.help_visible = false;
                 self.dirty = true;
@@ -93,7 +100,10 @@ impl App {
             }
             let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleAbout))
                 || k.code == KeyCode::Esc
-                || matches!(self.keymap.action(KeyContext::Common, chord), Some(Action::Back));
+                || matches!(
+                    self.keymap.action(KeyContext::Common, chord),
+                    Some(Action::Back)
+                );
             if close {
                 self.about_visible = false;
                 self.dirty = true;
@@ -109,7 +119,10 @@ impl App {
             }
             let close = matches!(self.keymap.global_action(chord), Some(Action::WhyAi))
                 || k.code == KeyCode::Esc
-                || matches!(self.keymap.action(KeyContext::Common, chord), Some(Action::Back));
+                || matches!(
+                    self.keymap.action(KeyContext::Common, chord),
+                    Some(Action::Back)
+                );
             if close {
                 self.why_ai_visible = false;
                 self.dirty = true;
@@ -141,8 +154,11 @@ impl App {
                         self.why_ai_visible = true;
                     } else {
                         self.status.kind = StatusKind::Info;
-                        self.status.text =
-                            t!("No AI radio picks to explain yet.", "아직 설명할 AI 라디오 선곡이 없어요.").to_owned();
+                        self.status.text = t!(
+                            "No AI radio picks to explain yet.",
+                            "아직 설명할 AI 라디오 선곡이 없어요."
+                        )
+                        .to_owned();
                     }
                     self.dirty = true;
                     return Vec::new();

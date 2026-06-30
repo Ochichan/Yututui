@@ -43,7 +43,10 @@ pub fn run(args_in: &[String]) -> i32 {
         }
     };
 
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("ytt -r: could not start runtime: {e}");
