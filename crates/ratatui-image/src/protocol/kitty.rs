@@ -32,7 +32,11 @@ struct KittyProtoState {
 
 impl KittyProtoState {
     fn new(img: &DynamicImage, id: u32, is_tmux: bool) -> Self {
-        let transmit_str = transmit_virtual(img, id, is_tmux);
+        Self::new_with_z_index(img, id, is_tmux, TEXT_BACKGROUND_Z_INDEX)
+    }
+
+    fn new_with_z_index(img: &DynamicImage, id: u32, is_tmux: bool, z_index: i32) -> Self {
+        let transmit_str = transmit_virtual(img, id, is_tmux, z_index);
         let [id_extra, id_r, id_g, id_b] = id.to_be_bytes();
         let id_color = format!("\x1b[38;2;{id_r};{id_g};{id_b}m");
         let id_extra = u16::from(id_extra);
@@ -67,6 +71,17 @@ pub struct Kitty {
 impl Kitty {
     pub fn new(image: DynamicImage, size: Size, id: u32, is_tmux: bool) -> Result<Self> {
         let proto_state = KittyProtoState::new(&image, id, is_tmux);
+        Ok(Self { proto_state, size })
+    }
+
+    pub fn new_with_z_index(
+        image: DynamicImage,
+        size: Size,
+        id: u32,
+        is_tmux: bool,
+        z_index: i32,
+    ) -> Result<Self> {
+        let proto_state = KittyProtoState::new_with_z_index(&image, id, is_tmux, z_index);
         Ok(Self { proto_state, size })
     }
 
@@ -105,10 +120,15 @@ pub struct StatefulKitty {
     size: Size,
     proto_state: KittyProtoState,
     is_tmux: bool,
+    z_index: i32,
 }
 
 impl StatefulKitty {
     pub fn new(id: u32, is_tmux: bool) -> StatefulKitty {
+        Self::new_with_z_index(id, is_tmux, TEXT_BACKGROUND_Z_INDEX)
+    }
+
+    pub fn new_with_z_index(id: u32, is_tmux: bool, z_index: i32) -> StatefulKitty {
         let [id_extra, id_r, id_g, id_b] = id.to_be_bytes();
         let id_color = format!("\x1b[38;2;{id_r};{id_g};{id_b}m");
         let id_extra = u16::from(id_extra);
@@ -117,6 +137,7 @@ impl StatefulKitty {
             size: Size::default(),
             proto_state: KittyProtoState::default(),
             is_tmux,
+            z_index,
         }
     }
 
@@ -142,7 +163,8 @@ impl StatefulProtocolTrait for StatefulKitty {
     fn resize_encode(&mut self, img: DynamicImage, size: Size) -> Result<()> {
         self.size = size;
         // If resized then we must transmit again.
-        self.proto_state = KittyProtoState::new(&img, self.id.0, self.is_tmux);
+        self.proto_state =
+            KittyProtoState::new_with_z_index(&img, self.id.0, self.is_tmux, self.z_index);
         Ok(())
     }
 }
@@ -283,7 +305,7 @@ fn mark_rows_for_redraw(
 /// A "virtual placement" (U=1) is created so that we can place it using unicode placeholders.
 /// Removing the placements when the unicode placeholder is no longer there is being handled
 /// automatically by kitty.
-fn transmit_virtual(img: &DynamicImage, id: u32, is_tmux: bool) -> String {
+fn transmit_virtual(img: &DynamicImage, id: u32, is_tmux: bool, z_index: i32) -> String {
     let (w, h) = (img.width(), img.height());
     let img_rgba8 = img.to_rgba8();
     let bytes = img_rgba8.as_raw();
@@ -315,7 +337,7 @@ fn transmit_virtual(img: &DynamicImage, id: u32, is_tmux: bool) -> String {
         if i == 0 {
             write!(
                 data,
-                "i={id},a=T,U=1,f=32,t=d,s={w},v={h},z={TEXT_BACKGROUND_Z_INDEX},"
+                "i={id},a=T,U=1,f=32,t=d,s={w},v={h},z={z_index},"
             )
             .unwrap();
         }
@@ -343,9 +365,17 @@ mod tests {
     #[test]
     fn virtual_transmission_places_kitty_image_behind_text_and_backgrounds() {
         let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1, 1, Rgba([0, 0, 0, 0])));
-        let seq = transmit_virtual(&image, 42, false);
+        let seq = transmit_virtual(&image, 42, false, TEXT_BACKGROUND_Z_INDEX);
 
         assert!(seq.contains(&format!("z={TEXT_BACKGROUND_Z_INDEX},")));
+    }
+
+    #[test]
+    fn virtual_transmission_can_place_kitty_image_in_foreground() {
+        let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1, 1, Rgba([0, 0, 0, 0])));
+        let seq = transmit_virtual(&image, 42, false, 0);
+
+        assert!(seq.contains("z=0,"));
     }
 
     #[test]

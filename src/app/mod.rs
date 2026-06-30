@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use image::DynamicImage;
 use ratatui::layout::Rect;
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 
@@ -136,11 +136,17 @@ pub struct App {
     /// nav bar or via `Action::ToggleAbout` (F1); any key/click (other than the GitHub link)
     /// dismisses it.
     pub about_visible: bool,
-    /// The app icon as a render-ready half-blocks protocol for the About card, decoded from the
-    /// embedded PNG and built once on first open. Half-blocks (not the graphics protocol used for
-    /// album art) so it draws in any terminal and repaints like plain text — leaving no residue
-    /// when the card closes over the view beneath. `RefCell` because render only has `&App`.
-    pub about_icon: RefCell<Option<StatefulProtocol>>,
+    /// The app icon as a render-ready protocol for the About card, decoded from the embedded PNG
+    /// and cached with the popup background it was composited against. Kitty-capable terminals use
+    /// foreground Kitty graphics for pixel quality; everything else falls back to half-blocks so
+    /// the card still draws everywhere. `RefCell` because render only has `&App`.
+    pub about_icon: RefCell<
+        Option<(
+            ratatui::style::Color,
+            Option<ProtocolType>,
+            StatefulProtocol,
+        )>,
+    >,
     /// Whether the "Why AI" overlay is showing. Opened by `Action::WhyAi` (`w`) when the last
     /// autoplay-radio refill went through the AI reranker; lists why each track was chosen (slot
     /// role + reason codes + confidence). Esc / `w` / Back dismiss it, like the About card.

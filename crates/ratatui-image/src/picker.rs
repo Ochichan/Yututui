@@ -275,15 +275,28 @@ impl Picker {
 
     /// Returns a new *stateful* protocol for [`crate::StatefulImage`] widgets.
     pub fn new_resize_protocol(&self, image: DynamicImage) -> StatefulProtocol {
+        self.new_resize_protocol_with_kitty_z_index(image, None)
+    }
+
+    /// Returns a new *stateful* protocol, overriding Kitty's z-index when Kitty is selected.
+    ///
+    /// ytm-tui uses album art as a background layer with a very low Kitty z-index, but small
+    /// foreground graphics inside opaque popups need the normal text layer instead.
+    pub fn new_resize_protocol_with_kitty_z_index(
+        &self,
+        image: DynamicImage,
+        kitty_z_index: Option<i32>,
+    ) -> StatefulProtocol {
         let protocol_type = match self.protocol_type {
             ProtocolType::Halfblocks => StatefulProtocolType::Halfblocks(Halfblocks::default()),
             ProtocolType::Sixel => StatefulProtocolType::Sixel(Sixel {
                 is_tmux: self.is_tmux,
                 ..Sixel::default()
             }),
-            ProtocolType::Kitty => {
-                StatefulProtocolType::Kitty(StatefulKitty::new(random(), self.is_tmux))
-            }
+            ProtocolType::Kitty => StatefulProtocolType::Kitty(match kitty_z_index {
+                Some(z_index) => StatefulKitty::new_with_z_index(random(), self.is_tmux, z_index),
+                None => StatefulKitty::new(random(), self.is_tmux),
+            }),
             ProtocolType::Iterm2 => StatefulProtocolType::ITerm2(Iterm2 {
                 is_tmux: self.is_tmux,
                 ..Iterm2::default()

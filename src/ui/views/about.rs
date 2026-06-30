@@ -6,12 +6,13 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::{Resize, StatefulImage};
 
+use image::imageops::FilterType;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget};
@@ -26,10 +27,12 @@ const GITHUB_LABEL: &str = "github.com/Ochichan/ytm-tui";
 
 /// The app icon, embedded at compile time so the card renders it no matter where (or how) the
 /// binary is launched — there's no assets dir to find at runtime.
-const ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/ytm-tui.png");
+const ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/ytm-tui-about.png");
 
 /// How many rows the icon band gets at the top of the card.
 const ICON_ROWS: u16 = 9;
+/// The About icon is foreground UI, unlike album art, which is deliberately pushed behind text.
+const ABOUT_ICON_KITTY_Z_INDEX: i32 = 0;
 
 /// Render the About card as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -55,7 +58,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_icon(frame: &mut Frame, app: &App, band: Rect) {
     ensure_icon(app);
     let mut guard = app.about_icon.borrow_mut();
-    let Some(proto) = guard.as_mut() else { return };
+    let Some((_, _, proto)) = guard.as_mut() else {
+        return;
+    };
 
     // Terminal cells are about half as wide as they are tall, so a square icon wants roughly
     // twice the columns of rows. `Resize::Fit` keeps the icon's aspect inside whatever rect we
@@ -68,19 +73,113 @@ fn draw_icon(frame: &mut Frame, app: &App, band: Rect) {
         width: w,
         height: h,
     };
-    frame.render_stateful_widget(StatefulImage::new().resize(Resize::Fit(None)), rect, proto);
+    frame.render_stateful_widget(
+        StatefulImage::new().resize(Resize::Fit(Some(FilterType::Lanczos3))),
+        rect,
+        proto,
+    );
 }
 
 /// Decode the embedded PNG and build its render protocol once, caching it on the app.
 ///
-/// Use halfblocks for the icon so it lives in the text layer of the popup. The album-art Kitty
-/// backend is deliberately placed behind non-default backgrounds; using it here would put the icon
-/// behind the About card's own opaque panel.
+/// Use foreground Kitty when the terminal picker supports it so the embedded PNG keeps pixel-level
+/// detail inside the popup. Other terminals keep the half-block fallback, composited
+/// against the popup background so transparent corners repaint cleanly.
 fn ensure_icon(app: &App) {
-    let needs_build = app.about_icon.borrow().is_none();
+    let bg = crate::ui::popup_bg(app);
+    let target_protocol = about_icon_protocol(app);
+    let needs_build =
+        app.about_icon
+            .borrow()
+            .as_ref()
+            .is_none_or(|(cached_bg, cached_protocol, _)| {
+                *cached_bg != bg || *cached_protocol != target_protocol
+            });
     if needs_build && let Ok(img) = image::load_from_memory(ICON_PNG) {
-        let proto = Picker::halfblocks().new_resize_protocol(img);
-        *app.about_icon.borrow_mut() = Some(proto);
+        let proto = match target_protocol {
+            Some(ProtocolType::Kitty) => {
+                let mut picker = app
+                    .art
+                    .picker
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_else(Picker::halfblocks);
+                picker.set_background_color(Some(color_to_rgba(bg)));
+                picker.new_resize_protocol_with_kitty_z_index(img, Some(ABOUT_ICON_KITTY_Z_INDEX))
+            }
+            _ => {
+                let mut picker = Picker::halfblocks();
+                picker.set_background_color(Some(color_to_rgba(bg)));
+                picker.new_resize_protocol(img)
+            }
+        };
+        *app.about_icon.borrow_mut() = Some((bg, target_protocol, proto));
+    }
+}
+
+fn about_icon_protocol(app: &App) -> Option<ProtocolType> {
+    app.art
+        .picker
+        .as_ref()
+        .filter(|picker| picker.protocol_type() == ProtocolType::Kitty)
+        .map(|picker| picker.protocol_type())
+}
+
+fn color_to_rgba(color: Color) -> image::Rgba<u8> {
+    let (r, g, b) = match color {
+        Color::Reset => (255, 255, 255),
+        Color::Black => (0, 0, 0),
+        Color::Red => (205, 0, 0),
+        Color::Green => (0, 205, 0),
+        Color::Yellow => (205, 205, 0),
+        Color::Blue => (0, 0, 238),
+        Color::Magenta => (205, 0, 205),
+        Color::Cyan => (0, 205, 205),
+        Color::Gray => (229, 229, 229),
+        Color::DarkGray => (127, 127, 127),
+        Color::LightRed => (255, 0, 0),
+        Color::LightGreen => (0, 255, 0),
+        Color::LightYellow => (255, 255, 0),
+        Color::LightBlue => (92, 92, 255),
+        Color::LightMagenta => (255, 0, 255),
+        Color::LightCyan => (0, 255, 255),
+        Color::White => (255, 255, 255),
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(i) => indexed_to_rgb(i),
+    };
+    image::Rgba([r, g, b, 255])
+}
+
+fn indexed_to_rgb(i: u8) -> (u8, u8, u8) {
+    match i {
+        0 => (0, 0, 0),
+        1 => (205, 0, 0),
+        2 => (0, 205, 0),
+        3 => (205, 205, 0),
+        4 => (0, 0, 238),
+        5 => (205, 0, 205),
+        6 => (0, 205, 205),
+        7 => (229, 229, 229),
+        8 => (127, 127, 127),
+        9 => (255, 0, 0),
+        10 => (0, 255, 0),
+        11 => (255, 255, 0),
+        12 => (92, 92, 255),
+        13 => (255, 0, 255),
+        14 => (0, 255, 255),
+        15 => (255, 255, 255),
+        16..=231 => {
+            let i = i - 16;
+            let r = (i / 36) % 6;
+            let g = (i / 6) % 6;
+            let b = i % 6;
+            let to_val = |c: u8| if c == 0 { 0 } else { 55 + c * 40 };
+            (to_val(r), to_val(g), to_val(b))
+        }
+        232..=255 => {
+            let gray = 8 + (i - 232) * 10;
+            (gray, gray, gray)
+        }
     }
 }
 

@@ -4694,6 +4694,65 @@ fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
 }
 
 #[test]
+fn about_icon_composites_transparent_pixels_against_popup_background() {
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let icon = about_icon_rect(area);
+    let mut app = app_playing(1, 0);
+    app.about_visible = true;
+    app.theme
+        .set_override(crate::theme::ThemeRole::Background, "#123456")
+        .unwrap();
+
+    let buf = render_app_buffer(&app, area.width, area.height);
+    assert_rgb_at_least(
+        buf.cell((icon.left(), icon.top()))
+            .expect("icon top-left is inside the buffer")
+            .bg,
+        (0x12, 0x34, 0x56),
+    );
+
+    app.theme
+        .set_override(crate::theme::ThemeRole::Background, "#654321")
+        .unwrap();
+    let buf = render_app_buffer(&app, area.width, area.height);
+    assert_rgb_at_least(
+        buf.cell((icon.left(), icon.top()))
+            .expect("icon top-left is inside the buffer")
+            .bg,
+        (0x65, 0x43, 0x21),
+    );
+}
+
+#[test]
+fn about_icon_uses_foreground_kitty_when_available() {
+    use ratatui_image::picker::{Picker, ProtocolType};
+
+    let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+    let icon = about_icon_rect(area);
+    let mut app = app_playing(1, 0);
+    app.about_visible = true;
+
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ProtocolType::Kitty);
+    app.art.picker = Some(picker);
+
+    let buf = render_app_buffer(&app, area.width, area.height);
+    let cached_protocol = app
+        .about_icon
+        .borrow()
+        .as_ref()
+        .map(|(_, protocol, _)| *protocol);
+    assert_eq!(cached_protocol, Some(Some(ProtocolType::Kitty)));
+
+    let symbol = buf
+        .cell((icon.left(), icon.top()))
+        .expect("icon top-left is inside the buffer")
+        .symbol();
+    assert!(symbol.contains("_G"));
+    assert!(symbol.contains("z=0,"));
+}
+
+#[test]
 fn popup_art_marker_dirties_kitty_anchor_when_popup_hits_middle_of_art_row() {
     use ratatui_image::protocol::kitty::StatefulKitty;
     use ratatui_image::protocol::{StatefulProtocol, StatefulProtocolType};
@@ -4849,6 +4908,16 @@ fn assert_opaque_rect(buffer: &ratatui::buffer::Buffer, rect: ratatui::layout::R
     }
 }
 
+fn assert_rgb_at_least(color: ratatui::style::Color, min: (u8, u8, u8)) {
+    let ratatui::style::Color::Rgb(r, g, b) = color else {
+        panic!("expected RGB color, got {color:?}");
+    };
+    assert!(
+        r >= min.0 && g >= min.1 && b >= min.2,
+        "expected color channels at least {min:?}, got ({r},{g},{b})"
+    );
+}
+
 fn dropdown_popup_rect(
     app: &App,
     mut is_row: impl FnMut(MouseTarget) -> bool,
@@ -4900,6 +4969,28 @@ fn centered_fixed(area: ratatui::layout::Rect, w: u16, h: u16) -> ratatui::layou
     ratatui::layout::Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
         y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+fn about_icon_rect(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    let popup = centered_fixed(area, 60, 22);
+    let inner = ratatui::layout::Rect {
+        x: popup.x.saturating_add(1),
+        y: popup.y.saturating_add(1),
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let band = ratatui::layout::Rect {
+        height: 9.min(inner.height),
+        ..inner
+    };
+    let h = band.height.clamp(1, 9);
+    let w = (h * 2).min(band.width);
+    ratatui::layout::Rect {
+        x: band.x + band.width.saturating_sub(w) / 2,
+        y: band.y + band.height.saturating_sub(h) / 2,
         width: w,
         height: h,
     }
