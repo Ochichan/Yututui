@@ -35,6 +35,7 @@ impl App {
             autoplay_on_start: self.config.effective_autoplay_on_start(),
             speed: self.playback.speed,
             seek_seconds: self.audio.seek_seconds,
+            mouse_wheel_volume: self.config.effective_mouse_wheel_volume(),
             gapless: self.config.effective_gapless(),
             autoplay_radio: self.autoplay_radio,
             radio_mode: self.config.radio.mode,
@@ -341,6 +342,11 @@ impl App {
                     s.draft.seek_seconds + f64::from(dir) * settings::SEEK_SECONDS_STEP,
                 );
                 // Stored only — affects the next seek key, nothing to push to mpv now.
+                Vec::new()
+            }
+            Field::MouseWheelVolume => {
+                let s = self.settings_mut();
+                s.draft.mouse_wheel_volume = !s.draft.mouse_wheel_volume;
                 Vec::new()
             }
             Field::AnimFps => {

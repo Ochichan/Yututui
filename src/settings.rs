@@ -96,6 +96,7 @@ impl SettingsTab {
                 let mut f = vec![
                     Field::Speed,
                     Field::SeekInterval,
+                    Field::MouseWheelVolume,
                     Field::Gapless,
                     Field::EqPreset,
                 ];
@@ -146,7 +147,7 @@ impl SettingsTab {
     pub fn sections(self) -> Vec<(&'static str, usize)> {
         match self {
             SettingsTab::Playback => vec![
-                (t!("Now Playing", "현재 재생"), 3),
+                (t!("Now Playing", "현재 재생"), 4),
                 (t!("EQ", "EQ"), eq::BANDS + 2),
             ],
             SettingsTab::Graphics => vec![
@@ -177,6 +178,7 @@ pub enum Field {
     // Playback
     Speed,
     SeekInterval,
+    MouseWheelVolume,
     Gapless,
     // EQ
     EqPreset,
@@ -239,7 +241,8 @@ impl Field {
     pub fn kind(self) -> FieldKind {
         match self {
             Field::CookiesFile | Field::DownloadDir | Field::ApiKey | Field::ThemeColor(_) => FieldKind::Text,
-            Field::Mouse | Field::AlbumArt | Field::AutoplayOnStart | Field::Gapless
+            Field::Mouse | Field::AlbumArt | Field::AutoplayOnStart | Field::MouseWheelVolume
+            | Field::Gapless
             | Field::AutoplayRadio | Field::Normalize | Field::AiEnabled | Field::BackgroundNone
             | Field::AnimPauseUnfocused
             | Field::AnimMaster | Field::AnimTitle | Field::AnimHeart | Field::AnimSeekbar
@@ -293,6 +296,7 @@ impl Field {
             Field::ResetAll => t!("Reset all settings", "모든 설정 초기화").to_owned(),
             Field::Speed => t!("Playback speed", "재생 속도").to_owned(),
             Field::SeekInterval => t!("Seek interval", "탐색 간격").to_owned(),
+            Field::MouseWheelVolume => t!("Wheel volume", "휠 볼륨 조절").to_owned(),
             Field::Gapless => t!("Gapless (next launch)", "갭리스 (재시작 후 적용)").to_owned(),
             Field::AutoplayRadio => t!("Autoplay radio", "자동재생 라디오").to_owned(),
             Field::RadioMode => t!("Radio mode", "라디오 모드").to_owned(),
@@ -353,6 +357,8 @@ pub struct SettingsDraft {
     pub speed: f64,
     /// Seek step (seconds) for the seek-back/-forward keys.
     pub seek_seconds: f64,
+    /// Whether wheel events over the player volume cluster nudge volume.
+    pub mouse_wheel_volume: bool,
     pub gapless: bool,
     pub autoplay_radio: bool,
     /// The radio station's adventurousness (drives MMR λ, sampling temperature, artist spacing).
@@ -407,6 +413,7 @@ impl SettingsDraft {
             Field::AutoplayOnStart => toggle_str(self.autoplay_on_start),
             Field::Speed => format!("{:.1}x", self.speed),
             Field::SeekInterval => format!("{:.0}s", self.seek_seconds),
+            Field::MouseWheelVolume => toggle_str(self.mouse_wheel_volume),
             // Buttons, not values: these rows show how to trigger them.
             Field::ResetKeybindings | Field::ResetAll => {
                 t!("↵ press Enter", "↵ Enter로 실행").to_owned()
@@ -482,6 +489,7 @@ impl SettingsDraft {
         cfg.autoplay_on_start = Some(self.autoplay_on_start);
         cfg.speed = Some(self.speed);
         cfg.seek_seconds = Some(self.seek_seconds);
+        cfg.mouse_wheel_volume = Some(self.mouse_wheel_volume);
         cfg.gapless = Some(self.gapless);
         cfg.autoplay_radio = Some(self.autoplay_radio);
         cfg.radio.mode = self.radio_mode;
@@ -579,6 +587,7 @@ mod tests {
             autoplay_on_start: false,
             speed: 1.0,
             seek_seconds: 10.0,
+            mouse_wheel_volume: true,
             gapless: true,
             autoplay_radio: false,
             radio_mode: RadioMode::Balanced,
@@ -674,13 +683,16 @@ mod tests {
     #[test]
     fn playback_tab_groups_now_playing_and_eq() {
         let f = SettingsTab::Playback.fields();
-        // Speed + SeekInterval + Gapless, then EqPreset + ten bands + Normalize.
-        assert_eq!(f.len(), 3 + 1 + eq::BANDS + 1);
+        // Speed + SeekInterval + WheelVolume + Gapless, then EqPreset + ten bands + Normalize.
+        assert_eq!(f.len(), 4 + 1 + eq::BANDS + 1);
         assert_eq!(f[0], Field::Speed);
         assert_eq!(f[1], Field::SeekInterval);
-        assert_eq!(f[2], Field::Gapless);
-        assert_eq!(f[3], Field::EqPreset);
-        assert_eq!(f[3 + eq::BANDS + 1], Field::Normalize);
+        assert_eq!(f[2], Field::MouseWheelVolume);
+        assert_eq!(f[3], Field::Gapless);
+        assert_eq!(f[4], Field::EqPreset);
+        assert_eq!(f[4 + eq::BANDS + 1], Field::Normalize);
+        assert_eq!(Field::MouseWheelVolume.kind(), FieldKind::Toggle);
+        assert_eq!(base_draft().value_display(Field::MouseWheelVolume), "[x]");
         let total: usize = SettingsTab::Playback.sections().iter().map(|(_, n)| n).sum();
         assert_eq!(total, f.len());
     }
@@ -776,6 +788,7 @@ mod tests {
             autoplay_on_start: true,
             speed: 1.7,
             seek_seconds: 25.0,
+            mouse_wheel_volume: false,
             gapless: false,
             autoplay_radio: true,
             radio_mode: RadioMode::Discovery,
@@ -812,6 +825,7 @@ mod tests {
         assert_eq!(cfg.autoplay_on_start, Some(true));
         assert_eq!(cfg.speed, Some(1.7));
         assert_eq!(cfg.seek_seconds, Some(25.0));
+        assert_eq!(cfg.mouse_wheel_volume, Some(false));
         assert_eq!(cfg.gapless, Some(false));
         assert_eq!(cfg.autoplay_radio, Some(true));
         assert_eq!(cfg.radio.mode, RadioMode::Discovery);

@@ -64,11 +64,19 @@ impl Translator {
                     row: m.row,
                 })
             }
-            // Wheel scroll moves the active list's cursor (Library / Search). `up` means
-            // toward earlier items.
-            Event::Mouse(m) if m.kind == MouseEventKind::ScrollUp => Some(Msg::MouseScroll { up: true }),
+            // Wheel scroll moves the active list's viewport, or nudges volume over the
+            // player volume cluster. Preserve the pointer cell so the reducer can decide.
+            Event::Mouse(m) if m.kind == MouseEventKind::ScrollUp => Some(Msg::MouseScroll {
+                up: true,
+                col: m.column,
+                row: m.row,
+            }),
             Event::Mouse(m) if m.kind == MouseEventKind::ScrollDown => {
-                Some(Msg::MouseScroll { up: false })
+                Some(Msg::MouseScroll {
+                    up: false,
+                    col: m.column,
+                    row: m.row,
+                })
             }
             Event::Resize(_, _) => Some(Msg::Resize),
             // Terminal focus in/out (DECSET ?1004, enabled in `tui::init`). Lets the reducer
@@ -218,11 +226,11 @@ mod tests {
         };
         assert!(matches!(
             t.translate(wheel(MouseEventKind::ScrollUp)),
-            Some(Msg::MouseScroll { up: true })
+            Some(Msg::MouseScroll { up: true, col: 4, row: 9 })
         ));
         assert!(matches!(
             t.translate(wheel(MouseEventKind::ScrollDown)),
-            Some(Msg::MouseScroll { up: false })
+            Some(Msg::MouseScroll { up: false, col: 4, row: 9 })
         ));
     }
 

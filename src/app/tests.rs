@@ -1332,8 +1332,8 @@ fn settings_band_edit_sets_custom_and_emits_filter() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..4 {
-        // Speed → Seek → Gapless → EqPreset → Band(0) at row 4.
+    for _ in 0..5 {
+        // Speed → Seek → Wheel volume → Gapless → EqPreset → Band(0) at row 5.
         app.update(Msg::Key(key(KeyCode::Down)));
     }
     let cmds = app.update(Msg::Key(key(KeyCode::Right))); // raise the band
@@ -1356,8 +1356,8 @@ fn settings_close_reasserts_audio_and_persists_volume() {
     app.playback.volume = 55; // a `=`/`-` change during the session
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..4 {
-        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 4
+    for _ in 0..5 {
+        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 5
     }
     app.update(Msg::Key(key(KeyCode::Right))); // raise it (draft = Custom)
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
@@ -1374,8 +1374,8 @@ fn settings_preset_selector_snaps_from_custom_to_flat() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..4 {
-        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 4
+    for _ in 0..5 {
+        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 5
     }
     app.update(Msg::Key(key(KeyCode::Right))); // hand-tune → Custom
     assert_eq!(
@@ -2902,10 +2902,10 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
     let len = app.library_len();
     app.bridges.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF);
 
-    app.update(Msg::MouseScroll { up: false });
+    app.update(Msg::MouseScroll { up: false, col: 0, row: 0 });
     assert_eq!(app.library_ui.selected, 0); // selection untouched by the wheel
     assert_eq!(app.bridges.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF), 3);
-    app.update(Msg::MouseScroll { up: true });
+    app.update(Msg::MouseScroll { up: true, col: 0, row: 0 });
     assert_eq!(app.bridges.library_scroll.resolve(app.library_ui.selected, 10, len, SCROLLOFF), 0); // clamped at top
 
     // Search: same decoupling, clamped at the last page.
@@ -2916,10 +2916,10 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
     app.search.selected = 19;
     let len = app.search.results.len();
     app.bridges.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF); // offset -> last page (10)
-    app.update(Msg::MouseScroll { up: false });
+    app.update(Msg::MouseScroll { up: false, col: 0, row: 0 });
     assert_eq!(app.search.selected, 19); // selection untouched
     assert_eq!(app.bridges.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF), 10); // clamped at end
-    app.update(Msg::MouseScroll { up: true });
+    app.update(Msg::MouseScroll { up: true, col: 0, row: 0 });
     assert_eq!(app.bridges.search_scroll.resolve(app.search.selected, 10, len, SCROLLOFF), 7);
 }
 
@@ -3394,6 +3394,55 @@ fn click_player_buttons_dispatch_actions() {
 }
 
 #[test]
+fn wheel_over_volume_cluster_adjusts_volume_when_enabled() {
+    let mut app = app_playing(1, 0);
+    app.playback.volume = 40;
+    app.register_mouse_button(
+        Rect {
+            x: 20,
+            y: 4,
+            width: 16,
+            height: 1,
+        },
+        MouseTarget::VolumeArea,
+    );
+
+    let cmds = app.update(Msg::MouseScroll { up: true, col: 25, row: 4 });
+    assert_eq!(app.playback.volume, 45);
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Player(PlayerCmd::SetVolume(45))]
+    ));
+
+    let cmds = app.update(Msg::MouseScroll { up: false, col: 25, row: 4 });
+    assert_eq!(app.playback.volume, 40);
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Player(PlayerCmd::SetVolume(40))]
+    ));
+}
+
+#[test]
+fn wheel_volume_setting_can_disable_volume_scroll() {
+    let mut app = app_playing(1, 0);
+    app.config.mouse_wheel_volume = Some(false);
+    app.playback.volume = 40;
+    app.register_mouse_button(
+        Rect {
+            x: 20,
+            y: 4,
+            width: 16,
+            height: 1,
+        },
+        MouseTarget::VolumeArea,
+    );
+
+    let cmds = app.update(Msg::MouseScroll { up: true, col: 25, row: 4 });
+    assert!(cmds.is_empty());
+    assert_eq!(app.playback.volume, 40);
+}
+
+#[test]
 fn click_next_button_loads_next_track() {
     let mut app = app_playing(3, 0);
     app.register_mouse_button(
@@ -3603,6 +3652,7 @@ fn rendering_player_registers_control_buttons() {
             .iter()
             .any(|b| b.target == MouseTarget::Player(Action::VolUp))
     );
+    assert!(buttons.iter().any(|b| b.target == MouseTarget::VolumeArea));
     assert!(
         buttons
             .iter()

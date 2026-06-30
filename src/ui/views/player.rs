@@ -566,6 +566,20 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
         Seg::label(&vol),
         Seg::button(MouseTarget::Player(Action::VolUp), " + "),
     ];
+    let widths: Vec<u16> = segments.iter().map(|s| buttons::text_width(s.text)).collect();
+    let total = widths.iter().copied().sum::<u16>();
+    let volume_offset = widths[..6].iter().copied().sum::<u16>();
+    let volume_width = widths[6..].iter().copied().sum::<u16>();
+    let x = area.x + area.width.saturating_sub(total) / 2 + volume_offset;
+    let width = if x < area.right() {
+        volume_width.min(area.right().saturating_sub(x))
+    } else {
+        0
+    };
+    app.register_mouse_button(
+        Rect { x, y: area.y, width, height: area.height.min(1) },
+        MouseTarget::VolumeArea,
+    );
     let controls = crate::ui::anim::controls_style(
         app,
         app.theme

@@ -156,6 +156,7 @@ impl App {
                 self.select_radio_mode(mode)
             }
             MouseTarget::RadioSelect(_) => Vec::new(),
+            MouseTarget::VolumeArea => Vec::new(),
             // Nav bar: switch screens from anywhere.
             MouseTarget::Nav(mode) => self.navigate_to(mode),
             // Search bar submit button.
@@ -288,16 +289,30 @@ impl App {
         Vec::new()
     }
 
-    /// Wheel scroll moves the *viewport* of whichever list is on top by
+    /// Wheel scroll nudges volume when the pointer is over the player's volume cluster.
+    /// Everywhere else it moves the *viewport* of whichever list is on top by
     /// [`MOUSE_SCROLL_LINES`] rows — decoupled from the selection, which stays put (it may
     /// scroll out of view; the render pass keeps it visible only for keyboard nav). An open
     /// overlay (the queue window) wins over the active screen.
-    pub(in crate::app) fn on_mouse_scroll(&mut self, up: bool) -> Vec<Cmd> {
+    pub(in crate::app) fn on_mouse_scroll(&mut self, up: bool, col: u16, row: u16) -> Vec<Cmd> {
         let n = MOUSE_SCROLL_LINES;
         if self.queue_popup.open {
             self.queue_popup.scroll.wheel(up, n, self.queue.len());
             self.dirty = true;
             return Vec::new();
+        }
+        if self.mode == Mode::Player
+            && self.config.effective_mouse_wheel_volume()
+            && matches!(
+                self.mouse_target_at(col, row),
+                Some(
+                    MouseTarget::VolumeArea
+                        | MouseTarget::Player(Action::VolDown | Action::VolUp)
+                )
+            )
+        {
+            let action = if up { Action::VolUp } else { Action::VolDown };
+            return self.on_player_action(action);
         }
         match self.mode {
             Mode::Library => {

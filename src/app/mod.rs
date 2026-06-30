@@ -425,7 +425,7 @@ impl App {
             Msg::MouseDoubleClick { col, row } => return self.on_mouse_double_click(col, row),
             Msg::MouseRightClick { col, row } => return self.on_mouse_right_click(col, row),
             Msg::MouseDrag { col, row } => return self.on_mouse_drag(col, row),
-            Msg::MouseScroll { up } => return self.on_mouse_scroll(up),
+            Msg::MouseScroll { up, col, row } => return self.on_mouse_scroll(up, col, row),
             Msg::Resize => self.dirty = true,
             Msg::Quit => self.should_quit = true,
             Msg::Remote(cmd, reply) => {

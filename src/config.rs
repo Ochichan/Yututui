@@ -221,6 +221,8 @@ pub struct Config {
     pub speed: Option<f64>,
     /// Seek step in seconds for the seek-back/-forward keys. `None` → 10s.
     pub seek_seconds: Option<f64>,
+    /// Adjust volume with the mouse wheel over the player volume cluster. `None` → on.
+    pub mouse_wheel_volume: Option<bool>,
     /// Gapless playback. `None` → on. Takes effect at the next launch (an mpv flag).
     pub gapless: Option<bool>,
     /// Auto-extend the queue with related tracks when it runs low. `None` → off.
@@ -282,6 +284,7 @@ impl Default for Config {
             normalize: None,
             speed: None,
             seek_seconds: None,
+            mouse_wheel_volume: None,
             gapless: None,
             autoplay_radio: None,
             autoplay_on_start: None,
@@ -412,6 +415,11 @@ impl Config {
     /// Seek step in seconds, clamped to the supported range (default 10s).
     pub fn effective_seek_seconds(&self) -> f64 {
         self.seek_seconds.unwrap_or(SEEK_SECONDS_DEFAULT).clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
+    }
+
+    /// Whether the mouse wheel changes volume over the player volume cluster (default on).
+    pub fn effective_mouse_wheel_volume(&self) -> bool {
+        self.mouse_wheel_volume.unwrap_or(true)
     }
 
     /// Whether gapless playback is on (default on).
@@ -594,6 +602,7 @@ mod tests {
             normalize: Some(true),
             speed: Some(1.5),
             seek_seconds: Some(15.0),
+            mouse_wheel_volume: Some(false),
             gapless: Some(false),
             autoplay_radio: Some(true),
             autoplay_on_start: Some(true),
@@ -619,6 +628,7 @@ mod tests {
         assert_eq!(back.normalize, Some(true));
         assert_eq!(back.speed, Some(1.5));
         assert_eq!(back.seek_seconds, Some(15.0));
+        assert_eq!(back.mouse_wheel_volume, Some(false));
         assert_eq!(back.gapless, Some(false));
         assert_eq!(back.autoplay_radio, Some(true));
         assert_eq!(back.autoplay_on_start, Some(true));
@@ -708,6 +718,7 @@ mod tests {
         assert!(!d.effective_normalize());
         assert_eq!(d.effective_speed(), 1.0);
         assert_eq!(d.effective_seek_seconds(), SEEK_SECONDS_DEFAULT);
+        assert!(d.effective_mouse_wheel_volume());
         assert!(d.effective_gapless());
         assert!(!d.effective_autoplay_radio());
         assert!(!d.effective_autoplay_on_start());
@@ -725,6 +736,9 @@ mod tests {
         assert_eq!(big.effective_seek_seconds(), SEEK_SECONDS_MAX);
         let tiny = Config { seek_seconds: Some(0.0), ..Config::default() };
         assert_eq!(tiny.effective_seek_seconds(), SEEK_SECONDS_MIN);
+
+        let wheel_off = Config { mouse_wheel_volume: Some(false), ..Config::default() };
+        assert!(!wheel_off.effective_mouse_wheel_volume());
     }
 
     #[test]

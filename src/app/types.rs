@@ -32,10 +32,12 @@ pub enum Msg {
         col: u16,
         row: u16,
     },
-    /// The mouse wheel was scrolled (`up` = toward earlier items). Moves the active
-    /// Library / Search list's cursor; ignored in other modes.
+    /// The mouse wheel was scrolled at a terminal cell. `up` means toward earlier items
+    /// for lists, and volume-up over the player volume cluster.
     MouseScroll {
         up: bool,
+        col: u16,
+        row: u16,
     },
     /// The terminal was resized; ratatui auto-resizes on draw, we just redraw.
     Resize,
@@ -265,6 +267,9 @@ pub enum MouseTarget {
     RadioMenu,
     /// Pick a radio mode from the open dropdown.
     RadioSelect(RadioMode),
+    /// The player volume cluster (`vol - 50% +`). Clicks are ignored on the label/value,
+    /// but wheel events over the cluster nudge volume.
+    VolumeArea,
     /// A nav-bar item — switch to that screen from any screen.
     Nav(Mode),
     /// The search bar's submit button.
