@@ -162,8 +162,9 @@ fn enable_keyboard_enhancement() {
     // strict implementers) route every keystroke — including plain text — as an escape code and
     // turn off the terminal's IME, so Hangul/CJK jamo never compose into syllables in the search
     // and DJ Gem input boxes. (ghostty was lenient enough to keep composing, which is why this only
-    // broke in kitty.) The remaining flags disambiguate special keys without touching text input,
-    // and every keymap chord is a plain Ctrl/Alt/Shift+key the legacy encoding already reports.
+    // broke in kitty.) The remaining flags disambiguate modified keys without touching text input.
+    // Ctrl+Shift character chords work when the terminal reports distinct enhanced key events;
+    // legacy encodings may still collapse them to the matching Ctrl+key before we see them.
     let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES;

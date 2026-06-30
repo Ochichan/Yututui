@@ -546,15 +546,17 @@ pub enum LibraryTab {
     All,
     Favorites,
     History,
+    RadioFavorites,
     Radio,
     Downloads,
 }
 
 impl LibraryTab {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::All,
         Self::Favorites,
         Self::History,
+        Self::RadioFavorites,
         Self::Radio,
         Self::Downloads,
     ];
@@ -563,7 +565,8 @@ impl LibraryTab {
         match self {
             LibraryTab::All => LibraryTab::Favorites,
             LibraryTab::Favorites => LibraryTab::History,
-            LibraryTab::History => LibraryTab::Radio,
+            LibraryTab::History => LibraryTab::RadioFavorites,
+            LibraryTab::RadioFavorites => LibraryTab::Radio,
             LibraryTab::Radio => LibraryTab::Downloads,
             LibraryTab::Downloads => LibraryTab::All,
         }
@@ -574,7 +577,8 @@ impl LibraryTab {
             LibraryTab::All => LibraryTab::Downloads,
             LibraryTab::Favorites => LibraryTab::All,
             LibraryTab::History => LibraryTab::Favorites,
-            LibraryTab::Radio => LibraryTab::History,
+            LibraryTab::RadioFavorites => LibraryTab::History,
+            LibraryTab::Radio => LibraryTab::RadioFavorites,
             LibraryTab::Downloads => LibraryTab::Radio,
         }
     }
@@ -584,8 +588,20 @@ impl LibraryTab {
             LibraryTab::All => t!("All", "전체"),
             LibraryTab::Favorites => t!("Favorites", "즐겨찾기"),
             LibraryTab::History => t!("History", "기록"),
+            LibraryTab::RadioFavorites => t!("Radio Favorites", "라디오 즐겨찾기"),
             LibraryTab::Radio => t!("Radio", "라디오"),
             LibraryTab::Downloads => t!("Downloads", "다운로드"),
+        }
+    }
+
+    pub fn compact_label(self) -> &'static str {
+        match self {
+            LibraryTab::All => t!("All", "전체"),
+            LibraryTab::Favorites => t!("Fav", "즐겨찾기"),
+            LibraryTab::History => t!("Hist", "기록"),
+            LibraryTab::RadioFavorites => t!("R-Fav", "라디오 찜"),
+            LibraryTab::Radio => t!("Radio", "라디오"),
+            LibraryTab::Downloads => t!("Down", "다운"),
         }
     }
 }

@@ -61,22 +61,40 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
     let mut spans = Vec::new();
     let mut x = area.x;
     let counts = app.library_counts();
+    let full_width: u16 = LibraryTab::ALL
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(i, t)| {
+            let label = format!(" {} ({}) ", t.label(), counts[i]);
+            buttons::text_width(&label).saturating_add((i > 0) as u16 * 2)
+        })
+        .sum();
+    let compact = full_width > area.width;
     for (i, t) in LibraryTab::ALL.iter().copied().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
             x = x.saturating_add(2);
         }
-        let label = format!(" {} ({}) ", t.label(), counts[i]);
+        let tab_label = if compact {
+            t.compact_label()
+        } else {
+            t.label()
+        };
+        let label = format!(" {} ({}) ", tab_label, counts[i]);
         let w = buttons::text_width(&label);
-        app.register_mouse_button(
-            Rect {
-                x,
-                y: area.y,
-                width: w,
-                height: 1,
-            },
-            MouseTarget::LibraryTab(t),
-        );
+        let area_right = area.x.saturating_add(area.width);
+        if x < area_right {
+            app.register_mouse_button(
+                Rect {
+                    x,
+                    y: area.y,
+                    width: w.min(area_right.saturating_sub(x)),
+                    height: 1,
+                },
+                MouseTarget::LibraryTab(t),
+            );
+        }
         x = x.saturating_add(w);
         let style = if app.library_ui.tab == t {
             Style::default()
@@ -147,9 +165,13 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
                         "재생 기록이 없어요 — 뭐든 재생해 보세요."
                     )
                 }
+                LibraryTab::RadioFavorites => t!(
+                    "No radio favorites yet — press f on a Radio Browser station.",
+                    "라디오 즐겨찾기가 없어요 — Radio Browser 방송에서 f 를 눌러 저장하세요."
+                ),
                 LibraryTab::Radio => t!(
-                    "No radio stations yet — play or favorite one from Radio Browser search.",
-                    "아직 라디오가 없어요 — Radio Browser 검색에서 재생하거나 즐겨찾기해 보세요."
+                    "No recent radio stations yet — play one from Radio Browser search.",
+                    "최근 라디오가 없어요 — Radio Browser 검색에서 재생해 보세요."
                 ),
                 LibraryTab::Downloads => t!(
                     "No downloaded tracks found in the download folder.",

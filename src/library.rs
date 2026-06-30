@@ -129,13 +129,18 @@ impl Library {
         self.history.remove(index).is_some()
     }
 
-    /// Remove every saved radio entry matching `video_id` from the Radio tab.
-    pub fn remove_radio_by_id(&mut self, video_id: &str) -> bool {
-        let before_favs = self.radio_favorites.len();
-        let before_recent = self.radios.len();
+    /// Remove a station from radio favorites only, leaving its recent-play entry intact.
+    pub fn remove_radio_favorite_by_id(&mut self, video_id: &str) -> bool {
+        let before = self.radio_favorites.len();
         self.radio_favorites.retain(|s| s.video_id != video_id);
+        self.radio_favorites.len() != before
+    }
+
+    /// Remove a station from recently played radio only, leaving its favorite status intact.
+    pub fn remove_radio_recent_by_id(&mut self, video_id: &str) -> bool {
+        let before = self.radios.len();
         self.radios.retain(|s| s.video_id != video_id);
-        self.radio_favorites.len() != before_favs || self.radios.len() != before_recent
+        self.radios.len() != before
     }
 
     /// Record that `song` is being played. Normal tracks move to the front of history; live radio

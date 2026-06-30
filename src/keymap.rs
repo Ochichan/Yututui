@@ -469,10 +469,10 @@ impl KeyContext {
 /// A normalized key combination: a [`KeyCode`] plus the ctrl/alt/shift modifiers.
 ///
 /// Equality is normalized so terminal quirks don't cause misses: 2-beolsik Korean IME
-/// jamo are mapped back to their physical QWERTY keys, for `Char` keys the `SHIFT`
-/// modifier is dropped (an uppercase `'L'` already encodes shift, and terminals disagree
-/// about whether to also set `SHIFT`), Ctrl/Alt letters ignore case, and `Shift+Tab`
-/// collapses to `BackTab`.
+/// jamo are mapped back to their physical QWERTY keys, plain shifted `Char` keys are
+/// represented by the produced character (an uppercase `'L'` already encodes shift), while
+/// Ctrl/Alt character chords keep `SHIFT` so `Ctrl+X` and `Ctrl+Shift+X` remain distinct.
+/// Ctrl/Alt letters ignore case, and `Shift+Tab` collapses to `BackTab`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Chord {
     pub code: KeyCode,
@@ -488,16 +488,37 @@ impl Chord {
         } else {
             code
         };
+        let modified_char = mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         if let KeyCode::Char(c) = code
-            && let Some(mut latin) = korean_2set_key(c)
+            && let Some(latin) = korean_2set_key(c)
         {
-            if mods.contains(KeyModifiers::SHIFT) && latin.is_ascii_lowercase() {
-                latin = latin.to_ascii_uppercase();
+            if modified_char {
+                mods.set(
+                    KeyModifiers::SHIFT,
+                    mods.contains(KeyModifiers::SHIFT) || latin.is_ascii_uppercase(),
+                );
+                code = KeyCode::Char(latin.to_ascii_lowercase());
+            } else {
+                code = KeyCode::Char(
+                    if mods.contains(KeyModifiers::SHIFT) && latin.is_ascii_lowercase() {
+                        latin.to_ascii_uppercase()
+                    } else {
+                        latin
+                    },
+                );
             }
-            code = KeyCode::Char(latin);
         }
-        // The char case already encodes shift; BackTab is inherently shifted.
-        if matches!(code, KeyCode::Char(_) | KeyCode::BackTab) {
+        if let KeyCode::Char(c) = code
+            && !modified_char
+            && mods.contains(KeyModifiers::SHIFT)
+            && c.is_ascii_lowercase()
+        {
+            code = KeyCode::Char(c.to_ascii_uppercase());
+        }
+        // Plain char case already encodes shift; BackTab is inherently shifted. Preserve
+        // Shift on Ctrl/Alt chars so enhanced terminals can bind Ctrl+Shift+letter separately.
+        if matches!(code, KeyCode::BackTab) || (matches!(code, KeyCode::Char(_)) && !modified_char)
+        {
             mods.remove(KeyModifiers::SHIFT);
         }
         // Terminals can report Ctrl+Q as either Char('q') or Char('Q'); persisted chord
@@ -1092,6 +1113,7 @@ mod tests {
     #[test]
     fn ctrl_and_arrow_formatting() {
         assert_eq!(format_chord(parse_chord("ctrl+r").unwrap()), "^r");
+        assert_eq!(format_chord(parse_chord("ctrl+shift+x").unwrap()), "^⇧x");
         assert_eq!(format_chord(parse_chord("ctrl+q").unwrap()), "^q");
         assert_eq!(format_chord(parse_chord("ctrl+h").unwrap()), "^h");
         assert_eq!(format_chord(parse_chord("left").unwrap()), "←");
@@ -1099,12 +1121,28 @@ mod tests {
         assert_eq!(format_chord(parse_chord("up").unwrap()), "↑");
         assert_eq!(format_chord(parse_chord("down").unwrap()), "↓");
         assert_eq!(chord_to_config(parse_chord("ctrl+r").unwrap()), "ctrl+r");
+        assert_eq!(
+            chord_to_config(parse_chord("ctrl+shift+x").unwrap()),
+            "ctrl+shift+x"
+        );
     }
 
     #[test]
     fn parse_format_round_trip() {
         for s in [
-            "space", "ctrl+n", "ctrl+q", "ctrl+h", "L", ">", "/", "?", "enter", "esc", "backtab",
+            "space",
+            "ctrl+n",
+            "ctrl+q",
+            "ctrl+h",
+            "ctrl+shift+x",
+            "alt+shift+1",
+            "L",
+            ">",
+            "/",
+            "?",
+            "enter",
+            "esc",
+            "backtab",
             "f5",
         ] {
             let chord = parse_chord(s).unwrap();
@@ -1122,6 +1160,11 @@ mod tests {
         let a = ev(KeyCode::Char('L'), KeyModifiers::SHIFT);
         let b = ev(KeyCode::Char('L'), KeyModifiers::empty());
         assert_eq!(a, b);
+        assert_eq!(
+            parse_chord("shift+l").unwrap(),
+            Chord::new(KeyCode::Char('L'), KeyModifiers::empty())
+        );
+        assert_eq!(chord_to_config(parse_chord("shift+l").unwrap()), "L");
         // Shift+Tab collapses to BackTab.
         assert_eq!(
             ev(KeyCode::Tab, KeyModifiers::SHIFT),
@@ -1142,6 +1185,38 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_shift_char_chords_stay_distinct() {
+        let ctrl_x = parse_chord("ctrl+x").unwrap();
+        let ctrl_shift_x = parse_chord("ctrl+shift+x").unwrap();
+        assert_ne!(ctrl_x, ctrl_shift_x);
+        assert_eq!(
+            ev(
+                KeyCode::Char('x'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ),
+            ctrl_shift_x
+        );
+        assert_eq!(
+            ev(
+                KeyCode::Char('X'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ),
+            ctrl_shift_x
+        );
+        // Some terminals report Ctrl+X as an uppercase char without the Shift modifier.
+        assert_eq!(ev(KeyCode::Char('X'), KeyModifiers::CONTROL), ctrl_x);
+
+        let mut km = KeyMap::default();
+        km.rebind(KeyContext::Player, Action::TogglePause, ctrl_shift_x)
+            .unwrap();
+        assert_eq!(
+            km.action(KeyContext::Player, ctrl_shift_x),
+            Some(Action::TogglePause)
+        );
+        assert_eq!(km.action(KeyContext::Player, ctrl_x), None);
+    }
+
+    #[test]
     fn korean_2set_keys_normalize_to_qwerty() {
         assert_eq!(
             ev(KeyCode::Char('ㅂ'), KeyModifiers::empty()),
@@ -1150,6 +1225,17 @@ mod tests {
         assert_eq!(
             ev(KeyCode::Char('ㅂ'), KeyModifiers::CONTROL),
             parse_chord("ctrl+q").unwrap()
+        );
+        assert_eq!(
+            ev(
+                KeyCode::Char('ㅂ'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ),
+            parse_chord("ctrl+shift+q").unwrap()
+        );
+        assert_eq!(
+            ev(KeyCode::Char('ㅃ'), KeyModifiers::CONTROL),
+            parse_chord("ctrl+shift+q").unwrap()
         );
         assert_eq!(
             ev(KeyCode::Char('ㄱ'), KeyModifiers::CONTROL),

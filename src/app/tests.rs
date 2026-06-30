@@ -2885,6 +2885,8 @@ fn playing_radio_records_radio_tab_only() {
     assert!(app.library_rows().is_empty());
     app.library_ui.tab = LibraryTab::Favorites;
     assert!(app.library_rows().is_empty());
+    app.library_ui.tab = LibraryTab::RadioFavorites;
+    assert!(app.library_rows().is_empty());
     app.library_ui.tab = LibraryTab::Radio;
     assert_eq!(row_ids(&app), vec!["rad:station-a"]);
 }
@@ -2911,8 +2913,10 @@ fn radio_favorite_is_separate_from_song_favorites() {
     assert!(app.library_rows().is_empty());
     app.library_ui.tab = LibraryTab::All;
     assert!(app.library_rows().is_empty());
-    app.library_ui.tab = LibraryTab::Radio;
+    app.library_ui.tab = LibraryTab::RadioFavorites;
     assert_eq!(row_ids(&app), vec!["rad:station-fav"]);
+    app.library_ui.tab = LibraryTab::Radio;
+    assert!(app.library_rows().is_empty());
 }
 
 #[test]
@@ -4650,11 +4654,28 @@ fn rating_radio_toggles_radio_favorite_without_signals() {
     assert!(app.library.favorites.is_empty());
     assert!(app.library.is_radio_favorite("rad:station-like"));
     assert!(!app.signals.is_disliked("rad:station-like"));
+    assert_eq!(
+        app.library.radios.front().map(|s| s.video_id.as_str()),
+        Some("rad:station-like")
+    );
 
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::RadioFavorites;
+    assert_eq!(row_ids(&app), vec!["rad:station-like"]);
+    app.library_ui.tab = LibraryTab::Radio;
+    assert!(app.library_rows().is_empty());
+
+    app.mode = Mode::Player;
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
     assert!(!app.library.is_radio_favorite("rad:station-like"));
+
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::RadioFavorites;
+    assert!(app.library_rows().is_empty());
+    app.library_ui.tab = LibraryTab::Radio;
+    assert_eq!(row_ids(&app), vec!["rad:station-like"]);
 }
 
 #[test]

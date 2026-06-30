@@ -312,7 +312,7 @@ pub struct RadioRuntime {
 /// local download-folder rows, and the pending file-delete confirmation.
 #[derive(Default)]
 pub struct LibraryView {
-    /// Which library list is shown (All / Favorites / History / Radio / Downloads).
+    /// Which library list is shown (All / Favorites / History / Radio Favorites / Radio / Downloads).
     pub tab: LibraryTab,
     /// The highlighted row in the active library list.
     pub selected: usize,

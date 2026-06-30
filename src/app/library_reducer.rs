@@ -9,7 +9,7 @@ impl App {
         self.library_rows().len()
     }
 
-    pub fn library_counts(&self) -> [usize; 5] {
+    pub fn library_counts(&self) -> [usize; 6] {
         [
             self.all_library_count(),
             self.library
@@ -22,7 +22,8 @@ impl App {
                 .iter()
                 .filter(|s| !s.is_radio_station())
                 .count(),
-            self.radio_library_count(),
+            self.radio_favorites_library_count(),
+            self.radio_recent_library_count(),
             self.library_ui.downloaded.len(),
         ]
     }
@@ -66,7 +67,8 @@ impl App {
                 .iter()
                 .filter(|s| !s.is_radio_station())
                 .collect(),
-            LibraryTab::Radio => self.radio_library_rows(),
+            LibraryTab::RadioFavorites => self.radio_favorites_library_rows(),
+            LibraryTab::Radio => self.radio_recent_library_rows(),
             LibraryTab::Downloads => self.library_ui.downloaded.iter().collect(),
         }
     }
@@ -120,16 +122,28 @@ impl App {
         count
     }
 
-    pub(in crate::app) fn radio_library_rows(&self) -> Vec<&Song> {
-        let mut rows = Vec::new();
-        let mut seen_ids = HashSet::new();
-        for song in self
-            .library
+    pub(in crate::app) fn radio_favorites_library_rows(&self) -> Vec<&Song> {
+        self.library
             .radio_favorites
             .iter()
-            .chain(self.library.radios.iter())
             .filter(|song| song.is_radio_station())
-        {
+            .collect()
+    }
+
+    fn radio_favorites_library_count(&self) -> usize {
+        self.library
+            .radio_favorites
+            .iter()
+            .filter(|song| song.is_radio_station())
+            .count()
+    }
+
+    pub(in crate::app) fn radio_recent_library_rows(&self) -> Vec<&Song> {
+        let mut rows = Vec::new();
+        let mut seen_ids = HashSet::new();
+        for song in self.library.radios.iter().filter(|song| {
+            song.is_radio_station() && !self.library.is_radio_favorite(&song.video_id)
+        }) {
             if seen_ids.insert(song.video_id.as_str()) {
                 rows.push(song);
             }
@@ -137,13 +151,13 @@ impl App {
         rows
     }
 
-    fn radio_library_count(&self) -> usize {
+    fn radio_recent_library_count(&self) -> usize {
         let mut seen_ids = HashSet::new();
         self.library
-            .radio_favorites
+            .radios
             .iter()
-            .chain(self.library.radios.iter())
             .filter(|song| song.is_radio_station())
+            .filter(|song| !self.library.is_radio_favorite(&song.video_id))
             .filter(|song| seen_ids.insert(song.video_id.as_str()))
             .count()
     }
@@ -200,9 +214,9 @@ impl App {
     }
 
     /// Delete library rows `lo..=hi` (positions in the current tab) with per-tab meaning:
-    /// Favorites un-favorites, History forgets, Radio forgets the station, Downloads asks before
-    /// deleting the files on disk, and All is an aggregate view so it's read-only. Clamps the
-    /// selection afterward.
+    /// Favorites un-favorites, History forgets, Radio Favorites un-favorites radio stations,
+    /// Radio forgets recently played stations, Downloads asks before deleting the files on disk,
+    /// and All is an aggregate view so it's read-only. Clamps the selection afterward.
     pub(in crate::app) fn library_delete_rows(&mut self, lo: usize, hi: usize) -> Vec<Cmd> {
         // Resolve the displayed (possibly filtered) rows to concrete songs first, then delete
         // by identity. Under an active filter the row positions no longer map to the raw
@@ -247,10 +261,23 @@ impl App {
                 self.dirty = true;
                 vec![Cmd::SaveLibrary]
             }
+            LibraryTab::RadioFavorites => {
+                let mut any = false;
+                for song in targets {
+                    any |= self.library.remove_radio_favorite_by_id(&song.video_id);
+                }
+                if any {
+                    self.clamp_library_selection();
+                    self.dirty = true;
+                    vec![Cmd::SaveLibrary]
+                } else {
+                    Vec::new()
+                }
+            }
             LibraryTab::Radio => {
                 let mut any = false;
                 for song in targets {
-                    any |= self.library.remove_radio_by_id(&song.video_id);
+                    any |= self.library.remove_radio_recent_by_id(&song.video_id);
                 }
                 if any {
                     self.clamp_library_selection();
