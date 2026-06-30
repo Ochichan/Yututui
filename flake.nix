@@ -17,7 +17,7 @@
           lib = pkgs.lib;
           ytm-tui = pkgs.rustPlatform.buildRustPackage {
             pname = "ytm-tui";
-            version = "1.5.6"; # keep in sync with Cargo.toml
+            version = "1.5.7"; # keep in sync with Cargo.toml
 
             # Drop build artifacts and flake results from the copied source so the store path
             # stays small and rebuilds aren't invalidated by a local `target/`.

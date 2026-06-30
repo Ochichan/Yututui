@@ -1,6 +1,6 @@
 [package]
 name = "ytm-tui"
-version = "1.5.6"
+version = "1.5.7"
 edition = "2024"
 description = "A fast terminal UI for YouTube Music — search, radio, synced lyrics, album art, and downloads, driven by mpv and yt-dlp."
 license = "MIT"

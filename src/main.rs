@@ -365,38 +365,6 @@ fn log_art_picker(picker: Option<&ratatui_image::picker::Picker>) {
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use ratatui_image::picker::ProtocolType;
-
-    use super::parse_image_protocol_override;
-
-    #[test]
-    fn image_protocol_override_accepts_supported_protocol_names() {
-        assert_eq!(
-            parse_image_protocol_override("halfblocks"),
-            Some(ProtocolType::Halfblocks)
-        );
-        assert_eq!(
-            parse_image_protocol_override("sixel"),
-            Some(ProtocolType::Sixel)
-        );
-        assert_eq!(
-            parse_image_protocol_override("kitty"),
-            Some(ProtocolType::Kitty)
-        );
-        assert_eq!(
-            parse_image_protocol_override("iterm2"),
-            Some(ProtocolType::Iterm2)
-        );
-        assert_eq!(
-            parse_image_protocol_override("  SIXEL  "),
-            Some(ProtocolType::Sixel)
-        );
-        assert_eq!(parse_image_protocol_override("bad"), None);
-    }
-}
-
 /// The animation tick period for a given frame rate. `fps` is expected pre-clamped (via
 /// [`config::AnimationsConfig::effective_fps`]); the `.max(1)` is a divide-by-zero guard only.
 fn anim_tick_period(fps: u16) -> Duration {
@@ -952,4 +920,36 @@ async fn run(
     let _ = app.signals.save();
     let _ = app.download_store.save();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui_image::picker::ProtocolType;
+
+    use super::parse_image_protocol_override;
+
+    #[test]
+    fn image_protocol_override_accepts_supported_protocol_names() {
+        assert_eq!(
+            parse_image_protocol_override("halfblocks"),
+            Some(ProtocolType::Halfblocks)
+        );
+        assert_eq!(
+            parse_image_protocol_override("sixel"),
+            Some(ProtocolType::Sixel)
+        );
+        assert_eq!(
+            parse_image_protocol_override("kitty"),
+            Some(ProtocolType::Kitty)
+        );
+        assert_eq!(
+            parse_image_protocol_override("iterm2"),
+            Some(ProtocolType::Iterm2)
+        );
+        assert_eq!(
+            parse_image_protocol_override("  SIXEL  "),
+            Some(ProtocolType::Sixel)
+        );
+        assert_eq!(parse_image_protocol_override("bad"), None);
+    }
 }

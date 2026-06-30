@@ -5,7 +5,7 @@
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1   # from a clone: dist\ or a release zip
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 --build   # force a source build (needs Rust)
 #
-# Pin a version with  $env:YTT_VERSION = 'v1.5.6'  (default: the latest release).
+# Pin a version with  $env:YTT_VERSION = 'v1.5.7'  (default: the latest release).
 # Adds the install dir to your user PATH and checks for the mpv / yt-dlp / ffmpeg runtime tools.
 # (On Windows the one-command path is Scoop:  scoop install ytm-tui.)
 
