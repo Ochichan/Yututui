@@ -86,7 +86,9 @@ impl App {
             .as_ref()
             .is_some_and(|s| matches!(s.current_field(), Some(Field::ThemeColor(_))));
         // The editor must stay operable no matter how keys are remapped, so the literal
-        // arrows / Enter / Esc / Tab are always honored here, on top of the configured ones.
+        // arrows / Enter / Esc / Backspace are always honored here, on top of the configured
+        // ones. Tab switching deliberately comes only from the keymap's FocusNext/FocusPrev
+        // bindings so Library and Settings secondary tabs stay tied to the same setting.
         let action = self
             .keymap
             .action(KeyContext::Settings, k.into())
@@ -145,8 +147,6 @@ impl App {
             KeyCode::Right => Some(Action::ChangeIncrease),
             KeyCode::Enter => Some(Action::Confirm),
             KeyCode::Esc => Some(Action::Back),
-            KeyCode::Tab => Some(Action::FocusNext),
-            KeyCode::BackTab => Some(Action::FocusPrev),
             KeyCode::Backspace => Some(Action::DeleteChar),
             _ => None,
         }

@@ -609,6 +609,26 @@ impl KeyMap {
             };
             labels.insert((ctx, action), chord);
         }
+        // Older configs may only have `player.open_search` remapped. Mirror that key into
+        // Search results so the same search key returns focus to the query box there, unless
+        // the results binding was explicitly customized.
+        if !overrides.contains_key("search_results.focus_input")
+            && let Some(&chord) = labels.get(&(KeyContext::Player, Action::OpenSearch))
+        {
+            let candidate = Self::from_labels(labels.clone());
+            if let Some(conflict) =
+                candidate.conflict(KeyContext::SearchResults, Action::FocusInput, chord)
+            {
+                tracing::warn!(
+                    chord = %chord_to_config(chord),
+                    conflict_ctx = ?conflict.ctx,
+                    conflict_action = ?conflict.existing,
+                    "not mirroring player.open_search to search_results.focus_input"
+                );
+            } else {
+                labels.insert((KeyContext::SearchResults, Action::FocusInput), chord);
+            }
+        }
         Self::from_labels(labels)
     }
 
@@ -673,14 +693,22 @@ impl KeyMap {
         action: Action,
         chord: Chord,
     ) -> Result<(), Conflict> {
-        if let Some(conflict) = self.conflict(ctx, action, chord) {
-            return Err(conflict);
+        for (target_ctx, target_action) in
+            std::iter::once((ctx, action)).chain(linked_rebinds(ctx, action).iter().copied())
+        {
+            if let Some(conflict) = self.conflict(target_ctx, target_action, chord) {
+                return Err(conflict);
+            }
         }
-        if let Some(old) = self.labels.get(&(ctx, action)).copied() {
-            self.bindings.remove(&(ctx, old));
+        for (target_ctx, target_action) in
+            std::iter::once((ctx, action)).chain(linked_rebinds(ctx, action).iter().copied())
+        {
+            if let Some(old) = self.labels.get(&(target_ctx, target_action)).copied() {
+                self.bindings.remove(&(target_ctx, old));
+            }
+            self.bindings.insert((target_ctx, chord), target_action);
+            self.labels.insert((target_ctx, target_action), chord);
         }
-        self.bindings.insert((ctx, chord), action);
-        self.labels.insert((ctx, action), chord);
         Ok(())
     }
 
@@ -707,6 +735,15 @@ impl KeyMap {
             }
         }
         out
+    }
+}
+
+fn linked_rebinds(ctx: KeyContext, action: Action) -> &'static [(KeyContext, Action)] {
+    match (ctx, action) {
+        (KeyContext::Player, Action::OpenSearch) => {
+            &[(KeyContext::SearchResults, Action::FocusInput)]
+        }
+        _ => &[],
     }
 }
 
@@ -1402,6 +1439,64 @@ mod tests {
     }
 
     #[test]
+    fn rebinding_open_search_also_moves_search_results_focus_input() {
+        let mut km = KeyMap::default();
+        let e_upper = parse_chord("E").unwrap();
+        km.rebind(KeyContext::Player, Action::OpenSearch, e_upper)
+            .unwrap();
+
+        assert_eq!(
+            km.action(KeyContext::Player, e_upper),
+            Some(Action::OpenSearch)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, e_upper),
+            Some(Action::FocusInput)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, parse_chord("/").unwrap()),
+            None
+        );
+
+        let overrides = km.to_overrides();
+        assert_eq!(
+            overrides.get("player.open_search").map(String::as_str),
+            Some("E")
+        );
+        assert_eq!(
+            overrides
+                .get("search_results.focus_input")
+                .map(String::as_str),
+            Some("E")
+        );
+    }
+
+    #[test]
+    fn open_search_rebind_rejects_search_results_focus_conflict() {
+        let mut km = KeyMap::default();
+        let enqueue = parse_chord("\\").unwrap();
+        let err = km
+            .rebind(KeyContext::Player, Action::OpenSearch, enqueue)
+            .unwrap_err();
+
+        assert_eq!(err.ctx, KeyContext::SearchResults);
+        assert_eq!(err.existing, Action::Enqueue);
+        assert_eq!(err.chord, enqueue);
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("/").unwrap()),
+            Some(Action::OpenSearch)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, parse_chord("/").unwrap()),
+            Some(Action::FocusInput)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, enqueue),
+            Some(Action::Enqueue)
+        );
+    }
+
+    #[test]
     fn overrides_round_trip() {
         let mut km = KeyMap::default();
         km.rebind(
@@ -1422,6 +1517,43 @@ mod tests {
         );
         assert_eq!(
             restored.action(KeyContext::Player, parse_chord("space").unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn legacy_open_search_override_mirrors_to_search_results_focus_input() {
+        let mut o = BTreeMap::new();
+        o.insert("player.open_search".to_owned(), "E".to_owned());
+        let km = KeyMap::from_overrides(&o);
+
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("E").unwrap()),
+            Some(Action::OpenSearch)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, parse_chord("E").unwrap()),
+            Some(Action::FocusInput)
+        );
+    }
+
+    #[test]
+    fn explicit_search_results_focus_input_override_is_respected() {
+        let mut o = BTreeMap::new();
+        o.insert("player.open_search".to_owned(), "E".to_owned());
+        o.insert("search_results.focus_input".to_owned(), "I".to_owned());
+        let km = KeyMap::from_overrides(&o);
+
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("E").unwrap()),
+            Some(Action::OpenSearch)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, parse_chord("I").unwrap()),
+            Some(Action::FocusInput)
+        );
+        assert_eq!(
+            km.action(KeyContext::SearchResults, parse_chord("E").unwrap()),
             None
         );
     }

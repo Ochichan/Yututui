@@ -346,6 +346,27 @@ fn enter_in_search_emits_search_cmd() {
 }
 
 #[test]
+fn remapped_open_search_key_focuses_search_input_from_results() {
+    let mut app = App::new(100);
+    app.keymap
+        .rebind(
+            KeyContext::Player,
+            Action::OpenSearch,
+            crate::keymap::parse_chord("E").unwrap(),
+        )
+        .unwrap();
+
+    app.update(Msg::Key(key(KeyCode::Char('E'))));
+    assert_eq!(app.mode, Mode::Search);
+    assert_eq!(app.search.focus, SearchFocus::Input);
+
+    app.search.results = songs(1);
+    app.search.focus = SearchFocus::Results;
+    app.update(Msg::Key(key(KeyCode::Char('E'))));
+    assert_eq!(app.search.focus, SearchFocus::Input);
+}
+
+#[test]
 fn search_submit_stays_enter_when_common_confirm_is_remapped() {
     let mut app = App::new(100);
     app.keymap = confirm_on_f5_keymap();
@@ -1131,6 +1152,44 @@ fn settings_tab_cycles_through_all_tabs() {
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
     app.update(Msg::Key(key(KeyCode::Tab)));
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General); // wraps
+}
+
+#[test]
+fn remapped_focus_keys_switch_library_and_settings_tabs() {
+    let mut app = app_playing(1, 0);
+    app.keymap
+        .rebind(
+            KeyContext::Common,
+            Action::FocusNext,
+            crate::keymap::parse_chord("f5").unwrap(),
+        )
+        .unwrap();
+    app.keymap
+        .rebind(
+            KeyContext::Common,
+            Action::FocusPrev,
+            crate::keymap::parse_chord("f6").unwrap(),
+        )
+        .unwrap();
+
+    app.update(Msg::Key(key(KeyCode::Char('l'))));
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
+    app.update(Msg::Key(key(KeyCode::F(5))));
+    assert_eq!(app.library_ui.tab, LibraryTab::Favorites);
+    app.update(Msg::Key(key(KeyCode::F(6))));
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
+    app.update(Msg::Key(key(KeyCode::Tab)));
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
+
+    app.update(Msg::Key(key(KeyCode::Char('q'))));
+    app.update(Msg::Key(key(KeyCode::Char(','))));
+    assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General);
+    app.update(Msg::Key(key(KeyCode::F(5))));
+    assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Playback);
+    app.update(Msg::Key(key(KeyCode::F(6))));
+    assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General);
+    app.update(Msg::Key(key(KeyCode::Tab)));
+    assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General);
 }
 
 #[test]
