@@ -9,3 +9,7 @@
 /ytm-tui icons/
 .DS_Store
 .claude/
+
+# Local docs notes
+/docs/*.md
+/docs/**/*.md

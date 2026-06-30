@@ -57,8 +57,6 @@ pub struct ThreadProtocol {
     tx: Sender<ResizeRequest>,
     id: u64,
     pending_id: Option<u64>,
-    last_resize: Option<Resize>,
-    last_area: Option<Size>,
 }
 
 impl ThreadProtocol {
@@ -68,8 +66,6 @@ impl ThreadProtocol {
             tx,
             id: 0,
             pending_id: None,
-            last_resize: None,
-            last_area: None,
         }
     }
 
@@ -79,40 +75,18 @@ impl ThreadProtocol {
         self.increment_id();
     }
 
-    /// Replace the protocol without blanking the currently rendered image. If this widget has
-    /// already been rendered, the new protocol is encoded for that last area in the background and
-    /// swapped in when complete. Until then, the old protocol continues to render, avoiding the
-    /// one-frame hole that a popup/art refresh would otherwise create.
-    pub fn refresh_protocol(&mut self, proto: StatefulProtocol) {
-        let Some(resize) = self.last_resize.clone() else {
-            self.replace_protocol(proto);
-            return;
-        };
-        let Some(area) = self.last_area else {
-            self.replace_protocol(proto);
-            return;
-        };
-        let size = proto.size_for(resize.clone(), area);
-        self.increment_id();
-        self.pending_id = Some(self.id);
-        let request = ResizeRequest {
-            protocol: proto,
-            resize,
-            size,
-            id: self.id,
-        };
-        if let Err(err) = self.tx.send(request) {
-            self.inner = Some(err.0.protocol);
-            self.pending_id = None;
-        }
-    }
-
     pub fn protocol_type(&self) -> Option<&StatefulProtocolType> {
         self.inner.as_ref().map(|inner| inner.protocol_type())
     }
 
     pub fn protocol_type_owned(self) -> Option<StatefulProtocolType> {
         self.inner.map(|inner| inner.protocol_type_owned())
+    }
+
+    pub fn mark_kitty_rows_for_redraw(&self, area: Rect, damage: Rect, buf: &mut Buffer) {
+        if let Some(protocol) = &self.inner {
+            protocol.mark_kitty_rows_for_redraw(area, damage, buf);
+        }
     }
 
     // Get the background color that fills in when resizing.
@@ -151,8 +125,6 @@ impl ThreadProtocol {
 
 impl ResizeEncodeRender for ThreadProtocol {
     fn resize_encode_render(&mut self, resize: &Resize, area: Rect, buf: &mut Buffer) {
-        self.last_resize = Some(resize.clone());
-        self.last_area = Some(area.into());
         if let Some(rect) = self.needs_resize(resize, area.into()) {
             self.resize_encode(resize, rect);
         }
@@ -192,49 +164,5 @@ impl ResizeEncodeRender for ThreadProtocol {
             .inner
             .as_mut()
             .map(|protocol| protocol.render(area, buf));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use ratatui::{buffer::Buffer, layout::Rect};
-
-    use super::*;
-    use crate::picker::Picker;
-
-    #[test]
-    fn refresh_protocol_keeps_current_image_until_replacement_is_encoded() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let picker = Picker::halfblocks();
-        let img = image::DynamicImage::new_rgb8(8, 8);
-        let area = Rect::new(0, 0, 4, 4);
-        let resize = Resize::Scale(None);
-        let mut threaded =
-            ThreadProtocol::new(tx, Some(picker.new_resize_protocol(img.clone())));
-
-        let mut buf = Buffer::empty(area);
-        threaded.resize_encode_render(&resize, area, &mut buf);
-        let response = rx
-            .try_recv()
-            .expect("first render queues initial resize")
-            .resize_encode()
-            .unwrap();
-        assert!(threaded.update_resized_protocol(response));
-
-        let mut buf = Buffer::empty(area);
-        threaded.resize_encode_render(&resize, area, &mut buf);
-        assert!(
-            rx.try_recv().is_err(),
-            "matching area should not queue another resize"
-        );
-        assert!(threaded.protocol_type().is_some());
-
-        threaded.refresh_protocol(picker.new_resize_protocol(img));
-        assert!(
-            threaded.protocol_type().is_some(),
-            "old encoded image stays renderable while fresh protocol is pending"
-        );
-        rx.try_recv()
-            .expect("fresh protocol is encoded in the background");
     }
 }

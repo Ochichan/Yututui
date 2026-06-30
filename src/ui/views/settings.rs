@@ -6,9 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph,
-};
+use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget, ScrollSurface};
@@ -639,15 +637,14 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
 /// Names the offending chord, the action already holding it, and where it lives, so the
 /// failure is loud and actionable rather than a silently-dropped remap.
 pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conflict) {
-    let theme = &app.theme;
     let popup = centered_fixed(area, 54, 9);
-    frame.render_widget(Clear, popup);
+    crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(" ⚠ Keybinding conflict ", " ⚠ 단축키 충돌 "))
         .borders(Borders::ALL)
-        .border_style(theme.style(R::Warning).add_modifier(Modifier::BOLD))
-        .style(theme.style(R::TextPrimary));
+        .border_style(crate::ui::popup_style(app, R::Warning).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -660,7 +657,10 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
     let lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled(chord, theme.style(R::Warning).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                chord,
+                crate::ui::popup_style(app, R::Warning).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(t!(" is already bound to", " 은(는) 이미 사용 중")),
         ]),
         Line::from(Span::styled(
@@ -668,39 +668,43 @@ pub fn render_conflict(frame: &mut Frame, app: &App, area: Rect, conflict: &Conf
                 "\u{201c}{}\u{201d}",
                 conflict.existing.human_label_for(conflict.ctx)
             ),
-            theme.style(R::Accent).add_modifier(Modifier::BOLD),
+            crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(where_line, theme.style(R::TextMuted))),
+        Line::from(Span::styled(
+            where_line,
+            crate::ui::popup_style(app, R::TextMuted),
+        )),
         Line::from(""),
         Line::from(Span::styled(
             t!(
                 "Binding unchanged · press any key",
                 "단축키 변경 안 됨 · 아무 키나 누르세요"
             ),
-            theme.style(R::TextMuted),
+            crate::ui::popup_style(app, R::TextMuted),
         )),
     ];
     frame.render_widget(
         Paragraph::new(lines)
             .alignment(Alignment::Center)
-            .style(theme.style(R::TextPrimary)),
+            .style(crate::ui::popup_style(app, R::TextPrimary)),
         inner,
     );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// A modal confirmation for the "reset all settings" button. Resetting wipes every setting
 /// (keybindings, theme, API key included) and the screen always persists on close, so the
 /// destructive action is gated behind an explicit yes/no rather than a single keypress.
 pub fn render_confirm_reset(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
     let popup = centered_fixed(area, 56, 9);
-    frame.render_widget(Clear, popup);
+    crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(" ⚠ Reset all settings ", " ⚠ 모든 설정 초기화 "))
         .borders(Borders::ALL)
-        .border_style(theme.style(R::Error).add_modifier(Modifier::BOLD))
-        .style(theme.style(R::TextPrimary));
+        .border_style(crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -715,25 +719,30 @@ pub fn render_confirm_reset(frame: &mut Frame, app: &App, area: Rect) {
                 "Keybindings, theme, and API key included.",
                 "단축키, 테마, API 키 포함."
             ),
-            theme.style(R::TextMuted),
+            crate::ui::popup_style(app, R::TextMuted),
         )),
         Line::from(""),
         Line::from(vec![
             Span::styled(
                 "Enter / y",
-                theme.style(R::Error).add_modifier(Modifier::BOLD),
+                crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD),
             ),
             Span::raw(t!(" reset    ", " 초기화    ")),
-            Span::styled("Esc", theme.style(R::Accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Esc",
+                crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(t!(" cancel", " 취소")),
         ]),
     ];
     frame.render_widget(
         Paragraph::new(lines)
             .alignment(Alignment::Center)
-            .style(theme.style(R::TextPrimary)),
+            .style(crate::ui::popup_style(app, R::TextPrimary)),
         inner,
     );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// A `w`×`h` rect centered in `area`, clamped so it never exceeds the available space.

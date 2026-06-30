@@ -229,11 +229,13 @@ pub struct ArtState {
     /// `StatefulImage` needs `&mut` during render, which only has `&App` (mirrors the
     /// [`RenderBridges`] fields). Resize/encode work is sent off-thread through `resize_tx`.
     pub protocol: RefCell<Option<ThreadProtocol>>,
+    /// Last rendered album-art cell rect. Used by popup renderers to make Kitty rows that were
+    /// overdrawn in the middle repaint cleanly when the popup closes.
+    pub rect: Cell<Option<Rect>>,
     /// Background resize/encode request channel for [`ThreadProtocol`].
     pub(in crate::app) resize_tx: Option<tokio::sync::mpsc::UnboundedSender<ResizeRequest>>,
-    /// The decoded source image kept alongside the protocol so [`App::refresh_art`] can
-    /// rebuild a fresh protocol (new graphics-protocol id) on demand — see that method for why.
-    /// Reducer-only (was a private App field) — `pub(in crate::app)`.
+    /// The decoded source image kept alongside the protocol for stale-result checks and future
+    /// resize/protocol rebuilds. Reducer-only (was a private App field) — `pub(in crate::app)`.
     pub(in crate::app) source: Option<DynamicImage>,
     /// Source pixel dimensions of the held art, for centering it within its panel.
     pub dims: (u32, u32),

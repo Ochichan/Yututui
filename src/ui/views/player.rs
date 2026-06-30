@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
+use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 use ratatui_image::{Resize, StatefulImage};
 use unicode_width::UnicodeWidthStr;
 
@@ -291,7 +291,7 @@ fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)>
 /// opened by clicking the `N/M` position label. Rows are click targets — single-click
 /// selects (drag to extend the selection), double-click jumps playback there — and each
 /// row's trailing `✗` removes that track. Keyboard nav / Delete / Enter operate it while
-/// open (see `App::on_key_queue`). Drawn last over everything (`Clear`) so its rects win.
+/// open (see `App::on_key_queue`). Drawn last over everything so its rects win.
 fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
     let total_len = app.queue.len();
     if total_len == 0 {
@@ -316,15 +316,17 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
     }
     app.queue_popup.rect.set(Some(popup));
 
-    frame.render_widget(Clear, popup);
+    crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
         .title(format!(" {} {pos}/{total} ", t!("Queue", "대기열")))
         .borders(Borders::ALL)
-        .border_style(app.theme.style(R::BorderPrimary))
-        .style(app.theme.style(R::TextPrimary));
+        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
     let list = block.inner(popup);
     frame.render_widget(block, popup);
     if list.height == 0 || list.width < 4 {
+        crate::ui::seal_popup_background(frame, app, popup);
+        crate::ui::mark_art_rows_for_popup(frame, app, popup);
         return;
     }
 
@@ -420,6 +422,8 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
         start,
         visible,
     );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// The EQ preset dropdown, anchored under the `eq:` label and listing the built-in presets
@@ -477,7 +481,7 @@ fn dropdown_width<'a>(labels: impl Iterator<Item = &'a str>) -> u16 {
 /// label whose hit rect matches `anchor_target`; titled `title`; lists `rows` of
 /// `(label, is_active, click-target)`. The active row is a full-width highlight bar (no arrow
 /// gutter) so the box stays exactly as wide as the longest label. Drawn over whatever is
-/// beneath it (`Clear`); dismissed by picking a row or clicking elsewhere.
+/// beneath it with an opaque text-cell background; dismissed by picking a row or clicking elsewhere.
 fn render_dropdown(
     frame: &mut Frame,
     app: &App,
@@ -514,12 +518,12 @@ fn render_dropdown(
         return;
     }
 
-    frame.render_widget(Clear, popup);
+    crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(app.theme.style(R::BorderPrimary))
-        .style(app.theme.style(R::TextPrimary));
+        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
     let list = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -550,6 +554,8 @@ fn render_dropdown(
         frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
         app.register_mouse_button(row, *target);
     }
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// The transport strip under the seekbar: skip-back / play-pause / skip-forward, then a
@@ -634,6 +640,7 @@ const MIN_LYRICS_ROWS: u16 = 3;
 /// the art's real bottom edge. When album art is off the layout is unchanged — lyrics get
 /// the whole area, and an empty area draws nothing.
 fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
+    app.art.rect.set(None);
     match (app.art_active(), app.lyrics.visible) {
         // Art on top, lyrics right under it. The art is capped so a readable lyrics window
         // always remains, then lyrics start one row below the art's actual bottom (not at a
@@ -710,9 +717,7 @@ fn draw_art(frame: &mut Frame, app: &App, band: Rect) -> Option<Rect> {
     }
     let mut rect = app.art_fit_rect(band);
     rect.y = band.y; // art_fit_rect centers vertically; re-anchor to the top of the band.
-    if app.art_suppressed_by_overlay() {
-        return Some(rect);
-    }
+    app.art.rect.set(Some(rect));
     if let Some(proto) = app.art.protocol.borrow_mut().as_mut() {
         frame.render_stateful_widget(
             StatefulImage::new().resize(Resize::Scale(Some(FilterType::Lanczos3))),

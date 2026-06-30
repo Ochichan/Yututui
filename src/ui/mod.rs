@@ -7,8 +7,9 @@ pub mod text;
 pub mod views;
 
 use ratatui::Frame;
-use ratatui::style::Style;
-use ratatui::widgets::Block;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::widgets::{Block, Clear};
 
 use crate::app::{App, Mode};
 use crate::theme::ThemeRole as R;
@@ -54,5 +55,49 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Deleting downloaded files is modal and irreversible — drawn last so its buttons win.
     if app.library_ui.confirm_delete.is_some() {
         views::library::render_confirm_delete(frame, app, area);
+    }
+}
+
+pub fn popup_bg(app: &App) -> Color {
+    match app.theme.color(R::Background) {
+        Color::Reset => app.theme.color(R::TextInverse),
+        bg => bg,
+    }
+}
+
+pub fn popup_style(app: &App, role: R) -> Style {
+    app.theme.style(role).bg(popup_bg(app))
+}
+
+pub fn render_popup_background(frame: &mut Frame, app: &App, area: Rect) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(popup_bg(app))),
+        area,
+    );
+}
+
+pub fn seal_popup_background(frame: &mut Frame, app: &App, area: Rect) {
+    let bg = popup_bg(app);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = frame.buffer_mut().cell_mut((x, y))
+                && cell.bg == Color::Reset
+            {
+                cell.set_bg(bg);
+            }
+        }
+    }
+}
+
+pub fn mark_art_rows_for_popup(frame: &mut Frame, app: &App, popup: Rect) {
+    let Some(art) = app.art.rect.get() else {
+        return;
+    };
+    if art.intersection(popup).is_empty() {
+        return;
+    }
+    if let Some(protocol) = app.art.protocol.borrow().as_ref() {
+        protocol.mark_kitty_rows_for_redraw(art, popup, frame.buffer_mut());
     }
 }

@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::{Resize, StatefulImage};
 
@@ -34,19 +34,21 @@ const ICON_ROWS: u16 = 9;
 /// Render the About card as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered_fixed(area, 60, 22);
-    frame.render_widget(Clear, popup);
+    crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(" About ", " 정보 "))
         .borders(Borders::ALL)
-        .border_style(app.theme.style(R::BorderPrimary))
-        .style(app.theme.style(R::TextPrimary));
+        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
     let rows = Layout::vertical([Constraint::Length(ICON_ROWS), Constraint::Min(0)]).split(inner);
     draw_icon(frame, app, rows[0]);
     draw_text(frame, app, rows[1]);
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// Draw the embedded icon centered in `band`, building (and caching) its protocol on first use.
@@ -71,19 +73,13 @@ fn draw_icon(frame: &mut Frame, app: &App, band: Rect) {
 
 /// Decode the embedded PNG and build its render protocol once, caching it on the app.
 ///
-/// Prefer the terminal's detected graphics protocol (`art_picker` — Kitty/Sixel) so the icon
-/// renders at full resolution like album art, instead of the blocky ~2px-per-cell half-blocks.
-/// Fall back to half-blocks when no picker was probed (album art off) or the terminal has no
-/// graphics support. Closing the card over album art repaints cleanly: `about_visible` is part
-/// of [`crate::app::App::art_overlay_mask`], so the main loop rebuilds the art (re-emitting every
-/// row) whenever the card toggles — the same dance the eq/radio/queue popups already rely on.
+/// Use halfblocks for the icon so it lives in the text layer of the popup. The album-art Kitty
+/// backend is deliberately placed behind non-default backgrounds; using it here would put the icon
+/// behind the About card's own opaque panel.
 fn ensure_icon(app: &App) {
     let needs_build = app.about_icon.borrow().is_none();
     if needs_build && let Ok(img) = image::load_from_memory(ICON_PNG) {
-        let proto = match app.art.picker.as_ref() {
-            Some(picker) => picker.new_resize_protocol(img),
-            None => Picker::halfblocks().new_resize_protocol(img),
-        };
+        let proto = Picker::halfblocks().new_resize_protocol(img);
         *app.about_icon.borrow_mut() = Some(proto);
     }
 }
@@ -105,11 +101,11 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     let name = Line::from(vec![
         Span::styled(
             "ytm-tui",
-            app.theme.style(R::Accent).add_modifier(Modifier::BOLD),
+            crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("  v{}", env!("CARGO_PKG_VERSION")),
-            app.theme.style(R::TextMuted),
+            crate::ui::popup_style(app, R::TextMuted),
         ),
     ]);
     frame.render_widget(Paragraph::new(name).alignment(Alignment::Center), rows[0]);
@@ -125,7 +121,7 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(desc)
             .alignment(Alignment::Center)
-            .style(app.theme.style(R::TextMuted)),
+            .style(crate::ui::popup_style(app, R::TextMuted)),
         rows[1],
     );
 
@@ -136,8 +132,8 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
         (t!("Author", "제작자"), "Ochichan"),
         (t!("Built", "빌드"), "Rust · ratatui"),
     ];
-    let key_style = app.theme.style(R::HelpKey);
-    let val_style = app.theme.style(R::HelpAction);
+    let key_style = crate::ui::popup_style(app, R::HelpKey);
+    let val_style = crate::ui::popup_style(app, R::HelpAction);
     let lines: Vec<Line> = info
         .iter()
         .map(|(k, v)| {
@@ -156,6 +152,7 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     let link_style = app
         .theme
         .style(R::Accent)
+        .bg(crate::ui::popup_bg(app))
         .add_modifier(Modifier::UNDERLINED);
     let segs = [
         Seg::label("  GitHub   "),
@@ -179,7 +176,7 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(hint)
             .alignment(Alignment::Center)
-            .style(app.theme.style(R::TextMuted)),
+            .style(crate::ui::popup_style(app, R::TextMuted)),
         rows[6],
     );
 }

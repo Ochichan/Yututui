@@ -256,15 +256,11 @@ fn draw_app_frame(
     terminal: &mut ratatui::DefaultTerminal,
     app: &App,
     perf: &mut PerfStats,
-    clear_before: bool,
 ) -> std::io::Result<()> {
     let start = perf.enabled.then(Instant::now);
-    let res = tui::draw_frame(
-        terminal,
-        app.synchronized_draw_active() || clear_before,
-        clear_before,
-        |f| ui::render(f, app),
-    );
+    let res = tui::draw_frame(terminal, app.synchronized_draw_active(), false, |f| {
+        ui::render(f, app)
+    });
     if res.is_ok()
         && let Some(start) = start
     {
@@ -478,7 +474,7 @@ async fn run(
     let mut anim_fps = app.animation_tick_fps();
     let mut anim_tick = anim_interval(anim_fps);
     let mut perf = PerfStats::from_env();
-    draw_app_frame(terminal, &app, &mut perf, false)?;
+    draw_app_frame(terminal, &app, &mut perf)?;
 
     // Every actor is up and the reducer loop is one statement away from draining `worker_rx`:
     // now start the control server and publish the instance descriptor. Doing it here (rather
@@ -503,7 +499,7 @@ async fn run(
             },
             Some(m) = worker_rx.recv() => m,
             _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
-                draw_app_frame(terminal, &app, &mut perf, false)?;
+                draw_app_frame(terminal, &app, &mut perf)?;
                 app.dirty = false;
                 perf.maybe_log(&app);
                 continue;
@@ -511,13 +507,6 @@ async fn run(
             _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
             _ = anim_tick.tick(), if app.animation_active() => Msg::AnimTick,
         };
-
-        // The `eq:`/`radio:` dropdowns and the queue window paint a `Clear` box over part of the
-        // album art, but graphics-protocol art only re-emits when its render *area* changes — so a
-        // closed popup would leave a stale box where it was. Snapshot which art-covering popups are
-        // open across dispatch and, on any change, rebuild the art so it repaints cleanly (see
-        // `App::refresh_art`) — the same clean appear/disappear the full-width `?` overlay gets free.
-        let overlay_before = app.art_overlay_mask();
 
         let resized_artwork = matches!(&msg, Msg::ArtworkResized(_));
         for cmd in app.update(msg) {
@@ -633,18 +622,7 @@ async fn run(
         }
 
         if app.dirty {
-            let overlay_after = app.art_overlay_mask();
-            // Native terminal graphics (Sixel/iTerm2/Kitty) live outside ratatui's text buffer.
-            // When a popup/modal/screen covers album art, clear the terminal graphics layer and
-            // force a full redraw. While the overlay remains visible, the player view suppresses
-            // art rendering so the image cannot reappear above the popup.
-            let clear_for_art_overlay = overlay_before != overlay_after
-                && app.art_active()
-                && app.art_uses_terminal_graphics();
-            if clear_for_art_overlay && overlay_after == 0 {
-                app.refresh_art();
-            }
-            draw_app_frame(terminal, &app, &mut perf, clear_for_art_overlay)?;
+            draw_app_frame(terminal, &app, &mut perf)?;
             app.dirty = false;
         }
         perf.maybe_log(&app);

@@ -151,10 +151,9 @@ impl App {
         vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
     }
 
-    /// A bitmask of visible surfaces that can cover graphics-protocol album art. Text-cell
-    /// overlays (`Clear`, modal blocks, and non-player screens) do not reliably erase Sixel/iTerm2
-    /// pixels, so the main loop snapshots this mask and clears native terminal graphics when it
-    /// changes. A mask (not a bool) keeps direct switches between overlays visible to the loop.
+    /// A bitmask of visible surfaces that can cover album art. Keeping each popup/modal distinct
+    /// makes the render tests catch newly-added overlay surfaces that need opaque backgrounds.
+    #[cfg(test)]
     pub fn art_overlay_mask(&self) -> u16 {
         u8::from(self.dropdowns.eq_open) as u16
             | ((self.dropdowns.radio_open as u16) << 1)
@@ -168,51 +167,8 @@ impl App {
             | ((!matches!(self.mode, Mode::Player) as u16) << 9)
     }
 
-    /// Whether the active album-art backend paints outside the normal text buffer. Halfblocks is
-    /// regular terminal text and can be overdrawn by `Clear`; graphics protocols need stronger
-    /// handling when popups or screen-level panels cover them.
-    pub fn art_uses_terminal_graphics(&self) -> bool {
-        self.art
-            .picker
-            .as_ref()
-            .is_some_and(|picker| !matches!(picker.protocol_type(), ProtocolType::Halfblocks))
-    }
-
-    /// Suppress native graphics-protocol art while an overlay is visible. The main loop clears the
-    /// terminal graphics layer on overlay transitions, and this keeps the next frame from
-    /// immediately re-planting art above the popup on terminals without reliable graphics z-order.
-    pub fn art_suppressed_by_overlay(&self) -> bool {
-        self.art_uses_terminal_graphics() && self.art_overlay_mask() != 0
-    }
-
-    /// Rebuild the held art into a fresh protocol so the *next* render re-transmits and
-    /// re-emits the whole image. ratatui-image only re-emits its Kitty unicode-placeholder rows
-    /// when the render *area* changes, so a `Clear` popup that overdraws part of the art (the
-    /// `eq:`/`radio:` dropdowns, the queue window) leaves a stale background box where it was —
-    /// the art never repaints there on its own. `new_resize_protocol` mints a new random
-    /// graphics id, which changes every row's escape so ratatui's diff re-emits all of them and
-    /// the terminal re-transmits the pixels — a complete, flicker-localized repaint with no
-    /// full-screen `clear()` flash. This is how `eq:`/`radio:`/queue get the same clean
-    /// appear/disappear the (full-width) `?` help overlay gets for free. Cheap clone of one
-    /// already-bounded image (`MAX_DIM`), only on a popup toggle.
-    pub fn refresh_art(&self) {
-        if let (Some(img), Some(picker), Some(tx)) = (
-            self.art.source.as_ref(),
-            self.art.picker.as_ref(),
-            self.art.resize_tx.as_ref(),
-        ) {
-            let fresh = picker.new_resize_protocol(img.clone());
-            let mut protocol = self.art.protocol.borrow_mut();
-            match protocol.as_mut() {
-                Some(current) => current.refresh_protocol(fresh),
-                None => *protocol = Some(ThreadProtocol::new(tx.clone(), Some(fresh))),
-            }
-        }
-    }
-
     /// Turn a decoded image into a render-ready protocol (or clear when there's none / no
-    /// picker). Building the protocol is cheap; the encode happens lazily at render. The decoded
-    /// image is also kept (`art_source`) so [`Self::refresh_art`] can rebuild on a popup toggle.
+    /// picker). Building the protocol is cheap; the encode happens lazily at render.
     pub(in crate::app) fn set_artwork(&mut self, video_id: String, image: Option<DynamicImage>) {
         match (image, self.art.picker.as_ref()) {
             (Some(img), Some(picker)) if self.art.resize_tx.is_some() => {

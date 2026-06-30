@@ -119,6 +119,10 @@ impl StatefulKitty {
             is_tmux,
         }
     }
+
+    pub(crate) fn mark_rows_for_redraw(&self, area: Rect, damage: Rect, buf: &mut Buffer) {
+        mark_rows_for_redraw(area, self.size, buf, &self.id, damage, 0);
+    }
 }
 
 impl ProtocolTrait for StatefulKitty {
@@ -232,6 +236,47 @@ fn render(
     }
 }
 
+fn mark_rows_for_redraw(
+    area: Rect,
+    size: Size,
+    buf: &mut Buffer,
+    (_, id_color, id_extra): &(u32, String, u16),
+    damage: Rect,
+    skip_line_count: usize,
+) {
+    let width = area.width.min(size.width).min(DIACRITICS.len() as u16);
+    let height = area.height.min(size.height).min(DIACRITICS.len() as u16);
+    let image = Rect {
+        width,
+        height,
+        ..area
+    };
+    let overlap = image.intersection(damage);
+    if overlap.is_empty() {
+        return;
+    }
+
+    let anchor_x = image.left();
+    for y in overlap.top()..overlap.bottom() {
+        if damage.left() <= anchor_x && anchor_x < damage.right() {
+            continue;
+        }
+        let row_y = y - image.top() + skip_line_count as u16;
+        let mut symbol = String::with_capacity(id_color.len() + 24);
+        write!(
+            symbol,
+            "\x1b[s{id_color}\u{10EEEE}{}{}{}\x1b[u",
+            diacritic(row_y),
+            diacritic(0),
+            diacritic(*id_extra)
+        )
+        .unwrap();
+        if let Some(cell) = buf.cell_mut((anchor_x, y)) {
+            cell.set_symbol(&symbol).set_diff_option(UNIT_WIDTH);
+        }
+    }
+}
+
 /// Create a kitty escape sequence for transmitting and virtual-placement.
 ///
 /// The image will be transmitted as RGBA in chunks of 4096 bytes.
@@ -291,6 +336,7 @@ fn transmit_virtual(img: &DynamicImage, id: u32, is_tmux: bool) -> String {
 #[cfg(test)]
 mod tests {
     use image::{DynamicImage, ImageBuffer, Rgba};
+    use ratatui::{buffer::Buffer, layout::Rect};
 
     use super::*;
 
@@ -300,6 +346,69 @@ mod tests {
         let seq = transmit_virtual(&image, 42, false);
 
         assert!(seq.contains(&format!("z={TEXT_BACKGROUND_Z_INDEX},")));
+    }
+
+    #[test]
+    fn interior_popup_damage_marks_anchor_without_retransmitting_image() {
+        let area = Rect::new(2, 1, 5, 3);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 8));
+        let id = id_tuple(42);
+
+        render(area, Size::new(5, 3), &mut buf, &id, None, 0);
+        let before = buf.cell((area.left(), 2)).unwrap().symbol().to_owned();
+        let untouched_before = buf.cell((area.left(), 1)).unwrap().symbol().to_owned();
+
+        mark_rows_for_redraw(
+            area,
+            Size::new(5, 3),
+            &mut buf,
+            &id,
+            Rect::new(area.left() + 2, 2, 2, 1),
+            0,
+        );
+        let after = buf.cell((area.left(), 2)).unwrap().symbol().to_owned();
+
+        assert_ne!(before, after);
+        assert!(after.contains('\u{10EEEE}'));
+        assert!(
+            !after.contains("_G"),
+            "row marker must not retransmit image pixels"
+        );
+        assert_eq!(
+            buf.cell((area.left(), 1)).unwrap().symbol(),
+            untouched_before,
+            "uncovered rows are left untouched"
+        );
+    }
+
+    #[test]
+    fn damage_that_already_covers_anchor_needs_no_marker() {
+        let area = Rect::new(2, 1, 5, 3);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 8));
+        let id = id_tuple(42);
+
+        render(area, Size::new(5, 3), &mut buf, &id, None, 0);
+        let before = buf.cell((area.left(), 2)).unwrap().symbol().to_owned();
+
+        mark_rows_for_redraw(
+            area,
+            Size::new(5, 3),
+            &mut buf,
+            &id,
+            Rect::new(area.left(), 2, 2, 1),
+            0,
+        );
+
+        assert_eq!(buf.cell((area.left(), 2)).unwrap().symbol(), before);
+    }
+
+    fn id_tuple(id: u32) -> (u32, String, u16) {
+        let [id_extra, id_r, id_g, id_b] = id.to_be_bytes();
+        (
+            id,
+            format!("\x1b[38;2;{id_r};{id_g};{id_b}m"),
+            u16::from(id_extra),
+        )
     }
 }
 

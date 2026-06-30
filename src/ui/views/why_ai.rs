@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
 use crate::keymap::{Action, KeyContext};
@@ -27,7 +27,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let body_rows = (explain.picks.len() as u16) * 2;
     let h = (body_rows + 5).clamp(7, area.height);
     let popup = centered_fixed(area, 72, h);
-    frame.render_widget(Clear, popup);
+    crate::ui::render_popup_background(frame, app, popup);
 
     let title = match explain.conf {
         Some(c) => format!(
@@ -40,8 +40,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(app.theme.style(R::BorderPrimary))
-        .style(app.theme.style(R::TextPrimary));
+        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -58,18 +58,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(hint))
             .alignment(Alignment::Center)
-            .style(app.theme.style(R::TextMuted)),
+            .style(crate::ui::popup_style(app, R::TextMuted)),
         rows[1],
     );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// Draw the numbered pick list: each pick is a role badge + track line, with a muted reason line
 /// beneath it.
 fn draw_picks(frame: &mut Frame, app: &App, area: Rect, explain: &crate::app::RadioAiExplain) {
     let width = area.width.saturating_sub(2) as usize;
-    let role_style = app.theme.style(R::Accent).add_modifier(Modifier::BOLD);
-    let track_style = app.theme.style(R::HelpAction);
-    let reason_style = app.theme.style(R::TextMuted);
+    let role_style = crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD);
+    let track_style = crate::ui::popup_style(app, R::HelpAction);
+    let reason_style = crate::ui::popup_style(app, R::TextMuted);
 
     let mut lines: Vec<Line> = Vec::with_capacity(explain.picks.len() * 2);
     for (i, p) in explain.picks.iter().enumerate() {

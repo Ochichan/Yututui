@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{App, LibraryTab, MouseTarget, ScrollSurface};
 use crate::t;
@@ -271,9 +271,8 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
 /// `CancelDelete` hit rects so the modal is fully usable by mouse as well as keyboard.
 pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     let count = app.library_ui.confirm_delete.as_ref().map_or(0, Vec::len);
-    let theme = &app.theme;
     let popup = centered_fixed(area, 56, 9);
-    frame.render_widget(Clear, popup);
+    crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(
@@ -281,8 +280,8 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
             " ⚠ 다운로드한 파일 삭제 "
         ))
         .borders(Borders::ALL)
-        .border_style(theme.style(R::Error).add_modifier(Modifier::BOLD))
-        .style(theme.style(R::TextPrimary));
+        .border_style(crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -305,7 +304,7 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(prompt)
             .alignment(Alignment::Center)
-            .style(theme.style(R::TextPrimary)),
+            .style(crate::ui::popup_style(app, R::TextPrimary)),
         rows[1],
     );
     frame.render_widget(
@@ -314,7 +313,7 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
             "실제 파일이 영구적으로 삭제됩니다."
         ))
         .alignment(Alignment::Center)
-        .style(theme.style(R::TextMuted)),
+        .style(crate::ui::popup_style(app, R::TextMuted)),
         rows[2],
     );
 
@@ -334,10 +333,12 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
         app,
         rows[4],
         &segs,
-        theme.style(R::Error).add_modifier(Modifier::BOLD),
-        theme.style(R::Accent).add_modifier(Modifier::BOLD),
+        crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD),
+        crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
         Alignment::Center,
     );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// A `w`×`h` rect centered in `area`, clamped so it never exceeds the available space.

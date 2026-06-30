@@ -199,6 +199,12 @@ impl StatefulProtocol {
         self.protocol_type
     }
 
+    pub fn mark_kitty_rows_for_redraw(&self, area: Rect, damage: Rect, buf: &mut Buffer) {
+        if let StatefulProtocolType::Kitty(kitty) = &self.protocol_type {
+            kitty.mark_rows_for_redraw(area, damage, buf);
+        }
+    }
+
     /// This returns the latest Result returned when encoding, and none if there was no encoding since the last result read. It is encouraged but not required to handle it
     pub fn last_encoding_result(&mut self) -> Option<Result<()>> {
         self.last_encoding_result.take()

@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
 use crate::keymap::{self, Action, KeyContext};
@@ -16,13 +16,13 @@ use crate::theme::ThemeRole as R;
 /// Render the cheat-sheet as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered(area, 80, 80);
-    frame.render_widget(Clear, popup);
+    crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
         .title(t!(" Help · keybindings ", " 도움말 · 단축키 "))
         .borders(Borders::ALL)
-        .border_style(app.theme.style(R::BorderPrimary))
-        .style(app.theme.style(R::TextPrimary));
+        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -31,13 +31,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
     let (left, right) = build_columns(app);
     frame.render_widget(
-        Paragraph::new(left).style(app.theme.style(R::TextPrimary)),
+        Paragraph::new(left).style(crate::ui::popup_style(app, R::TextPrimary)),
         cols[0],
     );
     frame.render_widget(
-        Paragraph::new(right).style(app.theme.style(R::TextPrimary)),
+        Paragraph::new(right).style(crate::ui::popup_style(app, R::TextPrimary)),
         cols[1],
     );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// Build the cheat-sheet lines, split across two columns at a group boundary.
@@ -58,12 +60,15 @@ fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
         };
         col.push(Line::from(Span::styled(
             title,
-            app.theme.style(R::HelpGroup).add_modifier(Modifier::BOLD),
+            crate::ui::popup_style(app, R::HelpGroup).add_modifier(Modifier::BOLD),
         )));
         for (key, label) in &rows {
             col.push(Line::from(vec![
-                Span::styled(format!("{key:>8}  "), app.theme.style(R::HelpKey)),
-                Span::styled(label.to_owned(), app.theme.style(R::HelpAction)),
+                Span::styled(
+                    format!("{key:>8}  "),
+                    crate::ui::popup_style(app, R::HelpKey),
+                ),
+                Span::styled(label.to_owned(), crate::ui::popup_style(app, R::HelpAction)),
             ]));
         }
         // A little padding after each group so the sections breathe.

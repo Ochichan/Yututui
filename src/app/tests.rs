@@ -4579,25 +4579,133 @@ fn art_overlay_mask_tracks_each_popup_independently() {
 }
 
 #[test]
-fn graphics_protocol_art_is_suppressed_while_overlay_is_visible() {
-    let mut app = app_playing(1, 0);
-    app.art.picker = Some(Picker::halfblocks());
-    app.help_visible = true;
-    assert!(
-        !app.art_suppressed_by_overlay(),
-        "halfblocks are text cells and can be safely overdrawn"
+fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
+    let player_area = ratatui::layout::Rect::new(0, 0, 80, 20);
+    let modal_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+
+    let mut eq = app_playing(3, 0);
+    eq.dropdowns.eq_open = true;
+    let buf = render_app_buffer(&eq, player_area.width, player_area.height);
+    assert_opaque_rect(
+        &buf,
+        dropdown_popup_rect(&eq, |t| matches!(t, MouseTarget::EqSelect(_))),
     );
 
-    let mut picker = Picker::halfblocks();
-    picker.set_protocol_type(ratatui_image::picker::ProtocolType::Sixel);
-    app.art.picker = Some(picker);
-    assert!(
-        app.art_suppressed_by_overlay(),
-        "native graphics are hidden while overlays are visible"
+    let mut radio = app_playing(3, 0);
+    radio.autoplay_radio = true;
+    radio.dropdowns.radio_open = true;
+    let buf = render_app_buffer(&radio, player_area.width, player_area.height);
+    assert_opaque_rect(
+        &buf,
+        dropdown_popup_rect(&radio, |t| matches!(t, MouseTarget::RadioSelect(_))),
     );
 
-    app.help_visible = false;
-    assert!(!app.art_suppressed_by_overlay());
+    let mut queue = app_playing(5, 0);
+    queue.open_queue_popup();
+    let buf = render_app_buffer(&queue, modal_area.width, modal_area.height);
+    assert_opaque_rect(&buf, queue.queue_popup.rect.get().unwrap());
+
+    let mut help = app_playing(1, 0);
+    help.help_visible = true;
+    let buf = render_app_buffer(&help, modal_area.width, modal_area.height);
+    assert_opaque_rect(&buf, centered_percent(modal_area, 80, 80));
+
+    let mut about = app_playing(1, 0);
+    about.about_visible = true;
+    let buf = render_app_buffer(&about, modal_area.width, modal_area.height);
+    assert_opaque_rect(&buf, centered_fixed(modal_area, 60, 22));
+
+    let mut why = app_playing(2, 0);
+    why.radio.last_explain = Some(RadioAiExplain {
+        conf: Some(0.82),
+        picks: vec![
+            ExplainPick {
+                title: "Bridge Track".to_owned(),
+                artist: "Some Artist".to_owned(),
+                role: Some("bridge".to_owned()),
+                reasons: vec!["tr".to_owned()],
+            },
+            ExplainPick {
+                title: "Core Track".to_owned(),
+                artist: "Another Artist".to_owned(),
+                role: Some("core".to_owned()),
+                reasons: vec![],
+            },
+        ],
+    });
+    why.why_ai_visible = true;
+    let buf = render_app_buffer(&why, modal_area.width, modal_area.height);
+    assert_opaque_rect(&buf, centered_fixed(modal_area, 72, 9));
+
+    let mut conflict = app_playing(1, 0);
+    conflict.key_conflict = Some(Conflict {
+        ctx: KeyContext::Player,
+        existing: Action::TogglePause,
+        chord: Chord::new(KeyCode::Char('x'), KeyModifiers::NONE),
+    });
+    let buf = render_app_buffer(&conflict, modal_area.width, modal_area.height);
+    assert_opaque_rect(&buf, centered_fixed(modal_area, 54, 9));
+
+    let mut reset = app_playing(1, 0);
+    reset.confirm_reset_all = true;
+    let buf = render_app_buffer(&reset, modal_area.width, modal_area.height);
+    assert_opaque_rect(&buf, centered_fixed(modal_area, 56, 9));
+
+    let mut delete = app_playing(1, 0);
+    delete.library_ui.confirm_delete = Some(vec![std::path::PathBuf::from("track.mp3")]);
+    let buf = render_app_buffer(&delete, modal_area.width, modal_area.height);
+    assert_opaque_rect(&buf, centered_fixed(modal_area, 56, 9));
+}
+
+#[test]
+fn popup_art_marker_dirties_kitty_anchor_when_popup_hits_middle_of_art_row() {
+    use ratatui_image::protocol::kitty::StatefulKitty;
+    use ratatui_image::protocol::{StatefulProtocol, StatefulProtocolType};
+    use ratatui_image::{FontSize, Resize, ResizeEncodeRender};
+
+    let app = app_playing(1, 0);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut protocol = StatefulProtocol::new(
+        image::DynamicImage::new_rgba8(10, 10),
+        FontSize::new(10, 20),
+        None,
+        StatefulProtocolType::Kitty(StatefulKitty::new(42, false)),
+    );
+    protocol.resize_encode(&Resize::Scale(None), ratatui::layout::Size::new(5, 3));
+    *app.art.protocol.borrow_mut() = Some(ThreadProtocol::new(tx, Some(protocol)));
+
+    let art = Rect::new(2, 1, 5, 3);
+    let popup = Rect::new(art.left() + 2, art.top() + 1, 2, 1);
+    app.art.rect.set(Some(art));
+
+    let backend = TestBackend::new(12, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            let anchor = (art.left(), art.top() + 1);
+            let before = frame
+                .buffer_mut()
+                .cell(anchor)
+                .expect("anchor is inside the buffer")
+                .symbol()
+                .to_owned();
+
+            crate::ui::mark_art_rows_for_popup(frame, &app, popup);
+
+            let after = frame
+                .buffer_mut()
+                .cell(anchor)
+                .expect("anchor is inside the buffer")
+                .symbol()
+                .to_owned();
+            assert_ne!(before, after);
+            assert!(after.contains('\u{10EEEE}'));
+            assert!(
+                !after.contains("_G"),
+                "row marker must not retransmit image pixels"
+            );
+        })
+        .unwrap();
 }
 
 #[test]
@@ -4683,6 +4791,82 @@ fn render_app(app: &App) {
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, app)).unwrap();
+}
+
+fn render_app_buffer(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, app)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+fn assert_opaque_rect(buffer: &ratatui::buffer::Buffer, rect: ratatui::layout::Rect) {
+    for y in rect.top()..rect.bottom() {
+        for x in rect.left()..rect.right() {
+            let cell = buffer.cell((x, y)).expect("cell is inside the buffer");
+            assert_ne!(
+                cell.bg,
+                ratatui::style::Color::Reset,
+                "popup cell at ({x},{y}) kept the default background"
+            );
+        }
+    }
+}
+
+fn dropdown_popup_rect(
+    app: &App,
+    mut is_row: impl FnMut(MouseTarget) -> bool,
+) -> ratatui::layout::Rect {
+    let rects: Vec<_> = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .filter_map(|b| is_row(b.target).then_some(b.rect))
+        .collect();
+    assert!(
+        !rects.is_empty(),
+        "dropdown row rects were not registered; targets: {:?}",
+        app.bridges
+            .mouse_buttons
+            .borrow()
+            .iter()
+            .map(|b| b.target)
+            .collect::<Vec<_>>()
+    );
+
+    let left = rects.iter().map(|r| r.left()).min().unwrap();
+    let top = rects.iter().map(|r| r.top()).min().unwrap();
+    let right = rects.iter().map(|r| r.right()).max().unwrap();
+    let bottom = rects.iter().map(|r| r.bottom()).max().unwrap();
+    ratatui::layout::Rect::new(
+        left.saturating_sub(1),
+        top.saturating_sub(1),
+        right - left + 2,
+        bottom - top + 2,
+    )
+}
+
+fn centered_percent(area: ratatui::layout::Rect, pct_w: u16, pct_h: u16) -> ratatui::layout::Rect {
+    let w = area.width * pct_w / 100;
+    let h = area.height * pct_h / 100;
+    ratatui::layout::Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+fn centered_fixed(area: ratatui::layout::Rect, w: u16, h: u16) -> ratatui::layout::Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    ratatui::layout::Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    }
 }
 
 /// The center cell of the hit rect registered for `target` in the last render.
