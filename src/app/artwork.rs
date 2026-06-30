@@ -15,7 +15,8 @@ impl App {
     /// Whether album art should drive the layout: the feature is on, a protocol was
     /// detected, and a decoded image is ready for the current track.
     pub fn art_active(&self) -> bool {
-        self.config.effective_album_art()
+        !self.radio_dedicated_mode
+            && self.config.effective_album_art()
             && self.art.picker.is_some()
             && self.art.protocol.borrow().is_some()
     }
@@ -174,9 +175,10 @@ impl App {
             | ((self.about_visible as u16) << 4)
             | ((self.why_ai_visible as u16) << 5)
             | ((self.key_conflict.is_some() as u16) << 6)
-            | ((self.pending_settings_confirm.is_some() as u16) << 7)
-            | ((self.library_ui.confirm_delete.is_some() as u16) << 8)
-            | ((!matches!(self.mode, Mode::Player) as u16) << 9)
+            | ((self.pending_radio_mode_confirm.is_some() as u16) << 7)
+            | ((self.pending_settings_confirm.is_some() as u16) << 8)
+            | ((self.library_ui.confirm_delete.is_some() as u16) << 9)
+            | ((!matches!(self.mode, Mode::Player) as u16) << 10)
     }
 
     /// Track overlay/screen transitions that can cover native terminal graphics. Ratatui's normal
@@ -281,7 +283,10 @@ impl App {
     /// The art's source, if album art is on and a protocol was detected. `None` keeps the
     /// reducer from emitting a fetch (and the view from reserving space) when off.
     pub(in crate::app) fn artwork_source(&self, song: &Song) -> Option<ArtSource> {
-        if !self.config.effective_album_art() || self.art.picker.is_none() {
+        if self.radio_dedicated_mode
+            || !self.config.effective_album_art()
+            || self.art.picker.is_none()
+        {
             return None;
         }
         Some(match &song.local_path {

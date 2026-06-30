@@ -111,13 +111,14 @@ pub fn render_segments(
 /// muted, and each tab is a click target that switches screens. Left-aligned, no box chrome
 /// — it reads like a tab strip, consistent with the in-line "text is the button" controls.
 pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
-    const ITEMS: [Mode; 5] = [
+    const NORMAL_ITEMS: [Mode; 5] = [
         Mode::Player,
         Mode::Search,
         Mode::Library,
         Mode::Settings,
         Mode::Ai,
     ];
+    const RADIO_ITEMS: [Mode; 4] = [Mode::Player, Mode::Search, Mode::Library, Mode::Settings];
     const GAP: &str = "  ";
     const BRAND: &str = "ytm-tui";
     const SEP: &str = " │ ";
@@ -134,10 +135,15 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
         .bg(app.theme.color(R::SelectionBg))
         .add_modifier(Modifier::BOLD);
     let muted = app.theme.style(R::TextMuted);
+    let items: &[Mode] = if app.radio_dedicated_mode {
+        &RADIO_ITEMS
+    } else {
+        &NORMAL_ITEMS
+    };
 
     // Left-aligned strip starting at the inner edge. Brand + separator are static labels;
     // each tab is clickable, so we walk `x` in step with the spans to keep hit rects on text.
-    let mut spans = Vec::with_capacity(ITEMS.len() * 4 + 4);
+    let mut spans = Vec::with_capacity(items.len() * 4 + 4);
     let mut x = area.x;
 
     // Left gutter doubles as the global animation toggle: a ✨ when animations are on, two blank
@@ -177,7 +183,7 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     spans.push(Span::styled(SEP, sep));
     x = x.saturating_add(text_width(SEP));
 
-    for (i, mode) in ITEMS.iter().enumerate() {
+    for (i, mode) in items.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(GAP, muted));
             x = x.saturating_add(text_width(GAP));

@@ -9,27 +9,34 @@ impl App {
         self.library_rows().len()
     }
 
-    pub fn library_counts(&self) -> [usize; 6] {
-        [
-            self.all_library_count(),
-            self.library
+    pub fn library_count_for(&self, tab: LibraryTab) -> usize {
+        match tab {
+            LibraryTab::All => self.all_library_count(),
+            LibraryTab::Favorites => self
+                .library
                 .favorites
                 .iter()
                 .filter(|s| !s.is_radio_station())
                 .count(),
-            self.library
+            LibraryTab::History => self
+                .library
                 .history
                 .iter()
                 .filter(|s| !s.is_radio_station())
                 .count(),
-            self.radio_favorites_library_count(),
-            self.radio_recent_library_count(),
-            self.library_ui.downloaded.len(),
-        ]
+            LibraryTab::RadioFavorites => self.radio_favorites_library_count(),
+            LibraryTab::Radio => self.radio_recent_library_count(),
+            LibraryTab::Downloads => self.library_ui.downloaded.len(),
+        }
     }
 
     pub fn library_rows(&self) -> Vec<&Song> {
-        let rows = self.library_rows_for(self.library_ui.tab);
+        let tab = if self.library_tab_available(self.library_ui.tab) {
+            self.library_ui.tab
+        } else {
+            self.library_tabs()[0]
+        };
+        let rows = self.library_rows_for(tab);
         self.apply_library_filter(rows)
     }
 

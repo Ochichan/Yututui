@@ -60,18 +60,23 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
     // cell-width math ratatui lays the spans out with, so the hit rects line up exactly.
     let mut spans = Vec::new();
     let mut x = area.x;
-    let counts = app.library_counts();
-    let full_width: u16 = LibraryTab::ALL
+    let tabs = app.library_tabs();
+    let active_tab = if app.library_tab_available(app.library_ui.tab) {
+        app.library_ui.tab
+    } else {
+        tabs[0]
+    };
+    let full_width: u16 = tabs
         .iter()
         .copied()
         .enumerate()
         .map(|(i, t)| {
-            let label = format!(" {} ({}) ", t.label(), counts[i]);
+            let label = format!(" {} ({}) ", t.label(), app.library_count_for(t));
             buttons::text_width(&label).saturating_add((i > 0) as u16 * 2)
         })
         .sum();
     let compact = full_width > area.width;
-    for (i, t) in LibraryTab::ALL.iter().copied().enumerate() {
+    for (i, t) in tabs.iter().copied().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
             x = x.saturating_add(2);
@@ -81,7 +86,7 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             t.label()
         };
-        let label = format!(" {} ({}) ", tab_label, counts[i]);
+        let label = format!(" {} ({}) ", tab_label, app.library_count_for(t));
         let w = buttons::text_width(&label);
         let area_right = area.x.saturating_add(area.width);
         if x < area_right {
@@ -96,7 +101,7 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
             );
         }
         x = x.saturating_add(w);
-        let style = if app.library_ui.tab == t {
+        let style = if active_tab == t {
             Style::default()
                 .fg(app.theme.color(R::SelectionFg))
                 .bg(app.theme.color(R::SelectionBg))

@@ -41,6 +41,20 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
+        // Radio mode confirmations are modal: only their Confirm/Cancel buttons act; a click
+        // anywhere else backs out without switching modes.
+        if self.pending_radio_mode_confirm.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(t @ (MouseTarget::ConfirmRadioMode | MouseTarget::CancelRadioMode)) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.pending_radio_mode_confirm = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
+        }
         // Settings confirmations are modal: only their Confirm/Cancel buttons act; a click
         // anywhere else backs out without changing the draft.
         if self.pending_settings_confirm.is_some() {
@@ -218,6 +232,9 @@ impl App {
             MouseTarget::SearchSourceSelect(_) => Vec::new(),
             // Library tab header.
             MouseTarget::LibraryTab(tab) if self.mode == Mode::Library => {
+                if !self.library_tab_available(tab) {
+                    return Vec::new();
+                }
                 self.library_ui.tab = tab;
                 self.library_ui.selected = 0;
                 self.library_ui.anchor = 0;
@@ -294,6 +311,17 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            MouseTarget::ConfirmRadioMode => {
+                let Some(confirm) = self.pending_radio_mode_confirm.take() else {
+                    return Vec::new();
+                };
+                self.apply_radio_mode_confirm(confirm)
+            }
+            MouseTarget::CancelRadioMode => {
+                self.pending_radio_mode_confirm = None;
+                self.dirty = true;
+                Vec::new()
+            }
             // Click the `ytm-tui` brand to open the About card.
             MouseTarget::AboutTitle => {
                 self.about_visible = true;
@@ -322,6 +350,7 @@ impl App {
         if self.help_visible
             || self.about_visible
             || self.key_conflict.is_some()
+            || self.pending_radio_mode_confirm.is_some()
             || self.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
         {
@@ -342,6 +371,9 @@ impl App {
             return self.on_mouse_click(col, row); // outside -> close, same as single click
         }
         match self.mouse_target_at(col, row) {
+            Some(MouseTarget::Nav(Mode::Player)) if self.mode == Mode::Player => {
+                self.request_radio_mode_switch()
+            }
             Some(MouseTarget::ListRow(i)) => self.on_list_row_activate(i),
             _ => self.on_mouse_click(col, row),
         }
@@ -619,6 +651,7 @@ impl App {
         if self.help_visible
             || self.about_visible
             || self.key_conflict.is_some()
+            || self.pending_radio_mode_confirm.is_some()
             || self.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.queue_popup.open

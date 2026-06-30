@@ -81,8 +81,16 @@ fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
 fn help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
     let mut out = Vec::new();
     for (ctx, actions) in keymap::groups() {
+        if app.radio_dedicated_mode
+            && matches!(ctx, KeyContext::AiInput | KeyContext::AiSuggestions)
+        {
+            continue;
+        }
         let mut rows: Vec<(String, String)> = actions
             .iter()
+            .filter(|action| {
+                !(app.radio_dedicated_mode && matches!(**action, Action::OpenAi | Action::WhyAi))
+            })
             .map(|action| {
                 let key = app
                     .keymap

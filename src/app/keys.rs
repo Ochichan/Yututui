@@ -22,6 +22,19 @@ impl App {
             return Vec::new();
         }
 
+        // Radio mode switching is modal: Enter or `y` confirms, anything else cancels.
+        // It sits outside Settings so the shortcut works from the Player/Search/Library tabs too.
+        if let Some(confirm) = self.pending_radio_mode_confirm.take() {
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            return if confirmed {
+                self.apply_radio_mode_confirm(confirm)
+            } else {
+                Vec::new()
+            };
+        }
+
         // Settings confirmations are modal: Enter or `y` confirms, anything else cancels.
         // Handle it here so the key can't leak through to the settings list.
         if let Some(confirm) = self.pending_settings_confirm.take() {
@@ -147,6 +160,10 @@ impl App {
                     return Vec::new();
                 }
                 Action::WhyAi => {
+                    if self.radio_dedicated_mode {
+                        self.dirty = true;
+                        return Vec::new();
+                    }
                     // Only worth an overlay if a prior DJ Gem rerank left something to explain;
                     // otherwise nudge the user with a transient note instead of an empty card.
                     if self.radio.last_explain.is_some() {
@@ -163,6 +180,7 @@ impl App {
                     return Vec::new();
                 }
                 Action::ToggleAnimations => return self.toggle_animations(),
+                Action::ToggleRadioMode => return self.request_radio_mode_switch(),
                 Action::ToggleRadio => {
                     self.autoplay_radio = !self.autoplay_radio;
                     self.status.text = format!(

@@ -310,6 +310,9 @@ impl App {
             }
             Action::OpenLibrary => {
                 self.mode = Mode::Library;
+                if !self.library_tab_available(self.library_ui.tab) {
+                    self.library_ui.tab = self.library_tabs()[0];
+                }
                 // Start each library visit with a clean, unfiltered list (also resets the
                 // cursor, the multi-select anchor, and the scroll offset).
                 self.clear_library_filter();
@@ -388,6 +391,8 @@ impl App {
             Action::OpenSearch => {
                 self.mode = Mode::Search;
                 self.search.focus = SearchFocus::Input;
+                let search = self.search_config_for_mode();
+                self.search.source = search.normalized_source(self.search.source);
                 self.dropdowns.eq_open = false;
                 self.dropdowns.radio_open = false;
                 self.dropdowns.search_source_open = false;

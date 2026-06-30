@@ -25,6 +25,15 @@ fn ctrl(code: KeyCode) -> KeyEvent {
     }
 }
 
+fn alt_shift(code: KeyCode) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers: KeyModifiers::ALT | KeyModifiers::SHIFT,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    }
+}
+
 /// The `af` chain set by a `SetAudioFilter` command among `cmds`, if any.
 fn af(cmds: &[Cmd]) -> Option<&str> {
     cmds.iter().find_map(|c| match c {
@@ -1021,6 +1030,68 @@ fn ctrl_r_toggles_autoplay_radio() {
     assert_eq!(
         save_config(&cmds).expect("a SaveConfig cmd").autoplay_radio,
         Some(false)
+    );
+}
+
+#[test]
+fn alt_shift_r_confirms_dedicated_radio_mode() {
+    let mut app = app_playing(1, 0);
+    assert!(!app.radio_dedicated_mode);
+    assert!(
+        !app.search_config_for_mode()
+            .selectable_sources()
+            .contains(&SearchSource::RadioBrowser)
+    );
+    assert_eq!(app.library_tabs(), &LibraryTab::NORMAL);
+
+    let cmds = app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.pending_radio_mode_confirm,
+        Some(RadioModeConfirm::Enter)
+    );
+    assert!(!app.radio_dedicated_mode);
+
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.radio_dedicated_mode);
+    assert!(app.pending_radio_mode_confirm.is_none());
+    assert_eq!(app.theme.preset, "dario");
+    assert_eq!(
+        app.theme.effective_hex(crate::theme::ThemeRole::Background),
+        "none"
+    );
+    assert_eq!(
+        app.search_config_for_mode().selectable_sources(),
+        vec![SearchSource::RadioBrowser]
+    );
+    assert_eq!(app.search.source, SearchSource::RadioBrowser);
+    assert_eq!(app.library_tabs(), &LibraryTab::RADIO_MODE);
+
+    app.update(Msg::Key(key(KeyCode::Char('g'))));
+    assert_ne!(app.mode, Mode::Ai, "DJ Gem is hidden in Radio mode");
+
+    app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
+    assert_eq!(app.pending_radio_mode_confirm, Some(RadioModeConfirm::Exit));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(!app.radio_dedicated_mode);
+    assert_eq!(app.theme.preset, "default");
+    assert!(
+        !app.search_config_for_mode()
+            .selectable_sources()
+            .contains(&SearchSource::RadioBrowser)
+    );
+}
+
+#[test]
+fn double_clicking_active_player_tab_confirms_radio_mode() {
+    let mut app = App::new(100);
+
+    let cmds = double_click_target(&mut app, MouseTarget::Nav(Mode::Player));
+
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.pending_radio_mode_confirm,
+        Some(RadioModeConfirm::Enter)
     );
 }
 
@@ -2888,6 +2959,11 @@ fn playing_radio_records_radio_tab_only() {
     app.library_ui.tab = LibraryTab::RadioFavorites;
     assert!(app.library_rows().is_empty());
     app.library_ui.tab = LibraryTab::Radio;
+    assert!(app.library_rows().is_empty());
+
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Radio;
     assert_eq!(row_ids(&app), vec!["rad:station-a"]);
 }
 
@@ -2913,6 +2989,11 @@ fn radio_favorite_is_separate_from_song_favorites() {
     assert!(app.library_rows().is_empty());
     app.library_ui.tab = LibraryTab::All;
     assert!(app.library_rows().is_empty());
+    app.library_ui.tab = LibraryTab::RadioFavorites;
+    assert!(app.library_rows().is_empty());
+
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::RadioFavorites;
     assert_eq!(row_ids(&app), vec!["rad:station-fav"]);
     app.library_ui.tab = LibraryTab::Radio;
@@ -4661,6 +4742,11 @@ fn rating_radio_toggles_radio_favorite_without_signals() {
 
     app.mode = Mode::Library;
     app.library_ui.tab = LibraryTab::RadioFavorites;
+    assert!(app.library_rows().is_empty());
+
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::RadioFavorites;
     assert_eq!(row_ids(&app), vec!["rad:station-like"]);
     app.library_ui.tab = LibraryTab::Radio;
     assert!(app.library_rows().is_empty());
@@ -5030,14 +5116,17 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     });
     assert_eq!(app.art_overlay_mask(), 1 << 6);
     app.key_conflict = None;
-    app.pending_settings_confirm = Some(SettingsConfirm::ResetAll);
+    app.pending_radio_mode_confirm = Some(RadioModeConfirm::Enter);
     assert_eq!(app.art_overlay_mask(), 1 << 7);
+    app.pending_radio_mode_confirm = None;
+    app.pending_settings_confirm = Some(SettingsConfirm::ResetAll);
+    assert_eq!(app.art_overlay_mask(), 1 << 8);
     app.pending_settings_confirm = None;
     app.library_ui.confirm_delete = Some(vec![std::path::PathBuf::from("track.mp3")]);
-    assert_eq!(app.art_overlay_mask(), 1 << 8);
+    assert_eq!(app.art_overlay_mask(), 1 << 9);
     app.library_ui.confirm_delete = None;
     app.mode = Mode::Search;
-    assert_eq!(app.art_overlay_mask(), 1 << 9);
+    assert_eq!(app.art_overlay_mask(), 1 << 10);
     app.mode = Mode::Player;
     assert_eq!(app.art_overlay_mask(), 0);
 }
@@ -5871,6 +5960,12 @@ fn click_target(app: &mut App, target: MouseTarget) -> Vec<Cmd> {
     render_app(app);
     let (col, row) = button_center(app, target);
     app.update(Msg::MouseClick { col, row })
+}
+
+fn double_click_target(app: &mut App, target: MouseTarget) -> Vec<Cmd> {
+    render_app(app);
+    let (col, row) = button_center(app, target);
+    app.update(Msg::MouseDoubleClick { col, row })
 }
 
 #[test]

@@ -235,7 +235,7 @@ impl App {
         if q.is_empty() {
             Vec::new()
         } else {
-            let config = self.config.effective_search();
+            let config = self.search_config_for_mode();
             let source = config.normalized_source(self.search.source);
             self.search.source = source;
             self.search.searching = true;
@@ -253,7 +253,7 @@ impl App {
     }
 
     pub(in crate::app) fn toggle_search_source_menu(&mut self) -> Vec<Cmd> {
-        let config = self.config.effective_search();
+        let config = self.search_config_for_mode();
         self.search.source = config.normalized_source(self.search.source);
         self.dropdowns.search_source_open = !self.dropdowns.search_source_open;
         self.dirty = true;
@@ -261,23 +261,27 @@ impl App {
     }
 
     pub(in crate::app) fn cycle_search_source(&mut self, forward: bool) -> Vec<Cmd> {
-        let search = self.config.effective_search();
+        let search = self.search_config_for_mode();
         let source = search.cycled_source(self.search.source, forward);
         self.set_search_source(source, false)
     }
 
     fn set_search_source(&mut self, source: SearchSource, close_menu: bool) -> Vec<Cmd> {
-        let mut search = self.config.effective_search();
+        let mut search = self.search_config_for_mode();
         let source = search.normalized_source(source);
         search.source = source;
         self.search.source = source;
-        self.config.search = search;
         if close_menu {
             self.dropdowns.search_source_open = false;
         }
         self.status.kind = StatusKind::Info;
         self.status.text = format!("{}: {}", t!("Search source", "검색 소스"), source.label());
         self.dirty = true;
-        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+        if self.radio_dedicated_mode {
+            Vec::new()
+        } else {
+            self.config.search = search;
+            vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+        }
     }
 }

@@ -94,17 +94,20 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         R::BorderMuted
     };
     // Make it obvious when we're not signed in (anonymous = search + public play only).
+    let current_source = app
+        .search_config_for_mode()
+        .normalized_source(app.search.source);
     let title = if app.authenticated {
         if crate::i18n::is_korean() {
-            format!(" 검색 · {} ", app.search.source.code())
+            format!(" 검색 · {} ", current_source.code())
         } else {
-            format!(" Search · {} ", app.search.source.code())
+            format!(" Search · {} ", current_source.code())
         }
     } else {
         if crate::i18n::is_korean() {
-            format!(" 검색 · 익명 · {} ", app.search.source.code())
+            format!(" 검색 · 익명 · {} ", current_source.code())
         } else {
-            format!(" Search · anonymous · {} ", app.search.source.code())
+            format!(" Search · anonymous · {} ", current_source.code())
         }
     };
     let block = Block::default()
@@ -147,7 +150,10 @@ fn render_source_chip(frame: &mut Frame, app: &App, area: Rect) {
         .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let label = format!("{}▾", app.search.source.code());
+    let current_source = app
+        .search_config_for_mode()
+        .normalized_source(app.search.source);
+    let label = format!("{}▾", current_source.code());
     let chip = Line::from(label)
         .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
         .alignment(Alignment::Center);
@@ -257,15 +263,17 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_source_dropdown(frame: &mut Frame, app: &App, area: Rect) {
+    let current_source = app
+        .search_config_for_mode()
+        .normalized_source(app.search.source);
     let rows: Vec<(String, bool, MouseTarget)> = app
-        .config
-        .effective_search()
+        .search_config_for_mode()
         .selectable_sources()
         .into_iter()
         .map(|source| {
             (
                 format!("{}  {}", source.code(), source.label()),
-                source == app.search.source,
+                source == current_source,
                 MouseTarget::SearchSourceSelect(source),
             )
         })

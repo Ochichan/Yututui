@@ -51,6 +51,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.why_ai_visible {
         views::why_ai::render(frame, app, area);
     }
+    // Radio mode switching is a global UI-mode confirmation.
+    if let Some(confirm) = app.pending_radio_mode_confirm {
+        views::player::render_radio_mode_confirm(frame, app, area, confirm);
+    }
     // A keybinding-conflict warning (Keys tab) is modal — it sits above everything else.
     if let Some(conflict) = &app.key_conflict {
         views::settings::render_conflict(frame, app, area, conflict);
@@ -75,6 +79,18 @@ pub fn popup_bg(app: &App) -> Color {
 
 pub fn popup_style(app: &App, role: R) -> Style {
     app.theme.style(role).bg(popup_bg(app))
+}
+
+pub fn confirm_border_style(app: &App) -> Style {
+    popup_style(app, R::BorderPrimary).add_modifier(ratatui::style::Modifier::BOLD)
+}
+
+pub fn confirm_button_style(app: &App) -> Style {
+    popup_style(app, R::Accent).add_modifier(ratatui::style::Modifier::BOLD)
+}
+
+pub fn confirm_gap_style(app: &App) -> Style {
+    popup_style(app, R::TextMuted)
 }
 
 pub fn render_popup_background(frame: &mut Frame, app: &App, area: Rect) {

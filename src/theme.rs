@@ -27,6 +27,13 @@ impl Default for ThemeConfig {
 }
 
 impl ThemeConfig {
+    pub fn dario() -> Self {
+        Self {
+            preset: ThemePreset::Dario.id().to_owned(),
+            overrides: BTreeMap::new(),
+        }
+    }
+
     pub fn preset_enum(&self) -> ThemePreset {
         ThemePreset::from_id(&self.preset).unwrap_or(ThemePreset::Default)
     }
@@ -118,6 +125,7 @@ impl ThemeConfig {
 pub enum ThemePreset {
     Default,
     Retro,
+    Dario,
     Midnight,
     Light,
     HighContrast,
@@ -131,7 +139,7 @@ pub enum ThemePreset {
 }
 
 impl ThemePreset {
-    pub const ALL: [ThemePreset; 12] = [
+    pub const ALL: [ThemePreset; 13] = [
         ThemePreset::Default,
         ThemePreset::Midnight,
         ThemePreset::Light,
@@ -143,6 +151,7 @@ impl ThemePreset {
         ThemePreset::TokyoNight,
         ThemePreset::Solarized,
         ThemePreset::RosePine,
+        ThemePreset::Dario,
         ThemePreset::Retro,
     ];
 
@@ -150,6 +159,7 @@ impl ThemePreset {
         match self {
             ThemePreset::Default => "default",
             ThemePreset::Retro => "retro",
+            ThemePreset::Dario => "dario",
             ThemePreset::Midnight => "midnight",
             ThemePreset::Light => "light",
             ThemePreset::HighContrast => "high_contrast",
@@ -167,6 +177,7 @@ impl ThemePreset {
         match self {
             ThemePreset::Default => "Default",
             ThemePreset::Retro => "Retro",
+            ThemePreset::Dario => "Dario",
             ThemePreset::Midnight => "Midnight",
             ThemePreset::Light => "Light",
             ThemePreset::HighContrast => "High Contrast",
@@ -438,6 +449,7 @@ impl ThemeRole {
         match preset {
             ThemePreset::Default => self.default_dark(),
             ThemePreset::Retro => self.retro(),
+            ThemePreset::Dario => self.dario(),
             ThemePreset::Midnight => self.midnight(),
             ThemePreset::Light => self.light(),
             ThemePreset::HighContrast => self.high_contrast(),
@@ -522,6 +534,42 @@ impl ThemeRole {
             | ThemeRole::SettingsValue
             | ThemeRole::HelpAction => "#C0C0C0",
             ThemeRole::SettingsLabel => "#808080",
+        }
+    }
+
+    fn dario(self) -> &'static str {
+        match self {
+            ThemeRole::Background => "none",
+            ThemeRole::TextPrimary => "#F2F2F2",
+            ThemeRole::TextMuted => "#7A7A7A",
+            ThemeRole::TextSubtle => "#BDBDBD",
+            ThemeRole::TextInverse => "#000000",
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::Accent
+            | ThemeRole::AccentAlt
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
+            | ThemeRole::SettingsGroup
+            | ThemeRole::GaugeFilled
+            | ThemeRole::Success
+            | ThemeRole::AiAssistant
+            | ThemeRole::SelectionBg => "#F2F2F2",
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
+            | ThemeRole::SelectionInactiveBg => "#404040",
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#BDBDBD",
+            ThemeRole::Error | ThemeRole::AiError => "#FFFFFF",
+            ThemeRole::SelectionFg => "#000000",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#F2F2F2",
+            ThemeRole::SettingsLabel => "#BDBDBD",
         }
     }
 

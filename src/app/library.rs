@@ -117,13 +117,13 @@ impl App {
                 Vec::new()
             }
             Some(Action::FocusNext) => {
-                self.library_ui.tab = self.library_ui.tab.next();
+                self.library_ui.tab = self.next_library_tab(self.library_ui.tab, true);
                 self.clear_library_filter();
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::FocusPrev) => {
-                self.library_ui.tab = self.library_ui.tab.prev();
+                self.library_ui.tab = self.next_library_tab(self.library_ui.tab, false);
                 self.clear_library_filter();
                 self.dirty = true;
                 Vec::new()

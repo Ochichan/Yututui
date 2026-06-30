@@ -367,6 +367,10 @@ pub enum MouseTarget {
     ConfirmSettings,
     /// Cancel button on a Settings confirmation modal.
     CancelSettings,
+    /// Confirm button on the radio-mode confirmation modal.
+    ConfirmRadioMode,
+    /// Cancel button on the radio-mode confirmation modal.
+    CancelRadioMode,
     /// The `ytm-tui` brand label at the top-left of the nav bar — opens the About card.
     AboutTitle,
     /// The GitHub link inside the About card — opens the repo in the system browser.
@@ -552,44 +556,17 @@ pub enum LibraryTab {
 }
 
 impl LibraryTab {
-    pub const ALL: [Self; 6] = [
-        Self::All,
-        Self::Favorites,
-        Self::History,
-        Self::RadioFavorites,
-        Self::Radio,
-        Self::Downloads,
-    ];
+    pub const NORMAL: [Self; 4] = [Self::All, Self::Favorites, Self::History, Self::Downloads];
 
-    pub(crate) fn next(self) -> Self {
-        match self {
-            LibraryTab::All => LibraryTab::Favorites,
-            LibraryTab::Favorites => LibraryTab::History,
-            LibraryTab::History => LibraryTab::RadioFavorites,
-            LibraryTab::RadioFavorites => LibraryTab::Radio,
-            LibraryTab::Radio => LibraryTab::Downloads,
-            LibraryTab::Downloads => LibraryTab::All,
-        }
-    }
-
-    pub(crate) fn prev(self) -> Self {
-        match self {
-            LibraryTab::All => LibraryTab::Downloads,
-            LibraryTab::Favorites => LibraryTab::All,
-            LibraryTab::History => LibraryTab::Favorites,
-            LibraryTab::RadioFavorites => LibraryTab::History,
-            LibraryTab::Radio => LibraryTab::RadioFavorites,
-            LibraryTab::Downloads => LibraryTab::Radio,
-        }
-    }
+    pub const RADIO_MODE: [Self; 2] = [Self::RadioFavorites, Self::Radio];
 
     pub fn label(self) -> &'static str {
         match self {
             LibraryTab::All => t!("All", "전체"),
             LibraryTab::Favorites => t!("Favorites", "즐겨찾기"),
             LibraryTab::History => t!("History", "기록"),
-            LibraryTab::RadioFavorites => t!("Radio Favorites", "라디오 즐겨찾기"),
-            LibraryTab::Radio => t!("Radio", "라디오"),
+            LibraryTab::RadioFavorites => t!("Radio Likes", "라디오 좋아요"),
+            LibraryTab::Radio => t!("Radio History", "라디오 히스토리"),
             LibraryTab::Downloads => t!("Downloads", "다운로드"),
         }
     }
@@ -599,9 +576,50 @@ impl LibraryTab {
             LibraryTab::All => t!("All", "전체"),
             LibraryTab::Favorites => t!("Fav", "즐겨찾기"),
             LibraryTab::History => t!("Hist", "기록"),
-            LibraryTab::RadioFavorites => t!("R-Fav", "라디오 찜"),
-            LibraryTab::Radio => t!("Radio", "라디오"),
+            LibraryTab::RadioFavorites => t!("R-Like", "라디오 좋아요"),
+            LibraryTab::Radio => t!("R-Hist", "라디오 기록"),
             LibraryTab::Downloads => t!("Down", "다운"),
+        }
+    }
+}
+
+/// Pending confirmation for entering or leaving the dedicated Radio UI mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RadioModeConfirm {
+    Enter,
+    Exit,
+}
+
+impl RadioModeConfirm {
+    pub fn title(self) -> &'static str {
+        match self {
+            RadioModeConfirm::Enter => t!(" Confirm radio mode ", " 라디오 모드 확인 "),
+            RadioModeConfirm::Exit => t!(" Confirm normal mode ", " 일반 모드 확인 "),
+        }
+    }
+
+    pub fn prompt(self) -> &'static str {
+        match self {
+            RadioModeConfirm::Enter => {
+                t!(
+                    "Switch to dedicated Radio mode?",
+                    "라디오 전용 모드로 전환할까요?"
+                )
+            }
+            RadioModeConfirm::Exit => t!("Leave Radio mode?", "라디오 모드에서 나갈까요?"),
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            RadioModeConfirm::Enter => t!(
+                "Search becomes Radio Browser only; Library shows radio favorites and history.",
+                "검색은 Radio Browser만, 라이브러리는 라디오 좋아요와 히스토리만 표시됩니다."
+            ),
+            RadioModeConfirm::Exit => t!(
+                "Your normal theme, Search sources, Library tabs, and DJ Gem tab return.",
+                "일반 테마, 검색 소스, 라이브러리 탭, DJ Gem 탭이 돌아옵니다."
+            ),
         }
     }
 }

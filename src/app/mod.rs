@@ -129,6 +129,14 @@ pub struct App {
     pub keymap: KeyMap,
     /// Resolved color theme (preset plus user overrides).
     pub theme: ThemeConfig,
+    /// Dedicated Radio UI mode: forces the Dario monochrome theme, Radio Browser-only search,
+    /// radio-only Library tabs, and hides the DJ Gem screen until normal mode is restored.
+    pub radio_dedicated_mode: bool,
+    /// The normal-mode theme to restore after leaving dedicated Radio mode. Updated on settings
+    /// saves while Radio mode is active so theme edits are not lost.
+    normal_mode_theme: Option<ThemeConfig>,
+    /// A pending confirmation before entering or leaving dedicated Radio mode.
+    pub pending_radio_mode_confirm: Option<RadioModeConfirm>,
     /// Whether the `?` help / cheat-sheet overlay is shown.
     pub help_visible: bool,
     /// A pending keybinding-conflict warning (Keys tab). When set, a modal popup is shown
@@ -289,6 +297,9 @@ impl App {
             authenticated: false,
             keymap: KeyMap::default(),
             theme: ThemeConfig::default(),
+            radio_dedicated_mode: false,
+            normal_mode_theme: None,
+            pending_radio_mode_confirm: None,
             help_visible: false,
             key_conflict: None,
             pending_settings_confirm: None,
@@ -369,13 +380,174 @@ impl App {
         self.ai.available = cfg.effective_ai_key().is_some();
         self.ai.model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
-        self.theme = cfg.effective_theme();
-        self.search.source = cfg.effective_search().source;
+        let normal_theme = cfg.effective_theme();
+        if self.radio_dedicated_mode {
+            self.normal_mode_theme = Some(normal_theme);
+            self.theme = ThemeConfig::dario();
+        } else {
+            self.theme = normal_theme;
+        }
+        let search =
+            Self::search_config_for_radio_mode(cfg.effective_search(), self.radio_dedicated_mode);
+        self.search.source = search.normalized_source(search.source);
         // Keep the process-wide UI language in sync with the applied config (this is the
         // central apply path, called at startup and after a settings save).
         crate::i18n::set_language(cfg.effective_language());
         // Keep the full config so the settings screen can persist the whole file.
         self.config = cfg.clone();
+        self.ensure_radio_mode_constraints();
+    }
+
+    pub fn search_config_for_mode(&self) -> SearchConfig {
+        Self::search_config_for_radio_mode(
+            self.config.effective_search(),
+            self.radio_dedicated_mode,
+        )
+    }
+
+    fn search_config_for_radio_mode(mut search: SearchConfig, radio_mode: bool) -> SearchConfig {
+        if radio_mode {
+            search.youtube = false;
+            search.soundcloud = false;
+            search.audius = false;
+            search.jamendo = false;
+            search.internet_archive = false;
+            search.radio_browser = true;
+            search.source = SearchSource::RadioBrowser;
+        } else {
+            search.radio_browser = false;
+            if search.source == SearchSource::RadioBrowser {
+                search.source = SearchSource::Youtube;
+            }
+        }
+        search.normalized()
+    }
+
+    pub fn library_tabs(&self) -> &'static [LibraryTab] {
+        if self.radio_dedicated_mode {
+            &LibraryTab::RADIO_MODE
+        } else {
+            &LibraryTab::NORMAL
+        }
+    }
+
+    pub fn library_tab_available(&self, tab: LibraryTab) -> bool {
+        self.library_tabs().contains(&tab)
+    }
+
+    pub(in crate::app) fn next_library_tab(
+        &self,
+        current: LibraryTab,
+        forward: bool,
+    ) -> LibraryTab {
+        let tabs = self.library_tabs();
+        let i = tabs.iter().position(|&tab| tab == current).unwrap_or(0);
+        let n = tabs.len();
+        if n == 0 {
+            return LibraryTab::All;
+        }
+        let j = if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        };
+        tabs[j]
+    }
+
+    pub(in crate::app) fn ensure_radio_mode_constraints(&mut self) {
+        if self.radio_dedicated_mode && self.mode == Mode::Ai {
+            self.mode = Mode::Player;
+        }
+        if !self.library_tab_available(self.library_ui.tab) {
+            self.library_ui.tab = self.library_tabs()[0];
+            self.clear_library_filter();
+        }
+        let search = self.search_config_for_mode();
+        self.search.source = search.normalized_source(self.search.source);
+        if self.radio_dedicated_mode {
+            self.dropdowns.search_source_open = false;
+            self.why_ai_visible = false;
+        }
+    }
+
+    pub(in crate::app) fn request_radio_mode_switch(&mut self) -> Vec<Cmd> {
+        self.pending_radio_mode_confirm = Some(if self.radio_dedicated_mode {
+            RadioModeConfirm::Exit
+        } else {
+            RadioModeConfirm::Enter
+        });
+        self.dropdowns.eq_open = false;
+        self.dropdowns.radio_open = false;
+        self.dropdowns.search_source_open = false;
+        self.queue_popup.open = false;
+        self.dirty = true;
+        Vec::new()
+    }
+
+    pub(in crate::app) fn apply_radio_mode_confirm(
+        &mut self,
+        confirm: RadioModeConfirm,
+    ) -> Vec<Cmd> {
+        self.pending_radio_mode_confirm = None;
+        match confirm {
+            RadioModeConfirm::Enter => self.enter_radio_dedicated_mode(),
+            RadioModeConfirm::Exit => self.exit_radio_dedicated_mode(),
+        }
+    }
+
+    fn enter_radio_dedicated_mode(&mut self) -> Vec<Cmd> {
+        if self.radio_dedicated_mode {
+            return Vec::new();
+        }
+        self.normal_mode_theme = Some(self.theme.clone());
+        self.radio_dedicated_mode = true;
+        self.theme = ThemeConfig::dario();
+        self.search.source = SearchSource::RadioBrowser;
+        self.search.searching = false;
+        self.search.results.clear();
+        self.search.selected = 0;
+        self.search.focus = SearchFocus::Input;
+        self.bridges.search_scroll.reset();
+        self.library_ui.tab = LibraryTab::RadioFavorites;
+        self.clear_library_filter();
+        if self.mode == Mode::Ai {
+            self.mode = Mode::Player;
+        }
+        self.why_ai_visible = false;
+        self.dropdowns.eq_open = false;
+        self.dropdowns.radio_open = false;
+        self.dropdowns.search_source_open = false;
+        self.clear_artwork();
+        self.art.force_clear_next_frame = true;
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!("Radio mode enabled", "라디오 모드 켜짐").to_owned();
+        self.dirty = true;
+        Vec::new()
+    }
+
+    fn exit_radio_dedicated_mode(&mut self) -> Vec<Cmd> {
+        if !self.radio_dedicated_mode {
+            return Vec::new();
+        }
+        self.radio_dedicated_mode = false;
+        self.theme = self
+            .normal_mode_theme
+            .take()
+            .unwrap_or_else(|| self.config.effective_theme());
+        if !self.library_tab_available(self.library_ui.tab) {
+            self.library_ui.tab = LibraryTab::All;
+            self.clear_library_filter();
+        }
+        let search = self.search_config_for_mode();
+        self.search.source = search.normalized_source(self.config.effective_search().source);
+        self.search.searching = false;
+        self.search.results.clear();
+        self.search.selected = 0;
+        self.dropdowns.search_source_open = false;
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!("Radio mode disabled", "라디오 모드 꺼짐").to_owned();
+        self.dirty = true;
+        Vec::new()
     }
 
     pub(in crate::app) fn sync_playback_modes_to_config(&mut self) {
@@ -1032,6 +1204,10 @@ impl App {
     /// reachable from any screen. Leaving Settings commits the draft via the normal close
     /// path so edits aren't lost; transient overlays are cleared.
     fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
+        if self.radio_dedicated_mode && mode == Mode::Ai {
+            self.dirty = true;
+            return Vec::new();
+        }
         self.dropdowns.eq_open = false;
         self.dropdowns.radio_open = false;
         self.dropdowns.search_source_open = false;
@@ -1055,9 +1231,14 @@ impl App {
             Mode::Search => {
                 self.mode = Mode::Search;
                 self.search.focus = SearchFocus::Input;
+                let search = self.search_config_for_mode();
+                self.search.source = search.normalized_source(self.search.source);
             }
             Mode::Library => {
                 self.mode = Mode::Library;
+                if !self.library_tab_available(self.library_ui.tab) {
+                    self.library_ui.tab = self.library_tabs()[0];
+                }
                 // Start each library visit clean (cursor, anchor, scroll, and any filter).
                 self.clear_library_filter();
             }

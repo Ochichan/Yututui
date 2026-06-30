@@ -704,7 +704,7 @@ pub fn render_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: Setting
     let block = Block::default()
         .title(confirm.title())
         .borders(Borders::ALL)
-        .border_style(crate::ui::popup_style(app, R::Warning).add_modifier(Modifier::BOLD))
+        .border_style(crate::ui::confirm_border_style(app))
         .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
@@ -747,8 +747,8 @@ pub fn render_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: Setting
         app,
         rows[4],
         &segs,
-        crate::ui::popup_style(app, R::Warning).add_modifier(Modifier::BOLD),
-        crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+        crate::ui::confirm_button_style(app),
+        crate::ui::confirm_gap_style(app),
         Alignment::Center,
     );
     crate::ui::seal_popup_background(frame, app, popup);

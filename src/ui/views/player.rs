@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 use ratatui_image::{Resize, StatefulImage};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, DownloadState, MouseTarget, ScrollSurface, StatusKind};
+use crate::app::{App, DownloadState, MouseTarget, RadioModeConfirm, ScrollSurface, StatusKind};
 use crate::keymap::Action;
 use crate::lyrics;
 use crate::t;
@@ -647,6 +647,10 @@ const MIN_LYRICS_ROWS: u16 = 3;
 /// the whole area, and an empty area draws nothing.
 fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
     app.art.rect.set(None);
+    if app.radio_dedicated_mode {
+        render_radio_filler(frame, app, area);
+        return;
+    }
     match (app.art_active(), app.lyrics.visible) {
         // Art on top, lyrics right under it. The art is capped so a readable lyrics window
         // always remains, then lyrics start one row below the art's actual bottom (not at a
@@ -694,6 +698,85 @@ fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
         // off this stays empty (drawing nothing), exactly as before.
         (false, false) => crate::ui::anim::render_canvas(frame, app, area),
     }
+}
+
+fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {
+    let after_gap = area.height.saturating_sub(ART_TOP_GAP);
+    let cap = if app.lyrics.visible {
+        after_gap.saturating_sub(MIN_LYRICS_ROWS).min(12)
+    } else {
+        after_gap.min(14)
+    };
+    let band = art_band(area, ART_TOP_GAP, cap);
+    match draw_radio_ascii(frame, app, band) {
+        Some(radio) if app.lyrics.visible => {
+            let lyrics_y = radio.bottom().saturating_add(ART_LYRICS_GAP);
+            let lyrics_area = Rect {
+                x: area.x,
+                y: lyrics_y,
+                width: area.width,
+                height: area.bottom().saturating_sub(lyrics_y),
+            };
+            render_lyrics(frame, app, lyrics_area);
+        }
+        None if app.lyrics.visible => render_lyrics(frame, app, area),
+        _ => {}
+    }
+}
+
+fn draw_radio_ascii(frame: &mut Frame, app: &App, area: Rect) -> Option<Rect> {
+    if area.width < 12 || area.height < 3 {
+        return None;
+    }
+    const LARGE: &[&str] = &[
+        "          .----------------.",
+        "         / .--------------. \\",
+        "        / /     RADIO      \\ \\",
+        "       | |   .---------.   | |",
+        "       | |   |  .---.  |   | |",
+        "       | |   |  |   |  |   | |",
+        "       | |   '---------'   | |",
+        "       | |  o   o   o   o  | |",
+        "        \\ \\  ~~~~~~~~~~~  / /",
+        "         \\ '--------------' /",
+        "          '------.  .------'",
+        "                 |__|       ",
+    ];
+    const SMALL: &[&str] = &[
+        "  .----------.  ",
+        " /   RADIO   \\ ",
+        "|  o  ===  o  |",
+        "|  [_______]  |",
+        " \\__________/ ",
+    ];
+    let art = if area.width >= 34 && area.height >= LARGE.len() as u16 {
+        LARGE
+    } else {
+        SMALL
+    };
+    let height = (art.len() as u16).min(area.height);
+    if height == 0 {
+        return None;
+    }
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let rect = Rect {
+        x: area.x,
+        y,
+        width: area.width,
+        height,
+    };
+    let style = app.theme.style(R::Accent).add_modifier(Modifier::BOLD);
+    let lines: Vec<Line> = art
+        .iter()
+        .take(height as usize)
+        .map(|line| {
+            Line::from((*line).to_owned())
+                .style(style)
+                .alignment(Alignment::Center)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), rect);
+    Some(rect)
 }
 
 /// The top slice of `area` the art may occupy: skip `gap` rows under the status line, then
@@ -783,6 +866,82 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(rendered), area);
+}
+
+/// A modal confirmation for entering/leaving dedicated Radio mode. It intentionally mirrors the
+/// Settings reset confirmation shape so broad UI-mode switches use the same interaction pattern.
+pub fn render_radio_mode_confirm(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    confirm: RadioModeConfirm,
+) {
+    let popup = centered_fixed(area, 60, 9);
+    crate::ui::render_popup_background(frame, app, popup);
+
+    let block = Block::default()
+        .title(confirm.title())
+        .borders(Borders::ALL)
+        .border_style(crate::ui::confirm_border_style(app))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new(confirm.prompt())
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::TextPrimary)),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(confirm.detail())
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::TextMuted)),
+        rows[2],
+    );
+
+    let segs = [
+        buttons::Seg::button(
+            MouseTarget::ConfirmRadioMode,
+            t!(" Confirm (Enter) ", " 확인 (Enter) "),
+        ),
+        buttons::Seg::label("    "),
+        buttons::Seg::button(
+            MouseTarget::CancelRadioMode,
+            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+        ),
+    ];
+    buttons::render_segments(
+        frame,
+        app,
+        rows[4],
+        &segs,
+        crate::ui::confirm_button_style(app),
+        crate::ui::confirm_gap_style(app),
+        Alignment::Center,
+    );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
+/// A `w`×`h` rect centered in `area`, clamped so it never exceeds the available space.
+fn centered_fixed(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    }
 }
 
 #[cfg(test)]

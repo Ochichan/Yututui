@@ -74,6 +74,7 @@ pub enum Action {
     FocusInput,
     // Global (active in any non-text-entry context).
     ToggleRadio,
+    ToggleRadioMode,
     ToggleHelp,
     ToggleAbout,
     ToggleAnimations,
@@ -284,6 +285,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "toggle_radio",
         "Toggle autoplay radio",
         "자동재생 라디오 켜기 / 끄기",
+    ),
+    (
+        Action::ToggleRadioMode,
+        "toggle_radio_mode",
+        "Enter / exit radio mode",
+        "라디오 모드 들어가기 / 나가기",
     ),
     (
         Action::ToggleHelp,
@@ -829,6 +836,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
     let key = |code| Chord::new(code, KeyModifiers::empty());
     let ch = |c| Chord::new(KeyCode::Char(c), KeyModifiers::empty());
     let ctrl = |c| Chord::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+    let alt_shift = |c| Chord::new(KeyCode::Char(c), KeyModifiers::ALT | KeyModifiers::SHIFT);
     vec![
         // Player (the main screen; self-contained transport + screen switches).
         (C::Player, A::TogglePause, ch(' ')),
@@ -871,6 +879,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // Global (active across screens; typeable globals are suppressed in text fields).
         (C::Global, A::Home, ctrl('h')),
         (C::Global, A::ToggleRadio, ctrl('r')),
+        (C::Global, A::ToggleRadioMode, alt_shift('r')),
         (C::Global, A::ToggleHelp, ch('?')),
         (C::Global, A::ToggleAbout, key(KeyCode::F(1))),
         (C::Global, A::ToggleAnimations, ch('A')),
