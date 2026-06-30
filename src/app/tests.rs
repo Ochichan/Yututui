@@ -3625,6 +3625,64 @@ fn library_scrollbar_shows_only_when_the_list_overflows() {
     assert!(!has_thumb(&fits), "a short list should not show a scrollbar");
 }
 
+#[test]
+fn library_scrollbar_thumb_tracks_the_actual_page_offset() {
+    let mut app = App::new(100);
+    for i in 0..40 {
+        app.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
+    }
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::History;
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    app.bridges
+        .library_scroll
+        .wheel(false, 999, app.library_len());
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+
+    let buf = terminal.backend().buffer();
+    assert_eq!(
+        buf.cell((79, 17)).map(|c| c.symbol()),
+        Some("█"),
+        "at the final page the scrollbar thumb should touch the list bottom"
+    );
+}
+
+#[test]
+fn dragging_library_scrollbar_moves_the_viewport() {
+    let mut app = App::new(100);
+    for i in 0..40 {
+        app.library.record_play(&Song::remote(format!("id{i}"), format!("t{i}"), "x", "0:10"));
+    }
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::History;
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let bar = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .find(|b| b.target == MouseTarget::Scrollbar(ScrollSurface::Library))
+        .map(|b| b.rect)
+        .expect("rendered library scrollbar rect");
+
+    app.update(Msg::MouseClick { col: bar.x, row: bar.y });
+    app.update(Msg::MouseDrag {
+        col: bar.x,
+        row: bar.y + bar.height - 1,
+    });
+
+    assert_eq!(
+        app.bridges.library_scroll.offset(),
+        app.library_len() - app.bridges.library_scroll.viewport()
+    );
+}
+
 fn assert_centered_in(rect: Rect, container: Rect) {
     let left = rect.x.saturating_sub(container.x);
     let right = container

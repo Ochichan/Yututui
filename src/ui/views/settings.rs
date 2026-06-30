@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, MouseTarget};
+use crate::app::{App, MouseTarget, ScrollSurface};
 use crate::keymap::{self, Action, Conflict, KeyContext};
 use crate::settings::{Field, FieldKind, SettingsState, SettingsTab};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
@@ -452,7 +452,15 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     // they win where they overlap (`mouse_target_at` takes the last-registered match).
     register_field_controls(app, st, area, offset, &display_to_field);
     // Right-border scrollbar tracking the viewport; a no-op when every row fits.
-    buttons::render_list_scrollbar(frame, app, area, len, offset, area.height as usize);
+    buttons::render_list_scrollbar(
+        frame,
+        app,
+        area,
+        ScrollSurface::Settings,
+        len,
+        offset,
+        area.height as usize,
+    );
 }
 
 /// Publish a hit rect for each visible field row's interactive control, layered over the row's

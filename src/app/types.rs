@@ -291,6 +291,9 @@ pub enum MouseTarget {
     /// A list row, by absolute item index (interpreted per the active screen). Single-click
     /// selects; double-click plays.
     ListRow(usize),
+    /// A vertical list scrollbar track/thumb. Clicking or dragging maps the pointer row to
+    /// the matching viewport offset for the owning scroll state.
+    Scrollbar(ScrollSurface),
     /// The `N/M` queue-position label on the player status line — opens the queue window.
     QueuePos,
     /// A row in the open queue window, by order position. Single-click selects; double-click
@@ -314,6 +317,15 @@ pub enum MouseTarget {
 pub struct MouseButtonRegion {
     pub rect: Rect,
     pub target: MouseTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollSurface {
+    Library,
+    Search,
+    AiSuggestions,
+    Settings,
+    Queue,
 }
 
 /// Who authored a line in the AI chat transcript.

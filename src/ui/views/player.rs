@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
 use ratatui_image::{Resize, StatefulImage};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, DownloadState, MouseTarget, StatusKind};
+use crate::app::{App, DownloadState, MouseTarget, ScrollSurface, StatusKind};
 use crate::keymap::Action;
 use crate::lyrics;
 use crate::t;
@@ -403,7 +403,15 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Scrollbar on the right border, tracking the viewport position; hidden when it all fits.
-    buttons::render_list_scrollbar(frame, app, list, total_len, start, visible);
+    buttons::render_list_scrollbar(
+        frame,
+        app,
+        list,
+        ScrollSurface::Queue,
+        total_len,
+        start,
+        visible,
+    );
 }
 
 /// The EQ preset dropdown, anchored under the `eq:` label and listing the built-in presets

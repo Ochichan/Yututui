@@ -54,6 +54,28 @@ impl ScrollState {
         self.offset.set(next);
     }
 
+    /// Directly place the viewport offset, clamped using the last rendered viewport height.
+    /// Used by mouse-dragging a scrollbar thumb; before the first render this is a no-op
+    /// because there is no track geometry to interpret.
+    pub fn set_offset(&self, offset: usize, len: usize) {
+        let viewport = self.viewport.get() as usize;
+        if viewport == 0 {
+            return;
+        }
+        self.offset.set(offset.min(len.saturating_sub(viewport)));
+    }
+
+    /// Current first visible row. Kept public for reducer tests and for scrollbars that need
+    /// to derive a grab offset from the last rendered thumb.
+    pub fn offset(&self) -> usize {
+        self.offset.get()
+    }
+
+    /// Last viewport height recorded by render.
+    pub fn viewport(&self) -> usize {
+        self.viewport.get() as usize
+    }
+
     /// Render-time: record the viewport height and return the offset to draw this frame.
     ///
     /// If the selection moved since the last frame (keyboard / click) the offset is nudged to
@@ -83,6 +105,69 @@ impl ScrollState {
         self.offset.set(off);
         off
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollbarThumb {
+    /// Row offset from the top of the scrollbar track.
+    pub start: u16,
+    /// Thumb height in rows.
+    pub len: u16,
+}
+
+/// Browser-style scrollbar geometry for a list viewport.
+///
+/// `position` is the first visible row and therefore ranges over `0..=content_len -
+/// viewport`. The thumb start uses that same scrollable range, so when the page reaches its
+/// final offset the thumb reaches the end of the track too.
+pub fn scrollbar_thumb(
+    content_len: usize,
+    viewport: usize,
+    track_len: u16,
+    position: usize,
+) -> Option<ScrollbarThumb> {
+    if content_len <= viewport || track_len == 0 {
+        return None;
+    }
+    let track = track_len as usize;
+    let max_offset = content_len - viewport;
+    let thumb_len = ((viewport.saturating_mul(track) + content_len / 2) / content_len)
+        .clamp(1, track);
+    let travel = track.saturating_sub(thumb_len);
+    let start = if travel == 0 {
+        0
+    } else {
+        let pos = position.min(max_offset);
+        (pos.saturating_mul(travel) + max_offset / 2) / max_offset
+    };
+    Some(ScrollbarThumb { start: start as u16, len: thumb_len as u16 })
+}
+
+/// Convert a row within a scrollbar track back into a list offset.
+///
+/// `grab` is the row inside the thumb that the pointer is holding. Keeping it stable makes
+/// dragging the middle or bottom of the thumb behave without a jump on the first drag event.
+pub fn offset_from_scrollbar_row(
+    row: u16,
+    grab: u16,
+    content_len: usize,
+    viewport: usize,
+    track_len: u16,
+) -> usize {
+    let Some(thumb) = scrollbar_thumb(content_len, viewport, track_len, 0) else {
+        return 0;
+    };
+    let track = track_len as usize;
+    let max_offset = content_len - viewport;
+    let thumb_len = thumb.len as usize;
+    let travel = track.saturating_sub(thumb_len);
+    if travel == 0 {
+        return 0;
+    }
+    let grab = (grab as usize).min(thumb_len.saturating_sub(1));
+    let row = (row as usize).min(track.saturating_sub(1));
+    let thumb_start = row.saturating_sub(grab).min(travel);
+    (thumb_start.saturating_mul(max_offset) + travel / 2) / travel
 }
 
 /// The smallest offset shift from `offset` that brings `cursor` within `scrolloff` rows of
@@ -228,5 +313,28 @@ mod tests {
         assert_eq!(s.view(10, 50), parked); // view() honors the parked offset, no snap
         // Clamps when the content shrinks below the stored offset.
         assert_eq!(s.view(10, 5), 0);
+    }
+
+    #[test]
+    fn scrollbar_thumb_reaches_track_end_at_last_page() {
+        let top = scrollbar_thumb(40, 15, 15, 0).unwrap();
+        assert_eq!(top.start, 0);
+
+        let bottom = scrollbar_thumb(40, 15, 15, 25).unwrap();
+        assert_eq!(
+            bottom.start + bottom.len,
+            15,
+            "last page should put the thumb against the track bottom"
+        );
+    }
+
+    #[test]
+    fn scrollbar_track_row_maps_back_to_scroll_offset() {
+        assert_eq!(offset_from_scrollbar_row(0, 0, 40, 15, 15), 0);
+        assert_eq!(offset_from_scrollbar_row(14, 0, 40, 15, 15), 25);
+
+        let thumb = scrollbar_thumb(40, 15, 15, 0).unwrap();
+        let center_grab = thumb.len / 2;
+        assert_eq!(offset_from_scrollbar_row(14, center_grab, 40, 15, 15), 25);
     }
 }

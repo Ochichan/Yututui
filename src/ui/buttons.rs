@@ -10,10 +10,10 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Mode, MouseTarget};
+use crate::app::{App, Mode, MouseTarget, ScrollSurface};
 use crate::t;
 
 /// The nav-bar label for a screen, in the active UI language. (`AI` is a proper noun, kept
@@ -213,28 +213,33 @@ pub fn render_list_scrollbar(
     frame: &mut Frame,
     app: &App,
     list_area: Rect,
+    surface: ScrollSurface,
     content_len: usize,
     position: usize,
     viewport: usize,
 ) {
-    if content_len <= viewport || list_area.height == 0 {
+    let Some(thumb) =
+        crate::ui::scroll::scrollbar_thumb(content_len, viewport, list_area.height, position)
+    else {
         return;
-    }
-    let mut state = ScrollbarState::new(content_len)
-        .position(position)
-        .viewport_content_length(viewport);
+    };
     let bar = Rect { x: list_area.right(), y: list_area.y, width: 1, height: list_area.height };
-    frame.render_stateful_widget(
-        Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None)
-            .track_symbol(Some("│"))
-            .thumb_symbol("█")
-            .track_style(app.theme.style(R::BorderPrimary))
-            .thumb_style(app.theme.style(R::Accent)),
-        bar,
-        &mut state,
-    );
+    app.register_mouse_button(bar, MouseTarget::Scrollbar(surface));
+
+    let thumb_start = thumb.start;
+    let thumb_end = thumb.start.saturating_add(thumb.len);
+    for row in 0..list_area.height {
+        let is_thumb = row >= thumb_start && row < thumb_end;
+        let (symbol, style) = if is_thumb {
+            ("█", app.theme.style(R::Accent))
+        } else {
+            ("│", app.theme.style(R::BorderPrimary))
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(symbol).style(style)),
+            Rect { x: bar.x, y: bar.y + row, width: 1, height: 1 },
+        );
+    }
 }
 
 /// The footer hint (e.g. "?  keybindings"): a single dim, clickable label — reads as a

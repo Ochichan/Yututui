@@ -9,7 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{App, LibraryTab, MouseTarget};
+use crate::app::{App, LibraryTab, MouseTarget, ScrollSurface};
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -249,7 +249,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
     }
 
     // Scrollbar on the right border, tracking the viewport position; hidden when the list fits.
-    buttons::render_list_scrollbar(frame, app, area, len, start, visible);
+    buttons::render_list_scrollbar(frame, app, area, ScrollSurface::Library, len, start, visible);
 }
 
 /// A modal confirming deletion of downloaded files from disk. Deleting a real file is

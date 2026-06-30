@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::app::{AiFocus, AiRole, App};
+use crate::app::{AiFocus, AiRole, App, ScrollSurface};
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -335,7 +335,15 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     }
     frame.render_stateful_widget(list, inner, &mut state);
     // Scrollbar on the right border, tracking the viewport position; hidden when it all fits.
-    buttons::render_list_scrollbar(frame, app, inner, len, state.offset(), inner.height as usize);
+    buttons::render_list_scrollbar(
+        frame,
+        app,
+        inner,
+        ScrollSurface::AiSuggestions,
+        len,
+        state.offset(),
+        inner.height as usize,
+    );
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {

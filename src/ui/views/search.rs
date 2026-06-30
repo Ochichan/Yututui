@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, MouseTarget, SearchFocus, StatusKind};
+use crate::app::{App, MouseTarget, ScrollSurface, SearchFocus, StatusKind};
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -211,5 +211,13 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     // Each visible row is a click target: single-click selects, double-click plays.
     buttons::register_list_rows(app, area, state.offset(), len, Some);
     // Scrollbar on the right border, tracking the viewport position; hidden when results fit.
-    buttons::render_list_scrollbar(frame, app, area, len, state.offset(), area.height as usize);
+    buttons::render_list_scrollbar(
+        frame,
+        app,
+        area,
+        ScrollSurface::Search,
+        len,
+        state.offset(),
+        area.height as usize,
+    );
 }

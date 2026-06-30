@@ -339,3 +339,12 @@ pub(crate) struct DragSelection {
     pub surface: DragSurface,
     pub anchor: usize,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScrollbarDrag {
+    pub surface: ScrollSurface,
+    pub rect: Rect,
+    pub content_len: usize,
+    pub viewport: usize,
+    pub grab: u16,
+}

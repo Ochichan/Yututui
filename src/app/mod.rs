@@ -216,6 +216,9 @@ pub struct App {
     /// Active mouse drag-selection session. Cleared on left-button release so a later
     /// drag starts from its own first row, not whatever was selected before.
     drag_selection: Option<DragSelection>,
+    /// Active scrollbar drag session. Kept separate from row range selection so dragging a
+    /// scrollbar never extends a Library/Queue multi-select range.
+    drag_scrollbar: Option<ScrollbarDrag>,
 
     // Lyrics ------------------------------------------------------------------
     /// Lyrics-panel state: visibility, in-flight flag, and the fetched track lyrics.
@@ -322,6 +325,7 @@ impl App {
             session: Session::default(),
             library_ui: LibraryView::default(),
             drag_selection: None,
+            drag_scrollbar: None,
             lyrics: Lyrics::default(),
             art: ArtState::default(),
             downloads: Downloads::default(),
@@ -431,6 +435,7 @@ impl App {
             Msg::MouseDrag { col, row } => return self.on_mouse_drag(col, row),
             Msg::MouseLeftUp => {
                 self.drag_selection = None;
+                self.drag_scrollbar = None;
                 return Vec::new();
             }
             Msg::MouseScroll { up, col, row } => return self.on_mouse_scroll(up, col, row),

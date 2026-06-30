@@ -18,12 +18,16 @@ impl App {
     }
 
     pub(in crate::app) fn mouse_target_at(&self, col: u16, row: u16) -> Option<MouseTarget> {
+        self.mouse_region_at(col, row).map(|b| b.target)
+    }
+
+    pub(in crate::app) fn mouse_region_at(&self, col: u16, row: u16) -> Option<MouseButtonRegion> {
         self.bridges.mouse_buttons
             .borrow()
             .iter()
             .rev()
             .find(|b| rect_contains(b.rect, col, row))
-            .map(|b| b.target)
+            .copied()
     }
 
     /// A left-click at `(col, row)`: buttons fire their mapped action; the player's
@@ -78,18 +82,29 @@ impl App {
             if !inside {
                 self.queue_popup.open = false;
                 self.drag_selection = None;
+                self.drag_scrollbar = None;
                 self.dirty = true;
                 return Vec::new();
             }
-            match self.mouse_target_at(col, row) {
-                Some(t @ (MouseTarget::QueueRow(_) | MouseTarget::QueueDel(_))) => {
+            match self.mouse_region_at(col, row) {
+                Some(MouseButtonRegion {
+                    target: MouseTarget::Scrollbar(ScrollSurface::Queue),
+                    rect,
+                }) => return self.on_scrollbar_press(ScrollSurface::Queue, rect, row),
+                Some(MouseButtonRegion {
+                    target: t @ (MouseTarget::QueueRow(_) | MouseTarget::QueueDel(_)),
+                    ..
+                }) => {
                     return self.on_mouse_target(t);
                 }
                 _ => return Vec::new(),
             }
         }
-        if let Some(target) = self.mouse_target_at(col, row) {
-            return self.on_mouse_target(target);
+        if let Some(region) = self.mouse_region_at(col, row) {
+            if let MouseTarget::Scrollbar(surface) = region.target {
+                return self.on_scrollbar_press(surface, region.rect, row);
+            }
+            return self.on_mouse_target(region.target);
         }
         // A click that missed every button dismisses an open status-line dropdown (modal-style),
         // so the same click doesn't also seek.
@@ -169,6 +184,7 @@ impl App {
                 self.library_ui.selected = 0;
                 self.library_ui.anchor = 0;
                 self.drag_selection = None;
+                self.drag_scrollbar = None;
                 self.bridges.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
@@ -194,6 +210,8 @@ impl App {
             MouseTarget::SettingsActivate(_) => Vec::new(),
             // Single-click a list row: select it (double-click plays — see double-click path).
             MouseTarget::ListRow(i) => self.on_list_row_click(i),
+            // Scrollbar targets are handled by the coordinate-aware click/drag paths.
+            MouseTarget::Scrollbar(_) => Vec::new(),
             // Open the queue window from the `N/M` position label.
             MouseTarget::QueuePos if self.mode == Mode::Player => {
                 self.open_queue_popup();
@@ -276,6 +294,10 @@ impl App {
     /// stays fixed). Works in the queue window and, identically, in the Library list.
     pub(in crate::app) fn on_mouse_drag(&mut self, col: u16, row: u16) -> Vec<Cmd> {
         if self.queue_popup.open {
+            if let Some(drag) = self.drag_scrollbar {
+                self.drag_scrollbar_to(drag, row);
+                return Vec::new();
+            }
             if let Some(MouseTarget::QueueRow(i) | MouseTarget::QueueDel(i)) =
                 self.mouse_target_at(col, row)
             {
@@ -287,6 +309,17 @@ impl App {
                 }
             }
             return Vec::new();
+        }
+        if let Some(drag) = self.drag_scrollbar {
+            self.drag_scrollbar_to(drag, row);
+            return Vec::new();
+        }
+        if let Some(MouseButtonRegion {
+            target: MouseTarget::Scrollbar(surface),
+            rect,
+        }) = self.mouse_region_at(col, row)
+        {
+            return self.on_scrollbar_press(surface, rect, row);
         }
         if self.mode == Mode::Library
             && let Some(MouseTarget::ListRow(i) | MouseTarget::LibraryDel(i)) =
@@ -300,6 +333,107 @@ impl App {
             }
         }
         Vec::new()
+    }
+
+    fn on_scrollbar_press(
+        &mut self,
+        surface: ScrollSurface,
+        rect: Rect,
+        row: u16,
+    ) -> Vec<Cmd> {
+        let Some((content_len, viewport, position)) = self.scrollbar_snapshot(surface) else {
+            return Vec::new();
+        };
+        let track_row = row.saturating_sub(rect.y).min(rect.height.saturating_sub(1));
+        let Some(thumb) =
+            crate::ui::scroll::scrollbar_thumb(content_len, viewport, rect.height, position)
+        else {
+            return Vec::new();
+        };
+        let thumb_end = thumb.start.saturating_add(thumb.len);
+        let grab = if track_row >= thumb.start && track_row < thumb_end {
+            track_row - thumb.start
+        } else {
+            thumb.len / 2
+        };
+        let drag = ScrollbarDrag {
+            surface,
+            rect,
+            content_len,
+            viewport,
+            grab,
+        };
+        self.drag_selection = None;
+        self.drag_scrollbar = Some(drag);
+        self.drag_scrollbar_to(drag, row);
+        Vec::new()
+    }
+
+    fn drag_scrollbar_to(&mut self, drag: ScrollbarDrag, row: u16) {
+        if drag.rect.height == 0 {
+            return;
+        }
+        let track_row = row
+            .saturating_sub(drag.rect.y)
+            .min(drag.rect.height.saturating_sub(1));
+        let offset = crate::ui::scroll::offset_from_scrollbar_row(
+            track_row,
+            drag.grab,
+            drag.content_len,
+            drag.viewport,
+            drag.rect.height,
+        );
+        if let Some(state) = self.scroll_state(drag.surface) {
+            state.set_offset(offset, drag.content_len);
+            self.dirty = true;
+        }
+    }
+
+    fn scrollbar_snapshot(&self, surface: ScrollSurface) -> Option<(usize, usize, usize)> {
+        let state = self.scroll_state(surface)?;
+        let content_len = self.scroll_content_len(surface)?;
+        let viewport = state.viewport();
+        if content_len <= viewport || viewport == 0 {
+            return None;
+        }
+        Some((content_len, viewport, state.offset()))
+    }
+
+    fn scroll_state(&self, surface: ScrollSurface) -> Option<&crate::ui::scroll::ScrollState> {
+        Some(match surface {
+            ScrollSurface::Library => &self.bridges.library_scroll,
+            ScrollSurface::Search => &self.bridges.search_scroll,
+            ScrollSurface::AiSuggestions => &self.bridges.ai_scroll,
+            ScrollSurface::Settings => &self.bridges.settings_scroll,
+            ScrollSurface::Queue => &self.queue_popup.scroll,
+        })
+    }
+
+    fn scroll_content_len(&self, surface: ScrollSurface) -> Option<usize> {
+        Some(match surface {
+            ScrollSurface::Library => self.library_len(),
+            ScrollSurface::Search => self.search.results.len(),
+            ScrollSurface::AiSuggestions => self.ai.suggestions.len(),
+            ScrollSurface::Settings => self.settings_field_display_len()?,
+            ScrollSurface::Queue => self.queue.len(),
+        })
+    }
+
+    fn settings_field_display_len(&self) -> Option<usize> {
+        let st = self.settings.as_deref()?;
+        if st.tab == SettingsTab::Keys {
+            return None;
+        }
+        let fields = st.tab.fields();
+        let sections = st.tab.sections();
+        Some(if sections.is_empty() {
+            fields.len()
+        } else {
+            fields
+                .len()
+                .saturating_add(sections.len())
+                .saturating_add(sections.len().saturating_sub(1))
+        })
     }
 
     fn drag_anchor(&mut self, surface: DragSurface, row: usize) -> usize {
