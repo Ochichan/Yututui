@@ -27,7 +27,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_nav(
         frame,
         app,
-        Rect { x: inner.x, y: area.y, width: inner.width, height: 1 },
+        Rect {
+            x: inner.x,
+            y: area.y,
+            width: inner.width,
+            height: 1,
+        },
     );
 
     let rows = Layout::vertical([
@@ -38,12 +43,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
+    let library_rows = app.library_rows();
+
     render_tabs(frame, app, rows[0]);
     // The filter prompt rides the spacer row when active, so opening it never reflows the list.
     if app.library_ui.filter_editing || !app.library_ui.filter_query.is_empty() {
-        render_filter(frame, app, rows[1]);
+        render_filter(frame, app, rows[1], library_rows.len());
     }
-    render_list(frame, app, rows[2]);
+    render_list(frame, app, rows[2], &library_rows);
 
     buttons::render_help_button(frame, app, rows[3]);
 }
@@ -53,15 +60,21 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
     // cell-width math ratatui lays the spans out with, so the hit rects line up exactly.
     let mut spans = Vec::new();
     let mut x = area.x;
+    let counts = app.library_counts();
     for (i, t) in LibraryTab::ALL.iter().copied().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
             x = x.saturating_add(2);
         }
-        let label = format!(" {} ({}) ", t.label(), app.library_count(t));
+        let label = format!(" {} ({}) ", t.label(), counts[i]);
         let w = buttons::text_width(&label);
         app.register_mouse_button(
-            Rect { x, y: area.y, width: w, height: 1 },
+            Rect {
+                x,
+                y: area.y,
+                width: w,
+                height: 1,
+            },
             MouseTarget::LibraryTab(t),
         );
         x = x.saturating_add(w);
@@ -80,10 +93,9 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
 
 /// The in-library filter prompt: `filter: <query>█  [N matches]` while typing, or
 /// `filter: <query>  (Esc to clear)` once committed. Rendered borderless on the spacer row.
-fn render_filter(frame: &mut Frame, app: &App, area: Rect) {
+fn render_filter(frame: &mut Frame, app: &App, area: Rect, matches: usize) {
     let editing = app.library_ui.filter_editing;
     let query = &app.library_ui.filter_query;
-    let matches = app.library_rows().len();
 
     let mut spans = vec![
         Span::styled(t!("filter: ", "필터: "), app.theme.style(R::TextMuted)),
@@ -107,11 +119,9 @@ fn render_filter(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_list(frame: &mut Frame, app: &App, area: Rect) {
+fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::Song]) {
     // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
     app.bridges.list_viewport_rows.set(area.height);
-
-    let rows = app.library_rows();
 
     if rows.is_empty() {
         // A filtered-to-nothing list gets a filter-specific message, not the per-tab "empty" hint.
@@ -132,7 +142,10 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
                     "즐겨찾기가 없어요 — 곡에서 f 를 눌러 저장하세요."
                 ),
                 LibraryTab::History => {
-                    t!("No history yet — play something.", "재생 기록이 없어요 — 뭐든 재생해 보세요.")
+                    t!(
+                        "No history yet — play something.",
+                        "재생 기록이 없어요 — 뭐든 재생해 보세요."
+                    )
                 }
                 LibraryTab::Downloads => t!(
                     "No downloaded tracks found in the download folder.",
@@ -141,7 +154,10 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
             }
             .to_owned()
         };
-        frame.render_widget(Paragraph::new(Line::from(msg).style(app.theme.style(R::TextMuted))), area);
+        frame.render_widget(
+            Paragraph::new(Line::from(msg).style(app.theme.style(R::TextMuted))),
+            area,
+        );
         return;
     }
 
@@ -163,19 +179,31 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
     // The wheel scrolls this viewport freely (decoupled from the cursor); the render only
     // nudges it to keep a keyboard-moved cursor on-screen with a margin — see `ui::scroll`.
     let visible = area.height as usize;
-    let start = app.bridges.library_scroll.resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
+    let start =
+        app.bridges
+            .library_scroll
+            .resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
 
     let body_w = area.width.saturating_sub(del_w) as usize;
-    for (vis, (i, song)) in rows.iter().enumerate().skip(start).take(visible).enumerate() {
+    for (vis, (i, song)) in rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible)
+        .enumerate()
+    {
         let y = area.y + vis as u16;
         let selected = i >= sel_lo && i <= sel_hi;
         let marker = if i == cursor { "▶ " } else { "  " };
         let body = if song.duration.is_empty() {
             format!("{marker}{} — {}", song.title, song.artist)
         } else {
-            format!("{marker}{} — {}  ({})", song.title, song.artist, song.duration)
+            format!(
+                "{marker}{} — {}  ({})",
+                song.title, song.artist, song.duration
+            )
         };
-        let body = crate::ui::text::truncate_to_width(&body, body_w.saturating_sub(1));
+        let body = crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1));
 
         let base = if selected {
             Style::default()
@@ -185,17 +213,32 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             app.theme.style(R::TextPrimary)
         };
-        let row = Rect { x: area.x, y, width: area.width, height: 1 };
+        let row = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
         frame.render_widget(Paragraph::new(Line::from(body).style(base)), row);
 
         // The row body selects (single-click) / plays (double-click).
-        let body_rect = Rect { x: row.x, y, width: row.width.saturating_sub(del_w), height: 1 };
+        let body_rect = Rect {
+            x: row.x,
+            y,
+            width: row.width.saturating_sub(del_w),
+            height: 1,
+        };
         app.register_mouse_button(body_rect, MouseTarget::ListRow(i));
 
         if deletable {
             // Trailing ✗ delete button, kept on the row's highlight when selected.
             let del_x = row.x + row.width.saturating_sub(del_w);
-            let del_rect = Rect { x: del_x, y, width: del_w, height: 1 };
+            let del_rect = Rect {
+                x: del_x,
+                y,
+                width: del_w,
+                height: 1,
+            };
             let mut del_style = app.theme.style(R::Error);
             if selected {
                 del_style = del_style.bg(app.theme.color(R::SelectionBg));
@@ -220,7 +263,10 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(t!(" ⚠ Delete downloaded files ", " ⚠ 다운로드한 파일 삭제 "))
+        .title(t!(
+            " ⚠ Delete downloaded files ",
+            " ⚠ 다운로드한 파일 삭제 "
+        ))
         .borders(Borders::ALL)
         .border_style(theme.style(R::Error).add_modifier(Modifier::BOLD))
         .style(theme.style(R::TextPrimary));
@@ -260,9 +306,15 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let segs = [
-        buttons::Seg::button(MouseTarget::ConfirmDelete, t!(" Delete (Enter) ", " 삭제 (Enter) ")),
+        buttons::Seg::button(
+            MouseTarget::ConfirmDelete,
+            t!(" Delete (Enter) ", " 삭제 (Enter) "),
+        ),
         buttons::Seg::label("    "),
-        buttons::Seg::button(MouseTarget::CancelDelete, t!(" Cancel (Esc) ", " 취소 (Esc) ")),
+        buttons::Seg::button(
+            MouseTarget::CancelDelete,
+            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+        ),
     ];
     buttons::render_segments(
         frame,

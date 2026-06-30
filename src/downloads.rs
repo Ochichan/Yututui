@@ -10,6 +10,7 @@
 //! match exactly. The id-in-filename scheme ([`crate::download`]) covers files this manifest
 //! doesn't know (e.g. copied from another machine); this manifest adds the richer metadata.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -64,8 +65,9 @@ impl DownloadStore {
 
     /// Drop records whose on-disk file is among `paths` (after a confirmed delete).
     pub fn remove_paths(&mut self, paths: &[PathBuf]) {
+        let doomed: HashSet<&PathBuf> = paths.iter().collect();
         self.tracks
-            .retain(|s| s.local_path.as_ref().is_none_or(|p| !paths.contains(p)));
+            .retain(|s| s.local_path.as_ref().is_none_or(|p| !doomed.contains(p)));
     }
 
     /// Fold the remembered enriched metadata (real artist/duration + `yt_video_id`, and the
@@ -75,9 +77,14 @@ impl DownloadStore {
     /// raw path can be stale, e.g. moved/symlinked dirs), while the manifest only lends the
     /// richer fields a bare scan can't know. A remembered record for a deleted file never matches.
     pub fn enrich(&self, scanned: Vec<Song>) -> Vec<Song> {
+        let by_id: HashMap<&str, &Song> = self
+            .tracks
+            .iter()
+            .map(|s| (s.video_id.as_str(), s))
+            .collect();
         scanned
             .into_iter()
-            .map(|song| match self.tracks.iter().find(|s| s.video_id == song.video_id) {
+            .map(|song| match by_id.get(song.video_id.as_str()) {
                 Some(rec) => Song {
                     title: rec.title.clone(),
                     artist: rec.artist.clone(),
@@ -139,7 +146,10 @@ mod tests {
         let out = store.enrich(vec![scanned]);
         assert_eq!(out[0].artist, "Real Artist");
         assert_eq!(out[0].youtube_id(), Some("dQw4w9WgXcQ"));
-        assert_eq!(out[0].local_path, Some(PathBuf::from("/tmp/fresh/plain.m4a")));
+        assert_eq!(
+            out[0].local_path,
+            Some(PathBuf::from("/tmp/fresh/plain.m4a"))
+        );
     }
 
     #[test]

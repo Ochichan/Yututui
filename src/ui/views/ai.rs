@@ -249,8 +249,11 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let mut lines: Vec<Line> = Vec::new();
-    for m in &app.ai.messages {
+    let height = area.height as usize;
+    let tail_budget = height.saturating_sub(usize::from(app.ai.thinking)).max(1);
+    let start = app.ai.messages.len().saturating_sub(tail_budget);
+    let mut lines: Vec<Line> = Vec::with_capacity(tail_budget + usize::from(app.ai.thinking));
+    for m in app.ai.messages.iter().skip(start) {
         // The prefix is a fixed-width label column; the Korean variants pad to 6 display cells
         // (한글 글자 = 2 cells) so the message text lines up across role lines.
         let (prefix, role) = match m.role {
@@ -275,7 +278,6 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Keep the latest content visible: scroll so the last lines sit at the bottom.
-    let height = area.height as usize;
     let scroll = lines.len().saturating_sub(height) as u16;
     frame.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((scroll, 0)),

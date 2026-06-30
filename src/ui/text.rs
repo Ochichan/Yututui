@@ -15,6 +15,9 @@ pub fn pad_to_width(s: &str, width: usize) -> String {
 /// Truncate `s` to at most `max` display cells, never splitting a wide character. Returns the
 /// owned prefix that fits (the whole string when it already fits).
 pub fn truncate_to_width(s: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max {
+        return s.to_owned();
+    }
     let mut out = String::new();
     let mut w = 0usize;
     for ch in s.chars() {
@@ -26,6 +29,26 @@ pub fn truncate_to_width(s: &str, max: usize) -> String {
         w += cw;
     }
     out
+}
+
+/// Truncate an owned string in place when needed, avoiding a second allocation for the common
+/// already-fitting path.
+pub fn truncate_owned_to_width(mut s: String, max: usize) -> String {
+    if UnicodeWidthStr::width(s.as_str()) <= max {
+        return s;
+    }
+    let mut w = 0usize;
+    let mut end = 0usize;
+    for (idx, ch) in s.char_indices() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > max {
+            break;
+        }
+        w += cw;
+        end = idx + ch.len_utf8();
+    }
+    s.truncate(end);
+    s
 }
 
 #[cfg(test)]
@@ -51,5 +74,11 @@ mod tests {
         assert_eq!(truncate_to_width("가나다", 6), "가나다");
         assert_eq!(truncate_to_width("abcdef", 3), "abc");
         assert_eq!(truncate_to_width("", 4), "");
+    }
+
+    #[test]
+    fn truncate_owned_reuses_fitting_string() {
+        assert_eq!(truncate_owned_to_width("abcdef".to_owned(), 6), "abcdef");
+        assert_eq!(truncate_owned_to_width("가나다".to_owned(), 5), "가나");
     }
 }

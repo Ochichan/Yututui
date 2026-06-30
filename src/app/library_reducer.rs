@@ -9,13 +9,13 @@ impl App {
         self.library_rows().len()
     }
 
-    pub fn library_count(&self, tab: LibraryTab) -> usize {
-        match tab {
-            LibraryTab::All => self.library_rows_for(tab).len(),
-            LibraryTab::Favorites => self.library.favorites.len(),
-            LibraryTab::History => self.library.history.len(),
-            LibraryTab::Downloads => self.library_ui.downloaded.len(),
-        }
+    pub fn library_counts(&self) -> [usize; 4] {
+        [
+            self.all_library_count(),
+            self.library.favorites.len(),
+            self.library.history.len(),
+            self.library_ui.downloaded.len(),
+        ]
     }
 
     pub fn library_rows(&self) -> Vec<&Song> {
@@ -73,6 +73,27 @@ impl App {
             }
         }
         rows
+    }
+
+    fn all_library_count(&self) -> usize {
+        let mut count = 0usize;
+        let mut seen_ids = HashSet::new();
+        let mut seen_titles = HashSet::new();
+        for song in self
+            .library
+            .favorites
+            .iter()
+            .chain(self.library.history.iter())
+            .chain(self.library_ui.downloaded.iter())
+        {
+            let title_key = song.title.trim().to_lowercase();
+            let fresh_id = seen_ids.insert(song.video_id.as_str());
+            let fresh_title = seen_titles.insert(title_key);
+            if fresh_id && fresh_title {
+                count += 1;
+            }
+        }
+        count
     }
 
     pub(in crate::app) fn library_songs(&self) -> Vec<Song> {

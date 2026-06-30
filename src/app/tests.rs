@@ -920,6 +920,48 @@ fn losing_terminal_focus_parks_animations_then_regaining_resumes() {
 }
 
 #[test]
+fn canvas_animation_advances_phase_every_tick_but_caps_redraws() {
+    let mut app = app_playing(1, 0);
+    app.playback.paused = false;
+    app.config.animations.master = true;
+    app.config.animations.rain = true;
+    app.config.animations.fps = 30;
+
+    assert_eq!(app.animation_tick_fps(), 30);
+    assert_eq!(app.animation_draw_fps(), 20);
+
+    let mut redraws = 0;
+    for expected_frame in 1..=30 {
+        app.dirty = false;
+        app.update(Msg::AnimTick);
+        assert_eq!(app.anim_frame, expected_frame);
+        redraws += usize::from(app.dirty);
+    }
+    assert_eq!(redraws, 20);
+}
+
+#[test]
+fn ai_mascot_animation_redraws_only_when_pose_can_change() {
+    let mut app = app_playing(1, 0);
+    app.mode = Mode::Ai;
+    app.playback.paused = false;
+    app.config.animations.master = true;
+    app.config.animations.fps = 30;
+
+    assert!(app.animation_active());
+    assert_eq!(app.animation_tick_fps(), 30);
+    assert_eq!(app.animation_draw_fps(), 3);
+
+    let mut redraws = 0;
+    for _ in 0..30 {
+        app.dirty = false;
+        app.update(Msg::AnimTick);
+        redraws += usize::from(app.dirty);
+    }
+    assert_eq!(redraws, 3);
+}
+
+#[test]
 fn toggling_animations_while_settings_open_survives_close() {
     let mut app = app_playing(1, 0);
     // Open settings; the draft is seeded from the (off) live config.
@@ -3113,6 +3155,8 @@ fn album_art_on_fetches_remote_then_builds_protocol() {
     let mut app = app_playing(3, 0);
     app.config.album_art = Some(true);
     app.art.picker = Some(Picker::halfblocks());
+    let (resize_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    app.set_art_resize_tx(resize_tx);
     // Advancing to id1 now fetches its thumbnail from the remote source.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
     assert!(app.art.loading);

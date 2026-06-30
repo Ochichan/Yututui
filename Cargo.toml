@@ -48,7 +48,7 @@ ratatui = "0.30.2"
 # renderers stamp a per-encode tag into the image's anchor cell so a rebuilt protocol
 # (`App::refresh_art` on a popup toggle) re-transmits once and the art doesn't ghost on Windows
 # Terminal — see `crate::protocol::next_redraw_tag`. Same 11.0.6 otherwise.
-ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+ratatui-image = { version = "11", default-features = false, features = ["crossterm", "tokio"] }
 # Synced-lyrics fetch (lrclib) + raw browse. `native-tls` uses the OS TLS stack —
 # Security.framework on macOS, SChannel on Windows — so there's no bundled C crypto
 # (no aws-lc-sys/NASM): smaller binary, and Windows builds need no extra toolchain.

@@ -66,7 +66,13 @@ pub fn render_segments(
     label_style: Style,
     alignment: Alignment,
 ) {
-    let total: u16 = segments.iter().map(|s| text_width(s.text)).sum();
+    let mut widths = Vec::with_capacity(segments.len());
+    let mut total = 0u16;
+    for seg in segments {
+        let width = text_width(seg.text);
+        total = total.saturating_add(width);
+        widths.push(width);
+    }
     let mut x = match alignment {
         Alignment::Center => area.x + area.width.saturating_sub(total) / 2,
         Alignment::Right => area.x + area.width.saturating_sub(total),
@@ -74,8 +80,7 @@ pub fn render_segments(
     };
 
     let mut spans = Vec::with_capacity(segments.len());
-    for seg in segments {
-        let width = text_width(seg.text);
+    for (seg, width) in segments.iter().zip(widths) {
         let style = if let Some(target) = seg.target {
             app.register_mouse_button(
                 Rect { x, y: area.y, width, height: area.height.min(1) },
@@ -109,8 +114,6 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     const MARGIN: &str = "  ";
     const END_PAD: &str = " ";
 
-    let labels: Vec<String> = ITEMS.iter().map(|mode| format!(" {} ", nav_label(*mode))).collect();
-
     let brand = app.theme.style(R::Accent).add_modifier(Modifier::BOLD);
     let sep = app.theme.style(R::BorderMuted);
     let active = Style::default()
@@ -121,7 +124,7 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
 
     // Left-aligned strip starting at the inner edge. Brand + separator are static labels;
     // each tab is clickable, so we walk `x` in step with the spans to keep hit rects on text.
-    let mut spans = Vec::with_capacity(ITEMS.len() * 2 + 4);
+    let mut spans = Vec::with_capacity(ITEMS.len() * 4 + 4);
     let mut x = area.x;
 
     // Left gutter doubles as the global animation toggle: a ✨ when animations are on, two blank
@@ -147,18 +150,21 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     spans.push(Span::styled(SEP, sep));
     x = x.saturating_add(text_width(SEP));
 
-    for (i, (mode, label)) in ITEMS.iter().zip(&labels).enumerate() {
+    for (i, mode) in ITEMS.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(GAP, muted));
             x = x.saturating_add(text_width(GAP));
         }
-        let w = text_width(label);
+        let label = nav_label(*mode);
+        let w = text_width(label).saturating_add(2);
         app.register_mouse_button(
             Rect { x, y: area.y, width: w, height: area.height.min(1) },
             MouseTarget::Nav(*mode),
         );
         let style = if app.mode == *mode { active } else { muted };
-        spans.push(Span::styled(label.clone(), style));
+        spans.push(Span::styled(" ", style));
+        spans.push(Span::styled(label, style));
+        spans.push(Span::styled(" ", style));
         x = x.saturating_add(w);
     }
     // Right gutter, then render into a rect sized to the text (not the full row) so when this

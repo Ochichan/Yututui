@@ -33,7 +33,8 @@ use app::{App, Cmd, Msg};
 use crossterm::event::EventStream;
 use futures::StreamExt;
 use player::{PlayerCmd, PlayerHandle};
-use std::time::Duration;
+use ratatui_image::thread::ResizeRequest;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
@@ -163,6 +164,105 @@ fn anim_interval(fps: u16) -> tokio::time::Interval {
     tick
 }
 
+struct PerfStats {
+    enabled: bool,
+    last_log: Instant,
+    frames: u64,
+    draw_total: Duration,
+    draw_max: Duration,
+    art_resizes: u64,
+}
+
+impl PerfStats {
+    fn from_env() -> Self {
+        let enabled = std::env::var_os("YTM_PERF").is_some();
+        Self {
+            enabled,
+            last_log: Instant::now(),
+            frames: 0,
+            draw_total: Duration::ZERO,
+            draw_max: Duration::ZERO,
+            art_resizes: 0,
+        }
+    }
+
+    fn record_draw(&mut self, elapsed: Duration) {
+        if !self.enabled {
+            return;
+        }
+        self.frames += 1;
+        self.draw_total += elapsed;
+        self.draw_max = self.draw_max.max(elapsed);
+    }
+
+    fn record_art_resize(&mut self) {
+        if self.enabled {
+            self.art_resizes += 1;
+        }
+    }
+
+    fn maybe_log(&mut self, app: &App) {
+        if !self.enabled || self.last_log.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        let avg_draw_ms = if self.frames == 0 {
+            0.0
+        } else {
+            self.draw_total.as_secs_f64() * 1000.0 / self.frames as f64
+        };
+        let a = app.animations();
+        let active_effects = [
+            a.title,
+            a.heart,
+            a.seekbar,
+            a.spinner,
+            a.eq_bars,
+            a.controls,
+            a.border,
+            a.rain,
+            a.donut,
+            a.visualizer,
+            a.starfield,
+            a.bounce,
+        ]
+        .into_iter()
+        .filter(|on| *on)
+        .count();
+        tracing::info!(
+            target: "ytt::perf",
+            frames = self.frames,
+            avg_draw_ms,
+            max_draw_ms = self.draw_max.as_secs_f64() * 1000.0,
+            art_resizes = self.art_resizes,
+            active_effects,
+            tick_fps = app.animation_tick_fps(),
+            draw_fps = app.animation_draw_fps(),
+            dirty = app.dirty,
+            "perf window"
+        );
+        self.last_log = Instant::now();
+        self.frames = 0;
+        self.draw_total = Duration::ZERO;
+        self.draw_max = Duration::ZERO;
+        self.art_resizes = 0;
+    }
+}
+
+fn draw_app_frame(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &App,
+    perf: &mut PerfStats,
+) -> std::io::Result<()> {
+    let start = perf.enabled.then(Instant::now);
+    let res = tui::draw_frame(terminal, app.synchronized_draw_active(), |f| ui::render(f, app));
+    if res.is_ok()
+        && let Some(start) = start
+    {
+        perf.record_draw(start.elapsed());
+    }
+    res
+}
+
 async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     cfg: config::Config,
@@ -233,6 +333,24 @@ async fn run(
     // select! branch never resolves to `None`.
     let (worker_tx, mut worker_rx) = mpsc::unbounded_channel::<Msg>();
 
+    let (art_resize_tx, mut art_resize_rx) = mpsc::unbounded_channel::<ResizeRequest>();
+    app.set_art_resize_tx(art_resize_tx);
+    let art_resize_msg_tx = worker_tx.clone();
+    tokio::spawn(async move {
+        while let Some(mut request) = art_resize_rx.recv().await {
+            while let Ok(newer) = art_resize_rx.try_recv() {
+                request = newer;
+            }
+            match tokio::task::spawn_blocking(move || request.resize_encode()).await {
+                Ok(Ok(response)) => {
+                    let _ = art_resize_msg_tx.send(Msg::ArtworkResized(response));
+                }
+                Ok(Err(e)) => tracing::warn!(error = ?e, "artwork resize failed"),
+                Err(e) => tracing::warn!(error = ?e, "artwork resize task failed"),
+            }
+        }
+    });
+
     // Signals (SIGINT/TERM/HUP) kill mpv and ask the loop to quit.
     player::lifetime::spawn_signal_handlers(worker_tx.clone());
 
@@ -300,6 +418,7 @@ async fn run(
         worker_tx.clone(),
         cfg.effective_download_dir(),
         cookies_file.clone(),
+        cfg.effective_download_concurrency(),
     );
 
     // Resolver actor: pre-resolves the next track's stream URL for instant skip.
@@ -343,9 +462,10 @@ async fn run(
     // guard is false, this timer never wakes, and the loop stays exactly as light as before.
     // `Skip` drops missed frames so a busy moment can't build up a backlog of redraws. The period
     // is rebuilt below whenever the user changes the rate in Settings.
-    let mut anim_fps = app.config.animations.effective_fps();
+    let mut anim_fps = app.animation_tick_fps();
     let mut anim_tick = anim_interval(anim_fps);
-    tui::draw_synced(terminal, |f| ui::render(f, &app))?;
+    let mut perf = PerfStats::from_env();
+    draw_app_frame(terminal, &app, &mut perf)?;
 
     // Every actor is up and the reducer loop is one statement away from draining `worker_rx`:
     // now start the control server and publish the instance descriptor. Doing it here (rather
@@ -370,8 +490,9 @@ async fn run(
             },
             Some(m) = worker_rx.recv() => m,
             _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
-                tui::draw_synced(terminal, |f| ui::render(f, &app))?;
+                draw_app_frame(terminal, &app, &mut perf)?;
                 app.dirty = false;
+                perf.maybe_log(&app);
                 continue;
             },
             _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
@@ -385,6 +506,7 @@ async fn run(
         // `App::refresh_art`) — the same clean appear/disappear the full-width `?` overlay gets free.
         let overlay_before = app.art_overlay_mask();
 
+        let resized_artwork = matches!(&msg, Msg::ArtworkResized(_));
         for cmd in app.update(msg) {
             match cmd {
                 Cmd::Player(pc) => {
@@ -480,13 +602,17 @@ async fn run(
                 }
             }
         }
+        if resized_artwork {
+            perf.record_art_resize();
+        }
 
         // The frame rate may have changed in Settings (committed to `config.animations` on close).
         // Rebuild the tick so the new rate applies without a relaunch — only when it actually
         // changed, so the common path costs one `u16` compare.
-        let new_fps = app.config.animations.effective_fps();
+        let new_fps = app.animation_tick_fps();
         if new_fps != anim_fps {
             anim_fps = new_fps;
+            app.reset_animation_cadence();
             anim_tick = anim_interval(anim_fps);
         }
 
@@ -498,9 +624,10 @@ async fn run(
             if overlay_before != overlay_after && app.art_active() {
                 app.refresh_art();
             }
-            tui::draw_synced(terminal, |f| ui::render(f, &app))?;
+            draw_app_frame(terminal, &app, &mut perf)?;
             app.dirty = false;
         }
+        perf.maybe_log(&app);
     }
 
     // Close the video overlay (if one is open) so it doesn't outlive the app. This is the single

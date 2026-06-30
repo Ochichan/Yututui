@@ -52,6 +52,19 @@ where
     res.map(|_| ())
 }
 
+/// Draw one frame, using synchronized update only when the caller expects large image/canvas
+/// damage. This keeps ordinary one-line redraws from emitting DECSET ?2026 wrappers.
+pub fn draw_frame<F>(terminal: &mut DefaultTerminal, synchronized: bool, render: F) -> io::Result<()>
+where
+    F: FnOnce(&mut Frame),
+{
+    if synchronized {
+        draw_synced(terminal, render)
+    } else {
+        terminal.draw(render).map(|_| ())
+    }
+}
+
 /// Drain and discard any events already buffered before the main event loop begins. Bounded so a
 /// user holding a key at launch can't make this spin.
 fn flush_pending_input() {

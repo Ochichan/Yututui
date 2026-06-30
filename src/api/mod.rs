@@ -4,14 +4,17 @@
 
 pub mod ytmusic;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::app::Msg;
 use crate::radio::CandidateSource;
+
+const RADIO_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// A search result track, trimmed to what the UI needs. Serializable so the local
 /// library (favorites/history) can persist tracks verbatim. `local_path` is set only for
@@ -223,6 +226,7 @@ async fn run_actor(
     mut rx: UnboundedReceiver<ApiCmd>,
     msg_tx: UnboundedSender<Msg>,
 ) {
+    let mut radio_ytdlp_cache: HashMap<String, (Instant, Vec<Song>)> = HashMap::new();
     while let Some(cmd) = rx.recv().await {
         match cmd {
             ApiCmd::Search(query) => {
@@ -268,11 +272,33 @@ async fn run_actor(
                 let want = limit.saturating_sub(candidates.len());
                 let mut ytdlp_err = None;
                 if want > 0 {
-                    match ytmusic::related_tracks(&seed, want, &seen).await {
+                    let now = Instant::now();
+                    radio_ytdlp_cache.retain(|_, (stored, _)| now.duration_since(*stored) < RADIO_YTDLP_CACHE_TTL);
+                    let cached = radio_ytdlp_cache
+                        .get(&seed)
+                        .filter(|(stored, _)| now.duration_since(*stored) < RADIO_YTDLP_CACHE_TTL)
+                        .map(|(_, songs)| songs.clone());
+                    let ytdlp_pool = match cached {
+                        Some(songs) => Ok(songs),
+                        None => {
+                            let empty = HashSet::new();
+                            match ytmusic::related_tracks(&seed, limit, &empty).await {
+                                Ok(songs) => {
+                                    radio_ytdlp_cache.insert(seed.clone(), (now, songs.clone()));
+                                    Ok(songs)
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                    };
+                    match ytdlp_pool {
                         Ok(songs) => {
                             for s in songs {
                                 if seen.insert(s.video_id.clone()) {
                                     candidates.push((s, CandidateSource::YtdlpRadio));
+                                    if candidates.len() >= limit {
+                                        break;
+                                    }
                                 }
                             }
                         }

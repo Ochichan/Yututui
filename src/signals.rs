@@ -74,6 +74,9 @@ pub struct Signals {
     /// co-occurrence. Insta-skips are excluded (barely-heard tracks aren't real neighbors).
     /// Bounded ring of [`PLAY_LOG_MAX`] events, oldest evicted.
     play_log: VecDeque<(String, i64)>,
+    /// In-memory version for caches derived from `play_log`.
+    #[serde(skip)]
+    play_log_generation: u64,
 }
 
 impl Signals {
@@ -111,6 +114,11 @@ impl Signals {
     /// The raw play sequence (with repeats), for building the co-occurrence graph.
     pub fn play_log(&self) -> &VecDeque<(String, i64)> {
         &self.play_log
+    }
+
+    /// Monotonic in-memory version for radio caches derived from [`Self::play_log`].
+    pub fn play_log_generation(&self) -> u64 {
+        self.play_log_generation
     }
 
     /// Learned affinity for a normalized artist key (0 when unseen), in [-2, 2].
@@ -206,6 +214,7 @@ impl Signals {
         while self.play_log.len() > PLAY_LOG_MAX {
             self.play_log.pop_front();
         }
+        self.play_log_generation = self.play_log_generation.wrapping_add(1);
     }
 
     fn bump_artist(&mut self, artist_key: &str, delta: f32) {

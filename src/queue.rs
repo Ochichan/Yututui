@@ -95,13 +95,20 @@ impl Queue {
         (self.cursor + 1, self.songs.len())
     }
 
-    /// Every queued track in play order — the listing shown by the queue window.
+    /// Every queued track in play order. Tests keep this collecting helper around
+    /// while the UI uses [`ordered_iter`](Self::ordered_iter) to avoid a frame allocation.
+    #[cfg(test)]
     pub fn ordered(&self) -> Vec<&Song> {
-        self.order.iter().filter_map(|&i| self.songs.get(i)).collect()
+        self.ordered_iter().collect()
+    }
+
+    /// Queued tracks in play order without allocating a temporary list.
+    pub fn ordered_iter(&self) -> impl Iterator<Item = &Song> {
+        self.order.iter().filter_map(|&i| self.songs.get(i))
     }
 
     /// The current track's 0-based index within the play order, for highlighting the
-    /// playing row in the queue window. Aligns with [`ordered`](Self::ordered).
+    /// playing row in the queue window. Aligns with [`ordered_iter`](Self::ordered_iter).
     pub fn cursor_pos(&self) -> usize {
         self.cursor
     }
@@ -247,8 +254,9 @@ impl Queue {
         self.current()
     }
 
-    /// Remove the track at order position `pos` (as listed by [`ordered`](Self::ordered)),
-    /// keeping `songs`, `order`, and `cursor` consistent: the song is dropped, every later
+    /// Remove the track at order position `pos` (as listed by
+    /// [`ordered_iter`](Self::ordered_iter)), keeping `songs`, `order`, and `cursor` consistent:
+    /// the song is dropped, every later
     /// `songs` index referenced by `order` is shifted down to match, and the cursor is moved
     /// so the same track stays current when possible. Returns `Some(current_changed)` —
     /// `true` when the removed track was the one playing, so the caller loads the new
