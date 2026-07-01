@@ -278,6 +278,49 @@ fn autoplay_on_start_is_noop_when_disabled() {
 }
 
 #[test]
+fn restores_radio_session_mode_and_last_station_without_autoplaying() {
+    let mut app = App::new(100);
+    app.library.record_play(&radio_station("older"));
+    app.library.record_play(&radio_station("latest"));
+
+    app.restore_last_session_from_library(true);
+
+    assert!(app.radio_dedicated_mode);
+    assert_eq!(app.theme.preset, "dario");
+    assert_eq!(app.search.source, SearchSource::RadioBrowser);
+    assert_eq!(app.library_tabs(), &LibraryTab::RADIO_MODE);
+    assert_eq!(app.queue.len(), 1);
+    assert_eq!(current(&app), "rad:latest");
+    assert!(app.playback.paused);
+    assert!(app.prefetch.loaded_video_id.is_none());
+}
+
+#[test]
+fn restores_cached_radio_mode_even_without_recent_station() {
+    let mut app = App::new(100);
+
+    app.restore_last_session_from_library(true);
+
+    assert!(app.radio_dedicated_mode);
+    assert_eq!(app.search.source, SearchSource::RadioBrowser);
+    assert!(app.queue.is_empty());
+}
+
+#[test]
+fn restores_normal_session_mode_from_song_history() {
+    let mut app = App::new(100);
+    app.library.record_play(&radio_station("station"));
+    app.library.record_play(&songs(1)[0]);
+
+    app.restore_last_session_from_library(false);
+
+    assert!(!app.radio_dedicated_mode);
+    assert_eq!(app.queue.len(), 1);
+    assert_eq!(current(&app), "id0");
+    assert!(app.playback.paused);
+}
+
+#[test]
 fn up_down_adjust_volume_in_player_mode() {
     let mut app = App::new(50);
     let cmds = app.update(Msg::Key(key(KeyCode::Up)));

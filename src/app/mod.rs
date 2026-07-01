@@ -518,22 +518,7 @@ impl App {
         }
         self.normal_mode_theme = Some(self.theme.clone());
         self.normal_mode_queue = Some(self.queue.snapshot());
-        self.radio_dedicated_mode = true;
-        self.theme = self
-            .radio_mode_theme
-            .clone()
-            .unwrap_or_else(ThemeConfig::dario);
-        self.search.source = SearchSource::RadioBrowser;
-        self.search.searching = false;
-        self.search.results.clear();
-        self.search.selected = 0;
-        self.search.focus = SearchFocus::Input;
-        self.bridges.search_scroll.reset();
-        self.library_ui.tab = LibraryTab::RadioFavorites;
-        self.clear_library_filter();
-        self.dropdowns.eq_open = false;
-        self.dropdowns.streaming_open = false;
-        self.dropdowns.search_source_open = false;
+        self.activate_radio_dedicated_mode_ui();
         let restore = self.radio_mode_queue.take();
         let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
         self.status.kind = StatusKind::Info;
@@ -569,6 +554,27 @@ impl App {
         self.status.text = t!("Radio mode disabled", "라디오 모드 꺼짐").to_owned();
         self.dirty = true;
         cmds
+    }
+
+    fn activate_radio_dedicated_mode_ui(&mut self) {
+        self.radio_dedicated_mode = true;
+        self.theme = self
+            .radio_mode_theme
+            .clone()
+            .unwrap_or_else(ThemeConfig::dario);
+        self.search.source = SearchSource::RadioBrowser;
+        self.search.searching = false;
+        self.search.results.clear();
+        self.search.selected = 0;
+        self.search.focus = SearchFocus::Input;
+        self.bridges.search_scroll.reset();
+        self.library_ui.tab = LibraryTab::RadioFavorites;
+        self.clear_library_filter();
+        self.dropdowns.eq_open = false;
+        self.dropdowns.streaming_open = false;
+        self.dropdowns.search_source_open = false;
+        self.ensure_radio_mode_constraints();
+        self.dirty = true;
     }
 
     fn stop_clear_and_restore_queue_for_mode_switch(
@@ -617,6 +623,14 @@ impl App {
 
     /// Seed the player with the last locally recorded track, without starting playback.
     /// This gives a fresh launch something useful to show while keeping autoplay opt-in.
+    pub fn restore_last_session_from_library(&mut self, radio_mode: bool) {
+        if radio_mode {
+            self.restore_last_radio_from_library();
+        } else {
+            self.restore_last_played_from_library();
+        }
+    }
+
     pub fn restore_last_played_from_library(&mut self) {
         if !self.queue.is_empty() {
             return;
@@ -624,10 +638,31 @@ impl App {
         let Some(song) = self.library.history.front().cloned() else {
             return;
         };
+        self.seed_restored_queue(song);
+    }
+
+    /// Restore dedicated Radio mode and seed the last played radio station, without starting
+    /// playback. The station itself comes from the persisted radio history.
+    pub fn restore_last_radio_from_library(&mut self) {
+        if !self.radio_dedicated_mode {
+            self.normal_mode_theme = Some(self.theme.clone());
+        }
+        self.activate_radio_dedicated_mode_ui();
+        if !self.queue.is_empty() {
+            return;
+        }
+        let Some(station) = self.library.radios.front().cloned() else {
+            return;
+        };
+        self.seed_restored_queue(station);
+    }
+
+    fn seed_restored_queue(&mut self, song: Song) {
         self.queue.set(vec![song], 0);
         self.playback.time_pos = None;
         self.playback.duration = None;
         self.playback.paused = true;
+        self.playback.stream_now_playing = None;
         self.last_shown_sec = -1;
         self.prefetch.loaded_video_id = None;
         self.status.text.clear();

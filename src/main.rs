@@ -21,6 +21,7 @@ mod remote;
 mod resolver;
 mod romanize;
 mod search_source;
+mod session;
 mod settings;
 mod signals;
 mod station;
@@ -534,6 +535,7 @@ async fn run(
     log_art_picker(app.art.picker.as_ref());
     // Load the local library (favorites + history); an absent/corrupt file → empty.
     app.library = library::Library::load();
+    let session_cache = session::SessionCache::load();
     // Load per-track preference signals (plays/skips/dislikes); absent → empty.
     app.signals = signals::Signals::load();
     // Load the downloads manifest, then enrich the bare disk scan with each track's remembered
@@ -542,7 +544,6 @@ async fn run(
     app.download_store = downloads::DownloadStore::load();
     let scanned = library::scan_downloads(&cfg.effective_download_dir());
     app.library_ui.downloaded = app.enrich_downloads(scanned);
-    app.restore_last_played_from_library();
     // Load local playlists (the DJ Gem playlist tools read/write these).
     app.playlists = playlists::Playlists::load();
     // Load the active natural-language station profile (explore level + avoided artists), if any.
@@ -552,6 +553,7 @@ async fn run(
     app.romanization.cache = romanize::RomanizeCache::load();
     // Push persisted playback/EQ settings (preset, bands, normalize, speed, autoplay).
     app.apply_config(&cfg);
+    app.restore_last_session_from_library(session_cache.was_radio_mode());
     startup.mark("app_state_loaded");
 
     let mut perf = PerfStats::from_env();
@@ -944,7 +946,8 @@ async fn run(
     // Close the video overlay (if one is open) so it doesn't outlive the app. This is the single
     // cleanup chokepoint: every quit path just sets `should_quit` and falls out of the loop here.
     app.close_video();
-    // Belt-and-suspenders: persist the library + signals + downloads manifest on a clean exit too.
+    // Belt-and-suspenders: persist the last UI mode + library/signals/downloads on a clean exit too.
+    let _ = session::SessionCache::from_radio_mode(app.radio_dedicated_mode).save();
     let _ = app.library.save();
     let _ = app.signals.save();
     let _ = app.download_store.save();
