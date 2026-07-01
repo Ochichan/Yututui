@@ -25,7 +25,7 @@ required-features = ["desktop-tray"]
 
 [features]
 default = []
-desktop-tray = ["dep:tao", "dep:tray-icon"]
+desktop-tray = ["dep:tao", "dep:tray-icon", "dep:wry"]
 
 [dependencies]
 anyhow = "1.0.103"
@@ -86,6 +86,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # hand, so it needs the same cell-width ratatui uses — `chars().count()` is wrong for
 # those. Already in the tree via ratatui, so this pins no extra copy.
 unicode-width = "0.2"
+wry = { version = "0.55.1", default-features = false, features = ["os-webview"], optional = true }
 
 [build-dependencies]
 embed-resource = "3.0.9"

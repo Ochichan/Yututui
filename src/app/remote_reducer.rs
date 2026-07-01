@@ -8,7 +8,8 @@
 
 use super::*;
 use crate::remote::proto::{
-    InstanceMode, RemoteCommand, RemoteResponse, StatusSnapshot, ToggleState,
+    InstanceMode, RemoteCommand, RemoteResponse, RemoteSettingChange, SettingsSnapshot,
+    StatusSnapshot, ToggleState,
 };
 
 impl App {
@@ -51,6 +52,7 @@ impl App {
                 (RemoteResponse::ok(self.now_playing_line()), cmds)
             }
             RemoteCommand::Streaming { state } => self.remote_set_streaming(state),
+            RemoteCommand::SetSetting { change } => self.remote_set_setting(change),
             RemoteCommand::ResumeSession => self.remote_resume_session(),
             RemoteCommand::Status => (RemoteResponse::status(self.status_snapshot()), Vec::new()),
             RemoteCommand::Quit => {
@@ -68,7 +70,10 @@ impl App {
             return (RemoteResponse::err("session_empty"), Vec::new());
         }
         let song = self.queue.current().cloned();
-        let cmds = self.load_song(song);
+        let mut cmds = self.load_song(song);
+        if self.autoplay_streaming {
+            cmds.extend(self.force_autoplay_extend());
+        }
         (RemoteResponse::status(self.status_snapshot()), cmds)
     }
 
@@ -85,12 +90,133 @@ impl App {
         self.dirty = true;
         let mut cmds = vec![self.save_playback_modes_cmd()];
         if on {
-            cmds.extend(self.maybe_autoplay_extend());
+            cmds.extend(self.force_autoplay_extend());
         }
         (
             RemoteResponse::ok(format!("streaming {}", if on { "on" } else { "off" })),
             cmds,
         )
+    }
+
+    fn remote_set_setting(&mut self, change: RemoteSettingChange) -> (RemoteResponse, Vec<Cmd>) {
+        match change {
+            RemoteSettingChange::AutoplayStreaming { value } => {
+                self.remote_set_streaming(if value {
+                    ToggleState::On
+                } else {
+                    ToggleState::Off
+                })
+            }
+            RemoteSettingChange::StreamingMode { value } => {
+                self.config.streaming.mode = value;
+                self.status.text = format!("Streaming mode: {}", value.label());
+                self.dirty = true;
+                let mut cmds = vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
+                if self.autoplay_streaming {
+                    cmds.extend(self.force_autoplay_extend());
+                }
+                (RemoteResponse::status(self.status_snapshot()), cmds)
+            }
+            RemoteSettingChange::StreamingSource { value } => {
+                let search = self.config.effective_search();
+                let source = search.normalized_streaming_source(value);
+                self.config.search.streaming_source = source;
+                self.status.text = format!("Streaming source: {}", source.label());
+                self.dirty = true;
+                let mut cmds = vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
+                if self.autoplay_streaming {
+                    cmds.extend(self.force_autoplay_extend());
+                }
+                (RemoteResponse::status(self.status_snapshot()), cmds)
+            }
+            RemoteSettingChange::Speed { tenths } => {
+                let speed = settings::clamp_speed(f64::from(tenths) / 10.0);
+                self.playback.speed = speed;
+                self.config.speed = Some(speed);
+                self.status.text = format!("{}: {:.1}x", t!("Speed", "재생 속도"), speed);
+                self.dirty = true;
+                (
+                    RemoteResponse::status(self.status_snapshot()),
+                    vec![
+                        Cmd::SaveConfig(Box::new(self.config.clone())),
+                        Cmd::Player(PlayerCmd::SetProperty {
+                            name: "speed".to_owned(),
+                            value: serde_json::Value::from(speed),
+                        }),
+                    ],
+                )
+            }
+            RemoteSettingChange::SeekSeconds { seconds } => {
+                let seek_seconds = settings::clamp_seek_seconds(f64::from(seconds));
+                self.audio.seek_seconds = seek_seconds;
+                self.config.seek_seconds = Some(seek_seconds);
+                self.status.text = format!("Seek step: {:.0}s", seek_seconds);
+                self.dirty = true;
+                (
+                    RemoteResponse::status(self.status_snapshot()),
+                    vec![Cmd::SaveConfig(Box::new(self.config.clone()))],
+                )
+            }
+            RemoteSettingChange::Normalize { value } => {
+                self.audio.normalize = value;
+                self.config.normalize = Some(value);
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Normalize", "노멀라이즈"),
+                    if value { "✓" } else { "✗" }
+                );
+                self.dirty = true;
+                (
+                    RemoteResponse::status(self.status_snapshot()),
+                    vec![
+                        Cmd::SaveConfig(Box::new(self.config.clone())),
+                        Cmd::Player(PlayerCmd::SetAudioFilter(
+                            self.current_af().unwrap_or_default(),
+                        )),
+                    ],
+                )
+            }
+            RemoteSettingChange::Gapless { value } => {
+                self.config.gapless = Some(value);
+                self.status.text = format!("Gapless: {}", if value { "on" } else { "off" });
+                self.dirty = true;
+                (
+                    RemoteResponse::status(self.status_snapshot()),
+                    vec![Cmd::SaveConfig(Box::new(self.config.clone()))],
+                )
+            }
+            RemoteSettingChange::AiEnabled { value } => {
+                let old_ai_enabled = self.config.effective_ai_enabled();
+                self.config.ai_enabled = Some(value);
+                if !value {
+                    self.ai.available = false;
+                    self.ai.thinking = false;
+                    self.streaming.pending_rerank = None;
+                }
+                self.status.text = format!("DJ Gem: {}", if value { "on" } else { "off" });
+                self.dirty = true;
+                let mut cmds = vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
+                if self.config.effective_ai_enabled() != old_ai_enabled {
+                    cmds.push(Cmd::ReloadAi {
+                        key: self.config.effective_ai_service_key(),
+                        model: self.ai.model,
+                        assistant_enabled: self.config.effective_ai_enabled(),
+                    });
+                }
+                (RemoteResponse::status(self.status_snapshot()), cmds)
+            }
+            RemoteSettingChange::RadioMode { state } => {
+                let next = state.resolve(self.radio_dedicated_mode);
+                let cmds = if next == self.radio_dedicated_mode {
+                    Vec::new()
+                } else if next {
+                    self.apply_radio_mode_confirm(RadioModeConfirm::Enter)
+                } else {
+                    self.apply_radio_mode_confirm(RadioModeConfirm::Exit)
+                };
+                (RemoteResponse::status(self.status_snapshot()), cmds)
+            }
+        }
     }
 
     /// A transport response: the now-playing line on success, or `queue_empty` when nothing
@@ -129,6 +255,11 @@ impl App {
     fn status_snapshot(&self) -> StatusSnapshot {
         let cur = self.queue.current();
         let (position, total) = self.queue.position();
+        let mut settings = SettingsSnapshot::from_config(&self.config, self.radio_dedicated_mode);
+        settings.autoplay_streaming = self.autoplay_streaming;
+        settings.speed_tenths = (self.playback.speed * 10.0).round() as u16;
+        settings.seek_seconds = self.audio.seek_seconds.round() as u16;
+        settings.normalize = self.audio.normalize;
         StatusSnapshot {
             title: cur.map(|s| self.display_title(s).into_owned()),
             artist: cur.map(|s| self.display_artist(s).into_owned()),
@@ -138,6 +269,7 @@ impl App {
             total,
             streaming: self.autoplay_streaming,
             owner_mode: InstanceMode::StandaloneTui,
+            settings,
         }
     }
 }
@@ -154,6 +286,17 @@ mod tests {
                 Song::remote("id0", "Zero", "A", "3:00"),
                 Song::remote("id1", "One", "B", "3:00"),
             ],
+            0,
+        );
+        app
+    }
+
+    fn six_track_app() -> App {
+        let mut app = App::new(50);
+        app.queue.set(
+            (0..6)
+                .map(|i| Song::remote(format!("id{i}"), format!("Track {i}"), "A", "3:00"))
+                .collect(),
             0,
         );
         app
@@ -199,6 +342,132 @@ mod tests {
             state: ToggleState::Toggle,
         });
         assert!(app.autoplay_streaming);
+    }
+
+    #[test]
+    fn streaming_on_forces_refill_even_when_queue_is_not_low() {
+        let mut app = six_track_app();
+        assert!(app.queue.remaining() > AUTOPLAY_THRESHOLD);
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::Streaming {
+            state: ToggleState::On,
+        });
+
+        assert!(resp.ok);
+        assert!(app.autoplay_streaming);
+        assert!(app.streaming.pending);
+        assert!(cmds.iter().any(|cmd| matches!(
+            cmd,
+            Cmd::StreamingFallback {
+                seed_video_id,
+                ..
+            } if seed_video_id == "id0"
+        )));
+    }
+
+    #[test]
+    fn streaming_source_change_forces_refill_while_streaming_is_on() {
+        let mut app = six_track_app();
+        app.autoplay_streaming = true;
+        app.streaming.last_extend = Some(Instant::now());
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::SetSetting {
+            change: RemoteSettingChange::StreamingSource {
+                value: SearchSource::Jamendo,
+            },
+        });
+
+        assert!(resp.ok);
+        assert!(app.streaming.pending);
+        assert!(
+            cmds.iter()
+                .any(|cmd| matches!(cmd, Cmd::StreamingFallback { .. }))
+        );
+    }
+
+    #[test]
+    fn disabling_dj_gem_forces_streaming_results_to_local_path() {
+        let mut app = two_track_app();
+        app.autoplay_streaming = true;
+        app.ai.available = true;
+
+        let (resp, _) = app.apply_remote(RemoteCommand::SetSetting {
+            change: RemoteSettingChange::AiEnabled { value: false },
+        });
+        assert!(resp.ok);
+        assert!(!app.ai.available);
+
+        let before = app.queue.len();
+        let cmds = app.update(Msg::StreamingResults {
+            seed_video_id: "id0".to_owned(),
+            candidates: vec![(
+                Song::remote("cand1", "Candidate", "B", "3:00"),
+                CandidateSource::YtdlpStreaming,
+            )],
+        });
+
+        assert!(cmds.iter().all(|cmd| !matches!(cmd, Cmd::AiRerank { .. })));
+        assert!(app.queue.len() > before);
+    }
+
+    #[test]
+    fn setting_command_updates_streaming_mode_and_source() {
+        let mut app = App::new(50);
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::SetSetting {
+            change: RemoteSettingChange::StreamingMode {
+                value: StreamingMode::Discovery,
+            },
+        });
+        assert!(resp.ok);
+        assert_eq!(app.config.streaming.mode, StreamingMode::Discovery);
+        assert!(cmds.iter().any(|cmd| matches!(cmd, Cmd::SaveConfig(_))));
+
+        app.apply_remote(RemoteCommand::SetSetting {
+            change: RemoteSettingChange::StreamingSource {
+                value: SearchSource::Jamendo,
+            },
+        });
+        assert_eq!(app.config.search.streaming_source, SearchSource::Jamendo);
+    }
+
+    #[test]
+    fn setting_command_updates_playback_speed_live() {
+        let mut app = App::new(50);
+        let (resp, cmds) = app.apply_remote(RemoteCommand::SetSetting {
+            change: RemoteSettingChange::Speed { tenths: 13 },
+        });
+
+        assert!(resp.ok);
+        assert_eq!(app.playback.speed, 1.3);
+        assert_eq!(app.config.speed, Some(1.3));
+        assert!(cmds.iter().any(|cmd| {
+            matches!(
+                cmd,
+                Cmd::Player(PlayerCmd::SetProperty { name, value })
+                    if name == "speed" && value == &serde_json::Value::from(1.3)
+            )
+        }));
+    }
+
+    #[test]
+    fn setting_command_can_toggle_radio_mode_for_tui_owner() {
+        let mut app = App::new(50);
+
+        let (resp, _) = app.apply_remote(RemoteCommand::SetSetting {
+            change: RemoteSettingChange::RadioMode {
+                state: ToggleState::On,
+            },
+        });
+        assert!(resp.ok);
+        assert!(app.radio_dedicated_mode);
+
+        app.apply_remote(RemoteCommand::SetSetting {
+            change: RemoteSettingChange::RadioMode {
+                state: ToggleState::Off,
+            },
+        });
+        assert!(!app.radio_dedicated_mode);
     }
 
     #[test]

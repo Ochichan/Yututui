@@ -58,9 +58,9 @@ fn print_help() {
     println!("Options:");
     println!("      --background Run the tray companion from a startup entry");
     println!("      --install-startup");
-    println!("                   Enable Windows login startup for ytt-tray");
+    println!("                   Enable login startup for ytt-tray");
     println!("      --uninstall-startup");
-    println!("                   Disable Windows login startup for ytt-tray");
+    println!("                   Disable login startup for ytt-tray");
     println!("      --startup-status");
     println!("                   Print the current startup registration state");
     println!("      --once       Print the current OS-neutral menu model and exit");

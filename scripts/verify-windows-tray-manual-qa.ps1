@@ -60,6 +60,7 @@ Assert-File "startup-uninstall-after.txt" | Out-Null
 Assert-File "startup-status-after-uninstall.txt" | Out-Null
 Assert-File "open-tui-plan.txt" | Out-Null
 Assert-File "tray-process-start.txt" | Out-Null
+Assert-File "mini-player-disconnected.png" | Out-Null
 Assert-File "tray-process-idle.txt" | Out-Null
 Assert-File "tray-visual-check.png" | Out-Null
 Assert-File "tray-scale-100.png" | Out-Null
@@ -71,6 +72,7 @@ Assert-File "ytt-process-before-daemon.txt" | Out-Null
 Assert-File "mpv-process-before-daemon.txt" | Out-Null
 Assert-File "daemon-status-idle.txt" | Out-Null
 Assert-File "daemon-status-resumed.txt" | Out-Null
+Assert-File "mini-player-playback.png" | Out-Null
 Assert-File "daemon-status-after-stop.txt" | Out-Null
 Assert-File "mpv-after-idle-daemon.txt" | Out-Null
 Assert-File "mpv-after-resume-daemon.txt" | Out-Null
@@ -87,14 +89,19 @@ Assert-True ($results.ytt_tray_subsystem -eq 2) "ytt-tray.exe was not recorded a
 Assert-ResultTrue -Results $results -Name "startup_roundtrip"
 Assert-ResultTrue -Results $results -Name "no_console_window"
 Assert-ResultTrue -Results $results -Name "notification_icon_visible"
+Assert-ResultTrue -Results $results -Name "left_click_menu_opens"
 Assert-ResultTrue -Results $results -Name "right_click_menu_opens"
+Assert-ResultTrue -Results $results -Name "mini_player_opens"
+Assert-ResultTrue -Results $results -Name "mini_player_disconnected_state"
 Assert-ResultTrue -Results $results -Name "open_tui_launches_terminal"
+Assert-ResultTrue -Results $results -Name "ytt_taskbar_clicks_do_not_crash"
 Assert-ResultTrue -Results $results -Name "shortcut_icon_correct"
 Assert-ResultTrue -Results $results -Name "explorer_restart_recovered_icon"
 Assert-ResultTrue -Results $results -Name "idle_daemon_has_no_mpv_child"
 Assert-ResultTrue -Results $results -Name "resume_started_music_without_terminal"
 Assert-ResultTrue -Results $results -Name "tray_status_updates"
 Assert-ResultTrue -Results $results -Name "playback_menu_controls_work"
+Assert-ResultTrue -Results $results -Name "mini_player_playback_controls_work"
 Assert-ResultTrue -Results $results -Name "stop_daemon_reaped_mpv"
 Assert-ResultTrue -Results $results -Name "quit_player_keeps_tray"
 Assert-ResultTrue -Results $results -Name "quit_tray_exits_only_tray"

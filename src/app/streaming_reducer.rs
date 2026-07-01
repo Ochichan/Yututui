@@ -7,10 +7,18 @@ impl App {
     /// paths fetch the *same* local candidate pool first; the DJ Gem reranker (when a key is
     /// configured) then reorders it in [`Msg::StreamingResults`]. The DJ Gem never invents tracks.
     pub(in crate::app) fn maybe_autoplay_extend(&mut self) -> Vec<Cmd> {
+        self.autoplay_extend(false)
+    }
+
+    pub(in crate::app) fn force_autoplay_extend(&mut self) -> Vec<Cmd> {
+        self.autoplay_extend(true)
+    }
+
+    fn autoplay_extend(&mut self, force: bool) -> Vec<Cmd> {
         if !self.autoplay_streaming {
             return Vec::new();
         }
-        if self.queue.remaining() > AUTOPLAY_THRESHOLD {
+        if !force && self.queue.remaining() > AUTOPLAY_THRESHOLD {
             return Vec::new();
         }
         // One refill in flight at a time: the pool fetch (`streaming.pending`) or, when the DJ Gem
@@ -22,7 +30,7 @@ impl App {
             Some(t) => t.elapsed() >= AUTOPLAY_COOLDOWN,
             None => true,
         };
-        if !cooled {
+        if !force && !cooled {
             return Vec::new();
         }
         let Some(cur) = self.queue.current() else {

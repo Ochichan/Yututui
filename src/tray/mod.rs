@@ -7,6 +7,7 @@
 pub mod control;
 pub mod launch;
 pub mod menu_model;
+pub mod panel;
 pub mod startup;
 pub mod status;
 

@@ -7,12 +7,14 @@ use serde_json::Value;
 
 use crate::api::ytmusic::YtMusicApi;
 use crate::api::{ApiEvent, Song};
-use crate::config::Config;
+use crate::config::{Config, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
+use crate::eq;
 use crate::library::Library;
 use crate::player::{self, PlayerCmd, PlayerEvent, PlayerHandle};
 use crate::queue::{Queue, QueueSnapshot};
 use crate::remote::proto::{
-    InstanceMode, RemoteCommand, RemoteResponse, StatusSnapshot, ToggleState,
+    InstanceMode, RemoteCommand, RemoteResponse, RemoteSettingChange, SettingsSnapshot,
+    StatusSnapshot, ToggleState,
 };
 use crate::search_source::SearchConfig;
 use crate::session::{LastMode, SessionCache};
@@ -31,6 +33,14 @@ const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
 const AUTOPLAY_MAX_FAILURES: u8 = 3;
 const MAX_CONSECUTIVE_PLAY_ERRORS: u8 = 3;
 const SESSION_EVENTS_CAP: usize = 20;
+
+fn clamp_speed(speed: f64) -> f64 {
+    ((speed * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX)
+}
+
+fn clamp_seek_seconds(seconds: f64) -> f64 {
+    seconds.round().clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
+}
 
 pub struct EngineOptions {
     pub resume: bool,
@@ -236,9 +246,14 @@ impl DaemonEngine {
                 effects.extend(streaming_effects);
                 response
             }
+            RemoteCommand::SetSetting { change } => {
+                let (response, setting_effects) = self.set_setting(change);
+                effects.extend(setting_effects);
+                response
+            }
             RemoteCommand::ResumeSession => {
                 let response = self.resume_session().await;
-                effects.extend(self.maybe_autoplay_extend());
+                effects.extend(self.force_autoplay_extend());
                 response
             }
         };
@@ -324,6 +339,8 @@ impl DaemonEngine {
             self.queue.position()
         };
         let current = self.queue.current();
+        let mut settings = SettingsSnapshot::from_config(&self.config, false);
+        settings.autoplay_streaming = self.streaming;
         StatusSnapshot {
             title: current.map(|song| song.title.clone()),
             artist: current.map(|song| song.artist.clone()),
@@ -333,6 +350,7 @@ impl DaemonEngine {
             total,
             streaming: self.streaming,
             owner_mode: InstanceMode::Daemon,
+            settings,
         }
     }
 
@@ -516,11 +534,87 @@ impl DaemonEngine {
             tracing::warn!(error = %e, "failed to save daemon autoplay streaming setting");
         }
         let effects = if self.streaming {
-            self.maybe_autoplay_extend()
+            self.force_autoplay_extend()
         } else {
             Vec::new()
         };
         (RemoteResponse::status(self.status()), effects)
+    }
+
+    fn set_setting(&mut self, change: RemoteSettingChange) -> (RemoteResponse, Vec<EngineEffect>) {
+        match change {
+            RemoteSettingChange::AutoplayStreaming { value } => self.set_streaming(if value {
+                ToggleState::On
+            } else {
+                ToggleState::Off
+            }),
+            RemoteSettingChange::StreamingMode { value } => {
+                self.config.streaming.mode = value;
+                self.save_config("daemon streaming mode setting");
+                let effects = if self.streaming {
+                    self.force_autoplay_extend()
+                } else {
+                    Vec::new()
+                };
+                (RemoteResponse::status(self.status()), effects)
+            }
+            RemoteSettingChange::StreamingSource { value } => {
+                let search = self.config.effective_search();
+                self.config.search.streaming_source = search.normalized_streaming_source(value);
+                self.save_config("daemon streaming source setting");
+                let effects = if self.streaming {
+                    self.force_autoplay_extend()
+                } else {
+                    Vec::new()
+                };
+                (RemoteResponse::status(self.status()), effects)
+            }
+            RemoteSettingChange::Speed { tenths } => {
+                let speed = clamp_speed(f64::from(tenths) / 10.0);
+                self.config.speed = Some(speed);
+                if let Some(player) = &self.player {
+                    player.handle.send(PlayerCmd::SetProperty {
+                        name: "speed".to_owned(),
+                        value: Value::from(speed),
+                    });
+                }
+                self.save_config("daemon speed setting");
+                (RemoteResponse::status(self.status()), Vec::new())
+            }
+            RemoteSettingChange::SeekSeconds { seconds } => {
+                self.config.seek_seconds = Some(clamp_seek_seconds(f64::from(seconds)));
+                self.save_config("daemon seek step setting");
+                (RemoteResponse::status(self.status()), Vec::new())
+            }
+            RemoteSettingChange::Normalize { value } => {
+                self.config.normalize = Some(value);
+                let af = self.current_audio_filter();
+                if let Some(player) = &self.player {
+                    player.handle.send(PlayerCmd::SetAudioFilter(af));
+                }
+                self.save_config("daemon normalize setting");
+                (RemoteResponse::status(self.status()), Vec::new())
+            }
+            RemoteSettingChange::Gapless { value } => {
+                self.config.gapless = Some(value);
+                self.save_config("daemon gapless setting");
+                (RemoteResponse::status(self.status()), Vec::new())
+            }
+            RemoteSettingChange::AiEnabled { value } => {
+                self.config.ai_enabled = Some(value);
+                self.save_config("daemon DJ Gem setting");
+                (RemoteResponse::status(self.status()), Vec::new())
+            }
+            RemoteSettingChange::RadioMode { .. } => {
+                (RemoteResponse::err("radio_mode_unavailable"), Vec::new())
+            }
+        }
+    }
+
+    fn save_config(&self, context: &str) {
+        if let Err(e) = self.config.save() {
+            tracing::warn!(error = %e, "failed to save {context}");
+        }
     }
 
     async fn advance_after_end(&mut self) -> Vec<EngineEffect> {
@@ -617,6 +711,7 @@ impl DaemonEngine {
                 value: Value::from(speed),
             });
         }
+        handle.send(PlayerCmd::SetAudioFilter(self.current_audio_filter()));
         self.player = Some(PlayerRuntime {
             handle,
             _guard: guard,
@@ -624,11 +719,31 @@ impl DaemonEngine {
         Ok(())
     }
 
+    fn current_audio_filter(&self) -> String {
+        eq::build_af_string(
+            &self.config.effective_eq_bands(),
+            self.config.effective_normalize(),
+        )
+        .unwrap_or_default()
+    }
+
     fn maybe_autoplay_extend(&mut self) -> Vec<EngineEffect> {
-        if !self.streaming
-            || self.queue.remaining() > AUTOPLAY_THRESHOLD
-            || self.streaming_pending
-            || self
+        self.autoplay_extend(false)
+    }
+
+    fn force_autoplay_extend(&mut self) -> Vec<EngineEffect> {
+        self.autoplay_extend(true)
+    }
+
+    fn autoplay_extend(&mut self, force: bool) -> Vec<EngineEffect> {
+        if !self.streaming || self.streaming_pending {
+            return Vec::new();
+        }
+        if !force && self.queue.remaining() > AUTOPLAY_THRESHOLD {
+            return Vec::new();
+        }
+        if !force
+            && self
                 .last_extend
                 .is_some_and(|t| t.elapsed() < AUTOPLAY_COOLDOWN)
         {
@@ -1105,6 +1220,47 @@ mod tests {
             _ => panic!("expected streaming fallback"),
         }
         assert!(engine.streaming_pending);
+    }
+
+    #[tokio::test]
+    async fn streaming_on_forces_request_even_when_queue_is_not_low() {
+        let mut engine = engine_with_queue(&["seed", "a", "b", "c", "d", "e"]);
+        engine.last_extend = Some(Instant::now());
+        assert!(engine.queue.remaining() > AUTOPLAY_THRESHOLD);
+
+        let (response, shutdown, effects) = engine
+            .handle_remote(RemoteCommand::Streaming {
+                state: ToggleState::On,
+            })
+            .await;
+
+        assert!(response.ok);
+        assert!(!shutdown);
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(
+            &effects[0],
+            EngineEffect::StreamingFallback { seed_video_id, .. } if seed_video_id == "seed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn streaming_on_forces_request_with_dj_gem_setting_off_too() {
+        let mut engine = engine_with_queue(&["seed", "a", "b", "c", "d", "e"]);
+        engine.config.ai_enabled = Some(false);
+        assert!(engine.queue.remaining() > AUTOPLAY_THRESHOLD);
+
+        let (response, shutdown, effects) = engine
+            .handle_remote(RemoteCommand::Streaming {
+                state: ToggleState::On,
+            })
+            .await;
+
+        assert!(response.ok);
+        assert!(!shutdown);
+        assert!(matches!(
+            effects.as_slice(),
+            [EngineEffect::StreamingFallback { seed_video_id, .. }] if seed_video_id == "seed"
+        ));
     }
 
     #[test]

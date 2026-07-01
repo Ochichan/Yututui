@@ -252,8 +252,17 @@ try {
 
     Ask-Check -Key "no_console_window" -Prompt "No console window remains open for ytt-tray.exe"
     Ask-Check -Key "notification_icon_visible" -Prompt "Notification-area icon is visible or present in overflow"
-    Ask-Check -Key "right_click_menu_opens" -Prompt "Right click opens the tray context menu"
+    Ask-Check -Key "left_click_menu_opens" -Prompt "Left click opens the tray context menu and ytt-tray.exe stays running"
+    Assert-TrayProcessRunning -Label "left click tray menu"
+    Ask-Check -Key "right_click_menu_opens" -Prompt "Right click opens the tray context menu and ytt-tray.exe stays running"
+    Assert-TrayProcessRunning -Label "right click tray menu"
+    Read-Host "Use the tray menu to choose Show Mini Player, then press Enter"
+    Assert-TrayProcessRunning -Label "Show Mini Player"
+    Capture-Screen -Name "mini-player-disconnected" | Out-Null
+    Ask-Check -Key "mini_player_opens" -Prompt "Show Mini Player opens a compact YtmTui Mini Player window"
+    Ask-Check -Key "mini_player_disconnected_state" -Prompt "Mini Player shows disconnected or idle state with playback buttons disabled before a track is loaded"
     Ask-Check -Key "open_tui_launches_terminal" -Prompt "Open TUI launches Windows Terminal, PowerShell, or cmd"
+    Ask-Check -Key "ytt_taskbar_clicks_do_not_crash" -Prompt "With the launched ytt.exe window open, left and right clicking its taskbar button does not close or crash ytt.exe"
     Ask-Check -Key "shortcut_icon_correct" -Prompt "Start Menu/Explorer shortcut displays the expected icon"
     Read-Host "Close any ytt terminal/player opened by Open TUI, then press Enter"
 
@@ -293,6 +302,9 @@ try {
         Ask-Check -Key "resume_started_music_without_terminal" -Prompt "Resume Last Session started music without opening a terminal window"
         Ask-Check -Key "tray_status_updates" -Prompt "Tray title/status updated for daemon playback"
         Ask-Check -Key "playback_menu_controls_work" -Prompt "Play/Pause, Next, and Previous worked from the tray menu"
+        Read-Host "Bring the Mini Player window to the front, then press Enter to capture playback state"
+        Capture-Screen -Name "mini-player-playback" | Out-Null
+        Ask-Check -Key "mini_player_playback_controls_work" -Prompt "Mini Player shows the current track and Play/Pause, Next, Previous, volume, and Streaming controls are enabled and work"
         Read-Host "Use the tray menu to choose Stop Music Daemon, then press Enter"
         Invoke-Capture -Name "daemon-status-after-stop" -File $YttPath -Arguments @("daemon", "status", "--json") | Out-Null
         Save-Text -Name "mpv-after-stop-daemon.txt" -Text (Get-Process -Name "mpv" -ErrorAction SilentlyContinue | Format-List | Out-String) | Out-Null

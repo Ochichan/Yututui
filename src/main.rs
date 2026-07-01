@@ -482,21 +482,44 @@ fn draw_app_frame(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     perf: &mut PerfStats,
-) -> std::io::Result<()> {
+) -> std::io::Result<bool> {
     let start = perf.enabled.then(Instant::now);
     let clear_before = app.take_clear_before_draw();
     let synchronized = clear_before || app.synchronized_draw_active();
     let res = tui::draw_frame(terminal, synchronized, clear_before, |f| ui::render(f, app));
-    if res.is_ok()
-        && let Some(start) = start
-    {
-        perf.record_draw(start.elapsed());
+    match res {
+        Ok(()) => {
+            if let Some(start) = start {
+                perf.record_draw(start.elapsed());
+            }
+            Ok(true)
+        }
+        Err(e) if is_transient_terminal_draw_error(&e) => {
+            tracing::warn!(
+                error = %e,
+                "ignored transient terminal draw failure; waiting for the next input or resize"
+            );
+            app.dirty = false;
+            Ok(false)
+        }
+        Err(e) => Err(e),
     }
-    res
 }
 
 fn finish_draw_cycle(app: &mut App) {
     app.dirty = app.clear_before_draw_pending();
+}
+
+#[cfg(windows)]
+fn is_transient_terminal_draw_error(error: &std::io::Error) -> bool {
+    // Windows Terminal can briefly reject console writes while its taskbar/window state is
+    // changing. Treat only these known Win32 console transition errors as recoverable.
+    matches!(error.raw_os_error(), Some(6 | 87 | 995))
+}
+
+#[cfg(not(windows))]
+fn is_transient_terminal_draw_error(_: &std::io::Error) -> bool {
+    false
 }
 
 async fn run(
@@ -721,8 +744,9 @@ async fn run(
 
     while !app.should_quit {
         if app.dirty {
-            draw_app_frame(terminal, &mut app, &mut perf)?;
-            finish_draw_cycle(&mut app);
+            if draw_app_frame(terminal, &mut app, &mut perf)? {
+                finish_draw_cycle(&mut app);
+            }
             perf.maybe_log(&app);
             if app.dirty {
                 continue;
@@ -745,15 +769,17 @@ async fn run(
             Some(result) = player_ready_rx.recv() => {
                 handles.handle_player_ready(result, &player_runtime, &mut app);
                 if app.dirty {
-                    draw_app_frame(terminal, &mut app, &mut perf)?;
-                    finish_draw_cycle(&mut app);
+                    if draw_app_frame(terminal, &mut app, &mut perf)? {
+                        finish_draw_cycle(&mut app);
+                    }
                     perf.maybe_log(&app);
                 }
                 continue;
             },
             _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
-                draw_app_frame(terminal, &mut app, &mut perf)?;
-                finish_draw_cycle(&mut app);
+                if draw_app_frame(terminal, &mut app, &mut perf)? {
+                    finish_draw_cycle(&mut app);
+                }
                 perf.maybe_log(&app);
                 continue;
             },
@@ -779,8 +805,7 @@ async fn run(
             anim_tick = anim_interval(anim_fps);
         }
 
-        if app.dirty {
-            draw_app_frame(terminal, &mut app, &mut perf)?;
+        if app.dirty && draw_app_frame(terminal, &mut app, &mut perf)? {
             finish_draw_cycle(&mut app);
         }
         perf.maybe_log(&app);

@@ -7,10 +7,14 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::Config;
+use crate::search_source::SearchSource;
+use crate::streaming::StreamingMode;
+
 /// Bumped on any breaking change to the request/response shape. The server rejects a
 /// mismatch with `bad_version`, so an old client against a new server fails loudly
 /// instead of misbehaving.
-pub const PROTOCOL_VERSION: u8 = 5;
+pub const PROTOCOL_VERSION: u8 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,9 +46,46 @@ pub enum RemoteCommand {
     Streaming {
         state: ToggleState,
     },
+    SetSetting {
+        change: RemoteSettingChange,
+    },
     ResumeSession,
     Status,
     Quit,
+}
+
+/// A single persisted/live setting mutation from companion surfaces such as the tray panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "setting", rename_all = "snake_case")]
+pub enum RemoteSettingChange {
+    AutoplayStreaming {
+        value: bool,
+    },
+    StreamingMode {
+        value: StreamingMode,
+    },
+    StreamingSource {
+        value: SearchSource,
+    },
+    /// Playback speed in tenths: `10` means `1.0x`, `15` means `1.5x`.
+    Speed {
+        tenths: u16,
+    },
+    SeekSeconds {
+        seconds: u16,
+    },
+    Normalize {
+        value: bool,
+    },
+    Gapless {
+        value: bool,
+    },
+    AiEnabled {
+        value: bool,
+    },
+    RadioMode {
+        state: ToggleState,
+    },
 }
 
 /// A three-way toggle: flip the current value, or set it explicitly.
@@ -135,6 +176,50 @@ pub struct StatusSnapshot {
     pub streaming: bool,
     #[serde(default)]
     pub owner_mode: InstanceMode,
+    #[serde(default)]
+    pub settings: SettingsSnapshot,
+}
+
+/// The small settings surface exposed to the desktop mini player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SettingsSnapshot {
+    pub autoplay_streaming: bool,
+    pub streaming_mode: StreamingMode,
+    pub streaming_source: SearchSource,
+    pub speed_tenths: u16,
+    pub seek_seconds: u16,
+    pub normalize: bool,
+    pub gapless: bool,
+    pub ai_enabled: bool,
+    pub radio_mode: bool,
+}
+
+impl SettingsSnapshot {
+    pub fn from_config(config: &Config, radio_mode: bool) -> Self {
+        let search = config.effective_search();
+        Self {
+            autoplay_streaming: config.effective_autoplay_streaming(),
+            streaming_mode: config.streaming.mode,
+            streaming_source: search.normalized_streaming_source(search.streaming_source),
+            speed_tenths: speed_tenths(config.effective_speed()),
+            seek_seconds: config.effective_seek_seconds().round() as u16,
+            normalize: config.effective_normalize(),
+            gapless: config.effective_gapless(),
+            ai_enabled: config.effective_ai_enabled(),
+            radio_mode,
+        }
+    }
+}
+
+impl Default for SettingsSnapshot {
+    fn default() -> Self {
+        Self::from_config(&Config::default(), false)
+    }
+}
+
+fn speed_tenths(speed: f64) -> u16 {
+    (speed * 10.0).round() as u16
 }
 
 impl StatusSnapshot {
@@ -249,6 +334,7 @@ mod tests {
             total: 0,
             streaming: false,
             owner_mode: InstanceMode::StandaloneTui,
+            settings: SettingsSnapshot::default(),
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));
@@ -266,6 +352,7 @@ mod tests {
             total: 0,
             streaming: false,
             owner_mode: InstanceMode::Daemon,
+            settings: SettingsSnapshot::default(),
         };
         let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
         assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");

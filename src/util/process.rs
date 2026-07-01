@@ -1,5 +1,7 @@
 //! Child process construction with explicit environment inheritance and bounded output capture.
 
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
 use std::process::{Command as StdCommand, ExitStatus, Stdio};
 use std::time::Duration;
 
@@ -100,9 +102,67 @@ pub fn apply_tokio_env(cmd: &mut TokioCommand, profile: ProcessProfile) {
 }
 
 fn allowed_env(profile: ProcessProfile) -> Vec<(String, String)> {
-    std::env::vars()
+    let mut vars = std::env::vars()
         .filter(|(k, _)| should_inherit(k, profile))
-        .collect()
+        .collect();
+    augment_env(&mut vars, profile);
+    vars
+}
+
+fn augment_env(vars: &mut Vec<(String, String)>, profile: ProcessProfile) {
+    #[cfg(target_os = "macos")]
+    augment_macos_path(vars, profile);
+    #[cfg(not(target_os = "macos"))]
+    let _ = (vars, profile);
+}
+
+#[cfg(target_os = "macos")]
+fn augment_macos_path(vars: &mut Vec<(String, String)>, profile: ProcessProfile) {
+    if !matches!(
+        profile,
+        ProcessProfile::Media
+            | ProcessProfile::Daemon
+            | ProcessProfile::YtDlp
+            | ProcessProfile::DesktopOpen
+            | ProcessProfile::Clipboard
+    ) {
+        return;
+    }
+
+    let current = vars
+        .iter()
+        .find(|(key, _)| key == "PATH")
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default();
+    let mut paths: Vec<PathBuf> = std::env::split_paths(&current).collect();
+    for hint in macos_path_hints() {
+        if !paths.iter().any(|path| path == &hint) {
+            paths.push(hint);
+        }
+    }
+    let Ok(joined) = std::env::join_paths(&paths) else {
+        return;
+    };
+    let joined = joined.to_string_lossy().into_owned();
+    if let Some((_, value)) = vars.iter_mut().find(|(key, _)| key == "PATH") {
+        *value = joined;
+    } else {
+        vars.push(("PATH".to_string(), joined));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_path_hints() -> Vec<PathBuf> {
+    let mut hints = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        hints.push(home.join(".cargo/bin"));
+        hints.push(home.join(".local/bin"));
+    }
+    hints
 }
 
 fn should_inherit(key: &str, profile: ProcessProfile) -> bool {
@@ -219,5 +279,19 @@ mod tests {
         assert!(should_inherit("YTM_MPV_EXTRA", ProcessProfile::Daemon));
         assert!(should_inherit("RUST_LOG", ProcessProfile::Daemon));
         assert!(!should_inherit("HTTPS_PROXY", ProcessProfile::Clipboard));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_allowed_env_adds_common_gui_launch_paths() {
+        let vars = allowed_env(ProcessProfile::Daemon);
+        let path = vars
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.as_str())
+            .unwrap_or_default();
+        let paths: Vec<PathBuf> = std::env::split_paths(path).collect();
+        assert!(paths.contains(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(paths.contains(&PathBuf::from("/usr/local/bin")));
     }
 }

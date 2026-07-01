@@ -1,6 +1,9 @@
 //! Terminal-launch planning for the desktop companion.
 
+use std::ffi::OsStr;
 use std::fmt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -78,17 +81,77 @@ impl fmt::Display for LaunchError {
 impl std::error::Error for LaunchError {}
 
 pub fn resolve_ytt_path() -> PathBuf {
-    let exe = std::env::current_exe().ok();
-    let sibling_name = if cfg!(windows) { "ytt.exe" } else { "ytt" };
-    if let Some(path) = exe
-        .as_ref()
+    resolve_ytt_path_from(
+        std::env::current_exe().ok().as_deref(),
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+    .unwrap_or_else(|| PathBuf::from(ytt_binary_name()))
+}
+
+fn resolve_ytt_path_from(
+    current_exe: Option<&Path>,
+    path_env: Option<&OsStr>,
+    home_env: Option<&OsStr>,
+) -> Option<PathBuf> {
+    if let Some(path) = current_exe
         .and_then(|p| p.parent())
-        .map(|dir| dir.join(sibling_name))
-        .filter(|p| p.exists())
+        .map(|dir| dir.join(ytt_binary_name()))
+        .filter(|p| is_executable_file(p))
     {
-        return path;
+        return Some(path);
     }
-    PathBuf::from(sibling_name)
+
+    path_ytt_candidates(path_env)
+        .chain(platform_ytt_candidates(home_env))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+fn ytt_binary_name() -> &'static str {
+    if cfg!(windows) { "ytt.exe" } else { "ytt" }
+}
+
+fn path_ytt_candidates(path_env: Option<&OsStr>) -> impl Iterator<Item = PathBuf> + '_ {
+    path_env
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(ytt_binary_name()))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_ytt_candidates(home_env: Option<&OsStr>) -> impl Iterator<Item = PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from("/opt/homebrew/bin").join(ytt_binary_name()),
+        PathBuf::from("/usr/local/bin").join(ytt_binary_name()),
+    ];
+    if let Some(home) = home_env {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".cargo/bin").join(ytt_binary_name()));
+        candidates.push(home.join(".local/bin").join(ytt_binary_name()));
+    }
+    candidates.into_iter()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_ytt_candidates(_: Option<&OsStr>) -> impl Iterator<Item = PathBuf> {
+    std::iter::empty()
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        path.metadata()
+            .map(|meta| meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 pub fn open_tui() -> Result<LaunchPlan, LaunchError> {
@@ -262,6 +325,66 @@ fn cmd_quote(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(unix)]
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ytm-tui-launch-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path) {
+        std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_ytt_path_prefers_executable_sibling() {
+        let dir = temp_test_dir("sibling");
+        let tray = dir.join("ytt-tray");
+        let ytt = dir.join("ytt");
+        write_executable(&tray);
+        write_executable(&ytt);
+
+        assert_eq!(resolve_ytt_path_from(Some(&tray), None, None), Some(ytt));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_ytt_path_uses_path_when_sibling_is_missing() {
+        let app_dir = temp_test_dir("missing-sibling");
+        let bin_dir = temp_test_dir("path");
+        let tray = app_dir.join("ytt-tray");
+        let ytt = bin_dir.join("ytt");
+        write_executable(&tray);
+        write_executable(&ytt);
+
+        assert_eq!(
+            resolve_ytt_path_from(Some(&tray), Some(bin_dir.as_os_str()), None),
+            Some(ytt)
+        );
+        let _ = std::fs::remove_dir_all(app_dir);
+        let _ = std::fs::remove_dir_all(bin_dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_platform_candidates_include_home_bins() {
+        let home = temp_test_dir("home");
+        let candidates: Vec<PathBuf> = platform_ytt_candidates(Some(home.as_os_str())).collect();
+        assert!(candidates.contains(&home.join(".cargo/bin/ytt")));
+        assert!(candidates.contains(&home.join(".local/bin/ytt")));
+        let _ = std::fs::remove_dir_all(home);
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

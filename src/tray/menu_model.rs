@@ -47,8 +47,10 @@ pub enum MenuAction {
     StartDaemon,
     ResumeDaemon,
     StopDaemon,
+    ShowMiniPlayer,
     OpenTui,
     Refresh,
+    ToggleStartup,
     QuitPlayer,
     QuitTray,
 }
@@ -70,8 +72,10 @@ impl MenuAction {
             MenuAction::StartDaemon
             | MenuAction::ResumeDaemon
             | MenuAction::StopDaemon
+            | MenuAction::ShowMiniPlayer
             | MenuAction::OpenTui
             | MenuAction::Refresh
+            | MenuAction::ToggleStartup
             | MenuAction::QuitTray => None,
         }
     }
@@ -154,8 +158,10 @@ pub fn build_menu(state: &TrayState) -> MenuModel {
             Some(MenuAction::ToggleStreaming),
         ),
         MenuEntry::Separator,
+        item("Show Mini Player", true, Some(MenuAction::ShowMiniPlayer)),
         item("Open TUI", true, Some(MenuAction::OpenTui)),
         item("Refresh", true, Some(MenuAction::Refresh)),
+        item("Open at Login", true, Some(MenuAction::ToggleStartup)),
         item("Quit Player", connected, Some(MenuAction::QuitPlayer)),
         item("Quit Tray", true, Some(MenuAction::QuitTray)),
     ];
@@ -196,14 +202,16 @@ fn daemon_action_item(state: &TrayState, index: usize) -> MenuEntry {
     let daemon_owner = state
         .status()
         .is_some_and(|status| status.owner_mode == InstanceMode::Daemon);
+    let daemon_idle = daemon_owner && state.status().is_some_and(is_idle);
     let disconnected = matches!(state, TrayState::Disconnected);
-    match (daemon_owner, disconnected, index) {
-        (true, _, 0) => item("Stop Music Daemon", true, Some(MenuAction::StopDaemon)),
-        (true, _, _) => item("Resume Last Session", false, Some(MenuAction::ResumeDaemon)),
-        (false, true, 0) => item("Start Music Daemon", true, Some(MenuAction::StartDaemon)),
-        (false, true, _) => item("Resume Last Session", true, Some(MenuAction::ResumeDaemon)),
-        (false, false, 0) => item("Start Music Daemon", false, Some(MenuAction::StartDaemon)),
-        (false, false, _) => item("Resume Last Session", false, Some(MenuAction::ResumeDaemon)),
+    match (daemon_owner, daemon_idle, disconnected, index) {
+        (true, _, _, 0) => item("Stop Music Daemon", true, Some(MenuAction::StopDaemon)),
+        (true, true, _, _) => item("Resume Last Session", true, Some(MenuAction::ResumeDaemon)),
+        (true, false, _, _) => item("Resume Last Session", false, Some(MenuAction::ResumeDaemon)),
+        (false, _, true, 0) => item("Start Music Daemon", true, Some(MenuAction::StartDaemon)),
+        (false, _, true, _) => item("Resume Last Session", true, Some(MenuAction::ResumeDaemon)),
+        (false, _, false, 0) => item("Start Music Daemon", false, Some(MenuAction::StartDaemon)),
+        (false, _, false, _) => item("Resume Last Session", false, Some(MenuAction::ResumeDaemon)),
     }
 }
 
@@ -251,6 +259,7 @@ mod tests {
             total: 3,
             streaming: true,
             owner_mode: InstanceMode::StandaloneTui,
+            settings: Default::default(),
         }
     }
 
@@ -280,6 +289,12 @@ mod tests {
         assert!(model.action_item(MenuAction::StartDaemon).unwrap().enabled);
         assert!(model.action_item(MenuAction::ResumeDaemon).unwrap().enabled);
         assert!(model.action_item(MenuAction::OpenTui).unwrap().enabled);
+        assert!(
+            model
+                .action_item(MenuAction::ToggleStartup)
+                .unwrap()
+                .enabled
+        );
         assert!(model.action_item(MenuAction::QuitTray).unwrap().enabled);
     }
 
@@ -311,7 +326,9 @@ mod tests {
             )
         );
         assert!(model.action_item(MenuAction::StopDaemon).unwrap().enabled);
-        assert!(!model.action_item(MenuAction::ResumeDaemon).unwrap().enabled);
+        assert!(model.action_item(MenuAction::ResumeDaemon).unwrap().enabled);
+        assert!(!model.action_item(MenuAction::PlayPause).unwrap().enabled);
+        assert!(!model.action_item(MenuAction::Next).unwrap().enabled);
     }
 
     #[test]
@@ -335,8 +352,10 @@ mod tests {
             })
         );
         assert_eq!(MenuAction::OpenTui.remote_command(), None);
+        assert_eq!(MenuAction::ShowMiniPlayer.remote_command(), None);
         assert_eq!(MenuAction::StartDaemon.remote_command(), None);
         assert_eq!(MenuAction::StopDaemon.remote_command(), None);
+        assert_eq!(MenuAction::ToggleStartup.remote_command(), None);
         assert_eq!(MenuAction::QuitTray.remote_command(), None);
     }
 }

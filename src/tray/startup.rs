@@ -2,9 +2,15 @@
 
 use std::fmt;
 use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
 
 #[cfg(windows)]
 const RUN_VALUE_NAME: &str = "YtmTui Tray";
+#[cfg(target_os = "macos")]
+const LAUNCH_AGENT_LABEL: &str = "io.github.ochi.ytm-tui.tray";
+#[cfg(target_os = "macos")]
+const LAUNCH_AGENT_FILE: &str = "io.github.ochi.ytm-tui.tray.plist";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupStatus {
@@ -18,16 +24,21 @@ pub enum StartupError {
     Unsupported,
     CurrentExe(String),
     Registry(String),
+    LaunchAgent(String),
 }
 
 impl fmt::Display for StartupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StartupError::Unsupported => {
-                write!(f, "startup management is only supported on Windows")
+                write!(
+                    f,
+                    "startup management is only supported on Windows and macOS"
+                )
             }
             StartupError::CurrentExe(message) => write!(f, "{message}"),
             StartupError::Registry(message) => write!(f, "{message}"),
+            StartupError::LaunchAgent(message) => write!(f, "{message}"),
         }
     }
 }
@@ -50,7 +61,7 @@ pub fn status() -> Result<StartupStatus, StartupError> {
 
 fn install_for_exe(exe: &Path) -> Result<String, StartupError> {
     let command = startup_command_for(exe);
-    platform_install(&command)?;
+    platform_install(exe, &command)?;
     Ok(command)
 }
 
@@ -59,7 +70,7 @@ fn startup_command_for(exe: &Path) -> String {
 }
 
 #[cfg(windows)]
-fn platform_install(command: &str) -> Result<(), StartupError> {
+fn platform_install(_exe: &Path, command: &str) -> Result<(), StartupError> {
     use std::ptr::null_mut;
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
@@ -106,8 +117,33 @@ fn platform_install(command: &str) -> Result<(), StartupError> {
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn platform_install(_command: &str) -> Result<(), StartupError> {
+#[cfg(target_os = "macos")]
+fn platform_install(exe: &Path, _command: &str) -> Result<(), StartupError> {
+    let paths = macos_startup_paths()?;
+    std::fs::create_dir_all(&paths.launch_agents_dir).map_err(|e| {
+        StartupError::LaunchAgent(format!(
+            "could not create LaunchAgents directory {}: {e}",
+            paths.launch_agents_dir.display()
+        ))
+    })?;
+    std::fs::create_dir_all(&paths.log_dir).map_err(|e| {
+        StartupError::LaunchAgent(format!(
+            "could not create startup log directory {}: {e}",
+            paths.log_dir.display()
+        ))
+    })?;
+
+    let plist = launch_agent_plist(exe, &paths.stdout_log, &paths.stderr_log);
+    std::fs::write(&paths.plist, plist).map_err(|e| {
+        StartupError::LaunchAgent(format!(
+            "could not write LaunchAgent {}: {e}",
+            paths.plist.display()
+        ))
+    })
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn platform_install(_exe: &Path, _command: &str) -> Result<(), StartupError> {
     Err(StartupError::Unsupported)
 }
 
@@ -147,7 +183,20 @@ fn platform_uninstall() -> Result<(), StartupError> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn platform_uninstall() -> Result<(), StartupError> {
+    let paths = macos_startup_paths()?;
+    match std::fs::remove_file(&paths.plist) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(StartupError::LaunchAgent(format!(
+            "could not remove LaunchAgent {}: {e}",
+            paths.plist.display()
+        ))),
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn platform_uninstall() -> Result<(), StartupError> {
     Err(StartupError::Unsupported)
 }
@@ -235,7 +284,25 @@ fn platform_status() -> Result<StartupStatus, StartupError> {
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn platform_status() -> Result<StartupStatus, StartupError> {
+    let paths = macos_startup_paths()?;
+    if !paths.plist.exists() {
+        return Ok(StartupStatus::Disabled);
+    }
+    let contents = std::fs::read_to_string(&paths.plist).map_err(|e| {
+        StartupError::LaunchAgent(format!(
+            "could not read LaunchAgent {}: {e}",
+            paths.plist.display()
+        ))
+    })?;
+    let command = launch_agent_program_arguments(&contents)
+        .map(|args| shell_command(&args))
+        .unwrap_or_else(|| paths.plist.display().to_string());
+    Ok(StartupStatus::Enabled { command })
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn platform_status() -> Result<StartupStatus, StartupError> {
     Ok(StartupStatus::Unsupported)
 }
@@ -262,6 +329,121 @@ fn registry_error(action: &str, code: u32) -> StartupError {
     StartupError::Registry(format!("{action} failed with Windows error {code}"))
 }
 
+#[cfg(target_os = "macos")]
+struct MacStartupPaths {
+    launch_agents_dir: PathBuf,
+    plist: PathBuf,
+    log_dir: PathBuf,
+    stdout_log: PathBuf,
+    stderr_log: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+fn macos_startup_paths() -> Result<MacStartupPaths, StartupError> {
+    let base = directories::BaseDirs::new()
+        .ok_or_else(|| StartupError::LaunchAgent("could not resolve home directory".to_string()))?;
+    let launch_agents_dir = base.home_dir().join("Library/LaunchAgents");
+    let log_dir = directories::ProjectDirs::from("", "", "ytm-tui")
+        .map(|dirs| dirs.cache_dir().join("logs"))
+        .unwrap_or_else(|| base.home_dir().join("Library/Caches/ytm-tui/logs"));
+    Ok(MacStartupPaths {
+        plist: launch_agents_dir.join(LAUNCH_AGENT_FILE),
+        launch_agents_dir,
+        stdout_log: log_dir.join("tray-launchagent.out.log"),
+        stderr_log: log_dir.join("tray-launchagent.err.log"),
+        log_dir,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_plist(exe: &Path, stdout_log: &Path, stderr_log: &Path) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{}</string>
+    <string>--background</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{}</string>
+  <key>StandardErrorPath</key>
+  <string>{}</string>
+</dict>
+</plist>
+"#,
+        plist_escape(LAUNCH_AGENT_LABEL),
+        plist_escape(&exe.to_string_lossy()),
+        plist_escape(&stdout_log.to_string_lossy()),
+        plist_escape(&stderr_log.to_string_lossy())
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_program_arguments(plist: &str) -> Option<Vec<String>> {
+    let start = plist.find("<key>ProgramArguments</key>")?;
+    let after_key = &plist[start..];
+    let array_start = after_key.find("<array>")? + "<array>".len();
+    let after_array = &after_key[array_start..];
+    let array_end = after_array.find("</array>")?;
+    let mut rest = &after_array[..array_end];
+    let mut args = Vec::new();
+
+    while let Some(open) = rest.find("<string>") {
+        rest = &rest[open + "<string>".len()..];
+        let close = rest.find("</string>")?;
+        args.push(plist_unescape(&rest[..close]));
+        rest = &rest[close + "</string>".len()..];
+    }
+
+    (!args.is_empty()).then_some(args)
+}
+
+#[cfg(target_os = "macos")]
+fn shell_command(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| shell_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | '.' | ':'))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+fn plist_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(target_os = "macos")]
+fn plist_unescape(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +456,24 @@ mod tests {
             command,
             r#""C:\Program Files\YtmTui\ytt-tray.exe" --background"#
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launch_agent_plist_round_trips_program_arguments() {
+        let plist = launch_agent_plist(
+            Path::new("/Applications/YtmTuiTray.app/Contents/MacOS/ytt-tray"),
+            Path::new("/Users/me/Library/Caches/ytm-tui/logs/out.log"),
+            Path::new("/Users/me/Library/Caches/ytm-tui/logs/err.log"),
+        );
+        let args = launch_agent_program_arguments(&plist).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "/Applications/YtmTuiTray.app/Contents/MacOS/ytt-tray".to_string(),
+                "--background".to_string()
+            ]
+        );
+        assert!(shell_command(&args).contains("--background"));
     }
 }
