@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::app::Msg;
 use crate::util::{http, sanitize};
 
 /// Session cache cap (bounded memory; cleared wholesale when exceeded).
@@ -81,6 +80,13 @@ pub enum LyricsCmd {
     },
 }
 
+pub enum LyricsEvent {
+    Result {
+        video_id: String,
+        lines: Vec<LyricLine>,
+    },
+}
+
 pub struct LyricsHandle {
     tx: UnboundedSender<LyricsCmd>,
 }
@@ -95,14 +101,20 @@ impl LyricsHandle {
     }
 }
 
-/// Spawn the lyrics actor; results return as [`Msg::LyricsResult`].
-pub fn spawn(msg_tx: UnboundedSender<Msg>) -> LyricsHandle {
+/// Spawn the lyrics actor; results return as [`LyricsEvent`]s.
+pub fn spawn<F>(emit: F) -> LyricsHandle
+where
+    F: Fn(LyricsEvent) + Send + Sync + 'static,
+{
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run_actor(rx, msg_tx));
+    tokio::spawn(run_actor(rx, emit));
     LyricsHandle { tx }
 }
 
-async fn run_actor(mut rx: UnboundedReceiver<LyricsCmd>, msg_tx: UnboundedSender<Msg>) {
+async fn run_actor<F>(mut rx: UnboundedReceiver<LyricsCmd>, emit: F)
+where
+    F: Fn(LyricsEvent) + Send + Sync + 'static,
+{
     let client = reqwest::Client::builder()
         .user_agent("ytm-tui/0.1 (https://github.com/ytm-tui/ytm-tui)")
         .build()
@@ -126,7 +138,7 @@ async fn run_actor(mut rx: UnboundedReceiver<LyricsCmd>, msg_tx: UnboundedSender
             fetched
         };
         tracing::info!(count = lines.len(), video_id = %video_id, "lyrics");
-        let _ = msg_tx.send(Msg::LyricsResult { video_id, lines });
+        emit(LyricsEvent::Result { video_id, lines });
     }
 }
 

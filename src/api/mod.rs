@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::app::Msg;
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
 use crate::util::sanitize;
@@ -312,7 +311,36 @@ pub enum ApiCmd {
     },
 }
 
-/// Handle for issuing API requests; results return as [`Msg`]s.
+/// Events emitted by the API actor.
+pub enum ApiEvent {
+    ModeResolved {
+        mode: ApiMode,
+        had_cookie: bool,
+    },
+    SearchResults {
+        query: String,
+        source: SearchSource,
+        songs: Vec<Song>,
+    },
+    SearchError {
+        source: SearchSource,
+        error: String,
+    },
+    StreamingResults {
+        seed_video_id: String,
+        candidates: Vec<(Song, CandidateSource)>,
+    },
+    StreamingPreflighted {
+        seed_video_id: String,
+        songs: Vec<Song>,
+    },
+    StreamingError {
+        seed_video_id: String,
+        error: String,
+    },
+}
+
+/// Handle for issuing API requests; results return as [`ApiEvent`]s.
 pub struct ApiHandle {
     tx: UnboundedSender<ApiCmd>,
 }
@@ -368,13 +396,16 @@ impl ApiHandle {
 /// A configured cookie is tried first; if it's rejected we fall back to anonymous
 /// (yt-dlp) search so search + public playback still work. With no cookie we go straight
 /// to anonymous. Commands sent before authentication settles are buffered by the channel.
-pub fn spawn(cookie: Option<String>, msg_tx: UnboundedSender<Msg>) -> ApiHandle {
+pub fn spawn<F>(cookie: Option<String>, emit: F) -> ApiHandle
+where
+    F: Fn(ApiEvent) + Send + Sync + 'static,
+{
     let had_cookie = cookie.is_some();
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         let (api, mode) = init_api(cookie).await;
-        let _ = msg_tx.send(Msg::ApiModeResolved { mode, had_cookie });
-        run_actor(api, rx, msg_tx).await;
+        emit(ApiEvent::ModeResolved { mode, had_cookie });
+        run_actor(api, rx, emit).await;
     });
     ApiHandle { tx }
 }
@@ -393,11 +424,10 @@ async fn init_api(cookie: Option<String>) -> (ytmusic::YtMusicApi, ApiMode) {
     (api, mode)
 }
 
-async fn run_actor(
-    api: ytmusic::YtMusicApi,
-    mut rx: UnboundedReceiver<ApiCmd>,
-    msg_tx: UnboundedSender<Msg>,
-) {
+async fn run_actor<F>(api: ytmusic::YtMusicApi, mut rx: UnboundedReceiver<ApiCmd>, emit: F)
+where
+    F: Fn(ApiEvent) + Send + Sync + 'static,
+{
     let mut streaming_ytdlp_cache: HashMap<
         (String, StreamingMode, SearchSource),
         (Instant, Vec<Song>),
@@ -409,10 +439,10 @@ async fn run_actor(
                 source,
                 config,
             } => {
-                let msg = match api.search_songs(&query, source, &config).await {
+                let event = match api.search_songs(&query, source, &config).await {
                     Ok(songs) => {
                         tracing::info!(count = songs.len(), query = %query, source = %source.code(), "search results");
-                        Msg::SearchResults {
+                        ApiEvent::SearchResults {
                             query,
                             source,
                             songs,
@@ -421,10 +451,10 @@ async fn run_actor(
                     Err(e) => {
                         let error = sanitize::sanitize_error_text(format!("{e:#}"));
                         tracing::warn!(source = %source.code(), error = %error, "search failed");
-                        Msg::SearchError { source, error }
+                        ApiEvent::SearchError { source, error }
                     }
                 };
-                let _ = msg_tx.send(msg);
+                emit(event);
             }
             ApiCmd::Streaming {
                 seed,
@@ -556,25 +586,25 @@ async fn run_actor(
                     }
                 }
 
-                let msg = if candidates.is_empty() {
+                let event = if candidates.is_empty() {
                     let error = if errors.is_empty() {
                         "no related tracks found".to_owned()
                     } else {
                         errors.join("; ")
                     };
                     tracing::warn!(seed = %seed, %error, "streaming search yielded nothing");
-                    Msg::StreamingError {
+                    ApiEvent::StreamingError {
                         seed_video_id,
                         error,
                     }
                 } else {
                     tracing::info!(count = candidates.len(), seed = %seed, "streaming results");
-                    Msg::StreamingResults {
+                    ApiEvent::StreamingResults {
                         seed_video_id,
                         candidates,
                     }
                 };
-                let _ = msg_tx.send(msg);
+                emit(event);
             }
             ApiCmd::StreamingPreflight {
                 seed_video_id,
@@ -585,7 +615,7 @@ async fn run_actor(
             } => {
                 let songs =
                     ytmusic::preflight_streaming_picks(picks, fallback, mode, &config).await;
-                let _ = msg_tx.send(Msg::StreamingPreflighted {
+                emit(ApiEvent::StreamingPreflighted {
                     seed_video_id,
                     songs,
                 });

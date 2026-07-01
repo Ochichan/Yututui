@@ -6,7 +6,7 @@
 //! The actor receives [`DownloadCmd::Start`] and spawns one task per track, gated by a
 //! [`Semaphore`] so only a configured number run at once (priority #1: bounded work).
 //! Progress is parsed from yt-dlp's `--progress-template` lines and streamed back as
-//! [`Msg::DownloadProgress`]; the final saved path comes from `--print after_move:filepath`.
+//! [`DownloadEvent::Progress`]; the final saved path comes from `--print after_move:filepath`.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -15,11 +15,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::Semaphore;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::{Sender, error::TrySendError};
 
 use crate::api::Song;
-use crate::app::Msg;
-use crate::util::{process, sanitize};
+use crate::util::{backpressure, process, sanitize};
 
 const OUTPUT_TEMPLATE: &str = "%(title)s [%(id)s].%(ext)s";
 const YTDLP_STDOUT_MAX: usize = 64 * 1024;
@@ -29,47 +28,71 @@ pub enum DownloadCmd {
     SetDir(PathBuf),
 }
 
+pub enum DownloadEvent {
+    Progress { video_id: String, percent: f64 },
+    Done { video_id: String, path: String },
+    Error { video_id: String, error: String },
+}
+
+type EventSink = Arc<dyn Fn(DownloadEvent) + Send + Sync>;
+
 pub struct DownloadHandle {
-    tx: UnboundedSender<DownloadCmd>,
+    tx: Sender<DownloadCmd>,
+}
+
+pub struct DownloadStartError {
+    pub video_id: String,
 }
 
 impl DownloadHandle {
-    pub fn start(&self, song: Song) {
-        let _ = self.tx.send(DownloadCmd::Start(song));
+    pub fn start(&self, song: Song) -> std::result::Result<(), DownloadStartError> {
+        match self.tx.try_send(DownloadCmd::Start(song)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(DownloadCmd::Start(song)))
+            | Err(TrySendError::Closed(DownloadCmd::Start(song))) => Err(DownloadStartError {
+                video_id: song.video_id,
+            }),
+            Err(TrySendError::Full(DownloadCmd::SetDir(_)))
+            | Err(TrySendError::Closed(DownloadCmd::SetDir(_))) => unreachable!(),
+        }
     }
 
-    pub fn set_dir(&self, dir: PathBuf) {
-        let _ = self.tx.send(DownloadCmd::SetDir(dir));
+    pub fn set_dir(&self, dir: PathBuf) -> bool {
+        self.tx.try_send(DownloadCmd::SetDir(dir)).is_ok()
     }
 }
 
-/// Spawn the download actor. Results return as `Msg::Download*`.
-pub fn spawn(
-    msg_tx: UnboundedSender<Msg>,
+/// Spawn the download actor. Results return as [`DownloadEvent`]s.
+pub fn spawn<F>(
+    emit: F,
     dir: PathBuf,
     cookies: Option<PathBuf>,
     max_concurrent: usize,
-) -> DownloadHandle {
-    let (tx, mut rx) = mpsc::unbounded_channel::<DownloadCmd>();
+) -> DownloadHandle
+where
+    F: Fn(DownloadEvent) + Send + Sync + 'static,
+{
+    let (tx, mut rx) = backpressure::bounded_channel::<DownloadCmd>(backpressure::DOWNLOAD_QUEUE);
     let sem = Arc::new(Semaphore::new(max_concurrent.max(1)));
+    let emit: EventSink = Arc::new(emit);
     tokio::spawn(async move {
         let mut dir = dir;
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 DownloadCmd::SetDir(new_dir) => dir = new_dir,
                 DownloadCmd::Start(song) => {
-                    let sem = sem.clone();
-                    let tx = msg_tx.clone();
+                    let Ok(permit) = sem.clone().acquire_owned().await else {
+                        return;
+                    };
+                    let emit = emit.clone();
                     let dir = dir.clone();
                     let cookies = cookies.clone();
                     tokio::spawn(async move {
-                        let Ok(_permit) = sem.acquire_owned().await else {
-                            return; // semaphore closed; nothing to do
-                        };
-                        if let Err(e) = run_download(&song, &dir, cookies.as_deref(), &tx).await {
+                        let _permit = permit;
+                        if let Err(e) = run_download(&song, &dir, cookies.as_deref(), &emit).await {
                             let error = sanitize::sanitize_error_text(format!("{e:#}"));
                             tracing::warn!(error = %error, video_id = %song.video_id, "download failed");
-                            let _ = tx.send(Msg::DownloadError {
+                            emit(DownloadEvent::Error {
                                 video_id: song.video_id.clone(),
                                 error,
                             });
@@ -86,11 +109,21 @@ async fn run_download(
     song: &Song,
     dir: &Path,
     cookies: Option<&Path>,
-    tx: &UnboundedSender<Msg>,
+    emit: &EventSink,
+) -> Result<()> {
+    run_download_with_program("yt-dlp", song, dir, cookies, emit).await
+}
+
+async fn run_download_with_program(
+    program: &str,
+    song: &Song,
+    dir: &Path,
+    cookies: Option<&Path>,
+    emit: &EventSink,
 ) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("create download dir {dir:?}"))?;
 
-    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
+    let mut cmd = process::tokio_command(program, process::ProcessProfile::YtDlp);
     cmd.arg(song.playback_target())
         .args(["-f", "bestaudio", "-x", "--audio-format", "m4a"])
         .args([
@@ -119,7 +152,7 @@ async fn run_download(
 
     // Stream progress from stderr.
     let vid = song.video_id.clone();
-    let tx2 = tx.clone();
+    let emit_progress = emit.clone();
     let progress = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         let mut last_percent: Option<u8> = None;
@@ -130,7 +163,7 @@ async fn run_download(
                     continue;
                 }
                 last_percent = Some(rounded);
-                let _ = tx2.send(Msg::DownloadProgress {
+                emit_progress(DownloadEvent::Progress {
                     video_id: vid.clone(),
                     percent: f64::from(rounded),
                 });
@@ -155,7 +188,7 @@ async fn run_download(
     }
     let path = out.lines().last().unwrap_or_default().trim().to_owned();
     tracing::info!(path = %path, video_id = %song.video_id, "download done");
-    let _ = tx.send(Msg::DownloadDone {
+    emit(DownloadEvent::Done {
         video_id: song.video_id.clone(),
         path,
     });
@@ -170,6 +203,15 @@ fn parse_percent(line: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::sync::Mutex;
+    #[cfg(unix)]
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
     #[test]
@@ -193,5 +235,86 @@ mod tests {
         assert!(OUTPUT_TEMPLATE.contains("[%(id)s]"));
         assert!(!OUTPUT_TEMPLATE.contains('/'));
         assert!(!OUTPUT_TEMPLATE.contains('\\'));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_download_uses_fake_ytdlp_progress_and_final_path() {
+        let root = temp_dir("download");
+        let bin_dir = root.join("bin");
+        let download_dir = root.join("music");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let saved = download_dir.join("Track [abc123def45].m4a");
+        let fake = write_executable(
+            &bin_dir,
+            "yt-dlp",
+            &format!(
+                "#!/bin/sh\nprintf 'download:  12.4%%\\n' >&2\nprintf 'download:  99.6%%\\n' >&2\nprintf '%s\\n' '{}'\n",
+                saved.display()
+            ),
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let emit: EventSink = Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        });
+
+        run_download_with_program(
+            fake.to_str().unwrap(),
+            &Song::remote("abc123def45", "Track", "Artist", "3:12"),
+            &download_dir,
+            None,
+            &emit,
+        )
+        .await
+        .unwrap();
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        match &events[0] {
+            DownloadEvent::Progress { video_id, percent } => {
+                assert_eq!(video_id, "abc123def45");
+                assert_eq!(*percent, 12.0);
+            }
+            _ => panic!("expected first progress event"),
+        }
+        match &events[1] {
+            DownloadEvent::Progress { video_id, percent } => {
+                assert_eq!(video_id, "abc123def45");
+                assert_eq!(*percent, 100.0);
+            }
+            _ => panic!("expected second progress event"),
+        }
+        match &events[2] {
+            DownloadEvent::Done { video_id, path } => {
+                assert_eq!(video_id, "abc123def45");
+                assert_eq!(path.as_str(), saved.to_string_lossy().as_ref());
+            }
+            _ => panic!("expected done event"),
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    fn write_executable(dir: &Path, name: &str, contents: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, contents).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ytm-tui-{name}-test-{}-{nanos}",
+            std::process::id()
+        ))
     }
 }

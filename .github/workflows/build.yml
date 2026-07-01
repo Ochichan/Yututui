@@ -34,6 +34,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --check
+      - name: Architecture invariants
+        run: scripts/check-architecture.sh
+      - name: Vendored ratatui-image patch invariants
+        run: scripts/check-ratatui-image-patch.sh
       - name: Install supply-chain tools
         run: cargo install --locked cargo-audit cargo-deny
       - name: RustSec audit

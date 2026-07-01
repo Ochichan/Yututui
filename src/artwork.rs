@@ -15,7 +15,6 @@ use std::path::PathBuf;
 use image::DynamicImage;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::app::Msg;
 use crate::util::http;
 
 /// Cap the decoded image to this many pixels on its longest side. The render protocol now
@@ -39,6 +38,13 @@ pub enum ArtworkCmd {
     Fetch { video_id: String, source: ArtSource },
 }
 
+pub enum ArtworkEvent {
+    Result {
+        video_id: String,
+        image: Option<DynamicImage>,
+    },
+}
+
 pub struct ArtworkHandle {
     tx: UnboundedSender<ArtworkCmd>,
 }
@@ -49,14 +55,20 @@ impl ArtworkHandle {
     }
 }
 
-/// Spawn the artwork actor; results return as [`Msg::ArtworkResult`].
-pub fn spawn(msg_tx: UnboundedSender<Msg>) -> ArtworkHandle {
+/// Spawn the artwork actor; results return as [`ArtworkEvent`]s.
+pub fn spawn<F>(emit: F) -> ArtworkHandle
+where
+    F: Fn(ArtworkEvent) + Send + Sync + 'static,
+{
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run_actor(rx, msg_tx));
+    tokio::spawn(run_actor(rx, emit));
     ArtworkHandle { tx }
 }
 
-async fn run_actor(mut rx: UnboundedReceiver<ArtworkCmd>, msg_tx: UnboundedSender<Msg>) {
+async fn run_actor<F>(mut rx: UnboundedReceiver<ArtworkCmd>, emit: F)
+where
+    F: Fn(ArtworkEvent) + Send + Sync + 'static,
+{
     let client = reqwest::Client::builder()
         .user_agent("ytm-tui/1 (https://github.com/Ochichan/ytm-tui)")
         .build()
@@ -74,7 +86,7 @@ async fn run_actor(mut rx: UnboundedReceiver<ArtworkCmd>, msg_tx: UnboundedSende
             None => None,
         };
         tracing::info!(video_id = %video_id, found = image.is_some(), "artwork");
-        let _ = msg_tx.send(Msg::ArtworkResult { video_id, image });
+        emit(ArtworkEvent::Result { video_id, image });
     }
 }
 

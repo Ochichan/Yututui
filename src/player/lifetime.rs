@@ -16,14 +16,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::util::safe_fs;
 
-#[cfg(unix)]
-use crate::app::Msg;
-#[cfg(unix)]
-use tokio::sync::mpsc::UnboundedSender;
-
 /// The live mpv pid, or 0 if none. Read from the panic hook and signal handler, which
 /// must be allocation-free and async-signal-safe — an atomic is exactly that.
 static MPV_PID: AtomicU32 = AtomicU32::new(0);
+
+/// Process-lifetime events emitted by signal handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalEvent {
+    Quit,
+}
 
 /// Record the spawned mpv pid so the panic hook / signal handler can reach it.
 pub fn set_mpv_pid(pid: u32) {
@@ -79,7 +80,10 @@ pub fn install_panic_hook() {
 /// loop to quit. Keyboard Ctrl+C is handled as a key event (raw mode swallows SIGINT),
 /// so these cover external `kill`s and terminal/SSH disconnects (SIGHUP).
 #[cfg(unix)]
-pub fn spawn_signal_handlers(tx: UnboundedSender<Msg>) {
+pub fn spawn_signal_handlers<F>(emit: F)
+where
+    F: Fn(SignalEvent) + Send + Sync + 'static,
+{
     use tokio::signal::unix::{SignalKind, signal};
 
     tokio::spawn(async move {
@@ -112,17 +116,20 @@ pub fn spawn_signal_handlers(tx: UnboundedSender<Msg>) {
         }
 
         kill_mpv_now();
-        let _ = tx.send(Msg::Quit);
+        emit(SignalEvent::Quit);
     });
 }
 
 #[cfg(windows)]
-pub fn spawn_signal_handlers(tx: tokio::sync::mpsc::UnboundedSender<crate::app::Msg>) {
+pub fn spawn_signal_handlers<F>(emit: F)
+where
+    F: Fn(SignalEvent) + Send + Sync + 'static,
+{
     // Console Ctrl+C; CTRL_CLOSE/logoff/shutdown are owned by the Job Object below.
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             kill_mpv_now();
-            let _ = tx.send(crate::app::Msg::Quit);
+            emit(SignalEvent::Quit);
         }
     });
 }

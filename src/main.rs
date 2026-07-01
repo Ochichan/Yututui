@@ -10,6 +10,7 @@ mod downloads;
 mod eq;
 mod event;
 mod i18n;
+mod ids;
 mod keymap;
 mod library;
 mod logging;
@@ -20,6 +21,7 @@ mod queue;
 mod remote;
 mod resolver;
 mod romanize;
+mod runtime;
 mod search_source;
 mod session;
 mod settings;
@@ -32,11 +34,12 @@ mod ui;
 mod util;
 
 use anyhow::Result;
-use app::{App, Cmd, Msg};
+use app::{App, Msg};
 use crossterm::event::EventStream;
 use futures::StreamExt;
-use player::{PlayerCmd, PlayerHandle};
+use player::PlayerHandle;
 use ratatui_image::thread::ResizeRequest;
+use runtime::RuntimeEvent;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -527,9 +530,12 @@ async fn run(
     // path that has not been exported yet would make yt-dlp error and break anonymous
     // playback.
     let cookies_file = cfg.effective_cookies_file().filter(|p| p.exists());
+    let player_runtime = cfg.player_runtime(cookies_file.clone());
+    let download_runtime = cfg.download_runtime(cookies_file.clone());
+    let ai_runtime = cfg.ai_runtime();
     startup.mark("cookies_resolved");
 
-    let mut app = App::new(cfg.volume);
+    let mut app = App::new(player_runtime.volume);
     // Hand over the terminal image picker (present only when album art is enabled).
     app.art.picker = art_picker;
     log_art_picker(app.art.picker.as_ref());
@@ -542,7 +548,7 @@ async fn run(
     // YouTube identity (+ real artist) so a downloaded-and-online track keeps its share link
     // after a restart; files the manifest doesn't know are recovered from their `[id]` filename.
     app.download_store = downloads::DownloadStore::load();
-    let scanned = library::scan_downloads(&cfg.effective_download_dir());
+    let scanned = library::scan_downloads(&download_runtime.dir);
     app.library_ui.downloaded = app.enrich_downloads(scanned);
     // Load local playlists (the DJ Gem playlist tools read/write these).
     app.playlists = playlists::Playlists::load();
@@ -575,8 +581,10 @@ async fn run(
 
     // Worker -> UI channel. Actors hold clones; the original stays alive so the
     // select! branch never resolves to `None`.
-    let (worker_tx, mut worker_rx) = mpsc::unbounded_channel::<Msg>();
+    let _runtime_queue_policy = util::backpressure::RUNTIME_EVENT_QUEUE;
+    let (worker_tx, mut worker_rx) = mpsc::unbounded_channel::<RuntimeEvent>();
 
+    let _art_resize_policy = util::backpressure::ART_RESIZE_QUEUE;
     let (art_resize_tx, mut art_resize_rx) = mpsc::unbounded_channel::<ResizeRequest>();
     app.set_art_resize_tx(art_resize_tx);
     let art_resize_msg_tx = worker_tx.clone();
@@ -587,7 +595,7 @@ async fn run(
             }
             match tokio::task::spawn_blocking(move || request.resize_encode()).await {
                 Ok(Ok(response)) => {
-                    let _ = art_resize_msg_tx.send(Msg::ArtworkResized(response));
+                    let _ = art_resize_msg_tx.send(RuntimeEvent::ArtworkResized(response));
                 }
                 Ok(Err(e)) => tracing::warn!(error = ?e, "artwork resize failed"),
                 Err(e) => tracing::warn!(error = ?e, "artwork resize task failed"),
@@ -596,7 +604,7 @@ async fn run(
     });
 
     // Signals (SIGINT/TERM/HUP) kill mpv and ask the loop to quit.
-    player::lifetime::spawn_signal_handlers(worker_tx.clone());
+    player::lifetime::spawn_signal_handlers(runtime::sink(worker_tx.clone(), RuntimeEvent::Signal));
 
     // The remote-control accept loop is started — and the instance descriptor published — just
     // before the reducer loop below (see `remote.map(..server.start..)`), NOT here. Publishing
@@ -605,20 +613,16 @@ async fn run(
     // already bound (in `bind_or_detect`), so the single-instance guard is in force from launch.
 
     // Spawn mpv off the startup path. Until the IPC actor is ready, reducer-emitted
-    // PlayerCmds are buffered below and replayed in order.
-    let mut player_handle: Option<PlayerHandle> = None;
-    let mut pending_player_cmds: Vec<PlayerCmd> = Vec::new();
-    let mut player_failed = false;
-    let mut _mpv_guard: Option<player::Mpv> = None;
+    // PlayerCmds are buffered by RuntimeHandles and replayed in order.
     let (player_ready_tx, mut player_ready_rx) =
         mpsc::unbounded_channel::<Result<(PlayerHandle, player::Mpv), String>>();
     let player_msg_tx = worker_tx.clone();
     let player_data_dir = data_dir.clone();
-    let player_cookies_file = cookies_file.clone();
-    let player_gapless = cfg.effective_gapless();
+    let player_cookies_file = player_runtime.cookies_file.clone();
+    let player_gapless = player_runtime.gapless;
     tokio::spawn(async move {
         let result = player::spawn(
-            player_msg_tx,
+            runtime::sink(player_msg_tx, RuntimeEvent::Player),
             player_data_dir,
             player_cookies_file,
             player_gapless,
@@ -631,40 +635,56 @@ async fn run(
 
     // Spawn the API actor. Cookie auth runs inside the actor so first render and player setup
     // don't wait on the network; commands sent before it settles stay queued in the channel.
-    let api_handle = api::spawn(cookie, worker_tx.clone());
+    let api_handle = api::spawn(cookie, runtime::sink(worker_tx.clone(), RuntimeEvent::Api));
     startup.mark("api_spawned");
 
     // Lyrics actor: fetches synced lyrics from lrclib on demand, cached per track.
-    let lyrics_handle = lyrics::spawn(worker_tx.clone());
+    let lyrics_handle = lyrics::spawn(runtime::sink(worker_tx.clone(), RuntimeEvent::Lyrics));
 
     // Artwork actor: fetches + decodes album art / thumbnails on demand (only used when
     // album art is enabled; the reducer simply never emits a fetch otherwise).
-    let artwork_handle = artwork::spawn(worker_tx.clone());
+    let artwork_handle = artwork::spawn(runtime::sink(worker_tx.clone(), RuntimeEvent::Artwork));
 
     // Download actor: yt-dlp best-audio + tags + cover art, capped concurrency.
     let download_handle = download::spawn(
-        worker_tx.clone(),
-        cfg.effective_download_dir(),
-        cookies_file.clone(),
-        cfg.effective_download_concurrency(),
+        runtime::sink(worker_tx.clone(), RuntimeEvent::Download),
+        download_runtime.dir.clone(),
+        download_runtime.cookies_file.clone(),
+        download_runtime.max_concurrent,
     );
 
     // Resolver actor: pre-resolves the next track's stream URL for instant skip.
-    let resolver_handle = resolver::spawn(worker_tx.clone(), cookies_file);
+    let resolver_handle = resolver::spawn(
+        runtime::sink(worker_tx.clone(), RuntimeEvent::Resolver),
+        player_runtime.cookies_file.clone(),
+    );
 
     // Gemini actor: spawned when any Gemini-backed feature is active. DJ Gem can be off while
     // title romanization is on, so UI assistant availability is tracked separately below.
-    let mut ai_handle = cfg
-        .effective_ai_service_key()
-        .and_then(|key| ai::spawn(&key, cfg.effective_gemini_model(), worker_tx.clone()));
-    app.ai.available = cfg.effective_ai_enabled() && ai_handle.is_some();
+    let ai_handle = ai_runtime.key.as_deref().and_then(|key| {
+        ai::spawn(
+            key,
+            ai_runtime.model,
+            runtime::sink(worker_tx.clone(), RuntimeEvent::Ai),
+        )
+    });
+    app.ai.available = ai_runtime.assistant_enabled && ai_handle.is_some();
+    let mut handles = runtime::RuntimeHandles::new(
+        worker_tx.clone(),
+        api_handle,
+        lyrics_handle,
+        artwork_handle,
+        download_handle,
+        resolver_handle,
+        ai_handle,
+    );
 
     // Opt-in autoplay-on-launch: now that every player/actor handle exists, ask the loop to
     // start the restored track. Routed through the message pump so the resulting load/save
     // commands flow through the normal dispatch below (no-op when the setting is off or
     // nothing was restored).
     if cfg.effective_autoplay_on_start() {
-        let _ = worker_tx.send(Msg::Autoplay);
+        let _ = worker_tx.send(RuntimeEvent::App(Msg::Autoplay));
     }
 
     let mut events = EventStream::new();
@@ -690,7 +710,7 @@ async fn run(
     // is accepting and the reducer will answer promptly. `_remote_guard` lives to end of `run`;
     // its Drop removes the descriptor (and best-effort the socket) on exit. `None` => remote
     // control unavailable this run; the app still works as a normal player.
-    let _remote_guard = remote.map(|server| server.start(worker_tx.clone()));
+    let _remote_guard = remote.map(|server| server.start(runtime::remote_sink(worker_tx.clone())));
 
     while !app.should_quit {
         if app.dirty {
@@ -714,48 +734,9 @@ async fn run(
                 Some(Err(_)) => continue,
                 None => break,
             },
-            Some(m) = worker_rx.recv() => m,
+            Some(event) = worker_rx.recv() => event.into(),
             Some(result) = player_ready_rx.recv() => {
-                match result {
-                    Ok((handle, guard)) => {
-                        handle.send(PlayerCmd::SetVolume(cfg.volume));
-                        // Apply persisted playback speed and the EQ/normalization chain up front.
-                        if (app.playback.speed - 1.0).abs() > f64::EPSILON {
-                            handle.send(PlayerCmd::SetProperty {
-                                name: "speed".to_owned(),
-                                value: serde_json::Value::from(app.playback.speed),
-                            });
-                        }
-                        if let Some(af) =
-                            crate::eq::build_af_string(&app.audio.bands, app.audio.normalize)
-                        {
-                            handle.send(PlayerCmd::SetAudioFilter(af));
-                        }
-                        // The M1 demo track is opt-in; keep its ordering before queued startup
-                        // commands, matching the old synchronous setup path.
-                        if let Ok(url) = std::env::var("YTM_PLAY_URL") {
-                            handle.load(url);
-                        }
-                        for cmd in pending_player_cmds.drain(..) {
-                            handle.send(cmd);
-                        }
-                        player_handle = Some(handle);
-                        _mpv_guard = Some(guard);
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to start mpv");
-                        player_failed = true;
-                        pending_player_cmds.clear();
-                        // Keep the richer preflight hint if we already set one.
-                        if app.status.text.is_empty() {
-                            app.status.text = format!(
-                                "{}: {e}",
-                                crate::t!("mpv unavailable", "mpv를 사용할 수 없음")
-                            );
-                            app.dirty = true;
-                        }
-                    }
-                }
+                handles.handle_player_ready(result, &player_runtime, &mut app);
                 if app.dirty {
                     draw_app_frame(terminal, &mut app, &mut perf)?;
                     finish_draw_cycle(&mut app);
@@ -775,152 +756,7 @@ async fn run(
 
         let resized_artwork = matches!(&msg, Msg::ArtworkResized(_));
         for cmd in app.update(msg) {
-            match cmd {
-                Cmd::Player(pc) => {
-                    if let Some(p) = &player_handle {
-                        p.send(pc);
-                    } else if !player_failed {
-                        pending_player_cmds.push(pc);
-                    }
-                }
-                Cmd::Search {
-                    query,
-                    source,
-                    config,
-                } => api_handle.search(query, source, config),
-                Cmd::SaveLibrary => {
-                    if let Err(e) = app.library.save() {
-                        tracing::warn!(error = %e, "failed to save library");
-                    }
-                }
-                Cmd::SaveDownloads => {
-                    if let Err(e) = app.download_store.save() {
-                        tracing::warn!(error = %e, "failed to save downloads manifest");
-                    }
-                }
-                Cmd::SaveSignals => {
-                    if let Err(e) = app.signals.save() {
-                        tracing::warn!(error = %e, "failed to save signals");
-                    }
-                }
-                Cmd::SaveRomanizedTitles => {
-                    if let Err(e) = app.romanization.cache.save() {
-                        tracing::warn!(error = %e, "failed to save romanized title cache");
-                    }
-                }
-                Cmd::ClearRomanizedTitles => {
-                    if let Err(e) = romanize::RomanizeCache::delete_saved() {
-                        tracing::warn!(error = %e, "failed to delete romanized title cache");
-                    }
-                }
-                Cmd::ScanDownloads(dir) => {
-                    let songs = library::scan_downloads(&dir);
-                    let _ = worker_tx.send(Msg::DownloadsScanned(songs));
-                }
-                Cmd::FetchLyrics {
-                    video_id,
-                    artist,
-                    title,
-                } => {
-                    lyrics_handle.fetch(video_id, artist, title);
-                }
-                Cmd::FetchArtwork { video_id, source } => {
-                    artwork_handle.fetch(video_id, source);
-                }
-                Cmd::Download(song) => download_handle.start(song),
-                Cmd::SetDownloadDir(dir) => download_handle.set_dir(dir),
-                Cmd::Resolve {
-                    video_id,
-                    watch_url,
-                } => {
-                    resolver_handle.resolve(video_id, watch_url);
-                }
-                Cmd::SaveConfig(cfg) => {
-                    if let Err(e) = cfg.save() {
-                        tracing::warn!(error = %e, "failed to save config");
-                    }
-                }
-                Cmd::SavePlaylists => {
-                    if let Err(e) = app.playlists.save() {
-                        tracing::warn!(error = %e, "failed to save playlists");
-                    }
-                }
-                Cmd::SaveStationProfile => {
-                    if let Err(e) = app.station.save() {
-                        tracing::warn!(error = %e, "failed to save station profile");
-                    }
-                }
-                Cmd::AskAi { prompt, context } => {
-                    if let Some(h) = &ai_handle {
-                        h.ask(prompt, context);
-                    }
-                }
-                Cmd::AiRerank {
-                    seed_video_id,
-                    prompt,
-                } => {
-                    if let Some(h) = &ai_handle {
-                        h.rerank(seed_video_id, prompt);
-                    }
-                }
-                Cmd::SummarizeFeedback { digest } => {
-                    if let Some(h) = &ai_handle {
-                        h.summarize_feedback(digest);
-                    }
-                }
-                Cmd::RomanizeTitles { request_id, items } => {
-                    let keys: Vec<String> = items.iter().map(|item| item.key.clone()).collect();
-                    if let Some(h) = &ai_handle {
-                        h.romanize(request_id, items);
-                    } else {
-                        let _ = worker_tx.send(Msg::RomanizedTitles {
-                            request_id,
-                            keys,
-                            entries: Vec::new(),
-                        });
-                    }
-                }
-                Cmd::StreamingFallback {
-                    seed,
-                    seed_video_id,
-                    exclude_ids,
-                    mode,
-                    config,
-                } => {
-                    api_handle.streaming(
-                        seed,
-                        seed_video_id,
-                        exclude_ids,
-                        app::STREAMING_POOL_COUNT,
-                        mode,
-                        config,
-                    );
-                }
-                Cmd::StreamingPreflight {
-                    seed_video_id,
-                    picks,
-                    fallback,
-                    mode,
-                    config,
-                } => {
-                    api_handle.streaming_preflight(seed_video_id, picks, fallback, mode, config);
-                }
-                Cmd::SetAiModel(model) => {
-                    if let Some(h) = &ai_handle {
-                        h.set_model(model);
-                    }
-                }
-                Cmd::ReloadAi {
-                    key,
-                    model,
-                    assistant_enabled,
-                } => {
-                    // Drop the old actor (closing its channel ends its task) and bring up a
-                    // fresh one for the new key, so a key edited in Settings works at once.
-                    ai_handle = key.and_then(|k| ai::spawn(&k, model, worker_tx.clone()));
-                    app.ai.available = assistant_enabled && ai_handle.is_some();
-                }
-            }
+            handles.dispatch(&mut app, cmd);
         }
         if resized_artwork {
             perf.record_art_resize();

@@ -290,6 +290,27 @@ pub struct Config {
     pub video_layout: VideoOverlay,
 }
 
+#[derive(Clone)]
+pub struct PlayerRuntimeConfig {
+    pub volume: i64,
+    pub cookies_file: Option<PathBuf>,
+    pub gapless: bool,
+}
+
+#[derive(Clone)]
+pub struct DownloadRuntimeConfig {
+    pub dir: PathBuf,
+    pub cookies_file: Option<PathBuf>,
+    pub max_concurrent: usize,
+}
+
+#[derive(Clone)]
+pub struct AiRuntimeConfig {
+    pub key: Option<String>,
+    pub model: GeminiModel,
+    pub assistant_enabled: bool,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -353,6 +374,30 @@ impl Config {
             return Ok(()); // no config dir on this platform; nothing to do
         };
         safe_fs::write_private_atomic_json(&path, self)
+    }
+
+    pub fn player_runtime(&self, cookies_file: Option<PathBuf>) -> PlayerRuntimeConfig {
+        PlayerRuntimeConfig {
+            volume: self.volume,
+            cookies_file,
+            gapless: self.effective_gapless(),
+        }
+    }
+
+    pub fn download_runtime(&self, cookies_file: Option<PathBuf>) -> DownloadRuntimeConfig {
+        DownloadRuntimeConfig {
+            dir: self.effective_download_dir(),
+            cookies_file,
+            max_concurrent: self.effective_download_concurrency(),
+        }
+    }
+
+    pub fn ai_runtime(&self) -> AiRuntimeConfig {
+        AiRuntimeConfig {
+            key: self.effective_ai_service_key(),
+            model: self.effective_gemini_model(),
+            assistant_enabled: self.effective_ai_enabled(),
+        }
     }
 
     /// The `Cookie:` header to authenticate ytmapi-rs, from the inline value or by

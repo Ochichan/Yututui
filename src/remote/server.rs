@@ -7,7 +7,7 @@
 //!      unlinks the socket when the listener drops, so a clean exit needs no manual unlink;
 //!      we still best-effort it (plus the instance descriptor) via [`InstanceGuard`].
 //!   2. **Accept loop** ([`serve`]): one line in, one line out per connection. Each request
-//!      is forwarded to the reducer as [`Msg::Remote`] with a oneshot reply channel, so the
+//!      is forwarded to the runtime as [`RemoteEvent::Command`] with a oneshot reply channel, so the
 //!      response reflects the real outcome (capability guards, `status`, clean `quit` ack).
 
 use std::io;
@@ -19,13 +19,11 @@ use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::{GenericFilePath, ListenerOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use super::endpoint;
-use super::proto::{InstanceFile, PROTOCOL_VERSION, RemoteRequest, RemoteResponse};
-use crate::app::Msg;
+use super::proto::{InstanceFile, PROTOCOL_VERSION, RemoteCommand, RemoteRequest, RemoteResponse};
 
 /// How long the single-instance probe waits for the existing server to answer a connect.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -46,6 +44,13 @@ pub enum BindOutcome {
     Unavailable,
 }
 
+/// Events emitted by the remote-control server.
+pub enum RemoteEvent {
+    Command(RemoteCommand, oneshot::Sender<RemoteResponse>),
+}
+
+type EventSink = Arc<dyn Fn(RemoteEvent) -> bool + Send + Sync>;
+
 /// A bound server ready to start serving. Hands back an [`InstanceGuard`] on [`start`].
 pub struct RemoteServer {
     listener: Listener,
@@ -65,8 +70,15 @@ impl RemoteServer {
     /// endpoint that nothing was yet accepting on, so a `ytt -r` fired during cold start saw a
     /// live descriptor but got no reply. Keep the returned guard alive for the whole session;
     /// dropping it removes the descriptor (and best-effort the socket).
-    pub fn start(self, tx: UnboundedSender<Msg>) -> InstanceGuard {
-        tokio::spawn(serve(self.listener, Arc::clone(&self.token), tx));
+    pub fn start<F>(self, emit: F) -> InstanceGuard
+    where
+        F: Fn(RemoteEvent) -> bool + Send + Sync + 'static,
+    {
+        tokio::spawn(serve(
+            self.listener,
+            Arc::clone(&self.token),
+            Arc::new(emit),
+        ));
         if self.owns_instance_file
             && let Err(e) = endpoint::write_instance(&InstanceFile {
                 app_pid: std::process::id(),
@@ -237,7 +249,7 @@ fn now_unix() -> u64 {
 }
 
 /// Accept connections forever, handling each on its own task.
-pub async fn serve(listener: Listener, token: Arc<str>, tx: UnboundedSender<Msg>) {
+pub async fn serve(listener: Listener, token: Arc<str>, emit: EventSink) {
     // A healthy listener only errors transiently. If `accept` fails repeatedly the listener is
     // wedged and a bare `continue` becomes a hot spin (one CPU pegged for nothing) — bail after
     // a short run of consecutive failures. Remote control degrades; the player keeps running.
@@ -259,10 +271,10 @@ pub async fn serve(listener: Listener, token: Arc<str>, tx: UnboundedSender<Msg>
                 continue;
             }
         };
-        let tx = tx.clone();
+        let emit = emit.clone();
         let token = token.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(conn, &token, tx).await {
+            if let Err(e) = handle_conn(conn, &token, emit).await {
                 tracing::debug!(error = %e, "remote: connection ended with error");
             }
         });
@@ -270,7 +282,7 @@ pub async fn serve(listener: Listener, token: Arc<str>, tx: UnboundedSender<Msg>
 }
 
 /// Read one request line (bounded), compute a response via the reducer, write it back.
-async fn handle_conn(conn: Stream, token: &str, tx: UnboundedSender<Msg>) -> io::Result<()> {
+async fn handle_conn(conn: Stream, token: &str, emit: EventSink) -> io::Result<()> {
     let mut reader = BufReader::new(&conn);
     let mut line = Vec::new();
     match timeout(READ_TIMEOUT, read_bounded_line(&mut reader, &mut line)).await {
@@ -290,7 +302,7 @@ async fn handle_conn(conn: Stream, token: &str, tx: UnboundedSender<Msg>) -> io:
             return Ok(());
         }
     };
-    let resp = build_response(line, token, &tx).await;
+    let resp = build_response(line, token, &emit).await;
     write_response(&conn, &resp).await?;
     Ok(())
 }
@@ -331,7 +343,7 @@ async fn write_response(conn: &Stream, resp: &RemoteResponse) -> io::Result<()> 
 }
 
 /// Validate the request and round-trip it through the reducer for the real outcome.
-async fn build_response(line: &str, token: &str, tx: &UnboundedSender<Msg>) -> RemoteResponse {
+async fn build_response(line: &str, token: &str, emit: &EventSink) -> RemoteResponse {
     let req: RemoteRequest = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(_) => return RemoteResponse::err("bad_request"),
@@ -344,7 +356,7 @@ async fn build_response(line: &str, token: &str, tx: &UnboundedSender<Msg>) -> R
     }
 
     let (reply_tx, reply_rx) = oneshot::channel();
-    if tx.send(Msg::Remote(req.command, reply_tx)).is_err() {
+    if !emit(RemoteEvent::Command(req.command, reply_tx)) {
         return RemoteResponse::err("shutting_down");
     }
     match timeout(REPLY_TIMEOUT, reply_rx).await {
@@ -388,16 +400,18 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let listener = bind(&path).unwrap();
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Msg>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteEvent>();
         // Reducer stand-in: ack any remote command with a fixed message.
         tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                if let Msg::Remote(_cmd, reply) = msg {
-                    let _ = reply.send(RemoteResponse::ok("pong".to_string()));
-                }
+            while let Some(RemoteEvent::Command(_cmd, reply)) = rx.recv().await {
+                let _ = reply.send(RemoteResponse::ok("pong".to_string()));
             }
         });
-        tokio::spawn(serve(listener, Arc::from("secret"), tx));
+        tokio::spawn(serve(
+            listener,
+            Arc::from("secret"),
+            Arc::new(move |event| tx.send(event).is_ok()),
+        ));
 
         // Correct token → the reducer's response is relayed back verbatim.
         let req = RemoteRequest {
@@ -439,13 +453,17 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let listener = bind(&path).unwrap();
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Msg>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteEvent>();
         tokio::spawn(async move {
             if rx.recv().await.is_some() {
                 panic!("oversized remote request reached reducer");
             }
         });
-        tokio::spawn(serve(listener, Arc::from("secret"), tx));
+        tokio::spawn(serve(
+            listener,
+            Arc::from("secret"),
+            Arc::new(move |event| tx.send(event).is_ok()),
+        ));
 
         let too_large = format!("{} \n", "x".repeat(MAX_REQUEST_BYTES + 1));
         let resp = parse(&send_line(&path, &too_large).await);

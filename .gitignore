@@ -11,5 +11,6 @@
 .claude/
 
 # Local docs notes
+/docs/desktop-tray-companion-plan.md
 /docs/*.md
 /docs/**/*.md

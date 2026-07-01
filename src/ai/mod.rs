@@ -1,7 +1,7 @@
 //! The DJ Gem assistant: a multi-turn Gemini function-calling agent that drives playback.
 //!
 //! Mirrors `youtube-music-cli`'s LLM service, adapted to this app's TEA architecture: the
-//! actor can't touch `App`, so tool side-effects flow back as [`crate::app::Msg`]s that
+//! actor can't touch `App`, so tool side-effects flow back as [`AiEvent`]s that
 //! `update()` applies. The model invokes tools (search, play, queue, streaming, playlists);
 //! resolves run inside the actor via yt-dlp; mutations are reported back as intents.
 //!
@@ -24,13 +24,14 @@ pub mod usage;
 pub use model::GeminiModel;
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{sleep, timeout};
 
 use crate::api::Song;
-use crate::app::{AiContext, AiPick, Msg};
+use crate::app::{AiContext, AiPick};
 use crate::romanize::{RomanizeItem, RomanizedResult};
 use client::{
     Content, GeminiClient, GeminiError, GenerateContentRequest, GenerationConfig, Part,
@@ -165,7 +166,45 @@ pub enum AiCmd {
     SetModel(GeminiModel),
 }
 
-/// Handle for issuing Gemini-backed requests; results return as [`Msg`]s.
+/// Events emitted by the Gemini actor.
+pub enum AiEvent {
+    Thinking(bool),
+    Chat(String),
+    Error(String),
+    PlayTracks(Vec<Song>),
+    Enqueue(Vec<Song>),
+    Suggestions(Vec<Song>),
+    SetAutoplay(bool),
+    SetStationProfile {
+        query: String,
+        explore: Option<String>,
+        avoid_artists: Vec<String>,
+    },
+    CreatePlaylist(String),
+    AddToPlaylist {
+        playlist: String,
+        songs: Vec<Song>,
+    },
+    PlayPlaylist(String),
+    StreamingPicks {
+        seed_video_id: String,
+        picks: Vec<AiPick>,
+        conf: Option<f32>,
+    },
+    StationPatch {
+        down_artists: Vec<String>,
+        boost_artists: Vec<String>,
+    },
+    RomanizedTitles {
+        request_id: u64,
+        keys: Vec<String>,
+        entries: Vec<RomanizedResult>,
+    },
+}
+
+pub(crate) type EventSink = Arc<dyn Fn(AiEvent) + Send + Sync>;
+
+/// Handle for issuing Gemini-backed requests; results return as [`AiEvent`]s.
 pub struct AiHandle {
     tx: UnboundedSender<AiCmd>,
 }
@@ -175,7 +214,7 @@ impl AiHandle {
         let _ = self.tx.send(AiCmd::Ask { prompt, context });
     }
 
-    /// Kick off a one-shot streaming rerank; the result returns as [`Msg::StreamingAiPicks`].
+    /// Kick off a one-shot streaming rerank; the result returns as [`AiEvent::StreamingPicks`].
     pub fn rerank(&self, seed_video_id: String, prompt: String) {
         let _ = self.tx.send(AiCmd::Rerank {
             seed_video_id,
@@ -183,7 +222,7 @@ impl AiHandle {
         });
     }
 
-    /// Kick off an off-path feedback summary; the result returns as [`Msg::StationPatch`].
+    /// Kick off an off-path feedback summary; the result returns as [`AiEvent::StationPatch`].
     pub fn summarize_feedback(&self, digest: String) {
         let _ = self.tx.send(AiCmd::SummarizeFeedback { digest });
     }
@@ -200,13 +239,16 @@ impl AiHandle {
 }
 
 /// Spawn the Gemini actor. Returns `None` if the key can't form a valid header.
-pub fn spawn(api_key: &str, model: GeminiModel, msg_tx: UnboundedSender<Msg>) -> Option<AiHandle> {
+pub fn spawn<F>(api_key: &str, model: GeminiModel, emit: F) -> Option<AiHandle>
+where
+    F: Fn(AiEvent) + Send + Sync + 'static,
+{
     let client = GeminiClient::new(api_key).ok()?;
     let (tx, rx) = mpsc::unbounded_channel();
     let actor = AiActor {
         client,
         model,
-        msg_tx,
+        emit: Arc::new(emit),
         call_times: VecDeque::new(),
     };
     tokio::spawn(actor.run(rx));
@@ -216,22 +258,26 @@ pub fn spawn(api_key: &str, model: GeminiModel, msg_tx: UnboundedSender<Msg>) ->
 struct AiActor {
     client: GeminiClient,
     model: GeminiModel,
-    msg_tx: UnboundedSender<Msg>,
+    emit: EventSink,
     /// Timestamps of recent Gemini calls, for the rate limiter.
     call_times: VecDeque<Instant>,
 }
 
 /// Clears the thinking spinner whenever a turn ends — including any `?`/early return,
 /// since Rust has no `defer`.
-struct ThinkingGuard(UnboundedSender<Msg>);
+struct ThinkingGuard(EventSink);
 
 impl Drop for ThinkingGuard {
     fn drop(&mut self) {
-        let _ = self.0.send(Msg::AiThinking(false));
+        (self.0)(AiEvent::Thinking(false));
     }
 }
 
 impl AiActor {
+    fn emit(&self, event: AiEvent) {
+        (self.emit)(event);
+    }
+
     async fn run(mut self, mut rx: UnboundedReceiver<AiCmd>) {
         while let Some(cmd) = rx.recv().await {
             match cmd {
@@ -299,7 +345,7 @@ impl AiActor {
     }
 
     async fn converse(&mut self, prompt: String, ctx: AiContext) {
-        let _guard = ThinkingGuard(self.msg_tx.clone());
+        let _guard = ThinkingGuard(self.emit.clone());
 
         // When the UI is set to Korean, steer replies to Korean explicitly — the base prompt
         // only says "reply in the user's language", which leaves English prompts ambiguous.
@@ -341,7 +387,7 @@ impl AiActor {
             let resp = match self.generate(&req, &mut model, side_effected).await {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = self.msg_tx.send(Msg::AiError(e.to_string()));
+                    self.emit(AiEvent::Error(e.to_string()));
                     return;
                 }
             };
@@ -356,14 +402,14 @@ impl AiActor {
             ));
 
             if let Some(reason) = resp.block_reason() {
-                let _ = self.msg_tx.send(Msg::AiError(format!(
+                self.emit(AiEvent::Error(format!(
                     "{} ({reason}).",
                     crate::t!("Request blocked", "요청이 차단되었어요")
                 )));
                 return;
             }
             let Some(content) = resp.content().cloned() else {
-                let _ = self.msg_tx.send(Msg::AiError(
+                self.emit(AiEvent::Error(
                     crate::t!("Empty response from Gemini.", "Gemini 응답이 비어 있어요.")
                         .to_owned(),
                 ));
@@ -380,14 +426,14 @@ impl AiActor {
                 if resp.finish_reason() == Some("MAX_TOKENS") {
                     out.push_str(crate::t!("\n…(response truncated)", "\n…(응답이 잘렸어요)"));
                 }
-                let _ = self.msg_tx.send(Msg::AiChat(out));
+                self.emit(AiEvent::Chat(out));
                 return;
             }
 
             // Surface any interim narration, then echo the model turn verbatim (this keeps
             // `thoughtSignature`, without which the follow-up turn 400s).
             if !text.trim().is_empty() {
-                let _ = self.msg_tx.send(Msg::AiChat(text));
+                self.emit(AiEvent::Chat(text));
             }
             contents.push(content);
 
@@ -398,7 +444,7 @@ impl AiActor {
                     let mut deps = tools::ToolDeps {
                         ctx: &ctx,
                         cache: &mut cache,
-                        msg_tx: &self.msg_tx,
+                        emit: &self.emit,
                         side_effected: &mut side_effected,
                     };
                     tools::execute_tool(&call.name, &call.args, &mut deps).await
@@ -408,7 +454,7 @@ impl AiActor {
             contents.push(Content::user(response_parts));
         }
 
-        let _ = self.msg_tx.send(Msg::AiError(
+        self.emit(AiEvent::Error(
             crate::t!(
                 "Stopped after too many tool steps — try a simpler request.",
                 "도구 호출이 너무 많아 중단했어요 — 좀 더 간단히 요청해 보세요."
@@ -417,15 +463,15 @@ impl AiActor {
         ));
     }
 
-    /// One-shot streaming rerank. Always emits [`Msg::StreamingAiPicks`]; the picks are empty on any
+    /// One-shot streaming rerank. Always emits [`AiEvent::StreamingPicks`]; the picks are empty on any
     /// failure (timeout, error, block, unparseable JSON), and the reducer then degrades to the
     /// local pick. The model can never invent a track — it picks opaque `cid`s, and the reducer
     /// resolves each one against the candidate pack this call was built from.
     async fn rerank(&mut self, seed_video_id: String, prompt: String) {
-        let _guard = ThinkingGuard(self.msg_tx.clone());
+        let _guard = ThinkingGuard(self.emit.clone());
         let req = build_rerank_request(&prompt);
         let (picks, conf) = self.rerank_call(&req).await.unwrap_or_default();
-        let _ = self.msg_tx.send(Msg::StreamingAiPicks {
+        self.emit(AiEvent::StreamingPicks {
             seed_video_id,
             picks,
             conf,
@@ -513,13 +559,13 @@ impl AiActor {
     }
 
     /// One-shot, off-the-hot-path feedback summary. Turns the recent session log into a small
-    /// avoid/boost patch for the active station. Always emits [`Msg::StationPatch`] (empty on any
+    /// avoid/boost patch for the active station. Always emits [`AiEvent::StationPatch`] (empty on any
     /// failure) so the reducer's in-flight guard always clears. No [`ThinkingGuard`]: this never
     /// runs while the user is waiting on a pick, so it must not flip the "DJ Gem is thinking" spinner.
     async fn summarize_feedback(&mut self, digest: String) {
         let req = build_feedback_request(&digest);
         let (down_artists, boost_artists) = self.feedback_call(&req).await.unwrap_or_default();
-        let _ = self.msg_tx.send(Msg::StationPatch {
+        self.emit(AiEvent::StationPatch {
             down_artists,
             boost_artists,
         });
@@ -604,13 +650,13 @@ impl AiActor {
         None
     }
 
-    /// One-shot title romanization upgrade. Always emits [`Msg::RomanizedTitles`]; empty entries
+    /// One-shot title romanization upgrade. Always emits [`AiEvent::RomanizedTitles`]; empty entries
     /// mean the local fallback remains in use.
     async fn romanize_titles(&mut self, request_id: u64, items: Vec<RomanizeItem>) {
         let keys: Vec<String> = items.iter().map(|item| item.key.clone()).collect();
         let req = build_romanize_request(&items);
         let entries = self.romanize_call(&req, &items).await.unwrap_or_default();
-        let _ = self.msg_tx.send(Msg::RomanizedTitles {
+        self.emit(AiEvent::RomanizedTitles {
             request_id,
             keys,
             entries,

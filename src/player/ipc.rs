@@ -11,12 +11,11 @@ use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{Duration, sleep};
 
-use super::PlayerCmd;
 use super::proto::{self, MpvIncoming};
-use crate::app::Msg;
+use super::{EventSink, PlayerCmd, PlayerEvent};
 
 /// Connect to the mpv IPC endpoint, retrying for ~3s while mpv finishes starting up.
 pub async fn connect_retry(path: &str) -> io::Result<Stream> {
@@ -36,13 +35,9 @@ pub async fn connect_retry(path: &str) -> io::Result<Stream> {
 }
 
 /// Drive one mpv connection: subscribe to progress properties, then loop forwarding
-/// mpv events to the UI (`msg_tx`) and writing player commands (`cmd_rx`) to mpv.
+/// mpv events to the runtime (`emit`) and writing player commands (`cmd_rx`) to mpv.
 /// Returns when mpv closes the connection or all command senders drop.
-pub async fn run_actor(
-    conn: Stream,
-    mut cmd_rx: UnboundedReceiver<PlayerCmd>,
-    msg_tx: UnboundedSender<Msg>,
-) {
+pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, emit: EventSink) {
     // Subscribe to the properties the player view needs. IDs are arbitrary but stable.
     for (id, prop) in [
         (1u64, "time-pos"),
@@ -66,7 +61,7 @@ pub async fn run_actor(
         tokio::select! {
             read = reader.read_line(&mut line) => match read {
                 Ok(0) | Err(_) => break, // mpv closed the connection
-                Ok(_) => dispatch_incoming(&line, &msg_tx, &mut last_sent_time_sec),
+                Ok(_) => dispatch_incoming(&line, &emit, &mut last_sent_time_sec),
             },
             cmd = cmd_rx.recv() => match cmd {
                 None => break, // all senders dropped: shutting down
@@ -112,8 +107,8 @@ async fn write_json(conn: &Stream, json: &str) -> io::Result<()> {
     writer.flush().await
 }
 
-/// Translate one mpv line into a [`Msg`] for the reducer.
-fn dispatch_incoming(line: &str, tx: &UnboundedSender<Msg>, last_sent_time_sec: &mut Option<i64>) {
+/// Translate one mpv line into a player event for the runtime.
+fn dispatch_incoming(line: &str, emit: &EventSink, last_sent_time_sec: &mut Option<i64>) {
     let Some(incoming) = proto::parse_line(line) else {
         return;
     };
@@ -124,34 +119,34 @@ fn dispatch_incoming(line: &str, tx: &UnboundedSender<Msg>, last_sent_time_sec: 
                     let sec = t as i64;
                     if *last_sent_time_sec != Some(sec) {
                         *last_sent_time_sec = Some(sec);
-                        let _ = tx.send(Msg::PlayerTimePos(t));
+                        emit(PlayerEvent::TimePos(t));
                     }
                 }
             }
             "duration" => {
                 if let Some(d) = value.as_f64() {
-                    let _ = tx.send(Msg::PlayerDuration(d));
+                    emit(PlayerEvent::Duration(d));
                 }
             }
             "pause" => {
                 if let Some(p) = value.as_bool() {
-                    let _ = tx.send(Msg::PlayerPaused(p));
+                    emit(PlayerEvent::Paused(p));
                 }
             }
             "volume" => {
                 if let Some(v) = value.as_f64() {
-                    let _ = tx.send(Msg::PlayerVolume(v));
+                    emit(PlayerEvent::Volume(v));
                 }
             }
             "metadata" => {
-                let _ = tx.send(Msg::PlayerMetadata(value));
+                emit(PlayerEvent::Metadata(value));
             }
             _ => {}
         },
         MpvIncoming::EndFile { reason, file_error } => match reason.as_str() {
             "eof" => {
                 *last_sent_time_sec = None;
-                let _ = tx.send(Msg::PlayerEof);
+                emit(PlayerEvent::Eof);
             }
             "error" => {
                 *last_sent_time_sec = None;
@@ -161,7 +156,7 @@ fn dispatch_incoming(line: &str, tx: &UnboundedSender<Msg>, last_sent_time_sec: 
                     Some(fe) if !fe.is_empty() => format!("mpv could not play this track ({fe})"),
                     _ => "mpv could not play this track".to_owned(),
                 };
-                let _ = tx.send(Msg::PlayerError(msg));
+                emit(PlayerEvent::Error(msg));
             }
             _ => {}
         },
@@ -176,19 +171,22 @@ mod tests {
     #[test]
     fn metadata_property_change_is_forwarded() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
         let mut last_sent_time_sec = None;
 
         dispatch_incoming(
             r#"{"event":"property-change","id":5,"name":"metadata","data":{"icy-title":"Artist - Track"}}"#,
-            &tx,
+            &emit,
             &mut last_sent_time_sec,
         );
 
         match rx.try_recv().expect("metadata message") {
-            Msg::PlayerMetadata(value) => {
+            PlayerEvent::Metadata(value) => {
                 assert_eq!(value["icy-title"], "Artist - Track");
             }
-            _ => panic!("expected PlayerMetadata"),
+            _ => panic!("expected metadata event"),
         }
     }
 }

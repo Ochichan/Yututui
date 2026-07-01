@@ -15,10 +15,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use tokio::sync::Semaphore;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::Sender;
 
-use crate::app::Msg;
-use crate::util::process;
+use crate::ids::{StreamUrl, VideoId, WatchUrl};
+use crate::util::{backpressure, process};
 
 /// Most concurrent resolves (we only look one ahead, but `prev`/retries can overlap).
 const MAX_CONCURRENT: usize = 2;
@@ -26,27 +26,51 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(12);
 const RESOLVE_STDOUT_MAX: usize = 16 * 1024;
 
 pub enum ResolveCmd {
-    Resolve { video_id: String, watch_url: String },
+    Resolve {
+        video_id: VideoId,
+        watch_url: WatchUrl,
+    },
 }
 
+pub enum ResolverEvent {
+    Resolved {
+        video_id: VideoId,
+        stream_url: StreamUrl,
+    },
+}
+
+type EventSink = Arc<dyn Fn(ResolverEvent) + Send + Sync>;
+
 pub struct ResolverHandle {
-    tx: UnboundedSender<ResolveCmd>,
+    tx: Sender<ResolveCmd>,
 }
 
 impl ResolverHandle {
-    pub fn resolve(&self, video_id: String, watch_url: String) {
-        let _ = self.tx.send(ResolveCmd::Resolve {
-            video_id,
-            watch_url,
-        });
+    pub fn resolve(&self, video_id: String, watch_url: String) -> bool {
+        self.tx
+            .try_send(ResolveCmd::Resolve {
+                video_id: VideoId::from(video_id),
+                watch_url: WatchUrl::from(watch_url),
+            })
+            .is_ok()
+    }
+
+    pub fn resolve_or_log(&self, video_id: String, watch_url: String) {
+        if !self.resolve(video_id.clone(), watch_url) {
+            tracing::debug!(video_id = %video_id, "prefetch queue full; dropping request");
+        }
     }
 }
 
-/// Spawn the resolver actor; results return as [`Msg::Resolved`].
-pub fn spawn(msg_tx: UnboundedSender<Msg>, cookies: Option<PathBuf>) -> ResolverHandle {
-    let (tx, mut rx) = mpsc::unbounded_channel::<ResolveCmd>();
+/// Spawn the resolver actor; results return as [`ResolverEvent`]s.
+pub fn spawn<F>(emit: F, cookies: Option<PathBuf>) -> ResolverHandle
+where
+    F: Fn(ResolverEvent) + Send + Sync + 'static,
+{
+    let (tx, mut rx) = backpressure::bounded_channel::<ResolveCmd>(backpressure::RESOLVER_QUEUE);
     let sem = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let in_flight = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let emit: EventSink = Arc::new(emit);
     tokio::spawn(async move {
         while let Some(ResolveCmd::Resolve {
             video_id,
@@ -55,34 +79,34 @@ pub fn spawn(msg_tx: UnboundedSender<Msg>, cookies: Option<PathBuf>) -> Resolver
         {
             if !in_flight
                 .lock()
-                .is_ok_and(|mut ids| ids.insert(video_id.clone()))
+                .is_ok_and(|mut ids| ids.insert(video_id.as_str().to_owned()))
             {
                 tracing::debug!(video_id = %video_id, "prefetch already in flight");
                 continue;
             }
-            let sem = sem.clone();
-            let tx = msg_tx.clone();
+            let Ok(permit) = sem.clone().acquire_owned().await else {
+                if let Ok(mut ids) = in_flight.lock() {
+                    ids.remove(video_id.as_str());
+                }
+                return;
+            };
+            let emit = emit.clone();
             let cookies = cookies.clone();
             let in_flight = in_flight.clone();
             tokio::spawn(async move {
-                let Ok(_permit) = sem.acquire_owned().await else {
-                    if let Ok(mut ids) = in_flight.lock() {
-                        ids.remove(&video_id);
-                    }
-                    return;
-                };
-                match resolve_url(&watch_url, cookies.as_deref()).await {
+                let _permit = permit;
+                match resolve_url(watch_url.as_str(), cookies.as_deref()).await {
                     Some(stream_url) => {
                         tracing::info!(video_id = %video_id, "prefetched");
-                        let _ = tx.send(Msg::Resolved {
+                        emit(ResolverEvent::Resolved {
                             video_id: video_id.clone(),
-                            stream_url,
+                            stream_url: StreamUrl::from(stream_url),
                         });
                     }
                     None => tracing::warn!(video_id = %video_id, "prefetch failed"),
                 }
                 if let Ok(mut ids) = in_flight.lock() {
-                    ids.remove(&video_id);
+                    ids.remove(video_id.as_str());
                 }
             });
         }
@@ -92,7 +116,15 @@ pub fn spawn(msg_tx: UnboundedSender<Msg>, cookies: Option<PathBuf>) -> Resolver
 
 /// Resolve a watch URL to a direct audio stream URL via `yt-dlp -g`.
 async fn resolve_url(watch_url: &str, cookies: Option<&std::path::Path>) -> Option<String> {
-    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
+    resolve_url_with_program("yt-dlp", watch_url, cookies).await
+}
+
+async fn resolve_url_with_program(
+    program: &str,
+    watch_url: &str,
+    cookies: Option<&std::path::Path>,
+) -> Option<String> {
+    let mut cmd = process::tokio_command(program, process::ProcessProfile::YtDlp);
     cmd.args(["-f", "bestaudio", "-g", "--no-playlist"])
         .arg(watch_url);
     if let Some(c) = cookies {
@@ -112,4 +144,53 @@ async fn resolve_url(watch_url: &str, cookies: Option<&std::path::Path>) -> Opti
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(str::to_owned)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn resolve_url_uses_fake_ytdlp_stdout() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let fake = write_executable(
+            &dir,
+            "yt-dlp",
+            "#!/bin/sh\nprintf '%s\\n' 'https://cdn.example/audio.m4a'\n",
+        );
+
+        let resolved = resolve_url_with_program(
+            fake.to_str().unwrap(),
+            "https://music.youtube.com/watch?v=abc123",
+            None,
+        )
+        .await;
+
+        assert_eq!(resolved.as_deref(), Some("https://cdn.example/audio.m4a"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    fn write_executable(dir: &std::path::Path, name: &str, contents: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, contents).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ytm-tui-resolver-test-{}-{nanos}",
+            std::process::id()
+        ))
+    }
 }

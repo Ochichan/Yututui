@@ -9,11 +9,12 @@
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::Song;
 use crate::api::ytmusic::{related_tracks_from_source, ytdlp_search};
-use crate::app::{AiContext, Msg};
+use crate::app::AiContext;
+
+use super::{AiEvent, EventSink};
 
 /// Default number of tracks a query resolves to when the model doesn't ask for a count.
 const DEFAULT_RESOLVE: usize = 1;
@@ -27,7 +28,7 @@ pub struct ToolDeps<'a> {
     pub ctx: &'a AiContext,
     /// `videoId → Song`, populated by searches so later tools resolve bare ids.
     pub cache: &'a mut HashMap<String, Song>,
-    pub msg_tx: &'a UnboundedSender<Msg>,
+    pub emit: &'a EventSink,
     /// Set true once any playback/queue/playlist mutation has run (disables model fallback).
     pub side_effected: &'a mut bool,
 }
@@ -199,7 +200,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
                 return err("nothing matched — try search_tracks first");
             };
             let label = fmt_song(&first);
-            send(deps, Msg::AiPlayTracks(vec![first]));
+            send(deps, AiEvent::PlayTracks(vec![first]));
             json!({ "playing": label })
         }
 
@@ -207,7 +208,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             let songs = resolve_songs(args, deps, 5).await;
             let count = songs.len();
             let labels: Vec<String> = songs.iter().map(fmt_song).collect();
-            send(deps, Msg::AiEnqueue(songs));
+            send(deps, AiEvent::Enqueue(songs));
             json!({ "queued": count, "tracks": labels })
         }
 
@@ -235,20 +236,20 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             if explore.is_some() || !avoid.is_empty() {
                 send(
                     deps,
-                    Msg::AiSetStationProfile {
+                    AiEvent::SetStationProfile {
                         query: seed.clone(),
                         explore: explore.clone(),
                         avoid_artists: avoid,
                     },
                 );
             }
-            send(deps, Msg::AiEnqueue(songs));
-            send(deps, Msg::AiSetAutoplay(true));
+            send(deps, AiEvent::Enqueue(songs));
+            send(deps, AiEvent::SetAutoplay(true));
             json!({ "started": true, "seed": seed, "queued": count, "explore": explore })
         }
 
         "stop_streaming" => {
-            send(deps, Msg::AiSetAutoplay(false));
+            send(deps, AiEvent::SetAutoplay(false));
             json!({ "stopped": true })
         }
 
@@ -260,7 +261,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             cache_all(deps, &songs);
             let labels: Vec<String> = songs.iter().map(fmt_song).collect();
             // Populating the pickable list is not a playback mutation → no side-effect flag.
-            let _ = deps.msg_tx.send(Msg::AiSuggestions(songs));
+            (deps.emit)(AiEvent::Suggestions(songs));
             json!({ "suggestions": labels })
         }
 
@@ -274,7 +275,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             let Some(playlist) = str_arg(args, "playlist") else {
                 return err("play_playlist requires a 'playlist'");
             };
-            send(deps, Msg::AiPlayPlaylist(playlist.clone()));
+            send(deps, AiEvent::PlayPlaylist(playlist.clone()));
             json!({ "playing_playlist": playlist })
         }
 
@@ -282,7 +283,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             let Some(name) = str_arg(args, "name") else {
                 return err("create_playlist requires a 'name'");
             };
-            send(deps, Msg::AiCreatePlaylist(name.clone()));
+            send(deps, AiEvent::CreatePlaylist(name.clone()));
             json!({ "created": name })
         }
 
@@ -297,7 +298,7 @@ pub async fn execute_tool(name: &str, args: &Value, deps: &mut ToolDeps<'_>) -> 
             let count = songs.len();
             send(
                 deps,
-                Msg::AiAddToPlaylist {
+                AiEvent::AddToPlaylist {
                     playlist: playlist.clone(),
                     songs,
                 },
@@ -401,9 +402,9 @@ async fn resolve_songs(args: &Value, deps: &mut ToolDeps<'_>, default_limit: usi
     Vec::new()
 }
 
-fn send(deps: &mut ToolDeps<'_>, msg: Msg) {
+fn send(deps: &mut ToolDeps<'_>, event: AiEvent) {
     *deps.side_effected = true;
-    let _ = deps.msg_tx.send(msg);
+    (deps.emit)(event);
 }
 
 fn cache_all(deps: &mut ToolDeps<'_>, songs: &[Song]) {
@@ -465,6 +466,12 @@ fn err(msg: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sink(tx: tokio::sync::mpsc::UnboundedSender<AiEvent>) -> EventSink {
+        std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        })
+    }
 
     #[test]
     fn str_list_arg_trims_drops_blanks_and_non_strings() {
@@ -550,11 +557,12 @@ mod tests {
         let ctx = ctx();
         let mut cache = HashMap::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit = sink(tx);
         let mut side = false;
         let mut deps = ToolDeps {
             ctx: &ctx,
             cache: &mut cache,
-            msg_tx: &tx,
+            emit: &emit,
             side_effected: &mut side,
         };
 
@@ -576,11 +584,12 @@ mod tests {
         ctx.current_radio_now_playing = Some("Track — Artist".to_owned());
         let mut cache = HashMap::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit = sink(tx);
         let mut side = false;
         let mut deps = ToolDeps {
             ctx: &ctx,
             cache: &mut cache,
-            msg_tx: &tx,
+            emit: &emit,
             side_effected: &mut side,
         };
 
@@ -597,11 +606,12 @@ mod tests {
         let mut cache = HashMap::new();
         cache.insert("vid1".to_owned(), Song::remote("vid1", "T", "A", "1:00"));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit = sink(tx);
         let mut side = false;
         let mut deps = ToolDeps {
             ctx: &ctx,
             cache: &mut cache,
-            msg_tx: &tx,
+            emit: &emit,
             side_effected: &mut side,
         };
 
@@ -609,8 +619,8 @@ mod tests {
         assert_eq!(r["playing"], "T — A");
         assert!(side, "play_music is a mutation");
         match rx.try_recv().unwrap() {
-            Msg::AiPlayTracks(songs) => assert_eq!(songs[0].video_id, "vid1"),
-            _ => panic!("expected AiPlayTracks"),
+            AiEvent::PlayTracks(songs) => assert_eq!(songs[0].video_id, "vid1"),
+            _ => panic!("expected PlayTracks"),
         }
     }
 
@@ -619,14 +629,18 @@ mod tests {
         let ctx = ctx();
         let mut cache = HashMap::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit = sink(tx);
         let mut side = false;
         let mut deps = ToolDeps {
             ctx: &ctx,
             cache: &mut cache,
-            msg_tx: &tx,
+            emit: &emit,
             side_effected: &mut side,
         };
         execute_tool("stop_streaming", &json!({}), &mut deps).await;
-        assert!(matches!(rx.try_recv().unwrap(), Msg::AiSetAutoplay(false)));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            AiEvent::SetAutoplay(false)
+        ));
     }
 }

@@ -11,13 +11,12 @@ pub mod mpv;
 pub mod proto;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::process::Child;
 use tokio::sync::mpsc::{self, UnboundedSender};
-
-use crate::app::Msg;
 
 /// Commands the reducer sends to the player actor.
 pub enum PlayerCmd {
@@ -45,6 +44,19 @@ pub enum PlayerCmd {
     /// Set an arbitrary mpv property (e.g. `speed`).
     SetProperty { name: String, value: Value },
 }
+
+/// Events emitted by the mpv IPC actor.
+pub enum PlayerEvent {
+    TimePos(f64),
+    Duration(f64),
+    Paused(bool),
+    Volume(f64),
+    Metadata(Value),
+    Eof,
+    Error(String),
+}
+
+pub(crate) type EventSink = Arc<dyn Fn(PlayerEvent) + Send + Sync>;
 
 /// A handle for sending [`PlayerCmd`]s to the player actor. Cheap to hold; sends are
 /// non-blocking and silently no-op if the actor has gone away.
@@ -91,15 +103,18 @@ impl Drop for Mpv {
     }
 }
 
-/// Spawn mpv, wire up the IPC actor, and register the lifeline. `msg_tx` receives
+/// Spawn mpv, wire up the IPC actor, and register the lifeline. `emit` receives
 /// player events; `data_dir` (if available) stores the PID registry for orphan reaping;
 /// `cookies_file` (if any) is forwarded to mpv's yt-dlp for authenticated streams.
-pub async fn spawn(
-    msg_tx: UnboundedSender<Msg>,
+pub async fn spawn<F>(
+    emit: F,
     data_dir: Option<PathBuf>,
     cookies_file: Option<PathBuf>,
     gapless: bool,
-) -> Result<(PlayerHandle, Mpv)> {
+) -> Result<(PlayerHandle, Mpv)>
+where
+    F: Fn(PlayerEvent) + Send + Sync + 'static,
+{
     let ipc_path = mpv::ipc_path()?;
     let child = mpv::spawn(&ipc_path, cookies_file.as_deref(), gapless)?;
     let mpv_pid = child.id().context("mpv exited before reporting a pid")?;
@@ -119,7 +134,7 @@ pub async fn spawn(
         .context("could not connect to the mpv IPC endpoint")?;
 
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(ipc::run_actor(conn, rx, msg_tx));
+    tokio::spawn(ipc::run_actor(conn, rx, Arc::new(emit)));
 
     Ok((
         PlayerHandle { tx },
