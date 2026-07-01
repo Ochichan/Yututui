@@ -30,6 +30,9 @@ pub struct ScrollState {
     /// Viewport height (rows) recorded by the last render, so the wheel handler — which runs
     /// between frames — can clamp without a layout pass.
     viewport: Cell<u16>,
+    /// One-shot request for append-only views (the DJ Gem transcript) to render the newest
+    /// content at the bottom after new lines arrive.
+    follow_tail: Cell<bool>,
 }
 
 impl ScrollState {
@@ -38,6 +41,13 @@ impl ScrollState {
     pub fn reset(&self) {
         self.offset.set(0);
         self.prev_sel.set(0);
+        self.follow_tail.set(false);
+    }
+
+    /// Append-only views call this when fresh content should snap the viewport to the newest
+    /// lines on the next render. A later user wheel/scrollbar move cancels the pending snap.
+    pub fn scroll_to_end(&self) {
+        self.follow_tail.set(true);
     }
 
     /// Mouse wheel: move the viewport by `delta` rows, decoupled from the selection and
@@ -55,6 +65,7 @@ impl ScrollState {
         } else {
             (cur + delta).min(max)
         };
+        self.follow_tail.set(false);
         self.offset.set(next);
     }
 
@@ -66,6 +77,7 @@ impl ScrollState {
         if viewport == 0 {
             return;
         }
+        self.follow_tail.set(false);
         self.offset.set(offset.min(len.saturating_sub(viewport)));
     }
 
@@ -106,6 +118,24 @@ impl ScrollState {
         self.viewport.set(viewport);
         let max = len.saturating_sub(viewport as usize);
         let off = self.offset.get().min(max);
+        self.offset.set(off);
+        off
+    }
+
+    /// Render-time offset for an append-only transcript. The first render, and any render after
+    /// [`scroll_to_end`](Self::scroll_to_end), pins the viewport to the newest lines. Otherwise it
+    /// preserves the user's wheel/scrollbar position like [`view`](Self::view).
+    pub fn view_tail(&self, viewport: u16, len: usize) -> usize {
+        let first_render = self.viewport.get() == 0;
+        self.viewport.set(viewport);
+        let max = len.saturating_sub(viewport as usize);
+        let follow_tail = self.follow_tail.get();
+        self.follow_tail.set(false);
+        let off = if first_render || follow_tail {
+            max
+        } else {
+            self.offset.get().min(max)
+        };
         self.offset.set(off);
         off
     }

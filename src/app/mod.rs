@@ -250,6 +250,9 @@ pub struct App {
     /// Active scrollbar drag session. Kept separate from row range selection so dragging a
     /// scrollbar never extends a Library/Queue multi-select range.
     drag_scrollbar: Option<ScrollbarDrag>,
+    /// Active DJ Gem transcript drag-copy selection. Stores rendered visual row indexes,
+    /// not message indexes, so wrapping and copy behavior line up exactly.
+    pub(crate) ai_transcript_drag: Option<AiTranscriptDrag>,
 
     // Lyrics ------------------------------------------------------------------
     /// Lyrics-panel state: visibility, in-flight flag, and the fetched track lyrics.
@@ -366,6 +369,7 @@ impl App {
             library_ui: LibraryView::default(),
             drag_selection: None,
             drag_scrollbar: None,
+            ai_transcript_drag: None,
             lyrics: Lyrics::default(),
             art: ArtState::default(),
             downloads: Downloads::default(),
@@ -726,11 +730,7 @@ impl App {
             Msg::MouseDoubleClick { col, row } => return self.on_mouse_double_click(col, row),
             Msg::MouseRightClick { col, row } => return self.on_mouse_right_click(col, row),
             Msg::MouseDrag { col, row } => return self.on_mouse_drag(col, row),
-            Msg::MouseLeftUp => {
-                self.drag_selection = None;
-                self.drag_scrollbar = None;
-                return Vec::new();
-            }
+            Msg::MouseLeftUp => return self.on_mouse_left_up(),
             Msg::MouseScroll { up, col, row } => return self.on_mouse_scroll(up, col, row),
             Msg::Resize => self.dirty = true,
             Msg::Quit => self.should_quit = true,
@@ -1119,6 +1119,7 @@ impl App {
             // --- DJ Gem assistant intents ---------------------------------------
             Msg::AiThinking(on) => {
                 self.ai.thinking = on;
+                self.bridges.ai_transcript_scroll.scroll_to_end();
                 self.dirty = true;
             }
             Msg::AiChat(text) => {

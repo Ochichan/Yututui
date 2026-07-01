@@ -238,6 +238,35 @@ impl App {
                 self.select_search_source(source)
             }
             MouseTarget::SearchSourceSelect(_) => Vec::new(),
+            // DJ Gem prompt box and submit button mirror the Search box interaction.
+            MouseTarget::AiInput if self.mode == Mode::Ai => {
+                self.ai.focus = AiFocus::Input;
+                self.ai.select_all = false;
+                self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::AiInput => Vec::new(),
+            MouseTarget::AiSubmit if self.mode == Mode::Ai => self.submit_ai_prompt(),
+            MouseTarget::AiSubmit => Vec::new(),
+            MouseTarget::AiSuggestionRow(i) if self.mode == Mode::Ai => {
+                if i < self.ai.suggestions.len() {
+                    self.ai.suggestions_selected = i;
+                    self.ai.focus = AiFocus::Suggestions;
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            MouseTarget::AiSuggestionRow(_) => Vec::new(),
+            MouseTarget::AiTranscriptRow(i) if self.mode == Mode::Ai => {
+                self.ai_transcript_drag = Some(AiTranscriptDrag {
+                    anchor: i,
+                    cursor: i,
+                    moved: false,
+                });
+                self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::AiTranscriptRow(_) => Vec::new(),
             // Library tab header.
             MouseTarget::LibraryTab(tab) if self.mode == Mode::Library => {
                 if !self.library_tab_available(tab) {
@@ -390,6 +419,14 @@ impl App {
             Some(MouseTarget::Nav(Mode::Player)) if self.mode == Mode::Player => {
                 self.request_radio_mode_switch()
             }
+            Some(MouseTarget::AiSuggestionRow(i)) if self.mode == Mode::Ai => {
+                if i < self.ai.suggestions.len() {
+                    self.ai.suggestions_selected = i;
+                    self.ai.focus = AiFocus::Suggestions;
+                    return self.play_ai_suggestion();
+                }
+                Vec::new()
+            }
             Some(MouseTarget::ListRow(i)) => self.on_list_row_activate(i),
             _ => self.on_mouse_click(col, row),
         }
@@ -426,6 +463,29 @@ impl App {
         {
             return self.on_scrollbar_press(surface, rect, row);
         }
+        if self.mode == Mode::Ai
+            && let Some(MouseTarget::AiTranscriptRow(i)) = self.mouse_target_at(col, row)
+        {
+            match self.ai_transcript_drag.as_mut() {
+                Some(drag) => {
+                    let moved = drag.moved || drag.cursor != i || drag.anchor != i;
+                    if drag.cursor != i || drag.moved != moved {
+                        drag.cursor = i;
+                        drag.moved = moved;
+                        self.dirty = true;
+                    }
+                }
+                None => {
+                    self.ai_transcript_drag = Some(AiTranscriptDrag {
+                        anchor: i,
+                        cursor: i,
+                        moved: false,
+                    });
+                    self.dirty = true;
+                }
+            }
+            return Vec::new();
+        }
         if self.mode == Mode::Library
             && let Some(MouseTarget::ListRow(i) | MouseTarget::LibraryDel(i)) =
                 self.mouse_target_at(col, row)
@@ -437,6 +497,44 @@ impl App {
                 self.dirty = true;
             }
         }
+        Vec::new()
+    }
+
+    pub(in crate::app) fn on_mouse_left_up(&mut self) -> Vec<Cmd> {
+        self.drag_selection = None;
+        self.drag_scrollbar = None;
+
+        if let Some(drag) = self.ai_transcript_drag.take() {
+            if drag.moved {
+                let (start, end) = if drag.anchor <= drag.cursor {
+                    (drag.anchor, drag.cursor)
+                } else {
+                    (drag.cursor, drag.anchor)
+                };
+                let text = {
+                    let lines = self.bridges.ai_transcript_copy_lines.borrow();
+                    let end = end.min(lines.len().saturating_sub(1));
+                    if start >= lines.len() || start > end {
+                        String::new()
+                    } else {
+                        lines[start..=end].join("\n")
+                    }
+                };
+                if !text.trim().is_empty() {
+                    copy_to_clipboard(&text);
+                    self.status.kind = StatusKind::Info;
+                    self.status.text = t!(
+                        "✓ Chat selection copied to clipboard",
+                        "✓ 선택한 채팅이 클립보드에 복사됐어요"
+                    )
+                    .to_owned();
+                    self.dirty = true;
+                }
+            } else {
+                self.dirty = true;
+            }
+        }
+
         Vec::new()
     }
 
@@ -466,6 +564,7 @@ impl App {
             grab,
         };
         self.drag_selection = None;
+        self.ai_transcript_drag = None;
         self.drag_scrollbar = Some(drag);
         self.drag_scrollbar_to(drag, row);
         Vec::new()
@@ -505,6 +604,7 @@ impl App {
         Some(match surface {
             ScrollSurface::Library => &self.bridges.library_scroll,
             ScrollSurface::Search => &self.bridges.search_scroll,
+            ScrollSurface::AiTranscript => &self.bridges.ai_transcript_scroll,
             ScrollSurface::AiSuggestions => &self.bridges.ai_scroll,
             ScrollSurface::Settings => &self.bridges.settings_scroll,
             ScrollSurface::Queue => &self.queue_popup.scroll,
@@ -515,6 +615,7 @@ impl App {
         Some(match surface {
             ScrollSurface::Library => self.library_len(),
             ScrollSurface::Search => self.search.results.len(),
+            ScrollSurface::AiTranscript => self.bridges.ai_transcript_copy_lines.borrow().len(),
             ScrollSurface::AiSuggestions => self.ai.suggestions.len(),
             ScrollSurface::Settings => self.settings_field_display_len()?,
             ScrollSurface::Queue => self.queue.len(),
@@ -590,9 +691,20 @@ impl App {
                 self.dirty = true;
             }
             Mode::Ai => {
-                self.bridges
-                    .ai_scroll
-                    .wheel(up, n, self.ai.suggestions.len());
+                match self.mouse_target_at(col, row) {
+                    Some(
+                        MouseTarget::AiSuggestionRow(_)
+                        | MouseTarget::Scrollbar(ScrollSurface::AiSuggestions),
+                    ) => {
+                        self.bridges
+                            .ai_scroll
+                            .wheel(up, n, self.ai.suggestions.len());
+                    }
+                    _ => {
+                        let len = self.bridges.ai_transcript_copy_lines.borrow().len();
+                        self.bridges.ai_transcript_scroll.wheel(up, n, len);
+                    }
+                }
                 self.dirty = true;
             }
             // Settings is an interactive form, not a browse list, so the wheel keeps walking

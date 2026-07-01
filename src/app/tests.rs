@@ -2804,6 +2804,168 @@ fn ai_empty_chat_is_not_appended() {
 }
 
 #[test]
+fn ai_transcript_scrolls_history_and_new_chat_snaps_to_latest() {
+    let mut app = App::new(100);
+    app.mode = Mode::Ai;
+    for i in 0..30 {
+        app.ai.messages.push(AiMessage {
+            role: AiRole::Ai,
+            text: format!("message {i}"),
+        });
+    }
+
+    let backend = TestBackend::new(80, 18);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let viewport = app.bridges.ai_transcript_scroll.viewport();
+    let content_len = app.bridges.ai_transcript_copy_lines.borrow().len();
+    assert!(content_len > viewport, "transcript should overflow");
+    assert_eq!(
+        app.bridges.ai_transcript_scroll.offset(),
+        content_len - viewport,
+        "first render should show the newest chat"
+    );
+    let row = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .find_map(|b| match b.target {
+            MouseTarget::AiTranscriptRow(_) => Some(b.rect),
+            _ => None,
+        })
+        .expect("rendered transcript row");
+
+    app.update(Msg::MouseScroll {
+        up: true,
+        col: row.x,
+        row: row.y,
+    });
+    assert!(
+        app.bridges.ai_transcript_scroll.offset() < content_len - viewport,
+        "wheel up should move to older chat"
+    );
+
+    app.update(Msg::AiChat("fresh answer".to_owned()));
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let content_len = app.bridges.ai_transcript_copy_lines.borrow().len();
+    assert_eq!(
+        app.bridges.ai_transcript_scroll.offset(),
+        content_len - app.bridges.ai_transcript_scroll.viewport(),
+        "new chat should snap back to the latest line"
+    );
+}
+
+#[test]
+fn dragging_ai_transcript_rows_copies_selection() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    app.mode = Mode::Ai;
+    app.ai.messages.push(AiMessage {
+        role: AiRole::User,
+        text: "play jazz".to_owned(),
+    });
+    app.ai.messages.push(AiMessage {
+        role: AiRole::Ai,
+        text: "queued something mellow".to_owned(),
+    });
+
+    let backend = TestBackend::new(80, 18);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let rows: Vec<Rect> = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .filter_map(|b| match b.target {
+            MouseTarget::AiTranscriptRow(_) => Some(b.rect),
+            _ => None,
+        })
+        .collect();
+    assert!(rows.len() >= 2, "need at least two transcript rows");
+
+    app.update(Msg::MouseClick {
+        col: rows[0].x,
+        row: rows[0].y,
+    });
+    app.update(Msg::MouseDrag {
+        col: rows[1].x,
+        row: rows[1].y,
+    });
+    app.update(Msg::MouseLeftUp);
+
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert_eq!(
+        app.status.text,
+        t!(
+            "✓ Chat selection copied to clipboard",
+            "✓ 선택한 채팅이 클립보드에 복사됐어요"
+        )
+    );
+}
+
+#[test]
+fn ai_submit_button_matches_enter_submit() {
+    let mut app = App::new(100);
+    app.mode = Mode::Ai;
+    app.ai.available = true;
+    app.ai.input = "play lofi".to_owned();
+
+    let backend = TestBackend::new(80, 18);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let button = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .find(|b| b.target == MouseTarget::AiSubmit)
+        .map(|b| b.rect)
+        .expect("rendered DJ Gem submit button");
+
+    let cmds = app.update(Msg::MouseClick {
+        col: button.x,
+        row: button.y,
+    });
+    assert_eq!(ask_ai(&cmds), Some("play lofi"));
+    assert!(app.ai.thinking);
+    assert!(app.ai.input.is_empty());
+}
+
+#[test]
+fn ai_suggestion_rows_are_clickable_choices() {
+    let mut app = App::new(100);
+    app.mode = Mode::Ai;
+    app.ai.messages.push(AiMessage {
+        role: AiRole::User,
+        text: "hide onboarding art".to_owned(),
+    });
+    app.ai.suggestions = songs(4);
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
+    let row = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .find_map(|b| match b.target {
+            MouseTarget::AiSuggestionRow(2) => Some(b.rect),
+            _ => None,
+        })
+        .expect("rendered DJ Gem suggestion row");
+
+    app.update(Msg::MouseClick {
+        col: row.x,
+        row: row.y,
+    });
+    assert_eq!(app.ai.focus, AiFocus::Suggestions);
+    assert_eq!(app.ai.suggestions_selected, 2);
+}
+
+#[test]
 fn ai_streaming_circuit_breaker_disables_after_repeated_empties() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);

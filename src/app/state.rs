@@ -52,6 +52,10 @@ pub struct RenderBridges {
     /// on-screen with a margin. One per list so each keeps its own place.
     pub library_scroll: crate::ui::scroll::ScrollState,
     pub search_scroll: crate::ui::scroll::ScrollState,
+    pub ai_transcript_scroll: crate::ui::scroll::ScrollState,
+    /// Last rendered DJ Gem transcript visual lines, after wrapping and prefix indentation.
+    /// Mouse-drag copy uses these exact rows so the copied text matches what was selected.
+    pub ai_transcript_copy_lines: RefCell<Vec<String>>,
     pub ai_scroll: crate::ui::scroll::ScrollState,
     /// The Settings field list keeps its own persistent offset too, so a mouse click on a
     /// visible row focuses it in place instead of letting ratatui re-derive the offset from 0
@@ -368,6 +372,13 @@ pub(crate) enum DragSurface {
 pub(crate) struct DragSelection {
     pub surface: DragSurface,
     pub anchor: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AiTranscriptDrag {
+    pub anchor: usize,
+    pub cursor: usize,
+    pub moved: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

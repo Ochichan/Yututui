@@ -9,8 +9,9 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{AiFocus, AiRole, App, ScrollSurface};
+use crate::app::{AiFocus, AiRole, App, MouseTarget, ScrollSurface, StatusKind};
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -61,6 +62,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // help
     ])
     .split(inner);
+
+    if !app.status.text.is_empty() {
+        let role = match app.status.kind {
+            StatusKind::Error => R::Error,
+            StatusKind::Info => R::Success,
+        };
+        frame.render_widget(
+            Paragraph::new(
+                Line::from(app.status.text.clone())
+                    .style(app.theme.style(role))
+                    .alignment(Alignment::Center),
+            ),
+            rows[0],
+        );
+    }
 
     render_transcript(frame, app, rows[1]);
     if has_suggestions {
@@ -227,7 +243,7 @@ fn render_mascot(frame: &mut Frame, app: &App, inner: Rect) {
 fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     // A little left breathing room so chat text doesn't hug the left border.
     const CHAT_LEFT_PAD: u16 = 2;
-    let area = Rect {
+    let padded = Rect {
         x: area.x + CHAT_LEFT_PAD,
         width: area.width.saturating_sub(CHAT_LEFT_PAD),
         ..area
@@ -278,49 +294,194 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
             ))
             .style(app.theme.style(R::TextMuted)),
         ];
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+        app.bridges.ai_transcript_copy_lines.borrow_mut().clear();
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), padded);
         return;
     }
 
-    let height = area.height as usize;
-    let tail_budget = height.saturating_sub(usize::from(app.ai.thinking)).max(1);
-    let start = app.ai.messages.len().saturating_sub(tail_budget);
-    let mut lines: Vec<Line> = Vec::with_capacity(tail_budget + usize::from(app.ai.thinking));
-    for m in app.ai.messages.iter().skip(start) {
-        // The prefix is a fixed-width label column; the Korean variants pad to 6 display cells
-        // (한글 글자 = 2 cells) so the message text lines up across role lines.
+    let text_area = Rect {
+        width: padded.width.saturating_sub(1),
+        ..padded
+    };
+    let lines = build_transcript_lines(app, text_area.width as usize);
+    let copy_lines: Vec<String> = lines.iter().map(|line| line.copy.clone()).collect();
+    *app.bridges.ai_transcript_copy_lines.borrow_mut() = copy_lines;
+
+    let len = lines.len();
+    let offset = app
+        .bridges
+        .ai_transcript_scroll
+        .view_tail(text_area.height, len);
+    let end = offset
+        .saturating_add(text_area.height as usize)
+        .min(lines.len());
+    let selected = app.ai_transcript_drag.map(|drag| {
+        if drag.anchor <= drag.cursor {
+            (drag.anchor, drag.cursor)
+        } else {
+            (drag.cursor, drag.anchor)
+        }
+    });
+    let selection_style = Style::default()
+        .fg(app.theme.color(R::SelectionFg))
+        .bg(app.theme.color(R::SelectionBg));
+    let visible: Vec<Line> = lines[offset..end]
+        .iter()
+        .enumerate()
+        .map(|(vis, line)| {
+            let abs = offset + vis;
+            if selected.is_some_and(|(start, end)| abs >= start && abs <= end) {
+                Line::from(line.copy.clone()).style(selection_style)
+            } else {
+                Line::from(line.copy.clone()).style(line.style)
+            }
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(visible), text_area);
+    register_transcript_rows(app, text_area, offset, len);
+    buttons::render_list_scrollbar(
+        frame,
+        app,
+        Rect {
+            x: padded.x.saturating_add(padded.width.saturating_sub(1)),
+            y: padded.y,
+            width: 1,
+            height: padded.height,
+        },
+        ScrollSurface::AiTranscript,
+        len,
+        offset,
+        text_area.height as usize,
+    );
+}
+
+#[derive(Debug, Clone)]
+struct TranscriptLine {
+    copy: String,
+    style: Style,
+}
+
+fn build_transcript_lines(app: &App, width: usize) -> Vec<TranscriptLine> {
+    let mut lines = Vec::new();
+    let width = width.max(1);
+    for m in &app.ai.messages {
         let (prefix, role) = match m.role {
             AiRole::User => (t!("you ", "나    "), R::AiUser),
             AiRole::Ai => (t!("gem ", "Gem   "), R::AiAssistant),
             AiRole::Error => (t!("err ", "오류  "), R::AiError),
         };
-        // First visual line carries the role prefix; wrapping handles the rest.
-        lines.push(Line::from(format!("{prefix}{}", m.text)).style(app.theme.style(role)));
+        push_wrapped_message(&mut lines, prefix, &m.text, width, app.theme.style(role));
     }
     if app.ai.thinking {
-        lines.push(
-            Line::from(t!("gem …thinking", "Gem   …생각 중").to_owned())
-                .style(app.theme.style(R::AiThinking)),
+        push_wrapped_message(
+            &mut lines,
+            t!("gem ", "Gem   "),
+            t!("…thinking", "…생각 중"),
+            width,
+            app.theme.style(R::AiThinking),
         );
     }
     if lines.is_empty() {
-        lines.push(
-            Line::from(t!(
+        lines.push(TranscriptLine {
+            copy: t!(
                 "Ask me to play, queue, or find music.",
                 "재생, 대기열 추가, 음악 찾기를 부탁해 보세요."
-            ))
-            .style(app.theme.style(R::TextMuted)),
+            )
+            .to_owned(),
+            style: app.theme.style(R::TextMuted),
+        });
+    }
+    lines
+}
+
+fn push_wrapped_message(
+    out: &mut Vec<TranscriptLine>,
+    prefix: &str,
+    text: &str,
+    width: usize,
+    style: Style,
+) {
+    let prefix_w = UnicodeWidthStr::width(prefix);
+    let body_w = width.saturating_sub(prefix_w).max(1);
+    let indent = " ".repeat(prefix_w);
+    let mut first = true;
+    for segment in wrap_text_cells(text, body_w) {
+        let head = if first { prefix } else { indent.as_str() };
+        out.push(TranscriptLine {
+            copy: format!("{head}{segment}"),
+            style,
+        });
+        first = false;
+    }
+}
+
+fn wrap_text_cells(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        if para.trim().is_empty() {
+            out.push(String::new());
+            continue;
+        }
+
+        let mut cur = String::new();
+        let mut cur_w = 0usize;
+        for word in para.split_whitespace() {
+            let word_w = UnicodeWidthStr::width(word);
+            if cur.is_empty() {
+                push_word_wrapped(&mut out, &mut cur, &mut cur_w, word, width);
+            } else if cur_w + 1 + word_w <= width {
+                cur.push(' ');
+                cur.push_str(word);
+                cur_w += 1 + word_w;
+            } else {
+                out.push(std::mem::take(&mut cur));
+                cur_w = 0;
+                push_word_wrapped(&mut out, &mut cur, &mut cur_w, word, width);
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+    }
+    out
+}
+
+fn push_word_wrapped(
+    out: &mut Vec<String>,
+    cur: &mut String,
+    cur_w: &mut usize,
+    word: &str,
+    width: usize,
+) {
+    for ch in word.chars() {
+        let ch_w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if *cur_w > 0 && cur_w.saturating_add(ch_w) > width {
+            out.push(std::mem::take(cur));
+            *cur_w = 0;
+        }
+        cur.push(ch);
+        *cur_w += ch_w;
+    }
+}
+
+fn register_transcript_rows(app: &App, area: Rect, offset: usize, count: usize) {
+    for vis in 0..area.height {
+        let item = offset + vis as usize;
+        if item >= count {
+            break;
+        }
+        app.register_mouse_button(
+            Rect {
+                x: area.x,
+                y: area.y + vis,
+                width: area.width,
+                height: 1,
+            },
+            MouseTarget::AiTranscriptRow(item),
         );
     }
-
-    // Keep the latest content visible: scroll so the last lines sit at the bottom.
-    let scroll = lines.len().saturating_sub(height) as u16;
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0)),
-        area,
-    );
 }
 
 fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
@@ -387,6 +548,7 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
     frame.render_stateful_widget(list, inner, &mut state);
+    register_suggestion_rows(app, inner, state.offset(), len);
     // Scrollbar on the right border, tracking the viewport position; hidden when it all fits.
     buttons::render_list_scrollbar(
         frame,
@@ -404,7 +566,30 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn register_suggestion_rows(app: &App, area: Rect, offset: usize, count: usize) {
+    for vis in 0..area.height {
+        let item = offset + vis as usize;
+        if item >= count {
+            break;
+        }
+        app.register_mouse_button(
+            Rect {
+                x: area.x,
+                y: area.y + vis,
+                width: area.width,
+                height: 1,
+            },
+            MouseTarget::AiSuggestionRow(item),
+        );
+    }
+}
+
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
+    let cols =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(AI_SEND_BTN_W)]).split(area);
+    let input_area = cols[0];
+    let button_area = cols[1];
+
     let focused = app.ai.focus == AiFocus::Input;
     let border = if focused {
         R::BorderFocused
@@ -431,5 +616,48 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         };
         Paragraph::new(text).style(app.theme.style(R::TextPrimary))
     };
-    frame.render_widget(para.block(block), area);
+    frame.render_widget(para.block(block), input_area);
+    app.register_mouse_button(input_area, MouseTarget::AiInput);
+    render_send_button(frame, app, button_area);
+}
+
+const AI_SEND_BTN_W: u16 = 8;
+
+fn render_send_button(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(app.theme.style(R::BorderMuted))
+        .style(app.theme.style(R::TextPrimary));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let label = Line::from(t!("Send", "전송"))
+        .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
+        .alignment(Alignment::Center);
+    frame.render_widget(Paragraph::new(label), inner);
+    app.register_mouse_button(area, MouseTarget::AiSubmit);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_text_cells;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn wraps_on_words_when_possible() {
+        assert_eq!(
+            wrap_text_cells("alpha beta gamma", 10),
+            vec!["alpha beta".to_owned(), "gamma".to_owned()]
+        );
+    }
+
+    #[test]
+    fn splits_words_that_exceed_the_width() {
+        let lines = wrap_text_cells("abcdefgh", 3);
+        assert_eq!(lines, vec!["abc", "def", "gh"]);
+        assert!(
+            lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= 3)
+        );
+    }
 }

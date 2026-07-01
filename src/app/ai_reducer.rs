@@ -14,6 +14,7 @@ impl App {
         self.dropdowns.search_source_open = false;
         self.ai.select_all = false;
         self.status.text.clear();
+        self.bridges.ai_transcript_scroll.scroll_to_end();
         self.dirty = true;
     }
 
@@ -138,6 +139,7 @@ impl App {
             return Vec::new();
         }
         self.ai.thinking = true;
+        self.bridges.ai_transcript_scroll.scroll_to_end();
         vec![Cmd::AskAi {
             prompt,
             context: Box::new(self.build_ai_context()),
@@ -169,6 +171,7 @@ impl App {
             let overflow = self.ai.messages.len() - AI_HISTORY_MAX;
             self.ai.messages.drain(0..overflow);
         }
+        self.bridges.ai_transcript_scroll.scroll_to_end();
     }
 
     /// Snapshot the read-only state the DJ Gem actor needs to answer its read tools.

@@ -355,6 +355,15 @@ pub enum MouseTarget {
     /// A vertical list scrollbar track/thumb. Clicking or dragging maps the pointer row to
     /// the matching viewport offset for the owning scroll state.
     Scrollbar(ScrollSurface),
+    /// A rendered visual row in the DJ Gem transcript, after wrapping. Dragging across these
+    /// rows copies the selected chat text.
+    AiTranscriptRow(usize),
+    /// The DJ Gem prompt input box.
+    AiInput,
+    /// The DJ Gem prompt submit button.
+    AiSubmit,
+    /// A pickable DJ Gem suggestion row.
+    AiSuggestionRow(usize),
     /// The `N/M` queue-position label on the player status line — opens the queue window.
     QueuePos,
     /// A row in the open queue window, by order position. Single-click selects; double-click
@@ -392,6 +401,7 @@ pub struct MouseButtonRegion {
 pub enum ScrollSurface {
     Library,
     Search,
+    AiTranscript,
     AiSuggestions,
     Settings,
     Queue,
