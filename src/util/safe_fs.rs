@@ -13,13 +13,17 @@ use serde::Serialize;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
+#[cfg(unix)]
 const PRIVATE_DIR_MODE: u32 = 0o700;
+#[cfg(unix)]
 const PRIVATE_FILE_MODE: u32 = 0o600;
 
+#[cfg(unix)]
 fn private_dir_mode() -> u32 {
     PRIVATE_DIR_MODE
 }
 
+#[cfg(unix)]
 fn private_file_mode() -> u32 {
     PRIVATE_FILE_MODE
 }

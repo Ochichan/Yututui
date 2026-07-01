@@ -1,7 +1,9 @@
 //! Private per-user runtime directory for sockets and short-lived descriptors.
 
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use crate::util::safe_fs;
 

@@ -11,7 +11,9 @@ use std::process::Stdio;
 use anyhow::{Context, Result};
 use tokio::process::Child;
 
-use crate::util::{process, runtime};
+use crate::util::process;
+#[cfg(unix)]
+use crate::util::runtime;
 
 /// A per-process IPC endpoint: a Unix socket path on macOS/Linux, a named pipe on
 /// Windows. Unique per pid so concurrent instances never collide.
