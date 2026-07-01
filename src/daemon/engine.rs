@@ -13,8 +13,8 @@ use crate::library::Library;
 use crate::player::{self, PlayerCmd, PlayerEvent, PlayerHandle};
 use crate::queue::{Queue, QueueSnapshot};
 use crate::remote::proto::{
-    InstanceMode, RemoteCommand, RemoteResponse, RemoteSettingChange, SettingsSnapshot,
-    StatusSnapshot, ToggleState,
+    InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse, RemoteSettingChange,
+    SettingsSnapshot, StatusSnapshot, ToggleState,
 };
 use crate::search_source::SearchConfig;
 use crate::session::{LastMode, SessionCache};
@@ -241,6 +241,30 @@ impl DaemonEngine {
             RemoteCommand::VolumeDown => self.adjust_volume(-VOLUME_STEP),
             RemoteCommand::SeekBack => self.seek(-self.config.effective_seek_seconds()),
             RemoteCommand::SeekForward => self.seek(self.config.effective_seek_seconds()),
+            RemoteCommand::ToggleShuffle => {
+                self.queue.toggle_shuffle();
+                self.config.shuffle = Some(self.queue.shuffle);
+                self.save_config("daemon shuffle setting");
+                self.save_session();
+                RemoteResponse::status(self.status())
+            }
+            RemoteCommand::CycleRepeat => {
+                self.queue.cycle_repeat();
+                self.config.repeat = self.queue.repeat;
+                self.save_config("daemon repeat setting");
+                self.save_session();
+                RemoteResponse::status(self.status())
+            }
+            RemoteCommand::QueuePlay { position } => {
+                let response = self.queue_play(position).await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
+            RemoteCommand::QueueRemove { position } => {
+                let response = self.queue_remove(position).await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
             RemoteCommand::Streaming { state } => {
                 let (response, streaming_effects) = self.set_streaming(state);
                 effects.extend(streaming_effects);
@@ -351,6 +375,19 @@ impl DaemonEngine {
             streaming: self.streaming,
             owner_mode: InstanceMode::Daemon,
             settings,
+            queue: self
+                .queue
+                .ordered_iter()
+                .enumerate()
+                .map(|(index, song)| QueueItemSnapshot {
+                    title: song.title.clone(),
+                    artist: song.artist.clone(),
+                    duration: song.duration.clone(),
+                    current: index == self.queue.cursor_pos(),
+                })
+                .collect(),
+            shuffle: self.queue.shuffle,
+            repeat: self.queue.repeat,
         }
     }
 
@@ -411,6 +448,54 @@ impl DaemonEngine {
             .await
             .map(|_| RemoteResponse::status(self.status()))
             .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
+    }
+
+    async fn queue_play(&mut self, position: usize) -> RemoteResponse {
+        if position >= self.queue.len() {
+            return RemoteResponse::err("queue_index");
+        }
+        self.queue.goto(position);
+        self.load_current()
+            .await
+            .map(|_| RemoteResponse::status(self.status()))
+            .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
+    }
+
+    async fn queue_remove(&mut self, position: usize) -> RemoteResponse {
+        let len_before = self.queue.len();
+        if position >= len_before {
+            return RemoteResponse::err("queue_index");
+        }
+
+        let current_pos = self.queue.cursor_pos();
+        let removed_current = position == current_pos;
+        let next_pos_after_removal = if removed_current && len_before > 1 {
+            if position + 1 < len_before {
+                Some(position)
+            } else if self.queue.repeat == crate::queue::Repeat::All {
+                Some(0)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let current_changed = self.queue.remove_at(position).unwrap_or(false);
+        self.save_session();
+
+        if current_changed {
+            if let Some(next_pos) = next_pos_after_removal {
+                self.queue.goto(next_pos);
+                return self
+                    .load_current()
+                    .await
+                    .map(|_| RemoteResponse::status(self.status()))
+                    .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
+            }
+            self.stop_playback();
+        }
+
+        RemoteResponse::status(self.status())
     }
 
     async fn toggle_pause(&mut self) -> RemoteResponse {

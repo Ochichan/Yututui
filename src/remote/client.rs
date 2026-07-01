@@ -256,6 +256,9 @@ mod tests {
             streaming: true,
             owner_mode: InstanceMode::StandaloneTui,
             settings: Default::default(),
+            queue: Vec::new(),
+            shuffle: false,
+            repeat: Default::default(),
         };
         let response = serde_json::to_string(&RemoteResponse::status(snapshot.clone())).unwrap();
         let server = tokio::spawn(serve_one_response(listener, response));

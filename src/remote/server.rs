@@ -258,7 +258,11 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
 }
 
 fn default_capabilities() -> Vec<String> {
-    vec!["remote-control".to_string(), "status".to_string()]
+    vec![
+        "remote-control".to_string(),
+        "status".to_string(),
+        "queue-control".to_string(),
+    ]
 }
 
 fn now_unix() -> u64 {

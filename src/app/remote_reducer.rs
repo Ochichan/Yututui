@@ -8,8 +8,8 @@
 
 use super::*;
 use crate::remote::proto::{
-    InstanceMode, RemoteCommand, RemoteResponse, RemoteSettingChange, SettingsSnapshot,
-    StatusSnapshot, ToggleState,
+    InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse, RemoteSettingChange,
+    SettingsSnapshot, StatusSnapshot, ToggleState,
 };
 
 impl App {
@@ -50,6 +50,38 @@ impl App {
             RemoteCommand::SeekForward => {
                 let cmds = self.on_player_action(Action::SeekForward);
                 (RemoteResponse::ok(self.now_playing_line()), cmds)
+            }
+            RemoteCommand::ToggleShuffle => {
+                self.queue.toggle_shuffle();
+                self.dirty = true;
+                (
+                    RemoteResponse::status(self.status_snapshot()),
+                    vec![self.save_playback_modes_cmd()],
+                )
+            }
+            RemoteCommand::CycleRepeat => {
+                self.queue.cycle_repeat();
+                self.dirty = true;
+                (
+                    RemoteResponse::status(self.status_snapshot()),
+                    vec![self.save_playback_modes_cmd()],
+                )
+            }
+            RemoteCommand::QueuePlay { position } => {
+                if position >= self.queue.len() {
+                    (RemoteResponse::err("queue_index"), Vec::new())
+                } else {
+                    let cmds = self.queue_popup_play(position);
+                    (RemoteResponse::status(self.status_snapshot()), cmds)
+                }
+            }
+            RemoteCommand::QueueRemove { position } => {
+                if position >= self.queue.len() {
+                    (RemoteResponse::err("queue_index"), Vec::new())
+                } else {
+                    let cmds = self.remove_queue_range(position, position);
+                    (RemoteResponse::status(self.status_snapshot()), cmds)
+                }
             }
             RemoteCommand::Streaming { state } => self.remote_set_streaming(state),
             RemoteCommand::SetSetting { change } => self.remote_set_setting(change),
@@ -270,6 +302,19 @@ impl App {
             streaming: self.autoplay_streaming,
             owner_mode: InstanceMode::StandaloneTui,
             settings,
+            queue: self
+                .queue
+                .ordered_iter()
+                .enumerate()
+                .map(|(index, song)| QueueItemSnapshot {
+                    title: self.display_title(song).into_owned(),
+                    artist: self.display_artist(song).into_owned(),
+                    duration: song.duration.clone(),
+                    current: index == self.queue.cursor_pos(),
+                })
+                .collect(),
+            shuffle: self.queue.shuffle,
+            repeat: self.queue.repeat,
         }
     }
 }
@@ -528,5 +573,78 @@ mod tests {
         assert_eq!(snap.position, 1);
         assert!(snap.streaming);
         assert_eq!(snap.title.as_deref(), Some("Zero"));
+    }
+
+    #[test]
+    fn status_reports_queue_rows_and_play_modes() {
+        let mut app = two_track_app();
+        app.queue.shuffle = true;
+        app.queue.repeat = crate::queue::Repeat::One;
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::Status);
+
+        assert!(cmds.is_empty());
+        let snap = resp.status.expect("status snapshot present");
+        assert!(snap.shuffle);
+        assert_eq!(snap.repeat, crate::queue::Repeat::One);
+        assert_eq!(snap.queue.len(), 2);
+        assert_eq!(snap.queue[0].title, "Zero");
+        assert_eq!(snap.queue[0].artist, "A");
+        assert!(snap.queue[0].current);
+        assert!(!snap.queue[1].current);
+    }
+
+    #[test]
+    fn queue_play_jumps_and_loads_selected_track() {
+        let mut app = two_track_app();
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::QueuePlay { position: 1 });
+
+        assert!(resp.ok);
+        assert_eq!(app.queue.current().unwrap().video_id, "id1");
+        assert!(cmds.iter().any(|cmd| {
+            matches!(
+                cmd,
+                Cmd::Player(crate::player::PlayerCmd::Load(url)) if url.contains("id1")
+            )
+        }));
+    }
+
+    #[test]
+    fn queue_remove_current_loads_next_track() {
+        let mut app = two_track_app();
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::QueueRemove { position: 0 });
+
+        assert!(resp.ok);
+        assert_eq!(app.queue.len(), 1);
+        assert_eq!(app.queue.current().unwrap().video_id, "id1");
+        assert!(cmds.iter().any(|cmd| {
+            matches!(
+                cmd,
+                Cmd::Player(crate::player::PlayerCmd::Load(url)) if url.contains("id1")
+            )
+        }));
+    }
+
+    #[test]
+    fn remote_shuffle_and_repeat_persist_modes() {
+        let mut app = two_track_app();
+
+        let (shuffle_resp, shuffle_cmds) = app.apply_remote(RemoteCommand::ToggleShuffle);
+        assert!(shuffle_resp.ok);
+        assert!(app.queue.shuffle);
+        assert!(
+            shuffle_cmds.iter().any(|cmd| {
+                matches!(cmd, Cmd::SaveConfig(config) if config.shuffle == Some(true))
+            })
+        );
+
+        let (repeat_resp, repeat_cmds) = app.apply_remote(RemoteCommand::CycleRepeat);
+        assert!(repeat_resp.ok);
+        assert_eq!(app.queue.repeat, crate::queue::Repeat::All);
+        assert!(repeat_cmds.iter().any(|cmd| {
+            matches!(cmd, Cmd::SaveConfig(config) if config.repeat == crate::queue::Repeat::All)
+        }));
     }
 }

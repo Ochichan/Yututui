@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::queue::Repeat;
 use crate::remote::proto::{InstanceMode, RemoteCommand, RemoteSettingChange, ToggleState};
 use crate::search_source::SearchSource;
 use crate::streaming::StreamingMode;
@@ -20,6 +21,10 @@ pub enum PanelCommand {
     SeekForward,
     VolumeUp,
     VolumeDown,
+    ToggleShuffle,
+    CycleRepeat,
+    QueuePlay(usize),
+    QueueRemove(usize),
     ToggleStreaming,
     SetStreaming(bool),
     SetStreamingMode(StreamingMode),
@@ -49,7 +54,11 @@ impl PanelCommand {
             PanelCommand::VolumeUp => Some(MenuAction::VolumeUp),
             PanelCommand::VolumeDown => Some(MenuAction::VolumeDown),
             PanelCommand::ToggleStreaming => Some(MenuAction::ToggleStreaming),
-            PanelCommand::SetStreaming(_)
+            PanelCommand::ToggleShuffle
+            | PanelCommand::CycleRepeat
+            | PanelCommand::QueuePlay(_)
+            | PanelCommand::QueueRemove(_)
+            | PanelCommand::SetStreaming(_)
             | PanelCommand::SetStreamingMode(_)
             | PanelCommand::SetStreamingSource(_)
             | PanelCommand::SetSpeed(_)
@@ -106,6 +115,10 @@ impl PanelCommand {
                     },
                 },
             }),
+            PanelCommand::ToggleShuffle => Some(RemoteCommand::ToggleShuffle),
+            PanelCommand::CycleRepeat => Some(RemoteCommand::CycleRepeat),
+            PanelCommand::QueuePlay(position) => Some(RemoteCommand::QueuePlay { position }),
+            PanelCommand::QueueRemove(position) => Some(RemoteCommand::QueueRemove { position }),
             _ => self.menu_action().and_then(MenuAction::remote_command),
         }
     }
@@ -133,6 +146,10 @@ fn parse_panel_command(message: PanelIpcMessage) -> Result<PanelCommand, serde_j
         "seek_forward" => PanelCommand::SeekForward,
         "volume_up" => PanelCommand::VolumeUp,
         "volume_down" => PanelCommand::VolumeDown,
+        "toggle_shuffle" => PanelCommand::ToggleShuffle,
+        "cycle_repeat" => PanelCommand::CycleRepeat,
+        "queue_play" => PanelCommand::QueuePlay(required_usize(value)?),
+        "queue_remove" => PanelCommand::QueueRemove(required_usize(value)?),
         "toggle_streaming" => PanelCommand::ToggleStreaming,
         "set_streaming" => PanelCommand::SetStreaming(required_bool(value)?),
         "set_streaming_mode" => {
@@ -175,6 +192,16 @@ fn required_u16(value: Option<Value>) -> Result<u16, serde_json::Error> {
     }
 }
 
+fn required_usize(value: Option<Value>) -> Result<usize, serde_json::Error> {
+    match value {
+        Some(Value::Number(value)) => value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| serde::de::Error::custom("expected usize value")),
+        _ => Err(serde::de::Error::custom("expected numeric value")),
+    }
+}
+
 fn required_str(value: Option<Value>) -> Result<String, serde_json::Error> {
     match value {
         Some(Value::String(value)) => Ok(value),
@@ -213,12 +240,17 @@ pub struct PanelPayload {
     owner_label: String,
     queue_label: String,
     volume_label: String,
+    queue: Vec<PanelQueueItemPayload>,
+    shuffle: bool,
+    repeat: String,
+    repeat_label: String,
     paused: bool,
     streaming: bool,
     settings: PanelSettingsPayload,
     error: Option<String>,
     can_playback: bool,
     can_volume: bool,
+    can_manage_queue: bool,
     can_toggle_streaming: bool,
     can_start_daemon: bool,
     can_resume_daemon: bool,
@@ -252,11 +284,22 @@ pub struct PanelOptionPayload {
     label: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PanelQueueItemPayload {
+    index: usize,
+    title: String,
+    artist: String,
+    duration: String,
+    current: bool,
+}
+
 pub fn payload_for_update(update: &PollUpdate) -> PanelPayload {
     let model = menu_model::build_menu(&update.state);
     let status = update.state.status();
     let connected = status.is_some();
     let idle = matches!(update.state.kind(), TrayStateKind::ConnectedIdle);
+    let repeat = status.map(|status| status.repeat).unwrap_or_default();
 
     PanelPayload {
         connected,
@@ -266,6 +309,10 @@ pub fn payload_for_update(update: &PollUpdate) -> PanelPayload {
         owner_label: owner_label(&update.state),
         queue_label: queue_label(&update.state),
         volume_label: volume_label(&update.state),
+        queue: queue_payload(&update.state),
+        shuffle: status.map(|status| status.shuffle).unwrap_or(false),
+        repeat: repeat_id(repeat).to_string(),
+        repeat_label: repeat_label(repeat).to_string(),
         paused: status.map(|status| status.paused).unwrap_or(true),
         streaming: status.map(|status| status.streaming).unwrap_or(false),
         settings: settings_payload(&update.state),
@@ -273,11 +320,32 @@ pub fn payload_for_update(update: &PollUpdate) -> PanelPayload {
         can_playback: action_enabled(&model, MenuAction::PlayPause),
         can_volume: action_enabled(&model, MenuAction::VolumeUp)
             || action_enabled(&model, MenuAction::VolumeDown),
+        can_manage_queue: status.is_some_and(|status| !status.queue.is_empty()),
         can_toggle_streaming: action_enabled(&model, MenuAction::ToggleStreaming),
         can_start_daemon: action_enabled(&model, MenuAction::StartDaemon),
         can_resume_daemon: action_enabled(&model, MenuAction::ResumeDaemon) || idle,
         can_stop_daemon: action_enabled(&model, MenuAction::StopDaemon),
     }
+}
+
+fn queue_payload(state: &TrayState) -> Vec<PanelQueueItemPayload> {
+    state
+        .status()
+        .map(|status| {
+            status
+                .queue
+                .iter()
+                .enumerate()
+                .map(|(index, item)| PanelQueueItemPayload {
+                    index,
+                    title: item.title.clone(),
+                    artist: item.artist.clone(),
+                    duration: item.duration.clone(),
+                    current: item.current,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn settings_payload(state: &TrayState) -> PanelSettingsPayload {
@@ -338,6 +406,22 @@ fn search_source_id(source: SearchSource) -> &'static str {
         SearchSource::InternetArchive => "internet_archive",
         SearchSource::RadioBrowser => "radio_browser",
         SearchSource::All => "all",
+    }
+}
+
+fn repeat_id(repeat: Repeat) -> &'static str {
+    match repeat {
+        Repeat::Off => "off",
+        Repeat::All => "all",
+        Repeat::One => "one",
+    }
+}
+
+fn repeat_label(repeat: Repeat) -> &'static str {
+    match repeat {
+        Repeat::Off => "Off",
+        Repeat::All => "All",
+        Repeat::One => "One",
     }
 }
 
@@ -502,7 +586,7 @@ const PANEL_HTML: &str = r#"<!doctype html>
 
     .tabs {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 6px;
     }
 
@@ -577,6 +661,12 @@ const PANEL_HTML: &str = r#"<!doctype html>
       padding-top: 4px;
     }
 
+    .mode-controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+
     .secondary {
       display: grid;
       grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -640,6 +730,95 @@ const PANEL_HTML: &str = r#"<!doctype html>
       gap: 6px;
     }
 
+    .queue-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .queue-list {
+      display: grid;
+      gap: 6px;
+      min-height: 0;
+      max-height: 244px;
+      overflow-y: auto;
+      padding-right: 2px;
+    }
+
+    .queue-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 32px;
+      gap: 6px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .queue-track {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      width: 100%;
+      text-align: left;
+    }
+
+    .queue-item.current .queue-track {
+      border-color: var(--accent);
+      background: var(--surface-3);
+    }
+
+    .queue-number {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 760;
+      text-align: center;
+    }
+
+    .queue-text {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .queue-title,
+    .queue-artist {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .queue-title {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .queue-artist,
+    .queue-duration {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 620;
+    }
+
+    .queue-remove {
+      width: 32px;
+      padding: 0;
+      color: var(--danger);
+    }
+
+    .empty {
+      display: grid;
+      place-items: center;
+      min-height: 120px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 680;
+    }
+
     button {
       display: inline-grid;
       place-items: center;
@@ -655,6 +834,23 @@ const PANEL_HTML: &str = r#"<!doctype html>
       letter-spacing: 0;
       outline: none;
       white-space: nowrap;
+    }
+
+    button.queue-track {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      gap: 8px;
+      place-items: initial;
+      align-items: center;
+      width: 100%;
+      text-align: left;
+    }
+
+    .mode-controls button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
     }
 
     button.icon {
@@ -718,6 +914,7 @@ const PANEL_HTML: &str = r#"<!doctype html>
 
     <div class="tabs" role="tablist">
       <button class="tab active" data-tab="now" id="tabNow">Now</button>
+      <button class="tab" data-tab="queue" id="tabQueue">Queue</button>
       <button class="tab" data-tab="streaming" id="tabStreaming">Streaming</button>
       <button class="tab" data-tab="playback" id="tabPlayback">Playback</button>
     </div>
@@ -740,6 +937,11 @@ const PANEL_HTML: &str = r#"<!doctype html>
           <button class="icon" data-action="next" id="next" title="Next" aria-label="Next">&#9654;&#9654;</button>
         </div>
 
+        <div class="mode-controls">
+          <button data-action="toggle_shuffle" id="shuffle" title="Shuffle" aria-label="Toggle shuffle">&#8644; Shuffle</button>
+          <button data-action="cycle_repeat" id="repeat" title="Repeat" aria-label="Cycle repeat">&#8635; <span id="repeatText">Repeat Off</span></button>
+        </div>
+
         <div class="secondary">
           <button data-action="seek_back" id="seekBack" title="Seek back">-10</button>
           <button data-action="seek_forward" id="seekForward" title="Seek forward">+10</button>
@@ -751,6 +953,14 @@ const PANEL_HTML: &str = r#"<!doctype html>
         </div>
 
         <div class="error" id="error" hidden></div>
+      </section>
+
+      <section class="tab-panel" data-panel="queue">
+        <div class="queue-head">
+          <span class="label" id="queueSummary">Queue unavailable</span>
+          <button class="compact" data-action="refresh" id="queueRefresh" title="Refresh">&#8635;</button>
+        </div>
+        <div class="queue-list" id="queueList"></div>
       </section>
 
       <section class="tab-panel" data-panel="streaming">
@@ -836,6 +1046,12 @@ const PANEL_HTML: &str = r#"<!doctype html>
       previous: document.getElementById("previous"),
       playPause: document.getElementById("playPause"),
       next: document.getElementById("next"),
+      shuffle: document.getElementById("shuffle"),
+      repeat: document.getElementById("repeat"),
+      repeatText: document.getElementById("repeatText"),
+      queueSummary: document.getElementById("queueSummary"),
+      queueList: document.getElementById("queueList"),
+      queueRefresh: document.getElementById("queueRefresh"),
       seekBack: document.getElementById("seekBack"),
       seekForward: document.getElementById("seekForward"),
       volumeDown: document.getElementById("volumeDown"),
@@ -898,6 +1114,41 @@ const PANEL_HTML: &str = r#"<!doctype html>
       els.streamingSource.value = selected;
     }
 
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function renderQueue(payload) {
+      els.queueSummary.textContent = payload.queueLabel;
+      if (!payload.queue.length) {
+        els.queueList.innerHTML = `<div class="empty">Queue empty</div>`;
+        return;
+      }
+
+      els.queueList.innerHTML = payload.queue.map(item => {
+        const number = item.current ? "&#9654;" : String(item.index + 1);
+        const duration = item.duration ? escapeHtml(item.duration) : "";
+        const current = item.current ? " current" : "";
+        return `
+          <div class="queue-item${current}">
+            <button class="queue-track" data-action="queue_play" data-position="${item.index}" title="Play ${escapeHtml(item.title)}">
+              <span class="queue-number">${number}</span>
+              <span class="queue-text">
+                <span class="queue-title">${escapeHtml(item.title)}</span>
+                <span class="queue-artist">${escapeHtml(item.artist)}</span>
+              </span>
+              <span class="queue-duration">${duration}</span>
+            </button>
+            <button class="queue-remove" data-action="queue_remove" data-position="${item.index}" title="Remove" aria-label="Remove">&#10005;</button>
+          </div>`;
+      }).join("");
+    }
+
     function apply(payload) {
       currentPayload = payload;
       const settings = payload.settings;
@@ -909,7 +1160,12 @@ const PANEL_HTML: &str = r#"<!doctype html>
       els.queueLabel.textContent = payload.queueLabel;
       els.volumeLabel.textContent = payload.volumeLabel;
       els.playPause.innerHTML = payload.paused ? "&#9654;" : "&#10073;&#10073;";
+      els.repeatText.textContent = "Repeat " + payload.repeatLabel;
+      renderQueue(payload);
 
+      els.shuffle.innerHTML = "&#8644; Shuffle";
+      els.shuffle.classList.toggle("on", payload.shuffle);
+      els.repeat.classList.toggle("on", payload.repeat !== "off");
       setToggle(els.streaming, settings.autoplayStreaming, "Stream", "Stream");
       setToggle(els.streamingToggle, settings.autoplayStreaming, "On", "Off");
       setToggle(els.aiEnabled, settings.aiEnabled, "On", "Off");
@@ -929,6 +1185,9 @@ const PANEL_HTML: &str = r#"<!doctype html>
       enabled(els.previous, payload.canPlayback);
       enabled(els.playPause, payload.canPlayback);
       enabled(els.next, payload.canPlayback);
+      enabled(els.shuffle, payload.connected);
+      enabled(els.repeat, payload.connected);
+      enabled(els.queueRefresh, payload.connected);
       enabled(els.seekBack, payload.canPlayback);
       enabled(els.seekForward, payload.canPlayback);
       enabled(els.volumeDown, payload.canVolume);
@@ -974,6 +1233,10 @@ const PANEL_HTML: &str = r#"<!doctype html>
 
       if (action === "set_streaming") {
         send(action, !settings.autoplayStreaming);
+      } else if (action === "toggle_shuffle" || action === "cycle_repeat") {
+        send(action);
+      } else if (action === "queue_play" || action === "queue_remove") {
+        send(action, Number(button.dataset.position));
       } else if (action === "set_streaming_mode") {
         send(action, button.dataset.value);
       } else if (action === "set_ai_enabled") {
@@ -1009,7 +1272,7 @@ const PANEL_HTML: &str = r#"<!doctype html>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::proto::{InstanceMode, StatusSnapshot};
+    use crate::remote::proto::{InstanceMode, QueueItemSnapshot, StatusSnapshot};
     use crate::tray::control::ControlError;
 
     fn playing_update() -> PollUpdate {
@@ -1019,10 +1282,26 @@ mod tests {
             paused: false,
             volume: 80,
             position: 1,
-            total: 3,
+            total: 2,
             streaming: true,
             owner_mode: InstanceMode::StandaloneTui,
             settings: Default::default(),
+            queue: vec![
+                QueueItemSnapshot {
+                    title: "Song".to_string(),
+                    artist: "Artist".to_string(),
+                    duration: "3:00".to_string(),
+                    current: true,
+                },
+                QueueItemSnapshot {
+                    title: "Next".to_string(),
+                    artist: "Other".to_string(),
+                    duration: "4:00".to_string(),
+                    current: false,
+                },
+            ],
+            shuffle: true,
+            repeat: Repeat::All,
         })
     }
 
@@ -1034,10 +1313,16 @@ mod tests {
         assert_eq!(payload.artist, "Artist");
         assert_eq!(payload.state_label, "Playing");
         assert_eq!(payload.owner_label, "Standalone TUI");
-        assert_eq!(payload.queue_label, "1 / 3");
+        assert_eq!(payload.queue_label, "1 / 2");
         assert_eq!(payload.volume_label, "80%");
+        assert_eq!(payload.queue.len(), 2);
+        assert_eq!(payload.queue[0].title, "Song");
+        assert!(payload.shuffle);
+        assert_eq!(payload.repeat, "all");
+        assert_eq!(payload.repeat_label, "All");
         assert!(payload.can_playback);
         assert!(payload.can_volume);
+        assert!(payload.can_manage_queue);
         assert!(payload.can_toggle_streaming);
         assert!(payload.settings.can_radio_mode);
         assert_eq!(payload.settings.streaming_mode, "balanced");
@@ -1075,6 +1360,9 @@ mod tests {
             streaming: false,
             owner_mode: InstanceMode::Daemon,
             settings: Default::default(),
+            queue: Vec::new(),
+            shuffle: false,
+            repeat: Default::default(),
         });
         let payload = payload_for_update(&update);
         assert_eq!(payload.title, "Nothing playing");
@@ -1085,6 +1373,7 @@ mod tests {
         assert!(!payload.can_start_daemon);
         assert!(payload.can_resume_daemon);
         assert!(payload.can_stop_daemon);
+        assert!(!payload.can_manage_queue);
         assert!(!payload.settings.can_radio_mode);
     }
 
@@ -1119,6 +1408,14 @@ mod tests {
                 }
             })
         );
+        assert_eq!(
+            PanelCommand::QueuePlay(2).remote_command(),
+            Some(RemoteCommand::QueuePlay { position: 2 })
+        );
+        assert_eq!(
+            PanelCommand::QueueRemove(1).remote_command(),
+            Some(RemoteCommand::QueueRemove { position: 1 })
+        );
     }
 
     #[test]
@@ -1138,6 +1435,22 @@ mod tests {
         assert_eq!(
             parse_ipc_message(r#"{"action":"set_speed","value":12}"#).unwrap(),
             PanelCommand::SetSpeed(12)
+        );
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"toggle_shuffle"}"#).unwrap(),
+            PanelCommand::ToggleShuffle
+        );
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"cycle_repeat"}"#).unwrap(),
+            PanelCommand::CycleRepeat
+        );
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"queue_play","value":2}"#).unwrap(),
+            PanelCommand::QueuePlay(2)
+        );
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"queue_remove","value":1}"#).unwrap(),
+            PanelCommand::QueueRemove(1)
         );
     }
 
@@ -1160,5 +1473,14 @@ mod tests {
     fn panel_html_renames_primary_streaming_control() {
         assert!(PANEL_HTML.contains("Streaming"));
         assert!(!PANEL_HTML.contains(">Radio</button>"));
+    }
+
+    #[test]
+    fn panel_html_exposes_queue_and_play_modes() {
+        assert!(PANEL_HTML.contains("data-tab=\"queue\""));
+        assert!(PANEL_HTML.contains("data-action=\"toggle_shuffle\""));
+        assert!(PANEL_HTML.contains("data-action=\"cycle_repeat\""));
+        assert!(PANEL_HTML.contains("data-action=\"queue_play\""));
+        assert!(PANEL_HTML.contains("data-action=\"queue_remove\""));
     }
 }

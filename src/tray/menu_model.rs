@@ -260,6 +260,9 @@ mod tests {
             streaming: true,
             owner_mode: InstanceMode::StandaloneTui,
             settings: Default::default(),
+            queue: Vec::new(),
+            shuffle: false,
+            repeat: Default::default(),
         }
     }
 

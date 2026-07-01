@@ -8,13 +8,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::queue::Repeat;
 use crate::search_source::SearchSource;
 use crate::streaming::StreamingMode;
 
 /// Bumped on any breaking change to the request/response shape. The server rejects a
 /// mismatch with `bad_version`, so an old client against a new server fails loudly
 /// instead of misbehaving.
-pub const PROTOCOL_VERSION: u8 = 6;
+pub const PROTOCOL_VERSION: u8 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,6 +43,14 @@ pub enum RemoteCommand {
     VolumeDown,
     SeekBack,
     SeekForward,
+    ToggleShuffle,
+    CycleRepeat,
+    QueuePlay {
+        position: usize,
+    },
+    QueueRemove {
+        position: usize,
+    },
     #[serde(alias = "radio")]
     Streaming {
         state: ToggleState,
@@ -178,6 +187,22 @@ pub struct StatusSnapshot {
     pub owner_mode: InstanceMode,
     #[serde(default)]
     pub settings: SettingsSnapshot,
+    #[serde(default)]
+    pub queue: Vec<QueueItemSnapshot>,
+    #[serde(default)]
+    pub shuffle: bool,
+    #[serde(default)]
+    pub repeat: Repeat,
+}
+
+/// A queue row in the currently effective play order.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QueueItemSnapshot {
+    pub title: String,
+    pub artist: String,
+    pub duration: String,
+    pub current: bool,
 }
 
 /// The small settings surface exposed to the desktop mini player.
@@ -335,6 +360,9 @@ mod tests {
             streaming: false,
             owner_mode: InstanceMode::StandaloneTui,
             settings: SettingsSnapshot::default(),
+            queue: Vec::new(),
+            shuffle: false,
+            repeat: Repeat::Off,
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));
@@ -353,6 +381,9 @@ mod tests {
             streaming: false,
             owner_mode: InstanceMode::Daemon,
             settings: SettingsSnapshot::default(),
+            queue: Vec::new(),
+            shuffle: false,
+            repeat: Repeat::Off,
         };
         let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
         assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");

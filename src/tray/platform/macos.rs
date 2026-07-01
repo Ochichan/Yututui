@@ -703,6 +703,9 @@ mod tests {
             streaming: false,
             owner_mode: InstanceMode::StandaloneTui,
             settings: Default::default(),
+            queue: Vec::new(),
+            shuffle: false,
+            repeat: Default::default(),
         });
         assert_eq!(tooltip_for_state(&state), "Paused: Artist - Song");
         let idle_daemon = TrayState::Connected(StatusSnapshot {
@@ -715,6 +718,9 @@ mod tests {
             streaming: false,
             owner_mode: InstanceMode::Daemon,
             settings: Default::default(),
+            queue: Vec::new(),
+            shuffle: false,
+            repeat: Default::default(),
         });
         assert_eq!(tooltip_for_state(&idle_daemon), "ytm-tui daemon idle");
         assert_eq!(

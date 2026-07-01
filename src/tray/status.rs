@@ -107,6 +107,9 @@ mod tests {
             streaming: false,
             owner_mode: crate::remote::proto::InstanceMode::StandaloneTui,
             settings: Default::default(),
+            queue: Vec::new(),
+            shuffle: false,
+            repeat: Default::default(),
         });
         assert_eq!(next_delay(config, &update), Duration::from_millis(10));
     }

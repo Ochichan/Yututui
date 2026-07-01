@@ -366,6 +366,7 @@ fn daemon_capabilities() -> Vec<String> {
     vec![
         "remote-control".to_string(),
         "status".to_string(),
+        "queue-control".to_string(),
         "headless-playback".to_string(),
         "session-resume".to_string(),
         "autoplay-streaming".to_string(),
@@ -585,5 +586,6 @@ mod tests {
     #[test]
     fn daemon_capabilities_advertise_headless_playback() {
         assert!(daemon_capabilities().contains(&"headless-playback".to_string()));
+        assert!(daemon_capabilities().contains(&"queue-control".to_string()));
     }
 }
