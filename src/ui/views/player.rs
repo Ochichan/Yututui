@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 use ratatui_image::{Resize, StatefulImage};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, DownloadState, MouseTarget, RadioModeConfirm, ScrollSurface, StatusKind};
 use crate::keymap::Action;
@@ -706,14 +706,12 @@ fn render_art_animation_separator(frame: &mut Frame, app: &App, area: Rect) {
     }
     const MOTIF: &str = "♫♪.ılılıll|̲̅●̲̅|̲̅=̲̅|̲̅●̲̅|llılılı.♫♪";
     let width = usize::from(area.width);
-    let mut line = String::new();
-    while UnicodeWidthStr::width(line.as_str()) < width {
-        line.push_str(MOTIF);
-    }
-    let line = crate::ui::text::pad_to_width(
-        &crate::ui::text::truncate_owned_to_width(line, width),
-        width,
-    );
+    let offset = if radio_art_animation_on(app) {
+        (app.anim_frame() / 6) as usize
+    } else {
+        0
+    };
+    let line = repeated_motif_line(MOTIF, width, offset);
     frame.render_widget(
         Paragraph::new(
             Line::from(line)
@@ -722,6 +720,45 @@ fn render_art_animation_separator(frame: &mut Frame, app: &App, area: Rect) {
         ),
         area,
     );
+}
+
+fn repeated_motif_line(motif: &str, width: usize, offset: usize) -> String {
+    let clusters = display_clusters(motif);
+    if clusters.is_empty() {
+        return " ".repeat(width);
+    }
+    let mut line = String::new();
+    let mut i = offset % clusters.len();
+    while UnicodeWidthStr::width(line.as_str()) < width {
+        line.push_str(&clusters[i]);
+        i = (i + 1) % clusters.len();
+    }
+    crate::ui::text::pad_to_width(
+        &crate::ui::text::truncate_owned_to_width(line, width),
+        width,
+    )
+}
+
+fn display_clusters(s: &str) -> Vec<String> {
+    let mut clusters = Vec::new();
+    let mut current = String::new();
+    for ch in s.chars() {
+        if UnicodeWidthChar::width(ch).unwrap_or(0) > 0 && !current.is_empty() {
+            clusters.push(std::mem::take(&mut current));
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        clusters.push(current);
+    }
+    clusters
+}
+
+fn radio_art_animation_on(app: &App) -> bool {
+    app.radio_dedicated_mode
+        && app.animations().master
+        && !app.playback.paused
+        && app.queue.current().is_some()
 }
 
 fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {
@@ -812,17 +849,108 @@ fn draw_radio_ascii(frame: &mut Frame, app: &App, area: Rect) -> Option<Rect> {
         height,
     };
     let style = app.theme.style(R::Accent).add_modifier(Modifier::BOLD);
-    let lines: Vec<Line> = art
-        .iter()
-        .take(height as usize)
-        .map(|line| {
-            Line::from((*line).to_owned())
-                .style(style)
-                .alignment(Alignment::Center)
-        })
+    let rendered = radio_art_lines(art, height as usize, radio_art_animation_on(app), app);
+    let lines: Vec<Line> = rendered
+        .into_iter()
+        .map(|line| Line::from(line).style(style).alignment(Alignment::Center))
         .collect();
     frame.render_widget(Paragraph::new(lines), rect);
     Some(rect)
+}
+
+fn radio_art_lines(art: &[&str], height: usize, animated: bool, app: &App) -> Vec<String> {
+    let mut lines: Vec<String> = art
+        .iter()
+        .take(height)
+        .map(|line| (*line).to_owned())
+        .collect();
+    if !animated || lines.is_empty() {
+        return lines;
+    }
+
+    let slow = app.anim_frame() / 2;
+    let width = art
+        .iter()
+        .map(|line| UnicodeWidthStr::width(*line))
+        .max()
+        .unwrap_or(0);
+    let note_sway = [-1, 0, 1, 1, 0, -1, -1, 0][((slow / 8) as usize) % 8];
+    let body_sway = [0, 1, 0, -1][((slow / 12) as usize) % 4];
+
+    for (i, line) in lines.iter_mut().enumerate() {
+        if art.len() > 8 && i == 5 {
+            *line = compose_radio_handle_line(line, note_sway, body_sway, width);
+            continue;
+        }
+        let delta = if art.len() > 8 && i < 6 {
+            note_sway
+        } else if i >= 3 {
+            body_sway
+        } else {
+            0
+        };
+        if delta != 0 {
+            *line = shift_display_line(line, delta, width);
+        }
+    }
+
+    if ((slow / 10) % 2) == 1 {
+        for line in &mut lines {
+            *line = line.replace("⣿⣿⣿⣿", "⣿⣿⣶⣿");
+        }
+    }
+    lines
+}
+
+fn compose_radio_handle_line(line: &str, note_sway: i32, body_sway: i32, width: usize) -> String {
+    let Some(handle_start_byte) = line.find('⣿') else {
+        return shift_display_line(line, body_sway, width);
+    };
+    let (note, handle) = line.split_at(handle_start_byte);
+    let handle_start = UnicodeWidthStr::width(note);
+    let mut cells = vec!['⠀'; width];
+    overlay_radio_segment(&mut cells, 0, note, note_sway);
+    overlay_radio_segment(&mut cells, handle_start, handle, body_sway);
+    cells.into_iter().collect()
+}
+
+fn overlay_radio_segment(cells: &mut [char], start: usize, segment: &str, delta: i32) {
+    let mut col = 0i32;
+    let start = start as i32 + delta;
+    for ch in segment.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0).max(1);
+        let target = start + col;
+        if ch != '⠀'
+            && ch != ' '
+            && target >= 0
+            && let Some(cell) = cells.get_mut(target as usize)
+        {
+            *cell = ch;
+        }
+        col += ch_width as i32;
+    }
+}
+
+fn shift_display_line(line: &str, delta: i32, width: usize) -> String {
+    if delta > 0 {
+        let shifted = format!("{}{}", "⠀".repeat(delta as usize), line);
+        return crate::ui::text::pad_to_width(
+            &crate::ui::text::truncate_owned_to_width(shifted, width),
+            width,
+        );
+    }
+
+    let mut skipped = 0usize;
+    let mut out = String::new();
+    for ch in line.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if skipped < delta.unsigned_abs() as usize {
+            skipped = skipped.saturating_add(ch_width);
+            continue;
+        }
+        out.push(ch);
+    }
+    crate::ui::text::pad_to_width(&crate::ui::text::truncate_owned_to_width(out, width), width)
 }
 
 /// The top slice of `area` the art may occupy: skip `gap` rows under the status line, then

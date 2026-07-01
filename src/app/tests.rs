@@ -1503,6 +1503,41 @@ fn radio_separator_renders_only_in_radio_mode() {
 }
 
 #[test]
+fn radio_art_animates_when_animation_master_is_on() {
+    let mut app = App::new(100);
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    app.queue.set(vec![radio_station("moving")], 0);
+    app.playback.paused = false;
+    app.config.animations.master = true;
+
+    assert!(
+        app.animation_active(),
+        "radio art should wake the animation clock when the master switch is on"
+    );
+
+    app.anim_frame = 0;
+    let first = render_app_buffer(&app, 80, 24);
+    let first_text: String = first
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+
+    app.anim_frame = 24;
+    let later = render_app_buffer(&app, 80, 24);
+    let later_text: String = later
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+
+    assert_ne!(
+        first_text, later_text,
+        "radio mode art should move on a slower animation phase"
+    );
+}
+
+#[test]
 fn double_clicking_active_player_tab_confirms_radio_mode() {
     let mut app = App::new(100);
 

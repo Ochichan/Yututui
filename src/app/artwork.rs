@@ -38,7 +38,8 @@ impl App {
 
     /// Whether the per-frame animation clock should run right now. True when we're on the
     /// player view (master switch + at least one effect enabled, a track loaded, not paused),
-    /// **or** when the DJ Gem start-screen mascot wants to groove (see [`Self::ai_mascot_active`]).
+    /// radio mode has its built-in radio art motion enabled, **or** when the DJ Gem start-screen
+    /// mascot wants to groove (see [`Self::ai_mascot_active`]).
     /// The main loop arms its ~30 fps tick on this; when it is false the tick never fires, so the
     /// app behaves byte-for-byte like today (the lightweight path).
     ///
@@ -48,10 +49,12 @@ impl App {
     /// a no-op on terminals that don't report focus (`focused` stays `true`). Overlays do not
     /// park the animation; they draw above the scene, matching the queue popup behavior.
     pub fn animation_active(&self) -> bool {
-        let running = (matches!(self.mode, Mode::Player)
+        let player_running = matches!(self.mode, Mode::Player)
             && !self.playback.paused
-            && self.queue.current().is_some()
-            && self.config.animations.active())
+            && self.queue.current().is_some();
+        let radio_art_running =
+            player_running && self.radio_dedicated_mode && self.config.animations.master;
+        let running = (player_running && (self.config.animations.active() || radio_art_running))
             || self.ai_mascot_active();
         running && (!self.config.animations.pause_unfocused || self.focused)
     }
