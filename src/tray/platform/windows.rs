@@ -1,4 +1,4 @@
-//! macOS menu bar backend for `ytt-tray`.
+//! Windows notification-area backend for `ytt-tray`.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -6,7 +6,6 @@ use std::thread;
 
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
-use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -16,8 +15,10 @@ use crate::tray::launch;
 use crate::tray::menu_model::{self, MenuAction, MenuEntry, MenuItem as ModelItem, TrayState};
 use crate::tray::status::{self, PollConfig, PollUpdate};
 
+const APP_ID: &str = "io.github.ochi.ytm-tui.tray";
 const POLL_THREAD_NAME: &str = "ytt-tray-status";
 const COMMAND_THREAD_NAME: &str = "ytt-tray-command";
+const ICO_BYTES: &[u8] = include_bytes!("../../../assets/icons/ytm-tui.ico");
 
 #[derive(Debug)]
 enum UserEvent {
@@ -28,10 +29,10 @@ enum UserEvent {
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
-    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-    event_loop.set_activation_policy(ActivationPolicy::Accessory);
-    event_loop.set_dock_visibility(false);
+    let _log_guard = init_file_logging();
+    set_app_user_model_id();
 
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
     MenuEvent::set_event_handler(Some({
@@ -48,14 +49,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         }
     }));
 
-    let mut app = MacTrayApp::new(proxy.clone());
+    let mut app = WindowsTrayApp::new(proxy.clone());
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::NewEvents(StartCause::Init) => {
                 if let Err(e) = app.init() {
-                    eprintln!("ytt-tray: {e}");
+                    report_error(e);
                     *control_flow = ControlFlow::Exit;
                 }
             }
@@ -79,14 +80,14 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     });
 }
 
-struct MacTrayApp {
+struct WindowsTrayApp {
     proxy: EventLoopProxy<UserEvent>,
     tray: Option<TrayIcon>,
-    menu: Option<MacMenu>,
+    menu: Option<WindowsMenu>,
     poll_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
-impl MacTrayApp {
+impl WindowsTrayApp {
     fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
         Self {
             proxy,
@@ -98,14 +99,13 @@ impl MacTrayApp {
 
     fn init(&mut self) -> Result<(), Box<dyn Error>> {
         let initial = PollUpdate::disconnected(control::ControlError::NotRunning);
-        let menu = MacMenu::new(&initial.state)?;
-        let icon = template_icon()?;
+        let menu = WindowsMenu::new(&initial.state)?;
+        let icon = app_icon()?;
         let tray = TrayIconBuilder::new()
-            .with_id("io.github.ochi.ytm-tui.tray")
+            .with_id(APP_ID)
             .with_menu(Box::new(menu.root.clone()))
             .with_tooltip(tooltip_for_state(&initial.state))
             .with_icon(icon)
-            .with_icon_as_template(true)
             .with_menu_on_left_click(true)
             .with_menu_on_right_click(true)
             .build()?;
@@ -129,7 +129,7 @@ impl MacTrayApp {
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    eprintln!("ytt-tray: could not start status runtime: {e}");
+                    report_error(format_args!("could not start status runtime: {e}"));
                     return;
                 }
             };
@@ -147,7 +147,7 @@ impl MacTrayApp {
                 .await;
             });
         }) {
-            eprintln!("ytt-tray: could not start status polling thread: {e}");
+            report_error(format_args!("could not start status polling thread: {e}"));
         }
     }
 
@@ -172,7 +172,7 @@ impl MacTrayApp {
         match action {
             MenuAction::OpenTui => match launch::open_tui() {
                 Ok(_) => self.request_status_now(),
-                Err(e) => eprintln!("ytt-tray: {e}"),
+                Err(e) => report_error(e),
             },
             MenuAction::Refresh => self.request_status_now(),
             MenuAction::QuitTray => {
@@ -193,7 +193,7 @@ impl MacTrayApp {
         let proxy = self.proxy.clone();
         spawn_async_command(move || async move {
             if let Err(e) = control::send_remote(command).await {
-                eprintln!("ytt-tray: {e}");
+                report_error(e);
             }
             let update = status::poll_once().await;
             let _ = proxy.send_event(UserEvent::Status(update));
@@ -204,7 +204,7 @@ impl MacTrayApp {
         let proxy = self.proxy.clone();
         spawn_async_command(move || async move {
             if let Err(e) = control::start_daemon(resume).await {
-                eprintln!("ytt-tray: {e}");
+                report_error(e);
             }
             let update = status::poll_once().await;
             let _ = proxy.send_event(UserEvent::Status(update));
@@ -215,7 +215,7 @@ impl MacTrayApp {
         let proxy = self.proxy.clone();
         spawn_async_command(move || async move {
             if let Err(e) = control::stop_daemon().await {
-                eprintln!("ytt-tray: {e}");
+                report_error(e);
             }
             let update = status::poll_once().await;
             let _ = proxy.send_event(UserEvent::Status(update));
@@ -230,14 +230,14 @@ impl MacTrayApp {
     }
 }
 
-struct MacMenu {
+struct WindowsMenu {
     root: Submenu,
     track: MenuItem,
     state: MenuItem,
     actions: HashMap<MenuAction, MenuItem>,
 }
 
-impl MacMenu {
+impl WindowsMenu {
     fn new(state: &TrayState) -> Result<Self, Box<dyn Error>> {
         let model = menu_model::build_menu(state);
         let root = Submenu::new("YtmTui", true);
@@ -364,7 +364,7 @@ fn action_slug(action: MenuAction) -> &'static str {
 }
 
 fn tooltip_for_state(state: &TrayState) -> String {
-    match state {
+    let text = match state {
         TrayState::Disconnected => "ytm-tui is not running".to_string(),
         TrayState::Connected(status) => {
             if status.owner_mode == InstanceMode::Daemon
@@ -382,7 +382,18 @@ fn tooltip_for_state(state: &TrayState) -> String {
                 _ => "ytm-tui: nothing playing".to_string(),
             }
         }
+    };
+    truncate_tooltip(text)
+}
+
+fn truncate_tooltip(text: String) -> String {
+    const MAX_CHARS: usize = 124;
+    if text.chars().count() <= MAX_CHARS {
+        return text;
     }
+    let mut short = text.chars().take(MAX_CHARS - 3).collect::<String>();
+    short.push_str("...");
+    short
 }
 
 fn spawn_async_command<F, Fut>(make_future: F)
@@ -398,38 +409,147 @@ where
         {
             Ok(rt) => rt,
             Err(e) => {
-                eprintln!("ytt-tray: could not start command runtime: {e}");
+                report_error(format_args!("could not start command runtime: {e}"));
                 return;
             }
         };
         rt.block_on(make_future());
     }) {
-        eprintln!("ytt-tray: could not start command thread: {e}");
+        report_error(format_args!("could not start command thread: {e}"));
     }
 }
 
-fn template_icon() -> Result<Icon, tray_icon::BadIcon> {
-    const SIZE: u32 = 18;
-    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-    let center = (SIZE as f32 - 1.0) / 2.0;
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let idx = ((y * SIZE + x) * 4) as usize;
-            let ring = (6.1..=8.0).contains(&dist);
-            let stem = (8..=10).contains(&x) && (3..=14).contains(&y);
-            let dot = dist <= 2.1;
-            if ring || stem || dot {
-                rgba[idx] = 0;
-                rgba[idx + 1] = 0;
-                rgba[idx + 2] = 0;
-                rgba[idx + 3] = 255;
-            }
-        }
+fn set_app_user_model_id() {
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+    let app_id = APP_ID
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let hr = unsafe { SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()) };
+    if hr < 0 {
+        report_error(format_args!(
+            "could not set AppUserModelID (HRESULT {hr:#x})"
+        ));
     }
-    Icon::from_rgba(rgba, SIZE, SIZE)
+}
+
+fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let dirs = directories::ProjectDirs::from("", "", "ytm-tui")?;
+    let dir = dirs.cache_dir();
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        report_error(format_args!(
+            "could not create log directory {}: {e}",
+            dir.display()
+        ));
+        return None;
+    }
+
+    let guard = crate::logging::init(dir);
+    if guard.is_some() {
+        tracing::info!(
+            target: "ytt_tray",
+            path = %dir.join("ytm-tui.log").display(),
+            "ytt-tray logging initialized"
+        );
+    }
+    guard
+}
+
+fn report_error(message: impl std::fmt::Display) {
+    let message = message.to_string();
+    tracing::error!(target: "ytt_tray", "ytt-tray: {message}");
+    #[cfg(debug_assertions)]
+    eprintln!("ytt-tray: {message}");
+}
+
+fn app_icon() -> Result<Icon, Box<dyn Error>> {
+    let entry = find_ico_entry(ICO_BYTES, 32)
+        .or_else(|| find_ico_entry(ICO_BYTES, 48))
+        .or_else(|| find_ico_entry(ICO_BYTES, 256))
+        .ok_or("ytm-tui.ico has no usable tray icon image")?;
+    let image = image::load_from_memory(&ICO_BYTES[entry.offset..entry.end()])?.to_rgba8();
+    let (width, height) = image.dimensions();
+    Ok(Icon::from_rgba(image.into_raw(), width, height)?)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IcoEntry {
+    width: u32,
+    height: u32,
+    bytes: usize,
+    offset: usize,
+}
+
+impl IcoEntry {
+    fn end(self) -> usize {
+        self.offset + self.bytes
+    }
+}
+
+fn ico_entries(bytes: &[u8]) -> Result<Vec<IcoEntry>, &'static str> {
+    if bytes.len() < 6 {
+        return Err("ICO header is too short");
+    }
+    let reserved = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let kind = u16::from_le_bytes([bytes[2], bytes[3]]);
+    let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+    if reserved != 0 || kind != 1 || count == 0 {
+        return Err("invalid ICO header");
+    }
+    let dir_len = 6usize
+        .checked_add(count.checked_mul(16).ok_or("ICO entry count overflows")?)
+        .ok_or("ICO directory overflows")?;
+    if bytes.len() < dir_len {
+        return Err("ICO directory is truncated");
+    }
+
+    let mut entries = Vec::with_capacity(count);
+    for index in 0..count {
+        let base = 6 + index * 16;
+        let width = if bytes[base] == 0 {
+            256
+        } else {
+            bytes[base] as u32
+        };
+        let height = if bytes[base + 1] == 0 {
+            256
+        } else {
+            bytes[base + 1] as u32
+        };
+        let bytes_len = u32::from_le_bytes([
+            bytes[base + 8],
+            bytes[base + 9],
+            bytes[base + 10],
+            bytes[base + 11],
+        ]) as usize;
+        let offset = u32::from_le_bytes([
+            bytes[base + 12],
+            bytes[base + 13],
+            bytes[base + 14],
+            bytes[base + 15],
+        ]) as usize;
+        let end = offset
+            .checked_add(bytes_len)
+            .ok_or("ICO image range overflows")?;
+        if end > bytes.len() {
+            return Err("ICO image range is outside the file");
+        }
+        entries.push(IcoEntry {
+            width,
+            height,
+            bytes: bytes_len,
+            offset,
+        });
+    }
+    Ok(entries)
+}
+
+fn find_ico_entry(bytes: &[u8], size: u32) -> Option<IcoEntry> {
+    ico_entries(bytes)
+        .ok()?
+        .into_iter()
+        .find(|entry| entry.width == size && entry.height == size)
 }
 
 #[cfg(test)]
@@ -461,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_tracks_playback_state() {
+    fn tooltip_tracks_playback_state_and_shell_limit() {
         let state = TrayState::Connected(StatusSnapshot {
             title: Some("Song".to_string()),
             artist: Some("Artist".to_string()),
@@ -488,10 +608,38 @@ mod tests {
             tooltip_for_state(&TrayState::Disconnected),
             "ytm-tui is not running"
         );
+
+        let long = tooltip_for_state(&TrayState::Connected(StatusSnapshot {
+            title: Some("T".repeat(200)),
+            artist: Some("Artist".to_string()),
+            paused: false,
+            volume: 60,
+            position: 1,
+            total: 2,
+            streaming: false,
+            owner_mode: InstanceMode::StandaloneTui,
+        }));
+        assert_eq!(long.chars().count(), 124);
+        assert!(long.ends_with("..."));
     }
 
     #[test]
-    fn template_icon_is_valid_rgba() {
-        assert!(template_icon().is_ok());
+    fn ico_resource_has_tray_and_shortcut_sizes() {
+        let sizes = ico_entries(ICO_BYTES)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.width)
+            .collect::<Vec<_>>();
+        for expected in [16, 20, 24, 32, 40, 48, 64, 128, 256] {
+            assert!(
+                sizes.contains(&expected),
+                "missing {expected}x{expected} icon in ytm-tui.ico; found {sizes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn app_icon_decodes_from_ico() {
+        assert!(app_icon().is_ok());
     }
 }

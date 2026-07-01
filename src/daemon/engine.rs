@@ -1,0 +1,1144 @@
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
+
+use crate::api::ytmusic::YtMusicApi;
+use crate::api::{ApiEvent, Song};
+use crate::config::Config;
+use crate::library::Library;
+use crate::player::{self, PlayerCmd, PlayerEvent, PlayerHandle};
+use crate::queue::{Queue, QueueSnapshot};
+use crate::remote::proto::{
+    InstanceMode, RemoteCommand, RemoteResponse, StatusSnapshot, ToggleState,
+};
+use crate::search_source::SearchConfig;
+use crate::session::{LastMode, SessionCache};
+use crate::signals::{self, Signals};
+use crate::station::StationStore;
+use crate::streaming::{self, CandidateSource, Cooc, StationState, StreamingConfig, StreamingMode};
+use crate::util::sanitize;
+
+const VOLUME_STEP: i64 = 5;
+const VOLUME_MAX: i64 = 100;
+const AUTOPLAY_THRESHOLD: usize = 3;
+const STREAMING_POOL_COUNT: usize = 40;
+const STREAMING_FALLBACK_COUNT: usize = 8;
+const STREAMING_RECENT_ARTISTS: usize = 12;
+const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
+const AUTOPLAY_MAX_FAILURES: u8 = 3;
+const MAX_CONSECUTIVE_PLAY_ERRORS: u8 = 3;
+const SESSION_EVENTS_CAP: usize = 20;
+
+pub struct EngineOptions {
+    pub resume: bool,
+}
+
+#[derive(Debug)]
+pub enum EngineError {
+    Player(String),
+}
+
+impl EngineError {
+    fn reason(&self) -> &'static str {
+        match self {
+            EngineError::Player(_) => "mpv_unavailable",
+        }
+    }
+}
+
+impl std::fmt::Display for EngineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EngineError::Player(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl std::error::Error for EngineError {}
+
+#[derive(Debug)]
+pub enum EngineEffect {
+    StreamingFallback {
+        seed: String,
+        seed_video_id: String,
+        exclude_ids: Vec<String>,
+        limit: usize,
+        mode: StreamingMode,
+        config: SearchConfig,
+    },
+    StreamingPreflight {
+        seed_video_id: String,
+        picks: Vec<Song>,
+        fallback: Vec<Song>,
+        mode: StreamingMode,
+        config: StreamingConfig,
+    },
+}
+
+pub struct DaemonEngine {
+    player: Option<PlayerRuntime>,
+    player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync>,
+    queue: Queue,
+    playback: DaemonPlayback,
+    config: Config,
+    library: Library,
+    signals: Signals,
+    station: StationStore,
+    loaded_video_id: Option<String>,
+    streaming: bool,
+    streaming_pending: bool,
+    last_extend: Option<Instant>,
+    consecutive_streaming_failures: u8,
+    last_error: Option<String>,
+    consecutive_play_errors: u8,
+    last_mode: LastMode,
+    inactive_normal_queue: Option<QueueSnapshot>,
+    inactive_radio_queue: Option<QueueSnapshot>,
+    session_events: VecDeque<DaemonSessionEvent>,
+}
+
+struct PlayerRuntime {
+    handle: PlayerHandle,
+    _guard: player::Mpv,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DaemonPlayback {
+    paused: bool,
+    volume: i64,
+    time_pos: Option<f64>,
+    duration: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonOutcome {
+    FullPlay,
+    Skip,
+    QuickSkip,
+}
+
+#[derive(Debug, Clone)]
+struct DaemonSessionEvent {
+    artist_key: String,
+    outcome: DaemonOutcome,
+    completion: f32,
+}
+
+impl DaemonEngine {
+    pub async fn start<F>(options: EngineOptions, emit: F) -> Result<Self, EngineError>
+    where
+        F: Fn(PlayerEvent) + Send + Sync + 'static,
+    {
+        let mut config = Config::load();
+        let station = StationStore::load();
+        if let Some(profile) = &station.active {
+            config.streaming.mode = profile.explore.to_mode();
+        }
+
+        if let Some(dir) = data_dir() {
+            player::lifetime::reap_orphans(&dir);
+        }
+        let player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync> = Arc::new(emit);
+        let mut queue = Queue::default();
+        queue.repeat = config.effective_repeat();
+        queue.set_shuffle(config.effective_shuffle());
+
+        let mut engine = Self {
+            player: None,
+            player_emit,
+            queue,
+            playback: DaemonPlayback {
+                paused: true,
+                volume: config.volume.clamp(0, VOLUME_MAX),
+                time_pos: None,
+                duration: None,
+            },
+            streaming: config.effective_autoplay_streaming(),
+            config,
+            library: Library::load(),
+            signals: Signals::load(),
+            station,
+            loaded_video_id: None,
+            streaming_pending: false,
+            last_extend: None,
+            consecutive_streaming_failures: 0,
+            last_error: None,
+            consecutive_play_errors: 0,
+            last_mode: LastMode::Normal,
+            inactive_normal_queue: None,
+            inactive_radio_queue: None,
+            session_events: VecDeque::new(),
+        };
+
+        if options.resume {
+            engine.restore_last_session();
+            if engine.queue.current().is_some() {
+                engine.load_current().await?;
+            }
+        }
+
+        Ok(engine)
+    }
+
+    pub fn api_cookie(&self) -> Option<String> {
+        self.config.effective_cookie()
+    }
+
+    pub fn initial_effects(&mut self) -> Vec<EngineEffect> {
+        self.maybe_autoplay_extend()
+    }
+
+    pub async fn handle_remote(
+        &mut self,
+        command: RemoteCommand,
+    ) -> (RemoteResponse, bool, Vec<EngineEffect>) {
+        self.last_error = None;
+        let mut effects = Vec::new();
+        let shutdown = matches!(command, RemoteCommand::Quit);
+        let response = match command {
+            RemoteCommand::Status => RemoteResponse::status(self.status()),
+            RemoteCommand::Quit => {
+                self.stop_playback();
+                self.save_session();
+                RemoteResponse::ok("stopping daemon".to_string())
+            }
+            RemoteCommand::Next => {
+                self.record_outgoing(false);
+                let response = self.next_track().await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
+            RemoteCommand::Prev => self.prev_track().await,
+            RemoteCommand::TogglePause => {
+                let response = self.toggle_pause().await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
+            RemoteCommand::Play { query } => {
+                let response = self.search_and_play(query).await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
+            RemoteCommand::Enqueue { query } => {
+                let response = self.search_and_enqueue(query).await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
+            RemoteCommand::VolumeUp => self.adjust_volume(VOLUME_STEP),
+            RemoteCommand::VolumeDown => self.adjust_volume(-VOLUME_STEP),
+            RemoteCommand::SeekBack => self.seek(-self.config.effective_seek_seconds()),
+            RemoteCommand::SeekForward => self.seek(self.config.effective_seek_seconds()),
+            RemoteCommand::Streaming { state } => {
+                let (response, streaming_effects) = self.set_streaming(state);
+                effects.extend(streaming_effects);
+                response
+            }
+            RemoteCommand::ResumeSession => {
+                let response = self.resume_session().await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
+        };
+        (response, shutdown, effects)
+    }
+
+    pub async fn handle_player_event(&mut self, event: PlayerEvent) -> Vec<EngineEffect> {
+        match event {
+            PlayerEvent::TimePos(t) => {
+                self.playback.time_pos = Some(t);
+                if t > 0.0 {
+                    self.consecutive_play_errors = 0;
+                }
+                Vec::new()
+            }
+            PlayerEvent::Duration(d) => {
+                self.playback.duration = Some(d);
+                Vec::new()
+            }
+            PlayerEvent::Paused(paused) => {
+                self.playback.paused = paused;
+                Vec::new()
+            }
+            PlayerEvent::Volume(volume) => {
+                self.playback.volume = volume.round() as i64;
+                Vec::new()
+            }
+            PlayerEvent::Metadata(_) => Vec::new(),
+            PlayerEvent::Eof => {
+                self.record_outgoing(true);
+                self.advance_after_end().await
+            }
+            PlayerEvent::Error(error) => self.handle_playback_error(error).await,
+        }
+    }
+
+    pub async fn handle_api_event(&mut self, event: ApiEvent) -> Vec<EngineEffect> {
+        match event {
+            ApiEvent::StreamingResults {
+                seed_video_id,
+                candidates,
+            } => {
+                self.streaming_pending = false;
+                if self.streaming && self.queue.contains_video_id(&seed_video_id) {
+                    let picks = self.plan_local_streaming(&seed_video_id, candidates);
+                    self.extend_sanitized_streaming(&seed_video_id, picks, &[])
+                        .await
+                } else {
+                    Vec::new()
+                }
+            }
+            ApiEvent::StreamingPreflighted {
+                seed_video_id,
+                songs,
+            } => {
+                self.streaming_pending = false;
+                if self.streaming && self.queue.contains_video_id(&seed_video_id) {
+                    self.extend_queue_from_streaming(songs).await
+                } else {
+                    Vec::new()
+                }
+            }
+            ApiEvent::StreamingError {
+                seed_video_id,
+                error,
+            } => {
+                self.streaming_pending = false;
+                if self.streaming && self.queue.contains_video_id(&seed_video_id) {
+                    self.note_streaming_failure(format!("autoplay streaming failed: {error}"));
+                }
+                Vec::new()
+            }
+            ApiEvent::ModeResolved { .. }
+            | ApiEvent::SearchResults { .. }
+            | ApiEvent::SearchError { .. } => Vec::new(),
+        }
+    }
+
+    pub fn status(&self) -> StatusSnapshot {
+        let (position, total) = if self.queue.is_empty() {
+            (0, 0)
+        } else {
+            self.queue.position()
+        };
+        let current = self.queue.current();
+        StatusSnapshot {
+            title: current.map(|song| song.title.clone()),
+            artist: current.map(|song| song.artist.clone()),
+            paused: current.is_none() || self.playback.paused,
+            volume: self.playback.volume,
+            position,
+            total,
+            streaming: self.streaming,
+            owner_mode: InstanceMode::Daemon,
+        }
+    }
+
+    fn restore_last_session(&mut self) {
+        let cache = SessionCache::load();
+        self.last_mode = cache.last_mode;
+        self.inactive_normal_queue = cache.normal_queue.clone();
+        self.inactive_radio_queue = cache.radio_queue.clone();
+
+        if let Some(snapshot) = cache.active_queue().cloned() {
+            self.queue.restore_snapshot(snapshot);
+            self.reset_idle_playback();
+            return;
+        }
+
+        let songs: Vec<Song> = match cache.last_mode {
+            LastMode::Radio => self.library.radios.iter().cloned().collect(),
+            LastMode::Normal => self.library.history.iter().cloned().collect(),
+        };
+        if !songs.is_empty() {
+            self.queue.set(songs, 0);
+            self.reset_idle_playback();
+        }
+    }
+
+    async fn resume_session(&mut self) -> RemoteResponse {
+        self.restore_last_session();
+        if self.queue.current().is_none() {
+            return RemoteResponse::err("session_empty");
+        }
+        self.load_current()
+            .await
+            .map(|_| RemoteResponse::status(self.status()))
+            .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
+    }
+
+    async fn next_track(&mut self) -> RemoteResponse {
+        if self.queue.is_empty() {
+            return RemoteResponse::err("queue_empty");
+        }
+        if self.queue.next(false).is_some() {
+            return self
+                .load_current()
+                .await
+                .map(|_| RemoteResponse::status(self.status()))
+                .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
+        }
+        self.stop_playback();
+        RemoteResponse::err("queue_end")
+    }
+
+    async fn prev_track(&mut self) -> RemoteResponse {
+        if self.queue.is_empty() {
+            return RemoteResponse::err("queue_empty");
+        }
+        self.queue.prev();
+        self.load_current()
+            .await
+            .map(|_| RemoteResponse::status(self.status()))
+            .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
+    }
+
+    async fn toggle_pause(&mut self) -> RemoteResponse {
+        if self.queue.is_empty() {
+            return RemoteResponse::err("queue_empty");
+        }
+        if self.loaded_video_id.as_deref()
+            != self.queue.current().map(|song| song.video_id.as_str())
+        {
+            return self
+                .load_current()
+                .await
+                .map(|_| RemoteResponse::status(self.status()))
+                .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
+        }
+        self.playback.paused = !self.playback.paused;
+        if let Some(player) = &self.player {
+            player.handle.send(PlayerCmd::CyclePause);
+        }
+        RemoteResponse::status(self.status())
+    }
+
+    async fn search_and_play(&mut self, query: String) -> RemoteResponse {
+        let song = match self.first_search_result(&query).await {
+            Ok(Some(song)) => song,
+            Ok(None) => return RemoteResponse::err("no_results"),
+            Err(()) => return RemoteResponse::err("search_error"),
+        };
+        if !self.queue.play_now(song) {
+            return RemoteResponse::err("queue_full");
+        }
+        self.load_current()
+            .await
+            .map(|_| RemoteResponse::status(self.status()))
+            .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
+    }
+
+    async fn search_and_enqueue(&mut self, query: String) -> RemoteResponse {
+        let song = match self.first_search_result(&query).await {
+            Ok(Some(song)) => song,
+            Ok(None) => return RemoteResponse::err("no_results"),
+            Err(()) => return RemoteResponse::err("search_error"),
+        };
+        let old_len = self.queue.len();
+        let was_idle = self.loaded_video_id.is_none();
+        let added = if self.config.effective_enqueue_next() && !was_idle {
+            self.queue.insert_next_many(vec![song])
+        } else {
+            self.queue.extend(vec![song])
+        };
+        if added == 0 {
+            return RemoteResponse::err("queue_full");
+        }
+        self.save_session();
+        if was_idle {
+            self.queue
+                .goto(old_len.min(self.queue.len().saturating_sub(1)));
+            return self
+                .load_current()
+                .await
+                .map(|_| RemoteResponse::status(self.status()))
+                .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
+        }
+        RemoteResponse::status(self.status())
+    }
+
+    async fn first_search_result(&mut self, query: &str) -> Result<Option<Song>, ()> {
+        let config = self.config.effective_search();
+        let source = config.normalized_source(config.source);
+        let api = match self.config.effective_cookie() {
+            Some(cookie) => match YtMusicApi::from_cookie(&cookie).await {
+                Ok(api) => api,
+                Err(e) => {
+                    let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                    tracing::warn!(%error, "daemon search cookie auth failed; using anonymous search");
+                    YtMusicApi::Anonymous
+                }
+            },
+            None => YtMusicApi::Anonymous,
+        };
+        match api.search_songs(query, source, &config).await {
+            Ok(songs) => Ok(songs.into_iter().next()),
+            Err(e) => {
+                let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                self.last_error = Some(format!("search failed: {error}"));
+                tracing::warn!(%query, %error, "daemon remote search failed");
+                Err(())
+            }
+        }
+    }
+
+    fn adjust_volume(&mut self, delta: i64) -> RemoteResponse {
+        self.playback.volume = (self.playback.volume + delta).clamp(0, VOLUME_MAX);
+        if let Some(player) = &self.player {
+            player
+                .handle
+                .send(PlayerCmd::SetVolume(self.playback.volume));
+        }
+        RemoteResponse::status(self.status())
+    }
+
+    fn seek(&mut self, seconds: f64) -> RemoteResponse {
+        if self.loaded_video_id.is_none() {
+            return RemoteResponse::err("nothing_playing");
+        }
+        if let Some(player) = &self.player {
+            player.handle.send(PlayerCmd::SeekRelative(seconds));
+        }
+        RemoteResponse::status(self.status())
+    }
+
+    fn set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<EngineEffect>) {
+        self.streaming = state.resolve(self.streaming);
+        self.config.autoplay_streaming = Some(self.streaming);
+        if self.streaming {
+            self.consecutive_streaming_failures = 0;
+        } else {
+            self.streaming_pending = false;
+        }
+        if let Err(e) = self.config.save() {
+            tracing::warn!(error = %e, "failed to save daemon autoplay streaming setting");
+        }
+        let effects = if self.streaming {
+            self.maybe_autoplay_extend()
+        } else {
+            Vec::new()
+        };
+        (RemoteResponse::status(self.status()), effects)
+    }
+
+    async fn advance_after_end(&mut self) -> Vec<EngineEffect> {
+        let mut effects = Vec::new();
+        if self.queue.next(true).is_some() {
+            if let Err(e) = self.load_current().await {
+                self.last_error = Some(e.to_string());
+                self.stop_playback();
+            }
+        } else {
+            self.reset_idle_playback();
+            self.loaded_video_id = None;
+        }
+        effects.extend(self.maybe_autoplay_extend());
+        effects
+    }
+
+    async fn handle_playback_error(&mut self, error: String) -> Vec<EngineEffect> {
+        self.last_error = Some(error);
+        self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
+        if self.consecutive_play_errors <= MAX_CONSECUTIVE_PLAY_ERRORS
+            && self.queue.peek_next().is_some()
+        {
+            self.queue.next(false);
+            if let Err(e) = self.load_current().await {
+                self.last_error = Some(e.to_string());
+                self.stop_playback();
+            }
+            self.maybe_autoplay_extend()
+        } else {
+            self.stop_playback();
+            Vec::new()
+        }
+    }
+
+    async fn load_current(&mut self) -> Result<(), EngineError> {
+        self.ensure_player().await?;
+        self.load_current_loaded();
+        Ok(())
+    }
+
+    fn load_current_loaded(&mut self) {
+        let Some(song) = self.queue.current().cloned() else {
+            self.stop_playback();
+            return;
+        };
+        self.playback.paused = false;
+        self.playback.time_pos = None;
+        self.playback.duration = None;
+        self.loaded_video_id = Some(song.video_id.clone());
+        self.library.record_play(&song);
+        if let Err(e) = self.library.save() {
+            tracing::warn!(error = %e, "failed to save daemon library history");
+        }
+        self.save_session();
+        if let Some(player) = &self.player {
+            player.handle.send(PlayerCmd::Load(song.playback_target()));
+        }
+    }
+
+    fn stop_playback(&mut self) {
+        if let Some(player) = self.player.take() {
+            player.handle.send(PlayerCmd::Stop);
+        }
+        self.reset_idle_playback();
+        self.loaded_video_id = None;
+    }
+
+    fn reset_idle_playback(&mut self) {
+        self.playback.paused = true;
+        self.playback.time_pos = None;
+        self.playback.duration = None;
+    }
+
+    async fn ensure_player(&mut self) -> Result<(), EngineError> {
+        if self.player.is_some() {
+            return Ok(());
+        }
+        let emit = Arc::clone(&self.player_emit);
+        let (handle, guard) = player::spawn(
+            move |event| (emit)(event),
+            data_dir(),
+            self.config.effective_cookies_file(),
+            self.config.effective_gapless(),
+        )
+        .await
+        .map_err(|e| EngineError::Player(format!("failed to start mpv: {e:#}")))?;
+
+        handle.send(PlayerCmd::SetVolume(self.playback.volume));
+        let speed = self.config.effective_speed();
+        if (speed - 1.0).abs() > f64::EPSILON {
+            handle.send(PlayerCmd::SetProperty {
+                name: "speed".to_owned(),
+                value: Value::from(speed),
+            });
+        }
+        self.player = Some(PlayerRuntime {
+            handle,
+            _guard: guard,
+        });
+        Ok(())
+    }
+
+    fn maybe_autoplay_extend(&mut self) -> Vec<EngineEffect> {
+        if !self.streaming
+            || self.queue.remaining() > AUTOPLAY_THRESHOLD
+            || self.streaming_pending
+            || self
+                .last_extend
+                .is_some_and(|t| t.elapsed() < AUTOPLAY_COOLDOWN)
+        {
+            return Vec::new();
+        }
+        let Some(cur) = self.queue.current() else {
+            return Vec::new();
+        };
+        if cur.is_radio_station() {
+            return Vec::new();
+        }
+
+        let seed = format!("{} — {}", cur.title, cur.artist);
+        let seed_video_id = cur.video_id.clone();
+        let exclude_ids = self.streaming_exclude_ids(&seed_video_id);
+        self.last_extend = Some(Instant::now());
+        self.streaming_pending = true;
+        vec![EngineEffect::StreamingFallback {
+            seed,
+            seed_video_id,
+            exclude_ids,
+            limit: STREAMING_POOL_COUNT,
+            mode: self.config.streaming.mode,
+            config: self.config.effective_search(),
+        }]
+    }
+
+    fn streaming_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
+        let profile = self.config.streaming.mode.profile(&self.config.streaming);
+        let mut ids: HashSet<String> = self
+            .queue
+            .ordered_iter()
+            .filter(|song| !song.is_radio_station())
+            .map(|song| song.video_id.clone())
+            .collect();
+        ids.insert(seed_video_id.to_owned());
+        let favorite_ids: HashSet<&str> = self
+            .library
+            .favorites
+            .iter()
+            .filter(|song| !song.is_radio_station())
+            .map(|s| s.video_id.as_str())
+            .collect();
+        for (idx, song) in self
+            .library
+            .history
+            .iter()
+            .filter(|song| !song.is_radio_station())
+            .enumerate()
+        {
+            let inside_horizon = idx < profile.history_block_horizon;
+            let protected_old_favorite =
+                profile.allow_old_liked_repeats && favorite_ids.contains(song.video_id.as_str());
+            if inside_horizon || !protected_old_favorite {
+                ids.insert(song.video_id.clone());
+            }
+        }
+        ids.into_iter().collect()
+    }
+
+    fn plan_local_streaming(
+        &mut self,
+        seed_video_id: &str,
+        mut candidates: Vec<(Song, CandidateSource)>,
+    ) -> Vec<Song> {
+        let st = self.build_station_state(seed_video_id);
+        let cooc = Cooc::build(self.signals.play_log(), &self.config.streaming.cooc);
+        self.augment_streaming_candidates(seed_video_id, &mut candidates);
+        let pool = streaming::pool_from_tagged(candidates);
+        streaming::plan_local(
+            pool,
+            &st,
+            &self.signals,
+            &cooc,
+            &self.config.streaming,
+            STREAMING_FALLBACK_COUNT,
+            signals::unix_now(),
+        )
+    }
+
+    async fn extend_sanitized_streaming(
+        &mut self,
+        seed_video_id: &str,
+        songs: Vec<Song>,
+        fallback: &[Song],
+    ) -> Vec<EngineEffect> {
+        let sanitized = streaming::sanitize_final_picks(
+            songs,
+            fallback,
+            self.config.streaming.mode,
+            &self.config.streaming,
+        );
+        if !sanitized.is_empty()
+            && streaming::final_preflight_needed(
+                &sanitized,
+                fallback,
+                self.config.streaming.mode,
+                &self.config.streaming,
+            )
+        {
+            self.streaming_pending = true;
+            return vec![EngineEffect::StreamingPreflight {
+                seed_video_id: seed_video_id.to_owned(),
+                picks: sanitized,
+                fallback: fallback.to_vec(),
+                mode: self.config.streaming.mode,
+                config: self.config.streaming.clone(),
+            }];
+        }
+        self.extend_queue_from_streaming(sanitized).await
+    }
+
+    async fn extend_queue_from_streaming(&mut self, songs: Vec<Song>) -> Vec<EngineEffect> {
+        let added = self.queue.extend(songs);
+        if added == 0 {
+            self.note_streaming_failure("autoplay streaming found no new tracks".to_owned());
+            return Vec::new();
+        }
+        self.consecutive_streaming_failures = 0;
+        self.save_session();
+        if self.loaded_video_id.is_none() && self.queue.remaining() > 0 {
+            self.queue.next(false);
+            if let Err(e) = self.load_current().await {
+                self.last_error = Some(e.to_string());
+                self.stop_playback();
+            }
+        }
+        Vec::new()
+    }
+
+    fn note_streaming_failure(&mut self, status: String) {
+        self.last_error = Some(status);
+        if self.streaming {
+            self.consecutive_streaming_failures =
+                self.consecutive_streaming_failures.saturating_add(1);
+            if self.consecutive_streaming_failures >= AUTOPLAY_MAX_FAILURES {
+                self.streaming = false;
+                self.streaming_pending = false;
+                self.config.autoplay_streaming = Some(false);
+                if let Err(e) = self.config.save() {
+                    tracing::warn!(error = %e, "failed to save daemon streaming circuit-breaker");
+                }
+            }
+        }
+    }
+
+    fn augment_streaming_candidates(
+        &self,
+        seed_video_id: &str,
+        candidates: &mut Vec<(Song, CandidateSource)>,
+    ) {
+        let mode = self.config.streaming.mode;
+        let profile = mode.profile(&self.config.streaming);
+        let seed_artist = self.streaming_seed_artist_key(seed_video_id);
+        let mut seen: HashSet<String> = candidates
+            .iter()
+            .map(|(song, _)| song.video_id.clone())
+            .collect();
+        seen.extend(
+            self.queue
+                .ordered_iter()
+                .filter(|song| !song.is_radio_station())
+                .map(|song| song.video_id.clone()),
+        );
+        seen.insert(seed_video_id.to_owned());
+
+        let (liked_cap, history_cap) = match mode {
+            StreamingMode::Focused => (14, 8),
+            StreamingMode::Balanced => (10, 14),
+            StreamingMode::Discovery => (6, 24),
+        };
+
+        let mut favorites: Vec<Song> = self
+            .library
+            .favorites
+            .iter()
+            .filter(|song| !song.is_radio_station())
+            .cloned()
+            .collect();
+        favorites.sort_by(|a, b| {
+            local_neighbor_score(b, &seed_artist, &self.signals).total_cmp(&local_neighbor_score(
+                a,
+                &seed_artist,
+                &self.signals,
+            ))
+        });
+        for song in favorites.into_iter().take(liked_cap) {
+            if seen.insert(song.video_id.clone()) {
+                candidates.push((song, CandidateSource::LikedNeighbor));
+            }
+        }
+
+        let mut added_history = 0usize;
+        for song in self
+            .library
+            .history
+            .iter()
+            .filter(|song| !song.is_radio_station())
+            .skip(profile.history_block_horizon)
+        {
+            if seen.insert(song.video_id.clone()) {
+                candidates.push((song.clone(), CandidateSource::HistoryCooc));
+                added_history += 1;
+                if added_history >= history_cap {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn build_station_state(&self, seed_video_id: &str) -> StationState {
+        let profile = self.config.streaming.mode.profile(&self.config.streaming);
+        let mut recent_track_ids: Vec<String> = self
+            .queue
+            .ordered_iter()
+            .filter(|song| !song.is_radio_station())
+            .map(|song| song.video_id.clone())
+            .collect();
+        recent_track_ids.extend(
+            self.library
+                .history
+                .iter()
+                .filter(|s| !s.is_radio_station())
+                .take(profile.history_block_horizon)
+                .map(|s| s.video_id.clone()),
+        );
+
+        let mut recent_artist_keys: Vec<String> = self
+            .library
+            .history
+            .iter()
+            .filter(|s| !s.is_radio_station())
+            .take(STREAMING_RECENT_ARTISTS)
+            .map(|s| signals::normalize_artist(&s.artist))
+            .collect();
+        recent_artist_keys.reverse();
+        if let Some(cur) = self.queue.current()
+            && !cur.is_radio_station()
+        {
+            push_artist_key(&mut recent_artist_keys, &cur.artist);
+        }
+        for song in self
+            .queue
+            .ordered_iter()
+            .skip(self.queue.cursor_pos().saturating_add(1))
+            .filter(|song| !song.is_radio_station())
+            .take(8)
+        {
+            push_artist_key(&mut recent_artist_keys, &song.artist);
+        }
+
+        let favorite_artist_keys: HashSet<String> = self
+            .library
+            .favorites
+            .iter()
+            .filter(|s| !s.is_radio_station())
+            .map(|s| signals::normalize_artist(&s.artist))
+            .collect();
+        let skip_streak = self.streaming_skip_streak();
+        let temporary_novelty_boost =
+            if self.config.streaming.mode == StreamingMode::Focused && skip_streak >= 2 {
+                0.12
+            } else {
+                0.0
+            };
+        let temporary_familiarity_boost =
+            if self.config.streaming.mode == StreamingMode::Discovery && skip_streak >= 2 {
+                0.20
+            } else {
+                0.0
+            };
+
+        StationState {
+            mode: self.config.streaming.mode,
+            seed_video_id: seed_video_id.to_owned(),
+            seed_artist_key: self.streaming_seed_artist_key(seed_video_id),
+            recent_track_ids,
+            recent_artist_keys,
+            banned_track_ids: HashSet::new(),
+            banned_artist_keys: self.station.avoid_artist_keys().into_iter().collect(),
+            favorite_artist_keys,
+            session_artist_bias: self.session_artist_bias(),
+            temporary_novelty_boost,
+            temporary_familiarity_boost,
+        }
+    }
+
+    fn streaming_seed_artist_key(&self, seed_video_id: &str) -> String {
+        if let Some(cur) = self.queue.current()
+            && cur.video_id == seed_video_id
+            && !cur.is_radio_station()
+        {
+            return signals::normalize_artist(&cur.artist);
+        }
+        self.library
+            .history
+            .iter()
+            .filter(|s| !s.is_radio_station())
+            .find(|s| s.video_id == seed_video_id)
+            .map(|s| signals::normalize_artist(&s.artist))
+            .unwrap_or_default()
+    }
+
+    fn session_artist_bias(&self) -> HashMap<String, f32> {
+        let mut out: HashMap<String, f32> = HashMap::new();
+        for event in self.session_events.iter().rev().take(8) {
+            let completion = event.completion.clamp(0.0, 1.0);
+            let delta = match event.outcome {
+                DaemonOutcome::FullPlay => 0.05 * completion.max(0.5),
+                DaemonOutcome::Skip => -0.10 * (1.0 - completion).max(0.25),
+                DaemonOutcome::QuickSkip => -0.20 * (1.0 - completion).max(0.5),
+            };
+            let entry = out.entry(event.artist_key.clone()).or_insert(0.0);
+            *entry = (*entry + delta).clamp(-0.50, 0.35);
+        }
+        out
+    }
+
+    fn streaming_skip_streak(&self) -> usize {
+        self.session_events
+            .iter()
+            .rev()
+            .take_while(|e| matches!(e.outcome, DaemonOutcome::Skip | DaemonOutcome::QuickSkip))
+            .count()
+    }
+
+    fn record_outgoing(&mut self, full: bool) {
+        let Some(song) = self.queue.current().cloned() else {
+            return;
+        };
+        if song.is_radio_station() {
+            return;
+        }
+        let artist_key = signals::normalize_artist(&song.artist);
+        let now = signals::unix_now();
+        let (outcome, completion) = if full {
+            self.signals
+                .record_play(&song.video_id, &artist_key, 1.0, now);
+            (DaemonOutcome::FullPlay, 1.0)
+        } else {
+            let completion = self.playback_completion();
+            self.signals
+                .record_skip(&song.video_id, &artist_key, completion, now, 0.6);
+            let outcome = if completion < signals::STRONG_SKIP_FRAC {
+                DaemonOutcome::QuickSkip
+            } else {
+                DaemonOutcome::Skip
+            };
+            (outcome, completion)
+        };
+        self.record_session_event(&artist_key, outcome, completion);
+        if let Err(e) = self.signals.save() {
+            tracing::warn!(error = %e, "failed to save daemon signals");
+        }
+    }
+
+    fn playback_completion(&self) -> f32 {
+        match (self.playback.time_pos, self.playback.duration) {
+            (Some(t), Some(d)) if d > 0.0 => (t / d).clamp(0.0, 1.0) as f32,
+            _ => 0.5,
+        }
+    }
+
+    fn record_session_event(&mut self, artist_key: &str, outcome: DaemonOutcome, completion: f32) {
+        self.session_events.push_back(DaemonSessionEvent {
+            artist_key: artist_key.to_owned(),
+            outcome,
+            completion,
+        });
+        while self.session_events.len() > SESSION_EVENTS_CAP {
+            self.session_events.pop_front();
+        }
+    }
+
+    fn session_cache_snapshot(&self) -> SessionCache {
+        let mut cache = SessionCache::from_radio_mode(self.last_mode == LastMode::Radio);
+        match self.last_mode {
+            LastMode::Normal => {
+                cache.normal_queue = Some(self.queue.snapshot());
+                cache.radio_queue = self.inactive_radio_queue.clone();
+            }
+            LastMode::Radio => {
+                cache.radio_queue = Some(self.queue.snapshot());
+                cache.normal_queue = self.inactive_normal_queue.clone();
+            }
+        }
+        cache
+    }
+
+    fn save_session(&self) {
+        if let Err(e) = self.session_cache_snapshot().save() {
+            tracing::warn!(error = %e, "failed to save daemon session");
+        }
+    }
+}
+
+fn local_neighbor_score(song: &Song, seed_artist_key: &str, sig: &Signals) -> f32 {
+    let artist_key = signals::normalize_artist(&song.artist);
+    let seed_bonus = if artist_key == seed_artist_key {
+        1.0
+    } else {
+        0.0
+    };
+    seed_bonus + sig.artist_weight(&artist_key)
+}
+
+fn push_artist_key(keys: &mut Vec<String>, artist: &str) {
+    let key = signals::normalize_artist(artist);
+    if !key.is_empty() {
+        keys.push(key);
+    }
+}
+
+fn data_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "ytm-tui").map(|dirs| dirs.data_dir().to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn song(id: &str) -> Song {
+        Song::remote(id, format!("title-{id}"), "artist".to_owned(), "3:00")
+    }
+
+    fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
+        let mut queue = Queue::default();
+        queue.set(ids.iter().map(|id| song(id)).collect(), 0);
+        DaemonEngine {
+            player: None,
+            player_emit: Arc::new(|_| {}),
+            queue,
+            playback: DaemonPlayback {
+                paused: true,
+                volume: 50,
+                time_pos: None,
+                duration: None,
+            },
+            config: Config::default(),
+            library: Library::default(),
+            signals: Signals::default(),
+            station: StationStore::default(),
+            loaded_video_id: None,
+            streaming: false,
+            streaming_pending: false,
+            last_extend: None,
+            consecutive_streaming_failures: 0,
+            last_error: None,
+            consecutive_play_errors: 0,
+            last_mode: LastMode::Normal,
+            inactive_normal_queue: None,
+            inactive_radio_queue: None,
+            session_events: VecDeque::new(),
+        }
+    }
+
+    #[test]
+    fn maybe_autoplay_extend_emits_real_streaming_request() {
+        let mut engine = engine_with_queue(&["seed"]);
+        engine.streaming = true;
+
+        let effects = engine.maybe_autoplay_extend();
+
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            EngineEffect::StreamingFallback {
+                seed_video_id,
+                limit,
+                ..
+            } => {
+                assert_eq!(seed_video_id, "seed");
+                assert_eq!(*limit, STREAMING_POOL_COUNT);
+            }
+            _ => panic!("expected streaming fallback"),
+        }
+        assert!(engine.streaming_pending);
+    }
+
+    #[test]
+    fn plan_local_streaming_filters_existing_queue_ids() {
+        let mut engine = engine_with_queue(&["seed"]);
+        let candidates = (0..12)
+            .map(|i| {
+                (
+                    Song::remote(
+                        format!("c{i}"),
+                        format!("candidate {i}"),
+                        format!("artist {i}"),
+                        "3:00",
+                    ),
+                    CandidateSource::YtdlpStreaming,
+                )
+            })
+            .collect();
+
+        let picks = engine.plan_local_streaming("seed", candidates);
+
+        assert!(!picks.is_empty());
+        assert!(picks.iter().all(|song| song.video_id != "seed"));
+    }
+
+    #[test]
+    fn session_snapshot_preserves_active_queue() {
+        let mut engine = engine_with_queue(&["a", "b"]);
+        engine.queue.next(false);
+
+        let cache = engine.session_cache_snapshot();
+        let snapshot = cache.normal_queue.expect("normal queue saved");
+
+        assert_eq!(snapshot.cursor, 1);
+        assert_eq!(snapshot.songs.len(), 2);
+    }
+}

@@ -10,7 +10,15 @@ use serde::{Deserialize, Serialize};
 /// Bumped on any breaking change to the request/response shape. The server rejects a
 /// mismatch with `bad_version`, so an old client against a new server fails loudly
 /// instead of misbehaving.
-pub const PROTOCOL_VERSION: u8 = 2;
+pub const PROTOCOL_VERSION: u8 = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceMode {
+    #[default]
+    StandaloneTui,
+    Daemon,
+}
 
 /// A semantic player command. Applied through the same reducer path a keypress uses, so
 /// it works regardless of the TUI's current input mode (Search text entry, Settings, …).
@@ -20,6 +28,12 @@ pub enum RemoteCommand {
     Next,
     Prev,
     TogglePause,
+    Play {
+        query: String,
+    },
+    Enqueue {
+        query: String,
+    },
     VolumeUp,
     VolumeDown,
     SeekBack,
@@ -28,6 +42,7 @@ pub enum RemoteCommand {
     Streaming {
         state: ToggleState,
     },
+    ResumeSession,
     Status,
     Quit,
 }
@@ -118,6 +133,8 @@ pub struct StatusSnapshot {
     pub total: usize,
     #[serde(alias = "radio")]
     pub streaming: bool,
+    #[serde(default)]
+    pub owner_mode: InstanceMode,
 }
 
 impl StatusSnapshot {
@@ -152,6 +169,16 @@ pub struct InstanceFile {
     pub endpoint: String,
     pub token: String,
     pub created_unix: u64,
+    #[serde(default)]
+    pub mode: InstanceMode,
+    #[serde(default = "current_protocol_version")]
+    pub protocol_version: u8,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+fn current_protocol_version() -> u8 {
+    PROTOCOL_VERSION
 }
 
 #[cfg(test)]
@@ -193,6 +220,16 @@ mod tests {
     }
 
     #[test]
+    fn search_commands_carry_query() {
+        let line = serde_json::to_string(&RemoteCommand::Play {
+            query: "hello".to_string(),
+        })
+        .unwrap();
+        assert!(line.contains("\"play\""), "got {line}");
+        assert!(line.contains("\"hello\""), "got {line}");
+    }
+
+    #[test]
     fn response_omits_none_fields() {
         let line = serde_json::to_string(&RemoteResponse::err("queue_empty")).unwrap();
         assert!(line.contains("\"ok\":false"));
@@ -211,9 +248,35 @@ mod tests {
             position: 0,
             total: 0,
             streaming: false,
+            owner_mode: InstanceMode::StandaloneTui,
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));
         assert!(line.contains("vol 80%"));
+    }
+
+    #[test]
+    fn status_json_exposes_owner_mode() {
+        let snap = StatusSnapshot {
+            title: None,
+            artist: None,
+            paused: false,
+            volume: 80,
+            position: 0,
+            total: 0,
+            streaming: false,
+            owner_mode: InstanceMode::Daemon,
+        };
+        let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
+        assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");
+    }
+
+    #[test]
+    fn legacy_instance_file_defaults_to_standalone_v3_shape() {
+        let line = r#"{"app_pid":7,"endpoint":"sock","token":"tok","created_unix":1}"#;
+        let file: InstanceFile = serde_json::from_str(line).unwrap();
+        assert_eq!(file.mode, InstanceMode::StandaloneTui);
+        assert_eq!(file.protocol_version, PROTOCOL_VERSION);
+        assert!(file.capabilities.is_empty());
     }
 }

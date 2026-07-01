@@ -7,7 +7,9 @@
 //! from the resulting state, which the control socket writes back to the client.
 
 use super::*;
-use crate::remote::proto::{RemoteCommand, RemoteResponse, StatusSnapshot, ToggleState};
+use crate::remote::proto::{
+    InstanceMode, RemoteCommand, RemoteResponse, StatusSnapshot, ToggleState,
+};
 
 impl App {
     /// Apply one remote command and return `(response, side-effect commands)`. The commands
@@ -29,6 +31,9 @@ impl App {
                 let cmds = self.on_player_action(Action::TogglePause);
                 (RemoteResponse::ok(self.pause_line()), cmds)
             }
+            RemoteCommand::Play { .. } | RemoteCommand::Enqueue { .. } => {
+                (RemoteResponse::err("daemon_required"), Vec::new())
+            }
             RemoteCommand::VolumeUp => {
                 let cmds = self.on_player_action(Action::VolUp);
                 (RemoteResponse::ok(self.vol_line()), cmds)
@@ -46,12 +51,25 @@ impl App {
                 (RemoteResponse::ok(self.now_playing_line()), cmds)
             }
             RemoteCommand::Streaming { state } => self.remote_set_streaming(state),
+            RemoteCommand::ResumeSession => self.remote_resume_session(),
             RemoteCommand::Status => (RemoteResponse::status(self.status_snapshot()), Vec::new()),
             RemoteCommand::Quit => {
                 let cmds = self.quit_app();
                 (RemoteResponse::ok("quitting ytt".to_string()), cmds)
             }
         }
+    }
+
+    fn remote_resume_session(&mut self) -> (RemoteResponse, Vec<Cmd>) {
+        if self.queue.is_empty() {
+            self.restore_last_played_from_library();
+        }
+        if self.queue.current().is_none() {
+            return (RemoteResponse::err("session_empty"), Vec::new());
+        }
+        let song = self.queue.current().cloned();
+        let cmds = self.load_song(song);
+        (RemoteResponse::status(self.status_snapshot()), cmds)
     }
 
     /// Set/toggle autoplay streaming, mirroring the `ToggleStreaming` key handler (status toast +
@@ -119,6 +137,7 @@ impl App {
             position: if total == 0 { 0 } else { position },
             total,
             streaming: self.autoplay_streaming,
+            owner_mode: InstanceMode::StandaloneTui,
         }
     }
 }
@@ -180,6 +199,34 @@ mod tests {
             state: ToggleState::Toggle,
         });
         assert!(app.autoplay_streaming);
+    }
+
+    #[test]
+    fn resume_session_loads_last_history_track() {
+        let mut app = App::new(50);
+        app.library
+            .record_play(&Song::remote("id0", "Zero", "A", "3:00"));
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::ResumeSession);
+
+        assert!(resp.ok);
+        assert_eq!(app.queue.current().unwrap().video_id, "id0");
+        assert!(cmds.iter().any(|cmd| {
+            matches!(
+                cmd,
+                Cmd::Player(crate::player::PlayerCmd::Load(url)) if url.contains("id0")
+            )
+        }));
+    }
+
+    #[test]
+    fn resume_session_without_history_is_rejected() {
+        let mut app = App::new(50);
+        let (resp, cmds) = app.apply_remote(RemoteCommand::ResumeSession);
+
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("session_empty"));
+        assert!(cmds.is_empty());
     }
 
     #[test]

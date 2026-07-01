@@ -106,6 +106,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_JobObjects",
     "Win32_System_Console",
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
 ] }
 
 # Local fork of ratatui-image 11.0.6 with the Kitty explicit-coordinate + Sixel/iTerm2 anchor

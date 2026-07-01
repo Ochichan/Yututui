@@ -2,8 +2,10 @@
 
 use std::fmt;
 
+use crate::daemon::{self, DaemonError, StartOptions};
 use crate::remote::client::{self, ClientError};
 use crate::remote::proto::{RemoteCommand, RemoteResponse, StatusSnapshot};
+use crate::tray::launch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlError {
@@ -38,6 +40,20 @@ impl From<ClientError> for ControlError {
     }
 }
 
+impl From<DaemonError> for ControlError {
+    fn from(value: DaemonError) -> Self {
+        match value {
+            DaemonError::StandaloneOwner => ControlError::Rejected(
+                "ytm-tui is already running in standalone TUI mode".to_string(),
+            ),
+            DaemonError::NotRunning(message) => ControlError::Transport(message),
+            DaemonError::ResumeRejected(reason) => ControlError::Rejected(reason),
+            DaemonError::StopRejected(reason) => ControlError::Rejected(reason),
+            other => ControlError::Transport(other.to_string()),
+        }
+    }
+}
+
 pub async fn send_remote(command: RemoteCommand) -> Result<RemoteResponse, ControlError> {
     let resp = client::send(command).await.map_err(ControlError::from)?;
     response_to_result(resp)
@@ -56,6 +72,21 @@ pub fn response_to_result(resp: RemoteResponse) -> Result<RemoteResponse, Contro
 pub async fn status() -> Result<StatusSnapshot, ControlError> {
     let resp = send_remote(RemoteCommand::Status).await?;
     resp.status.ok_or(ControlError::MissingStatus)
+}
+
+pub async fn start_daemon(resume: bool) -> Result<(), ControlError> {
+    daemon::start_daemon(StartOptions {
+        resume,
+        from_tray: true,
+        executable: Some(launch::resolve_ytt_path()),
+    })
+    .await
+    .map(|_| ())
+    .map_err(ControlError::from)
+}
+
+pub async fn stop_daemon() -> Result<(), ControlError> {
+    daemon::stop_daemon().await.map_err(ControlError::from)
 }
 
 #[cfg(test)]
@@ -82,5 +113,17 @@ mod tests {
     fn rejected_response_maps_to_control_error() {
         let err = response_to_result(RemoteResponse::err("queue_empty")).unwrap_err();
         assert_eq!(err, ControlError::Rejected("queue_empty".to_string()));
+    }
+
+    #[test]
+    fn daemon_errors_map_to_user_facing_control_errors() {
+        assert_eq!(
+            ControlError::from(DaemonError::StandaloneOwner),
+            ControlError::Rejected("ytm-tui is already running in standalone TUI mode".to_string())
+        );
+        assert_eq!(
+            ControlError::from(DaemonError::StopRejected("busy".to_string())),
+            ControlError::Rejected("busy".to_string())
+        );
     }
 }

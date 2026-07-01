@@ -11,6 +11,7 @@
 .claude/
 
 # Local docs notes
+/docs/daemon-mode-completion-plan.md
 /docs/desktop-tray-companion-plan.md
 /docs/*.md
 /docs/**/*.md

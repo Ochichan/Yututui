@@ -28,6 +28,9 @@ curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | 
 ```
 
 > `curl | bash` とソースビルドは `ytt` **だけ**を入れます。補助ツールは自分で入れるか（`brew install mpv yt-dlp ffmpeg`、`sudo apt install mpv yt-dlp ffmpeg`、`sudo pacman -S mpv yt-dlp ffmpeg`）— インストール後に `ytt doctor` で何が足りないか確認してください。
+> Windows では、Scoop が `ytt-tray.exe` と **YtmTui Tray** ショートカットも入れます。これは通知領域のヘルパーです。ターミナルで動く `ytt` セッションのタスクバーボタンは、引き続き Windows Terminal のものです。
+> Windows の tray 自動起動は任意です。有効化は `ytt-tray --install-startup`、削除は `ytt-tray --uninstall-startup` を実行してください。
+> バックグラウンド再生: `ytt daemon start --resume` で保存済みキューを headless 音楽デーモンとして開始し、`ytt -r status`、`ytt -r pp`、`ytt -r next`、`ytt -r play "lofi"`、`ytt daemon stop` で操作できます。
 
 ---
 
@@ -51,7 +54,7 @@ ytt
 
 - **DJ Gem ストリーミング** — **`Ctrl+R`** を押せば、今聴いている曲を中心に途切れないラジオが始まります。雰囲気は3つから: Focused、Balanced、Discovery。**`w`** を押せば、各曲を選んだ理由をやさしい言葉で見せてくれます。
 - **本物のアルバムアート** — 対応するターミナルなら、プレイヤーに実際のカバー画像を描きます。その下には時間同期した歌詞が流れます（**`Shift+L`**）。
-- **リモート操作** — 別のターミナルやメディアキーから操作: `ytt -r pp`、`ytt -r next`、`ytt -r status`。
+- **リモート操作 + デーモンモード** — 実行中の TUI や headless デーモンを別ターミナルから操作: `ytt -r pp`、`ytt -r next`、`ytt -r status`、`ytt -r play "city pop"`。
 - **検索 · ライブラリ · キュー** — **`s`** で検索、**`l`** でライブラリ（お気に入り・履歴・ダウンロード）、**`c`** でキュー。
 - **自分好みに** — テーマ11種、すべての色を hex で調整、すべてのキーを再設定、10バンド EQ、そして静かな静止画面からくるくる回る ASCII ドーナツまでのアニメーション。
 - **DJ Gem アシスタント** *(任意)* — **`g`** を押して言葉で頼むだけ: *「ローファイをかけて」「アップテンポな曲を3つキューに入れて」*。無料の Google Gemini キーが必要ですが、それ以外の機能はキーなしでも全部動きます。
@@ -98,6 +101,8 @@ ytt
 ytt -r pp          # 再生 / 一時停止
 ytt -r next        # 次の曲
 ytt -r streaming on    # ストリーミングをオン
+ytt -r play "lofi"      # デーモン: 検索して最初の結果を再生
+ytt -r enqueue "city pop"  # デーモン: 検索して最初の結果をキューに追加
 ytt -r status      # 一行の「再生中」
 ytt -r quit        # 止めて終了
 ```
@@ -109,7 +114,17 @@ bindsym XF86AudioPlay exec ytt -r pp
 bindsym XF86AudioNext exec ytt -r next
 ```
 
-`ytt` を二度起動しても、スピーカーを取り合う二つ目のプレイヤーは生まれず、すでに動いている方への呼びかけ方を教えてくれるだけです。（本当に二つ欲しいなら `ytt --new-instance`。）全コマンドは `ytt -r --help`。
+ターミナルなしで再生を続けるなら、デーモンを起動します:
+
+```sh
+ytt daemon start --resume   # 保存済みキュー/セッションを復元して再生
+ytt daemon status --json    # スクリプト向け owner/status スナップショット
+ytt daemon stop             # デーモン停止と mpv の後始末
+```
+
+デーモンの resume は、保存済みのキュー順、カーソル、シャッフル/リピート、通常/ラジオモードのキューを復元します。自動ストリーミングも TUI と同じ推薦経路で headless のままキューを補充します。`ytt -r play …` と `ytt -r enqueue …` はデーモン検索コマンドです。standalone TUI が所有者の場合は `daemon_required` で拒否されます。
+
+`ytt` を二度起動しても、スピーカーを取り合う二つ目のプレイヤーは生まれず、すでに動いている方への呼びかけ方を教えてくれるだけです。（本当に二つ欲しいなら `ytt --new-instance`。）全コマンドは `ytt -r --help` と `ytt daemon --help`。
 
 ---
 

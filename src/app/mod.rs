@@ -673,6 +673,50 @@ impl App {
         self.dirty = true;
     }
 
+    /// Build the persisted session cache from the active queue plus the inactive mode's stashed
+    /// queue. This is the handoff used by both the next TUI launch and the headless daemon.
+    pub fn session_cache_snapshot(&self) -> crate::session::SessionCache {
+        let mut cache = crate::session::SessionCache::from_radio_mode(self.radio_dedicated_mode);
+        if self.radio_dedicated_mode {
+            cache.radio_queue = Some(self.queue.snapshot());
+            cache.normal_queue = self.normal_mode_queue.clone();
+        } else {
+            cache.normal_queue = Some(self.queue.snapshot());
+            cache.radio_queue = self.radio_mode_queue.clone();
+        }
+        cache
+    }
+
+    /// Restore an exact queue snapshot when one exists; fall back to the legacy library-history
+    /// restore path for old session files.
+    pub fn restore_last_session_from_cache(&mut self, cache: &crate::session::SessionCache) {
+        self.normal_mode_queue = cache.normal_queue.clone();
+        self.radio_mode_queue = cache.radio_queue.clone();
+
+        if cache.was_radio_mode() {
+            self.activate_radio_dedicated_mode_ui();
+        }
+
+        if let Some(snapshot) = cache.active_queue().cloned() {
+            self.queue.restore_snapshot(snapshot);
+            self.seed_restored_playback_state();
+            return;
+        }
+
+        self.restore_last_session_from_library(cache.was_radio_mode());
+    }
+
+    fn seed_restored_playback_state(&mut self) {
+        self.playback.time_pos = None;
+        self.playback.duration = None;
+        self.playback.paused = true;
+        self.playback.stream_now_playing = None;
+        self.last_shown_sec = -1;
+        self.prefetch.loaded_video_id = None;
+        self.status.text.clear();
+        self.dirty = true;
+    }
+
     /// Opt-in: when "autoplay on launch" is enabled and [`restore_last_played_from_library`]
     /// seeded a track, start playing it at launch — the same path pressing play would take
     /// (load → record → prefetch). Returns no commands when the setting is off or nothing was

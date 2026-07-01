@@ -101,7 +101,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
+          sudo apt-get install -y libssl-dev pkg-config mpv
+
+      - name: Install macOS smoke dependencies
+        if: runner.os == 'macOS'
+        run: brew install mpv
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -114,14 +118,205 @@ jobs:
       - name: Clippy (warnings = errors)
         run: cargo clippy --all-targets --target ${{ matrix.target }} -- -D warnings
 
+      - name: Clippy Windows tray helper
+        if: runner.os == 'Windows'
+        run: |
+          cargo clippy --features desktop-tray --target ${{ matrix.target }} --bin ytt-tray -- -D warnings
+
       - name: Test
         run: cargo test --target ${{ matrix.target }}
 
+      - name: Test Windows tray helper
+        if: runner.os == 'Windows'
+        run: |
+          cargo test --features desktop-tray --target ${{ matrix.target }} tray::
+
       - name: Release build
+        if: runner.os != 'Windows'
         run: cargo build --release --target ${{ matrix.target }}
 
-      # macOS ships a YtmTui.app bundle (icon + Info.plist) next to the bare binary; Linux and
-      # Windows ship the bare binary in a tar.gz / zip.
+      - name: Smoke Unix daemon
+        if: runner.os != 'Windows'
+        run: scripts/unix-daemon-smoke.sh --target "${{ matrix.target }}" --profile release
+
+      - name: Release build (Windows + tray)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --release --features desktop-tray --target ${{ matrix.target }} --bin ytt --bin ytt-tray
+
+      - name: Verify Windows subsystem split
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          function Get-PeSubsystem($Path) {
+            $bytes = [System.IO.File]::ReadAllBytes($Path)
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            $optionalHeaderOffset = $peOffset + 24
+            return [BitConverter]::ToUInt16($bytes, $optionalHeaderOffset + 68)
+          }
+
+          $ytt = Get-PeSubsystem "target/${{ matrix.target }}/release/ytt.exe"
+          $tray = Get-PeSubsystem "target/${{ matrix.target }}/release/ytt-tray.exe"
+
+          if ($ytt -ne 3) {
+            throw "ytt.exe should use the Windows console subsystem, found $ytt"
+          }
+          if ($tray -ne 2) {
+            throw "ytt-tray.exe should use the Windows GUI subsystem, found $tray"
+          }
+
+      - name: Validate Windows PowerShell scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($script in @(
+            "scripts/windows-daemon-smoke.ps1",
+            "scripts/windows-tray-process-smoke.ps1",
+            "scripts/windows-tray-manual-qa.ps1",
+            "scripts/verify-windows-tray-manual-qa.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "PowerShell parser found errors in $script"
+            }
+          }
+
+      - name: Self-test Windows manual QA verifier
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP "windows-tray-manual-qa-verifier-self-test"
+          Remove-Item -LiteralPath $evidence -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+
+          function Write-Evidence {
+            param(
+              [string]$Name,
+              [string]$Text = ""
+            )
+            Set-Content -LiteralPath (Join-Path $evidence $Name) -Value $Text -Encoding UTF8
+          }
+
+          $trueFields = @(
+            "startup_roundtrip",
+            "no_console_window",
+            "notification_icon_visible",
+            "right_click_menu_opens",
+            "open_tui_launches_terminal",
+            "shortcut_icon_correct",
+            "explorer_restart_recovered_icon",
+            "idle_daemon_has_no_mpv_child",
+            "resume_started_music_without_terminal",
+            "tray_status_updates",
+            "playback_menu_controls_work",
+            "stop_daemon_reaped_mpv",
+            "quit_player_keeps_tray",
+            "quit_tray_exits_only_tray",
+            "tray_scale_100_crisp",
+            "tray_scale_150_crisp",
+            "tray_scale_200_crisp"
+          )
+          $results = [ordered]@{
+            ytt_subsystem = 3
+            ytt_tray_subsystem = 2
+            display_scaling_values = "100,150,200"
+          }
+          foreach ($field in $trueFields) {
+            $results[$field] = $true
+          }
+          $results | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence "results.json") -Encoding UTF8
+
+          $emptyFiles = @(
+            "transcript.txt",
+            "tray-process-before.txt",
+            "ytt-process-before.txt",
+            "mpv-process-before.txt",
+            "ytt-version.txt",
+            "ytt-tray-version.txt",
+            "startup-status-before.txt",
+            "startup-uninstall-before.txt",
+            "startup-install.txt",
+            "startup-uninstall-after.txt",
+            "tray-visual-check.png",
+            "tray-scale-100.png",
+            "tray-scale-150.png",
+            "tray-scale-200.png",
+            "tray-after-explorer-restart.png",
+            "daemon-status-before.txt",
+            "ytt-process-before-daemon.txt",
+            "mpv-process-before-daemon.txt",
+            "mpv-after-idle-daemon.txt",
+            "mpv-after-stop-daemon.txt",
+            "tray-process-after-quit-tray.txt",
+            "ytm-tui.log",
+            "daemon.log"
+          )
+          foreach ($name in $emptyFiles) {
+            Write-Evidence -Name $name
+          }
+
+          Write-Evidence -Name "startup-registry-installed.txt" -Text '"C:\fake\ytt-tray.exe" --background'
+          Write-Evidence -Name "startup-status-installed.txt" -Text 'enabled: "C:\fake\ytt-tray.exe" --background'
+          Write-Evidence -Name "startup-status-after-uninstall.txt" -Text "disabled"
+          Write-Evidence -Name "open-tui-plan.txt" -Text "wt.exe C:\fake\ytt.exe"
+
+          $trayProcess = @"
+          Id : 1234
+          ProcessName : ytt-tray
+          WorkingSet64 : 1048576
+          PrivateMemorySize64 : 2097152
+          "@
+          Write-Evidence -Name "tray-process-start.txt" -Text $trayProcess
+          Write-Evidence -Name "tray-process-idle.txt" -Text $trayProcess
+          Write-Evidence -Name "tray-process-after-quit-player.txt" -Text $trayProcess
+          Write-Evidence -Name "mpv-after-resume-daemon.txt" -Text "Id : 4321"
+
+          @{ ok = $true; status = @{ owner_mode = "daemon"; paused = $true; total = 0; title = $null } } |
+            ConvertTo-Json -Depth 6 |
+            Set-Content -LiteralPath (Join-Path $evidence "daemon-status-idle.txt") -Encoding UTF8
+          @{ ok = $true; status = @{ owner_mode = "daemon"; paused = $false; total = 2; title = "Windows Smoke One" } } |
+            ConvertTo-Json -Depth 6 |
+            Set-Content -LiteralPath (Join-Path $evidence "daemon-status-resumed.txt") -Encoding UTF8
+          @{ ok = $false; status = @{ owner_mode = "standalone" } } |
+            ConvertTo-Json -Depth 6 |
+            Set-Content -LiteralPath (Join-Path $evidence "daemon-status-after-stop.txt") -Encoding UTF8
+
+          ./scripts/verify-windows-tray-manual-qa.ps1 -EvidenceDir $evidence
+
+      - name: Report Windows release binary sizes
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($name in @("ytt.exe", "ytt-tray.exe")) {
+            $path = "target/${{ matrix.target }}/release/$name"
+            $size = (Get-Item -LiteralPath $path).Length
+            "{0}: {1:N0} bytes" -f $name, $size
+          }
+
+      - name: Smoke Windows tray process
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows-tray-process-smoke.ps1 -Target "${{ matrix.target }}" -Profile release
+
+      - name: Install Windows smoke dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install mpv -y --no-progress
+
+      - name: Smoke Windows daemon and tray CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows-daemon-smoke.ps1 -Target "${{ matrix.target }}" -Profile release -AllowProfileMove
+
+      # macOS ships a YtmTui.app bundle (icon + Info.plist) next to the bare binary; Linux ships
+      # the bare binary; Windows ships ytt.exe plus the optional notification-area helper.
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -136,8 +331,38 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.bin }}" `
+          Compress-Archive -Path `
+            "target/${{ matrix.target }}/release/ytt.exe", `
+            "target/${{ matrix.target }}/release/ytt-tray.exe" `
             -DestinationPath "${{ matrix.archive }}"
+
+      - name: Verify Windows package contents
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "ytm-tui-windows-package"
+          Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+          Expand-Archive -Path "${{ matrix.archive }}" -DestinationPath $stage
+
+          foreach ($name in @("ytt.exe", "ytt-tray.exe")) {
+            $path = Join-Path $stage $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Windows archive is missing $name"
+            }
+          }
+
+          $manifest = Get-Content packaging/scoop/ytm-tui.json.tmpl -Raw | ConvertFrom-Json
+          foreach ($name in @("ytt.exe", "ytt-tray.exe")) {
+            if ($manifest.bin -notcontains $name) {
+              throw "Scoop manifest does not expose $name in bin"
+            }
+          }
+          $shortcut = @($manifest.shortcuts) | Where-Object {
+            $_[0] -eq "ytt-tray.exe" -and $_[1] -eq "YtmTui Tray"
+          }
+          if (-not $shortcut) {
+            throw "Scoop manifest is missing the YtmTui Tray shortcut"
+          }
 
       # One SHA-256 sidecar per archive in `sha256sum`/`shasum` format (`<hash>  <file>`). bash
       # runs on all three runners (Git Bash on Windows); sha256sum ships on Linux and

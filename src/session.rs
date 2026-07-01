@@ -1,13 +1,14 @@
-//! Small last-session cache: UI mode that should be restored on the next launch.
+//! Small last-session cache: UI mode and queue snapshots restored on the next launch.
 //!
-//! Track/station history already lives in the library. This cache deliberately stores only
-//! the bit that is not library data: whether the user last closed the app in normal mode
-//! or dedicated Radio mode.
+//! Track/station history still lives in the library. This cache stores the session-shaped
+//! state that history cannot reconstruct: the active mode plus the queue order/cursor for
+//! normal and dedicated Radio mode. Older cache files that only contain `last_mode` still load.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::queue::QueueSnapshot;
 use crate::util::safe_fs;
 
 const SESSION_CACHE_FILE: &str = "session.json";
@@ -20,16 +21,20 @@ pub enum LastMode {
     Radio,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionCache {
     pub last_mode: LastMode,
+    pub normal_queue: Option<QueueSnapshot>,
+    pub radio_queue: Option<QueueSnapshot>,
 }
 
 impl Default for SessionCache {
     fn default() -> Self {
         Self {
             last_mode: LastMode::Normal,
+            normal_queue: None,
+            radio_queue: None,
         }
     }
 }
@@ -42,11 +47,20 @@ impl SessionCache {
             } else {
                 LastMode::Normal
             },
+            ..Self::default()
         }
     }
 
     pub fn was_radio_mode(&self) -> bool {
         self.last_mode == LastMode::Radio
+    }
+
+    pub fn active_queue(&self) -> Option<&QueueSnapshot> {
+        match self.last_mode {
+            LastMode::Normal => self.normal_queue.as_ref(),
+            LastMode::Radio => self.radio_queue.as_ref(),
+        }
+        .filter(|snapshot| !snapshot.is_empty())
     }
 
     pub fn load() -> Self {

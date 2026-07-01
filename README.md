@@ -28,6 +28,9 @@ curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | 
 ```
 
 > The `curl | bash` and from-source paths install **only** `ytt`. Install the helpers yourself (`brew install mpv yt-dlp ffmpeg`, `sudo apt install mpv yt-dlp ffmpeg`, `sudo pacman -S mpv yt-dlp ffmpeg`) — or just run `ytt doctor` afterward to see what's missing.
+> On Windows, Scoop also installs `ytt-tray.exe` and a **YtmTui Tray** shortcut. It lives in the notification area; a terminal-hosted `ytt` session still belongs to Windows Terminal's taskbar button.
+> Windows tray startup is opt-in: run `ytt-tray --install-startup` to enable it and `ytt-tray --uninstall-startup` to remove it.
+> Background playback: `ytt daemon start --resume` starts the headless music daemon from your saved queue; control it with `ytt -r status`, `ytt -r pp`, `ytt -r next`, `ytt -r play "lofi"`, and `ytt daemon stop`.
 
 ---
 
@@ -51,7 +54,7 @@ That's it. Music.
 
 - **DJ Gem streaming** — press **`Ctrl+R`** and it builds an endless station around what you're hearing. Three moods: Focused, Balanced, Discovery. Press **`w`** to see, in plain language, why it picked each song.
 - **Real album art** — actual cover images drawn right in the Player, on terminals that support them. Time-synced lyrics scroll underneath (**`Shift+L`**).
-- **Remote control** — drive it from another terminal or your media keys: `ytt -r pp`, `ytt -r next`, `ytt -r status`.
+- **Remote control + daemon mode** — drive a running TUI or the headless daemon from another terminal: `ytt -r pp`, `ytt -r next`, `ytt -r status`, `ytt -r play "city pop"`.
 - **Search · Library · Queue** — **`s`** to search, **`l`** for your library (favorites, history, downloads), **`c`** for the queue.
 - **Yours to tweak** — 11 themes, every color editable in hex, every key rebindable, a 10-band EQ, and animations from a calm still screen to a spinning ASCII donut.
 - **DJ Gem assistant** *(optional)* — press **`g`** and ask in plain words: *"play some lo-fi", "queue three upbeat songs"*. Needs a free Google Gemini key; everything else works without it.
@@ -98,6 +101,8 @@ Once `ytt` is playing, control it from another terminal — or your media keys �
 ytt -r pp          # play / pause
 ytt -r next        # next song
 ytt -r streaming on    # turn streaming on
+ytt -r play "lofi"      # daemon: search and play the first result
+ytt -r enqueue "city pop"  # daemon: search and add the first result
 ytt -r status      # one-line "now playing"
 ytt -r quit        # stop and close
 ```
@@ -109,7 +114,17 @@ bindsym XF86AudioPlay exec ytt -r pp
 bindsym XF86AudioNext exec ytt -r next
 ```
 
-Launching `ytt` twice won't start a second player fighting over your speakers — it just reminds you how to reach the one you've got. (`ytt --new-instance` if you really want two.) Run `ytt -r --help` for the full command list.
+For terminal-free playback, start the daemon:
+
+```sh
+ytt daemon start --resume   # restore the saved queue/session and play it
+ytt daemon status --json    # owner/status snapshot for scripts
+ytt daemon stop             # stop the daemon and reap mpv
+```
+
+Daemon resume restores the saved queue order, cursor, shuffle/repeat, and normal/radio mode queues. Autoplay streaming keeps working headlessly and tops up the queue through the same recommendation path as the TUI. `ytt -r play …` and `ytt -r enqueue …` are daemon search commands; a standalone TUI owner rejects them with `daemon_required`.
+
+Launching `ytt` twice won't start a second player fighting over your speakers — it just reminds you how to reach the one you've got. (`ytt --new-instance` if you really want two.) Run `ytt -r --help` and `ytt daemon --help` for the full command list.
 
 ---
 

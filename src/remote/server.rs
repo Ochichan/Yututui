@@ -23,7 +23,9 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use super::endpoint;
-use super::proto::{InstanceFile, PROTOCOL_VERSION, RemoteCommand, RemoteRequest, RemoteResponse};
+use super::proto::{
+    InstanceFile, InstanceMode, PROTOCOL_VERSION, RemoteCommand, RemoteRequest, RemoteResponse,
+};
 
 /// How long the single-instance probe waits for the existing server to answer a connect.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -61,9 +63,17 @@ pub struct RemoteServer {
     /// Whether this server publishes the *shared* instance descriptor. A `--new-instance`
     /// secondary binds a private socket and never advertises itself to `ytt -r`.
     owns_instance_file: bool,
+    mode: InstanceMode,
+    capabilities: Vec<String>,
 }
 
 impl RemoteServer {
+    pub fn with_instance_metadata(mut self, mode: InstanceMode, capabilities: Vec<String>) -> Self {
+        self.mode = mode;
+        self.capabilities = capabilities;
+        self
+    }
+
     /// Spawn the accept loop, **then** publish the instance descriptor, and return the cleanup
     /// guard. Publishing only after the accept loop exists — and only when the caller is about
     /// to enter the reducer loop — closes the startup race where the descriptor advertised an
@@ -85,6 +95,9 @@ impl RemoteServer {
                 endpoint: self.endpoint.clone(),
                 token: self.token.to_string(),
                 created_unix: now_unix(),
+                mode: self.mode,
+                protocol_version: PROTOCOL_VERSION,
+                capabilities: self.capabilities.clone(),
             })
         {
             // The socket is up but we couldn't advertise where/how to reach it. Clients won't
@@ -170,6 +183,8 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
                 token: Arc::from(""),
                 endpoint: ep,
                 owns_instance_file: false,
+                mode: InstanceMode::StandaloneTui,
+                capabilities: default_capabilities(),
             })),
             Err(e) => {
                 tracing::warn!(error = %e, "remote: secondary instance could not bind; no remote control");
@@ -237,7 +252,13 @@ pub async fn bind_or_detect(new_instance: bool) -> BindOutcome {
         token: Arc::from(token.as_str()),
         endpoint: ep,
         owns_instance_file: true,
+        mode: InstanceMode::StandaloneTui,
+        capabilities: default_capabilities(),
     }))
+}
+
+fn default_capabilities() -> Vec<String> {
+    vec!["remote-control".to_string(), "status".to_string()]
 }
 
 fn now_unix() -> u64 {

@@ -105,6 +105,7 @@ mod tests {
             position: 1,
             total: 1,
             streaming: false,
+            owner_mode: crate::remote::proto::InstanceMode::StandaloneTui,
         });
         assert_eq!(next_delay(config, &update), Duration::from_millis(10));
     }

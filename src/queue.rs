@@ -58,14 +58,35 @@ pub struct Queue {
 
 /// A point-in-time copy of the queue's playable state.
 ///
-/// Fields stay private so only `Queue` can create valid snapshots, but `App` can store one
-/// while switching between normal and dedicated Radio modes.
+/// `SessionCache` persists this so a later TUI or daemon can resume the actual queue, not just
+/// the most recent history item. Fields are crate-visible for that persistence boundary; restore
+/// still goes through [`Queue::restore_snapshot`], which validates the order/cursor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct QueueSnapshot {
-    songs: Vec<Song>,
-    order: Vec<usize>,
-    cursor: usize,
-    shuffle: bool,
-    repeat: Repeat,
+    pub(crate) songs: Vec<Song>,
+    pub(crate) order: Vec<usize>,
+    pub(crate) cursor: usize,
+    pub(crate) shuffle: bool,
+    pub(crate) repeat: Repeat,
+}
+
+impl Default for QueueSnapshot {
+    fn default() -> Self {
+        Self {
+            songs: Vec::new(),
+            order: Vec::new(),
+            cursor: 0,
+            shuffle: false,
+            repeat: Repeat::Off,
+        }
+    }
+}
+
+impl QueueSnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.songs.is_empty()
+    }
 }
 
 impl Default for Queue {

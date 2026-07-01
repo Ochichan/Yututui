@@ -9,7 +9,16 @@
             "hash": "__SHA_WINDOWS_X64__"
         }
     },
-    "bin": "ytt.exe",
+    "bin": [
+        "ytt.exe",
+        "ytt-tray.exe"
+    ],
+    "shortcuts": [
+        [
+            "ytt-tray.exe",
+            "YtmTui Tray"
+        ]
+    ],
     "depends": [
         "extras/mpv",
         "main/yt-dlp",

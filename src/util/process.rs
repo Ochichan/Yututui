@@ -11,6 +11,8 @@ use tokio::process::Command as TokioCommand;
 pub enum ProcessProfile {
     /// mpv/yt-dlp media playback and stream resolution.
     Media,
+    /// The background `ytt daemon serve` process.
+    Daemon,
     /// Networked yt-dlp commands.
     YtDlp,
     /// OS browser opener (`open`, `xdg-open`, `cmd /C start`).
@@ -113,6 +115,9 @@ fn should_inherit(key: &str, profile: ProcessProfile) -> bool {
         "PATH"
             | "PATHEXT"
             | "HOME"
+            | "USER"
+            | "USERNAME"
+            | "LOGNAME"
             | "USERPROFILE"
             | "LOCALAPPDATA"
             | "APPDATA"
@@ -131,18 +136,28 @@ fn should_inherit(key: &str, profile: ProcessProfile) -> bool {
         return true;
     }
 
-    if matches!(profile, ProcessProfile::Media | ProcessProfile::YtDlp)
-        && matches!(
-            upper.as_str(),
-            "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" | "NO_PROXY"
-        )
+    if matches!(
+        profile,
+        ProcessProfile::Media | ProcessProfile::Daemon | ProcessProfile::YtDlp
+    ) && matches!(
+        upper.as_str(),
+        "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" | "NO_PROXY"
+    ) {
+        return true;
+    }
+
+    if matches!(profile, ProcessProfile::Daemon)
+        && matches!(upper.as_str(), "RUST_LOG" | "YTM_MPV_EXTRA")
     {
         return true;
     }
 
     if matches!(
         profile,
-        ProcessProfile::Media | ProcessProfile::DesktopOpen | ProcessProfile::Clipboard
+        ProcessProfile::Media
+            | ProcessProfile::Daemon
+            | ProcessProfile::DesktopOpen
+            | ProcessProfile::Clipboard
     ) && matches!(
         upper.as_str(),
         "DISPLAY"
@@ -197,11 +212,12 @@ mod tests {
     fn required_runtime_keys_are_inherited() {
         assert!(should_inherit("PATH", ProcessProfile::YtDlp));
         assert!(should_inherit("HOME", ProcessProfile::Media));
-        assert!(should_inherit(
-            "XDG_RUNTIME_DIR",
-            ProcessProfile::DesktopOpen
-        ));
+        assert!(should_inherit("USER", ProcessProfile::DesktopOpen));
+        assert!(should_inherit("USERNAME", ProcessProfile::DesktopOpen));
+        assert!(should_inherit("XDG_RUNTIME_DIR", ProcessProfile::Daemon));
         assert!(should_inherit("HTTPS_PROXY", ProcessProfile::YtDlp));
+        assert!(should_inherit("YTM_MPV_EXTRA", ProcessProfile::Daemon));
+        assert!(should_inherit("RUST_LOG", ProcessProfile::Daemon));
         assert!(!should_inherit("HTTPS_PROXY", ProcessProfile::Clipboard));
     }
 }

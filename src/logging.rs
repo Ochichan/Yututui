@@ -8,10 +8,14 @@ use std::path::Path;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
-/// Initialise the global tracing subscriber, writing `ytm-tui.log` into `dir`.
-/// Level is controlled by `RUST_LOG` (defaults to `info`). Returns the flush guard.
 pub fn init(dir: &Path) -> Option<WorkerGuard> {
-    let appender = tracing_appender::rolling::never(dir, "ytm-tui.log");
+    init_named(dir, "ytm-tui.log")
+}
+
+/// Initialise the global tracing subscriber, writing `file_name` into `dir`.
+/// Level is controlled by `RUST_LOG` (defaults to `info`). Returns the flush guard.
+pub fn init_named(dir: &Path, file_name: &str) -> Option<WorkerGuard> {
+    let appender = tracing_appender::rolling::never(dir, file_name);
     let (writer, guard) = tracing_appender::non_blocking(appender);
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));

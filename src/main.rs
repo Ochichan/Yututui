@@ -3,6 +3,7 @@ mod api;
 mod app;
 mod artwork;
 mod config;
+mod daemon;
 mod deps;
 mod doctor;
 mod download;
@@ -60,6 +61,7 @@ fn main() -> Result<()> {
                 println!();
                 println!("Usage: ytt [OPTIONS]");
                 println!("       ytt -r <command>     Control a running instance");
+                println!("       ytt daemon <command> Manage the headless music daemon");
                 println!("       ytt doctor           Check your environment and exit");
                 println!();
                 println!("Launch the terminal YouTube Music player.");
@@ -81,6 +83,11 @@ fn main() -> Result<()> {
             "-r" | "--remote" => {
                 let rest: Vec<String> = std::env::args().skip(2).collect();
                 std::process::exit(remote::client::run(&rest));
+            }
+            // Headless daemon entrypoints must run before any TUI/terminal setup.
+            "daemon" => {
+                let rest: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(daemon::run_cli(&rest));
             }
             "--new-instance" => new_instance = true,
             // One-shot environment diagnostic; never touches the terminal. Exits with its
@@ -559,7 +566,7 @@ async fn run(
     app.romanization.cache = romanize::RomanizeCache::load();
     // Push persisted playback/EQ settings (preset, bands, normalize, speed, autoplay).
     app.apply_config(&cfg);
-    app.restore_last_session_from_library(session_cache.was_radio_mode());
+    app.restore_last_session_from_cache(&session_cache);
     startup.mark("app_state_loaded");
 
     let mut perf = PerfStats::from_env();
@@ -783,7 +790,7 @@ async fn run(
     // cleanup chokepoint: every quit path just sets `should_quit` and falls out of the loop here.
     app.close_video();
     // Belt-and-suspenders: persist the last UI mode + library/signals/downloads on a clean exit too.
-    let _ = session::SessionCache::from_radio_mode(app.radio_dedicated_mode).save();
+    let _ = app.session_cache_snapshot().save();
     let _ = app.library.save();
     let _ = app.signals.save();
     let _ = app.download_store.save();

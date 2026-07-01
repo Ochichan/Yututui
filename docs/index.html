@@ -957,7 +957,7 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
         <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop bucket add extras</code></div>
         <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket</code></div>
         <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop install ytm-tui</code></div>
-        <p class="cmd-note" data-i18n="inst.win.note">Uses Scoop (scoop.sh). Installs ytt plus mpv, yt-dlp and ffmpeg in one go.</p>
+        <p class="cmd-note" data-i18n="inst.win.note">Uses Scoop (scoop.sh). Installs ytt plus mpv, yt-dlp, ffmpeg, and a YtmTui Tray shortcut.</p>
       </div>
 
       <!-- Linux -->
@@ -1003,9 +1003,12 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
       <div class="remote-list">
         <div class="r"><code>ytt -r pp</code><span class="desc" data-i18n="rem.pp">Play / pause</span></div>
         <div class="r"><code>ytt -r next</code><span class="desc" data-i18n="rem.next">Skip to the next song</span></div>
+        <div class="r"><code>ytt daemon start --resume</code><span class="desc" data-i18n="rem.daemon">Start the headless music daemon</span></div>
+        <div class="r"><code>ytt -r play "lofi"</code><span class="desc" data-i18n="rem.play">Daemon: search and play</span></div>
+        <div class="r"><code>ytt -r enqueue "city pop"</code><span class="desc" data-i18n="rem.enqueue">Daemon: search and queue</span></div>
         <div class="r"><code>ytt -r streaming on</code><span class="desc" data-i18n="rem.streaming">Switch endless streaming on</span></div>
         <div class="r"><code>ytt -r status</code><span class="desc" data-i18n="rem.status">What's playing right now?</span></div>
-        <div class="r"><code>ytt -r quit</code><span class="desc" data-i18n="rem.quit">Stop the music and close ytt</span></div>
+        <div class="r"><code>ytt daemon stop</code><span class="desc" data-i18n="rem.stopdaemon">Stop the daemon and reap mpv</span></div>
       </div>
 
       <div class="remote-aside">
@@ -1018,7 +1021,7 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
           <div style="color:var(--foam)">bindsym XF86AudioPlay exec ytt -r pp</div>
           <div style="color:var(--foam)">bindsym XF86AudioNext exec ytt -r next</div>
         </div>
-        <p style="color:var(--subtle);font-size:.85rem" data-i18n-html="rem.single">And launching <code>ytt</code> twice won't start a second player fighting over your speakers — it just reminds you how to reach the one you've got.</p>
+        <p style="color:var(--subtle);font-size:.85rem" data-i18n-html="rem.single">Launching <code>ytt</code> twice won't start a second player. For terminal-free playback, the daemon restores your saved queue order, cursor, shuffle/repeat, and streaming state.</p>
       </div>
     </div>
   </div>
@@ -1124,7 +1127,7 @@ var KO = {
   "inst.h2": "플랫폼을 고르고, 한 줄 붙여넣기.",
   "inst.sub": "각 명령은 ytt와 보조 프로그램(mpv, yt-dlp, ffmpeg)까지 알아서 설치해 줍니다. 그다음 세 글자만 치면 음악이 나와요.",
   "inst.mac.note": "Homebrew가 mpv, yt-dlp, ffmpeg를 자동으로 함께 설치합니다. Homebrew가 없다면 brew.sh에서 먼저 설치하세요.",
-  "inst.win.note": "Scoop(scoop.sh)을 사용합니다. ytt와 mpv, yt-dlp, ffmpeg를 한 번에 설치해요.",
+  "inst.win.note": "Scoop(scoop.sh)을 사용합니다. ytt와 mpv, yt-dlp, ffmpeg, YtmTui Tray 바로 가기를 한 번에 설치해요.",
   "inst.lin.note": "curl 한 줄이 체크섬을 검증하고 ytt를 PATH에 추가합니다. ytt만 설치하므로, 이후 ytt doctor로 보조 프로그램을 점검하세요.",
   "inst.src.note": "먼저 저장소를 클론하세요. 빌드에 몇 분 걸립니다 — 커피 한 잔 하기 딱 좋죠.",
   "inst.then": "그다음 실행:",
@@ -1134,11 +1137,12 @@ var KO = {
   "rem.eyebrow": "원격 제어",
   "rem.h2": "하던 일을 멈추지 않고 조종하기",
   "rem.sub": "<code>ytt</code> 가 재생 중이면, 다른 터미널에서 — 또는 키보드의 미디어 키로 — 바로 조종할 수 있어요. 시킨 한 가지만 하고, 한 줄로 결과를 알려준 뒤, 비켜줍니다. 음악 화면은 깜빡이지도 않아요.",
-  "rem.pp": "재생 / 일시정지", "rem.next": "다음 곡으로", "rem.streaming": "무한 스트리밍 켜기",
-  "rem.status": "지금 뭐가 재생 중이지?", "rem.quit": "음악 멈추고 ytt 종료",
+  "rem.pp": "재생 / 일시정지", "rem.next": "다음 곡으로", "rem.daemon": "headless 음악 데몬 시작",
+  "rem.play": "데몬: 검색 후 재생", "rem.enqueue": "데몬: 검색 후 큐에 추가",
+  "rem.streaming": "무한 스트리밍 켜기", "rem.status": "지금 뭐가 재생 중이지?", "rem.stopdaemon": "데몬 중지 및 mpv 정리",
   "rem.example": "ytt -r status →",
   "rem.wire": "# 미디어 키에 연결 (i3 / sway)",
-  "rem.single": "그리고 <code>ytt</code> 를 두 번 실행해도 스피커를 두고 다투는 두 번째 플레이어가 생기지 않아요 — 이미 켜져 있는 쪽을 어떻게 부를지만 알려주죠.",
+  "rem.single": "<code>ytt</code> 를 두 번 실행해도 두 번째 플레이어가 생기지 않습니다. 터미널 없이 들을 때는 데몬이 저장된 큐 순서, 커서, 셔플/반복, 스트리밍 상태를 복원합니다.",
 
   "foot.h2": "분명 잠들었어야 할 사람이 만들었습니다.",
   "foot.p": "그 사람 컴퓨터에선 잘 돌아갑니다. 이제 여러분 컴퓨터에서도 그러길 바라요. 터미널 한구석에 자리를 얻는다면, 별 하나가 큰 힘이 됩니다.",
@@ -1212,7 +1216,7 @@ var JA = {
   "inst.h2": "プラットフォームを選んで、一行貼り付け。",
   "inst.sub": "各コマンドが ytt と補助ツール（mpv、yt-dlp、ffmpeg）まで自動で入れてくれます。あとは3文字打つだけで音楽が流れます。",
   "inst.mac.note": "Homebrew が mpv、yt-dlp、ffmpeg を自動で一緒に入れます。Homebrew がない場合は brew.sh で先に入れてください。",
-  "inst.win.note": "Scoop（scoop.sh）を使います。ytt と mpv、yt-dlp、ffmpeg を一度に入れます。",
+  "inst.win.note": "Scoop（scoop.sh）を使います。ytt と mpv、yt-dlp、ffmpeg、YtmTui Tray ショートカットを一度に入れます。",
   "inst.lin.note": "curl 一行がチェックサムを検証して ytt を PATH に追加します。ytt だけを入れるので、あとで ytt doctor で補助ツールを確認してください。",
   "inst.src.note": "先にリポジトリをクローンしてください。ビルドには数分かかります — コーヒーを淹れる口実にどうぞ。",
   "inst.then": "あとは実行:",
@@ -1222,11 +1226,12 @@ var JA = {
   "rem.eyebrow": "リモート操作",
   "rem.h2": "作業を止めずに操作する",
   "rem.sub": "<code>ytt</code> が再生中なら、別のターミナルから — あるいはキーボードのメディアキーで — そのまま操作できます。頼んだ一つだけをこなして、一行で結果を伝え、すっと退きます。音楽画面はちらつきもしません。",
-  "rem.pp": "再生 / 一時停止", "rem.next": "次の曲へ", "rem.streaming": "無限ストリーミングをオン",
-  "rem.status": "今、何が再生中？", "rem.quit": "音楽を止めて ytt を終了",
+  "rem.pp": "再生 / 一時停止", "rem.next": "次の曲へ", "rem.daemon": "headless 音楽デーモンを開始",
+  "rem.play": "デーモン: 検索して再生", "rem.enqueue": "デーモン: 検索してキューへ",
+  "rem.streaming": "無限ストリーミングをオン", "rem.status": "今、何が再生中？", "rem.stopdaemon": "デーモン停止と mpv の後始末",
   "rem.example": "ytt -r status →",
   "rem.wire": "# メディアキーに割り当て (i3 / sway)",
-  "rem.single": "そして <code>ytt</code> を二度起動しても、スピーカーを取り合う二つ目のプレイヤーは生まれません — すでに動いている方への呼びかけ方を教えてくれるだけです。",
+  "rem.single": "<code>ytt</code> を二度起動しても二つ目のプレイヤーは生まれません。ターミナルなしで聴くときは、デーモンが保存済みのキュー順、カーソル、シャッフル/リピート、ストリーミング状態を復元します。",
 
   "foot.h2": "本当は寝ているべきだった一人が作りました。",
   "foot.p": "その人のマシンでは動きます。これで、願わくばあなたのマシンでも。ターミナルの片隅に居場所をもらえたら、スター一つが大きな励みになります。",

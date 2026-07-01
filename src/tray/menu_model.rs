@@ -1,6 +1,6 @@
 //! OS-neutral menu model for desktop companion backends.
 
-use crate::remote::proto::{RemoteCommand, StatusSnapshot, ToggleState};
+use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot, ToggleState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayStateKind {
@@ -44,6 +44,9 @@ pub enum MenuAction {
     VolumeUp,
     VolumeDown,
     ToggleStreaming,
+    StartDaemon,
+    ResumeDaemon,
+    StopDaemon,
     OpenTui,
     Refresh,
     QuitPlayer,
@@ -64,7 +67,12 @@ impl MenuAction {
                 state: ToggleState::Toggle,
             }),
             MenuAction::QuitPlayer => Some(RemoteCommand::Quit),
-            MenuAction::OpenTui | MenuAction::Refresh | MenuAction::QuitTray => None,
+            MenuAction::StartDaemon
+            | MenuAction::ResumeDaemon
+            | MenuAction::StopDaemon
+            | MenuAction::OpenTui
+            | MenuAction::Refresh
+            | MenuAction::QuitTray => None,
         }
     }
 }
@@ -127,7 +135,10 @@ pub fn build_menu(state: &TrayState) -> MenuModel {
     let entries = vec![
         item("YtmTui", false, None),
         item(track_label(state), false, None),
-        item(state_label(kind), false, None),
+        item(state_label(state), false, None),
+        MenuEntry::Separator,
+        daemon_action_item(state, 0),
+        daemon_action_item(state, 1),
         MenuEntry::Separator,
         item("Play / Pause", has_track, Some(MenuAction::PlayPause)),
         item("Next", has_track, Some(MenuAction::Next)),
@@ -181,12 +192,37 @@ fn track_label(state: &TrayState) -> String {
     }
 }
 
-fn state_label(kind: TrayStateKind) -> &'static str {
-    match kind {
-        TrayStateKind::ConnectedPlaying => "Playing",
-        TrayStateKind::ConnectedPaused => "Paused",
-        TrayStateKind::ConnectedIdle => "Idle",
-        TrayStateKind::Disconnected => "Disconnected",
+fn daemon_action_item(state: &TrayState, index: usize) -> MenuEntry {
+    let daemon_owner = state
+        .status()
+        .is_some_and(|status| status.owner_mode == InstanceMode::Daemon);
+    let disconnected = matches!(state, TrayState::Disconnected);
+    match (daemon_owner, disconnected, index) {
+        (true, _, 0) => item("Stop Music Daemon", true, Some(MenuAction::StopDaemon)),
+        (true, _, _) => item("Resume Last Session", false, Some(MenuAction::ResumeDaemon)),
+        (false, true, 0) => item("Start Music Daemon", true, Some(MenuAction::StartDaemon)),
+        (false, true, _) => item("Resume Last Session", true, Some(MenuAction::ResumeDaemon)),
+        (false, false, 0) => item("Start Music Daemon", false, Some(MenuAction::StartDaemon)),
+        (false, false, _) => item("Resume Last Session", false, Some(MenuAction::ResumeDaemon)),
+    }
+}
+
+fn state_label(state: &TrayState) -> String {
+    match state {
+        TrayState::Disconnected => "Disconnected".to_string(),
+        TrayState::Connected(status) => {
+            let owner = match status.owner_mode {
+                InstanceMode::StandaloneTui => "Standalone TUI",
+                InstanceMode::Daemon => "Daemon",
+            };
+            let state = match state.kind() {
+                TrayStateKind::ConnectedPlaying => "Playing",
+                TrayStateKind::ConnectedPaused => "Paused",
+                TrayStateKind::ConnectedIdle => "Idle",
+                TrayStateKind::Disconnected => "Disconnected",
+            };
+            format!("{owner}: {state}")
+        }
     }
 }
 
@@ -205,7 +241,6 @@ fn streaming_label(state: &TrayState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn playing_status() -> StatusSnapshot {
         StatusSnapshot {
             title: Some("Song".to_string()),
@@ -215,6 +250,7 @@ mod tests {
             position: 1,
             total: 3,
             streaming: true,
+            owner_mode: InstanceMode::StandaloneTui,
         }
     }
 
@@ -241,6 +277,8 @@ mod tests {
         assert_eq!(model.primary_action, MenuAction::OpenTui);
         assert!(!model.action_item(MenuAction::PlayPause).unwrap().enabled);
         assert!(!model.action_item(MenuAction::QuitPlayer).unwrap().enabled);
+        assert!(model.action_item(MenuAction::StartDaemon).unwrap().enabled);
+        assert!(model.action_item(MenuAction::ResumeDaemon).unwrap().enabled);
         assert!(model.action_item(MenuAction::OpenTui).unwrap().enabled);
         assert!(model.action_item(MenuAction::QuitTray).unwrap().enabled);
     }
@@ -259,6 +297,31 @@ mod tests {
     }
 
     #[test]
+    fn daemon_connected_menu_identifies_daemon_owner() {
+        let mut status = playing_status();
+        status.owner_mode = InstanceMode::Daemon;
+        status.title = None;
+        status.artist = None;
+        status.total = 0;
+        let model = build_menu(&TrayState::Connected(status));
+        assert_eq!(model.state, TrayStateKind::ConnectedIdle);
+        assert!(
+            model.entries.iter().any(
+                |entry| matches!(entry, MenuEntry::Item(item) if item.label == "Daemon: Idle")
+            )
+        );
+        assert!(model.action_item(MenuAction::StopDaemon).unwrap().enabled);
+        assert!(!model.action_item(MenuAction::ResumeDaemon).unwrap().enabled);
+    }
+
+    #[test]
+    fn standalone_connected_menu_does_not_start_a_second_owner() {
+        let model = build_menu(&TrayState::Connected(playing_status()));
+        assert!(!model.action_item(MenuAction::StartDaemon).unwrap().enabled);
+        assert!(!model.action_item(MenuAction::ResumeDaemon).unwrap().enabled);
+    }
+
+    #[test]
     fn actions_map_to_remote_commands() {
         assert_eq!(
             MenuAction::PlayPause.remote_command(),
@@ -272,6 +335,8 @@ mod tests {
             })
         );
         assert_eq!(MenuAction::OpenTui.remote_command(), None);
+        assert_eq!(MenuAction::StartDaemon.remote_command(), None);
+        assert_eq!(MenuAction::StopDaemon.remote_command(), None);
         assert_eq!(MenuAction::QuitTray.remote_command(), None);
     }
 }

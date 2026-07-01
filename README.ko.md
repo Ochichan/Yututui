@@ -28,6 +28,9 @@ curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | 
 ```
 
 > `curl | bash`와 소스 빌드 방식은 `ytt`만 설치합니다. 보조 프로그램은 직접 설치하거나(`brew install mpv yt-dlp ffmpeg`, `sudo apt install mpv yt-dlp ffmpeg`, `sudo pacman -S mpv yt-dlp ffmpeg`) — 설치 후 `ytt doctor`로 뭐가 빠졌는지 확인하세요.
+> Windows에서는 Scoop이 `ytt-tray.exe`와 **YtmTui Tray** 바로 가기도 설치합니다. 이건 알림 영역 도우미이며, 터미널에서 실행 중인 `ytt` 세션의 작업 표시줄 버튼은 여전히 Windows Terminal에 속합니다.
+> Windows tray 시작 프로그램 등록은 선택 사항입니다. 켜려면 `ytt-tray --install-startup`, 제거하려면 `ytt-tray --uninstall-startup`을 실행하세요.
+> 백그라운드 재생: `ytt daemon start --resume`으로 저장된 큐를 headless 음악 데몬에서 시작하고, `ytt -r status`, `ytt -r pp`, `ytt -r next`, `ytt -r play "lofi"`, `ytt daemon stop`으로 제어하세요.
 
 ---
 
@@ -51,7 +54,7 @@ ytt
 
 - **DJ Gem 스트리밍** — **`Ctrl+R`** 한 번이면 지금 듣는 곡을 중심으로 끝없이 이어지는 라디오가 시작됩니다. 분위기는 셋 중에서: Focused, Balanced, Discovery. **`w`** 를 누르면 각 곡을 고른 이유를 쉬운 말로 보여줍니다.
 - **진짜 앨범 아트** — 지원하는 터미널이라면 플레이어에 실제 커버 이미지를 그려줍니다. 그 아래로는 시간 동기화된 가사가 흐르죠(**`Shift+L`**).
-- **원격 제어** — 다른 터미널이나 미디어 키로 조종: `ytt -r pp`, `ytt -r next`, `ytt -r status`.
+- **원격 제어 + 데몬 모드** — 실행 중인 TUI나 headless 데몬을 다른 터미널에서 조종: `ytt -r pp`, `ytt -r next`, `ytt -r status`, `ytt -r play "city pop"`.
 - **검색 · 보관함 · 큐** — **`s`** 검색, **`l`** 보관함(즐겨찾기·기록·다운로드), **`c`** 큐.
 - **내 마음대로** — 테마 11종, 모든 색을 hex로 조정, 모든 키 재설정, 10밴드 EQ, 그리고 고요한 정지 화면부터 빙글빙글 도는 ASCII 도넛까지의 애니메이션.
 - **DJ Gem 어시스턴트** *(선택)* — **`g`** 를 누르고 말로 시키세요: *"로파이 좀 틀어줘", "신나는 곡 세 개 큐에 넣어줘"*. 무료 Google Gemini 키가 필요하며, 나머지 기능은 키 없이도 모두 동작합니다.
@@ -98,6 +101,8 @@ ytt
 ytt -r pp          # 재생 / 일시정지
 ytt -r next        # 다음 곡
 ytt -r streaming on    # 스트리밍 켜기
+ytt -r play "lofi"      # 데몬: 검색 후 첫 결과 재생
+ytt -r enqueue "city pop"  # 데몬: 검색 후 첫 결과 큐에 추가
 ytt -r status      # 한 줄 "지금 재생 중"
 ytt -r quit        # 멈추고 종료
 ```
@@ -109,7 +114,17 @@ bindsym XF86AudioPlay exec ytt -r pp
 bindsym XF86AudioNext exec ytt -r next
 ```
 
-`ytt` 를 두 번 실행해도 스피커를 두고 다투는 두 번째 플레이어가 생기지 않고, 이미 켜진 쪽을 어떻게 부를지만 알려줍니다. (정말 두 개를 원하면 `ytt --new-instance`.) 전체 명령은 `ytt -r --help`.
+터미널 없이 계속 재생하려면 데몬을 시작하세요:
+
+```sh
+ytt daemon start --resume   # 저장된 큐/세션 복원 후 재생
+ytt daemon status --json    # 스크립트용 owner/status 스냅샷
+ytt daemon stop             # 데몬 중지 및 mpv 정리
+```
+
+데몬 resume은 저장된 큐 순서, 커서, 셔플/반복, 일반/라디오 모드 큐를 복원합니다. 자동 스트리밍도 TUI와 같은 추천 경로로 headless에서 계속 큐를 채웁니다. `ytt -r play …`, `ytt -r enqueue …`는 데몬 검색 명령이며, standalone TUI 소유자는 `daemon_required`로 거절합니다.
+
+`ytt` 를 두 번 실행해도 스피커를 두고 다투는 두 번째 플레이어가 생기지 않고, 이미 켜진 쪽을 어떻게 부를지만 알려줍니다. (정말 두 개를 원하면 `ytt --new-instance`.) 전체 명령은 `ytt -r --help`와 `ytt daemon --help`.
 
 ---
 

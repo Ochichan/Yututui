@@ -25,7 +25,7 @@ fn user_tag() -> String {
 pub fn socket_endpoint() -> io::Result<String> {
     #[cfg(windows)]
     {
-        Ok(format!(r"\\.\pipe\ytm-tui-remote-{}", user_tag()))
+        Ok(windows_socket_endpoint(&user_tag()))
     }
     #[cfg(unix)]
     {
@@ -41,7 +41,7 @@ pub fn socket_endpoint() -> io::Result<String> {
 pub fn alt_socket_endpoint(pid: u32) -> io::Result<String> {
     #[cfg(windows)]
     {
-        Ok(format!(r"\\.\pipe\ytm-tui-remote-{}-{}", user_tag(), pid))
+        Ok(windows_alt_socket_endpoint(&user_tag(), pid))
     }
     #[cfg(unix)]
     {
@@ -60,7 +60,7 @@ pub fn instance_path() -> io::Result<PathBuf> {
 fn legacy_socket_endpoint() -> String {
     #[cfg(windows)]
     {
-        format!(r"\\.\pipe\ytm-tui-remote-{}", user_tag())
+        windows_socket_endpoint(&user_tag())
     }
     #[cfg(unix)]
     {
@@ -69,6 +69,16 @@ fn legacy_socket_endpoint() -> String {
             .to_string_lossy()
             .into_owned()
     }
+}
+
+#[cfg(any(windows, test))]
+fn windows_socket_endpoint(user_tag: &str) -> String {
+    format!(r"\\.\pipe\ytm-tui-remote-{user_tag}")
+}
+
+#[cfg(any(windows, test))]
+fn windows_alt_socket_endpoint(user_tag: &str, pid: u32) -> String {
+    format!(r"\\.\pipe\ytm-tui-remote-{user_tag}-{pid}")
 }
 
 fn legacy_instance_path() -> PathBuf {
@@ -153,6 +163,16 @@ mod tests {
                 alt.len()
             );
         }
+    }
+
+    #[test]
+    fn windows_endpoints_use_per_user_named_pipe_names() {
+        let primary = windows_socket_endpoint("User123");
+        let alt = windows_alt_socket_endpoint("User123", 42);
+
+        assert_eq!(primary, r"\\.\pipe\ytm-tui-remote-User123");
+        assert_eq!(alt, r"\\.\pipe\ytm-tui-remote-User123-42");
+        assert_ne!(primary, alt);
     }
 
     #[test]

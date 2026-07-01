@@ -160,6 +160,11 @@ fn materialize_plan(
 
 #[cfg(target_os = "windows")]
 fn platform_candidate_plans(ytt_path: &Path, _terminal_env: Option<&str>) -> Vec<LaunchPlan> {
+    windows_candidate_plans(ytt_path)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_candidate_plans(ytt_path: &Path) -> Vec<LaunchPlan> {
     let path = ytt_path.to_string_lossy().into_owned();
     vec![
         LaunchPlan::new("wt.exe", vec![path.clone()]),
@@ -244,12 +249,12 @@ fn write_macos_command_script(ytt_path: &Path) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn powershell_quote(input: &str) -> String {
     format!("'{}'", input.replace('\'', "''"))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn cmd_quote(input: &str) -> String {
     format!("\"{}\"", input.replace('"', "\"\""))
 }
@@ -286,14 +291,27 @@ mod tests {
         let _ = std::fs::remove_file(script);
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn windows_plans_prefer_windows_terminal() {
-        let plans = candidate_plans_for(Path::new(r"C:\Program Files\YtmTui\ytt.exe"), None);
+        let plans = windows_candidate_plans(Path::new(r"C:\Program Files\YtmTui\ytt.exe"));
         assert_eq!(plans[0].program, "wt.exe");
         assert_eq!(plans[1].program, "powershell.exe");
         assert_eq!(plans[2].program, "cmd.exe");
         assert!(plans[1].args[2].contains("C:\\Program Files\\YtmTui\\ytt.exe"));
+    }
+
+    #[test]
+    fn windows_fallbacks_quote_absolute_ytt_path() {
+        let plans = windows_candidate_plans(Path::new(r"C:\Users\Ochi Music\ytt.exe"));
+        assert_eq!(plans[0].args, vec![r"C:\Users\Ochi Music\ytt.exe"]);
+        assert_eq!(
+            plans[1].args,
+            vec!["-NoExit", "-Command", r"& 'C:\Users\Ochi Music\ytt.exe'"]
+        );
+        assert_eq!(
+            plans[2].args,
+            vec!["/K", r#""C:\Users\Ochi Music\ytt.exe""#]
+        );
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]

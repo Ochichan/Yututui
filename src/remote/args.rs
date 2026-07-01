@@ -31,6 +31,8 @@ Control a running ytt instance over its local control socket.
 Commands:
   next, n                 Skip to the next track
   prev, p                 Go to the previous track
+  play <query>            Search and play the first result (daemon)
+  enqueue <query>         Search and add the first result (daemon)
   play-pause, pp, toggle  Toggle play / pause
   up, vol-up              Volume up
   down, vol-down          Volume down
@@ -38,6 +40,7 @@ Commands:
   fwd, forward            Seek forward
   streaming [on|off|toggle]
                           Toggle (or set) autoplay streaming
+  resume-session          Load and play the saved session
   status, st              Print the current track / state
   quit                    Quit the running instance
 
@@ -76,6 +79,19 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
     let command = match verb {
         "next" | "n" => RemoteCommand::Next,
         "prev" | "p" | "previous" => RemoteCommand::Prev,
+        "play" if !rest.is_empty() => RemoteCommand::Play {
+            query: rest.join(" "),
+        },
+        "enqueue" | "queue" | "add" => {
+            if rest.is_empty() {
+                return Err(ParseError::Invalid(format!(
+                    "{verb}: expected a search query"
+                )));
+            }
+            RemoteCommand::Enqueue {
+                query: rest.join(" "),
+            }
+        }
         "play-pause" | "pp" | "toggle" | "play" | "pause" => RemoteCommand::TogglePause,
         "up" | "vol-up" | "volup" => RemoteCommand::VolumeUp,
         "down" | "vol-down" | "voldown" => RemoteCommand::VolumeDown,
@@ -95,6 +111,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
             };
             RemoteCommand::Streaming { state }
         }
+        "resume-session" | "load-session" => RemoteCommand::ResumeSession,
         "status" | "st" => RemoteCommand::Status,
         "quit" | "exit" => RemoteCommand::Quit,
         other => {
@@ -131,10 +148,24 @@ mod tests {
         assert_eq!(cmd(&["p"]), RemoteCommand::Prev);
         assert_eq!(cmd(&["pp"]), RemoteCommand::TogglePause);
         assert_eq!(cmd(&["toggle"]), RemoteCommand::TogglePause);
+        assert_eq!(
+            cmd(&["play", "new", "song"]),
+            RemoteCommand::Play {
+                query: "new song".to_string()
+            }
+        );
+        assert_eq!(
+            cmd(&["enqueue", "new", "song"]),
+            RemoteCommand::Enqueue {
+                query: "new song".to_string()
+            }
+        );
         assert_eq!(cmd(&["up"]), RemoteCommand::VolumeUp);
         assert_eq!(cmd(&["vol-down"]), RemoteCommand::VolumeDown);
         assert_eq!(cmd(&["back"]), RemoteCommand::SeekBack);
         assert_eq!(cmd(&["fwd"]), RemoteCommand::SeekForward);
+        assert_eq!(cmd(&["resume-session"]), RemoteCommand::ResumeSession);
+        assert_eq!(cmd(&["load-session"]), RemoteCommand::ResumeSession);
         assert_eq!(cmd(&["status"]), RemoteCommand::Status);
         assert_eq!(cmd(&["quit"]), RemoteCommand::Quit);
     }
@@ -174,6 +205,12 @@ mod tests {
     #[test]
     fn streaming_bad_state_is_invalid() {
         let owned = vec!["streaming".to_string(), "loud".to_string()];
+        assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
+    }
+
+    #[test]
+    fn enqueue_requires_query() {
+        let owned = vec!["enqueue".to_string()];
         assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
     }
 

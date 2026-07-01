@@ -25,7 +25,11 @@ scripts, and a combined `checksums.txt`), three jobs run:
   `depends_on` mpv, yt-dlp, **and ffmpeg**.
 - **`publish-scoop`** — fills the version + the Windows SHA into the manifest and pushes it
   to the bucket. `suggest` became **`depends`** (`extras/mpv`, `main/yt-dlp`, `main/ffmpeg`),
-  and `autoupdate.hash` reads `checksums.txt` so the ScoopInstaller bot can bump it too.
+  the Windows archive exposes both `ytt.exe` and `ytt-tray.exe`, and the manifest creates a
+  `YtmTui Tray` shortcut for the notification-area helper. CI expands the packaged zip and re-checks
+  both executables plus the Scoop `bin`/`shortcuts` shape. Tray login startup remains opt-in via
+  `ytt-tray --install-startup`. `autoupdate.hash` reads
+  `checksums.txt` so the ScoopInstaller bot can bump it too.
 - **`publish-aur`** — substitutes the version into the PKGBUILD and hands it to the
   deploy-aur action, which runs `updpkgsums` (fills the real checksums), regenerates
   `.SRCINFO`, and pushes to `ytm-tui-bin`.

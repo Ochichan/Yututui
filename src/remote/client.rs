@@ -22,6 +22,7 @@ use super::proto::{InstanceFile, PROTOCOL_VERSION, RemoteCommand, RemoteRequest,
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+const SEARCH_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_REPLY_BYTES: usize = 4096;
 
 const EXIT_OK: i32 = 0;
@@ -118,6 +119,7 @@ async fn send_to_instance(
         _ => return Err(ClientError::ConnectFailed),
     };
 
+    let reply_timeout = reply_timeout_for(&command);
     let req = RemoteRequest {
         version: PROTOCOL_VERSION,
         token: instance.token,
@@ -140,13 +142,20 @@ async fn send_to_instance(
     }
 
     let mut reader = BufReader::new(&conn);
-    let line = match timeout(REPLY_TIMEOUT, read_bounded_line(&mut reader)).await {
+    let line = match timeout(reply_timeout, read_bounded_line(&mut reader)).await {
         Ok(Ok(Some(line))) => line,
         Ok(Ok(None)) => return Err(ClientError::NoResponse),
         Ok(Err(_)) => return Err(ClientError::MalformedResponse),
         Err(_) => return Err(ClientError::NoResponse),
     };
     serde_json::from_str(line.trim()).map_err(|_| ClientError::MalformedResponse)
+}
+
+fn reply_timeout_for(command: &RemoteCommand) -> Duration {
+    match command {
+        RemoteCommand::Play { .. } | RemoteCommand::Enqueue { .. } => SEARCH_REPLY_TIMEOUT,
+        _ => REPLY_TIMEOUT,
+    }
 }
 
 async fn exchange_for_cli(parsed: Parsed) -> i32 {
@@ -184,6 +193,7 @@ async fn exchange_for_cli(parsed: Parsed) -> i32 {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::remote::proto::InstanceMode;
     use interprocess::local_socket::ListenerOptions;
     use interprocess::local_socket::tokio::Listener;
     use tokio::io::AsyncBufReadExt;
@@ -201,6 +211,9 @@ mod tests {
             endpoint,
             token: "secret".to_string(),
             created_unix: 1,
+            mode: InstanceMode::StandaloneTui,
+            protocol_version: PROTOCOL_VERSION,
+            capabilities: vec!["remote-control".to_string(), "status".to_string()],
         }
     }
 
@@ -241,6 +254,7 @@ mod tests {
             position: 1,
             total: 2,
             streaming: true,
+            owner_mode: InstanceMode::StandaloneTui,
         };
         let response = serde_json::to_string(&RemoteResponse::status(snapshot.clone())).unwrap();
         let server = tokio::spawn(serve_one_response(listener, response));
