@@ -63,4 +63,59 @@ PLIST
 
 printf 'APPL????' > "$stage_dir/YtmTui.app/Contents/PkgInfo"
 chmod +x "$stage_dir/YtmTui.app/Contents/MacOS/ytt"
-tar -czf "$out_dir/$archive" -C "$stage_dir" "$bin_name" YtmTui.app
+
+archive_items=("$bin_name" "YtmTui.app")
+
+if [[ -x "$release_dir/ytt-tray" ]]; then
+  mkdir -p "$stage_dir/YtmTuiTray.app/Contents/MacOS" \
+    "$stage_dir/YtmTuiTray.app/Contents/Resources"
+  cp "$release_dir/ytt-tray" "$stage_dir/ytt-tray"
+  cp "$release_dir/ytt-tray" "$stage_dir/YtmTuiTray.app/Contents/MacOS/ytt-tray"
+  # Keep `ytt` beside `ytt-tray` inside the helper bundle so the tray's "Open TUI"
+  # action can launch an absolute bundled path even when the archive root is moved.
+  cp "$release_dir/$bin_name" "$stage_dir/YtmTuiTray.app/Contents/MacOS/ytt"
+  cp assets/icons/ytm-tui.icns "$stage_dir/YtmTuiTray.app/Contents/Resources/ytm-tui.icns"
+
+  cat > "$stage_dir/YtmTuiTray.app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>YtmTui Tray</string>
+  <key>CFBundleExecutable</key>
+  <string>ytt-tray</string>
+  <key>CFBundleIconFile</key>
+  <string>ytm-tui</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.ochi.ytm-tui.tray</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>YtmTuiTray</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$version</string>
+  <key>CFBundleVersion</key>
+  <string>$version</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.music</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+
+  printf 'APPL????' > "$stage_dir/YtmTuiTray.app/Contents/PkgInfo"
+  chmod +x "$stage_dir/ytt-tray" \
+    "$stage_dir/YtmTuiTray.app/Contents/MacOS/ytt-tray" \
+    "$stage_dir/YtmTuiTray.app/Contents/MacOS/ytt"
+  archive_items+=("ytt-tray" "YtmTuiTray.app")
+fi
+
+tar -czf "$out_dir/$archive" -C "$stage_dir" "${archive_items[@]}"

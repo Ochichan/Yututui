@@ -18,7 +18,7 @@ use tokio::time::timeout;
 
 use super::args::{self, ParseError, Parsed};
 use super::endpoint;
-use super::proto::{PROTOCOL_VERSION, RemoteRequest, RemoteResponse};
+use super::proto::{InstanceFile, PROTOCOL_VERSION, RemoteCommand, RemoteRequest, RemoteResponse};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -27,6 +27,41 @@ const MAX_REPLY_BYTES: usize = 4096;
 const EXIT_OK: i32 = 0;
 const EXIT_TRANSPORT: i32 = 1;
 const EXIT_USAGE: i32 = 2;
+
+/// Transport-level failures from the local control socket. Semantic command rejection is
+/// represented by an `ok: false` [`RemoteResponse`], not by this error type.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ClientError {
+    NoRunningInstance,
+    MalformedEndpoint,
+    ConnectFailed,
+    EncodeFailed(String),
+    WriteFailed(String),
+    FlushFailed(String),
+    NoResponse,
+    MalformedResponse,
+}
+
+impl ClientError {
+    pub fn human_message(&self) -> String {
+        match self {
+            ClientError::NoRunningInstance => {
+                "no running ytt instance found — start one with `ytt`.".to_string()
+            }
+            ClientError::MalformedEndpoint => {
+                "malformed endpoint in the instance descriptor.".to_string()
+            }
+            ClientError::ConnectFailed => {
+                "could not reach ytt (it may have exited) — start one with `ytt`.".to_string()
+            }
+            ClientError::EncodeFailed(e) => format!("could not encode request: {e}"),
+            ClientError::WriteFailed(e) => format!("write failed: {e}"),
+            ClientError::FlushFailed(e) => format!("flush failed: {e}"),
+            ClientError::NoResponse => "no response from ytt.".to_string(),
+            ClientError::MalformedResponse => "malformed response from ytt.".to_string(),
+        }
+    }
+}
 
 /// Entry point from `main` for `ytt -r …`. Parses args, runs the exchange on a tiny
 /// current-thread runtime, and returns the process exit code. Never returns to the normal
@@ -54,81 +89,84 @@ pub fn run(args_in: &[String]) -> i32 {
             return EXIT_TRANSPORT;
         }
     };
-    rt.block_on(exchange(parsed))
+    rt.block_on(exchange_for_cli(parsed))
 }
 
-async fn exchange(parsed: Parsed) -> i32 {
+/// Send one semantic command to the running instance and return its raw response.
+///
+/// This is the reusable control path for both `ytt -r` and desktop companions. It never touches
+/// terminal state and never prints; callers decide how to render success, rejection, or transport
+/// failures.
+pub async fn send(command: RemoteCommand) -> Result<RemoteResponse, ClientError> {
     let Some(instance) = endpoint::read_instance() else {
-        eprintln!("ytt -r: no running ytt instance found — start one with `ytt`.");
-        return EXIT_TRANSPORT;
+        return Err(ClientError::NoRunningInstance);
     };
+    send_to_instance(instance, command).await
+}
+
+async fn send_to_instance(
+    instance: InstanceFile,
+    command: RemoteCommand,
+) -> Result<RemoteResponse, ClientError> {
     let Ok(name) = instance.endpoint.as_str().to_fs_name::<GenericFilePath>() else {
-        eprintln!("ytt -r: malformed endpoint in the instance descriptor.");
-        return EXIT_TRANSPORT;
+        return Err(ClientError::MalformedEndpoint);
     };
 
     let conn = match timeout(CONNECT_TIMEOUT, Stream::connect(name)).await {
         Ok(Ok(c)) => c,
         // Connect refused / timed out: the descriptor is stale or the instance just exited.
-        _ => {
-            eprintln!("ytt -r: could not reach ytt (it may have exited) — start one with `ytt`.");
-            return EXIT_TRANSPORT;
-        }
+        _ => return Err(ClientError::ConnectFailed),
     };
 
     let req = RemoteRequest {
         version: PROTOCOL_VERSION,
         token: instance.token,
-        command: parsed.command,
+        command,
     };
     let mut payload = match serde_json::to_vec(&req) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("ytt -r: could not encode request: {e}");
-            return EXIT_TRANSPORT;
-        }
+        Err(e) => return Err(ClientError::EncodeFailed(e.to_string())),
     };
     payload.push(b'\n');
 
     {
         let mut writer = &conn;
         if let Err(e) = writer.write_all(&payload).await {
-            eprintln!("ytt -r: write failed: {e}");
-            return EXIT_TRANSPORT;
+            return Err(ClientError::WriteFailed(e.to_string()));
         }
         if let Err(e) = writer.flush().await {
-            eprintln!("ytt -r: flush failed: {e}");
-            return EXIT_TRANSPORT;
+            return Err(ClientError::FlushFailed(e.to_string()));
         }
     }
 
     let mut reader = BufReader::new(&conn);
     let line = match timeout(REPLY_TIMEOUT, read_bounded_line(&mut reader)).await {
         Ok(Ok(Some(line))) => line,
-        Ok(Ok(None)) => {
-            eprintln!("ytt -r: no response from ytt.");
-            return EXIT_TRANSPORT;
-        }
-        Ok(Err(_)) => {
-            eprintln!("ytt -r: malformed response from ytt.");
-            return EXIT_TRANSPORT;
-        }
-        Err(_) => {
-            eprintln!("ytt -r: no response from ytt.");
-            return EXIT_TRANSPORT;
-        }
+        Ok(Ok(None)) => return Err(ClientError::NoResponse),
+        Ok(Err(_)) => return Err(ClientError::MalformedResponse),
+        Err(_) => return Err(ClientError::NoResponse),
     };
-    let resp: RemoteResponse = match serde_json::from_str(line.trim()) {
+    serde_json::from_str(line.trim()).map_err(|_| ClientError::MalformedResponse)
+}
+
+async fn exchange_for_cli(parsed: Parsed) -> i32 {
+    let resp = match send(parsed.command).await {
         Ok(r) => r,
-        Err(_) => {
-            eprintln!("ytt -r: malformed response from ytt.");
+        Err(e) => {
+            eprintln!("ytt -r: {}", e.human_message());
             return EXIT_TRANSPORT;
         }
     };
 
     if resp.ok {
         if parsed.json {
-            println!("{}", line.trim());
+            match serde_json::to_string(&resp) {
+                Ok(line) => println!("{line}"),
+                Err(e) => {
+                    eprintln!("ytt -r: could not encode response: {e}");
+                    return EXIT_TRANSPORT;
+                }
+            }
         } else if !parsed.quiet
             && let Some(msg) = &resp.message
         {
@@ -140,6 +178,113 @@ async fn exchange(parsed: Parsed) -> i32 {
         let reason = resp.reason.as_deref().unwrap_or("rejected");
         eprintln!("ytt -r: {reason}");
         EXIT_USAGE
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use interprocess::local_socket::ListenerOptions;
+    use interprocess::local_socket::tokio::Listener;
+    use tokio::io::AsyncBufReadExt;
+
+    fn test_endpoint(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("ytm-tui-client-{name}-{}.sock", std::process::id()))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn test_instance(endpoint: String) -> InstanceFile {
+        InstanceFile {
+            app_pid: std::process::id(),
+            endpoint,
+            token: "secret".to_string(),
+            created_unix: 1,
+        }
+    }
+
+    fn bind_test_listener(endpoint: &str) -> Listener {
+        let _ = std::fs::remove_file(endpoint);
+        let name = endpoint.to_fs_name::<GenericFilePath>().unwrap();
+        ListenerOptions::new()
+            .name(name)
+            .reclaim_name(false)
+            .create_tokio()
+            .unwrap()
+    }
+
+    async fn serve_one_response(listener: Listener, response_line: String) {
+        let conn = listener.accept().await.unwrap();
+        {
+            let mut reader = BufReader::new(&conn);
+            let mut request = String::new();
+            reader.read_line(&mut request).await.unwrap();
+            assert!(request.contains("\"version\""));
+            assert!(request.contains("\"secret\""));
+        }
+        let mut writer = &conn;
+        writer.write_all(response_line.as_bytes()).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_to_instance_round_trips_status_response() {
+        let endpoint = test_endpoint("status");
+        let listener = bind_test_listener(&endpoint);
+        let snapshot = crate::remote::proto::StatusSnapshot {
+            title: Some("Song".to_string()),
+            artist: Some("Artist".to_string()),
+            paused: false,
+            volume: 75,
+            position: 1,
+            total: 2,
+            streaming: true,
+        };
+        let response = serde_json::to_string(&RemoteResponse::status(snapshot.clone())).unwrap();
+        let server = tokio::spawn(serve_one_response(listener, response));
+
+        let resp = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::Status)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert!(resp.ok);
+        assert_eq!(resp.status, Some(snapshot));
+    }
+
+    #[tokio::test]
+    async fn send_to_instance_preserves_semantic_rejection_response() {
+        let endpoint = test_endpoint("rejected");
+        let listener = bind_test_listener(&endpoint);
+        let response = serde_json::to_string(&RemoteResponse::err("queue_empty")).unwrap();
+        let server = tokio::spawn(serve_one_response(listener, response));
+
+        let resp = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::Next)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("queue_empty"));
+    }
+
+    #[tokio::test]
+    async fn send_to_instance_rejects_malformed_response() {
+        let endpoint = test_endpoint("malformed");
+        let listener = bind_test_listener(&endpoint);
+        let server = tokio::spawn(serve_one_response(listener, "{not json}".to_string()));
+
+        let err = send_to_instance(test_instance(endpoint.clone()), RemoteCommand::Status)
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        let _ = std::fs::remove_file(endpoint);
+
+        assert_eq!(err, ClientError::MalformedResponse);
     }
 }
 
