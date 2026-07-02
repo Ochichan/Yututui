@@ -9,13 +9,11 @@ use crate::streaming::canonical;
 /// Where a candidate came from. Provenance is a ranking prior — the upstream YTM continuation
 /// is trusted most, a blind text search least.
 ///
-/// Only `YtdlpStreaming` is produced today; the authenticated/local sources are wired by the
-/// candidate-fetch stage (v3). The `provenance_weight` table already ranks them all, so the
-/// variants are intentionally defined ahead of their producers.
-#[allow(
-    dead_code,
-    reason = "ArtistTop/MoodPlaylist/HistoryCooc/LikedNeighbor not yet sourced"
-)]
+/// `YtdlpStreaming` comes from the anonymous search, `HistoryCooc`/`LikedNeighbor` from the
+/// local signals (see `streaming_reducer`). The two authenticated sources are defined ahead
+/// of their producers because the `provenance_weight` table and the per-source config
+/// weights already rank them.
+#[allow(dead_code, reason = "ArtistTop/MoodPlaylist not yet sourced")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CandidateSource {
     /// The upstream YTM continuation (`get_watch_playlist_from_video_id`). Strongest.
@@ -48,13 +46,10 @@ impl CandidateSource {
 
 /// Per-feature normalized scores retained from the scoring pass so the DJ Gem reranker can see
 /// the *evidence* behind a candidate (not just its collapsed `base_score`). Each field is in
-/// [0,1] (`music_tier`/`version_penalty` are the raw [0,1] signals; the rest are min-max
-/// normalized across the batch). Filled by [`super::score::filter_and_score`]; default-zero
-/// until then. Emitted as 0-100 integers in the compact candidate pack.
-#[allow(
-    dead_code,
-    reason = "read by the DJ Gem candidate pack builder in src/streaming/pack.rs (A2/A3)"
-)]
+/// [0,1] (`music_tier` is the raw [0,1] signal; the rest are min-max normalized across the
+/// batch). Filled by [`super::score::filter_and_score`]; default-zero until then. Emitted as
+/// 0-100 integers in the compact candidate pack (the version qualifier is re-derived from the
+/// title there, not carried here).
 #[derive(Debug, Clone, Default)]
 pub struct FeatureScores {
     pub cooc: f32,
@@ -63,7 +58,6 @@ pub struct FeatureScores {
     pub continuation: f32,
     pub completion: f32,
     pub music_tier: f32,
-    pub version_penalty: f32,
     /// How naturally this candidate follows the *immediately-preceding* (seed) track —
     /// distinct from `cooc`, which spans the whole recent window. Evidence-only: it does NOT
     /// feed `base_score`.
@@ -83,32 +77,11 @@ pub struct Candidate {
     /// Normalized `title+artist` key for dedup / similarity.
     pub canonical_key: String,
     pub album: Option<String>,
-    // Rich metadata only the authenticated sources provide; populated + read by the scoring
-    // pass in v3. Defined now so the candidate shape is stable across stages.
-    #[allow(
-        dead_code,
-        reason = "populated and scored once authenticated sources land (v3)"
-    )]
-    pub plays: Option<u64>,
-    #[allow(
-        dead_code,
-        reason = "populated and scored once authenticated sources land (v3)"
-    )]
-    pub explicit: Option<bool>,
-    #[allow(
-        dead_code,
-        reason = "populated and scored once authenticated sources land (v3)"
-    )]
-    pub mood_tag: Option<String>,
     pub duration_secs: Option<u32>,
     pub base_score: f32,
     pub novelty: f32,
     /// Per-feature evidence for the DJ Gem reranker (see [`FeatureScores`]). Filled by the
     /// scoring pass; default-zero until then.
-    #[allow(
-        dead_code,
-        reason = "read by the DJ Gem candidate pack builder in src/streaming/pack.rs (A2/A3)"
-    )]
     pub features: FeatureScores,
 }
 
@@ -126,9 +99,6 @@ impl Candidate {
             artist_key,
             canonical_key,
             album: None,
-            plays: None,
-            explicit: None,
-            mood_tag: None,
             duration_secs,
             base_score: 0.0,
             novelty: 0.0,

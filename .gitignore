@@ -19,3 +19,4 @@ cookies.txt
 /docs/desktop-tray-companion-plan.md
 /docs/*.md
 /docs/**/*.md
+*.sha256

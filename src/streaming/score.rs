@@ -92,7 +92,6 @@ pub fn filter_and_score(
             continuation: cont_n[i],
             completion: comp_n[i],
             music_tier: feats[i].music_tier,
-            version_penalty: feats[i].version_penalty,
             transition: trans_n[i],
         };
     }

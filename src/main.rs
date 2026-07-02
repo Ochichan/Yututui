@@ -639,11 +639,12 @@ async fn run(
     startup.mark("deps_checked");
 
     // Worker -> UI channel. Actors hold clones; the original stays alive so the
-    // select! branch never resolves to `None`.
-    let _runtime_queue_policy = util::backpressure::RUNTIME_EVENT_QUEUE;
+    // select! branch never resolves to `None`. Intentionally unbounded: single-session
+    // event bus, and the one high-frequency producer (mpv time-pos) is coalesced to
+    // ~1/sec inside the IPC actor before it ever reaches this channel.
     let (worker_tx, mut worker_rx) = mpsc::unbounded_channel::<RuntimeEvent>();
 
-    let _art_resize_policy = util::backpressure::ART_RESIZE_QUEUE;
+    // Latest-only in behavior: the drain loop below always skips to the newest request.
     let (art_resize_tx, mut art_resize_rx) = mpsc::unbounded_channel::<ResizeRequest>();
     app.set_art_resize_tx(art_resize_tx);
     let art_resize_msg_tx = worker_tx.clone();

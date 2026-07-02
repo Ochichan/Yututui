@@ -75,13 +75,19 @@ impl App {
             return Vec::new();
         }
 
+        // Only rows that can actually need an overlay are worth cloning — both
+        // `ensure_local` and `gemini_candidate` early-return on this same predicate,
+        // so pre-filtering here is behavior-identical and skips the (typically
+        // Latin-majority) bulk of the queue/search/library surfaces.
+        let needs = |song: &&Song| crate::romanize::needs_latinization(&song.title, &song.artist);
+
         let mut songs = Vec::new();
-        if let Some(song) = self.queue.current() {
+        if let Some(song) = self.queue.current().filter(|s| needs(s)) {
             songs.push(song.clone());
         }
-        songs.extend(self.queue.ordered_iter().cloned());
-        songs.extend(self.search.results.iter().cloned());
-        songs.extend(self.ai.suggestions.iter().cloned());
+        songs.extend(self.queue.ordered_iter().filter(needs).cloned());
+        songs.extend(self.search.results.iter().filter(needs).cloned());
+        songs.extend(self.ai.suggestions.iter().filter(needs).cloned());
 
         let rows = self.library_rows();
         let viewport = self.bridges.library_scroll.viewport().max(50);
@@ -90,6 +96,7 @@ impl App {
             rows.into_iter()
                 .skip(start)
                 .take(viewport.min(100))
+                .filter(|s| needs(s))
                 .cloned(),
         );
 
