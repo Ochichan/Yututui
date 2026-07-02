@@ -20,7 +20,7 @@ use crate::queue::Repeat;
 use crate::search_source::SearchConfig;
 use crate::streaming::StreamingConfig;
 use crate::t;
-use crate::theme::{ThemeConfig, ThemePreset};
+use crate::theme::ThemeConfig;
 
 /// Clamp range for playback speed (matches the `>`/`<` controls and the settings slider).
 pub const SPEED_MIN: f64 = 0.5;
@@ -730,15 +730,12 @@ impl Config {
         }
     }
 
-    /// The normalized theme config to apply at runtime.
+    /// The normalized theme config to apply at runtime. Retro mode no longer forces the
+    /// Retro preset here: enabling it seeds the theme once (see
+    /// `settings_toggle_retro_mode`), after which preset and colors stay user-editable —
+    /// retro keeps only the English UI + ASCII scrub guarantees.
     pub fn effective_theme(&self) -> ThemeConfig {
-        if self.retro_mode {
-            let mut theme = ThemeConfig::default();
-            theme.set_preset(ThemePreset::Retro);
-            theme
-        } else {
-            self.theme.normalized()
-        }
+        self.theme.normalized()
     }
 
     /// The UI language to apply at runtime (default English).

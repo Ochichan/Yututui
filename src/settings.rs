@@ -20,7 +20,7 @@ use crate::keymap::{Action, KeyContext, KeyMap};
 use crate::search_source::SearchConfig;
 use crate::streaming::StreamingMode;
 use crate::t;
-use crate::theme::{ThemeConfig, ThemePreset, ThemeRole};
+use crate::theme::{ThemeConfig, ThemeRole};
 
 /// Per-band gain limits and keyboard step (dB), for the EQ sliders.
 pub const BAND_GAIN_MIN: f64 = -12.0;
@@ -897,15 +897,15 @@ impl SettingsDraft {
         cfg.ai_enabled = Some(self.ai_enabled);
         cfg.romanized_titles = Some(self.romanized_titles);
         cfg.retro_mode = self.retro_mode;
-        if self.retro_mode {
-            let mut retro = ThemeConfig::default();
-            retro.set_preset(ThemePreset::Retro);
-            cfg.theme = retro;
-            cfg.language = Language::English;
+        // The theme commits as edited even in retro mode (enabling retro only *seeds* the
+        // Retro preset in the draft); retro keeps forcing the English UI, since basic TTY
+        // console fonts are the whole point of the mode.
+        cfg.theme = self.theme.normalized();
+        cfg.language = if self.retro_mode {
+            Language::English
         } else {
-            cfg.theme = self.theme.normalized();
-            cfg.language = self.language;
-        }
+            self.language
+        };
         cfg.animations = self.animations;
         cfg.scrobble.lastfm.enabled = Some(self.lastfm_enabled);
         cfg.scrobble.lastfm.love_sync = Some(self.lastfm_love_sync);
@@ -1309,6 +1309,32 @@ mod tests {
             cfg.theme.overrides.get("accent").map(String::as_str),
             Some("#123456")
         );
+    }
+
+    #[test]
+    fn retro_mode_commits_the_edited_theme_but_keeps_english() {
+        // Retro used to overwrite the committed theme with a fresh Retro preset (wiping
+        // the user's preset + color overrides on disk). Now the theme commits as edited;
+        // only the UI language stays forced to English.
+        let mut draft = base_draft();
+        draft.retro_mode = true;
+        draft.language = crate::i18n::Language::Korean;
+        draft.theme.set_preset(crate::theme::ThemePreset::Nord);
+        draft
+            .theme
+            .set_override(ThemeRole::Accent, "#ABCDEF")
+            .unwrap();
+        let mut cfg = Config::default();
+        draft.apply_to(&mut cfg);
+        assert!(cfg.retro_mode);
+        assert_eq!(cfg.theme.preset, "nord");
+        assert_eq!(
+            cfg.theme.overrides.get("accent").map(String::as_str),
+            Some("#ABCDEF")
+        );
+        assert_eq!(cfg.language, crate::i18n::Language::English);
+        // And the runtime theme honors the user's choice under retro mode too.
+        assert_eq!(cfg.effective_theme().preset, "nord");
     }
 
     #[test]

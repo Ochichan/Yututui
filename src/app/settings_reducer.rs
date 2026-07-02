@@ -554,16 +554,6 @@ impl App {
             }
             Field::ThemePreset => {
                 let s = self.settings_mut();
-                if s.draft.retro_mode {
-                    s.draft.theme.set_preset(crate::theme::ThemePreset::Retro);
-                    self.theme = s.draft.theme.normalized();
-                    self.status.text = t!(
-                        "Retro mode keeps the Retro theme",
-                        "레트로 모드는 레트로 테마를 유지합니다"
-                    )
-                    .to_owned();
-                    return Vec::new();
-                }
                 let next = s.draft.theme.preset_enum().stepped(dir);
                 s.draft.theme.set_preset(next);
                 self.theme = s.draft.theme.normalized();
@@ -1149,7 +1139,10 @@ impl App {
         };
         st.draft.retro_mode = !st.draft.retro_mode;
         if st.draft.retro_mode {
-            st.draft.theme = crate::theme::ThemeConfig::default();
+            // Seed the Retro preset as a starting point (keeping any color overrides) —
+            // unlike before, this is a one-time default: preset and colors stay freely
+            // editable while retro mode is on, and turning retro off keeps whatever
+            // theme is current instead of snapping back.
             st.draft.theme.set_preset(crate::theme::ThemePreset::Retro);
             st.draft.language = crate::i18n::Language::English;
             self.theme = st.draft.theme.normalized();
