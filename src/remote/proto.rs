@@ -41,8 +41,17 @@ pub enum RemoteCommand {
     },
     VolumeUp,
     VolumeDown,
+    /// Set the output volume to an absolute percent (`0..=100`). Additive since v7:
+    /// an older server rejects it as `bad_request` instead of misbehaving.
+    SetVolume {
+        percent: i64,
+    },
     SeekBack,
     SeekForward,
+    /// Absolute seek within the current track, in milliseconds. Additive since v7.
+    SeekTo {
+        ms: u64,
+    },
     ToggleShuffle,
     CycleRepeat,
     QueuePlay {
@@ -193,6 +202,14 @@ pub struct StatusSnapshot {
     pub shuffle: bool,
     #[serde(default)]
     pub repeat: Repeat,
+    /// Playback position within the current track in milliseconds, sampled at
+    /// response time; `None` when nothing is loaded or the position is unknown.
+    /// Additive since v7 (older servers simply omit it).
+    #[serde(default)]
+    pub elapsed_ms: Option<u64>,
+    /// Current track length in milliseconds; `None` for live streams / unknown.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
 }
 
 /// A queue row in the currently effective play order.
@@ -330,6 +347,27 @@ mod tests {
     }
 
     #[test]
+    fn volume_and_seek_commands_round_trip() {
+        for cmd in [
+            RemoteCommand::SetVolume { percent: 42 },
+            RemoteCommand::SeekTo { ms: 91_500 },
+        ] {
+            let line = serde_json::to_string(&cmd).unwrap();
+            let back: RemoteCommand = serde_json::from_str(&line).unwrap();
+            assert_eq!(back, cmd, "got {line}");
+        }
+    }
+
+    #[test]
+    fn legacy_status_without_position_fields_still_parses() {
+        // A v7 server predating elapsed_ms/duration_ms: the fields default to None.
+        let line = r#"{"title":"Song","artist":"A","paused":false,"volume":50,"position":1,"total":2,"streaming":false}"#;
+        let snap: StatusSnapshot = serde_json::from_str(line).unwrap();
+        assert_eq!(snap.elapsed_ms, None);
+        assert_eq!(snap.duration_ms, None);
+    }
+
+    #[test]
     fn search_commands_carry_query() {
         let line = serde_json::to_string(&RemoteCommand::Play {
             query: "hello".to_string(),
@@ -363,6 +401,8 @@ mod tests {
             queue: Vec::new(),
             shuffle: false,
             repeat: Repeat::Off,
+            elapsed_ms: None,
+            duration_ms: None,
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));
@@ -384,6 +424,8 @@ mod tests {
             queue: Vec::new(),
             shuffle: false,
             repeat: Repeat::Off,
+            elapsed_ms: None,
+            duration_ms: None,
         };
         let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
         assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");

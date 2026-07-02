@@ -36,8 +36,10 @@ Commands:
   play-pause, pp, toggle  Toggle play / pause
   up, vol-up              Volume up
   down, vol-down          Volume down
+  volume <0-100>          Set the volume to an absolute percent
   back                    Seek backward
   fwd, forward            Seek forward
+  seek-to <seconds>       Seek to an absolute position in the current track
   streaming [on|off|toggle]
                           Toggle (or set) autoplay streaming
   resume-session          Load and play the saved session
@@ -95,8 +97,35 @@ pub fn parse(args: &[String]) -> Result<Parsed, ParseError> {
         "play-pause" | "pp" | "toggle" | "play" | "pause" => RemoteCommand::TogglePause,
         "up" | "vol-up" | "volup" => RemoteCommand::VolumeUp,
         "down" | "vol-down" | "voldown" => RemoteCommand::VolumeDown,
+        "volume" | "vol" => {
+            let percent = rest
+                .first()
+                .and_then(|value| value.parse::<i64>().ok())
+                .filter(|value| (0..=100).contains(value));
+            match percent {
+                Some(percent) => RemoteCommand::SetVolume { percent },
+                None => {
+                    return Err(ParseError::Invalid(format!(
+                        "{verb}: expected a percent between 0 and 100"
+                    )));
+                }
+            }
+        }
         "back" | "rewind" => RemoteCommand::SeekBack,
         "fwd" | "forward" | "ff" => RemoteCommand::SeekForward,
+        "seek-to" | "seekto" => {
+            let seconds = rest.first().and_then(|value| value.parse::<f64>().ok());
+            match seconds {
+                Some(seconds) if seconds >= 0.0 && seconds.is_finite() => RemoteCommand::SeekTo {
+                    ms: (seconds * 1000.0).round() as u64,
+                },
+                _ => {
+                    return Err(ParseError::Invalid(format!(
+                        "{verb}: expected a non-negative position in seconds"
+                    )));
+                }
+            }
+        }
         "streaming" | "radio" => {
             let state = match rest.first().copied() {
                 None => ToggleState::Toggle,
@@ -162,8 +191,16 @@ mod tests {
         );
         assert_eq!(cmd(&["up"]), RemoteCommand::VolumeUp);
         assert_eq!(cmd(&["vol-down"]), RemoteCommand::VolumeDown);
+        assert_eq!(
+            cmd(&["volume", "55"]),
+            RemoteCommand::SetVolume { percent: 55 }
+        );
         assert_eq!(cmd(&["back"]), RemoteCommand::SeekBack);
         assert_eq!(cmd(&["fwd"]), RemoteCommand::SeekForward);
+        assert_eq!(
+            cmd(&["seek-to", "92.5"]),
+            RemoteCommand::SeekTo { ms: 92_500 }
+        );
         assert_eq!(cmd(&["resume-session"]), RemoteCommand::ResumeSession);
         assert_eq!(cmd(&["load-session"]), RemoteCommand::ResumeSession);
         assert_eq!(cmd(&["status"]), RemoteCommand::Status);
@@ -212,6 +249,23 @@ mod tests {
     fn enqueue_requires_query() {
         let owned = vec!["enqueue".to_string()];
         assert!(matches!(parse(&owned), Err(ParseError::Invalid(_))));
+    }
+
+    #[test]
+    fn volume_and_seek_reject_bad_values() {
+        for args in [
+            &["volume"][..],
+            &["volume", "150"][..],
+            &["volume", "loud"][..],
+            &["seek-to"][..],
+            &["seek-to", "-3"][..],
+        ] {
+            let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            assert!(
+                matches!(parse(&owned), Err(ParseError::Invalid(_))),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

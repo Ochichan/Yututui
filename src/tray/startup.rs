@@ -134,9 +134,19 @@ fn platform_install(exe: &Path, _command: &str) -> Result<(), StartupError> {
     })?;
 
     let plist = launch_agent_plist(exe, &paths.stdout_log, &paths.stderr_log);
-    std::fs::write(&paths.plist, plist).map_err(|e| {
+    // Write-then-rename so a crash mid-write can't leave a truncated agent that
+    // launchd rejects while status() still reports it as Enabled.
+    let tmp = paths.plist.with_extension("plist.tmp");
+    std::fs::write(&tmp, plist).map_err(|e| {
         StartupError::LaunchAgent(format!(
             "could not write LaunchAgent {}: {e}",
+            tmp.display()
+        ))
+    })?;
+    std::fs::rename(&tmp, &paths.plist).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        StartupError::LaunchAgent(format!(
+            "could not install LaunchAgent {}: {e}",
             paths.plist.display()
         ))
     })

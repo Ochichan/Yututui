@@ -110,6 +110,8 @@ mod tests {
             queue: Vec::new(),
             shuffle: false,
             repeat: Default::default(),
+            elapsed_ms: None,
+            duration_ms: None,
         });
         assert_eq!(next_delay(config, &update), Duration::from_millis(10));
     }

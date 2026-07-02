@@ -254,8 +254,10 @@ impl DaemonEngine {
             }
             RemoteCommand::VolumeUp => self.adjust_volume(VOLUME_STEP),
             RemoteCommand::VolumeDown => self.adjust_volume(-VOLUME_STEP),
+            RemoteCommand::SetVolume { percent } => self.set_volume(percent),
             RemoteCommand::SeekBack => self.seek(-self.config.effective_seek_seconds()),
             RemoteCommand::SeekForward => self.seek(self.config.effective_seek_seconds()),
+            RemoteCommand::SeekTo { ms } => self.seek_to(ms as f64 / 1000.0),
             RemoteCommand::ToggleShuffle => {
                 self.queue.toggle_shuffle();
                 self.config.shuffle = Some(self.queue.shuffle);
@@ -409,6 +411,23 @@ impl DaemonEngine {
                 .collect(),
             shuffle: self.queue.shuffle,
             repeat: self.queue.repeat,
+            elapsed_ms: current.and(self.playback.time_pos).map(|pos| {
+                // Interpolated to "now", mirroring the OS media-session clock, so the
+                // mini player's progress bar is fresh at every poll.
+                let mut pos = pos;
+                if !self.playback.paused
+                    && let Some(at) = self.playback.time_pos_at
+                {
+                    pos += at.elapsed().as_secs_f64() * self.playback.speed;
+                }
+                if let Some(duration) = self.playback.duration {
+                    pos = pos.min(duration);
+                }
+                (pos.max(0.0) * 1000.0) as u64
+            }),
+            duration_ms: current
+                .and(self.playback.duration)
+                .map(|duration| (duration.max(0.0) * 1000.0) as u64),
         }
     }
 
@@ -890,7 +909,11 @@ impl DaemonEngine {
     }
 
     fn adjust_volume(&mut self, delta: i64) -> RemoteResponse {
-        self.playback.volume = (self.playback.volume + delta).clamp(0, VOLUME_MAX);
+        self.set_volume(self.playback.volume + delta)
+    }
+
+    fn set_volume(&mut self, percent: i64) -> RemoteResponse {
+        self.playback.volume = percent.clamp(0, VOLUME_MAX);
         if let Some(player) = &self.player {
             player
                 .handle
@@ -912,6 +935,21 @@ impl DaemonEngine {
         self.note_seek(target);
         if let Some(player) = &self.player {
             player.handle.send(PlayerCmd::SeekRelative(seconds));
+        }
+        RemoteResponse::status(self.status())
+    }
+
+    fn seek_to(&mut self, pos: f64) -> RemoteResponse {
+        if self.loaded_video_id.is_none() {
+            return RemoteResponse::err("nothing_playing");
+        }
+        let mut target = pos.max(0.0);
+        if let Some(duration) = self.playback.duration {
+            target = target.min(duration);
+        }
+        self.note_seek(target);
+        if let Some(player) = &self.player {
+            player.handle.send(PlayerCmd::SeekAbsolute(target));
         }
         RemoteResponse::status(self.status())
     }

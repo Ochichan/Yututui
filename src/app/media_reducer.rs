@@ -93,6 +93,8 @@ impl App {
                 }
                 self.playback.time_pos = Some(pos);
                 self.playback.time_pos_at = Some(Instant::now());
+                // No epoch bump here: `App::update` bumps it centrally for every turn
+                // that emits a seek command, this one included.
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SeekAbsolute(pos))]
             }

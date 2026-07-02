@@ -4,10 +4,11 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::panic;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
-use tray_icon::menu::{CheckMenuItem, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
@@ -28,16 +29,20 @@ const ICO_BYTES: &[u8] = include_bytes!("../../../assets/icons/ytm-tui.ico");
 enum UserEvent {
     Status(PollUpdate),
     ShowMenu,
-    ShowMiniPlayer,
+    /// Show the mini player, optionally anchored near a tray click (physical px).
+    ShowMiniPlayer(Option<(f64, f64)>),
     Panel(PanelCommand),
     Menu(MenuAction),
+    /// The first daemon menu slot; whether it means Start or Stop depends on the
+    /// state at click time, so the decision lives in the app, not in the menu id.
+    DaemonPrimary,
     Refresh,
     StartupChanged,
     Quit,
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
-    let _log_guard = init_file_logging();
+    let log_guard = init_file_logging();
     install_tray_panic_hook();
     set_app_user_model_id();
 
@@ -47,13 +52,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     MenuEvent::set_event_handler(Some({
         let proxy = proxy.clone();
         move |event: MenuEvent| {
-            if let Some(action) = action_from_menu_id(event.id()) {
-                let message = match action {
-                    MenuAction::ShowMiniPlayer => UserEvent::ShowMiniPlayer,
-                    MenuAction::Refresh => UserEvent::Refresh,
-                    MenuAction::QuitTray => UserEvent::Quit,
-                    other => UserEvent::Menu(other),
-                };
+            if let Some(message) = user_event_from_menu_id(event.id()) {
                 let _ = proxy.send_event(message);
             }
         }
@@ -61,19 +60,34 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     TrayIconEvent::set_event_handler(Some({
         let proxy = proxy.clone();
-        move |event: TrayIconEvent| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left | MouseButton::Right,
+        move |event: TrayIconEvent| match event {
+            // Left click is the media-companion convention: pop the mini player,
+            // anchored near the icon. The context menu lives on right click.
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                position,
+                ..
+            }
+            | TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                position,
+                ..
+            } => {
+                let _ = proxy.send_event(UserEvent::ShowMiniPlayer(Some((position.x, position.y))));
+            }
+            TrayIconEvent::Click {
+                button: MouseButton::Right,
                 button_state: MouseButtonState::Up,
                 ..
-            } = event
-            {
+            } => {
                 let _ = proxy.send_event(UserEvent::ShowMenu);
             }
+            _ => {}
         }
     }));
 
-    let mut app = WindowsTrayApp::new(proxy.clone());
+    let mut app = WindowsTrayApp::new(proxy.clone(), log_guard);
 
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -90,8 +104,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             Event::UserEvent(UserEvent::ShowMenu) => {
                 app.show_menu();
             }
-            Event::UserEvent(UserEvent::ShowMiniPlayer) => {
-                app.show_panel(target);
+            Event::UserEvent(UserEvent::ShowMiniPlayer(anchor)) => {
+                app.show_panel(target, anchor);
             }
             Event::UserEvent(UserEvent::Panel(command)) => {
                 app.handle_panel_command(command);
@@ -107,6 +121,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             }
             Event::UserEvent(UserEvent::Menu(action)) => {
                 app.handle_action(action);
+            }
+            Event::UserEvent(UserEvent::DaemonPrimary) => {
+                app.handle_daemon_primary();
             }
             Event::WindowEvent {
                 window_id,
@@ -137,10 +154,18 @@ struct WindowsTrayApp {
     panel: Option<MiniPlayerPanel>,
     last_update: PollUpdate,
     poll_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    // Held until LoopDestroyed: tao's run() never returns (it exits the process), so
+    // dropping this in shutdown() is the only chance the non-blocking appender gets
+    // to flush the final log lines.
+    log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+    menu_dismissed_at: Option<Instant>,
 }
 
 impl WindowsTrayApp {
-    fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+    fn new(
+        proxy: EventLoopProxy<UserEvent>,
+        log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+    ) -> Self {
         Self {
             proxy,
             tray: None,
@@ -148,6 +173,8 @@ impl WindowsTrayApp {
             panel: None,
             last_update: PollUpdate::disconnected(control::ControlError::NotRunning),
             poll_shutdown: None,
+            log_guard,
+            menu_dismissed_at: None,
         }
     }
 
@@ -227,16 +254,42 @@ impl WindowsTrayApp {
         });
     }
 
-    fn show_menu(&self) {
+    fn show_menu(&mut self) {
+        // A click on the tray icon while the menu is open dismisses it, but tao
+        // buffers that click during the modal menu loop and delivers it as another
+        // ShowMenu right after show_menu() returns — treat it as "close", not
+        // "reopen".
+        if self
+            .menu_dismissed_at
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(300))
+        {
+            return;
+        }
         if let Some(tray) = &self.tray {
             tray.show_menu();
+            self.menu_dismissed_at = Some(Instant::now());
+        }
+    }
+
+    fn handle_daemon_primary(&self) {
+        // One physical menu item whose meaning tracks the menu model: "Stop Music
+        // Daemon" while a daemon owns playback, otherwise "Start Music Daemon".
+        let daemon_owner = self
+            .last_update
+            .state
+            .status()
+            .is_some_and(|status| status.owner_mode == InstanceMode::Daemon);
+        if daemon_owner {
+            self.stop_daemon();
+        } else {
+            self.start_daemon(false);
         }
     }
 
     fn handle_action(&self, action: MenuAction) {
         match action {
             MenuAction::ShowMiniPlayer => {
-                let _ = self.proxy.send_event(UserEvent::ShowMiniPlayer);
+                let _ = self.proxy.send_event(UserEvent::ShowMiniPlayer(None));
             }
             MenuAction::OpenTui => match launch::open_tui() {
                 Ok(_) => self.request_status_now(),
@@ -258,8 +311,15 @@ impl WindowsTrayApp {
         }
     }
 
-    fn show_panel(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
+    fn show_panel(
+        &mut self,
+        target: &EventLoopWindowTarget<UserEvent>,
+        anchor: Option<(f64, f64)>,
+    ) {
         if let Some(panel) = &self.panel {
+            if let Some(anchor) = anchor {
+                panel.position_near(anchor);
+            }
             panel.show();
             panel.apply_update(&self.last_update);
             return;
@@ -270,6 +330,10 @@ impl WindowsTrayApp {
             let _ = proxy.send_event(UserEvent::Panel(command));
         }) {
             Ok(panel) => {
+                if let Some(anchor) = anchor {
+                    panel.position_near(anchor);
+                }
+                panel.show();
                 panel.apply_update(&self.last_update);
                 self.panel = Some(panel);
             }
@@ -278,16 +342,27 @@ impl WindowsTrayApp {
     }
 
     fn handle_panel_command(&self, command: PanelCommand) {
-        if command == PanelCommand::Hide {
-            if let Some(panel) = &self.panel {
-                panel.hide();
+        match command {
+            PanelCommand::Hide => {
+                if let Some(panel) = &self.panel {
+                    panel.hide();
+                }
             }
-            return;
-        }
-        if let Some(remote) = command.remote_command() {
-            self.send_panel_remote(remote, matches!(command, PanelCommand::SetStreaming(true)));
-        } else if let Some(action) = command.menu_action() {
-            self.handle_action(action);
+            PanelCommand::Drag => {
+                if let Some(panel) = &self.panel {
+                    panel.start_drag();
+                }
+            }
+            command => {
+                if let Some(remote) = command.remote_command() {
+                    self.send_panel_remote(
+                        remote,
+                        matches!(command, PanelCommand::SetStreaming(true)),
+                    );
+                } else if let Some(action) = command.menu_action() {
+                    self.handle_action(action);
+                }
+            }
         }
     }
 
@@ -383,27 +458,38 @@ impl WindowsTrayApp {
         if let Some(tx) = self.poll_shutdown.take() {
             let _ = tx.send(());
         }
-        MenuEvent::set_event_handler::<fn(MenuEvent)>(None);
-        TrayIconEvent::set_event_handler::<fn(TrayIconEvent)>(None);
+        // Flush the log before tao exits the process. (muda/tray-icon handlers live
+        // in set-once cells — unsetting them here was always a no-op, so we don't.)
+        drop(self.log_guard.take());
     }
 }
 
 struct WindowsMenu {
-    root: Submenu,
+    // The tray root must be a `Menu`. A `Submenu` root registers muda's window
+    // subclass with a `MenuChild` payload, and muda's WM_NCACTIVATE/WM_NCPAINT arm
+    // blindly casts that payload back to `Menu` — type confusion that access-violates
+    // the process the moment the menu opens (SetForegroundWindow) or is dismissed.
+    // See tray-icon#115 / tauri#11363.
+    root: Menu,
     track: MenuItem,
     state: MenuItem,
     startup: CheckMenuItem,
+    // Single handle for the first daemon slot. Its action flips between StartDaemon
+    // and StopDaemon with the state, so an action-keyed handle map would strand it:
+    // whichever variant was absent at build time could never appear afterwards.
+    daemon_primary: MenuItem,
     actions: HashMap<MenuAction, MenuItem>,
 }
 
 impl WindowsMenu {
     fn new(state: &TrayState) -> Result<Self, Box<dyn Error>> {
         let model = menu_model::build_menu(state);
-        let root = Submenu::new("YtmTui", true);
+        let root = Menu::new();
         let mut action_items = HashMap::new();
         let mut track = None;
         let mut state_item = None;
         let mut startup_item = None;
+        let mut daemon_primary = None;
         let mut disabled_index = 0usize;
 
         for entry in model.entries {
@@ -413,6 +499,17 @@ impl WindowsMenu {
                     if item.action == Some(MenuAction::ToggleStartup) {
                         let menu_item = make_startup_menu_item(&item);
                         startup_item = Some(menu_item.clone());
+                        root.append(&menu_item)?;
+                        continue;
+                    }
+                    if is_daemon_primary(item.action) {
+                        let menu_item = MenuItem::with_id(
+                            MenuId::new(DAEMON_PRIMARY_ID),
+                            &item.label,
+                            item.enabled,
+                            None,
+                        );
+                        daemon_primary = Some(menu_item.clone());
                         root.append(&menu_item)?;
                         continue;
                     }
@@ -437,6 +534,7 @@ impl WindowsMenu {
             track: track.ok_or("missing track menu item")?,
             state: state_item.ok_or("missing state menu item")?,
             startup: startup_item.ok_or("missing startup menu item")?,
+            daemon_primary: daemon_primary.ok_or("missing daemon menu item")?,
             actions: action_items,
         })
     }
@@ -450,8 +548,14 @@ impl WindowsMenu {
             };
             if let Some(action) = item.action {
                 if action == MenuAction::ToggleStartup {
+                    // Label only. Checked/enabled refresh on StartupChanged events —
+                    // reading the registry on every status poll was wasted IO.
                     self.startup.set_text(item.label);
-                    self.apply_startup_status();
+                    continue;
+                }
+                if is_daemon_primary(Some(action)) {
+                    self.daemon_primary.set_text(item.label);
+                    self.daemon_primary.set_enabled(item.enabled);
                     continue;
                 }
                 if let Some(handle) = self.actions.get(&action) {
@@ -504,6 +608,28 @@ fn make_startup_menu_item(item: &ModelItem) -> CheckMenuItem {
         checked,
         None,
     )
+}
+
+const DAEMON_PRIMARY_ID: &str = "ytt-tray:daemon_primary";
+
+fn is_daemon_primary(action: Option<MenuAction>) -> bool {
+    matches!(
+        action,
+        Some(MenuAction::StartDaemon) | Some(MenuAction::StopDaemon)
+    )
+}
+
+fn user_event_from_menu_id(id: &MenuId) -> Option<UserEvent> {
+    if id.as_ref() == DAEMON_PRIMARY_ID {
+        return Some(UserEvent::DaemonPrimary);
+    }
+    let action = action_from_menu_id(id)?;
+    Some(match action {
+        MenuAction::ShowMiniPlayer => UserEvent::ShowMiniPlayer(None),
+        MenuAction::Refresh => UserEvent::Refresh,
+        MenuAction::QuitTray => UserEvent::Quit,
+        other => UserEvent::Menu(other),
+    })
 }
 
 fn action_menu_id(action: MenuAction) -> MenuId {
@@ -600,11 +726,23 @@ fn tooltip_for_state(state: &TrayState) -> String {
 }
 
 fn truncate_tooltip(text: String) -> String {
-    const MAX_CHARS: usize = 124;
-    if text.chars().count() <= MAX_CHARS {
+    // The shell's szTip buffer holds 128 UTF-16 units including the NUL, so budget
+    // in UTF-16 units, not chars — a title full of non-BMP codepoints (emoji, rare
+    // CJK) would otherwise overflow into a garbled tooltip.
+    const MAX_UTF16: usize = 124;
+    if text.encode_utf16().count() <= MAX_UTF16 {
         return text;
     }
-    let mut short = text.chars().take(MAX_CHARS - 3).collect::<String>();
+    let mut used = 0usize;
+    let mut short = String::new();
+    for ch in text.chars() {
+        let units = ch.len_utf16();
+        if used + units > MAX_UTF16 - 3 {
+            break;
+        }
+        used += units;
+        short.push(ch);
+    }
     short.push_str("...");
     short
 }
@@ -674,9 +812,26 @@ fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 }
 
 fn install_tray_panic_hook() {
+    // panic = "abort" kills the process before tracing-appender's worker thread can
+    // flush, so mirror every panic synchronously into a plain file next to the log.
+    let panic_log = directories::ProjectDirs::from("", "", "ytm-tui")
+        .map(|dirs| dirs.cache_dir().join("ytt-tray-panic.log"));
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         tracing::error!(target: "ytt_tray", panic = %info, "ytt-tray panic");
+        if let Some(path) = &panic_log
+            && let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+        {
+            use std::io::Write;
+            let unix_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or_default();
+            let _ = writeln!(file, "[unix {unix_secs}] ytt-tray panic: {info}");
+        }
         previous(info);
     }));
 }
@@ -822,6 +977,8 @@ mod tests {
             queue: Vec::new(),
             shuffle: false,
             repeat: Default::default(),
+            elapsed_ms: None,
+            duration_ms: None,
         });
         assert_eq!(tooltip_for_state(&state), "Paused: Artist - Song");
         let idle_daemon = TrayState::Connected(StatusSnapshot {
@@ -837,6 +994,8 @@ mod tests {
             queue: Vec::new(),
             shuffle: false,
             repeat: Default::default(),
+            elapsed_ms: None,
+            duration_ms: None,
         });
         assert_eq!(tooltip_for_state(&idle_daemon), "ytm-tui daemon idle");
         assert_eq!(
@@ -857,8 +1016,25 @@ mod tests {
             queue: Vec::new(),
             shuffle: false,
             repeat: Default::default(),
+            elapsed_ms: None,
+            duration_ms: None,
         }));
         assert_eq!(long.chars().count(), 124);
+        assert!(long.ends_with("..."));
+    }
+
+    #[test]
+    fn daemon_primary_menu_id_dispatches_state_dependent_event() {
+        assert!(matches!(
+            user_event_from_menu_id(&MenuId::new(DAEMON_PRIMARY_ID)),
+            Some(UserEvent::DaemonPrimary)
+        ));
+    }
+
+    #[test]
+    fn tooltip_truncates_by_utf16_units() {
+        let long = truncate_tooltip("\u{1F3B5}".repeat(100));
+        assert!(long.encode_utf16().count() <= 124);
         assert!(long.ends_with("..."));
     }
 

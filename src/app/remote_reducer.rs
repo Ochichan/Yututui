@@ -43,6 +43,24 @@ impl App {
                 let cmds = self.on_player_action(Action::VolDown);
                 (RemoteResponse::ok(self.vol_line()), cmds)
             }
+            RemoteCommand::SetVolume { percent } => {
+                let volume = percent.clamp(0, 100);
+                self.playback.volume = volume;
+                self.dirty = true;
+                (
+                    RemoteResponse::ok(self.vol_line()),
+                    vec![Cmd::Player(PlayerCmd::SetVolume(volume))],
+                )
+            }
+            RemoteCommand::SeekTo { ms } => {
+                if self.queue.current().is_none() {
+                    return (RemoteResponse::err("queue_empty"), Vec::new());
+                }
+                // Same guarded path an OS scrubber drag takes (`MediaCommand::SeekTo`),
+                // so range checks and the epoch bump live in one place.
+                let cmds = self.apply_media(crate::media::MediaCommand::SeekTo(ms as f64 / 1000.0));
+                (RemoteResponse::status(self.status_snapshot()), cmds)
+            }
             RemoteCommand::SeekBack => {
                 let cmds = self.on_player_action(Action::SeekBack);
                 (RemoteResponse::ok(self.now_playing_line()), cmds)
@@ -315,6 +333,23 @@ impl App {
                 .collect(),
             shuffle: self.queue.shuffle,
             repeat: self.queue.repeat,
+            elapsed_ms: cur.and(self.playback.time_pos).map(|pos| {
+                // Interpolate to "now" like the OS media session does, so the mini
+                // player's progress bar starts from a fresh value between polls.
+                let mut pos = pos;
+                if !self.playback.paused
+                    && let Some(at) = self.playback.time_pos_at
+                {
+                    pos += at.elapsed().as_secs_f64() * self.playback.speed;
+                }
+                if let Some(duration) = self.playback.duration {
+                    pos = pos.min(duration);
+                }
+                (pos.max(0.0) * 1000.0) as u64
+            }),
+            duration_ms: cur
+                .and(self.playback.duration)
+                .map(|duration| (duration.max(0.0) * 1000.0) as u64),
         }
     }
 }
@@ -560,6 +595,46 @@ mod tests {
         assert!(resp.ok);
         assert!(app.playback.volume > before);
         assert!(resp.message.unwrap().contains("volume"));
+    }
+
+    #[test]
+    fn set_volume_clamps_and_applies() {
+        let mut app = App::new(50);
+        let (resp, cmds) = app.apply_remote(RemoteCommand::SetVolume { percent: 250 });
+        assert!(resp.ok);
+        assert_eq!(app.playback.volume, 100);
+        assert!(
+            cmds.iter()
+                .any(|cmd| matches!(cmd, Cmd::Player(PlayerCmd::SetVolume(100))))
+        );
+
+        let (resp, _) = app.apply_remote(RemoteCommand::SetVolume { percent: 35 });
+        assert!(resp.ok);
+        assert_eq!(app.playback.volume, 35);
+    }
+
+    #[test]
+    fn seek_to_requires_a_track_and_seeks_absolutely() {
+        let mut app = App::new(50);
+        let (resp, cmds) = app.apply_remote(RemoteCommand::SeekTo { ms: 5_000 });
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("queue_empty"));
+        assert!(cmds.is_empty());
+
+        let mut app = two_track_app();
+        app.prefetch.loaded_video_id = Some("id0".to_string());
+        app.playback.time_pos = Some(1.0);
+        app.playback.duration = Some(180.0);
+        let (resp, cmds) = app.apply_remote(RemoteCommand::SeekTo { ms: 90_000 });
+        assert!(resp.ok);
+        assert!(cmds.iter().any(
+            |cmd| matches!(cmd, Cmd::Player(PlayerCmd::SeekAbsolute(pos)) if (*pos - 90.0).abs() < 1e-9)
+        ));
+        // (The position-epoch bump happens centrally in `App::update`, which wraps
+        // this reducer in production — not in `apply_remote` itself.)
+        let snapshot = resp.status.expect("status snapshot present");
+        assert_eq!(snapshot.duration_ms, Some(180_000));
+        assert!(snapshot.elapsed_ms.is_some());
     }
 
     #[test]

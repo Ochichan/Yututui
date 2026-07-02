@@ -14,6 +14,17 @@ use ytm_tui::tray::status::PollConfig;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The release binary is a GUI-subsystem executable (no console), which makes
+    // every CLI verb print into the void when run from a terminal. Re-attach to the
+    // parent console for anything that isn't the tray itself; harmless no-op when
+    // launched from Explorer or a startup entry.
+    #[cfg(windows)]
+    if !matches!(
+        args.first().map(String::as_str),
+        None | Some("--background")
+    ) {
+        attach_parent_console();
+    }
     match args.first().map(String::as_str) {
         Some("--version") | Some("-V") => {
             println!("ytt-tray {}", env!("CARGO_PKG_VERSION"));
@@ -146,6 +157,15 @@ async fn run_polling() {
         shutdown,
     )
     .await;
+}
+
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // Best-effort: fails when there is no parent console, which is fine.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
 }
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {

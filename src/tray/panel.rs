@@ -21,6 +21,10 @@ pub enum PanelCommand {
     SeekForward,
     VolumeUp,
     VolumeDown,
+    /// Absolute volume from the panel's volume bar (wheel / drag / click), `0..=100`.
+    SetVolume(i64),
+    /// Absolute seek from the panel's progress bar, in milliseconds.
+    SeekTo(u64),
     ToggleShuffle,
     CycleRepeat,
     QueuePlay(usize),
@@ -41,6 +45,8 @@ pub enum PanelCommand {
     OpenTui,
     Refresh,
     Hide,
+    /// Begin a native window drag (the frameless panel's header is the drag region).
+    Drag,
 }
 
 impl PanelCommand {
@@ -58,6 +64,8 @@ impl PanelCommand {
             | PanelCommand::CycleRepeat
             | PanelCommand::QueuePlay(_)
             | PanelCommand::QueueRemove(_)
+            | PanelCommand::SetVolume(_)
+            | PanelCommand::SeekTo(_)
             | PanelCommand::SetStreaming(_)
             | PanelCommand::SetStreamingMode(_)
             | PanelCommand::SetStreamingSource(_)
@@ -72,7 +80,7 @@ impl PanelCommand {
             PanelCommand::StopDaemon => Some(MenuAction::StopDaemon),
             PanelCommand::OpenTui => Some(MenuAction::OpenTui),
             PanelCommand::Refresh => Some(MenuAction::Refresh),
-            PanelCommand::Hide => None,
+            PanelCommand::Hide | PanelCommand::Drag => None,
         }
     }
 
@@ -119,6 +127,8 @@ impl PanelCommand {
             PanelCommand::CycleRepeat => Some(RemoteCommand::CycleRepeat),
             PanelCommand::QueuePlay(position) => Some(RemoteCommand::QueuePlay { position }),
             PanelCommand::QueueRemove(position) => Some(RemoteCommand::QueueRemove { position }),
+            PanelCommand::SetVolume(percent) => Some(RemoteCommand::SetVolume { percent }),
+            PanelCommand::SeekTo(ms) => Some(RemoteCommand::SeekTo { ms }),
             _ => self.menu_action().and_then(MenuAction::remote_command),
         }
     }
@@ -146,6 +156,8 @@ fn parse_panel_command(message: PanelIpcMessage) -> Result<PanelCommand, serde_j
         "seek_forward" => PanelCommand::SeekForward,
         "volume_up" => PanelCommand::VolumeUp,
         "volume_down" => PanelCommand::VolumeDown,
+        "set_volume" => PanelCommand::SetVolume(i64::from(required_u16(value)?).min(100)),
+        "seek_to" => PanelCommand::SeekTo(required_u64(value)?),
         "toggle_shuffle" => PanelCommand::ToggleShuffle,
         "cycle_repeat" => PanelCommand::CycleRepeat,
         "queue_play" => PanelCommand::QueuePlay(required_usize(value)?),
@@ -170,6 +182,7 @@ fn parse_panel_command(message: PanelIpcMessage) -> Result<PanelCommand, serde_j
         "open_tui" => PanelCommand::OpenTui,
         "refresh" => PanelCommand::Refresh,
         "hide" => PanelCommand::Hide,
+        "drag" => PanelCommand::Drag,
         _ => return Err(serde::de::Error::custom("unknown panel action")),
     };
     Ok(command)
@@ -188,6 +201,15 @@ fn required_u16(value: Option<Value>) -> Result<u16, serde_json::Error> {
             .as_u64()
             .and_then(|value| u16::try_from(value).ok())
             .ok_or_else(|| serde::de::Error::custom("expected u16 value")),
+        _ => Err(serde::de::Error::custom("expected numeric value")),
+    }
+}
+
+fn required_u64(value: Option<Value>) -> Result<u64, serde_json::Error> {
+    match value {
+        Some(Value::Number(value)) => value
+            .as_u64()
+            .ok_or_else(|| serde::de::Error::custom("expected u64 value")),
         _ => Err(serde::de::Error::custom("expected numeric value")),
     }
 }
@@ -242,6 +264,10 @@ pub struct PanelPayload {
     owner_label: String,
     queue_label: String,
     volume_label: String,
+    volume: i64,
+    elapsed_ms: Option<u64>,
+    duration_ms: Option<u64>,
+    can_seek: bool,
     queue: Vec<PanelQueueItemPayload>,
     shuffle: bool,
     repeat: String,
@@ -311,6 +337,13 @@ pub fn payload_for_update(update: &PollUpdate) -> PanelPayload {
         owner_label: owner_label(&update.state),
         queue_label: queue_label(&update.state),
         volume_label: volume_label(&update.state),
+        volume: status
+            .map(|status| status.volume.clamp(0, 100))
+            .unwrap_or(0),
+        elapsed_ms: status.and_then(|status| status.elapsed_ms),
+        duration_ms: status.and_then(|status| status.duration_ms),
+        can_seek: action_enabled(&model, MenuAction::PlayPause)
+            && status.is_some_and(|status| status.duration_ms.is_some()),
         queue: queue_payload(&update.state),
         shuffle: status.map(|status| status.shuffle).unwrap_or(false),
         repeat: repeat_id(repeat).to_string(),
@@ -329,8 +362,7 @@ pub fn payload_for_update(update: &PollUpdate) -> PanelPayload {
         // an idle daemon. Adding a blanket `|| idle` here used to light the button up for
         // an idle *standalone TUI*, where resume is always rejected (StandaloneOwner).
         can_resume_daemon: action_enabled(&model, MenuAction::ResumeDaemon)
-            || (idle
-                && status.is_some_and(|status| status.owner_mode == InstanceMode::Daemon)),
+            || (idle && status.is_some_and(|status| status.owner_mode == InstanceMode::Daemon)),
         can_stop_daemon: action_enabled(&model, MenuAction::StopDaemon),
     }
 }
@@ -522,23 +554,40 @@ const PANEL_HTML: &str = r#"<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
+    /* Catppuccin Macchiato — official palette (github.com/catppuccin/catppuccin) */
     :root {
       color-scheme: dark;
-      --bg: #141619;
-      --surface: #1d2024;
-      --surface-2: #282d32;
-      --surface-3: #32383f;
-      --line: #444b54;
-      --text: #f4f6f8;
-      --muted: #b5bdc7;
-      --soft: #8b95a1;
-      --accent: #25d09b;
-      --accent-2: #8fb4ff;
-      --danger: #ff7468;
+      --rosewater: #f4dbd6;
+      --flamingo: #f0c6c6;
+      --pink: #f5bde6;
+      --mauve: #c6a0f6;
+      --red: #ed8796;
+      --maroon: #ee99a0;
+      --peach: #f5a97f;
+      --yellow: #eed49f;
+      --green: #a6da95;
+      --teal: #8bd5ca;
+      --sky: #91d7e3;
+      --sapphire: #7dc4e4;
+      --blue: #8aadf4;
+      --lavender: #b7bdf8;
+      --text: #cad3f5;
+      --subtext1: #b8c0e0;
+      --subtext0: #a5adcb;
+      --overlay2: #939ab7;
+      --overlay1: #8087a2;
+      --overlay0: #6e738d;
+      --surface2: #5b6078;
+      --surface1: #494d64;
+      --surface0: #363a4f;
+      --base: #24273a;
+      --mantle: #1e2030;
+      --crust: #181926;
     }
 
     * {
       box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
     }
 
     html,
@@ -547,71 +596,230 @@ const PANEL_HTML: &str = r#"<!doctype html>
       height: 100%;
       margin: 0;
       overflow: hidden;
-      background: var(--bg);
+      background: transparent;
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      letter-spacing: 0;
+      font-family: ui-rounded, "SF Pro Rounded", -apple-system, "Segoe UI Variable Text",
+        "Segoe UI", system-ui, sans-serif;
+      font-size: 12px;
       user-select: none;
+      cursor: default;
     }
 
-    .shell {
+    body {
+      padding: 13px;
+    }
+
+    /* The whole player is one soft rounded cushion floating on a transparent window. */
+    .cushion {
       display: grid;
-      grid-template-rows: auto auto 1fr auto;
-      gap: 10px;
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+      gap: 9px;
       width: 100%;
       height: 100%;
-      padding: 14px;
-      background: var(--surface);
+      padding: 13px 13px 11px;
+      border: 1.5px solid rgba(91, 96, 120, 0.6);
+      border-radius: 26px;
+      background:
+        radial-gradient(130% 80% at 50% 0%, rgba(198, 160, 246, 0.14) 0%, rgba(198, 160, 246, 0) 46%),
+        linear-gradient(180deg, #262a40 0%, var(--base) 42%, var(--mantle) 100%);
+      box-shadow:
+        0 18px 44px rgba(12, 12, 20, 0.55),
+        0 2px 10px rgba(12, 12, 20, 0.35);
+      overflow: hidden;
     }
 
-    header,
-    .meta,
-    .row {
-      display: flex;
-      align-items: center;
-      min-width: 0;
-    }
+    /* ---------- header ---------- */
 
     header {
-      justify-content: space-between;
-      gap: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 1px 2px;
+      cursor: grab;
+    }
+
+    header:active {
+      cursor: grabbing;
     }
 
     .brand {
-      color: var(--muted);
-      font-size: 13px;
-      font-weight: 760;
-    }
-
-    .status {
-      max-width: 190px;
-      overflow: hidden;
-      padding: 4px 9px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      color: var(--accent);
-      font-size: 12px;
-      font-weight: 680;
-      text-overflow: ellipsis;
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      gap: 7px;
+      color: var(--lavender);
+      font-size: 13.5px;
+      font-weight: 800;
+      letter-spacing: 0.2px;
       white-space: nowrap;
     }
+
+    .brand .cat {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 22px;
+      padding: 0 9px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(198, 160, 246, 0.28), rgba(245, 189, 230, 0.24));
+      color: var(--pink);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: 100%;
+      margin-left: auto;
+      overflow: hidden;
+      padding: 4px 11px;
+      border: 1.5px solid var(--surface1);
+      border-radius: 999px;
+      background: var(--mantle);
+      color: var(--subtext1);
+      font-size: 11px;
+      font-weight: 750;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .chip::before {
+      content: "";
+      flex: none;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--overlay0);
+    }
+
+    .chip[data-state="playing"] {
+      border-color: rgba(166, 218, 149, 0.5);
+      color: var(--green);
+    }
+
+    .chip[data-state="playing"]::before {
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(166, 218, 149, 0.9);
+      animation: pulse 2.2s ease-in-out infinite;
+    }
+
+    .chip[data-state="paused"] {
+      border-color: rgba(245, 169, 127, 0.5);
+      color: var(--peach);
+    }
+
+    .chip[data-state="paused"]::before {
+      background: var(--peach);
+    }
+
+    .chip[data-state="idle"] {
+      border-color: rgba(145, 215, 227, 0.45);
+      color: var(--sky);
+    }
+
+    .chip[data-state="idle"]::before {
+      background: var(--sky);
+    }
+
+    .chip[data-state="disconnected"] {
+      border-color: rgba(237, 135, 150, 0.45);
+      color: var(--red);
+    }
+
+    .chip[data-state="disconnected"]::before {
+      background: var(--red);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+
+    .icon-btn {
+      flex: none;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border-radius: 50%;
+      font-size: 12px;
+    }
+
+    button.icon-btn#hide {
+      color: var(--overlay1);
+    }
+
+    button.icon-btn#hide:hover:not(:disabled) {
+      border-color: rgba(237, 135, 150, 0.55);
+      background: rgba(237, 135, 150, 0.14);
+      color: var(--red);
+    }
+
+    /* ---------- mode switch (Music / Radio) ---------- */
+
+    .mode-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      background: var(--crust);
+    }
+
+    .mode-switch button {
+      height: 30px;
+      border: none;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--subtext0);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .mode-switch button.on {
+      background: linear-gradient(135deg, var(--mauve), var(--pink));
+      color: var(--crust);
+      box-shadow: 0 3px 12px rgba(198, 160, 246, 0.35);
+    }
+
+    .mode-switch button#modeRadio.on {
+      background: linear-gradient(135deg, var(--teal), var(--sky));
+      box-shadow: 0 3px 12px rgba(139, 213, 202, 0.35);
+    }
+
+    .mode-switch button:disabled {
+      opacity: 0.45;
+    }
+
+    /* ---------- tabs ---------- */
 
     .tabs {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 6px;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      background: var(--mantle);
     }
 
     .tab {
-      height: 30px;
+      height: 26px;
+      padding: 0;
+      border: none;
+      border-radius: 999px;
       background: transparent;
-      color: var(--muted);
+      color: var(--subtext0);
+      font-size: 11.5px;
     }
 
     .tab.active {
-      border-color: var(--accent-2);
-      background: var(--surface-2);
-      color: var(--text);
+      background: var(--surface0);
+      color: var(--mauve);
+      box-shadow: 0 2px 8px rgba(24, 25, 38, 0.55);
     }
 
     main {
@@ -626,17 +834,38 @@ const PANEL_HTML: &str = r#"<!doctype html>
 
     .tab-panel.active {
       display: grid;
-      gap: 10px;
+      gap: 8px;
       align-content: start;
+    }
+
+    /* Spread the Now sections over the full height instead of pooling slack at
+       the bottom; let the queue list flex to whatever height is left. */
+    .tab-panel[data-panel="now"].active {
+      align-content: space-between;
+    }
+
+    .tab-panel[data-panel="queue"].active {
+      grid-template-rows: auto minmax(0, 1fr);
+      align-content: stretch;
+    }
+
+    /* ---------- now playing ---------- */
+
+    .now-card {
+      display: grid;
+      gap: 3px;
+      padding: 11px 13px 12px;
+      border-radius: 20px;
+      background: rgba(30, 32, 48, 0.75);
     }
 
     .title {
       min-width: 0;
       overflow: hidden;
       color: var(--text);
-      font-size: 21px;
-      font-weight: 780;
-      line-height: 1.14;
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.2;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
@@ -644,18 +873,23 @@ const PANEL_HTML: &str = r#"<!doctype html>
     .artist {
       min-width: 0;
       overflow: hidden;
-      color: var(--muted);
-      font-size: 14px;
-      font-weight: 540;
+      color: var(--subtext1);
+      font-size: 12.5px;
+      font-weight: 650;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
     .meta {
-      gap: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
       overflow: hidden;
-      color: var(--soft);
-      font-size: 12px;
+      margin-top: 3px;
+      color: var(--overlay1);
+      font-size: 10.5px;
+      font-weight: 650;
       white-space: nowrap;
     }
 
@@ -664,83 +898,229 @@ const PANEL_HTML: &str = r#"<!doctype html>
       text-overflow: ellipsis;
     }
 
-    .transport {
+    .meta .onair {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      background: rgba(139, 213, 202, 0.14);
+      color: var(--teal);
+    }
+
+    /* The explicit display above beats the UA's [hidden] rule — restore it. */
+    .meta .onair[hidden] {
+      display: none;
+    }
+
+    .meta .onair::before {
+      content: "";
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--teal);
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+
+    /* progress row: [-N] [bar] [+N] */
+    .progress-row {
       display: grid;
-      grid-template-columns: 44px 58px 44px;
-      gap: 10px;
+      grid-template-columns: 30px minmax(0, 1fr) 30px;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    .progress-row .step {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-radius: 50%;
+      color: var(--subtext0);
+      font-size: 9.5px;
+      font-weight: 800;
+    }
+
+    .bar {
+      position: relative;
+      height: 18px;
+      border-radius: 999px;
+      touch-action: none;
+    }
+
+    .bar .track {
+      position: absolute;
+      inset: 6px 0;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--surface0);
+    }
+
+    .bar .fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 0%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--mauve), var(--pink));
+      transition: width 0.15s linear;
+    }
+
+    .bar .knob {
+      position: absolute;
+      top: 50%;
+      left: 0%;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: var(--rosewater);
+      box-shadow: 0 1px 6px rgba(12, 12, 20, 0.6);
+      transform: translate(-50%, -50%);
+      transition: left 0.15s linear;
+    }
+
+    .bar.dragging .fill,
+    .bar.dragging .knob {
+      transition: none;
+    }
+
+    #progressBar.disabled {
+      opacity: 0.4;
+    }
+
+    #progressBar.live .fill {
+      width: 100% !important;
+      background: repeating-linear-gradient(
+        -45deg,
+        rgba(139, 213, 202, 0.85) 0 10px,
+        rgba(145, 215, 227, 0.55) 10px 20px
+      );
+      animation: crawl 1.2s linear infinite;
+    }
+
+    #progressBar.live .knob {
+      display: none;
+    }
+
+    @keyframes crawl {
+      from { background-position: 0 0; }
+      to { background-position: 28px 0; }
+    }
+
+    .times {
+      display: flex;
+      justify-content: space-between;
+      padding: 0 40px;
+      color: var(--overlay1);
+      font-size: 10px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .times .live-tag {
+      color: var(--teal);
+      letter-spacing: 1px;
+    }
+
+    /* transport */
+    .transport {
+      display: flex;
       align-items: center;
       justify-content: center;
-      padding-top: 4px;
+      gap: 18px;
+      padding: 2px 0 0;
     }
 
-    .mode-controls {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 6px;
-    }
-
-    .secondary {
-      display: grid;
-      grid-template-columns: repeat(7, minmax(0, 1fr));
-      gap: 6px;
-    }
-
-    .settings {
-      display: grid;
-      gap: 8px;
-    }
-
-    .row {
-      justify-content: space-between;
-      gap: 10px;
-      min-height: 34px;
-    }
-
-    .label {
-      color: var(--muted);
+    .transport .skip {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      border-radius: 50%;
+      color: var(--lavender);
       font-size: 12px;
-      font-weight: 680;
     }
 
-    .value {
-      color: var(--text);
-      font-size: 12px;
-      font-weight: 760;
+    .transport .primary {
+      width: 56px;
+      height: 56px;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--mauve), var(--pink));
+      color: var(--crust);
+      font-size: 19px;
+      box-shadow: 0 6px 20px rgba(198, 160, 246, 0.4);
     }
 
-    .segmented,
-    .stepper {
+    .transport .primary:hover:not(:disabled) {
+      border-color: transparent;
+      box-shadow: 0 6px 24px rgba(245, 189, 230, 0.55);
+    }
+
+    /* shuffle / repeat / streaming pills */
+    .pill-row {
       display: grid;
-      gap: 6px;
-    }
-
-    .segmented {
       grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-
-    .stepper {
-      grid-template-columns: 34px 76px 34px;
-      align-items: center;
-    }
-
-    select {
-      width: 190px;
-      height: 32px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface-2);
-      color: var(--text);
-      font: inherit;
-      font-size: 12px;
-      font-weight: 650;
-      outline: none;
-    }
-
-    .daemon {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 6px;
     }
+
+    .pill-row button {
+      height: 30px;
+      border-radius: 999px;
+      font-size: 11px;
+    }
+
+    button#shuffle.on {
+      border-color: rgba(139, 213, 202, 0.6);
+      background: rgba(139, 213, 202, 0.13);
+      color: var(--teal);
+    }
+
+    button#repeat.on {
+      border-color: rgba(245, 189, 230, 0.6);
+      background: rgba(245, 189, 230, 0.12);
+      color: var(--pink);
+    }
+
+    button#streaming.on {
+      border-color: rgba(166, 218, 149, 0.6);
+      background: rgba(166, 218, 149, 0.12);
+      color: var(--green);
+    }
+
+    /* volume row */
+    .volume-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) 40px;
+      gap: 9px;
+      align-items: center;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: var(--mantle);
+    }
+
+    .volume-row .vol-ico {
+      color: var(--subtext0);
+      font-size: 13px;
+    }
+
+    #volumeBar .fill {
+      background: linear-gradient(90deg, var(--teal), var(--sky));
+    }
+
+    #volumeBar.disabled {
+      opacity: 0.4;
+    }
+
+    #volumePct {
+      color: var(--subtext1);
+      font-size: 11px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    /* ---------- queue ---------- */
 
     .queue-head {
       display: flex;
@@ -748,49 +1128,80 @@ const PANEL_HTML: &str = r#"<!doctype html>
       justify-content: space-between;
       gap: 8px;
       min-width: 0;
+      padding: 0 2px;
     }
 
     .queue-list {
       display: grid;
       gap: 6px;
+      align-content: start;
       min-height: 0;
-      max-height: 244px;
       overflow-y: auto;
-      padding-right: 2px;
+      padding-right: 4px;
+    }
+
+    .queue-list::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .queue-list::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      background: var(--surface1);
     }
 
     .queue-item {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 32px;
+      grid-template-columns: minmax(0, 1fr) 30px;
       gap: 6px;
       align-items: center;
       min-width: 0;
     }
 
-    .queue-track {
+    button.queue-track {
       display: grid;
-      grid-template-columns: 28px minmax(0, 1fr) auto;
-      gap: 8px;
+      grid-template-columns: 26px minmax(0, 1fr) auto;
+      gap: 9px;
       align-items: center;
       width: 100%;
+      height: auto;
+      padding: 7px 11px 7px 8px;
+      border-color: transparent;
+      border-radius: 16px;
+      background: var(--mantle);
       text-align: left;
     }
 
-    .queue-item.current .queue-track {
-      border-color: var(--accent);
-      background: var(--surface-3);
+    button.queue-track:hover:not(:disabled) {
+      border-color: var(--surface2);
+    }
+
+    .queue-item.current button.queue-track {
+      border-color: rgba(198, 160, 246, 0.55);
+      background: rgba(198, 160, 246, 0.12);
+      box-shadow: 0 2px 10px rgba(198, 160, 246, 0.18);
     }
 
     .queue-number {
-      color: var(--accent);
-      font-size: 12px;
-      font-weight: 760;
-      text-align: center;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--surface0);
+      color: var(--subtext0);
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .queue-item.current .queue-number {
+      background: var(--mauve);
+      color: var(--crust);
     }
 
     .queue-text {
       display: grid;
-      gap: 2px;
+      gap: 1px;
       min-width: 0;
     }
 
@@ -804,173 +1215,346 @@ const PANEL_HTML: &str = r#"<!doctype html>
     .queue-title {
       color: var(--text);
       font-size: 12px;
-      font-weight: 760;
+      font-weight: 750;
     }
 
-    .queue-artist,
+    .queue-artist {
+      color: var(--subtext0);
+      font-size: 10.5px;
+      font-weight: 600;
+    }
+
     .queue-duration {
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 620;
+      color: var(--overlay1);
+      font-size: 10.5px;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
     }
 
-    .queue-remove {
-      width: 32px;
+    button.queue-remove {
+      width: 30px;
+      height: 30px;
       padding: 0;
-      color: var(--danger);
+      border-color: transparent;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--red);
+      font-size: 11px;
+    }
+
+    button.queue-remove:hover:not(:disabled) {
+      border-color: rgba(237, 135, 150, 0.4);
+      background: rgba(237, 135, 150, 0.14);
     }
 
     .empty {
       display: grid;
+      gap: 4px;
       place-items: center;
-      min-height: 120px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      color: var(--muted);
+      min-height: 150px;
+      border: 2px dashed var(--surface1);
+      border-radius: 20px;
+      color: var(--subtext0);
       font-size: 12px;
-      font-weight: 680;
+      font-weight: 700;
     }
 
-    button {
-      display: inline-grid;
-      place-items: center;
-      min-width: 0;
-      height: 34px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface-2);
+    .empty .kaomoji {
+      color: var(--overlay1);
+      font-size: 16px;
+      letter-spacing: 1px;
+    }
+
+    /* ---------- settings rows ---------- */
+
+    .settings {
+      display: grid;
+      gap: 7px;
+      align-content: start;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 40px;
+      padding: 4px 5px 4px 12px;
+      border-radius: 16px;
+      background: var(--mantle);
+    }
+
+    .label {
+      color: var(--subtext1);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .sub-label {
+      color: var(--overlay0);
+      font-size: 10px;
+      font-weight: 650;
+    }
+
+    .value {
+      min-width: 44px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+    }
+
+    .segmented {
+      display: inline-flex;
+      gap: 4px;
+      padding: 3px;
+      border-radius: 999px;
+      background: var(--crust);
+    }
+
+    .segmented button {
+      height: 26px;
+      padding: 0 10px;
+      border: none;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--subtext0);
+      font-size: 11px;
+    }
+
+    .segmented button.on {
+      background: var(--mauve);
+      color: var(--crust);
+    }
+
+    .stepper {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .stepper button {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-radius: 50%;
+      font-size: 14px;
+    }
+
+    .toggle {
+      min-width: 58px;
+      height: 30px;
+      border-radius: 999px;
+    }
+
+    .toggle.on {
+      border-color: rgba(166, 218, 149, 0.6);
+      background: rgba(166, 218, 149, 0.14);
+      color: var(--green);
+    }
+
+    select {
+      height: 32px;
+      max-width: 190px;
+      padding: 0 10px;
+      border: 1.5px solid var(--surface1);
+      border-radius: 14px;
+      background: var(--surface0);
       color: var(--text);
       font: inherit;
       font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0;
+      font-weight: 650;
       outline: none;
+    }
+
+    /* ---------- dock ---------- */
+
+    .dock {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+      padding: 6px;
+      border-radius: 18px;
+      background: var(--mantle);
+    }
+
+    .dock button {
+      height: 30px;
+      border-color: transparent;
+      border-radius: 12px;
+      font-size: 11px;
+    }
+
+    button#startDaemon {
+      color: var(--green);
+    }
+
+    button#startDaemon:hover:not(:disabled) {
+      border-color: rgba(166, 218, 149, 0.6);
+    }
+
+    button#resumeDaemon {
+      color: var(--teal);
+    }
+
+    button#resumeDaemon:hover:not(:disabled) {
+      border-color: rgba(139, 213, 202, 0.6);
+    }
+
+    button#stopDaemon {
+      color: var(--red);
+    }
+
+    button#stopDaemon:hover:not(:disabled) {
+      border-color: rgba(237, 135, 150, 0.6);
+    }
+
+    button#openTui {
+      color: var(--lavender);
+    }
+
+    button#openTui:hover:not(:disabled) {
+      border-color: rgba(183, 189, 248, 0.6);
+    }
+
+    /* ---------- error toast ---------- */
+
+    /* Inline toast row between the tabs' content and the dock: when hidden its
+       grid row collapses, so it never overlaps the controls. */
+    .alert {
+      overflow: hidden;
+      padding: 7px 14px;
+      border: 1.5px solid rgba(237, 135, 150, 0.5);
+      border-radius: 999px;
+      background: rgba(237, 135, 150, 0.1);
+      color: var(--red);
+      font-size: 11px;
+      font-weight: 650;
+      text-align: center;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    button.queue-track {
-      display: grid;
-      grid-template-columns: 28px minmax(0, 1fr) auto;
-      gap: 8px;
-      place-items: initial;
-      align-items: center;
-      width: 100%;
-      text-align: left;
+    .alert[hidden] {
+      display: none;
     }
 
-    .mode-controls button {
+    /* ---------- shared button base ---------- */
+
+    button {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
-    }
-
-    button.icon {
-      font-size: 15px;
-    }
-
-    button.primary {
-      width: 58px;
-      height: 44px;
-      border-color: var(--accent);
-      background: var(--accent);
-      color: #07130f;
-      font-size: 18px;
-    }
-
-    button.compact {
-      height: 30px;
-      font-size: 11px;
-    }
-
-    button:active:not(:disabled) {
-      transform: translateY(1px);
+      min-width: 0;
+      height: 34px;
+      padding: 0 10px;
+      border: 1.5px solid var(--surface1);
+      border-radius: 16px;
+      background: var(--surface0);
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+      outline: none;
+      transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease,
+        color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
     }
 
     button:hover:not(:disabled) {
-      border-color: var(--accent);
+      border-color: var(--mauve);
+    }
+
+    button:active:not(:disabled) {
+      transform: scale(0.92);
+    }
+
+    button:focus-visible {
+      border-color: var(--lavender);
+      box-shadow: 0 0 0 3px rgba(183, 189, 248, 0.25);
     }
 
     button:disabled,
     select:disabled {
-      color: #727b86;
-      opacity: 0.48;
-    }
-
-    button.on {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-
-    button.mode.on {
-      border-color: var(--accent-2);
-      color: var(--accent-2);
-    }
-
-    .error {
-      min-height: 16px;
-      overflow: hidden;
-      color: var(--danger);
-      font-size: 12px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      opacity: 0.38;
     }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <header>
-      <div class="brand">YtmTui</div>
-      <div class="status" id="stateLabel">Disconnected</div>
+  <div class="cushion">
+    <header id="dragRegion">
+      <div class="brand"><span class="cat">=^..^=</span> YtmTui</div>
+      <div class="chip" id="stateLabel" data-state="disconnected">Disconnected</div>
+      <button class="icon-btn" data-action="refresh" id="refreshTop" title="Refresh">&#8635;</button>
+      <button class="icon-btn" data-action="hide" id="hide" title="Hide">&#10005;</button>
     </header>
+
+    <div class="mode-switch" id="modeSwitch" title="Switch between normal playback and the dedicated radio mode">
+      <button id="modeMusic" data-mode="music">&#9834; Music</button>
+      <button id="modeRadio" data-mode="radio">&#128251; Radio</button>
+    </div>
 
     <div class="tabs" role="tablist">
       <button class="tab active" data-tab="now" id="tabNow">Now</button>
       <button class="tab" data-tab="queue" id="tabQueue">Queue</button>
-      <button class="tab" data-tab="streaming" id="tabStreaming">Streaming</button>
-      <button class="tab" data-tab="playback" id="tabPlayback">Playback</button>
+      <button class="tab" data-tab="streaming" id="tabStreaming">Stream</button>
+      <button class="tab" data-tab="playback" id="tabPlayback">Tune</button>
     </div>
 
     <main>
       <section class="tab-panel active" data-panel="now">
-        <div class="title" id="title">ytm-tui is not running</div>
-        <div class="artist" id="artist">YtmTui</div>
-        <div class="meta">
-          <span id="ownerLabel">Offline</span>
-          <span>&#183;</span>
-          <span id="queueLabel">Queue unavailable</span>
-          <span>&#183;</span>
-          <span id="volumeLabel">--</span>
+        <div class="now-card">
+          <div class="title" id="title">ytm-tui is not running</div>
+          <div class="artist" id="artist">YtmTui</div>
+          <div class="meta">
+            <span id="ownerLabel">Offline</span>
+            <span>&#183;</span>
+            <span id="queueLabel">Queue unavailable</span>
+            <span class="onair" id="onAir" hidden>on air &#9834;</span>
+          </div>
+
+          <div class="progress-row">
+            <button class="step" data-action="seek_back" id="seekBack" title="Seek back">-10</button>
+            <div class="bar" id="progressBar">
+              <div class="track"><div class="fill" id="progressFill"></div></div>
+              <div class="knob" id="progressKnob"></div>
+            </div>
+            <button class="step" data-action="seek_forward" id="seekForward" title="Seek forward">+10</button>
+          </div>
+          <div class="times">
+            <span id="timeElapsed">-:--</span>
+            <span id="timeTotal">-:--</span>
+          </div>
         </div>
 
         <div class="transport">
-          <button class="icon" data-action="previous" id="previous" title="Previous" aria-label="Previous">&#9664;&#9664;</button>
+          <button class="skip" data-action="previous" id="previous" title="Previous" aria-label="Previous">&#9664;&#9664;</button>
           <button class="primary" data-action="play_pause" id="playPause" title="Play or pause" aria-label="Play or pause">&#9654;</button>
-          <button class="icon" data-action="next" id="next" title="Next" aria-label="Next">&#9654;&#9654;</button>
+          <button class="skip" data-action="next" id="next" title="Next" aria-label="Next">&#9654;&#9654;</button>
         </div>
 
-        <div class="mode-controls">
+        <div class="pill-row">
           <button data-action="toggle_shuffle" id="shuffle" title="Shuffle" aria-label="Toggle shuffle">&#8644; Shuffle</button>
-          <button data-action="cycle_repeat" id="repeat" title="Repeat" aria-label="Cycle repeat">&#8635; <span id="repeatText">Repeat Off</span></button>
+          <button data-action="cycle_repeat" id="repeat" title="Repeat" aria-label="Cycle repeat">&#8635; <span id="repeatText">Off</span></button>
+          <button data-action="set_streaming" id="streaming" title="Autoplay streaming">&#9835; Stream</button>
         </div>
 
-        <div class="secondary">
-          <button data-action="seek_back" id="seekBack" title="Seek back">-10</button>
-          <button data-action="seek_forward" id="seekForward" title="Seek forward">+10</button>
-          <button data-action="volume_down" id="volumeDown" title="Volume down">Vol-</button>
-          <button data-action="volume_up" id="volumeUp" title="Volume up">Vol+</button>
-          <button data-action="set_streaming" id="streaming" title="Streaming">Stream</button>
-          <button data-action="refresh" id="refresh" title="Refresh">&#8635;</button>
-          <button data-action="hide" id="hide" title="Hide">&#10005;</button>
+        <div class="volume-row">
+          <span class="vol-ico">&#9834;</span>
+          <div class="bar" id="volumeBar" title="Scroll or drag to change the volume">
+            <div class="track"><div class="fill" id="volumeFill"></div></div>
+            <div class="knob" id="volumeKnob"></div>
+          </div>
+          <span id="volumePct">--</span>
         </div>
-
-        <div class="error" id="error" hidden></div>
       </section>
 
       <section class="tab-panel" data-panel="queue">
         <div class="queue-head">
           <span class="label" id="queueSummary">Queue unavailable</span>
-          <button class="compact" data-action="refresh" id="queueRefresh" title="Refresh">&#8635;</button>
+          <button class="icon-btn" data-action="refresh" id="queueRefresh" title="Refresh">&#8635;</button>
         </div>
         <div class="queue-list" id="queueList"></div>
       </section>
@@ -979,14 +1563,14 @@ const PANEL_HTML: &str = r#"<!doctype html>
         <div class="settings">
           <div class="row">
             <span class="label">Streaming</span>
-            <button data-action="set_streaming" id="streamingToggle">Off</button>
+            <button class="toggle" data-action="set_streaming" id="streamingToggle">Off</button>
           </div>
           <div class="row">
             <span class="label">Mode</span>
             <div class="segmented">
-              <button class="compact mode" data-action="set_streaming_mode" data-value="focused" id="modeFocused">Focused</button>
-              <button class="compact mode" data-action="set_streaming_mode" data-value="balanced" id="modeBalanced">Balanced</button>
-              <button class="compact mode" data-action="set_streaming_mode" data-value="discovery" id="modeDiscovery">Discovery</button>
+              <button class="mode" data-action="set_streaming_mode" data-value="focused" id="modeFocused">Focused</button>
+              <button class="mode" data-action="set_streaming_mode" data-value="balanced" id="modeBalanced">Balanced</button>
+              <button class="mode" data-action="set_streaming_mode" data-value="discovery" id="modeDiscovery">Discovery</button>
             </div>
           </div>
           <div class="row">
@@ -995,11 +1579,11 @@ const PANEL_HTML: &str = r#"<!doctype html>
           </div>
           <div class="row">
             <span class="label">DJ Gem</span>
-            <button data-action="set_ai_enabled" id="aiEnabled">On</button>
+            <button class="toggle" data-action="set_ai_enabled" id="aiEnabled">On</button>
           </div>
           <div class="row">
-            <span class="label">Radio mode</span>
-            <button data-action="set_radio_mode" id="radioMode">Off</button>
+            <span class="label">Radio mode <span class="sub-label" id="radioHint"></span></span>
+            <button class="toggle" data-action="set_radio_mode" id="radioMode">Off</button>
           </div>
         </div>
       </section>
@@ -1015,7 +1599,7 @@ const PANEL_HTML: &str = r#"<!doctype html>
             </div>
           </div>
           <div class="row">
-            <span class="label">Seek</span>
+            <span class="label">Seek step</span>
             <div class="stepper">
               <button data-action="seek_delta" data-delta="-1" id="seekDown">-</button>
               <span class="value" id="seekLabel">10s</span>
@@ -1024,17 +1608,19 @@ const PANEL_HTML: &str = r#"<!doctype html>
           </div>
           <div class="row">
             <span class="label">Normalize</span>
-            <button data-action="set_normalize" id="normalize">Off</button>
+            <button class="toggle" data-action="set_normalize" id="normalize">Off</button>
           </div>
           <div class="row">
             <span class="label">Gapless</span>
-            <button data-action="set_gapless" id="gapless">On</button>
+            <button class="toggle" data-action="set_gapless" id="gapless">On</button>
           </div>
         </div>
       </section>
     </main>
 
-    <div class="daemon">
+    <div class="alert" id="error" hidden></div>
+
+    <div class="dock">
       <button data-action="start_daemon" id="startDaemon">Start</button>
       <button data-action="resume_daemon" id="resumeDaemon">Resume</button>
       <button data-action="stop_daemon" id="stopDaemon">Stop</button>
@@ -1046,48 +1632,22 @@ const PANEL_HTML: &str = r#"<!doctype html>
     window.__YTM_TUI_INITIAL__ = __INITIAL_PAYLOAD__;
 
     let currentPayload = window.__YTM_TUI_INITIAL__;
+    let lastQueueKey = null;
+    let lastSourceOptionsKey = null;
 
-    const els = {
-      stateLabel: document.getElementById("stateLabel"),
-      title: document.getElementById("title"),
-      artist: document.getElementById("artist"),
-      ownerLabel: document.getElementById("ownerLabel"),
-      queueLabel: document.getElementById("queueLabel"),
-      volumeLabel: document.getElementById("volumeLabel"),
-      error: document.getElementById("error"),
-      previous: document.getElementById("previous"),
-      playPause: document.getElementById("playPause"),
-      next: document.getElementById("next"),
-      shuffle: document.getElementById("shuffle"),
-      repeat: document.getElementById("repeat"),
-      repeatText: document.getElementById("repeatText"),
-      queueSummary: document.getElementById("queueSummary"),
-      queueList: document.getElementById("queueList"),
-      queueRefresh: document.getElementById("queueRefresh"),
-      seekBack: document.getElementById("seekBack"),
-      seekForward: document.getElementById("seekForward"),
-      volumeDown: document.getElementById("volumeDown"),
-      volumeUp: document.getElementById("volumeUp"),
-      streaming: document.getElementById("streaming"),
-      streamingToggle: document.getElementById("streamingToggle"),
-      modeFocused: document.getElementById("modeFocused"),
-      modeBalanced: document.getElementById("modeBalanced"),
-      modeDiscovery: document.getElementById("modeDiscovery"),
-      streamingSource: document.getElementById("streamingSource"),
-      aiEnabled: document.getElementById("aiEnabled"),
-      radioMode: document.getElementById("radioMode"),
-      speedDown: document.getElementById("speedDown"),
-      speedUp: document.getElementById("speedUp"),
-      speedLabel: document.getElementById("speedLabel"),
-      seekDown: document.getElementById("seekDown"),
-      seekUp: document.getElementById("seekUp"),
-      seekLabel: document.getElementById("seekLabel"),
-      normalize: document.getElementById("normalize"),
-      gapless: document.getElementById("gapless"),
-      startDaemon: document.getElementById("startDaemon"),
-      resumeDaemon: document.getElementById("resumeDaemon"),
-      stopDaemon: document.getElementById("stopDaemon")
-    };
+    const els = {};
+    [
+      "stateLabel", "title", "artist", "ownerLabel", "queueLabel", "onAir", "error",
+      "previous", "playPause", "next", "shuffle", "repeat", "repeatText", "streaming",
+      "seekBack", "seekForward", "progressBar", "progressFill", "progressKnob",
+      "timeElapsed", "timeTotal", "volumeBar", "volumeFill", "volumeKnob", "volumePct",
+      "modeMusic", "modeRadio", "radioHint",
+      "queueSummary", "queueList", "queueRefresh", "refreshTop", "hide",
+      "streamingToggle", "modeFocused", "modeBalanced", "modeDiscovery", "streamingSource",
+      "aiEnabled", "radioMode", "speedDown", "speedUp", "speedLabel",
+      "seekDown", "seekUp", "seekLabel", "normalize", "gapless",
+      "startDaemon", "resumeDaemon", "stopDaemon", "openTui", "dragRegion"
+    ].forEach(id => { els[id] = document.getElementById(id); });
 
     function send(action, value) {
       if (window.ipc && window.ipc.postMessage) {
@@ -1114,16 +1674,10 @@ const PANEL_HTML: &str = r#"<!doctype html>
       button.classList.toggle("on", on);
     }
 
-    function renderSourceOptions(settings) {
-      const selected = settings.streamingSource;
-      const html = settings.streamingSources.map(source => {
-        const attr = source.value === selected ? " selected" : "";
-        return `<option value="${source.value}"${attr}>${source.label}</option>`;
-      }).join("");
-      if (els.streamingSource.innerHTML !== html) {
-        els.streamingSource.innerHTML = html;
-      }
-      els.streamingSource.value = selected;
+    function chipState(payload) {
+      if (!payload.connected) return "disconnected";
+      const state = String(payload.stateLabel || "").toLowerCase();
+      return state === "playing" || state === "paused" ? state : "idle";
     }
 
     function escapeHtml(value) {
@@ -1135,10 +1689,230 @@ const PANEL_HTML: &str = r#"<!doctype html>
         .replace(/'/g, "&#39;");
     }
 
+    function fmtTime(ms) {
+      if (ms == null || !isFinite(ms)) return "-:--";
+      const total = Math.max(0, Math.floor(ms / 1000));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+      const two = n => String(n).padStart(2, "0");
+      return h > 0 ? h + ":" + two(m) + ":" + two(s) : m + ":" + two(s);
+    }
+
+    /* ---------- window drag (frameless) ---------- */
+
+    els.dragRegion.addEventListener("mousedown", event => {
+      if (event.button !== 0) return;
+      if (event.target.closest("button")) return;
+      send("drag");
+    });
+
+    /* ---------- progress bar: live interpolation + click/drag seek ---------- */
+
+    const prog = {
+      anchorMs: null,
+      anchorAt: 0,
+      playing: false,
+      speed: 1,
+      durationMs: null,
+      live: false,
+      canSeek: false,
+      holdUntil: 0,
+      dragging: false
+    };
+
+    function shownElapsed() {
+      if (prog.anchorMs == null) return null;
+      let value = prog.anchorMs;
+      if (prog.playing && !prog.dragging) {
+        value += (performance.now() - prog.anchorAt) * prog.speed;
+      }
+      if (prog.durationMs != null) value = Math.min(value, prog.durationMs);
+      return Math.max(0, value);
+    }
+
+    function renderProgress() {
+      const elapsed = shownElapsed();
+      const isLive = prog.live;
+      els.progressBar.classList.toggle("live", isLive);
+      els.progressBar.classList.toggle("disabled", !prog.canSeek && !isLive);
+      if (isLive) {
+        els.timeElapsed.textContent = "on air";
+        els.timeTotal.innerHTML = '<span class="live-tag">LIVE</span>';
+        return;
+      }
+      const pct = prog.durationMs && elapsed != null
+        ? Math.min(100, (elapsed / prog.durationMs) * 100)
+        : 0;
+      els.progressFill.style.width = pct + "%";
+      els.progressKnob.style.left = pct + "%";
+      els.timeElapsed.textContent = fmtTime(elapsed);
+      els.timeTotal.textContent = prog.durationMs != null ? fmtTime(prog.durationMs) : "-:--";
+    }
+
+    function syncProgress(payload) {
+      if (performance.now() < prog.holdUntil || prog.dragging) return;
+      prog.anchorMs = payload.elapsedMs;
+      prog.anchorAt = performance.now();
+      prog.playing = payload.connected && !payload.paused && payload.elapsedMs != null;
+      prog.speed = (payload.settings.speedTenths || 10) / 10;
+      prog.durationMs = payload.durationMs;
+      prog.live = payload.connected
+        && payload.durationMs == null
+        && payload.elapsedMs != null;
+      prog.canSeek = payload.canSeek;
+      renderProgress();
+    }
+
+    setInterval(renderProgress, 250);
+
+    function barFraction(bar, clientX) {
+      const rect = bar.getBoundingClientRect();
+      if (rect.width <= 0) return 0;
+      return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    }
+
+    els.progressBar.addEventListener("pointerdown", event => {
+      if (!prog.canSeek || prog.durationMs == null) return;
+      prog.dragging = true;
+      els.progressBar.classList.add("dragging");
+      els.progressBar.setPointerCapture(event.pointerId);
+      prog.anchorMs = barFraction(els.progressBar, event.clientX) * prog.durationMs;
+      renderProgress();
+    });
+
+    els.progressBar.addEventListener("pointermove", event => {
+      if (!prog.dragging) return;
+      prog.anchorMs = barFraction(els.progressBar, event.clientX) * prog.durationMs;
+      renderProgress();
+    });
+
+    function endSeekDrag(event) {
+      if (!prog.dragging) return;
+      prog.dragging = false;
+      els.progressBar.classList.remove("dragging");
+      const target = Math.round(barFraction(els.progressBar, event.clientX) * prog.durationMs);
+      prog.anchorMs = target;
+      prog.anchorAt = performance.now();
+      prog.holdUntil = performance.now() + 1500;
+      send("seek_to", target);
+      renderProgress();
+    }
+
+    els.progressBar.addEventListener("pointerup", endSeekDrag);
+    els.progressBar.addEventListener("pointercancel", () => {
+      prog.dragging = false;
+      els.progressBar.classList.remove("dragging");
+    });
+
+    /* ---------- volume bar: wheel + click/drag ---------- */
+
+    const vol = {
+      local: null,
+      localUntil: 0,
+      canVolume: false,
+      dragging: false,
+      sendTimer: null,
+      pending: null
+    };
+
+    function currentVolume() {
+      return vol.local != null ? vol.local : currentPayload.volume;
+    }
+
+    function renderVolume() {
+      const value = currentVolume();
+      const pct = Math.min(100, Math.max(0, value));
+      els.volumeFill.style.width = pct + "%";
+      els.volumeKnob.style.left = pct + "%";
+      els.volumePct.textContent = currentPayload.connected ? pct + "%" : "--";
+      els.volumeBar.classList.toggle("disabled", !vol.canVolume);
+    }
+
+    function queueVolumeSend(value) {
+      vol.pending = value;
+      if (vol.sendTimer) return;
+      vol.sendTimer = setTimeout(() => {
+        vol.sendTimer = null;
+        send("set_volume", vol.pending);
+      }, 70);
+    }
+
+    function setVolumeLocal(value) {
+      if (!vol.canVolume) return;
+      const next = Math.min(100, Math.max(0, Math.round(value)));
+      vol.local = next;
+      vol.localUntil = performance.now() + 1800;
+      queueVolumeSend(next);
+      renderVolume();
+    }
+
+    els.volumeBar.addEventListener("wheel", event => {
+      event.preventDefault();
+      if (!vol.canVolume) return;
+      const step = event.shiftKey ? 1 : 5;
+      const dir = (event.deltaY || event.deltaX) < 0 ? 1 : -1;
+      setVolumeLocal(currentVolume() + dir * step);
+    }, { passive: false });
+
+    els.volumeBar.addEventListener("pointerdown", event => {
+      if (!vol.canVolume) return;
+      vol.dragging = true;
+      els.volumeBar.classList.add("dragging");
+      els.volumeBar.setPointerCapture(event.pointerId);
+      setVolumeLocal(barFraction(els.volumeBar, event.clientX) * 100);
+    });
+
+    els.volumeBar.addEventListener("pointermove", event => {
+      if (!vol.dragging) return;
+      setVolumeLocal(barFraction(els.volumeBar, event.clientX) * 100);
+    });
+
+    function endVolumeDrag() {
+      vol.dragging = false;
+      els.volumeBar.classList.remove("dragging");
+    }
+
+    els.volumeBar.addEventListener("pointerup", endVolumeDrag);
+    els.volumeBar.addEventListener("pointercancel", endVolumeDrag);
+
+    /* ---------- streaming source select ---------- */
+
+    function renderSourceOptions(settings) {
+      const selected = settings.streamingSource;
+      const sources = settings.streamingSources.slice();
+      // Protocol skew safety net: an unknown current value still shows up instead
+      // of leaving the select blank.
+      if (!sources.some(source => source.value === selected)) {
+        sources.push({ value: selected, label: settings.streamingSourceLabel || selected });
+      }
+      // Rebuild <option>s only when the option list itself changes; comparing against
+      // innerHTML never matched (browsers re-serialize attributes), which used to
+      // rebuild + reset this select on every poll.
+      const optionsKey = JSON.stringify(sources);
+      if (optionsKey !== lastSourceOptionsKey) {
+        lastSourceOptionsKey = optionsKey;
+        els.streamingSource.innerHTML = sources.map(source =>
+          `<option value="${escapeHtml(source.value)}">${escapeHtml(source.label)}</option>`
+        ).join("");
+      }
+      if (els.streamingSource.value !== selected) {
+        els.streamingSource.value = selected;
+      }
+    }
+
+    /* ---------- queue ---------- */
+
     function renderQueue(payload) {
       els.queueSummary.textContent = payload.queueLabel;
+      // Skip the innerHTML rebuild unless the queue actually changed — rebuilding on
+      // every 2s poll ate in-flight clicks and thrashed layout on large queues.
+      const queueKey = JSON.stringify(payload.queue);
+      if (queueKey === lastQueueKey) return;
+      lastQueueKey = queueKey;
+
       if (!payload.queue.length) {
-        els.queueList.innerHTML = `<div class="empty">Queue empty</div>`;
+        els.queueList.innerHTML = `<div class="empty"><span class="kaomoji">=^..^=</span><span>queue is napping&#8230;</span></div>`;
         return;
       }
 
@@ -1161,29 +1935,37 @@ const PANEL_HTML: &str = r#"<!doctype html>
       }).join("");
     }
 
+    /* ---------- apply a status payload ---------- */
+
     function apply(payload) {
       currentPayload = payload;
       const settings = payload.settings;
 
       els.stateLabel.textContent = payload.stateLabel;
+      els.stateLabel.dataset.state = chipState(payload);
       els.title.textContent = payload.title;
       els.artist.textContent = payload.artist;
       els.ownerLabel.textContent = payload.ownerLabel;
       els.queueLabel.textContent = payload.queueLabel;
-      els.volumeLabel.textContent = payload.volumeLabel;
+      els.onAir.hidden = !payload.streaming;
       els.playPause.innerHTML = payload.paused ? "&#9654;" : "&#10073;&#10073;";
-      els.repeatText.textContent = "Repeat " + payload.repeatLabel;
+      els.repeatText.textContent = payload.repeatLabel;
       renderQueue(payload);
 
-      els.shuffle.innerHTML = "&#8644; Shuffle";
       els.shuffle.classList.toggle("on", payload.shuffle);
       els.repeat.classList.toggle("on", payload.repeat !== "off");
-      setToggle(els.streaming, settings.autoplayStreaming, "Stream", "Stream");
+      els.streaming.classList.toggle("on", settings.autoplayStreaming);
       setToggle(els.streamingToggle, settings.autoplayStreaming, "On", "Off");
       setToggle(els.aiEnabled, settings.aiEnabled, "On", "Off");
       setToggle(els.radioMode, settings.radioMode, "On", "Off");
       setToggle(els.normalize, settings.normalize, "On", "Off");
       setToggle(els.gapless, settings.gapless, "On", "Off");
+
+      els.modeMusic.classList.toggle("on", !settings.radioMode);
+      els.modeRadio.classList.toggle("on", settings.radioMode);
+      enabled(els.modeMusic, settings.canRadioMode && settings.radioMode);
+      enabled(els.modeRadio, settings.canRadioMode && !settings.radioMode);
+      els.radioHint.textContent = settings.canRadioMode ? "" : "(TUI only)";
 
       els.modeFocused.classList.toggle("on", settings.streamingMode === "focused");
       els.modeBalanced.classList.toggle("on", settings.streamingMode === "balanced");
@@ -1200,10 +1982,8 @@ const PANEL_HTML: &str = r#"<!doctype html>
       enabled(els.shuffle, payload.connected);
       enabled(els.repeat, payload.connected);
       enabled(els.queueRefresh, payload.connected);
-      enabled(els.seekBack, payload.canPlayback);
-      enabled(els.seekForward, payload.canPlayback);
-      enabled(els.volumeDown, payload.canVolume);
-      enabled(els.volumeUp, payload.canVolume);
+      enabled(els.seekBack, payload.canSeek);
+      enabled(els.seekForward, payload.canSeek);
       enabled(els.streaming, payload.canToggleStreaming);
       enabled(els.streamingToggle, payload.canToggleStreaming);
       enabled(els.modeFocused, payload.connected);
@@ -1222,6 +2002,13 @@ const PANEL_HTML: &str = r#"<!doctype html>
       enabled(els.resumeDaemon, payload.canResumeDaemon);
       enabled(els.stopDaemon, payload.canStopDaemon);
 
+      vol.canVolume = payload.canVolume;
+      if (performance.now() > vol.localUntil) {
+        vol.local = null;
+      }
+      renderVolume();
+      syncProgress(payload);
+
       if (payload.error) {
         els.error.hidden = false;
         els.error.textContent = payload.error;
@@ -1231,10 +2018,24 @@ const PANEL_HTML: &str = r#"<!doctype html>
       }
     }
 
+    /* ---------- clicks ---------- */
+
     document.addEventListener("click", event => {
       const tab = event.target.closest("button[data-tab]");
       if (tab) {
         setTab(tab.dataset.tab);
+        return;
+      }
+
+      const mode = event.target.closest("button[data-mode]");
+      if (mode && !mode.disabled) {
+        const settings = currentPayload.settings;
+        const wantRadio = mode.dataset.mode === "radio";
+        if (wantRadio !== settings.radioMode) {
+          settings.radioMode = wantRadio;
+          send("set_radio_mode", wantRadio);
+          apply(currentPayload);
+        }
         return;
       }
 
@@ -1243,28 +2044,53 @@ const PANEL_HTML: &str = r#"<!doctype html>
       const action = button.dataset.action;
       const settings = currentPayload.settings;
 
+      // Setter clicks update currentPayload optimistically so rapid clicks compute
+      // from the newest value instead of the last poll; the next status payload
+      // remains authoritative and overwrites everything.
       if (action === "set_streaming") {
-        send(action, !settings.autoplayStreaming);
+        settings.autoplayStreaming = !settings.autoplayStreaming;
+        send(action, settings.autoplayStreaming);
+        apply(currentPayload);
       } else if (action === "toggle_shuffle" || action === "cycle_repeat") {
         send(action);
       } else if (action === "queue_play" || action === "queue_remove") {
         send(action, Number(button.dataset.position));
       } else if (action === "set_streaming_mode") {
+        settings.streamingMode = button.dataset.value;
         send(action, button.dataset.value);
+        apply(currentPayload);
       } else if (action === "set_ai_enabled") {
-        send(action, !settings.aiEnabled);
+        settings.aiEnabled = !settings.aiEnabled;
+        send(action, settings.aiEnabled);
+        apply(currentPayload);
       } else if (action === "set_radio_mode") {
-        send(action, !settings.radioMode);
+        settings.radioMode = !settings.radioMode;
+        send(action, settings.radioMode);
+        apply(currentPayload);
       } else if (action === "set_normalize") {
-        send(action, !settings.normalize);
+        settings.normalize = !settings.normalize;
+        send(action, settings.normalize);
+        apply(currentPayload);
       } else if (action === "set_gapless") {
-        send(action, !settings.gapless);
+        settings.gapless = !settings.gapless;
+        send(action, settings.gapless);
+        apply(currentPayload);
       } else if (action === "speed_delta") {
         const next = Math.max(5, Math.min(20, settings.speedTenths + Number(button.dataset.delta)));
-        send("set_speed", next);
+        if (next !== settings.speedTenths) {
+          settings.speedTenths = next;
+          settings.speedLabel = (next / 10).toFixed(1) + "x";
+          send("set_speed", next);
+          apply(currentPayload);
+        }
       } else if (action === "seek_delta") {
         const next = Math.max(1, Math.min(60, settings.seekSeconds + Number(button.dataset.delta)));
-        send("set_seek_seconds", next);
+        if (next !== settings.seekSeconds) {
+          settings.seekSeconds = next;
+          settings.seekLabel = next + "s";
+          send("set_seek_seconds", next);
+          apply(currentPayload);
+        }
       } else {
         send(action);
       }
@@ -1314,6 +2140,8 @@ mod tests {
             ],
             shuffle: true,
             repeat: Repeat::All,
+            elapsed_ms: Some(42_000),
+            duration_ms: Some(180_000),
         })
     }
 
@@ -1327,6 +2155,10 @@ mod tests {
         assert_eq!(payload.owner_label, "Standalone TUI");
         assert_eq!(payload.queue_label, "1 / 2");
         assert_eq!(payload.volume_label, "80%");
+        assert_eq!(payload.volume, 80);
+        assert_eq!(payload.elapsed_ms, Some(42_000));
+        assert_eq!(payload.duration_ms, Some(180_000));
+        assert!(payload.can_seek);
         assert_eq!(payload.queue.len(), 2);
         assert_eq!(payload.queue[0].title, "Song");
         assert!(payload.shuffle);
@@ -1354,6 +2186,9 @@ mod tests {
         assert_eq!(payload.queue_label, "Queue unavailable");
         assert!(!payload.can_playback);
         assert!(!payload.can_volume);
+        assert!(!payload.can_seek);
+        assert_eq!(payload.volume, 0);
+        assert_eq!(payload.elapsed_ms, None);
         assert!(payload.can_start_daemon);
         assert!(payload.can_resume_daemon);
         assert!(!payload.can_stop_daemon);
@@ -1375,6 +2210,8 @@ mod tests {
             queue: Vec::new(),
             shuffle: false,
             repeat: Default::default(),
+            elapsed_ms: None,
+            duration_ms: None,
         });
         let payload = payload_for_update(&update);
         assert_eq!(payload.title, "Nothing playing");
@@ -1467,24 +2304,90 @@ mod tests {
     }
 
     #[test]
+    fn ipc_message_parses_volume_seek_and_drag() {
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"set_volume","value":63}"#).unwrap(),
+            PanelCommand::SetVolume(63)
+        );
+        // The panel clamps out-of-range wheel values defensively on the Rust side too.
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"set_volume","value":100}"#).unwrap(),
+            PanelCommand::SetVolume(100)
+        );
+        assert!(parse_ipc_message(r#"{"action":"set_volume","value":-4}"#).is_err());
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"seek_to","value":91500}"#).unwrap(),
+            PanelCommand::SeekTo(91_500)
+        );
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"drag"}"#).unwrap(),
+            PanelCommand::Drag
+        );
+
+        assert_eq!(
+            PanelCommand::SetVolume(63).remote_command(),
+            Some(RemoteCommand::SetVolume { percent: 63 })
+        );
+        assert_eq!(
+            PanelCommand::SeekTo(91_500).remote_command(),
+            Some(RemoteCommand::SeekTo { ms: 91_500 })
+        );
+        assert_eq!(PanelCommand::Drag.remote_command(), None);
+        assert_eq!(PanelCommand::Drag.menu_action(), None);
+    }
+
+    #[test]
     fn scripts_escape_html_script_endings() {
         let mut update = playing_update();
         if let TrayState::Connected(status) = &mut update.state {
-            status.title = Some("</script><script>alert(1)</script>".to_string());
+            status.title = Some("</script><script>alert(1)</script><!--".to_string());
         }
         let html = html(&update);
-        assert!(html.contains("<\\/script>"));
+        assert!(html.contains(r"\u003c/script>\u003cscript>alert(1)"));
+        assert!(html.contains(r"\u003c!--"));
         assert!(!html.contains("</script><script>alert"));
 
         let script = update_script(&update);
-        assert!(script.contains("<\\/script>"));
+        assert!(script.contains(r"\u003c/script>\u003cscript>alert(1)"));
+        assert!(script.contains(r"\u003c!--"));
         assert!(!script.contains("</script><script>alert"));
     }
 
     #[test]
-    fn panel_html_renames_primary_streaming_control() {
-        assert!(PANEL_HTML.contains("Streaming"));
-        assert!(!PANEL_HTML.contains(">Radio</button>"));
+    fn panel_html_has_exactly_one_payload_slot() {
+        assert_eq!(PANEL_HTML.matches("__INITIAL_PAYLOAD__").count(), 1);
+    }
+
+    #[test]
+    fn idle_standalone_payload_cannot_resume() {
+        let mut update = playing_update();
+        if let TrayState::Connected(status) = &mut update.state {
+            status.title = None;
+            status.artist = None;
+            status.total = 0;
+            status.queue.clear();
+        }
+        let payload = payload_for_update(&update);
+        assert_eq!(payload.state_label, "Idle");
+        assert!(
+            !payload.can_resume_daemon,
+            "resume against a standalone TUI always dead-ends"
+        );
+        assert!(!payload.can_start_daemon);
+    }
+
+    #[test]
+    fn panel_html_exposes_mode_switch_and_bars() {
+        // The Music/Radio switch and both interactive bars must survive redesigns.
+        assert!(PANEL_HTML.contains("data-mode=\"music\""));
+        assert!(PANEL_HTML.contains("data-mode=\"radio\""));
+        assert!(PANEL_HTML.contains("data-action=\"set_radio_mode\""));
+        assert!(PANEL_HTML.contains("id=\"volumeBar\""));
+        assert!(PANEL_HTML.contains("id=\"progressBar\""));
+        assert!(PANEL_HTML.contains("addEventListener(\"wheel\""));
+        assert!(PANEL_HTML.contains("\"set_volume\""));
+        assert!(PANEL_HTML.contains("\"seek_to\""));
+        assert!(PANEL_HTML.contains("send(\"drag\")"));
     }
 
     #[test]

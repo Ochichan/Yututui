@@ -56,7 +56,6 @@ pub const EAGER: bool = false;
 /// Posted to the worker thread to drain the snapshot channel.
 const WM_APP_UPDATE: u32 = WM_APP + 1;
 /// Timeline refresh cadence while playing (SMTC doesn't interpolate; spec W-3).
-const TIMELINE_TIMER_ID: usize = 1;
 const TIMELINE_REFRESH_MS: u32 = 5_000;
 
 pub struct Backend {
@@ -120,7 +119,10 @@ struct Session {
     snapshot: MediaSnapshot,
     /// Stream reference for the current artwork, keyed by cache file.
     thumbnail: Option<(PathBuf, RandomAccessStreamReference)>,
-    timer_running: bool,
+    /// Live thread-timer id, or 0 when stopped. With a NULL hwnd, `SetTimer`
+    /// IGNORES the requested id and returns a fresh one — killing anything other
+    /// than the returned id silently fails and leaks a timer per play/pause cycle.
+    timer_id: usize,
 }
 
 fn worker(
@@ -310,7 +312,7 @@ fn init_session(sink: &CommandSink) -> Result<Session> {
             tokens,
             snapshot: MediaSnapshot::idle(),
             thumbnail: None,
-            timer_running: false,
+            timer_id: 0,
         })
     }
 }
@@ -433,13 +435,13 @@ impl Session {
                 .as_ref()
                 .is_some_and(|t| !t.is_live && t.duration.is_some());
         unsafe {
-            if want && !self.timer_running {
+            if want && self.timer_id == 0 {
                 // Thread timer (no window): WM_TIMER lands in the pump directly.
-                let _ = SetTimer(None, TIMELINE_TIMER_ID, TIMELINE_REFRESH_MS, None);
-                self.timer_running = true;
-            } else if !want && self.timer_running {
-                let _ = KillTimer(None, TIMELINE_TIMER_ID);
-                self.timer_running = false;
+                // The system assigns the id — the one KillTimer must receive.
+                self.timer_id = SetTimer(None, 0, TIMELINE_REFRESH_MS, None);
+            } else if !want && self.timer_id != 0 {
+                let _ = KillTimer(None, self.timer_id);
+                self.timer_id = 0;
             }
         }
     }
@@ -468,8 +470,8 @@ impl Session {
         }
         let _ = self.smtc.SetIsEnabled(false);
         unsafe {
-            if self.timer_running {
-                let _ = KillTimer(None, TIMELINE_TIMER_ID);
+            if self.timer_id != 0 {
+                let _ = KillTimer(None, self.timer_id);
             }
             let _ = DestroyWindow(self.hwnd);
         }

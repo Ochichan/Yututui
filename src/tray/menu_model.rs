@@ -263,6 +263,8 @@ mod tests {
             queue: Vec::new(),
             shuffle: false,
             repeat: Default::default(),
+            elapsed_ms: None,
+            duration_ms: None,
         }
     }
 

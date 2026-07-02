@@ -8,7 +8,7 @@ use std::thread;
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
-use tray_icon::menu::{CheckMenuItem, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
@@ -29,13 +29,16 @@ enum UserEvent {
     ShowMiniPlayer,
     Panel(PanelCommand),
     Menu(MenuAction),
+    /// The first daemon menu slot; whether it means Start or Stop depends on the
+    /// state at click time, so the decision lives in the app, not in the menu id.
+    DaemonPrimary,
     Refresh,
     StartupChanged,
     Quit,
 }
 
 pub fn run() -> Result<(), Box<dyn Error>> {
-    let _log_guard = init_file_logging();
+    let log_guard = init_file_logging();
     install_tray_panic_hook();
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -47,19 +50,13 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     MenuEvent::set_event_handler(Some({
         let proxy = proxy.clone();
         move |event: MenuEvent| {
-            if let Some(action) = action_from_menu_id(event.id()) {
-                let message = match action {
-                    MenuAction::ShowMiniPlayer => UserEvent::ShowMiniPlayer,
-                    MenuAction::Refresh => UserEvent::Refresh,
-                    MenuAction::QuitTray => UserEvent::Quit,
-                    other => UserEvent::Menu(other),
-                };
+            if let Some(message) = user_event_from_menu_id(event.id()) {
                 let _ = proxy.send_event(message);
             }
         }
     }));
 
-    let mut app = MacTrayApp::new(proxy.clone());
+    let mut app = MacTrayApp::new(proxy.clone(), log_guard);
 
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -91,6 +88,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             Event::UserEvent(UserEvent::Menu(action)) => {
                 app.handle_action(action);
             }
+            Event::UserEvent(UserEvent::DaemonPrimary) => {
+                app.handle_daemon_primary();
+            }
             Event::WindowEvent {
                 window_id,
                 event: WindowEvent::CloseRequested,
@@ -120,10 +120,17 @@ struct MacTrayApp {
     panel: Option<MiniPlayerPanel>,
     last_update: PollUpdate,
     poll_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    // Held until LoopDestroyed: tao's run() never returns (it exits the process), so
+    // dropping this in shutdown() is the only chance the non-blocking appender gets
+    // to flush the final log lines.
+    log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
 impl MacTrayApp {
-    fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+    fn new(
+        proxy: EventLoopProxy<UserEvent>,
+        log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+    ) -> Self {
         Self {
             proxy,
             tray: None,
@@ -131,6 +138,7 @@ impl MacTrayApp {
             panel: None,
             last_update: PollUpdate::disconnected(control::ControlError::NotRunning),
             poll_shutdown: None,
+            log_guard,
         }
     }
 
@@ -209,6 +217,21 @@ impl MacTrayApp {
         });
     }
 
+    fn handle_daemon_primary(&self) {
+        // One physical menu item whose meaning tracks the menu model: "Stop Music
+        // Daemon" while a daemon owns playback, otherwise "Start Music Daemon".
+        let daemon_owner = self
+            .last_update
+            .state
+            .status()
+            .is_some_and(|status| status.owner_mode == InstanceMode::Daemon);
+        if daemon_owner {
+            self.stop_daemon();
+        } else {
+            self.start_daemon(false);
+        }
+    }
+
     fn handle_action(&self, action: MenuAction) {
         match action {
             MenuAction::ShowMiniPlayer => {
@@ -254,16 +277,27 @@ impl MacTrayApp {
     }
 
     fn handle_panel_command(&self, command: PanelCommand) {
-        if command == PanelCommand::Hide {
-            if let Some(panel) = &self.panel {
-                panel.hide();
+        match command {
+            PanelCommand::Hide => {
+                if let Some(panel) = &self.panel {
+                    panel.hide();
+                }
             }
-            return;
-        }
-        if let Some(remote) = command.remote_command() {
-            self.send_panel_remote(remote, matches!(command, PanelCommand::SetStreaming(true)));
-        } else if let Some(action) = command.menu_action() {
-            self.handle_action(action);
+            PanelCommand::Drag => {
+                if let Some(panel) = &self.panel {
+                    panel.start_drag();
+                }
+            }
+            command => {
+                if let Some(remote) = command.remote_command() {
+                    self.send_panel_remote(
+                        remote,
+                        matches!(command, PanelCommand::SetStreaming(true)),
+                    );
+                } else if let Some(action) = command.menu_action() {
+                    self.handle_action(action);
+                }
+            }
         }
     }
 
@@ -359,26 +393,36 @@ impl MacTrayApp {
         if let Some(tx) = self.poll_shutdown.take() {
             let _ = tx.send(());
         }
-        MenuEvent::set_event_handler::<fn(MenuEvent)>(None);
+        // Flush the log before tao exits the process. (muda's event handler lives in
+        // a set-once cell — unsetting it here was always a no-op, so we don't.)
+        drop(self.log_guard.take());
     }
 }
 
 struct MacMenu {
-    root: Submenu,
+    // `Menu` root for parity with the Windows backend, where a `Submenu` root is an
+    // outright crash (muda WM_NCACTIVATE type confusion); on macOS both map to an
+    // NSMenu, so this is behaviour-neutral and keeps one shape to reason about.
+    root: Menu,
     track: MenuItem,
     state: MenuItem,
     startup: CheckMenuItem,
+    // Single handle for the first daemon slot. Its action flips between StartDaemon
+    // and StopDaemon with the state, so an action-keyed handle map would strand it:
+    // whichever variant was absent at build time could never appear afterwards.
+    daemon_primary: MenuItem,
     actions: HashMap<MenuAction, MenuItem>,
 }
 
 impl MacMenu {
     fn new(state: &TrayState) -> Result<Self, Box<dyn Error>> {
         let model = menu_model::build_menu(state);
-        let root = Submenu::new("YtmTui", true);
+        let root = Menu::new();
         let mut action_items = HashMap::new();
         let mut track = None;
         let mut state_item = None;
         let mut startup_item = None;
+        let mut daemon_primary = None;
         let mut disabled_index = 0usize;
 
         for entry in model.entries {
@@ -388,6 +432,17 @@ impl MacMenu {
                     if item.action == Some(MenuAction::ToggleStartup) {
                         let menu_item = make_startup_menu_item(&item);
                         startup_item = Some(menu_item.clone());
+                        root.append(&menu_item)?;
+                        continue;
+                    }
+                    if is_daemon_primary(item.action) {
+                        let menu_item = MenuItem::with_id(
+                            MenuId::new(DAEMON_PRIMARY_ID),
+                            &item.label,
+                            item.enabled,
+                            None,
+                        );
+                        daemon_primary = Some(menu_item.clone());
                         root.append(&menu_item)?;
                         continue;
                     }
@@ -412,6 +467,7 @@ impl MacMenu {
             track: track.ok_or("missing track menu item")?,
             state: state_item.ok_or("missing state menu item")?,
             startup: startup_item.ok_or("missing startup menu item")?,
+            daemon_primary: daemon_primary.ok_or("missing daemon menu item")?,
             actions: action_items,
         })
     }
@@ -425,8 +481,15 @@ impl MacMenu {
             };
             if let Some(action) = item.action {
                 if action == MenuAction::ToggleStartup {
+                    // Label only. Checked/enabled refresh on StartupChanged events —
+                    // hitting the LaunchAgent plist on every status poll was main-
+                    // thread disk IO plus report_error spam on persistent failure.
                     self.startup.set_text(item.label);
-                    self.apply_startup_status();
+                    continue;
+                }
+                if is_daemon_primary(Some(action)) {
+                    self.daemon_primary.set_text(item.label);
+                    self.daemon_primary.set_enabled(item.enabled);
                     continue;
                 }
                 if let Some(handle) = self.actions.get(&action) {
@@ -479,6 +542,28 @@ fn make_startup_menu_item(item: &ModelItem) -> CheckMenuItem {
         checked,
         None,
     )
+}
+
+const DAEMON_PRIMARY_ID: &str = "ytt-tray:daemon_primary";
+
+fn is_daemon_primary(action: Option<MenuAction>) -> bool {
+    matches!(
+        action,
+        Some(MenuAction::StartDaemon) | Some(MenuAction::StopDaemon)
+    )
+}
+
+fn user_event_from_menu_id(id: &MenuId) -> Option<UserEvent> {
+    if id.as_ref() == DAEMON_PRIMARY_ID {
+        return Some(UserEvent::DaemonPrimary);
+    }
+    let action = action_from_menu_id(id)?;
+    Some(match action {
+        MenuAction::ShowMiniPlayer => UserEvent::ShowMiniPlayer,
+        MenuAction::Refresh => UserEvent::Refresh,
+        MenuAction::QuitTray => UserEvent::Quit,
+        other => UserEvent::Menu(other),
+    })
 }
 
 fn action_menu_id(action: MenuAction) -> MenuId {
@@ -623,9 +708,26 @@ fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 }
 
 fn install_tray_panic_hook() {
+    // panic = "abort" kills the process before tracing-appender's worker thread can
+    // flush, so mirror every panic synchronously into a plain file next to the log.
+    let panic_log = directories::ProjectDirs::from("", "", "ytm-tui")
+        .map(|dirs| dirs.cache_dir().join("ytt-tray-panic.log"));
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         tracing::error!(target: "ytt_tray", panic = %info, "ytt-tray panic");
+        if let Some(path) = &panic_log
+            && let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+        {
+            use std::io::Write;
+            let unix_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or_default();
+            let _ = writeln!(file, "[unix {unix_secs}] ytt-tray panic: {info}");
+        }
         previous(info);
     }));
 }
@@ -706,6 +808,8 @@ mod tests {
             queue: Vec::new(),
             shuffle: false,
             repeat: Default::default(),
+            elapsed_ms: None,
+            duration_ms: None,
         });
         assert_eq!(tooltip_for_state(&state), "Paused: Artist - Song");
         let idle_daemon = TrayState::Connected(StatusSnapshot {
@@ -721,6 +825,8 @@ mod tests {
             queue: Vec::new(),
             shuffle: false,
             repeat: Default::default(),
+            elapsed_ms: None,
+            duration_ms: None,
         });
         assert_eq!(tooltip_for_state(&idle_daemon), "ytm-tui daemon idle");
         assert_eq!(
@@ -732,5 +838,13 @@ mod tests {
     #[test]
     fn template_icon_is_valid_rgba() {
         assert!(template_icon().is_ok());
+    }
+
+    #[test]
+    fn daemon_primary_menu_id_dispatches_state_dependent_event() {
+        assert!(matches!(
+            user_event_from_menu_id(&MenuId::new(DAEMON_PRIMARY_ID)),
+            Some(UserEvent::DaemonPrimary)
+        ));
     }
 }

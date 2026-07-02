@@ -6,6 +6,7 @@ use std::fmt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::thread;
 
 use crate::util::process::{self, ProcessProfile};
 
@@ -84,7 +85,11 @@ pub fn resolve_ytt_path() -> PathBuf {
     resolve_ytt_path_from(
         std::env::current_exe().ok().as_deref(),
         std::env::var_os("PATH").as_deref(),
-        std::env::var_os("HOME").as_deref(),
+        // Windows sets USERPROFILE, not HOME; accept either so the per-user
+        // candidate dirs below stay reachable everywhere.
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .as_deref(),
     )
     .unwrap_or_else(|| PathBuf::from(ytt_binary_name()))
 }
@@ -133,9 +138,37 @@ fn platform_ytt_candidates(home_env: Option<&OsStr>) -> impl Iterator<Item = Pat
     candidates.into_iter()
 }
 
-#[cfg(not(target_os = "macos"))]
-fn platform_ytt_candidates(_: Option<&OsStr>) -> impl Iterator<Item = PathBuf> {
-    std::iter::empty()
+#[cfg(windows)]
+fn platform_ytt_candidates(home_env: Option<&OsStr>) -> impl Iterator<Item = PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(home) = home_env {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".cargo").join("bin").join(ytt_binary_name()));
+        // Scoop's default shim directory — a startup-launched tray can see a PATH
+        // that predates the shell profile, so probe it directly too.
+        candidates.push(home.join("scoop").join("shims").join(ytt_binary_name()));
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(
+            PathBuf::from(local)
+                .join("Microsoft")
+                .join("WinGet")
+                .join("Links")
+                .join(ytt_binary_name()),
+        );
+    }
+    candidates.into_iter()
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn platform_ytt_candidates(home_env: Option<&OsStr>) -> impl Iterator<Item = PathBuf> {
+    let mut candidates = vec![PathBuf::from("/usr/local/bin").join(ytt_binary_name())];
+    if let Some(home) = home_env {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".cargo/bin").join(ytt_binary_name()));
+        candidates.push(home.join(".local/bin").join(ytt_binary_name()));
+    }
+    candidates.into_iter()
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -176,7 +209,16 @@ pub fn open_tui_with_path(ytt_path: &Path) -> Result<LaunchPlan, LaunchError> {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         match cmd.spawn() {
-            Ok(_) => return Ok(plan),
+            Ok(mut child) => {
+                // Reap the launcher when it exits — a dropped Child sits as a zombie
+                // for the whole life of the long-running tray process on Unix.
+                let _ = thread::Builder::new()
+                    .name("ytt-tray-reap".to_string())
+                    .spawn(move || {
+                        let _ = child.wait();
+                    });
+                return Ok(plan);
+            }
             Err(e) => {
                 if let Some(path) = cleanup {
                     let _ = std::fs::remove_file(path);
@@ -239,7 +281,11 @@ fn windows_candidate_plans(ytt_path: &Path) -> Vec<LaunchPlan> {
                 format!("& {}", powershell_quote(&path)),
             ],
         ),
-        LaunchPlan::new("cmd.exe", vec!["/K".to_string(), cmd_quote(&path)]),
+        // The bare path, not a pre-quoted one: std::process already quotes an arg
+        // containing spaces once, so pre-quoting handed cmd.exe `"\"…\""` — a command
+        // it can never resolve. With a single level of quotes, cmd's two-quote rule
+        // runs the path as-is.
+        LaunchPlan::new("cmd.exe", vec!["/K".to_string(), path]),
     ]
 }
 
@@ -315,11 +361,6 @@ fn write_macos_command_script(ytt_path: &Path) -> std::io::Result<PathBuf> {
 #[cfg(any(target_os = "windows", test))]
 fn powershell_quote(input: &str) -> String {
     format!("'{}'", input.replace('\'', "''"))
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn cmd_quote(input: &str) -> String {
-    format!("\"{}\"", input.replace('"', "\"\""))
 }
 
 #[cfg(test)]
@@ -431,10 +472,7 @@ mod tests {
             plans[1].args,
             vec!["-NoExit", "-Command", r"& 'C:\Users\Ochi Music\ytt.exe'"]
         );
-        assert_eq!(
-            plans[2].args,
-            vec!["/K", r#""C:\Users\Ochi Music\ytt.exe""#]
-        );
+        assert_eq!(plans[2].args, vec!["/K", r"C:\Users\Ochi Music\ytt.exe"]);
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
