@@ -128,6 +128,59 @@ Launching `ytt` twice won't start a second player fighting over your speakers �
 
 ---
 
+## Scrobbling (Last.fm / ListenBrainz)
+
+`ytt` scrobbles what you actually listen to — Now Playing updates, the standard
+half-track/4-minute rule, love/unlove sync for in-app likes, and a durable offline queue
+(listens recorded on a plane are delivered when you're back online). Works in the TUI and
+the headless daemon alike, independent of the OS media-controls toggle.
+
+- **Last.fm** — Settings → **Accounts** → *Last.fm account* → approve in the browser. Or
+  headless: `ytt auth lastfm`. Self-built binaries without embedded API credentials can
+  set their own via `scrobble.lastfm.api_key` / `api_secret` in `config.json`
+  ([create an API account](https://www.last.fm/api/account/create)).
+- **ListenBrainz** — paste your [user token](https://listenbrainz.org/settings/) into
+  Settings → Accounts, or run `ytt auth listenbrainz <token>`. Self-hosted instances:
+  set `scrobble.listenbrainz.api_url`.
+- Toggles for each service, like→love sync, and local-file scrobbling live on the same
+  tab. Queued-but-undelivered listens sit in `scrobble-queue.jsonl` next to your config.
+
+## Spotify import / export
+
+Move playlists between Spotify, YouTube Music, and plain files — with checkpointed,
+resumable jobs and a match report for anything ambiguous:
+
+```sh
+ytt auth spotify --client-id <YOUR-CLIENT-ID>   # one-time PKCE browser connect
+ytt transfer list spotify                        # find the playlist id
+ytt transfer import <spotify-url-or-id>          # → a new YTM playlist
+ytt transfer import liked --to likes             # Spotify likes → YTM likes (order kept)
+ytt transfer import backup.csv --to-playlist "Restored"   # Exportify CSV / ytm-tui JSON
+ytt transfer export ytm:<id> --to spotify        # the other direction
+ytt transfer backup --dir ~/music-backup --csv   # every YTM playlist → JSON (+CSV)
+ytt transfer resume <job-id>                     # continue after a rate-limit/abort
+```
+
+Or stay in the TUI: Settings → **Accounts** → *Import from Spotify…* picks a playlist and
+imports it while you keep listening; progress rides the status line.
+
+**Spotify setup (one time).** Spotify Development-Mode apps only serve accounts on their
+own allowlist, so you bring your own (free) app: create one at
+[developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), add the
+redirect URI `http://127.0.0.1:9271/callback` **exactly** (the loopback IP, not
+`localhost`; change the port via `spotify.redirect_port` if 9271 is taken), add your own
+Spotify account under *User Management*, and paste the app's Client ID into
+Settings → Accounts (or `ytt auth spotify --client-id …`). There is no client secret —
+the PKCE flow doesn't use one.
+
+Matching is metadata-based (NFKC-normalized, CJK-safe titles + artist + duration + album
+tie-breaks). Anything under the accept threshold lands in the job report as *ambiguous*
+or *not found* instead of being silently guessed; re-run with `--take-best`,
+`--min-score`, or fix by hand. Big playlists: run with `--dry-run`, review, then
+`ytt transfer resume <job-id>` to write.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -138,6 +191,8 @@ Launching `ytt` twice won't start a second player fighting over your speakers �
 | A specific song won't play | It may need sign-in — see Cookies below. |
 | No album art | Off by default, and terminal-dependent. Turn on **Album art** (Settings → General) and restart. |
 | DJ Gem won't respond | Add a free Gemini key in Settings → DJ Gem and switch **Enable DJ Gem** on. |
+| Spotify returns 403 on connect/import | Your app is in Development Mode: add your own Spotify account under *User Management* in the developer dashboard, and re-check the Client ID. |
+| Scrobbles not appearing | Check Settings → Accounts is connected and enabled; offline listens flush automatically (they wait in `scrobble-queue.jsonl`). The daemon reads accounts at start — restart it after connecting. |
 | Remapped a key into chaos | Settings → General → **Reset keybindings**. |
 
 Still stuck? [Open an issue](https://github.com/Ochichan/ytm-tui/issues) and mention your OS.
@@ -146,7 +201,9 @@ Still stuck? [Open an issue](https://github.com/Ochichan/ytm-tui/issues) and men
 
 ## Sign-in & file locations
 
-**Cookies (optional).** You almost certainly don't need this — public songs search and play fine anonymously. To reach members-only or region-locked tracks, export your YouTube Music cookies in **Netscape format** to `cookies.txt` (macOS: `~/Music/ytm-tui/cookies.txt`, Windows: `%USERPROFILE%\Music\ytm-tui\cookies.txt`) and restart `ytt`. **Treat that file like a password.** You can also point to it in Settings → General.
+**Cookies (optional).** You almost certainly don't need this — public songs search and play fine anonymously. To reach members-only or region-locked tracks (and for playlist transfer / account playlists), export your YouTube Music cookies in **Netscape format** to `cookies.txt` (macOS: `~/Music/ytm-tui/cookies.txt`, Windows: `%USERPROFILE%\Music\ytm-tui\cookies.txt`) and restart `ytt`. **Treat that file like a password.** You can also point to it in Settings → General.
+
+Export them the *incognito way* or they die within minutes: open a **private/incognito window**, sign in to music.youtube.com there, export `cookies.txt` from that tab (allow your exporter extension in incognito first), then **close the incognito window**. A session whose browser is gone never gets rotated or signed out — exports from your everyday browser stop working as soon as it rotates the session, and heavy tool use can even sign that browser out. A good export has `SAPISID`/`SID` lines in it; visitor-only exports (no login) won't work and `ytt` will say so.
 
 **Config & downloads.**
 - Config: `~/Library/Application Support/ytm-tui/config.json` (macOS) · `~/.config/ytm-tui/config.json` (Linux) · `%APPDATA%\ytm-tui\config.json` (Windows).

@@ -1,6 +1,7 @@
 //! Small, dependency-free helpers shared across the app.
 
 pub mod backpressure;
+pub mod browser;
 pub mod format;
 pub mod http;
 pub mod process;

@@ -45,15 +45,19 @@ pub enum SettingsTab {
     /// Theme preset, color roles, and animation toggles, as three sub-categories.
     Graphics,
     Ai,
+    /// External accounts: Last.fm / ListenBrainz scrobbling (and later Spotify), as
+    /// per-service sub-categories.
+    Accounts,
 }
 
 impl SettingsTab {
-    pub const ALL: [SettingsTab; 5] = [
+    pub const ALL: [SettingsTab; 6] = [
         SettingsTab::General,
         SettingsTab::Playback,
         SettingsTab::Keys,
         SettingsTab::Graphics,
         SettingsTab::Ai,
+        SettingsTab::Accounts,
     ];
 
     pub fn label(self) -> &'static str {
@@ -63,6 +67,7 @@ impl SettingsTab {
             SettingsTab::Keys => t!("Hotkeys", "핫키"),
             SettingsTab::Graphics => t!("Graphics", "그래픽"),
             SettingsTab::Ai => t!("DJ Gem", "DJ Gem"),
+            SettingsTab::Accounts => t!("Accounts", "계정"),
         }
     }
 
@@ -154,6 +159,19 @@ impl SettingsTab {
                 Field::AutoplayStreaming,
                 Field::StreamingMode,
             ],
+            // Per-service account sections; see `sections` for the headers.
+            SettingsTab::Accounts => vec![
+                Field::LastfmEnabled,
+                Field::LastfmConnect,
+                Field::LastfmLoveSync,
+                Field::ListenBrainzEnabled,
+                Field::ListenBrainzToken,
+                Field::SpotifyClientId,
+                Field::SpotifyRedirectPort,
+                Field::SpotifyConnect,
+                Field::SpotifyImport,
+                Field::ScrobbleLocalFiles,
+            ],
             // The Keys tab is a list of remappable bindings, not `Field`s; it has its own
             // navigation and rendering paths (see `crate::keymap::editable_entries`).
             SettingsTab::Keys => Vec::new(),
@@ -173,6 +191,12 @@ impl SettingsTab {
                 (t!("Theme", "테마"), 3),
                 (t!("Colors", "색상"), ThemeRole::ALL.len()),
                 (t!("Animations", "애니메이션"), 15),
+            ],
+            SettingsTab::Accounts => vec![
+                ("Last.fm", 3),
+                ("ListenBrainz", 2),
+                ("Spotify", 4),
+                (t!("Scrobbling", "스크로블링"), 1),
             ],
             _ => Vec::new(),
         }
@@ -262,6 +286,26 @@ pub enum Field {
     AnimVisualizer,
     AnimStarfield,
     AnimBounce,
+    // Accounts
+    /// Scrobble to Last.fm (kept separate from connecting, so the session survives an off).
+    LastfmEnabled,
+    /// A button: starts the browser authorization flow, or disconnects when connected.
+    LastfmConnect,
+    /// Mirror in-app like/unlike to Last.fm love/unlove.
+    LastfmLoveSync,
+    ListenBrainzEnabled,
+    /// The user token from listenbrainz.org/settings (masked like the API key).
+    ListenBrainzToken,
+    /// Scrobble local files too (when they carry title + artist metadata).
+    ScrobbleLocalFiles,
+    /// The user's own Spotify app Client ID (a public identifier, not a secret).
+    SpotifyClientId,
+    /// Loopback port — must match the app's registered redirect URI.
+    SpotifyRedirectPort,
+    /// A button: run the PKCE browser flow, or disconnect when connected.
+    SpotifyConnect,
+    /// A button: list Spotify playlists and import the picked one.
+    SpotifyImport,
 }
 
 /// How a field is edited / rendered.
@@ -286,6 +330,8 @@ pub enum SettingsConfirm {
     ResetKeybindings,
     ResetAll,
     ClearRomanizedTitleCache,
+    LastfmDisconnect,
+    SpotifyDisconnect,
 }
 
 impl SettingsConfirm {
@@ -300,6 +346,12 @@ impl SettingsConfirm {
             }
             SettingsConfirm::ClearRomanizedTitleCache => {
                 t!(" Confirm clear title cache ", " 제목 캐시 삭제 확인 ")
+            }
+            SettingsConfirm::LastfmDisconnect => {
+                t!(" Confirm Last.fm disconnect ", " Last.fm 연결 해제 확인 ")
+            }
+            SettingsConfirm::SpotifyDisconnect => {
+                t!(" Confirm Spotify disconnect ", " Spotify 연결 해제 확인 ")
             }
         }
     }
@@ -328,6 +380,12 @@ impl SettingsConfirm {
                     "로마자 제목 캐시를 삭제할까요?"
                 )
             }
+            SettingsConfirm::LastfmDisconnect => {
+                t!("Disconnect Last.fm?", "Last.fm 연결을 해제할까요?")
+            }
+            SettingsConfirm::SpotifyDisconnect => {
+                t!("Disconnect Spotify?", "Spotify 연결을 해제할까요?")
+            }
         }
     }
 
@@ -353,6 +411,14 @@ impl SettingsConfirm {
                 "Only generated title/artist overlays are removed.",
                 "생성된 제목/아티스트 표시 캐시만 삭제됩니다."
             ),
+            SettingsConfirm::LastfmDisconnect => t!(
+                "Scrobbling stops; queued scrobbles are kept until you reconnect.",
+                "스크로블이 중단됩니다. 대기 중 스크로블은 재연결까지 보관돼요."
+            ),
+            SettingsConfirm::SpotifyDisconnect => t!(
+                "Removes the saved token; the Client ID stays configured.",
+                "저장된 토큰이 삭제됩니다. 클라이언트 ID는 유지돼요."
+            ),
         }
     }
 }
@@ -365,6 +431,9 @@ impl Field {
             | Field::AudiusAppName
             | Field::JamendoClientId
             | Field::ApiKey
+            | Field::ListenBrainzToken
+            | Field::SpotifyClientId
+            | Field::SpotifyRedirectPort
             | Field::ThemeColor(_) => FieldKind::Text,
             Field::Mouse
             | Field::AlbumArt
@@ -398,7 +467,11 @@ impl Field {
             | Field::AnimDonut
             | Field::AnimVisualizer
             | Field::AnimStarfield
-            | Field::AnimBounce => FieldKind::Toggle,
+            | Field::AnimBounce
+            | Field::LastfmEnabled
+            | Field::LastfmLoveSync
+            | Field::ListenBrainzEnabled
+            | Field::ScrobbleLocalFiles => FieldKind::Toggle,
             Field::Language
             | Field::SearchSource
             | Field::StreamingSource
@@ -409,9 +482,12 @@ impl Field {
             Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
                 FieldKind::Slider
             }
-            Field::ResetKeybindings | Field::ResetAll | Field::ClearRomanizedTitleCache => {
-                FieldKind::Button
-            }
+            Field::ResetKeybindings
+            | Field::ResetAll
+            | Field::ClearRomanizedTitleCache
+            | Field::LastfmConnect
+            | Field::SpotifyConnect
+            | Field::SpotifyImport => FieldKind::Button,
         }
     }
 
@@ -503,12 +579,26 @@ impl Field {
             Field::AnimVisualizer => t!("Visualizer", "비주얼라이저").to_owned(),
             Field::AnimStarfield => t!("Starfield / notes", "별·음표").to_owned(),
             Field::AnimBounce => t!("Bouncing logo", "튕기는 로고").to_owned(),
+            Field::LastfmEnabled => t!("Scrobble to Last.fm", "Last.fm 스크로블").to_owned(),
+            Field::LastfmConnect => t!("Last.fm account", "Last.fm 계정").to_owned(),
+            Field::LastfmLoveSync => t!("Sync likes as loves", "좋아요를 love로 동기화").to_owned(),
+            Field::ListenBrainzEnabled => {
+                t!("Scrobble to ListenBrainz", "ListenBrainz 스크로블").to_owned()
+            }
+            Field::ListenBrainzToken => t!("User token", "사용자 토큰").to_owned(),
+            Field::ScrobbleLocalFiles => t!("Scrobble local files", "로컬 파일 스크로블").to_owned(),
+            Field::SpotifyClientId => t!("Client ID", "클라이언트 ID").to_owned(),
+            Field::SpotifyRedirectPort => t!("Redirect port", "리다이렉트 포트").to_owned(),
+            Field::SpotifyConnect => t!("Spotify account", "Spotify 계정").to_owned(),
+            Field::SpotifyImport => {
+                t!("Import from Spotify…", "Spotify에서 가져오기…").to_owned()
+            }
         }
     }
 
-    /// Whether the field's value must be hidden when displayed (the API key).
+    /// Whether the field's value must be hidden when displayed (keys / tokens).
     pub fn is_secret(self) -> bool {
-        matches!(self, Field::ApiKey)
+        matches!(self, Field::ApiKey | Field::ListenBrainzToken)
     }
 }
 
@@ -564,6 +654,26 @@ pub struct SettingsDraft {
     /// Player-view animation toggles (the Animations tab). Edited in place; the whole struct
     /// is copied into `Config` on save. See [`AnimationsConfig`].
     pub animations: AnimationsConfig,
+    // Accounts ----------------------------------------------------------------
+    pub lastfm_enabled: bool,
+    pub lastfm_love_sync: bool,
+    /// The stored session key; not edited directly (the Connect flow / disconnect set it),
+    /// carried in the draft so closing the screen round-trips it via `apply_to`.
+    pub lastfm_session_key: String,
+    /// Display-only: whose account the session belongs to (set by the Connect flow).
+    pub lastfm_username: String,
+    pub listenbrainz_enabled: bool,
+    /// The ListenBrainz user token (masked like the API key).
+    pub listenbrainz_token: String,
+    pub scrobble_local_files: bool,
+    // Spotify (transfer) -------------------------------------------------------
+    pub spotify_client_id: String,
+    /// Edited as text; validated + parsed on apply.
+    pub spotify_redirect_port: String,
+    /// Display-only: whether a saved token exists (checked when the screen opens) /
+    /// the display name once a connect flow completes this session.
+    pub spotify_connected: bool,
+    pub spotify_username: String,
 }
 
 impl SettingsDraft {
@@ -674,6 +784,64 @@ impl SettingsDraft {
                     t!("***configured***", "***저장됨***").to_owned()
                 }
             }
+            Field::LastfmEnabled => toggle_str(self.lastfm_enabled),
+            // The Connect button doubles as the connection status line.
+            Field::LastfmConnect => {
+                if self.lastfm_session_key.trim().is_empty() {
+                    t!("↵ connect in browser", "↵ Enter로 브라우저 연결").to_owned()
+                } else if self.lastfm_username.trim().is_empty() {
+                    t!("connected · ↵ disconnect", "연결됨 · ↵ 연결 해제").to_owned()
+                } else if crate::i18n::is_korean() {
+                    format!("{} 연결됨 · ↵ 연결 해제", self.lastfm_username)
+                } else {
+                    format!("connected as {} · ↵ disconnect", self.lastfm_username)
+                }
+            }
+            Field::LastfmLoveSync => toggle_str(self.lastfm_love_sync),
+            Field::ListenBrainzEnabled => toggle_str(self.listenbrainz_enabled),
+            Field::ListenBrainzToken => {
+                if self.listenbrainz_token.trim().is_empty() {
+                    t!("(none)", "(없음)").to_owned()
+                } else {
+                    t!("***configured***", "***저장됨***").to_owned()
+                }
+            }
+            Field::ScrobbleLocalFiles => toggle_str(self.scrobble_local_files),
+            Field::SpotifyClientId => {
+                if self.spotify_client_id.trim().is_empty() {
+                    t!("(none — create an app at developer.spotify.com)", "(없음 — developer.spotify.com에서 앱 생성)")
+                        .to_owned()
+                } else {
+                    self.spotify_client_id.clone()
+                }
+            }
+            Field::SpotifyRedirectPort => {
+                if self.spotify_redirect_port.trim().is_empty() {
+                    format!(
+                        "({}: {})",
+                        t!("default", "기본값"),
+                        crate::config::SPOTIFY_REDIRECT_PORT_DEFAULT
+                    )
+                } else {
+                    self.spotify_redirect_port.clone()
+                }
+            }
+            Field::SpotifyConnect => {
+                if !self.spotify_connected {
+                    t!("↵ connect in browser", "↵ Enter로 브라우저 연결").to_owned()
+                } else if self.spotify_username.trim().is_empty() {
+                    t!("connected · ↵ disconnect", "연결됨 · ↵ 연결 해제").to_owned()
+                } else if crate::i18n::is_korean() {
+                    format!("{} 연결됨 · ↵ 연결 해제", self.spotify_username)
+                } else {
+                    format!("connected as {} · ↵ disconnect", self.spotify_username)
+                }
+            }
+            Field::SpotifyImport => t!(
+                "↵ pick a playlist (↵ again cancels a running import)",
+                "↵ 플레이리스트 선택 (실행 중엔 ↵로 취소)"
+            )
+            .to_owned(),
         }
     }
 
@@ -687,6 +855,9 @@ impl SettingsDraft {
             Field::AudiusAppName => self.search.audius_app_name.as_deref(),
             Field::JamendoClientId => self.search.jamendo_client_id.as_deref(),
             Field::ApiKey => Some(&self.gemini_api_key),
+            Field::ListenBrainzToken => Some(&self.listenbrainz_token),
+            Field::SpotifyClientId => Some(&self.spotify_client_id),
+            Field::SpotifyRedirectPort => Some(&self.spotify_redirect_port),
             Field::ThemeColor(role) => self.theme.overrides.get(role.id()).map(String::as_str),
             _ => None,
         }
@@ -733,6 +904,16 @@ impl SettingsDraft {
             cfg.language = self.language;
         }
         cfg.animations = self.animations;
+        cfg.scrobble.lastfm.enabled = Some(self.lastfm_enabled);
+        cfg.scrobble.lastfm.love_sync = Some(self.lastfm_love_sync);
+        cfg.scrobble.lastfm.session_key = blank_to_none(&self.lastfm_session_key);
+        cfg.scrobble.lastfm.username = blank_to_none(&self.lastfm_username);
+        cfg.scrobble.listenbrainz.enabled = Some(self.listenbrainz_enabled);
+        cfg.scrobble.listenbrainz.token = blank_to_none(&self.listenbrainz_token);
+        cfg.scrobble.local_files = Some(self.scrobble_local_files);
+        cfg.spotify.client_id = blank_to_none(&self.spotify_client_id);
+        // Invalid port text falls back to the default rather than persisting garbage.
+        cfg.spotify.redirect_port = self.spotify_redirect_port.trim().parse::<u16>().ok();
     }
 }
 
@@ -854,6 +1035,17 @@ mod tests {
             retro_mode: false,
             language: Language::English,
             animations: AnimationsConfig::default(),
+            lastfm_enabled: true,
+            lastfm_love_sync: true,
+            lastfm_session_key: String::new(),
+            lastfm_username: String::new(),
+            listenbrainz_enabled: true,
+            listenbrainz_token: String::new(),
+            scrobble_local_files: true,
+            spotify_client_id: String::new(),
+            spotify_redirect_port: String::new(),
+            spotify_connected: false,
+            spotify_username: String::new(),
         }
     }
 
@@ -863,8 +1055,28 @@ mod tests {
         assert_eq!(SettingsTab::Playback.stepped(true), SettingsTab::Keys);
         assert_eq!(SettingsTab::Keys.stepped(true), SettingsTab::Graphics);
         assert_eq!(SettingsTab::Graphics.stepped(true), SettingsTab::Ai);
-        assert_eq!(SettingsTab::Ai.stepped(true), SettingsTab::General); // wraps
-        assert_eq!(SettingsTab::General.stepped(false), SettingsTab::Ai); // wraps back
+        assert_eq!(SettingsTab::Ai.stepped(true), SettingsTab::Accounts);
+        assert_eq!(SettingsTab::Accounts.stepped(true), SettingsTab::General); // wraps
+        assert_eq!(SettingsTab::General.stepped(false), SettingsTab::Accounts); // wraps back
+    }
+
+    #[test]
+    fn accounts_tab_sections_partition_its_fields() {
+        let _guard = crate::i18n::lock_for_test();
+        let f = SettingsTab::Accounts.fields();
+        let sections = SettingsTab::Accounts.sections();
+        // Section counts must partition the field list exactly (the view walks them in lockstep).
+        assert_eq!(sections.iter().map(|(_, n)| n).sum::<usize>(), f.len());
+        assert_eq!(f[0], Field::LastfmEnabled);
+        assert_eq!(Field::LastfmConnect.kind(), FieldKind::Button);
+        assert_eq!(Field::ListenBrainzToken.kind(), FieldKind::Text);
+        assert!(Field::ListenBrainzToken.is_secret());
+        // The connect row doubles as the status line: it must reflect the session state.
+        let mut d = base_draft();
+        assert!(d.value_display(Field::LastfmConnect).contains('↵'));
+        d.lastfm_session_key = "sk".to_owned();
+        d.lastfm_username = "listener".to_owned();
+        assert!(d.value_display(Field::LastfmConnect).contains("listener"));
     }
 
     #[test]
@@ -1143,6 +1355,17 @@ mod tests {
                 pause_unfocused: false,
                 ..Default::default()
             },
+            lastfm_enabled: false,
+            lastfm_love_sync: false,
+            lastfm_session_key: "sk-abc".to_owned(),
+            lastfm_username: "listener".to_owned(),
+            listenbrainz_enabled: true,
+            listenbrainz_token: "lb-tok".to_owned(),
+            scrobble_local_files: false,
+            spotify_client_id: "  spotify-cid  ".to_owned(),
+            spotify_redirect_port: "9333".to_owned(),
+            spotify_connected: true,
+            spotify_username: "listener".to_owned(),
         };
 
         let mut cfg = Config::default();
@@ -1171,6 +1394,15 @@ mod tests {
         assert_eq!(cfg.media_controls, Some(false));
         assert_eq!(cfg.autoplay_streaming, Some(true));
         assert_eq!(cfg.streaming.mode, StreamingMode::Discovery);
+        assert_eq!(cfg.scrobble.lastfm.enabled, Some(false));
+        assert_eq!(cfg.scrobble.lastfm.love_sync, Some(false));
+        assert_eq!(cfg.scrobble.lastfm.session_key.as_deref(), Some("sk-abc"));
+        assert_eq!(cfg.scrobble.lastfm.username.as_deref(), Some("listener"));
+        assert_eq!(cfg.scrobble.listenbrainz.enabled, Some(true));
+        assert_eq!(cfg.scrobble.listenbrainz.token.as_deref(), Some("lb-tok"));
+        assert_eq!(cfg.scrobble.local_files, Some(false));
+        assert_eq!(cfg.spotify.client_id.as_deref(), Some("spotify-cid"));
+        assert_eq!(cfg.spotify.redirect_port, Some(9333));
         assert_eq!(cfg.eq_preset, EqPreset::Custom);
         assert_eq!(cfg.eq_bands, Some(bands));
         assert_eq!(cfg.normalize, Some(true));

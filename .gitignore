@@ -1,5 +1,9 @@
 /target
 /dist
+
+# Browser cookie exports (login secrets — never commit)
+cookies.txt
+*cookies*.txt
 # Nix build symlinks (`nix build` writes ./result)
 /result
 /result-*

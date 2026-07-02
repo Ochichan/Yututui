@@ -27,6 +27,14 @@ pub struct Song {
     pub artist: String,
     /// Pre-formatted duration string (e.g. "3:45").
     pub duration: String,
+    /// Album name, when the provider exposes it (YT Music search does). Feeds scrobble
+    /// metadata and Spotify↔YTM matching; old persisted JSON omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    /// Numeric duration in seconds, when known exactly (search results, imports). Display
+    /// still uses `duration`; consumers needing seconds fall back to parsing that string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<u32>,
     /// The provider this result came from. Defaults to YouTube for old persisted JSON.
     #[serde(default, skip_serializing_if = "SearchSource::is_youtube")]
     pub source: SearchSource,
@@ -87,11 +95,29 @@ impl Song {
             title: title.into(),
             artist: artist.into(),
             duration: duration.into(),
+            album: None,
+            duration_secs: None,
             source: SearchSource::Youtube,
             playable: None,
             local_path: None,
             yt_video_id: None,
         }
+    }
+
+    /// A YT Music search result with the richer fields the catalog exposes. Seconds are
+    /// derived from the display string once, here, so downstream consumers (matching,
+    /// scrobbling) don't re-parse.
+    pub fn from_search(
+        video_id: impl Into<String>,
+        title: impl Into<String>,
+        artist: impl Into<String>,
+        duration: impl Into<String>,
+        album: Option<String>,
+    ) -> Self {
+        let mut song = Self::remote(video_id, title, artist, duration);
+        song.duration_secs = crate::streaming::candidate::parse_duration_secs(&song.duration);
+        song.album = album.filter(|a| !a.trim().is_empty());
+        song
     }
 
     pub fn from_source(
@@ -113,6 +139,8 @@ impl Song {
             title: title.into(),
             artist: artist.into(),
             duration: duration.into(),
+            album: None,
+            duration_secs: None,
             source,
             playable: Some(playable),
             local_path: None,
@@ -142,6 +170,8 @@ impl Song {
             title,
             artist: "Local file".to_owned(),
             duration: String::new(),
+            album: None,
+            duration_secs: None,
             source: SearchSource::Youtube,
             playable: None,
             local_path: Some(path),
@@ -174,6 +204,8 @@ impl Song {
             title: self.title.clone(),
             artist: self.artist.clone(),
             duration: self.duration.clone(),
+            album: self.album.clone(),
+            duration_secs: self.duration_secs,
             source: self.source,
             playable: self.playable.clone(),
             local_path: Some(path),
@@ -647,4 +679,33 @@ async fn cached_related_tracks(
         ytmusic::related_tracks_from_source(seed, source, config, limit, &empty, mode).await?;
     cache.insert(cache_key, (now, songs.clone()));
     Ok(songs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_persisted_song_json_still_deserializes() {
+        // library.json/playlists.json entries written before `album`/`duration_secs` existed.
+        let json = r#"{"video_id":"dQw4w9WgXcQ","title":"T","artist":"A","duration":"3:45"}"#;
+        let song: Song = serde_json::from_str(json).expect("old JSON must load");
+        assert_eq!(song.album, None);
+        assert_eq!(song.duration_secs, None);
+        // And untouched tracks keep serializing without the new fields (diff-clean stores).
+        let out = serde_json::to_string(&song).expect("serialize");
+        assert!(!out.contains("album"));
+        assert!(!out.contains("duration_secs"));
+    }
+
+    #[test]
+    fn from_search_enriches_album_and_seconds() {
+        let song = Song::from_search("id", "T", "A", "3:45", Some("Album".to_owned()));
+        assert_eq!(song.album.as_deref(), Some("Album"));
+        assert_eq!(song.duration_secs, Some(225));
+        // Blank album strings from the parser are treated as absent.
+        let song = Song::from_search("id", "T", "A", "", Some("  ".to_owned()));
+        assert_eq!(song.album, None);
+        assert_eq!(song.duration_secs, None);
+    }
 }

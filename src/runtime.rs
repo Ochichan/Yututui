@@ -22,7 +22,9 @@ pub enum RuntimeEvent {
     Player(crate::player::PlayerEvent),
     Remote(crate::remote::server::RemoteEvent),
     Resolver(crate::resolver::ResolverEvent),
+    Scrobble(crate::scrobble::ScrobbleEvent),
     Signal(crate::player::lifetime::SignalEvent),
+    Transfer(crate::transfer::actor::TransferEvent),
 }
 
 impl From<RuntimeEvent> for Msg {
@@ -152,7 +154,9 @@ impl From<RuntimeEvent> for Msg {
                 video_id: video_id.into_string(),
                 stream_url: stream_url.into_string(),
             },
+            RuntimeEvent::Scrobble(event) => Msg::Scrobble(event),
             RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit) => Msg::Quit,
+            RuntimeEvent::Transfer(event) => Msg::Transfer(event),
         }
     }
 }
@@ -185,9 +189,13 @@ pub struct RuntimeHandles {
     download_handle: crate::download::DownloadHandle,
     resolver_handle: crate::resolver::ResolverHandle,
     ai_handle: Option<crate::ai::AiHandle>,
+    scrobble_handle: crate::scrobble::ScrobbleHandle,
+    /// Spawned on the first transfer command — costs nothing until the feature is used.
+    transfer_handle: Option<crate::transfer::actor::TransferHandle>,
 }
 
 impl RuntimeHandles {
+    #[allow(clippy::too_many_arguments)] // one-time construction in `run()`
     pub fn new(
         worker_tx: UnboundedSender<RuntimeEvent>,
         api_handle: crate::api::ApiHandle,
@@ -196,6 +204,7 @@ impl RuntimeHandles {
         download_handle: crate::download::DownloadHandle,
         resolver_handle: crate::resolver::ResolverHandle,
         ai_handle: Option<crate::ai::AiHandle>,
+        scrobble_handle: crate::scrobble::ScrobbleHandle,
     ) -> Self {
         Self {
             worker_tx,
@@ -209,7 +218,22 @@ impl RuntimeHandles {
             download_handle,
             resolver_handle,
             ai_handle,
+            scrobble_handle,
+            transfer_handle: None,
         }
+    }
+
+    /// Feed the scrobbler the same snapshot the loop is about to publish to the OS media
+    /// session. Deliberately independent of that session's enabled state — scrobbling
+    /// must survive `media_controls: false`.
+    pub fn scrobble_observe(&mut self, snapshot: &crate::media::MediaSnapshot) {
+        self.scrobble_handle.observe(snapshot);
+    }
+
+    /// Best-effort queue flush on quit, bounded by `budget`.
+    pub async fn scrobble_shutdown(&self, budget: std::time::Duration) {
+        let done = self.scrobble_handle.shutdown_flush();
+        let _ = tokio::time::timeout(budget, done).await;
     }
 
     pub fn handle_player_ready(
@@ -415,6 +439,17 @@ impl RuntimeHandles {
                     crate::ai::spawn(&k, model, sink(self.worker_tx.clone(), RuntimeEvent::Ai))
                 });
                 app.ai.available = assistant_enabled && self.ai_handle.is_some();
+            }
+            Cmd::ScrobbleAuthStart => self.scrobble_handle.auth_start(),
+            Cmd::ScrobbleReconfigure(settings) => self.scrobble_handle.reconfigure(*settings),
+            Cmd::Transfer(cmd) => {
+                let handle = self.transfer_handle.get_or_insert_with(|| {
+                    crate::transfer::actor::spawn(sink(
+                        self.worker_tx.clone(),
+                        RuntimeEvent::Transfer,
+                    ))
+                });
+                handle.send(cmd);
             }
         }
     }

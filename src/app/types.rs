@@ -216,6 +216,11 @@ pub enum Msg {
         keys: Vec<String>,
         entries: Vec<RomanizedResult>,
     },
+    /// An event from the scrobble actor: auth-flow progress or a service-health notice.
+    /// Scrobbling itself is fire-and-forget and never surfaces here.
+    Scrobble(crate::scrobble::ScrobbleEvent),
+    /// An event from the transfer actor: Spotify auth, playlist listings, job progress.
+    Transfer(crate::transfer::actor::TransferEvent),
 }
 
 /// Side effects the reducer asks the run loop to perform.
@@ -312,6 +317,13 @@ pub enum Cmd {
         model: GeminiModel,
         assistant_enabled: bool,
     },
+    /// Kick the Last.fm browser authorization flow (Settings › Accounts › connect).
+    ScrobbleAuthStart,
+    /// Hand the scrobble actor a fresh settings snapshot (settings save, connect,
+    /// disconnect) — takes effect live, no relaunch.
+    ScrobbleReconfigure(Box<crate::scrobble::ScrobbleSettings>),
+    /// A command for the transfer actor (Spotify auth / playlist listing / jobs).
+    Transfer(crate::transfer::actor::TransferCmd),
 }
 
 /// A clickable terminal region's semantic target.

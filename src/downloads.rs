@@ -83,6 +83,8 @@ impl DownloadStore {
                     title: rec.title.clone(),
                     artist: rec.artist.clone(),
                     duration: rec.duration.clone(),
+                    album: rec.album.clone(),
+                    duration_secs: rec.duration_secs,
                     yt_video_id: rec.yt_video_id.clone(),
                     ..song
                 },

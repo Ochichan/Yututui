@@ -95,6 +95,8 @@ pub struct MediaTrack {
     pub title: String,
     /// Display artist; empty when unknown (adapters omit the field then).
     pub artist: String,
+    /// Album name when the catalog knows it (`xesam:album`; scrobble metadata).
+    pub album: Option<String>,
     /// Track length in seconds; `None` for live streams (radio).
     pub duration: Option<f64>,
     pub is_live: bool,
@@ -211,6 +213,7 @@ pub fn diff(old: &MediaSnapshot, new: &MediaSnapshot) -> MediaChanges {
             a.key != b.key
                 || a.title != b.title
                 || a.artist != b.artist
+                || a.album != b.album
                 || a.duration != b.duration
                 || a.is_live != b.is_live
                 || a.url != b.url
@@ -430,6 +433,7 @@ mod tests {
             key: key.to_owned(),
             title: format!("title-{key}"),
             artist: "artist".to_owned(),
+            album: None,
             duration: Some(180.0),
             is_live: false,
             url: None,

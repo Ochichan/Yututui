@@ -25,6 +25,12 @@ use crate::util::{format, http, process, sanitize};
 /// at least this many (or runs out). Capped at 50 — `ytdlp_search` clamps to the same.
 const SEARCH_RESULT_LIMIT: usize = 50;
 const STREAMING_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(8);
+/// Latched when an authenticated innertube search fails to parse (empty/attested-only
+/// responses): every later search this process goes straight to yt-dlp. Restarting the
+/// app retries innertube, so a future un-gating heals on its own.
+static AUTH_SEARCH_DEGRADED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 const PROVIDER_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
 const PROVIDER_JSON_MAX: usize = 2 * 1024 * 1024;
 const YTDLP_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
@@ -39,10 +45,146 @@ pub enum YtMusicApi {
 impl YtMusicApi {
     /// Authenticate with a raw browser `Cookie:` header.
     pub async fn from_cookie(cookie: &str) -> Result<Self> {
-        let client = YtMusic::from_cookie(cookie)
+        // A cookies.txt exported without being signed in carries only visitor cookies
+        // (PREF/SOCS/YSC/…). ytmapi-rs would fail with an opaque "Error parsing header";
+        // say what's actually wrong instead.
+        if !cookie.contains("SAPISID=") {
+            bail!(
+                "the cookie has no login session (no SAPISID) — sign in to music.youtube.com \
+                 in your browser, then export cookies.txt again"
+            );
+        }
+        // ytmapi-rs extracts SAPISID by scanning for the `;` after its value; append one
+        // so a cookie string that happens to END with SAPISID still parses.
+        let cookie = if cookie.trim_end().ends_with(';') {
+            cookie.trim_end().to_owned()
+        } else {
+            format!("{};", cookie.trim_end())
+        };
+        let client = YtMusic::from_cookie(&cookie)
             .await
             .context("YouTube Music cookie authentication failed")?;
         Ok(Self::Browser(client))
+    }
+
+    /// The authenticated client, or the one error every account operation shares.
+    /// Anonymous mode can play and search, but reading/writing the user's library
+    /// requires the cookie.
+    fn browser(&self) -> Result<&YtMusic<BrowserToken>> {
+        match self {
+            Self::Browser(c) => Ok(c),
+            Self::Anonymous => bail!(
+                "this needs a YouTube Music cookie — add cookies.txt (or `cookie`) in Settings › General"
+            ),
+        }
+    }
+
+    // Account playlist/library operations (the transfer feature) ---------------------
+
+    /// The user's own playlists as `(id, title, track-count-string)`.
+    pub async fn library_playlists(&self) -> Result<Vec<(String, String, String)>> {
+        let playlists = self
+            .browser()?
+            .get_library_playlists()
+            .await
+            .context("listing YouTube Music playlists failed")?;
+        Ok(playlists
+            .into_iter()
+            .map(|p| (p.playlist_id.get_raw().to_owned(), p.title, p.tracks))
+            .collect())
+    }
+
+    /// A playlist's playable tracks in order, with the album/duration enrichment the
+    /// matcher wants. Episodes and unavailable entries are skipped.
+    pub async fn playlist_tracks_full(&self, playlist_id: &str) -> Result<Vec<Song>> {
+        use ytmapi_rs::parse::PlaylistItem;
+        let items = self
+            .browser()?
+            .get_playlist_tracks(ytmapi_rs::common::PlaylistID::from_raw(playlist_id))
+            .await
+            .context("fetching YouTube Music playlist tracks failed")?;
+        Ok(items
+            .into_iter()
+            .filter_map(|item| match item {
+                PlaylistItem::Song(s) => {
+                    if !s.is_available {
+                        return None;
+                    }
+                    let artist = s
+                        .artists
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Some(Song::from_search(
+                        s.video_id.get_raw(),
+                        s.title,
+                        artist,
+                        s.duration,
+                        Some(s.album.name),
+                    ))
+                }
+                PlaylistItem::Video(v) => {
+                    if !v.is_available {
+                        return None;
+                    }
+                    Some(Song::from_search(
+                        v.video_id.get_raw(),
+                        v.title,
+                        v.channel_name,
+                        v.duration,
+                        None,
+                    ))
+                }
+                PlaylistItem::Episode(_) | PlaylistItem::UploadSong(_) => None,
+            })
+            .collect())
+    }
+
+    /// Create a private playlist in the user's account; returns its id.
+    pub async fn create_account_playlist(&self, title: &str, description: &str) -> Result<String> {
+        use ytmapi_rs::query::playlist::{CreatePlaylistQuery, PrivacyStatus};
+        let id = self
+            .browser()?
+            .create_playlist(CreatePlaylistQuery::new(
+                title,
+                Some(description),
+                PrivacyStatus::Private,
+            ))
+            .await
+            .context("creating the YouTube Music playlist failed")?;
+        Ok(id.get_raw().to_owned())
+    }
+
+    /// Append tracks (order preserved within the call). Caller chunks to a polite size.
+    pub async fn add_items_to_account_playlist(
+        &self,
+        playlist_id: &str,
+        video_ids: &[String],
+    ) -> Result<()> {
+        if video_ids.is_empty() {
+            return Ok(());
+        }
+        self.browser()?
+            .add_video_items_to_playlist(
+                ytmapi_rs::common::PlaylistID::from_raw(playlist_id),
+                video_ids.iter().map(|id| VideoID::from_raw(id.as_str())),
+            )
+            .await
+            .context("adding tracks to the YouTube Music playlist failed")?;
+        Ok(())
+    }
+
+    /// Like a song (adds it to the account's Liked Music). Idempotent server-side.
+    pub async fn rate_song_liked(&self, video_id: &str) -> Result<()> {
+        self.browser()?
+            .rate_song(
+                VideoID::from_raw(video_id),
+                ytmapi_rs::common::LikeStatus::Liked,
+            )
+            .await
+            .context("liking the song on YouTube Music failed")?;
+        Ok(())
     }
 
     /// Search for songs matching `query`, using the backend for this mode. Returns up to
@@ -118,6 +260,12 @@ impl YtMusicApi {
     }
 
     async fn search_youtube(&self, query: &str) -> Result<Vec<Song>> {
+        // Once one authenticated search comes back empty/unparseable this process, they
+        // all will (Google gates innertube search behind browser attestation as of
+        // mid-2026) — skip the wasted round-trip and go straight to yt-dlp.
+        if AUTH_SEARCH_DEGRADED.load(std::sync::atomic::Ordering::Relaxed) {
+            return ytdlp_search(query, SEARCH_RESULT_LIMIT).await;
+        }
         match self {
             // The simplified `search_songs` wrapper only fetches the first page (~20). Drive
             // the continuation stream directly so we can collect up to SEARCH_RESULT_LIMIT,
@@ -135,13 +283,31 @@ impl YtMusicApi {
                 while songs.len() < SEARCH_RESULT_LIMIT
                     && let Some(page) = pages.next().await
                 {
-                    let page = page.context("YouTube Music search failed")?;
+                    let page = match page {
+                        Ok(page) => page,
+                        // ytmapi-rs response parsers rot as YouTube shifts layouts
+                        // (0.3.2 is current upstream). Degrade instead of failing the
+                        // search: keep whatever pages parsed; with nothing at all,
+                        // fall back to the anonymous yt-dlp path (no album metadata,
+                        // but results).
+                        Err(e) if songs.is_empty() => {
+                            AUTH_SEARCH_DEGRADED
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                            tracing::warn!(
+                                error = %sanitize::sanitize_error_text(format!("{e:#}")),
+                                "authenticated search parse failed; using yt-dlp for the rest of this session"
+                            );
+                            return ytdlp_search(query, SEARCH_RESULT_LIMIT).await;
+                        }
+                        Err(_) => break,
+                    };
                     for s in page {
-                        songs.push(Song::remote(
+                        songs.push(Song::from_search(
                             s.video_id.get_raw(),
                             s.title,
                             s.artist,
                             s.duration,
+                            s.album.map(|a| a.name),
                         ));
                         if songs.len() >= SEARCH_RESULT_LIMIT {
                             break;

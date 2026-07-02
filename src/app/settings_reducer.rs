@@ -58,6 +58,42 @@ impl App {
             retro_mode: self.config.effective_retro_mode(),
             language: self.config.effective_language(),
             animations: self.config.animations,
+            lastfm_enabled: self.config.scrobble.lastfm.enabled.unwrap_or(true),
+            lastfm_love_sync: self.config.scrobble.lastfm.love_sync.unwrap_or(true),
+            lastfm_session_key: self
+                .config
+                .scrobble
+                .lastfm
+                .session_key
+                .clone()
+                .unwrap_or_default(),
+            lastfm_username: self
+                .config
+                .scrobble
+                .lastfm
+                .username
+                .clone()
+                .unwrap_or_default(),
+            listenbrainz_enabled: self.config.scrobble.listenbrainz.enabled.unwrap_or(true),
+            listenbrainz_token: self
+                .config
+                .scrobble
+                .listenbrainz
+                .token
+                .clone()
+                .unwrap_or_default(),
+            scrobble_local_files: self.config.effective_scrobble_local_files(),
+            spotify_client_id: self.config.spotify.client_id.clone().unwrap_or_default(),
+            spotify_redirect_port: self
+                .config
+                .spotify
+                .redirect_port
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
+            // Connection state = "a token file exists"; the display name arrives only
+            // when a connect flow completes in this session.
+            spotify_connected: crate::spotify::auth::SpotifyToken::load().is_some(),
+            spotify_username: String::new(),
         };
         self.settings = Some(Box::new(SettingsState {
             tab: SettingsTab::General,
@@ -80,6 +116,10 @@ impl App {
         // While editing a text field, keys feed the buffer until Enter/Esc commits it.
         if self.settings.as_ref().is_some_and(|s| s.editing_text) {
             return self.settings_edit_text(k);
+        }
+        // The Spotify playlist picker overlay swallows navigation keys while open.
+        if self.spotify_picker.is_some() {
+            return self.spotify_picker_key(k);
         }
         let on_keys_tab = self
             .settings
@@ -569,6 +609,26 @@ impl App {
                 }
                 Vec::new()
             }
+            Field::LastfmEnabled => {
+                let s = self.settings_mut();
+                s.draft.lastfm_enabled = !s.draft.lastfm_enabled;
+                Vec::new()
+            }
+            Field::LastfmLoveSync => {
+                let s = self.settings_mut();
+                s.draft.lastfm_love_sync = !s.draft.lastfm_love_sync;
+                Vec::new()
+            }
+            Field::ListenBrainzEnabled => {
+                let s = self.settings_mut();
+                s.draft.listenbrainz_enabled = !s.draft.listenbrainz_enabled;
+                Vec::new()
+            }
+            Field::ScrobbleLocalFiles => {
+                let s = self.settings_mut();
+                s.draft.scrobble_local_files = !s.draft.scrobble_local_files;
+                Vec::new()
+            }
             // Text fields ignore ←/→; Enter starts editing instead. The reset button has no
             // value to nudge — Enter activates it (see `settings_activate`).
             Field::CookiesFile
@@ -576,10 +636,16 @@ impl App {
             | Field::AudiusAppName
             | Field::JamendoClientId
             | Field::ApiKey
+            | Field::ListenBrainzToken
+            | Field::SpotifyClientId
+            | Field::SpotifyRedirectPort
             | Field::ThemeColor(_)
             | Field::ResetKeybindings
             | Field::ResetAll
-            | Field::ClearRomanizedTitleCache => Vec::new(),
+            | Field::ClearRomanizedTitleCache
+            | Field::LastfmConnect
+            | Field::SpotifyConnect
+            | Field::SpotifyImport => Vec::new(),
         }
     }
 
@@ -677,9 +743,356 @@ impl App {
                     self.settings_request_confirm(SettingsConfirm::ClearRomanizedTitleCache);
                     Vec::new()
                 }
+                Field::LastfmConnect => {
+                    let connected = self
+                        .settings
+                        .as_ref()
+                        .is_some_and(|s| !s.draft.lastfm_session_key.trim().is_empty());
+                    if connected {
+                        self.settings_request_confirm(SettingsConfirm::LastfmDisconnect);
+                        Vec::new()
+                    } else {
+                        self.status.text =
+                            t!("Requesting Last.fm authorization…", "Last.fm 인증 요청 중…")
+                                .to_owned();
+                        self.status.kind = StatusKind::Info;
+                        self.dirty = true;
+                        vec![Cmd::ScrobbleAuthStart]
+                    }
+                }
+                Field::SpotifyConnect => {
+                    let (connected, client_id, port) = {
+                        let st = self.settings_mut();
+                        (
+                            st.draft.spotify_connected,
+                            st.draft.spotify_client_id.trim().to_owned(),
+                            st.draft
+                                .spotify_redirect_port
+                                .trim()
+                                .parse::<u16>()
+                                .unwrap_or(crate::config::SPOTIFY_REDIRECT_PORT_DEFAULT),
+                        )
+                    };
+                    if connected {
+                        self.settings_request_confirm(SettingsConfirm::SpotifyDisconnect);
+                        return Vec::new();
+                    }
+                    self.dirty = true;
+                    if client_id.is_empty() {
+                        self.status.text = t!(
+                            "Set a Client ID first (create an app at developer.spotify.com)",
+                            "먼저 클라이언트 ID를 입력하세요 (developer.spotify.com에서 앱 생성)"
+                        )
+                        .to_owned();
+                        self.status.kind = StatusKind::Error;
+                        return Vec::new();
+                    }
+                    self.status.text = t!(
+                        "Starting Spotify authorization…",
+                        "Spotify 인증을 시작합니다…"
+                    )
+                    .to_owned();
+                    self.status.kind = StatusKind::Info;
+                    vec![Cmd::Transfer(crate::transfer::actor::TransferCmd::AuthStart {
+                        client_id,
+                        port,
+                    })]
+                }
+                Field::SpotifyImport => {
+                    self.dirty = true;
+                    // While a job runs, the same button cancels it (the checkpoint
+                    // survives — `ytt transfer resume` can pick it back up).
+                    if self.transfer_running {
+                        self.transfer_running = false;
+                        self.status.text =
+                            t!("Cancelling the import…", "가져오기를 취소하는 중…").to_owned();
+                        self.status.kind = StatusKind::Info;
+                        return vec![Cmd::Transfer(
+                            crate::transfer::actor::TransferCmd::CancelJob,
+                        )];
+                    }
+                    let connected = self
+                        .settings
+                        .as_ref()
+                        .is_some_and(|s| s.draft.spotify_connected);
+                    if !connected {
+                        self.status.text = t!(
+                            "Connect Spotify first",
+                            "먼저 Spotify를 연결해 주세요"
+                        )
+                        .to_owned();
+                        self.status.kind = StatusKind::Error;
+                        return Vec::new();
+                    }
+                    self.status.text =
+                        t!("Loading Spotify playlists…", "Spotify 플레이리스트 불러오는 중…")
+                            .to_owned();
+                    self.status.kind = StatusKind::Info;
+                    vec![Cmd::Transfer(
+                        crate::transfer::actor::TransferCmd::ListSpotifyPlaylists,
+                    )]
+                }
                 _ => Vec::new(),
             },
             _ => Vec::new(),
+        }
+    }
+
+    /// Keys while the Spotify playlist picker overlay is open (↑/↓/Enter/Esc).
+    pub(in crate::app) fn spotify_picker_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        let action = self
+            .keymap
+            .action(KeyContext::Settings, k.into())
+            .or_else(|| Self::settings_safety_action(k));
+        let Some(picker) = self.spotify_picker.as_mut() else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        match action {
+            Some(Action::MoveUp) => {
+                picker.selected = picker.selected.saturating_sub(1);
+                Vec::new()
+            }
+            Some(Action::MoveDown) => {
+                picker.selected = (picker.selected + 1).min(picker.items.len().saturating_sub(1));
+                Vec::new()
+            }
+            Some(Action::Confirm) => {
+                let Some(item) = picker.items.get(picker.selected).cloned() else {
+                    return Vec::new();
+                };
+                self.spotify_picker = None;
+                self.transfer_running = true;
+                // The TUI can't browse account playlists, so the picker lands imports in
+                // the app's own Library playlists — playable the moment the job finishes.
+                // (`ytt transfer` still targets the YTM account by default.)
+                let dest = match item.source {
+                    crate::transfer::TransferSource::SpotifyLiked => {
+                        crate::transfer::TransferDest::YtmLikes
+                    }
+                    _ => crate::transfer::TransferDest::LocalPlaylist { name: None },
+                };
+                let spec = crate::transfer::JobSpec {
+                    source: item.source,
+                    dest,
+                    dry_run: false,
+                    min_score: 0.80,
+                    take_best: false,
+                    rematch: false,
+                };
+                self.status.text = if crate::i18n::is_korean() {
+                    format!("가져오는 중: {}", item.label)
+                } else {
+                    format!("Importing: {}", item.label)
+                };
+                self.status.kind = StatusKind::Info;
+                vec![Cmd::Transfer(
+                    crate::transfer::actor::TransferCmd::StartJob(Box::new(spec)),
+                )]
+            }
+            Some(Action::SettingsCancel | Action::Back) => {
+                self.spotify_picker = None;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Auth/listing/job events from the transfer actor.
+    pub(in crate::app) fn on_transfer_event(
+        &mut self,
+        event: crate::transfer::actor::TransferEvent,
+    ) -> Vec<Cmd> {
+        use crate::transfer::actor::TransferEvent;
+        self.dirty = true;
+        match event {
+            TransferEvent::AuthUrl(url) => {
+                open_in_browser(&url);
+                self.status.text = t!(
+                    "Approve ytm-tui in the browser…",
+                    "브라우저에서 ytm-tui를 승인해 주세요…"
+                )
+                .to_owned();
+                self.status.kind = StatusKind::Info;
+            }
+            TransferEvent::AuthDone { display_name } => {
+                if let Some(st) = self.settings.as_mut() {
+                    st.draft.spotify_connected = true;
+                    st.draft.spotify_username = display_name.clone();
+                }
+                self.status.text = if crate::i18n::is_korean() {
+                    format!("Spotify 연결됨: {display_name}")
+                } else {
+                    format!("Spotify connected as {display_name}")
+                };
+                self.status.kind = StatusKind::Info;
+            }
+            TransferEvent::AuthError(error) => {
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Spotify authorization failed", "Spotify 인증 실패"),
+                    crate::util::sanitize::sanitize_error_text(error)
+                );
+                self.status.kind = StatusKind::Error;
+            }
+            TransferEvent::Disconnected => {
+                if let Some(st) = self.settings.as_mut() {
+                    st.draft.spotify_connected = false;
+                    st.draft.spotify_username.clear();
+                }
+                self.status.text =
+                    t!("Spotify disconnected", "Spotify 연결을 해제했어요").to_owned();
+                self.status.kind = StatusKind::Info;
+            }
+            TransferEvent::SpotifyPlaylists(Ok(items)) => {
+                if items.is_empty() {
+                    self.status.text = t!("No Spotify playlists", "Spotify 플레이리스트 없음").to_owned();
+                    self.status.kind = StatusKind::Info;
+                } else {
+                    self.status.text.clear();
+                    self.spotify_picker = Some(crate::app::state::SpotifyPicker {
+                        items,
+                        selected: 0,
+                    });
+                }
+            }
+            TransferEvent::SpotifyPlaylists(Err(error)) => {
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Could not list Spotify playlists", "Spotify 플레이리스트 조회 실패"),
+                    crate::util::sanitize::sanitize_error_text(error)
+                );
+                self.status.kind = StatusKind::Error;
+            }
+            TransferEvent::Progress(p) => {
+                self.transfer_running = true;
+                self.status.text = if crate::i18n::is_korean() {
+                    format!(
+                        "Spotify 가져오기: {} {}/{} · {}",
+                        p.stage.label(),
+                        p.done,
+                        p.total,
+                        p.current
+                    )
+                } else {
+                    format!(
+                        "Spotify import: {} {}/{} · {}",
+                        p.stage.label(),
+                        p.done,
+                        p.total,
+                        p.current
+                    )
+                };
+                self.status.kind = StatusKind::Info;
+            }
+            TransferEvent::JobDone(report) => {
+                self.transfer_running = false;
+                // A local-dest job wrote playlists.json from the actor; reload so the
+                // Library shows it now and a later in-app save can't clobber it. (The
+                // app persists its own mutations immediately, so disk is the union.)
+                self.playlists = crate::playlists::Playlists::load();
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Import finished", "가져오기 완료"),
+                    report.render_text()
+                );
+                self.status.kind = StatusKind::Info;
+            }
+            TransferEvent::JobFailed {
+                job_id,
+                error,
+                resumable,
+            } => {
+                self.transfer_running = false;
+                let error = crate::util::sanitize::sanitize_error_text(error);
+                self.status.text = if resumable && !job_id.is_empty() {
+                    format!(
+                        "{}: {error} · ytt transfer resume {job_id}",
+                        t!("Import interrupted", "가져오기 중단")
+                    )
+                } else {
+                    format!("{}: {error}", t!("Import failed", "가져오기 실패"))
+                };
+                self.status.kind = StatusKind::Error;
+            }
+        }
+        Vec::new()
+    }
+
+    /// Auth-flow progress and service-health notices from the scrobble actor.
+    pub(in crate::app) fn on_scrobble_event(
+        &mut self,
+        event: crate::scrobble::ScrobbleEvent,
+    ) -> Vec<Cmd> {
+        use crate::scrobble::ScrobbleEvent;
+        self.dirty = true;
+        match event {
+            ScrobbleEvent::AuthUrl(url) => {
+                open_in_browser(&url);
+                self.status.text = t!(
+                    "Approve ytm-tui in the browser…",
+                    "브라우저에서 ytm-tui를 승인해 주세요…"
+                )
+                .to_owned();
+                self.status.kind = StatusKind::Info;
+                Vec::new()
+            }
+            ScrobbleEvent::AuthDone {
+                username,
+                session_key,
+            } => {
+                self.config.scrobble.lastfm.session_key = Some(session_key.clone());
+                self.config.scrobble.lastfm.username = Some(username.clone());
+                // Mirror into the open draft too, or closing settings would clobber the
+                // fresh session with the stale pre-connect values.
+                if let Some(st) = self.settings.as_mut() {
+                    st.draft.lastfm_session_key = session_key;
+                    st.draft.lastfm_username = username.clone();
+                }
+                self.status.text = if crate::i18n::is_korean() {
+                    format!("Last.fm 연결됨: {username}")
+                } else {
+                    format!("Last.fm connected as {username}")
+                };
+                self.status.kind = StatusKind::Info;
+                vec![
+                    Cmd::SaveConfig(Box::new(self.config.clone())),
+                    Cmd::ScrobbleReconfigure(Box::new(self.config.scrobble_settings())),
+                ]
+            }
+            ScrobbleEvent::AuthFailed(error) => {
+                let error = crate::util::sanitize::sanitize_error_text(error);
+                self.status.text = format!(
+                    "{}: {error}",
+                    t!("Last.fm authorization failed", "Last.fm 인증 실패")
+                );
+                self.status.kind = StatusKind::Error;
+                Vec::new()
+            }
+            ScrobbleEvent::SessionInvalid(kind) => {
+                self.status.text = if crate::i18n::is_korean() {
+                    format!(
+                        "{} 세션이 만료되었어요 — 설정 › 계정에서 다시 연결해 주세요",
+                        kind.label()
+                    )
+                } else {
+                    format!(
+                        "{} session expired — reconnect in Settings › Accounts",
+                        kind.label()
+                    )
+                };
+                self.status.kind = StatusKind::Error;
+                Vec::new()
+            }
+            ScrobbleEvent::QueueStalled { pending } => {
+                self.status.text = if crate::i18n::is_korean() {
+                    format!("스크로블 {pending}건이 전송 대기 중이에요")
+                } else {
+                    format!("{pending} scrobbles waiting to be delivered")
+                };
+                self.status.kind = StatusKind::Info;
+                Vec::new()
+            }
         }
     }
 
@@ -700,6 +1113,25 @@ impl App {
             SettingsConfirm::ResetAll => self.settings_reset_all(),
             SettingsConfirm::ClearRomanizedTitleCache => {
                 self.settings_clear_romanized_title_cache()
+            }
+            SettingsConfirm::LastfmDisconnect => {
+                if let Some(st) = self.settings.as_mut() {
+                    st.draft.lastfm_session_key.clear();
+                    st.draft.lastfm_username.clear();
+                }
+                self.config.scrobble.lastfm.session_key = None;
+                self.config.scrobble.lastfm.username = None;
+                self.status.text = t!("Last.fm disconnected", "Last.fm 연결을 해제했어요").to_owned();
+                self.status.kind = StatusKind::Info;
+                vec![
+                    Cmd::SaveConfig(Box::new(self.config.clone())),
+                    Cmd::ScrobbleReconfigure(Box::new(self.config.scrobble_settings())),
+                ]
+            }
+            SettingsConfirm::SpotifyDisconnect => {
+                // The actor deletes the token file and answers with `Disconnected`,
+                // which flips the draft's display state.
+                vec![Cmd::Transfer(crate::transfer::actor::TransferCmd::Disconnect)]
             }
         }
     }
@@ -793,6 +1225,13 @@ impl App {
             d.retro_mode = def.effective_retro_mode();
             d.language = def.effective_language();
             d.animations = def.animations; // all effects off (the lightweight default)
+            // Accounts: behavior flags reset, but the connections themselves survive —
+            // "reset settings" should not disconnect Last.fm or wipe the LB token.
+            d.lastfm_enabled = true;
+            d.lastfm_love_sync = true;
+            d.listenbrainz_enabled = true;
+            d.scrobble_local_files = true;
+            d.spotify_redirect_port = String::new();
             st.keymap = KeyMap::default();
             st.editing_text = false;
         }
@@ -937,6 +1376,21 @@ impl App {
                 }
                 self.status.text = t!("API key saved", "API 키를 저장했어요").to_owned();
             }
+            Field::ListenBrainzToken => {
+                self.config.scrobble.listenbrainz.token = settings::blank_to_none(&value);
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+                cmds.push(Cmd::ScrobbleReconfigure(Box::new(
+                    self.config.scrobble_settings(),
+                )));
+            }
+            Field::SpotifyClientId => {
+                self.config.spotify.client_id = settings::blank_to_none(&value);
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+            }
+            Field::SpotifyRedirectPort => {
+                self.config.spotify.redirect_port = value.trim().parse::<u16>().ok();
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+            }
             Field::ThemeColor(_) => return Vec::new(),
             // Non-text fields never reach here (only Field::kind()==Text enters edit mode).
             _ => return Vec::new(),
@@ -984,6 +1438,9 @@ impl App {
             Field::AudiusAppName => st.draft.search.audius_app_name.as_mut(),
             Field::JamendoClientId => st.draft.search.jamendo_client_id.as_mut(),
             Field::ApiKey => Some(&mut st.draft.gemini_api_key),
+            Field::ListenBrainzToken => Some(&mut st.draft.listenbrainz_token),
+            Field::SpotifyClientId => Some(&mut st.draft.spotify_client_id),
+            Field::SpotifyRedirectPort => Some(&mut st.draft.spotify_redirect_port),
             Field::ThemeColor(role) => st.draft.theme.overrides.get_mut(role.id()),
             _ => None,
         }
@@ -1096,6 +1553,12 @@ impl App {
             cmds.push(Cmd::SetDownloadDir(new_download_dir.clone()));
             cmds.push(Cmd::ScanDownloads(new_download_dir));
         }
+        // Hand the scrobble actor the committed account settings. Unconditional: the
+        // snapshot is a few strings and the actor's swap is trivial, so this is cheaper
+        // than tracking which of the scrobble fields changed.
+        cmds.push(Cmd::ScrobbleReconfigure(Box::new(
+            self.config.scrobble_settings(),
+        )));
         // React to an album-art toggle. Turning it off drops the held image (frees RAM).
         // Turning it on fetches the current track's art live — but only when a protocol was
         // detected at startup (`artwork_source` gates on the picker); a first-time enable

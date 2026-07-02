@@ -309,6 +309,7 @@ impl App {
                 key: song.video_id.clone(),
                 title,
                 artist,
+                album: if is_live { None } else { song.album.clone() },
                 duration,
                 is_live,
                 url,

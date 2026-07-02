@@ -229,6 +229,9 @@ fn build_metadata(snapshot: &MediaSnapshot) -> Metadata {
         // (splitting on commas would mangle names that contain them).
         builder = builder.artist([track.artist.clone()]);
     }
+    if let Some(album) = track.album.clone().filter(|a| !a.is_empty()) {
+        builder = builder.album(album);
+    }
     // Live streams omit mpris:length entirely (spec table §2.6).
     if let Some(duration) = track.duration.filter(|_| !track.is_live) {
         builder = builder.length(Time::from_micros((duration * 1e6) as i64));

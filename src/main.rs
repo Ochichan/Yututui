@@ -2,6 +2,7 @@ mod ai;
 mod api;
 mod app;
 mod artwork;
+mod auth_cli;
 mod config;
 mod daemon;
 mod deps;
@@ -24,13 +25,16 @@ mod remote;
 mod resolver;
 mod romanize;
 mod runtime;
+mod scrobble;
 mod search_source;
 mod session;
 mod settings;
 mod signals;
+mod spotify;
 mod station;
 mod streaming;
 mod theme;
+mod transfer;
 mod tui;
 mod ui;
 mod util;
@@ -63,6 +67,8 @@ fn main() -> Result<()> {
                 println!("Usage: ytt [OPTIONS]");
                 println!("       ytt -r <command>     Control a running instance");
                 println!("       ytt daemon <command> Manage the headless music daemon");
+                println!("       ytt auth <service>   Connect Last.fm / ListenBrainz / Spotify");
+                println!("       ytt transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)");
                 println!("       ytt doctor           Check your environment and exit");
                 println!();
                 println!("Launch the terminal YouTube Music player.");
@@ -89,6 +95,17 @@ fn main() -> Result<()> {
             "daemon" => {
                 let rest: Vec<String> = std::env::args().skip(2).collect();
                 std::process::exit(daemon::run_cli(&rest));
+            }
+            // One-shot account connections (Last.fm approval flow, ListenBrainz token,
+            // Spotify PKCE) — usable without a terminal UI, e.g. for daemon-only setups.
+            "auth" => {
+                let rest: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(auth_cli::run(&rest));
+            }
+            // Playlist transfer (Spotify ↔ YTM ↔ files) — batch jobs, never the TUI.
+            "transfer" => {
+                let rest: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(transfer::cli::run(&rest));
             }
             "--new-instance" => new_instance = true,
             // One-shot environment diagnostic; never touches the terminal. Exits with its
@@ -700,6 +717,14 @@ async fn run(
         )
     });
     app.ai.available = ai_runtime.assistant_enabled && ai_handle.is_some();
+
+    // Scrobble actor (Last.fm / ListenBrainz): fed playback snapshots from the loop below,
+    // delivers via a durable queue. Idles when no account is connected.
+    let scrobble_handle = scrobble::spawn(
+        cfg.scrobble_settings(),
+        runtime::sink(worker_tx.clone(), RuntimeEvent::Scrobble),
+    );
+
     let mut handles = runtime::RuntimeHandles::new(
         worker_tx.clone(),
         api_handle,
@@ -708,6 +733,7 @@ async fn run(
         download_handle,
         resolver_handle,
         ai_handle,
+        scrobble_handle,
     );
 
     // Opt-in autoplay-on-launch: now that every player/actor handle exists, ask the loop to
@@ -824,9 +850,12 @@ async fn run(
 
         // Mirror the post-update state to the OS media session: the facade diffs, so
         // this is one comparison when nothing media-visible changed. The enabled flag
-        // tracks the Settings toggle live.
+        // tracks the Settings toggle live. The scrobbler taps the same snapshot first —
+        // it must keep working when media controls are disabled (publish early-returns).
         media.set_enabled(app.config.effective_media_controls());
-        media.publish(app.media_snapshot());
+        let snapshot = app.media_snapshot();
+        handles.scrobble_observe(&snapshot);
+        media.publish(snapshot);
 
         // The frame rate may have changed in Settings (committed to `config.animations` on close).
         // Rebuild the tick so the new rate applies without a relaunch — only when it actually
@@ -852,6 +881,11 @@ async fn run(
     let _ = app.library.save();
     let _ = app.signals.save();
     let _ = app.download_store.save();
+    // Give queued scrobbles one bounded delivery attempt (they're already durable on
+    // disk either way — leftovers flush on the next launch).
+    handles
+        .scrobble_shutdown(Duration::from_millis(1500))
+        .await;
     Ok(())
 }
 

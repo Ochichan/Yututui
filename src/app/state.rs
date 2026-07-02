@@ -179,6 +179,13 @@ pub struct Downloads {
     pub(in crate::app) sources: HashMap<String, Song>,
 }
 
+/// The Spotify playlist picker overlay (Settings › Accounts › Import from Spotify…):
+/// "Liked Songs" first, then the account's playlists.
+pub struct SpotifyPicker {
+    pub items: Vec<crate::transfer::actor::PickerPlaylist>,
+    pub selected: usize,
+}
+
 /// Lyrics-panel state: whether the panel is shown, the in-flight flag, and the fetched
 /// lyrics for the current track.
 #[derive(Default)]

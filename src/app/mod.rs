@@ -156,6 +156,11 @@ pub struct App {
     /// A pending destructive/settings-wide confirmation. Enter/`y` confirms; Esc/`n` or the
     /// Cancel button backs out before the key can leak through to the settings list.
     pub pending_settings_confirm: Option<SettingsConfirm>,
+    /// The "Import from Spotify" playlist picker overlay (Settings › Accounts). ↑/↓
+    /// select, Enter imports, Esc closes.
+    pub spotify_picker: Option<SpotifyPicker>,
+    /// A transfer job is running (guards double-starts; progress rides the status line).
+    pub transfer_running: bool,
     /// Whether the About card overlay is showing. Opened by clicking the `ytm-tui` brand in the
     /// nav bar or via `Action::ToggleAbout` (F1); any key/click (other than the GitHub link)
     /// dismisses it.
@@ -325,6 +330,8 @@ impl App {
             mouse_help_visible: false,
             key_conflict: None,
             pending_settings_confirm: None,
+            spotify_picker: None,
+            transfer_running: false,
             about_visible: false,
             about_icon: RefCell::new(None),
             why_ai_visible: false,
@@ -1311,6 +1318,8 @@ impl App {
             } => {
                 return self.apply_romanized_titles(request_id, keys, entries);
             }
+            Msg::Scrobble(event) => return self.on_scrobble_event(event),
+            Msg::Transfer(event) => return self.on_transfer_event(event),
         }
         Vec::new()
     }
@@ -1486,31 +1495,7 @@ fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
         && row < rect.y.saturating_add(rect.height)
 }
 
-/// Open `url` in the system's default browser, fire-and-forget. Spawns the platform opener
-/// (`open` / `xdg-open` / `cmd start`) detached with stdio nulled so it can't touch the TUI's
-/// terminal; any failure (no opener installed) is ignored — the URL is also shown in the card.
-fn open_in_browser(url: &str) {
-    use std::process::Stdio;
-    let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = process::std_command("open", process::ProcessProfile::DesktopOpen);
-        c.arg(url);
-        c
-    } else if cfg!(target_os = "windows") {
-        // `start` is a cmd builtin; the empty "" is its (ignored) window-title argument.
-        let mut c = process::std_command("cmd", process::ProcessProfile::DesktopOpen);
-        c.args(["/C", "start", "", url]);
-        c
-    } else {
-        let mut c = process::std_command("xdg-open", process::ProcessProfile::DesktopOpen);
-        c.arg(url);
-        c
-    };
-    let _ = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-}
+pub(crate) use crate::util::browser::open_in_browser;
 
 /// Copy `text` to the system clipboard, fire-and-forget. Mirrors `open_in_browser`: spawns the
 /// platform clipboard tool with stdio nulled and pipes `text` to its stdin, so no native

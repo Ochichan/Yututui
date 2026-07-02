@@ -191,8 +191,88 @@ impl VideoOverlay {
     }
 }
 
-// No `Debug`: this holds secrets (`cookie` raw header, `gemini_api_key`), so a stray `{:?}`
-// must not be able to leak them — same reason `GeminiClient` omits it.
+/// Scrobbling accounts (the **Accounts** settings tab) plus shared behavior, grouped under
+/// one JSON key (`"scrobble"`). Every field is `#[serde(default)]` so older config files
+/// forward-migrate cleanly.
+// No `Debug`: holds the Last.fm session key and the ListenBrainz token (see `Config`).
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScrobbleConfig {
+    pub lastfm: LastfmConfig,
+    pub listenbrainz: ListenBrainzConfig,
+    /// Also scrobble local files (when they carry real title + artist metadata). `None` → on.
+    pub local_files: Option<bool>,
+}
+
+/// Last.fm account + behavior. The app ships embedded API credentials
+/// (see [`crate::scrobble::lastfm`]); `api_key`/`api_secret` override them when set.
+// No `Debug`: `session_key` and `api_secret` are secrets.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LastfmConfig {
+    /// `None` → on whenever a session key is present (mirrors the `ai_enabled` idiom), so
+    /// connecting is enough; this exists to switch scrobbling off without disconnecting.
+    pub enabled: Option<bool>,
+    /// The infinite-lifetime web-service session key from `auth.getSession`.
+    pub session_key: Option<String>,
+    /// Display-only: whose account the session key belongs to.
+    pub username: Option<String>,
+    /// Mirror in-app like/unlike to Last.fm `track.love`/`track.unlove`. `None` → on.
+    pub love_sync: Option<bool>,
+    /// Override the embedded application API key (for self-built binaries).
+    pub api_key: Option<String>,
+    pub api_secret: Option<String>,
+}
+
+impl LastfmConfig {
+    /// Connected *and* not switched off — the "should we scrobble here" gate.
+    pub fn is_active(&self) -> bool {
+        self.session_key.as_deref().is_some_and(|k| !k.is_empty())
+            && self.enabled.unwrap_or(true)
+    }
+}
+
+/// ListenBrainz account. Token auth only — no browser flow (the user copies their token
+/// from listenbrainz.org/settings). `api_url` supports self-hosted instances.
+// No `Debug`: `token` is a secret.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ListenBrainzConfig {
+    /// `None` → on whenever a token is present (same idiom as [`LastfmConfig::enabled`]).
+    pub enabled: Option<bool>,
+    pub token: Option<String>,
+    /// `None` → `https://api.listenbrainz.org`.
+    pub api_url: Option<String>,
+}
+
+impl ListenBrainzConfig {
+    pub fn is_active(&self) -> bool {
+        self.token.as_deref().is_some_and(|t| !t.is_empty()) && self.enabled.unwrap_or(true)
+    }
+}
+
+/// Spotify Web API access (the transfer feature). Development-mode apps are limited to an
+/// allowlist of 25 users, so every user registers their **own** app at
+/// developer.spotify.com and pastes the Client ID here — there is no embedded one. Tokens
+/// live in a separate `spotify_token.json` (the client rotates refresh tokens outside the
+/// settings screen; splitting the files avoids write races with config saves).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpotifyConfig {
+    /// The user's own app Client ID (PKCE — no secret exists).
+    pub client_id: Option<String>,
+    /// Loopback-redirect port; the app's registered redirect URI must be exactly
+    /// `http://127.0.0.1:<port>/callback`. `None` → [`SPOTIFY_REDIRECT_PORT_DEFAULT`].
+    pub redirect_port: Option<u16>,
+    /// Optional market (ISO country code) for Spotify track search during export.
+    pub market: Option<String>,
+}
+
+pub const SPOTIFY_REDIRECT_PORT_DEFAULT: u16 = 9271;
+
+// No `Debug`: this holds secrets (`cookie` raw header, `gemini_api_key`, the scrobbling
+// session key/token), so a stray `{:?}` must not be able to leak them — same reason
+// `GeminiClient` omits it.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -293,6 +373,14 @@ pub struct Config {
     /// Publish playback to the OS media session — macOS Now Playing, Windows SMTC,
     /// Linux MPRIS — and accept media keys / widget control. `None` → on.
     pub media_controls: Option<bool>,
+
+    // Scrobbling ------------------------------------------------------------------
+    /// Last.fm / ListenBrainz accounts and scrobbling behavior. See [`ScrobbleConfig`].
+    pub scrobble: ScrobbleConfig,
+
+    // Spotify transfer ------------------------------------------------------------
+    /// Spotify Web API app registration for playlist import/export. See [`SpotifyConfig`].
+    pub spotify: SpotifyConfig,
 }
 
 #[derive(Clone)]
@@ -351,6 +439,8 @@ impl Default for Config {
             keybindings: std::collections::BTreeMap::new(),
             video_layout: VideoOverlay::default(),
             media_controls: None,
+            scrobble: ScrobbleConfig::default(),
+            spotify: SpotifyConfig::default(),
         }
     }
 }
@@ -473,6 +563,57 @@ impl Config {
     /// Windows SMTC, Linux MPRIS) and accept media keys / widget control (default on).
     pub fn effective_media_controls(&self) -> bool {
         self.media_controls.unwrap_or(true)
+    }
+
+    /// Whether local files scrobble too (when they carry title + artist metadata; default on).
+    pub fn effective_scrobble_local_files(&self) -> bool {
+        self.scrobble.local_files.unwrap_or(true)
+    }
+
+    /// The Spotify loopback-redirect port (must match the registered redirect URI).
+    pub fn effective_spotify_port(&self) -> u16 {
+        self.spotify.redirect_port.unwrap_or(SPOTIFY_REDIRECT_PORT_DEFAULT)
+    }
+
+    /// The runtime snapshot handed to the scrobble actor. App credentials resolve from
+    /// the embedded pair with config overrides; the session requires those credentials
+    /// plus a connected, enabled account.
+    pub fn scrobble_settings(&self) -> crate::scrobble::ScrobbleSettings {
+        let lastfm = &self.scrobble.lastfm;
+        let (api_key, api_secret) = crate::scrobble::lastfm::app_credentials(
+            lastfm.api_key.as_deref(),
+            lastfm.api_secret.as_deref(),
+        );
+        let lastfm_app = (!api_key.is_empty() && !api_secret.is_empty()).then_some(
+            crate::scrobble::LastfmApp {
+                api_key,
+                api_secret,
+            },
+        );
+        crate::scrobble::ScrobbleSettings {
+            lastfm: (lastfm_app.is_some() && lastfm.is_active()).then(|| {
+                crate::scrobble::LastfmSession {
+                    session_key: lastfm.session_key.clone().unwrap_or_default(),
+                    love_sync: lastfm.love_sync.unwrap_or(true),
+                }
+            }),
+            lastfm_app,
+            listenbrainz: self.scrobble.listenbrainz.is_active().then(|| {
+                crate::scrobble::ListenBrainzSession {
+                    token: self.scrobble.listenbrainz.token.clone().unwrap_or_default(),
+                    api_url: self
+                        .scrobble
+                        .listenbrainz
+                        .api_url
+                        .clone()
+                        .filter(|u| !u.trim().is_empty())
+                        .unwrap_or_else(|| {
+                            crate::scrobble::listenbrainz::DEFAULT_API_URL.to_owned()
+                        }),
+                }
+            }),
+            local_files: self.effective_scrobble_local_files(),
+        }
     }
 
     /// The ten band gains to apply: the hand-tuned array if set, else the preset's.
@@ -757,6 +898,27 @@ mod tests {
             keybindings: std::collections::BTreeMap::new(),
             video_layout: VideoOverlay::Large,
             media_controls: Some(false),
+            scrobble: ScrobbleConfig {
+                lastfm: LastfmConfig {
+                    enabled: Some(true),
+                    session_key: Some("sk-123".to_owned()),
+                    username: Some("listener".to_owned()),
+                    love_sync: Some(false),
+                    api_key: None,
+                    api_secret: None,
+                },
+                listenbrainz: ListenBrainzConfig {
+                    enabled: None,
+                    token: Some("lb-token".to_owned()),
+                    api_url: None,
+                },
+                local_files: Some(false),
+            },
+            spotify: SpotifyConfig {
+                client_id: Some("spotify-app-id".to_owned()),
+                redirect_port: Some(9333),
+                market: Some("KR".to_owned()),
+            },
         };
         let s = serde_json::to_string(&c).unwrap();
         let back: Config = serde_json::from_str(&s).unwrap();
@@ -787,6 +949,14 @@ mod tests {
         assert!(back.retro_mode);
         assert_eq!(back.video_layout, VideoOverlay::Large);
         assert_eq!(back.media_controls, Some(false));
+        assert_eq!(back.scrobble.lastfm.session_key.as_deref(), Some("sk-123"));
+        assert_eq!(back.scrobble.lastfm.username.as_deref(), Some("listener"));
+        assert_eq!(back.scrobble.lastfm.love_sync, Some(false));
+        assert_eq!(back.scrobble.listenbrainz.token.as_deref(), Some("lb-token"));
+        assert_eq!(back.scrobble.local_files, Some(false));
+        assert!(back.scrobble.lastfm.is_active());
+        assert_eq!(back.spotify.client_id.as_deref(), Some("spotify-app-id"));
+        assert_eq!(back.effective_spotify_port(), 9333);
         assert_eq!(back.theme.preset, "midnight");
         assert_eq!(
             back.theme

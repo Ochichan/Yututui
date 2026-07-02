@@ -171,6 +171,9 @@ enum DaemonEvent {
     Media(crate::media::MediaCommand),
     /// The media-artwork cache resolved a local file for a track.
     MediaArt(crate::media::artwork::MediaArtworkReady),
+    /// Scrobble-actor notices. The daemon has no UI and never runs the interactive auth
+    /// flow (`ytt auth lastfm` does), so these only reach the log.
+    Scrobble(crate::scrobble::ScrobbleEvent),
     Signal,
 }
 
@@ -239,7 +242,17 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             let _ = media_art_tx.send(DaemonEvent::MediaArt(ready));
         },
     );
-    media.publish(engine.media_snapshot());
+    // Scrobbler: same snapshot feed as the TUI loop, headless-safe (log-only events).
+    // Config is read at daemon start — reconnecting via `ytt auth lastfm` needs a daemon
+    // restart, which the CLI prints as a hint.
+    let scrobble_event_tx = event_tx.clone();
+    let mut scrobble = crate::scrobble::spawn(engine.scrobble_settings(), move |event| {
+        let _ = scrobble_event_tx.send(DaemonEvent::Scrobble(event));
+    });
+
+    let startup_snapshot = engine.media_snapshot();
+    scrobble.observe(&startup_snapshot);
+    media.publish(startup_snapshot);
     // macOS delivers remote-command callbacks through the main run loop; pump it on a
     // short interval while the session is live (the guard parks the timer elsewhere).
     let mut media_pump = tokio::time::interval(Duration::from_millis(100));
@@ -284,12 +297,38 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
                 }
             }
             DaemonEvent::MediaArt(ready) => engine.set_media_art(ready),
+            DaemonEvent::Scrobble(event) => log_scrobble_event(event),
             DaemonEvent::Signal => break,
         }
-        // Mirror the post-event state to the OS session (diff-based inside).
-        media.publish(engine.media_snapshot());
+        // Mirror the post-event state to the OS session (diff-based inside); the
+        // scrobbler taps the same snapshot first (it ignores media-controls enablement).
+        let snapshot = engine.media_snapshot();
+        scrobble.observe(&snapshot);
+        media.publish(snapshot);
     }
+    // Bounded best-effort delivery of queued scrobbles; leftovers flush next launch.
+    let _ = tokio::time::timeout(Duration::from_millis(1500), scrobble.shutdown_flush()).await;
     EXIT_OK
+}
+
+/// The daemon's stand-in for the TUI's status toasts: scrobble notices go to the log.
+fn log_scrobble_event(event: crate::scrobble::ScrobbleEvent) {
+    use crate::scrobble::ScrobbleEvent;
+    match event {
+        ScrobbleEvent::SessionInvalid(kind) => {
+            tracing::warn!(service = kind.label(), "scrobble session invalid; run `ytt auth`");
+        }
+        ScrobbleEvent::QueueStalled { pending } => {
+            tracing::warn!(pending, "scrobble queue stalled");
+        }
+        // The daemon never starts the interactive flow, so these are unexpected.
+        ScrobbleEvent::AuthUrl(_) | ScrobbleEvent::AuthDone { .. } => {
+            tracing::info!("unexpected scrobble auth event in daemon");
+        }
+        ScrobbleEvent::AuthFailed(error) => {
+            tracing::warn!(error = %crate::util::sanitize::sanitize_error_text(error), "scrobble auth failed");
+        }
+    }
 }
 
 async fn status(json: bool) -> i32 {

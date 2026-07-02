@@ -1,0 +1,931 @@
+//! The transfer engine: fetch → match → write, with a checkpoint flush at every
+//! meaningful boundary so any abort resumes idempotently. One plain async fn — the CLI
+//! runs it on its own runtime, the TUI actor on a worker task.
+
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, bail};
+
+use super::checkpoint::{Checkpoint, ReportRow, TrackEntry, TransferReport};
+use super::matching::{
+    MatchCandidate, MatchConfig, MatchOutcome, Pacing, TrackInput, best_outcome, match_track_ytm,
+    normalize_stripped,
+};
+use super::{FileFormat, JobSpec, Stage, TransferDest, TransferProgress, TransferSource};
+use crate::api::Song;
+use crate::api::ytmusic::YtMusicApi;
+use crate::search_source::SearchConfig;
+use crate::spotify::client::{SpotifyClient, SpotifyError};
+
+/// Every job caps its work list here (YTM's own playlist cap is ~5,000 anyway).
+const TRACK_CAP: usize = 10_000;
+/// YTM playlist appends: chunk size and the pause between chunks.
+const YTM_ADD_CHUNK: usize = 50;
+const YTM_ADD_PAUSE: Duration = Duration::from_secs(1);
+/// Sequential like pacing (preserves the like-order timeline, stays polite).
+const YTM_LIKE_PAUSE: Duration = Duration::from_millis(1200);
+/// Spotify's add-items cap per call.
+const SPOTIFY_ADD_CHUNK: usize = 100;
+/// Checkpoint flush cadence during matching/like-writing.
+const CHECKPOINT_EVERY: usize = 10;
+
+/// What a failed job means for the caller: `resumable` failures keep their checkpoint
+/// and print/emit the `resume` hint.
+pub struct JobError {
+    pub resumable: bool,
+    pub error: anyhow::Error,
+}
+
+impl JobError {
+    fn fatal(error: anyhow::Error) -> Self {
+        Self {
+            resumable: false,
+            error,
+        }
+    }
+}
+
+/// The clients a job may need; flows check for what they actually use and fail with a
+/// setup hint otherwise.
+pub struct JobCtx {
+    pub ytm: Option<YtMusicApi>,
+    pub spotify: Option<SpotifyClient>,
+    pub search_config: SearchConfig,
+    /// Spotify search market (config `spotify.market`).
+    pub market: Option<String>,
+}
+
+impl JobCtx {
+    fn ytm(&self) -> Result<&YtMusicApi, JobError> {
+        self.ytm.as_ref().ok_or_else(|| {
+            JobError::fatal(anyhow!(
+                "this needs a YouTube Music cookie — add cookies.txt (or `cookie`) in Settings › General"
+            ))
+        })
+    }
+
+    fn spotify(&mut self) -> Result<&mut SpotifyClient, JobError> {
+        self.spotify.as_mut().ok_or_else(|| {
+            JobError::fatal(anyhow!(
+                "this needs a connected Spotify account — run `ytt auth spotify` first"
+            ))
+        })
+    }
+}
+
+/// Run (or resume) a transfer job to completion. The checkpoint under `job_id` is the
+/// single source of truth for what already happened.
+pub async fn run_job(
+    job_id: String,
+    spec: JobSpec,
+    resume: Option<Checkpoint>,
+    ctx: &mut JobCtx,
+    progress: &mut (dyn FnMut(TransferProgress) + Send),
+) -> Result<TransferReport, JobError> {
+    let started = Instant::now();
+    if let Some(spotify) = ctx.spotify.as_mut() {
+        spotify.reset_rate_budget();
+    }
+
+    // File exports never match anything — a straight fetch-and-write.
+    if let TransferDest::File { path, format } = &spec.dest {
+        let (path, format) = (path.clone(), *format);
+        return export_file(&job_id, &spec, ctx, &path, format, started).await;
+    }
+
+    // Stage 1 — fetch (or resume from the checkpoint's frozen list).
+    let mut cp = match resume {
+        Some(mut cp) => {
+            // The caller's spec wins over the checkpointed one: this is what turns a
+            // finished dry-run into the write pass on resume (and lets --min-score /
+            // --take-best be adjusted between runs). Source/dest were used to build
+            // the frozen track list, so those stay meaningful either way.
+            cp.spec = spec.clone();
+            if spec.rematch {
+                for entry in &mut cp.tracks {
+                    entry.outcome = None;
+                    entry.input.known_video_id = None;
+                    entry.written = false;
+                }
+            }
+            cp
+        }
+        None => {
+            let (source_name, entries, skipped_local) = fetch_source(&job_id, &spec, ctx).await?;
+            let mut cp = Checkpoint::new(job_id.clone(), spec.clone(), entries);
+            cp.dest_name = Some(default_dest_name(&spec.dest, &source_name));
+            cp.skipped_local = skipped_local;
+            cp.stage = Stage::Matching;
+            cp.save().map_err(|e| JobError::fatal(e.into()))?;
+            cp
+        }
+    };
+    let skipped_local = cp.skipped_local;
+
+    // Stage 2 — match everything still unresolved.
+    if cp.stage == Stage::Fetching {
+        cp.stage = Stage::Matching;
+    }
+    if cp.stage == Stage::Matching {
+        match_stage(&mut cp, ctx, progress).await?;
+        cp.stage = Stage::Writing;
+        cp.save().map_err(|e| JobError::fatal(e.into()))?;
+    }
+
+    let mut report = build_report(&cp, skipped_local);
+
+    // Stage 3 — write (skipped on dry-run: the checkpoint keeps the matches, and a
+    // later `resume` performs exactly the writes).
+    if !cp.spec.dry_run {
+        write_stage(&mut cp, ctx, progress, &mut report).await?;
+        cp.stage = Stage::Done;
+        cp.save().map_err(|e| JobError::fatal(e.into()))?;
+    }
+
+    report.elapsed_secs = started.elapsed().as_secs();
+    if let Err(e) = report.save() {
+        tracing::warn!(error = %e, "could not save transfer report");
+    }
+    Ok(report)
+}
+
+fn default_dest_name(dest: &TransferDest, source_name: &str) -> String {
+    match dest {
+        TransferDest::YtmNewPlaylist { name }
+        | TransferDest::SpotifyNewPlaylist { name }
+        | TransferDest::LocalPlaylist { name } => name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| source_name.to_owned()),
+        TransferDest::YtmExistingPlaylist { name } => name.clone(),
+        TransferDest::YtmLikes => "Liked Music".to_owned(),
+        TransferDest::File { path, .. } => path.display().to_string(),
+    }
+}
+
+// Fetch ---------------------------------------------------------------------------
+
+async fn fetch_source(
+    job_id: &str,
+    spec: &JobSpec,
+    ctx: &mut JobCtx,
+) -> Result<(String, Vec<TrackEntry>, u32), JobError> {
+    let mut beat = progress_beat(job_id, Stage::Fetching);
+    let (name, inputs, skipped_local): (String, Vec<TrackInput>, u32) = match &spec.source {
+        TransferSource::SpotifyPlaylist { id } => {
+            let spotify = ctx.spotify()?;
+            let meta = spotify
+                .playlist_meta(id)
+                .await
+                .map_err(spotify_job_error)?;
+            let mut on_page = |done: u32, total: u32| beat(done, total, meta.name.clone());
+            let tracks = spotify
+                .playlist_tracks(id, &mut on_page)
+                .await
+                .map_err(spotify_job_error)?;
+            let skipped = meta.total.saturating_sub(tracks.len() as u32);
+            (
+                meta.name,
+                tracks.iter().map(TrackInput::from_spotify).collect(),
+                skipped,
+            )
+        }
+        TransferSource::SpotifyLiked => {
+            let spotify = ctx.spotify()?;
+            let mut on_page = |done: u32, total: u32| beat(done, total, "Liked Songs".to_owned());
+            let mut tracks = spotify
+                .liked_tracks(&mut on_page)
+                .await
+                .map_err(spotify_job_error)?;
+            // Spotify returns newest-first; import oldest-first so the YTM like
+            // timeline ends up in the original order.
+            tracks.reverse();
+            (
+                "Spotify Liked Songs".to_owned(),
+                tracks.iter().map(TrackInput::from_spotify).collect(),
+                0,
+            )
+        }
+        TransferSource::YtmPlaylist { id } => {
+            let ytm = ctx.ytm()?;
+            let name = ytm
+                .library_playlists()
+                .await
+                .map_err(JobError::fatal)?
+                .into_iter()
+                .find(|(pid, _, _)| pid == id)
+                .map(|(_, title, _)| title)
+                .unwrap_or_else(|| format!("ytm:{id}"));
+            let songs = ytm
+                .playlist_tracks_full(id)
+                .await
+                .map_err(ytm_job_error)?;
+            (name, songs.iter().map(TrackInput::from_song).collect(), 0)
+        }
+        TransferSource::LocalPlaylist { key } => {
+            let store = crate::playlists::Playlists::load();
+            let playlist = store.find(key).ok_or_else(|| {
+                JobError::fatal(anyhow!("no local playlist named `{key}`"))
+            })?;
+            (
+                playlist.name.clone(),
+                playlist.songs.iter().map(TrackInput::from_song).collect(),
+                0,
+            )
+        }
+        TransferSource::File { path } => {
+            let (name, inputs) = read_file_inputs(path).map_err(JobError::fatal)?;
+            (name, inputs, 0)
+        }
+    };
+    let mut inputs = inputs;
+    if inputs.len() > TRACK_CAP {
+        tracing::warn!(
+            dropped = inputs.len() - TRACK_CAP,
+            "transfer capped at {TRACK_CAP} tracks"
+        );
+        inputs.truncate(TRACK_CAP);
+    }
+    let entries = inputs
+        .into_iter()
+        .map(|input| TrackEntry {
+            input,
+            outcome: None,
+            written: false,
+        })
+        .collect();
+    Ok((name, entries, skipped_local))
+}
+
+fn read_file_inputs(path: &std::path::Path) -> anyhow::Result<(String, Vec<TrackInput>)> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "json" => {
+            let file = super::json::read_playlist(path)?;
+            let inputs = file.to_track_inputs();
+            Ok((file.name, inputs))
+        }
+        "csv" => {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Imported playlist")
+                .to_owned();
+            Ok((name, super::csv::read_tracks(path)?))
+        }
+        _ => bail!("unsupported file type `{ext}` — use .json (ytm-tui) or .csv (Exportify)"),
+    }
+}
+
+// Match ---------------------------------------------------------------------------
+
+async fn match_stage(
+    cp: &mut Checkpoint,
+    ctx: &mut JobCtx,
+    progress: &mut (dyn FnMut(TransferProgress) + Send),
+) -> Result<(), JobError> {
+    let cfg = MatchConfig {
+        accept: cp.spec.min_score,
+        ambiguous_floor: (cp.spec.min_score - 0.20).max(0.40),
+    };
+    let to_spotify = matches!(cp.spec.dest, TransferDest::SpotifyNewPlaylist { .. });
+    let total = cp.tracks.len() as u32;
+    let mut memo = std::collections::HashMap::new();
+    let mut pace = Pacing::ytm_default();
+    let search_config = ctx.search_config.clone();
+    let market = ctx.market.clone();
+    // One weird track must not kill a 300-track job: an isolated search failure
+    // becomes NotFound (reported, retryable via --rematch). A *streak* means the
+    // backend itself died (cookie, network) — abort resumably then.
+    let mut consecutive_failures = 0u32;
+
+    for idx in 0..cp.tracks.len() {
+        if cp.tracks[idx].outcome.is_some() {
+            continue; // resumed work
+        }
+        let input = cp.tracks[idx].input.clone();
+        let outcome = if to_spotify {
+            // Spotify's client already absorbs transient trouble internally; anything
+            // surfacing here (rate budget, auth) is systemic — abort resumably.
+            match_track_spotify(ctx.spotify()?, &input, &cfg, market.clone())
+                .await
+                .map_err(|e| checkpointed(cp, e))?
+        } else {
+            match match_track_ytm(
+                ctx.ytm()?,
+                &input,
+                &cfg,
+                &search_config,
+                &mut memo,
+                &mut pace,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    consecutive_failures = 0;
+                    outcome
+                }
+                Err(e) => {
+                    consecutive_failures += 1;
+                    if consecutive_failures >= 5 {
+                        return Err(checkpointed(cp, ytm_job_error(e)));
+                    }
+                    tracing::warn!(
+                        track = %input.display(),
+                        error = %crate::util::sanitize::sanitize_error_text(format!("{e:#}")),
+                        "match lookup failed; recording as not-found"
+                    );
+                    MatchOutcome::NotFound
+                }
+            }
+        };
+        cp.tracks[idx].outcome = Some(outcome);
+
+        let (matched, ambiguous, not_found) = outcome_counts(&cp.tracks);
+        progress(TransferProgress {
+            job_id: cp.job_id.clone(),
+            stage: Stage::Matching,
+            done: (idx + 1) as u32,
+            total,
+            matched,
+            ambiguous,
+            not_found,
+            current: input.display(),
+        });
+        if (idx + 1) % CHECKPOINT_EVERY == 0 {
+            cp.save().map_err(|e| JobError::fatal(e.into()))?;
+        }
+    }
+    cp.save().map_err(|e| JobError::fatal(e.into()))?;
+    Ok(())
+}
+
+/// Spotify-direction retrieval: `track:"…" artist:"…"` first, plain text second.
+async fn match_track_spotify(
+    spotify: &mut SpotifyClient,
+    input: &TrackInput,
+    cfg: &MatchConfig,
+    market: Option<String>,
+) -> Result<MatchOutcome, JobError> {
+    let stripped = normalize_stripped(&input.title);
+    let artist = input.artists.first().cloned().unwrap_or_default();
+    let fielded = if artist.is_empty() {
+        format!("track:\"{stripped}\"")
+    } else {
+        format!("track:\"{stripped}\" artist:\"{artist}\"")
+    };
+    let mut candidates: Vec<MatchCandidate> = spotify
+        .search_track(&fielded, market.as_deref())
+        .await
+        .map_err(spotify_job_error)?
+        .iter()
+        .map(MatchCandidate::from)
+        .collect();
+    let mut outcome = best_outcome(input, &candidates, cfg);
+    if !matches!(outcome, MatchOutcome::Matched { .. }) {
+        let plain = format!("{artist} {}", input.title);
+        let more = spotify
+            .search_track(plain.trim(), market.as_deref())
+            .await
+            .map_err(spotify_job_error)?;
+        for track in &more {
+            if !candidates.iter().any(|c| c.key == track.uri) {
+                candidates.push(MatchCandidate::from(track));
+            }
+        }
+        outcome = best_outcome(input, &candidates, cfg);
+    }
+    Ok(outcome)
+}
+
+// Write ---------------------------------------------------------------------------
+
+async fn write_stage(
+    cp: &mut Checkpoint,
+    ctx: &mut JobCtx,
+    progress: &mut (dyn FnMut(TransferProgress) + Send),
+    report: &mut TransferReport,
+) -> Result<(), JobError> {
+    // Collect the ordered, deduped write list: (entry index, destination key).
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut writes: Vec<(usize, String)> = Vec::new();
+    for (idx, entry) in cp.tracks.iter().enumerate() {
+        let key = match (&entry.outcome, cp.spec.take_best) {
+            (Some(MatchOutcome::Matched { key, .. }), _) => key.clone(),
+            (Some(MatchOutcome::Ambiguous { candidates }), true) => {
+                match candidates.first() {
+                    Some(best) => best.key.clone(),
+                    None => continue,
+                }
+            }
+            _ => continue,
+        };
+        if !seen.insert(key.clone()) {
+            report.duplicates_dropped += 1;
+            continue;
+        }
+        writes.push((idx, key));
+    }
+    let total = writes.len() as u32;
+
+    // The local store needs no network at all — handle it before the client-bound arms.
+    if matches!(cp.spec.dest, TransferDest::LocalPlaylist { .. }) {
+        return write_local(cp, writes, progress, report);
+    }
+
+    match cp.spec.dest.clone() {
+        TransferDest::YtmLikes => {
+            let mut done = 0u32;
+            for (idx, key) in writes {
+                if cp.tracks[idx].written {
+                    done += 1;
+                    continue;
+                }
+                // rate_song is idempotent server-side, so a crash between the call and
+                // the checkpoint flush re-likes harmlessly on resume.
+                ctx.ytm()?
+                    .rate_song_liked(&key)
+                    .await
+                    .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
+                cp.tracks[idx].written = true;
+                report.written += 1;
+                done += 1;
+                progress(progress_write(cp, done, total, idx));
+                if (done as usize).is_multiple_of(CHECKPOINT_EVERY) {
+                    cp.save().map_err(|e| JobError::fatal(e.into()))?;
+                }
+                tokio::time::sleep(YTM_LIKE_PAUSE).await;
+            }
+        }
+        TransferDest::YtmNewPlaylist { .. } | TransferDest::YtmExistingPlaylist { .. } => {
+            let dest_id = ensure_ytm_dest(cp, ctx).await?;
+            reconcile_written_ytm(cp, ctx, &dest_id).await?;
+            let pending: Vec<(usize, String)> = writes
+                .into_iter()
+                .filter(|(idx, _)| !cp.tracks[*idx].written)
+                .collect();
+            let mut done = total - pending.len() as u32;
+            report.written += done;
+            for chunk in pending.chunks(YTM_ADD_CHUNK) {
+                let ids: Vec<String> = chunk.iter().map(|(_, key)| key.clone()).collect();
+                ctx.ytm()?
+                    .add_items_to_account_playlist(&dest_id, &ids)
+                    .await
+                    .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
+                for (idx, _) in chunk {
+                    cp.tracks[*idx].written = true;
+                }
+                done += chunk.len() as u32;
+                report.written += chunk.len() as u32;
+                progress(progress_write(cp, done, total, chunk.last().unwrap().0));
+                cp.save().map_err(|e| JobError::fatal(e.into()))?;
+                tokio::time::sleep(YTM_ADD_PAUSE).await;
+            }
+        }
+        TransferDest::SpotifyNewPlaylist { .. } => {
+            let dest_id = ensure_spotify_dest(cp, ctx).await?;
+            reconcile_written_spotify(cp, ctx, &dest_id).await?;
+            let pending: Vec<(usize, String)> = writes
+                .into_iter()
+                .filter(|(idx, _)| !cp.tracks[*idx].written)
+                .collect();
+            let mut done = total - pending.len() as u32;
+            report.written += done;
+            for chunk in pending.chunks(SPOTIFY_ADD_CHUNK) {
+                let uris: Vec<String> = chunk.iter().map(|(_, key)| key.clone()).collect();
+                {
+                    let spotify = ctx.spotify()?;
+                    spotify
+                        .add_tracks(&dest_id, &uris)
+                        .await
+                        .map_err(|e| checkpointed(cp, spotify_job_error(e)))?;
+                }
+                for (idx, _) in chunk {
+                    cp.tracks[*idx].written = true;
+                }
+                done += chunk.len() as u32;
+                report.written += chunk.len() as u32;
+                progress(progress_write(cp, done, total, chunk.last().unwrap().0));
+                cp.save().map_err(|e| JobError::fatal(e.into()))?;
+            }
+        }
+        TransferDest::File { .. } => unreachable!("file exports take the export_file path"),
+        TransferDest::LocalPlaylist { .. } => unreachable!("handled before the client arms"),
+    }
+    Ok(())
+}
+
+/// Write matches into the app's own playlist store (`playlists.json`): visible in the
+/// TUI Library immediately. Create-or-append by name; the store itself dedupes by
+/// `video_id`, so resumes and re-runs are naturally idempotent.
+fn write_local(
+    cp: &mut Checkpoint,
+    writes: Vec<(usize, String)>,
+    progress: &mut (dyn FnMut(TransferProgress) + Send),
+    report: &mut TransferReport,
+) -> Result<(), JobError> {
+    let name = cp
+        .dest_name
+        .clone()
+        .unwrap_or_else(|| "Imported playlist".to_owned());
+    let mut store = crate::playlists::Playlists::load();
+    let key = match store.list().iter().find(|p| p.name == name) {
+        Some(existing) => existing.id.clone(),
+        None => store.create(&name).ok_or_else(|| {
+            JobError::fatal(anyhow!("could not create the local playlist `{name}`"))
+        })?,
+    };
+    cp.dest_id = Some(key.clone());
+
+    let total = writes.len() as u32;
+    let mut done = 0u32;
+    for (idx, video_id) in writes {
+        let song = song_for_entry(&cp.tracks[idx], &video_id);
+        match store.add(&key, song) {
+            crate::playlists::AddResult::Added | crate::playlists::AddResult::Duplicate => {
+                cp.tracks[idx].written = true;
+                report.written += 1;
+            }
+            crate::playlists::AddResult::Full => {
+                tracing::warn!("local playlist `{name}` is full; remaining tracks skipped");
+                break;
+            }
+            crate::playlists::AddResult::NotFound => {
+                return Err(JobError::fatal(anyhow!(
+                    "local playlist `{name}` vanished mid-write"
+                )));
+            }
+        }
+        done += 1;
+        progress(progress_write(cp, done, total, idx));
+    }
+    store
+        .save()
+        .map_err(|e| JobError::fatal(anyhow::Error::from(e).context("saving playlists.json")))?;
+    cp.save().map_err(|e| JobError::fatal(e.into()))?;
+    Ok(())
+}
+
+/// Reconstruct a playable `Song` for a write target, preferring the matched candidate's
+/// metadata (carried in the checkpoint) and degrading to the source input's fields (a
+/// take-best ambiguous pick only carries its display line).
+fn song_for_entry(entry: &TrackEntry, video_id: &str) -> Song {
+    let (title, artist, album, duration_secs) = match &entry.outcome {
+        Some(MatchOutcome::Matched {
+            title: Some(title),
+            artist,
+            album,
+            duration_secs,
+            ..
+        }) => (
+            title.clone(),
+            artist.clone().unwrap_or_default(),
+            album.clone(),
+            *duration_secs,
+        ),
+        _ => (
+            entry.input.title.clone(),
+            entry.input.artists.join(", "),
+            entry.input.album.clone(),
+            entry.input.duration_secs,
+        ),
+    };
+    let duration = duration_secs
+        .map(|s| crate::util::format::time(f64::from(s)))
+        .unwrap_or_default();
+    let mut song = Song::from_search(video_id, title, artist, duration, album);
+    song.duration_secs = duration_secs;
+    song
+}
+
+/// Create (once) or find the YTM destination playlist; the id is checkpointed before
+/// the first add so a resume never creates a duplicate.
+async fn ensure_ytm_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<String, JobError> {
+    if let Some(id) = &cp.dest_id {
+        return Ok(id.clone());
+    }
+    let ytm = ctx.ytm()?;
+    let existing = ytm
+        .library_playlists()
+        .await
+        .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
+    let dest = cp.spec.dest.clone();
+    let id = match &dest {
+        // Append-or-create: a `--to-playlist NAME` target that doesn't exist yet is
+        // simply created under that exact name (no collision suffixing).
+        TransferDest::YtmExistingPlaylist { name } => {
+            match existing.iter().find(|(_, title, _)| title == name) {
+                Some((id, _, _)) => id.clone(),
+                None => {
+                    let description = format!("Imported by ytm-tui (job {})", cp.job_id);
+                    let id = ytm
+                        .create_account_playlist(name, &description)
+                        .await
+                        .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
+                    cp.dest_name = Some(name.clone());
+                    id
+                }
+            }
+        }
+        _ => {
+            let base = cp
+                .dest_name
+                .clone()
+                .unwrap_or_else(|| "Imported playlist".to_owned());
+            // Title collision policy: suffix rather than merging into someone's list.
+            let mut name = base.clone();
+            if existing.iter().any(|(_, title, _)| *title == name) {
+                name = format!("{base} (Spotify import)");
+            }
+            if existing.iter().any(|(_, title, _)| *title == name) {
+                name = format!("{base} (Spotify import {})", crate::signals::unix_now());
+            }
+            let description = format!("Imported by ytm-tui (job {})", cp.job_id);
+            let id = ytm
+                .create_account_playlist(&name, &description)
+                .await
+                .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
+            cp.dest_name = Some(name);
+            id
+        }
+    };
+    cp.dest_id = Some(id.clone());
+    cp.save().map_err(|e| JobError::fatal(e.into()))?;
+    Ok(id)
+}
+
+async fn ensure_spotify_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<String, JobError> {
+    if let Some(id) = &cp.dest_id {
+        return Ok(id.clone());
+    }
+    let name = cp
+        .dest_name
+        .clone()
+        .unwrap_or_else(|| "Imported playlist".to_owned());
+    let description = format!("Imported from YouTube Music by ytm-tui (job {})", cp.job_id);
+    let spotify = ctx.spotify()?;
+    // Prefer an existing playlist with the exact name: Development Mode apps created
+    // after the March 2026 policy can't create playlists at all, but appending to the
+    // user's existing ones works fine.
+    let existing = spotify
+        .my_playlists()
+        .await
+        .map_err(|e| checkpointed(cp, spotify_job_error(e)))?
+        .into_iter()
+        .find(|p| p.name == name);
+    let id = match existing {
+        Some(p) => p.id,
+        None => match spotify.create_playlist(&name, &description).await {
+            Ok(id) => id,
+            Err(SpotifyError::NotAllowlisted) => {
+                return Err(checkpointed(
+                    cp,
+                    JobError {
+                        resumable: true,
+                        error: anyhow!(
+                            "Spotify blocks playlist creation for new apps — create an empty \
+                             playlist named \"{name}\" in Spotify yourself, then resume this job"
+                        ),
+                    },
+                ));
+            }
+            Err(e) => return Err(checkpointed(cp, spotify_job_error(e))),
+        },
+    };
+    cp.dest_id = Some(id.clone());
+    cp.save().map_err(|e| JobError::fatal(e.into()))?;
+    Ok(id)
+}
+
+/// Belt-and-braces resume idempotency: whatever already made it into the destination
+/// (a crash can land between a successful add and the checkpoint flush) is marked
+/// written before any new adds.
+async fn reconcile_written_ytm(
+    cp: &mut Checkpoint,
+    ctx: &mut JobCtx,
+    dest_id: &str,
+) -> Result<(), JobError> {
+    if !cp.tracks.iter().any(|t| t.written) && cp.stage == Stage::Writing {
+        // Fresh write stage on a fresh playlist: nothing to reconcile unless resuming.
+        if cp.dest_id.is_none() {
+            return Ok(());
+        }
+    }
+    let present: HashSet<String> = ctx
+        .ytm()?
+        .playlist_tracks_full(dest_id)
+        .await
+        .map(|songs| songs.into_iter().map(|s| s.video_id).collect())
+        .unwrap_or_default();
+    if present.is_empty() {
+        return Ok(());
+    }
+    for entry in &mut cp.tracks {
+        if let Some(MatchOutcome::Matched { key, .. }) = &entry.outcome
+            && present.contains(key)
+        {
+            entry.written = true;
+        }
+    }
+    Ok(())
+}
+
+async fn reconcile_written_spotify(
+    cp: &mut Checkpoint,
+    ctx: &mut JobCtx,
+    dest_id: &str,
+) -> Result<(), JobError> {
+    let spotify = ctx.spotify()?;
+    let mut on_page = |_done: u32, _total: u32| {};
+    let present: HashSet<String> = spotify
+        .playlist_tracks(dest_id, &mut on_page)
+        .await
+        .map(|tracks| tracks.into_iter().map(|t| t.uri).collect())
+        .unwrap_or_default();
+    if present.is_empty() {
+        return Ok(());
+    }
+    for entry in &mut cp.tracks {
+        if let Some(MatchOutcome::Matched { key, .. }) = &entry.outcome
+            && present.contains(key)
+        {
+            entry.written = true;
+        }
+    }
+    Ok(())
+}
+
+// File export ------------------------------------------------------------------------
+
+async fn export_file(
+    job_id: &str,
+    spec: &JobSpec,
+    ctx: &mut JobCtx,
+    path: &std::path::Path,
+    format: FileFormat,
+    started: Instant,
+) -> Result<TransferReport, JobError> {
+    let (name, source_label, songs): (String, String, Vec<Song>) = match &spec.source {
+        TransferSource::YtmPlaylist { id } => {
+            let ytm = ctx.ytm()?;
+            let title = ytm
+                .library_playlists()
+                .await
+                .map_err(ytm_job_error)?
+                .into_iter()
+                .find(|(pid, _, _)| pid == id)
+                .map(|(_, title, _)| title)
+                .unwrap_or_else(|| format!("ytm:{id}"));
+            let songs = ytm.playlist_tracks_full(id).await.map_err(ytm_job_error)?;
+            (title, format!("ytm:{id}"), songs)
+        }
+        TransferSource::LocalPlaylist { key } => {
+            let store = crate::playlists::Playlists::load();
+            let playlist = store
+                .find(key)
+                .ok_or_else(|| JobError::fatal(anyhow!("no local playlist named `{key}`")))?;
+            (
+                playlist.name.clone(),
+                format!("local:{key}"),
+                playlist.songs.clone(),
+            )
+        }
+        other => {
+            return Err(JobError::fatal(anyhow!(
+                "file export supports YouTube Music / local playlists (got {other:?})"
+            )));
+        }
+    };
+    match format {
+        FileFormat::Json => {
+            let file = super::json::PlaylistFile::new(name, source_label, songs.clone());
+            super::json::write_playlist(path, &file).map_err(JobError::fatal)?;
+        }
+        FileFormat::Csv => {
+            super::csv::write_songs(path, &songs).map_err(JobError::fatal)?;
+        }
+    }
+    Ok(TransferReport {
+        job_id: job_id.to_owned(),
+        total: songs.len() as u32,
+        matched: songs.len() as u32,
+        written: songs.len() as u32,
+        elapsed_secs: started.elapsed().as_secs(),
+        ..TransferReport::default()
+    })
+}
+
+// Shared helpers -----------------------------------------------------------------------
+
+fn outcome_counts(tracks: &[TrackEntry]) -> (u32, u32, u32) {
+    let mut matched = 0;
+    let mut ambiguous = 0;
+    let mut not_found = 0;
+    for t in tracks {
+        match &t.outcome {
+            Some(MatchOutcome::Matched { .. }) => matched += 1,
+            Some(MatchOutcome::Ambiguous { .. }) => ambiguous += 1,
+            Some(MatchOutcome::NotFound) => not_found += 1,
+            _ => {}
+        }
+    }
+    (matched, ambiguous, not_found)
+}
+
+fn build_report(cp: &Checkpoint, skipped_local: u32) -> TransferReport {
+    let (matched, _, _) = outcome_counts(&cp.tracks);
+    let mut report = TransferReport {
+        job_id: cp.job_id.clone(),
+        total: cp.tracks.len() as u32,
+        matched,
+        skipped_local,
+        ..TransferReport::default()
+    };
+    for entry in &cp.tracks {
+        match &entry.outcome {
+            Some(MatchOutcome::Ambiguous { candidates }) => {
+                let note = candidates
+                    .iter()
+                    .map(|c| format!("{} ({:.2})", c.display, c.score))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                report.ambiguous.push(ReportRow {
+                    title: entry.input.title.clone(),
+                    artists: entry.input.artists.join(", "),
+                    note,
+                });
+            }
+            Some(MatchOutcome::NotFound) => {
+                report.not_found.push(ReportRow {
+                    title: entry.input.title.clone(),
+                    artists: entry.input.artists.join(", "),
+                    note: "no match on the destination".to_owned(),
+                });
+            }
+            _ => {}
+        }
+    }
+    report
+}
+
+fn progress_write(cp: &Checkpoint, done: u32, total: u32, idx: usize) -> TransferProgress {
+    let (matched, ambiguous, not_found) = outcome_counts(&cp.tracks);
+    TransferProgress {
+        job_id: cp.job_id.clone(),
+        stage: Stage::Writing,
+        done,
+        total,
+        matched,
+        ambiguous,
+        not_found,
+        current: cp
+            .tracks
+            .get(idx)
+            .map(|t| t.input.display())
+            .unwrap_or_default(),
+    }
+}
+
+fn progress_beat(
+    job_id: &str,
+    stage: Stage,
+) -> impl FnMut(u32, u32, String) + use<> {
+    let job_id = job_id.to_owned();
+    move |_done, _total, _current| {
+        // Fetch pagination is fast; per-page progress is deliberately not surfaced (the
+        // interesting stages report per-track). Hook kept for symmetry/debugging.
+        tracing::debug!(job = %job_id, stage = stage.label(), "fetch page");
+    }
+}
+
+/// Persist the checkpoint before surfacing an error — the resume story depends on it.
+fn checkpointed(cp: &mut Checkpoint, err: JobError) -> JobError {
+    if let Err(e) = cp.save() {
+        tracing::warn!(error = %e, "could not save checkpoint while failing");
+    }
+    err
+}
+
+fn spotify_job_error(e: SpotifyError) -> JobError {
+    let resumable = matches!(
+        e,
+        SpotifyError::RateLimited | SpotifyError::Network(_) | SpotifyError::Auth(_)
+    );
+    JobError {
+        resumable,
+        error: anyhow!("{e}"),
+    }
+}
+
+fn ytm_job_error(e: anyhow::Error) -> JobError {
+    // YTM failures mid-job (expired cookie, throttling) are the classic resume case.
+    JobError {
+        resumable: true,
+        error: e.context("YouTube Music request failed — after fixing the cookie you can resume this job"),
+    }
+}

@@ -68,6 +68,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(confirm) = app.pending_settings_confirm {
         views::settings::render_confirm(frame, app, area, confirm);
     }
+    // The Spotify playlist picker (Import from Spotify…) is modal over Settings.
+    if app.spotify_picker.is_some() {
+        views::settings::render_spotify_picker(frame, app, area);
+    }
     // Deleting downloaded files is modal and irreversible — drawn last so its buttons win.
     if app.library_ui.confirm_delete.is_some() {
         views::library::render_confirm_delete(frame, app, area);

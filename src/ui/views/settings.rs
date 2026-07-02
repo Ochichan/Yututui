@@ -761,6 +761,67 @@ pub fn render_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: Setting
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
+/// The Spotify playlist picker overlay (Import from Spotify…): ↑/↓ select, Enter
+/// imports into a new YTM playlist (Liked Songs → the like button), Esc closes.
+pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(picker) = app.spotify_picker.as_ref() else {
+        return;
+    };
+    let h = (picker.items.len() as u16 + 4).clamp(7, 18);
+    let popup = centered_fixed(area, 62, h);
+    crate::ui::render_popup_background(frame, app, popup);
+
+    let block = Block::default()
+        .title(t!(" Import from Spotify ", " Spotify에서 가져오기 "))
+        .borders(Borders::ALL)
+        .border_style(crate::ui::confirm_border_style(app))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    let visible = rows[0].height as usize;
+    // Keep the selection in view for long playlist lists.
+    let first = picker
+        .selected
+        .saturating_sub(visible.saturating_sub(1))
+        .min(picker.items.len().saturating_sub(visible.max(1)));
+    let lines: Vec<ratatui::text::Line> = picker
+        .items
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(visible)
+        .map(|(i, item)| {
+            let marker = if i == picker.selected { "▸ " } else { "  " };
+            let count = if item.total > 0 {
+                format!("  ({})", item.total)
+            } else {
+                String::new()
+            };
+            let style = if i == picker.selected {
+                crate::ui::popup_style(app, R::TextPrimary)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                crate::ui::popup_style(app, R::TextMuted)
+            };
+            ratatui::text::Line::styled(format!("{marker}{}{count}", item.label), style)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), rows[0]);
+    frame.render_widget(
+        Paragraph::new(t!(
+            "↑/↓ select · Enter import · Esc close",
+            "↑/↓ 선택 · Enter 가져오기 · Esc 닫기"
+        ))
+        .alignment(Alignment::Center)
+        .style(crate::ui::popup_style(app, R::TextMuted)),
+        rows[1],
+    );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
 /// A `w`×`h` rect centered in `area`, clamped so it never exceeds the available space.
 fn centered_fixed(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);

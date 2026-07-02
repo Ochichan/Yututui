@@ -436,6 +436,10 @@ impl DaemonEngine {
         self.config.effective_media_controls()
     }
 
+    pub fn scrobble_settings(&self) -> crate::scrobble::ScrobbleSettings {
+        self.config.scrobble_settings()
+    }
+
     pub fn set_media_art(&mut self, ready: crate::media::artwork::MediaArtworkReady) {
         self.media_art = Some(ready);
     }
@@ -665,6 +669,7 @@ impl DaemonEngine {
                 key: song.video_id.clone(),
                 title: song.title.clone(),
                 artist: song.artist.clone(),
+                album: if is_live { None } else { song.album.clone() },
                 duration,
                 is_live,
                 url: youtube_id

@@ -24,7 +24,7 @@ const OUTPUT_TEMPLATE: &str = "%(title)s [%(id)s].%(ext)s";
 const YTDLP_STDOUT_MAX: usize = 64 * 1024;
 
 pub enum DownloadCmd {
-    Start(Song),
+    Start(Box<Song>),
     SetDir(PathBuf),
 }
 
@@ -46,7 +46,7 @@ pub struct DownloadStartError {
 
 impl DownloadHandle {
     pub fn start(&self, song: Song) -> std::result::Result<(), DownloadStartError> {
-        match self.tx.try_send(DownloadCmd::Start(song)) {
+        match self.tx.try_send(DownloadCmd::Start(Box::new(song))) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(DownloadCmd::Start(song)))
             | Err(TrySendError::Closed(DownloadCmd::Start(song))) => Err(DownloadStartError {

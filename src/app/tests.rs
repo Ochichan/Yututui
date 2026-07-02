@@ -1834,7 +1834,33 @@ fn settings_tab_cycles_through_all_tabs() {
     app.update(Msg::Key(key(KeyCode::Tab)));
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
     app.update(Msg::Key(key(KeyCode::Tab)));
+    assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Accounts);
+    app.update(Msg::Key(key(KeyCode::Tab)));
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General); // wraps
+}
+
+#[test]
+fn settings_accounts_tab_renders_service_sections() {
+    let mut app = App::new(100);
+    app.config.retro_mode = true; // English labels for stable assertions
+    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.settings.as_mut().unwrap().tab = SettingsTab::Accounts;
+
+    let buf = render_app_buffer(&app, 120, 40);
+    let text: String = buf
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+
+    assert!(text.contains("Last.fm"), "Last.fm section header renders");
+    assert!(text.contains("ListenBrainz"), "ListenBrainz section renders");
+    assert!(text.contains("Spotify"), "Spotify section renders");
+    assert!(
+        text.contains("connect in browser"),
+        "disconnected accounts offer the connect action"
+    );
+    assert!(text.contains("Client ID"), "Spotify Client ID field renders");
 }
 
 #[test]
@@ -4210,6 +4236,8 @@ fn bare_local(path: &str, title: &str) -> Song {
         title: title.to_owned(),
         artist: "Local file".to_owned(),
         duration: String::new(),
+        album: None,
+        duration_secs: None,
         source: SearchSource::Youtube,
         playable: None,
         local_path: Some(PathBuf::from(path)),

@@ -19,6 +19,7 @@ pub mod media;
 mod player;
 mod queue;
 pub mod remote;
+mod scrobble;
 mod search_source;
 mod session;
 mod signals;
