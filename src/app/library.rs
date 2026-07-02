@@ -225,6 +225,15 @@ impl App {
                 self.open_playlist_create();
                 Vec::new()
             }
+            // `p` opens the add-to-playlist picker for the selected song(s). The Playlists
+            // root has no song rows, so it's a no-op there (like `f`/`d`).
+            Some(Action::AddToPlaylist) => {
+                if !self.playlists_root() {
+                    let songs = self.selected_library_songs();
+                    self.open_playlist_picker(songs);
+                }
+                Vec::new()
+            }
             Some(Action::OpenAi) => {
                 self.enter_ai();
                 Vec::new()

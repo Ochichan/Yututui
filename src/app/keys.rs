@@ -75,6 +75,12 @@ impl App {
             return Vec::new();
         }
 
+        // The "add to playlist" picker captures the keyboard while open (list nav + the
+        // inline name entry) — before Search-Enter and globals so keys can't leak through.
+        if self.playlist_picker.is_some() {
+            return self.on_key_playlist_picker(k);
+        }
+
         // Search submit/select is fixed to the physical Enter key. Handle it before
         // remappable globals so Enter stays local to Search while every other screen keeps
         // using the user's keymap.
@@ -257,6 +263,14 @@ impl App {
     /// Whether a focused text field is currently capturing typed characters (so command
     /// keys and the `?` help shortcut must not fire — they'd be typed instead).
     pub(in crate::app) fn in_text_entry(&self) -> bool {
+        // The picker's inline name entry captures text regardless of the mode it opened over.
+        if self
+            .playlist_picker
+            .as_ref()
+            .is_some_and(|p| p.naming.is_some())
+        {
+            return true;
+        }
         match self.mode {
             Mode::Search => self.search.focus == SearchFocus::Input,
             Mode::Ai => self.ai.focus == AiFocus::Input,

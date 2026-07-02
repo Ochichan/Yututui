@@ -409,6 +409,13 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            // `P` opens the add-to-playlist picker for the track that's playing.
+            Action::AddToPlaylist => {
+                if let Some(song) = self.queue.current().cloned() {
+                    self.open_playlist_picker(vec![song]);
+                }
+                Vec::new()
+            }
             Action::CopyLink => {
                 // Compute the (owned) URL before touching `self.status` to avoid borrowing
                 // `self` both immutably (queue) and mutably (status) at once. `recover_youtube_id`

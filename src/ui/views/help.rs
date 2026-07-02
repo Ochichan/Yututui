@@ -175,6 +175,12 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                     "Scroll the visible list; on Player volume, wheel changes volume.",
                     "보이는 목록을 스크롤합니다. Player 볼륨 영역에서는 볼륨을 조절합니다.",
                 ),
+                mouse_row(
+                    "Picker row click",
+                    "피커 행 클릭",
+                    "In the add-to-playlist popup, add the pending song(s) to that playlist.",
+                    "플레이리스트 추가 팝업에서 해당 플레이리스트로 곡을 추가합니다.",
+                ),
             ],
         ),
         (
@@ -472,6 +478,13 @@ mod tests {
             playlists.contains(&("Del".to_owned(), "Delete playlist / remove song".to_owned()))
         );
         assert!(playlists.contains(&("q".to_owned(), "Back / close".to_owned())));
+        assert!(playlists.contains(&("p".to_owned(), "Add to playlist".to_owned())));
+
+        let library = groups
+            .iter()
+            .find_map(|(title, rows)| (title == "Library").then_some(rows))
+            .expect("library group");
+        assert!(library.contains(&("p".to_owned(), "Add to playlist".to_owned())));
     }
 
     #[test]

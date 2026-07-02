@@ -548,6 +548,141 @@ pub fn render_playlist_create(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
+/// The "add to playlist" picker popup, drawn over whichever screen opened it: pick an
+/// existing playlist (or the trailing "New playlist…" row, which flips to an inline name
+/// entry) for the pending song(s). Rows publish `PlaylistPickRow` hit rects; the name
+/// entry publishes `ConfirmPickerCreate` / `CancelPickerCreate`.
+pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(picker) = app.playlist_picker.as_ref() else {
+        return;
+    };
+    let playlists = app.playlists.list();
+    let rows_total = playlists.len() + 1; // + "New playlist…"
+    let visible = rows_total.min(8);
+    let h = (visible as u16 + 6).min(area.height);
+    let popup = centered_fixed(area, 56, h);
+    crate::ui::render_popup_background(frame, app, popup);
+
+    let block = Block::default()
+        .title(t!(" ♪ Add to playlist ", " ♪ 플레이리스트에 추가 "))
+        .borders(Borders::ALL)
+        .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // what's being added
+        Constraint::Min(1),    // list / name entry
+        Constraint::Length(1), // hint / buttons
+    ])
+    .split(inner);
+
+    // "adding: <title>" for one song, "adding: N tracks" for a selection.
+    let subject = if picker.songs.len() == 1 {
+        app.display_title(&picker.songs[0]).into_owned()
+    } else if crate::i18n::is_korean() {
+        format!("{}곡", picker.songs.len())
+    } else {
+        format!("{} tracks", picker.songs.len())
+    };
+    let subject = crate::ui::text::truncate_owned_to_width(
+        format!("{}{subject}", t!("  adding: ", "  추가할 곡: ")),
+        inner.width as usize,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(subject).style(crate::ui::popup_style(app, R::TextMuted))),
+        rows[0],
+    );
+
+    if let Some(name) = picker.naming.as_ref() {
+        // Phase two: the inline new-playlist name entry.
+        let shown = crate::ui::text::truncate_owned_to_width(
+            name.clone(),
+            (rows[1].width as usize).saturating_sub(12),
+        );
+        let input = Line::from(vec![
+            Span::styled(
+                t!("  name: ", "  이름: "),
+                crate::ui::popup_style(app, R::TextMuted),
+            ),
+            Span::styled(shown, crate::ui::popup_style(app, R::TextPrimary)),
+            Span::styled("\u{2588}", crate::ui::popup_style(app, R::Accent)),
+        ]);
+        frame.render_widget(Paragraph::new(input), rows[1]);
+
+        let segs = [
+            buttons::Seg::button(
+                MouseTarget::ConfirmPickerCreate,
+                t!(" Create + add (Enter) ", " 만들고 추가 (Enter) "),
+            ),
+            buttons::Seg::label("    "),
+            buttons::Seg::button(
+                MouseTarget::CancelPickerCreate,
+                t!(" Back (Esc) ", " 뒤로 (Esc) "),
+            ),
+        ];
+        buttons::render_segments(
+            frame,
+            app,
+            rows[2],
+            &segs,
+            crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+            crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+            Alignment::Center,
+        );
+    } else {
+        // Phase one: the playlist list (+ trailing "New playlist…" row), cursor-windowed.
+        let list_h = rows[1].height as usize;
+        let start = picker.cursor.saturating_sub(list_h.saturating_sub(1));
+        for (vis, i) in (start..rows_total).take(list_h).enumerate() {
+            let y = rows[1].y + vis as u16;
+            let selected = i == picker.cursor;
+            let marker = if selected { "▶ " } else { "  " };
+            let body = if i < playlists.len() {
+                let p = &playlists[i];
+                let count = p.songs.len();
+                if crate::i18n::is_korean() {
+                    format!("{marker}♪ {} — {count}곡", p.name)
+                } else {
+                    let noun = if count == 1 { "track" } else { "tracks" };
+                    format!("{marker}♪ {} — {count} {noun}", p.name)
+                }
+            } else {
+                format!("{marker}{}", t!("＋ New playlist…", "＋ 새 플레이리스트…"))
+            };
+            let body = crate::ui::text::truncate_owned_to_width(body, rows[1].width as usize);
+            let style = if selected {
+                Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                crate::ui::popup_style(app, R::TextPrimary)
+            };
+            let row = Rect {
+                x: rows[1].x,
+                y,
+                width: rows[1].width,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(Line::from(body).style(style)), row);
+            app.register_mouse_button(row, MouseTarget::PlaylistPickRow(i));
+        }
+        frame.render_widget(
+            Paragraph::new(t!(
+                "↑↓ move · Enter add · n new · Esc close",
+                "↑↓ 이동 · Enter 추가 · n 새로 만들기 · Esc 닫기"
+            ))
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::TextMuted)),
+            rows[2],
+        );
+    }
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
 /// A modal confirming deletion of a whole playlist. The tracks themselves are untouched
 /// (they may still live in favorites/history/downloads), but the list is gone at once, so
 /// it's gated like the download delete — Enter/`y`/Delete button confirm, anything else

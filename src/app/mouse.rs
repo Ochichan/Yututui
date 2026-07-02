@@ -98,6 +98,24 @@ impl App {
                 }
             }
         }
+        // The add-to-playlist picker is modal: its rows choose, its name-entry buttons act,
+        // and a click anywhere else closes it without adding.
+        if self.playlist_picker.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(
+                    t @ (MouseTarget::PlaylistPickRow(_)
+                    | MouseTarget::ConfirmPickerCreate
+                    | MouseTarget::CancelPickerCreate),
+                ) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.playlist_picker = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
+        }
         // The create-playlist popup is modal: only its Create/Cancel buttons act; a click
         // anywhere else cancels it (matching the queue window's click-outside-to-close).
         if self.library_ui.create_input.is_some() {
@@ -389,6 +407,20 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            // Add-to-playlist picker: clicking a row chooses it (the trailing row opens
+            // the inline name entry); the name-entry buttons commit or back out.
+            MouseTarget::PlaylistPickRow(i) if self.playlist_picker.is_some() => {
+                self.picker_choose(i)
+            }
+            MouseTarget::PlaylistPickRow(_) => Vec::new(),
+            MouseTarget::ConfirmPickerCreate => self.picker_create_commit(),
+            MouseTarget::CancelPickerCreate => {
+                if let Some(picker) = self.playlist_picker.as_mut() {
+                    picker.naming = None;
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             // The "delete downloaded files" confirmation buttons.
             MouseTarget::ConfirmDelete => self.confirm_delete_files_apply(),
             MouseTarget::CancelDelete => {
@@ -452,6 +484,7 @@ impl App {
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
             || self.library_ui.create_input.is_some()
+            || self.playlist_picker.is_some()
         {
             return self.on_mouse_click(col, row);
         }
@@ -851,6 +884,7 @@ impl App {
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
             || self.library_ui.create_input.is_some()
+            || self.playlist_picker.is_some()
         {
             return Vec::new();
         }

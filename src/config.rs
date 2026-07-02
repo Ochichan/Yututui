@@ -227,8 +227,7 @@ pub struct LastfmConfig {
 impl LastfmConfig {
     /// Connected *and* not switched off — the "should we scrobble here" gate.
     pub fn is_active(&self) -> bool {
-        self.session_key.as_deref().is_some_and(|k| !k.is_empty())
-            && self.enabled.unwrap_or(true)
+        self.session_key.as_deref().is_some_and(|k| !k.is_empty()) && self.enabled.unwrap_or(true)
     }
 }
 
@@ -572,7 +571,9 @@ impl Config {
 
     /// The Spotify loopback-redirect port (must match the registered redirect URI).
     pub fn effective_spotify_port(&self) -> u16 {
-        self.spotify.redirect_port.unwrap_or(SPOTIFY_REDIRECT_PORT_DEFAULT)
+        self.spotify
+            .redirect_port
+            .unwrap_or(SPOTIFY_REDIRECT_PORT_DEFAULT)
     }
 
     /// The runtime snapshot handed to the scrobble actor. App credentials resolve from
@@ -584,12 +585,11 @@ impl Config {
             lastfm.api_key.as_deref(),
             lastfm.api_secret.as_deref(),
         );
-        let lastfm_app = (!api_key.is_empty() && !api_secret.is_empty()).then_some(
-            crate::scrobble::LastfmApp {
+        let lastfm_app =
+            (!api_key.is_empty() && !api_secret.is_empty()).then_some(crate::scrobble::LastfmApp {
                 api_key,
                 api_secret,
-            },
-        );
+            });
         crate::scrobble::ScrobbleSettings {
             lastfm: (lastfm_app.is_some() && lastfm.is_active()).then(|| {
                 crate::scrobble::LastfmSession {
@@ -952,7 +952,10 @@ mod tests {
         assert_eq!(back.scrobble.lastfm.session_key.as_deref(), Some("sk-123"));
         assert_eq!(back.scrobble.lastfm.username.as_deref(), Some("listener"));
         assert_eq!(back.scrobble.lastfm.love_sync, Some(false));
-        assert_eq!(back.scrobble.listenbrainz.token.as_deref(), Some("lb-token"));
+        assert_eq!(
+            back.scrobble.listenbrainz.token.as_deref(),
+            Some("lb-token")
+        );
         assert_eq!(back.scrobble.local_files, Some(false));
         assert!(back.scrobble.lastfm.is_active());
         assert_eq!(back.spotify.client_id.as_deref(), Some("spotify-app-id"));
@@ -976,7 +979,7 @@ mod tests {
         km.rebind(
             KeyContext::Player,
             Action::TogglePause,
-            parse_chord("P").unwrap(),
+            parse_chord("x").unwrap(),
         )
         .unwrap();
         let cfg = Config {
@@ -988,7 +991,7 @@ mod tests {
             cfg.keybindings
                 .get("player.toggle_pause")
                 .map(String::as_str),
-            Some("P")
+            Some("x")
         );
 
         // Round-trip through the exact serde path `Config::save`/`load` use (write JSON,
@@ -999,7 +1002,7 @@ mod tests {
         // On next launch the persisted override rebuilds into the live keymap.
         let restored = KeyMap::from_config(&back);
         assert_eq!(
-            restored.action(KeyContext::Player, parse_chord("P").unwrap()),
+            restored.action(KeyContext::Player, parse_chord("x").unwrap()),
             Some(Action::TogglePause)
         );
         assert_eq!(

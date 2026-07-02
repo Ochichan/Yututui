@@ -183,6 +183,13 @@ impl App {
                         None => Vec::new(),
                     }
                 }
+                // `p` opens the add-to-playlist picker for the highlighted result.
+                Some(Action::AddToPlaylist) => {
+                    if let Some(song) = self.search.results.get(self.search.selected).cloned() {
+                        self.open_playlist_picker(vec![song]);
+                    }
+                    Vec::new()
+                }
                 Some(Action::FocusInput) => {
                     self.search.focus = SearchFocus::Input;
                     self.dirty = true;

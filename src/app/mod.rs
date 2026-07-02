@@ -255,6 +255,9 @@ pub struct App {
     /// Library-screen state: active tab, list cursor + multi-select anchor, local
     /// download-folder rows, and the pending file-delete confirmation.
     pub library_ui: LibraryView,
+    /// The "add to playlist" picker popup, when open (from Library rows, Search results,
+    /// or the Player's current track).
+    pub playlist_picker: Option<PlaylistPicker>,
     /// Active mouse drag-selection session. Cleared on left-button release so a later
     /// drag starts from its own first row, not whatever was selected before.
     drag_selection: Option<DragSelection>,
@@ -381,6 +384,7 @@ impl App {
             signals: Signals::default(),
             session: Session::default(),
             library_ui: LibraryView::default(),
+            playlist_picker: None,
             drag_selection: None,
             drag_scrollbar: None,
             ai_transcript_drag: None,
@@ -1350,6 +1354,7 @@ impl App {
         self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;
+        self.playlist_picker = None;
         self.reset_playlist_ui_state();
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
         // when the input is re-entered later.
@@ -1404,6 +1409,7 @@ impl App {
         // content state — it resets only on a fresh Library entry below).
         self.library_ui.create_input = None;
         self.library_ui.confirm_playlist_delete = None;
+        self.playlist_picker = None;
         // Any navigation deselects: a Ctrl+A highlight must not survive a screen change.
         self.search.select_all = false;
         self.ai.select_all = false;

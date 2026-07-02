@@ -2287,12 +2287,12 @@ fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
         .rebind(
             KeyContext::Player,
             Action::TogglePause,
-            crate::keymap::parse_chord("P").unwrap(),
+            crate::keymap::parse_chord("x").unwrap(),
         )
         .unwrap();
     assert_eq!(
         app.keymap
-            .action(KeyContext::Player, crate::keymap::parse_chord("P").unwrap()),
+            .action(KeyContext::Player, crate::keymap::parse_chord("x").unwrap()),
         Some(Action::TogglePause)
     );
 
@@ -2316,13 +2316,13 @@ fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
         Some(Action::TogglePause)
     );
     assert_eq!(
-        draft_keymap.action(KeyContext::Player, crate::keymap::parse_chord("P").unwrap()),
+        draft_keymap.action(KeyContext::Player, crate::keymap::parse_chord("x").unwrap()),
         None
     );
     // The live keymap follows the existing Settings flow: changes commit on close.
     assert_eq!(
         app.keymap
-            .action(KeyContext::Player, crate::keymap::parse_chord("P").unwrap()),
+            .action(KeyContext::Player, crate::keymap::parse_chord("x").unwrap()),
         Some(Action::TogglePause)
     );
 
@@ -2338,7 +2338,7 @@ fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
     );
     assert_eq!(
         app.keymap
-            .action(KeyContext::Player, crate::keymap::parse_chord("P").unwrap()),
+            .action(KeyContext::Player, crate::keymap::parse_chord("x").unwrap()),
         None
     );
 }
@@ -7481,4 +7481,139 @@ fn playlists_reload_reconciles_a_dangling_drilldown() {
     app.reconcile_playlists_reload();
     assert!(app.library_ui.open_playlist.is_none());
     assert_eq!(app.library_ui.selected, 0);
+}
+
+// --- "Add to playlist" picker (p / P) --------------------------------------
+
+/// Favorites tab with two tracks and one existing playlist ("Mix").
+fn app_with_picker_fixture() -> App {
+    let mut app = app_with_favorites(vec![
+        fsong("s1", "Song One", "A"),
+        fsong("s2", "Song Two", "B"),
+    ]);
+    app.playlists.create("Mix");
+    app
+}
+
+#[test]
+fn p_is_bound_to_add_to_playlist_and_listed_in_the_cheat_sheet() {
+    let app = App::new(100);
+    let p = Chord::new(KeyCode::Char('p'), KeyModifiers::empty());
+    assert_eq!(
+        app.keymap.action(KeyContext::Library, p),
+        Some(Action::AddToPlaylist)
+    );
+    assert_eq!(
+        app.keymap.action(KeyContext::SearchResults, p),
+        Some(Action::AddToPlaylist)
+    );
+    let shift_p = Chord::new(KeyCode::Char('P'), KeyModifiers::empty());
+    assert_eq!(
+        app.keymap.action(KeyContext::Player, shift_p),
+        Some(Action::AddToPlaylist)
+    );
+}
+
+#[test]
+fn p_on_a_library_row_opens_the_picker_and_enter_adds() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_with_picker_fixture();
+    app.update(Msg::Key(key(KeyCode::Char('p'))));
+    let picker = app.playlist_picker.as_ref().expect("picker open");
+    assert_eq!(picker.songs.len(), 1);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(app.playlist_picker.is_none());
+    assert_eq!(app.playlists.find("Mix").unwrap().songs.len(), 1);
+    assert!(app.status.text.contains("Added 1 track to Mix"));
+}
+
+#[test]
+fn p_with_a_multiselect_range_adds_the_whole_range() {
+    let mut app = app_with_picker_fixture();
+    app.library_ui.selected = 0;
+    app.library_ui.anchor = 1;
+    app.update(Msg::Key(key(KeyCode::Char('p'))));
+    assert_eq!(app.playlist_picker.as_ref().unwrap().songs.len(), 2);
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(app.playlists.find("Mix").unwrap().songs.len(), 2);
+}
+
+#[test]
+fn adding_a_duplicate_reports_already_there_without_saving() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_with_picker_fixture();
+    app.update(Msg::Key(key(KeyCode::Char('p'))));
+    app.update(Msg::Key(key(KeyCode::Enter))); // first add
+    app.update(Msg::Key(key(KeyCode::Char('p'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter))); // same song again
+    assert!(cmds.iter().all(|c| !matches!(c, Cmd::SavePlaylists)));
+    assert_eq!(app.playlists.find("Mix").unwrap().songs.len(), 1);
+    assert!(app.status.text.contains("Already in playlist"));
+}
+
+#[test]
+fn picker_n_creates_a_playlist_and_adds_in_one_go() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_with_picker_fixture();
+    app.update(Msg::Key(key(KeyCode::Char('p'))));
+    app.update(Msg::Key(key(KeyCode::Char('n')))); // jump to the name entry
+    assert!(app.playlist_picker.as_ref().unwrap().naming.is_some());
+    for c in "Road".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(app.playlist_picker.is_none());
+    assert_eq!(app.playlists.find("Road").unwrap().songs.len(), 1);
+}
+
+#[test]
+fn picker_esc_backs_out_of_naming_then_closes() {
+    let mut app = app_with_picker_fixture();
+    app.update(Msg::Key(key(KeyCode::Char('p'))));
+    app.update(Msg::Key(key(KeyCode::Char('n'))));
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    let picker = app.playlist_picker.as_ref().expect("back to the list");
+    assert!(picker.naming.is_none());
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(app.playlist_picker.is_none());
+    assert!(app.playlists.find("Mix").unwrap().songs.is_empty()); // nothing added
+}
+
+#[test]
+fn shift_p_on_the_player_picks_up_the_current_track() {
+    let mut app = app_playing(2, 0);
+    app.playlists.create("Mix");
+    app.update(Msg::Key(key(KeyCode::Char('P'))));
+    let picker = app.playlist_picker.as_ref().expect("picker open");
+    assert_eq!(picker.songs[0].video_id, "id0");
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(app.playlists.find("Mix").unwrap().songs[0].video_id, "id0");
+    assert_eq!(app.mode, Mode::Player); // adding never leaves the screen
+}
+
+#[test]
+fn p_on_a_search_result_picks_that_result() {
+    let mut app = App::new(100);
+    app.playlists.create("Mix");
+    app.mode = Mode::Search;
+    app.search.results = songs(2);
+    app.search.focus = SearchFocus::Results;
+    app.search.selected = 1;
+    app.update(Msg::Key(key(KeyCode::Char('p'))));
+    let picker = app.playlist_picker.as_ref().expect("picker open");
+    assert_eq!(picker.songs[0].video_id, "id1");
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(app.playlists.find("Mix").unwrap().songs[0].video_id, "id1");
+    assert_eq!(app.mode, Mode::Search);
+}
+
+#[test]
+fn p_is_a_noop_on_the_playlists_root() {
+    let mut app = app_with_playlists();
+    assert!(app.playlists_root());
+    app.update(Msg::Key(key(KeyCode::Char('p'))));
+    assert!(app.playlist_picker.is_none());
 }

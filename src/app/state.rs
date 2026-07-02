@@ -366,6 +366,20 @@ pub struct LibraryView {
     pub confirm_playlist_delete: Option<String>,
 }
 
+/// The "add to playlist" picker popup: which songs are being added, the highlighted row,
+/// and the optional inline new-playlist name entry. Opens over any screen (Library rows,
+/// Search results, the Player's current track), so it lives on [`App`] rather than a view.
+pub struct PlaylistPicker {
+    /// The song(s) to add — a library multi-select range, one search result, or the
+    /// current track.
+    pub songs: Vec<Song>,
+    /// The highlighted picker row: `0..len` are playlists, `len` is "New playlist…".
+    pub cursor: usize,
+    /// `Some` while the trailing "New playlist…" row is capturing a name (phase two of
+    /// the popup). Enter creates the playlist and adds the songs; Esc returns to the list.
+    pub naming: Option<String>,
+}
+
 /// Queue-window overlay state: whether it's open, the selection cursor + anchor, its
 /// on-screen rect (a render→reducer bridge), and its wheel-scroll offset. Grouping the
 /// `Cell`/scroll bridges here keeps them next to the overlay state they belong to.

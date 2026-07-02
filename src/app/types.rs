@@ -403,6 +403,13 @@ pub enum MouseTarget {
     ConfirmPlaylistCreate,
     /// Cancel button on the "new playlist" popup.
     CancelPlaylistCreate,
+    /// A row in the "add to playlist" picker: `0..len` choose a playlist, `len` is the
+    /// trailing "New playlist…" row.
+    PlaylistPickRow(usize),
+    /// Create button on the picker's inline new-playlist name entry.
+    ConfirmPickerCreate,
+    /// Back button on the picker's inline new-playlist name entry (returns to the list).
+    CancelPickerCreate,
     /// Confirm button on the "delete downloaded files" modal.
     ConfirmDelete,
     /// Cancel button on the "delete downloaded files" modal.

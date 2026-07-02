@@ -247,6 +247,188 @@ impl App {
         self.clamp_library_selection();
         self.bridges.library_scroll.reset();
     }
+
+    // --- "Add to playlist" picker ------------------------------------------------
+
+    /// Open the picker over the current screen for `songs` (a library selection, one
+    /// search result, or the current track). No-op when there's nothing to add.
+    pub(in crate::app) fn open_playlist_picker(&mut self, songs: Vec<Song>) {
+        if songs.is_empty() {
+            return;
+        }
+        self.playlist_picker = Some(PlaylistPicker {
+            songs,
+            cursor: 0,
+            naming: None,
+        });
+        self.dirty = true;
+    }
+
+    /// Keystrokes while the picker is open. List phase: ↑/↓ move, Enter chooses (the
+    /// trailing row switches to name entry), `n` jumps straight to name entry, Esc/`q`
+    /// close. Naming phase: type/Backspace edit, Enter creates-and-adds, Esc backs out
+    /// to the list.
+    pub(in crate::app) fn on_key_playlist_picker(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        let Some(picker) = self.playlist_picker.as_mut() else {
+            return Vec::new();
+        };
+        if picker.naming.is_some() {
+            match k.code {
+                KeyCode::Esc => {
+                    picker.naming = None;
+                    self.dirty = true;
+                }
+                KeyCode::Enter => return self.picker_create_commit(),
+                KeyCode::Backspace => {
+                    if let Some(buf) = picker.naming.as_mut() {
+                        buf.pop();
+                        self.dirty = true;
+                    }
+                }
+                KeyCode::Char(c)
+                    if !k
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    if let Some(buf) = picker.naming.as_mut()
+                        && buf.chars().count() < PLAYLIST_NAME_MAX
+                    {
+                        buf.push(c);
+                        self.dirty = true;
+                    }
+                }
+                _ => {}
+            }
+            return Vec::new();
+        }
+        let last = self.playlists.list().len(); // the "New playlist…" row
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.playlist_picker = None;
+                self.dirty = true;
+            }
+            KeyCode::Up => {
+                picker.cursor = picker.cursor.saturating_sub(1);
+                self.dirty = true;
+            }
+            KeyCode::Down => {
+                picker.cursor = (picker.cursor + 1).min(last);
+                self.dirty = true;
+            }
+            KeyCode::Char('n') => {
+                picker.naming = Some(String::new());
+                self.dirty = true;
+            }
+            KeyCode::Enter => {
+                let row = picker.cursor;
+                return self.picker_choose(row);
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Act on picker row `row`: add the pending songs to that playlist, or open the
+    /// inline name entry when it's the trailing "New playlist…" row.
+    pub(in crate::app) fn picker_choose(&mut self, row: usize) -> Vec<Cmd> {
+        let Some(picker) = self.playlist_picker.as_mut() else {
+            return Vec::new();
+        };
+        if row >= self.playlists.playlists.len() {
+            picker.naming = Some(String::new());
+            picker.cursor = self.playlists.playlists.len();
+            self.dirty = true;
+            return Vec::new();
+        }
+        let Some(picker) = self.playlist_picker.take() else {
+            return Vec::new();
+        };
+        let key = self.playlists.playlists[row].id.clone();
+        self.picker_add_songs(&key, picker.songs)
+    }
+
+    /// Commit the picker's inline name entry: create the playlist, then add the songs.
+    pub(in crate::app) fn picker_create_commit(&mut self) -> Vec<Cmd> {
+        let Some(name) = self
+            .playlist_picker
+            .as_ref()
+            .and_then(|p| p.naming.as_deref())
+        else {
+            return Vec::new();
+        };
+        let name = name.trim().to_owned();
+        self.dirty = true;
+        if name.is_empty() {
+            self.status.kind = StatusKind::Info;
+            self.status.text =
+                t!("Enter a playlist name", "플레이리스트 이름을 입력하세요").to_string();
+            return Vec::new();
+        }
+        match self.playlists.create(&name) {
+            Some(id) => {
+                let songs = self
+                    .playlist_picker
+                    .take()
+                    .map_or_else(Vec::new, |p| p.songs);
+                self.picker_add_songs(&id, songs)
+            }
+            // Blank is pre-checked above, so `None` here means the playlist cap.
+            None => {
+                self.status.kind = StatusKind::Error;
+                self.status.text =
+                    t!("Playlists are full", "플레이리스트가 가득 찼어요").to_string();
+                Vec::new()
+            }
+        }
+    }
+
+    /// Add `songs` to the playlist at `key` and report the outcome in the status line.
+    /// Saves when anything was actually added (idempotent under duplicates).
+    fn picker_add_songs(&mut self, key: &str, songs: Vec<Song>) -> Vec<Cmd> {
+        let name = self
+            .playlists
+            .find(key)
+            .map_or_else(|| key.to_owned(), |p| p.name.clone());
+        let (mut added, mut dupes, mut full) = (0usize, 0usize, 0usize);
+        for song in songs {
+            match self.playlists.add(key, song) {
+                crate::playlists::AddResult::Added => added += 1,
+                crate::playlists::AddResult::Duplicate => dupes += 1,
+                crate::playlists::AddResult::Full => full += 1,
+                crate::playlists::AddResult::NotFound => {}
+            }
+        }
+        self.dirty = true;
+        if full > 0 && added == 0 {
+            self.status.kind = StatusKind::Error;
+            self.status.text = t!("Playlist is full", "플레이리스트가 가득 찼어요").to_string();
+            return Vec::new();
+        }
+        if added == 0 {
+            self.status.kind = StatusKind::Info;
+            self.status.text = format!(
+                "{}: {name}",
+                t!("Already in playlist", "이미 플레이리스트에 있어요")
+            );
+            return Vec::new();
+        }
+        self.status.kind = StatusKind::Info;
+        self.status.text = if crate::i18n::is_korean() {
+            if dupes > 0 {
+                format!("{name}에 {added}곡 추가 ({dupes}곡은 이미 있음)")
+            } else {
+                format!("{name}에 {added}곡 추가")
+            }
+        } else {
+            let noun = if added == 1 { "track" } else { "tracks" };
+            if dupes > 0 {
+                format!("Added {added} {noun} to {name} ({dupes} already there)")
+            } else {
+                format!("Added {added} {noun} to {name}")
+            }
+        };
+        vec![Cmd::SavePlaylists]
+    }
 }
 
 /// Create-popup name length bound (bounded memory; far beyond any sensible name).

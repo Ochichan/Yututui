@@ -68,6 +68,7 @@ pub enum Action {
     PlayAll,
     // Playlists tab.
     PlaylistCreate,
+    AddToPlaylist,
     // Settings screen.
     SettingsCancel,
     ChangeDecrease,
@@ -263,6 +264,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "playlist_create",
         "New playlist",
         "새 플레이리스트",
+    ),
+    (
+        Action::AddToPlaylist,
+        "add_to_playlist",
+        "Add to playlist",
+        "플레이리스트에 추가",
     ),
     (
         Action::SettingsCancel,
@@ -914,6 +921,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::OpenSettings, ch(',')),
         (C::Player, A::OpenAi, ch('g')),
         (C::Player, A::OpenSearch, ch('s')),
+        (C::Player, A::AddToPlaylist, ch('P')),
         (C::Player, A::CopyLink, ch('y')),
         (C::Player, A::PlayVideo, ch('v')),
         (C::Player, A::ToggleVideoLayout, ch('V')),
@@ -945,6 +953,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Library, A::Favorite, ch('f')),
         (C::Library, A::Download, ch('d')),
         (C::Library, A::OpenAi, ch('g')),
+        (C::Library, A::AddToPlaylist, ch('p')),
         (C::Library, A::LibraryRemove, key(KeyCode::Delete)),
         (C::Library, A::LibraryFilter, ch('/')),
         (C::Library, A::Back, ch('q')),
@@ -956,6 +965,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Playlists, A::Favorite, ch('f')),
         (C::Playlists, A::Download, ch('d')),
         (C::Playlists, A::OpenAi, ch('g')),
+        (C::Playlists, A::AddToPlaylist, ch('p')),
         (C::Playlists, A::LibraryRemove, key(KeyCode::Delete)),
         (C::Playlists, A::LibraryFilter, ch('/')),
         (C::Playlists, A::Back, ch('q')),
@@ -978,6 +988,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::SearchResults, A::Enqueue, ch('\\')),
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('d')),
+        (C::SearchResults, A::AddToPlaylist, ch('p')),
         (C::SearchResults, A::Back, ch('q')),
         // DJ Gem box (text entry; Enter→send is handled in the input handler).
         (C::AiInput, A::SelectAll, ctrl('a')),
@@ -1939,7 +1950,7 @@ mod tests {
     #[test]
     fn rebind_moves_binding() {
         let mut km = KeyMap::default();
-        let p_upper = parse_chord("P").unwrap();
+        let p_upper = parse_chord("x").unwrap();
         km.rebind(KeyContext::Player, Action::TogglePause, p_upper)
             .unwrap();
         assert_eq!(
@@ -2176,17 +2187,17 @@ mod tests {
         km.rebind(
             KeyContext::Player,
             Action::TogglePause,
-            parse_chord("P").unwrap(),
+            parse_chord("x").unwrap(),
         )
         .unwrap();
         let overrides = km.to_overrides();
         assert_eq!(
             overrides.get("player.toggle_pause").map(String::as_str),
-            Some("P")
+            Some("x")
         );
         let restored = KeyMap::from_overrides(&overrides);
         assert_eq!(
-            restored.action(KeyContext::Player, parse_chord("P").unwrap()),
+            restored.action(KeyContext::Player, parse_chord("x").unwrap()),
             Some(Action::TogglePause)
         );
         assert_eq!(
