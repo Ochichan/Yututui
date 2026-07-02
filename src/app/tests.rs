@@ -1889,6 +1889,62 @@ fn help_overlay_shows_player_radio_normal_mode_binding() {
 }
 
 #[test]
+fn retro_frames_contain_only_cp437_safe_cells() {
+    // The whole point of retro mode: whatever the app renders — CJK metadata, emoji
+    // toggles, braille art, animation glyphs, the About icon — the scrubbed frame must
+    // contain nothing a 256-glyph console font can't show.
+    let mut app = App::new(100);
+    app.queue.set(
+        vec![crate::api::Song::remote(
+            "vid1",
+            "한글 제목 ♫",
+            "アーティスト",
+            "3:00",
+        )],
+        0,
+    );
+    app.mode = Mode::Player;
+    app.config.retro_mode = true;
+    app.queue.shuffle = true;
+    app.queue.repeat = crate::queue::Repeat::One;
+    app.config.animations.master = true;
+    app.config.animations.spinner = true;
+    app.config.animations.eq_bars = true;
+    // Album art active (halfblocks fallback picker): retro must render it as ASCII art.
+    configure_test_art_picker(&mut app, ratatui_image::picker::ProtocolType::Halfblocks);
+    app.set_artwork(
+        "vid1".to_owned(),
+        Some(image::DynamicImage::new_rgb8(64, 64)),
+    );
+
+    let assert_scrubbed = |app: &App, label: &str| {
+        let buf = render_app_buffer(app, 100, 30);
+        for (i, cell) in buf.content().iter().enumerate() {
+            assert!(
+                crate::ui::retro::retro_supported(cell.symbol()),
+                "{label}: cell {i} holds unsupported symbol {:?}",
+                cell.symbol()
+            );
+        }
+    };
+
+    assert_scrubbed(&app, "player");
+    app.about_visible = true;
+    assert_scrubbed(&app, "about card");
+    app.about_visible = false;
+    app.help_visible = true;
+    assert_scrubbed(&app, "help overlay");
+    app.help_visible = false;
+    app.mode = Mode::Search;
+    assert_scrubbed(&app, "search");
+    app.mode = Mode::Library;
+    assert_scrubbed(&app, "library");
+    app.mode = Mode::Player;
+    app.radio_dedicated_mode = true;
+    assert_scrubbed(&app, "radio mode");
+}
+
+#[test]
 fn remapped_focus_keys_switch_library_and_settings_tabs() {
     let mut app = app_playing(1, 0);
     app.keymap

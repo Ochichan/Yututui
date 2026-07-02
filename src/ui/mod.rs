@@ -1,6 +1,7 @@
 //! Top-level rendering: owns the screen layout and dispatches to the active view.
 
 pub mod anim;
+pub mod ascii_art;
 pub mod buttons;
 pub mod retro;
 pub mod scroll;

@@ -311,8 +311,13 @@ pub fn render_list_scrollbar(
 /// status-bar hints, not boxed buttons. Shared by every screen's footer.
 pub fn render_help_button(frame: &mut Frame, app: &App, area: Rect) {
     let key_label = app.help_footer();
-    let mouse_icon = if app.retro_mode() { "?" } else { "🖱" };
-    let mouse_label = format!("{mouse_icon} {}", t!("mouse", "마우스"));
+    // CP437 has no mouse glyph, and a `?` icon reads as a second help hint — retro mode
+    // drops the icon and keeps the plain word.
+    let mouse_label = if app.retro_mode() {
+        t!("mouse", "마우스").to_owned()
+    } else {
+        format!("🖱 {}", t!("mouse", "마우스"))
+    };
     let segs = [
         Seg::button(MouseTarget::Global(Action::ToggleHelp), key_label.as_str()),
         Seg::label("   "),

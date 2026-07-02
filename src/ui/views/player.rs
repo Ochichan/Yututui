@@ -15,6 +15,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{App, DownloadState, MouseTarget, RadioModeConfirm, ScrollSurface, StatusKind};
 use crate::keymap::Action;
 use crate::lyrics;
+use crate::queue::Repeat;
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons::{self, Seg};
@@ -162,14 +163,47 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 /// The current track's tri-state rating glyph: 👍 liked, 👎 disliked, 🤔 neither. Language-neutral
 /// Unicode — all three are width-2, so the status line never shifts as the state changes — so the
-/// row reads identically in every UI language. `like` is favorite membership; `dislike` is the
-/// streaming engine's hard-block flag — mutually exclusive, so one glyph covers both states, cycled by
+/// row reads identically in every UI language. Retro mode picks the single-cell `+`/`-`/`?`
+/// stand-ins at the source (still one width across all states), so a 256-glyph console never
+/// sees the emoji at all. `like` is favorite membership; `dislike` is the streaming engine's
+/// hard-block flag — mutually exclusive, so one glyph covers both states, cycled by
 /// [`Action::CycleRating`].
-fn rating_glyph(liked: bool, disliked: bool) -> &'static str {
-    match (liked, disliked) {
-        (true, _) => "👍",
-        (false, true) => "👎",
-        (false, false) => "🤔",
+fn rating_glyph(liked: bool, disliked: bool, retro: bool) -> &'static str {
+    match (retro, liked, disliked) {
+        (false, true, _) => "👍",
+        (false, false, true) => "👎",
+        (false, false, false) => "🤔",
+        (true, true, _) => "+",
+        (true, false, true) => "-",
+        (true, false, false) => "?",
+    }
+}
+
+/// The `S:` shuffle toggle's state glyph. Both states of a mode share one display width, so the
+/// centered status line never shifts on toggle: the non-retro cross pads to the 🔀 emoji's two
+/// cells, and the retro pair are single-cell CP437 glyphs (`v`/`x`, the same checked/cross
+/// convention the retro scrubber maps ✓/✗ to elsewhere).
+fn shuffle_glyph(on: bool, retro: bool) -> &'static str {
+    match (retro, on) {
+        (false, true) => "🔀",
+        (false, false) => "✗ ",
+        (true, true) => "v",
+        (true, false) => "x",
+    }
+}
+
+/// The `R:` repeat toggle's state glyph — the media repeat-all / repeat-one symbols, or a cross
+/// padded to their two cells when off. Retro mode picks single-cell CP437 glyphs at the source
+/// instead of trusting the post-pass scrubber: `∞` repeat-all, `1` repeat-one, `x` off — three
+/// distinct states where the old scrub collapsed 🔁 and 🔂 into the same letter.
+fn repeat_glyph(mode: Repeat, retro: bool) -> &'static str {
+    match (retro, mode) {
+        (false, Repeat::Off) => "✗ ",
+        (false, Repeat::All) => "🔁",
+        (false, Repeat::One) => "🔂",
+        (true, Repeat::Off) => "x",
+        (true, Repeat::All) => "∞",
+        (true, Repeat::One) => "1",
     }
 }
 
@@ -199,6 +233,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
 /// buffer. A `None` target is a static label/spacing; spacing is its own label so a clickable
 /// segment's hit rect hugs just its text.
 fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)> {
+    let retro = app.retro_mode();
     let mut parts: Vec<(Option<MouseTarget>, Cow<'static, str>)> = Vec::with_capacity(16);
     // A braille throbber leads the line when the spinner animation is on (no-op otherwise). It's a
     // plain label, so `render_segments` keeps every later hit rect aligned to its rendered text.
@@ -233,21 +268,22 @@ fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)>
         parts.push((None, Cow::Borrowed("    ")));
         parts.push((
             Some(MouseTarget::Player(Action::CycleRating)),
-            Cow::Borrowed(rating_glyph(liked, disliked)),
+            Cow::Borrowed(rating_glyph(liked, disliked, retro)),
         ));
     }
-    // Shuffle and repeat are both always shown as click toggles, so the line's layout never
-    // shifts as they appear/disappear. Each carries its media glyph — `S:🔀` shuffle, `R:🔁`/`R:🔂`
-    // repeat — or a cross when off, so they read the same in every UI language.
+    // Shuffle and repeat are both always shown as click toggles, and every state of each keeps
+    // one display width, so the line's layout never shifts as they toggle or appear. Each
+    // carries its media glyph — `S:🔀` shuffle, `R:🔁`/`R:🔂` repeat — or a padded cross when
+    // off, so they read the same in every UI language.
     parts.push((None, Cow::Borrowed("    ")));
     parts.push((
         Some(MouseTarget::Player(Action::ToggleShuffle)),
-        Cow::Owned(format!("S:{}", if app.queue.shuffle { "🔀" } else { "✗" })),
+        Cow::Owned(format!("S:{}", shuffle_glyph(app.queue.shuffle, retro))),
     ));
     parts.push((None, Cow::Borrowed("    ")));
     parts.push((
         Some(MouseTarget::Player(Action::CycleRepeat)),
-        Cow::Owned(format!("R:{}", app.queue.repeat.label())),
+        Cow::Owned(format!("R:{}", repeat_glyph(app.queue.repeat, retro))),
     ));
     if (app.playback.speed - 1.0).abs() > f64::EPSILON {
         parts.push((None, Cow::Owned(format!("    {:.1}x", app.playback.speed))));
@@ -981,6 +1017,21 @@ fn draw_art(frame: &mut Frame, app: &App, band: Rect) -> Option<Rect> {
     let mut rect = app.art_fit_rect(band);
     rect.y = band.y; // art_fit_rect centers vertically; re-anchor to the top of the band.
     app.art.rect.set(Some(rect));
+    // Retro mode draws the cover itself as luminance-ramp ASCII art: a basic console has no
+    // graphics protocol, and the half-block fallback needs truecolor cells the scrubber
+    // would flatten into `#` mush anyway.
+    if app.retro_mode() {
+        if let Some((id, img)) = app.art_source_image() {
+            crate::ui::ascii_art::render_image(
+                frame,
+                crate::ui::ascii_art::Slot::AlbumArt,
+                id,
+                img,
+                rect,
+            );
+        }
+        return Some(rect);
+    }
     if let Some(proto) = app.art.protocol.borrow_mut().as_mut() {
         frame.render_stateful_widget(
             StatefulImage::new().resize(Resize::Scale(Some(FilterType::Lanczos3))),
@@ -1150,6 +1201,95 @@ mod tests {
             t,
             MouseTarget::Player(Action::CycleRating)
         )));
+    }
+
+    #[test]
+    fn toggle_glyphs_share_one_width_per_mode() {
+        // The status line is centered, so a width change in any always-present segment
+        // shifts the whole line. Every state of shuffle / repeat / rating must therefore
+        // measure the same in its mode — including retro, where the old post-pass scrub
+        // turned `S:🔀`→`S:S ` but `S:✗`→`S:x` and nudged the line on every toggle.
+        let w = UnicodeWidthStr::width;
+        for retro in [false, true] {
+            assert_eq!(
+                w(shuffle_glyph(true, retro)),
+                w(shuffle_glyph(false, retro))
+            );
+            assert_eq!(
+                w(repeat_glyph(Repeat::All, retro)),
+                w(repeat_glyph(Repeat::One, retro))
+            );
+            assert_eq!(
+                w(repeat_glyph(Repeat::All, retro)),
+                w(repeat_glyph(Repeat::Off, retro))
+            );
+            assert_eq!(
+                w(rating_glyph(true, false, retro)),
+                w(rating_glyph(false, true, retro))
+            );
+            assert_eq!(
+                w(rating_glyph(true, false, retro)),
+                w(rating_glyph(false, false, retro))
+            );
+        }
+    }
+
+    #[test]
+    fn retro_toggle_glyphs_are_distinct_single_cp437_cells() {
+        // Repeat-all and repeat-one must stay tellable apart on a basic console (the old
+        // scrub mapped both 🔁 and 🔂 to `R`), and every retro state glyph must be a plain
+        // single-cell symbol so the scrubber has nothing left to rewrite.
+        let states = [
+            shuffle_glyph(true, true),
+            shuffle_glyph(false, true),
+            repeat_glyph(Repeat::Off, true),
+            repeat_glyph(Repeat::All, true),
+            repeat_glyph(Repeat::One, true),
+            rating_glyph(true, false, true),
+            rating_glyph(false, true, true),
+            rating_glyph(false, false, true),
+        ];
+        for s in states {
+            assert_eq!(UnicodeWidthStr::width(s), 1, "{s:?} must be one cell");
+        }
+        assert_ne!(
+            repeat_glyph(Repeat::All, true),
+            repeat_glyph(Repeat::One, true)
+        );
+        assert_ne!(
+            repeat_glyph(Repeat::All, true),
+            repeat_glyph(Repeat::Off, true)
+        );
+        assert_ne!(
+            repeat_glyph(Repeat::One, true),
+            repeat_glyph(Repeat::Off, true)
+        );
+        assert_ne!(shuffle_glyph(true, true), shuffle_glyph(false, true));
+    }
+
+    #[test]
+    fn status_line_width_is_invariant_across_shuffle_and_repeat_states() {
+        let mut app = App::new(100);
+        app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
+        for retro in [false, true] {
+            app.config.retro_mode = retro;
+            let mut widths = Vec::new();
+            for shuffle in [false, true] {
+                for repeat in [Repeat::Off, Repeat::All, Repeat::One] {
+                    app.queue.shuffle = shuffle;
+                    app.queue.repeat = repeat;
+                    let total: usize = status_line_parts(&app)
+                        .iter()
+                        .map(|(_, s)| UnicodeWidthStr::width(s.as_ref()))
+                        .sum();
+                    widths.push(total);
+                }
+            }
+            assert!(
+                widths.windows(2).all(|w| w[0] == w[1]),
+                "retro={retro}: line width changed across toggle states: {widths:?}"
+            );
+        }
     }
 
     #[test]

@@ -32,16 +32,6 @@ impl Repeat {
             Repeat::One => Repeat::Off,
         }
     }
-
-    /// A language-neutral Unicode glyph for the `R:` status-line button: the media
-    /// "repeat-all" / "repeat-one" symbols, and a cross when off. Identical in every UI language.
-    pub fn label(self) -> &'static str {
-        match self {
-            Repeat::Off => "✗",
-            Repeat::All => "🔁",
-            Repeat::One => "🔂",
-        }
-    }
 }
 
 /// A bounded play queue with shuffle and repeat.

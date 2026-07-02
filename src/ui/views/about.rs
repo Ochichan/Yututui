@@ -56,12 +56,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Draw the embedded icon centered in `band`, building (and caching) its protocol on first use.
 fn draw_icon(frame: &mut Frame, app: &App, band: Rect) {
-    ensure_icon(app);
-    let mut guard = app.about_icon.borrow_mut();
-    let Some((_, _, proto)) = guard.as_mut() else {
-        return;
-    };
-
     // Terminal cells are about half as wide as they are tall, so a square icon wants roughly
     // twice the columns of rows. `Resize::Fit` keeps the icon's aspect inside whatever rect we
     // hand it, so this only has to be in the right ballpark.
@@ -72,6 +66,22 @@ fn draw_icon(frame: &mut Frame, app: &App, band: Rect) {
         y: band.y + band.height.saturating_sub(h) / 2,
         width: w,
         height: h,
+    };
+    // Retro mode: ASCII-art the icon instead of building an image protocol (see `draw_art`).
+    if app.retro_mode() {
+        crate::ui::ascii_art::render_png(
+            frame,
+            crate::ui::ascii_art::Slot::AboutIcon,
+            "about-icon",
+            ICON_PNG,
+            rect,
+        );
+        return;
+    }
+    ensure_icon(app);
+    let mut guard = app.about_icon.borrow_mut();
+    let Some((_, _, proto)) = guard.as_mut() else {
+        return;
     };
     frame.render_stateful_widget(
         StatefulImage::new().resize(Resize::Fit(Some(FilterType::Lanczos3))),

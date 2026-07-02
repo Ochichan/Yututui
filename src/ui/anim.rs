@@ -222,16 +222,35 @@ pub fn controls_style(app: &App, base: Style) -> Style {
     ))
 }
 
-/// A short braille spinner glyph for the front of the status line, or `None` when the `spinner`
-/// flag is off. Frames come from the well-known `throbber-widgets-tui` braille set.
+/// A short spinner glyph for the front of the status line, or `None` when the `spinner` flag is
+/// off. Frames come from the well-known `throbber-widgets-tui` braille set — or its classic
+/// `|/-\` ASCII set in retro mode, where a console font rarely covers braille.
 pub fn spinner_prefix(app: &App) -> Option<String> {
     let a = app.animations();
     if !(a.master && a.spinner) {
         return None;
     }
-    let syms = throbber_widgets_tui::BRAILLE_EIGHT.symbols;
+    let syms = if app.retro_mode() {
+        throbber_widgets_tui::ASCII.symbols
+    } else {
+        throbber_widgets_tui::BRAILLE_EIGHT.symbols
+    };
     let i = (app.anim_frame() / 2) as usize % syms.len();
     Some(syms[i].to_owned())
+}
+
+/// One-cell bar levels: eighth-blocks normally; a CP437 shade ramp in retro mode, where the
+/// eighth-blocks (all but ▄/█) are outside a 256-glyph console font — level reads as density
+/// instead of height, which is how DOS-era meters drew it anyway.
+const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+const RETRO_BLOCKS: [char; 8] = ['.', ':', '░', '░', '▒', '▒', '▓', '█'];
+
+fn bar_blocks(app: &App) -> &'static [char; 8] {
+    if app.retro_mode() {
+        &RETRO_BLOCKS
+    } else {
+        &BLOCKS
+    }
 }
 
 /// A row of faux VU bars (`▁▂▃▅▇`) for the status line, or `None` when the `eq_bars` flag is off.
@@ -241,13 +260,13 @@ pub fn eq_bars(app: &App) -> Option<String> {
     if !(a.master && a.eq_bars) {
         return None;
     }
-    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let blocks = bar_blocks(app);
     let f = app.anim_frame();
     let mut s = String::with_capacity(5);
     for i in 0..5u64 {
         let t = wave(f + i * 7, 16 + i * 3) * 0.6 + wave(f * 2 + i * 5, 9 + i) * 0.4;
-        let idx = (t * (BLOCKS.len() - 1) as f64).round() as usize;
-        s.push(BLOCKS[idx.min(BLOCKS.len() - 1)]);
+        let idx = (t * (blocks.len() - 1) as f64).round() as usize;
+        s.push(blocks[idx.min(blocks.len() - 1)]);
     }
     Some(s)
 }
@@ -461,7 +480,7 @@ fn starfield(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
 /// A decorative (non-audio-reactive) spectrum: bars rising from the bottom strip of the zone, each
 /// mixing two waves, coloured from the gauge colour up to the accent.
 fn visualizer(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
-    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let blocks = bar_blocks(app);
     let strip = (zone.height / 3).clamp(2, 8);
     let baseline = i32::from(zone.bottom());
     let top = i32::from(zone.top());
@@ -500,8 +519,8 @@ fn visualizer(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
             if row < full {
                 put_char(buf, x, y, '█', style);
             } else if row == full && frac > 0.05 {
-                let idx = (frac * (BLOCKS.len() - 1) as f64).round() as usize;
-                put_char(buf, x, y, BLOCKS[idx.min(BLOCKS.len() - 1)], style);
+                let idx = (frac * (blocks.len() - 1) as f64).round() as usize;
+                put_char(buf, x, y, blocks[idx.min(blocks.len() - 1)], style);
             }
         }
     }

@@ -21,10 +21,23 @@ impl App {
             && self.art.protocol.borrow().is_some()
     }
 
+    /// Whether rendering will actually ship a native terminal image this frame. Retro mode
+    /// always draws text (ASCII art), so no native-image clear/resync work is ever needed
+    /// there, even when a native protocol was detected at startup.
     fn native_image_protocol_selected(&self) -> bool {
-        self.art.picker.as_ref().is_some_and(|picker| {
-            picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks
-        })
+        !self.retro_mode()
+            && self.art.picker.as_ref().is_some_and(|picker| {
+                picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks
+            })
+    }
+
+    /// The held decoded art and its owning track id, for renderers that draw the image
+    /// themselves (retro ASCII art) instead of through the terminal-graphics protocol.
+    pub fn art_source_image(&self) -> Option<(&str, &DynamicImage)> {
+        match (self.art.video_id.as_deref(), self.art.source.as_ref()) {
+            (Some(id), Some(img)) => Some((id, img)),
+            _ => None,
+        }
     }
 
     fn native_art_active(&self) -> bool {
