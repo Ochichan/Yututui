@@ -68,7 +68,9 @@ fn main() -> Result<()> {
                 println!("       ytt -r <command>     Control a running instance");
                 println!("       ytt daemon <command> Manage the headless music daemon");
                 println!("       ytt auth <service>   Connect Last.fm / ListenBrainz / Spotify");
-                println!("       ytt transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)");
+                println!(
+                    "       ytt transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
+                );
                 println!("       ytt doctor           Check your environment and exit");
                 println!();
                 println!("Launch the terminal YouTube Music player.");
@@ -883,9 +885,7 @@ async fn run(
     let _ = app.download_store.save();
     // Give queued scrobbles one bounded delivery attempt (they're already durable on
     // disk either way — leftovers flush on the next launch).
-    handles
-        .scrobble_shutdown(Duration::from_millis(1500))
-        .await;
+    handles.scrobble_shutdown(Duration::from_millis(1500)).await;
     Ok(())
 }
 

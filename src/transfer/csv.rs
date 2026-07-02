@@ -26,8 +26,8 @@ pub const HEADER: [&str; 7] = [
 
 /// Write YTM songs as CSV. Plain `std::fs` — exports are user documents, not private state.
 pub fn write_songs(path: &Path, songs: &[Song]) -> Result<()> {
-    let mut writer = csv::Writer::from_path(path)
-        .with_context(|| format!("creating {}", path.display()))?;
+    let mut writer =
+        csv::Writer::from_path(path).with_context(|| format!("creating {}", path.display()))?;
     writer.write_record(HEADER)?;
     for song in songs {
         let duration_ms = song
@@ -51,8 +51,8 @@ pub fn write_songs(path: &Path, songs: &[Song]) -> Result<()> {
 
 /// Read a playlist CSV (Exportify or ours) into match inputs.
 pub fn read_tracks(path: &Path) -> Result<Vec<TrackInput>> {
-    let mut reader = csv::Reader::from_path(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let mut reader =
+        csv::Reader::from_path(path).with_context(|| format!("reading {}", path.display()))?;
     let headers = reader.headers().context("CSV has no header row")?.clone();
     let col = |name: &str| -> Option<usize> {
         headers

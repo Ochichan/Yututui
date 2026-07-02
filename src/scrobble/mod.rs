@@ -159,9 +159,7 @@ impl ScrobbleHandle {
     }
 
     pub fn reconfigure(&self, settings: ScrobbleSettings) {
-        let _ = self
-            .tx
-            .send(ScrobbleCmd::Reconfigure(Box::new(settings)));
+        let _ = self.tx.send(ScrobbleCmd::Reconfigure(Box::new(settings)));
     }
 
     /// Kick the Last.fm browser authorization flow (events come back via the sink).

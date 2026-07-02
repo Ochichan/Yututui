@@ -18,17 +18,17 @@ const BODY_MAX: usize = 512 * 1024;
 
 /// One-shot token check for the auth CLI / settings validation. `Ok(Some(name))` when
 /// the instance reports the account name.
-pub async fn validate_token(
-    api_url: &str,
-    token: &str,
-) -> Result<Option<String>, ScrobbleError> {
+pub async fn validate_token(api_url: &str, token: &str) -> Result<Option<String>, ScrobbleError> {
     let http = reqwest::Client::builder()
         .user_agent(format!("ytm-tui/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_default();
     let resp = http
-        .get(format!("{}/1/validate-token", api_url.trim_end_matches('/')))
+        .get(format!(
+            "{}/1/validate-token",
+            api_url.trim_end_matches('/')
+        ))
         .header(reqwest::header::AUTHORIZATION, token_header(token)?)
         .send()
         .await

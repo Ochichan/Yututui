@@ -432,7 +432,10 @@ mod tests {
         let a = sim.play(&t, 61, 0.0);
         let s = scrobbles(&a);
         assert_eq!(s.len(), 1);
-        assert_eq!(s[0].started_unix, started, "restart before threshold = same listen");
+        assert_eq!(
+            s[0].started_unix, started,
+            "restart before threshold = same listen"
+        );
     }
 
     #[test]
@@ -448,7 +451,10 @@ mod tests {
         let second = sim.play(&t, 99, 0.0);
         let s = scrobbles(&second);
         assert_eq!(s.len(), 1, "second loop scrobbles again");
-        assert!(s[0].started_unix > first_ts, "fresh listen, fresh timestamp");
+        assert!(
+            s[0].started_unix > first_ts,
+            "fresh listen, fresh timestamp"
+        );
         // And now-playing re-announces on the new loop.
         assert_eq!(now_playings(&second), 1);
     }
@@ -572,10 +578,13 @@ mod tests {
         assert!(!a2.iter().any(|a| matches!(a, ScrobbleAction::Love { .. })));
         // Unlike → unlove.
         sim.advance(1.0);
-        let a3 = sim.monitor.observe(&sim.obs(Some(t.clone()), true, 13.0), true);
-        assert!(a3.iter().any(
-            |a| matches!(a, ScrobbleAction::Love { love: false, .. })
-        ));
+        let a3 = sim
+            .monitor
+            .observe(&sim.obs(Some(t.clone()), true, 13.0), true);
+        assert!(
+            a3.iter()
+                .any(|a| matches!(a, ScrobbleAction::Love { love: false, .. }))
+        );
     }
 
     #[test]
@@ -590,10 +599,10 @@ mod tests {
         let withdur = track("late", Some(120.0));
         let mut all = Vec::new();
         for i in 1..=61 {
-            all.extend(sim.monitor.observe(
-                &sim.obs(Some(withdur.clone()), true, f64::from(i)),
-                true,
-            ));
+            all.extend(
+                sim.monitor
+                    .observe(&sim.obs(Some(withdur.clone()), true, f64::from(i)), true),
+            );
             sim.advance(1.0);
         }
         let s = scrobbles(&all);

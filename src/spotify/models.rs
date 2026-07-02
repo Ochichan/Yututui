@@ -28,7 +28,10 @@ pub struct SpotifyUser {
 
 impl SpotifyUser {
     pub fn label(&self) -> &str {
-        self.display_name.as_deref().filter(|n| !n.is_empty()).unwrap_or(&self.id)
+        self.display_name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&self.id)
     }
 }
 
@@ -123,10 +126,19 @@ pub fn simplify(item: &RawTrackItem) -> Option<SpotifyTrack> {
         return None;
     }
     let track = item.item.as_ref().or(item.track.as_ref())?;
-    if track.get("type").and_then(|t| t.as_str()).unwrap_or("track") != "track" {
+    if track
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("track")
+        != "track"
+    {
         return None;
     }
-    if track.get("is_local").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if track
+        .get("is_local")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return None;
     }
     let uri = track.get("uri")?.as_str()?.to_owned();
@@ -219,7 +231,8 @@ mod tests {
         assert!(simplify(&local).is_none());
 
         // Removed/null track → skipped.
-        let null: RawTrackItem = serde_json::from_value(serde_json::json!({"track": null})).unwrap();
+        let null: RawTrackItem =
+            serde_json::from_value(serde_json::json!({"track": null})).unwrap();
         assert!(simplify(&null).is_none());
     }
 }

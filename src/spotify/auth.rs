@@ -276,7 +276,12 @@ async fn wait_for_callback(
             }
         }
         if state.as_deref() != Some(expected_state) {
-            let _ = respond(&mut stream, 400, "State mismatch — close this tab and retry.").await;
+            let _ = respond(
+                &mut stream,
+                400,
+                "State mismatch — close this tab and retry.",
+            )
+            .await;
             bail!("authorization response state mismatch");
         }
         if let Some(error) = error {
@@ -327,10 +332,7 @@ async fn respond(
 
 /// Refresh (PKCE apps get *rotating* refresh tokens): persist the successor **before**
 /// returning it, falling back to the old refresh token when the response omits one.
-pub async fn refresh(
-    http: &reqwest::Client,
-    token: &SpotifyToken,
-) -> anyhow::Result<SpotifyToken> {
+pub async fn refresh(http: &reqwest::Client, token: &SpotifyToken) -> anyhow::Result<SpotifyToken> {
     use anyhow::{Context, bail};
     let resp = http
         .post(TOKEN_URL)
@@ -371,7 +373,10 @@ fn token_from_response(
         .and_then(|v| v.as_str())
         .or(fallback_refresh)?
         .to_owned();
-    let expires_in = body.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(3600);
+    let expires_in = body
+        .get("expires_in")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(3600);
     Some(SpotifyToken {
         access_token,
         refresh_token,
@@ -402,8 +407,10 @@ mod tests {
     fn verifier_shape_is_rfc_legal() {
         let v = pkce_verifier();
         assert_eq!(v.len(), 64);
-        assert!(v.bytes().all(|b| b.is_ascii_alphanumeric()
-            || matches!(b, b'-' | b'.' | b'_' | b'~')));
+        assert!(
+            v.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
+        );
         assert_ne!(pkce_verifier(), v, "two verifiers must differ");
     }
 

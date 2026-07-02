@@ -34,7 +34,10 @@ pub enum SpotifyError {
     /// The per-job 429 budget ran out; the job should checkpoint and abort resumably.
     RateLimited,
     Network(String),
-    Api { status: u16, message: String },
+    Api {
+        status: u16,
+        message: String,
+    },
     Decode(String),
 }
 
@@ -52,7 +55,10 @@ impl std::fmt::Display for SpotifyError {
                  account, and double-check the Client ID"
             ),
             SpotifyError::RateLimited => {
-                write!(f, "Spotify rate limit exhausted — resume the job in a few minutes")
+                write!(
+                    f,
+                    "Spotify rate limit exhausted — resume the job in a few minutes"
+                )
             }
             SpotifyError::Network(m) => write!(f, "network: {m}"),
             SpotifyError::Api { status, message } => write!(f, "Spotify HTTP {status}: {message}"),
@@ -76,9 +82,8 @@ impl SpotifyClient {
     /// Build from the saved token. `client_id_hint` (the config value) guards against a
     /// token minted by a different app registration.
     pub fn from_saved(client_id_hint: Option<&str>) -> Result<Self, SpotifyError> {
-        let token = SpotifyToken::load().ok_or_else(|| {
-            SpotifyError::Auth("not connected (no saved token)".to_owned())
-        })?;
+        let token = SpotifyToken::load()
+            .ok_or_else(|| SpotifyError::Auth("not connected (no saved token)".to_owned()))?;
         if let Some(hint) = client_id_hint.map(str::trim).filter(|h| !h.is_empty())
             && !token.client_id.is_empty()
             && token.client_id != hint
@@ -126,9 +131,8 @@ impl SpotifyClient {
         let mut out = Vec::new();
         let mut url = format!("{API_BASE}/me/playlists?limit=50");
         loop {
-            let page: Paging<RawPlaylist> = self
-                .request_json(reqwest::Method::GET, url, None)
-                .await?;
+            let page: Paging<RawPlaylist> =
+                self.request_json(reqwest::Method::GET, url, None).await?;
             out.extend(page.items.into_iter().map(SpotifyPlaylist::from));
             match page.next {
                 Some(next) => url = next,
@@ -168,9 +172,8 @@ impl SpotifyClient {
         let mut out = Vec::new();
         let mut seen = 0u32;
         loop {
-            let page: Paging<RawTrackItem> = self
-                .request_json(reqwest::Method::GET, url, None)
-                .await?;
+            let page: Paging<RawTrackItem> =
+                self.request_json(reqwest::Method::GET, url, None).await?;
             seen += page.items.len() as u32;
             out.extend(page.items.iter().filter_map(simplify));
             on_page(seen.min(page.total.max(seen)), page.total);
@@ -191,9 +194,8 @@ impl SpotifyClient {
         let mut out = Vec::new();
         let mut seen = 0u32;
         loop {
-            let page: Paging<RawTrackItem> = self
-                .request_json(reqwest::Method::GET, url, None)
-                .await?;
+            let page: Paging<RawTrackItem> =
+                self.request_json(reqwest::Method::GET, url, None).await?;
             seen += page.items.len() as u32;
             out.extend(page.items.iter().filter_map(simplify));
             on_page(seen.min(page.total.max(seen)), page.total);
@@ -355,7 +357,8 @@ impl SpotifyClient {
                 continue;
             }
             if !status.is_success() {
-                let body: serde_json::Value = json_limited(resp, BODY_MAX).await.unwrap_or_default();
+                let body: serde_json::Value =
+                    json_limited(resp, BODY_MAX).await.unwrap_or_default();
                 let message = body
                     .pointer("/error/message")
                     .and_then(|m| m.as_str())

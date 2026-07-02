@@ -120,7 +120,11 @@ mod tests {
         assert!(err.contains("version 99"), "{err}");
         let _ = std::fs::remove_file(&path);
 
-        std::fs::write(&path, r#"{"format":"other","version":1,"name":"x","exported_at_unix":0,"tracks":[]}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"format":"other","version":1,"name":"x","exported_at_unix":0,"tracks":[]}"#,
+        )
+        .unwrap();
         assert!(read_playlist(&path).is_err());
         let _ = std::fs::remove_file(path);
     }

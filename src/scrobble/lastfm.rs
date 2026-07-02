@@ -304,7 +304,11 @@ mod tests {
             ScrobbleError::Auth(_)
         ));
         assert!(matches!(
-            classify(29, "Rate limit exceeded".into(), Some(Duration::from_secs(5))),
+            classify(
+                29,
+                "Rate limit exceeded".into(),
+                Some(Duration::from_secs(5))
+            ),
             ScrobbleError::RateLimited(Some(_))
         ));
         assert!(matches!(

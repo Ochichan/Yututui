@@ -175,10 +175,7 @@ async fn fetch_source(
     let (name, inputs, skipped_local): (String, Vec<TrackInput>, u32) = match &spec.source {
         TransferSource::SpotifyPlaylist { id } => {
             let spotify = ctx.spotify()?;
-            let meta = spotify
-                .playlist_meta(id)
-                .await
-                .map_err(spotify_job_error)?;
+            let meta = spotify.playlist_meta(id).await.map_err(spotify_job_error)?;
             let mut on_page = |done: u32, total: u32| beat(done, total, meta.name.clone());
             let tracks = spotify
                 .playlist_tracks(id, &mut on_page)
@@ -217,17 +214,14 @@ async fn fetch_source(
                 .find(|(pid, _, _)| pid == id)
                 .map(|(_, title, _)| title)
                 .unwrap_or_else(|| format!("ytm:{id}"));
-            let songs = ytm
-                .playlist_tracks_full(id)
-                .await
-                .map_err(ytm_job_error)?;
+            let songs = ytm.playlist_tracks_full(id).await.map_err(ytm_job_error)?;
             (name, songs.iter().map(TrackInput::from_song).collect(), 0)
         }
         TransferSource::LocalPlaylist { key } => {
             let store = crate::playlists::Playlists::load();
-            let playlist = store.find(key).ok_or_else(|| {
-                JobError::fatal(anyhow!("no local playlist named `{key}`"))
-            })?;
+            let playlist = store
+                .find(key)
+                .ok_or_else(|| JobError::fatal(anyhow!("no local playlist named `{key}`")))?;
             (
                 playlist.name.clone(),
                 playlist.songs.iter().map(TrackInput::from_song).collect(),
@@ -417,12 +411,10 @@ async fn write_stage(
     for (idx, entry) in cp.tracks.iter().enumerate() {
         let key = match (&entry.outcome, cp.spec.take_best) {
             (Some(MatchOutcome::Matched { key, .. }), _) => key.clone(),
-            (Some(MatchOutcome::Ambiguous { candidates }), true) => {
-                match candidates.first() {
-                    Some(best) => best.key.clone(),
-                    None => continue,
-                }
-            }
+            (Some(MatchOutcome::Ambiguous { candidates }), true) => match candidates.first() {
+                Some(best) => best.key.clone(),
+                None => continue,
+            },
             _ => continue,
         };
         if !seen.insert(key.clone()) {
@@ -891,10 +883,7 @@ fn progress_write(cp: &Checkpoint, done: u32, total: u32, idx: usize) -> Transfe
     }
 }
 
-fn progress_beat(
-    job_id: &str,
-    stage: Stage,
-) -> impl FnMut(u32, u32, String) + use<> {
+fn progress_beat(job_id: &str, stage: Stage) -> impl FnMut(u32, u32, String) + use<> {
     let job_id = job_id.to_owned();
     move |_done, _total, _current| {
         // Fetch pagination is fast; per-page progress is deliberately not surfaced (the
@@ -926,6 +915,8 @@ fn ytm_job_error(e: anyhow::Error) -> JobError {
     // YTM failures mid-job (expired cookie, throttling) are the classic resume case.
     JobError {
         resumable: true,
-        error: e.context("YouTube Music request failed — after fixing the cookie you can resume this job"),
+        error: e.context(
+            "YouTube Music request failed — after fixing the cookie you can resume this job",
+        ),
     }
 }

@@ -316,7 +316,10 @@ fn log_scrobble_event(event: crate::scrobble::ScrobbleEvent) {
     use crate::scrobble::ScrobbleEvent;
     match event {
         ScrobbleEvent::SessionInvalid(kind) => {
-            tracing::warn!(service = kind.label(), "scrobble session invalid; run `ytt auth`");
+            tracing::warn!(
+                service = kind.label(),
+                "scrobble session invalid; run `ytt auth`"
+            );
         }
         ScrobbleEvent::QueueStalled { pending } => {
             tracing::warn!(pending, "scrobble queue stalled");

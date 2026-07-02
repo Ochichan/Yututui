@@ -586,13 +586,13 @@ impl Field {
                 t!("Scrobble to ListenBrainz", "ListenBrainz 스크로블").to_owned()
             }
             Field::ListenBrainzToken => t!("User token", "사용자 토큰").to_owned(),
-            Field::ScrobbleLocalFiles => t!("Scrobble local files", "로컬 파일 스크로블").to_owned(),
+            Field::ScrobbleLocalFiles => {
+                t!("Scrobble local files", "로컬 파일 스크로블").to_owned()
+            }
             Field::SpotifyClientId => t!("Client ID", "클라이언트 ID").to_owned(),
             Field::SpotifyRedirectPort => t!("Redirect port", "리다이렉트 포트").to_owned(),
             Field::SpotifyConnect => t!("Spotify account", "Spotify 계정").to_owned(),
-            Field::SpotifyImport => {
-                t!("Import from Spotify…", "Spotify에서 가져오기…").to_owned()
-            }
+            Field::SpotifyImport => t!("Import from Spotify…", "Spotify에서 가져오기…").to_owned(),
         }
     }
 
@@ -809,8 +809,11 @@ impl SettingsDraft {
             Field::ScrobbleLocalFiles => toggle_str(self.scrobble_local_files),
             Field::SpotifyClientId => {
                 if self.spotify_client_id.trim().is_empty() {
-                    t!("(none — create an app at developer.spotify.com)", "(없음 — developer.spotify.com에서 앱 생성)")
-                        .to_owned()
+                    t!(
+                        "(none — create an app at developer.spotify.com)",
+                        "(없음 — developer.spotify.com에서 앱 생성)"
+                    )
+                    .to_owned()
                 } else {
                     self.spotify_client_id.clone()
                 }

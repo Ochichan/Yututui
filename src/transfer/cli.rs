@@ -77,8 +77,9 @@ pub fn run(args: &[String]) -> i32 {
         Some("import") => {
             let rest: Vec<&str> = it.collect();
             match parse_import(&rest) {
-                Ok((spec, yes)) => runtime()
-                    .map_or(EXIT_FAILED, |rt| rt.block_on(execute_new(spec, yes, "sp2yt"))),
+                Ok((spec, yes)) => runtime().map_or(EXIT_FAILED, |rt| {
+                    rt.block_on(execute_new(spec, yes, "sp2yt"))
+                }),
                 Err(msg) => {
                     eprintln!("ytt transfer import: {msg}");
                     EXIT_USAGE
@@ -88,8 +89,9 @@ pub fn run(args: &[String]) -> i32 {
         Some("export") => {
             let rest: Vec<&str> = it.collect();
             match parse_export(&rest) {
-                Ok((spec, yes)) => runtime()
-                    .map_or(EXIT_FAILED, |rt| rt.block_on(execute_new(spec, yes, "yt2sp"))),
+                Ok((spec, yes)) => runtime().map_or(EXIT_FAILED, |rt| {
+                    rt.block_on(execute_new(spec, yes, "yt2sp"))
+                }),
                 Err(msg) => {
                     eprintln!("ytt transfer export: {msg}");
                     EXIT_USAGE
@@ -99,9 +101,7 @@ pub fn run(args: &[String]) -> i32 {
         Some("backup") => {
             let rest: Vec<&str> = it.collect();
             match parse_backup(&rest) {
-                Ok((dir, csv)) => {
-                    runtime().map_or(EXIT_FAILED, |rt| rt.block_on(backup(dir, csv)))
-                }
+                Ok((dir, csv)) => runtime().map_or(EXIT_FAILED, |rt| rt.block_on(backup(dir, csv))),
                 Err(msg) => {
                     eprintln!("ytt transfer backup: {msg}");
                     EXIT_USAGE
@@ -347,18 +347,19 @@ async fn build_ctx(spec: &JobSpec, cfg: &Config) -> Result<JobCtx, String> {
         TransferSource::SpotifyPlaylist { .. } | TransferSource::SpotifyLiked
     ) || matches!(spec.dest, TransferDest::SpotifyNewPlaylist { .. });
     // LocalPlaylist writes locally but still *matches* against YouTube Music.
-    let needs_ytm = matches!(
-        spec.source,
-        TransferSource::YtmPlaylist { .. }
-    ) || matches!(
-        spec.dest,
-        TransferDest::YtmNewPlaylist { .. }
-            | TransferDest::YtmExistingPlaylist { .. }
-            | TransferDest::YtmLikes
-            | TransferDest::LocalPlaylist { .. }
-    );
+    let needs_ytm = matches!(spec.source, TransferSource::YtmPlaylist { .. })
+        || matches!(
+            spec.dest,
+            TransferDest::YtmNewPlaylist { .. }
+                | TransferDest::YtmExistingPlaylist { .. }
+                | TransferDest::YtmLikes
+                | TransferDest::LocalPlaylist { .. }
+        );
     let spotify = if needs_spotify {
-        Some(SpotifyClient::from_saved(cfg.spotify.client_id.as_deref()).map_err(|e| e.to_string())?)
+        Some(
+            SpotifyClient::from_saved(cfg.spotify.client_id.as_deref())
+                .map_err(|e| e.to_string())?,
+        )
     } else {
         None
     };
@@ -404,8 +405,14 @@ async fn execute_new(spec: JobSpec, yes: bool, kind: &str) -> i32 {
             return EXIT_FAILED;
         }
     };
-    let report = match run_job(job_id.clone(), first_spec, None, &mut ctx, &mut print_progress)
-        .await
+    let report = match run_job(
+        job_id.clone(),
+        first_spec,
+        None,
+        &mut ctx,
+        &mut print_progress,
+    )
+    .await
     {
         Ok(report) => report,
         Err(e) => return print_job_error(&job_id, e),
@@ -425,7 +432,9 @@ async fn execute_new(spec: JobSpec, yes: bool, kind: &str) -> i32 {
             "Write {} tracks to the destination? [y/N] ",
             report.matched
         )) {
-            println!("Aborted — nothing was written. Resume later with `ytt transfer resume {job_id}`.");
+            println!(
+                "Aborted — nothing was written. Resume later with `ytt transfer resume {job_id}`."
+            );
             return EXIT_OK;
         }
         // Perform the writes by resuming the checkpoint we just made.
@@ -471,7 +480,15 @@ async fn finish_resumed(job_id: String, cp: Checkpoint, cfg: &Config) -> i32 {
             return EXIT_FAILED;
         }
     };
-    match run_job(job_id.clone(), spec, Some(cp), &mut ctx, &mut print_progress).await {
+    match run_job(
+        job_id.clone(),
+        spec,
+        Some(cp),
+        &mut ctx,
+        &mut print_progress,
+    )
+    .await
+    {
         Ok(report) => {
             finish_progress_line();
             conclude(&report)
@@ -502,7 +519,10 @@ fn print_job_error(job_id: &str, e: JobError) -> i32 {
 
 fn print_report_details(report: &TransferReport) {
     for row in &report.ambiguous {
-        println!("  ambiguous: {} — {}  →  {}", row.artists, row.title, row.note);
+        println!(
+            "  ambiguous: {} — {}  →  {}",
+            row.artists, row.title, row.note
+        );
     }
     for row in &report.not_found {
         println!("  not found: {} — {}", row.artists, row.title);
@@ -511,7 +531,10 @@ fn print_report_details(report: &TransferReport) {
 
 fn print_progress(p: TransferProgress) {
     let counts = if p.stage == Stage::Matching {
-        format!(" ({} ok, {} ambiguous, {} miss)", p.matched, p.ambiguous, p.not_found)
+        format!(
+            " ({} ok, {} ambiguous, {} miss)",
+            p.matched, p.ambiguous, p.not_found
+        )
     } else {
         String::new()
     };
@@ -576,7 +599,10 @@ async fn backup(dir: PathBuf, also_csv: bool) -> i32 {
         }
     };
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("ytt transfer backup: could not create {}: {e}", dir.display());
+        eprintln!(
+            "ytt transfer backup: could not create {}: {e}",
+            dir.display()
+        );
         return EXIT_FAILED;
     }
     let playlists = match ytm.library_playlists().await {
@@ -611,14 +637,19 @@ async fn backup(dir: PathBuf, also_csv: bool) -> i32 {
             eprintln!("  skipped {title}: {e:#}");
             continue;
         }
-        if also_csv && let Err(e) = super::csv::write_songs(&dir.join(format!("{stem}.csv")), &songs)
+        if also_csv
+            && let Err(e) = super::csv::write_songs(&dir.join(format!("{stem}.csv")), &songs)
         {
             eprintln!("  csv for {title} failed: {e:#}");
         }
         println!("  {} ({} tracks)", json_path.display(), songs.len());
         ok += 1;
     }
-    println!("Backed up {ok}/{} playlists to {}", playlists.len(), dir.display());
+    println!(
+        "Backed up {ok}/{} playlists to {}",
+        playlists.len(),
+        dir.display()
+    );
     EXIT_OK
 }
 

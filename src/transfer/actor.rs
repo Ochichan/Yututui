@@ -16,7 +16,10 @@ use crate::spotify::client::SpotifyClient;
 
 pub enum TransferCmd {
     /// Start the PKCE flow with the (possibly unsaved) draft Client ID.
-    AuthStart { client_id: String, port: u16 },
+    AuthStart {
+        client_id: String,
+        port: u16,
+    },
     Disconnect,
     ListSpotifyPlaylists,
     StartJob(Box<JobSpec>),
@@ -26,7 +29,9 @@ pub enum TransferCmd {
 /// Events back to the reducer. No secrets anywhere here.
 pub enum TransferEvent {
     AuthUrl(String),
-    AuthDone { display_name: String },
+    AuthDone {
+        display_name: String,
+    },
     AuthError(String),
     Disconnected,
     SpotifyPlaylists(Result<Vec<PickerPlaylist>, String>),
@@ -77,14 +82,12 @@ async fn run_actor(mut rx: UnboundedReceiver<TransferCmd>, emit: EventSink) {
                 let emit = Arc::clone(&emit);
                 auth_task = Some(tokio::spawn(run_auth(client_id, port, emit)));
             }
-            TransferCmd::Disconnect => {
-                match crate::spotify::auth::SpotifyToken::delete_saved() {
-                    Ok(()) => emit(TransferEvent::Disconnected),
-                    Err(e) => emit(TransferEvent::AuthError(format!(
-                        "could not remove the token: {e}"
-                    ))),
-                }
-            }
+            TransferCmd::Disconnect => match crate::spotify::auth::SpotifyToken::delete_saved() {
+                Ok(()) => emit(TransferEvent::Disconnected),
+                Err(e) => emit(TransferEvent::AuthError(format!(
+                    "could not remove the token: {e}"
+                ))),
+            },
             TransferCmd::ListSpotifyPlaylists => {
                 let emit = Arc::clone(&emit);
                 tokio::spawn(async move {
@@ -223,7 +226,10 @@ async fn build_ctx(spec: &JobSpec, cfg: &Config) -> Result<JobCtx, String> {
                 | TransferDest::LocalPlaylist { .. }
         );
     let spotify = if needs_spotify {
-        Some(SpotifyClient::from_saved(cfg.spotify.client_id.as_deref()).map_err(|e| e.to_string())?)
+        Some(
+            SpotifyClient::from_saved(cfg.spotify.client_id.as_deref())
+                .map_err(|e| e.to_string())?,
+        )
     } else {
         None
     };

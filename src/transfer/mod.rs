@@ -23,29 +23,48 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TransferSource {
-    SpotifyPlaylist { id: String },
+    SpotifyPlaylist {
+        id: String,
+    },
     SpotifyLiked,
     /// A YouTube Music account playlist.
-    YtmPlaylist { id: String },
+    YtmPlaylist {
+        id: String,
+    },
     /// A local (on-disk) ytm-tui playlist, by its store key.
-    LocalPlaylist { key: String },
-    File { path: PathBuf },
+    LocalPlaylist {
+        key: String,
+    },
+    File {
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TransferDest {
     /// Create a YTM playlist (name defaults to the source's).
-    YtmNewPlaylist { name: Option<String> },
+    YtmNewPlaylist {
+        name: Option<String>,
+    },
     /// Append to an existing YTM playlist, found by exact title.
-    YtmExistingPlaylist { name: String },
+    YtmExistingPlaylist {
+        name: String,
+    },
     /// `rate_song(Liked)` each match (oldest-first to preserve like order).
     YtmLikes,
     /// The app's own local playlist store — browsable/playable in the TUI Library
     /// immediately (account playlists aren't browsable in-app). Create-or-append by name.
-    LocalPlaylist { name: Option<String> },
-    SpotifyNewPlaylist { name: Option<String> },
-    File { path: PathBuf, format: FileFormat },
+    LocalPlaylist {
+        name: Option<String>,
+    },
+    SpotifyNewPlaylist {
+        name: Option<String>,
+    },
+    File {
+        path: PathBuf,
+        format: FileFormat,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

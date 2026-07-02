@@ -182,7 +182,9 @@ pub fn normalize(s: &str) -> String {
 /// remix, acoustic, instrumental, covers) are deliberately kept — they participate in
 /// similarity instead.
 pub fn normalize_stripped(s: &str) -> String {
-    strip_video_noise(&normalize(&strip_translation_brackets(&strip_annotations(s))))
+    strip_video_noise(&normalize(&strip_translation_brackets(&strip_annotations(
+        s,
+    ))))
 }
 
 /// Phrase-level video-title noise, removed from the *normalized* form (post-punctuation,
@@ -233,8 +235,8 @@ fn is_noise_annotation(inner: &str) -> bool {
         "stereo",
     ];
     NOISE.iter().any(|n| inner.contains(n))
-        // "2011 remaster" / "remastered 2015" style year combos hit `contains` above;
-        // a bare year alone is kept (could be part of the title).
+    // "2011 remaster" / "remastered 2015" style year combos hit `contains` above;
+    // a bare year alone is kept (could be part of the title).
 }
 
 fn strip_annotations(s: &str) -> String {
@@ -304,7 +306,10 @@ fn strip_translation_brackets(s: &str) -> String {
     if segments.is_empty() {
         return s.to_owned();
     }
-    let base_ascii = outside.chars().filter(|c| c.is_alphanumeric()).any(|c| c.is_ascii());
+    let base_ascii = outside
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .any(|c| c.is_ascii());
     let base_other = outside
         .chars()
         .filter(|c| c.is_alphanumeric())
@@ -329,7 +334,14 @@ fn is_translation_gloss(base_ascii: bool, base_other: bool, inner: &str) -> bool
     }
     // Identity markers stay even across scripts.
     const IDENTITY: [&str; 8] = [
-        "live", "remix", "acoustic", "inst", "instrumental", "ver", "version", "cover",
+        "live",
+        "remix",
+        "acoustic",
+        "inst",
+        "instrumental",
+        "ver",
+        "version",
+        "cover",
     ];
     let lower = inner.to_lowercase();
     if IDENTITY.iter().any(|m| lower.contains(m)) {
@@ -660,7 +672,11 @@ mod tests {
         // full-form comparison still lands via similarity of normalized strings.
         let a = input("TT", &["TWICE"], None, Some(212));
         let c = cand("TT (티티)", "TWICE", None, Some(212));
-        assert!(score_candidate(&a, &c) >= 0.80, "{}", score_candidate(&a, &c));
+        assert!(
+            score_candidate(&a, &c) >= 0.80,
+            "{}",
+            score_candidate(&a, &c)
+        );
     }
 
     #[test]
@@ -717,15 +733,15 @@ mod tests {
         assert!(matches!(out, MatchOutcome::Matched { .. }));
         // Ambiguous band: same title, artist edit-distance-ish, duration off.
         let out = best_outcome(&i, &[cand("ETA", "NewJeanz Tribute", None, None)], &cfg);
-        assert!(
-            matches!(out, MatchOutcome::Ambiguous { .. }),
-            "got {out:?}"
-        );
+        assert!(matches!(out, MatchOutcome::Ambiguous { .. }), "got {out:?}");
         // Nothing close.
         let out = best_outcome(&i, &[cand("Different Song", "Other", None, Some(90))], &cfg);
         assert!(matches!(out, MatchOutcome::NotFound));
         // Empty candidate set.
-        assert!(matches!(best_outcome(&i, &[], &cfg), MatchOutcome::NotFound));
+        assert!(matches!(
+            best_outcome(&i, &[], &cfg),
+            MatchOutcome::NotFound
+        ));
     }
 
     #[test]
@@ -741,7 +757,12 @@ mod tests {
     fn video_result_shapes_still_match() {
         // "IU 'Celebrity' M/V" on the official channel, duration off by MV extras.
         let i = input("Celebrity", &["IU"], None, Some(195));
-        let mv = cand("IU 'Celebrity' M/V", "이지금 [IU Official]", None, Some(215));
+        let mv = cand(
+            "IU 'Celebrity' M/V",
+            "이지금 [IU Official]",
+            None,
+            Some(215),
+        );
         assert!(
             score_candidate(&i, &mv) >= 0.80,
             "MV shape: {}",

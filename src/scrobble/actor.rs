@@ -54,7 +54,9 @@ pub enum ScrobbleEvent {
     /// invalidation, cleared by a `Reconfigure` with fresh credentials.
     SessionInvalid(ServiceKind),
     /// Scrobbles are piling up undelivered (emitted at most once an hour).
-    QueueStalled { pending: usize },
+    QueueStalled {
+        pending: usize,
+    },
 }
 
 type EventSink = Arc<dyn Fn(ScrobbleEvent) + Send + Sync>;
@@ -108,7 +110,8 @@ impl Health {
                 None
             }
             ScrobbleError::RateLimited(after) => {
-                self.backoff_until = Some(now + after.unwrap_or(FLUSH_RETRY).max(Duration::from_secs(10)));
+                self.backoff_until =
+                    Some(now + after.unwrap_or(FLUSH_RETRY).max(Duration::from_secs(10)));
                 None
             }
             ScrobbleError::Network(_) => {
@@ -352,7 +355,9 @@ impl Actor {
             loop {
                 tokio::time::sleep(AUTH_POLL).await;
                 if Instant::now() >= deadline {
-                    emit(ScrobbleEvent::AuthFailed("authorization timed out".to_owned()));
+                    emit(ScrobbleEvent::AuthFailed(
+                        "authorization timed out".to_owned(),
+                    ));
                     return;
                 }
                 match client.get_session(&token).await {
@@ -402,8 +407,14 @@ impl Actor {
         if let Some(client) = self.lastfm.clone()
             && self.lastfm_health.ready(Instant::now())
         {
-            flush_service(&client, &mut entries, queue, &mut self.lastfm_health, &self.emit)
-                .await;
+            flush_service(
+                &client,
+                &mut entries,
+                queue,
+                &mut self.lastfm_health,
+                &self.emit,
+            )
+            .await;
         }
         if let Some(client) = self.listenbrainz.clone()
             && self.listenbrainz_health.ready(Instant::now())

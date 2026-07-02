@@ -258,7 +258,11 @@ mod tests {
     #[test]
     fn append_load_rewrite_round_trip() {
         let (dir, q) = temp_queue("rt");
-        let a = entry("a", 100, vec![ServiceKind::Lastfm, ServiceKind::ListenBrainz]);
+        let a = entry(
+            "a",
+            100,
+            vec![ServiceKind::Lastfm, ServiceKind::ListenBrainz],
+        );
         let b = entry("b", 200, vec![ServiceKind::Lastfm]);
         q.append(&a).unwrap();
         q.append(&b).unwrap();
@@ -291,7 +295,11 @@ mod tests {
     #[test]
     fn duplicate_ids_keep_first() {
         let (dir, q) = temp_queue("dupe");
-        let a = entry("a", 100, vec![ServiceKind::Lastfm, ServiceKind::ListenBrainz]);
+        let a = entry(
+            "a",
+            100,
+            vec![ServiceKind::Lastfm, ServiceKind::ListenBrainz],
+        );
         let mut a_later = a.clone();
         a_later.pending = vec![ServiceKind::Lastfm];
         q.append(&a).unwrap();
@@ -305,7 +313,11 @@ mod tests {
         let now = 10_000_000;
         let old_ts = now - 15 * 24 * 3600; // 15 days: past the Last.fm window
         let entries = vec![
-            entry("old-both", old_ts, vec![ServiceKind::Lastfm, ServiceKind::ListenBrainz]),
+            entry(
+                "old-both",
+                old_ts,
+                vec![ServiceKind::Lastfm, ServiceKind::ListenBrainz],
+            ),
             entry("old-lastfm", old_ts, vec![ServiceKind::Lastfm]),
             entry("fresh", now - 60, vec![ServiceKind::Lastfm]),
         ];
@@ -321,7 +333,13 @@ mod tests {
     fn cap_drops_oldest_first() {
         let now = 10_000_000;
         let entries: Vec<QueueEntry> = (0..QUEUE_CAP + 10)
-            .map(|i| entry(&format!("k{i}"), now - 100_000 + i as i64, vec![ServiceKind::Lastfm]))
+            .map(|i| {
+                entry(
+                    &format!("k{i}"),
+                    now - 100_000 + i as i64,
+                    vec![ServiceKind::Lastfm],
+                )
+            })
             .collect();
         let (kept, dropped) = compact(entries, now);
         assert_eq!(dropped, 10);

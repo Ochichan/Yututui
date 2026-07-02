@@ -24,7 +24,9 @@ fn netscape_to_header(content: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let query = std::env::args().nth(1).unwrap_or_else(|| "IU Celebrity".to_owned());
+    let query = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "IU Celebrity".to_owned());
     let home = std::env::var("HOME")?;
     let cookies = std::fs::read_to_string(format!("{home}/Music/ytm-tui/cookies.txt"))?;
     let yt = YtMusic::from_cookie(netscape_to_header(&cookies)).await?;

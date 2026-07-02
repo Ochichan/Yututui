@@ -219,10 +219,11 @@ mod tests {
 
     #[test]
     fn round_trips_with_mixed_outcomes() {
-        let mut cp = Checkpoint::new("sp2yt-test-0001".to_owned(), spec(), vec![
-            entry("one"),
-            entry("two"),
-        ]);
+        let mut cp = Checkpoint::new(
+            "sp2yt-test-0001".to_owned(),
+            spec(),
+            vec![entry("one"), entry("two")],
+        );
         cp.tracks[0].outcome = Some(MatchOutcome::Matched {
             key: "vid1".to_owned(),
             score: 0.93,

@@ -291,8 +291,7 @@ impl YtMusicApi {
                         // fall back to the anonymous yt-dlp path (no album metadata,
                         // but results).
                         Err(e) if songs.is_empty() => {
-                            AUTH_SEARCH_DEGRADED
-                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                            AUTH_SEARCH_DEGRADED.store(true, std::sync::atomic::Ordering::Relaxed);
                             tracing::warn!(
                                 error = %sanitize::sanitize_error_text(format!("{e:#}")),
                                 "authenticated search parse failed; using yt-dlp for the rest of this session"
