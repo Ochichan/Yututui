@@ -19,4 +19,6 @@ cookies.txt
 /docs/desktop-tray-companion-plan.md
 /docs/*.md
 /docs/**/*.md
+# Full-GUI design set — kept as local working notes (see docs/gui/README.md)
+/docs/gui/
 *.sha256
