@@ -4,17 +4,17 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>ytm-tui — YouTube Music in your terminal</title>
-<meta name="description" content="A fast, keyboard-driven YouTube Music client that lives in your terminal. DJ Gem streaming, real album art, remote control, 11 themes. No browser, no ads. Rust + ratatui, MIT." />
+<meta name="description" content="A fast, keyboard-driven YouTube Music client for your terminal. DJ Gem streaming, real album art, synced lyrics, Last.fm & ListenBrainz scrobbling, Spotify import, and remote control from anywhere. No browser, no ads. Rust + ratatui, MIT." />
 
 <!-- Open Graph / social -->
 <meta property="og:type" content="website" />
 <meta property="og:title" content="ytm-tui — YouTube Music in your terminal" />
-<meta property="og:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, real album art, remote control. No browser, no ads." />
+<meta property="og:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, real album art, scrobbling, Spotify import, remote control. No browser, no ads." />
 <meta property="og:url" content="https://ochichan.github.io/ytm-tui/" />
 <meta property="og:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
 <meta name="twitter:card" content="summary" />
 <meta name="twitter:title" content="ytm-tui — YouTube Music in your terminal" />
-<meta name="twitter:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, real album art, remote control." />
+<meta name="twitter:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, scrobbling, Spotify import, real album art." />
 <meta name="twitter:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
 
 <link rel="icon" type="image/png" href="ytm-tui.png" />
@@ -22,6 +22,21 @@
 
 <meta name="theme-color" content="#faf4ed" media="(prefers-color-scheme: light)" />
 <meta name="theme-color" content="#191724" media="(prefers-color-scheme: dark)" />
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "ytm-tui",
+  "applicationCategory": "MultimediaApplication",
+  "operatingSystem": "macOS, Windows, Linux",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://ochichan.github.io/ytm-tui/",
+  "downloadUrl": "https://github.com/Ochichan/ytm-tui/releases",
+  "description": "A fast, keyboard-driven YouTube Music client for the terminal: DJ Gem streaming, album art, synced lyrics, Last.fm/ListenBrainz scrobbling, Spotify playlist import/export, headless daemon and remote control."
+}
+</script>
 
 <!-- Set theme + lang before paint to avoid a flash -->
 <script>
@@ -51,7 +66,7 @@
 <style>
 /* ============================================================
    ytm-tui — promo page
-   Theme: Rosé Pine (Dawn = light, Main = dark) — one of the app's own themes.
+   Theme: Rosé Pine (Dawn = light, Main = dark) — one of the app's own 13 themes.
    Type:  JetBrains Mono everywhere (terminal voice) + Bricolage Grotesque (headlines).
    ============================================================ */
 
@@ -159,9 +174,9 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
   display: inline-flex; align-items: center; gap: .55rem;
 }
 .eyebrow .dot { color: var(--love); }
-.section-head { max-width: 60ch; margin-bottom: clamp(2rem, 4vw, 3rem); }
+.section-head { max-width: 62ch; margin-bottom: clamp(2rem, 4vw, 3rem); }
 .section-head h2 { font-size: clamp(1.7rem, 3.6vw, 2.7rem); font-weight: 800; }
-.section-head p { color: var(--subtle); margin-top: .9rem; max-width: 56ch; }
+.section-head p { color: var(--subtle); margin-top: .9rem; max-width: 58ch; }
 
 /* skip link */
 .skip {
@@ -171,7 +186,7 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .skip:focus { left: 1rem; top: 1rem; }
 
 /* ============================================================
-   Top bar — styled like ytm-tui's own nav, not mac window dots
+   Top bar — styled like ytm-tui's own nav
    ============================================================ */
 .topbar {
   position: sticky; top: 0; z-index: 40;
@@ -187,16 +202,13 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .brand { display: flex; align-items: center; gap: .55rem; font-weight: 700; color: var(--text); }
 .brand .spark { color: var(--gold); }
 .brand .name { letter-spacing: -0.01em; }
-.brand .sep { color: var(--line); }
-.brand .ver { color: var(--muted); font-size: .78rem; }
-.topbar__nav { display: none; gap: 1.1rem; color: var(--muted); font-size: .85rem; margin-left: .4rem; }
-.topbar__nav a { color: var(--muted); }
+.topbar__nav { display: none; gap: 1rem; color: var(--muted); font-size: .83rem; margin-left: .4rem; }
+.topbar__nav a { color: var(--muted); white-space: nowrap; }
 .topbar__nav a:hover { color: var(--text); text-decoration: none; }
 .topbar__spacer { flex: 1; }
 .topbar__tools { display: flex; align-items: center; gap: .55rem; }
 
-@media (min-width: 860px) { .topbar__nav { display: flex; } }
-@media (max-width: 520px) { .brand .ver, .brand .sep { display: none; } }
+@media (min-width: 960px) { .topbar__nav { display: flex; } }
 
 /* segmented + icon toggles */
 .seg {
@@ -227,12 +239,12 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
    Hero
    ============================================================ */
 .hero { padding-top: clamp(2.6rem, 6vw, 4.5rem); }
-.hero__copy { max-width: 40ch; }
+.hero__copy { max-width: none; }
 .hero h1 {
   font-size: clamp(2.5rem, 7vw, 4.6rem); font-weight: 800; margin-top: 1.1rem;
 }
 .hero h1 .accent { color: var(--love); }
-.hero__sub { color: var(--subtle); font-size: clamp(.98rem, 1vw + .8rem, 1.12rem); margin-top: 1.3rem; max-width: 52ch; }
+.hero__sub { color: var(--subtle); font-size: clamp(.98rem, 1vw + .8rem, 1.12rem); margin-top: 1.3rem; max-width: 56ch; }
 .hero__cta { display: flex; flex-wrap: wrap; gap: .8rem; margin-top: 1.8rem; align-items: center; }
 
 .btn {
@@ -314,7 +326,7 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .term__cue::before { content: "▸"; display: inline-block; animation: cue-nudge 1.4s ease-in-out infinite; }
 @keyframes cue-nudge { 0%, 100% { transform: translateX(0); opacity: .55; } 50% { transform: translateX(3px); opacity: 1; } }
 .term__bar .right { margin-left: auto; color: var(--muted); }
-@media (max-width: 640px) {
+@media (max-width: 700px) {
   .term__bar .tname, .term__bar .vbar, .term__cue, .term__bar .right { display: none; }
   .term__tabs { gap: .1rem; overflow-x: auto; -ms-overflow-style: none; scrollbar-width: none; }
   .term__tabs::-webkit-scrollbar { display: none; }
@@ -325,7 +337,7 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
   position: relative; overflow: hidden;
   padding: clamp(1.3rem, 3vw, 2.1rem) 1.2rem clamp(1rem, 2vw, 1.3rem);
   display: flex; flex-direction: column; gap: 1rem;
-  min-height: 380px;
+  min-height: 400px;
 }
 .term__screen--player { align-items: center; text-align: center; }
 
@@ -357,12 +369,27 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .art2 img { width: 100%; height: 100%; object-fit: cover; }
 .art2 .placeholder { color: var(--muted); font-size: 1.8rem; }
 
+/* one synced-lyrics line under the art, like the real Player */
+.lyric2 { font-size: .8rem; color: var(--subtle); min-height: 1.3em; }
+.lyric2 .now { color: var(--text); font-weight: 700; }
+
 .hintbar { color: var(--muted); font-size: .76rem; margin-top: auto; padding-top: .4rem; }
 .hintbar kbd { color: var(--text); }
 
 /* key flash (^R, c) */
 .keyflash { position: absolute; top: .9rem; left: 50%; transform: translateX(-50%); z-index: 6; }
 .keyflash kbd { font-size: .85rem; background: var(--iris); color: var(--bg); border-color: transparent; box-shadow: 0 6px 18px -6px var(--glow); }
+
+/* scrobble toast (bottom-left, like the app's status line) */
+.toast2 {
+  position: absolute; left: 1rem; bottom: 1rem; z-index: 6;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
+  color: var(--subtle); font-size: .76rem; padding: .4rem .7rem;
+  box-shadow: 0 14px 30px -14px rgba(0,0,0,.5);
+  animation: toast-in .35s ease;
+}
+.toast2 .ok { color: var(--pine); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* queue popup overlay (press c) */
 .qpop {
@@ -404,21 +431,32 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .lrow { display: flex; align-items: baseline; gap: .5rem; padding: .26rem .5rem; border-radius: 4px; font-size: .86rem; color: var(--text); }
 .lrow .mk { flex: none; width: 1.1ch; color: var(--love); }
 .lrow .body { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .src { color: var(--pine); }
 .lrow .heart { color: var(--love); }
 .lrow .dash { color: var(--muted); }
 .lrow .art { color: var(--subtle); }
 .lrow .dur { color: var(--muted); }
 .lrow .del { flex: none; color: var(--love); padding-left: .6rem; }
 .lrow.sel { background: var(--iris); color: var(--bg); }
-.lrow.sel .heart, .lrow.sel .dash, .lrow.sel .art, .lrow.sel .dur { color: var(--bg); }
+.lrow.sel .heart, .lrow.sel .dash, .lrow.sel .art, .lrow.sel .dur, .lrow.sel .src { color: var(--bg); }
 
-/* Search: three bordered boxes — [⌕] [ query █ ] [Search] */
+/* Search: three bordered boxes — [YT▾] [ query █ ] [Search] + source dropdown */
 .srch { display: flex; gap: .5rem; width: 100%; align-items: stretch; }
 .srch__icon, .srch__btn { flex: none; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); display: grid; place-items: center; }
-.srch__icon { width: 2.7rem; color: var(--foam); font-weight: 700; font-size: 1rem; }
+.srch__icon { min-width: 3.4rem; color: var(--pine); font-weight: 700; font-size: .85rem; padding: 0 .5rem; }
 .srch__btn { padding: 0 1.1rem; color: var(--foam); font-weight: 700; font-size: .85rem; }
 .srch__box { position: relative; flex: 1; min-width: 0; border: 1px solid var(--foam); border-radius: 6px; background: var(--bg); padding: .62rem .78rem; color: var(--text); display: flex; align-items: center; font-size: .88rem; }
-.srch__cap { position: absolute; top: -.58rem; left: .6rem; font-size: .68rem; background: var(--surface); padding: 0 .35rem; color: var(--foam); }
+.srch__cap { position: absolute; top: -.58rem; left: .6rem; font-size: .68rem; background: var(--surface); padding: 0 .35rem; color: var(--foam); white-space: nowrap; }
+.srcpop__card {
+  width: fit-content; min-width: 15rem;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--bg);
+  box-shadow: 0 18px 40px -18px rgba(0,0,0,.5); overflow: hidden; font-size: .82rem;
+}
+.srcpop__title { padding: .3rem .65rem; color: var(--subtle); border-bottom: 1px solid var(--line); font-size: .72rem; }
+.srcpop__row { display: flex; align-items: center; gap: .55rem; padding: .22rem .65rem; color: var(--text); }
+.srcpop__row .code { color: var(--pine); width: 3.5ch; }
+.srcpop__row.on { background: var(--iris); color: var(--bg); }
+.srcpop__row.on .code { color: var(--bg); }
 
 /* sub-tab strips (Library + Settings) — plain text, count in parens */
 .subtabs { display: flex; gap: .3rem; flex-wrap: wrap; width: 100%; font-size: .82rem; }
@@ -427,16 +465,26 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .subtab.on { background: var(--iris); color: var(--bg); font-weight: 700; }
 .subtab.on .n { opacity: .9; }
 
+/* Playlists rows: ▶ ♪ Name — N tracks */
+.plrow { display: flex; align-items: baseline; gap: .5rem; padding: .28rem .5rem; border-radius: 4px; font-size: .86rem; color: var(--text); }
+.plrow .mk { flex: none; width: 1.1ch; color: var(--love); }
+.plrow .note { color: var(--gold); }
+.plrow .cnt { color: var(--muted); }
+.plrow.sel { background: var(--iris); color: var(--bg); }
+.plrow.sel .note, .plrow.sel .cnt { color: var(--bg); }
+
 /* Settings field rows: {▶}{label}{value}; values show kind glyphs ([x], < v >, sliders) */
 .set-list { display: flex; flex-direction: column; width: 100%; }
 .srow { display: flex; align-items: baseline; gap: .5rem; padding: .3rem .5rem; border-radius: 4px; font-size: .86rem; }
 .srow .mk { flex: none; width: 1.1ch; color: var(--love); }
-.srow .lbl { flex: none; width: 23ch; color: var(--subtle); white-space: nowrap; }
+.srow .lbl { flex: none; width: 26ch; color: var(--subtle); white-space: nowrap; }
+.srow .grp { color: var(--gold); font-size: .74rem; padding-top: .5rem; }
 .srow .val { color: var(--foam); white-space: nowrap; }
 .srow .val.tog { color: var(--text); font-weight: 700; }
+.srow .val .ok { color: var(--pine); }
 .srow.sel { background: var(--iris); color: var(--bg); }
 .srow.sel .lbl, .srow.sel .val, .srow.sel .val.tog { color: var(--bg); }
-@media (max-width: 560px) { .srow { font-size: .76rem; } .set-list { overflow-x: auto; } }
+@media (max-width: 560px) { .srow { font-size: .74rem; } .srow .lbl { width: 20ch; } .set-list { overflow-x: auto; } }
 
 /* DJ Gem: transcript + Gemini-tan mascot + Suggestions panel + Ask box */
 .ai { width: 100%; flex: 1; display: flex; flex-direction: column; gap: .75rem; }
@@ -478,8 +526,8 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 }
 .feature:hover { background: var(--overlay); }
 .feature__top { display: flex; align-items: center; gap: .6rem; margin-bottom: 1rem; }
-.feature h3 { font-size: 1.18rem; font-weight: 700; letter-spacing: -.01em; }
-.feature p { color: var(--subtle); font-size: .9rem; }
+.feature h3 { font-size: 1.14rem; font-weight: 700; letter-spacing: -.01em; }
+.feature p { color: var(--subtle); font-size: .89rem; }
 .feature p code { color: var(--text); background: var(--bg); padding: .05rem .35rem; border-radius: 3px; border: 1px solid var(--line); }
 .feature.lov h3 { color: var(--love); } .feature.iri h3 { color: var(--iris); }
 .feature.gol h3 { color: var(--gold); } .feature.foa h3 { color: var(--foam); }
@@ -492,7 +540,7 @@ kbd {
 }
 
 /* ============================================================
-   "Why these picks" band (DJ Gem streaming spotlight)
+   Accent bands (DJ Gem / Spotify / Scrobble spotlights)
    ============================================================ */
 .why-band { background: var(--surface); border-block: 1px solid var(--line); }
 .why-grid { display: grid; grid-template-columns: 1fr 1.1fr; gap: clamp(2rem, 5vw, 4rem); align-items: center; }
@@ -512,6 +560,38 @@ kbd {
 .why-pick .ttl { color: var(--text); font-weight: 600; }
 .why-pick .role { color: var(--iris); font-size: .72rem; border: 1px solid color-mix(in srgb, var(--iris) 40%, transparent); border-radius: 4px; padding: 0 .35rem; margin-left: .5rem; }
 .why-pick .reason { color: var(--subtle); font-size: .82rem; margin-top: .25rem; }
+
+/* transfer terminal mock (Spotify band) */
+.xfer {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+  box-shadow: var(--shadow); overflow: hidden; font-size: .82rem;
+}
+.xfer__bar { display: flex; align-items: center; gap: .5rem; padding: .5rem .85rem; border-bottom: 1px solid var(--line); color: var(--muted); font-size: .74rem; background: color-mix(in srgb, var(--overlay) 55%, var(--surface)); }
+.xfer__body { padding: .9rem 1rem 1rem; overflow-x: auto; }
+.xfer__body .ln { white-space: nowrap; padding: .12rem 0; color: var(--subtle); }
+.xfer__body .ln .prompt { color: var(--pine); }
+.xfer__body .ln code { color: var(--text); }
+.xfer__body .ln .hash { color: var(--muted); }
+.xfer__body .ln .ok { color: var(--pine); }
+.xfer__body .ln .warn { color: var(--gold); }
+.xfer__body .ln .err { color: var(--love); }
+.xfer__body .ln .dim { color: var(--muted); }
+.xfer__gauge { color: var(--foam); }
+
+/* scrobble ledger card */
+.ledger {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+  box-shadow: var(--shadow); overflow: hidden; font-size: .82rem;
+}
+.ledger__title { padding: .7rem 1rem; border-bottom: 1px solid var(--line); color: var(--love); font-size: .85rem; background: color-mix(in srgb, var(--love) 7%, var(--bg)); display: flex; gap: .5rem; align-items: center; }
+.ledger__body { padding: .6rem 1rem .9rem; display: flex; flex-direction: column; }
+.ledger .ev { display: grid; grid-template-columns: 5.5ch 1fr; gap: .8rem; padding: .55rem 0; border-bottom: 1px dashed var(--line); align-items: baseline; }
+.ledger .ev:last-child { border-bottom: 0; }
+.ledger .ev .t { color: var(--muted); font-size: .76rem; }
+.ledger .ev .what { color: var(--text); }
+.ledger .ev .sub { color: var(--subtle); font-size: .78rem; margin-top: .15rem; }
+.ledger .ok { color: var(--pine); }
+.ledger .plane { color: var(--gold); }
 
 /* ============================================================
    Install
@@ -548,13 +628,13 @@ kbd {
 .run-row kbd { margin: 0 .15rem; }
 
 /* ============================================================
-   Remote control band
+   Everywhere band (remote + daemon + OS integration)
    ============================================================ */
 .remote-grid { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(1.4rem, 4vw, 3rem); }
 @media (max-width: 820px) { .remote-grid { grid-template-columns: 1fr; } }
 .remote-list { display: flex; flex-direction: column; gap: .55rem; }
 .remote-list .r {
-  display: grid; grid-template-columns: minmax(0,1.2fr) 1fr; gap: 1rem; align-items: baseline;
+  display: grid; grid-template-columns: minmax(0,1.25fr) 1fr; gap: 1rem; align-items: baseline;
   padding: .55rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: var(--surface);
 }
 .remote-list .r code { color: var(--foam); font-size: .85rem; }
@@ -566,6 +646,24 @@ kbd {
 }
 .statusline .st { color: var(--pine); }
 .statusline b { color: var(--text); font-weight: 600; }
+
+.os-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: clamp(1.6rem, 4vw, 2.6rem); }
+@media (max-width: 820px) { .os-grid { grid-template-columns: 1fr; } }
+.os-card { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 1.2rem 1.2rem 1.1rem; }
+.os-card h3 { font-size: 1rem; display: flex; align-items: center; gap: .5rem; }
+.os-card h3 .os { color: var(--muted); font-size: .74rem; font-weight: 400; border: 1px solid var(--line); border-radius: 4px; padding: .05rem .4rem; }
+.os-card p { color: var(--subtle); font-size: .84rem; margin-top: .6rem; }
+.os-card p code { color: var(--text); }
+.os-card.mac h3 { color: var(--foam); } .os-card.win h3 { color: var(--iris); } .os-card.lin h3 { color: var(--gold); }
+
+/* reliability strip */
+.rely { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-top: clamp(1.8rem, 4vw, 2.8rem); }
+@media (max-width: 900px) { .rely { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 520px) { .rely { grid-template-columns: 1fr; } }
+.rely .cell { background: var(--surface); padding: 1.1rem 1.2rem; }
+.rely .cell h4 { font-size: .88rem; color: var(--text); display: flex; gap: .5rem; align-items: center; }
+.rely .cell h4 .ic { color: var(--pine); }
+.rely .cell p { color: var(--muted); font-size: .78rem; margin-top: .4rem; }
 
 /* ============================================================
    Footer
@@ -589,7 +687,7 @@ kbd {
 .foot__meta { text-align: right; }
 @media (max-width: 720px) { .foot__meta { text-align: center; } }
 .foot__meta .lic { color: var(--subtle); }
-.disclaimer { padding-bottom: 2.5rem; color: var(--muted); font-size: .72rem; text-align: center; max-width: 60ch; margin-inline: auto; opacity: .8; }
+.disclaimer { padding-bottom: 2.5rem; color: var(--muted); font-size: .72rem; text-align: center; max-width: 62ch; margin-inline: auto; opacity: .8; }
 
 /* ============================================================
    Scroll reveal (only hide when JS can reveal it again)
@@ -602,7 +700,7 @@ kbd {
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
   .reveal { opacity: 1 !important; transform: none !important; transition: none !important; }
-  .seek2__fill, .spinner, .qpop, .cur, .term__cue::before { animation: none !important; }
+  .seek2__fill, .spinner, .qpop, .cur, .term__cue::before, .toast2 { animation: none !important; }
   .btn:hover, .btn--ghost:hover, .btn--primary:hover { transform: none; }
   *, *::before, *::after { transition-duration: .001ms !important; }
 }
@@ -617,14 +715,14 @@ kbd {
     <div class="brand">
       <span class="spark" aria-hidden="true">✨</span>
       <span class="name">ytm-tui</span>
-      <span class="sep" aria-hidden="true">·</span>
-      <span class="ver">v1.5.8</span>
     </div>
     <nav class="topbar__nav" aria-label="Sections">
       <a href="#features" data-i18n="nav.features">Features</a>
-      <a href="#streaming" data-i18n="nav.streaming">Streaming</a>
+      <a href="#streaming" data-i18n="nav.streaming">DJ Gem</a>
+      <a href="#spotify" data-i18n="nav.spotify">Spotify</a>
+      <a href="#scrobble" data-i18n="nav.scrobble">Scrobbling</a>
+      <a href="#everywhere" data-i18n="nav.everywhere">Everywhere</a>
       <a href="#install" data-i18n="nav.install">Install</a>
-      <a href="#remote" data-i18n="nav.remote">Remote</a>
     </nav>
     <div class="topbar__spacer"></div>
     <div class="topbar__tools">
@@ -653,8 +751,9 @@ kbd {
     </h1>
   </div>
   <p class="hero__sub" data-i18n="hero.sub">
-    A fast, keyboard-driven YouTube Music client with DJ Gem streaming, real album art, and remote control.
-    No browser tab quietly eating your RAM. No ads. No mouse required — though it's there if you miss it.
+    A fast, keyboard-driven YouTube Music client that lives in your terminal. DJ Gem builds endless streaming
+    around what you're hearing, album art and synced lyrics render right in the TUI, every listen scrobbles
+    to Last.fm, and your Spotify library moves in with one command. No browser tab quietly eating your RAM. No ads.
   </p>
   <div class="hero__cta">
     <a class="btn btn--primary" href="#install"><span aria-hidden="true">▸</span> <span data-i18n="hero.cta1">Install ytm-tui</span></a>
@@ -666,9 +765,9 @@ kbd {
   </div>
 
   <div class="trust" aria-label="At a glance">
-    <span data-i18n="trust.ram">🪶 Tiny memory footprint</span><span class="pipe">│</span>
+    <span data-i18n="trust.ram">🪶 One tiny binary</span><span class="pipe">│</span>
     <span data-i18n="trust.ads">🚫 Zero ads</span><span class="pipe">│</span>
-    <span data-i18n="trust.themes">🎨 11 themes, fully recolorable</span><span class="pipe">│</span>
+    <span data-i18n="trust.themes">🎨 13 themes, recolorable to the last hex</span><span class="pipe">│</span>
     <span data-i18n="trust.keys">⌨ Every key rebindable</span><span class="pipe">│</span>
     <span data-i18n="trust.mit">⚖ MIT</span>
   </div>
@@ -720,8 +819,12 @@ kbd {
       </div>
 
       <div class="art2" id="d-art"><span class="placeholder" aria-hidden="true">♪</span></div>
+      <div class="lyric2" id="d-lyric" aria-hidden="true"></div>
 
       <div class="hintbar" aria-hidden="true"><kbd>?</kbd> <span data-i18n="hint.help">keybindings</span></div>
+
+      <!-- scrobble toast (status line moment) -->
+      <div class="toast2" id="d-toast" hidden><span class="ok">✓</span> <span data-i18n="demo.scrobbled">scrobbled — Last.fm · ListenBrainz</span></div>
 
       <!-- queue popup (press c) -->
       <div class="qpop" id="d-qpop" hidden>
@@ -733,69 +836,80 @@ kbd {
       </div>
     </div><!-- /#screen-player -->
 
-    <!-- ===== SEARCH screen ===== -->
+    <!-- ===== SEARCH screen (source dropdown open — six catalogs) ===== -->
     <div class="term__screen" id="screen-search" role="tabpanel" aria-labelledby="tab-search" data-screen="search" tabindex="0" hidden>
       <div class="scr">
         <div class="srch">
-          <div class="srch__icon" aria-hidden="true">⌕</div>
+          <div class="srch__icon" aria-hidden="true">YT▾</div>
           <div class="srch__box">
-            <span class="srch__cap" data-i18n="search.cap">Search</span>
+            <span class="srch__cap"><span data-i18n="search.cap">Search</span> · YT</span>
             <span>back number</span><span class="cur" aria-hidden="true"></span>
           </div>
           <button class="srch__btn" type="button" tabindex="-1" data-i18n="search.btn">Search</button>
         </div>
         <div class="scr-list" role="list">
-          <div class="lrow sel" role="listitem"><span class="mk" aria-hidden="true">▶</span><span class="body"><span class="heart" aria-hidden="true">♥ </span>クリスマスソング <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (5:42)</span></span></div>
-          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">高嶺の花子さん <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (5:10)</span></span></div>
-          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">花束 <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (5:33)</span></span></div>
-          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">わたがし <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (4:47)</span></span></div>
-          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">大不正解 <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (4:05)</span></span></div>
-          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">SISTER <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (4:31)</span></span></div>
+          <div class="lrow sel" role="listitem"><span class="mk" aria-hidden="true">▶</span><span class="body"><span class="src">[YT]</span> <span class="heart" aria-hidden="true">♥ </span>クリスマスソング <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (5:42)</span></span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body"><span class="src">[YT]</span> 高嶺の花子さん <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (5:10)</span></span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body"><span class="src">[YT]</span> 花束 <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (5:33)</span></span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body"><span class="src">[SC]</span> 大不正解 <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (4:05)</span></span></div>
+          <div class="lrow" role="listitem"><span class="mk"></span><span class="body"><span class="src">[YT]</span> SISTER <span class="dash">—</span> <span class="art">back number</span><span class="dur">  (4:31)</span></span></div>
+        </div>
+        <div class="srcpop__card" aria-hidden="true">
+          <div class="srcpop__title"><kbd>Tab</kbd> <span data-i18n="search.srcmenu">search source</span></div>
+          <div class="srcpop__row on"><span class="code">YT</span> YouTube</div>
+          <div class="srcpop__row"><span class="code">SC</span> SoundCloud</div>
+          <div class="srcpop__row"><span class="code">AU</span> Audius</div>
+          <div class="srcpop__row"><span class="code">JA</span> Jamendo</div>
+          <div class="srcpop__row"><span class="code">IA</span> Internet Archive</div>
+          <div class="srcpop__row"><span class="code">RAD</span> Radio Browser</div>
+          <div class="srcpop__row"><span class="code">ALL</span> <span data-i18n="search.all">All enabled</span></div>
         </div>
         <div class="scr-help"><kbd>?</kbd> <span data-i18n="hint.help">keybindings</span></div>
       </div>
     </div><!-- /#screen-search -->
 
-    <!-- ===== LIBRARY screen ===== -->
+    <!-- ===== LIBRARY screen (Playlists tab) ===== -->
     <div class="term__screen" id="screen-library" role="tabpanel" aria-labelledby="tab-library" data-screen="library" tabindex="0" hidden>
       <div class="scr">
         <div class="subtabs">
-          <span class="subtab"><span data-i18n="lib.all">All</span> <span class="n">(128)</span></span>
-          <span class="subtab on"><span data-i18n="lib.fav">Favorites</span> <span class="n">(42)</span></span>
-          <span class="subtab"><span data-i18n="lib.hist">History</span> <span class="n">(87)</span></span>
+          <span class="subtab"><span data-i18n="lib.all">All</span> <span class="n">(214)</span></span>
+          <span class="subtab"><span data-i18n="lib.fav">Favorites</span> <span class="n">(42)</span></span>
+          <span class="subtab"><span data-i18n="lib.hist">History</span> <span class="n">(128)</span></span>
           <span class="subtab"><span data-i18n="lib.dl">Downloads</span> <span class="n">(15)</span></span>
+          <span class="subtab on"><span data-i18n="lib.pl">Playlists</span> <span class="n">(4)</span></span>
         </div>
         <div class="scr-list" role="list">
-          <div class="lrow sel" role="listitem"><span class="mk" aria-hidden="true">▶</span><span class="body">Late Night Study <span class="dash">—</span> <span class="art">Mello</span><span class="dur">  (2:48)</span></span><span class="del" aria-hidden="true">✗</span></div>
-          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">Amber <span class="dash">—</span> <span class="art">Sundial</span><span class="dur">  (4:11)</span></span><span class="del" aria-hidden="true">✗</span></div>
-          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">Ceramic <span class="dash">—</span> <span class="art">Tide Pools</span><span class="dur">  (3:22)</span></span><span class="del" aria-hidden="true">✗</span></div>
-          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">Foxtrot <span class="dash">—</span> <span class="art">Holo Beats</span><span class="dur">  (3:05)</span></span><span class="del" aria-hidden="true">✗</span></div>
-          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">Marrow <span class="dash">—</span> <span class="art">Kettle</span><span class="dur">  (5:18)</span></span><span class="del" aria-hidden="true">✗</span></div>
-          <div class="lrow" role="listitem"><span class="mk"></span><span class="body">Paper Planes <span class="dash">—</span> <span class="art">Aoi</span><span class="dur">  (3:51)</span></span><span class="del" aria-hidden="true">✗</span></div>
+          <div class="plrow sel" role="listitem"><span class="mk" aria-hidden="true">▶</span><span class="note" aria-hidden="true">♪</span> <span data-i18n="lib.pl1">City Pop Nights</span> <span class="cnt">— 34 <span data-i18n="lib.tracks">tracks</span></span></div>
+          <div class="plrow" role="listitem"><span class="mk"></span><span class="note" aria-hidden="true">♪</span> Liked Songs (Spotify) <span class="cnt">— 512 <span data-i18n="lib.tracks">tracks</span></span></div>
+          <div class="plrow" role="listitem"><span class="mk"></span><span class="note" aria-hidden="true">♪</span> <span data-i18n="lib.pl3">Study Lo-fi</span> <span class="cnt">— 58 <span data-i18n="lib.tracks">tracks</span></span></div>
+          <div class="plrow" role="listitem"><span class="mk"></span><span class="note" aria-hidden="true">♪</span> <span data-i18n="lib.pl4">Rainy Day Drive</span> <span class="cnt">— 21 <span data-i18n="lib.tracks">tracks</span></span></div>
         </div>
-        <div class="scr-help"><kbd>?</kbd> <span data-i18n="hint.help">keybindings</span></div>
+        <div class="scr-help"><kbd>n</kbd> <span data-i18n="lib.new">new playlist</span> · <kbd>Enter</kbd> <span data-i18n="lib.open">open</span> · <kbd>a</kbd> <span data-i18n="lib.playall">play all</span> · <kbd>?</kbd> <span data-i18n="hint.help">keybindings</span></div>
       </div>
     </div><!-- /#screen-library -->
 
-    <!-- ===== SETTINGS screen (General tab) ===== -->
+    <!-- ===== SETTINGS screen (Accounts tab) ===== -->
     <div class="term__screen" id="screen-settings" role="tabpanel" aria-labelledby="tab-settings" data-screen="settings" tabindex="0" hidden>
       <div class="scr">
         <div class="subtabs">
-          <span class="subtab on" data-i18n="set.general">General</span>
+          <span class="subtab" data-i18n="set.general">General</span>
           <span class="subtab" data-i18n="set.playback">Playback</span>
           <span class="subtab" data-i18n="set.hotkeys">Hotkeys</span>
           <span class="subtab" data-i18n="set.graphics">Graphics</span>
           <span class="subtab">DJ Gem</span>
+          <span class="subtab on" data-i18n="set.accounts">Accounts</span>
         </div>
         <div class="set-list">
-          <div class="srow sel"><span class="mk" aria-hidden="true">▶</span><span class="lbl" data-i18n="set.lang">Language</span><span class="val">&lt; <span data-i18n="set.lang.val">English</span> &gt;</span></div>
-          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.cookies">Cookies file</span><span class="val" data-i18n="set.default">(default: ~/…)</span></div>
-          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.dldir">Download dir</span><span class="val">~/Music/ytm-tui</span></div>
-          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.mouse">Mouse (next launch)</span><span class="val tog">[x]</span></div>
-          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.art">Album art (next launch)</span><span class="val tog">[x]</span></div>
-          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.autoplay">Autoplay on launch</span><span class="val tog">[ ]</span></div>
-          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.resetkeys">Reset keybindings</span><span class="val">↵ <span data-i18n="set.enter">press Enter</span></span></div>
-          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.resetall">Reset all settings</span><span class="val">↵ <span data-i18n="set.enter">press Enter</span></span></div>
+          <div class="srow"><span class="mk"></span><span class="grp">Last.fm</span></div>
+          <div class="srow sel"><span class="mk" aria-hidden="true">▶</span><span class="lbl" data-i18n="set.lastfm">Scrobble to Last.fm</span><span class="val tog">[x]</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.lastfm.acct">Last.fm account</span><span class="val"><span class="ok">✓</span> ochi_dev</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.loves">Sync likes as loves</span><span class="val tog">[x]</span></div>
+          <div class="srow"><span class="mk"></span><span class="grp">ListenBrainz</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.lb">Scrobble to ListenBrainz</span><span class="val tog">[x]</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.lb.token">User token</span><span class="val">••••••••</span></div>
+          <div class="srow"><span class="mk"></span><span class="grp">Spotify</span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.sp.acct">Spotify account</span><span class="val"><span class="ok">✓</span> <span data-i18n="set.connected">connected</span></span></div>
+          <div class="srow"><span class="mk"></span><span class="lbl" data-i18n="set.sp.import">Import from Spotify…</span><span class="val">↵ <span data-i18n="set.enter">press Enter</span></span></div>
         </div>
         <div class="scr-help"><kbd>?</kbd> <span data-i18n="hint.help">keybindings</span> · <kbd>Tab</kbd> <span data-i18n="set.switch">switch tab</span></div>
       </div>
@@ -821,7 +935,7 @@ kbd {
 <span class="c2">  ╰───────────────╯</span>
 <span class="c5">     ♪    </span><span class="c1">♫</span><span class="c4">    ♩</span>
 <span class="c2"> G</span><span class="c3">  E</span><span class="c4">  M</span><span class="c5">  I</span><span class="c1">  N</span><span class="c2">  I</span></pre>
-          <p class="ai-empty" data-i18n="ai.empty">Ask me to play, queue, or find music.</p>
+          <p class="ai-empty" data-i18n="ai.empty">Ask me to play, queue, or find music — I can build playlists too.</p>
         </div>
         <div class="ai-sug">
           <div class="ai-sug__title" data-i18n="ai.sugtitle">Suggestions</div>
@@ -860,33 +974,51 @@ kbd {
     </article>
 
     <article class="feature gol">
-      <div class="feature__top"><kbd>album art</kbd></div>
-      <h3 class="display" data-i18n="f.art.h">Real album art. In a terminal.</h3>
-      <p data-i18n-html="f.art.p">Yes — actual cover images, drawn right in the Player on terminals that can show them. Pixels where you least expect them. Synced lyrics scroll underneath, karaoke for one.</p>
-    </article>
-
-    <article class="feature foa">
-      <div class="feature__top"><kbd>ytt -r</kbd></div>
-      <h3 class="display" data-i18n="f.remote.h">Drive it from anywhere</h3>
-      <p data-i18n-html="f.remote.p">Wire your media keys once — <code>⏯ ⏭ ⏮</code> — and never alt-tab back. <code>ytt -r next</code>, <code>ytt -r pp</code>, <code>ytt -r status</code>. A stray second launch just hands you the controls.</p>
+      <div class="feature__top"><kbd>album art</kbd> <kbd>v</kbd></div>
+      <h3 class="display" data-i18n="f.art.h">Album art, lyrics — and the video</h3>
+      <p data-i18n-html="f.art.p">Actual cover images drawn right in the Player, with time-synced lyrics scrolling underneath. And when hearing isn't enough: press <code>v</code> and the music video floats over your terminal in its own little mpv window.</p>
     </article>
 
     <article class="feature pin">
-      <div class="feature__top"><kbd>s</kbd></div>
-      <h3 class="display" data-i18n="f.nav.h">Search, library, queue, lyrics</h3>
-      <p data-i18n-html="f.nav.p"><code>s</code> to search, <code>Enter</code> to play. <code>l</code> for your library, <code>c</code> for the queue, <code>Shift+L</code> for time-synced lyrics. Favorites, history and downloads, all in one list.</p>
+      <div class="feature__top"><kbd>Tab ▾</kbd></div>
+      <h3 class="display" data-i18n="f.sources.h">Six catalogs, one search box</h3>
+      <p data-i18n-html="f.sources.p">YouTube Music is home base, but the search box also speaks SoundCloud, Audius, Jamendo, Internet Archive, and Radio Browser. Flip sources with <code>Tab</code>, or search them all at once — every result tagged <code>[SRC]</code>.</p>
+    </article>
+
+    <article class="feature lov">
+      <div class="feature__top"><kbd>scrobble</kbd></div>
+      <h3 class="display" data-i18n="f.scrobble.h">Every listen, on the record</h3>
+      <p data-i18n-html="f.scrobble.p">Last.fm and ListenBrainz, done properly: Now Playing updates, the half-track/4-minute rule, likes synced as loves. Offline listens queue on disk and deliver themselves when you're back — even from the headless daemon.</p>
+    </article>
+
+    <article class="feature foa">
+      <div class="feature__top"><kbd>ytt transfer</kbd></div>
+      <h3 class="display" data-i18n="f.spotify.h">Move in from Spotify</h3>
+      <p data-i18n-html="f.spotify.p">Liked songs and playlists migrate to YouTube Music with one command — checkpointed, resumable, CJK-safe matching, and a report for anything it wasn't sure about. Works the other way too, plus JSON/CSV backups of everything.</p>
+    </article>
+
+    <article class="feature ros">
+      <div class="feature__top"><kbd>n</kbd> <kbd>d</kbd></div>
+      <h3 class="display" data-i18n="f.playlists.h">Playlists and downloads, kept local</h3>
+      <p data-i18n-html="f.playlists.p">Build playlists right in the Library (DJ Gem can build them for you), drop Spotify imports into them, and press <code>d</code> to save any track as an m4a with cover art and tags — played offline from the Downloads tab.</p>
+    </article>
+
+    <article class="feature foa">
+      <div class="feature__top"><kbd>⏯ ⏭ ⏮</kbd></div>
+      <h3 class="display" data-i18n="f.remote.h">Control it from everywhere</h3>
+      <p data-i18n-html="f.remote.p">Media keys, macOS Control Center, a menu-bar / tray mini player, Linux MPRIS widgets, <code>ytt -r</code> from any terminal — or no terminal at all with the headless daemon. The music doesn't care where the order came from.</p>
     </article>
 
     <article class="feature ros">
       <div class="feature__top"><kbd>,</kbd></div>
       <h3 class="display" data-i18n="f.custom.h">Unmistakably yours</h3>
-      <p data-i18n-html="f.custom.p">11 built-in themes (Gruvbox, Nord, Dracula, Tokyo Night, Rosé Pine…), every color tweakable in hex, every key rebindable, a 10-band EQ, and animations from a calm still screen to a spinning ASCII donut.</p>
+      <p data-i18n-html="f.custom.p">13 built-in themes (Gruvbox, Nord, Dracula, Tokyo Night, Rosé Pine…), all 34 color roles editable in hex, a 10-band EQ with presets from Flat to Jazz, animations from a calm still screen to a spinning ASCII donut — and a retro mode that runs in a bare Linux console, ASCII album art included.</p>
     </article>
 
     <article class="feature lov">
       <div class="feature__top"><kbd>?</kbd></div>
       <h3 class="display" data-i18n="f.help.h">The app remembers the keys</h3>
-      <p data-i18n-html="f.help.p">Forget a shortcut? Press <code>?</code> for the full, always-current cheat sheet, grouped by screen — in your language, with your custom bindings. Even Korean jamo work: <code>ㅂ</code> = <code>q</code>.</p>
+      <p data-i18n-html="f.help.p">Forget a shortcut? Press <code>?</code> for the full, always-current cheat sheet — in your language, with your custom bindings. Korean jamo work as-is (<code>ㅂ</code> = <code>q</code>), and everything on screen is clickable if the mouse is more your speed.</p>
     </article>
   </div>
 </section>
@@ -897,7 +1029,7 @@ kbd {
     <div class="section-head reveal" style="margin-bottom:0">
       <p class="eyebrow"><span class="dot">●</span> <span data-i18n="why.eyebrow">Streaming with its reasons</span></p>
       <h2 class="display" id="why-h2" data-i18n="why.h2">It doesn't just autoplay. It can tell you why.</h2>
-      <p data-i18n-html="why.sub">Most players guess your next song and hope. ytm-tui's streaming plans a <em>set</em> — an anchor, a bridge, a lift, a wind-down — then keeps the music flowing as your queue runs dry. Press <code>w</code> and it shows its work, in plain language, no math.</p>
+      <p data-i18n-html="why.sub">Most players guess your next song and hope. ytm-tui's streaming plans a <em>set</em> — a core, a bridge, a discovery — then keeps the music flowing as your queue runs dry. Press <code>w</code> and it shows its work, in plain language, no math.</p>
     </div>
 
     <div class="why-card reveal" aria-label="Why these picks overlay">
@@ -905,23 +1037,130 @@ kbd {
       <div class="why-card__body">
         <div class="why-pick">
           <span class="n">1</span>
-          <div><span class="ttl">Late Night Study — Mello</span><span class="role" data-i18n="why.r1.role">anchor</span><div class="reason" data-i18n="why.r1.reason">Sets the tempo you searched for.</div></div>
+          <div><span class="ttl">Late Night Study — Mello</span><span class="role" data-i18n="why.r1.role">core</span><div class="reason" data-i18n="why.r1.reason">Stays on the tempo you've been listening to.</div></div>
         </div>
         <div class="why-pick">
           <span class="n">2</span>
-          <div><span class="ttl">Foxtrot — Holo Beats</span><span class="role" data-i18n="why.r2.role">bridge</span><div class="reason" data-i18n="why.r2.reason">Keeps the key, swaps the drums for focus.</div></div>
+          <div><span class="ttl">Foxtrot — Holo Beats</span><span class="role" data-i18n="why.r2.role">bridge</span><div class="reason" data-i18n="why.r2.reason">Keeps the key, swaps the drums — often played after this one.</div></div>
         </div>
         <div class="why-pick">
           <span class="n">3</span>
-          <div><span class="ttl">Amber — Sundial</span><span class="role" data-i18n="why.r3.role">lift</span><div class="reason" data-i18n="why.r3.reason">A small energy lift so the set doesn't flatline.</div></div>
+          <div><span class="ttl">Amber — Sundial</span><span class="role" data-i18n="why.r3.role">discovery</span><div class="reason" data-i18n="why.r3.reason">New to you, adjacent to two artists you favorite.</div></div>
         </div>
       </div>
     </div>
   </div>
 </section>
 
+<!-- ===================== SPOTIFY MIGRATION ===================== -->
+<section class="section wrap" id="spotify" aria-labelledby="sp-h2">
+  <div class="why-grid">
+    <div class="section-head reveal" style="margin-bottom:0">
+      <p class="eyebrow"><span class="dot">●</span> <span data-i18n="sp.eyebrow">Leaving Spotify?</span></p>
+      <h2 class="display" id="sp-h2" data-i18n="sp.h2">Your library moves in with one command.</h2>
+      <p data-i18n-html="sp.sub">Liked songs, playlists, the lot — matched track by track (NFKC-normalized and CJK-safe, so K-pop and J-pop metadata survive), written to YouTube Music or into local playlists, with likes kept in order. Every job is checkpointed: rate limit, Ctrl-C, power cut — <code>resume</code> picks up where it left off. Nothing ambiguous is silently guessed; it lands in a report you can review.</p>
+      <p data-i18n-html="sp.sub2">Prefer to stay in the app? Settings → Accounts → <em>Import from Spotify…</em> picks a playlist and imports it in the background while the music keeps playing. Exports and Exportify-style CSV/JSON backups ride the same engine.</p>
+    </div>
+
+    <div class="xfer reveal" aria-label="Playlist transfer example">
+      <div class="xfer__bar"><span class="dotrow" aria-hidden="true"><span class="d l"></span><span class="d g"></span><span class="d p"></span></span> ytt transfer</div>
+      <div class="xfer__body">
+        <div class="ln"><span class="prompt">$</span> <code>ytt auth spotify --client-id &lt;your-app&gt;</code> <span class="hash"># one time, PKCE — no secret</span></div>
+        <div class="ln"><span class="prompt">$</span> <code>ytt transfer import liked --to likes</code></div>
+        <div class="ln dim">sp2yt-1751443200-a3f1 · <span data-i18n="sp.t.fetch">fetching liked songs…</span> 512</div>
+        <div class="ln"><span class="xfer__gauge">[███████████████░░░░░]</span> <span data-i18n="sp.t.match">matching</span> 389/512</div>
+        <div class="ln"><span class="ok">✓ 486 <span data-i18n="sp.t.matched">matched</span></span> · <span class="warn">19 <span data-i18n="sp.t.ambig">ambiguous</span></span> · <span class="err">7 <span data-i18n="sp.t.nf">not found</span></span> → <span data-i18n="sp.t.report">report saved</span></div>
+        <div class="ln dim"><span data-i18n="sp.t.resume">interrupted? —</span> <code>ytt transfer resume sp2yt-1751443200-a3f1</code></div>
+        <div class="ln" style="margin-top:.5rem"><span class="prompt">$</span> <code>ytt transfer backup --dir ~/music-backup --csv</code> <span class="hash"># every YTM playlist → JSON + CSV</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== SCROBBLING ===================== -->
+<section class="why-band section" id="scrobble" aria-labelledby="sc-h2">
+  <div class="wrap why-grid">
+    <div class="section-head reveal" style="margin-bottom:0">
+      <p class="eyebrow"><span class="dot">●</span> <span data-i18n="sc.eyebrow">Last.fm · ListenBrainz</span></p>
+      <h2 class="display" id="sc-h2" data-i18n="sc.h2">Your listening history, wherever you keep it.</h2>
+      <p data-i18n-html="sc.sub">ytm-tui scrobbles like a good citizen: Now Playing as the song starts, the scrobble itself at the classic half-track-or-4-minutes mark, and your in-app likes synced to Last.fm as loves. Connect from Settings → Accounts, or headless with <code>ytt auth lastfm</code>.</p>
+      <p data-i18n-html="sc.sub2">Listens are written to a crash-safe queue on disk <em>before</em> any network attempt — so a flight, a dead Wi-Fi, or a kill -9 loses nothing. They deliver themselves when you're back online, from the TUI or the daemon alike. Self-hosted ListenBrainz? Point <code>api_url</code> at it.</p>
+    </div>
+
+    <div class="ledger reveal" aria-label="Scrobble timeline example">
+      <div class="ledger__title"><span aria-hidden="true">♥</span> <span data-i18n="sc.card.title">scrobble log — one evening</span></div>
+      <div class="ledger__body">
+        <div class="ev"><span class="t">21:04</span><div><div class="what"><span data-i18n="sc.e1">Now playing →</span> クリスマスソング</div><div class="sub">Last.fm <span class="ok">✓</span> · ListenBrainz <span class="ok">✓</span></div></div></div>
+        <div class="ev"><span class="t">21:07</span><div><div class="what"><span class="ok">✓</span> <span data-i18n="sc.e2">scrobbled at 2:51</span></div><div class="sub" data-i18n="sc.e2s">half-track rule — no waiting for the outro</div></div></div>
+        <div class="ev"><span class="t">21:09</span><div><div class="what"><span style="color:var(--love)">♥</span> <span data-i18n="sc.e3">liked in-app → loved on Last.fm</span></div><div class="sub" data-i18n="sc.e3s">one keypress, both places</div></div></div>
+        <div class="ev"><span class="t">23:30</span><div><div class="what"><span class="plane">✈</span> <span data-i18n="sc.e4">offline — 14 listens queued</span></div><div class="sub">scrobble-queue.jsonl</div></div></div>
+        <div class="ev"><span class="t">07:12</span><div><div class="what"><span class="ok">✓</span> <span data-i18n="sc.e5">back online — 14/14 delivered</span></div><div class="sub" data-i18n="sc.e5s">automatically, oldest first</div></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== EVERYWHERE (remote + daemon + OS) ===================== -->
+<section class="section wrap" id="everywhere" aria-labelledby="rem-h2">
+  <div class="section-head reveal">
+    <p class="eyebrow"><span class="dot">●</span> <span data-i18n="rem.eyebrow">Remote control · daemon · OS integration</span></p>
+    <h2 class="display" id="rem-h2" data-i18n="rem.h2">The player is wherever you are</h2>
+    <p data-i18n-html="rem.sub">Once <code>ytt</code> is playing — or the headless daemon is, no terminal required — boss it around from anywhere: another shell, your media keys, Control Center, the tray. It does the one thing you asked, prints a tidy line, and gets out of the way.</p>
+  </div>
+
+  <div class="remote-grid reveal">
+    <div class="remote-list">
+      <div class="r"><code>ytt -r pp</code><span class="desc" data-i18n="rem.pp">Play / pause</span></div>
+      <div class="r"><code>ytt -r next</code><span class="desc" data-i18n="rem.next">Skip to the next song</span></div>
+      <div class="r"><code>ytt -r volume 40</code><span class="desc" data-i18n="rem.vol">Set the volume outright</span></div>
+      <div class="r"><code>ytt -r seek-to 90</code><span class="desc" data-i18n="rem.seek">Jump to a timestamp</span></div>
+      <div class="r"><code>ytt -r streaming on</code><span class="desc" data-i18n="rem.streaming">Switch endless streaming on</span></div>
+      <div class="r"><code>ytt -r status --json</code><span class="desc" data-i18n="rem.status">Now-playing snapshot, script-ready</span></div>
+      <div class="r"><code>ytt daemon start --resume</code><span class="desc" data-i18n="rem.daemon">Headless: restore the saved queue and play</span></div>
+      <div class="r"><code>ytt -r play "lofi"</code><span class="desc" data-i18n="rem.play">Daemon: search and play the first hit</span></div>
+      <div class="r"><code>ytt daemon stop</code><span class="desc" data-i18n="rem.stopdaemon">Stop the daemon and reap mpv</span></div>
+    </div>
+
+    <div class="remote-aside">
+      <div class="statusline">
+        <div style="color:var(--muted);margin-bottom:.4rem">ytt -r status →</div>
+        <div><span class="st">[playing]</span> <b>クリスマスソング — back number</b> • vol 80% • 1/4 • streaming on</div>
+      </div>
+      <div class="statusline">
+        <div style="color:var(--muted);margin-bottom:.4rem" data-i18n="rem.wire"># wire it to your media keys (i3 / sway)</div>
+        <div style="color:var(--foam)">bindsym XF86AudioPlay exec ytt -r pp</div>
+        <div style="color:var(--foam)">bindsym XF86AudioNext exec ytt -r next</div>
+      </div>
+      <p style="color:var(--subtle);font-size:.85rem" data-i18n-html="rem.single">Launching <code>ytt</code> twice won't start a second player fighting over your speakers — it just hands you the controls. The daemon restores queue order, cursor, shuffle/repeat, and streaming state, and keeps scrobbling while it's at it.</p>
+    </div>
+  </div>
+
+  <div class="os-grid reveal">
+    <div class="os-card mac">
+      <h3><span aria-hidden="true"></span> Control Center <span class="os">macOS</span></h3>
+      <p data-i18n-html="os.mac">The real Now Playing card: artwork, a working scrubber, next/previous, even a Like button. Your AirPods' stem click does what it should. And the same mini player rides your menu bar — <code>ytt-tray</code> ships with the macOS build.</p>
+    </div>
+    <div class="os-card win">
+      <h3><span aria-hidden="true">▦</span> SMTC + <span data-i18n="os.win.tray">tray mini player</span> <span class="os">Windows</span></h3>
+      <p data-i18n-html="os.win">Media overlay with artwork and seek, plus an optional tray companion: left-click for a mini player (Now / Queue / Stream / Tune), right-click for the full menu. <code>ytt-tray --install-startup</code> if you want it at login.</p>
+    </div>
+    <div class="os-card lin">
+      <h3><span aria-hidden="true">◆</span> MPRIS <span class="os">Linux</span></h3>
+      <p data-i18n-html="os.lin">A first-class <code>org.mpris.MediaPlayer2</code> citizen: playerctl, GNOME and KDE widgets, waybar — they all just see a music player, because it is one.</p>
+    </div>
+  </div>
+
+  <div class="rely reveal" aria-label="Reliability details">
+    <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.1h">No orphaned mpv. Ever.</span></h4><p data-i18n="rely.1p">Kill it, crash it, close the window, log off — signal hooks, a panic hook, a Windows Job Object, and a PID lifeline file make sure the audio dies with the app.</p></div>
+    <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.2h">Instant skips</span></h4><p data-i18n="rely.2p">The next track's stream URL is resolved while the current one plays, so "next" starts in a blink, not in three seconds. Gapless by default.</p></div>
+    <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.3h">Crash-safe by paranoia</span></h4><p data-i18n="rely.3p">Scrobbles hit disk before the network. Transfers checkpoint every few tracks. Config saves are atomic. Your data assumes the worst so you don't have to.</p></div>
+    <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.4h">ytt doctor</span></h4><p data-i18n="rely.4p">One command checks mpv, yt-dlp, ffmpeg and your folders, then tells you exactly what to fix — in plain words, not a stack trace.</p></div>
+  </div>
+</section>
+
 <!-- ===================== INSTALL ===================== -->
-<section class="section wrap" id="install" aria-labelledby="inst-h2">
+<section class="why-band section" id="install" aria-labelledby="inst-h2">
+  <div class="wrap">
   <div class="section-head reveal">
     <p class="eyebrow"><span class="dot">●</span> <span data-i18n="inst.eyebrow">Two minutes to music</span></p>
     <h2 class="display" id="inst-h2" data-i18n="inst.h2">Pick your platform. Paste one line.</h2>
@@ -946,7 +1185,7 @@ kbd {
       <div class="cmd-panel active" data-panel="mac">
         <button class="copy-btn copy-line" type="button" data-copy="brew install Ochichan/tap/ytm-tui" data-i18n="copy">copy</button>
         <div class="cmd-line"><span class="prompt">$</span> <code>brew install Ochichan/tap/ytm-tui</code></div>
-        <p class="cmd-note" data-i18n="inst.mac.note">Homebrew pulls in mpv, yt-dlp and ffmpeg automatically. Don't have Homebrew? Grab it at brew.sh first.</p>
+        <p class="cmd-note" data-i18n="inst.mac.note">Homebrew pulls in mpv, yt-dlp and ffmpeg automatically — and installs ytt-tray, the menu-bar companion, alongside. Don't have Homebrew? Grab it at brew.sh first.</p>
       </div>
 
       <!-- Windows -->
@@ -957,12 +1196,12 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
         <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop bucket add extras</code></div>
         <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket</code></div>
         <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop install ytm-tui</code></div>
-        <p class="cmd-note" data-i18n="inst.win.note">Uses Scoop (scoop.sh). Installs ytt plus mpv, yt-dlp, ffmpeg, and a YtmTui Tray shortcut.</p>
+        <p class="cmd-note" data-i18n="inst.win.note">Uses Scoop (scoop.sh). Installs ytt plus mpv, yt-dlp, ffmpeg — and the YtmTui Tray mini player, which stays out of your way until you want it.</p>
       </div>
 
       <!-- Linux -->
       <div class="cmd-panel" data-panel="lin">
-        <div class="cmd-line"><span class="hash"># Nix — the most reproducible option</span></div>
+        <div class="cmd-line"><span class="hash"># Nix — the most reproducible option (helpers included)</span></div>
         <div class="cmd-line"><span class="prompt">$</span> <code>nix run github:Ochichan/ytm-tui</code> <button class="copy-btn" type="button" data-copy="nix run github:Ochichan/ytm-tui" data-i18n="copy">copy</button></div>
         <div class="cmd-line" style="margin-top:.6rem"><span class="hash"># Arch (AUR)</span></div>
         <div class="cmd-line"><span class="prompt">$</span> <code>yay -S ytm-tui-bin</code> <button class="copy-btn" type="button" data-copy="yay -S ytm-tui-bin" data-i18n="copy">copy</button></div>
@@ -986,44 +1225,8 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
       <span class="big mono"><span class="prompt">$</span> ytt</span>
       <span data-i18n-html="inst.firstkey">…and press <kbd>?</kbd> at any time for every key. The app teaches you the rest.</span>
     </div>
-    <p class="cmd-note" style="border:0;padding-top:.6rem" data-i18n-html="inst.doctor">Something off? Run <code>ytt doctor</code> — it checks mpv, yt-dlp and ffmpeg and tells you exactly what to fix.</p>
+    <p class="cmd-note" style="border:0;padding-top:.6rem" data-i18n-html="inst.doctor">Something off? Run <code>ytt doctor</code> — it checks mpv, yt-dlp and ffmpeg and tells you exactly what to fix. No YouTube account needed; public tracks play anonymously, and your own account is one cookies.txt away if you want it.</p>
   </div>
-</section>
-
-<!-- ===================== REMOTE ===================== -->
-<section class="why-band section" id="remote" aria-labelledby="rem-h2">
-  <div class="wrap">
-    <div class="section-head reveal">
-      <p class="eyebrow"><span class="dot">●</span> <span data-i18n="rem.eyebrow">Remote control</span></p>
-      <h2 class="display" id="rem-h2" data-i18n="rem.h2">Reach it without leaving your work</h2>
-      <p data-i18n-html="rem.sub">Once <code>ytt</code> is playing, boss it around from another terminal — or straight from your keyboard's media keys. It does the one thing you asked, prints a tidy line, and gets out of the way. The music screen doesn't even flicker.</p>
-    </div>
-
-    <div class="remote-grid reveal">
-      <div class="remote-list">
-        <div class="r"><code>ytt -r pp</code><span class="desc" data-i18n="rem.pp">Play / pause</span></div>
-        <div class="r"><code>ytt -r next</code><span class="desc" data-i18n="rem.next">Skip to the next song</span></div>
-        <div class="r"><code>ytt daemon start --resume</code><span class="desc" data-i18n="rem.daemon">Start the headless music daemon</span></div>
-        <div class="r"><code>ytt -r play "lofi"</code><span class="desc" data-i18n="rem.play">Daemon: search and play</span></div>
-        <div class="r"><code>ytt -r enqueue "city pop"</code><span class="desc" data-i18n="rem.enqueue">Daemon: search and queue</span></div>
-        <div class="r"><code>ytt -r streaming on</code><span class="desc" data-i18n="rem.streaming">Switch endless streaming on</span></div>
-        <div class="r"><code>ytt -r status</code><span class="desc" data-i18n="rem.status">What's playing right now?</span></div>
-        <div class="r"><code>ytt daemon stop</code><span class="desc" data-i18n="rem.stopdaemon">Stop the daemon and reap mpv</span></div>
-      </div>
-
-      <div class="remote-aside">
-        <div class="statusline">
-          <div style="color:var(--muted);margin-bottom:.4rem" data-i18n="rem.example">ytt -r status →</div>
-          <div><span class="st">[playing]</span> <b>クリスマスソング — back number</b> • vol 80% • 1/4 • streaming on</div>
-        </div>
-        <div class="statusline">
-          <div style="color:var(--muted);margin-bottom:.4rem" data-i18n="rem.wire"># wire it to your media keys (i3 / sway)</div>
-          <div style="color:var(--foam)">bindsym XF86AudioPlay exec ytt -r pp</div>
-          <div style="color:var(--foam)">bindsym XF86AudioNext exec ytt -r next</div>
-        </div>
-        <p style="color:var(--subtle);font-size:.85rem" data-i18n-html="rem.single">Launching <code>ytt</code> twice won't start a second player. For terminal-free playback, the daemon restores your saved queue order, cursor, shuffle/repeat, and streaming state.</p>
-      </div>
-    </div>
   </div>
 </section>
 
@@ -1046,6 +1249,7 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
       <a href="https://github.com/Ochichan/ytm-tui/blob/main/README.md" target="_blank" rel="noopener">README · EN</a>
       <a href="https://github.com/Ochichan/ytm-tui/blob/main/README.ko.md" target="_blank" rel="noopener">한국어</a>
       <a href="https://github.com/Ochichan/ytm-tui/blob/main/README.ja.md" target="_blank" rel="noopener">日本語</a>
+      <a href="https://github.com/Ochichan/ytm-tui/releases" target="_blank" rel="noopener" data-i18n="foot.releases">Releases</a>
     </div>
     <div class="foot__meta">
       <div class="lic">MIT © Ochichan</div>
@@ -1054,49 +1258,52 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
   </div>
 
   <p class="disclaimer" data-i18n="foot.disclaimer">
-    Not affiliated with YouTube or Google. Plays public songs anonymously; bring your own account via cookies if you like.
+    Not affiliated with YouTube, Google, Spotify, Last.fm or ListenBrainz. Plays public songs anonymously; bring your own accounts if and when you want them. The DJ Gem assistant is optional and needs a free Gemini API key — everything else works without it.
   </p>
 </footer>
 
 <script>
 /* ============================================================
    i18n — English lives in the HTML (also works with JS off).
-   Korean lives here; toggling back to EN restores the captured baseline.
+   Korean + Japanese live here; toggling back to EN restores the
+   captured baseline. The app itself ships an English/한국어 UI.
    ============================================================ */
 var KO = {
   "skip": "본문으로 건너뛰기",
-  "nav.features": "기능", "nav.streaming": "스트리밍", "nav.install": "설치", "nav.remote": "원격 제어",
+  "nav.features": "기능", "nav.streaming": "DJ Gem", "nav.spotify": "Spotify", "nav.scrobble": "스크로블",
+  "nav.everywhere": "어디서든", "nav.install": "설치",
 
   "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
   "hero.h1a": "지금 재생 중 —",
   "hero.h1b": "터미널 안에서.",
-  "hero.sub": "빠르고 키보드로 다루는 유튜브 뮤직 클라이언트예요. DJ Gem 스트리밍, 진짜 앨범 아트, 원격 제어까지. 램을 야금야금 먹는 브라우저 탭도, 광고도 없죠. 마우스요? 없어도 되지만, 아쉬울까 봐 챙겨뒀어요.",
+  "hero.sub": "빠르고 키보드로 다루는 유튜브 뮤직 클라이언트예요. DJ Gem이 지금 듣는 곡을 중심으로 끝없는 스트리밍을 이어주고, 앨범 아트와 싱크 가사가 TUI 안에 그대로 그려지고, 모든 감상은 Last.fm에 스크로블되고, Spotify 라이브러리는 명령 한 줄로 이사 옵니다. 램을 야금야금 먹는 브라우저 탭도, 광고도 없어요.",
   "hero.cta1": "ytm-tui 설치하기",
   "hero.cta2": "GitHub에서 별 주기",
   "copy": "복사",
-  "trust.ram": "🪶 가벼운 메모리", "trust.ads": "🚫 광고 없음", "trust.themes": "🎨 테마 11종, 색 전부 변경 가능",
+  "trust.ram": "🪶 작은 바이너리 하나", "trust.ads": "🚫 광고 없음", "trust.themes": "🎨 테마 13종, 마지막 hex까지 내 마음대로",
   "trust.keys": "⌨ 모든 키 재설정 가능", "trust.mit": "⚖ MIT",
 
   "demo.empty": "재생 중인 곡 없음 — s 를 눌러 검색하세요",
   "demo.upnext": "다음 곡",
+  "demo.scrobbled": "스크로블 완료 — Last.fm · ListenBrainz",
   "hint.help": "단축키",
 
   "tab.player": "플레이어", "tab.search": "검색", "tab.library": "라이브러리", "tab.settings": "설정", "tab.ai": "DJ Gem",
   "demo.clickcue": "눌러서 둘러보기",
 
-  "search.cap": "검색", "search.btn": "검색",
+  "search.cap": "검색", "search.btn": "검색", "search.srcmenu": "검색 소스", "search.all": "전체 소스",
 
-  "lib.all": "전체", "lib.fav": "즐겨찾기", "lib.hist": "기록", "lib.dl": "다운로드",
+  "lib.all": "전체", "lib.fav": "즐겨찾기", "lib.hist": "기록", "lib.dl": "다운로드", "lib.pl": "플레이리스트",
+  "lib.tracks": "곡", "lib.pl1": "시티팝의 밤", "lib.pl3": "공부용 Lo-fi", "lib.pl4": "빗길 드라이브",
+  "lib.new": "새 플레이리스트", "lib.open": "열기", "lib.playall": "전체 재생",
 
-  "set.general": "일반", "set.playback": "재생", "set.hotkeys": "단축키", "set.graphics": "그래픽",
-  "set.lang": "언어", "set.lang.val": "한국어",
-  "set.cookies": "쿠키 파일", "set.default": "(기본값: ~/…)",
-  "set.dldir": "다운로드 폴더",
-  "set.mouse": "마우스 (다음 실행)", "set.art": "앨범 아트 (다음 실행)", "set.autoplay": "실행 시 자동재생",
-  "set.resetkeys": "단축키 초기화", "set.resetall": "모든 설정 초기화",
+  "set.general": "일반", "set.playback": "재생", "set.hotkeys": "핫키", "set.graphics": "그래픽", "set.accounts": "계정",
+  "set.lastfm": "Last.fm으로 스크로블", "set.lastfm.acct": "Last.fm 계정", "set.loves": "좋아요를 love로 동기화",
+  "set.lb": "ListenBrainz로 스크로블", "set.lb.token": "사용자 토큰",
+  "set.sp.acct": "Spotify 계정", "set.connected": "연결됨", "set.sp.import": "Spotify에서 가져오기…",
   "set.enter": "Enter 누르기", "set.switch": "탭 전환",
 
-  "ai.eyebrow": "✦ DJ Gem 어시스턴트", "ai.empty": "재생·대기열·검색을 말로 시켜보세요.",
+  "ai.eyebrow": "✦ DJ Gem 어시스턴트", "ai.empty": "재생·대기열·검색을 말로 시켜보세요 — 플레이리스트도 만들어 줍니다.",
   "ai.sugtitle": "추천", "ai.ask": "질문", "ai.prompt": "back number 같은 곡 틀어줘", "ai.send": "전송",
 
   "feat.eyebrow": "핵심만 쏙",
@@ -1104,150 +1311,226 @@ var KO = {
   "feat.sub": "전부 키보드로, 전부 빠르게, 전부 원하는 대로 재설정할 수 있어요. <code>ytt</code> 한 번이면 이 모든 게 시작됩니다.",
   "f.streaming.h": "분위기를 읽는 DJ Gem 스트리밍",
   "f.streaming.p": "<code>Ctrl+R</code> 한 번이면 지금 듣는 곡을 중심으로 나만의 스트리밍이 시작돼요. Gemini 기반 <em>큐 디렉터</em>가 분위기에 맞는 곡을 골라 이어주죠 — Focused, Balanced, Discovery 모드 중에서. <code>w</code> 를 누르면 그 이유를 쉬운 말로 설명해 줍니다.",
-  "f.art.h": "터미널 안에, 진짜 앨범 아트",
-  "f.art.p": "네, 진짜 커버 이미지를 플레이어에 그대로 띄워줍니다 (지원하는 터미널에서요). 픽셀이 있을 거라곤 생각도 못 한 곳에 떡하니. 그 아래로는 싱크된 가사가 흘러가죠, 1인용 노래방처럼.",
+  "f.art.h": "앨범 아트, 가사 — 그리고 뮤직비디오",
+  "f.art.p": "진짜 커버 이미지가 플레이어에 그대로 그려지고, 그 아래로 싱크된 가사가 흘러갑니다. 듣는 것만으로 아쉬울 땐 <code>v</code> — 뮤직비디오가 터미널 위에 작은 mpv 창으로 뜹니다.",
+  "f.sources.h": "카탈로그 여섯, 검색창 하나",
+  "f.sources.p": "본진은 YouTube Music이지만, 검색창은 SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser도 알아들어요. <code>Tab</code> 으로 소스를 넘기거나 전부 한꺼번에 — 결과마다 <code>[SRC]</code> 태그가 붙습니다.",
+  "f.scrobble.h": "모든 감상을 기록으로",
+  "f.scrobble.p": "Last.fm과 ListenBrainz를 제대로: Now Playing 갱신, 하프트랙/4분 규칙, 좋아요는 love로 동기화. 오프라인 감상은 디스크에 줄을 섰다가 온라인이 되면 스스로 배달됩니다 — headless 데몬에서도요.",
+  "f.spotify.h": "Spotify에서 이사 오기",
+  "f.spotify.p": "좋아요와 플레이리스트가 명령 한 줄로 YouTube Music으로 옮겨져요 — 체크포인트, 이어하기, CJK에 안전한 매칭, 애매한 곡은 리포트로. 반대 방향도 되고, 전체를 JSON/CSV로 백업할 수도 있습니다.",
+  "f.playlists.h": "플레이리스트와 다운로드는 내 손안에",
+  "f.playlists.p": "라이브러리에서 바로 플레이리스트를 만들고(DJ Gem에게 시켜도 됩니다), Spotify에서 가져온 곡을 담고, <code>d</code> 를 누르면 커버 아트와 태그가 박힌 m4a로 저장 — 다운로드 탭에서 오프라인 재생.",
   "f.remote.h": "어디서든 조종하기",
-  "f.remote.p": "미디어 키를 한 번만 연결하면 — <code>⏯ ⏭ ⏮</code> — 다시는 창을 전환할 필요가 없어요. <code>ytt -r next</code>, <code>ytt -r pp</code>, <code>ytt -r status</code>. 실수로 한 번 더 실행해도, 그냥 조종 방법만 알려줍니다.",
-  "f.nav.h": "검색 · 보관함 · 큐 · 가사",
-  "f.nav.p": "<code>s</code> 로 검색하고 <code>Enter</code> 로 재생. <code>l</code> 보관함, <code>c</code> 큐, <code>Shift+L</code> 싱크 가사. 즐겨찾기 · 기록 · 다운로드가 한 목록에.",
+  "f.remote.p": "미디어 키, macOS Control Center, 메뉴 바/트레이 미니 플레이어, Linux MPRIS 위젯, 아무 터미널에서나 <code>ytt -r</code> — 아니면 터미널 없이 headless 데몬으로. 음악은 명령이 어디서 왔는지 신경 쓰지 않아요.",
   "f.custom.h": "누가 봐도 내 취향",
-  "f.custom.p": "내장 테마 11종(Gruvbox, Nord, Dracula, Tokyo Night, Rosé Pine…), 모든 색을 hex로 조정, 모든 키 재설정, 10밴드 EQ, 그리고 고요한 정지 화면부터 빙글빙글 도는 ASCII 도넛까지 이어지는 애니메이션.",
+  "f.custom.p": "내장 테마 13종(Gruvbox, Nord, Dracula, Tokyo Night, Rosé Pine…), 색 역할 34개 전부 hex로 편집, Flat부터 Jazz까지 프리셋을 갖춘 10밴드 EQ, 고요한 정지 화면부터 빙글빙글 도는 ASCII 도넛까지의 애니메이션 — 그리고 맨몸 리눅스 콘솔에서도 도는 레트로 모드, ASCII 앨범 아트 포함.",
   "f.help.h": "단축키는 앱이 기억합니다",
-  "f.help.p": "단축키가 가물가물하세요? <code>?</code> 를 누르면 화면별로 정리된 최신 치트시트가 떠요 — 내 언어로, 내가 바꾼 키 그대로. 한글 자모도 그대로 통해요: <code>ㅂ</code> = <code>q</code>.",
+  "f.help.p": "단축키가 가물가물하세요? <code>?</code> 를 누르면 내 언어로, 내가 바꾼 키 그대로 최신 치트시트가 떠요. 한글 자모도 그대로 통하고(<code>ㅂ</code> = <code>q</code>), 마우스가 편하면 화면의 모든 것이 클릭됩니다.",
 
   "why.eyebrow": "이유까지 말하는 스트리밍",
   "why.h2": "그냥 자동 재생이 아니에요. 왜 골랐는지도 말해주죠.",
-  "why.sub": "대부분의 플레이어는 다음 곡을 찍어놓고 잘 맞기만 바라죠. ytm-tui의 스트리밍은 <em>한 세트</em>를 통째로 설계합니다 — 기준 곡, 연결, 상승, 마무리까지 — 그리고 대기열이 비어갈 때마다 음악을 계속 채워줘요. <code>w</code> 를 누르면 복잡한 수식 없이 쉬운 말로 그 과정을 보여줍니다.",
+  "why.sub": "대부분의 플레이어는 다음 곡을 찍어놓고 잘 맞기만 바라죠. ytm-tui의 스트리밍은 <em>한 세트</em>를 설계합니다 — 중심 곡, 연결 곡, 발견 곡 — 그리고 대기열이 비어갈 때마다 음악을 계속 채워줘요. <code>w</code> 를 누르면 복잡한 수식 없이 쉬운 말로 그 과정을 보여줍니다.",
   "why.card.title": "이 DJ Gem 선곡의 이유",
-  "why.r1.role": "기준", "why.r1.reason": "검색한 템포를 잡아줍니다.",
-  "why.r2.role": "연결", "why.r2.reason": "키는 유지, 드럼은 빼서 집중 모드로.",
-  "why.r3.role": "상승", "why.r3.reason": "늘어지지 않게 살짝 에너지를 올려요.",
+  "why.r1.role": "중심", "why.r1.reason": "지금까지 듣던 템포를 그대로 유지합니다.",
+  "why.r2.role": "연결", "why.r2.reason": "키는 유지, 드럼은 교체 — 이 곡 다음에 자주 재생돼요.",
+  "why.r3.role": "발견", "why.r3.reason": "처음 듣는 곡이지만, 즐겨찾는 두 아티스트와 맞닿아 있어요.",
+
+  "sp.eyebrow": "Spotify를 떠나시나요?",
+  "sp.h2": "라이브러리가 명령 한 줄로 이사 옵니다.",
+  "sp.sub": "좋아요, 플레이리스트, 전부 — 곡 단위로 매칭해서(NFKC 정규화 + CJK 안전, K-pop·J-pop 메타데이터도 무사히) YouTube Music이나 로컬 플레이리스트에 순서 그대로 씁니다. 모든 작업은 체크포인트가 있어요: 레이트 리밋, Ctrl-C, 정전 — <code>resume</code> 하면 끊긴 곳부터 이어집니다. 애매한 곡은 조용히 때려 맞추지 않고 리포트에 남겨요.",
+  "sp.sub2": "앱 안이 더 편하다면 설정 → 계정 → <em>Spotify에서 가져오기…</em> 로 플레이리스트를 고르면, 음악이 흐르는 동안 백그라운드에서 가져옵니다. 내보내기와 Exportify 스타일 CSV/JSON 백업도 같은 엔진 위에서 돌아가요.",
+  "sp.t.fetch": "좋아요 목록 가져오는 중…", "sp.t.match": "매칭 중",
+  "sp.t.matched": "매칭 완료", "sp.t.ambig": "애매함", "sp.t.nf": "못 찾음", "sp.t.report": "리포트 저장됨",
+  "sp.t.resume": "끊겼나요? —",
+
+  "sc.eyebrow": "Last.fm · ListenBrainz",
+  "sc.h2": "당신의 감상 기록, 어디에 두든.",
+  "sc.sub": "ytm-tui는 스크로블 예절이 바릅니다: 곡이 시작되면 Now Playing, 하프트랙 또는 4분 시점에 스크로블, 앱 안의 좋아요는 Last.fm love로 동기화. 설정 → 계정에서 연결하거나, 터미널에서 <code>ytt auth lastfm</code> 으로도 됩니다.",
+  "sc.sub2": "감상 기록은 네트워크를 시도하기 <em>전에</em> 디스크의 크래시 안전 큐에 먼저 적혀요 — 비행기, 끊긴 와이파이, kill -9 에도 하나도 잃지 않습니다. 온라인이 되면 TUI든 데몬이든 알아서 배달해요. 셀프 호스팅 ListenBrainz는 <code>api_url</code> 만 바꾸면 됩니다.",
+  "sc.card.title": "스크로블 로그 — 어느 저녁",
+  "sc.e1": "Now Playing →", "sc.e2": "2:51에 스크로블", "sc.e2s": "하프트랙 규칙 — 아웃트로까지 기다리지 않아요",
+  "sc.e3": "앱에서 좋아요 → Last.fm에서 love", "sc.e3s": "키 하나로 양쪽에",
+  "sc.e4": "오프라인 — 감상 14개 대기 중", "sc.e5": "온라인 복귀 — 14/14 배달 완료", "sc.e5s": "자동으로, 오래된 것부터",
+
+  "rem.eyebrow": "원격 제어 · 데몬 · OS 통합",
+  "rem.h2": "플레이어는 당신이 있는 곳에",
+  "rem.sub": "<code>ytt</code> 가 재생 중이면 — 터미널 없이 headless 데몬이 돌고 있어도 — 어디서든 부릴 수 있어요: 다른 셸, 미디어 키, Control Center, 트레이. 시킨 한 가지만 하고, 한 줄로 결과를 알려준 뒤, 비켜줍니다.",
+  "rem.pp": "재생 / 일시정지", "rem.next": "다음 곡으로", "rem.vol": "볼륨을 바로 지정",
+  "rem.seek": "원하는 시점으로 점프", "rem.streaming": "무한 스트리밍 켜기", "rem.status": "지금 재생 정보, 스크립트에 바로",
+  "rem.daemon": "headless: 저장된 큐를 복원해 재생", "rem.play": "데몬: 검색해서 첫 곡 재생", "rem.stopdaemon": "데몬 중지 및 mpv 정리",
+  "rem.wire": "# 미디어 키에 연결 (i3 / sway)",
+  "rem.single": "<code>ytt</code> 를 두 번 실행해도 스피커를 두고 싸우는 두 번째 플레이어는 생기지 않아요 — 그냥 조종 방법을 알려줄 뿐. 데몬은 큐 순서, 커서, 셔플/반복, 스트리밍 상태를 복원하고, 그 와중에 스크로블도 계속합니다.",
+
+  "os.mac": "진짜 Now Playing 카드: 앨범 아트, 실제로 움직이는 시크바, 다음/이전, 좋아요 버튼까지. AirPods 꼭지를 눌러도 제대로 반응해요. 그리고 같은 미니 플레이어가 메뉴 바에도 — macOS 빌드에 <code>ytt-tray</code> 가 함께 들어 있습니다.",
+  "os.win.tray": "트레이 미니 플레이어",
+  "os.win": "앨범 아트와 시크가 있는 미디어 오버레이, 그리고 선택형 트레이 동반자: 왼쪽 클릭으로 미니 플레이어(Now / Queue / Stream / Tune), 오른쪽 클릭으로 전체 메뉴. 로그인 시 자동 실행은 <code>ytt-tray --install-startup</code>.",
+  "os.lin": "당당한 <code>org.mpris.MediaPlayer2</code> 시민: playerctl, GNOME·KDE 위젯, waybar — 전부 평범한 음악 플레이어로 인식해요. 실제로 그러니까요.",
+
+  "rely.1h": "고아 mpv는 없습니다. 절대로.",
+  "rely.1p": "죽이든, 크래시가 나든, 창을 닫든, 로그아웃하든 — 시그널 훅, 패닉 훅, Windows Job Object, PID 라이프라인 파일이 오디오가 앱과 함께 꺼지도록 보장합니다.",
+  "rely.2h": "즉각적인 스킵",
+  "rely.2p": "다음 곡의 스트림 URL을 현재 곡이 재생되는 동안 미리 풀어둬서, \"다음\"이 3초가 아니라 눈 깜짝할 새에 시작됩니다. 갭리스는 기본값.",
+  "rely.3h": "편집증적 크래시 안전",
+  "rely.3p": "스크로블은 네트워크보다 디스크가 먼저. 전송은 몇 곡마다 체크포인트. 설정 저장은 원자적. 데이터가 최악을 가정하니, 당신은 안 그래도 됩니다.",
+  "rely.4h": "ytt doctor",
+  "rely.4p": "명령 하나로 mpv, yt-dlp, ffmpeg와 폴더를 점검하고, 뭘 고쳐야 하는지 스택 트레이스가 아니라 사람 말로 알려줍니다.",
 
   "inst.eyebrow": "음악까지 2분",
   "inst.h2": "플랫폼을 고르고, 한 줄 붙여넣기.",
   "inst.sub": "각 명령은 ytt와 보조 프로그램(mpv, yt-dlp, ffmpeg)까지 알아서 설치해 줍니다. 그다음 세 글자만 치면 음악이 나와요.",
-  "inst.mac.note": "Homebrew가 mpv, yt-dlp, ffmpeg를 자동으로 함께 설치합니다. Homebrew가 없다면 brew.sh에서 먼저 설치하세요.",
-  "inst.win.note": "Scoop(scoop.sh)을 사용합니다. ytt와 mpv, yt-dlp, ffmpeg, YtmTui Tray 바로 가기를 한 번에 설치해요.",
+  "inst.mac.note": "Homebrew가 mpv, yt-dlp, ffmpeg를 자동으로 함께 설치하고 — 메뉴 바 동반 앱 ytt-tray까지 같이 들어갑니다. Homebrew가 없다면 brew.sh에서 먼저 설치하세요.",
+  "inst.win.note": "Scoop(scoop.sh)을 사용합니다. ytt와 mpv, yt-dlp, ffmpeg — 그리고 필요할 때까지 조용히 있는 YtmTui Tray 미니 플레이어까지 한 번에 설치해요.",
   "inst.lin.note": "curl 한 줄이 체크섬을 검증하고 ytt를 PATH에 추가합니다. ytt만 설치하므로, 이후 ytt doctor로 보조 프로그램을 점검하세요.",
   "inst.src.note": "먼저 저장소를 클론하세요. 빌드에 몇 분 걸립니다 — 커피 한 잔 하기 딱 좋죠.",
   "inst.then": "그다음 실행:",
   "inst.firstkey": "…그리고 언제든 <kbd>?</kbd> 를 누르면 모든 키가 나옵니다. 앱이 스스로 알려줘요.",
-  "inst.doctor": "뭔가 이상한가요? <code>ytt doctor</code> 를 실행하면 mpv, yt-dlp, ffmpeg를 점검하고 정확히 뭘 고쳐야 할지 알려줍니다.",
-
-  "rem.eyebrow": "원격 제어",
-  "rem.h2": "하던 일을 멈추지 않고 조종하기",
-  "rem.sub": "<code>ytt</code> 가 재생 중이면, 다른 터미널에서 — 또는 키보드의 미디어 키로 — 바로 조종할 수 있어요. 시킨 한 가지만 하고, 한 줄로 결과를 알려준 뒤, 비켜줍니다. 음악 화면은 깜빡이지도 않아요.",
-  "rem.pp": "재생 / 일시정지", "rem.next": "다음 곡으로", "rem.daemon": "headless 음악 데몬 시작",
-  "rem.play": "데몬: 검색 후 재생", "rem.enqueue": "데몬: 검색 후 큐에 추가",
-  "rem.streaming": "무한 스트리밍 켜기", "rem.status": "지금 뭐가 재생 중이지?", "rem.stopdaemon": "데몬 중지 및 mpv 정리",
-  "rem.example": "ytt -r status →",
-  "rem.wire": "# 미디어 키에 연결 (i3 / sway)",
-  "rem.single": "<code>ytt</code> 를 두 번 실행해도 두 번째 플레이어가 생기지 않습니다. 터미널 없이 들을 때는 데몬이 저장된 큐 순서, 커서, 셔플/반복, 스트리밍 상태를 복원합니다.",
+  "inst.doctor": "뭔가 이상한가요? <code>ytt doctor</code> 를 실행하면 mpv, yt-dlp, ffmpeg를 점검하고 정확히 뭘 고쳐야 할지 알려줍니다. YouTube 계정은 없어도 돼요 — 공개 곡은 익명으로 재생되고, 원하면 cookies.txt 하나로 내 계정을 연결할 수 있습니다.",
 
   "foot.h2": "분명 잠들었어야 할 사람이 만들었습니다.",
   "foot.p": "그 사람 컴퓨터에선 잘 돌아갑니다. 이제 여러분 컴퓨터에서도 그러길 바라요. 터미널 한구석에 자리를 얻는다면, 별 하나가 큰 힘이 됩니다.",
   "foot.cta": "GitHub에서 별 주기",
   "foot.thanks": "QA 영웅: <a href=\"https://github.com/ZZNN75\" target=\"_blank\" rel=\"noopener\">@ZZNN75</a> 님이 일부러 다 부숴본 덕분에, 여러분은 부술 일이 없습니다. 🫡",
+  "foot.releases": "릴리스",
   "foot.made": "Rust · ratatui",
-  "foot.disclaimer": "YouTube 또는 Google과 무관합니다. 공개된 곡을 익명으로 재생하며, 원한다면 쿠키로 본인 계정을 연결할 수 있습니다."
+  "foot.disclaimer": "YouTube, Google, Spotify, Last.fm, ListenBrainz와 무관합니다. 공개된 곡을 익명으로 재생하며, 계정 연결은 전부 선택 사항입니다. DJ Gem 어시스턴트는 무료 Gemini API 키가 필요한 선택 기능이고, 나머지는 키 없이도 전부 동작합니다."
 };
 
 var JA = {
   "skip": "本文へスキップ",
-  "nav.features": "機能", "nav.streaming": "ストリーミング", "nav.install": "インストール", "nav.remote": "リモート操作",
+  "nav.features": "機能", "nav.streaming": "DJ Gem", "nav.spotify": "Spotify", "nav.scrobble": "スクロブル",
+  "nav.everywhere": "どこからでも", "nav.install": "インストール",
 
   "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
   "hero.h1a": "再生中 —",
   "hero.h1b": "ターミナルの中で。",
-  "hero.sub": "速くて、キーボードで操る YouTube Music クライアント。DJ Gem ストリーミング、本物のアルバムアート、リモート操作まで。RAM をじわじわ食うブラウザのタブも、広告もなし。マウス？ なくても平気ですが、恋しくならないように用意してあります。",
+  "hero.sub": "速くて、キーボードで操る YouTube Music クライアント。DJ Gem が今聴いている曲を軸に果てしないストリーミングをつなぎ、アルバムアートと同期歌詞は TUI の中にそのまま描かれ、すべての再生は Last.fm にスクロブルされ、Spotify のライブラリはコマンド一行で引っ越してきます。RAM をじわじわ食うブラウザのタブも、広告もなし。",
   "hero.cta1": "ytm-tui をインストール",
   "hero.cta2": "GitHub でスターを付ける",
   "copy": "コピー",
-  "trust.ram": "🪶 軽いメモリ使用量", "trust.ads": "🚫 広告ゼロ", "trust.themes": "🎨 テーマ11種、色は全部変更可能",
+  "trust.ram": "🪶 小さなバイナリ一つ", "trust.ads": "🚫 広告ゼロ", "trust.themes": "🎨 テーマ13種、最後の hex まで自分色",
   "trust.keys": "⌨ すべてのキーを再設定可能", "trust.mit": "⚖ MIT",
 
   "demo.empty": "再生中の曲なし — s を押して検索",
   "demo.upnext": "次の曲",
+  "demo.scrobbled": "スクロブル完了 — Last.fm · ListenBrainz",
   "hint.help": "ショートカット",
 
   "tab.player": "プレイヤー", "tab.search": "検索", "tab.library": "ライブラリ", "tab.settings": "設定", "tab.ai": "DJ Gem",
   "demo.clickcue": "クリックして見てみる",
 
-  "search.cap": "検索", "search.btn": "検索",
+  "search.cap": "検索", "search.btn": "検索", "search.srcmenu": "検索ソース", "search.all": "すべてのソース",
 
-  "lib.all": "すべて", "lib.fav": "お気に入り", "lib.hist": "履歴", "lib.dl": "ダウンロード",
+  "lib.all": "すべて", "lib.fav": "お気に入り", "lib.hist": "履歴", "lib.dl": "ダウンロード", "lib.pl": "プレイリスト",
+  "lib.tracks": "曲", "lib.pl1": "シティポップの夜", "lib.pl3": "勉強用 Lo-fi", "lib.pl4": "雨の日ドライブ",
+  "lib.new": "新規プレイリスト", "lib.open": "開く", "lib.playall": "すべて再生",
 
-  "set.general": "一般", "set.playback": "再生", "set.hotkeys": "ショートカット", "set.graphics": "グラフィック",
-  "set.lang": "言語", "set.lang.val": "日本語",
-  "set.cookies": "Cookie ファイル", "set.default": "(既定: ~/…)",
-  "set.dldir": "ダウンロード先",
-  "set.mouse": "マウス (次回起動時)", "set.art": "アルバムアート (次回起動時)", "set.autoplay": "起動時に自動再生",
-  "set.resetkeys": "ショートカットを初期化", "set.resetall": "すべての設定を初期化",
+  "set.general": "一般", "set.playback": "再生", "set.hotkeys": "ホットキー", "set.graphics": "グラフィック", "set.accounts": "アカウント",
+  "set.lastfm": "Last.fm へスクロブル", "set.lastfm.acct": "Last.fm アカウント", "set.loves": "いいねを love として同期",
+  "set.lb": "ListenBrainz へスクロブル", "set.lb.token": "ユーザートークン",
+  "set.sp.acct": "Spotify アカウント", "set.connected": "接続済み", "set.sp.import": "Spotify からインポート…",
   "set.enter": "Enter を押す", "set.switch": "タブ切り替え",
 
-  "ai.eyebrow": "✦ DJ Gem アシスタント", "ai.empty": "再生・キュー・検索を言葉で頼んでみて。",
+  "ai.eyebrow": "✦ DJ Gem アシスタント", "ai.empty": "再生・キュー・検索を言葉で頼んでみて。プレイリストだって作れます。",
   "ai.sugtitle": "おすすめ", "ai.ask": "質問", "ai.prompt": "back number みたいな曲をかけて", "ai.send": "送信",
 
   "feat.eyebrow": "おいしいところだけ",
   "feat.h2": "すべての機能が、キー一つで",
   "feat.sub": "全部キーボードで、全部速く、全部好きなように再設定できます。<code>ytt</code> と打てば、その瞬間からすべてが始まります。",
   "f.streaming.h": "空気を読む DJ Gem ストリーミング",
-  "f.streaming.p": "<code>Ctrl+R</code> を押せば、ytm-tui が今聴いている曲を中心にしたストリーミングに早変わり。Gemini 搭載の<em>キュー・ディレクター</em>が雰囲気に合う曲を並べてくれます — Focused、Balanced、Discovery の中から。<code>w</code> を押せば、その理由をやさしい言葉で説明します。",
-  "f.art.h": "ターミナルの中に、本物のアルバムアート",
-  "f.art.p": "そう、本物のカバー画像をプレイヤーにそのまま表示します（対応するターミナルで）。ピクセルなんてないと思っていた場所に、どんと。その下には同期した歌詞が流れます、一人カラオケみたいに。",
+  "f.streaming.p": "<code>Ctrl+R</code> を押せば、今聴いている曲を軸にしたストリーミングが始まります。Gemini 搭載の<em>キュー・ディレクター</em>が雰囲気に合う曲を並べてくれます — Focused、Balanced、Discovery の中から。<code>w</code> を押せば、その理由をやさしい言葉で説明します。",
+  "f.art.h": "アルバムアート、歌詞 — そして MV",
+  "f.art.p": "本物のカバー画像がプレイヤーにそのまま描かれ、その下を同期歌詞が流れていきます。聴くだけじゃ物足りないときは <code>v</code> — ミュージックビデオがターミナルの上に小さな mpv ウィンドウで浮かびます。",
+  "f.sources.h": "カタログは六つ、検索窓は一つ",
+  "f.sources.p": "ホームは YouTube Music ですが、検索窓は SoundCloud、Audius、Jamendo、Internet Archive、Radio Browser も話せます。<code>Tab</code> でソースを切り替えるか、全部まとめて — 結果には <code>[SRC]</code> タグ付き。",
+  "f.scrobble.h": "すべての再生を、記録に",
+  "f.scrobble.p": "Last.fm と ListenBrainz をきちんと: Now Playing の更新、ハーフトラック/4分ルール、いいねは love として同期。オフラインの再生はディスクに並んで、オンラインに戻ると自分で配達されます — headless デーモンからでも。",
+  "f.spotify.h": "Spotify から引っ越す",
+  "f.spotify.p": "いいねもプレイリストも、コマンド一行で YouTube Music へ — チェックポイント、再開、CJK に安全なマッチング、あいまいな曲はレポートへ。逆方向も、全体の JSON/CSV バックアップもできます。",
+  "f.playlists.h": "プレイリストとダウンロードは手元に",
+  "f.playlists.p": "ライブラリでそのままプレイリストを作り（DJ Gem に頼んでも OK）、Spotify から持ち込んだ曲を入れて、<code>d</code> を押せばカバーアートとタグ入りの m4a で保存 — ダウンロードタブからオフライン再生。",
   "f.remote.h": "どこからでも操作",
-  "f.remote.p": "メディアキーを一度つなげば — <code>⏯ ⏭ ⏮</code> — もう二度とウィンドウを切り替えなくて済みます。<code>ytt -r next</code>、<code>ytt -r pp</code>、<code>ytt -r status</code>。うっかりもう一度起動しても、操作の仕方を教えてくれるだけです。",
-  "f.nav.h": "検索 · ライブラリ · キュー · 歌詞",
-  "f.nav.p": "<code>s</code> で検索して <code>Enter</code> で再生。<code>l</code> でライブラリ、<code>c</code> でキュー、<code>Shift+L</code> で時間同期の歌詞。お気に入り・履歴・ダウンロードが一つのリストに。",
+  "f.remote.p": "メディアキー、macOS のコントロールセンター、メニューバー/トレイのミニプレイヤー、Linux の MPRIS ウィジェット、どのターミナルからでも <code>ytt -r</code> — あるいはターミナルなしの headless デーモンで。音楽は命令がどこから来たか気にしません。",
   "f.custom.h": "誰が見ても自分好み",
-  "f.custom.p": "内蔵テーマ11種（Gruvbox、Nord、Dracula、Tokyo Night、Rosé Pine…）、すべての色を hex で調整、すべてのキーを再設定、10バンド EQ、そして静かな静止画面からくるくる回る ASCII ドーナツまで続くアニメーション。",
+  "f.custom.p": "内蔵テーマ13種（Gruvbox、Nord、Dracula、Tokyo Night、Rosé Pine…）、34の色ロールすべてを hex で編集、Flat から Jazz までのプリセット付き10バンド EQ、静かな静止画面からくるくる回る ASCII ドーナツまでのアニメーション — さらに素の Linux コンソールでも動くレトロモード、ASCII アルバムアート付き。",
   "f.help.h": "ショートカットはアプリが覚えています",
-  "f.help.p": "ショートカットがうろ覚え？ <code>?</code> を押せば画面ごとに整理された最新のチートシートが表示されます — あなたの言語で、あなたが変えたキーのまま。ハングルの字母だってちゃんと通ります：<code>ㅂ</code> = <code>q</code>。",
+  "f.help.p": "うろ覚えでも大丈夫。<code>?</code> を押せば、あなたの言語で、あなたが変えたキーのまま最新のチートシートが出ます。ハングルの字母もそのまま通り（<code>ㅂ</code> = <code>q</code>）、マウス派なら画面のすべてがクリックできます。",
 
   "why.eyebrow": "理由まで語るストリーミング",
   "why.h2": "ただ自動再生するだけじゃない。なぜ選んだかも教えてくれる。",
-  "why.sub": "ほとんどのプレイヤーは次の曲を当てずっぽうで選んで、合うことを祈るだけ。ytm-tui のストリーミングは<em>ワンセット</em>をまるごと設計します — 基準の曲、つなぎ、盛り上げ、締め — そしてキューが空きそうになるたびに音楽を満たし続けます。<code>w</code> を押せば、難しい数式なしでやさしい言葉でその過程を見せてくれます。",
+  "why.sub": "ほとんどのプレイヤーは次の曲を当てずっぽうで選んで、合うことを祈るだけ。ytm-tui のストリーミングは<em>ワンセット</em>を設計します — 軸、つなぎ、発見 — そしてキューが空きそうになるたびに音楽を満たし続けます。<code>w</code> を押せば、難しい数式なしでその過程を見せてくれます。",
   "why.card.title": "この DJ Gem 選曲の理由",
-  "why.r1.role": "基準", "why.r1.reason": "検索したテンポを決めます。",
-  "why.r2.role": "つなぎ", "why.r2.reason": "キーは保ったまま、ドラムを抜いて集中モードへ。",
-  "why.r3.role": "盛り上げ", "why.r3.reason": "間延びしないよう少しだけエネルギーを上げます。",
+  "why.r1.role": "軸", "why.r1.reason": "ここまで聴いてきたテンポをそのまま保ちます。",
+  "why.r2.role": "つなぎ", "why.r2.reason": "キーは保ったままドラムを交換 — この曲の後によく再生されています。",
+  "why.r3.role": "発見", "why.r3.reason": "初めての曲ですが、お気に入りの2組のアーティストと地続きです。",
+
+  "sp.eyebrow": "Spotify を離れる？",
+  "sp.h2": "ライブラリはコマンド一行で引っ越してきます。",
+  "sp.sub": "いいねも、プレイリストも、全部 — 曲単位でマッチングして（NFKC 正規化 + CJK 安全、K-pop・J-pop のメタデータも無事）、YouTube Music かローカルのプレイリストへ順番どおりに書き込みます。すべてのジョブにチェックポイント: レート制限、Ctrl-C、停電 — <code>resume</code> すれば途切れたところから続きます。あいまいな曲は黙って当てずっぽうにせず、レビューできるレポートに残します。",
+  "sp.sub2": "アプリの中が良ければ、設定 → アカウント → <em>Spotify からインポート…</em> でプレイリストを選ぶと、音楽を流したままバックグラウンドで取り込みます。エクスポートも Exportify 形式の CSV/JSON バックアップも同じエンジンで動きます。",
+  "sp.t.fetch": "いいねを取得中…", "sp.t.match": "マッチング中",
+  "sp.t.matched": "マッチ", "sp.t.ambig": "あいまい", "sp.t.nf": "見つからず", "sp.t.report": "レポート保存済み",
+  "sp.t.resume": "中断した？ —",
+
+  "sc.eyebrow": "Last.fm · ListenBrainz",
+  "sc.h2": "あなたのリスニング履歴を、どこに置いても。",
+  "sc.sub": "ytm-tui のスクロブルは礼儀正しい: 曲が始まれば Now Playing、ハーフトラックまたは4分の時点でスクロブル、アプリ内のいいねは Last.fm の love として同期。設定 → アカウントから、またはターミナルで <code>ytt auth lastfm</code>。",
+  "sc.sub2": "再生記録はネットワークを試す<em>前に</em>ディスク上のクラッシュ安全なキューへ先に書かれます — フライトも、切れた Wi-Fi も、kill -9 も、一つも失いません。オンラインに戻れば TUI からでもデーモンからでも自動配達。セルフホストの ListenBrainz は <code>api_url</code> を向けるだけ。",
+  "sc.card.title": "スクロブルログ — ある晩",
+  "sc.e1": "Now Playing →", "sc.e2": "2:51 でスクロブル", "sc.e2s": "ハーフトラックルール — アウトロを待ちません",
+  "sc.e3": "アプリでいいね → Last.fm で love", "sc.e3s": "キー一つで、両方に",
+  "sc.e4": "オフライン — 14件の再生をキューに", "sc.e5": "オンライン復帰 — 14/14 配達完了", "sc.e5s": "自動で、古い順に",
+
+  "rem.eyebrow": "リモート操作 · デーモン · OS 統合",
+  "rem.h2": "プレイヤーはあなたのいる場所に",
+  "rem.sub": "<code>ytt</code> が再生中なら — ターミナルなしで headless デーモンが動いていても — どこからでも操れます: 別のシェル、メディアキー、コントロールセンター、トレイ。頼んだ一つだけをこなして、一行で結果を伝え、すっと退きます。",
+  "rem.pp": "再生 / 一時停止", "rem.next": "次の曲へ", "rem.vol": "音量を直接指定",
+  "rem.seek": "好きな時点へジャンプ", "rem.streaming": "無限ストリーミングをオン", "rem.status": "再生情報をスクリプトへそのまま",
+  "rem.daemon": "headless: 保存したキューを復元して再生", "rem.play": "デーモン: 検索して最初の一曲を再生", "rem.stopdaemon": "デーモン停止と mpv の後始末",
+  "rem.wire": "# メディアキーに割り当て (i3 / sway)",
+  "rem.single": "<code>ytt</code> を二度起動しても、スピーカーを取り合う二つ目のプレイヤーは生まれません — 操作方法を教えてくれるだけ。デーモンはキューの順序、カーソル、シャッフル/リピート、ストリーミング状態を復元し、その間もスクロブルを続けます。",
+
+  "os.mac": "本物の Now Playing カード: アートワーク、ちゃんと動くシークバー、次へ/前へ、Like ボタンまで。AirPods の軸をつまんでも、期待どおりに動きます。同じミニプレイヤーはメニューバーにも — macOS ビルドには <code>ytt-tray</code> が同梱されています。",
+  "os.win.tray": "トレイ・ミニプレイヤー",
+  "os.win": "アートワークとシーク付きのメディアオーバーレイ、そして任意のトレイ相棒: 左クリックでミニプレイヤー（Now / Queue / Stream / Tune）、右クリックでフルメニュー。ログイン時に起動したければ <code>ytt-tray --install-startup</code>。",
+  "os.lin": "堂々たる <code>org.mpris.MediaPlayer2</code> の市民: playerctl、GNOME・KDE のウィジェット、waybar — どれも普通の音楽プレイヤーとして認識します。実際そうですから。",
+
+  "rely.1h": "孤児 mpv は残しません。絶対に。",
+  "rely.1p": "強制終了しても、クラッシュしても、ウィンドウを閉じても、ログオフしても — シグナルフック、パニックフック、Windows の Job Object、PID ライフラインファイルが、音声がアプリと一緒に消えることを保証します。",
+  "rely.2h": "一瞬でスキップ",
+  "rely.2p": "次の曲のストリーム URL を再生中に先に解決しておくので、「次へ」は3秒ではなく瞬きの間に始まります。ギャップレスは初期設定でオン。",
+  "rely.3h": "心配性なクラッシュ安全",
+  "rely.3p": "スクロブルはネットワークよりディスクが先。転送は数曲ごとにチェックポイント。設定保存はアトミック。データが最悪を想定するので、あなたはしなくて大丈夫。",
+  "rely.4h": "ytt doctor",
+  "rely.4p": "コマンド一つで mpv、yt-dlp、ffmpeg とフォルダを点検し、直すべきことをスタックトレースではなく人間の言葉で教えてくれます。",
 
   "inst.eyebrow": "音楽まで2分",
   "inst.h2": "プラットフォームを選んで、一行貼り付け。",
   "inst.sub": "各コマンドが ytt と補助ツール（mpv、yt-dlp、ffmpeg）まで自動で入れてくれます。あとは3文字打つだけで音楽が流れます。",
-  "inst.mac.note": "Homebrew が mpv、yt-dlp、ffmpeg を自動で一緒に入れます。Homebrew がない場合は brew.sh で先に入れてください。",
-  "inst.win.note": "Scoop（scoop.sh）を使います。ytt と mpv、yt-dlp、ffmpeg、YtmTui Tray ショートカットを一度に入れます。",
+  "inst.mac.note": "Homebrew が mpv、yt-dlp、ffmpeg を自動で一緒に入れ — メニューバーの相棒 ytt-tray も同梱します。Homebrew がない場合は brew.sh で先に入れてください。",
+  "inst.win.note": "Scoop（scoop.sh）を使います。ytt と mpv、yt-dlp、ffmpeg — そして必要になるまで静かにしている YtmTui Tray ミニプレイヤーまで一度に入ります。",
   "inst.lin.note": "curl 一行がチェックサムを検証して ytt を PATH に追加します。ytt だけを入れるので、あとで ytt doctor で補助ツールを確認してください。",
   "inst.src.note": "先にリポジトリをクローンしてください。ビルドには数分かかります — コーヒーを淹れる口実にどうぞ。",
   "inst.then": "あとは実行:",
   "inst.firstkey": "…そしていつでも <kbd>?</kbd> を押せばすべてのキーが出ます。残りはアプリが教えてくれます。",
-  "inst.doctor": "何かおかしい？ <code>ytt doctor</code> を実行すれば mpv、yt-dlp、ffmpeg を点検して、何を直すべきか正確に教えてくれます。",
-
-  "rem.eyebrow": "リモート操作",
-  "rem.h2": "作業を止めずに操作する",
-  "rem.sub": "<code>ytt</code> が再生中なら、別のターミナルから — あるいはキーボードのメディアキーで — そのまま操作できます。頼んだ一つだけをこなして、一行で結果を伝え、すっと退きます。音楽画面はちらつきもしません。",
-  "rem.pp": "再生 / 一時停止", "rem.next": "次の曲へ", "rem.daemon": "headless 音楽デーモンを開始",
-  "rem.play": "デーモン: 検索して再生", "rem.enqueue": "デーモン: 検索してキューへ",
-  "rem.streaming": "無限ストリーミングをオン", "rem.status": "今、何が再生中？", "rem.stopdaemon": "デーモン停止と mpv の後始末",
-  "rem.example": "ytt -r status →",
-  "rem.wire": "# メディアキーに割り当て (i3 / sway)",
-  "rem.single": "<code>ytt</code> を二度起動しても二つ目のプレイヤーは生まれません。ターミナルなしで聴くときは、デーモンが保存済みのキュー順、カーソル、シャッフル/リピート、ストリーミング状態を復元します。",
+  "inst.doctor": "何かおかしい？ <code>ytt doctor</code> を実行すれば mpv、yt-dlp、ffmpeg を点検して、直すべき箇所を正確に教えてくれます。YouTube アカウントは不要 — 公開曲は匿名で再生でき、望むなら cookies.txt 一つで自分のアカウントもつなげます。",
 
   "foot.h2": "本当は寝ているべきだった一人が作りました。",
   "foot.p": "その人のマシンでは動きます。これで、願わくばあなたのマシンでも。ターミナルの片隅に居場所をもらえたら、スター一つが大きな励みになります。",
   "foot.cta": "GitHub でスターを付ける",
   "foot.thanks": "QA ヒーロー：<a href=\"https://github.com/ZZNN75\" target=\"_blank\" rel=\"noopener\">@ZZNN75</a> さんがわざと全部壊してくれたおかげで、あなたが壊す必要はありません。🫡",
+  "foot.releases": "リリース",
   "foot.made": "Rust · ratatui",
-  "foot.disclaimer": "YouTube または Google とは無関係です。公開されている曲を匿名で再生します。お望みなら Cookie で自分のアカウントを接続できます。"
+  "foot.disclaimer": "YouTube、Google、Spotify、Last.fm、ListenBrainz とは無関係です。公開曲を匿名で再生し、アカウント接続はすべて任意です。DJ Gem アシスタントは無料の Gemini API キーが必要なオプション機能で、それ以外はキーなしで全部動きます。"
 };
 
 var DICTS = { ko: KO, ja: JA };
 
 /* dynamic strings used by the live demo, all languages */
 var T = {
-  en: { playing: "▸ playing", thinking: "Queue Director is thinking…", done: "4 in queue" },
-  ko: { playing: "▸ 재생 중", thinking: "큐 디렉터가 고르는 중…", done: "대기열 4곡" },
-  ja: { playing: "▸ 再生中", thinking: "キュー・ディレクターが選んでいます…", done: "キューに4曲" }
+  en: { playing: "▸ playing", thinking: "Queue Director is thinking…", done: "4 in queue", lyric: "and the city hums along —" },
+  ko: { playing: "▸ 재생 중", thinking: "큐 디렉터가 고르는 중…", done: "대기열 4곡", lyric: "도시가 따라 흥얼거리고 —" },
+  ja: { playing: "▸ 再生中", thinking: "キュー・ディレクターが選んでいます…", done: "キューに4曲", lyric: "街も一緒に口ずさむ —" }
 };
 
 var html = document.documentElement;
@@ -1368,7 +1651,8 @@ document.querySelectorAll(".tab-btn").forEach(function (tab) {
 
 /* ============================================================
    The living terminal — a faithful ytm-tui Player session
-   boot → play → ^R streaming on → c opens Queue popup → advance → loop
+   boot → play (+lyric) → ^R streaming on → c opens Queue popup
+   → advance → scrobble toast → loop
    ============================================================ */
 var demo = (function () {
   var reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1395,11 +1679,13 @@ var demo = (function () {
     pos: document.getElementById("d-pos"),
     streaming: document.getElementById("d-streaming"),
     art: document.getElementById("d-art"),
+    lyric: document.getElementById("d-lyric"),
     queue: document.getElementById("d-queue"),
     qstate: document.getElementById("d-qstate"),
     qpop: document.getElementById("d-qpop"),
     keyflash: document.getElementById("d-keyflash"),
     keycap: document.getElementById("d-keycap"),
+    toast: document.getElementById("d-toast"),
     clock: document.getElementById("demo-clock")
   };
   if (!els.title) return null;
@@ -1436,6 +1722,9 @@ var demo = (function () {
   }
   var SPIN = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
   function flashKey(k) { els.keycap.textContent = k; els.keyflash.hidden = false; after(950, function () { els.keyflash.hidden = true; }); }
+  function showLyric() {
+    els.lyric.innerHTML = '♪ <span class="now">' + L().lyric + "</span>";
+  }
   function addRow(i, playing) {
     var row = document.createElement("div");
     row.className = "qrow2" + (playing ? " playing" : "");
@@ -1451,22 +1740,26 @@ var demo = (function () {
     els.state.textContent = L().playing; els.playicon.textContent = "‖";
     els.fill.style.width = "38%"; els.elapsed.textContent = "2:10";
     els.streaming.textContent = "streaming:balanced";
-    els.qpop.hidden = true;
+    showLyric();
+    els.qpop.hidden = true; els.toast.hidden = true;
   }
   function run() {
     clearAll();
     QTOTAL = 1;
     els.title.innerHTML = '<span class="np__empty">' + emptyMsg() + "</span>";
     els.art.innerHTML = '<span class="placeholder" aria-hidden="true">♪</span>';
+    els.lyric.textContent = "";
     els.fill.style.width = "0%"; els.elapsed.textContent = "0:00"; els.total.textContent = "0:00";
     els.state.textContent = ""; els.playicon.textContent = "‖"; els.pos.textContent = "";
-    els.streaming.textContent = "streaming:✗"; els.qpop.hidden = true; els.queue.innerHTML = ""; els.qstate.textContent = "";
+    els.streaming.textContent = "streaming:✗"; els.qpop.hidden = true; els.toast.hidden = true;
+    els.queue.innerHTML = ""; els.qstate.textContent = "";
 
     after(1100, play);
     function play() {
       setTrack(0);
       els.state.textContent = L().playing;
       raf = requestAnimationFrame(tick);
+      after(900, showLyric);
       after(1700, streaming);
     }
     function streaming() {
@@ -1492,7 +1785,13 @@ var demo = (function () {
     }
     function closeAndAdvance() {
       els.qpop.hidden = true;
-      after(650, function () { setTrack(1); after(4200, run); });
+      after(650, function () {
+        setTrack(1);
+        showLyric();
+        after(900, function () { els.toast.hidden = false; });
+        after(3300, function () { els.toast.hidden = true; });
+        after(4600, run);
+      });
     }
   }
   function clock() {

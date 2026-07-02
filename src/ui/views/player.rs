@@ -13,7 +13,7 @@ use ratatui_image::{Resize, StatefulImage};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, DownloadState, MouseTarget, RadioModeConfirm, ScrollSurface, StatusKind};
-use crate::keymap::Action;
+use crate::keymap::{Action, KeyContext};
 use crate::lyrics;
 use crate::queue::Repeat;
 use crate::t;
@@ -99,11 +99,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 };
                 format!("{heart}{title} — {artist}")
             }
-            None => t!(
-                "Nothing playing — press / to search",
-                "재생 중인 곡 없음 — / 를 눌러 검색"
-            )
-            .to_owned(),
+            None => {
+                // The search key respects rebinds (the chord bound to `OpenSearch`, not a
+                // hardcoded letter).
+                let key = app.keymap.label_for_display(
+                    KeyContext::Player,
+                    Action::OpenSearch,
+                    app.retro_mode(),
+                );
+                if crate::i18n::is_korean() {
+                    format!("재생 중인 곡 없음 — {key} 를 눌러 검색")
+                } else {
+                    format!("Nothing playing — press {key} to search")
+                }
+            }
         };
         frame.render_widget(
             Paragraph::new(

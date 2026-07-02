@@ -3,10 +3,12 @@
 # SHA-256 placeholders from the release checksums.txt) and pushes the result to
 # Formula/ytm-tui.rb in the tap. Do not edit the tap copy by hand — edit this template.
 #
-# A prebuilt-binary formula: it installs the `ytt` binary straight from the GitHub release
+# A prebuilt-binary formula: it installs the binaries straight from the GitHub release
 # (no Rust toolchain, no compile) and pulls in the three runtime tools as dependencies, so
-# `brew install Ochichan/tap/ytm-tui` is genuinely one command. (The macOS tarball also
-# carries a YtmTui.app bundle; the formula installs only the CLI and ignores the .app.)
+# `brew install Ochichan/tap/ytm-tui` is genuinely one command. macOS also gets `ytt-tray`,
+# the menu-bar companion (run it once, or `ytt-tray --install-startup` for login). The
+# tarball's YtmTui.app / YtmTuiTray.app bundles are Finder conveniences; the formula
+# installs only the CLIs and ignores the .apps.
 class YtmTui < Formula
   desc "Fast, low-RAM YouTube Music player for your terminal"
   homepage "https://github.com/Ochichan/ytm-tui"
@@ -41,9 +43,23 @@ class YtmTui < Formula
 
   def install
     bin.install "ytt"
+    # The menu-bar companion ships in the macOS tarballs only; Linux is covered by
+    # the MPRIS session built into `ytt` itself.
+    bin.install "ytt-tray" if OS.mac?
+  end
+
+  def caveats
+    on_macos do
+      <<~EOS
+        The menu-bar companion is installed as `ytt-tray`.
+        Start it now with `ytt-tray`, or keep it at login with:
+          ytt-tray --install-startup
+      EOS
+    end
   end
 
   test do
     assert_path_exists bin/"ytt"
+    assert_path_exists bin/"ytt-tray" if OS.mac?
   end
 end

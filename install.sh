@@ -162,6 +162,13 @@ download_release() {
   info "Extracting…"
   tar -xzf "$tmp/$archive" -C "$tmp" "$BIN" || die "archive did not contain $BIN"
   install_prebuilt "$tmp/$BIN"
+  # macOS archives also carry `ytt-tray`, the menu-bar companion (releases after v1.5.8).
+  # Install it beside ytt when present; older archives just skip this quietly.
+  if [ "$OS" = Darwin ] && tar -xzf "$tmp/$archive" -C "$tmp" ytt-tray 2>/dev/null; then
+    install -m 0755 "$tmp/ytt-tray" "$INSTALL_DIR/ytt-tray"
+    xattr -d com.apple.quarantine "$INSTALL_DIR/ytt-tray" 2>/dev/null || true
+    ok "Installed menu-bar companion -> $INSTALL_DIR/ytt-tray  (keep it at login: ytt-tray --install-startup)"
+  fi
   rm -rf "$tmp"
   DOWNLOAD_TMP=""
 }

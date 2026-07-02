@@ -118,26 +118,40 @@ jobs:
       - name: Clippy (warnings = errors)
         run: cargo clippy --all-targets --target ${{ matrix.target }} -- -D warnings
 
-      - name: Clippy Windows tray helper
-        if: runner.os == 'Windows'
+      # The tray companion ships on Windows (notification area) and macOS (menu bar).
+      # Linux has no tray backend — the main binary's MPRIS session covers it.
+      - name: Clippy tray helper
+        if: runner.os != 'Linux'
         run: |
           cargo clippy --features desktop-tray --target ${{ matrix.target }} --bin ytt-tray -- -D warnings
 
       - name: Test
         run: cargo test --target ${{ matrix.target }}
 
-      - name: Test Windows tray helper
-        if: runner.os == 'Windows'
+      - name: Test tray helper
+        if: runner.os != 'Linux'
         run: |
           cargo test --features desktop-tray --target ${{ matrix.target }} tray::
 
       - name: Release build
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Release build (macOS + tray)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --features desktop-tray --target ${{ matrix.target }} --bin ytt --bin ytt-tray
 
       - name: Smoke Unix daemon
         if: runner.os != 'Windows'
         run: scripts/unix-daemon-smoke.sh --target "${{ matrix.target }}" --profile release
+
+      - name: Smoke macOS tray CLI
+        if: runner.os == 'macOS'
+        run: |
+          out="$(target/${{ matrix.target }}/release/ytt-tray --version)"
+          echo "$out"
+          case "$out" in ytt-tray\ *) ;; *) echo "unexpected --version output" >&2; exit 1 ;; esac
 
       - name: Release build (Windows + tray)
         if: runner.os == 'Windows'
@@ -322,12 +336,24 @@ jobs:
         shell: pwsh
         run: ./scripts/windows-daemon-smoke.ps1 -Target "${{ matrix.target }}" -Profile release -AllowProfileMove
 
-      # macOS ships a YtmTui.app bundle (icon + Info.plist) next to the bare binary; Linux ships
-      # the bare binary; Windows ships ytt.exe plus the optional notification-area helper.
+      # macOS ships the bare binaries (ytt + the ytt-tray menu-bar helper) alongside their
+      # YtmTui.app / YtmTuiTray.app bundles (icon + Info.plist); Linux ships the bare binary
+      # (MPRIS lives in ytt itself); Windows ships ytt.exe plus the notification-area helper.
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
           scripts/package-macos.sh "${{ matrix.target }}" "${{ matrix.archive }}" "${{ matrix.bin }}" "$GITHUB_WORKSPACE"
+
+      - name: Verify macOS package contents
+        if: runner.os == 'macOS'
+        run: |
+          listing="$(tar -tzf "${{ matrix.archive }}")"
+          for entry in ytt ytt-tray YtmTui.app/Contents/MacOS/ytt YtmTuiTray.app/Contents/MacOS/ytt-tray; do
+            if ! grep -qx "$entry" <<<"$listing"; then
+              echo "macOS archive is missing $entry" >&2
+              exit 1
+            fi
+          done
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
