@@ -1,3 +1,6 @@
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+
 use ratatui::Frame;
 
 use crate::app::App;
@@ -123,12 +126,35 @@ fn printable_ascii(c: char) -> Option<&'static str> {
 
 /// A `'static` one-char slice for a CP437-covered character, found in the repertoire tables.
 fn cp437_static(c: char) -> Option<&'static str> {
-    for table in [CP437_GRAPHICS, CP437_PRINTABLE] {
-        if let Some((i, m)) = table.char_indices().find(|&(_, m)| m == c) {
-            return table.get(i..i + m.len_utf8());
+    cp437_slices().get(&c).copied()
+}
+
+/// The CP437 repertoire as a set. The scrub visits every non-ASCII cell every frame, and
+/// a linear `str::contains` over the ~250-char tables per cell was the real cost of retro
+/// mode — box-drawing borders are all non-ASCII.
+fn cp437_set() -> &'static HashSet<char> {
+    static SET: OnceLock<HashSet<char>> = OnceLock::new();
+    SET.get_or_init(|| {
+        CP437_GRAPHICS
+            .chars()
+            .chain(CP437_PRINTABLE.chars())
+            .collect()
+    })
+}
+
+/// char → one-char `'static` slice into the repertoire tables (graphics table wins ties,
+/// matching the old first-table-first linear scan).
+fn cp437_slices() -> &'static HashMap<char, &'static str> {
+    static MAP: OnceLock<HashMap<char, &'static str>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut map = HashMap::new();
+        for table in [CP437_GRAPHICS, CP437_PRINTABLE] {
+            for (i, c) in table.char_indices() {
+                map.entry(c).or_insert(&table[i..i + c.len_utf8()]);
+            }
         }
-    }
-    None
+        map
+    })
 }
 
 /// Whether a cell symbol can be shown verbatim by a 256-glyph console font (printable ASCII
@@ -142,7 +168,7 @@ pub(crate) fn retro_supported(symbol: &str) -> bool {
     let Some(c) = chars.next() else {
         return true;
     };
-    chars.next().is_none() && (CP437_GRAPHICS.contains(c) || CP437_PRINTABLE.contains(c))
+    chars.next().is_none() && cp437_set().contains(&c)
 }
 
 // Classic CP437 display glyphs from the C0 control-code positions, as shown by VGA text mode.

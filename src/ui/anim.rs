@@ -165,21 +165,36 @@ pub fn title_line(
             body
         };
 
-        // A bright band sweeps across the characters (shimmer).
-        let chars: Vec<char> = window.chars().collect();
-        let span_len = chars.len() as f64 + 8.0;
+        // A bright band sweeps across the characters (shimmer). Outside the ~6-cell band
+        // the interpolation factor is exactly 0, so the whole tail shares one Style —
+        // group equal-style runs into one Span each instead of one heap String per char
+        // (this runs at the animation FPS). Cell output is identical either way.
+        let span_len = window.chars().count() as f64 + 8.0;
         let head = (f as f64 / 2.0) % span_len;
         let mut col = 0.0f64;
-        for ch in chars {
+        let mut run = String::new();
+        let mut run_style: Option<Style> = None;
+        for ch in window.chars() {
             let d = (col - head).abs();
             let b = (1.0 - d / 3.0).clamp(0.0, 1.0);
-            spans.push(Span::styled(
-                ch.to_string(),
-                Style::default()
-                    .fg(lerp_color(base, bright, b))
-                    .add_modifier(Modifier::BOLD),
-            ));
+            let style = Style::default()
+                .fg(lerp_color(base, bright, b))
+                .add_modifier(Modifier::BOLD);
+            if run_style != Some(style) {
+                if let Some(prev) = run_style.take()
+                    && !run.is_empty()
+                {
+                    spans.push(Span::styled(std::mem::take(&mut run), prev));
+                }
+                run_style = Some(style);
+            }
+            run.push(ch);
             col += UnicodeWidthChar::width(ch).unwrap_or(1) as f64;
+        }
+        if let Some(style) = run_style
+            && !run.is_empty()
+        {
+            spans.push(Span::styled(run, style));
         }
     } else {
         // Heart-only: the body stays exactly as the plain path would render it.
