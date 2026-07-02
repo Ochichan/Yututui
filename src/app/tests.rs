@@ -7617,3 +7617,37 @@ fn p_is_a_noop_on_the_playlists_root() {
     app.update(Msg::Key(key(KeyCode::Char('p'))));
     assert!(app.playlist_picker.is_none());
 }
+
+#[test]
+fn entering_the_playlists_tab_nudges_playlist_creation() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    open_library_tab(&mut app, LibraryTab::Playlists);
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert_eq!(app.status.text, "Press n to create a new playlist");
+}
+
+#[test]
+fn the_playlist_create_nudge_follows_a_rebind() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    app.keymap
+        .rebind(
+            KeyContext::Playlists,
+            Action::PlaylistCreate,
+            crate::keymap::parse_chord("b").unwrap(),
+        )
+        .unwrap();
+    open_library_tab(&mut app, LibraryTab::Playlists);
+    assert_eq!(app.status.text, "Press b to create a new playlist");
+}
+
+#[test]
+fn mouse_tab_click_on_playlists_also_nudges() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    app.update(Msg::Key(key(KeyCode::Char('l'))));
+    app.on_mouse_target(MouseTarget::LibraryTab(LibraryTab::Playlists));
+    assert_eq!(app.library_ui.tab, LibraryTab::Playlists);
+    assert!(app.status.text.contains("create a new playlist"));
+}

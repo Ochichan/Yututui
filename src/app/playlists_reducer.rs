@@ -231,6 +231,24 @@ impl App {
         self.library_ui.confirm_playlist_delete = None;
     }
 
+    /// A transient onboarding nudge shown on entering the Playlists tab: the live chord
+    /// bound to [`Action::PlaylistCreate`] (so a rebind updates the message in lock-step),
+    /// riding the shared status line, which auto-expires after `STATUS_TTL`.
+    pub(in crate::app) fn hint_playlist_create(&mut self) {
+        let key = self.keymap.label_for_display(
+            KeyContext::Playlists,
+            Action::PlaylistCreate,
+            self.retro_mode(),
+        );
+        self.status.kind = StatusKind::Info;
+        self.status.text = if crate::i18n::is_korean() {
+            format!("{key} 키로 새 플레이리스트를 만들어 보세요")
+        } else {
+            format!("Press {key} to create a new playlist")
+        };
+        self.dirty = true;
+    }
+
     /// After an external rewrite of the playlists store (a finished transfer job), drop a
     /// drill-down or pending delete whose playlist no longer exists and re-clamp the cursor.
     pub(in crate::app) fn reconcile_playlists_reload(&mut self) {

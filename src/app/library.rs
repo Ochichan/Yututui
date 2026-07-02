@@ -145,6 +145,9 @@ impl App {
                 self.library_ui.tab = self.next_library_tab(self.library_ui.tab, true);
                 self.reset_playlist_ui_state();
                 self.clear_library_filter();
+                if self.library_ui.tab == LibraryTab::Playlists {
+                    self.hint_playlist_create();
+                }
                 self.dirty = true;
                 Vec::new()
             }
@@ -152,6 +155,9 @@ impl App {
                 self.library_ui.tab = self.next_library_tab(self.library_ui.tab, false);
                 self.reset_playlist_ui_state();
                 self.clear_library_filter();
+                if self.library_ui.tab == LibraryTab::Playlists {
+                    self.hint_playlist_create();
+                }
                 self.dirty = true;
                 Vec::new()
             }

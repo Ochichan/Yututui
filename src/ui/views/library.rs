@@ -56,6 +56,22 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             library_rows.len()
         };
         render_filter(frame, app, rows[1], matches);
+    } else if !app.status.text.is_empty() {
+        // A transient status ("Added 2 tracks to …", the create-a-playlist nudge) rides the
+        // spacer row so Library actions are visible without leaving the screen. It
+        // auto-clears after STATUS_TTL via the global StatusTick, like the Search band.
+        let role = match app.status.kind {
+            crate::app::StatusKind::Error => R::Error,
+            crate::app::StatusKind::Info => R::Success,
+        };
+        frame.render_widget(
+            Paragraph::new(
+                Line::from(app.status.text.clone())
+                    .style(app.theme.style(role))
+                    .alignment(Alignment::Center),
+            ),
+            rows[1],
+        );
     } else if app.effective_library_tab() == LibraryTab::Playlists
         && app.library_ui.open_playlist.is_some()
     {
@@ -171,6 +187,29 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
             } else {
                 format!("No tracks match \"{}\".", app.library_ui.filter_query)
             }
+        } else if app.library_ui.tab == LibraryTab::Playlists {
+            // The root level never reaches here (it renders via `render_playlist_list`),
+            // so this is an opened-but-empty playlist. Built from the live keymap so a
+            // rebind updates the hint in lock-step.
+            let add = app.keymap.label_for_display(
+                crate::keymap::KeyContext::Library,
+                crate::keymap::Action::AddToPlaylist,
+                app.retro_mode(),
+            );
+            let gem = app.keymap.label_for_display(
+                crate::keymap::KeyContext::Playlists,
+                crate::keymap::Action::OpenAi,
+                app.retro_mode(),
+            );
+            if crate::i18n::is_korean() {
+                format!(
+                    "빈 플레이리스트예요 — 다른 목록에서 {add} 로 곡을 추가하거나 DJ Gem({gem})에게 부탁하세요."
+                )
+            } else {
+                format!(
+                    "This playlist is empty — press {add} on any song to add it here, or ask DJ Gem ({gem})."
+                )
+            }
         } else {
             match app.library_ui.tab {
                 LibraryTab::All => t!(
@@ -199,12 +238,8 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
                     "No downloaded tracks found in the download folder.",
                     "다운로드 폴더에 받은 곡이 없어요."
                 ),
-                // The root level never reaches here (it renders via `render_playlist_list`),
-                // so this is an opened-but-empty playlist.
-                LibraryTab::Playlists => t!(
-                    "This playlist is empty — ask DJ Gem (g) to add tracks.",
-                    "빈 플레이리스트예요 — DJ Gem(g)으로 곡을 추가해 보세요."
-                ),
+                // Handled by the keymap-aware branch above; benign fallback for exhaustiveness.
+                LibraryTab::Playlists => t!("This playlist is empty.", "빈 플레이리스트예요."),
             }
             .to_owned()
         };
@@ -342,11 +377,17 @@ fn render_playlist_list(frame: &mut Frame, app: &App, area: Rect) {
                 format!("No playlists match \"{}\".", app.library_ui.filter_query)
             }
         } else {
-            t!(
-                "No playlists yet — press n to create one, or import from Spotify.",
-                "아직 플레이리스트가 없어요 — n 으로 만들거나 Spotify에서 가져오세요."
-            )
-            .to_owned()
+            // Built from the live keymap so a rebind updates the hint in lock-step.
+            let key = app.keymap.label_for_display(
+                crate::keymap::KeyContext::Playlists,
+                crate::keymap::Action::PlaylistCreate,
+                app.retro_mode(),
+            );
+            if crate::i18n::is_korean() {
+                format!("아직 플레이리스트가 없어요 — {key} 로 만들거나 Spotify에서 가져오세요.")
+            } else {
+                format!("No playlists yet — press {key} to create one, or import from Spotify.")
+            }
         };
         frame.render_widget(
             Paragraph::new(Line::from(msg).style(app.theme.style(R::TextMuted))),

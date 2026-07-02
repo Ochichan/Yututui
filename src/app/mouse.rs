@@ -326,6 +326,9 @@ impl App {
                 // drill-down included, matching the keyboard Tab/BackTab path.
                 self.reset_playlist_ui_state();
                 self.clear_library_filter();
+                if tab == LibraryTab::Playlists {
+                    self.hint_playlist_create();
+                }
                 self.drag_selection = None;
                 self.drag_scrollbar = None;
                 self.dirty = true;

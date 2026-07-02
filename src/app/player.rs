@@ -319,6 +319,9 @@ impl App {
                 // drill-down or popup left from the previous visit).
                 self.reset_playlist_ui_state();
                 self.clear_library_filter();
+                if self.effective_library_tab() == LibraryTab::Playlists {
+                    self.hint_playlist_create();
+                }
                 self.dropdowns.eq_open = false;
                 self.dropdowns.streaming_open = false;
                 self.dropdowns.search_source_open = false;

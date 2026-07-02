@@ -1440,6 +1440,9 @@ impl App {
                 // playlist drill-down or popup left from the previous visit).
                 self.reset_playlist_ui_state();
                 self.clear_library_filter();
+                if self.effective_library_tab() == LibraryTab::Playlists {
+                    self.hint_playlist_create();
+                }
             }
             Mode::Settings => self.open_settings(),
             Mode::Ai => self.enter_ai(),
