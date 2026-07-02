@@ -1,6 +1,8 @@
 //! Native window wrapper for the mini player WebView.
 
+use std::cell::RefCell;
 use std::error::Error;
+use std::rc::Rc;
 
 use tao::dpi::LogicalSize;
 use tao::event_loop::EventLoopWindowTarget;
@@ -17,12 +19,20 @@ const PANEL_WIDTH: f64 = 398.0;
 const PANEL_HEIGHT: f64 = 602.0;
 
 pub struct MiniPlayerPanel {
-    // Field order is load-bearing: the WebView must drop before its host window
-    // (wry's documented teardown order; on Windows the WebView2 controller must be
-    // closed while the HWND is still alive).
-    webview: WebView,
+    // Torn down on `hide()` and rebuilt on `show()` so a tray that opened the mini player
+    // once doesn't keep a whole browser engine (WebView2 is ~5 processes / ~200 MB)
+    // resident while idle. `RefCell` keeps `show`/`hide`/`apply_update` on `&self`, so the
+    // platform tray code needs no changes. Declared before `window`: the WebView must drop
+    // before its host window (wry's documented teardown order; on Windows the WebView2
+    // controller must be closed while the HWND is still alive).
+    webview: RefCell<Option<WebView>>,
     window: Window,
     window_id: WindowId,
+    // Kept so `show()` can rebuild the WebView after `hide()` dropped it.
+    on_command: Rc<dyn Fn(PanelCommand)>,
+    // Last status seen, used to seed a rebuilt page so a reopened panel shows current
+    // state without waiting for the next poll.
+    latest: RefCell<PollUpdate>,
 }
 
 impl MiniPlayerPanel {
@@ -36,7 +46,7 @@ impl MiniPlayerPanel {
         F: Fn(PanelCommand) + 'static,
     {
         let size = LogicalSize::new(PANEL_WIDTH, PANEL_HEIGHT);
-        let window = WindowBuilder::new()
+        let builder = WindowBuilder::new()
             .with_title("YtmTui Mini Player")
             .with_inner_size(size)
             .with_min_inner_size(size)
@@ -48,31 +58,28 @@ impl MiniPlayerPanel {
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top(true)
-            .with_visible(true)
-            .build(target)?;
+            .with_visible(true);
+        // Windows-only: route transparency through a no-redirection-bitmap window so the
+        // WebView2 DirectComposition surface alpha-composites onto the desktop. Without it
+        // tao falls back to `DwmEnableBlurBehindWindow`, which WebView2 ignores — the
+        // "transparent" margin then renders as a solid white backdrop (most visible at the
+        // corners the page's drop shadow doesn't cover).
+        #[cfg(windows)]
+        let builder = {
+            use tao::platform::windows::WindowBuilderExtWindows;
+            builder.with_no_redirection_bitmap(true)
+        };
+        let window = builder.build(target)?;
         let window_id = window.id();
-        let webview = WebViewBuilder::new()
-            .with_transparent(true)
-            .with_html(panel::html(initial))
-            .with_ipc_handler(
-                move |request| match panel::parse_ipc_message(request.body()) {
-                    Ok(command) => on_command(command),
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "ytt_tray",
-                            message = request.body().as_str(),
-                            error = %e,
-                            "ignored invalid mini player IPC message"
-                        );
-                    }
-                },
-            )
-            .build(&window)?;
+        let on_command: Rc<dyn Fn(PanelCommand)> = Rc::new(on_command);
+        let webview = build_webview(&window, initial, &on_command)?;
 
         Ok(Self {
-            webview,
+            webview: RefCell::new(Some(webview)),
             window,
             window_id,
+            on_command,
+            latest: RefCell::new(initial.clone()),
         })
     }
 
@@ -81,13 +88,33 @@ impl MiniPlayerPanel {
     }
 
     pub fn show(&self) {
+        // Rebuild the WebView if `hide()` tore it down (the first `show()` after `create`
+        // reuses the one built there).
+        let needs_rebuild = self.webview.borrow().is_none();
+        if needs_rebuild {
+            let latest = self.latest.borrow();
+            match build_webview(&self.window, &latest, &self.on_command) {
+                Ok(webview) => *self.webview.borrow_mut() = Some(webview),
+                Err(e) => tracing::warn!(
+                    target: "ytt_tray",
+                    error = %e,
+                    "could not rebuild mini player webview"
+                ),
+            }
+        }
         self.window.set_visible(true);
         self.window.set_focus();
-        let _ = self.webview.focus();
+        if let Some(webview) = &*self.webview.borrow() {
+            let _ = webview.focus();
+        }
     }
 
     pub fn hide(&self) {
         self.window.set_visible(false);
+        // Drop the WebView so its WebView2 processes (Chromium engine, ~200 MB) exit while
+        // the panel is dismissed. The window itself is cheap and stays put; the HWND
+        // outlives the controller, matching wry's required teardown order.
+        self.webview.borrow_mut().take();
     }
 
     /// Begin a native move triggered by a mousedown in the page's header. The IPC
@@ -145,7 +172,10 @@ impl MiniPlayerPanel {
     }
 
     pub fn apply_update(&self, update: &PollUpdate) {
-        if let Err(e) = self.webview.evaluate_script(&panel::update_script(update)) {
+        *self.latest.borrow_mut() = update.clone();
+        if let Some(webview) = &*self.webview.borrow()
+            && let Err(e) = webview.evaluate_script(&panel::update_script(update))
+        {
             tracing::warn!(
                 target: "ytt_tray",
                 error = %e,
@@ -153,4 +183,33 @@ impl MiniPlayerPanel {
             );
         }
     }
+}
+
+/// Build the mini player WebView on `window`, seeded with `update` and wired to
+/// `on_command`. Shared by `create` and by `show()` when it rebuilds the view after
+/// `hide()` tore it down.
+fn build_webview(
+    window: &Window,
+    update: &PollUpdate,
+    on_command: &Rc<dyn Fn(PanelCommand)>,
+) -> Result<WebView, Box<dyn Error>> {
+    let on_command = Rc::clone(on_command);
+    let webview = WebViewBuilder::new()
+        .with_transparent(true)
+        .with_html(panel::html(update))
+        .with_ipc_handler(
+            move |request| match panel::parse_ipc_message(request.body()) {
+                Ok(command) => (*on_command)(command),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "ytt_tray",
+                        message = request.body().as_str(),
+                        error = %e,
+                        "ignored invalid mini player IPC message"
+                    );
+                }
+            },
+        )
+        .build(window)?;
+    Ok(webview)
 }
