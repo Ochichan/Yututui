@@ -5,10 +5,7 @@ use super::*;
 const ART_REFRESH_OVERLAY_CLEAR_FRAMES: u8 = 3;
 
 impl App {
-    pub fn set_art_resize_tx(
-        &mut self,
-        tx: tokio::sync::mpsc::UnboundedSender<ResizeRequest>,
-    ) {
+    pub fn set_art_resize_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<ResizeRequest>) {
         self.art.resize_tx = Some(tx);
     }
 

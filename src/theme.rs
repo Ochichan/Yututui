@@ -1105,25 +1105,41 @@ mod tests {
 
         cfg.set_preset(ThemePreset::Light);
         assert_ne!(cfg.color(ThemeRole::BorderPrimary), before);
-        assert_eq!(cfg.color(ThemeRole::BorderPrimary), Color::Rgb(0xC0, 0x26, 0xD3));
+        assert_eq!(
+            cfg.color(ThemeRole::BorderPrimary),
+            Color::Rgb(0xC0, 0x26, 0xD3)
+        );
 
-        cfg.set_override(ThemeRole::BorderPrimary, "#123456").unwrap();
-        assert_eq!(cfg.color(ThemeRole::BorderPrimary), Color::Rgb(0x12, 0x34, 0x56));
+        cfg.set_override(ThemeRole::BorderPrimary, "#123456")
+            .unwrap();
+        assert_eq!(
+            cfg.color(ThemeRole::BorderPrimary),
+            Color::Rgb(0x12, 0x34, 0x56)
+        );
 
         if let Some(value) = cfg.override_value_mut(ThemeRole::BorderPrimary) {
             *value = "#654321".to_owned();
         }
-        assert_eq!(cfg.color(ThemeRole::BorderPrimary), Color::Rgb(0x65, 0x43, 0x21));
+        assert_eq!(
+            cfg.color(ThemeRole::BorderPrimary),
+            Color::Rgb(0x65, 0x43, 0x21)
+        );
 
         cfg.reset_role(ThemeRole::BorderPrimary);
-        assert_eq!(cfg.color(ThemeRole::BorderPrimary), Color::Rgb(0xC0, 0x26, 0xD3));
+        assert_eq!(
+            cfg.color(ThemeRole::BorderPrimary),
+            Color::Rgb(0xC0, 0x26, 0xD3)
+        );
 
         cfg.ensure_override_for_edit(ThemeRole::Accent);
         assert!(cfg.overrides.contains_key("accent"));
 
         // Clones and retro fall back to the uncached resolve path correctly.
         let clone = cfg.clone();
-        assert_eq!(clone.color(ThemeRole::BorderPrimary), Color::Rgb(0xC0, 0x26, 0xD3));
+        assert_eq!(
+            clone.color(ThemeRole::BorderPrimary),
+            Color::Rgb(0xC0, 0x26, 0xD3)
+        );
         cfg.set_preset(ThemePreset::Retro);
         assert_eq!(
             cfg.color(ThemeRole::Background),
@@ -1139,7 +1155,12 @@ mod tests {
             let expected = Style::default()
                 .fg(cfg.color(role))
                 .bg(cfg.color(ThemeRole::Background));
-            assert_eq!(cfg.style(role), expected, "style mismatch for {}", role.id());
+            assert_eq!(
+                cfg.style(role),
+                expected,
+                "style mismatch for {}",
+                role.id()
+            );
         }
     }
 

@@ -96,10 +96,9 @@ fn debounce(kind: StoreKind) -> Duration {
     match kind {
         // Ratings/favorites/likes: flush fast — this is the data a user would miss.
         StoreKind::Library | StoreKind::Signals => Duration::from_millis(300),
-        StoreKind::Downloads
-        | StoreKind::Config
-        | StoreKind::Playlists
-        | StoreKind::Station => Duration::from_millis(500),
+        StoreKind::Downloads | StoreKind::Config | StoreKind::Playlists | StoreKind::Station => {
+            Duration::from_millis(500)
+        }
         // Pure display cache, fully rebuildable — lazy is fine.
         StoreKind::RomanizedTitles => Duration::from_secs(3),
         // Only sent at quit, where flush() drains immediately anyway.
