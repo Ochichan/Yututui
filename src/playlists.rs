@@ -110,6 +110,37 @@ impl Playlists {
         }
     }
 
+    /// Remove the playlist matched by `key` (id or name), returning it so callers can
+    /// name it in a status message.
+    pub fn delete(&mut self, key: &str) -> Option<Playlist> {
+        let key = key.trim();
+        let idx = self
+            .playlists
+            .iter()
+            .position(|p| p.id == key)
+            .or_else(|| {
+                self.playlists
+                    .iter()
+                    .position(|p| p.name.eq_ignore_ascii_case(key))
+            })?;
+        Some(self.playlists.remove(idx))
+    }
+
+    /// Remove one track (by `video_id`) from the playlist matched by `key`. Returns
+    /// whether anything was removed.
+    pub fn remove_song(&mut self, key: &str, video_id: &str) -> bool {
+        let key = key.trim();
+        let idx = self.playlists.iter().position(|p| p.id == key).or_else(|| {
+            self.playlists
+                .iter()
+                .position(|p| p.name.eq_ignore_ascii_case(key))
+        });
+        let Some(i) = idx else { return false };
+        let before = self.playlists[i].songs.len();
+        self.playlists[i].songs.retain(|s| s.video_id != video_id);
+        self.playlists[i].songs.len() != before
+    }
+
     fn push_song(p: &mut Playlist, song: Song) -> AddResult {
         if p.songs.iter().any(|s| s.video_id == song.video_id) {
             return AddResult::Duplicate;
@@ -226,6 +257,29 @@ mod tests {
             assert!(p.create(&format!("p{i}")).is_some());
         }
         assert!(p.create("one too many").is_none());
+    }
+
+    #[test]
+    fn delete_matches_by_id_or_name_and_reports_miss() {
+        let mut p = Playlists::default();
+        let id = p.create("Old Mix").unwrap();
+        assert!(p.delete("nope").is_none());
+        assert_eq!(p.delete("old mix").unwrap().id, id); // case-insensitive name
+        assert!(p.list().is_empty());
+        assert!(p.delete(&id).is_none()); // already gone
+    }
+
+    #[test]
+    fn remove_song_by_video_id() {
+        let mut p = Playlists::default();
+        let id = p.create("Mix").unwrap();
+        p.add(&id, song("a"));
+        p.add(&id, song("b"));
+        assert!(p.remove_song(&id, "a"));
+        assert!(!p.remove_song(&id, "a")); // already removed
+        assert!(!p.remove_song("missing", "b")); // unknown playlist
+        assert_eq!(p.find(&id).unwrap().songs.len(), 1);
+        assert_eq!(p.find(&id).unwrap().songs[0].video_id, "b");
     }
 
     #[test]

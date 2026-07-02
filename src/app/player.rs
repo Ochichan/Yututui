@@ -315,7 +315,9 @@ impl App {
                     self.library_ui.tab = self.library_tabs()[0];
                 }
                 // Start each library visit with a clean, unfiltered list (also resets the
-                // cursor, the multi-select anchor, and the scroll offset).
+                // cursor, the multi-select anchor, the scroll offset, and any playlist
+                // drill-down or popup left from the previous visit).
+                self.reset_playlist_ui_state();
                 self.clear_library_filter();
                 self.dropdowns.eq_open = false;
                 self.dropdowns.streaming_open = false;

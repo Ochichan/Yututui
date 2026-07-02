@@ -43,14 +43,31 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(inner);
 
+    let playlists_root = app.playlists_root();
     let library_rows = app.library_rows();
 
     render_tabs(frame, app, rows[0]);
-    // The filter prompt rides the spacer row when active, so opening it never reflows the list.
+    // The filter prompt rides the spacer row when active, so opening it never reflows the
+    // list. At the Playlists root the match count is playlists, not songs.
     if app.library_ui.filter_editing || !app.library_ui.filter_query.is_empty() {
-        render_filter(frame, app, rows[1], library_rows.len());
+        let matches = if playlists_root {
+            app.filtered_playlists().len()
+        } else {
+            library_rows.len()
+        };
+        render_filter(frame, app, rows[1], matches);
+    } else if app.effective_library_tab() == LibraryTab::Playlists
+        && app.library_ui.open_playlist.is_some()
+    {
+        // Inside an opened playlist the spacer row carries a clickable breadcrumb back
+        // to the playlist list.
+        render_playlist_breadcrumb(frame, app, rows[1]);
     }
-    render_list(frame, app, rows[2], &library_rows);
+    if playlists_root {
+        render_playlist_list(frame, app, rows[2]);
+    } else {
+        render_list(frame, app, rows[2], &library_rows);
+    }
 
     buttons::render_help_button(frame, app, rows[3]);
 }
@@ -182,6 +199,12 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
                     "No downloaded tracks found in the download folder.",
                     "다운로드 폴더에 받은 곡이 없어요."
                 ),
+                // The root level never reaches here (it renders via `render_playlist_list`),
+                // so this is an opened-but-empty playlist.
+                LibraryTab::Playlists => t!(
+                    "This playlist is empty — ask DJ Gem (g) to add tracks.",
+                    "빈 플레이리스트예요 — DJ Gem(g)으로 곡을 추가해 보세요."
+                ),
             }
             .to_owned()
         };
@@ -298,6 +321,311 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
         start,
         visible,
     );
+}
+
+/// The Playlists tab's root level: one row per local playlist (`▶ ♪ Name — N tracks`),
+/// cursor-only highlight (no multi-select range — playlist actions are single-row), a
+/// trailing ✗ that asks before deleting the playlist, and the shared Library scrollbar.
+fn render_playlist_list(frame: &mut Frame, app: &App, area: Rect) {
+    // Record the viewport height so PageUp/PageDown can move by a screenful (see app::page_step).
+    app.bridges.list_viewport_rows.set(area.height);
+
+    let rows = app.filtered_playlists();
+    if rows.is_empty() {
+        let msg: String = if !app.library_ui.filter_query.is_empty() {
+            if crate::i18n::is_korean() {
+                format!(
+                    "'{}' 와 일치하는 플레이리스트가 없어요.",
+                    app.library_ui.filter_query
+                )
+            } else {
+                format!("No playlists match \"{}\".", app.library_ui.filter_query)
+            }
+        } else {
+            t!(
+                "No playlists yet — press n to create one, or import from Spotify.",
+                "아직 플레이리스트가 없어요 — n 으로 만들거나 Spotify에서 가져오세요."
+            )
+            .to_owned()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(msg).style(app.theme.style(R::TextMuted))),
+            area,
+        );
+        return;
+    }
+
+    if area.height == 0 || area.width < 4 {
+        return;
+    }
+
+    let len = rows.len();
+    let cursor = app.library_ui.selected.min(len - 1);
+    let del_w: u16 = 2;
+    let visible = area.height as usize;
+    let start =
+        app.bridges
+            .library_scroll
+            .resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
+
+    let body_w = area.width.saturating_sub(del_w) as usize;
+    for (vis, (i, playlist)) in rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible)
+        .enumerate()
+    {
+        let y = area.y + vis as u16;
+        let selected = i == cursor;
+        let marker = if selected { "▶ " } else { "  " };
+        let count = playlist.songs.len();
+        let body = if crate::i18n::is_korean() {
+            format!("{marker}♪ {} — {count}곡", playlist.name)
+        } else {
+            let noun = if count == 1 { "track" } else { "tracks" };
+            format!("{marker}♪ {} — {count} {noun}", playlist.name)
+        };
+        let body = crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1));
+
+        let base = if selected {
+            Style::default()
+                .fg(app.theme.color(R::SelectionFg))
+                .bg(app.theme.color(R::SelectionBg))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            app.theme.style(R::TextPrimary)
+        };
+        let row = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(Line::from(body).style(base)), row);
+
+        // The row body selects (single-click) / opens (double-click).
+        let body_rect = Rect {
+            x: row.x,
+            y,
+            width: row.width.saturating_sub(del_w),
+            height: 1,
+        };
+        app.register_mouse_button(body_rect, MouseTarget::ListRow(i));
+
+        // Trailing ✗: asks before deleting the whole playlist.
+        let del_rect = Rect {
+            x: row.x + row.width.saturating_sub(del_w),
+            y,
+            width: del_w,
+            height: 1,
+        };
+        let mut del_style = app.theme.style(R::Error);
+        if selected {
+            del_style = del_style.bg(app.theme.color(R::SelectionBg));
+        }
+        frame.render_widget(Paragraph::new(Line::from("✗").style(del_style)), del_rect);
+        app.register_mouse_button(del_rect, MouseTarget::LibraryDel(i));
+    }
+
+    buttons::render_list_scrollbar(
+        frame,
+        app,
+        Rect {
+            x: area.right(),
+            y: area.y,
+            width: 1,
+            height: area.height,
+        },
+        ScrollSurface::Library,
+        len,
+        start,
+        visible,
+    );
+}
+
+/// The opened-playlist breadcrumb on the spacer row: `⟵ Name — N tracks  (q: back)`.
+/// Clicking it returns to the playlist list (same as Back).
+fn render_playlist_breadcrumb(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(playlist) = app
+        .library_ui
+        .open_playlist
+        .as_ref()
+        .and_then(|key| app.playlists.find(key))
+    else {
+        return;
+    };
+    let back_key = app.keymap.label_for_display(
+        crate::keymap::KeyContext::Playlists,
+        crate::keymap::Action::Back,
+        app.retro_mode(),
+    );
+    let count = playlist.songs.len();
+    let text = if crate::i18n::is_korean() {
+        format!("⟵ {} — {count}곡  ({back_key}: 뒤로)", playlist.name)
+    } else {
+        let noun = if count == 1 { "track" } else { "tracks" };
+        format!("⟵ {} — {count} {noun}  ({back_key}: back)", playlist.name)
+    };
+    let w = buttons::text_width(&text).min(area.width);
+    frame.render_widget(
+        Paragraph::new(Line::from(text).style(app.theme.style(R::TextMuted))),
+        area,
+    );
+    app.register_mouse_button(
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: w,
+            height: 1,
+        },
+        MouseTarget::PlaylistBack,
+    );
+}
+
+/// The create-playlist popup ("new window", per UX request): a centered card with a name
+/// input, committed with Enter / the Create button, cancelled with Esc / Cancel / a click
+/// outside. Buttons publish `ConfirmPlaylistCreate` / `CancelPlaylistCreate` hit rects.
+pub fn render_playlist_create(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(name) = app.library_ui.create_input.as_ref() else {
+        return;
+    };
+    let popup = centered_fixed(area, 56, 8);
+    crate::ui::render_popup_background(frame, app, popup);
+
+    let block = Block::default()
+        .title(t!(" ♪ New playlist ", " ♪ 새 플레이리스트 "))
+        .borders(Borders::ALL)
+        .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // input
+        Constraint::Length(1), // spacer
+        Constraint::Min(1),    // buttons
+    ])
+    .split(inner);
+
+    // `name: <typed>█` — the filter prompt's visual language, inside the popup.
+    let shown = crate::ui::text::truncate_owned_to_width(
+        name.clone(),
+        (rows[1].width as usize).saturating_sub(12),
+    );
+    let input = Line::from(vec![
+        Span::styled(
+            t!("  name: ", "  이름: "),
+            crate::ui::popup_style(app, R::TextMuted),
+        ),
+        Span::styled(shown, crate::ui::popup_style(app, R::TextPrimary)),
+        Span::styled("\u{2588}", crate::ui::popup_style(app, R::Accent)),
+    ]);
+    frame.render_widget(Paragraph::new(input), rows[1]);
+
+    let segs = [
+        buttons::Seg::button(
+            MouseTarget::ConfirmPlaylistCreate,
+            t!(" Create (Enter) ", " 만들기 (Enter) "),
+        ),
+        buttons::Seg::label("    "),
+        buttons::Seg::button(
+            MouseTarget::CancelPlaylistCreate,
+            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+        ),
+    ];
+    buttons::render_segments(
+        frame,
+        app,
+        rows[3],
+        &segs,
+        crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+        crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+        Alignment::Center,
+    );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
+/// A modal confirming deletion of a whole playlist. The tracks themselves are untouched
+/// (they may still live in favorites/history/downloads), but the list is gone at once, so
+/// it's gated like the download delete — Enter/`y`/Delete button confirm, anything else
+/// cancels. Buttons publish `ConfirmPlaylistDelete` / `CancelPlaylistDelete` hit rects.
+pub fn render_confirm_playlist_delete(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(key) = app.library_ui.confirm_playlist_delete.as_ref() else {
+        return;
+    };
+    let (name, count) = app
+        .playlists
+        .find(key)
+        .map(|p| (p.name.clone(), p.songs.len()))
+        .unwrap_or_else(|| (key.clone(), 0));
+    let popup = centered_fixed(area, 56, 9);
+    crate::ui::render_popup_background(frame, app, popup);
+
+    let block = Block::default()
+        .title(t!(" ⚠ Delete playlist ", " ⚠ 플레이리스트 삭제 "))
+        .borders(Borders::ALL)
+        .border_style(crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // prompt
+        Constraint::Length(1), // detail
+        Constraint::Length(1), // spacer
+        Constraint::Min(1),    // buttons
+    ])
+    .split(inner);
+
+    let prompt = if crate::i18n::is_korean() {
+        format!("'{name}' ({count}곡) 플레이리스트를 삭제할까요?")
+    } else {
+        let noun = if count == 1 { "track" } else { "tracks" };
+        format!("Delete \"{name}\" ({count} {noun})?")
+    };
+    let prompt = crate::ui::text::truncate_owned_to_width(prompt, inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(prompt)
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::TextPrimary)),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(t!(
+            "The tracks themselves are not deleted.",
+            "곡 자체는 삭제되지 않아요."
+        ))
+        .alignment(Alignment::Center)
+        .style(crate::ui::popup_style(app, R::TextMuted)),
+        rows[2],
+    );
+
+    let segs = [
+        buttons::Seg::button(
+            MouseTarget::ConfirmPlaylistDelete,
+            t!(" Delete (Enter) ", " 삭제 (Enter) "),
+        ),
+        buttons::Seg::label("    "),
+        buttons::Seg::button(
+            MouseTarget::CancelPlaylistDelete,
+            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+        ),
+    ];
+    buttons::render_segments(
+        frame,
+        app,
+        rows[4],
+        &segs,
+        crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD),
+        crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+        Alignment::Center,
+    );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// A modal confirming deletion of downloaded files from disk. Deleting a real file is

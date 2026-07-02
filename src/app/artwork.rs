@@ -196,6 +196,8 @@ impl App {
             | ((self.library_ui.confirm_delete.is_some() as u16) << 9)
             | ((!matches!(self.mode, Mode::Player) as u16) << 10)
             | ((self.mouse_help_visible as u16) << 11)
+            | ((self.library_ui.create_input.is_some() as u16) << 12)
+            | ((self.library_ui.confirm_playlist_delete.is_some() as u16) << 13)
     }
 
     /// Track overlay/screen transitions that can cover native terminal graphics. Ratatui's normal

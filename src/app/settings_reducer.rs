@@ -793,10 +793,9 @@ impl App {
                     )
                     .to_owned();
                     self.status.kind = StatusKind::Info;
-                    vec![Cmd::Transfer(crate::transfer::actor::TransferCmd::AuthStart {
-                        client_id,
-                        port,
-                    })]
+                    vec![Cmd::Transfer(
+                        crate::transfer::actor::TransferCmd::AuthStart { client_id, port },
+                    )]
                 }
                 Field::SpotifyImport => {
                     self.dirty = true;
@@ -816,17 +815,16 @@ impl App {
                         .as_ref()
                         .is_some_and(|s| s.draft.spotify_connected);
                     if !connected {
-                        self.status.text = t!(
-                            "Connect Spotify first",
-                            "먼저 Spotify를 연결해 주세요"
-                        )
-                        .to_owned();
+                        self.status.text =
+                            t!("Connect Spotify first", "먼저 Spotify를 연결해 주세요").to_owned();
                         self.status.kind = StatusKind::Error;
                         return Vec::new();
                     }
-                    self.status.text =
-                        t!("Loading Spotify playlists…", "Spotify 플레이리스트 불러오는 중…")
-                            .to_owned();
+                    self.status.text = t!(
+                        "Loading Spotify playlists…",
+                        "Spotify 플레이리스트 불러오는 중…"
+                    )
+                    .to_owned();
                     self.status.kind = StatusKind::Info;
                     vec![Cmd::Transfer(
                         crate::transfer::actor::TransferCmd::ListSpotifyPlaylists,
@@ -946,20 +944,22 @@ impl App {
             }
             TransferEvent::SpotifyPlaylists(Ok(items)) => {
                 if items.is_empty() {
-                    self.status.text = t!("No Spotify playlists", "Spotify 플레이리스트 없음").to_owned();
+                    self.status.text =
+                        t!("No Spotify playlists", "Spotify 플레이리스트 없음").to_owned();
                     self.status.kind = StatusKind::Info;
                 } else {
                     self.status.text.clear();
-                    self.spotify_picker = Some(crate::app::state::SpotifyPicker {
-                        items,
-                        selected: 0,
-                    });
+                    self.spotify_picker =
+                        Some(crate::app::state::SpotifyPicker { items, selected: 0 });
                 }
             }
             TransferEvent::SpotifyPlaylists(Err(error)) => {
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Could not list Spotify playlists", "Spotify 플레이리스트 조회 실패"),
+                    t!(
+                        "Could not list Spotify playlists",
+                        "Spotify 플레이리스트 조회 실패"
+                    ),
                     crate::util::sanitize::sanitize_error_text(error)
                 );
                 self.status.kind = StatusKind::Error;
@@ -989,8 +989,12 @@ impl App {
                 self.transfer_running = false;
                 // A local-dest job wrote playlists.json from the actor; reload so the
                 // Library shows it now and a later in-app save can't clobber it. (The
-                // app persists its own mutations immediately, so disk is the union.)
+                // app persists its own mutations immediately, so disk is the union — which
+                // also means a just-deleted playlist reappears if the job re-created it.)
                 self.playlists = crate::playlists::Playlists::load();
+                // The store changed under the Playlists tab: drop a drill-down or pending
+                // delete whose playlist vanished and re-clamp the cursor into the new rows.
+                self.reconcile_playlists_reload();
                 self.status.text = format!(
                     "{}: {}",
                     t!("Import finished", "가져오기 완료"),
@@ -1121,7 +1125,8 @@ impl App {
                 }
                 self.config.scrobble.lastfm.session_key = None;
                 self.config.scrobble.lastfm.username = None;
-                self.status.text = t!("Last.fm disconnected", "Last.fm 연결을 해제했어요").to_owned();
+                self.status.text =
+                    t!("Last.fm disconnected", "Last.fm 연결을 해제했어요").to_owned();
                 self.status.kind = StatusKind::Info;
                 vec![
                     Cmd::SaveConfig(Box::new(self.config.clone())),
@@ -1131,7 +1136,9 @@ impl App {
             SettingsConfirm::SpotifyDisconnect => {
                 // The actor deletes the token file and answers with `Disconnected`,
                 // which flips the draft's display state.
-                vec![Cmd::Transfer(crate::transfer::actor::TransferCmd::Disconnect)]
+                vec![Cmd::Transfer(
+                    crate::transfer::actor::TransferCmd::Disconnect,
+                )]
             }
         }
     }

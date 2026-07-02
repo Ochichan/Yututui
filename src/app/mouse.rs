@@ -83,6 +83,37 @@ impl App {
                 }
             }
         }
+        // The playlist-delete confirmation is modal the same way.
+        if self.library_ui.confirm_playlist_delete.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(
+                    t @ (MouseTarget::ConfirmPlaylistDelete | MouseTarget::CancelPlaylistDelete),
+                ) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.library_ui.confirm_playlist_delete = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
+        }
+        // The create-playlist popup is modal: only its Create/Cancel buttons act; a click
+        // anywhere else cancels it (matching the queue window's click-outside-to-close).
+        if self.library_ui.create_input.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(
+                    t @ (MouseTarget::ConfirmPlaylistCreate | MouseTarget::CancelPlaylistCreate),
+                ) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.library_ui.create_input = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
+        }
         if self.help_visible {
             self.help_visible = false;
             self.dirty = true;
@@ -273,11 +304,12 @@ impl App {
                     return Vec::new();
                 }
                 self.library_ui.tab = tab;
-                self.library_ui.selected = 0;
-                self.library_ui.anchor = 0;
+                // A tab switch resets the whole list surface — the filter and any playlist
+                // drill-down included, matching the keyboard Tab/BackTab path.
+                self.reset_playlist_ui_state();
+                self.clear_library_filter();
                 self.drag_selection = None;
                 self.drag_scrollbar = None;
-                self.bridges.library_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }
@@ -337,6 +369,26 @@ impl App {
                 self.library_delete_rows(i, i)
             }
             MouseTarget::LibraryDel(_) => Vec::new(),
+            // The opened-playlist breadcrumb returns to the playlist list.
+            MouseTarget::PlaylistBack if self.mode == Mode::Library => {
+                self.close_open_playlist();
+                Vec::new()
+            }
+            MouseTarget::PlaylistBack => Vec::new(),
+            // The "delete playlist" confirmation buttons.
+            MouseTarget::ConfirmPlaylistDelete => self.confirm_playlist_delete_apply(),
+            MouseTarget::CancelPlaylistDelete => {
+                self.library_ui.confirm_playlist_delete = None;
+                self.dirty = true;
+                Vec::new()
+            }
+            // The create-playlist popup buttons.
+            MouseTarget::ConfirmPlaylistCreate => self.playlist_create_commit(),
+            MouseTarget::CancelPlaylistCreate => {
+                self.library_ui.create_input = None;
+                self.dirty = true;
+                Vec::new()
+            }
             // The "delete downloaded files" confirmation buttons.
             MouseTarget::ConfirmDelete => self.confirm_delete_files_apply(),
             MouseTarget::CancelDelete => {
@@ -398,6 +450,8 @@ impl App {
             || self.pending_radio_mode_confirm.is_some()
             || self.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
+            || self.library_ui.confirm_playlist_delete.is_some()
+            || self.library_ui.create_input.is_some()
         {
             return self.on_mouse_click(col, row);
         }
@@ -490,7 +544,13 @@ impl App {
             && let Some(MouseTarget::ListRow(i) | MouseTarget::LibraryDel(i)) =
                 self.mouse_target_at(col, row)
         {
-            let anchor = self.drag_anchor(DragSurface::Library, i);
+            // The Playlists root has no multi-select (its actions are single-row), so a drag
+            // just moves the cursor with the anchor pinned to it.
+            let anchor = if self.playlists_root() {
+                i
+            } else {
+                self.drag_anchor(DragSurface::Library, i)
+            };
             if self.library_ui.anchor != anchor || self.library_ui.selected != i {
                 self.library_ui.anchor = anchor;
                 self.library_ui.selected = i;
@@ -763,6 +823,12 @@ impl App {
             }
             Mode::Library if index < self.library_len() => {
                 self.library_ui.selected = index;
+                // At the Playlists root a double-click opens the playlist (the row is a
+                // playlist, not a song) — the mouse equivalent of Enter there too.
+                if self.playlists_root() {
+                    self.library_ui.anchor = index;
+                    return self.open_selected_playlist();
+                }
                 match self.selected_library_song() {
                     Some(song) => self.play_now(song),
                     None => Vec::new(),
@@ -783,6 +849,8 @@ impl App {
             || self.pending_radio_mode_confirm.is_some()
             || self.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
+            || self.library_ui.confirm_playlist_delete.is_some()
+            || self.library_ui.create_input.is_some()
         {
             return Vec::new();
         }
@@ -831,6 +899,10 @@ impl App {
                 }
                 self.library_ui.selected = index;
                 self.library_ui.anchor = index;
+                // At the Playlists root the row is a playlist: enqueue the whole thing.
+                if self.playlists_root() {
+                    return self.enqueue_selected_playlist();
+                }
                 match self.selected_library_song() {
                     Some(song) => self.enqueue(song),
                     None => Vec::new(),

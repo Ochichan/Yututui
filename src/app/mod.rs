@@ -56,6 +56,7 @@ mod library_reducer;
 mod media_reducer;
 mod mouse;
 mod player;
+mod playlists_reducer;
 mod queue;
 mod remote_reducer;
 mod romanize;
@@ -494,6 +495,7 @@ impl App {
     pub(in crate::app) fn ensure_radio_mode_constraints(&mut self) {
         if !self.library_tab_available(self.library_ui.tab) {
             self.library_ui.tab = self.library_tabs()[0];
+            self.reset_playlist_ui_state();
             self.clear_library_filter();
         }
         let search = self.search_config_for_mode();
@@ -1348,6 +1350,7 @@ impl App {
         self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;
+        self.reset_playlist_ui_state();
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
         // when the input is re-entered later.
         self.search.select_all = false;
@@ -1397,6 +1400,10 @@ impl App {
         self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
         self.library_ui.confirm_delete = None;
+        // Popup-like playlist surfaces dismiss on any navigation (the drill-down itself is
+        // content state — it resets only on a fresh Library entry below).
+        self.library_ui.create_input = None;
+        self.library_ui.confirm_playlist_delete = None;
         // Any navigation deselects: a Ctrl+A highlight must not survive a screen change.
         self.search.select_all = false;
         self.ai.select_all = false;
@@ -1423,7 +1430,9 @@ impl App {
                 if !self.library_tab_available(self.library_ui.tab) {
                     self.library_ui.tab = self.library_tabs()[0];
                 }
-                // Start each library visit clean (cursor, anchor, scroll, and any filter).
+                // Start each library visit clean (cursor, anchor, scroll, filter, and any
+                // playlist drill-down or popup left from the previous visit).
+                self.reset_playlist_ui_state();
                 self.clear_library_filter();
             }
             Mode::Settings => self.open_settings(),

@@ -62,6 +62,19 @@ impl App {
             return Vec::new();
         }
 
+        // Deleting a playlist drops the whole list at once, so it's gated behind the same
+        // modal: Enter or `y` confirms, anything else backs out.
+        if self.library_ui.confirm_playlist_delete.is_some() {
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            if confirmed {
+                return self.confirm_playlist_delete_apply();
+            }
+            self.library_ui.confirm_playlist_delete = None;
+            return Vec::new();
+        }
+
         // Search submit/select is fixed to the physical Enter key. Handle it before
         // remappable globals so Enter stays local to Search while every other screen keeps
         // using the user's keymap.
@@ -248,7 +261,9 @@ impl App {
             Mode::Search => self.search.focus == SearchFocus::Input,
             Mode::Ai => self.ai.focus == AiFocus::Input,
             Mode::Settings => self.settings.as_ref().is_some_and(|s| s.editing_text),
-            Mode::Library => self.library_ui.filter_editing,
+            Mode::Library => {
+                self.library_ui.filter_editing || self.library_ui.create_input.is_some()
+            }
             _ => false,
         }
     }

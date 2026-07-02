@@ -1854,13 +1854,19 @@ fn settings_accounts_tab_renders_service_sections() {
         .collect();
 
     assert!(text.contains("Last.fm"), "Last.fm section header renders");
-    assert!(text.contains("ListenBrainz"), "ListenBrainz section renders");
+    assert!(
+        text.contains("ListenBrainz"),
+        "ListenBrainz section renders"
+    );
     assert!(text.contains("Spotify"), "Spotify section renders");
     assert!(
         text.contains("connect in browser"),
         "disconnected accounts offer the connect action"
     );
-    assert!(text.contains("Client ID"), "Spotify Client ID field renders");
+    assert!(
+        text.contains("Client ID"),
+        "Spotify Client ID field renders"
+    );
 }
 
 #[test]
@@ -3925,7 +3931,7 @@ fn downloads_tab_shows_download_folder_tracks() {
     let mut app = App::new(100);
     app.library_ui.downloaded = vec![Song::local_file(PathBuf::from("/tmp/a.m4a"))];
     app.update(Msg::Key(key(KeyCode::Char('l'))));
-    app.update(Msg::Key(key(KeyCode::BackTab))); // All -> Downloads
+    open_library_tab(&mut app, LibraryTab::Downloads);
     assert_eq!(app.library_ui.tab, LibraryTab::Downloads);
     assert_eq!(app.library_len(), 1);
 }
@@ -7237,4 +7243,242 @@ fn enter_on_queue_drag_range_starts_at_range_beginning() {
     assert_eq!(app.queue.cursor_pos(), 1);
     assert_eq!(current(&app), "id1");
     assert!(load_url(&cmds).expect("a Load cmd").contains("id1"));
+}
+
+// --- Library Playlists tab ------------------------------------------------
+
+/// Opens the Playlists tab with two playlists ("Alpha": a1+a2, "Beta": b1).
+fn app_with_playlists() -> App {
+    let mut app = App::new(100);
+    app.playlists.create("Alpha");
+    app.playlists.add("Alpha", fsong("a1", "Song A1", "X"));
+    app.playlists.add("Alpha", fsong("a2", "Song A2", "Y"));
+    app.playlists.create("Beta");
+    app.playlists.add("Beta", fsong("b1", "Song B1", "Z"));
+    open_library_tab(&mut app, LibraryTab::Playlists);
+    app
+}
+
+#[test]
+fn playlists_is_the_last_normal_tab() {
+    assert_eq!(
+        LibraryTab::NORMAL,
+        [
+            LibraryTab::All,
+            LibraryTab::Favorites,
+            LibraryTab::History,
+            LibraryTab::Downloads,
+            LibraryTab::Playlists,
+        ]
+    );
+}
+
+#[test]
+fn n_is_bound_to_playlist_create_in_the_playlists_context() {
+    let app = App::new(100);
+    let n = Chord::new(KeyCode::Char('n'), KeyModifiers::empty());
+    assert_eq!(
+        app.keymap.action(KeyContext::Playlists, n),
+        Some(Action::PlaylistCreate)
+    );
+    // The song tabs must not gain the binding.
+    assert_eq!(app.keymap.action(KeyContext::Library, n), None);
+}
+
+#[test]
+fn playlists_root_lists_playlists() {
+    let app = app_with_playlists();
+    assert!(app.playlists_root());
+    assert_eq!(app.library_len(), 2);
+    assert_eq!(app.library_count_for(LibraryTab::Playlists), 2);
+    // Root rows are playlists, so there are no song rows to act on.
+    assert!(app.library_rows().is_empty());
+}
+
+#[test]
+fn enter_opens_a_playlist_and_back_returns_to_the_list() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Enter))); // open "Alpha"
+    assert_eq!(app.library_ui.open_playlist.as_deref(), Some("alpha"));
+    assert_eq!(row_ids(&app), vec!["a1", "a2"]);
+
+    app.update(Msg::Key(key(KeyCode::Char('q')))); // back to the playlist list
+    assert_eq!(app.mode, Mode::Library);
+    assert!(app.library_ui.open_playlist.is_none());
+    assert_eq!(app.library_ui.selected, 0); // cursor restored to "Alpha"
+
+    app.update(Msg::Key(key(KeyCode::Char('q')))); // and out of the Library
+    assert_eq!(app.mode, Mode::Player);
+}
+
+#[test]
+fn esc_backs_out_of_an_opened_playlist() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.library_ui.open_playlist.is_some());
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(app.library_ui.open_playlist.is_none());
+    assert_eq!(app.mode, Mode::Library);
+}
+
+#[test]
+fn a_on_the_playlist_root_plays_that_playlist_as_a_fresh_queue() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Down))); // cursor to "Beta"
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('a'))));
+    assert_eq!(app.mode, Mode::Player);
+    assert_eq!(app.queue.len(), 1);
+    assert_eq!(current(&app), "b1");
+    assert!(load_url(&cmds).is_some());
+}
+
+#[test]
+fn enter_in_the_drilldown_plays_the_selected_song() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Enter))); // open "Alpha"
+    app.update(Msg::Key(key(KeyCode::Down))); // cursor to a2
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(app.mode, Mode::Player);
+    assert_eq!(current(&app), "a2");
+    assert!(load_url(&cmds).is_some());
+}
+
+#[test]
+fn delete_on_the_playlist_root_asks_then_deletes_on_confirm() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Delete)));
+    // Nothing deleted yet — the modal is pending.
+    assert_eq!(
+        app.library_ui.confirm_playlist_delete.as_deref(),
+        Some("alpha")
+    );
+    assert_eq!(app.playlists.list().len(), 2);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('y'))));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(app.library_ui.confirm_playlist_delete.is_none());
+    assert_eq!(app.playlists.list().len(), 1);
+    assert!(app.playlists.find("alpha").is_none());
+    assert!(app.status.text.contains("Deleted playlist"));
+}
+
+#[test]
+fn any_other_key_cancels_the_playlist_delete_confirm() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Delete)));
+    assert!(app.library_ui.confirm_playlist_delete.is_some());
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('x'))));
+    assert!(cmds.iter().all(|c| !matches!(c, Cmd::SavePlaylists)));
+    assert!(app.library_ui.confirm_playlist_delete.is_none());
+    assert_eq!(app.playlists.list().len(), 2);
+}
+
+#[test]
+fn delete_in_the_drilldown_removes_the_song_from_the_playlist() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Enter))); // open "Alpha"
+    let cmds = app.update(Msg::Key(key(KeyCode::Delete))); // remove a1, no confirm
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert_eq!(app.library_ui.open_playlist.as_deref(), Some("alpha"));
+    assert_eq!(row_ids(&app), vec!["a2"]);
+    assert_eq!(app.playlists.find("alpha").unwrap().songs.len(), 1);
+}
+
+#[test]
+fn n_opens_the_create_popup_and_enter_creates_and_selects() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Char('n'))));
+    assert_eq!(app.library_ui.create_input.as_deref(), Some(""));
+
+    for c in "My Mix".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    assert_eq!(app.library_ui.create_input.as_deref(), Some("My Mix"));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(app.library_ui.create_input.is_none());
+    assert!(app.playlists.find("My Mix").is_some());
+    // The cursor lands on the new playlist (appended last).
+    assert_eq!(app.library_ui.selected, 2);
+    assert!(app.status.text.contains("Created playlist"));
+}
+
+#[test]
+fn esc_cancels_the_create_popup_without_creating() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Char('n'))));
+    app.update(Msg::Key(key(KeyCode::Char('x'))));
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(app.library_ui.create_input.is_none());
+    assert_eq!(app.playlists.list().len(), 2);
+}
+
+#[test]
+fn blank_create_popup_enter_hints_instead_of_creating() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(cmds.iter().all(|c| !matches!(c, Cmd::SavePlaylists)));
+    // The popup stays open for a correction.
+    assert!(app.library_ui.create_input.is_some());
+    assert_eq!(app.playlists.list().len(), 2);
+    assert!(app.status.text.contains("Enter a playlist name"));
+}
+
+#[test]
+fn slash_filters_playlist_names_at_the_root() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "be".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    assert_eq!(app.library_len(), 1);
+    assert_eq!(app.filtered_playlists()[0].name, "Beta");
+
+    // Enter commits the filter; the next Enter opens the (only) filtered playlist.
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(app.library_ui.open_playlist.as_deref(), Some("beta"));
+}
+
+#[test]
+fn switching_tabs_closes_an_opened_playlist() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.library_ui.open_playlist.is_some());
+    app.update(Msg::Key(key(KeyCode::Tab))); // wraps to All
+    assert!(app.library_ui.open_playlist.is_none());
+    assert_eq!(app.library_ui.tab, LibraryTab::All);
+}
+
+#[test]
+fn backslash_on_the_playlist_root_enqueues_the_whole_playlist() {
+    // Playing state, so the enqueue is a pure append (idle enqueues start playback).
+    let mut app = app_playing(1, 0);
+    app.playlists.create("Alpha");
+    app.playlists.add("Alpha", fsong("a1", "Song A1", "X"));
+    app.playlists.add("Alpha", fsong("a2", "Song A2", "Y"));
+    open_library_tab(&mut app, LibraryTab::Playlists);
+    let before = app.queue.len();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('\\'))));
+    assert!(load_url(&cmds).is_none()); // no interruption
+    assert_eq!(app.queue.len(), before + 2); // both "Alpha" tracks
+    assert_eq!(app.mode, Mode::Library); // enqueue never leaves the screen
+}
+
+#[test]
+fn playlists_reload_reconciles_a_dangling_drilldown() {
+    let mut app = app_with_playlists();
+    app.update(Msg::Key(key(KeyCode::Enter))); // open "Alpha"
+    assert!(app.library_ui.open_playlist.is_some());
+    // Simulate an external rewrite (finished transfer job) that dropped "alpha".
+    app.playlists = crate::playlists::Playlists::default();
+    app.reconcile_playlists_reload();
+    assert!(app.library_ui.open_playlist.is_none());
+    assert_eq!(app.library_ui.selected, 0);
 }

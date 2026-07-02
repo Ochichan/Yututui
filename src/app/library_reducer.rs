@@ -5,8 +5,12 @@ use crate::util::sanitize;
 
 impl App {
     /// Number of rows currently shown in the active library tab — after the in-library
-    /// filter, so selection/navigation bounds track what's actually on screen.
+    /// filter, so selection/navigation bounds track what's actually on screen. At the
+    /// Playlists root the rows are playlists, not songs.
     pub(in crate::app) fn library_len(&self) -> usize {
+        if self.playlists_root() {
+            return self.filtered_playlists().len();
+        }
         self.library_rows().len()
     }
 
@@ -28,16 +32,12 @@ impl App {
             LibraryTab::RadioFavorites => self.radio_favorites_library_count(),
             LibraryTab::Radio => self.radio_recent_library_count(),
             LibraryTab::Downloads => self.library_ui.downloaded.len(),
+            LibraryTab::Playlists => self.playlists.list().len(),
         }
     }
 
     pub fn library_rows(&self) -> Vec<&Song> {
-        let tab = if self.library_tab_available(self.library_ui.tab) {
-            self.library_ui.tab
-        } else {
-            self.library_tabs()[0]
-        };
-        let rows = self.library_rows_for(tab);
+        let rows = self.library_rows_for(self.effective_library_tab());
         self.apply_library_filter(rows)
     }
 
@@ -78,6 +78,15 @@ impl App {
             LibraryTab::RadioFavorites => self.radio_favorites_library_rows(),
             LibraryTab::Radio => self.radio_recent_library_rows(),
             LibraryTab::Downloads => self.library_ui.downloaded.iter().collect(),
+            // Song rows exist only inside an opened playlist; the root level lists the
+            // playlists themselves (see `filtered_playlists`).
+            LibraryTab::Playlists => self
+                .library_ui
+                .open_playlist
+                .as_ref()
+                .and_then(|key| self.playlists.find(key))
+                .map(|p| p.songs.iter().collect())
+                .unwrap_or_default(),
         }
     }
 
@@ -226,6 +235,14 @@ impl App {
     /// Radio forgets recently played stations, Downloads asks before deleting the files on disk,
     /// and All is an aggregate view so it's read-only. Clamps the selection afterward.
     pub(in crate::app) fn library_delete_rows(&mut self, lo: usize, hi: usize) -> Vec<Cmd> {
+        // The Playlists root lists playlists, not songs — the song-target resolution below
+        // would bail on its empty song list, so route to the delete-confirm modal first.
+        // Deleting is deliberately single-row (`lo`): dropping several whole playlists in
+        // one keypress is too destructive for a range gesture.
+        if self.playlists_root() {
+            self.request_playlist_delete(lo);
+            return Vec::new();
+        }
         // Resolve the displayed (possibly filtered) rows to concrete songs first, then delete
         // by identity. Under an active filter the row positions no longer map to the raw
         // collection indices, so an index-based removal would hit the wrong tracks.
@@ -306,6 +323,24 @@ impl App {
                     self.dirty = true;
                 }
                 Vec::new()
+            }
+            // Drill-down rows of an opened playlist: remove the selected tracks from it
+            // (the playlist itself stays; root-level deletion is handled above).
+            LibraryTab::Playlists => {
+                let Some(key) = self.library_ui.open_playlist.clone() else {
+                    return Vec::new();
+                };
+                let mut any = false;
+                for song in targets {
+                    any |= self.playlists.remove_song(&key, &song.video_id);
+                }
+                if any {
+                    self.clamp_library_selection();
+                    self.dirty = true;
+                    vec![Cmd::SavePlaylists]
+                } else {
+                    Vec::new()
+                }
             }
         }
     }

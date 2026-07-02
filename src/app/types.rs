@@ -392,6 +392,17 @@ pub enum MouseTarget {
     QueueDel(usize),
     /// The `✗` delete button on a Library list row, by row index in the current tab.
     LibraryDel(usize),
+    /// The breadcrumb of an opened playlist (Playlists tab drill-down) — returns to the
+    /// playlist list.
+    PlaylistBack,
+    /// Confirm button on the "delete playlist" modal.
+    ConfirmPlaylistDelete,
+    /// Cancel button on the "delete playlist" modal.
+    CancelPlaylistDelete,
+    /// Create button on the "new playlist" popup.
+    ConfirmPlaylistCreate,
+    /// Cancel button on the "new playlist" popup.
+    CancelPlaylistCreate,
     /// Confirm button on the "delete downloaded files" modal.
     ConfirmDelete,
     /// Cancel button on the "delete downloaded files" modal.
@@ -611,10 +622,17 @@ pub enum LibraryTab {
     RadioFavorites,
     Radio,
     Downloads,
+    Playlists,
 }
 
 impl LibraryTab {
-    pub const NORMAL: [Self; 4] = [Self::All, Self::Favorites, Self::History, Self::Downloads];
+    pub const NORMAL: [Self; 5] = [
+        Self::All,
+        Self::Favorites,
+        Self::History,
+        Self::Downloads,
+        Self::Playlists,
+    ];
 
     pub const RADIO_MODE: [Self; 2] = [Self::RadioFavorites, Self::Radio];
 
@@ -626,6 +644,7 @@ impl LibraryTab {
             LibraryTab::RadioFavorites => t!("Radio Likes", "라디오 좋아요"),
             LibraryTab::Radio => t!("Radio History", "라디오 히스토리"),
             LibraryTab::Downloads => t!("Downloads", "다운로드"),
+            LibraryTab::Playlists => t!("Playlists", "플레이리스트"),
         }
     }
 
@@ -637,6 +656,7 @@ impl LibraryTab {
             LibraryTab::RadioFavorites => t!("R-Like", "라디오 좋아요"),
             LibraryTab::Radio => t!("R-Hist", "라디오 기록"),
             LibraryTab::Downloads => t!("Down", "다운"),
+            LibraryTab::Playlists => t!("Lists", "플리"),
         }
     }
 }

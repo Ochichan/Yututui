@@ -84,6 +84,11 @@ impl App {
     }
 
     pub(in crate::app) fn on_key_library(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        // The create-playlist popup captures every key while open — checked before the
+        // filter so its Esc closes the popup, not the filter.
+        if self.library_ui.create_input.is_some() {
+            return self.on_key_playlist_create(k);
+        }
         // While the filter box is capturing, typed characters edit the query (the list narrows
         // live) and the arrows still move within the filtered rows — see `on_key_library_filter`.
         if self.library_ui.filter_editing {
@@ -96,8 +101,22 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
+        let playlists_tab = self.effective_library_tab() == LibraryTab::Playlists;
+        // With no filter to clear, Esc backs out of an opened playlist — the second stage
+        // of the same "get me out" gesture.
+        if k.code == KeyCode::Esc && playlists_tab && self.library_ui.open_playlist.is_some() {
+            self.close_open_playlist();
+            return Vec::new();
+        }
         let len = self.library_len();
-        match self.keymap.action(KeyContext::Library, k.into()) {
+        // The Playlists tab resolves against its own context so its bindings (and the
+        // cheat-sheet group) can differ from the song tabs; Common still supplies shared nav.
+        let ctx = if playlists_tab {
+            KeyContext::Playlists
+        } else {
+            KeyContext::Library
+        };
+        match self.keymap.action(ctx, k.into()) {
             Some(Action::LibraryFilter) => {
                 // Open the filter input (re-opens with the current query if one is applied).
                 self.library_ui.filter_editing = true;
@@ -105,11 +124,17 @@ impl App {
                 Vec::new()
             }
             Some(Action::Back) => {
-                // `q` always closes the Library in one press. Esc is the lighter gesture that
-                // just clears an applied filter (handled above); the filter is reset on the
-                // next Library open regardless, so leaving with one applied is harmless.
-                self.mode = Mode::Player;
-                self.dirty = true;
+                // Inside an opened playlist, Back first returns to the playlist list; from
+                // the root (and every other tab) `q` closes the Library in one press. Esc is
+                // the lighter gesture that just clears an applied filter (handled above);
+                // the filter is reset on the next Library open regardless, so leaving with
+                // one applied is harmless.
+                if playlists_tab && self.library_ui.open_playlist.is_some() {
+                    self.close_open_playlist();
+                } else {
+                    self.mode = Mode::Player;
+                    self.dirty = true;
+                }
                 Vec::new()
             }
             Some(Action::Quit) => {
@@ -118,12 +143,14 @@ impl App {
             }
             Some(Action::FocusNext) => {
                 self.library_ui.tab = self.next_library_tab(self.library_ui.tab, true);
+                self.reset_playlist_ui_state();
                 self.clear_library_filter();
                 self.dirty = true;
                 Vec::new()
             }
             Some(Action::FocusPrev) => {
                 self.library_ui.tab = self.next_library_tab(self.library_ui.tab, false);
+                self.reset_playlist_ui_state();
                 self.clear_library_filter();
                 self.dirty = true;
                 Vec::new()
@@ -164,13 +191,40 @@ impl App {
                 Vec::new()
             }
             // Delete the selected range (mouse-drag or single row), per-tab semantics.
+            // At the Playlists root this asks before deleting the playlist under the cursor.
             Some(Action::LibraryRemove) => self.library_delete_selection(),
-            // Enter plays the highlighted track right now, keeping the existing queue intact.
-            Some(Action::Confirm) => self.play_now_many(self.selected_library_songs()),
-            // `\` adds the highlighted track to the queue without interrupting playback.
-            Some(Action::Enqueue) => self.enqueue_many(self.selected_library_songs()),
-            // `P` plays the whole current tab as a fresh queue (the old Enter behavior).
-            Some(Action::PlayAll) => self.play_from_library(),
+            // Enter opens the playlist under the cursor at the Playlists root; on song rows
+            // it plays the highlighted track right now, keeping the existing queue intact.
+            Some(Action::Confirm) => {
+                if self.playlists_root() {
+                    self.open_selected_playlist()
+                } else {
+                    self.play_now_many(self.selected_library_songs())
+                }
+            }
+            // `\` enqueues without interrupting playback: the whole playlist under the
+            // cursor at the Playlists root, the highlighted track(s) on song rows.
+            Some(Action::Enqueue) => {
+                if self.playlists_root() {
+                    self.enqueue_selected_playlist()
+                } else {
+                    self.enqueue_many(self.selected_library_songs())
+                }
+            }
+            // `a` plays the playlist under the cursor at the Playlists root; on song rows it
+            // plays the whole current tab as a fresh queue (the old Enter behavior).
+            Some(Action::PlayAll) => {
+                if self.playlists_root() {
+                    self.play_selected_playlist()
+                } else {
+                    self.play_from_library()
+                }
+            }
+            // `n` opens the create-playlist popup (bound only in the Playlists context).
+            Some(Action::PlaylistCreate) => {
+                self.open_playlist_create();
+                Vec::new()
+            }
             Some(Action::OpenAi) => {
                 self.enter_ai();
                 Vec::new()

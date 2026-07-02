@@ -72,6 +72,14 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.spotify_picker.is_some() {
         views::settings::render_spotify_picker(frame, app, area);
     }
+    // The create-playlist popup captures Library input while open.
+    if app.library_ui.create_input.is_some() {
+        views::library::render_playlist_create(frame, app, area);
+    }
+    // Deleting a whole playlist is modal, like the file delete below.
+    if app.library_ui.confirm_playlist_delete.is_some() {
+        views::library::render_confirm_playlist_delete(frame, app, area);
+    }
     // Deleting downloaded files is modal and irreversible — drawn last so its buttons win.
     if app.library_ui.confirm_delete.is_some() {
         views::library::render_confirm_delete(frame, app, area);

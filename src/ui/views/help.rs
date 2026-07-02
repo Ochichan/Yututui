@@ -288,20 +288,20 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                 mouse_row(
                     "Tab click",
                     "탭 클릭",
-                    "Switch All, Favorites, History, Radio, Downloads.",
-                    "All, Favorites, History, Radio, Downloads 탭을 전환합니다.",
+                    "Switch All, Favorites, History, Radio, Downloads, Playlists.",
+                    "All, Favorites, History, Radio, Downloads, Playlists 탭을 전환합니다.",
                 ),
                 mouse_row(
                     "Row click",
                     "행 클릭",
-                    "Single-click selects; double-click plays now.",
-                    "한 번 클릭은 선택, 더블클릭은 바로 재생입니다.",
+                    "Single-click selects; double-click plays now (opens a playlist).",
+                    "한 번 클릭은 선택, 더블클릭은 바로 재생(플레이리스트는 열기)입니다.",
                 ),
                 mouse_row(
                     "Row right click",
                     "행 우클릭",
-                    "Add that library song to the queue.",
-                    "해당 라이브러리 곡을 대기열에 추가합니다.",
+                    "Add that library song (or whole playlist) to the queue.",
+                    "해당 곡(플레이리스트 행은 전체)을 대기열에 추가합니다.",
                 ),
                 mouse_row(
                     "Drag rows",
@@ -314,6 +314,12 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                     "x 클릭",
                     "Remove/unfavorite/forget/download-delete by the active tab.",
                     "현재 탭 의미에 맞게 제거, 즐겨찾기 해제, 기록 삭제, 파일 삭제를 합니다.",
+                ),
+                mouse_row(
+                    "Breadcrumb click",
+                    "브레드크럼 클릭",
+                    "Inside a playlist, go back to the playlist list.",
+                    "플레이리스트 안에서 목록으로 돌아갑니다.",
                 ),
             ],
         ),
@@ -447,6 +453,25 @@ mod tests {
         assert!(search_results.contains(&("Tab".to_owned(), "Open source menu".to_owned())));
         // `\` adds to the queue.
         assert!(search_results.contains(&("\\".to_owned(), "Add to queue".to_owned())));
+    }
+
+    #[test]
+    fn playlists_context_gets_its_own_cheat_sheet_group() {
+        let _guard = crate::i18n::lock_for_test();
+        let app = App::new(100);
+        let groups = help_groups(&app);
+
+        let playlists = groups
+            .iter()
+            .find_map(|(title, rows)| (title == "Playlists").then_some(rows))
+            .expect("playlists group");
+        assert!(playlists.contains(&("Enter".to_owned(), "Open / play selected".to_owned())));
+        assert!(playlists.contains(&("a".to_owned(), "Play playlist".to_owned())));
+        assert!(playlists.contains(&("n".to_owned(), "New playlist".to_owned())));
+        assert!(
+            playlists.contains(&("Del".to_owned(), "Delete playlist / remove song".to_owned()))
+        );
+        assert!(playlists.contains(&("q".to_owned(), "Back / close".to_owned())));
     }
 
     #[test]

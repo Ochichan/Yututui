@@ -354,6 +354,16 @@ pub struct LibraryView {
     /// and the list narrows live). Committed with Enter (keeps the filter, returns to list
     /// navigation); cleared with Esc.
     pub filter_editing: bool,
+    /// Drill-down state of the Playlists tab: the id of the opened playlist whose songs are
+    /// listed. `None` = the root level (the playlist list itself).
+    pub open_playlist: Option<String>,
+    /// The create-playlist popup's name buffer. `Some` while the popup is open and capturing
+    /// keystrokes (Enter creates, Esc cancels).
+    pub create_input: Option<String>,
+    /// Pending "delete playlist" confirmation: the id of the playlist queued for deletion
+    /// (removes the whole list at once, so it's gated behind an explicit yes/no like the
+    /// download-file delete). `None` when no modal is open.
+    pub confirm_playlist_delete: Option<String>,
 }
 
 /// Queue-window overlay state: whether it's open, the selection cursor + anchor, its

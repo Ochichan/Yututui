@@ -66,6 +66,8 @@ pub enum Action {
     LibraryRemove,
     LibraryFilter,
     PlayAll,
+    // Playlists tab.
+    PlaylistCreate,
     // Settings screen.
     SettingsCancel,
     ChangeDecrease,
@@ -257,6 +259,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "탭 전체 재생",
     ),
     (
+        Action::PlaylistCreate,
+        "playlist_create",
+        "New playlist",
+        "새 플레이리스트",
+    ),
+    (
         Action::SettingsCancel,
         "settings_cancel",
         "Close settings",
@@ -364,6 +372,22 @@ impl Action {
             (KeyContext::Library, Action::Confirm) => t!("Play selected", "선택 항목 재생"),
             (KeyContext::Library, Action::Back) => t!("Close Library", "라이브러리 닫기"),
             (KeyContext::Library, Action::LibraryRemove) => t!("Remove / delete", "제거 / 삭제"),
+            (KeyContext::Playlists, Action::Confirm) => {
+                t!("Open / play selected", "열기 / 선택 재생")
+            }
+            (KeyContext::Playlists, Action::PlayAll) => {
+                t!("Play playlist", "플레이리스트 재생")
+            }
+            (KeyContext::Playlists, Action::Enqueue) => {
+                t!("Enqueue playlist / song", "플레이리스트 / 곡 큐에 추가")
+            }
+            (KeyContext::Playlists, Action::LibraryRemove) => {
+                t!(
+                    "Delete playlist / remove song",
+                    "플레이리스트 삭제 / 곡 제거"
+                )
+            }
+            (KeyContext::Playlists, Action::Back) => t!("Back / close", "뒤로 / 닫기"),
             (KeyContext::Queue, Action::Confirm) => t!("Play / jump to track", "곡 재생 / 이동"),
             (KeyContext::Queue, Action::Back) => t!("Close queue", "대기열 닫기"),
             (KeyContext::Queue, Action::QueueRemove) => {
@@ -410,6 +434,7 @@ pub enum KeyContext {
     Common,
     Global,
     Library,
+    Playlists,
     Queue,
     SearchInput,
     SearchResults,
@@ -428,6 +453,12 @@ const CONTEXT_META: &[(KeyContext, &str, &str, &str)] = &[
     ),
     (KeyContext::Global, "global", "Global", "전역"),
     (KeyContext::Library, "library", "Library", "라이브러리"),
+    (
+        KeyContext::Playlists,
+        "playlists",
+        "Playlists",
+        "플레이리스트",
+    ),
     (KeyContext::Queue, "queue", "Queue window", "대기열 창"),
     (
         KeyContext::SearchInput,
@@ -917,6 +948,17 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Library, A::LibraryRemove, key(KeyCode::Delete)),
         (C::Library, A::LibraryFilter, ch('/')),
         (C::Library, A::Back, ch('q')),
+        // Playlists tab (root list of playlists + opened-playlist drill-down).
+        (C::Playlists, A::Confirm, key(KeyCode::Enter)),
+        (C::Playlists, A::PlayAll, ch('a')),
+        (C::Playlists, A::Enqueue, ch('\\')),
+        (C::Playlists, A::PlaylistCreate, ch('n')),
+        (C::Playlists, A::Favorite, ch('f')),
+        (C::Playlists, A::Download, ch('d')),
+        (C::Playlists, A::OpenAi, ch('g')),
+        (C::Playlists, A::LibraryRemove, key(KeyCode::Delete)),
+        (C::Playlists, A::LibraryFilter, ch('/')),
+        (C::Playlists, A::Back, ch('q')),
         // Queue window (overlay on the player; up/down nav comes from Common).
         (C::Queue, A::Confirm, key(KeyCode::Enter)),
         (C::Queue, A::QueueRemove, key(KeyCode::Delete)),
