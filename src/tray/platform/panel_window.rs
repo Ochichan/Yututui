@@ -102,6 +102,10 @@ impl MiniPlayerPanel {
     /// Place the panel next to a tray-icon click (physical pixels): centered on the
     /// click, preferring above it (bottom taskbars), flipping below for top bars,
     /// and kept inside the monitor that contains the click.
+    ///
+    /// Windows-only: the notification-area click reports an anchor position. On macOS
+    /// the panel opens from a menu item (no click coordinates), so the OS places it.
+    #[cfg(windows)]
     pub fn position_near(&self, (anchor_x, anchor_y): (f64, f64)) {
         let size = self.window.outer_size();
         let monitor = self
