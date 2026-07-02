@@ -207,7 +207,12 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
             },
             MouseTarget::Nav(*mode),
         );
-        let style = if app.mode == *mode { active } else { muted };
+        let style = if app.mode == *mode {
+            // A brief accent wash on the tab just switched to (identity when off).
+            crate::ui::anim::active_tab_style(app, crate::ui::anim::TabPop::Nav, active)
+        } else {
+            muted
+        };
         spans.push(Span::styled(" ", style));
         spans.push(Span::styled(label, style));
         spans.push(Span::styled(" ", style));

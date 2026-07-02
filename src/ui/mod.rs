@@ -133,6 +133,10 @@ pub fn seal_popup_background(frame: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
+    // Every popup ends its render here, so this one call gives all of them the fade-in
+    // materialize (a no-op unless the popup-fade window is running — see `App::detect_fx`).
+    // After the seal above, every cell has a concrete background to blend from.
+    anim::popup_fade_overlay(frame, app, area);
 }
 
 pub fn mark_art_rows_for_popup(_frame: &mut Frame, _app: &App, _popup: Rect) {

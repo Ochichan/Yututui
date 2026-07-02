@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=YTM TUI
+GenericName=Music Player
+Comment=A fast terminal UI for YouTube Music
+# `ytt` is the shipped command; it lives on PATH after install (install.sh / the AUR
+# package both put it there). Terminal=true so launchers open it in a terminal window.
+Exec=ytt
+Terminal=true
+# Icon name (not a path) so the freedesktop icon theme resolves it from hicolor/pixmaps.
+# It must stay "ytm-tui" to match the MPRIS `DesktopEntry` property the player advertises
+# (see src/media/mpris.rs `desktop_entry`) — that is how KDE/GNOME media widgets find the
+# artwork/name for background playback.
+Icon=ytm-tui
+Categories=AudioVideo;Audio;Player;
+Keywords=youtube;music;player;tui;terminal;
+StartupNotify=false

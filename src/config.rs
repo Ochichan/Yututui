@@ -38,7 +38,7 @@ pub const DOWNLOAD_CONCURRENCY_MIN: usize = 1;
 pub const DOWNLOAD_CONCURRENCY_MAX: usize = 3;
 pub const DOWNLOAD_CONCURRENCY_DEFAULT: usize = 2;
 
-/// Player-view eye-candy toggles (the **Animations** settings tab). Every field is an
+/// UI eye-candy toggles (the **Animations** settings tab). Every field is an
 /// independent on/off; **all default to `false`** so a fresh install behaves exactly like
 /// before (the app's whole identity is "fast and light"). `master` is a global kill-switch:
 /// when it is off, nothing animates regardless of the per-effect flags, and the animation
@@ -54,16 +54,48 @@ pub struct AnimationsConfig {
     pub title: bool,
     /// Pulse the `♥` like-marker when the track is in the library.
     pub heart: bool,
-    /// Moving sparkle / bright head on the filled seekbar.
+    /// Seekbar motion: the sweeping comet on the filled gauge plus smooth sub-second fill
+    /// (the gauge interpolates between mpv's one-per-second reports while the clock runs).
     pub seekbar: bool,
     /// Spinning throbber next to "▸ playing" on the status line.
     pub spinner: bool,
-    /// Faux VU `▁▂▃▅▇` bars on the status line.
+    /// Faux VU `▁▂▃▅▇` bars on the status line (and a mini VU marker on the queue window's
+    /// now-playing row).
     pub eq_bars: bool,
     /// Pulse/glow the transport play-pause glyph.
     pub controls: bool,
     /// "Breathing" outer border colour cycle.
     pub border: bool,
+    // Player one-shots (event feedback, each plays once and the clock re-sleeps) -
+    /// Letter-cascade reveal of the title line when a new track starts.
+    pub track_intro: bool,
+    /// Synced-lyrics polish: the current line breathes and flashes as it becomes current;
+    /// far lines fade with distance.
+    pub lyrics: bool,
+    /// Transient status messages type themselves in with a bright caret head.
+    pub toast: bool,
+    /// A short volume gauge flashes under the transport strip when the volume changes.
+    pub volume_flash: bool,
+    /// A little burst of hearts/sparks around the title when the track is liked.
+    pub like_burst: bool,
+    /// A bright ripple at the seekbar head after a seek.
+    pub seek_flash: bool,
+    // UI-wide effects (Search / Library / Settings / DJ Gem, not just the player) -
+    /// The focused list selection bar breathes gently toward the accent colour.
+    pub selection: bool,
+    /// List rows cascade in top-to-bottom on view/tab switches and new search results.
+    pub stagger: bool,
+    /// Text-input carets blink (search box, filter, playlist names, settings fields, DJ Gem).
+    pub caret: bool,
+    /// The active tab pops with a brief accent wash on view/tab switches.
+    pub tabs: bool,
+    /// Popups and dropdowns materialize with a ~150 ms fade-in instead of appearing at once.
+    pub popup_fade: bool,
+    /// Activity indicators animate: "Searching…" dots, lyrics fetching, DJ Gem "…thinking",
+    /// and a spinner on a running download's `⬇ N%` tag.
+    pub activity: bool,
+    /// The About card twinkles: sparkles around the icon and a gradient sweep on the name.
+    pub about_fx: bool,
     // Filler-canvas effects (drawn only in blank zones) ------------------------
     /// Matrix-style digital rain in the free zone(s).
     pub rain: bool,
@@ -107,6 +139,19 @@ impl Default for AnimationsConfig {
             eq_bars: false,
             controls: false,
             border: false,
+            track_intro: false,
+            lyrics: false,
+            toast: false,
+            volume_flash: false,
+            like_burst: false,
+            seek_flash: false,
+            selection: false,
+            stagger: false,
+            caret: false,
+            tabs: false,
+            popup_fade: false,
+            activity: false,
+            about_fx: false,
             rain: false,
             donut: false,
             visualizer: false,
@@ -134,6 +179,19 @@ impl AnimationsConfig {
             || self.eq_bars
             || self.controls
             || self.border
+            || self.track_intro
+            || self.lyrics
+            || self.toast
+            || self.volume_flash
+            || self.like_burst
+            || self.seek_flash
+            || self.selection
+            || self.stagger
+            || self.caret
+            || self.tabs
+            || self.popup_fade
+            || self.activity
+            || self.about_fx
             || self.rain
             || self.donut
             || self.visualizer
@@ -1160,6 +1218,22 @@ mod tests {
         };
         assert!(effect_only.any_effect());
         assert!(!effect_only.active());
+
+        // The UI-wide effects count as effects too — master + only `caret` (or `toast`)
+        // must wake the clock, or the new toggles would silently never run.
+        let ui_only = AnimationsConfig {
+            master: true,
+            caret: true,
+            ..Default::default()
+        };
+        assert!(ui_only.any_effect());
+        assert!(ui_only.active());
+        let toast_only = AnimationsConfig {
+            master: true,
+            toast: true,
+            ..Default::default()
+        };
+        assert!(toast_only.active());
 
         // Master on but no effect → still inactive (nothing to draw).
         let master_only = AnimationsConfig {

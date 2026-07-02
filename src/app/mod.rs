@@ -314,6 +314,10 @@ pub struct App {
     /// Monotonic animation frame counter, bumped on each [`Msg::AnimTick`] (~30 fps) while
     /// animations are active. Drives every effect's phase; wraps harmlessly. `0` at rest.
     anim_frame: u64,
+    /// One-shot animation feedback: start frames for event-driven effects (toast reveal, track
+    /// intro, volume flash, …) plus the last-observed values `update` diffs to fire them.
+    /// See [`FxState`]; all of it is inert until the matching animation flags are enabled.
+    pub fx: FxState,
     /// Fractional redraw scheduler for animation frames. The phase can advance at the configured
     /// FPS while heavyweight effects redraw at a lower cadence, preserving motion timing without
     /// forcing the terminal compositor to repaint every logical tick.
@@ -363,6 +367,7 @@ impl App {
             status_text_prev: String::new(),
             video: Video::default(),
             anim_frame: 0,
+            fx: FxState::new(volume.clamp(0, VOLUME_MAX)),
             audio: AudioEq::default(),
             autoplay_streaming: false,
             dropdowns: Dropdowns::default(),
@@ -781,7 +786,8 @@ impl App {
         // leftover `Info` color from a previous green toast.
         self.status.kind = StatusKind::Error;
         let cmds = self.dispatch(msg);
-        if self.status.text != status_before {
+        let status_changed = self.status.text != status_before;
+        if status_changed {
             self.status.set_at = if self.status.text.is_empty() {
                 None
             } else {
@@ -795,17 +801,22 @@ impl App {
         // any seek command emitted this turn is a position discontinuity (bump the epoch so
         // the OS session re-announces the position), and any pause/resume flip rebases the
         // interpolation anchor so a long pause never reads as elapsed progress.
-        if cmds.iter().any(|cmd| {
+        let seeked = cmds.iter().any(|cmd| {
             matches!(
                 cmd,
                 Cmd::Player(PlayerCmd::SeekRelative(_) | PlayerCmd::SeekAbsolute(_))
             )
-        }) {
+        });
+        if seeked {
             self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
         }
         if self.playback.paused != paused_before {
             self.playback.time_pos_at = Some(Instant::now());
         }
+        // One-shot animation feedback, detected centrally for the same reason as the status
+        // TTL above: every input path (key, mouse, remote, DJ Gem) changes the same state, so
+        // diffing it here means no call site can forget to trigger the matching effect.
+        self.detect_fx(status_changed, seeked);
         self.sync_art_overlay_state();
         self.status_text_prev = status_before; // return the buffer's capacity for next turn
         cmds

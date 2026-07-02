@@ -59,19 +59,24 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else if !app.status.text.is_empty() {
         // A transient status ("Added 2 tracks to …", the create-a-playlist nudge) rides the
         // spacer row so Library actions are visible without leaving the screen. It
-        // auto-clears after STATUS_TTL via the global StatusTick, like the Search band.
-        let role = match app.status.kind {
-            crate::app::StatusKind::Error => R::Error,
-            crate::app::StatusKind::Info => R::Success,
-        };
-        frame.render_widget(
-            Paragraph::new(
-                Line::from(app.status.text.clone())
-                    .style(app.theme.style(role))
-                    .alignment(Alignment::Center),
-            ),
-            rows[1],
-        );
+        // auto-clears after STATUS_TTL via the global StatusTick, like the Search band — and
+        // types itself in while the toast animation's window runs.
+        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[1].width) {
+            frame.render_widget(Paragraph::new(line), rows[1]);
+        } else {
+            let role = match app.status.kind {
+                crate::app::StatusKind::Error => R::Error,
+                crate::app::StatusKind::Info => R::Success,
+            };
+            frame.render_widget(
+                Paragraph::new(
+                    Line::from(app.status.text.clone())
+                        .style(app.theme.style(role))
+                        .alignment(Alignment::Center),
+                ),
+                rows[1],
+            );
+        }
     } else if app.effective_library_tab() == LibraryTab::Playlists
         && app.library_ui.open_playlist.is_some()
     {
@@ -135,10 +140,15 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
         }
         x = x.saturating_add(w);
         let style = if active_tab == t {
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD)
+            // A brief accent wash right after a tab/screen switch (identity when off).
+            crate::ui::anim::active_tab_style(
+                app,
+                crate::ui::anim::TabPop::Inner,
+                Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg))
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             app.theme.style(R::TextMuted)
         };
@@ -158,7 +168,11 @@ fn render_filter(frame: &mut Frame, app: &App, area: Rect, matches: usize) {
         Span::styled(query.clone(), app.theme.style(R::TextPrimary)),
     ];
     if editing {
-        spans.push(Span::styled("\u{2588}", app.theme.style(R::Accent)));
+        spans.push(crate::ui::anim::caret_span(
+            app,
+            app.theme.style(R::Accent),
+            app.theme.color(R::Background),
+        ));
     }
     let hint = if matches == 0 {
         t!("  (no matches)", "  (일치 없음)").to_owned()
@@ -299,13 +313,18 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
         let body = crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1));
 
         let base = if selected {
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD)
+            crate::ui::anim::selection_style(
+                app,
+                Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg))
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             app.theme.style(R::TextPrimary)
         };
+        // Rows cascade in top-to-bottom right after a tab/view switch (identity when off).
+        let base = crate::ui::anim::stagger_style(app, crate::app::Mode::Library, vis, base);
         let row = Rect {
             x: area.x,
             y,
@@ -430,13 +449,18 @@ fn render_playlist_list(frame: &mut Frame, app: &App, area: Rect) {
         let body = crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1));
 
         let base = if selected {
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD)
+            crate::ui::anim::selection_style(
+                app,
+                Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg))
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             app.theme.style(R::TextPrimary)
         };
+        // Playlist rows cascade too (same Library reveal window as the track lists).
+        let base = crate::ui::anim::stagger_style(app, crate::app::Mode::Library, vis, base);
         let row = Rect {
             x: area.x,
             y,
@@ -561,7 +585,11 @@ pub fn render_playlist_create(frame: &mut Frame, app: &App, area: Rect) {
             crate::ui::popup_style(app, R::TextMuted),
         ),
         Span::styled(shown, crate::ui::popup_style(app, R::TextPrimary)),
-        Span::styled("\u{2588}", crate::ui::popup_style(app, R::Accent)),
+        crate::ui::anim::caret_span(
+            app,
+            crate::ui::popup_style(app, R::Accent),
+            crate::ui::popup_bg(app),
+        ),
     ]);
     frame.render_widget(Paragraph::new(input), rows[1]);
 
@@ -648,7 +676,11 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
                 crate::ui::popup_style(app, R::TextMuted),
             ),
             Span::styled(shown, crate::ui::popup_style(app, R::TextPrimary)),
-            Span::styled("\u{2588}", crate::ui::popup_style(app, R::Accent)),
+            crate::ui::anim::caret_span(
+                app,
+                crate::ui::popup_style(app, R::Accent),
+                crate::ui::popup_bg(app),
+            ),
         ]);
         frame.render_widget(Paragraph::new(input), rows[1]);
 
@@ -694,10 +726,13 @@ pub fn render_playlist_picker(frame: &mut Frame, app: &App, area: Rect) {
             };
             let body = crate::ui::text::truncate_owned_to_width(body, rows[1].width as usize);
             let style = if selected {
-                Style::default()
-                    .fg(app.theme.color(R::SelectionFg))
-                    .bg(app.theme.color(R::SelectionBg))
-                    .add_modifier(Modifier::BOLD)
+                crate::ui::anim::selection_style(
+                    app,
+                    Style::default()
+                        .fg(app.theme.color(R::SelectionFg))
+                        .bg(app.theme.color(R::SelectionBg))
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 crate::ui::popup_style(app, R::TextPrimary)
             };

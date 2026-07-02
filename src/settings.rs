@@ -127,7 +127,9 @@ impl SettingsTab {
                 f
             }
             // Theme (preset + transparent-bg toggle), then every color role, then the
-            // animation toggles (master kill-switch first, then per-element effects).
+            // animation toggles (master kill-switch first, then the behaviour knobs, the
+            // player element effects, the player one-shots, the UI-wide effects, and finally
+            // the filler-canvas set — the same grouping as `AnimationsConfig`).
             SettingsTab::Graphics => {
                 let mut f = vec![Field::RetroMode, Field::ThemePreset, Field::BackgroundNone];
                 f.extend(ThemeRole::ALL.iter().copied().map(Field::ThemeColor));
@@ -142,6 +144,19 @@ impl SettingsTab {
                     Field::AnimEqBars,
                     Field::AnimControls,
                     Field::AnimBorder,
+                    Field::AnimTrackIntro,
+                    Field::AnimLyrics,
+                    Field::AnimToast,
+                    Field::AnimVolumeFlash,
+                    Field::AnimLikeBurst,
+                    Field::AnimSeekFlash,
+                    Field::AnimSelection,
+                    Field::AnimStagger,
+                    Field::AnimCaret,
+                    Field::AnimTabs,
+                    Field::AnimPopupFade,
+                    Field::AnimActivity,
+                    Field::AnimAboutFx,
                     Field::AnimRain,
                     Field::AnimDonut,
                     Field::AnimVisualizer,
@@ -190,7 +205,7 @@ impl SettingsTab {
             SettingsTab::Graphics => vec![
                 (t!("Theme", "테마"), 3),
                 (t!("Colors", "색상"), ThemeRole::ALL.len()),
-                (t!("Animations", "애니메이션"), 15),
+                (t!("Animations", "애니메이션"), 28),
             ],
             SettingsTab::Accounts => vec![
                 ("Last.fm", 3),
@@ -281,6 +296,22 @@ pub enum Field {
     AnimEqBars,
     AnimControls,
     AnimBorder,
+    // Player one-shots (event feedback).
+    AnimTrackIntro,
+    AnimLyrics,
+    AnimToast,
+    AnimVolumeFlash,
+    AnimLikeBurst,
+    AnimSeekFlash,
+    // UI-wide effects (Search / Library / Settings / DJ Gem / popups).
+    AnimSelection,
+    AnimStagger,
+    AnimCaret,
+    AnimTabs,
+    AnimPopupFade,
+    AnimActivity,
+    AnimAboutFx,
+    // Filler-canvas effects.
     AnimRain,
     AnimDonut,
     AnimVisualizer,
@@ -463,6 +494,19 @@ impl Field {
             | Field::AnimEqBars
             | Field::AnimControls
             | Field::AnimBorder
+            | Field::AnimTrackIntro
+            | Field::AnimLyrics
+            | Field::AnimToast
+            | Field::AnimVolumeFlash
+            | Field::AnimLikeBurst
+            | Field::AnimSeekFlash
+            | Field::AnimSelection
+            | Field::AnimStagger
+            | Field::AnimCaret
+            | Field::AnimTabs
+            | Field::AnimPopupFade
+            | Field::AnimActivity
+            | Field::AnimAboutFx
             | Field::AnimRain
             | Field::AnimDonut
             | Field::AnimVisualizer
@@ -494,7 +538,7 @@ impl Field {
     /// For an animation toggle field, a mutable handle to its flag inside an
     /// [`AnimationsConfig`]; `None` for any non-animation field. This single mapping is the
     /// source of truth used for both rendering the checkbox and flipping it on input — so the
-    /// 13 effects never drift out of sync across the display / toggle / persist paths.
+    /// 26 effects never drift out of sync across the display / toggle / persist paths.
     pub(crate) fn anim_flag(self, a: &mut AnimationsConfig) -> Option<&mut bool> {
         Some(match self {
             Field::AnimMaster => &mut a.master,
@@ -505,6 +549,19 @@ impl Field {
             Field::AnimEqBars => &mut a.eq_bars,
             Field::AnimControls => &mut a.controls,
             Field::AnimBorder => &mut a.border,
+            Field::AnimTrackIntro => &mut a.track_intro,
+            Field::AnimLyrics => &mut a.lyrics,
+            Field::AnimToast => &mut a.toast,
+            Field::AnimVolumeFlash => &mut a.volume_flash,
+            Field::AnimLikeBurst => &mut a.like_burst,
+            Field::AnimSeekFlash => &mut a.seek_flash,
+            Field::AnimSelection => &mut a.selection,
+            Field::AnimStagger => &mut a.stagger,
+            Field::AnimCaret => &mut a.caret,
+            Field::AnimTabs => &mut a.tabs,
+            Field::AnimPopupFade => &mut a.popup_fade,
+            Field::AnimActivity => &mut a.activity,
+            Field::AnimAboutFx => &mut a.about_fx,
             Field::AnimRain => &mut a.rain,
             Field::AnimDonut => &mut a.donut,
             Field::AnimVisualizer => &mut a.visualizer,
@@ -574,6 +631,19 @@ impl Field {
             Field::AnimEqBars => t!("EQ bars", "EQ 막대").to_owned(),
             Field::AnimControls => t!("Control pulse", "컨트롤 펄스").to_owned(),
             Field::AnimBorder => t!("Breathing border", "테두리 호흡").to_owned(),
+            Field::AnimTrackIntro => t!("Track intro reveal", "곡 시작 타이틀 등장").to_owned(),
+            Field::AnimLyrics => t!("Lyrics glow", "가사 글로우").to_owned(),
+            Field::AnimToast => t!("Status typewriter", "상태 메시지 타자기").to_owned(),
+            Field::AnimVolumeFlash => t!("Volume flash", "볼륨 플래시").to_owned(),
+            Field::AnimLikeBurst => t!("Like heart burst", "좋아요 하트 팡").to_owned(),
+            Field::AnimSeekFlash => t!("Seek ripple", "탐색 물결").to_owned(),
+            Field::AnimSelection => t!("Selection breathing", "선택 줄 숨쉬기").to_owned(),
+            Field::AnimStagger => t!("List cascade", "목록 캐스케이드").to_owned(),
+            Field::AnimCaret => t!("Caret blink", "커서 깜빡임").to_owned(),
+            Field::AnimTabs => t!("Tab pop", "탭 강조 팝").to_owned(),
+            Field::AnimPopupFade => t!("Popup fade-in", "팝업 페이드인").to_owned(),
+            Field::AnimActivity => t!("Activity dots", "진행 표시 점").to_owned(),
+            Field::AnimAboutFx => t!("About sparkles", "정보 카드 반짝임").to_owned(),
             Field::AnimRain => t!("Matrix rain", "매트릭스 비").to_owned(),
             Field::AnimDonut => t!("Spinning donut", "회전 도넛").to_owned(),
             Field::AnimVisualizer => t!("Visualizer", "비주얼라이저").to_owned(),
@@ -756,7 +826,7 @@ impl SettingsDraft {
             Field::AnimFps => format!("{} fps", self.animations.effective_fps()),
             // Behaviour knob, rendered as a checkbox (handled explicitly, not via `anim_flag`).
             Field::AnimPauseUnfocused => toggle_str(self.animations.pause_unfocused),
-            // All 13 animation toggles render as a checkbox; one mapping (`anim_flag`) reads
+            // All 26 animation toggles render as a checkbox; one mapping (`anim_flag`) reads
             // the live value out of the draft's `animations`, so display never drifts from
             // the toggle/persist paths. (`field` is the value being matched here.)
             Field::AnimMaster
@@ -767,6 +837,19 @@ impl SettingsDraft {
             | Field::AnimEqBars
             | Field::AnimControls
             | Field::AnimBorder
+            | Field::AnimTrackIntro
+            | Field::AnimLyrics
+            | Field::AnimToast
+            | Field::AnimVolumeFlash
+            | Field::AnimLikeBurst
+            | Field::AnimSeekFlash
+            | Field::AnimSelection
+            | Field::AnimStagger
+            | Field::AnimCaret
+            | Field::AnimTabs
+            | Field::AnimPopupFade
+            | Field::AnimActivity
+            | Field::AnimAboutFx
             | Field::AnimRain
             | Field::AnimDonut
             | Field::AnimVisualizer
@@ -1086,10 +1169,10 @@ mod tests {
     fn graphics_tab_groups_theme_colors_and_animations() {
         let _guard = crate::i18n::lock_for_test();
         let f = SettingsTab::Graphics.fields();
-        // ThemePreset + BackgroundNone + every color role + 15 animation fields
+        // ThemePreset + BackgroundNone + every color role + 28 animation fields
         // plus the RetroMode fallback toggle.
-        // (master enable + fps slider + pause-when-unfocused toggle + 12 per-effect toggles).
-        assert_eq!(f.len(), 3 + ThemeRole::ALL.len() + 15);
+        // (master enable + fps slider + pause-when-unfocused toggle + 25 per-effect toggles).
+        assert_eq!(f.len(), 3 + ThemeRole::ALL.len() + 28);
         assert_eq!(f[0], Field::RetroMode);
         assert_eq!(f[1], Field::ThemePreset);
         assert_eq!(f[2], Field::BackgroundNone);

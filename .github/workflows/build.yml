@@ -329,7 +329,15 @@ jobs:
       - name: Install Windows smoke dependencies
         if: runner.os == 'Windows'
         shell: pwsh
-        run: choco install mpv -y --no-progress
+        run: |
+          choco install mpv -y --no-progress
+          # choco's mpvio.install drops mpv.exe in its package tools dir and appends that
+          # dir to the *machine* PATH — which later steps in this job do not inherit (there
+          # is no refreshenv between steps). Surface it via $GITHUB_PATH so the daemon
+          # smoke's `Get-Command mpv` resolves in the next step.
+          $mpv = Get-ChildItem -Path "$env:ChocolateyInstall\lib" -Recurse -Filter mpv.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $mpv) { throw "mpv.exe not found under $env:ChocolateyInstall\lib after choco install" }
+          Split-Path $mpv.FullName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Smoke Windows daemon and tray CLI
         if: runner.os == 'Windows'
@@ -355,10 +363,18 @@ jobs:
             fi
           done
 
+      # Ship the desktop entry + 1024² icon beside the binary so `ytt` gets a launcher and
+      # the MPRIS media widget shows artwork/name (install.sh and the AUR package place them
+      # into the freedesktop dirs). The binary stays at the archive root so existing
+      # extract paths (install.sh, AUR `$srcdir/ytt`) are unaffected.
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          tar -czf "${{ matrix.archive }}" -C "target/${{ matrix.target }}/release" "${{ matrix.bin }}"
+          staging="$(mktemp -d)"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$staging/"
+          cp packaging/linux/ytm-tui.desktop "$staging/"
+          cp assets/icons/ytm-tui.png "$staging/"
+          tar -czf "${{ matrix.archive }}" -C "$staging" "${{ matrix.bin }}" ytm-tui.desktop ytm-tui.png
 
       - name: Package (Windows)
         if: runner.os == 'Windows'

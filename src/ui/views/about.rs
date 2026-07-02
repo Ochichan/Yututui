@@ -48,14 +48,19 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, popup);
 
     let rows = Layout::vertical([Constraint::Length(ICON_ROWS), Constraint::Min(0)]).split(inner);
-    draw_icon(frame, app, rows[0]);
+    let icon = draw_icon(frame, app, rows[0]);
+    // Sparkles twinkle on the blank cells around the icon while the About animation is on
+    // (never inside the icon's own rect — a native-graphics icon leaves its text cells
+    // blank, so the empty-cell check alone can't protect it).
+    crate::ui::anim::about_sparkles(frame, app, rows[0], icon);
     draw_text(frame, app, rows[1]);
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// Draw the embedded icon centered in `band`, building (and caching) its protocol on first use.
-fn draw_icon(frame: &mut Frame, app: &App, band: Rect) {
+/// Returns the rect the icon occupies so the sparkle overlay can keep clear of it.
+fn draw_icon(frame: &mut Frame, app: &App, band: Rect) -> Rect {
     // Terminal cells are about half as wide as they are tall, so a square icon wants roughly
     // twice the columns of rows. `Resize::Fit` keeps the icon's aspect inside whatever rect we
     // hand it, so this only has to be in the right ballpark.
@@ -76,18 +81,19 @@ fn draw_icon(frame: &mut Frame, app: &App, band: Rect) {
             ICON_PNG,
             rect,
         );
-        return;
+        return rect;
     }
     ensure_icon(app);
     let mut guard = app.about_icon.borrow_mut();
     let Some((_, _, proto)) = guard.as_mut() else {
-        return;
+        return rect;
     };
     frame.render_stateful_widget(
         StatefulImage::new().resize(Resize::Fit(Some(FilterType::Lanczos3))),
         rect,
         proto,
     );
+    rect
 }
 
 /// Decode the embedded PNG and build its render protocol once, caching it on the app.
@@ -216,17 +222,20 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     ])
     .split(area);
 
-    // Name + version.
-    let name = Line::from(vec![
-        Span::styled(
-            "ytm-tui",
-            crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  v{}", env!("CARGO_PKG_VERSION")),
-            crate::ui::popup_style(app, R::TextMuted),
-        ),
-    ]);
+    // Name + version — with a gradient band sweeping the brand while the About animation is on.
+    let name = crate::ui::anim::about_brand_line(app, "ytm-tui", env!("CARGO_PKG_VERSION"))
+        .unwrap_or_else(|| {
+            Line::from(vec![
+                Span::styled(
+                    "ytm-tui",
+                    crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  v{}", env!("CARGO_PKG_VERSION")),
+                    crate::ui::popup_style(app, R::TextMuted),
+                ),
+            ])
+        });
     frame.render_widget(Paragraph::new(name).alignment(Alignment::Center), rows[0]);
 
     // Description.

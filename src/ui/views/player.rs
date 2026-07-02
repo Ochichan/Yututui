@@ -61,30 +61,40 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // Title (or an error, if playback failed). With the title/heart animations off this is the
     // plain bold line exactly as before; with them on, `anim::title_line` returns a shimmering /
-    // scrolling line (and a pulsing ♥), which we render in place of it.
+    // scrolling line (and a pulsing ♥), which we render in place of it. A just-changed track's
+    // intro cascade and a just-set status message's typewriter reveal each take precedence for
+    // their short one-shot window, then fall through to these steady-state forms.
     if !app.status.text.is_empty() {
-        let role = match app.status.kind {
-            StatusKind::Error => R::Error,
-            StatusKind::Info => R::Success,
-        };
-        frame.render_widget(
-            Paragraph::new(
-                Line::from(app.status.text.clone())
-                    .style(app.theme.style(role))
-                    .alignment(Alignment::Center),
-            ),
-            rows[1],
-        );
+        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[1].width) {
+            frame.render_widget(Paragraph::new(line), rows[1]);
+        } else {
+            let role = match app.status.kind {
+                StatusKind::Error => R::Error,
+                StatusKind::Info => R::Success,
+            };
+            frame.render_widget(
+                Paragraph::new(
+                    Line::from(app.status.text.clone())
+                        .style(app.theme.style(role))
+                        .alignment(Alignment::Center),
+                ),
+                rows[1],
+            );
+        }
     } else if let Some(line) = app.queue.current().and_then(|s| {
         let title = app.display_title(s);
         let artist = app.display_artist(s);
-        crate::ui::anim::title_line(
+        let liked = app.library.is_favorite(&s.video_id);
+        crate::ui::anim::title_intro_line(
             app,
             title.as_ref(),
             artist.as_ref(),
-            app.library.is_favorite(&s.video_id),
+            liked,
             rows[1].width,
         )
+        .or_else(|| {
+            crate::ui::anim::title_line(app, title.as_ref(), artist.as_ref(), liked, rows[1].width)
+        })
     }) {
         frame.render_widget(Paragraph::new(line), rows[1]);
     } else {
@@ -125,8 +135,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Seekbar. Ratio + label (incl. the None/zero-duration handling) live in `format` so the
-    // edge cases are unit-tested without a frame buffer.
-    let ratio = format::seekbar_ratio(app.playback.time_pos, app.playback.duration);
+    // edge cases are unit-tested without a frame buffer. With the seekbar animation on, the
+    // fill also interpolates between mpv's ~1 Hz position reports (the label stays on whole
+    // seconds), so the gauge glides instead of stepping.
+    let ratio = crate::ui::anim::smooth_seek_ratio(
+        app,
+        format::seekbar_ratio(app.playback.time_pos, app.playback.duration),
+    );
     let seekbar = Gauge::default()
         .gauge_style(
             Style::default()
@@ -139,14 +154,33 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             app.playback.duration,
         ));
     frame.render_widget(seekbar, rows[3]);
-    // A bright comet sweeps the filled portion when the seekbar animation is on (no-op otherwise).
+    // A bright comet sweeps the filled portion when the seekbar animation is on (no-op
+    // otherwise), and a short ripple marks the head right after a seek.
     crate::ui::anim::seekbar_overlay(frame, app, rows[3], ratio);
+    crate::ui::anim::seek_flash_overlay(frame, app, rows[3], ratio);
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
     app.bridges.seekbar_rect.set(Some(rows[3]));
 
     render_controls(frame, app, rows[5]);
+    // A transient volume gauge flashes on the blank row under the transport strip right after
+    // a volume nudge (no-op outside its one-shot window).
+    crate::ui::anim::volume_flash_overlay(frame, app, rows[6]);
 
     render_status_line(frame, app, rows[7]);
+
+    // Heart burst around the title when the current track is liked. Skipped while a status
+    // message covers the title (nothing to celebrate over) — drawn after the neighbours so the
+    // sparks sit on top of the blank gap rows.
+    if app.status.text.is_empty()
+        && let Some(s) = app.queue.current()
+    {
+        let title = app.display_title(s);
+        let artist = app.display_artist(s);
+        let occupied = unicode_width::UnicodeWidthStr::width(format!("{title} — {artist}").as_str())
+            as u16
+            + 4;
+        crate::ui::anim::like_burst_overlay(frame, app, rows[1], occupied);
+    }
 
     // Central filler: album art (top) and/or the lyrics panel (below). With album art off
     // this is exactly the old behaviour — lyrics fill the whole area, nothing else draws.
@@ -321,12 +355,17 @@ fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)>
             )),
         ));
     }
-    // Download indicator for the current track, if one is in flight or finished.
+    // Download indicator for the current track, if one is in flight or finished. While one is
+    // actually running and the activity animation is on, a spinner stands in for the `⬇` so
+    // live progress reads as motion (same single cell, so the line never shifts).
     if let Some(s) = app.queue.current()
         && let Some(state) = app.downloads.active.get(&s.video_id)
     {
         let tag = match state {
-            DownloadState::Running(p) => format!("⬇ {p}%"),
+            DownloadState::Running(p) => {
+                let head = crate::ui::anim::download_spinner(app).unwrap_or_else(|| "⬇".to_owned());
+                format!("{head} {p}%")
+            }
             DownloadState::Done => "⬇ ✓".to_owned(),
             DownloadState::Failed => "⬇ ✗".to_owned(),
         };
@@ -405,7 +444,18 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
         let y = list.y + vis as u16;
         let selected = i >= sel_lo && i <= sel_hi;
         let is_current = i == current;
-        let marker = if is_current { "▸ " } else { "  " };
+        // The now-playing marker becomes a two-cell mini VU while the EQ-bars animation is on
+        // and something is actually playing (same width as `▸ `, so nothing shifts).
+        let vu = if is_current {
+            crate::ui::anim::queue_marker(app)
+        } else {
+            None
+        };
+        let marker = match &vu {
+            Some(bars) => bars.as_str(),
+            None if is_current => "▸ ",
+            None => "  ",
+        };
         let title = app.display_title(song);
         let artist = app.display_artist(song);
         let text = crate::ui::text::truncate_owned_to_width(
@@ -414,9 +464,12 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
         );
 
         let mut base = if selected {
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
+            crate::ui::anim::selection_style(
+                app,
+                Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg)),
+            )
         } else if is_current {
             app.theme.style(R::Accent)
         } else {
@@ -595,10 +648,13 @@ fn render_dropdown(
         let pad = (list.width as usize).saturating_sub(UnicodeWidthStr::width(text.as_str()));
         text.push_str(&" ".repeat(pad));
         let style = if *active {
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD)
+            crate::ui::anim::selection_style(
+                app,
+                Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg))
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             app.theme.style(R::TextPrimary)
         };
@@ -1064,14 +1120,23 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
     let lines = match &app.lyrics.track {
         Some(t) if !t.lines.is_empty() => &t.lines,
         _ => {
-            let msg = if app.lyrics.loading {
-                t!("Searching lyrics…", "가사 검색 중…")
+            let base = if app.lyrics.loading {
+                t!("Searching lyrics", "가사 검색 중")
             } else if app.lyrics.track.is_some() {
                 t!("No synced lyrics found.", "동기화된 가사가 없어요.")
             } else {
-                t!("Fetching lyrics…", "가사 가져오는 중…")
+                t!("Fetching lyrics", "가사 가져오는 중")
             };
-            frame.render_widget(Paragraph::new(centered(msg, dim)), area);
+            // In-flight messages carry animated dots when the activity flag is on; the
+            // static ellipsis otherwise (and always for the terminal "not found" state).
+            let msg = if app.lyrics.track.is_some() && !app.lyrics.loading {
+                base.to_owned()
+            } else if let Some(dots) = crate::ui::anim::activity_dots(app) {
+                format!("{base}{dots}")
+            } else {
+                format!("{base}…")
+            };
+            frame.render_widget(Paragraph::new(centered(&msg, dim)), area);
             return;
         }
     };
@@ -1085,17 +1150,27 @@ fn render_lyrics(frame: &mut Frame, app: &App, area: Rect) {
     // Keep the current line vertically centered.
     let start = cur.unwrap_or(0).saturating_sub(height / 2);
 
-    let current_style = app
-        .theme
-        .style(R::LyricsCurrent)
-        .add_modifier(Modifier::BOLD);
+    // With the lyrics animation on, the current line breathes toward the accent (flashing as
+    // it first becomes current) and far lines fade slightly with distance; identity when off.
+    let current_style = crate::ui::anim::lyrics_current_style(
+        app,
+        app.theme
+            .style(R::LyricsCurrent)
+            .add_modifier(Modifier::BOLD),
+    );
     let rendered: Vec<Line> = lines
         .iter()
         .enumerate()
         .skip(start)
         .take(height)
         .map(|(i, l)| {
-            let style = if Some(i) == cur { current_style } else { dim };
+            let style = if Some(i) == cur {
+                current_style
+            } else {
+                // No current line yet (intro silence) → no distance fade, plain dim.
+                let distance = cur.map_or(0, |c| c.abs_diff(i));
+                crate::ui::anim::lyrics_dim_style(app, dim, distance)
+            };
             centered(&l.text, style)
         })
         .collect();

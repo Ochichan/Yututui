@@ -26,7 +26,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$(uname -s)" in
-  Darwin|Linux) ;;
+  Darwin)
+    # CI macOS runners have no GUI/login session, so the OS Now Playing session can't
+    # attach and would wedge the daemon's event loop. Exercise the daemon headless; the
+    # spawned daemon inherits this env var. (Linux MPRIS degrades gracefully, so it stays
+    # enabled below and keeps that coverage.)
+    export YTM_NO_MEDIA_SESSION=1
+    ;;
+  Linux) ;;
   *)
     echo "unix-daemon-smoke.sh must run on macOS or Linux" >&2
     exit 2

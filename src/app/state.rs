@@ -76,6 +76,85 @@ impl RenderBridges {
     }
 }
 
+/// One-shot animation feedback ("fx") state: the frame each event-driven effect started, plus
+/// the last-observed values [`App::update`] diffs against to fire them. Centralizing detection
+/// in the reducer wrapper means every input path — key, mouse, remote, DJ Gem — triggers the
+/// same feedback without ~40 call sites having to remember to. Start frames are read by
+/// `crate::ui::anim`; the `last_*` anchors are reducer-only. While `anim_frame < until` the
+/// animation clock stays awake even where it would otherwise sleep (paused, non-player views),
+/// so a one-shot always gets to finish; afterwards the clock re-sleeps and, with every flag
+/// off, nothing here is ever armed and rendering is byte-for-byte unchanged.
+pub struct FxState {
+    /// The clock stays armed while `anim_frame < until` (the max deadline of all live
+    /// one-shots). Comparison-based, so stale values are harmless once passed.
+    pub(in crate::app) until: u64,
+    /// New status text was set → typewriter reveal (all views' status bands).
+    pub toast: Option<u64>,
+    /// The current track changed → title letter-cascade intro.
+    pub track_intro: Option<u64>,
+    /// The volume changed → transient gauge under the transport strip.
+    pub volume: Option<u64>,
+    /// The current track flipped to liked → heart burst around the title.
+    pub like: Option<u64>,
+    /// A seek command was issued → ripple at the seekbar head.
+    pub seek: Option<u64>,
+    /// The screen switched → nav-tab pop. Carries the mode switched *to*.
+    pub switch: Option<(u64, Mode)>,
+    /// An in-view tab bar changed (Library tabs / Settings tabs) → tab pop.
+    pub tabbar: Option<u64>,
+    /// A list got fresh content (view/tab switch, search results, playlist drill-down) →
+    /// row cascade. Carries the mode whose list should cascade.
+    pub list: Option<(u64, Mode)>,
+    /// A popup/dropdown opened → fade-in materialize (applied in `seal_popup_background`).
+    pub popup: Option<u64>,
+    /// The current synced-lyric line advanced → flash on the newly-current line.
+    pub lyric: Option<u64>,
+
+    // Last-observed values the central diff compares against (reducer-only) ----
+    pub(in crate::app) last_track_id: Option<String>,
+    pub(in crate::app) last_volume: i64,
+    pub(in crate::app) last_liked: bool,
+    pub(in crate::app) last_mode: Mode,
+    pub(in crate::app) last_library_tab: LibraryTab,
+    pub(in crate::app) last_settings_tab: Option<SettingsTab>,
+    pub(in crate::app) last_open_playlist: Option<String>,
+    pub(in crate::app) last_searching: bool,
+    /// Overlay-open bitmask (the art overlay mask's popup bits plus the two it doesn't
+    /// track); a bit turning on means "a popup just opened".
+    pub(in crate::app) last_popup_mask: u32,
+    pub(in crate::app) last_lyric_index: Option<usize>,
+}
+
+impl FxState {
+    /// Anchors seeded from launch state so the first frames don't replay a phantom "change"
+    /// (e.g. the initial volume reading as a volume change).
+    pub(in crate::app) fn new(volume: i64) -> Self {
+        Self {
+            until: 0,
+            toast: None,
+            track_intro: None,
+            volume: None,
+            like: None,
+            seek: None,
+            switch: None,
+            tabbar: None,
+            list: None,
+            popup: None,
+            lyric: None,
+            last_track_id: None,
+            last_volume: volume,
+            last_liked: false,
+            last_mode: Mode::Player,
+            last_library_tab: LibraryTab::default(),
+            last_settings_tab: None,
+            last_open_playlist: None,
+            last_searching: false,
+            last_popup_mask: 0,
+            last_lyric_index: None,
+        }
+    }
+}
+
 /// The transient status/notification line shown to the user: its text, when it was last set
 /// (for TTL auto-expiry), and its semantic kind (which drives its color).
 #[derive(Default)]

@@ -1,20 +1,28 @@
-//! Optional player-window animations. Every effect is individually gated by an
+//! Optional UI animations. Every effect is individually gated by an
 //! [`AnimationsConfig`](crate::config::AnimationsConfig) flag plus the global `master` switch;
 //! with all flags off nothing here ever runs (the per-frame clock in `main.rs` stays asleep, so
-//! the player renders byte-for-byte like a build with this module absent — the app's "fast and
+//! the app renders byte-for-byte like a build with this module absent — the "fast and
 //! light" identity is preserved).
 //!
-//! Two families:
+//! Four families:
 //! * **Element-level** — restyle existing widgets in place (title shimmer, beating heart,
-//!   breathing border, control pulse, seekbar comet, status-line spinner / EQ bars). These return
-//!   a tweaked `Style`/`Line` or draw a small overlay; when their flag is off they return the
+//!   breathing border, control pulse, seekbar comet, status-line spinner / EQ bars, lyrics glow,
+//!   selection breathing, blinking carets, activity dots). These return a tweaked
+//!   `Style`/`Line`/`String` or draw a small overlay; when their flag is off they return the
 //!   plain value, so the call site stays a one-liner.
+//! * **One-shots** — event feedback armed centrally by `App::detect_fx` (title intro on a track
+//!   change, status typewriter, volume flash, like burst, seek ripple, tab pop, list cascade,
+//!   popup fade-in). Each reads its start frame from [`App::fx`](crate::app::FxState) and its
+//!   window from [`fx_window`]; the window is defined in wall-clock ms and converted through
+//!   [`App::anim_ms_frames`], so a one-shot feels the same length at 5 fps and at 60 fps.
 //! * **Canvas** — drawn straight into the back buffer in the blank filler zone only (never over
 //!   album art or lyrics): matrix rain, spinning donut, faux visualizer, starfield, bouncing logo.
+//! * **Overlay** — the About card's sparkles and brand gradient.
 //!
-//! All phase comes from [`App::anim_frame`] (a frame counter frozen while paused), so the effects
-//! are deterministic and resume cleanly. Canvas glyphs are all display-width 1, so direct cell
-//! writes never drift the layout.
+//! All phase comes from [`App::anim_frame`] (a frame counter frozen while paused, except while a
+//! one-shot keeps the clock briefly awake), so the effects are deterministic and resume cleanly.
+//! Canvas/overlay glyphs are all display-width 1, so direct cell writes never drift the layout;
+//! everything degrades in retro mode either at the source or through the CP437 scrubber.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -26,8 +34,38 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::App;
+use crate::app::{App, Mode};
 use crate::theme::ThemeRole as R;
+
+/// One-shot effect windows, in wall-clock milliseconds. `App::detect_fx` arms the clock with
+/// these; the matching render helpers here derive their progress from the same values, so
+/// trigger and drawing can never disagree about an effect's length.
+pub mod fx_window {
+    /// Title letter-cascade on a track change.
+    pub const TRACK_INTRO_MS: u64 = 800;
+    /// Heart burst on a like.
+    pub const LIKE_MS: u64 = 700;
+    /// Volume gauge flash after a volume nudge.
+    pub const VOLUME_MS: u64 = 750;
+    /// Ripple at the seekbar head after a seek.
+    pub const SEEK_MS: u64 = 350;
+    /// Active-tab pop on a view/tab switch.
+    pub const SWITCH_MS: u64 = 350;
+    /// List-row cascade on fresh content.
+    pub const LIST_MS: u64 = 600;
+    /// Popup fade-in materialize.
+    pub const POPUP_MS: u64 = 160;
+    /// Flash on a newly-current synced-lyric line.
+    pub const LYRIC_MS: u64 = 450;
+    /// Typewriter speed for the status toast (display columns per second).
+    pub const TOAST_COLS_PER_SEC: u64 = 70;
+
+    /// The toast window for a message `cols` wide: type time plus a short glow tail, capped so
+    /// a long message speeds up rather than lingering past the status TTL.
+    pub fn toast_ms(cols: usize) -> u64 {
+        (250 + cols as u64 * 1000 / TOAST_COLS_PER_SEC).min(1600)
+    }
+}
 
 // ── shared helpers ──────────────────────────────────────────────────────────
 
@@ -36,6 +74,28 @@ fn wave(frame: u64, period: u64) -> f64 {
     let p = period.max(1);
     let t = (frame % p) as f64 / p as f64;
     0.5 - 0.5 * (std::f64::consts::TAU * t).cos()
+}
+
+/// Fast start, gentle landing — the house easing for one-shot motion.
+fn ease_out_cubic(t: f64) -> f64 {
+    1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
+}
+
+/// Linear progress (0..1) through a one-shot window `ms` long that started at frame `start`.
+/// `None` before it starts or after it ends — every one-shot renderer keys off this, so an
+/// expired effect costs one comparison and draws nothing.
+fn fx_t(app: &App, start: Option<u64>, ms: u64) -> Option<f64> {
+    let start = start?;
+    let f = app.anim_frame();
+    if f < start {
+        return None; // stale slot from before a frame-counter context change
+    }
+    let len = app.anim_ms_frames(ms).max(1);
+    let elapsed = f - start;
+    if elapsed >= len {
+        return None;
+    }
+    Some(elapsed as f64 / len as f64)
 }
 
 /// Deterministic per-cell scramble (splitmix64 finaliser) — used so rain columns / stars keep a
@@ -315,6 +375,564 @@ pub fn seekbar_overlay(frame: &mut Frame, app: &App, area: Rect, ratio: f64) {
             cell.set_bg(lerp_color(gauge, Color::Rgb(255, 255, 255), t));
         }
     }
+}
+
+// ── one-shot + ambient UI effects ───────────────────────────────────────────
+
+/// Equal-style run grouper for character-by-character line builders (these run at animation
+/// FPS, so they emit one `Span` per style-run instead of one heap `String` per char).
+struct RunBuilder {
+    spans: Vec<Span<'static>>,
+    run: String,
+    style: Option<Style>,
+}
+
+impl RunBuilder {
+    fn new(spans: Vec<Span<'static>>) -> Self {
+        Self {
+            spans,
+            run: String::new(),
+            style: None,
+        }
+    }
+
+    fn push(&mut self, ch: char, style: Style) {
+        if self.style != Some(style) {
+            self.flush();
+            self.style = Some(style);
+        }
+        self.run.push(ch);
+    }
+
+    fn flush(&mut self) {
+        if let Some(style) = self.style.take()
+            && !self.run.is_empty()
+        {
+            self.spans
+                .push(Span::styled(std::mem::take(&mut self.run), style));
+        }
+        self.run.clear();
+    }
+
+    fn finish(mut self) -> Vec<Span<'static>> {
+        self.flush();
+        self.spans
+    }
+}
+
+/// Smooth sub-second seekbar fill: interpolates the gauge between mpv's ~1 Hz `time-pos`
+/// reports using the same `time_pos_at` anchor the OS media session interpolates with.
+/// Folded under the `seekbar` flag (it is that element's animation); returns `base` untouched
+/// when the flag is off, playback is paused, or the clock isn't running — so a parked app
+/// never creeps.
+pub fn smooth_seek_ratio(app: &App, base: f64) -> f64 {
+    let a = app.animations();
+    if !(a.master && a.seekbar) || app.playback.paused || !app.animation_active() {
+        return base;
+    }
+    let (Some(pos), Some(at), Some(dur)) = (
+        app.playback.time_pos,
+        app.playback.time_pos_at,
+        app.playback.duration,
+    ) else {
+        return base;
+    };
+    if dur <= 0.0 {
+        return base;
+    }
+    let live = pos + at.elapsed().as_secs_f64() * app.playback.speed.max(0.0);
+    (live / dur).clamp(0.0, 1.0)
+}
+
+/// A bright ripple expanding from the seekbar head right after a seek, so the jump target is
+/// unmissable. Recolours cell backgrounds only (like the comet), so the time label stays put.
+pub fn seek_flash_overlay(frame: &mut Frame, app: &App, area: Rect, ratio: f64) {
+    let a = app.animations();
+    if !(a.master && a.seek_flash) || area.width == 0 || area.height == 0 {
+        return;
+    }
+    let Some(t) = fx_t(app, app.fx.seek, fx_window::SEEK_MS) else {
+        return;
+    };
+    let spread = ease_out_cubic(t);
+    let head = ((f64::from(area.width) * ratio) as u16).min(area.width.saturating_sub(1));
+    let radius = 1.0 + spread * 5.0;
+    let gauge = app.theme.color(R::GaugeFilled);
+    let empty = app.theme.color(R::GaugeEmpty);
+    let buf = frame.buffer_mut();
+    for dx in -6i32..=6 {
+        let d = dx.unsigned_abs() as f64;
+        if d > radius {
+            continue;
+        }
+        let x = i32::from(area.x) + i32::from(head) + dx;
+        if x < i32::from(area.x) || x >= i32::from(area.right()) {
+            continue;
+        }
+        // Brightest at the head, fading with distance and as the ripple dies out.
+        let b = (1.0 - d / radius.max(1.0)) * (1.0 - t);
+        if let Some(cell) = buf.cell_mut((x as u16, area.y)) {
+            let under = if (x - i32::from(area.x)) as f64 / f64::from(area.width.max(1)) < ratio {
+                gauge
+            } else {
+                empty
+            };
+            cell.set_bg(lerp_color(under, Color::Rgb(255, 255, 255), b * 0.9));
+        }
+    }
+}
+
+/// A transient volume gauge flashed on the blank row under the transport strip whenever the
+/// volume changes (keys, wheel, or remote) — hold for two thirds of the window, fade out over
+/// the last third. `█`/`░` cells only, so retro mode shows it verbatim.
+pub fn volume_flash_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let a = app.animations();
+    if !(a.master && a.volume_flash) || area.height == 0 {
+        return;
+    }
+    let Some(t) = fx_t(app, app.fx.volume, fx_window::VOLUME_MS) else {
+        return;
+    };
+    const BAR_W: u16 = 14;
+    if area.width < BAR_W + 2 {
+        return;
+    }
+    let alpha = ((1.0 - t) * 3.0).clamp(0.0, 1.0);
+    let vol = (app.playback.volume.clamp(0, 100) as f64) / 100.0;
+    let filled = (vol * f64::from(BAR_W)).round() as u16;
+    let x0 = area.x + (area.width - BAR_W) / 2;
+    let bg = app.theme.color(R::Background);
+    let on = lerp_color(bg, app.theme.color(R::GaugeFilled), alpha);
+    let off = lerp_color(bg, app.theme.color(R::GaugeEmpty), alpha * 0.6);
+    let buf = frame.buffer_mut();
+    for i in 0..BAR_W {
+        let (ch, color) = if i < filled {
+            ('█', on)
+        } else {
+            ('░', off)
+        };
+        put_char(buf, x0 + i, area.y, ch, Style::default().fg(color));
+    }
+}
+
+/// The title line's letter-cascade intro right after a track change: characters sweep in
+/// left-to-right with a bright head, landing on the plain bold title. Centered by a leading
+/// pad so the text sits at its final position from the first frame. Takes precedence over the
+/// shimmer while its window runs; `None` otherwise (the caller falls through).
+pub fn title_intro_line(
+    app: &App,
+    title: &str,
+    artist: &str,
+    liked: bool,
+    width: u16,
+) -> Option<Line<'static>> {
+    let a = app.animations();
+    if !(a.master && a.track_intro) {
+        return None;
+    }
+    let t = fx_t(app, app.fx.track_intro, fx_window::TRACK_INTRO_MS)?;
+    let heart = if liked { "♥ " } else { "" };
+    let body = col_window(&format!("{heart}{title} — {artist}"), 0, width as usize);
+    let total = UnicodeWidthStr::width(body.as_str());
+    let reveal = ease_out_cubic(t) * (total as f64 + 5.0);
+    let pad = (width as usize).saturating_sub(total) / 2;
+    let base = app.theme.color(R::TextPrimary);
+    let bright = app.theme.color(R::Accent);
+    let mut b = RunBuilder::new(vec![Span::raw(" ".repeat(pad))]);
+    let mut col = 0f64;
+    for ch in body.chars() {
+        if col >= reveal {
+            break;
+        }
+        // Brightest just behind the reveal head, settling to the plain title colour.
+        let glow = (1.0 - (reveal - col) / 5.0).clamp(0.0, 1.0);
+        let style = Style::default()
+            .fg(lerp_color(base, bright, glow))
+            .add_modifier(Modifier::BOLD);
+        b.push(ch, style);
+        col += UnicodeWidthChar::width(ch).unwrap_or(1) as f64;
+    }
+    Some(Line::from(b.finish()).alignment(Alignment::Left))
+}
+
+/// The transient status message typing itself in with a bright caret head — shared by every
+/// view's status band. Reads the text and kind straight off [`App::status`]; `None` when the
+/// flag is off or the window has passed (callers render their plain centered line).
+pub fn status_toast_line(app: &App, width: u16) -> Option<Line<'static>> {
+    let a = app.animations();
+    if !(a.master && a.toast) {
+        return None;
+    }
+    let text = app.status.text.as_str();
+    if text.is_empty() {
+        return None;
+    }
+    let cols = UnicodeWidthStr::width(text);
+    let window_ms = fx_window::toast_ms(cols);
+    let t = fx_t(app, app.fx.toast, window_ms)?;
+    // The window is type-time plus a fixed glow tail; typing progress maps onto the type
+    // portion so the last characters land just before the tail starts.
+    let type_frac = 1.0 - 250.0 / window_ms as f64;
+    let progress = (t / type_frac.max(0.05)).min(1.0);
+    let shown = col_window(text, 0, width as usize);
+    let shown_cols = UnicodeWidthStr::width(shown.as_str());
+    let reveal = progress * shown_cols as f64;
+    let role = match app.status.kind {
+        crate::app::StatusKind::Error => R::Error,
+        crate::app::StatusKind::Info => R::Success,
+    };
+    let style = app.theme.style(role);
+    let pad = (width as usize).saturating_sub(shown_cols) / 2;
+    let mut b = RunBuilder::new(vec![Span::raw(" ".repeat(pad))]);
+    let mut col = 0f64;
+    for ch in shown.chars() {
+        if col >= reveal {
+            break;
+        }
+        b.push(ch, style);
+        col += UnicodeWidthChar::width(ch).unwrap_or(1) as f64;
+    }
+    let mut spans = b.finish();
+    if progress < 1.0 && (col as usize) < width as usize {
+        // The typing head: a block caret in the accent colour.
+        spans.push(Span::styled("\u{2588}", app.theme.style(R::Accent)));
+    }
+    Some(Line::from(spans).alignment(Alignment::Left))
+}
+
+/// A little burst of hearts and sparks radiating from the title when the current track is
+/// liked. Drawn over the title row and the blank gap rows directly above/below it; the row of
+/// cells the title text itself occupies (`occupied_cols`, centered) is left untouched so the
+/// words never glitch.
+pub fn like_burst_overlay(frame: &mut Frame, app: &App, area: Rect, occupied_cols: u16) {
+    let a = app.animations();
+    if !(a.master && a.like_burst) || area.width < 12 {
+        return;
+    }
+    let Some(t) = fx_t(app, app.fx.like, fx_window::LIKE_MS) else {
+        return;
+    };
+    let spread = ease_out_cubic(t);
+    const GLYPHS: [char; 5] = ['♥', '✦', '·', '*', '♥'];
+    let color = lerp_color(app.theme.color(R::Error), app.theme.color(R::AccentAlt), t);
+    let cx = i32::from(area.x) + i32::from(area.width) / 2;
+    let cy = i32::from(area.y);
+    let keep_lo = cx - i32::from(occupied_cols) / 2 - 1;
+    let keep_hi = cx + i32::from(occupied_cols) / 2 + 1;
+    let buf = frame.buffer_mut();
+    for i in 0..12u64 {
+        // Sparks die off one by one toward the end instead of all vanishing at once.
+        if t > 0.55 && hash32(i * 97).is_multiple_of(3) {
+            continue;
+        }
+        let ang = (i as f64 / 12.0 + f64::from(hash32(i) % 100) / 900.0) * std::f64::consts::TAU;
+        let x = cx + (ang.cos() * (2.0 + spread * 14.0)).round() as i32;
+        let y = cy + (ang.sin() * (0.4 + spread * 1.7)).round() as i32;
+        if y < cy - 1 || y > cy + 1 {
+            continue;
+        }
+        if x < i32::from(area.x) || x >= i32::from(area.right()) {
+            continue;
+        }
+        if y == cy && x >= keep_lo && x <= keep_hi {
+            continue; // never overwrite the title text itself
+        }
+        let g = GLYPHS[(hash32(i * 31) as usize) % GLYPHS.len()];
+        put_char(buf, x as u16, y as u16, g, Style::default().fg(color));
+    }
+}
+
+/// The focused list-selection bar, breathing gently toward the accent colour. Identity when
+/// the flag is off or the style has no background to breathe.
+pub fn selection_style(app: &App, base: Style) -> Style {
+    let a = app.animations();
+    if !(a.master && a.selection) {
+        return base;
+    }
+    let Some(bg) = base.bg else { return base };
+    let t = wave(app.anim_frame(), app.anim_ms_frames(2800)) * 0.35;
+    base.bg(lerp_color(bg, app.theme.color(R::Accent), t))
+}
+
+/// Cascade restyle for the `vis`-th visible row of `mode`'s list while a list-reveal one-shot
+/// runs: rows fade up from the theme background top-to-bottom. Identity outside the window.
+pub fn stagger_style(app: &App, mode: Mode, vis: usize, base: Style) -> Style {
+    let Some(alpha) = stagger_alpha(app, mode, vis) else {
+        return base;
+    };
+    let bg_theme = app.theme.color(R::Background);
+    let mut out = base;
+    if let Some(fg) = base.fg {
+        out = out.fg(lerp_color(bg_theme, fg, alpha));
+    }
+    if let Some(bg) = base.bg {
+        out = out.bg(lerp_color(bg_theme, bg, alpha));
+    }
+    out
+}
+
+/// The cascade's per-row alpha (0 hidden → 1 landed), or `None` when no cascade applies to
+/// `mode` right now. Row delays are staggered across the first 60% of the window (capped at
+/// 14 distinct steps so tall lists still finish together); each row then fades in over 25%.
+fn stagger_alpha(app: &App, mode: Mode, vis: usize) -> Option<f64> {
+    let a = app.animations();
+    if !(a.master && a.stagger) {
+        return None;
+    }
+    let (start, m) = app.fx.list?;
+    if m != mode {
+        return None;
+    }
+    let t = fx_t(app, Some(start), fx_window::LIST_MS)?;
+    let delay = (vis as f64).min(14.0) / 14.0 * 0.6;
+    let alpha = ((t - delay) / 0.25).clamp(0.0, 1.0);
+    Some(ease_out_cubic(alpha))
+}
+
+/// A blinking block caret for text inputs, breathing between its own colour and `bg` (~1.1 s
+/// cycle, ~60% on so it reads as a caret, not a strobe). `base` is exactly the style the call
+/// site renders its plain solid block with today — returned untouched when the flag is off,
+/// so the off-state stays byte-identical.
+pub fn caret_span(app: &App, base: Style, bg: Color) -> Span<'static> {
+    let a = app.animations();
+    if !(a.master && a.caret) {
+        return Span::styled("\u{2588}", base);
+    }
+    let on = base.fg.unwrap_or_else(|| app.theme.color(R::Accent));
+    let alpha = (wave(app.anim_frame(), app.anim_ms_frames(1100)) * 1.6).clamp(0.0, 1.0);
+    Span::styled("\u{2588}", base.fg(lerp_color(bg, on, alpha)))
+}
+
+/// Blink for string-composed carets (the settings text editor's `▏`): the caret char while
+/// on, a plain space while off. Same cadence as [`caret_span`]; always one cell.
+pub fn caret_char(app: &App) -> char {
+    let a = app.animations();
+    if !(a.master && a.caret) {
+        return '▏';
+    }
+    let period = app.anim_ms_frames(1100);
+    if app.anim_frame() % period < period * 3 / 5 {
+        '▏'
+    } else {
+        ' '
+    }
+}
+
+/// Which tab strip a pop applies to: the top nav bar (armed by a screen switch) or an
+/// in-view tab bar (Library / Settings tabs).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TabPop {
+    Nav,
+    Inner,
+}
+
+/// The active tab's style right after a switch: a bright accent wash that settles onto the
+/// normal selection colours. Identity when the flag is off or no pop is running.
+pub fn active_tab_style(app: &App, pop: TabPop, base: Style) -> Style {
+    let a = app.animations();
+    if !(a.master && a.tabs) {
+        return base;
+    }
+    let start = match pop {
+        TabPop::Nav => app.fx.switch.map(|(f, _)| f),
+        TabPop::Inner => app.fx.tabbar,
+    };
+    let Some(t) = fx_t(app, start, fx_window::SWITCH_MS) else {
+        return base;
+    };
+    let glow = 1.0 - ease_out_cubic(t);
+    let mut out = base;
+    if let Some(bg) = base.bg {
+        out = out.bg(lerp_color(bg, app.theme.color(R::Accent), glow * 0.8));
+    }
+    out
+}
+
+/// Popup fade-in: while the window runs, every cell of a just-opened popup is blended up from
+/// the popup background, so the box materializes instead of appearing at once. Runs as a
+/// post-pass from `seal_popup_background` (after Reset backgrounds are sealed, so every cell
+/// has a concrete colour to blend from). A no-op the moment the window ends.
+pub fn popup_fade_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let a = app.animations();
+    if !(a.master && a.popup_fade) {
+        return;
+    }
+    let Some(t) = fx_t(app, app.fx.popup, fx_window::POPUP_MS) else {
+        return;
+    };
+    let alpha = ease_out_cubic(t);
+    let from = crate::ui::popup_bg(app);
+    let buf = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                let fg = lerp_color(from, cell.fg, alpha);
+                let bg = lerp_color(from, cell.bg, alpha);
+                cell.set_fg(fg).set_bg(bg);
+            }
+        }
+    }
+}
+
+/// Animated trailing dots for an in-progress label (`Searching`, `…thinking`): cycles
+/// `∅ → . → .. → ...` about three times a second, padded to a fixed three cells so the line
+/// never shifts. `None` when the flag is off (callers keep their static `…`).
+pub fn activity_dots(app: &App) -> Option<String> {
+    let a = app.animations();
+    if !(a.master && a.activity) {
+        return None;
+    }
+    let step = (app.anim_frame() / app.anim_ms_frames(350).max(1)) % 4;
+    let mut s = ".".repeat(step as usize);
+    while s.len() < 3 {
+        s.push(' ');
+    }
+    Some(s)
+}
+
+/// A spinner glyph standing in for the `⬇` of a *running* download's status tag, so live
+/// progress reads as activity at a glance. `None` when the flag is off (the static `⬇` stays).
+pub fn download_spinner(app: &App) -> Option<String> {
+    let a = app.animations();
+    if !(a.master && a.activity) {
+        return None;
+    }
+    let syms = if app.retro_mode() {
+        throbber_widgets_tui::ASCII.symbols
+    } else {
+        throbber_widgets_tui::BRAILLE_EIGHT.symbols
+    };
+    let i = (app.anim_frame() / 2) as usize % syms.len();
+    Some(syms[i].to_owned())
+}
+
+/// The current synced-lyric line's style: breathes toward the accent, with a bright flash as
+/// a line first becomes current (armed by the central lyric-index diff). Identity when off.
+pub fn lyrics_current_style(app: &App, base: Style) -> Style {
+    let a = app.animations();
+    if !(a.master && a.lyrics) {
+        return base;
+    }
+    let breathe = wave(app.anim_frame(), app.anim_ms_frames(2400)) * 0.35;
+    let mut fg = lerp_color(
+        app.theme.color(R::LyricsCurrent),
+        app.theme.color(R::Accent),
+        breathe,
+    );
+    if let Some(t) = fx_t(app, app.fx.lyric, fx_window::LYRIC_MS) {
+        fg = lerp_color(app.theme.color(R::AccentAlt), fg, ease_out_cubic(t));
+    }
+    base.fg(fg)
+}
+
+/// Non-current lyric lines fade slightly with distance from the current one, focusing the eye.
+/// Only applied on themes with a concrete RGB background (a transparent background has no
+/// colour to fade toward); lines within two rows keep the plain dim style.
+pub fn lyrics_dim_style(app: &App, base: Style, distance: usize) -> Style {
+    let a = app.animations();
+    if !(a.master && a.lyrics) || distance <= 2 {
+        return base;
+    }
+    let Color::Rgb(..) = app.theme.color(R::Background) else {
+        return base;
+    };
+    let fade = ((distance as f64 - 2.0) * 0.14).min(0.55);
+    base.fg(lerp_color(
+        app.theme.color(R::LyricsDim),
+        app.theme.color(R::Background),
+        fade,
+    ))
+}
+
+/// A two-cell mini VU marker for the queue window's now-playing row — the moving-bars version
+/// of the static `▸ `. Rides the `eq_bars` flag (it is the same visual language as the
+/// status-line VU); `None` when off or paused, so the marker freezes back to `▸ `.
+pub fn queue_marker(app: &App) -> Option<String> {
+    let a = app.animations();
+    if !(a.master && a.eq_bars) || app.playback.paused {
+        return None;
+    }
+    let blocks = bar_blocks(app);
+    let f = app.anim_frame();
+    let mut s = String::with_capacity(8);
+    for i in 0..2u64 {
+        let t = wave(f + i * 5, 14 + i * 4) * 0.7 + wave(f * 2 + i * 3, 9) * 0.3;
+        let idx = (t * (blocks.len() - 1) as f64).round() as usize;
+        s.push(blocks[idx.min(blocks.len() - 1)]);
+    }
+    Some(s)
+}
+
+// ── About-card overlay effects ──────────────────────────────────────────────
+
+const ABOUT_SPARKLE_GLYPHS: [char; 6] = ['✦', '✧', '·', '*', '✦', '·'];
+
+/// Twinkling sparkles on the blank cells around the About card's icon. Positions are hashed
+/// (stable) per zone size; each star breathes on its own phase between the subtle and the
+/// alt-accent colour. Never writes over a non-blank cell — and never inside `keep_clear`
+/// (the icon's rect), whose cells look blank when a native graphics protocol draws the icon.
+pub fn about_sparkles(frame: &mut Frame, app: &App, zone: Rect, keep_clear: Rect) {
+    let a = app.animations();
+    if !(a.master && a.about_fx) || zone.width < 10 || zone.height < 2 {
+        return;
+    }
+    let f = app.anim_frame();
+    let dim = app.theme.color(R::TextSubtle);
+    let bright = app.theme.color(R::AccentAlt);
+    let count = (u32::from(zone.width) / 4).clamp(6, 16);
+    let buf = frame.buffer_mut();
+    for i in 0..u64::from(count) {
+        let x = zone.left() + (hash32(i * 3 + 1) % u32::from(zone.width)) as u16;
+        let y = zone.top() + (hash32(i * 7 + 2) % u32::from(zone.height)) as u16;
+        if keep_clear.contains(ratatui::layout::Position { x, y }) {
+            continue;
+        }
+        let phase = u64::from(hash32(i * 11 + 3) % 60);
+        let tw = wave(f + phase, app.anim_ms_frames(1600));
+        if tw < 0.25 {
+            continue; // fully dark part of the twinkle — leave the cell alone
+        }
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            if cell.symbol() != " " {
+                continue;
+            }
+            let g = ABOUT_SPARKLE_GLYPHS[(hash32(i * 13) as usize) % ABOUT_SPARKLE_GLYPHS.len()];
+            cell.set_char(g).set_fg(lerp_color(dim, bright, tw));
+        }
+    }
+}
+
+/// The About card's `ytm-tui  vX.Y.Z` name line with a gradient band sweeping across the
+/// brand. `None` when the flag is off (the caller renders its plain two-span line).
+pub fn about_brand_line(app: &App, name: &str, version: &str) -> Option<Line<'static>> {
+    let a = app.animations();
+    if !(a.master && a.about_fx) {
+        return None;
+    }
+    let f = app.anim_frame();
+    let base = app.theme.color(R::Accent);
+    let bright = app.theme.color(R::AccentAlt);
+    let bg = crate::ui::popup_bg(app);
+    let span_len = name.chars().count() as f64 + 6.0;
+    let head = (f as f64 / 3.0) % span_len;
+    let mut b = RunBuilder::new(Vec::new());
+    for (i, ch) in name.chars().enumerate() {
+        let d = (i as f64 - head).abs();
+        let glow = (1.0 - d / 3.0).clamp(0.0, 1.0);
+        b.push(
+            ch,
+            Style::default()
+                .fg(lerp_color(base, bright, glow))
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+    let mut spans = b.finish();
+    spans.push(Span::styled(
+        format!("  v{version}"),
+        app.theme.style(R::TextMuted).bg(bg),
+    ));
+    Some(Line::from(spans))
 }
 
 // ── canvas effects ──────────────────────────────────────────────────────────
@@ -703,5 +1321,56 @@ mod tests {
             .add_modifier(Modifier::BOLD);
         assert_eq!(border_style(&app, base), base);
         assert_eq!(controls_style(&app, base), base);
+    }
+
+    /// Same promise for the new generation of effects: everything off (the default) means
+    /// identity styles, `None` builders, the plain solid caret, and an untouched seek ratio.
+    #[test]
+    fn new_effects_off_are_identity_too() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut app = App::new(100);
+        app.status.text = "Saved: something".to_owned();
+        let base = Style::default()
+            .fg(Color::Rgb(9, 8, 7))
+            .bg(Color::Rgb(3, 2, 1))
+            .add_modifier(Modifier::BOLD);
+
+        assert!(title_intro_line(&app, "Title", "Artist", false, 40).is_none());
+        assert!(status_toast_line(&app, 40).is_none());
+        assert!(activity_dots(&app).is_none());
+        assert!(download_spinner(&app).is_none());
+        assert!(queue_marker(&app).is_none());
+        assert!(about_brand_line(&app, "ytm-tui", "0.0.0").is_none());
+        assert_eq!(selection_style(&app, base), base);
+        assert_eq!(stagger_style(&app, Mode::Library, 3, base), base);
+        assert_eq!(active_tab_style(&app, TabPop::Nav, base), base);
+        assert_eq!(lyrics_current_style(&app, base), base);
+        assert_eq!(lyrics_dim_style(&app, base, 9), base);
+        assert_eq!(smooth_seek_ratio(&app, 0.42), 0.42);
+        assert_eq!(caret_char(&app), '▏');
+        let caret = caret_span(&app, base, Color::Rgb(0, 0, 0));
+        assert_eq!(caret.content, "\u{2588}");
+        assert_eq!(caret.style, base);
+    }
+
+    /// One-shots are inert until armed: even with master + flags on, the render helpers stay
+    /// `None` while no fx window has been triggered; arming a slot produces output for the
+    /// window's duration.
+    #[test]
+    fn one_shots_require_an_armed_window() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut app = App::new(100);
+        app.config.animations.master = true;
+        app.config.animations.track_intro = true;
+        app.config.animations.toast = true;
+        app.status.text = "hello".to_owned();
+        // Flags on but nothing armed → still nothing to draw.
+        assert!(title_intro_line(&app, "T", "A", false, 40).is_none());
+        assert!(status_toast_line(&app, 40).is_none());
+        // Armed → the helpers produce output while the window runs.
+        app.fx.track_intro = Some(0);
+        app.fx.toast = Some(0);
+        assert!(title_intro_line(&app, "T", "A", false, 40).is_some());
+        assert!(status_toast_line(&app, 40).is_some());
     }
 }

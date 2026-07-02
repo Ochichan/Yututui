@@ -221,7 +221,7 @@ or *not found* instead of being silently guessed; re-run with `--take-best`,
 
 - **Themes** — 13 built-ins (Default, Midnight, Light, High Contrast, Terminal Green, Gruvbox, Nord, Dracula, Tokyo Night, Solarized Dark, Rosé Pine, Dario, Retro), and every one of the 34 color roles takes a `#RRGGBB` (or `none` for transparent) in Settings → Graphics.
 - **EQ** — a real 10-band graphic EQ (31 Hz–16 kHz) under Settings → Playback; **`e`** cycles the presets, **`N`** toggles loudness normalization.
-- **Animations** — the `✨` in the nav (or **`A`**) toggles them; Settings → Graphics picks which: title shimmer, beating heart, seekbar glow, EQ bars, matrix rain, starfield, a DVD-style bouncing logo, and yes, the spinning ASCII donut.
+- **Animations** — the `✨` in the nav (or **`A`**) toggles them; Settings → Graphics picks which of the 25: title shimmer, beating heart, seekbar glow, EQ bars, a track-intro reveal, lyrics glow, typewriter toasts, volume/seek/like feedback flashes, breathing selections, list cascades, blinking carets, tab pops, popup fade-ins, activity dots, About-card sparkles, matrix rain, starfield, a DVD-style bouncing logo, and yes, the spinning ASCII donut.
 - **Retro mode** — one toggle (Settings → Graphics) makes everything CP437-safe for a bare Linux console or a crusty SSH session: Retro theme, ASCII-only glyphs, and album art re-rendered as honest-to-goodness ASCII art.
 - **Keys & mouse** — every binding is remappable with conflict detection (Settings → Hotkeys), and the whole UI is mouse-aware if you'd rather click.
 

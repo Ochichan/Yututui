@@ -341,7 +341,12 @@ fn render_tabs(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
             MouseTarget::SettingsTab(i),
         );
         x = x.saturating_add(w);
-        let style = if st.tab == t { active } else { muted };
+        let style = if st.tab == t {
+            // A brief accent wash right after a tab switch (identity when off).
+            crate::ui::anim::active_tab_style(app, crate::ui::anim::TabPop::Inner, active)
+        } else {
+            muted
+        };
         spans.push(Span::styled(label, style));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -382,21 +387,26 @@ fn slider_str(bar: &str, num: &str) -> String {
 }
 
 /// The value text drawn to the right of a (non-color) field's label, exactly as [`field_row`]
-/// renders it. Shared so the click-target math never drifts from the on-screen glyphs.
-fn field_value_text(st: &SettingsState, field: Field, focused: bool) -> String {
+/// renders it. Shared so the click-target math never drifts from the on-screen glyphs (the
+/// blinking edit caret swaps `▏`↔space — both one cell, so the math holds mid-blink too).
+fn field_value_text(app: &App, st: &SettingsState, field: Field, focused: bool) -> String {
     match (field, field.kind()) {
         // Secret fields (API key) are never shown in clear text; while editing, render a
         // masked buffer of *that field's* typed length so keystrokes still register visibly.
         (f, _) if f.is_secret() && focused && st.editing_text => {
             let len = st.draft.text_value(field).map_or(0, |s| s.chars().count());
-            format!("{}▏", "•".repeat(len))
+            format!("{}{}", "•".repeat(len), crate::ui::anim::caret_char(app))
         }
         // Show the live edit buffer with a caret for the focused path field.
         (
             Field::CookiesFile | Field::DownloadDir | Field::AudiusAppName | Field::JamendoClientId,
             _,
         ) if focused && st.editing_text => {
-            format!("{}▏", st.draft.text_value(field).unwrap_or_default())
+            format!(
+                "{}{}",
+                st.draft.text_value(field).unwrap_or_default(),
+                crate::ui::anim::caret_char(app)
+            )
         }
         (Field::Speed, _) => slider_str(
             &bar(st.draft.speed, SPEED_MIN, SPEED_MAX),
@@ -442,7 +452,8 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
             if i == focused_field {
                 selected = items.len();
             }
-            items.push(field_row(st, field, i == focused_field));
+            let row = items.len();
+            items.push(field_row(app, st, field, i == focused_field, row));
             display_to_field.push(Some(i));
         }
     } else {
@@ -454,14 +465,20 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
             }
             items.push(ListItem::new(Line::from(Span::styled(
                 (*title).to_owned(),
-                theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
+                crate::ui::anim::stagger_style(
+                    app,
+                    crate::app::Mode::Settings,
+                    items.len(),
+                    theme.style(R::SettingsGroup).add_modifier(Modifier::BOLD),
+                ),
             ))));
             display_to_field.push(None);
             for _ in 0..*count {
                 if i == focused_field {
                     selected = items.len();
                 }
-                items.push(field_row(st, fields[i], i == focused_field));
+                let row = items.len();
+                items.push(field_row(app, st, fields[i], i == focused_field, row));
                 display_to_field.push(Some(i));
                 i += 1;
             }
@@ -576,7 +593,7 @@ fn register_field_controls(
         // Slider/Select widths don't depend on `focused` (no edit mode), so the ‹ › / < >
         // arrow positions below are stable. Only Text/Button rows vary with `editing_text`, and
         // those register a single whole-value activate rect where exact width is non-critical.
-        let value = field_value_text(st, field, focused);
+        let value = field_value_text(app, st, field, focused);
         let w = buttons::text_width(&value);
         match field.kind() {
             FieldKind::Toggle => {
@@ -596,8 +613,18 @@ fn register_field_controls(
 
 /// One field row: a left-aligned label and its current value (with a slider bar for numeric
 /// fields, `< … >` arrows for cycles, and a caret for the text field being edited).
-fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a> {
+/// `display_row` is the row's position in the rendered list, used by the cascade reveal —
+/// every span's style passes through `stagger_style`, an identity outside its window.
+fn field_row<'a>(
+    app: &App,
+    st: &SettingsState,
+    field: Field,
+    focused: bool,
+    display_row: usize,
+) -> ListItem<'a> {
     let theme = &st.draft.theme;
+    let fade =
+        |s: Style| crate::ui::anim::stagger_style(app, crate::app::Mode::Settings, display_row, s);
     if let Field::ThemeColor(role) = field {
         let label = pad_to_width(role.label(), color_label_width());
         let value = if focused && st.editing_text {
@@ -613,32 +640,35 @@ fn field_row<'a>(st: &SettingsState, field: Field, focused: bool) -> ListItem<'a
         // Transparent roles have no fill — show a hatched marker so it reads as "terminal
         // background shows through" rather than a missing/black swatch.
         let swatch = if theme.is_role_transparent(role) {
-            Span::styled("▒▒", theme.style(R::TextMuted))
+            Span::styled("▒▒", fade(theme.style(R::TextMuted)))
         } else {
-            Span::styled("  ", Style::default().bg(theme.color(role)))
+            Span::styled("  ", fade(Style::default().bg(theme.color(role))))
         };
         return ListItem::new(Line::from(vec![
-            Span::styled(label, theme.style(R::SettingsLabel)),
+            Span::styled(label, fade(theme.style(R::SettingsLabel))),
             Span::raw(" "),
             swatch,
             Span::raw("  "),
-            Span::styled(format!("{:<9}", value), theme.style(value_role)),
-            Span::styled(role.description().to_owned(), theme.style(R::TextMuted)),
+            Span::styled(format!("{:<9}", value), fade(theme.style(value_role))),
+            Span::styled(
+                role.description().to_owned(),
+                fade(theme.style(R::TextMuted)),
+            ),
         ]));
     }
     // Pad every label in this tab to the widest one (+ a 2-space gutter, min 20) so the value
     // column lines up regardless of label length. The value text itself is produced by the
     // shared `field_value_text`, so the click-target math stays in lockstep with the glyphs.
     let label = pad_to_width(&field.label(), other_label_width(st.tab));
-    let value = field_value_text(st, field, focused);
+    let value = field_value_text(app, st, field, focused);
     let value_role = if focused {
         R::SettingsValueFocused
     } else {
         R::SettingsValue
     };
     ListItem::new(Line::from(vec![
-        Span::styled(label, theme.style(R::SettingsLabel)),
-        Span::styled(value, theme.style(value_role)),
+        Span::styled(label, fade(theme.style(R::SettingsLabel))),
+        Span::styled(value, fade(theme.style(value_role))),
     ]))
 }
 

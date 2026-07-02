@@ -231,10 +231,17 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
 
     // OS media session: the headless daemon publishes Now Playing / SMTC / MPRIS too,
     // so media keys and OS widgets control background playback without a terminal.
+    //
+    // `YTM_NO_MEDIA_SESSION` force-disables it. Escape hatch for GUI-less contexts —
+    // CI smoke tests, `ssh`, a launchd daemon — where macOS has no login/Aqua session
+    // to attach MPNowPlayingInfoCenter/MPRemoteCommandCenter to; there the activation
+    // wedges the daemon's event loop (Linux MPRIS degrades gracefully, macOS does not).
     let media_cmd_tx = event_tx.clone();
     let media_art_tx = event_tx.clone();
+    let media_enabled =
+        engine.media_controls_enabled() && std::env::var_os("YTM_NO_MEDIA_SESSION").is_none();
     let mut media = crate::media::MediaSession::new(
-        engine.media_controls_enabled(),
+        media_enabled,
         move |cmd| {
             let _ = media_cmd_tx.send(DaemonEvent::Media(cmd));
         },

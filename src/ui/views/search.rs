@@ -47,20 +47,25 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // A transient confirmation (e.g. "Added to queue: …" after enqueuing a search result while a
     // track is already playing) rides the otherwise-empty top band so it's visible without leaving
-    // the search screen. It auto-clears after STATUS_TTL via the global StatusTick.
+    // the search screen. It auto-clears after STATUS_TTL via the global StatusTick. A just-set
+    // message types itself in while the toast animation's window runs.
     if !app.status.text.is_empty() {
-        let role = match app.status.kind {
-            StatusKind::Error => R::Error,
-            StatusKind::Info => R::Success,
-        };
-        frame.render_widget(
-            Paragraph::new(
-                Line::from(app.status.text.clone())
-                    .style(app.theme.style(role))
-                    .alignment(Alignment::Center),
-            ),
-            rows[0],
-        );
+        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[0].width) {
+            frame.render_widget(Paragraph::new(line), rows[0]);
+        } else {
+            let role = match app.status.kind {
+                StatusKind::Error => R::Error,
+                StatusKind::Info => R::Success,
+            };
+            frame.render_widget(
+                Paragraph::new(
+                    Line::from(app.status.text.clone())
+                        .style(app.theme.style(role))
+                        .alignment(Alignment::Center),
+                ),
+                rows[0],
+            );
+        }
     }
 
     render_input(frame, app, rows[1]);
@@ -124,12 +129,21 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
             .bg(app.theme.color(R::SelectionBg));
         Paragraph::new(Line::from(Span::styled(app.search.input.clone(), hl)))
     } else {
-        let text = if focused {
-            format!("{}\u{2588}", app.search.input)
+        if focused {
+            // The caret is its own span so the caret animation can blink it (the plain solid
+            // block in the text's own style when that flag is off, exactly as before).
+            let caret = crate::ui::anim::caret_span(
+                app,
+                app.theme.style(R::TextPrimary),
+                app.theme.color(R::Background),
+            );
+            Paragraph::new(Line::from(vec![
+                Span::styled(app.search.input.clone(), app.theme.style(R::TextPrimary)),
+                caret,
+            ]))
         } else {
-            app.search.input.clone()
-        };
-        Paragraph::new(text).style(app.theme.style(R::TextPrimary))
+            Paragraph::new(app.search.input.clone()).style(app.theme.style(R::TextPrimary))
+        }
     };
     frame.render_widget(para.block(block), input_area);
     app.register_mouse_button(input_area, MouseTarget::SearchInput);
@@ -182,17 +196,26 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     app.bridges.list_viewport_rows.set(area.height);
 
     if app.search.searching {
-        let msg = Line::from(t!("Searching…", "검색 중…")).style(app.theme.style(R::Warning));
+        // Animated trailing dots while a search is in flight (static ellipsis when off).
+        let text = match crate::ui::anim::activity_dots(app) {
+            Some(dots) => format!("{}{dots}", t!("Searching", "검색 중")),
+            None => t!("Searching…", "검색 중…").to_owned(),
+        };
+        let msg = Line::from(text).style(app.theme.style(R::Warning));
         frame.render_widget(Paragraph::new(msg), area);
         return;
     }
 
     let focused = app.search.focus == SearchFocus::Results;
+    // Fresh results cascade in top-to-bottom while the stagger window runs. The offset is
+    // resolved further down, but new results always land with the viewport at the top, so
+    // styling by absolute row index is the visible order.
     let items: Vec<ListItem> = app
         .search
         .results
         .iter()
-        .map(|s| {
+        .enumerate()
+        .map(|(i, s)| {
             let title = app.display_title(s);
             let artist = app.display_artist(s);
             let heart = if app.library.is_favorite(&s.video_id) {
@@ -206,15 +229,23 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!("{source}{heart}{title} — {artist}  ({})", s.duration)
             };
-            ListItem::new(line).style(app.theme.style(R::TextPrimary))
+            ListItem::new(line).style(crate::ui::anim::stagger_style(
+                app,
+                crate::app::Mode::Search,
+                i,
+                app.theme.style(R::TextPrimary),
+            ))
         })
         .collect();
 
     let highlight = if focused {
-        Style::default()
-            .fg(app.theme.color(R::SelectionFg))
-            .bg(app.theme.color(R::SelectionBg))
-            .add_modifier(Modifier::BOLD)
+        crate::ui::anim::selection_style(
+            app,
+            Style::default()
+                .fg(app.theme.color(R::SelectionFg))
+                .bg(app.theme.color(R::SelectionBg))
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Style::default()
             .fg(app.theme.color(R::SelectionInactiveFg))
@@ -355,10 +386,13 @@ fn render_dropdown(
         let pad = (list.width as usize).saturating_sub(UnicodeWidthStr::width(text.as_str()));
         text.push_str(&" ".repeat(pad));
         let style = if *active {
-            Style::default()
-                .fg(app.theme.color(R::SelectionFg))
-                .bg(app.theme.color(R::SelectionBg))
-                .add_modifier(Modifier::BOLD)
+            crate::ui::anim::selection_style(
+                app,
+                Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg))
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             app.theme.style(R::TextPrimary)
         };

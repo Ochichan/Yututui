@@ -48,8 +48,10 @@ impl App {
 
     /// Whether the per-frame animation clock should run right now. True when we're on the
     /// player view (master switch + at least one effect enabled, a track loaded, not paused),
-    /// radio mode has its built-in radio art motion enabled, **or** when the DJ Gem start-screen
-    /// mascot wants to groove (see [`Self::ai_mascot_active`]).
+    /// radio mode has its built-in radio art motion enabled, when the DJ Gem start-screen
+    /// mascot wants to groove (see [`Self::ai_mascot_active`]), while a one-shot feedback
+    /// effect is mid-flight (see [`Self::fx_active`]), or while an ambient UI effect has
+    /// something on screen to animate (see [`Self::ambient_animation_running`]).
     /// The main loop arms its ~30 fps tick on this; when it is false the tick never fires, so the
     /// app behaves byte-for-byte like today (the lightweight path).
     ///
@@ -65,8 +67,90 @@ impl App {
         let radio_art_running =
             player_running && self.radio_dedicated_mode && self.config.animations.master;
         let running = (player_running && (self.config.animations.active() || radio_art_running))
-            || self.ai_mascot_active();
+            || self.ai_mascot_active()
+            || self.fx_active()
+            || self.ambient_animation_running();
         running && (!self.config.animations.pause_unfocused || self.focused)
+    }
+
+    /// Whether any one-shot feedback effect is still inside its window. While true the clock
+    /// keeps ticking even where it would otherwise sleep (paused playback, non-player views) so
+    /// the effect gets to finish; the deadline is comparison-based, so once passed the stale
+    /// start frames cost nothing. Armed only through [`Self::fx_arm`], which is gated per-flag,
+    /// so with every toggle off this is permanently false.
+    pub fn fx_active(&self) -> bool {
+        self.anim_frame < self.fx.until
+    }
+
+    /// Whether a *continuous* UI effect currently has something on screen to animate outside
+    /// the player's own gate: a blinking caret in a visible text input, the breathing selection
+    /// bar of the focused list, animated activity dots, the About card's sparkles, or the
+    /// player's lyrics glow. Checked every run-loop iteration, so everything here is a plain
+    /// field read — no row formatting or allocation.
+    fn ambient_animation_running(&self) -> bool {
+        let a = &self.config.animations;
+        if !a.master {
+            return false;
+        }
+        if a.about_fx && self.about_visible {
+            return true;
+        }
+        if a.caret && self.text_input_caret_visible() {
+            return true;
+        }
+        // Breathing selection bars inside mode-independent popups (the add-to-playlist picker
+        // and the search-source dropdown float over whichever screen opened them).
+        if a.selection && (self.playlist_picker.is_some() || self.dropdowns.search_source_open) {
+            return true;
+        }
+        match self.mode {
+            Mode::Player => {
+                // The element effects already run via the player gate while playing; the two
+                // ambient extras are the lyrics glow (breathes only while playing — pausing
+                // freezes it like every player effect) and animated "fetching" dots.
+                let playing = !self.playback.paused && self.queue.current().is_some();
+                (playing && a.lyrics && self.lyrics.visible)
+                    || (playing && a.activity && self.lyrics.visible && self.lyrics.loading)
+            }
+            Mode::Search => {
+                (a.activity && self.search.searching)
+                    || (a.selection
+                        && self.search.focus == SearchFocus::Results
+                        && !self.search.results.is_empty())
+            }
+            Mode::Library => a.selection,
+            // The settings cursor is fg-only (no selection bar) — nothing there breathes, so
+            // the selection flag must not spin the clock; the caret case is handled above.
+            Mode::Settings => false,
+            Mode::Ai => {
+                (a.activity && self.ai.thinking)
+                    || (a.selection
+                        && self.ai.focus == AiFocus::Suggestions
+                        && !self.ai.suggestions.is_empty())
+            }
+        }
+    }
+
+    /// Whether some text input with a caret is on screen right now (the search box, the DJ Gem
+    /// prompt, the library filter, a playlist-name entry, or a settings text field). Drives the
+    /// caret-blink clock and the render helper, so the two can't drift.
+    pub fn text_input_caret_visible(&self) -> bool {
+        if self
+            .playlist_picker
+            .as_ref()
+            .is_some_and(|p| p.naming.is_some())
+        {
+            return true;
+        }
+        match self.mode {
+            Mode::Search => self.search.focus == SearchFocus::Input,
+            Mode::Ai => self.ai.focus == AiFocus::Input,
+            Mode::Library => {
+                self.library_ui.filter_editing || self.library_ui.create_input.is_some()
+            }
+            Mode::Settings => self.settings.as_ref().is_some_and(|s| s.editing_text),
+            Mode::Player => false,
+        }
     }
 
     /// Logical animation tick rate. This remains the configured FPS so frame-based animation phases
@@ -75,22 +159,37 @@ impl App {
         self.config.animations.effective_fps()
     }
 
-    /// Actual redraw cadence for the active animation mix. Cheap element effects keep the configured
-    /// FPS; full-cell canvas effects cap repaint work; the DJ Gem mascot only needs to redraw when its
-    /// pose can change.
+    /// Actual redraw cadence for the active animation mix. One-shot feedback effects and cheap
+    /// element effects keep the configured FPS; full-cell canvas effects cap repaint work;
+    /// ambient UI effects (caret blink, selection breathing, activity dots, About sparkles) are
+    /// slow breathers that look identical at ~12 fps; the DJ Gem mascot only needs to redraw
+    /// when its pose can change.
     pub fn animation_draw_fps(&self) -> u16 {
         let fps = self.animation_tick_fps();
         let a = &self.config.animations;
+        if self.fx_active() {
+            // One-shots are short and motion-dense; let them draw at the full tick rate.
+            return fps;
+        }
         if matches!(self.mode, Mode::Player)
             && a.master
             && (a.rain || a.donut || a.visualizer || a.starfield)
         {
-            fps.min(20)
-        } else if self.ai_mascot_active() {
-            (fps / 10).max(1)
-        } else {
-            fps
+            return fps.min(20);
         }
+        let player_running = matches!(self.mode, Mode::Player)
+            && !self.playback.paused
+            && self.queue.current().is_some();
+        if player_running && a.master && (a.any_effect() || self.radio_dedicated_mode) {
+            return fps;
+        }
+        if self.ambient_animation_running() {
+            return fps.min(12);
+        }
+        if self.ai_mascot_active() {
+            return (fps / 10).max(1);
+        }
+        fps
     }
 
     pub fn reset_animation_cadence(&mut self) {
@@ -116,6 +215,164 @@ impl App {
         if self.anim_draw_credit >= tick_fps {
             self.anim_draw_credit -= tick_fps;
             self.dirty = true;
+        }
+    }
+
+    /// Frames the animation clock needs to cover `ms` milliseconds at the configured tick rate
+    /// (never zero). One-shot effect windows are defined in wall-clock terms and converted
+    /// through this, so they feel the same length at 5 fps and at 60 fps.
+    pub fn anim_ms_frames(&self, ms: u64) -> u64 {
+        (u64::from(self.animation_tick_fps()) * ms)
+            .div_ceil(1000)
+            .max(1)
+    }
+
+    /// Start a one-shot effect window `ms` long: returns the start frame for the effect's slot
+    /// and extends [`FxState::until`] so [`Self::fx_active`] keeps the clock awake to the end.
+    fn fx_arm(&mut self, ms: u64) -> u64 {
+        let start = self.anim_frame;
+        self.fx.until = self.fx.until.max(start + self.anim_ms_frames(ms) + 1);
+        self.dirty = true;
+        start
+    }
+
+    /// Overlay-open bitmask for popup fade-in detection: the art overlay mask's popup bits
+    /// (minus its bit 10, which is "not on the player screen", not a popup) plus the two
+    /// overlays that mask doesn't track. A bit turning on means "a popup just opened".
+    fn fx_popup_mask(&self) -> u32 {
+        u32::from(self.art_overlay_mask() & !(1 << 10))
+            | ((self.spotify_picker.is_some() as u32) << 16)
+            | ((self.dropdowns.search_source_open as u32) << 17)
+    }
+
+    /// Central one-shot trigger detection, called once per [`App::update`] turn after the
+    /// reducer ran. Diffs the interesting state against the anchors in [`FxState`] and arms
+    /// the matching effect windows. The anchors are refreshed unconditionally (so enabling a
+    /// flag later can't replay a stale backlog of changes); the *triggers* are gated per-flag
+    /// under `master`, so with everything off this never arms the clock.
+    pub(in crate::app) fn detect_fx(&mut self, status_changed: bool, seeked: bool) {
+        use crate::ui::anim::fx_window as w;
+        let a = self.config.animations;
+        let on = |flag: bool| a.master && flag;
+
+        // Track change → title intro. Also remembered so this turn's liked-flag flip (a
+        // *different* track being current) can't masquerade as a fresh like below.
+        let current_id = self.queue.current().map(|s| s.video_id.as_str());
+        let track_changed = current_id != self.fx.last_track_id.as_deref();
+        if track_changed {
+            self.fx.last_track_id = current_id.map(ToOwned::to_owned);
+            self.fx.last_lyric_index = None;
+            if on(a.track_intro) && self.fx.last_track_id.is_some() {
+                self.fx.track_intro = Some(self.fx_arm(w::TRACK_INTRO_MS));
+            }
+        }
+
+        // Neutral/dislike → liked (same track) → heart burst.
+        let liked_now = self
+            .queue
+            .current()
+            .is_some_and(|s| self.library.is_favorite(&s.video_id));
+        if liked_now != self.fx.last_liked {
+            self.fx.last_liked = liked_now;
+            if liked_now && !track_changed && on(a.like_burst) {
+                self.fx.like = Some(self.fx_arm(w::LIKE_MS));
+            }
+        }
+
+        // Volume nudge (keys, mouse wheel, remote) → transient gauge.
+        if self.playback.volume != self.fx.last_volume {
+            self.fx.last_volume = self.playback.volume;
+            if on(a.volume_flash) {
+                self.fx.volume = Some(self.fx_arm(w::VOLUME_MS));
+            }
+        }
+
+        // A seek command went out this turn → ripple at the seekbar head.
+        if seeked && on(a.seek_flash) {
+            self.fx.seek = Some(self.fx_arm(w::SEEK_MS));
+        }
+
+        // A fresh status message → typewriter reveal, window scaled to the text length.
+        if status_changed && !self.status.text.is_empty() && on(a.toast) {
+            let cols = unicode_width::UnicodeWidthStr::width(self.status.text.as_str());
+            self.fx.toast = Some(self.fx_arm(w::toast_ms(cols)));
+        }
+
+        // Screen switch → nav-tab pop + the new view's list cascade.
+        if self.mode != self.fx.last_mode {
+            self.fx.last_mode = self.mode;
+            if on(a.tabs) {
+                self.fx.switch = Some((self.fx_arm(w::SWITCH_MS), self.mode));
+            }
+            if on(a.stagger) {
+                self.fx.list = Some((self.fx_arm(w::LIST_MS), self.mode));
+            }
+        }
+
+        // Library tab / opened playlist / Settings tab changes → tab pop + list cascade.
+        if self.library_ui.tab != self.fx.last_library_tab {
+            self.fx.last_library_tab = self.library_ui.tab;
+            if on(a.tabs) {
+                self.fx.tabbar = Some(self.fx_arm(w::SWITCH_MS));
+            }
+            if on(a.stagger) {
+                self.fx.list = Some((self.fx_arm(w::LIST_MS), Mode::Library));
+            }
+        }
+        if self.library_ui.open_playlist != self.fx.last_open_playlist {
+            self.fx.last_open_playlist = self.library_ui.open_playlist.clone();
+            if on(a.stagger) {
+                self.fx.list = Some((self.fx_arm(w::LIST_MS), Mode::Library));
+            }
+        }
+        let settings_tab = self.settings.as_ref().map(|s| s.tab);
+        if settings_tab != self.fx.last_settings_tab {
+            let switched_within = settings_tab.is_some() && self.fx.last_settings_tab.is_some();
+            self.fx.last_settings_tab = settings_tab;
+            if switched_within {
+                if on(a.tabs) {
+                    self.fx.tabbar = Some(self.fx_arm(w::SWITCH_MS));
+                }
+                if on(a.stagger) {
+                    self.fx.list = Some((self.fx_arm(w::LIST_MS), Mode::Settings));
+                }
+            }
+        }
+
+        // A search just finished → results cascade (covers every entry path to results).
+        if self.search.searching != self.fx.last_searching {
+            let finished = self.fx.last_searching && !self.search.searching;
+            self.fx.last_searching = self.search.searching;
+            if finished && on(a.stagger) {
+                self.fx.list = Some((self.fx_arm(w::LIST_MS), Mode::Search));
+            }
+        }
+
+        // Any popup/dropdown newly opened → fade-in materialize.
+        let popup_mask = self.fx_popup_mask();
+        let newly_opened = popup_mask & !self.fx.last_popup_mask;
+        self.fx.last_popup_mask = popup_mask;
+        if newly_opened != 0 && on(a.popup_fade) {
+            self.fx.popup = Some(self.fx_arm(w::POPUP_MS));
+        }
+
+        // The synced-lyric line advanced → flash the newly-current line. Only tracked while
+        // the panel is visible on the player, so the index scan never runs anywhere else.
+        if matches!(self.mode, Mode::Player) && self.lyrics.visible && on(a.lyrics) {
+            let idx = self
+                .lyrics
+                .track
+                .as_ref()
+                .filter(|t| !t.lines.is_empty())
+                .and_then(|t| {
+                    crate::lyrics::current_index(&t.lines, self.playback.time_pos.unwrap_or(0.0))
+                });
+            if idx != self.fx.last_lyric_index {
+                self.fx.last_lyric_index = idx;
+                if idx.is_some() {
+                    self.fx.lyric = Some(self.fx_arm(w::LYRIC_MS));
+                }
+            }
         }
     }
 

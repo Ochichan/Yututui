@@ -73,6 +73,22 @@ install_prebuilt() {
   ok "Installed prebuilt binary -> $INSTALL_DIR/$BIN"
 }
 
+# Install the Linux launcher entry + icon into the XDG user dirs so `ytt` appears in app
+# menus and MPRIS media widgets (KDE/GNOME) resolve its icon by the "ytm-tui" theme name.
+# User-level, matching the ~/.local/bin binary install; the cache refreshes are best-effort.
+install_linux_desktop() {
+  local desktop_src="$1" icon_src="$2"
+  local data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
+  local apps_dir="$data_dir/applications"
+  local icon_dir="$data_dir/icons/hicolor/1024x1024/apps"
+  mkdir -p "$apps_dir" "$icon_dir"
+  install -m 0644 "$desktop_src" "$apps_dir/ytm-tui.desktop"
+  install -m 0644 "$icon_src" "$icon_dir/ytm-tui.png"
+  update-desktop-database "$apps_dir" >/dev/null 2>&1 || true
+  gtk-update-icon-cache -q -t "$data_dir/icons/hicolor" >/dev/null 2>&1 || true
+  ok "Installed launcher + icon -> $apps_dir/ytm-tui.desktop"
+}
+
 install_via_cargo() {
   if [ ! -f Cargo.toml ]; then
     die "No prebuilt for $OS/$ARCH on the Releases page, and this isn't a ytm-tui checkout.
@@ -168,6 +184,11 @@ download_release() {
     install -m 0755 "$tmp/ytt-tray" "$INSTALL_DIR/ytt-tray"
     xattr -d com.apple.quarantine "$INSTALL_DIR/ytt-tray" 2>/dev/null || true
     ok "Installed menu-bar companion -> $INSTALL_DIR/ytt-tray  (keep it at login: ytt-tray --install-startup)"
+  fi
+  # Linux archives also carry a .desktop entry + icon (releases after v1.5.9); place them in
+  # the XDG user dirs. Older archives just skip this quietly.
+  if [ "$OS" = Linux ] && tar -xzf "$tmp/$archive" -C "$tmp" ytm-tui.desktop ytm-tui.png 2>/dev/null; then
+    install_linux_desktop "$tmp/ytm-tui.desktop" "$tmp/ytm-tui.png"
   fi
   rm -rf "$tmp"
   DOWNLOAD_TMP=""
