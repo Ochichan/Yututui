@@ -37,7 +37,7 @@ pub enum AddResult {
 }
 
 /// All local playlists, persisted to `<data dir>/playlists.json`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Playlists {
     pub playlists: Vec<Playlist>,

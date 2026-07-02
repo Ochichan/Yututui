@@ -64,7 +64,7 @@ struct TrackSignals {
 }
 
 /// All persisted preference signals, written to `<data dir>/signals.json`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Signals {
     /// Per-track engagement, keyed by `video_id`. Bounded by [`TRACKS_MAX`].

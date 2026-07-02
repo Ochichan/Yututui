@@ -18,6 +18,7 @@ mod library;
 mod logging;
 mod lyrics;
 mod media;
+mod persist;
 mod player;
 mod playlists;
 mod queue;
@@ -574,6 +575,13 @@ async fn run(
     #[cfg(windows)]
     player::lifetime::install_console_ctrl_handler();
 
+    // Background persistence actor: Save* commands hand it owned snapshots and it does
+    // the debounced atomic writes off the loop task. The flush hook is installed after
+    // the mpv panic hook above (last installed runs first), so on a panic pending
+    // snapshots land on disk, then mpv dies, then the terminal is restored.
+    let persist = persist::spawn();
+    persist::install_panic_flush(persist.pending());
+
     // Config is loaded in `async_main` (so mouse capture can reflect it) and passed in.
     let cookie = cfg.effective_cookie();
     // Only hand mpv/yt-dlp a cookies file that actually exists: a configured/default
@@ -736,6 +744,7 @@ async fn run(
         resolver_handle,
         ai_handle,
         scrobble_handle,
+        persist.clone(),
     );
 
     // Opt-in autoplay-on-launch: now that every player/actor handle exists, ask the loop to
@@ -886,11 +895,23 @@ async fn run(
     // Close the video overlay (if one is open) so it doesn't outlive the app. This is the single
     // cleanup chokepoint: every quit path just sets `should_quit` and falls out of the loop here.
     app.close_video();
-    // Belt-and-suspenders: persist the last UI mode + library/signals/downloads on a clean exit too.
-    let _ = app.session_cache_snapshot().save();
-    let _ = app.library.save();
-    let _ = app.signals.save();
-    let _ = app.download_store.save();
+    // Belt-and-suspenders: persist the last UI mode + library/signals/downloads on a clean exit
+    // too. Send fresh quit-time snapshots, then drain the actor — the flush also lands any still-
+    // debounced config/playlists/romanize writes. Do NOT save directly here instead: an older
+    // pending snapshot in the actor could then overwrite the newer direct write.
+    persist.save(persist::Snapshot::Session(app.session_cache_snapshot()));
+    persist.save(persist::Snapshot::Library(app.library.clone()));
+    persist.save(persist::Snapshot::Signals(app.signals.clone()));
+    persist.save(persist::Snapshot::Downloads(app.download_store.clone()));
+    if !persist.flush(Duration::from_secs(5)).await {
+        // Timed out (disk hung?). Direct fallback is safe: the actor holds the same
+        // quit-time snapshots, so a late actor write can't clobber anything newer.
+        tracing::warn!("persist flush timed out at quit; writing directly");
+        let _ = app.session_cache_snapshot().save();
+        let _ = app.library.save();
+        let _ = app.signals.save();
+        let _ = app.download_store.save();
+    }
     // Give queued scrobbles one bounded delivery attempt (they're already durable on
     // disk either way — leftovers flush on the next launch).
     handles.scrobble_shutdown(Duration::from_millis(1500)).await;

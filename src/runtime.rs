@@ -192,6 +192,8 @@ pub struct RuntimeHandles {
     scrobble_handle: crate::scrobble::ScrobbleHandle,
     /// Spawned on the first transfer command — costs nothing until the feature is used.
     transfer_handle: Option<crate::transfer::actor::TransferHandle>,
+    /// Debounced background store writes (the `Cmd::Save*` family).
+    persist: crate::persist::PersistHandle,
 }
 
 impl RuntimeHandles {
@@ -205,6 +207,7 @@ impl RuntimeHandles {
         resolver_handle: crate::resolver::ResolverHandle,
         ai_handle: Option<crate::ai::AiHandle>,
         scrobble_handle: crate::scrobble::ScrobbleHandle,
+        persist: crate::persist::PersistHandle,
     ) -> Self {
         Self {
             worker_tx,
@@ -220,6 +223,7 @@ impl RuntimeHandles {
             ai_handle,
             scrobble_handle,
             transfer_handle: None,
+            persist,
         }
     }
 
@@ -293,36 +297,36 @@ impl RuntimeHandles {
                 source,
                 config,
             } => self.api_handle.search(query, source, config),
+            // Save*: hand the persistence actor an owned snapshot. Cloning a store is a
+            // couple ms of memcpy at worst; the fsync it replaces on this task was 5-50ms.
             Cmd::SaveLibrary => {
-                if let Err(e) = app.library.save() {
-                    tracing::warn!(error = %e, "failed to save library");
-                }
+                self.persist
+                    .save(crate::persist::Snapshot::Library(app.library.clone()));
             }
             Cmd::SaveDownloads => {
-                if let Err(e) = app.download_store.save() {
-                    tracing::warn!(error = %e, "failed to save downloads manifest");
-                }
+                self.persist.save(crate::persist::Snapshot::Downloads(
+                    app.download_store.clone(),
+                ));
             }
             Cmd::SaveSignals => {
-                if let Err(e) = app.signals.save() {
-                    tracing::warn!(error = %e, "failed to save signals");
-                }
+                self.persist
+                    .save(crate::persist::Snapshot::Signals(app.signals.clone()));
             }
             Cmd::SaveRomanizedTitles => {
-                if let Err(e) = app.romanization.cache.save() {
-                    tracing::warn!(error = %e, "failed to save romanized title cache");
-                }
+                self.persist.save(crate::persist::Snapshot::RomanizedTitles(
+                    app.romanization.cache.clone(),
+                ));
             }
             Cmd::ClearRomanizedTitles => {
-                if let Err(e) = crate::romanize::RomanizeCache::delete_saved() {
-                    tracing::warn!(error = %e, "failed to delete romanized title cache");
-                }
+                self.persist.delete_romanized_titles();
             }
             Cmd::ScanDownloads(dir) => {
-                let songs = crate::library::scan_downloads(&dir);
-                let _ = self
-                    .worker_tx
-                    .send(RuntimeEvent::App(Msg::DownloadsScanned(songs)));
+                // Directory scan does per-file IO — keep it off the loop task too.
+                let tx = self.worker_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let songs = crate::library::scan_downloads(&dir);
+                    let _ = tx.send(RuntimeEvent::App(Msg::DownloadsScanned(songs)));
+                });
             }
             Cmd::FetchLyrics {
                 video_id,
@@ -355,19 +359,15 @@ impl RuntimeHandles {
                 self.resolver_handle.resolve_or_log(video_id, watch_url);
             }
             Cmd::SaveConfig(cfg) => {
-                if let Err(e) = cfg.save() {
-                    tracing::warn!(error = %e, "failed to save config");
-                }
+                self.persist.save(crate::persist::Snapshot::Config(cfg));
             }
             Cmd::SavePlaylists => {
-                if let Err(e) = app.playlists.save() {
-                    tracing::warn!(error = %e, "failed to save playlists");
-                }
+                self.persist
+                    .save(crate::persist::Snapshot::Playlists(app.playlists.clone()));
             }
             Cmd::SaveStationProfile => {
-                if let Err(e) = app.station.save() {
-                    tracing::warn!(error = %e, "failed to save station profile");
-                }
+                self.persist
+                    .save(crate::persist::Snapshot::Station(app.station.clone()));
             }
             Cmd::AskAi { prompt, context } => {
                 if let Some(h) = &self.ai_handle {

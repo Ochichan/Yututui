@@ -93,7 +93,7 @@ impl StationProfile {
 }
 
 /// Persisted holder for the single active station, mirroring [`crate::playlists::Playlists`].
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StationStore {
     /// The active station, if one was started from a vibe (None -> plain seed-based streaming).

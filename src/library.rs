@@ -26,7 +26,7 @@ const DOWNLOADS_MAX: usize = 999;
 const AUDIO_EXTENSIONS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"];
 
 /// Saved tracks and play history, persisted to `<data dir>/library.json`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Library {
     /// Saved tracks, most-recently-favorited first.

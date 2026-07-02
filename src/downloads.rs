@@ -22,7 +22,7 @@ use crate::util::safe_fs;
 const STORE_MAX: usize = 999;
 
 /// The download manifest, persisted to `<data dir>/downloads.json`.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DownloadStore {
     /// Enriched download records, most-recent first, de-duplicated by `video_id`.
