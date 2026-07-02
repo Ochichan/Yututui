@@ -37,8 +37,24 @@ impl App {
     }
 
     pub fn library_rows(&self) -> Vec<&Song> {
-        let rows = self.library_rows_for(self.effective_library_tab());
-        self.apply_library_filter(rows)
+        let tab = self.effective_library_tab();
+        // Playlist drill-down rows borrow from the playlists store, whose mutation
+        // surface (create/rename/add/remove/reorder) is too broad to key cheaply —
+        // and an open playlist is small. Build those uncached.
+        if matches!(tab, LibraryTab::Playlists) {
+            let rows = self.open_playlist_rows();
+            return self.apply_library_filter(rows);
+        }
+        let key = self.library_rows_key(tab);
+        if let Some(cache) = self.library_rows_cache.borrow().as_ref()
+            && cache.key == key
+        {
+            return self.rows_from_slots(&cache.slots);
+        }
+        let slots = self.build_library_slots(tab);
+        let rows = self.rows_from_slots(&slots);
+        *self.library_rows_cache.borrow_mut() = Some(LibraryRowsCache { key, slots });
+        rows
     }
 
     /// Narrow `rows` to the active in-library filter — a case-insensitive substring match on
@@ -51,73 +67,182 @@ impl App {
             return rows;
         }
         rows.into_iter()
-            .filter(|s| {
-                s.title.to_lowercase().contains(&needle)
-                    || s.artist.to_lowercase().contains(&needle)
-                    || self.display_title(s).to_lowercase().contains(&needle)
-                    || self.display_artist(s).to_lowercase().contains(&needle)
+            .filter(|s| self.song_matches_filter(s, &needle))
+            .collect()
+    }
+
+    fn song_matches_filter(&self, s: &Song, needle: &str) -> bool {
+        s.title.to_lowercase().contains(needle)
+            || s.artist.to_lowercase().contains(needle)
+            || self.display_title(s).to_lowercase().contains(needle)
+            || self.display_artist(s).to_lowercase().contains(needle)
+    }
+
+    /// Song rows of the opened playlist; the Playlists root level lists the playlists
+    /// themselves (see `filtered_playlists`).
+    fn open_playlist_rows(&self) -> Vec<&Song> {
+        self.library_ui
+            .open_playlist
+            .as_ref()
+            .and_then(|key| self.playlists.find(key))
+            .map(|p| p.songs.iter().collect())
+            .unwrap_or_default()
+    }
+
+    fn library_rows_key(&self, tab: LibraryTab) -> RowsKey {
+        RowsKey {
+            library_rev: self.library.rev,
+            downloaded_rev: self.library_ui.downloaded_rev,
+            romanize_rev: self.romanization.cache.rev(),
+            fav_len: self.library.favorites.len(),
+            hist_len: self.library.history.len(),
+            radio_fav_len: self.library.radio_favorites.len(),
+            radios_len: self.library.radios.len(),
+            down_len: self.library_ui.downloaded.len(),
+            tab,
+            filter: self.library_ui.filter_query.clone(),
+            romanized_on: self.config.effective_romanized_titles(),
+        }
+    }
+
+    /// Resolve cached slots back to rows. `.get` + debug_assert so a hypothetically
+    /// missed invalidation degrades to a dropped row in release, never a render panic.
+    fn rows_from_slots(&self, slots: &[RowSlot]) -> Vec<&Song> {
+        slots
+            .iter()
+            .filter_map(|slot| {
+                let song = match *slot {
+                    RowSlot::Fav(i) => self.library.favorites.get(i as usize),
+                    RowSlot::Hist(i) => self.library.history.get(i as usize),
+                    RowSlot::RadioFav(i) => self.library.radio_favorites.get(i as usize),
+                    RowSlot::RadioRecent(i) => self.library.radios.get(i as usize),
+                    RowSlot::Down(i) => self.library_ui.downloaded.get(i as usize),
+                };
+                debug_assert!(song.is_some(), "stale library row slot {slot:?}");
+                song
             })
             .collect()
     }
 
-    pub(in crate::app) fn library_rows_for(&self, tab: LibraryTab) -> Vec<&Song> {
-        match tab {
-            LibraryTab::All => self.all_library_rows(),
+    /// The uncached row computation: per-tab source selection (+ the All-tab dedup),
+    /// then the in-library filter, producing stable (collection, index) slots.
+    fn build_library_slots(&self, tab: LibraryTab) -> Vec<RowSlot> {
+        let mut slots: Vec<RowSlot> = match tab {
+            LibraryTab::All => {
+                let mut slots = Vec::new();
+                let mut seen_ids = HashSet::new();
+                let mut seen_titles = HashSet::new();
+                let favs = self
+                    .library
+                    .favorites
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| (RowSlot::Fav(i as u32), s));
+                let hist = self
+                    .library
+                    .history
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| (RowSlot::Hist(i as u32), s));
+                let down = self
+                    .library_ui
+                    .downloaded
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| (RowSlot::Down(i as u32), s));
+                for (slot, song) in favs
+                    .chain(hist)
+                    .chain(down)
+                    .filter(|(_, song)| !song.is_radio_station())
+                {
+                    // Collapse a track that lives in several collections to one row. The exact id
+                    // catches a favorite that's also in history; the normalized title additionally
+                    // catches a downloaded file (saved as `<title>.m4a`, so its title matches the
+                    // catalog title) that duplicates a remote favorite/history entry. First in the
+                    // chain wins, so the richer catalog entry is preferred over the local file.
+                    let title_key = song.title.trim().to_lowercase();
+                    let fresh_id = seen_ids.insert(song.video_id.as_str());
+                    let fresh_title = seen_titles.insert(title_key);
+                    if fresh_id && fresh_title {
+                        slots.push(slot);
+                    }
+                }
+                slots
+            }
             LibraryTab::Favorites => self
                 .library
                 .favorites
                 .iter()
-                .filter(|s| !s.is_radio_station())
+                .enumerate()
+                .filter(|(_, s)| !s.is_radio_station())
+                .map(|(i, _)| RowSlot::Fav(i as u32))
                 .collect(),
             LibraryTab::History => self
                 .library
                 .history
                 .iter()
-                .filter(|s| !s.is_radio_station())
+                .enumerate()
+                .filter(|(_, s)| !s.is_radio_station())
+                .map(|(i, _)| RowSlot::Hist(i as u32))
                 .collect(),
-            LibraryTab::RadioFavorites => self.radio_favorites_library_rows(),
-            LibraryTab::Radio => self.radio_recent_library_rows(),
-            LibraryTab::Downloads => self.library_ui.downloaded.iter().collect(),
-            // Song rows exist only inside an opened playlist; the root level lists the
-            // playlists themselves (see `filtered_playlists`).
-            LibraryTab::Playlists => self
-                .library_ui
-                .open_playlist
-                .as_ref()
-                .and_then(|key| self.playlists.find(key))
-                .map(|p| p.songs.iter().collect())
-                .unwrap_or_default(),
-        }
-    }
-
-    pub(in crate::app) fn all_library_rows(&self) -> Vec<&Song> {
-        let mut rows = Vec::new();
-        let mut seen_ids = HashSet::new();
-        let mut seen_titles = HashSet::new();
-        for song in self
-            .library
-            .favorites
-            .iter()
-            .chain(self.library.history.iter())
-            .chain(self.library_ui.downloaded.iter())
-            .filter(|song| !song.is_radio_station())
-        {
-            // Collapse a track that lives in several collections to one row. The exact id
-            // catches a favorite that's also in history; the normalized title additionally
-            // catches a downloaded file (saved as `<title>.m4a`, so its title matches the
-            // catalog title) that duplicates a remote favorite/history entry. First in the
-            // chain wins, so the richer catalog entry is preferred over the local file.
-            let title_key = song.title.trim().to_lowercase();
-            let fresh_id = seen_ids.insert(song.video_id.clone());
-            let fresh_title = seen_titles.insert(title_key);
-            if fresh_id && fresh_title {
-                rows.push(song);
+            LibraryTab::RadioFavorites => self
+                .library
+                .radio_favorites
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.is_radio_station())
+                .map(|(i, _)| RowSlot::RadioFav(i as u32))
+                .collect(),
+            LibraryTab::Radio => {
+                let mut seen_ids = HashSet::new();
+                self.library
+                    .radios
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, song)| {
+                        song.is_radio_station()
+                            && !self.library.is_radio_favorite(&song.video_id)
+                            && seen_ids.insert(song.video_id.as_str())
+                    })
+                    .map(|(i, _)| RowSlot::RadioRecent(i as u32))
+                    .collect()
             }
+            LibraryTab::Downloads => (0..self.library_ui.downloaded.len())
+                .map(|i| RowSlot::Down(i as u32))
+                .collect(),
+            // Handled (uncached) in `library_rows` before we get here.
+            LibraryTab::Playlists => Vec::new(),
+        };
+        let needle = self.library_ui.filter_query.trim().to_lowercase();
+        if !needle.is_empty() {
+            let matches = |slot: &RowSlot| -> bool {
+                let song = match *slot {
+                    RowSlot::Fav(i) => self.library.favorites.get(i as usize),
+                    RowSlot::Hist(i) => self.library.history.get(i as usize),
+                    RowSlot::RadioFav(i) => self.library.radio_favorites.get(i as usize),
+                    RowSlot::RadioRecent(i) => self.library.radios.get(i as usize),
+                    RowSlot::Down(i) => self.library_ui.downloaded.get(i as usize),
+                };
+                song.is_some_and(|s| self.song_matches_filter(s, &needle))
+            };
+            slots.retain(matches);
         }
-        rows
+        slots
     }
 
     fn all_library_count(&self) -> usize {
+        let key: AllCountKey = (
+            self.library.rev,
+            self.library_ui.downloaded_rev,
+            self.library.favorites.len(),
+            self.library.history.len(),
+            self.library_ui.downloaded.len(),
+        );
+        if let Some((cached_key, count)) = self.all_count_cache.get()
+            && cached_key == key
+        {
+            return count;
+        }
         let mut count = 0usize;
         let mut seen_ids = HashSet::new();
         let mut seen_titles = HashSet::new();
@@ -136,15 +261,8 @@ impl App {
                 count += 1;
             }
         }
+        self.all_count_cache.set(Some((key, count)));
         count
-    }
-
-    pub(in crate::app) fn radio_favorites_library_rows(&self) -> Vec<&Song> {
-        self.library
-            .radio_favorites
-            .iter()
-            .filter(|song| song.is_radio_station())
-            .collect()
     }
 
     fn radio_favorites_library_count(&self) -> usize {
@@ -153,19 +271,6 @@ impl App {
             .iter()
             .filter(|song| song.is_radio_station())
             .count()
-    }
-
-    pub(in crate::app) fn radio_recent_library_rows(&self) -> Vec<&Song> {
-        let mut rows = Vec::new();
-        let mut seen_ids = HashSet::new();
-        for song in self.library.radios.iter().filter(|song| {
-            song.is_radio_station() && !self.library.is_radio_favorite(&song.video_id)
-        }) {
-            if seen_ids.insert(song.video_id.as_str()) {
-                rows.push(song);
-            }
-        }
-        rows
     }
 
     fn radio_recent_library_count(&self) -> usize {
@@ -366,6 +471,7 @@ impl App {
                 }
             }
         }
+        self.library_ui.downloaded_rev = self.library_ui.downloaded_rev.wrapping_add(1);
         self.library_ui.downloaded.retain(|song| {
             song.local_path
                 .as_ref()
@@ -388,6 +494,43 @@ impl App {
         self.library_ui.anchor = self.library_ui.anchor.min(last);
     }
 }
+
+/// A visible library row, addressed as (source collection, index) — small, `Copy`, and
+/// resolvable back to `&Song` in O(1). Cached across frames in `App::library_rows_cache`.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::app) enum RowSlot {
+    Fav(u32),
+    Hist(u32),
+    RadioFav(u32),
+    RadioRecent(u32),
+    Down(u32),
+}
+
+/// Everything the row computation reads. Revs cover in-place mutation through the store
+/// methods; the lengths are belt-and-suspenders for direct collection pushes (tests).
+#[derive(PartialEq, Eq)]
+pub(in crate::app) struct RowsKey {
+    library_rev: u64,
+    downloaded_rev: u64,
+    romanize_rev: u64,
+    fav_len: usize,
+    hist_len: usize,
+    radio_fav_len: usize,
+    radios_len: usize,
+    down_len: usize,
+    tab: LibraryTab,
+    filter: String,
+    romanized_on: bool,
+}
+
+pub(in crate::app) struct LibraryRowsCache {
+    key: RowsKey,
+    slots: Vec<RowSlot>,
+}
+
+/// (library_rev, downloaded_rev, favorites len, history len, downloaded len) — the All-tab
+/// count reads nothing else.
+pub(in crate::app) type AllCountKey = (u64, u64, usize, usize, usize);
 
 fn remove_download_file_if_safe(
     path: &std::path::Path,

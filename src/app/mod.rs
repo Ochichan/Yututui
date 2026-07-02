@@ -258,6 +258,16 @@ pub struct App {
     /// Library-screen state: active tab, list cursor + multi-select anchor, local
     /// download-folder rows, and the pending file-delete confirmation.
     pub library_ui: LibraryView,
+    /// Cross-frame cache of the visible library rows (dedup + filter are O(library) and
+    /// used to run on every frame *and* every navigation event). Keyed on the source
+    /// revisions/lengths + tab + filter; see `library_reducer`. Interior mutability so
+    /// `library_rows(&self)` can refresh it.
+    library_rows_cache: RefCell<Option<library_reducer::LibraryRowsCache>>,
+    /// Same idea for the All-tab dedup count shown in the tab bar every frame.
+    all_count_cache: Cell<Option<(library_reducer::AllCountKey, usize)>>,
+    /// Memo for `recover_youtube_id`'s library title scan (per current track + library
+    /// state) — media_snapshot re-asks it every second while playing a local/radio track.
+    yid_scan_memo: RefCell<Option<player::YidMemo>>,
     /// The "add to playlist" picker popup, when open (from Library rows, Search results,
     /// or the Player's current track).
     pub playlist_picker: Option<PlaylistPicker>,
@@ -388,6 +398,9 @@ impl App {
             signals: Signals::default(),
             session: Session::default(),
             library_ui: LibraryView::default(),
+            library_rows_cache: RefCell::new(None),
+            all_count_cache: Cell::new(None),
+            yid_scan_memo: RefCell::new(None),
             playlist_picker: None,
             drag_selection: None,
             drag_scrollbar: None,
@@ -990,6 +1003,7 @@ impl App {
                 self.dirty = true;
             }
             Msg::DownloadsScanned(songs) => {
+                self.library_ui.downloaded_rev = self.library_ui.downloaded_rev.wrapping_add(1);
                 self.library_ui.downloaded = self.enrich_downloads(songs);
                 let len = self.library_len();
                 if self.library_ui.selected >= len {

@@ -66,6 +66,10 @@ pub struct RomanizedResult {
 #[serde(default)]
 pub struct RomanizeCache {
     entries: BTreeMap<String, RomanizedEntry>,
+    /// Mutation counter so display-dependent caches (the library row cache filters on
+    /// romanized titles) can key on cache content without hashing it.
+    #[serde(skip)]
+    rev: u64,
 }
 
 impl RomanizeCache {
@@ -98,7 +102,13 @@ impl RomanizeCache {
     }
 
     pub fn clear(&mut self) {
+        self.rev = self.rev.wrapping_add(1);
         self.entries.clear();
+    }
+
+    /// Content revision — changes whenever an overlay entry is added/replaced/cleared.
+    pub fn rev(&self) -> u64 {
+        self.rev
     }
 
     pub fn display_title<'a>(&'a self, song: &'a Song) -> Cow<'a, str> {
@@ -130,6 +140,7 @@ impl RomanizeCache {
         }
         let title = clean_display(&romanize_text(&song.title));
         let artist = clean_display(&romanize_text(&song.artist));
+        self.rev = self.rev.wrapping_add(1);
         self.entries.insert(
             key,
             RomanizedEntry {
@@ -181,6 +192,9 @@ impl RomanizeCache {
                 self.entries.insert(result.key.clone(), next);
                 changed = true;
             }
+        }
+        if changed {
+            self.rev = self.rev.wrapping_add(1);
         }
         changed
     }

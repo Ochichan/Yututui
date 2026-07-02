@@ -343,6 +343,10 @@ pub struct LibraryView {
     pub anchor: usize,
     /// Local audio files found in the configured download directory.
     pub downloaded: Vec<Song>,
+    /// Mutation counter for `downloaded` (row cache / id-recovery memo key). Bumped at
+    /// every prod mutation site; a rescan can swap same-length different-content lists,
+    /// which is why length alone can't key the caches.
+    pub downloaded_rev: u64,
     /// Pending "delete downloaded files" confirmation: the on-disk paths queued for deletion
     /// (file removal is irreversible, so it's gated behind an explicit yes/no). `None` when no
     /// modal is open.

@@ -34,6 +34,7 @@ impl App {
         // Remember the enriched record (id + real metadata) BEFORE the move below — `insert`
         // takes `song` by value, so recording after it would not compile.
         self.download_store.record(&song);
+        self.library_ui.downloaded_rev = self.library_ui.downloaded_rev.wrapping_add(1);
         self.library_ui
             .downloaded
             .retain(|s| s.video_id != song.video_id);

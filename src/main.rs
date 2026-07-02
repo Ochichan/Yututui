@@ -607,6 +607,7 @@ async fn run(
     // after a restart; files the manifest doesn't know are recovered from their `[id]` filename.
     app.download_store = downloads::DownloadStore::load();
     let scanned = library::scan_downloads(&download_runtime.dir);
+    app.library_ui.downloaded_rev = app.library_ui.downloaded_rev.wrapping_add(1);
     app.library_ui.downloaded = app.enrich_downloads(scanned);
     // Load local playlists (the DJ Gem playlist tools read/write these).
     app.playlists = playlists::Playlists::load();

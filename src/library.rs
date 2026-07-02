@@ -37,6 +37,11 @@ pub struct Library {
     pub radio_favorites: Vec<Song>,
     /// Recently played live radio stations, most-recent first; capped at [`RADIOS_MAX`].
     pub radios: VecDeque<Song>,
+    /// Mutation counter for downstream caches (library row cache, id-recovery memo).
+    /// Every `&mut self` method bumps it; direct field mutation (tests) is covered by the
+    /// caches also keying on collection lengths.
+    #[serde(skip)]
+    pub(crate) rev: u64,
 }
 
 impl Library {
@@ -68,8 +73,13 @@ impl Library {
         self.radio_favorites.iter().any(|s| s.video_id == video_id)
     }
 
+    fn touch(&mut self) {
+        self.rev = self.rev.wrapping_add(1);
+    }
+
     /// Toggle `song`'s favorite status. Returns `true` if it is now a favorite.
     pub fn toggle_favorite(&mut self, song: &Song) -> bool {
+        self.touch();
         if song.is_radio_station() {
             return self.toggle_radio_favorite(song);
         }
@@ -89,6 +99,7 @@ impl Library {
 
     /// Toggle a live radio station's favorite status, separate from track favorites.
     pub fn toggle_radio_favorite(&mut self, song: &Song) -> bool {
+        self.touch();
         if !song.is_radio_station() {
             return false;
         }
@@ -110,6 +121,7 @@ impl Library {
     /// Remove the favorite at `index` (position in [`Self::favorites`]). Returns whether a
     /// track was removed — `false` for an out-of-range index. Powers the library's delete.
     pub fn remove_favorite_at(&mut self, index: usize) -> bool {
+        self.touch();
         if index < self.favorites.len() {
             self.favorites.remove(index);
             true
@@ -121,11 +133,13 @@ impl Library {
     /// Remove the history entry at `index` (position in [`Self::history`]). Returns whether a
     /// track was removed — `false` for an out-of-range index. Powers the library's delete.
     pub fn remove_history_at(&mut self, index: usize) -> bool {
+        self.touch();
         self.history.remove(index).is_some()
     }
 
     /// Remove a station from radio favorites only, leaving its recent-play entry intact.
     pub fn remove_radio_favorite_by_id(&mut self, video_id: &str) -> bool {
+        self.touch();
         let before = self.radio_favorites.len();
         self.radio_favorites.retain(|s| s.video_id != video_id);
         self.radio_favorites.len() != before
@@ -133,6 +147,7 @@ impl Library {
 
     /// Remove a station from recently played radio only, leaving its favorite status intact.
     pub fn remove_radio_recent_by_id(&mut self, video_id: &str) -> bool {
+        self.touch();
         let before = self.radios.len();
         self.radios.retain(|s| s.video_id != video_id);
         self.radios.len() != before
@@ -141,6 +156,7 @@ impl Library {
     /// Record that `song` is being played. Normal tracks move to the front of history; live radio
     /// stations move to the Radio tab instead so they never feed song history.
     pub fn record_play(&mut self, song: &Song) {
+        self.touch();
         if song.is_radio_station() {
             self.record_radio(song);
             return;
@@ -154,6 +170,7 @@ impl Library {
 
     /// Record a live radio station in its own list, de-duped by id and kept out of song lists.
     pub fn record_radio(&mut self, song: &Song) {
+        self.touch();
         if !song.is_radio_station() {
             return;
         }

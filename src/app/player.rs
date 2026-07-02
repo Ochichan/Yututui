@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// Memoized result of [`App::recover_youtube_id`]'s library title scan, keyed on the
+/// track and the same rev/length fingerprint the library row cache uses.
+pub(in crate::app) struct YidMemo {
+    pub(in crate::app) video_id: String,
+    pub(in crate::app) state_key: (u64, u64, usize, usize, usize),
+    pub(in crate::app) result: Option<String>,
+}
+
 impl App {
     /// The mpv `af` filter chain for the current EQ + normalization state, or `None` when
     /// nothing is active (the caller then clears `af`).
@@ -64,14 +72,36 @@ impl App {
         {
             return Some(id.to_owned());
         }
+        // The title scan lowercases every favorites/history/downloads entry — memoize per
+        // (track, library state) since media_snapshot re-asks this at ~1 Hz for local tracks.
+        let memo_key = (
+            self.library.rev,
+            self.library_ui.downloaded_rev,
+            self.library.favorites.len(),
+            self.library.history.len(),
+            self.library_ui.downloaded.len(),
+        );
+        if let Some(memo) = self.yid_scan_memo.borrow().as_ref()
+            && memo.video_id == song.video_id
+            && memo.state_key == memo_key
+        {
+            return memo.result.clone();
+        }
         let key = song.title.trim().to_lowercase();
-        self.library
+        let result = self
+            .library
             .favorites
             .iter()
             .chain(self.library.history.iter())
             .chain(self.library_ui.downloaded.iter())
             .find(|e| e.youtube_id().is_some() && e.title.trim().to_lowercase() == key)
-            .and_then(|e| e.youtube_id().map(str::to_owned))
+            .and_then(|e| e.youtube_id().map(str::to_owned));
+        *self.yid_scan_memo.borrow_mut() = Some(YidMemo {
+            video_id: song.video_id.clone(),
+            state_key: memo_key,
+            result: result.clone(),
+        });
+        result
     }
 
     /// `v`: toggle the external mpv video overlay. Open → close it and resume the audio we
