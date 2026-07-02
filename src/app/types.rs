@@ -523,7 +523,7 @@ impl StreamNowPlaying {
 /// `shortlist` is the exact set the model was shown — every returned id is validated against
 /// it (so a hallucinated id is dropped) — and `local_pick` is the guaranteed fallback ordering
 /// the engine produced, used to top up any slots the DJ Gem left empty.
-pub(crate) struct PendingRerank {
+pub struct PendingRerank {
     pub(crate) seed_video_id: String,
     pub(crate) mode: StreamingMode,
     pub(crate) shortlist: Vec<Song>,
@@ -550,7 +550,7 @@ pub struct AiPick {
 /// mapped back to real tracks (title + artist) while [`PendingRerank`] is still in hand — so the
 /// overlay can render it long after the pending rerank has been consumed.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct StreamingAiExplain {
+pub struct StreamingAiExplain {
     /// The model's self-reported confidence in [0,1], if any.
     pub(crate) conf: Option<f32>,
     /// The picks the model chose, in its best-first order (hallucinated cids already dropped).
@@ -574,7 +574,7 @@ pub(crate) struct ExplainPick {
 /// skip → widen and avoid the skipped artist, a like → stay close — so the model reacts to the
 /// arc of the session, not just the aggregate per-track signals the engine already folds in.
 #[derive(Debug, Clone)]
-pub(crate) struct SessionEvent {
+pub struct SessionEvent {
     /// Normalized artist key (the recovery context keys off the artist, not the track id — the
     /// engine already excludes the just-played track via history/cooldown).
     pub(crate) artist_key: String,

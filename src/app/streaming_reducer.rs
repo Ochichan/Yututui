@@ -805,7 +805,7 @@ impl App {
     /// Sync the active station profile's adventurousness onto the live engine mode. The avoid
     /// list is read live in [`App::build_station_state`], so only the mode needs applying here
     /// (called at startup after the persisted profile loads).
-    pub(crate) fn apply_station_profile(&mut self) {
+    pub fn apply_station_profile(&mut self) {
         if let Some(profile) = &self.station.active {
             self.config.streaming.mode = profile.explore.to_mode();
         }

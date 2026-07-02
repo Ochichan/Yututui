@@ -1,44 +1,8 @@
-mod ai;
-mod api;
-mod app;
-mod artwork;
-mod auth_cli;
-mod config;
-mod daemon;
-mod deps;
-mod doctor;
-mod download;
-mod downloads;
-mod eq;
-mod event;
-mod i18n;
-mod ids;
-mod keymap;
-mod library;
-mod logging;
-mod lyrics;
-mod media;
-mod persist;
-mod player;
-mod playlists;
-mod queue;
-mod remote;
-mod resolver;
-mod romanize;
-mod runtime;
-mod scrobble;
-mod search_source;
-mod session;
-mod settings;
-mod signals;
-mod spotify;
-mod station;
-mod streaming;
-mod theme;
-mod transfer;
-mod tui;
-mod ui;
-mod util;
+use ytm_tui::{
+    ai, api, app, artwork, auth_cli, config, daemon, deps, doctor, download, downloads, event,
+    i18n, library, logging, lyrics, media, persist, player, playlists, remote, resolver, romanize,
+    runtime, scrobble, session, signals, station, transfer, tui, ui,
+};
 
 use anyhow::Result;
 use app::{App, Msg};

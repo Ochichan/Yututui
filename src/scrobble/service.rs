@@ -77,6 +77,9 @@ impl std::error::Error for ScrobbleError {}
 
 /// What every scrobbling backend can do. Batch size is the caller's job (Last.fm caps at
 /// 50 per `track.scrobble`; the queue flusher chunks accordingly).
+// Internal trait with in-crate impls only; callers never name the returned futures, so
+// plain `async fn` (without explicit auto-trait bounds) is fine here.
+#[allow(async_fn_in_trait)]
 pub trait ScrobbleService {
     fn kind(&self) -> ServiceKind;
     async fn now_playing(&self, track: &ScrobbleTrack) -> Result<(), ScrobbleError>;

@@ -5,7 +5,7 @@ use super::*;
 const ART_REFRESH_OVERLAY_CLEAR_FRAMES: u8 = 3;
 
 impl App {
-    pub(crate) fn set_art_resize_tx(
+    pub fn set_art_resize_tx(
         &mut self,
         tx: tokio::sync::mpsc::UnboundedSender<ResizeRequest>,
     ) {
@@ -96,7 +96,7 @@ impl App {
         }
     }
 
-    pub(crate) fn reset_animation_cadence(&mut self) {
+    pub fn reset_animation_cadence(&mut self) {
         self.anim_draw_credit = 0;
         self.anim_last_draw_fps = 0;
     }
