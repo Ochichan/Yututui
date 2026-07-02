@@ -107,8 +107,34 @@ async fn write_json(conn: &Stream, json: &str) -> io::Result<()> {
     writer.flush().await
 }
 
+/// Borrowed view of the one high-rate mpv line: a `time-pos` property-change. Parsing
+/// into this (zero-copy `&str` fields, `data` as a plain number) skips the full
+/// `serde_json::Value` tree that `proto::parse_line` builds — and time-pos arrives many
+/// times a second during playback, then is deduped to 1/sec anyway.
+#[derive(serde::Deserialize)]
+struct TimePosLine<'a> {
+    event: &'a str,
+    name: &'a str,
+    data: f64,
+}
+
 /// Translate one mpv line into a player event for the runtime.
 fn dispatch_incoming(line: &str, emit: &EventSink, last_sent_time_sec: &mut Option<i64>) {
+    // Fast path: dedup time-pos before allocating anything. A borrow-mode parse fails on
+    // any other event shape (missing fields, null/escaped data) and falls through to the
+    // general path below, so behavior is unchanged — e.g. `data:null` still ends up in
+    // the `as_f64() == None` arm there and emits nothing.
+    if let Ok(tp) = serde_json::from_str::<TimePosLine>(line.trim())
+        && tp.event == "property-change"
+        && tp.name == "time-pos"
+    {
+        let sec = tp.data as i64;
+        if *last_sent_time_sec != Some(sec) {
+            *last_sent_time_sec = Some(sec);
+            emit(PlayerEvent::TimePos(tp.data));
+        }
+        return;
+    }
     let Some(incoming) = proto::parse_line(line) else {
         return;
     };
@@ -188,5 +214,43 @@ mod tests {
             }
             _ => panic!("expected metadata event"),
         }
+    }
+
+    #[test]
+    fn time_pos_dedups_to_whole_seconds() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut last_sent_time_sec = None;
+
+        for data in ["1.1", "1.4", "1.9", "2.0"] {
+            let line =
+                format!(r#"{{"event":"property-change","id":1,"name":"time-pos","data":{data}}}"#);
+            dispatch_incoming(&line, &emit, &mut last_sent_time_sec);
+        }
+
+        // 1.1 emits (second 1), 1.4/1.9 dedup away, 2.0 emits (second 2).
+        assert!(matches!(rx.try_recv(), Ok(PlayerEvent::TimePos(t)) if t == 1.1));
+        assert!(matches!(rx.try_recv(), Ok(PlayerEvent::TimePos(t)) if t == 2.0));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn null_time_pos_emits_nothing() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut last_sent_time_sec = Some(3);
+
+        dispatch_incoming(
+            r#"{"event":"property-change","id":1,"name":"time-pos","data":null}"#,
+            &emit,
+            &mut last_sent_time_sec,
+        );
+
+        assert!(rx.try_recv().is_err());
+        assert_eq!(last_sent_time_sec, Some(3));
     }
 }

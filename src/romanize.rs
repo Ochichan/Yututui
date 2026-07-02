@@ -70,6 +70,11 @@ pub struct RomanizeCache {
     /// romanized titles) can key on cache content without hashing it.
     #[serde(skip)]
     rev: u64,
+    /// Reusable key buffer for [`Self::entry_for`] — it runs twice per list row per
+    /// frame when romanized titles are on, and the joined key was a fresh `String` each
+    /// time. `RefCell` because lookups come through `&self` from the render path.
+    #[serde(skip)]
+    key_scratch: std::cell::RefCell<String>,
 }
 
 impl RomanizeCache {
@@ -126,8 +131,12 @@ impl RomanizeCache {
     }
 
     pub fn entry_for(&self, song: &Song) -> Option<&RomanizedEntry> {
-        let key = key_for_song(song);
-        self.entries.get(&key)
+        let mut buf = self.key_scratch.borrow_mut();
+        buf.clear();
+        write_key(&mut buf, song);
+        // The returned reference borrows `entries`, not the scratch buffer, so the
+        // RefCell borrow ends here.
+        self.entries.get(buf.as_str())
     }
 
     pub fn ensure_local(&mut self, song: &Song) -> bool {
@@ -205,14 +214,23 @@ fn cache_path() -> Option<PathBuf> {
 }
 
 pub fn key_for_song(song: &Song) -> String {
+    let mut key = String::new();
+    write_key(&mut key, song);
+    key
+}
+
+/// The persisted cache-key format (`\u{1f}`-joined fields) written into a caller-owned
+/// buffer — [`RomanizeCache::entry_for`] reuses one across lookups. Must stay in sync
+/// with what older versions produced via `join`, since keys live in the cache file.
+fn write_key(buf: &mut String, song: &Song) {
     let stable_id = song.youtube_id().unwrap_or(song.video_id.as_str());
-    [
-        song.source.code(),
-        stable_id,
-        song.title.trim(),
-        song.artist.trim(),
-    ]
-    .join("\u{1f}")
+    buf.push_str(song.source.code());
+    buf.push('\u{1f}');
+    buf.push_str(stable_id);
+    buf.push('\u{1f}');
+    buf.push_str(song.title.trim());
+    buf.push('\u{1f}');
+    buf.push_str(song.artist.trim());
 }
 
 fn usable_overlay<'a>(overlay: &'a str, original: &str) -> Option<&'a str> {
