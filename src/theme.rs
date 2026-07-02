@@ -4,24 +4,61 @@
 //! config stores a preset plus per-role `#RRGGBB` overrides.
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use ratatui::style::{Color, Style};
 use serde::{Deserialize, Serialize};
 
 use crate::t;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Fully resolved role→color/style tables so the per-frame `color()`/`style()` calls are
+/// plain array reads instead of hex parsing. Indexed by `ThemeRole as usize` (declaration
+/// order matches `ThemeRole::ALL` — asserted in tests). Boxed so a `ThemeConfig` stays
+/// pointer-sized until someone actually renders with it.
+#[derive(Debug)]
+struct ResolvedPalette {
+    colors: [Color; ThemeRole::ALL.len()],
+    styles: [Style; ThemeRole::ALL.len()],
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
+    /// Mutate via the methods below (or whole-value assignment) — writing this field
+    /// directly leaves the resolved palette cache stale.
     pub preset: String,
+    /// Same caveat as `preset`: go through `set_override`/`reset_role`/`override_value_mut`.
     pub overrides: BTreeMap<String, String>,
+    /// Lazily resolved palette; every mutating method resets it.
+    #[serde(skip)]
+    palette: OnceLock<Box<ResolvedPalette>>,
 }
+
+impl Clone for ThemeConfig {
+    fn clone(&self) -> Self {
+        // Fresh cache: cheaper than cloning the tables and immune to cloning stale state.
+        Self {
+            preset: self.preset.clone(),
+            overrides: self.overrides.clone(),
+            palette: OnceLock::new(),
+        }
+    }
+}
+
+impl PartialEq for ThemeConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.preset == other.preset && self.overrides == other.overrides
+    }
+}
+
+impl Eq for ThemeConfig {}
 
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
             preset: ThemePreset::Default.id().to_owned(),
             overrides: BTreeMap::new(),
+            palette: OnceLock::new(),
         }
     }
 }
@@ -31,6 +68,7 @@ impl ThemeConfig {
         Self {
             preset: ThemePreset::Dario.id().to_owned(),
             overrides: BTreeMap::new(),
+            palette: OnceLock::new(),
         }
     }
 
@@ -39,6 +77,7 @@ impl ThemeConfig {
     }
 
     pub fn set_preset(&mut self, preset: ThemePreset) {
+        self.palette = OnceLock::new();
         self.preset = preset.id().to_owned();
     }
 
@@ -56,6 +95,20 @@ impl ThemeConfig {
     }
 
     pub fn color(&self, role: ThemeRole) -> Color {
+        self.palette().colors[role as usize]
+    }
+
+    pub fn style(&self, role: ThemeRole) -> Style {
+        self.palette().styles[role as usize]
+    }
+
+    fn palette(&self) -> &ResolvedPalette {
+        self.palette
+            .get_or_init(|| Box::new(self.resolve_palette()))
+    }
+
+    /// The old per-call `color()` body, now only run when (re)building the palette.
+    fn resolve_color(&self, role: ThemeRole) -> Color {
         if self.preset_enum() == ThemePreset::Retro && !self.overrides.contains_key(role.id()) {
             return role.retro_color();
         }
@@ -67,13 +120,18 @@ impl ThemeConfig {
         }
     }
 
-    pub fn style(&self, role: ThemeRole) -> Style {
-        Style::default()
-            .fg(self.color(role))
-            .bg(self.color(ThemeRole::Background))
+    fn resolve_palette(&self) -> ResolvedPalette {
+        let mut colors = [Color::Reset; ThemeRole::ALL.len()];
+        for role in ThemeRole::ALL {
+            colors[role as usize] = self.resolve_color(role);
+        }
+        let bg = colors[ThemeRole::Background as usize];
+        let styles = std::array::from_fn(|i| Style::default().fg(colors[i]).bg(bg));
+        ResolvedPalette { colors, styles }
     }
 
     pub fn set_override(&mut self, role: ThemeRole, value: &str) -> Result<(), String> {
+        self.palette = OnceLock::new();
         let Some(canonical) = normalize_value(value) else {
             return Err(if crate::i18n::is_korean() {
                 format!(
@@ -93,12 +151,21 @@ impl ThemeConfig {
     }
 
     pub fn reset_role(&mut self, role: ThemeRole) {
+        self.palette = OnceLock::new();
         self.overrides.remove(role.id());
     }
 
     pub fn ensure_override_for_edit(&mut self, role: ThemeRole) {
+        self.palette = OnceLock::new();
         let value = self.effective_hex(role);
         self.overrides.entry(role.id().to_owned()).or_insert(value);
+    }
+
+    /// Mutable access to an existing override's raw value (live hex editing in Settings).
+    /// Routed through a method so handing out the `&mut` invalidates the palette first.
+    pub fn override_value_mut(&mut self, role: ThemeRole) -> Option<&mut String> {
+        self.palette = OnceLock::new();
+        self.overrides.get_mut(role.id())
     }
 
     pub fn normalized(&self) -> Self {
@@ -117,6 +184,7 @@ impl ThemeConfig {
         Self {
             preset: preset.id().to_owned(),
             overrides,
+            palette: OnceLock::new(),
         }
     }
 }
@@ -1020,6 +1088,59 @@ mod tests {
         cfg.set_override(ThemeRole::Background, "TRANSPARENT")
             .unwrap();
         assert_eq!(cfg.effective_hex(ThemeRole::Background), "none");
+    }
+
+    #[test]
+    fn role_all_order_matches_discriminants() {
+        // The resolved palette indexes by `role as usize`; ALL must mirror declaration order.
+        for (i, role) in ThemeRole::ALL.iter().enumerate() {
+            assert_eq!(*role as usize, i, "{} out of order in ALL", role.id());
+        }
+    }
+
+    #[test]
+    fn every_mutator_invalidates_the_palette() {
+        let mut cfg = ThemeConfig::default();
+        let before = cfg.color(ThemeRole::BorderPrimary); // primes the cache
+
+        cfg.set_preset(ThemePreset::Light);
+        assert_ne!(cfg.color(ThemeRole::BorderPrimary), before);
+        assert_eq!(cfg.color(ThemeRole::BorderPrimary), Color::Rgb(0xC0, 0x26, 0xD3));
+
+        cfg.set_override(ThemeRole::BorderPrimary, "#123456").unwrap();
+        assert_eq!(cfg.color(ThemeRole::BorderPrimary), Color::Rgb(0x12, 0x34, 0x56));
+
+        if let Some(value) = cfg.override_value_mut(ThemeRole::BorderPrimary) {
+            *value = "#654321".to_owned();
+        }
+        assert_eq!(cfg.color(ThemeRole::BorderPrimary), Color::Rgb(0x65, 0x43, 0x21));
+
+        cfg.reset_role(ThemeRole::BorderPrimary);
+        assert_eq!(cfg.color(ThemeRole::BorderPrimary), Color::Rgb(0xC0, 0x26, 0xD3));
+
+        cfg.ensure_override_for_edit(ThemeRole::Accent);
+        assert!(cfg.overrides.contains_key("accent"));
+
+        // Clones and retro fall back to the uncached resolve path correctly.
+        let clone = cfg.clone();
+        assert_eq!(clone.color(ThemeRole::BorderPrimary), Color::Rgb(0xC0, 0x26, 0xD3));
+        cfg.set_preset(ThemePreset::Retro);
+        assert_eq!(
+            cfg.color(ThemeRole::Background),
+            ThemeRole::Background.retro_color()
+        );
+    }
+
+    #[test]
+    fn style_matches_color_pair() {
+        let mut cfg = ThemeConfig::default();
+        cfg.set_preset(ThemePreset::Midnight);
+        for role in ThemeRole::ALL {
+            let expected = Style::default()
+                .fg(cfg.color(role))
+                .bg(cfg.color(ThemeRole::Background));
+            assert_eq!(cfg.style(role), expected, "style mismatch for {}", role.id());
+        }
     }
 
     #[test]

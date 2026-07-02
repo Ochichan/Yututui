@@ -1448,7 +1448,7 @@ impl App {
             Field::ListenBrainzToken => Some(&mut st.draft.listenbrainz_token),
             Field::SpotifyClientId => Some(&mut st.draft.spotify_client_id),
             Field::SpotifyRedirectPort => Some(&mut st.draft.spotify_redirect_port),
-            Field::ThemeColor(role) => st.draft.theme.overrides.get_mut(role.id()),
+            Field::ThemeColor(role) => st.draft.theme.override_value_mut(role),
             _ => None,
         }
     }
