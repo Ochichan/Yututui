@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_imports)]
 //! Internal library crate for the `ytt` binary and the optional `ytt-tray` helper.
 //!
 //! The whole module tree is `pub` so the binaries and the unit-test harness can reach
