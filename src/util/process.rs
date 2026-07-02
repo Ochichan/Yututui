@@ -207,7 +207,10 @@ fn should_inherit(key: &str, profile: ProcessProfile) -> bool {
     }
 
     if matches!(profile, ProcessProfile::Daemon)
-        && matches!(upper.as_str(), "RUST_LOG" | "YTM_MPV_EXTRA")
+        && matches!(
+            upper.as_str(),
+            "RUST_LOG" | "YTM_MPV_EXTRA" | "YTM_NO_MEDIA_SESSION"
+        )
     {
         return true;
     }
@@ -278,6 +281,16 @@ mod tests {
         assert!(should_inherit("HTTPS_PROXY", ProcessProfile::YtDlp));
         assert!(should_inherit("YTM_MPV_EXTRA", ProcessProfile::Daemon));
         assert!(should_inherit("RUST_LOG", ProcessProfile::Daemon));
+        // Reaches the spawned daemon child (env is otherwise cleared) so a headless
+        // launch can disable the OS media session; daemon-scoped like YTM_MPV_EXTRA.
+        assert!(should_inherit(
+            "YTM_NO_MEDIA_SESSION",
+            ProcessProfile::Daemon
+        ));
+        assert!(!should_inherit(
+            "YTM_NO_MEDIA_SESSION",
+            ProcessProfile::YtDlp
+        ));
         assert!(!should_inherit("HTTPS_PROXY", ProcessProfile::Clipboard));
     }
 
