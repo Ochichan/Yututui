@@ -202,6 +202,14 @@ if (-not (Get-Command "mpv" -ErrorAction SilentlyContinue)) {
     throw "mpv is required for the daemon smoke test"
 }
 
+# The daemon publishes SMTC (System Media Transport Controls), which needs a real top-level
+# window + message pump on an interactive session (see src/media/smtc.rs). The CI runner's
+# non-interactive, DETACHED_PROCESS daemon has none, so SMTC init wedges the daemon's event
+# loop on the first playing snapshot. Run the daemon headless: this whitelisted env var
+# reaches the spawned child (util/process.rs) and disables the OS media session — the same
+# escape hatch the macOS/unix smoke uses.
+$env:YTM_NO_MEDIA_SESSION = "1"
+
 New-Item -ItemType Directory -Force -Path $WorkRoot | Out-Null
 
 $roamingRoot = Join-Path $env:APPDATA "ytm-tui"
