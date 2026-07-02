@@ -843,6 +843,10 @@ async fn run(
         };
 
         let resized_artwork = matches!(&msg, Msg::ArtworkResized(_));
+        // AnimTick/StatusTick only advance animations / expire the toast — they can't touch
+        // anything a media snapshot reads, so skip rebuilding it (snapshot construction
+        // allocates ~10 Strings, and AnimTick fires at up to the configured FPS).
+        let media_inert = matches!(&msg, Msg::AnimTick | Msg::StatusTick);
         for cmd in app.update(msg) {
             handles.dispatch(&mut app, cmd);
         }
@@ -854,10 +858,14 @@ async fn run(
         // this is one comparison when nothing media-visible changed. The enabled flag
         // tracks the Settings toggle live. The scrobbler taps the same snapshot first —
         // it must keep working when media controls are disabled (publish early-returns).
+        // Scrobble cadence is unaffected by the inert skip: elapsed time is credited from
+        // the 1 Hz PlayerTimePos observations, which always take this path.
         media.set_enabled(app.config.effective_media_controls());
-        let snapshot = app.media_snapshot();
-        handles.scrobble_observe(&snapshot);
-        media.publish(snapshot);
+        if !media_inert {
+            let snapshot = app.media_snapshot();
+            handles.scrobble_observe(&snapshot);
+            media.publish(snapshot);
+        }
 
         // The frame rate may have changed in Settings (committed to `config.animations` on close).
         // Rebuild the tick so the new rate applies without a relaunch — only when it actually

@@ -195,6 +195,9 @@ pub struct App {
     /// The transient status/notification line: its text, last-set time (for TTL expiry), and
     /// semantic kind (see [`Status`]).
     pub status: Status,
+    /// Scratch buffer for [`Self::update`]'s before/after status comparison, reused across
+    /// turns so the per-message clone doesn't allocate. Private — only `update` touches it.
+    status_text_prev: String,
     /// Video-overlay state: the detached mpv process (if open) and whether opening it paused
     /// the audio (see [`Video`]). Private — render never reads it.
     video: Video,
@@ -347,6 +350,7 @@ impl App {
             media_art: None,
             queue: Queue::default(),
             status: Status::default(),
+            status_text_prev: String::new(),
             video: Video::default(),
             anim_frame: 0,
             audio: AudioEq::default(),
@@ -753,7 +757,9 @@ impl App {
     /// the main loop can expire it after [`STATUS_TTL`] and bring the song title back —
     /// without each call site having to remember to arm a timer. See [`Self::status_visible`].
     pub fn update(&mut self, msg: Msg) -> Vec<Cmd> {
-        let status_before = self.status.text.clone();
+        let mut status_before = std::mem::take(&mut self.status_text_prev);
+        status_before.clear();
+        status_before.push_str(&self.status.text);
         let kind_before = self.status.kind;
         let paused_before = self.playback.paused;
         // Default this turn's status to the error styling; the few positive handlers override
@@ -788,6 +794,7 @@ impl App {
             self.playback.time_pos_at = Some(Instant::now());
         }
         self.sync_art_overlay_state();
+        self.status_text_prev = status_before; // return the buffer's capacity for next turn
         cmds
     }
 
