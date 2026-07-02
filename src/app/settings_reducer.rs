@@ -40,6 +40,7 @@ impl App {
             seek_seconds: self.audio.seek_seconds,
             mouse_wheel_volume: self.config.effective_mouse_wheel_volume(),
             gapless: self.config.effective_gapless(),
+            media_controls: self.config.effective_media_controls(),
             autoplay_streaming: self.autoplay_streaming,
             streaming_mode: self.config.streaming.mode,
             eq_preset: self.audio.preset,
@@ -301,6 +302,11 @@ impl App {
             Field::AlbumArt => {
                 let s = self.settings_mut();
                 s.draft.album_art = !s.draft.album_art;
+                Vec::new()
+            }
+            Field::MediaControls => {
+                let s = self.settings_mut();
+                s.draft.media_controls = !s.draft.media_controls;
                 Vec::new()
             }
             Field::AutoplayOnStart => {

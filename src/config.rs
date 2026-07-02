@@ -288,6 +288,11 @@ pub struct Config {
     /// Window layout for the mpv video overlay (`v` opens, `Shift+V` toggles). Defaults to
     /// `Compact` (top-right ~30%).
     pub video_layout: VideoOverlay,
+
+    // OS media session ----------------------------------------------------------
+    /// Publish playback to the OS media session — macOS Now Playing, Windows SMTC,
+    /// Linux MPRIS — and accept media keys / widget control. `None` → on.
+    pub media_controls: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -345,6 +350,7 @@ impl Default for Config {
             language: Language::default(),
             keybindings: std::collections::BTreeMap::new(),
             video_layout: VideoOverlay::default(),
+            media_controls: None,
         }
     }
 }
@@ -461,6 +467,12 @@ impl Config {
     /// Whether to show album art / thumbnails in the player view (default off; opt-in).
     pub fn effective_album_art(&self) -> bool {
         self.album_art.unwrap_or(false)
+    }
+
+    /// Whether to publish playback to the OS media session (macOS Now Playing,
+    /// Windows SMTC, Linux MPRIS) and accept media keys / widget control (default on).
+    pub fn effective_media_controls(&self) -> bool {
+        self.media_controls.unwrap_or(true)
     }
 
     /// The ten band gains to apply: the hand-tuned array if set, else the preset's.
@@ -744,6 +756,7 @@ mod tests {
             language: Language::Korean,
             keybindings: std::collections::BTreeMap::new(),
             video_layout: VideoOverlay::Large,
+            media_controls: Some(false),
         };
         let s = serde_json::to_string(&c).unwrap();
         let back: Config = serde_json::from_str(&s).unwrap();
@@ -773,6 +786,7 @@ mod tests {
         assert_eq!(back.gemini_model, GeminiModel::Latest);
         assert!(back.retro_mode);
         assert_eq!(back.video_layout, VideoOverlay::Large);
+        assert_eq!(back.media_controls, Some(false));
         assert_eq!(back.theme.preset, "midnight");
         assert_eq!(
             back.theme

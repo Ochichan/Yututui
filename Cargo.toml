@@ -101,7 +101,13 @@ libc = "0.2"
 # mpv when our process dies for ANY reason (close button, logoff, Task-Manager kill) —
 # the hard kills signal handlers can't catch. Plus SetConsoleCtrlHandler for prompt
 # teardown. Version 0.61 is already in the tree (via tokio/sysinfo), so no extra copy.
+#
+# `windows` (WinRT) powers the SMTC media session (`src/media/smtc.rs`): the Media/
+# Storage_Streams/Foundation trio is the session + thumbnail surface, Win32_System_WinRT
+# is `GetForWindow` interop + RoInitialize, and the UI/Gdi/LibraryLoader features are
+# just the hidden top-level window SMTC requires (WNDCLASSW lives behind Graphics_Gdi).
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", default-features = false, features = ["Media", "Storage_Streams", "Foundation", "Win32_Foundation", "Win32_System_WinRT", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -110,6 +116,26 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Registry",
     "Win32_UI_Shell",
 ] }
+
+# macOS Now Playing media session (`src/media/macos.rs`): pure-Rust ObjC bindings —
+# no C shims, no build scripts — so the clean cross-build story holds. `objc2-media-player`
+# is MPNowPlayingInfoCenter/MPRemoteCommandCenter, `objc2-app-kit` only supplies the
+# NSImage the artwork wrapper needs, `objc2-core-foundation` the CFRunLoop pump that
+# delivers remote-command callbacks in a TUI (no NSApplication run loop), and `block2`
+# the handler blocks. Unused classes cost binary size ~nothing (LTO strips; msg_send is lazy).
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-core-foundation = "0.3"
+objc2-foundation = "0.3"
+objc2-media-player = "0.3"
+
+# Linux MPRIS media session (`src/media/mpris.rs`): the maintained zbus-based server-side
+# implementation of org.mpris.MediaPlayer2 (pure Rust; playerctl/GNOME/KDE widgets all
+# speak it). The `tokio` feature rides our existing runtime instead of zbus's async-io.
+[target.'cfg(target_os = "linux")'.dependencies]
+mpris-server = { version = "0.10", features = ["tokio"] }
 
 # Local fork of ratatui-image 11.0.6 with the Kitty explicit-coordinate + Sixel/iTerm2 anchor
 # redraw-tag patches (see the dep note above). A vendored path patch — not a git/crates.io fork —

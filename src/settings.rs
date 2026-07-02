@@ -114,6 +114,7 @@ impl SettingsTab {
                     Field::SeekInterval,
                     Field::MouseWheelVolume,
                     Field::Gapless,
+                    Field::MediaControls,
                     Field::EqPreset,
                 ];
                 f.extend((0..eq::BANDS).map(Field::Band));
@@ -165,7 +166,7 @@ impl SettingsTab {
     pub fn sections(self) -> Vec<(&'static str, usize)> {
         match self {
             SettingsTab::Playback => vec![
-                (t!("Now Playing", "현재 재생"), 4),
+                (t!("Now Playing", "현재 재생"), 5),
                 (t!("EQ", "EQ"), eq::BANDS + 2),
             ],
             SettingsTab::Graphics => vec![
@@ -212,6 +213,9 @@ pub enum Field {
     SeekInterval,
     MouseWheelVolume,
     Gapless,
+    /// Publish playback to the OS media session (Now Playing / SMTC / MPRIS) and
+    /// accept media keys / widget control. Applied live on save.
+    MediaControls,
     // EQ
     EqPreset,
     Band(usize),
@@ -374,6 +378,7 @@ impl Field {
             | Field::SearchRadioBrowser
             | Field::MouseWheelVolume
             | Field::Gapless
+            | Field::MediaControls
             | Field::AutoplayStreaming
             | Field::Normalize
             | Field::AiEnabled
@@ -464,6 +469,7 @@ impl Field {
             Field::SeekInterval => t!("Seek interval", "탐색 간격").to_owned(),
             Field::MouseWheelVolume => t!("Wheel volume", "휠 볼륨 조절").to_owned(),
             Field::Gapless => t!("Gapless (next launch)", "갭리스 (재시작 후 적용)").to_owned(),
+            Field::MediaControls => t!("OS media controls", "OS 미디어 컨트롤").to_owned(),
             Field::AutoplayStreaming => t!("Autoplay streaming", "자동 스트리밍").to_owned(),
             Field::StreamingMode => t!("Streaming mode", "스트리밍 모드").to_owned(),
             Field::EqPreset => t!("Preset", "프리셋").to_owned(),
@@ -533,6 +539,8 @@ pub struct SettingsDraft {
     /// Whether wheel events over the player volume cluster nudge volume.
     pub mouse_wheel_volume: bool,
     pub gapless: bool,
+    /// Publish playback to the OS media session (Now Playing / SMTC / MPRIS).
+    pub media_controls: bool,
     pub autoplay_streaming: bool,
     /// The streaming station's adventurousness (drives MMR λ, sampling temperature, artist spacing).
     pub streaming_mode: StreamingMode,
@@ -619,6 +627,7 @@ impl SettingsDraft {
                 t!("↵ press Enter", "↵ Enter로 실행").to_owned()
             }
             Field::Gapless => toggle_str(self.gapless),
+            Field::MediaControls => toggle_str(self.media_controls),
             Field::AutoplayStreaming => toggle_str(self.autoplay_streaming),
             Field::StreamingMode => self.streaming_mode.label().to_owned(),
             Field::EqPreset => self.eq_preset.label().to_owned(),
@@ -697,6 +706,7 @@ impl SettingsDraft {
         cfg.seek_seconds = Some(self.seek_seconds);
         cfg.mouse_wheel_volume = Some(self.mouse_wheel_volume);
         cfg.gapless = Some(self.gapless);
+        cfg.media_controls = Some(self.media_controls);
         cfg.autoplay_streaming = Some(self.autoplay_streaming);
         cfg.streaming.mode = self.streaming_mode;
         cfg.eq_preset = self.eq_preset;
@@ -830,6 +840,7 @@ mod tests {
             seek_seconds: 10.0,
             mouse_wheel_volume: true,
             gapless: true,
+            media_controls: true,
             autoplay_streaming: false,
             streaming_mode: StreamingMode::Balanced,
             eq_preset: EqPreset::Flat,
@@ -943,14 +954,16 @@ mod tests {
     #[test]
     fn playback_tab_groups_now_playing_and_eq() {
         let f = SettingsTab::Playback.fields();
-        // Speed + SeekInterval + WheelVolume + Gapless, then EqPreset + ten bands + Normalize.
-        assert_eq!(f.len(), 4 + 1 + eq::BANDS + 1);
+        // Speed + SeekInterval + WheelVolume + Gapless + MediaControls, then
+        // EqPreset + ten bands + Normalize.
+        assert_eq!(f.len(), 5 + 1 + eq::BANDS + 1);
         assert_eq!(f[0], Field::Speed);
         assert_eq!(f[1], Field::SeekInterval);
         assert_eq!(f[2], Field::MouseWheelVolume);
         assert_eq!(f[3], Field::Gapless);
-        assert_eq!(f[4], Field::EqPreset);
-        assert_eq!(f[4 + eq::BANDS + 1], Field::Normalize);
+        assert_eq!(f[4], Field::MediaControls);
+        assert_eq!(f[5], Field::EqPreset);
+        assert_eq!(f[5 + eq::BANDS + 1], Field::Normalize);
         assert_eq!(Field::MouseWheelVolume.kind(), FieldKind::Toggle);
         assert_eq!(base_draft().value_display(Field::MouseWheelVolume), "[x]");
         let total: usize = SettingsTab::Playback
@@ -1110,6 +1123,7 @@ mod tests {
             seek_seconds: 25.0,
             mouse_wheel_volume: false,
             gapless: false,
+            media_controls: false,
             autoplay_streaming: true,
             streaming_mode: StreamingMode::Discovery,
             eq_preset: EqPreset::Custom,
@@ -1154,6 +1168,7 @@ mod tests {
         assert_eq!(cfg.seek_seconds, Some(25.0));
         assert_eq!(cfg.mouse_wheel_volume, Some(false));
         assert_eq!(cfg.gapless, Some(false));
+        assert_eq!(cfg.media_controls, Some(false));
         assert_eq!(cfg.autoplay_streaming, Some(true));
         assert_eq!(cfg.streaming.mode, StreamingMode::Discovery);
         assert_eq!(cfg.eq_preset, EqPreset::Custom);

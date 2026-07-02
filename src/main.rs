@@ -16,6 +16,7 @@ mod keymap;
 mod library;
 mod logging;
 mod lyrics;
+mod media;
 mod player;
 mod playlists;
 mod queue;
@@ -717,6 +718,28 @@ async fn run(
         let _ = worker_tx.send(RuntimeEvent::App(Msg::Autoplay));
     }
 
+    // OS media session (macOS Now Playing / Windows SMTC / Linux MPRIS): commands from
+    // media keys and OS widgets come back through the normal message pump as
+    // `Msg::Media`; artwork-cache results as `Msg::MediaArtworkReady`. Non-fatal when
+    // the platform session can't initialize.
+    let media_cmd_tx = worker_tx.clone();
+    let media_art_tx = worker_tx.clone();
+    let mut media = media::MediaSession::new(
+        cfg.effective_media_controls(),
+        move |cmd| {
+            let _ = media_cmd_tx.send(RuntimeEvent::App(Msg::Media(cmd)));
+        },
+        move |ready| {
+            let _ = media_art_tx.send(RuntimeEvent::App(Msg::MediaArtworkReady(ready)));
+        },
+    );
+    media.publish(app.media_snapshot());
+    // macOS delivers remote-command callbacks through the main run loop, which a TUI
+    // never spins on its own — pump it briefly on a short interval while the session
+    // is live (no-op elsewhere; the `if` guard keeps the timer parked).
+    let mut media_pump = tokio::time::interval(Duration::from_millis(100));
+    media_pump.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
     let mut events = EventStream::new();
     let mut input = event::Translator::default();
     let mut ime_scrub = tokio::time::interval(Duration::from_millis(80));
@@ -785,6 +808,10 @@ async fn run(
             },
             _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
             _ = anim_tick.tick(), if app.animation_active() => Msg::AnimTick,
+            _ = media_pump.tick(), if media.wants_pump() => {
+                media.pump();
+                continue;
+            },
         };
 
         let resized_artwork = matches!(&msg, Msg::ArtworkResized(_));
@@ -794,6 +821,12 @@ async fn run(
         if resized_artwork {
             perf.record_art_resize();
         }
+
+        // Mirror the post-update state to the OS media session: the facade diffs, so
+        // this is one comparison when nothing media-visible changed. The enabled flag
+        // tracks the Settings toggle live.
+        media.set_enabled(app.config.effective_media_controls());
+        media.publish(app.media_snapshot());
 
         // The frame rate may have changed in Settings (committed to `config.animations` on close).
         // Rebuild the tick so the new rate applies without a relaunch — only when it actually

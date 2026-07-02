@@ -195,6 +195,13 @@ pub enum Msg {
         crate::remote::proto::RemoteCommand,
         tokio::sync::oneshot::Sender<crate::remote::proto::RemoteResponse>,
     ),
+    /// A command from the OS media session (media keys, Now Playing / SMTC / MPRIS
+    /// surfaces, Bluetooth AVRCP). Applied through the same reducer paths as a keypress
+    /// (see [`App::apply_media`]), so it is independent of the current input mode.
+    Media(crate::media::MediaCommand),
+    /// The media-session artwork cache resolved a local file for a track. Stored on the
+    /// app so the next media snapshot carries it (the OS artwork then refreshes).
+    MediaArtworkReady(crate::media::artwork::MediaArtworkReady),
     /// Result of an off-path feedback summary (see [`Cmd::SummarizeFeedback`]): artists the
     /// listener kept skipping vs. warmed to, folded into the active station's avoid list. Always
     /// delivered (empty on failure) so the in-flight guard clears.

@@ -108,6 +108,9 @@ pub struct DaemonEngine {
     inactive_normal_queue: Option<QueueSnapshot>,
     inactive_radio_queue: Option<QueueSnapshot>,
     session_events: VecDeque<DaemonSessionEvent>,
+    /// The media-session artwork cache's resolved file for a track, keyed by
+    /// `video_id`; surfaced in [`Self::media_snapshot`] while the keys match.
+    media_art: Option<crate::media::artwork::MediaArtworkReady>,
 }
 
 struct PlayerRuntime {
@@ -120,7 +123,15 @@ struct DaemonPlayback {
     paused: bool,
     volume: i64,
     time_pos: Option<f64>,
+    /// When `time_pos` was last (re)based — the OS media session interpolates the live
+    /// position from this anchor while playing (rebased on pause/resume/seek too).
+    time_pos_at: Option<Instant>,
+    /// Bumped on every position discontinuity (seek / track (re)start) so the media
+    /// session re-announces the position; playback progress never bumps it.
+    position_epoch: u64,
     duration: Option<f64>,
+    /// Live playback speed (session-scoped, seeded from config; MPRIS `Rate` writes it).
+    speed: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,7 +175,10 @@ impl DaemonEngine {
                 paused: true,
                 volume: config.volume.clamp(0, VOLUME_MAX),
                 time_pos: None,
+                time_pos_at: None,
+                position_epoch: 0,
                 duration: None,
+                speed: config.effective_speed(),
             },
             streaming: config.effective_autoplay_streaming(),
             config,
@@ -181,6 +195,7 @@ impl DaemonEngine {
             inactive_normal_queue: None,
             inactive_radio_queue: None,
             session_events: VecDeque::new(),
+            media_art: None,
         };
 
         if options.resume {
@@ -288,6 +303,7 @@ impl DaemonEngine {
         match event {
             PlayerEvent::TimePos(t) => {
                 self.playback.time_pos = Some(t);
+                self.playback.time_pos_at = Some(Instant::now());
                 if t > 0.0 {
                     self.consecutive_play_errors = 0;
                 }
@@ -298,6 +314,11 @@ impl DaemonEngine {
                 Vec::new()
             }
             PlayerEvent::Paused(paused) => {
+                if self.playback.paused != paused {
+                    // Rebase the position clock on pause/resume so a long pause never
+                    // reads as elapsed progress to the OS media session.
+                    self.playback.time_pos_at = Some(Instant::now());
+                }
                 self.playback.paused = paused;
                 Vec::new()
             }
@@ -388,6 +409,287 @@ impl DaemonEngine {
                 .collect(),
             shuffle: self.queue.shuffle,
             repeat: self.queue.repeat,
+        }
+    }
+
+    /// Whether the OS media session should be live (the same config toggle the TUI uses).
+    pub fn media_controls_enabled(&self) -> bool {
+        self.config.effective_media_controls()
+    }
+
+    pub fn set_media_art(&mut self, ready: crate::media::artwork::MediaArtworkReady) {
+        self.media_art = Some(ready);
+    }
+
+    /// Apply one OS media-session command. Returns `(shutdown, effects)`; commands the
+    /// current state can't honor are ignored quietly (their buttons were reported
+    /// disabled). Mirrors [`crate::app`]'s `apply_media` for the headless engine.
+    pub async fn handle_media(
+        &mut self,
+        cmd: crate::media::MediaCommand,
+    ) -> (bool, Vec<EngineEffect>) {
+        use crate::media::MediaCommand;
+        tracing::debug!(?cmd, "daemon media command");
+        let mut effects = Vec::new();
+        match cmd {
+            MediaCommand::Play => {
+                if self.queue.current().is_some() && (self.playback.paused || self.needs_load()) {
+                    let _ = self.toggle_pause().await;
+                    effects.extend(self.maybe_autoplay_extend());
+                }
+            }
+            MediaCommand::Pause => {
+                if !self.playback.paused && !self.needs_load() {
+                    let _ = self.toggle_pause().await;
+                }
+            }
+            MediaCommand::Toggle => {
+                if self.queue.current().is_some() {
+                    let _ = self.toggle_pause().await;
+                    effects.extend(self.maybe_autoplay_extend());
+                }
+            }
+            MediaCommand::Stop => {
+                if self.queue.current().is_some() || self.loaded_video_id.is_some() {
+                    self.stop_playback();
+                    self.save_session();
+                }
+            }
+            MediaCommand::Next => {
+                if self.queue.peek_next().is_some() {
+                    self.record_outgoing(false);
+                    let _ = self.next_track().await;
+                    effects.extend(self.maybe_autoplay_extend());
+                }
+            }
+            MediaCommand::Previous => {
+                if self.queue.current().is_some() {
+                    let _ = self.prev_track().await;
+                }
+            }
+            MediaCommand::SeekBy(seconds) => {
+                if self.media_can_seek() {
+                    let _ = self.seek(seconds);
+                }
+            }
+            MediaCommand::SeekTo(pos) => {
+                if self.media_can_seek() && pos >= 0.0 {
+                    // Out-of-range SetPosition is ignored per the MPRIS spec.
+                    if let Some(d) = self.playback.duration
+                        && pos > d + 0.5
+                    {
+                        return (false, effects);
+                    }
+                    self.note_seek(pos);
+                    if let Some(player) = &self.player {
+                        player.handle.send(PlayerCmd::SeekAbsolute(pos));
+                    }
+                }
+            }
+            MediaCommand::SetShuffle(on) => {
+                if self.queue.shuffle != on {
+                    self.queue.set_shuffle(on);
+                    self.config.shuffle = Some(on);
+                    self.save_config("daemon shuffle setting");
+                    self.save_session();
+                }
+            }
+            MediaCommand::SetRepeat(mode) => {
+                if self.queue.repeat != mode {
+                    self.queue.repeat = mode;
+                    self.config.repeat = mode;
+                    self.save_config("daemon repeat setting");
+                    self.save_session();
+                }
+            }
+            MediaCommand::SetVolume(v) => {
+                let volume = (v.clamp(0.0, 1.0) * 100.0).round() as i64;
+                if volume != self.playback.volume {
+                    let _ = self.adjust_volume(volume - self.playback.volume);
+                }
+            }
+            MediaCommand::SetRate(rate) => {
+                if rate == 0.0 {
+                    return Box::pin(self.handle_media(MediaCommand::Pause)).await;
+                }
+                let speed = clamp_speed(rate);
+                if (speed - self.playback.speed).abs() > f64::EPSILON {
+                    self.playback.speed = speed;
+                    if let Some(player) = &self.player {
+                        player.handle.send(PlayerCmd::SetProperty {
+                            name: "speed".to_owned(),
+                            value: Value::from(speed),
+                        });
+                    }
+                }
+            }
+            MediaCommand::Like => self.media_set_rating(true),
+            MediaCommand::Dislike => self.media_set_rating(false),
+            MediaCommand::OpenUri(uri) => {
+                if let Some(id) = crate::media::parse_youtube_video_id(&uri) {
+                    let song = self
+                        .library
+                        .favorites
+                        .iter()
+                        .chain(self.library.history.iter())
+                        .find(|s| s.youtube_id() == Some(id.as_str()))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            Song::remote(id.clone(), format!("YouTube {id}"), "", "")
+                        });
+                    if self.queue.play_now(song) {
+                        if let Err(e) = self.load_current().await {
+                            self.last_error = Some(e.to_string());
+                            self.stop_playback();
+                        }
+                        effects.extend(self.maybe_autoplay_extend());
+                    }
+                }
+            }
+            MediaCommand::Quit => {
+                self.stop_playback();
+                self.save_session();
+                return (true, effects);
+            }
+        }
+        (false, effects)
+    }
+
+    fn needs_load(&self) -> bool {
+        self.loaded_video_id.as_deref() != self.queue.current().map(|song| song.video_id.as_str())
+    }
+
+    fn media_can_seek(&self) -> bool {
+        self.loaded_video_id.is_some()
+            && self
+                .queue
+                .current()
+                .is_some_and(|song| !song.is_radio_station())
+    }
+
+    /// Like/dislike from the OS surface: same favorite/dislike bookkeeping the TUI's
+    /// rating cycle performs, persisted immediately (the daemon has no Cmd loop).
+    fn media_set_rating(&mut self, like: bool) {
+        let Some(song) = self.queue.current().cloned() else {
+            return;
+        };
+        if song.is_radio_station() {
+            if like {
+                self.library.toggle_favorite(&song);
+                if let Err(e) = self.library.save() {
+                    tracing::warn!(error = %e, "failed to save daemon library");
+                }
+            }
+            return;
+        }
+        let artist_key = signals::normalize_artist(&song.artist);
+        let now = signals::unix_now();
+        let liked = self.library.is_favorite(&song.video_id);
+        let disliked = self.signals.is_disliked(&song.video_id);
+        if like {
+            if liked {
+                self.library.toggle_favorite(&song);
+                self.signals
+                    .record_like(&song.video_id, &artist_key, false, now);
+            } else {
+                if disliked {
+                    self.signals
+                        .toggle_dislike(&song.video_id, &artist_key, now);
+                }
+                let now_fav = self.library.toggle_favorite(&song);
+                self.signals
+                    .record_like(&song.video_id, &artist_key, now_fav, now);
+            }
+        } else if disliked {
+            self.signals
+                .toggle_dislike(&song.video_id, &artist_key, now);
+        } else {
+            if liked {
+                self.library.toggle_favorite(&song);
+                self.signals
+                    .record_like(&song.video_id, &artist_key, false, now);
+            }
+            self.signals
+                .toggle_dislike(&song.video_id, &artist_key, now);
+        }
+        if let Err(e) = self.library.save() {
+            tracing::warn!(error = %e, "failed to save daemon library");
+        }
+        if let Err(e) = self.signals.save() {
+            tracing::warn!(error = %e, "failed to save daemon signals");
+        }
+    }
+
+    /// Build the OS media-session snapshot from engine state (the daemon analog of
+    /// the TUI's `App::media_snapshot`).
+    pub fn media_snapshot(&self) -> crate::media::MediaSnapshot {
+        use crate::media::{MediaCaps, MediaPlaybackStatus, MediaSnapshot, MediaTrack};
+        let current = self.queue.current();
+        let track = current.map(|song| {
+            let is_live = song.is_radio_station();
+            let duration = if is_live {
+                None
+            } else {
+                self.playback.duration.filter(|d| *d > 0.0).or_else(|| {
+                    crate::streaming::candidate::parse_duration_secs(&song.duration).map(f64::from)
+                })
+            };
+            let youtube_id = song.youtube_id().map(str::to_owned);
+            let art_query = match (&song.local_path, &youtube_id) {
+                (Some(path), _) => Some(crate::media::artwork::ArtQuery::LocalFile(path.clone())),
+                (None, Some(id)) if !is_live => {
+                    Some(crate::media::artwork::ArtQuery::Youtube { id: id.clone() })
+                }
+                _ => None,
+            };
+            MediaTrack {
+                key: song.video_id.clone(),
+                title: song.title.clone(),
+                artist: song.artist.clone(),
+                duration,
+                is_live,
+                url: youtube_id
+                    .as_deref()
+                    .map(|id| format!("https://music.youtube.com/watch?v={id}")),
+                art_remote_url: youtube_id
+                    .as_deref()
+                    .filter(|_| !is_live)
+                    .map(crate::media::artwork::remote_thumbnail_url),
+                art_file: self
+                    .media_art
+                    .as_ref()
+                    .filter(|art| art.key == song.video_id)
+                    .map(|art| art.path.clone()),
+                art_query,
+                liked: self.library.is_favorite(&song.video_id),
+                disliked: self.signals.is_disliked(&song.video_id),
+            }
+        });
+        let status = if track.is_none() {
+            MediaPlaybackStatus::Stopped
+        } else if self.playback.paused || self.loaded_video_id.is_none() {
+            MediaPlaybackStatus::Paused
+        } else {
+            MediaPlaybackStatus::Playing
+        };
+        let caps = MediaCaps {
+            can_next: self.queue.peek_next().is_some(),
+            can_previous: track.is_some(),
+            can_play: track.is_some(),
+            can_pause: track.is_some(),
+            can_seek: self.media_can_seek() && track.as_ref().is_some_and(|t| t.duration.is_some()),
+        };
+        MediaSnapshot {
+            track,
+            status,
+            position: self.playback.time_pos.unwrap_or(0.0),
+            captured_at: self.playback.time_pos_at.unwrap_or_else(Instant::now),
+            rate: self.playback.speed,
+            shuffle: self.queue.shuffle,
+            repeat: self.queue.repeat,
+            volume: (self.playback.volume as f64 / 100.0).clamp(0.0, 1.0),
+            caps,
+            position_epoch: self.playback.position_epoch,
         }
     }
 
@@ -601,10 +903,24 @@ impl DaemonEngine {
         if self.loaded_video_id.is_none() {
             return RemoteResponse::err("nothing_playing");
         }
+        // Optimistic position + epoch bump so the OS media session re-announces the
+        // discontinuity immediately; mpv confirms via its next time-pos report.
+        let mut target = (self.playback.time_pos.unwrap_or(0.0) + seconds).max(0.0);
+        if let Some(d) = self.playback.duration {
+            target = target.min(d);
+        }
+        self.note_seek(target);
         if let Some(player) = &self.player {
             player.handle.send(PlayerCmd::SeekRelative(seconds));
         }
         RemoteResponse::status(self.status())
+    }
+
+    /// Record a position discontinuity at `pos` (seek applied / track restarted).
+    fn note_seek(&mut self, pos: f64) {
+        self.playback.time_pos = Some(pos);
+        self.playback.time_pos_at = Some(Instant::now());
+        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
     }
 
     fn set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<EngineEffect>) {
@@ -657,6 +973,7 @@ impl DaemonEngine {
             RemoteSettingChange::Speed { tenths } => {
                 let speed = clamp_speed(f64::from(tenths) / 10.0);
                 self.config.speed = Some(speed);
+                self.playback.speed = speed;
                 if let Some(player) = &self.player {
                     player.handle.send(PlayerCmd::SetProperty {
                         name: "speed".to_owned(),
@@ -748,6 +1065,8 @@ impl DaemonEngine {
         };
         self.playback.paused = false;
         self.playback.time_pos = None;
+        self.playback.time_pos_at = None;
+        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
         self.playback.duration = None;
         self.loaded_video_id = Some(song.video_id.clone());
         self.library.record_play(&song);
@@ -771,6 +1090,8 @@ impl DaemonEngine {
     fn reset_idle_playback(&mut self) {
         self.playback.paused = true;
         self.playback.time_pos = None;
+        self.playback.time_pos_at = None;
+        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
         self.playback.duration = None;
     }
 
@@ -789,7 +1110,7 @@ impl DaemonEngine {
         .map_err(|e| EngineError::Player(format!("failed to start mpv: {e:#}")))?;
 
         handle.send(PlayerCmd::SetVolume(self.playback.volume));
-        let speed = self.config.effective_speed();
+        let speed = self.playback.speed;
         if (speed - 1.0).abs() > f64::EPSILON {
             handle.send(PlayerCmd::SetProperty {
                 name: "speed".to_owned(),
@@ -1265,7 +1586,10 @@ mod tests {
                 paused: true,
                 volume: 50,
                 time_pos: None,
+                time_pos_at: None,
+                position_epoch: 0,
                 duration: None,
+                speed: 1.0,
             },
             config: Config::default(),
             library: Library::default(),
@@ -1282,6 +1606,7 @@ mod tests {
             inactive_normal_queue: None,
             inactive_radio_queue: None,
             session_events: VecDeque::new(),
+            media_art: None,
         }
     }
 

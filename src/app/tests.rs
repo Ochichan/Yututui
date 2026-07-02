@@ -2394,8 +2394,8 @@ fn settings_band_edit_sets_custom_and_emits_filter() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..5 {
-        // Speed → Seek → Wheel volume → Gapless → EqPreset → Band(0) at row 5.
+    for _ in 0..6 {
+        // Speed → Seek → Wheel volume → Gapless → Media controls → EqPreset → Band(0) at row 6.
         app.update(Msg::Key(key(KeyCode::Down)));
     }
     let cmds = app.update(Msg::Key(key(KeyCode::Right))); // raise the band
@@ -2418,8 +2418,8 @@ fn settings_close_reasserts_audio_and_persists_volume() {
     app.playback.volume = 55; // a `=`/`-` change during the session
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..5 {
-        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 5
+    for _ in 0..6 {
+        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 6
     }
     app.update(Msg::Key(key(KeyCode::Right))); // raise it (draft = Custom)
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
@@ -2436,8 +2436,8 @@ fn settings_preset_selector_snaps_from_custom_to_flat() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..5 {
-        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 5
+    for _ in 0..6 {
+        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 6
     }
     app.update(Msg::Key(key(KeyCode::Right))); // hand-tune → Custom
     assert_eq!(

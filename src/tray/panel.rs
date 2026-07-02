@@ -225,6 +225,8 @@ fn parse_search_source(value: String) -> Result<SearchSource, serde_json::Error>
         "audius" => Ok(SearchSource::Audius),
         "jamendo" => Ok(SearchSource::Jamendo),
         "internet_archive" => Ok(SearchSource::InternetArchive),
+        // "radio_browser" is deliberately absent: live radio streams are not valid
+        // autoplay/DJ Gem candidates (see SearchConfig::normalized_streaming_source).
         "all" => Ok(SearchSource::All),
         _ => Err(serde::de::Error::custom("unknown streaming source")),
     }
@@ -323,7 +325,12 @@ pub fn payload_for_update(update: &PollUpdate) -> PanelPayload {
         can_manage_queue: status.is_some_and(|status| !status.queue.is_empty()),
         can_toggle_streaming: action_enabled(&model, MenuAction::ToggleStreaming),
         can_start_daemon: action_enabled(&model, MenuAction::StartDaemon),
-        can_resume_daemon: action_enabled(&model, MenuAction::ResumeDaemon) || idle,
+        // Trust the menu model: it already enables Resume for a disconnected player and
+        // an idle daemon. Adding a blanket `|| idle` here used to light the button up for
+        // an idle *standalone TUI*, where resume is always rejected (StandaloneOwner).
+        can_resume_daemon: action_enabled(&model, MenuAction::ResumeDaemon)
+            || (idle
+                && status.is_some_and(|status| status.owner_mode == InstanceMode::Daemon)),
         can_stop_daemon: action_enabled(&model, MenuAction::StopDaemon),
     }
 }
@@ -497,9 +504,14 @@ fn volume_label(state: &TrayState) -> String {
 }
 
 fn json_for_script<T: Serialize>(value: &T) -> String {
+    // The payload is spliced into a <script> block (html()) and into evaluate_script
+    // (update_script()). Escaping every `<` as the JSON escape `<` neutralises HTML parser
+    // re-entry sequences — `</script`, `<script`, and `<!--` alike — while staying
+    // valid JSON/JS (a bare `</`-only rewrite left the latter two open). U+2028/29
+    // are legal JSON but broke JS string literals before ES2019 webviews.
     serde_json::to_string(value)
         .expect("panel payload serialization should not fail")
-        .replace("</", "<\\/")
+        .replace('<', "\\u003c")
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029")
 }

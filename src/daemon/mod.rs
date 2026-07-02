@@ -167,6 +167,10 @@ enum DaemonEvent {
     Remote(RemoteEvent),
     Player(crate::player::PlayerEvent),
     Api(crate::api::ApiEvent),
+    /// A command from the OS media session (media keys / Now Playing / SMTC / MPRIS).
+    Media(crate::media::MediaCommand),
+    /// The media-artwork cache resolved a local file for a track.
+    MediaArt(crate::media::artwork::MediaArtworkReady),
     Signal,
 }
 
@@ -222,9 +226,38 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
         let _ = signal_event_tx.send(DaemonEvent::Signal);
     });
 
+    // OS media session: the headless daemon publishes Now Playing / SMTC / MPRIS too,
+    // so media keys and OS widgets control background playback without a terminal.
+    let media_cmd_tx = event_tx.clone();
+    let media_art_tx = event_tx.clone();
+    let mut media = crate::media::MediaSession::new(
+        engine.media_controls_enabled(),
+        move |cmd| {
+            let _ = media_cmd_tx.send(DaemonEvent::Media(cmd));
+        },
+        move |ready| {
+            let _ = media_art_tx.send(DaemonEvent::MediaArt(ready));
+        },
+    );
+    media.publish(engine.media_snapshot());
+    // macOS delivers remote-command callbacks through the main run loop; pump it on a
+    // short interval while the session is live (the guard parks the timer elsewhere).
+    let mut media_pump = tokio::time::interval(Duration::from_millis(100));
+    media_pump.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     dispatch_engine_effects(&api, engine.initial_effects());
 
-    while let Some(event) = event_rx.recv().await {
+    loop {
+        let event = tokio::select! {
+            maybe = event_rx.recv() => match maybe {
+                Some(event) => event,
+                None => break,
+            },
+            _ = media_pump.tick(), if media.wants_pump() => {
+                media.pump();
+                continue;
+            },
+        };
         match event {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => {
                 let (response, shutdown, effects) = engine.handle_remote(command).await;
@@ -243,8 +276,18 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
                 let effects = engine.handle_api_event(event).await;
                 dispatch_engine_effects(&api, effects);
             }
+            DaemonEvent::Media(command) => {
+                let (shutdown, effects) = engine.handle_media(command).await;
+                dispatch_engine_effects(&api, effects);
+                if shutdown {
+                    break;
+                }
+            }
+            DaemonEvent::MediaArt(ready) => engine.set_media_art(ready),
             DaemonEvent::Signal => break,
         }
+        // Mirror the post-event state to the OS session (diff-based inside).
+        media.publish(engine.media_snapshot());
     }
     EXIT_OK
 }

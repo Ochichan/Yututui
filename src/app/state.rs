@@ -132,6 +132,14 @@ pub struct Video {
 pub struct Playback {
     /// Playback position in seconds, if known.
     pub time_pos: Option<f64>,
+    /// When `time_pos` was last (re)based, so the OS media session can interpolate the
+    /// live position between mpv reports (`time_pos + elapsed × speed` while playing).
+    /// Rebasing also happens on pause/resume so a long pause never reads as progress.
+    pub time_pos_at: Option<Instant>,
+    /// Bumped on every position discontinuity — a seek or a track (re)start — so the
+    /// media session knows to re-announce the position (MPRIS `Seeked`, SMTC timeline
+    /// reset, macOS elapsed update). Ordinary playback progress never bumps it.
+    pub position_epoch: u64,
     /// Track duration in seconds, if known.
     pub duration: Option<f64>,
     /// Whether playback is currently paused.

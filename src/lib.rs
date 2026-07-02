@@ -15,6 +15,7 @@ pub mod i18n;
 mod keymap;
 mod library;
 pub mod logging;
+pub mod media;
 mod player;
 mod queue;
 pub mod remote;

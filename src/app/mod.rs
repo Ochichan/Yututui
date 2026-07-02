@@ -53,6 +53,7 @@ mod download;
 mod keys;
 mod library;
 mod library_reducer;
+mod media_reducer;
 mod mouse;
 mod player;
 mod queue;
@@ -179,6 +180,10 @@ pub struct App {
     /// Live playback transport: position, duration, pause state, volume, and speed
     /// (mirrors mpv's current state, distinct from the persisted defaults in `config`).
     pub playback: Playback,
+    /// The media-session artwork cache's resolved local file for the current (or a
+    /// recent) track, keyed by `video_id`. Set by [`Msg::MediaArtworkReady`]; read by
+    /// [`App::media_snapshot`], which only surfaces it while the keys still match.
+    pub(crate) media_art: Option<crate::media::artwork::MediaArtworkReady>,
     /// The play queue: ordering, shuffle, repeat, and the current track.
     pub queue: Queue,
     /// The transient status/notification line: its text, last-set time (for TTL expiry), and
@@ -328,6 +333,7 @@ impl App {
                 speed: 1.0,
                 ..Default::default()
             },
+            media_art: None,
             queue: Queue::default(),
             status: Status::default(),
             video: Video::default(),
@@ -663,14 +669,7 @@ impl App {
 
     fn seed_restored_queue(&mut self, song: Song) {
         self.queue.set(vec![song], 0);
-        self.playback.time_pos = None;
-        self.playback.duration = None;
-        self.playback.paused = true;
-        self.playback.stream_now_playing = None;
-        self.last_shown_sec = -1;
-        self.prefetch.loaded_video_id = None;
-        self.status.text.clear();
-        self.dirty = true;
+        self.seed_restored_playback_state();
     }
 
     /// Build the persisted session cache from the active queue plus the inactive mode's stashed
@@ -708,6 +707,8 @@ impl App {
 
     fn seed_restored_playback_state(&mut self) {
         self.playback.time_pos = None;
+        self.playback.time_pos_at = None;
+        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
         self.playback.duration = None;
         self.playback.paused = true;
         self.playback.stream_now_playing = None;
@@ -741,6 +742,7 @@ impl App {
     pub fn update(&mut self, msg: Msg) -> Vec<Cmd> {
         let status_before = self.status.text.clone();
         let kind_before = self.status.kind;
+        let paused_before = self.playback.paused;
         // Default this turn's status to the error styling; the few positive handlers override
         // it to `Info` while they run. This keeps the kind in lock-step with the status text:
         // an error set by one of the ~40 plain `self.status.text = …` sites can never inherit a
@@ -756,6 +758,21 @@ impl App {
         } else {
             // Text unchanged this turn — keep the color the still-showing message already had.
             self.status.kind = kind_before;
+        }
+        // Media-session position clock, kept centrally so no seek/pause site can forget it:
+        // any seek command emitted this turn is a position discontinuity (bump the epoch so
+        // the OS session re-announces the position), and any pause/resume flip rebases the
+        // interpolation anchor so a long pause never reads as elapsed progress.
+        if cmds.iter().any(|cmd| {
+            matches!(
+                cmd,
+                Cmd::Player(PlayerCmd::SeekRelative(_) | PlayerCmd::SeekAbsolute(_))
+            )
+        }) {
+            self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
+        }
+        if self.playback.paused != paused_before {
+            self.playback.time_pos_at = Some(Instant::now());
         }
         self.sync_art_overlay_state();
         cmds
@@ -782,6 +799,11 @@ impl App {
                 let (resp, cmds) = self.apply_remote(cmd);
                 let _ = reply.send(resp);
                 return cmds;
+            }
+            Msg::Media(cmd) => return self.apply_media(cmd),
+            Msg::MediaArtworkReady(ready) => {
+                // No redraw: this only feeds the OS media session, not the TUI.
+                self.media_art = Some(ready);
             }
             Msg::Autoplay => return self.autoplay_on_start_cmds(),
             Msg::ApiModeResolved { mode, had_cookie } => {
@@ -821,6 +843,7 @@ impl App {
             }
             Msg::PlayerTimePos(t) => {
                 self.playback.time_pos = Some(t);
+                self.playback.time_pos_at = Some(Instant::now());
                 // Real progress means the current track opened and is playing, so the
                 // auto-skip streak is broken — clear it.
                 if t > 0.0 {
