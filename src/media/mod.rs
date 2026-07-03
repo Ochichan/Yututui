@@ -268,13 +268,25 @@ pub fn parse_youtube_video_id(uri: &str) -> Option<String> {
             .split('&')
             .find_map(|param| param.strip_prefix("v="))?
     };
-    let id: String = id
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
     // YouTube ids are 11 chars today; accept a small range to stay future-proof
     // while rejecting obviously-truncated fragments.
-    (id.len() >= 8 && id.len() <= 16).then_some(id)
+    leading_id(id, 8, 16)
+}
+
+/// Take the leading id-charset run off `raw`, requiring it to end at a real URL
+/// boundary (`?`, `&`, `#`, `/`, or the end of the string). A run stopped by anything
+/// else — e.g. the `:` of a second URL pasted right behind the first — is a mangled
+/// paste, not an id.
+fn leading_id(raw: &str, min: usize, max: usize) -> Option<String> {
+    let end = raw
+        .char_indices()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '-' || *c == '_'))
+        .map_or(raw.len(), |(i, _)| i);
+    let (id, rest) = raw.split_at(end);
+    if !matches!(rest.chars().next(), None | Some('?' | '&' | '#' | '/')) {
+        return None;
+    }
+    (id.len() >= min && id.len() <= max).then(|| id.to_owned())
 }
 
 /// Extract a YouTube playlist id from a playlist URL
@@ -297,12 +309,8 @@ pub fn parse_youtube_playlist_id(uri: &str) -> Option<String> {
         .strip_prefix("playlist?")?
         .split('&')
         .find_map(|param| param.strip_prefix("list="))?;
-    let id: String = id
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
     // Playlist ids vary by kind ("PL…" 34, "OLAK5uy_…" 41, mixes longer); bound loosely.
-    (id.len() >= 8 && id.len() <= 64).then_some(id)
+    leading_id(id, 8, 64)
 }
 
 /// The facade owned by the run loop (TUI or daemon). Construction never fails: a
@@ -488,6 +496,39 @@ mod tests {
         assert_eq!(
             parse_youtube_playlist_id("https://www.youtube.com/playlist?list=PL1"),
             None
+        );
+    }
+
+    #[test]
+    fn concatenated_urls_are_not_ids() {
+        // Two URLs pasted back to back: the id run ends at the second URL's `:` — a
+        // mangled paste, not an id. (Regression: this used to yield "-UfI1X-MSighttps".)
+        assert_eq!(
+            parse_youtube_video_id(
+                "https://youtu.be/-UfI1X-MSighttps://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_youtube_video_id(
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQhttps://youtu.be/-UfI1X-MSig"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_youtube_playlist_id(
+                "https://www.youtube.com/playlist?list=PLabcdefgh1234https://youtu.be/x"
+            ),
+            None
+        );
+        // Legitimate boundaries still parse: query params, fragments, trailing slashes.
+        assert_eq!(
+            parse_youtube_video_id("https://youtu.be/dQw4w9WgXcQ#t=10").as_deref(),
+            Some("dQw4w9WgXcQ")
+        );
+        assert_eq!(
+            parse_youtube_video_id("https://youtu.be/dQw4w9WgXcQ/").as_deref(),
+            Some("dQw4w9WgXcQ")
         );
     }
 
