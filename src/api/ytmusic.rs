@@ -195,6 +195,13 @@ impl YtMusicApi {
         source: SearchSource,
         config: &SearchConfig,
     ) -> Result<Vec<Song>> {
+        // A pasted YouTube watch/share URL is not a text query: resolve that exact video
+        // and return it as the only result, whatever source is selected (the URL already
+        // names the provider). Metadata comes from yt-dlp; a failed lookup still yields
+        // a playable bare entry (mpv resolves the id at load time).
+        if let Some(id) = crate::media::parse_youtube_video_id(query) {
+            return Ok(vec![lookup_video_song(&id).await]);
+        }
         match source {
             SearchSource::All => self.search_all_sources(query, config).await,
             source => self.search_one_source(query, source, config).await,
@@ -575,6 +582,27 @@ pub(crate) async fn preflight_streaming_picks(
     }
 
     out
+}
+
+/// Resolve one pasted watch/share URL's video id into a full search row. Failure
+/// degrades to a bare-but-playable entry instead of an error: the id itself is what
+/// makes the row playable, the metadata is only the label.
+async fn lookup_video_song(video_id: &str) -> Song {
+    match enrich_video_meta(video_id).await {
+        Ok(meta) if !meta.title.trim().is_empty() => {
+            let duration = meta
+                .duration_secs
+                .map(|s| format::time(f64::from(s)))
+                .unwrap_or_default();
+            Song::from_search(video_id, meta.title, meta.channel, duration, None)
+        }
+        Ok(_) => Song::remote(video_id, format!("YouTube {video_id}"), "", ""),
+        Err(e) => {
+            let error = sanitize::sanitize_error_text(format!("{e:#}"));
+            tracing::warn!(id = %video_id, error = %error, "pasted-URL metadata lookup failed");
+            Song::remote(video_id, format!("YouTube {video_id}"), "", "")
+        }
+    }
 }
 
 #[derive(Debug)]
