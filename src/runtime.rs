@@ -100,6 +100,18 @@ impl From<RuntimeEvent> for Msg {
                 crate::api::ApiEvent::SearchError { source, error } => {
                     Msg::SearchError { source, error }
                 }
+                crate::api::ApiEvent::PlaylistTracks {
+                    title,
+                    intent,
+                    songs,
+                } => Msg::PlaylistTracks {
+                    title,
+                    intent,
+                    songs,
+                },
+                crate::api::ApiEvent::PlaylistTracksError { title, error } => {
+                    Msg::PlaylistTracksError { title, error }
+                }
                 crate::api::ApiEvent::StreamingResults {
                     seed_video_id,
                     candidates,
@@ -336,6 +348,12 @@ impl RuntimeHandles {
                 source,
                 config,
             } => self.api_handle.search(query, source, config),
+            Cmd::SearchPlaylists { query } => self.api_handle.search_playlists(query),
+            Cmd::FetchPlaylistTracks {
+                playlist_id,
+                title,
+                intent,
+            } => self.api_handle.playlist_tracks(playlist_id, title, intent),
             // Save*: hand the persistence actor an owned snapshot. Cloning a store is a
             // couple ms of memcpy at worst; the fsync it replaces on this task was 5-50ms.
             Cmd::SaveLibrary => {

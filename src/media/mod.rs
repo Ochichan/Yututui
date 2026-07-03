@@ -277,6 +277,34 @@ pub fn parse_youtube_video_id(uri: &str) -> Option<String> {
     (id.len() >= 8 && id.len() <= 16).then_some(id)
 }
 
+/// Extract a YouTube playlist id from a playlist URL
+/// (`{music,www,m,}.youtube.com/playlist?list=…`). Watch URLs carrying a `list=` param
+/// are deliberately *not* matched — a pasted watch link means that video, not the
+/// playlist it was opened from.
+pub fn parse_youtube_playlist_id(uri: &str) -> Option<String> {
+    let uri = uri.trim();
+    let rest = uri
+        .strip_prefix("https://")
+        .or_else(|| uri.strip_prefix("http://"))?;
+    let (host, path) = rest.split_once('/')?;
+    if !matches!(
+        host,
+        "music.youtube.com" | "www.youtube.com" | "youtube.com" | "m.youtube.com"
+    ) {
+        return None;
+    }
+    let id = path
+        .strip_prefix("playlist?")?
+        .split('&')
+        .find_map(|param| param.strip_prefix("list="))?;
+    let id: String = id
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    // Playlist ids vary by kind ("PL…" 34, "OLAK5uy_…" 41, mixes longer); bound loosely.
+    (id.len() >= 8 && id.len() <= 64).then_some(id)
+}
+
 /// The facade owned by the run loop (TUI or daemon). Construction never fails: a
 /// backend that can't initialize just leaves the session inert (A-2 in the spec).
 pub struct MediaSession {
@@ -427,6 +455,41 @@ use fallback as platform_backend;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_playlist_id_variants() {
+        for url in [
+            "https://www.youtube.com/playlist?list=PLabcdefgh1234",
+            "https://music.youtube.com/playlist?list=PLabcdefgh1234",
+            "http://m.youtube.com/playlist?list=PLabcdefgh1234&si=xyz",
+        ] {
+            assert_eq!(
+                parse_youtube_playlist_id(url).as_deref(),
+                Some("PLabcdefgh1234"),
+                "{url}"
+            );
+        }
+        // A watch URL with a list param means the video, not the playlist.
+        assert_eq!(
+            parse_youtube_playlist_id(
+                "https://www.youtube.com/watch?v=abc12345678&list=PLabcdefgh1234"
+            ),
+            None
+        );
+        // Non-YouTube hosts, schemeless strings, and truncated ids are rejected.
+        assert_eq!(
+            parse_youtube_playlist_id("https://example.com/playlist?list=PLabcdefgh1234"),
+            None
+        );
+        assert_eq!(
+            parse_youtube_playlist_id("youtube.com/playlist?list=PLabcdefgh1234"),
+            None
+        );
+        assert_eq!(
+            parse_youtube_playlist_id("https://www.youtube.com/playlist?list=PL1"),
+            None
+        );
+    }
 
     fn track(key: &str) -> MediaTrack {
         MediaTrack {

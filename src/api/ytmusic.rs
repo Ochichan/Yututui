@@ -35,6 +35,12 @@ const PROVIDER_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
 const PROVIDER_JSON_MAX: usize = 2 * 1024 * 1024;
 const YTDLP_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
 const YTDLP_JSON_MAX: usize = 2 * 1024 * 1024;
+/// Flat playlist extraction budget: hundreds of entries and a slower endpoint than a
+/// plain search, so a longer timeout and a larger JSON ceiling.
+const PLAYLIST_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const PLAYLIST_JSON_MAX: usize = 8 * 1024 * 1024;
+/// Cap imported/enqueued playlist tracks at the local-playlist song cap.
+const PLAYLIST_TRACKS_MAX: usize = 999;
 
 /// A YouTube Music client in one of two auth modes.
 pub enum YtMusicApi {
@@ -199,6 +205,9 @@ impl YtMusicApi {
         // and return it as the only result, whatever source is selected (the URL already
         // names the provider). Metadata comes from yt-dlp; a failed lookup still yields
         // a playable bare entry (mpv resolves the id at load time).
+        if let Some(id) = crate::media::parse_youtube_playlist_id(query) {
+            return Ok(vec![lookup_playlist_row(&id).await]);
+        }
         if let Some(id) = crate::media::parse_youtube_video_id(query) {
             return Ok(vec![lookup_video_song(&id).await]);
         }
@@ -206,6 +215,52 @@ impl YtMusicApi {
             SearchSource::All => self.search_all_sources(query, config).await,
             source => self.search_one_source(query, source, config).await,
         }
+    }
+
+    /// Search public YouTube playlists by name. Authenticated innertube (community
+    /// playlists) answers first; anonymous or degraded sessions fall back to a flat
+    /// yt-dlp extraction of YouTube's own results page with the playlist-type filter.
+    pub async fn search_playlists(&self, query: &str) -> Result<Vec<Song>> {
+        // A pasted playlist URL names the playlist directly — same short-circuit as
+        // `search_songs`, so the kind toggle doesn't change what a URL paste means.
+        if let Some(id) = crate::media::parse_youtube_playlist_id(query) {
+            return Ok(vec![lookup_playlist_row(&id).await]);
+        }
+        if let YtMusicApi::Browser(client) = self
+            && !AUTH_SEARCH_DEGRADED.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            match client.search_community_playlists(query).await {
+                Ok(results) if !results.is_empty() => {
+                    return Ok(results.into_iter().filter_map(playlist_row).collect());
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                    tracing::warn!(error = %error, "innertube playlist search failed; trying yt-dlp");
+                }
+            }
+        }
+        ytdlp_playlist_search(query).await
+    }
+
+    /// A remote playlist's playable tracks. Authenticated sessions ask innertube (rich
+    /// album/duration metadata); anonymous sessions — or an innertube miss — use a flat
+    /// yt-dlp extraction of the public playlist page.
+    pub async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Song>> {
+        let raw = playlist_id
+            .strip_prefix(super::PLAYLIST_ID_PREFIX)
+            .unwrap_or(playlist_id);
+        if matches!(self, YtMusicApi::Browser(_)) {
+            match self.playlist_tracks_full(raw).await {
+                Ok(songs) if !songs.is_empty() => return Ok(songs),
+                Ok(_) => {}
+                Err(e) => {
+                    let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                    tracing::warn!(error = %error, "innertube playlist fetch failed; trying yt-dlp");
+                }
+            }
+        }
+        ytdlp_playlist_tracks(raw).await
     }
 
     async fn search_all_sources(&self, query: &str, config: &SearchConfig) -> Result<Vec<Song>> {
@@ -582,6 +637,183 @@ pub(crate) async fn preflight_streaming_picks(
     }
 
     out
+}
+
+/// Map one innertube playlist search result to a `ytpl:` row. The views / track-count
+/// string rides in the duration slot (rows render it in parentheses).
+fn playlist_row(result: ytmapi_rs::parse::SearchResultPlaylist) -> Option<Song> {
+    use ytmapi_rs::parse::SearchResultPlaylist as P;
+    let (title, author, extra, id) = match result {
+        P::Community(p) => (p.title, p.author, p.views, p.playlist_id),
+        P::Featured(p) => (p.title, p.author, p.songs, p.playlist_id),
+        _ => return None, // podcasts (and future kinds) aren't playable track lists here
+    };
+    Some(Song::remote(
+        format!("{}{}", super::PLAYLIST_ID_PREFIX, id.get_raw()),
+        title,
+        author,
+        extra,
+    ))
+}
+
+/// Anonymous playlist search: YouTube's own results page with the playlist-type filter
+/// (`sp=EgIQAw==`), flat-extracted by yt-dlp — the only playlist search available
+/// without innertube auth.
+async fn ytdlp_playlist_search(query: &str) -> Result<Vec<Song>> {
+    let url = reqwest::Url::parse_with_params(
+        "https://www.youtube.com/results",
+        &[("search_query", query), ("sp", "EgIQAw==")],
+    )
+    .context("could not build the playlist search URL")?;
+    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
+    cmd.arg(url.as_str())
+        .arg("--flat-playlist")
+        .arg("--dump-single-json")
+        .arg("--no-warnings")
+        .arg("--playlist-end")
+        .arg("20")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    let output = process::tokio_output_limited(cmd, YTDLP_SEARCH_TIMEOUT, YTDLP_JSON_MAX)
+        .await
+        .context("failed to run yt-dlp — is it installed and on PATH?")?;
+    if !output.status.success() {
+        bail!(
+            "yt-dlp playlist search exited with status {}",
+            output.status
+        );
+    }
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("could not parse yt-dlp playlist search output")?;
+    Ok(parse_ytdlp_playlist_search(&json))
+}
+
+/// Entries of a flat-extracted results page → playlist rows. A filtered results page
+/// can still interleave videos, so entries are kept only when they look like playlists
+/// (a `list=` URL or a playlist-shaped id — video ids are 11 chars).
+fn parse_ytdlp_playlist_search(json: &serde_json::Value) -> Vec<Song> {
+    let entries = json
+        .get("entries")
+        .and_then(|e| e.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(serde_json::Value::as_str)?;
+            let url = entry
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if !url.contains("list=") && id.len() <= 16 {
+                return None;
+            }
+            let title = entry
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if title.trim().is_empty() {
+                return None;
+            }
+            let author = json_string(entry, &["channel", "uploader"]).unwrap_or_default();
+            let count = entry
+                .get("playlist_count")
+                .and_then(serde_json::Value::as_u64)
+                .map(|n| format!("{n} tracks"))
+                .unwrap_or_default();
+            Some(Song::remote(
+                format!("{}{id}", super::PLAYLIST_ID_PREFIX),
+                title,
+                author,
+                count,
+            ))
+        })
+        .collect()
+}
+
+/// Flat yt-dlp extraction of a public playlist page → its tracks in order.
+async fn ytdlp_playlist_tracks(playlist_id: &str) -> Result<Vec<Song>> {
+    let json = ytdlp_playlist_json(playlist_id, None).await?;
+    let entries = json
+        .get("entries")
+        .and_then(|e| e.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    Ok(entries
+        .iter()
+        .filter_map(parse_ytdlp_playlist_track)
+        .take(PLAYLIST_TRACKS_MAX)
+        .collect())
+}
+
+/// One flat playlist entry → a track row; private/deleted placeholders are skipped.
+fn parse_ytdlp_playlist_track(entry: &serde_json::Value) -> Option<Song> {
+    let id = entry.get("id").and_then(serde_json::Value::as_str)?;
+    let title = entry.get("title").and_then(serde_json::Value::as_str)?;
+    if title.is_empty() || title == "[Private video]" || title == "[Deleted video]" {
+        return None;
+    }
+    let artist = json_string(entry, &["channel", "uploader"]).unwrap_or_default();
+    let duration = entry
+        .get("duration")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .map(format::time)
+        .unwrap_or_default();
+    Some(Song::from_search(id, title, artist, duration, None))
+}
+
+/// One pasted playlist URL → a single playlist row. Failure degrades to a bare row —
+/// the id is what makes it fetchable, the title is only the label.
+async fn lookup_playlist_row(playlist_id: &str) -> Song {
+    let row_id = format!("{}{playlist_id}", super::PLAYLIST_ID_PREFIX);
+    match ytdlp_playlist_json(playlist_id, Some("0")).await {
+        Ok(json) => {
+            let title = json_string(&json, &["title"])
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| format!("YouTube playlist {playlist_id}"));
+            let author = json_string(&json, &["channel", "uploader"]).unwrap_or_default();
+            let count = json
+                .get("playlist_count")
+                .and_then(serde_json::Value::as_u64)
+                .map(|n| format!("{n} tracks"))
+                .unwrap_or_default();
+            Song::remote(row_id, title, author, count)
+        }
+        Err(e) => {
+            let error = sanitize::sanitize_error_text(format!("{e:#}"));
+            tracing::warn!(id = %playlist_id, error = %error, "pasted-URL playlist lookup failed");
+            Song::remote(row_id, format!("YouTube playlist {playlist_id}"), "", "")
+        }
+    }
+}
+
+/// Flat-extract a public playlist page. `items` limits extraction (`"0"` → metadata
+/// only, for the fast title probe). Innertube browse ids ("VLPL…") and share URLs
+/// ("PL…") differ by the VL prefix; the public page wants the bare form.
+async fn ytdlp_playlist_json(playlist_id: &str, items: Option<&str>) -> Result<serde_json::Value> {
+    let id = playlist_id.strip_prefix("VL").unwrap_or(playlist_id);
+    let url = format!("https://www.youtube.com/playlist?list={id}");
+    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
+    cmd.arg(&url)
+        .arg("--flat-playlist")
+        .arg("--dump-single-json")
+        .arg("--no-warnings")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(items) = items {
+        cmd.arg("--playlist-items").arg(items);
+    }
+    let output = process::tokio_output_limited(cmd, PLAYLIST_FETCH_TIMEOUT, PLAYLIST_JSON_MAX)
+        .await
+        .context("failed to run yt-dlp — is it installed and on PATH?")?;
+    if !output.status.success() {
+        bail!(
+            "yt-dlp playlist extraction exited with status {}",
+            output.status
+        );
+    }
+    serde_json::from_slice(&output.stdout).context("could not parse yt-dlp playlist output")
 }
 
 /// Resolve one pasted watch/share URL's video id into a full search row. Failure
@@ -1122,6 +1354,60 @@ fn archive_file_url(identifier: &str, file: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playlist_search_entries_keep_playlists_and_drop_videos() {
+        let json = serde_json::json!({
+            "entries": [
+                {
+                    "id": "PLabcdefgh1234567890abcdefgh12345",
+                    "url": "https://www.youtube.com/playlist?list=PLabcdefgh1234567890abcdefgh12345",
+                    "title": "Chill Mix",
+                    "uploader": "Some Curator",
+                    "playlist_count": 42
+                },
+                // An interleaved plain video (11-char id, no list=): dropped.
+                { "id": "abc12345678", "url": "https://www.youtube.com/watch?v=abc12345678", "title": "A video" },
+                // Untitled playlist entry: dropped.
+                { "id": "PLzz", "url": "https://www.youtube.com/playlist?list=PLzz", "title": "" }
+            ]
+        });
+        let rows = parse_ytdlp_playlist_search(&json);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].video_id, "ytpl:PLabcdefgh1234567890abcdefgh12345");
+        assert_eq!(rows[0].title, "Chill Mix");
+        assert_eq!(rows[0].artist, "Some Curator");
+        assert_eq!(rows[0].duration, "42 tracks");
+        assert_eq!(
+            rows[0].youtube_playlist_id(),
+            Some("PLabcdefgh1234567890abcdefgh12345")
+        );
+        // A playlist row must never read as a playable YouTube video.
+        assert_eq!(rows[0].youtube_id(), None);
+    }
+
+    #[test]
+    fn playlist_track_entries_skip_private_and_format_duration() {
+        let track = parse_ytdlp_playlist_track(&serde_json::json!({
+            "id": "abc12345678",
+            "title": "A Song",
+            "channel": "An Artist",
+            "duration": 245.0
+        }))
+        .expect("a playable track");
+        assert_eq!(track.video_id, "abc12345678");
+        assert_eq!(track.duration, "4:05");
+        assert_eq!(track.duration_secs, Some(245));
+        for title in ["[Private video]", "[Deleted video]", ""] {
+            assert!(
+                parse_ytdlp_playlist_track(&serde_json::json!({
+                    "id": "abc12345678",
+                    "title": title,
+                }))
+                .is_none()
+            );
+        }
+    }
 
     #[test]
     fn streaming_queries_expand_title_artist_seed() {

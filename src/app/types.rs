@@ -101,6 +101,17 @@ pub enum Msg {
         source: SearchSource,
         error: String,
     },
+    /// A remote playlist's tracks arrived (answering [`Cmd::FetchPlaylistTracks`]).
+    PlaylistTracks {
+        title: String,
+        intent: crate::api::PlaylistIntent,
+        songs: Vec<Song>,
+    },
+    /// Fetching a remote playlist's tracks failed.
+    PlaylistTracksError {
+        title: String,
+        error: String,
+    },
     /// Download folder scan completed.
     DownloadsScanned(Vec<Song>),
     /// Synced lyrics for `video_id` (empty `lines` = none found).
@@ -246,6 +257,16 @@ pub enum Cmd {
         query: String,
         source: SearchSource,
         config: SearchConfig,
+    },
+    /// Search public YouTube playlists by name (the search box's playlist kind).
+    SearchPlaylists {
+        query: String,
+    },
+    /// Fetch a remote playlist's full track list, then apply `intent` to it.
+    FetchPlaylistTracks {
+        playlist_id: String,
+        title: String,
+        intent: crate::api::PlaylistIntent,
     },
     /// Persist the library (song favorites/history and radio stations) to disk.
     SaveLibrary,
@@ -731,6 +752,15 @@ pub enum SearchFocus {
     #[default]
     Input,
     Results,
+}
+
+/// What the search box looks for: tracks (default) or public YouTube playlists.
+/// Session-scoped; toggled with [`Action::ToggleSearchKind`].
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+pub enum SearchKind {
+    #[default]
+    Songs,
+    Playlists,
 }
 
 /// The semantic kind of the transient `status` line, controlling its color in the player

@@ -234,7 +234,7 @@ impl Song {
     /// The real YouTube video ID for this track, if it originated from YouTube. Pure local
     /// files (dropped into the library, never sourced online) return `None`. Downloaded
     /// catalog tracks keep their original ID via `yt_video_id` even though `video_id`
-    /// becomes a `local:` identity.
+    /// becomes a `local:` identity. Playlist rows (`ytpl:` ids) are not videos.
     pub fn youtube_id(&self) -> Option<&str> {
         if let Some(id) = self.yt_video_id.as_deref() {
             return Some(id);
@@ -242,7 +242,14 @@ impl Song {
         if self.local_path.is_some() || self.source != SearchSource::Youtube {
             return None;
         }
-        (!self.video_id.starts_with("local:")).then_some(self.video_id.as_str())
+        (!self.video_id.starts_with("local:") && !self.video_id.starts_with(PLAYLIST_ID_PREFIX))
+            .then_some(self.video_id.as_str())
+    }
+
+    /// The YouTube playlist id when this row is a playlist search result (see
+    /// [`PLAYLIST_ID_PREFIX`]); `None` for ordinary tracks.
+    pub fn youtube_playlist_id(&self) -> Option<&str> {
+        self.video_id.strip_prefix(PLAYLIST_ID_PREFIX)
     }
 
     /// A shareable public URL for this track, if it has a YouTube origin.
@@ -319,6 +326,21 @@ pub enum ApiMode {
     Anonymous,
 }
 
+/// Marker prefix for *playlist* rows in search results — their `video_id` is
+/// `"ytpl:<playlist id>"`. Never sent to the wire; strip via [`Song::youtube_playlist_id`].
+pub const PLAYLIST_ID_PREFIX: &str = "ytpl:";
+
+/// What the reducer wants done with a remote playlist's tracks once they arrive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistIntent {
+    /// Replace the queue with the playlist and start playing.
+    Play,
+    /// Append the playlist's tracks to the queue.
+    Enqueue,
+    /// Save the playlist as a local playlist (named after it).
+    Import,
+}
+
 /// Commands the reducer sends to the API actor.
 pub enum ApiCmd {
     Search {
@@ -340,6 +362,17 @@ pub enum ApiCmd {
         fallback: Vec<Song>,
         mode: StreamingMode,
         config: StreamingConfig,
+    },
+    /// Search public YouTube playlists by name (YouTube-only; other providers have no
+    /// playlist catalog here). Results return as ordinary [`ApiEvent::SearchResults`]
+    /// rows whose ids carry [`PLAYLIST_ID_PREFIX`].
+    SearchPlaylists { query: String },
+    /// Fetch a remote playlist's full track list; `title` and `intent` ride along so the
+    /// reducer knows what to do with the answer.
+    PlaylistTracks {
+        playlist_id: String,
+        title: String,
+        intent: PlaylistIntent,
     },
 }
 
@@ -368,6 +401,17 @@ pub enum ApiEvent {
     },
     StreamingError {
         seed_video_id: String,
+        error: String,
+    },
+    /// A remote playlist's tracks, answering [`ApiCmd::PlaylistTracks`].
+    PlaylistTracks {
+        title: String,
+        intent: PlaylistIntent,
+        songs: Vec<Song>,
+    },
+    /// Fetching a remote playlist's tracks failed.
+    PlaylistTracksError {
+        title: String,
         error: String,
     },
 }
@@ -419,6 +463,25 @@ impl ApiHandle {
             fallback,
             mode,
             config,
+        });
+    }
+
+    pub fn search_playlists(&self, query: impl Into<String>) {
+        let _ = self.tx.send(ApiCmd::SearchPlaylists {
+            query: query.into(),
+        });
+    }
+
+    pub fn playlist_tracks(
+        &self,
+        playlist_id: impl Into<String>,
+        title: impl Into<String>,
+        intent: PlaylistIntent,
+    ) {
+        let _ = self.tx.send(ApiCmd::PlaylistTracks {
+            playlist_id: playlist_id.into(),
+            title: title.into(),
+            intent,
         });
     }
 }
@@ -484,6 +547,49 @@ where
                         let error = sanitize::sanitize_error_text(format!("{e:#}"));
                         tracing::warn!(source = %source.code(), error = %error, "search failed");
                         ApiEvent::SearchError { source, error }
+                    }
+                };
+                emit(event);
+            }
+            ApiCmd::SearchPlaylists { query } => {
+                let event = match api.search_playlists(&query).await {
+                    Ok(songs) => {
+                        tracing::info!(count = songs.len(), query = %query, "playlist search results");
+                        ApiEvent::SearchResults {
+                            query,
+                            source: SearchSource::Youtube,
+                            songs,
+                        }
+                    }
+                    Err(e) => {
+                        let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                        tracing::warn!(error = %error, "playlist search failed");
+                        ApiEvent::SearchError {
+                            source: SearchSource::Youtube,
+                            error,
+                        }
+                    }
+                };
+                emit(event);
+            }
+            ApiCmd::PlaylistTracks {
+                playlist_id,
+                title,
+                intent,
+            } => {
+                let event = match api.playlist_tracks(&playlist_id).await {
+                    Ok(songs) => {
+                        tracing::info!(count = songs.len(), id = %playlist_id, "playlist tracks fetched");
+                        ApiEvent::PlaylistTracks {
+                            title,
+                            intent,
+                            songs,
+                        }
+                    }
+                    Err(e) => {
+                        let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                        tracing::warn!(id = %playlist_id, error = %error, "playlist tracks fetch failed");
+                        ApiEvent::PlaylistTracksError { title, error }
                     }
                 };
                 emit(event);

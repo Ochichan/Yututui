@@ -306,6 +306,8 @@ pub struct SearchState {
     pub selected: usize,
     /// True between issuing a search request and its results arriving.
     pub searching: bool,
+    /// Whether the box searches tracks or public YouTube playlists (session-scoped).
+    pub kind: SearchKind,
 }
 
 /// DJ Gem assistant state: availability, model, the chat transcript, the prompt being

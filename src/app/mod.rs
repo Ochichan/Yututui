@@ -403,6 +403,7 @@ impl App {
                 focus: SearchFocus::Input,
                 results: Vec::new(),
                 selected: 0,
+                kind: SearchKind::default(),
                 searching: false,
             },
             library: Library::default(),
@@ -1022,6 +1023,18 @@ impl App {
             }
             Msg::VideoOverlay { generation, event } => {
                 return self.on_video_overlay_event(generation, event);
+            }
+            Msg::PlaylistTracks {
+                title,
+                intent,
+                songs,
+            } => {
+                return self.on_playlist_tracks(title, intent, songs);
+            }
+            Msg::PlaylistTracksError { title, error } => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!("{title}: {error}");
+                self.dirty = true;
             }
             Msg::PlayerError(e) => {
                 // Log *which* track failed and whether it came from a (possibly stale)

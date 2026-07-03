@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, MouseTarget, ScrollSurface, SearchFocus, StatusKind};
+use crate::app::{App, MouseTarget, ScrollSurface, SearchFocus, SearchKind, StatusKind};
 use crate::t;
 use crate::theme::ThemeRole as R;
 use crate::ui::buttons;
@@ -102,17 +102,24 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let current_source = app
         .search_config_for_mode()
         .normalized_source(app.search.source);
+    // Playlist kind fixes the provider (YouTube playlists), so its tag replaces the
+    // source code in the title.
+    let tail = if app.search.kind == SearchKind::Playlists {
+        t!("playlists (^P)", "플레이리스트 (^P)").to_owned()
+    } else {
+        current_source.code().to_owned()
+    };
     let title = if app.authenticated {
         if crate::i18n::is_korean() {
-            format!(" 검색 · {} ", current_source.code())
+            format!(" 검색 · {tail} ")
         } else {
-            format!(" Search · {} ", current_source.code())
+            format!(" Search · {tail} ")
         }
     } else {
         if crate::i18n::is_korean() {
-            format!(" 검색 · 익명 · {} ", current_source.code())
+            format!(" 검색 · 익명 · {tail} ")
         } else {
-            format!(" Search · anonymous · {} ", current_source.code())
+            format!(" Search · anonymous · {tail} ")
         }
     };
     let block = Block::default()
@@ -223,7 +230,12 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 ""
             };
-            let source = format!("[{}] ", s.source.code());
+            // Playlist rows get their own tag so they read as containers, not tracks.
+            let source = if s.youtube_playlist_id().is_some() {
+                "[PL] ".to_owned()
+            } else {
+                format!("[{}] ", s.source.code())
+            };
             let line = if s.duration.is_empty() {
                 format!("{source}{heart}{title} — {artist}")
             } else {

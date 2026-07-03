@@ -60,6 +60,8 @@ pub enum Action {
     DeleteChar,
     SelectAll,
     ToggleSearchSourceMenu,
+    /// Search box: flip between searching tracks and public YouTube playlists.
+    ToggleSearchKind,
     // Queue window.
     QueueRemove,
     // Library list.
@@ -237,6 +239,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "toggle_search_source_menu",
         "Search source menu",
         "검색 소스 메뉴",
+    ),
+    (
+        Action::ToggleSearchKind,
+        "toggle_search_kind",
+        "Search songs / playlists",
+        "검색: 곡 / 플레이리스트",
     ),
     (
         Action::QueueRemove,
@@ -904,6 +912,12 @@ fn linked_rebinds(ctx: KeyContext, action: Action) -> &'static [(KeyContext, Act
         (KeyContext::SearchResults, Action::ToggleSearchSourceMenu) => {
             &[(KeyContext::SearchInput, Action::ToggleSearchSourceMenu)]
         }
+        (KeyContext::SearchInput, Action::ToggleSearchKind) => {
+            &[(KeyContext::SearchResults, Action::ToggleSearchKind)]
+        }
+        (KeyContext::SearchResults, Action::ToggleSearchKind) => {
+            &[(KeyContext::SearchInput, Action::ToggleSearchKind)]
+        }
         _ => &[],
     }
 }
@@ -1004,6 +1018,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // Search box (text entry; Enter→search is handled in the input handler).
         (C::SearchInput, A::SelectAll, ctrl('a')),
         (C::SearchInput, A::ToggleSearchSourceMenu, key(KeyCode::Tab)),
+        (C::SearchInput, A::ToggleSearchKind, ctrl('p')),
         (C::SearchInput, A::FocusPrev, key(KeyCode::BackTab)),
         // Search results list commands (Enter→play is fixed to the physical key in the
         // handler, so it's not listed here; the cheat-sheet shows it as a fixed row).
@@ -1013,6 +1028,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
             A::ToggleSearchSourceMenu,
             key(KeyCode::Tab),
         ),
+        (C::SearchResults, A::ToggleSearchKind, ctrl('p')),
         (C::SearchResults, A::Enqueue, ch('\\')),
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('d')),

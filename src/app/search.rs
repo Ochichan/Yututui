@@ -87,6 +87,9 @@ impl App {
                     Some(Action::ToggleSearchSourceMenu) => {
                         return self.toggle_search_source_menu();
                     }
+                    Some(Action::ToggleSearchKind) => {
+                        return self.toggle_search_kind();
+                    }
                     Some(Action::Back) => {
                         self.mode = Mode::Player;
                         self.dirty = true;
@@ -106,9 +109,13 @@ impl App {
                 }
                 Vec::new()
             }
-            // Enter plays the highlighted result right now, keeping the existing queue intact.
+            // Enter plays the highlighted result right now, keeping the existing queue
+            // intact. A playlist row fetches its tracks first, then replaces the queue.
             SearchFocus::Results if k.code == KeyCode::Enter => match self.selected_search_song() {
-                Some(song) => self.play_now(song),
+                Some(song) => match song.youtube_playlist_id() {
+                    Some(_) => self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Play),
+                    None => self.play_now(song),
+                },
                 None => Vec::new(),
             },
             SearchFocus::Results
@@ -124,9 +131,16 @@ impl App {
             }
             SearchFocus::Results => match self.keymap.action(KeyContext::SearchResults, k.into()) {
                 Some(Action::ToggleSearchSourceMenu) => self.toggle_search_source_menu(),
+                Some(Action::ToggleSearchKind) => self.toggle_search_kind(),
                 // `\` adds the highlighted result to the queue without interrupting playback.
+                // A playlist row appends its whole track list.
                 Some(Action::Enqueue) => match self.selected_search_song() {
-                    Some(song) => self.enqueue(song),
+                    Some(song) => match song.youtube_playlist_id() {
+                        Some(_) => {
+                            self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Enqueue)
+                        }
+                        None => self.enqueue(song),
+                    },
                     None => Vec::new(),
                 },
                 Some(Action::Back) => {
@@ -171,6 +185,9 @@ impl App {
                 // Favorite the highlighted result (♥ appears on the row).
                 Some(Action::Favorite) => {
                     if let Some(song) = self.search.results.get(self.search.selected).cloned() {
+                        if song.youtube_playlist_id().is_some() {
+                            return self.playlist_row_hint();
+                        }
                         self.library.toggle_favorite(&song);
                         self.dirty = true;
                         return vec![Cmd::SaveLibrary];
@@ -179,13 +196,21 @@ impl App {
                 }
                 Some(Action::Download) => {
                     match self.search.results.get(self.search.selected).cloned() {
+                        Some(song) if song.youtube_playlist_id().is_some() => {
+                            self.playlist_row_hint()
+                        }
                         Some(song) => self.start_download(song),
                         None => Vec::new(),
                     }
                 }
-                // `p` opens the add-to-playlist picker for the highlighted result.
+                // `p` opens the add-to-playlist picker for the highlighted result. A
+                // playlist row instead imports the whole playlist as a local one.
                 Some(Action::AddToPlaylist) => {
                     if let Some(song) = self.search.results.get(self.search.selected).cloned() {
+                        if song.youtube_playlist_id().is_some() {
+                            return self
+                                .fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Import);
+                        }
                         self.open_playlist_picker(vec![song]);
                     }
                     Vec::new()
@@ -242,16 +267,144 @@ impl App {
         if q.is_empty() {
             Vec::new()
         } else {
+            self.search.searching = true;
+            self.status.text.clear();
+            // Playlist kind is YouTube-only (no other provider has a playlist catalog),
+            // so it bypasses the source selection entirely.
+            if self.search.kind == SearchKind::Playlists && !self.radio_dedicated_mode {
+                return vec![Cmd::SearchPlaylists { query: q }];
+            }
             let config = self.search_config_for_mode();
             let source = config.normalized_source(self.search.source);
             self.search.source = source;
-            self.search.searching = true;
-            self.status.text.clear();
             vec![Cmd::Search {
                 query: q,
                 source,
                 config,
             }]
+        }
+    }
+
+    /// `Ctrl+P`: flip the search box between tracks and public YouTube playlists.
+    pub(in crate::app) fn toggle_search_kind(&mut self) -> Vec<Cmd> {
+        self.search.kind = match self.search.kind {
+            SearchKind::Songs => SearchKind::Playlists,
+            SearchKind::Playlists => SearchKind::Songs,
+        };
+        self.status.kind = StatusKind::Info;
+        self.status.text = match self.search.kind {
+            SearchKind::Songs => t!("Search: songs", "검색: 곡").to_owned(),
+            SearchKind::Playlists => {
+                t!("Search: YouTube playlists", "검색: 유튜브 플레이리스트").to_owned()
+            }
+        };
+        self.dirty = true;
+        Vec::new()
+    }
+
+    /// Kick the track fetch for a playlist row; `intent` decides what happens when the
+    /// tracks arrive ([`Msg::PlaylistTracks`] → [`Self::on_playlist_tracks`]).
+    fn fetch_playlist_tracks(
+        &mut self,
+        row: &Song,
+        intent: crate::api::PlaylistIntent,
+    ) -> Vec<Cmd> {
+        let Some(id) = row.youtube_playlist_id() else {
+            return Vec::new();
+        };
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!("Fetching playlist…", "플레이리스트 불러오는 중…").to_owned();
+        self.dirty = true;
+        vec![Cmd::FetchPlaylistTracks {
+            playlist_id: id.to_owned(),
+            title: row.title.clone(),
+            intent,
+        }]
+    }
+
+    /// Status hint for per-track actions that don't apply to a playlist row.
+    fn playlist_row_hint(&mut self) -> Vec<Cmd> {
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!(
+            "Playlist row: Enter plays, \\ enqueues, p imports",
+            "플레이리스트 행: Enter 재생, \\ 큐 추가, p 가져오기"
+        )
+        .to_owned();
+        self.dirty = true;
+        Vec::new()
+    }
+
+    /// A remote playlist's tracks arrived: play, enqueue, or import per the intent the
+    /// user picked on the row.
+    pub(in crate::app) fn on_playlist_tracks(
+        &mut self,
+        title: String,
+        intent: crate::api::PlaylistIntent,
+        songs: Vec<Song>,
+    ) -> Vec<Cmd> {
+        use crate::api::PlaylistIntent;
+        self.dirty = true;
+        if songs.is_empty() {
+            self.status.text = t!(
+                "Playlist is empty or unavailable",
+                "플레이리스트가 비어 있거나 사용할 수 없어요"
+            )
+            .to_owned();
+            return Vec::new();
+        }
+        match intent {
+            PlaylistIntent::Play => {
+                // Mirror `Msg::AiPlayTracks`: replace the queue and start at the top.
+                let requested = songs.clone();
+                self.queue.set(songs, 0);
+                let song = self.queue.current().cloned();
+                let mut cmds = self.load_song(song);
+                cmds.extend(self.request_romanization_for_songs(&requested));
+                // After load_song, which clears the transient status.
+                self.status.kind = StatusKind::Info;
+                self.status.text = if crate::i18n::is_korean() {
+                    format!("플레이리스트 재생: {title} ({}곡)", requested.len())
+                } else {
+                    format!("Playing playlist: {title} ({} tracks)", requested.len())
+                };
+                cmds
+            }
+            PlaylistIntent::Enqueue => {
+                let added = self.queue.extend(songs);
+                self.status.kind = StatusKind::Info;
+                self.status.text = if crate::i18n::is_korean() {
+                    format!("{added}곡을 대기열에 추가함")
+                } else {
+                    format!("Queued {added} track(s)")
+                };
+                Vec::new()
+            }
+            PlaylistIntent::Import => {
+                let Some(id) = self.playlists.create(&title) else {
+                    self.status.text = t!(
+                        "Could not create the playlist (name in use or limit reached)",
+                        "플레이리스트를 만들 수 없어요 (이름 중복 또는 한도 초과)"
+                    )
+                    .to_owned();
+                    return Vec::new();
+                };
+                let mut added = 0usize;
+                for song in songs {
+                    if matches!(
+                        self.playlists.add(&id, song),
+                        crate::playlists::AddResult::Added
+                    ) {
+                        added += 1;
+                    }
+                }
+                self.status.kind = StatusKind::Info;
+                self.status.text = if crate::i18n::is_korean() {
+                    format!("플레이리스트 가져옴: {title} ({added}곡)")
+                } else {
+                    format!("Imported playlist: {title} ({added} tracks)")
+                };
+                vec![Cmd::SavePlaylists]
+            }
         }
     }
 
