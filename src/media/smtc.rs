@@ -23,8 +23,9 @@ use windows::Foundation::{TimeSpan, TypedEventHandler};
 use windows::Media::{
     AutoRepeatModeChangeRequestedEventArgs, MediaPlaybackAutoRepeatMode, MediaPlaybackStatus,
     MediaPlaybackType, PlaybackPositionChangeRequestedEventArgs,
-    ShuffleEnabledChangeRequestedEventArgs, SystemMediaTransportControls,
-    SystemMediaTransportControlsButton, SystemMediaTransportControlsButtonPressedEventArgs,
+    PlaybackRateChangeRequestedEventArgs, ShuffleEnabledChangeRequestedEventArgs,
+    SystemMediaTransportControls, SystemMediaTransportControlsButton,
+    SystemMediaTransportControlsButtonPressedEventArgs,
     SystemMediaTransportControlsTimelineProperties,
 };
 use windows::Storage::Streams::{
@@ -277,6 +278,21 @@ fn init_session(sink: &CommandSink) -> Result<Session> {
             ))?,
         ));
 
+        let rate_sink = std::sync::Arc::clone(sink);
+        tokens.push((
+            "PlaybackRateChangeRequested",
+            smtc.PlaybackRateChangeRequested(&TypedEventHandler::new(
+                move |_, args: windows::core::Ref<PlaybackRateChangeRequestedEventArgs>| {
+                    if let Some(args) = args.as_ref()
+                        && let Ok(rate) = args.RequestedPlaybackRate()
+                    {
+                        rate_sink(MediaCommand::SetRate(rate));
+                    }
+                    Ok(())
+                },
+            ))?,
+        ));
+
         let repeat_sink = std::sync::Arc::clone(sink);
         tokens.push((
             "AutoRepeatModeChangeRequested",
@@ -351,6 +367,10 @@ impl Session {
                 Repeat::One => MediaPlaybackAutoRepeatMode::Track,
                 Repeat::All => MediaPlaybackAutoRepeatMode::List,
             })?;
+            // Session property, not a timeline field: consumers (Phone Link, AVRCP,
+            // third-party flyouts) extrapolate position between our 5s timeline pushes
+            // using this rate, and RateChangeRequested never fires until it's seeded.
+            self.smtc.SetPlaybackRate(self.snapshot.rate)?;
         }
         if changes.track || changes.position || changes.status || changes.options {
             self.push_timeline()?;
@@ -377,6 +397,9 @@ impl Session {
                 music.SetTitle(&HSTRING::from(track.title.as_str()))?;
                 if !track.artist.is_empty() {
                     music.SetArtist(&HSTRING::from(track.artist.as_str()))?;
+                }
+                if let Some(album) = track.album.as_deref().filter(|a| !a.is_empty()) {
+                    music.SetAlbumTitle(&HSTRING::from(album))?;
                 }
                 if let Some(reference) = self.thumbnail_reference() {
                     updater.SetThumbnail(&reference)?;
@@ -446,8 +469,12 @@ impl Session {
         }
     }
 
-    /// Orderly shutdown (spec W-1): Closed status → handlers off → disabled →
-    /// window destroyed — so the flyout entry disappears immediately on quit.
+    /// Orderly shutdown (spec W-1): Closed status → handlers off → metadata
+    /// cleared → disabled → window destroyed — so the flyout entry disappears
+    /// immediately on quit. The ClearAll must come *before* the disable
+    /// (a disabled control can reject updater calls) and everything runs
+    /// sequentially on this thread: Firefox observed that a non-sequential
+    /// cleanup leaves a ghost SMTC entry showing the bare executable name.
     fn teardown(mut self) {
         let _ = self.smtc.SetPlaybackStatus(MediaPlaybackStatus::Closed);
         for (name, token) in self.tokens.drain(..) {
@@ -456,6 +483,7 @@ impl Session {
                 "PlaybackPositionChangeRequested" => {
                     self.smtc.RemovePlaybackPositionChangeRequested(token)
                 }
+                "PlaybackRateChangeRequested" => self.smtc.RemovePlaybackRateChangeRequested(token),
                 "ShuffleEnabledChangeRequested" => {
                     self.smtc.RemoveShuffleEnabledChangeRequested(token)
                 }
@@ -467,6 +495,10 @@ impl Session {
             if let Err(e) = result {
                 tracing::debug!(handler = name, error = %e, "SMTC handler removal failed");
             }
+        }
+        if let Ok(updater) = self.smtc.DisplayUpdater() {
+            let _ = updater.ClearAll();
+            let _ = updater.Update();
         }
         let _ = self.smtc.SetIsEnabled(false);
         unsafe {

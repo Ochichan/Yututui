@@ -157,7 +157,7 @@ Launching `ytt` twice won't start a second player fighting over your speakers �
 `ytt` shows up wherever your OS shows music — on by default, toggle under Settings → Playback → *OS media controls*. Works from the TUI and the daemon alike.
 
 - **macOS** — the real Now Playing card in Control Center: artwork, a working scrubber, next/previous, and a Like button. Play/pause from your AirPods' stem does what it should. And the **YtmTui Tray** companion rides the menu bar (`ytt-tray`, included with brew and the release archive) — the same mini player and menu as Windows, one click from the clock.
-- **Windows** — the SMTC media overlay with artwork and seek, plus the optional **YtmTui Tray** companion (installed by Scoop): left-click for a mini player with Now / Queue / Stream / Tune tabs, right-click for the full menu — start/stop the daemon, resume the last session, open the TUI. `ytt-tray --install-startup` makes it start at login; it's opt-in.
+- **Windows** — the SMTC media overlay with artwork and seek, plus the optional **YtmTui Tray** companion (installed by Scoop): left-click for a mini player with Now / Queue / Stream / Tune tabs, right-click for the full menu — start/stop the daemon, resume the last session, open the TUI. `ytt-tray --install-startup` makes it start at login; it's opt-in. Installers also register the app identity so the flyout says **YtmTui** — if it ever shows "Unknown app", run `ytt register-media-identity` once.
 - **Linux** — a first-class MPRIS player (`org.mpris.MediaPlayer2.ytmtui`): playerctl, GNOME/KDE media widgets, and waybar all just work.
 
 ---
@@ -239,6 +239,7 @@ or *not found* instead of being silently guessed; re-run with `--take-best`,
 | No album art | Off by default, and terminal-dependent. Turn on **Album art** (Settings → General) and restart. |
 | `v` won't open the video | It launches a separate mpv window — check `ytt doctor`. Local-only tracks have no video to show. |
 | No Control Center / SMTC / MPRIS entry | Check Settings → Playback → **OS media controls**; it publishes once something has played. |
+| Media flyout shows "Unknown app" / two entries | Run `ytt register-media-identity` once (installers do it for you). Two entries means mpv's own media session is on — `ytt` turns it off automatically on mpv ≥ 0.39; re-enable it deliberately with `YTM_MPV_EXTRA=--media-controls=yes`. |
 | DJ Gem won't respond | Add a free Gemini key in Settings → DJ Gem and switch **Enable DJ Gem** on. |
 | Spotify returns 403 on connect/import | Your app is in Development Mode: add your own Spotify account under *User Management* in the developer dashboard, and re-check the Client ID. |
 | Scrobbles not appearing | Check Settings → Accounts is connected and enabled; offline listens flush automatically (they wait in `scrobble-queue.jsonl`). The daemon reads accounts at start — restart it after connecting. |

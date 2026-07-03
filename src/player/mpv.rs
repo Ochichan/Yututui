@@ -7,6 +7,7 @@
 
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use tokio::process::Child;
@@ -14,6 +15,34 @@ use tokio::process::Child;
 use crate::util::process;
 #[cfg(unix)]
 use crate::util::runtime;
+
+/// Whether the installed mpv accepts `--media-controls` (added in mpv 0.39).
+///
+/// mpv ≥ 0.39 registers its **own** OS media session by default — Windows SMTC
+/// and macOS Now Playing — even in headless/audio-only mode, which would sit in
+/// the flyout next to the session `crate::media` publishes as a duplicate entry
+/// with raw stream metadata. Both our spawns pass `--media-controls=no` when
+/// supported; older mpv must never see the flag (unknown options are fatal at
+/// startup), hence this one-time capability probe instead of version parsing
+/// (which breaks on git builds).
+///
+/// The flag must come BEFORE `--version`: mpv validates only the options parsed
+/// before `--version` short-circuits, so the reversed order reports success for
+/// any flag. Probed once per process — the daemon respawns mpv on every
+/// stop→play cycle, and the answer can't change mid-run.
+pub fn media_controls_flag_supported() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        process::std_command("mpv", process::ProcessProfile::Media)
+            .args(["--no-config", "--media-controls=no", "--version"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
+}
 
 /// A per-process IPC endpoint: a Unix socket path on macOS/Linux, a named pipe on
 /// Windows. Unique per pid so concurrent instances never collide.
@@ -87,6 +116,13 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
             "--ytdl-raw-options-append=cookies={}",
             path.display()
         ));
+    }
+
+    // The OS media session is ours (`crate::media`), not mpv's — see the probe
+    // docs. Placed before YTM_MPV_EXTRA so mpv's last-option-wins rule keeps
+    // `YTM_MPV_EXTRA=--media-controls=yes` working as a user override.
+    if media_controls_flag_supported() {
+        cmd.arg("--media-controls=no");
     }
 
     // Escape hatch for tests/debugging, e.g. `YTM_MPV_EXTRA="--ao=null --volume=0"`.

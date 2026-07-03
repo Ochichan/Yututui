@@ -157,7 +157,7 @@ ytt daemon stop             # デーモン停止 + mpv の後始末
 `ytt` は OS が音楽を表示するすべての場所に現れます — 初期設定でオン、設定 → 再生 → *OS メディアコントロール* で切れます。TUI でもデーモンでも同じように動きます。
 
 - **macOS** — コントロールセンターの本物の Now Playing カード: アートワーク、ちゃんと動くシークバー、次へ/前へ、Like ボタンまで。AirPods の軸をつまむ操作も期待どおりに効きます。さらに **YtmTui Tray** の相棒がメニューバーに（`ytt-tray`、brew とリリースアーカイブに同梱）— Windows と同じミニプレイヤーとメニューが、時計の隣のワンクリックに。
-- **Windows** — アートワークとシーク付きの SMTC メディアオーバーレイ、そして任意の **YtmTui Tray** 相棒（Scoop が入れます）: 左クリックで Now / Queue / Stream / Tune タブのミニプレイヤー、右クリックでフルメニュー — デーモンの起動/停止、前回セッションの再開、TUI を開く。ログイン時の自動起動は `ytt-tray --install-startup`（任意）。
+- **Windows** — アートワークとシーク付きの SMTC メディアオーバーレイ、そして任意の **YtmTui Tray** 相棒（Scoop が入れます）: 左クリックで Now / Queue / Stream / Tune タブのミニプレイヤー、右クリックでフルメニュー — デーモンの起動/停止、前回セッションの再開、TUI を開く。ログイン時の自動起動は `ytt-tray --install-startup`（任意）。インストーラーはアプリの識別情報も登録するのでフライアウトには **YtmTui** と表示されます — もし「不明なアプリ」と出たら `ytt register-media-identity` を一度実行してください。
 - **Linux** — 堂々たる MPRIS プレイヤー（`org.mpris.MediaPlayer2.ytmtui`）: playerctl、GNOME/KDE のメディアウィジェット、waybar が全部そのまま認識します。
 
 ---
@@ -235,6 +235,7 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 | アルバムアートが出ない | 初期設定はオフで、ターミナル依存です。**アルバムアート**（設定 → 一般）をオンにして再起動。 |
 | `v` を押しても映像が出ない | 別の mpv ウィンドウを開く機能です — `ytt doctor` で mpv を確認。ローカル専用トラックには見せる映像がありません。 |
 | コントロールセンター / SMTC / MPRIS に出ない | 設定 → 再生 → **OS メディアコントロール**を確認。何かが一度再生されてから表示されます。 |
+| メディアフライアウトに「不明なアプリ」/ 項目が 2 つ | `ytt register-media-identity` を一度実行（インストーラーは自動で行います）。項目が 2 つなら mpv 自身のメディアセッションが有効 — mpv ≥ 0.39 では `ytt` が自動で無効化します。あえて有効にするなら `YTM_MPV_EXTRA=--media-controls=yes`。 |
 | DJ Gem が反応しない | 設定 → DJ Gem に無料の Gemini キーを入れ、**Enable DJ Gem** をオンに。 |
 | Spotify の接続/インポートで 403 | アプリが Development Mode です。開発者ダッシュボードの *User Management* に自分の Spotify アカウントを追加し、Client ID を再確認。 |
 | スクロブルが反映されない | 設定 → アカウントが接続・有効か確認。オフライン分は自動配達されます（`scrobble-queue.jsonl` で待機）。デーモンは起動時にアカウントを読むので、接続後はデーモンを再起動。 |

@@ -144,6 +144,19 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
 ] }
 
+# GSMTC *consumer* side, for `examples/smtc-probe.rs` only (the Windows SMTC QA
+# harness reads back the session ytt publishes and drives it like Phone Link
+# would — docs/windows-smtc-completion-plan.md §5.1). Dev-deps don't participate
+# in `cargo build --bin`, so `Media_Control` never bloats the shipped binaries;
+# cargo unifies these with the [dependencies] features only for examples/tests.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62", default-features = false, features = [
+    "Media_Control",
+    "Foundation",
+    "Foundation_Collections",
+    "Storage_Streams",
+] }
+
 # macOS Now Playing media session (`src/media/macos.rs`): pure-Rust ObjC bindings —
 # no C shims, no build scripts — so the clean cross-build story holds. `objc2-media-player`
 # is MPNowPlayingInfoCenter/MPRemoteCommandCenter, `objc2-app-kit` only supplies the

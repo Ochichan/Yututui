@@ -17,6 +17,11 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 fn main() -> Result<()> {
+    // Windows shell identity (media flyout, taskbar grouping). Before anything else —
+    // the daemon path below inherits it, and it must precede any window/session.
+    #[cfg(windows)]
+    media::identity::adopt_process_identity();
+
     // `ytt --new-instance` deliberately launches a second, independent player even when one
     // is already running (bypassing the single-instance guard); threaded into `async_main`.
     let mut new_instance = false;
@@ -78,6 +83,13 @@ fn main() -> Result<()> {
             // One-shot environment diagnostic; never touches the terminal. Exits with its
             // own status code (non-zero if a required tool or directory is unusable).
             "doctor" => std::process::exit(doctor::run()),
+            // Hidden maintenance command (run by install.ps1 / Scoop post_install): registers
+            // the AppUserModelId so the Windows media flyout shows "YtmTui" + icon instead of
+            // "Unknown app". Kept out of --help; errors out on other platforms.
+            "register-media-identity" => {
+                let rest: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(media::identity::register_cli(&rest));
+            }
             _ => {}
         }
     }

@@ -37,6 +37,12 @@ function Install-File($srcExe) {
     New-Item -ItemType Directory -Force -Path $script:InstallDir | Out-Null
     $dest = Join-Path $script:InstallDir "$Bin.exe"
     Copy-Item $srcExe $dest -Force
+    # The media-flyout icon rides along when the source ships it (release zips carry
+    # ytm-tui.ico at the root; older archives simply don't have it).
+    $srcIcon = Join-Path (Split-Path $srcExe -Parent) 'ytm-tui.ico'
+    if (Test-Path $srcIcon) {
+        Copy-Item $srcIcon (Join-Path $script:InstallDir 'ytm-tui.ico') -Force
+    }
     Ok "Installed -> $dest"
 }
 
@@ -144,6 +150,37 @@ if ($missing.Count -gt 0) {
 }
 else {
     Ok "Runtime tools present (mpv, yt-dlp, ffmpeg)"
+}
+
+# --- register the Windows media identity ------------------------------------------------
+# Names the OS media flyout entry ("YtmTui" + icon instead of "Unknown app"). Idempotent;
+# writes only HKCU\Software\Classes\AppUserModelId. Version-gated because on older builds
+# an unknown subcommand falls through to launching the TUI, which must never happen inside
+# this script (e.g. YTT_VERSION pinned to a pre-1.6 release).
+$yttExe = Join-Path $InstallDir "$Bin.exe"
+$supportsIdentity = $false
+$verLine = & $yttExe --version 2>$null
+if ("$verLine" -match '(\d+)\.(\d+)\.(\d+)') {
+    $v = [Version]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
+    $supportsIdentity = $v -ge [Version]::new(1, 6, 0)
+}
+if ($supportsIdentity) {
+    $iconArgs = @()
+    $localIcon = Join-Path $InstallDir 'ytm-tui.ico'
+    $repoIcon = Join-Path $ScriptDir 'assets\icons\ytm-tui.ico'
+    # Prefer the icon installed next to the exe; a source checkout (--build path) falls
+    # back to the repo asset so cargo-built installs get an icon too.
+    if (-not (Test-Path $localIcon) -and (Test-Path $repoIcon)) {
+        Copy-Item $repoIcon $localIcon -Force
+    }
+    if (Test-Path $localIcon) { $iconArgs = @('--icon', $localIcon) }
+    & $yttExe register-media-identity @iconArgs *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Ok "Media identity registered (Windows media flyout shows 'YtmTui')"
+    }
+    else {
+        Warn "Media identity not registered (cosmetic only; flyout may show 'Unknown app')"
+    }
 }
 
 Write-Host ""

@@ -12,6 +12,7 @@
 //! keeps running with media controls disabled and one warning line in the log.
 
 pub mod artwork;
+pub mod identity;
 
 #[cfg(target_os = "macos")]
 mod macos;

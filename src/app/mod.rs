@@ -1712,6 +1712,14 @@ fn spawn_video_overlay(
     use std::process::Stdio;
     let mut cmd = process::std_command("mpv", process::ProcessProfile::Media);
     cmd.arg(url);
+    // The audio instance already owns the OS media session; without this the
+    // overlay mpv would register a second, duplicate entry (mpv ≥ 0.39 does so
+    // by default even for a plain window). As a CLI option it wins over the
+    // user's mpv config, which is the point — the override lever for the audio
+    // instance (`YTM_MPV_EXTRA`) intentionally doesn't reach the overlay.
+    if crate::player::mpv::media_controls_flag_supported() {
+        cmd.arg("--media-controls=no");
+    }
     for arg in layout.mpv_window_args() {
         cmd.arg(arg);
     }

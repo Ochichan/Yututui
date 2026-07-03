@@ -26,9 +26,52 @@ fn main() {
         .display()
         .to_string()
         .replace('\\', "/");
+    // Icon + VERSIONINFO. Windows shell surfaces (Task Manager, the media flyout's
+    // identity fallbacks) read FileDescription/ProductName off the exe when nothing
+    // better is registered (see src/media/identity.rs). One crate-wide resource links
+    // into BOTH bins, so the strings stay binary-neutral (no OriginalFilename), and
+    // the FILEVERSION digits derive from CARGO_PKG_VERSION so they can't rot.
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap();
+    let mut nums = version.split('.').map(|part| {
+        part.chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse::<u16>()
+            .unwrap_or(0)
+    });
+    let (major, minor, patch) = (
+        nums.next().unwrap_or(0),
+        nums.next().unwrap_or(0),
+        nums.next().unwrap_or(0),
+    );
     let rc = out_dir.join("ytm-tui.rc");
-    std::fs::write(&rc, format!("1 ICON \"{icon}\"\n"))
-        .expect("failed to write Windows resource script");
+    let rc_source = format!(
+        r#"1 ICON "{icon}"
+
+1 VERSIONINFO
+FILEVERSION {major},{minor},{patch},0
+PRODUCTVERSION {major},{minor},{patch},0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "YtmTui"
+      VALUE "ProductName", "ytm-tui"
+      VALUE "FileVersion", "{version}"
+      VALUE "ProductVersion", "{version}"
+      VALUE "CompanyName", "Ochichan"
+      VALUE "LegalCopyright", "MIT License"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+"#
+    );
+    std::fs::write(&rc, rc_source).expect("failed to write Windows resource script");
 
     embed_resource::compile(&rc, embed_resource::NONE)
         .manifest_required()

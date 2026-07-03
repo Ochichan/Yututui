@@ -414,13 +414,16 @@ jobs:
           cp assets/icons/ytm-tui.png "$staging/"
           tar -czf "${{ matrix.archive }}" -C "$staging" "${{ matrix.bin }}" ytm-tui.desktop ytm-tui.png
 
+      # The .ico rides at the archive root: `ytt register-media-identity` points the
+      # media-flyout IconUri at the copy installed next to the exe (install.ps1 / Scoop).
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Compress-Archive -Path `
             "target/${{ matrix.target }}/release/ytt.exe", `
-            "target/${{ matrix.target }}/release/ytt-desktop.exe" `
+            "target/${{ matrix.target }}/release/ytt-desktop.exe", `
+            "assets/icons/ytm-tui.ico" `
             -DestinationPath "${{ matrix.archive }}"
 
       - name: Verify Windows package contents
@@ -431,7 +434,7 @@ jobs:
           Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
           Expand-Archive -Path "${{ matrix.archive }}" -DestinationPath $stage
 
-          foreach ($name in @("ytt.exe", "ytt-desktop.exe")) {
+          foreach ($name in @("ytt.exe", "ytt-desktop.exe", "ytm-tui.ico")) {
             $path = Join-Path $stage $name
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Windows archive is missing $name"
@@ -449,6 +452,9 @@ jobs:
           }
           if (-not $shortcut) {
             throw "Scoop manifest is missing the YtmTui Desktop shortcut"
+          }
+          if (-not $manifest.post_install) {
+            throw "Scoop manifest is missing the media-identity post_install"
           }
 
       # One SHA-256 sidecar per archive in `sha256sum`/`shasum` format (`<hash>  <file>`). bash

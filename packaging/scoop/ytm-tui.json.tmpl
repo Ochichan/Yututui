@@ -19,6 +19,9 @@
             "YtmTui Desktop"
         ]
     ],
+    "post_install": [
+        "& \"$dir\\ytt.exe\" register-media-identity --icon \"$dir\\ytm-tui.ico\""
+    ],
     "depends": [
         "extras/mpv",
         "main/yt-dlp",
