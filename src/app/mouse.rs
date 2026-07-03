@@ -223,6 +223,7 @@ impl App {
             MouseTarget::Global(Action::ToggleHelp) => {
                 self.help_visible = true;
                 self.mouse_help_visible = false;
+                self.bridges.help_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }
@@ -339,6 +340,7 @@ impl App {
             MouseTarget::MouseHelp => {
                 self.help_visible = false;
                 self.mouse_help_visible = true;
+                self.bridges.help_scroll.reset();
                 self.dirty = true;
                 Vec::new()
             }
@@ -755,9 +757,25 @@ impl App {
     /// Everywhere else it moves the *viewport* of whichever list is on top by
     /// [`MOUSE_SCROLL_LINES`] rows — decoupled from the selection, which stays put (it may
     /// scroll out of view; the render pass keeps it visible only for keyboard nav). An open
-    /// overlay (the queue window) wins over the active screen.
-    pub(in crate::app) fn on_mouse_scroll(&mut self, up: bool, col: u16, row: u16) -> Vec<Cmd> {
+    /// overlay (the queue window) wins over the active screen. Ctrl+wheel bypasses all of
+    /// that and steps the text zoom, browser-style, wherever the pointer is.
+    pub(in crate::app) fn on_mouse_scroll(
+        &mut self,
+        up: bool,
+        col: u16,
+        row: u16,
+        ctrl: bool,
+    ) -> Vec<Cmd> {
+        if ctrl {
+            return self.zoom_step(up);
+        }
         let n = MOUSE_SCROLL_LINES;
+        // The cheat-sheet overlays scroll like any list (length is clamped at render).
+        if self.help_visible || self.mouse_help_visible {
+            self.bridges.help_scroll.wheel(up, n, usize::MAX);
+            self.dirty = true;
+            return Vec::new();
+        }
         if self.queue_popup.open {
             self.queue_popup.scroll.wheel(up, n, self.queue.len());
             self.dirty = true;

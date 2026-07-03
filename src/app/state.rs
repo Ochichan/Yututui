@@ -63,6 +63,10 @@ pub struct RenderBridges {
     pub settings_scroll: crate::ui::scroll::ScrollState,
     /// One offset per column of the two-column Keys tab; only the focused column re-anchors.
     pub settings_keys_scroll: [crate::ui::scroll::ScrollState; 2],
+    /// Wheel / arrow-key offset for the help and mouse cheat-sheet overlays (one state is
+    /// enough — they never show together). Reset when either overlay opens; the render pass
+    /// records the viewport and clamps to the sheet's real length like every other list.
+    pub help_scroll: crate::ui::scroll::ScrollState,
 }
 
 impl RenderBridges {

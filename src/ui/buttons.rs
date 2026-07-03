@@ -106,27 +106,28 @@ pub fn render_segments(
     frame.render_widget(Paragraph::new(Line::from(spans).alignment(alignment)), area);
 }
 
+/// Every screen in nav order. Radio mode swaps only the player tab's *label*
+/// (see [`nav_label`]), not the set of screens.
+const NAV_ITEMS: [Mode; 5] = [
+    Mode::Player,
+    Mode::Search,
+    Mode::Library,
+    Mode::Settings,
+    Mode::Ai,
+];
+
 /// The screen nav bar shown at the top of every view: `ytm-tui │ Player · Search ·
 /// Library · Settings · DJ Gem` (or `Radio` for the player tab in dedicated Radio mode).
 /// The `ytm-tui` brand sits at the top-left, set off by a muted
 /// `│`; the tabs follow. The active screen is highlighted (selection colors), the rest are
 /// muted, and each tab is a click target that switches screens. Left-aligned, no box chrome
 /// — it reads like a tab strip, consistent with the in-line "text is the button" controls.
+///
+/// When the full strip doesn't fit (a narrow terminal, or text zoom shrinking the virtual
+/// grid), it degrades to a paged strip: `◀ ▶` arrows that switch to the previous / next
+/// screen on click, around a window of tabs centered on the active one — so every screen
+/// stays reachable by mouse no matter how little width remains.
 pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
-    const NORMAL_ITEMS: [Mode; 5] = [
-        Mode::Player,
-        Mode::Search,
-        Mode::Library,
-        Mode::Settings,
-        Mode::Ai,
-    ];
-    const RADIO_ITEMS: [Mode; 5] = [
-        Mode::Player,
-        Mode::Search,
-        Mode::Library,
-        Mode::Settings,
-        Mode::Ai,
-    ];
     const GAP: &str = "  ";
     const BRAND: &str = "ytm-tui";
     const SEP: &str = " │ ";
@@ -143,11 +144,23 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
         .bg(app.theme.color(R::SelectionBg))
         .add_modifier(Modifier::BOLD);
     let muted = app.theme.style(R::TextMuted);
-    let items: &[Mode] = if app.radio_dedicated_mode {
-        &RADIO_ITEMS
-    } else {
-        &NORMAL_ITEMS
-    };
+    let items: &[Mode] = &NAV_ITEMS;
+
+    // Measure the full strip; when it can't fit, hand over to the paged variant instead
+    // of letting the rightmost tabs clip into unreachability.
+    let full: u16 = [MARGIN, BRAND, SEP, END_PAD]
+        .iter()
+        .map(|s| text_width(s))
+        .sum::<u16>()
+        + items
+            .iter()
+            .map(|m| text_width(nav_label(*m, app.radio_dedicated_mode)) + 2)
+            .sum::<u16>()
+        + text_width(GAP) * (items.len() as u16 - 1);
+    if full > area.width {
+        render_nav_paged(frame, app, area, items, active, muted);
+        return;
+    }
 
     // Left-aligned strip starting at the inner edge. Brand + separator are static labels;
     // each tab is clickable, so we walk `x` in step with the spans to keep hit rects on text.
@@ -222,6 +235,118 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
     // strip rides a border line the border keeps drawing in the cells past it.
     spans.push(Span::raw(END_PAD));
     x = x.saturating_add(text_width(END_PAD));
+    let used = x.saturating_sub(area.x).min(area.width);
+    let strip = Rect {
+        width: used,
+        ..area
+    };
+    frame.render_widget(Paragraph::new(Line::from(spans)), strip);
+}
+
+/// The narrow-width nav: `◀` and `▶` page to the previous / next screen, and between them
+/// sits a window of tabs centered on the active screen, grown outward while width lasts.
+/// Clicking an arrow both navigates and (because the window follows the active tab) slides
+/// hidden tabs into view — two clicks reach any screen on even the tiniest grid.
+fn render_nav_paged(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    items: &[Mode],
+    active: Style,
+    muted: Style,
+) {
+    const MARGIN: &str = " ";
+    let arrow_on = app.theme.style(R::Accent).add_modifier(Modifier::BOLD);
+    let active_idx = items.iter().position(|m| *m == app.mode).unwrap_or(0);
+
+    // Grow the visible window outward from the active tab, right neighbor first (reading
+    // direction), while everything — margins, both arrows, gaps — still fits.
+    let tab_w = |i: usize| text_width(nav_label(items[i], app.radio_dedicated_mode)) + 2;
+    let chrome = text_width(MARGIN) * 2 + 2 + 2; // margins + "◀ " + " ▶"
+    let budget = area.width.saturating_sub(chrome);
+    let (mut lo, mut hi) = (active_idx, active_idx);
+    let mut used = tab_w(active_idx);
+    loop {
+        let right = (hi + 1 < items.len()).then(|| tab_w(hi + 1) + 1);
+        let left = (lo > 0).then(|| tab_w(lo - 1) + 1);
+        match (right, left) {
+            (Some(r), _) if used + r <= budget => {
+                hi += 1;
+                used += r;
+            }
+            (_, Some(l)) if used + l <= budget => {
+                lo -= 1;
+                used += l;
+            }
+            _ => break,
+        }
+    }
+
+    let mut spans = Vec::with_capacity((hi - lo + 1) * 3 + 6);
+    let mut x = area.x;
+    let push = |spans: &mut Vec<Span>, x: &mut u16, text: &str, style: Style| {
+        spans.push(Span::styled(text.to_owned(), style));
+        *x = x.saturating_add(text_width(text));
+    };
+
+    push(&mut spans, &mut x, MARGIN, muted);
+    // `◀`: one screen back. Dimmed (and inert) at the first screen, like a scrollbar end.
+    if active_idx > 0 {
+        app.register_mouse_button(
+            Rect {
+                x,
+                y: area.y,
+                width: 2,
+                height: area.height.min(1),
+            },
+            MouseTarget::Nav(items[active_idx - 1]),
+        );
+        push(&mut spans, &mut x, "◀ ", arrow_on);
+    } else {
+        push(&mut spans, &mut x, "◀ ", muted);
+    }
+
+    for (i, mode) in items.iter().enumerate().take(hi + 1).skip(lo) {
+        if i > lo {
+            push(&mut spans, &mut x, " ", muted);
+        }
+        let label = nav_label(*mode, app.radio_dedicated_mode);
+        let w = text_width(label).saturating_add(2);
+        app.register_mouse_button(
+            Rect {
+                x,
+                y: area.y,
+                width: w,
+                height: area.height.min(1),
+            },
+            MouseTarget::Nav(*mode),
+        );
+        let style = if app.mode == *mode {
+            crate::ui::anim::active_tab_style(app, crate::ui::anim::TabPop::Nav, active)
+        } else {
+            muted
+        };
+        push(&mut spans, &mut x, " ", style);
+        push(&mut spans, &mut x, label, style);
+        push(&mut spans, &mut x, " ", style);
+    }
+
+    // `▶`: one screen forward.
+    if active_idx + 1 < items.len() {
+        app.register_mouse_button(
+            Rect {
+                x,
+                y: area.y,
+                width: 2,
+                height: area.height.min(1),
+            },
+            MouseTarget::Nav(items[active_idx + 1]),
+        );
+        push(&mut spans, &mut x, " ▶", arrow_on);
+    } else {
+        push(&mut spans, &mut x, " ▶", muted);
+    }
+
     let used = x.saturating_sub(area.x).min(area.width);
     let strip = Rect {
         width: used,

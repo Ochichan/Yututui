@@ -36,11 +36,13 @@ pub enum Msg {
     /// session so a later drag starts a fresh range instead of extending stale state.
     MouseLeftUp,
     /// The mouse wheel was scrolled at a terminal cell. `up` means toward earlier items
-    /// for lists, and volume-up over the player volume cluster.
+    /// for lists, and volume-up over the player volume cluster. With `ctrl` held the
+    /// wheel steps the text zoom instead (browser-style).
     MouseScroll {
         up: bool,
         col: u16,
         row: u16,
+        ctrl: bool,
     },
     /// The terminal was resized; ratatui auto-resizes on draw, we just redraw.
     Resize,

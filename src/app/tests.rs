@@ -3202,6 +3202,7 @@ fn ai_transcript_scrolls_history_and_new_chat_snaps_to_latest() {
         up: true,
         col: row.x,
         row: row.y,
+        ctrl: false,
     });
     assert!(
         app.bridges.ai_transcript_scroll.offset() < content_len - viewport,
@@ -4836,6 +4837,7 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
         up: false,
         col: 0,
         row: 0,
+        ctrl: false,
     });
     assert_eq!(app.library_ui.selected, 0); // selection untouched by the wheel
     assert_eq!(
@@ -4848,6 +4850,7 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
         up: true,
         col: 0,
         row: 0,
+        ctrl: false,
     });
     assert_eq!(
         app.bridges
@@ -4870,6 +4873,7 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
         up: false,
         col: 0,
         row: 0,
+        ctrl: false,
     });
     assert_eq!(app.search.selected, 19); // selection untouched
     assert_eq!(
@@ -4882,6 +4886,7 @@ fn wheel_scrolls_the_viewport_not_the_selection() {
         up: true,
         col: 0,
         row: 0,
+        ctrl: false,
     });
     assert_eq!(
         app.bridges
@@ -5544,6 +5549,7 @@ fn wheel_over_volume_cluster_adjusts_volume_when_enabled() {
         up: true,
         col: 25,
         row: 4,
+        ctrl: false,
     });
     assert_eq!(app.playback.volume, 45);
     assert!(matches!(
@@ -5555,6 +5561,7 @@ fn wheel_over_volume_cluster_adjusts_volume_when_enabled() {
         up: false,
         col: 25,
         row: 4,
+        ctrl: false,
     });
     assert_eq!(app.playback.volume, 40);
     assert!(matches!(
@@ -5582,6 +5589,7 @@ fn wheel_volume_setting_can_disable_volume_scroll() {
         up: true,
         col: 25,
         row: 4,
+        ctrl: false,
     });
     assert!(cmds.is_empty());
     assert_eq!(app.playback.volume, 40);
@@ -7924,4 +7932,263 @@ fn mouse_tab_click_on_playlists_also_nudges() {
     app.on_mouse_target(MouseTarget::LibraryTab(LibraryTab::Playlists));
     assert_eq!(app.library_ui.tab, LibraryTab::Playlists);
     assert!(app.status.text.contains("create a new playlist"));
+}
+
+// Text zoom (Ctrl+wheel / Ctrl+-/=) ------------------------------------------------
+
+#[test]
+fn zoom_keys_step_the_scale_and_persist_it() {
+    let mut app = app_playing(1, 0);
+    app.zoom_supported = true;
+
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+    assert_eq!(app.zoom.percent(), 125, "first step is the fine 25% notch");
+    assert_eq!(app.zoom.scale(), 2, "125% already renders on the 2x grid");
+    assert_eq!(app.config.text_zoom, Some(125));
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::SaveConfig(cfg)] if cfg.text_zoom == Some(125)
+    ));
+    assert!(app.status.text.contains("125%"));
+
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('-'))));
+    assert_eq!(app.zoom.percent(), 100);
+    assert_eq!(app.zoom.scale(), 1);
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::SaveConfig(cfg)] if cfg.text_zoom == Some(100)
+    ));
+}
+
+#[test]
+fn zoom_clamps_at_both_ends_with_a_toast_and_no_save() {
+    let mut app = app_playing(1, 0);
+    app.zoom_supported = true;
+    app.zoom.set(300);
+    app.config.text_zoom = Some(300);
+
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+    assert_eq!(app.zoom.percent(), 300);
+    assert!(cmds.is_empty(), "at max: no config churn, just a toast");
+    assert!(!app.status.text.is_empty());
+
+    app.zoom.set(100);
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('-'))));
+    assert_eq!(app.zoom.percent(), 100);
+    assert!(cmds.is_empty());
+}
+
+#[test]
+fn zoom_on_unsupported_terminal_explains_itself_and_stays_at_1() {
+    let mut app = app_playing(1, 0);
+    assert!(!app.zoom_supported, "probe result defaults to unsupported");
+
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+    assert_eq!(app.zoom.scale(), 1);
+    assert!(cmds.is_empty());
+    assert!(
+        !app.status.text.is_empty(),
+        "a cheat-sheet-advertised key must never be silently dead"
+    );
+}
+
+#[test]
+fn ctrl_wheel_steps_zoom_instead_of_scrolling() {
+    let mut app = app_playing(3, 0);
+    app.zoom_supported = true;
+
+    let cmds = app.update(Msg::MouseScroll {
+        up: true,
+        col: 5,
+        row: 5,
+        ctrl: true,
+    });
+    assert_eq!(app.zoom.scale(), 2);
+    assert!(matches!(cmds.as_slice(), [Cmd::SaveConfig(_)]));
+
+    let cmds = app.update(Msg::MouseScroll {
+        up: false,
+        col: 5,
+        row: 5,
+        ctrl: true,
+    });
+    assert_eq!(app.zoom.scale(), 1);
+    assert!(matches!(cmds.as_slice(), [Cmd::SaveConfig(_)]));
+}
+
+#[test]
+fn zoom_keys_work_while_the_help_overlay_is_open() {
+    let mut app = app_playing(1, 0);
+    app.zoom_supported = true;
+    app.help_visible = true;
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+    assert_eq!(
+        app.zoom.scale(),
+        2,
+        "the cheat-sheet advertises Ctrl+=; it must work while the sheet is open"
+    );
+    assert!(app.help_visible, "zoom must not dismiss the overlay");
+}
+
+#[test]
+fn zoom_change_forces_a_full_clear_redraw() {
+    let mut app = app_playing(1, 0);
+    app.zoom_supported = true;
+    app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+    assert!(
+        app.take_clear_before_draw(),
+        "stale multicells from the old grid must be cleared"
+    );
+}
+
+#[test]
+fn persisted_zoom_is_restored_only_when_the_terminal_supports_it() {
+    let cfg = Config {
+        text_zoom: Some(150),
+        ..Config::default()
+    };
+
+    let mut app = App::new(100);
+    app.apply_config(&cfg);
+    assert_eq!(
+        app.zoom.percent(),
+        100,
+        "unsupported terminal ignores the persisted level"
+    );
+
+    let mut app = App::new(100);
+    app.zoom_supported = true;
+    app.apply_config(&cfg);
+    assert_eq!(app.zoom.percent(), 150);
+    assert_eq!(app.zoom.scale(), 2);
+}
+
+#[test]
+fn native_album_art_is_hidden_while_zoomed() {
+    let mut app = app_playing(1, 0);
+    app.zoom_supported = true;
+    app.config.album_art = Some(true);
+    app.art.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    app.set_art_resize_tx(tx);
+    let img = image::DynamicImage::new_rgb8(4, 4);
+    app.set_artwork("vid0".to_owned(), Some(img));
+    assert!(app.art_active(), "sanity: art shows at scale 1");
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+    // The halfblocks picker renders art as text cells, which keep scaling.
+    assert!(app.art_active(), "halfblock art is text and survives zoom");
+
+    app.art
+        .picker
+        .as_mut()
+        .unwrap()
+        .set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+    assert!(
+        !app.art_active(),
+        "pixel-protocol art would stripe across scaled rows; it must hide"
+    );
+    app.update(Msg::Key(ctrl(KeyCode::Char('-'))));
+    assert!(app.art_active(), "art returns at scale 1");
+}
+
+// Responsive layout under zoom / narrow grids ---------------------------------------
+
+/// Render the UI into a TestBackend of the given size and return the registered mouse
+/// targets plus the first screen row as text (the nav strip).
+fn render_at(app: &App, w: u16, h: u16) -> (Vec<MouseTarget>, String) {
+    let backend = TestBackend::new(w, h);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::render(f, app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let top: String = (0..w)
+        .map(|x| buf.cell((x, 0)).map(|c| c.symbol()).unwrap_or(" "))
+        .collect::<Vec<_>>()
+        .join("");
+    let targets = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .map(|b| b.target)
+        .collect();
+    (targets, top)
+}
+
+#[test]
+fn narrow_nav_pages_with_arrows_so_every_screen_stays_clickable() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.mode = Mode::Library;
+
+    let (targets, top) = render_at(&app, 40, 12);
+    assert!(top.contains('◀') && top.contains('▶'), "paged nav: {top:?}");
+    assert!(
+        top.contains("Library"),
+        "the active tab must stay visible: {top:?}"
+    );
+    // The arrows page to the neighbor screens even though their tabs may be off-screen.
+    assert!(targets.contains(&MouseTarget::Nav(Mode::Search)));
+    assert!(targets.contains(&MouseTarget::Nav(Mode::Settings)));
+
+    // Wide grids keep the full strip — no arrows.
+    let (_, top) = render_at(&app, 100, 30);
+    assert!(!top.contains('◀'), "full-width nav must not page: {top:?}");
+    assert!(top.contains("DJ Gem"));
+}
+
+#[test]
+fn narrow_nav_arrows_navigate_on_click() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.mode = Mode::Library;
+    render_at(&app, 40, 12);
+
+    // Find the ◀ arrow's registered rect (the Nav(Search) target) and click it.
+    let rect = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .find(|b| b.target == MouseTarget::Nav(Mode::Search))
+        .map(|b| b.rect)
+        .expect("left arrow registered");
+    app.update(Msg::MouseClick {
+        col: rect.x,
+        row: rect.y,
+    });
+    assert_eq!(app.mode, Mode::Search, "◀ pages to the previous screen");
+}
+
+#[test]
+fn help_overlay_scrolls_with_wheel_and_keys_and_resets_on_open() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('?'))));
+    assert!(app.help_visible);
+
+    // First render records the viewport; the sheet is far longer than 12 rows.
+    render_at(&app, 40, 12);
+    assert_eq!(app.bridges.help_scroll.offset(), 0);
+
+    app.update(Msg::MouseScroll {
+        up: false,
+        col: 5,
+        row: 5,
+        ctrl: false,
+    });
+    let after_wheel = app.bridges.help_scroll.offset();
+    assert!(after_wheel > 0, "wheel-down must scroll the sheet");
+
+    app.update(Msg::Key(key(KeyCode::Down)));
+    assert_eq!(app.bridges.help_scroll.offset(), after_wheel + 1);
+    app.update(Msg::Key(key(KeyCode::Up)));
+    assert_eq!(app.bridges.help_scroll.offset(), after_wheel);
+    assert!(app.help_visible, "scroll keys must not dismiss the overlay");
+
+    // Close and reopen: the offset starts back at the top.
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    app.update(Msg::Key(key(KeyCode::Char('?'))));
+    assert_eq!(app.bridges.help_scroll.offset(), 0);
 }

@@ -257,7 +257,23 @@ fn repeat_glyph(mode: Repeat, retro: bool) -> &'static str {
 /// cyan style, so the line looks exactly like the plain status text it replaced. `eq:` is
 /// always shown now (so the dropdown is always reachable); the rest stay conditional.
 fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
-    let parts = status_line_parts(app);
+    // Roomy separators normally; progressively tighter when the line wouldn't fit (narrow
+    // terminals, or text zoom shrinking the virtual grid). Content always wins over air —
+    // the `eq:` / `R:` toggles at the tail must stay visible and clickable.
+    let fits = |parts: &Vec<(Option<MouseTarget>, Cow<'static, str>)>| {
+        parts
+            .iter()
+            .map(|(_, text)| buttons::text_width(text))
+            .sum::<u16>()
+            <= area.width
+    };
+    // The last tier also sheds the non-clickable decorations (state word, speed, norm, VU,
+    // download tag), keeping every *control* reachable on even the tiniest grid.
+    let parts = [("    ", false), ("  ", false), (" ", false), (" ", true)]
+        .iter()
+        .map(|(gap, minimal)| status_line_parts_at(app, gap, *minimal))
+        .find(fits)
+        .unwrap_or_else(|| status_line_parts_at(app, " ", true));
     let segments: Vec<Seg> = parts
         .iter()
         .map(|(target, text)| match target {
@@ -275,7 +291,14 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
 /// repeat, speed, EQ, normalize, streaming mode, download tag) is unit-testable without a frame
 /// buffer. A `None` target is a static label/spacing; spacing is its own label so a clickable
 /// segment's hit rect hugs just its text.
-fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)> {
+/// The `minimal` variant is the last responsive tier: the playback state shrinks to its
+/// one-cell glyph and purely informational tags (speed, norm, VU bars, download progress)
+/// drop away, so the clickable toggles never fall off the right edge.
+fn status_line_parts_at(
+    app: &App,
+    gap: &str,
+    minimal: bool,
+) -> Vec<(Option<MouseTarget>, Cow<'static, str>)> {
     let retro = app.retro_mode();
     let mut parts: Vec<(Option<MouseTarget>, Cow<'static, str>)> = Vec::with_capacity(16);
     // A braille throbber leads the line when the spinner animation is on (no-op otherwise). It's a
@@ -286,17 +309,18 @@ fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)>
     // EAW-neutral glyphs (one cell everywhere) — the ⏸/▶ media emoji widen to two
     // cells on some terminals (Windows), which drifts every later segment's hit rect
     // off its rendered text and makes `R:`/`eq:` unclickable. See `render_controls`.
-    let state = if app.playback.paused {
-        t!("‖ paused", "‖ 일시정지")
-    } else {
-        t!("▸ playing", "▸ 재생 중")
+    let state = match (minimal, app.playback.paused) {
+        (true, true) => "‖",
+        (true, false) => "▸",
+        (false, true) => t!("‖ paused", "‖ 일시정지"),
+        (false, false) => t!("▸ playing", "▸ 재생 중"),
     };
     parts.push((None, Cow::Borrowed(state)));
     if !app.queue.is_empty() {
         let (pos, _) = app.queue.position();
         // Clickable (opens the queue window) but styled exactly like the labels around it,
         // so the line looks unchanged — same as the `S:`/`R:` toggles next to it.
-        parts.push((None, Cow::Borrowed("    ")));
+        parts.push((None, Cow::Owned(gap.to_owned())));
         parts.push((
             Some(MouseTarget::QueuePos),
             Cow::Owned(format!("{pos}/{}", app.queue.len())),
@@ -308,7 +332,7 @@ fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)>
     if let Some(cur) = app.queue.current() {
         let liked = app.library.is_favorite(&cur.video_id);
         let disliked = app.signals.is_disliked(&cur.video_id);
-        parts.push((None, Cow::Borrowed("    ")));
+        parts.push((None, Cow::Owned(gap.to_owned())));
         parts.push((
             Some(MouseTarget::Player(Action::CycleRating)),
             Cow::Borrowed(rating_glyph(liked, disliked, retro)),
@@ -318,35 +342,35 @@ fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)>
     // one display width, so the line's layout never shifts as they toggle or appear. Each
     // carries its media glyph — `S:🔀` shuffle, `R:🔁`/`R:🔂` repeat — or a padded cross when
     // off, so they read the same in every UI language.
-    parts.push((None, Cow::Borrowed("    ")));
+    parts.push((None, Cow::Owned(gap.to_owned())));
     parts.push((
         Some(MouseTarget::Player(Action::ToggleShuffle)),
         Cow::Owned(format!("S:{}", shuffle_glyph(app.queue.shuffle, retro))),
     ));
-    parts.push((None, Cow::Borrowed("    ")));
+    parts.push((None, Cow::Owned(gap.to_owned())));
     parts.push((
         Some(MouseTarget::Player(Action::CycleRepeat)),
         Cow::Owned(format!("R:{}", repeat_glyph(app.queue.repeat, retro))),
     ));
-    if (app.playback.speed - 1.0).abs() > f64::EPSILON {
-        parts.push((None, Cow::Owned(format!("    {:.1}x", app.playback.speed))));
+    if !minimal && (app.playback.speed - 1.0).abs() > f64::EPSILON {
+        parts.push((None, Cow::Owned(format!("{gap}{:.1}x", app.playback.speed))));
     }
-    parts.push((None, Cow::Borrowed("    ")));
+    parts.push((None, Cow::Owned(gap.to_owned())));
     parts.push((
         Some(MouseTarget::EqMenu),
         Cow::Owned(format!("eq:{}", app.audio.preset.label())),
     ));
     // Faux VU bars trail the EQ label when the EQ-bars animation is on (no-op otherwise).
-    if let Some(bars) = crate::ui::anim::eq_bars(app) {
-        parts.push((None, Cow::Owned(format!("    {bars}"))));
+    if !minimal && let Some(bars) = crate::ui::anim::eq_bars(app) {
+        parts.push((None, Cow::Owned(format!("{gap}{bars}"))));
     }
-    if app.audio.normalize {
-        parts.push((None, Cow::Owned(format!("    {}", t!("norm", "평준화")))));
+    if !minimal && app.audio.normalize {
+        parts.push((None, Cow::Owned(format!("{gap}{}", t!("norm", "평준화")))));
     }
     if app.autoplay_streaming {
         // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
         // mode dropdown — same affordance as the `eq:` label next to it.
-        parts.push((None, Cow::Borrowed("    ")));
+        parts.push((None, Cow::Owned(gap.to_owned())));
         parts.push((
             Some(MouseTarget::StreamingMenu),
             Cow::Owned(format!(
@@ -358,7 +382,8 @@ fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)>
     // Download indicator for the current track, if one is in flight or finished. While one is
     // actually running and the activity animation is on, a spinner stands in for the `⬇` so
     // live progress reads as motion (same single cell, so the line never shifts).
-    if let Some(s) = app.queue.current()
+    if !minimal
+        && let Some(s) = app.queue.current()
         && let Some(state) = app.downloads.active.get(&s.video_id)
     {
         let tag = match state {
@@ -369,7 +394,7 @@ fn status_line_parts(app: &App) -> Vec<(Option<MouseTarget>, Cow<'static, str>)>
             DownloadState::Done => "⬇ ✓".to_owned(),
             DownloadState::Failed => "⬇ ✗".to_owned(),
         };
-        parts.push((None, Cow::Owned(format!("    {tag}"))));
+        parts.push((None, Cow::Owned(format!("{gap}{tag}"))));
     }
 
     parts
@@ -683,13 +708,29 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
         " ‖ "
     };
     let vol = format!("{}%", app.playback.volume);
+    // Roomy gaps normally; tighter ones when the strip wouldn't fit (a narrow terminal or
+    // text zoom shrinking the virtual grid). Buttons keep their one-cell inner padding, so
+    // hit targets stay comfortable — only the dead space between them compresses.
+    let full: u16 = 3 * 3
+        + 3
+        + 3
+        + 6
+        + buttons::text_width(t!("vol ", "볼륨 "))
+        + 3
+        + 3
+        + buttons::text_width(&vol);
+    let (gap, vol_gap) = if full <= area.width {
+        ("   ", "      ")
+    } else {
+        (" ", "  ")
+    };
     let segments = [
         Seg::button(MouseTarget::Player(Action::PrevTrack), " ⇤ "),
-        Seg::label("   "),
+        Seg::label(gap),
         Seg::button(MouseTarget::Player(Action::TogglePause), toggle),
-        Seg::label("   "),
+        Seg::label(gap),
         Seg::button(MouseTarget::Player(Action::NextTrack), " ⇥ "),
-        Seg::label("      "),
+        Seg::label(vol_gap),
         Seg::label(t!("vol ", "볼륨 ")),
         Seg::button(MouseTarget::Player(Action::VolDown), " - "),
         Seg::label(&vol),
@@ -1268,7 +1309,7 @@ mod tests {
     #[test]
     fn status_line_always_offers_shuffle_repeat_and_eq() {
         let app = App::new(100);
-        let parts = status_line_parts(&app);
+        let parts = status_line_parts_at(&app, "    ", false);
         // Shuffle, repeat and the EQ menu are always present so the line never reflows.
         assert!(has_target(&parts, |t| matches!(
             t,
@@ -1362,7 +1403,7 @@ mod tests {
                 for repeat in [Repeat::Off, Repeat::All, Repeat::One] {
                     app.queue.shuffle = shuffle;
                     app.queue.repeat = repeat;
-                    let total: usize = status_line_parts(&app)
+                    let total: usize = status_line_parts_at(&app, "    ", false)
                         .iter()
                         .map(|(_, s)| UnicodeWidthStr::width(s.as_ref()))
                         .sum();
@@ -1380,7 +1421,7 @@ mod tests {
     fn status_line_shows_position_and_rating_once_a_track_is_current() {
         let mut app = App::new(100);
         app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
-        let parts = status_line_parts(&app);
+        let parts = status_line_parts_at(&app, "    ", false);
         // The clickable N/M position label appears, reading "1/1".
         assert!(
             parts

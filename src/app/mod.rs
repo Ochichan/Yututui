@@ -330,6 +330,13 @@ pub struct App {
     /// Defaults to `true`, so terminals/multiplexers that never report focus animate exactly as
     /// before — the pause is strictly additive. Gates [`App::animation_active`].
     pub focused: bool,
+
+    /// Shared text-zoom scale (this handle is a clone of the one inside the terminal
+    /// backend and the event translator — setting it rescales the next draw).
+    pub zoom: crate::zoom::ZoomHandle,
+    /// Whether the terminal passed the OSC 66 text-sizing probe at startup. When false the
+    /// zoom actions explain themselves in a toast instead of silently doing nothing.
+    pub zoom_supported: bool,
 }
 
 impl App {
@@ -420,6 +427,8 @@ impl App {
             anim_draw_credit: 0,
             anim_last_draw_fps: 0,
             focused: true,
+            zoom: crate::zoom::ZoomHandle::default(),
+            zoom_supported: false,
         }
     }
 
@@ -454,6 +463,11 @@ impl App {
         // Keep the process-wide UI language in sync with the applied config (this is the
         // central apply path, called at startup and after a settings save).
         crate::i18n::set_language(cfg.effective_language());
+        // Restore the persisted text zoom, but only on terminals that passed the OSC 66
+        // probe — a config written under kitty must not garble a later tmux session.
+        if self.zoom_supported {
+            self.zoom.set(cfg.effective_text_zoom());
+        }
         // Keep the full config so the settings screen can persist the whole file.
         self.config = cfg.clone();
         self.ensure_radio_mode_constraints();
@@ -828,6 +842,52 @@ impl App {
         self.status.set_at.is_some()
     }
 
+    /// Step the text zoom one notch up or down (Ctrl+wheel / Ctrl+-/=). On terminals
+    /// without the text sizing protocol this explains itself in a toast instead of
+    /// silently doing nothing — the keys are advertised in the cheat-sheet, so a dead
+    /// key would read as a bug.
+    pub(in crate::app) fn zoom_step(&mut self, zoom_in: bool) -> Vec<Cmd> {
+        self.status.kind = StatusKind::Info;
+        if !self.zoom_supported {
+            self.status.text = t!(
+                "Text zoom needs a terminal with the text sizing protocol (kitty 0.40+)",
+                "글자 확대는 텍스트 크기 프로토콜 지원 터미널이 필요해요 (kitty 0.40+)"
+            )
+            .to_owned();
+            self.dirty = true;
+            return Vec::new();
+        }
+        let current = self.zoom.percent();
+        let next = crate::zoom::step(current, zoom_in);
+        if next == current {
+            self.status.text = if zoom_in {
+                t!(
+                    "Text is already at its largest (300%)",
+                    "이미 최대 글자 크기예요 (300%)"
+                )
+            } else {
+                t!(
+                    "Text is back to its normal size (100%)",
+                    "기본 글자 크기예요 (100%)"
+                )
+            }
+            .to_owned();
+            self.dirty = true;
+            return Vec::new();
+        }
+        self.zoom.set(next);
+        self.status.text = if crate::i18n::is_korean() {
+            format!("글자 크기 {next}%")
+        } else {
+            format!("Text size {next}%")
+        };
+        // The virtual grid just changed size: force the full VT-clear redraw path so no
+        // scaled multicells (or native-image placements) from the old grid survive.
+        self.request_native_image_clear();
+        self.config.text_zoom = Some(next);
+        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+    }
+
     fn dispatch(&mut self, msg: Msg) -> Vec<Cmd> {
         match msg {
             Msg::Key(k) => return self.on_key(k),
@@ -836,7 +896,9 @@ impl App {
             Msg::MouseRightClick { col, row } => return self.on_mouse_right_click(col, row),
             Msg::MouseDrag { col, row } => return self.on_mouse_drag(col, row),
             Msg::MouseLeftUp => return self.on_mouse_left_up(),
-            Msg::MouseScroll { up, col, row } => return self.on_mouse_scroll(up, col, row),
+            Msg::MouseScroll { up, col, row, ctrl } => {
+                return self.on_mouse_scroll(up, col, row, ctrl);
+            }
             Msg::Resize => self.dirty = true,
             Msg::Quit => self.should_quit = true,
             Msg::Remote(cmd, reply) => {

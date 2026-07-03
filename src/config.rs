@@ -364,6 +364,11 @@ pub struct Config {
     pub seek_seconds: Option<f64>,
     /// Adjust volume with the mouse wheel over the player volume cluster. `None` → on.
     pub mouse_wheel_volume: Option<bool>,
+    /// Text zoom level in percent (one of 100/125/150/175/200/250/300), rendered via
+    /// the terminal's text sizing protocol (Ctrl+wheel / Ctrl+-/=). `None` → 100%.
+    /// Applied only on terminals that pass the startup probe, so a config saved under
+    /// kitty stays harmless elsewhere.
+    pub text_zoom: Option<u16>,
     /// Gapless playback. `None` → on. Takes effect at the next launch (an mpv flag).
     pub gapless: Option<bool>,
     /// Shuffle playback order. `None` → off.
@@ -477,6 +482,7 @@ impl Default for Config {
             speed: None,
             seek_seconds: None,
             mouse_wheel_volume: None,
+            text_zoom: None,
             gapless: None,
             shuffle: None,
             repeat: Repeat::default(),
@@ -699,6 +705,11 @@ impl Config {
     /// Whether the mouse wheel changes volume over the player volume cluster (default on).
     pub fn effective_mouse_wheel_volume(&self) -> bool {
         self.mouse_wheel_volume.unwrap_or(true)
+    }
+
+    /// The persisted text-zoom percent, snapped to the nearest supported level.
+    pub fn effective_text_zoom(&self) -> u16 {
+        crate::zoom::snap(self.text_zoom.unwrap_or(100))
     }
 
     /// Whether gapless playback is on (default on).
@@ -930,6 +941,7 @@ mod tests {
             speed: Some(1.5),
             seek_seconds: Some(15.0),
             mouse_wheel_volume: Some(false),
+            text_zoom: Some(150),
             gapless: Some(false),
             shuffle: Some(true),
             repeat: Repeat::One,

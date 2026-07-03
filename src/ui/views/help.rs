@@ -15,70 +15,121 @@ use crate::theme::ThemeRole as R;
 
 /// Render the cheat-sheet as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let popup = centered(area, 80, 80);
-    crate::ui::render_popup_background(frame, app, popup);
-
-    let block = Block::default()
-        .title(t!(" Help · keybindings ", " 도움말 · 단축키 "))
-        .borders(Borders::ALL)
-        .border_style(crate::ui::popup_style(app, R::BorderPrimary))
-        .style(crate::ui::popup_style(app, R::TextPrimary));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-
-    // Split into two columns so the full list fits without scrolling on most terminals.
-    let cols =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
-    let (left, right) = build_columns(app);
-    frame.render_widget(
-        Paragraph::new(left).style(crate::ui::popup_style(app, R::TextPrimary)),
-        cols[0],
+    render_sheet(
+        frame,
+        app,
+        area,
+        t!(" Help · keybindings ", " 도움말 · 단축키 "),
+        (80, 80),
+        help_groups(app),
     );
-    frame.render_widget(
-        Paragraph::new(right).style(crate::ui::popup_style(app, R::TextPrimary)),
-        cols[1],
-    );
-    crate::ui::seal_popup_background(frame, app, popup);
-    crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
 /// Render the mouse cheat-sheet as a centered popup over `area`.
 pub fn render_mouse(frame: &mut Frame, app: &App, area: Rect) {
-    let popup = centered(area, 84, 82);
+    render_sheet(
+        frame,
+        app,
+        area,
+        t!(" Help · mouse ", " 도움말 · 마우스 "),
+        (84, 82),
+        mouse_help_groups(),
+    );
+}
+
+/// Shared cheat-sheet popup. Two columns when there's room (the whole list fits without
+/// scrolling on most terminals); on narrow grids (small terminals, or text zoom shrinking
+/// the virtual grid) it goes near-full-screen and single-column, and the wheel / arrow
+/// keys scroll it (`bridges.help_scroll`) so every row stays reachable.
+fn render_sheet(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    title: &str,
+    (pct_w, pct_h): (u16, u16),
+    groups: Vec<(String, Vec<(String, String)>)>,
+) {
+    // Two ~38-col columns need ~76 usable columns; below that, one column reads better
+    // than two crushed ones, and a small screen deserves the whole screen.
+    let narrow = area.width < 80;
+    let popup = if narrow {
+        centered(area, 96, 96)
+    } else {
+        centered(area, pct_w, pct_h)
+    };
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
-        .title(t!(" Help · mouse ", " 도움말 · 마우스 "))
+        .title(title.to_owned())
         .borders(Borders::ALL)
         .border_style(crate::ui::popup_style(app, R::BorderPrimary))
         .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
+
+    let columns: Vec<Vec<Line<'static>>> = if narrow {
+        vec![flat_lines(app, groups)]
+    } else {
+        let (left, right) = split_groups(app, groups);
+        vec![left, right]
+    };
+    let len = columns.iter().map(Vec::len).max().unwrap_or(0);
+    let offset = app.bridges.help_scroll.view(inner.height, len) as u16;
+
+    // A scroll hint on the bottom border when rows continue below the fold.
+    let more = len > usize::from(inner.height) + usize::from(offset);
+    let block = if more {
+        block.title_bottom(
+            Line::from(t!(" ↓ scroll ", " ↓ 스크롤 "))
+                .right_aligned()
+                .style(crate::ui::popup_style(app, R::TextMuted)),
+        )
+    } else {
+        block
+    };
     frame.render_widget(block, popup);
 
-    let cols =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
-    let (left, right) = build_mouse_columns(app);
-    frame.render_widget(
-        Paragraph::new(left).style(crate::ui::popup_style(app, R::TextPrimary)),
-        cols[0],
-    );
-    frame.render_widget(
-        Paragraph::new(right).style(crate::ui::popup_style(app, R::TextPrimary)),
-        cols[1],
-    );
+    let rects: Vec<Rect> = if columns.len() == 2 {
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(inner)
+            .to_vec()
+    } else {
+        vec![inner]
+    };
+    for (lines, rect) in columns.into_iter().zip(rects) {
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(crate::ui::popup_style(app, R::TextPrimary))
+                .scroll((offset, 0)),
+            rect,
+        );
+    }
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
-/// Build the cheat-sheet lines, split across two columns at a group boundary.
-fn build_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-    split_groups(app, help_groups(app))
+/// All groups as one flowing column (the narrow-grid layout).
+fn flat_lines(app: &App, groups: Vec<(String, Vec<(String, String)>)>) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+    for (title, rows) in groups {
+        lines.push(Line::from(Span::styled(
+            title,
+            crate::ui::popup_style(app, R::HelpGroup).add_modifier(Modifier::BOLD),
+        )));
+        for (key, label) in &rows {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{key:>8}  "),
+                    crate::ui::popup_style(app, R::HelpKey),
+                ),
+                Span::styled(label.to_owned(), crate::ui::popup_style(app, R::HelpAction)),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+    lines
 }
 
-fn build_mouse_columns(app: &App) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-    split_groups(app, mouse_help_groups())
-}
-
+/// Split the cheat-sheet lines across two columns at a group boundary.
 fn split_groups(
     app: &App,
     groups: Vec<(String, Vec<(String, String)>)>,
@@ -174,6 +225,12 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                     "휠 / 스크롤바",
                     "Scroll the visible list; on Player volume, wheel changes volume.",
                     "보이는 목록을 스크롤합니다. Player 볼륨 영역에서는 볼륨을 조절합니다.",
+                ),
+                mouse_row(
+                    "Ctrl + wheel",
+                    "Ctrl + 휠",
+                    "Zoom the text like a browser (also Ctrl+-/=; needs kitty 0.40+).",
+                    "브라우저처럼 글자를 확대/축소합니다 (Ctrl+-/= 도 동일, kitty 0.40+ 필요).",
                 ),
                 mouse_row(
                     "Picker row click",
@@ -564,5 +621,35 @@ mod tests {
         ] {
             assert!(nav.contains(&row), "cheat-sheet should list {row:?}");
         }
+    }
+
+    #[test]
+    fn text_zoom_appears_in_both_cheat_sheets() {
+        let _guard = crate::i18n::lock_for_test();
+        let app = App::new(100);
+
+        // Keyboard sheet: the Global group lists both zoom chords via the keymap table.
+        let global = help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Global").then_some(rows))
+            .expect("global group");
+        for row in [
+            ("^=".to_owned(), "Text size up".to_owned()),
+            ("^-".to_owned(), "Text size down".to_owned()),
+        ] {
+            assert!(global.contains(&row), "cheat-sheet should list {row:?}");
+        }
+
+        // Mouse sheet: the Common group explains Ctrl+wheel.
+        let common = mouse_help_groups()
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Common").then_some(rows))
+            .expect("common group");
+        assert!(
+            common
+                .iter()
+                .any(|(gesture, what)| gesture == "Ctrl + wheel" && what.contains("Zoom")),
+            "mouse cheat-sheet should explain Ctrl+wheel zoom"
+        );
     }
 }

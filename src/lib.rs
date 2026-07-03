@@ -45,6 +45,7 @@ pub mod transfer;
 pub mod tui;
 pub mod ui;
 pub mod util;
+pub mod zoom;
 
 #[cfg(feature = "desktop-tray")]
 pub mod tray;

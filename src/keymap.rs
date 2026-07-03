@@ -82,6 +82,8 @@ pub enum Action {
     ToggleAbout,
     ToggleAnimations,
     WhyAi,
+    TextZoomIn,
+    TextZoomOut,
     // Player extras: copy link + external mpv video overlay.
     CopyLink,
     PlayVideo,
@@ -330,6 +332,18 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "why_ai",
         "Why these DJ Gem picks",
         "DJ Gem 선곡 이유 보기",
+    ),
+    (
+        Action::TextZoomIn,
+        "text_zoom_in",
+        "Text size up",
+        "글자 확대",
+    ),
+    (
+        Action::TextZoomOut,
+        "text_zoom_out",
+        "Text size down",
+        "글자 축소",
     ),
     (
         Action::CopyLink,
@@ -945,6 +959,10 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Global, A::ToggleAbout, key(KeyCode::F(1))),
         (C::Global, A::ToggleAnimations, ch('A')),
         (C::Global, A::WhyAi, ch('w')),
+        // Browser-style text zoom (`=` is the unshifted `+` key). Works only on terminals
+        // with the text sizing protocol; elsewhere the reducer answers with a hint toast.
+        (C::Global, A::TextZoomIn, ctrl('=')),
+        (C::Global, A::TextZoomOut, ctrl('-')),
         (C::Global, A::Quit, ctrl('q')),
         // Library list commands.
         (C::Library, A::Confirm, key(KeyCode::Enter)),
@@ -2273,6 +2291,28 @@ mod tests {
             km.action(KeyContext::Player, parse_chord("space").unwrap()),
             Some(Action::TogglePause)
         );
+    }
+
+    #[test]
+    fn text_zoom_defaults_bind_ctrl_equals_and_minus_globally() {
+        let km = KeyMap::default();
+        assert_eq!(
+            km.global_action(parse_chord("ctrl+=").unwrap()),
+            Some(Action::TextZoomIn)
+        );
+        assert_eq!(
+            km.global_action(parse_chord("ctrl+-").unwrap()),
+            Some(Action::TextZoomOut)
+        );
+        // Ctrl chords are non-typeable, so the zoom keys keep working inside the search
+        // and DJ Gem text fields (`is_typeable` gates global suppression there).
+        assert!(!parse_chord("ctrl+=").unwrap().is_typeable());
+        assert!(!parse_chord("ctrl+-").unwrap().is_typeable());
+        // And they survive a config round-trip like any rebindable chord.
+        for spelled in ["ctrl+=", "ctrl+-"] {
+            let chord = parse_chord(spelled).unwrap();
+            assert_eq!(chord_to_config(chord), spelled);
+        }
     }
 
     #[test]

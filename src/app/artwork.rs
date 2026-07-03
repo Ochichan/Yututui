@@ -16,6 +16,16 @@ impl App {
             && self.config.effective_album_art()
             && self.art.picker.is_some()
             && self.art.protocol.borrow().is_some()
+            && !self.zoom_suppresses_native_art()
+    }
+
+    /// Text zoom renders on a scaled virtual grid, which pixel-protocol art can't join:
+    /// its placeholder/anchor cells are forwarded unscaled, so a zoomed placement would
+    /// stripe across the scaled rows. Native art is therefore hidden while zoomed —
+    /// "zoom the text" literally — and the freed space goes to lyrics/track info.
+    /// Halfblocks and retro ASCII art are text, so they keep rendering (and scale).
+    fn zoom_suppresses_native_art(&self) -> bool {
+        self.zoom.scale() > 1 && self.native_image_protocol_selected()
     }
 
     /// Whether rendering will actually ship a native terminal image this frame. Retro mode
@@ -477,7 +487,7 @@ impl App {
         }
     }
 
-    fn request_native_image_clear(&mut self) {
+    pub(in crate::app) fn request_native_image_clear(&mut self) {
         self.art.force_clear_next_frame = true;
         self.dirty = true;
     }

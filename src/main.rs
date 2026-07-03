@@ -1,7 +1,7 @@
 use ytm_tui::{
     ai, api, app, artwork, auth_cli, config, daemon, deps, doctor, download, downloads, event,
     i18n, library, logging, lyrics, media, persist, player, playlists, remote, resolver, romanize,
-    runtime, scrobble, session, signals, station, transfer, tui, ui,
+    runtime, scrobble, session, signals, station, transfer, tui, ui, zoom,
 };
 
 use anyhow::Result;
@@ -137,9 +137,21 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
         None
     };
     startup.mark("art_picker_ready");
-    let mut terminal = tui::init(mouse)?;
+    // Shared by the zoom backend (draw scaling), the event translator (mouse-cell
+    // mapping), and the reducer (Ctrl+wheel / Ctrl+-/= steps).
+    let zoom = zoom::ZoomHandle::default();
+    let (mut terminal, text_sizing) = tui::init(mouse, zoom.clone())?;
     startup.mark("terminal_ready");
-    let result = run(&mut terminal, cfg, art_picker, remote, startup).await;
+    let result = run(
+        &mut terminal,
+        cfg,
+        art_picker,
+        remote,
+        startup,
+        zoom,
+        text_sizing,
+    )
+    .await;
     tui::restore(mouse);
     result
 }
@@ -464,7 +476,7 @@ impl PerfStats {
 }
 
 fn draw_app_frame(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut tui::AppTerminal,
     app: &mut App,
     perf: &mut PerfStats,
 ) -> std::io::Result<bool> {
@@ -508,11 +520,13 @@ fn is_transient_terminal_draw_error(_: &std::io::Error) -> bool {
 }
 
 async fn run(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut tui::AppTerminal,
     cfg: config::Config,
     art_picker: Option<ratatui_image::picker::Picker>,
     remote: Option<remote::RemoteServer>,
     mut startup: StartupTrace,
+    zoom: zoom::ZoomHandle,
+    text_sizing: bool,
 ) -> Result<()> {
     // Resolve cross-platform dirs; logging + PID registry degrade gracefully if absent.
     let dirs = directories::ProjectDirs::from("", "", "ytm-tui");
@@ -558,6 +572,10 @@ async fn run(
     startup.mark("cookies_resolved");
 
     let mut app = App::new(player_runtime.volume);
+    // Zoom wiring before `apply_config`, which restores the persisted scale (gated on
+    // the probe result so an unsupported terminal never sees a scale above 1).
+    app.zoom = zoom.clone();
+    app.zoom_supported = text_sizing;
     // Hand over the terminal image picker (present only when album art is enabled).
     app.art.picker = art_picker;
     log_art_picker(app.art.picker.as_ref());
@@ -784,7 +802,10 @@ async fn run(
         // sending an input event to the app.
         let msg = tokio::select! {
             maybe = events.next() => match maybe {
-                Some(Ok(ev)) => match input.translate(ev) {
+                // The translator maps physical mouse cells onto the zoom backend's
+                // virtual grid, so hit-testing (and double-click identity) stay correct
+                // while the UI is scaled.
+                Some(Ok(ev)) => match input.translate(ev, zoom.scale()) {
                     Some(m) => m,
                     None => continue,
                 },

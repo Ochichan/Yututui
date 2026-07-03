@@ -98,6 +98,7 @@ ytt
 | `Shift+S` / `r` | 셔플 / 반복 전환 |
 | `e` | EQ 프리셋 (Flat · Bass · Treble · Vocal · Rock · Jazz) |
 | `<` / `>` | 재생 속도 (0.5×–2×) |
+| `Ctrl+-` / `Ctrl+=` | 글자 축소 / 확대 (Ctrl+휠도 동일, kitty 0.40+) |
 | `,` | 설정 |
 | `Ctrl+Q` | 종료 |
 

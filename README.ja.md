@@ -98,6 +98,7 @@ ytt
 | `Shift+S` / `r` | シャッフル / リピート切り替え |
 | `e` | EQ プリセット（Flat · Bass · Treble · Vocal · Rock · Jazz） |
 | `<` / `>` | 再生速度（0.5×–2×） |
+| `Ctrl+-` / `Ctrl+=` | 文字の縮小 / 拡大（Ctrl+ホイールでも可、kitty 0.40+） |
 | `,` | 設定 |
 | `Ctrl+Q` | 終了 |
 

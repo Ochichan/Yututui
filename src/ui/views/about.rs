@@ -144,6 +144,13 @@ fn ensure_icon(app: &App) {
 }
 
 fn about_icon_protocol(app: &App) -> Option<ProtocolType> {
+    // While text zoom is active the pixel protocols can't render on the scaled virtual
+    // grid (their placeholder cells would stripe); `None` selects the halfblock icon,
+    // which is text and scales with the rest of the popup. The cache key includes the
+    // protocol, so toggling zoom rebuilds the icon automatically.
+    if app.zoom.scale() > 1 {
+        return None;
+    }
     app.art
         .picker
         .as_ref()

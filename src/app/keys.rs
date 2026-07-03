@@ -109,10 +109,24 @@ impl App {
             return self.settings_capture_key(k);
         }
 
-        // While the help overlay is up, swallow input; help-toggle / Esc / Back dismiss it.
+        // Text zoom is resolved ahead of the overlay blocks below so it keeps working
+        // while help / about / the mouse sheet are up — the cheat-sheet itself advertises
+        // Ctrl+-/= , so the natural first place users try it is with that overlay open.
+        if !(self.in_text_entry() && chord.is_typeable())
+            && let Some(action @ (Action::TextZoomIn | Action::TextZoomOut)) =
+                self.keymap.global_action(chord)
+        {
+            return self.zoom_step(matches!(action, Action::TextZoomIn));
+        }
+
+        // While the help overlay is up, swallow input; help-toggle / Esc / Back dismiss it,
+        // and the navigation keys scroll the sheet (it rarely fits whole on small grids).
         if self.help_visible {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return self.quit_app();
+            }
+            if self.scroll_help_overlay(chord) {
+                return Vec::new();
             }
             let close = matches!(self.keymap.global_action(chord), Some(Action::ToggleHelp))
                 || k.code == KeyCode::Esc
@@ -128,10 +142,13 @@ impl App {
         }
 
         // The mouse cheat-sheet is opened by a mouse-only footer icon. While up, swallow input;
-        // Esc / Back dismiss it, and Quit still works.
+        // Esc / Back dismiss it, Quit still works, and the navigation keys scroll it.
         if self.mouse_help_visible {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return self.quit_app();
+            }
+            if self.scroll_help_overlay(chord) {
+                return Vec::new();
             }
             let close = k.code == KeyCode::Esc
                 || matches!(
@@ -192,6 +209,7 @@ impl App {
             match action {
                 Action::ToggleHelp => {
                     self.help_visible = true;
+                    self.bridges.help_scroll.reset();
                     self.dirty = true;
                     return Vec::new();
                 }
@@ -258,6 +276,27 @@ impl App {
             Mode::Settings => self.on_key_settings(k),
             Mode::Ai => self.on_key_ai(k),
         }
+    }
+
+    /// Scroll the open help / mouse cheat-sheet with the shared navigation chords. Returns
+    /// whether the chord was a scroll key (the overlay swallows it either way; this just
+    /// tells the caller not to treat it as anything else). The sheet length is unknown here
+    /// — render clamps the offset to the real content every frame, so `usize::MAX` simply
+    /// means "no reducer-side ceiling".
+    fn scroll_help_overlay(&mut self, chord: crate::keymap::Chord) -> bool {
+        let scroll = &self.bridges.help_scroll;
+        let page = scroll.viewport().max(1);
+        match self.keymap.action(KeyContext::Common, chord) {
+            Some(Action::MoveUp) => scroll.wheel(true, 1, usize::MAX),
+            Some(Action::MoveDown) => scroll.wheel(false, 1, usize::MAX),
+            Some(Action::PageUp) => scroll.wheel(true, page, usize::MAX),
+            Some(Action::PageDown) => scroll.wheel(false, page, usize::MAX),
+            Some(Action::JumpTop) => scroll.set_offset(0, usize::MAX),
+            Some(Action::JumpBottom) => scroll.wheel(false, usize::MAX / 2, usize::MAX),
+            _ => return false,
+        }
+        self.dirty = true;
+        true
     }
 
     /// Whether a focused text field is currently capturing typed characters (so command

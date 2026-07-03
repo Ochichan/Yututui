@@ -13,14 +13,31 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
-use ratatui::backend::Backend;
-use ratatui::{DefaultTerminal, Frame, Terminal};
+use ratatui::backend::{Backend, CrosstermBackend};
+use ratatui::{Frame, Terminal};
+
+use crate::zoom::{ZoomBackend, ZoomHandle};
+
+/// The app's terminal: a [`CrosstermBackend`] wrapped in the OSC 66 text-zoom layer.
+/// At zoom 1 (always, on terminals without the text sizing protocol) the wrapper is a
+/// transparent pass-through of ratatui's `DefaultTerminal`.
+pub type AppTerminal = Terminal<ZoomBackend<io::Stdout>>;
 
 static KEYBOARD_ENHANCEMENT_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Initialise the terminal. When `mouse` is true, mouse events are captured.
-pub fn init(mouse: bool) -> io::Result<DefaultTerminal> {
-    let terminal = ratatui::try_init()?;
+///
+/// Returns the terminal plus whether the text sizing protocol (OSC 66 zoom) is
+/// available — probed here because the handshake must happen after the alternate
+/// screen is entered (so the probe glyph lands on a throwaway screen) and before the
+/// event loop's `EventStream` starts reading stdin (the probe reads its own replies).
+pub fn init(mouse: bool, zoom: ZoomHandle) -> io::Result<(AppTerminal, bool)> {
+    // `try_init` = panic hook + raw mode + alternate screen + a `DefaultTerminal` we
+    // don't want. Drop the terminal (it has no teardown Drop) and rebuild on the zoom
+    // backend, keeping ratatui's hook/raw-mode/alt-screen setup — and `ratatui::restore`
+    // in `restore()` — exactly as they were.
+    drop(ratatui::try_init()?);
+    let terminal = Terminal::new(ZoomBackend::new(CrosstermBackend::new(io::stdout()), zoom))?;
     if mouse {
         execute!(io::stdout(), EnableMouseCapture)?;
     }
@@ -30,11 +47,14 @@ pub fn init(mouse: bool) -> io::Result<DefaultTerminal> {
     // before the input flush below — focus is reported only on *transitions*, not as a backlog.
     let _ = execute!(io::stdout(), EnableFocusChange);
     enable_keyboard_enhancement();
+    let text_sizing = crate::zoom::should_probe() && crate::zoom::probe_support();
     // Discard any input already queued by terminal setup — chiefly leftover bytes from the
     // graphics/keyboard capability probes (DA1 `\e[?...c`, cell-size `\e[...t`, kitty APC) that
     // would otherwise be mis-parsed as key/mouse events the moment the event loop starts.
+    // Runs after the text-sizing probe so a late/partial CPR reply can't ghost into the
+    // event loop either.
     flush_pending_input();
-    Ok(terminal)
+    Ok((terminal, text_sizing))
 }
 
 /// Draw one frame wrapped in a synchronized update (DECSET ?2026), so the terminal swaps the
@@ -43,7 +63,7 @@ pub fn init(mouse: bool) -> io::Result<DefaultTerminal> {
 /// each frame. `Begin`/`End` are unsupported-terminal-safe — a terminal that doesn't grok the
 /// private mode simply ignores both, leaving behaviour identical to a bare `draw`. `End` is always
 /// emitted, even if `draw` errors, so a failed frame can't leave the terminal stuck mid-update.
-pub fn draw_synced<F>(terminal: &mut DefaultTerminal, render: F) -> io::Result<()>
+pub fn draw_synced<F>(terminal: &mut AppTerminal, render: F) -> io::Result<()>
 where
     F: FnOnce(&mut Frame),
 {
@@ -56,7 +76,7 @@ where
 /// Draw one frame, using synchronized update only when the caller expects large image/canvas
 /// damage. This keeps ordinary one-line redraws from emitting DECSET ?2026 wrappers.
 pub fn draw_frame<F>(
-    terminal: &mut DefaultTerminal,
+    terminal: &mut AppTerminal,
     synchronized: bool,
     clear_before: bool,
     render: F,
