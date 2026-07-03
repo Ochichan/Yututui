@@ -7939,7 +7939,7 @@ fn mouse_tab_click_on_playlists_also_nudges() {
 #[test]
 fn zoom_keys_step_the_scale_and_persist_it() {
     let mut app = app_playing(1, 0);
-    app.zoom_supported = true;
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
 
     let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('='))));
     assert_eq!(app.zoom.percent(), 125, "first step is the fine 25% notch");
@@ -7963,7 +7963,7 @@ fn zoom_keys_step_the_scale_and_persist_it() {
 #[test]
 fn zoom_clamps_at_both_ends_with_a_toast_and_no_save() {
     let mut app = app_playing(1, 0);
-    app.zoom_supported = true;
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
     app.zoom.set(300);
     app.config.text_zoom = Some(300);
 
@@ -7981,7 +7981,7 @@ fn zoom_clamps_at_both_ends_with_a_toast_and_no_save() {
 #[test]
 fn zoom_on_unsupported_terminal_explains_itself_and_stays_at_1() {
     let mut app = app_playing(1, 0);
-    assert!(!app.zoom_supported, "probe result defaults to unsupported");
+    assert!(!app.zoom.supported(), "mode defaults to unsupported");
 
     let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('='))));
     assert_eq!(app.zoom.scale(), 1);
@@ -7995,7 +7995,7 @@ fn zoom_on_unsupported_terminal_explains_itself_and_stays_at_1() {
 #[test]
 fn ctrl_wheel_steps_zoom_instead_of_scrolling() {
     let mut app = app_playing(3, 0);
-    app.zoom_supported = true;
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
 
     let cmds = app.update(Msg::MouseScroll {
         up: true,
@@ -8019,7 +8019,7 @@ fn ctrl_wheel_steps_zoom_instead_of_scrolling() {
 #[test]
 fn zoom_keys_work_while_the_help_overlay_is_open() {
     let mut app = app_playing(1, 0);
-    app.zoom_supported = true;
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
     app.help_visible = true;
 
     app.update(Msg::Key(ctrl(KeyCode::Char('='))));
@@ -8034,7 +8034,7 @@ fn zoom_keys_work_while_the_help_overlay_is_open() {
 #[test]
 fn zoom_change_forces_a_full_clear_redraw() {
     let mut app = app_playing(1, 0);
-    app.zoom_supported = true;
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
     app.update(Msg::Key(ctrl(KeyCode::Char('='))));
     assert!(
         app.take_clear_before_draw(),
@@ -8058,7 +8058,7 @@ fn persisted_zoom_is_restored_only_when_the_terminal_supports_it() {
     );
 
     let mut app = App::new(100);
-    app.zoom_supported = true;
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
     app.apply_config(&cfg);
     assert_eq!(app.zoom.percent(), 150);
     assert_eq!(app.zoom.scale(), 2);
@@ -8067,7 +8067,7 @@ fn persisted_zoom_is_restored_only_when_the_terminal_supports_it() {
 #[test]
 fn native_album_art_is_hidden_while_zoomed() {
     let mut app = app_playing(1, 0);
-    app.zoom_supported = true;
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
     app.config.album_art = Some(true);
     app.art.picker = Some(ratatui_image::picker::Picker::halfblocks());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -8191,4 +8191,31 @@ fn help_overlay_scrolls_with_wheel_and_keys_and_resets_on_open() {
     app.update(Msg::Key(key(KeyCode::Esc)));
     app.update(Msg::Key(key(KeyCode::Char('?'))));
     assert_eq!(app.bridges.help_scroll.offset(), 0);
+}
+
+#[test]
+fn decdhl_terminals_step_straight_to_double_size() {
+    let mut app = app_playing(1, 0);
+    app.zoom.set_mode(crate::zoom::ZoomMode::Decdhl);
+
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+    assert_eq!(
+        app.zoom.percent(),
+        200,
+        "no intermediate levels without OSC 66"
+    );
+    assert_eq!(app.zoom.scale(), 2);
+    assert!(app.status.text.contains("200%"));
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::SaveConfig(cfg)] if cfg.text_zoom == Some(200)
+    ));
+
+    // At the top the toast quotes this mode's real maximum, not the OSC 66 ladder's.
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+    assert!(cmds.is_empty());
+    assert!(app.status.text.contains("200%"), "{}", app.status.text);
+
+    app.update(Msg::Key(ctrl(KeyCode::Char('-'))));
+    assert_eq!(app.zoom.percent(), 100);
 }

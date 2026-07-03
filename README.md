@@ -98,7 +98,7 @@ Press **`?`** in the app for the complete, live cheat sheet — it reflects *you
 | `Shift+S` / `r` | Shuffle / repeat cycle |
 | `e` | EQ preset (Flat · Bass · Treble · Vocal · Rock · Jazz) |
 | `<` / `>` | Playback speed (0.5×–2×) |
-| `Ctrl+-` / `Ctrl+=` | Text zoom out / in (also Ctrl+wheel; kitty 0.40+) |
+| `Ctrl+-` / `Ctrl+=` | Text zoom out / in (also Ctrl+wheel, or Settings → Large text; kitty, Windows Terminal, …) |
 | `,` | Settings |
 | `Ctrl+Q` | Quit |
 

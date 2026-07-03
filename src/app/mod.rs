@@ -331,12 +331,11 @@ pub struct App {
     /// before — the pause is strictly additive. Gates [`App::animation_active`].
     pub focused: bool,
 
-    /// Shared text-zoom scale (this handle is a clone of the one inside the terminal
-    /// backend and the event translator — setting it rescales the next draw).
+    /// Shared text-zoom state (this handle is a clone of the one inside the terminal
+    /// backend and the event translator — setting it rescales the next draw). Carries
+    /// the mechanism detected at startup; when that is `None` the zoom actions explain
+    /// themselves in a toast instead of silently doing nothing.
     pub zoom: crate::zoom::ZoomHandle,
-    /// Whether the terminal passed the OSC 66 text-sizing probe at startup. When false the
-    /// zoom actions explain themselves in a toast instead of silently doing nothing.
-    pub zoom_supported: bool,
 }
 
 impl App {
@@ -428,7 +427,6 @@ impl App {
             anim_last_draw_fps: 0,
             focused: true,
             zoom: crate::zoom::ZoomHandle::default(),
-            zoom_supported: false,
         }
     }
 
@@ -463,9 +461,11 @@ impl App {
         // Keep the process-wide UI language in sync with the applied config (this is the
         // central apply path, called at startup and after a settings save).
         crate::i18n::set_language(cfg.effective_language());
-        // Restore the persisted text zoom, but only on terminals that passed the OSC 66
-        // probe — a config written under kitty must not garble a later tmux session.
-        if self.zoom_supported {
+        // Restore the persisted text zoom, but only on terminals with a working zoom
+        // mechanism — a config written under kitty must not garble a later tmux session.
+        // (`set` snaps to the mode's levels, so kitty's 150% reads as 200% on a
+        // double-size-line terminal rather than getting lost.)
+        if self.zoom.supported() {
             self.zoom.set(cfg.effective_text_zoom());
         }
         // Keep the full config so the settings screen can persist the whole file.
@@ -848,30 +848,32 @@ impl App {
     /// key would read as a bug.
     pub(in crate::app) fn zoom_step(&mut self, zoom_in: bool) -> Vec<Cmd> {
         self.status.kind = StatusKind::Info;
-        if !self.zoom_supported {
+        if !self.zoom.supported() {
             self.status.text = t!(
-                "Text zoom needs a terminal with the text sizing protocol (kitty 0.40+)",
-                "글자 확대는 텍스트 크기 프로토콜 지원 터미널이 필요해요 (kitty 0.40+)"
+                "This terminal can't scale text (kitty 0.40+, Windows Terminal, …)",
+                "이 터미널은 글자 확대를 지원하지 않아요 (kitty 0.40+, Windows Terminal 등 가능)"
             )
             .to_owned();
             self.dirty = true;
             return Vec::new();
         }
         let current = self.zoom.percent();
-        let next = crate::zoom::step(current, zoom_in);
+        let next = self.zoom.step(zoom_in);
         if next == current {
             self.status.text = if zoom_in {
-                t!(
-                    "Text is already at its largest (300%)",
-                    "이미 최대 글자 크기예요 (300%)"
-                )
+                let max = self.zoom.max_percent();
+                if crate::i18n::is_korean() {
+                    format!("이미 최대 글자 크기예요 ({max}%)")
+                } else {
+                    format!("Text is already at its largest ({max}%)")
+                }
             } else {
                 t!(
                     "Text is back to its normal size (100%)",
                     "기본 글자 크기예요 (100%)"
                 )
-            }
-            .to_owned();
+                .to_owned()
+            };
             self.dirty = true;
             return Vec::new();
         }

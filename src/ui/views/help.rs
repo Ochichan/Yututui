@@ -229,8 +229,8 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                 mouse_row(
                     "Ctrl + wheel",
                     "Ctrl + 휠",
-                    "Zoom the text like a browser (also Ctrl+-/=; needs kitty 0.40+).",
-                    "브라우저처럼 글자를 확대/축소합니다 (Ctrl+-/= 도 동일, kitty 0.40+ 필요).",
+                    "Zoom the text like a browser (also Ctrl+-/=; kitty, Windows Terminal, …).",
+                    "브라우저처럼 글자를 확대/축소합니다 (Ctrl+-/= 도 동일, kitty·Windows Terminal 등).",
                 ),
                 mouse_row(
                     "Picker row click",

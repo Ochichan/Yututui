@@ -107,6 +107,7 @@ impl SettingsTab {
                 Field::DownloadDir,
                 Field::Mouse,
                 Field::AlbumArt,
+                Field::BigText,
                 Field::AutoplayOnStart,
                 Field::EnqueueNext,
                 Field::ResetKeybindings,
@@ -247,6 +248,9 @@ pub enum Field {
     ResetKeybindings,
     /// A button (not a value): activates "reset every setting to defaults".
     ResetAll,
+    /// Text zoom to the mode's "big" level (150% via OSC 66, 200% via double-size
+    /// lines) — the one-toggle version of Ctrl+wheel for people who never learn chords.
+    BigText,
     // Playback
     Speed,
     SeekInterval,
@@ -476,6 +480,7 @@ impl Field {
             | Field::SearchJamendo
             | Field::SearchInternetArchive
             | Field::SearchRadioBrowser
+            | Field::BigText
             | Field::MouseWheelVolume
             | Field::Gapless
             | Field::MediaControls
@@ -598,6 +603,7 @@ impl Field {
             Field::EnqueueNext => t!("Enqueue as next", "큐 추가: 다음 곡").to_owned(),
             Field::ResetKeybindings => t!("Reset keybindings", "단축키 초기화").to_owned(),
             Field::ResetAll => t!("Reset all settings", "모든 설정 초기화").to_owned(),
+            Field::BigText => t!("Large text", "큰 글자 모드").to_owned(),
             Field::Speed => t!("Playback speed", "재생 속도").to_owned(),
             Field::SeekInterval => t!("Seek interval", "탐색 간격").to_owned(),
             Field::MouseWheelVolume => t!("Wheel volume", "휠 볼륨 조절").to_owned(),
@@ -696,6 +702,11 @@ pub struct SettingsDraft {
     pub speed: f64,
     /// Seek step (seconds) for the seek-back/-forward keys.
     pub seek_seconds: f64,
+    /// The "large text" toggle (see [`Field::BigText`]). `big_text_percent` is the
+    /// level it enables — seeded from the detected zoom mode when Settings opens, since
+    /// the draft itself has no terminal access.
+    pub big_text: bool,
+    pub big_text_percent: u16,
     /// Whether wheel events over the player volume cluster nudge volume.
     pub mouse_wheel_volume: bool,
     pub gapless: bool,
@@ -801,6 +812,7 @@ impl SettingsDraft {
             Field::EnqueueNext => toggle_str(self.enqueue_next),
             Field::Speed => format!("{:.1}x", self.speed),
             Field::SeekInterval => format!("{:.0}s", self.seek_seconds),
+            Field::BigText => toggle_str(self.big_text),
             Field::MouseWheelVolume => toggle_str(self.mouse_wheel_volume),
             // Buttons, not values: these rows show how to trigger them.
             Field::ResetKeybindings | Field::ResetAll | Field::ClearRomanizedTitleCache => {
@@ -961,6 +973,16 @@ impl SettingsDraft {
         cfg.enqueue_next = Some(self.enqueue_next);
         cfg.speed = Some(self.speed);
         cfg.seek_seconds = Some(self.seek_seconds);
+        // Large text: ON keeps an existing custom zoom level (Ctrl+wheel may have set
+        // 250%, say) and otherwise enables the mode's big level; OFF always returns to
+        // normal size.
+        cfg.text_zoom = Some(if self.big_text {
+            cfg.text_zoom
+                .filter(|&p| p > 100)
+                .unwrap_or(self.big_text_percent)
+        } else {
+            100
+        });
         cfg.mouse_wheel_volume = Some(self.mouse_wheel_volume);
         cfg.gapless = Some(self.gapless);
         cfg.media_controls = Some(self.media_controls);
@@ -1105,6 +1127,8 @@ mod tests {
             enqueue_next: false,
             speed: 1.0,
             seek_seconds: 10.0,
+            big_text: false,
+            big_text_percent: 150,
             mouse_wheel_volume: true,
             gapless: true,
             media_controls: true,
@@ -1294,6 +1318,7 @@ mod tests {
                 Field::DownloadDir,
                 Field::Mouse,
                 Field::AlbumArt,
+                Field::BigText,
                 Field::AutoplayOnStart,
                 Field::EnqueueNext,
                 Field::ResetKeybindings,
@@ -1445,6 +1470,8 @@ mod tests {
             enqueue_next: true,
             speed: 1.7,
             seek_seconds: 25.0,
+            big_text: false,
+            big_text_percent: 150,
             mouse_wheel_volume: false,
             gapless: false,
             media_controls: false,
@@ -1528,6 +1555,30 @@ mod tests {
                 .map(String::as_str),
             Some("#123456")
         );
+    }
+
+    #[test]
+    fn big_text_toggle_maps_to_the_zoom_level() {
+        // ON with no prior zoom: enables the mode-preferred level.
+        let mut draft = base_draft();
+        draft.big_text = true;
+        draft.big_text_percent = 200;
+        let mut cfg = Config::default();
+        draft.apply_to(&mut cfg);
+        assert_eq!(cfg.text_zoom, Some(200));
+
+        // ON with a custom wheel-set level already in the config: keeps it.
+        let mut cfg = Config {
+            text_zoom: Some(250),
+            ..Config::default()
+        };
+        draft.apply_to(&mut cfg);
+        assert_eq!(cfg.text_zoom, Some(250));
+
+        // OFF always returns to normal size.
+        draft.big_text = false;
+        draft.apply_to(&mut cfg);
+        assert_eq!(cfg.text_zoom, Some(100));
     }
 
     #[test]

@@ -27,17 +27,20 @@ static KEYBOARD_ENHANCEMENT_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Initialise the terminal. When `mouse` is true, mouse events are captured.
 ///
-/// Returns the terminal plus whether the text sizing protocol (OSC 66 zoom) is
-/// available — probed here because the handshake must happen after the alternate
-/// screen is entered (so the probe glyph lands on a throwaway screen) and before the
-/// event loop's `EventStream` starts reading stdin (the probe reads its own replies).
-pub fn init(mouse: bool, zoom: ZoomHandle) -> io::Result<(AppTerminal, bool)> {
+/// Also detects the terminal's text-zoom mechanism into `zoom` — done here because the
+/// probes must run after the alternate screen is entered (so probe glyphs land on a
+/// throwaway screen) and before the event loop's `EventStream` starts reading stdin
+/// (the probes read their own cursor-position replies).
+pub fn init(mouse: bool, zoom: ZoomHandle) -> io::Result<AppTerminal> {
     // `try_init` = panic hook + raw mode + alternate screen + a `DefaultTerminal` we
     // don't want. Drop the terminal (it has no teardown Drop) and rebuild on the zoom
     // backend, keeping ratatui's hook/raw-mode/alt-screen setup — and `ratatui::restore`
     // in `restore()` — exactly as they were.
     drop(ratatui::try_init()?);
-    let terminal = Terminal::new(ZoomBackend::new(CrosstermBackend::new(io::stdout()), zoom))?;
+    let terminal = Terminal::new(ZoomBackend::new(
+        CrosstermBackend::new(io::stdout()),
+        zoom.clone(),
+    ))?;
     if mouse {
         execute!(io::stdout(), EnableMouseCapture)?;
     }
@@ -47,14 +50,14 @@ pub fn init(mouse: bool, zoom: ZoomHandle) -> io::Result<(AppTerminal, bool)> {
     // before the input flush below — focus is reported only on *transitions*, not as a backlog.
     let _ = execute!(io::stdout(), EnableFocusChange);
     enable_keyboard_enhancement();
-    let text_sizing = crate::zoom::should_probe() && crate::zoom::probe_support();
+    zoom.set_mode(crate::zoom::detect_mode());
     // Discard any input already queued by terminal setup — chiefly leftover bytes from the
     // graphics/keyboard capability probes (DA1 `\e[?...c`, cell-size `\e[...t`, kitty APC) that
     // would otherwise be mis-parsed as key/mouse events the moment the event loop starts.
-    // Runs after the text-sizing probe so a late/partial CPR reply can't ghost into the
+    // Runs after the zoom-mode probes so a late/partial CPR reply can't ghost into the
     // event loop either.
     flush_pending_input();
-    Ok((terminal, text_sizing))
+    Ok(terminal)
 }
 
 /// Draw one frame wrapped in a synchronized update (DECSET ?2026), so the terminal swaps the

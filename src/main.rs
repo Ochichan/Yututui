@@ -140,18 +140,9 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
     // Shared by the zoom backend (draw scaling), the event translator (mouse-cell
     // mapping), and the reducer (Ctrl+wheel / Ctrl+-/= steps).
     let zoom = zoom::ZoomHandle::default();
-    let (mut terminal, text_sizing) = tui::init(mouse, zoom.clone())?;
+    let mut terminal = tui::init(mouse, zoom.clone())?;
     startup.mark("terminal_ready");
-    let result = run(
-        &mut terminal,
-        cfg,
-        art_picker,
-        remote,
-        startup,
-        zoom,
-        text_sizing,
-    )
-    .await;
+    let result = run(&mut terminal, cfg, art_picker, remote, startup, zoom).await;
     tui::restore(mouse);
     result
 }
@@ -526,7 +517,6 @@ async fn run(
     remote: Option<remote::RemoteServer>,
     mut startup: StartupTrace,
     zoom: zoom::ZoomHandle,
-    text_sizing: bool,
 ) -> Result<()> {
     // Resolve cross-platform dirs; logging + PID registry degrade gracefully if absent.
     let dirs = directories::ProjectDirs::from("", "", "ytm-tui");
@@ -572,10 +562,9 @@ async fn run(
     startup.mark("cookies_resolved");
 
     let mut app = App::new(player_runtime.volume);
-    // Zoom wiring before `apply_config`, which restores the persisted scale (gated on
-    // the probe result so an unsupported terminal never sees a scale above 1).
+    // Zoom wiring before `apply_config`, which restores the persisted scale (the handle
+    // carries the probed mode, so an unsupported terminal never sees a scale above 1).
     app.zoom = zoom.clone();
-    app.zoom_supported = text_sizing;
     // Hand over the terminal image picker (present only when album art is enabled).
     app.art.picker = art_picker;
     log_art_picker(app.art.picker.as_ref());

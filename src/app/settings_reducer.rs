@@ -38,6 +38,8 @@ impl App {
             enqueue_next: self.config.effective_enqueue_next(),
             speed: self.playback.speed,
             seek_seconds: self.audio.seek_seconds,
+            big_text: self.config.effective_text_zoom() > 100,
+            big_text_percent: self.zoom.mode().big_percent(),
             mouse_wheel_volume: self.config.effective_mouse_wheel_volume(),
             gapless: self.config.effective_gapless(),
             media_controls: self.config.effective_media_controls(),
@@ -488,6 +490,11 @@ impl App {
                     s.draft.seek_seconds + f64::from(dir) * settings::SEEK_SECONDS_STEP,
                 );
                 // Stored only — affects the next seek key, nothing to push to mpv now.
+                Vec::new()
+            }
+            Field::BigText => {
+                let s = self.settings_mut();
+                s.draft.big_text = !s.draft.big_text;
                 Vec::new()
             }
             Field::MouseWheelVolume => {
@@ -1508,7 +1515,14 @@ impl App {
         } else {
             None
         };
+        let old_zoom = self.zoom.percent();
         d.apply_to(&mut self.config);
+        // Push the (possibly toggled) large-text level to the renderer. The handle snaps
+        // to what this terminal's zoom mode can draw; a change forces the full-clear
+        // redraw path so nothing from the old grid survives.
+        if self.zoom.supported() && self.zoom.set(self.config.effective_text_zoom()) != old_zoom {
+            self.request_native_image_clear();
+        }
         self.search.source = self.config.effective_search().source;
         // Commit the edited keybindings (live + persisted as compact overrides).
         self.keymap = st.keymap.clone();
@@ -1532,6 +1546,15 @@ impl App {
         self.config.volume = self.playback.volume;
         self.sync_playback_modes_to_config();
         self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+        // Turning "large text" on in a terminal that can't render it deserves the why,
+        // not a silent no-op — override the generic saved-toast with the explanation.
+        if !self.zoom.supported() && st.draft.big_text && old_zoom <= 100 {
+            self.status.text = t!(
+                "Large text saved, but this terminal can't scale text (kitty 0.40+, Windows Terminal, …)",
+                "큰 글자 설정은 저장됐지만 이 터미널은 글자 확대를 지원하지 않아요 (kitty 0.40+, Windows Terminal 등 가능)"
+            )
+            .to_owned();
+        }
         // Re-assert the committed audio chain before persisting: the draft was
         // previewing live, but a track change mid-edit (EOF auto-advance) would have
         // rebuilt mpv's chain from the *old* committed bands, so push the now-committed
