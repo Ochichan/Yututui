@@ -52,9 +52,9 @@
 
   function switchMode(radio: boolean) {
     if (radio === radioMode) return;
-    // TODO(wire:M5/radio.mode): confirm modal + Apply(Streaming(RadioMode)); needs the
-    // capability on both owners. Until then the switch opens the patch bay.
-    wip.gate('radio.mode');
+    // Flip the mode via the RadioMode setting change; the library tab set + search default
+    // follow player.radio_mode on the next push (docs/gui/07 §16).
+    playback.setRadioMode(radio);
   }
 
   // Provisional keyboard (single source: lib/keyboard/provisional.ts — table shown in

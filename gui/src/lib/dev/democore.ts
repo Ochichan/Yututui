@@ -133,6 +133,8 @@ export class DemoCoreTransport implements Transport {
   #aiTimer: ReturnType<typeof setTimeout> | null = null;
   // Tracked downloads by video_id (the `downloads` topic snapshot).
   #downloads: DownloadStatus[] = [];
+  // Music ⇄ Radio mode, flipped by set_setting { radio_mode }.
+  #radioMode = false;
 
   onMessage(cb: (env: InEnvelope) => void): void {
     this.#cb = cb;
@@ -286,6 +288,14 @@ export class DemoCoreTransport implements Transport {
       case 'ask_ai':
         this.#askAi(String(p.prompt ?? ''));
         return;
+      case 'set_setting': {
+        const change = (p.change ?? {}) as Record<string, unknown>;
+        if (change.setting === 'radio_mode') {
+          const st = String(change.state ?? 'toggle');
+          this.#radioMode = st === 'on' ? true : st === 'off' ? false : !this.#radioMode;
+        }
+        break; // trailing pushPlayer reflects radio_mode
+      }
       case 'download':
         this.#download(String(p.video_id ?? ''), String(p.title ?? ''));
         return;
@@ -614,7 +624,7 @@ export class DemoCoreTransport implements Transport {
       shuffle: this.#shuffle,
       repeat: this.#repeat,
       streaming: false,
-      radio_mode: false,
+      radio_mode: this.#radioMode,
       stream_now_playing:
         t?.duration_ms == null && t ? '지금 흐르는 곡: lo-fi beats to ship to' : null,
       owner_mode: 'daemon',

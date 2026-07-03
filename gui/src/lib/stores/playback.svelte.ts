@@ -103,6 +103,15 @@ export class PlaybackStore {
     this.#client.cmd('cycle_repeat');
   }
 
+  /** Music ⇄ Radio mode. Truth is `player.radio_mode`; the switch flips it via the existing
+   *  RadioMode setting change (works v7+), reflected on the next player push. */
+  setRadioMode(on: boolean): void {
+    if (this.model) this.model.radio_mode = on; // optimistic
+    this.#client.cmd('set_setting', {
+      change: { setting: 'radio_mode', state: on ? 'on' : 'off' },
+    });
+  }
+
   /** 👍/–/👎 cycle synthesized core-side from favorite+disliked (docs/gui/02 §11.2). */
   cycleRating(): void {
     const t = this.track;

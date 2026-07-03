@@ -26,7 +26,6 @@ export type FeatureId =
   | 'settings.accounts'
   | 'ai.whygem'
   | 'transfer.wizard'
-  | 'radio.mode'
   | 'help.keymap'
   | 'lyrics.live'
   | 'artwork.live'
@@ -140,15 +139,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
     capability: 'transfer-v8',
     notes:
       'Dest must surface YtmExistingPlaylist — dev-mode Spotify apps 403 on playlist creation since mid-2026, so append-to-existing is the mainline path, not an edge case.',
-  },
-  'radio.mode': {
-    title: 'Radio mode switch',
-    milestone: 'M5',
-    brief: 'docs/gui/07-feature-briefs.md §16',
-    protocol:
-      'cmd apply { streaming: RadioMode { state } } — confirm modal is a frontend concern; the wire command is already-confirmed intent. Needs the capability on BOTH owners (daemon too).',
-    seam: 'the Music/Radio switch in the App.svelte rail footer; Library radio tabs + Search radio default flip on player.radio_mode',
-    capability: 'settings-v8',
   },
   'help.keymap': {
     title: 'Help overlay (live keymap)',
