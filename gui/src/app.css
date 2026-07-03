@@ -66,8 +66,9 @@
   --elev-3: 0 16px 48px rgb(0 0 0 / 0.4), 0 4px 12px rgb(0 0 0 / 0.28);
 
   /* --- fonts (verbatim from panel.rs) --- */
-  --font-ui: ui-rounded, 'SF Pro Rounded', -apple-system, 'Segoe UI Variable Text',
-    'Segoe UI', system-ui, sans-serif;
+  --font-ui:
+    ui-rounded, 'SF Pro Rounded', -apple-system, 'Segoe UI Variable Text', 'Segoe UI', system-ui,
+    sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Segoe UI Mono', monospace;
 
   color-scheme: dark;
@@ -102,6 +103,58 @@ button {
   font: inherit;
   color: inherit;
   cursor: pointer;
+}
+
+/* --- shared form controls (settings tabs, search, composer) --- */
+.ti {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--role-border-muted);
+  border-radius: var(--radius-s);
+  background: var(--surface-0);
+  color: var(--role-settings-value);
+  font: inherit;
+  font-size: 12.5px;
+}
+.ti:focus {
+  outline: none;
+  border-color: var(--role-border-focused);
+}
+.ti::placeholder {
+  color: var(--role-text-subtle);
+}
+.sel {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--role-border-muted);
+  border-radius: var(--radius-s);
+  background: var(--surface-0);
+  color: var(--role-settings-value);
+  font: inherit;
+  font-size: 12.5px;
+}
+.sel:focus {
+  outline: none;
+  border-color: var(--role-border-focused);
+}
+
+/* --- themed scrollbars + selection --- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--role-border-primary) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--role-border-primary);
+  border-radius: var(--radius-pill);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+::selection {
+  background: var(--role-selection-bg);
+  color: var(--role-selection-fg);
 }
 
 :focus-visible {

@@ -1,11 +1,41 @@
 // Applies the 34 theme roles from the boot payload (and, later, live `settings` pushes) to
 // CSS custom properties on <html>, computing surface tints in JS (docs/gui/06 §1–2). The
-// frontend embeds zero preset palettes — the core resolves preset+overrides to hex per role.
+// core's 13 presets stay core-resolved (the frontend embeds none of them); the LOCAL
+// themes (lib/theme/local.ts) are a separate frontend-owned skin set applied through the
+// same pipeline, persisted per window in localStorage.
+//
+// TODO(wire:M3/settings.theme-editor): on the live `settings` theme push, decide
+// precedence — a chosen local skin currently wins over the boot payload; the wiring agent
+// reconciles this with core-side theme state (see gui/WIRING.md).
 
 import type { BootTheme } from '../ipc/boot';
+import { DEFAULT_LOCAL_THEME, localTheme, type LocalTheme } from '../theme/local';
+
+const STORAGE_KEY = 'ytm-tui.gui.local-theme';
 
 export class ThemeStore {
   applied = $state(false);
+  /** Active local-theme id, or null when the boot/core theme is in effect. */
+  localId = $state<string | null>(null);
+
+  /** Boot order: core-provided theme first, then the user's chosen local skin on top. */
+  boot(bootTheme: BootTheme | null): void {
+    this.apply(bootTheme);
+    const saved = storedThemeId();
+    const t = saved ? localTheme(saved) : null;
+    if (t) this.applyLocal(t);
+    else if (!bootTheme) this.applyLocal(DEFAULT_LOCAL_THEME);
+  }
+
+  applyLocal(t: LocalTheme): void {
+    this.apply({ roles: t.roles, colorScheme: t.scheme });
+    this.localId = t.id;
+    try {
+      localStorage.setItem(STORAGE_KEY, t.id);
+    } catch {
+      // Storage can be unavailable under a custom scheme — the theme still applies.
+    }
+  }
 
   apply(theme: BootTheme | null): void {
     if (!theme) return;
@@ -40,14 +70,35 @@ function parseHex(hex: string | undefined): [number, number, number] | null {
 }
 
 function toHex(rgb: [number, number, number]): string {
-  return '#' + rgb.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+  return (
+    '#' +
+    rgb
+      .map((v) =>
+        Math.max(0, Math.min(255, Math.round(v)))
+          .toString(16)
+          .padStart(2, '0'),
+      )
+      .join('')
+  );
 }
 
 function mix(a: string, b: string, t: number): string {
   const ca = parseHex(a);
   const cb = parseHex(b);
   if (!ca || !cb) return a;
-  return toHex([ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t, ca[2] + (cb[2] - ca[2]) * t]);
+  return toHex([
+    ca[0] + (cb[0] - ca[0]) * t,
+    ca[1] + (cb[1] - ca[1]) * t,
+    ca[2] + (cb[2] - ca[2]) * t,
+  ]);
+}
+
+function storedThemeId(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
 }
 
 function luminance(hex: string | undefined): number {

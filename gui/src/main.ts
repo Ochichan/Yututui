@@ -1,31 +1,60 @@
-// Boot: read the injected payload, pick a transport (real shell vs plain browser), apply the
-// theme, wire the client + stores, and mount App (docs/gui/05 §2).
+// Boot: read the injected payload, pick a transport (real shell vs the in-page demo
+// core), apply the theme, assemble the store bundle, and mount App (docs/gui/05 §2).
 
 import { mount } from 'svelte';
 import App from './App.svelte';
 import './app.css';
 import { readBoot } from './lib/ipc/boot';
-import { WryTransport, FakeTransport, type Transport } from './lib/ipc/transport';
+import { WryTransport, type Transport } from './lib/ipc/transport';
 import { Client } from './lib/ipc/client';
+import { DemoCoreTransport } from './lib/dev/democore';
+import type { AppCtx } from './lib/ctx';
 import { ConnectionStore } from './lib/stores/connection.svelte';
 import { UiStore } from './lib/stores/ui.svelte';
 import { ThemeStore } from './lib/stores/theme.svelte';
+import { PlaybackStore } from './lib/stores/playback.svelte';
+import { QueueStore } from './lib/stores/queue.svelte';
+import { LyricsStore } from './lib/stores/lyrics.svelte';
+import { ToastStore } from './lib/stores/toasts.svelte';
+import { WipStore } from './lib/wiring/wip.svelte';
 
 const boot = readBoot();
 
-const transport: Transport = window.ipc ? new WryTransport() : new FakeTransport();
+// Real shell when wry injected window.ipc; otherwise the demo core keeps the whole UI
+// alive and interactive in a plain browser (docs/gui/05 §4.3).
+const transport: Transport = window.ipc ? new WryTransport() : new DemoCoreTransport();
 const client = new Client(transport);
 
-// Apply the theme before mount so the first paint is themed; falls back to the app.css
-// role defaults when the boot payload carries no theme (M0 injects a static default).
-new ThemeStore().apply(boot.theme);
+// Apply the theme before mount so the first paint is themed: core-provided boot theme
+// first, then the user's persisted local skin (lib/theme/local.ts) on top.
+const theme = new ThemeStore();
+theme.boot(boot.theme);
 
 const connection = new ConnectionStore(client);
-const ui = new UiStore();
+const toasts = new ToastStore();
+toasts.attach(client);
+
+const ctx: AppCtx = {
+  boot,
+  client,
+  demo: !transport.live,
+  connection,
+  theme,
+  ui: new UiStore(),
+  playback: new PlaybackStore(client),
+  queue: new QueueStore(client),
+  lyrics: new LyricsStore(client),
+  toasts,
+  wip: new WipStore(connection),
+};
+
+// One subscription for the whole window; the gateway aggregates across windows. Topics
+// without a live core wire yet simply never push (see gui/WIRING.md).
+client.sub(['player', 'queue', 'lyrics', 'system']);
 
 const app = mount(App, {
   target: document.getElementById('app')!,
-  props: { boot, client, connection, ui },
+  props: { ctx },
 });
 
 export default app;
