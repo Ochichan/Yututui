@@ -13,7 +13,7 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { playback, queue, ui, connection } = ctx;
+  const { playback, queue, ui, connection, downloads } = ctx;
 
   const track = $derived(playback.track);
   const model = $derived(playback.model);
@@ -96,6 +96,16 @@
       {#if model.streaming}
         <span class="chip on passive" title="DJ Gem autoplay on">✦</span>
       {/if}
+    {/if}
+    {#if downloads.active > 0}
+      <button
+        class="chip on mono"
+        onclick={() => {
+          ui.setView('library');
+          ui.libraryTab = 'downloads';
+        }}
+        title="Downloads in progress — open the Downloads tab">⬇ {downloads.active}</button
+      >
     {/if}
   </div>
 

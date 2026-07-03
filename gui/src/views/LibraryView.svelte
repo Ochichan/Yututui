@@ -15,7 +15,7 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { ui, wip, playback, library } = ctx;
+  const { ui, wip, playback, library, downloads } = ctx;
 
   const MUSIC_TABS: Array<{ id: LibraryTab; label: string }> = [
     { id: 'all', label: 'All' },
@@ -56,10 +56,6 @@
     radio_history: 'Stations you tuned in radio mode, newest first.',
   };
 
-  function pendingId(t: LibraryTab): 'downloads.manage' | 'library.playlists' {
-    return t === 'downloads' ? 'downloads.manage' : 'library.playlists';
-  }
-
   // Pull the active scope, debounced on the filter so typing doesn't spam the core.
   let debounce: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
@@ -73,11 +69,11 @@
 
   function playAll() {
     if (isScope(tab)) library.playAll();
-    else wip.gate(pendingId(tab));
+    else if (tab === 'playlists') wip.gate('library.playlists');
   }
   function enqueueAll() {
     if (isScope(tab)) library.enqueueAll();
-    else wip.gate(pendingId(tab));
+    else if (tab === 'playlists') wip.gate('library.playlists');
   }
 </script>
 
@@ -111,9 +107,32 @@
   </header>
 
   <div class="body">
-    {#if !isScope(tab)}
+    {#if tab === 'downloads'}
+      {#if downloads.items.length === 0}
+        <div class="center"><p class="hint">{EMPTY_BODY.downloads}</p></div>
+      {:else}
+        <div class="list" role="list">
+          {#each downloads.items as d (d.video_id)}
+            <div class="drow" class:failed={d.state === 'failed'} role="listitem">
+              <span class="dtitle">{d.title}</span>
+              <span class="dstate mono">
+                {#if d.state === 'running'}⬇ {d.pct}%
+                {:else if d.state === 'done'}✓ Done
+                {:else}⚠ {d.error}{/if}
+              </span>
+              {#if d.state === 'failed'}
+                <button class="ri" title="Retry" onclick={() => downloads.retry(d)}>↻</button>
+              {/if}
+              <button class="ri" title="Delete download" onclick={() => downloads.remove(d, true)}
+                >✕</button
+              >
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {:else if !isScope(tab)}
       <div class="center">
-        <PendingSurface id={pendingId(tab)} {wip} glyph="📚" body={EMPTY_BODY[tab]} />
+        <PendingSurface id="library.playlists" {wip} glyph="📚" body={EMPTY_BODY[tab]} />
       </div>
     {:else if library.loading && library.tracks.length === 0}
       <div class="center"><p class="hint">Loading…</p></div>
@@ -124,6 +143,7 @@
         {#each library.tracks as t, i (`${t.video_id}:${i}`)}
           <TrackRow track={t} index={i + 1} ondblclick={() => library.play(t)}>
             {#snippet actions()}
+              <button class="ri" title="Download" onclick={() => downloads.download(t)}>⬇</button>
               <button class="ri" title="Add to queue" onclick={() => library.enqueue(t)}>＋</button>
               {#if removable(tab)}
                 <button class="ri" title="Remove" onclick={() => library.remove(t)}>✕</button>
@@ -141,10 +161,12 @@
   </div>
 
   <footer class="foot">
-    {#if isScope(tab)}
+    {#if tab === 'downloads'}
+      <span class="count mono">{downloads.active} active · {downloads.items.length} total</span>
+    {:else if isScope(tab)}
       <span class="count mono">{library.total} tracks</span>
     {:else}
-      <WireTag id={pendingId(tab)} {wip} />
+      <WireTag id="library.playlists" {wip} />
     {/if}
   </footer>
 </div>
@@ -225,6 +247,29 @@
   .list {
     display: flex;
     flex-direction: column;
+  }
+  .drow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    height: 44px;
+    padding: 0 var(--space-2);
+    border-bottom: 1px solid var(--role-border-muted);
+  }
+  .dtitle {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+  .dstate {
+    font-size: 11.5px;
+    color: var(--role-text-subtle);
+  }
+  .drow.failed .dstate {
+    color: var(--role-text-warning, var(--role-accent-alt));
   }
   .ri {
     border: none;

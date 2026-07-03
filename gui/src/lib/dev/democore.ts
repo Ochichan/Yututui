@@ -15,6 +15,7 @@ import type { PlayerModel } from '../../generated/protocol/PlayerModel';
 import type { TrackModel } from '../../generated/protocol/TrackModel';
 import type { Repeat } from '../../generated/protocol/Repeat';
 import type { LyricLine } from '../stores/lyrics.svelte';
+import type { DownloadStatus } from '../stores/downloads.svelte';
 
 // ── the demo catalog (original fictional tracks — the cat is the brand, =^..^=) ──────
 
@@ -130,6 +131,8 @@ export class DemoCoreTransport implements Transport {
   // DJ Gem transcript (role + text), grown by ask_ai.
   #aiMessages: Array<{ role: 'user' | 'assistant'; text: string }> = [];
   #aiTimer: ReturnType<typeof setTimeout> | null = null;
+  // Tracked downloads by video_id (the `downloads` topic snapshot).
+  #downloads: DownloadStatus[] = [];
 
   onMessage(cb: (env: InEnvelope) => void): void {
     this.#cb = cb;
@@ -282,6 +285,13 @@ export class DemoCoreTransport implements Transport {
         return;
       case 'ask_ai':
         this.#askAi(String(p.prompt ?? ''));
+        return;
+      case 'download':
+        this.#download(String(p.video_id ?? ''), String(p.title ?? ''));
+        return;
+      case 'delete_download':
+        this.#downloads = this.#downloads.filter((d) => d.video_id !== String(p.video_id ?? ''));
+        this.#pushDownloads();
         return;
       default:
         // Unknown command: a real core would reject reason-coded; the demo just ignores.
@@ -531,6 +541,59 @@ export class DemoCoreTransport implements Transport {
       topic: 'ai',
       // PROVISIONAL shape — see AiState in stores/ai.svelte.ts.
       payload: { kind: 'ai_state', messages: this.#aiMessages, thinking, suggestions },
+    });
+  }
+
+  // ── downloads ────────────────────────────────────────────────────────────────────────
+
+  #download(videoId: string, title: string): void {
+    if (!videoId) return;
+    const src =
+      CATALOG.find((t) => t.video_id === videoId) ??
+      this.#stations.find((t) => t.video_id === videoId);
+    // Upsert as running-at-0 (a re-download of a failed item restarts it).
+    this.#downloads = [
+      ...this.#downloads.filter((d) => d.video_id !== videoId),
+      { video_id: videoId, title, state: 'running', pct: 0, error: null },
+    ];
+    this.#pushDownloads();
+
+    // A live stream (no duration) can't be downloaded — fail it, like the real core.
+    if (src && src.duration_ms == null) {
+      setTimeout(
+        () =>
+          this.#setDownload(videoId, {
+            state: 'failed',
+            pct: 0,
+            error: "can't grab a live stream",
+          }),
+        200,
+      );
+      return;
+    }
+    [25, 50, 75].forEach((pct, i) =>
+      setTimeout(
+        () => this.#setDownload(videoId, { state: 'running', pct, error: null }),
+        150 * (i + 1),
+      ),
+    );
+    setTimeout(() => this.#setDownload(videoId, { state: 'done', pct: 100, error: null }), 600);
+  }
+
+  #setDownload(videoId: string, patch: Partial<DownloadStatus>): void {
+    const at = this.#downloads.findIndex((d) => d.video_id === videoId);
+    if (at < 0) return; // deleted mid-flight — drop the stale progress tick
+    this.#downloads = this.#downloads.map((d, i) => (i === at ? { ...d, ...patch } : d));
+    this.#pushDownloads();
+  }
+
+  #pushDownloads(): void {
+    this.#emit({
+      v: 1,
+      kind: 'event',
+      topic: 'downloads',
+      // PROVISIONAL shape — see DownloadsSnapshot in stores/downloads.svelte.ts.
+      payload: { kind: 'downloads_snapshot', items: this.#downloads },
     });
   }
 

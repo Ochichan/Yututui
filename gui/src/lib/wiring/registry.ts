@@ -18,7 +18,6 @@
 
 export type FeatureId =
   | 'library.playlists'
-  | 'downloads.manage'
   | 'queue.reorder'
   | 'settings.apply'
   | 'settings.hotkeys'
@@ -59,15 +58,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
       'playlist_create / playlist_delete / playlist_add_tracks / playlist_remove_track / playlist_play; `playlists` topic + req fetch_playlist_detail',
     seam: 'create gui/src/lib/stores/playlists.svelte.ts + gui/src/views/library/PlaylistDetail.svelte + the three modals (Create / Delete / Add-to-playlist)',
     capability: 'library-v8',
-  },
-  'downloads.manage': {
-    title: 'Downloads',
-    milestone: 'M2',
-    brief: 'docs/gui/07-feature-briefs.md §15',
-    protocol:
-      'cmd download { track } / delete_download { video_id, delete_file }; `downloads` topic (per-video_id Running(pct)/Done/Failed)',
-    seam: 'create gui/src/lib/stores/downloads.svelte.ts; wire the Downloads tab in LibraryView + the transport-bar ⬇ chip',
-    capability: 'downloads-v8',
   },
   'queue.reorder': {
     title: 'Queue drag-reorder',

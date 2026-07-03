@@ -11,7 +11,7 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { search } = ctx;
+  const { search, downloads } = ctx;
 
   const SOURCES: Array<{ id: SearchSource; label: string }> = [
     { id: 'all', label: 'All' },
@@ -90,6 +90,9 @@
               {#each g.tracks as t (t.video_id)}
                 <TrackRow track={t} ondblclick={() => search.play(t)}>
                   {#snippet actions()}
+                    <button class="enq" title="Download" onclick={() => downloads.download(t)}
+                      >⬇</button
+                    >
                     <button class="enq" title="Add to queue" onclick={() => search.enqueue(t)}
                       >＋</button
                     >
