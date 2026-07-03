@@ -18,15 +18,18 @@ use interprocess::local_socket::tokio::Listener;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::{GenericFilePath, ListenerOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+#[cfg(test)]
+use tokio::io::BufReader;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use super::endpoint;
 use super::proto::{
-    InstanceFile, InstanceMode, PROTOCOL_VERSION, PROTOCOL_VERSION_V7, RemoteCommand,
+    HelloRequest, InstanceFile, InstanceMode, PROTOCOL_VERSION, PROTOCOL_VERSION_V7, RemoteCommand,
     RemoteRequest, RemoteResponse,
 };
+use super::sessions::{RemoteSessionHub, SESSION_MAX_FRAME_BYTES, SessionTuning, run_session};
 
 /// How long the single-instance probe waits for the existing server to answer a connect.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -52,7 +55,7 @@ pub enum RemoteEvent {
     Command(RemoteCommand, oneshot::Sender<RemoteResponse>),
 }
 
-type EventSink = Arc<dyn Fn(RemoteEvent) -> bool + Send + Sync>;
+pub(crate) type EventSink = Arc<dyn Fn(RemoteEvent) -> bool + Send + Sync>;
 
 /// A bound server ready to start serving. Hands back an [`InstanceGuard`] on [`start`].
 pub struct RemoteServer {
@@ -85,10 +88,16 @@ impl RemoteServer {
     where
         F: Fn(RemoteEvent) -> bool + Send + Sync + 'static,
     {
+        let hub = Arc::new(RemoteSessionHub::new(
+            self.mode,
+            self.capabilities.clone(),
+            SessionTuning::default(),
+        ));
         tokio::spawn(serve(
             self.listener,
             Arc::clone(&self.token),
             Arc::new(emit),
+            hub,
         ));
         if self.owns_instance_file
             && let Err(e) = endpoint::write_instance(&InstanceFile {
@@ -275,7 +284,12 @@ fn now_unix() -> u64 {
 }
 
 /// Accept connections forever, handling each on its own task.
-pub async fn serve(listener: Listener, token: Arc<str>, emit: EventSink) {
+pub(crate) async fn serve(
+    listener: Listener,
+    token: Arc<str>,
+    emit: EventSink,
+    hub: Arc<RemoteSessionHub>,
+) {
     // A healthy listener only errors transiently. If `accept` fails repeatedly the listener is
     // wedged and a bare `continue` becomes a hot spin (one CPU pegged for nothing) — bail after
     // a short run of consecutive failures. Remote control degrades; the player keeps running.
@@ -299,48 +313,84 @@ pub async fn serve(listener: Listener, token: Arc<str>, emit: EventSink) {
         };
         let emit = emit.clone();
         let token = token.clone();
+        let hub = Arc::clone(&hub);
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(conn, &token, emit).await {
+            if let Err(e) = handle_conn(conn, &token, emit, hub).await {
                 tracing::debug!(error = %e, "remote: connection ended with error");
             }
         });
     }
 }
 
-/// Read one request line (bounded), compute a response via the reducer, write it back.
-async fn handle_conn(conn: Stream, token: &str, emit: EventSink) -> io::Result<()> {
-    let mut reader = BufReader::new(&conn);
+/// Read the first line and discriminate the connection mode (docs/gui/02 §4.3):
+/// a one-shot `RemoteRequest` (`command` key) is answered and closed; a `HelloRequest`
+/// (`hello` key) upgrades into a long-lived session. The two shapes are structurally
+/// unambiguous, so this is two explicit parse attempts, never `untagged`.
+///
+/// The first line is read **unbuffered** (byte-wise off the raw stream): a `BufReader`
+/// here could slurp bytes past line 1 — frames a fast session client already sent — and
+/// dropping it would lose them. The read buffer is sized for session frames from the
+/// start; the one-shot 4 KB cap is enforced post-parse.
+async fn handle_conn(
+    conn: Stream,
+    token: &str,
+    emit: EventSink,
+    hub: Arc<RemoteSessionHub>,
+) -> io::Result<()> {
     let mut line = Vec::new();
-    match timeout(READ_TIMEOUT, read_bounded_line(&mut reader, &mut line)).await {
-        Ok(Ok(ReadLineOutcome::Line)) => {}
-        Ok(Ok(ReadLineOutcome::TooLarge)) => {
-            write_response(&conn, &RemoteResponse::err("bad_request")).await?;
-            return Ok(());
+    {
+        let mut raw = &conn;
+        match timeout(
+            READ_TIMEOUT,
+            read_bounded_line(&mut raw, &mut line, SESSION_MAX_FRAME_BYTES),
+        )
+        .await
+        {
+            Ok(Ok(ReadLineOutcome::Line)) => {}
+            Ok(Ok(ReadLineOutcome::TooLarge)) => {
+                write_response(&conn, &RemoteResponse::err("bad_request")).await?;
+                return Ok(());
+            }
+            // EOF, read error, or timeout: drop the connection silently.
+            _ => return Ok(()),
         }
-        // EOF, read error, or timeout: drop the connection silently.
-        _ => return Ok(()),
     }
 
-    let line = match std::str::from_utf8(&line) {
+    let text = match std::str::from_utf8(&line) {
         Ok(s) => s.trim(),
         Err(_) => {
             write_response(&conn, &RemoteResponse::err("bad_request")).await?;
             return Ok(());
         }
     };
-    let resp = build_response(line, token, &emit).await;
-    write_response(&conn, &resp).await?;
+
+    if let Ok(req) = serde_json::from_str::<RemoteRequest>(text) {
+        // One-shot mode keeps its historical 4 KB bound, enforced after the parse
+        // (the shared first-line buffer had to be session-sized).
+        let resp = if line.len() > MAX_REQUEST_BYTES {
+            RemoteResponse::err("bad_request")
+        } else {
+            build_response(req, token, &emit).await
+        };
+        write_response(&conn, &resp).await?;
+        return Ok(());
+    }
+    if let Ok(hello) = serde_json::from_str::<HelloRequest>(text) {
+        return run_session(conn, hello, token, hub, emit).await;
+    }
+    write_response(&conn, &RemoteResponse::err("bad_request")).await?;
     Ok(())
 }
 
-enum ReadLineOutcome {
+pub(crate) enum ReadLineOutcome {
     Line,
     TooLarge,
 }
 
-async fn read_bounded_line<R: tokio::io::AsyncRead + Unpin>(
+pub(crate) async fn read_bounded_line<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut R,
     line: &mut Vec<u8>,
+    max_bytes: usize,
 ) -> io::Result<ReadLineOutcome> {
     let mut byte = [0u8; 1];
     loop {
@@ -349,7 +399,7 @@ async fn read_bounded_line<R: tokio::io::AsyncRead + Unpin>(
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "remote EOF"));
         }
         line.push(byte[0]);
-        if line.len() > MAX_REQUEST_BYTES {
+        if line.len() > max_bytes {
             return Ok(ReadLineOutcome::TooLarge);
         }
         if byte[0] == b'\n' {
@@ -369,11 +419,7 @@ async fn write_response(conn: &Stream, resp: &RemoteResponse) -> io::Result<()> 
 }
 
 /// Validate the request and round-trip it through the reducer for the real outcome.
-async fn build_response(line: &str, token: &str, emit: &EventSink) -> RemoteResponse {
-    let req: RemoteRequest = match serde_json::from_str(line) {
-        Ok(r) => r,
-        Err(_) => return RemoteResponse::err("bad_request"),
-    };
+async fn build_response(req: RemoteRequest, token: &str, emit: &EventSink) -> RemoteResponse {
     // Range, not equality: the v7 one-shot shapes are frozen, so a v8 server keeps
     // serving shipped v7 clients (`ytt -r`, the tray) forever (docs/gui/02 §9).
     if !(PROTOCOL_VERSION_V7..=PROTOCOL_VERSION).contains(&req.version) {
@@ -391,6 +437,20 @@ async fn build_response(line: &str, token: &str, emit: &EventSink) -> RemoteResp
         Ok(Ok(resp)) => resp,
         _ => RemoteResponse::err("timeout"),
     }
+}
+
+#[cfg(test)]
+fn test_hub() -> Arc<RemoteSessionHub> {
+    test_hub_with(SessionTuning::default())
+}
+
+#[cfg(test)]
+fn test_hub_with(tuning: SessionTuning) -> Arc<RemoteSessionHub> {
+    Arc::new(RemoteSessionHub::new(
+        InstanceMode::StandaloneTui,
+        vec!["events-v8".to_string()],
+        tuning,
+    ))
 }
 
 #[cfg(all(test, unix))]
@@ -439,6 +499,7 @@ mod tests {
             listener,
             Arc::from("secret"),
             Arc::new(move |event| tx.send(event).is_ok()),
+            test_hub(),
         ));
 
         // Correct token → the reducer's response is relayed back verbatim.
@@ -512,13 +573,312 @@ mod tests {
             listener,
             Arc::from("secret"),
             Arc::new(move |event| tx.send(event).is_ok()),
+            test_hub(),
         ));
 
+        // Garbage that large fails both parses → bad_request, never the reducer.
         let too_large = format!("{} \n", "x".repeat(MAX_REQUEST_BYTES + 1));
         let resp = parse(&send_line(&path, &too_large).await);
         assert!(!resp.ok);
         assert_eq!(resp.reason.as_deref(), Some("bad_request"));
 
+        // A syntactically VALID one-shot over 4 KB is also rejected: the one-shot cap
+        // is enforced post-parse now that the shared first-line buffer is session-sized.
+        let req = RemoteRequest {
+            version: PROTOCOL_VERSION,
+            token: "secret".to_string(),
+            command: RemoteCommand::Play {
+                query: "q".repeat(MAX_REQUEST_BYTES),
+            },
+        };
+        let resp = parse(&send_line(&path, &serde_json::to_string(&req).unwrap()).await);
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("bad_request"));
+
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// Session-mode socket tests. Deliberately NOT unix-gated: on the Windows CI leg these
+/// run over a real named pipe, which makes them the standing long-lived-duplex smoke the
+/// v8 design calls out as its one genuinely new transport risk (docs/gui/02 §19.1).
+#[cfg(test)]
+mod session_socket_tests {
+    use super::*;
+    use crate::remote::proto::{ClientFrame, ClientOp, HelloAck, HelloBody, ServerFrame, Topic};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    use tokio::time::timeout as ttimeout;
+
+    const T: Duration = Duration::from_secs(5);
+
+    fn test_endpoint(tag: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!(
+                r"\\.\pipe\ytm-tui-session-test-{}-{tag}",
+                std::process::id()
+            )
+        }
+        #[cfg(unix)]
+        {
+            let ep = std::env::temp_dir()
+                .join(format!(
+                    "ytm-tui-session-test-{}-{tag}.sock",
+                    std::process::id()
+                ))
+                .to_string_lossy()
+                .into_owned();
+            let _ = std::fs::remove_file(&ep);
+            ep
+        }
+    }
+
+    /// Bind + serve with a pong-stub reducer; returns the endpoint.
+    fn start_server(tag: &str, hub: Arc<RemoteSessionHub>) -> String {
+        let ep = test_endpoint(tag);
+        let listener = bind(&ep).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteEvent>();
+        tokio::spawn(async move {
+            while let Some(RemoteEvent::Command(_cmd, reply)) = rx.recv().await {
+                let _ = reply.send(RemoteResponse::ok("pong".to_string()));
+            }
+        });
+        tokio::spawn(serve(
+            listener,
+            Arc::from("secret"),
+            Arc::new(move |event| tx.send(event).is_ok()),
+            hub,
+        ));
+        ep
+    }
+
+    async fn connect(ep: &str) -> Stream {
+        let name = ep.to_fs_name::<GenericFilePath>().unwrap();
+        // The accept loop may not be polling yet on a fresh listener; retry briefly.
+        for _ in 0..50 {
+            if let Ok(conn) = Stream::connect(name.clone()).await {
+                return conn;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("could not connect to {ep}");
+    }
+
+    async fn write_json<W: tokio::io::AsyncWrite + Unpin, S: serde::Serialize>(
+        writer: &mut W,
+        value: &S,
+    ) {
+        let mut bytes = serde_json::to_vec(value).unwrap();
+        bytes.push(b'\n');
+        ttimeout(T, writer.write_all(&bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        ttimeout(T, writer.flush()).await.unwrap().unwrap();
+    }
+
+    async fn read_json_line<R: tokio::io::AsyncBufRead + Unpin, D: serde::de::DeserializeOwned>(
+        reader: &mut R,
+    ) -> D {
+        let mut line = String::new();
+        let n = ttimeout(T, reader.read_line(&mut line))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(n > 0, "unexpected EOF");
+        serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("bad line {line:?}: {e}"))
+    }
+
+    fn hello(version: u8, min_version: u8, token: &str) -> HelloRequest {
+        HelloRequest {
+            version,
+            token: token.to_string(),
+            hello: HelloBody {
+                client: "test".to_string(),
+                min_version,
+            },
+        }
+    }
+
+    /// Hello → subscribe → ping → command over one long-lived duplex connection.
+    #[tokio::test]
+    async fn session_handshake_ping_command_and_subscribe() {
+        let ep = start_server("roundtrip", test_hub());
+        let conn = connect(&ep).await;
+        let (read_half, mut write_half) = tokio::io::split(conn);
+        let mut reader = BufReader::new(read_half);
+
+        write_json(
+            &mut write_half,
+            &hello(PROTOCOL_VERSION, PROTOCOL_VERSION, "secret"),
+        )
+        .await;
+        let ack: HelloAck = read_json_line(&mut reader).await;
+        assert!(ack.ok, "{ack:?}");
+        assert_eq!(ack.version, PROTOCOL_VERSION);
+        assert!(ack.session_id > 0);
+        assert!(ack.capabilities.iter().any(|c| c == "events-v8"));
+
+        write_json(
+            &mut write_half,
+            &ClientFrame {
+                id: 1,
+                op: ClientOp::Subscribe {
+                    topics: vec![Topic::Player, Topic::System],
+                },
+            },
+        )
+        .await;
+        match read_json_line::<_, ServerFrame>(&mut reader).await {
+            ServerFrame::Reply { id, resp } => {
+                assert_eq!(id, 1);
+                assert!(resp.ok);
+            }
+            other => panic!("expected subscribe reply, got {other:?}"),
+        }
+
+        write_json(
+            &mut write_half,
+            &ClientFrame {
+                id: 2,
+                op: ClientOp::Ping,
+            },
+        )
+        .await;
+        match read_json_line::<_, ServerFrame>(&mut reader).await {
+            ServerFrame::Pong { id } => assert_eq!(id, 2),
+            other => panic!("expected pong, got {other:?}"),
+        }
+
+        write_json(
+            &mut write_half,
+            &ClientFrame {
+                id: 3,
+                op: ClientOp::Command(RemoteCommand::TogglePause),
+            },
+        )
+        .await;
+        match read_json_line::<_, ServerFrame>(&mut reader).await {
+            ServerFrame::Reply { id, resp } => {
+                assert_eq!(id, 3);
+                assert!(resp.ok);
+                assert_eq!(resp.message.as_deref(), Some("pong"));
+            }
+            other => panic!("expected command reply, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_hello_rejections() {
+        let ep = start_server("reject", test_hub());
+
+        // Wrong token.
+        let conn = connect(&ep).await;
+        let (read_half, mut write_half) = tokio::io::split(conn);
+        let mut reader = BufReader::new(read_half);
+        write_json(
+            &mut write_half,
+            &hello(PROTOCOL_VERSION, PROTOCOL_VERSION, "nope"),
+        )
+        .await;
+        let ack: HelloAck = read_json_line(&mut reader).await;
+        assert!(!ack.ok);
+        assert_eq!(ack.reason.as_deref(), Some("bad_token"));
+
+        // A v7-only client must not get a session (it never tries in practice — the
+        // descriptor gate — but the wire answer is still bad_version).
+        let conn = connect(&ep).await;
+        let (read_half, mut write_half) = tokio::io::split(conn);
+        let mut reader = BufReader::new(read_half);
+        write_json(&mut write_half, &hello(7, 7, "secret")).await;
+        let ack: HelloAck = read_json_line(&mut reader).await;
+        assert!(!ack.ok);
+        assert_eq!(ack.reason.as_deref(), Some("bad_version"));
+    }
+
+    #[tokio::test]
+    async fn ninth_session_gets_sessions_full() {
+        let ep = start_server("cap", test_hub());
+        let mut held = Vec::new();
+        for i in 0..super::super::sessions::MAX_SESSIONS {
+            let conn = connect(&ep).await;
+            let (read_half, mut write_half) = tokio::io::split(conn);
+            let mut reader = BufReader::new(read_half);
+            write_json(
+                &mut write_half,
+                &hello(PROTOCOL_VERSION, PROTOCOL_VERSION, "secret"),
+            )
+            .await;
+            let ack: HelloAck = read_json_line(&mut reader).await;
+            assert!(ack.ok, "session {i}: {ack:?}");
+            held.push((reader, write_half));
+        }
+        let conn = connect(&ep).await;
+        let (read_half, mut write_half) = tokio::io::split(conn);
+        let mut reader = BufReader::new(read_half);
+        write_json(
+            &mut write_half,
+            &hello(PROTOCOL_VERSION, PROTOCOL_VERSION, "secret"),
+        )
+        .await;
+        let ack: HelloAck = read_json_line(&mut reader).await;
+        assert!(!ack.ok);
+        assert_eq!(ack.reason.as_deref(), Some("sessions_full"));
+    }
+
+    #[tokio::test]
+    async fn idle_session_is_garbage_collected_with_goodbye() {
+        let tuning = SessionTuning {
+            idle_timeout: Duration::from_millis(200),
+            ..SessionTuning::default()
+        };
+        let ep = start_server("idle", test_hub_with(tuning));
+        let conn = connect(&ep).await;
+        let (read_half, mut write_half) = tokio::io::split(conn);
+        let mut reader = BufReader::new(read_half);
+        write_json(
+            &mut write_half,
+            &hello(PROTOCOL_VERSION, PROTOCOL_VERSION, "secret"),
+        )
+        .await;
+        let ack: HelloAck = read_json_line(&mut reader).await;
+        assert!(ack.ok);
+
+        // Send nothing: the server GCs us with a best-effort goodbye, then EOF.
+        match read_json_line::<_, ServerFrame>(&mut reader).await {
+            ServerFrame::Goodbye { reason } => assert_eq!(reason, "idle_timeout"),
+            other => panic!("expected goodbye, got {other:?}"),
+        }
+        let mut rest = String::new();
+        let n = ttimeout(T, reader.read_line(&mut rest))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(n, 0, "connection must close after goodbye, got {rest:?}");
+    }
+
+    #[tokio::test]
+    async fn malformed_session_frame_gets_goodbye_bad_request() {
+        let ep = start_server("badframe", test_hub());
+        let conn = connect(&ep).await;
+        let (read_half, mut write_half) = tokio::io::split(conn);
+        let mut reader = BufReader::new(read_half);
+        write_json(
+            &mut write_half,
+            &hello(PROTOCOL_VERSION, PROTOCOL_VERSION, "secret"),
+        )
+        .await;
+        let ack: HelloAck = read_json_line(&mut reader).await;
+        assert!(ack.ok);
+
+        ttimeout(T, write_half.write_all(b"{not a frame}\n"))
+            .await
+            .unwrap()
+            .unwrap();
+        ttimeout(T, write_half.flush()).await.unwrap().unwrap();
+        match read_json_line::<_, ServerFrame>(&mut reader).await {
+            ServerFrame::Goodbye { reason } => assert_eq!(reason, "bad_request"),
+            other => panic!("expected goodbye, got {other:?}"),
+        }
     }
 }

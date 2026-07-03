@@ -16,5 +16,6 @@ pub mod client;
 pub mod endpoint;
 pub mod proto;
 pub mod server;
+mod sessions;
 
 pub use server::{BindOutcome, RemoteServer, bind_or_detect};
