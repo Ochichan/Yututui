@@ -21,8 +21,16 @@ use crate::streaming::StreamingMode;
 mod command;
 #[cfg(test)]
 mod freeze;
+mod model;
+mod model_player;
+mod session;
 
 pub use command::{RemoteCommand, RemoteSettingChange};
+pub use model::{ArtworkRef, TrackModel};
+pub use model_player::{EqModel, PlayerModel, QueueModel};
+pub use session::{
+    ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, PushEvent, ServerFrame, Topic,
+};
 
 /// The version this build speaks. Servers accept one-shot requests in the
 /// `PROTOCOL_VERSION_V7..=PROTOCOL_VERSION` range (an old client keeps working forever);
@@ -74,7 +82,7 @@ pub struct RemoteRequest {
 
 /// One response line. `reason` is a stable machine code (e.g. `queue_empty`); `message`
 /// is the human line printed to stdout; `status` carries the snapshot for `status`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteResponse {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
