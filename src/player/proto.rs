@@ -18,6 +18,9 @@ pub enum MpvIncoming {
         reason: String,
         file_error: Option<String>,
     },
+    /// A `script-message …` fired inside mpv (e.g. by a rebound key in the video
+    /// overlay); `args` are the message name and its arguments.
+    ClientMessage { args: Vec<String> },
     /// A command reply or an event we don't act on.
     Other,
 }
@@ -43,8 +46,27 @@ pub fn parse_line(line: &str) -> Option<MpvIncoming> {
                 .map(str::to_owned);
             Some(MpvIncoming::EndFile { reason, file_error })
         }
+        Some("client-message") => {
+            let args = v
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(MpvIncoming::ClientMessage { args })
+        }
         _ => Some(MpvIncoming::Other),
     }
+}
+
+/// `keybind <key> <command>` — (re)bind a key inside mpv at runtime. Used by the video
+/// overlay to route its playlist-next/prev keys to the app queue via `script-message`.
+pub fn cmd_keybind(key: &str, command: &str, request_id: u64) -> String {
+    json!({ "command": ["keybind", key, command], "request_id": request_id }).to_string()
 }
 
 /// `loadfile <url> <mode>` — `mode` is `replace` or `append`.

@@ -187,7 +187,9 @@ fn dispatch_incoming(line: &str, emit: &EventSink, last_sent_time_sec: &mut Opti
             }
             _ => {}
         },
-        MpvIncoming::Other => {}
+        // Script messages are a video-overlay concern ([`super::video`]); the audio
+        // engine has no keys to press.
+        MpvIncoming::ClientMessage { .. } | MpvIncoming::Other => {}
     }
 }
 

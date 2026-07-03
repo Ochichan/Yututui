@@ -29,6 +29,10 @@ pub enum VideoEvent {
     Quit,
     /// The IPC connection dropped (mpv exited — after a quit, a crash, or a kill).
     Closed,
+    /// The user pressed the next-track key (`>`) inside the overlay window.
+    Next,
+    /// The user pressed the previous-track key (`<`) inside the overlay window.
+    Prev,
 }
 
 /// Commands the reducer sends to the overlay window.
@@ -76,6 +80,17 @@ async fn run<F>(
 {
     if let Err(e) = write_json(&conn, &proto::cmd_observe(1, "eof-reached")).await {
         tracing::warn!(error = %e, "failed to observe eof-reached on the video overlay");
+    }
+    // Route mpv's own playlist-next/prev keys to the app queue. The overlay always
+    // plays a single-entry playlist, so the default bindings are dead ends anyway; on
+    // an mpv too old for `keybind` the command errors harmlessly and the keys stay dead.
+    for (id, key, msg) in [
+        (2u64, ">", "script-message ytt-video-next"),
+        (3, "<", "script-message ytt-video-prev"),
+    ] {
+        if let Err(e) = write_json(&conn, &proto::cmd_keybind(key, msg, id)).await {
+            tracing::warn!(error = %e, key, "failed to bind a video overlay key");
+        }
     }
 
     let mut reader = BufReader::new(&conn);
@@ -147,6 +162,11 @@ fn interpret(line: &str, eof_latched: &mut bool) -> Option<VideoEvent> {
             // `redirect` is playlist bookkeeping) — neither means the window closed.
             _ => None,
         },
+        MpvIncoming::ClientMessage { args } => match args.first().map(String::as_str) {
+            Some("ytt-video-next") => Some(VideoEvent::Next),
+            Some("ytt-video-prev") => Some(VideoEvent::Prev),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -205,6 +225,34 @@ mod tests {
             interp(r#"{"event":"end-file","reason":"eof"}"#, &mut latched),
             Some(VideoEvent::Eof)
         ));
+    }
+
+    #[test]
+    fn client_messages_map_to_next_prev() {
+        let mut latched = false;
+        assert!(matches!(
+            interp(
+                r#"{"event":"client-message","args":["ytt-video-next"]}"#,
+                &mut latched
+            ),
+            Some(VideoEvent::Next)
+        ));
+        assert!(matches!(
+            interp(
+                r#"{"event":"client-message","args":["ytt-video-prev"]}"#,
+                &mut latched
+            ),
+            Some(VideoEvent::Prev)
+        ));
+        // Foreign script messages (user scripts run in the overlay too) are ignored.
+        assert!(
+            interp(
+                r#"{"event":"client-message","args":["osc-visibility","auto"]}"#,
+                &mut latched
+            )
+            .is_none()
+        );
+        assert!(interp(r#"{"event":"client-message"}"#, &mut latched).is_none());
     }
 
     #[test]

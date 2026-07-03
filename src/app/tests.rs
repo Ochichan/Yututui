@@ -8419,3 +8419,50 @@ fn video_event_from_an_older_generation_is_ignored() {
     assert!(app.video.proc.is_some());
     app.close_video();
 }
+
+#[cfg(unix)]
+#[test]
+fn video_next_key_skips_and_shows_the_next_video() {
+    let mut app = app_playing(3, 0);
+    app.video.proc = Some(fake_overlay_proc());
+    app.playback.paused = true;
+    app.video.paused_audio = true;
+
+    let generation = app.video.generation;
+    let cmds = app.update(Msg::VideoOverlay {
+        generation,
+        event: VideoEvent::Next,
+    });
+
+    assert_eq!(current(&app), "id1");
+    // Audio stays pinned paused under the video; the window shows the landed track.
+    assert!(app.playback.paused && app.video.paused_audio);
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::VideoLoad(url) if url == "https://www.youtube.com/watch?v=id1"
+    )));
+    app.close_video();
+}
+
+#[cfg(unix)]
+#[test]
+fn video_prev_key_goes_back_a_video() {
+    let mut app = app_playing(3, 1);
+    app.video.proc = Some(fake_overlay_proc());
+    app.playback.paused = true;
+    app.video.paused_audio = true;
+
+    let generation = app.video.generation;
+    let cmds = app.update(Msg::VideoOverlay {
+        generation,
+        event: VideoEvent::Prev,
+    });
+
+    assert_eq!(current(&app), "id0");
+    assert!(app.playback.paused && app.video.paused_audio);
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::VideoLoad(url) if url == "https://www.youtube.com/watch?v=id0"
+    )));
+    app.close_video();
+}

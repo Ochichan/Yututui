@@ -288,6 +288,8 @@ impl App {
                 cmds
             }
             VideoEvent::Quit => self.finish_video_overlay(t!("Video closed", "영상 닫음")),
+            VideoEvent::Next => self.video_skip(true),
+            VideoEvent::Prev => self.video_skip(false),
             VideoEvent::Closed => {
                 // Act only when the process is genuinely gone: an IPC hiccup with a live
                 // window degrades to the pre-IPC behavior instead of yanking the overlay.
@@ -308,9 +310,32 @@ impl App {
         // never diverge between audio and video continuation.
         let mut cmds = self.record_outgoing(true);
         cmds.extend(self.advance(true));
+        self.video_follow_queue(cmds, t!("Next video…", "다음 영상…"))
+    }
+
+    /// The `>`/`<` keys pressed inside the overlay window: move the queue like the
+    /// player's own next/prev actions, then show the landed track's video.
+    pub(in crate::app) fn video_skip(&mut self, forward: bool) -> Vec<Cmd> {
+        let (cmds, status) = if forward {
+            // Mirror `Action::NextTrack`: a manual skip (ignores repeat-one).
+            let mut cmds = self.record_outgoing(false);
+            cmds.extend(self.advance(false));
+            (cmds, t!("Next video…", "다음 영상…"))
+        } else {
+            // Mirror `Action::PrevTrack`.
+            let song = self.queue.prev().cloned();
+            (self.load_song(song), t!("Previous video…", "이전 영상…"))
+        };
+        self.video_follow_queue(cmds, status)
+    }
+
+    /// After a queue move with the overlay open: keep the audio engine pinned paused
+    /// under the video and load the landed track's video into the same window (or wind
+    /// the overlay down when the queue ended / the track is local-only).
+    fn video_follow_queue(&mut self, mut cmds: Vec<Cmd>, status: &str) -> Vec<Cmd> {
         if self.prefetch.loaded_video_id.is_none() {
-            // Queue ended (advance loaded nothing): close the overlay and drop the stale
-            // paused track from mpv, mirroring the audio queue-end (mpv idle, paused).
+            // Queue ended (the move loaded nothing): close the overlay and drop the
+            // stale paused track from mpv, mirroring the audio queue-end (idle, paused).
             self.close_video();
             self.video.paused_audio = false;
             cmds.push(Cmd::Player(PlayerCmd::Stop));
@@ -319,9 +344,9 @@ impl App {
             self.dirty = true;
             return cmds;
         }
-        // advance()→load_song() loaded the next track into the (still paused) audio
-        // engine, but reset_progress() cleared our pause flag — re-pin both sides so
-        // audio never plays under the video and a later close resumes at this track.
+        // load_song() loaded the landed track into the (still paused) audio engine, but
+        // reset_progress() cleared our pause flag — re-pin both sides so audio never
+        // plays under the video and a later close resumes at this track.
         self.playback.paused = true;
         self.video.paused_audio = true;
         cmds.push(Cmd::Player(PlayerCmd::SetProperty {
@@ -339,10 +364,10 @@ impl App {
                     "https://www.youtube.com/watch?v={id}"
                 )));
                 self.status.kind = StatusKind::Info;
-                self.status.text = t!("Next video…", "다음 영상…").to_owned();
+                self.status.text = status.to_owned();
             }
             None => {
-                // The next track is local-only (no recoverable video): fall back to
+                // The landed track is local-only (no recoverable video): fall back to
                 // audio playback instead of skipping tracks hunting for one.
                 cmds.extend(self.finish_video_overlay(t!(
                     "This track is local-only — continuing with audio",
