@@ -7,11 +7,25 @@
 //! track current); turning it off restores natural order. This keeps every operation a
 //! pure index manipulation — easy to reason about and unit-test.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::api::Song;
 use serde::{Deserialize, Serialize};
 
 /// Hard cap on queued tracks (priority #1: bounded memory).
 const MAX: usize = 999;
+
+/// Owner-global queue revision source (docs/gui/02 §14). One counter per process —
+/// deliberately NOT per-`Queue`: radio mode and `--resume` swap whole queues through
+/// snapshots, and two independently-counted queues could land on the same rev across a
+/// stash/swap, making a change invisible to rev-comparing observers (the v8 publisher).
+/// Drawing every assignment from one monotonic source makes every swap observable.
+/// The value is runtime-only: it is never serialized ([`QueueSnapshot`] has no rev).
+static QUEUE_REV: AtomicU64 = AtomicU64::new(1);
+
+fn next_queue_rev() -> u64 {
+    QUEUE_REV.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Repeat mode, cycled by the `r` key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -43,6 +57,12 @@ pub struct Queue {
     cursor: usize,
     pub shuffle: bool,
     pub repeat: Repeat,
+    /// Membership/order revision, assigned from [`QUEUE_REV`]. Bumped by every mutation
+    /// of `songs`/`order` — including [`restore_snapshot`](Self::restore_snapshot) — and
+    /// deliberately NOT by cursor moves (`next`/`prev`/`goto`): the cursor rides
+    /// `PlayerModel.queue_pos` on the wire, so a track advance must not look like a
+    /// queue change. Private: only mutators may touch it.
+    rev: u64,
     rng: fastrand::Rng,
 }
 
@@ -87,6 +107,7 @@ impl Default for Queue {
             cursor: 0,
             shuffle: false,
             repeat: Repeat::Off,
+            rev: next_queue_rev(),
             rng: fastrand::Rng::new(),
         }
     }
@@ -99,6 +120,16 @@ impl Queue {
 
     pub fn len(&self) -> usize {
         self.songs.len()
+    }
+
+    /// The membership/order revision. Equal revs ⇒ identical contents and play order
+    /// (process-wide — safe to compare across queue swaps); cursor moves don't change it.
+    pub fn rev(&self) -> u64 {
+        self.rev
+    }
+
+    fn bump_rev(&mut self) {
+        self.rev = next_queue_rev();
     }
 
     pub fn contains_video_id(&self, video_id: &str) -> bool {
@@ -119,6 +150,7 @@ impl Queue {
 
     /// Restore a snapshot previously produced by [`snapshot`](Self::snapshot).
     pub fn restore_snapshot(&mut self, snapshot: QueueSnapshot) {
+        self.bump_rev();
         self.songs = snapshot.songs;
         self.order = snapshot.order;
         self.shuffle = snapshot.shuffle;
@@ -201,6 +233,7 @@ impl Queue {
         // If the queue had been empty, the cursor already sits at 0 → the first appended
         // track becomes current, which is what an enqueue-into-empty should do.
         self.order.extend(new_indices);
+        self.bump_rev();
         added
     }
 
@@ -231,6 +264,7 @@ impl Queue {
                 self.order.insert(at + offset, idx);
             }
         }
+        self.bump_rev();
         added
     }
 
@@ -269,6 +303,7 @@ impl Queue {
             }
             self.cursor = at;
         }
+        self.bump_rev();
         added
     }
 
@@ -279,6 +314,7 @@ impl Queue {
         let start = start.min(songs.len().saturating_sub(1));
         self.songs = songs;
         self.rebuild_order(start);
+        self.bump_rev();
     }
 
     /// Advance to the next track, returning it. `auto` is true for end-of-track
@@ -383,6 +419,7 @@ impl Queue {
         if self.cursor >= self.order.len() {
             self.cursor = self.order.len().saturating_sub(1);
         }
+        self.bump_rev();
         Some(was_current)
     }
 
@@ -400,6 +437,7 @@ impl Queue {
         if let Some(&current_idx) = self.order.get(self.cursor) {
             self.rebuild_order(current_idx);
         }
+        self.bump_rev();
     }
 
     /// Cycle the repeat mode.
@@ -785,5 +823,77 @@ mod tests {
         seen.sort_unstable();
         assert_eq!(seen, (0..6).collect::<Vec<_>>());
         assert!(q.order.iter().all(|&i| i < q.songs.len()));
+    }
+
+    #[test]
+    fn rev_bumps_on_membership_and_order_changes_only() {
+        let mut q = Queue::default();
+        let mut last = q.rev();
+
+        let mut expect_bump = |q: &Queue, what: &str| {
+            assert!(q.rev() > last, "{what} must bump rev");
+            last = q.rev();
+        };
+
+        q.set(songs(5), 0);
+        expect_bump(&q, "set");
+        q.extend(songs(2));
+        expect_bump(&q, "extend");
+        q.insert_next_many(vec![song("n")]);
+        expect_bump(&q, "insert_next_many");
+        q.play_now(song("p"));
+        expect_bump(&q, "play_now");
+        q.remove_at(0);
+        expect_bump(&q, "remove_at");
+        q.toggle_shuffle();
+        expect_bump(&q, "toggle_shuffle");
+
+        // Cursor moves and mode flags are NOT membership/order changes: the cursor rides
+        // PlayerModel.queue_pos on the wire, so these must be invisible to rev.
+        let frozen = q.rev();
+        q.next(false);
+        q.next(true);
+        q.prev();
+        q.goto(2);
+        q.cycle_repeat();
+        q.set_shuffle(q.shuffle); // no-op set
+        assert_eq!(q.rev(), frozen, "cursor/mode changes must not bump rev");
+
+        // No-op mutations don't bump either.
+        let mut full = Queue::default();
+        full.set(songs(MAX), 0);
+        let at_cap = full.rev();
+        assert_eq!(full.extend(songs(3)), 0);
+        assert_eq!(full.rev(), at_cap, "capped extend added nothing");
+        assert_eq!(full.remove_at(MAX + 5), None);
+        assert_eq!(full.rev(), at_cap, "out-of-range remove changed nothing");
+    }
+
+    #[test]
+    fn rev_is_owner_global_so_queue_swaps_never_collide() {
+        // The radio-mode scenario (docs/gui/02 §14): stash queue A, live on queue B,
+        // mutate both the same number of times, swap back. A per-queue counter would
+        // repeat an already-seen rev; the process-global source cannot.
+        let mut seen = std::collections::HashSet::new();
+
+        let mut q = Queue::default();
+        q.set(songs(3), 0);
+        assert!(seen.insert(q.rev()), "fresh rev per mutation");
+        let stash_a = q.snapshot();
+
+        // Swap to queue B and mutate it.
+        q.restore_snapshot(QueueSnapshot::default());
+        assert!(seen.insert(q.rev()), "swap to B is observable");
+        q.set(songs(2), 0);
+        assert!(seen.insert(q.rev()));
+
+        // Swap back to A: contents equal the stash, but the rev must be brand new —
+        // an observer comparing revs sees the swap even though A itself never changed.
+        q.restore_snapshot(stash_a);
+        assert!(seen.insert(q.rev()), "swap back to A must mint a fresh rev");
+
+        // And two live queues never share a rev.
+        let other = Queue::default();
+        assert!(seen.insert(other.rev()), "revs are process-global");
     }
 }
