@@ -19,11 +19,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
+use crate::remote::endpoint;
 use crate::remote::proto::{
     ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, InstanceFile, InstanceMode,
     PROTOCOL_VERSION, PushEvent, ServerFrame, Topic,
 };
-use crate::remote::endpoint;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -53,7 +53,11 @@ impl ConnState {
     pub fn to_conn_payload(&self) -> serde_json::Value {
         match self {
             ConnState::Connecting => serde_json::json!({ "state": "connecting" }),
-            ConnState::Online { protocol_version, capabilities, owner_mode } => serde_json::json!({
+            ConnState::Online {
+                protocol_version,
+                capabilities,
+                owner_mode,
+            } => serde_json::json!({
                 "state": "online",
                 "protocolVersion": protocol_version,
                 "capabilities": capabilities,
@@ -105,15 +109,22 @@ where
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let builder = std::thread::Builder::new().name("ytt-desktop-gateway".to_string());
     if let Err(e) = builder.spawn(move || {
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
-            emit(GatewayEvent::Connection(ConnState::Offline { reason: "no_runtime".into() }));
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            emit(GatewayEvent::Connection(ConnState::Offline {
+                reason: "no_runtime".into(),
+            }));
             return;
         };
         rt.block_on(run(emit, shutdown_rx));
     }) {
         tracing::warn!(target: "ytt_desktop", error = %e, "could not start gateway thread");
     }
-    GatewayHandle { shutdown: Some(shutdown_tx) }
+    GatewayHandle {
+        shutdown: Some(shutdown_tx),
+    }
 }
 
 async fn run<F: Fn(GatewayEvent)>(emit: F, mut shutdown_rx: oneshot::Receiver<()>) {
@@ -129,7 +140,9 @@ async fn run<F: Fn(GatewayEvent)>(emit: F, mut shutdown_rx: oneshot::Receiver<()
                     owner_mode: ack.owner_mode,
                 }));
                 let reason = run_session(conn, &mut shutdown_rx).await;
-                emit(GatewayEvent::Connection(ConnState::Offline { reason: reason.clone() }));
+                emit(GatewayEvent::Connection(ConnState::Offline {
+                    reason: reason.clone(),
+                }));
                 if reason == "shutdown" {
                     return;
                 }
@@ -174,7 +187,10 @@ async fn connect_and_hello(instance: InstanceFile) -> Result<(Stream, HelloAck),
     let hello = HelloRequest {
         version: PROTOCOL_VERSION,
         token: instance.token,
-        hello: HelloBody { client: "ytt-desktop".to_string(), min_version: PROTOCOL_VERSION },
+        hello: HelloBody {
+            client: "ytt-desktop".to_string(),
+            min_version: PROTOCOL_VERSION,
+        },
     };
     if write_line(&conn, &hello).await.is_err() {
         return Err("write_failed".to_string());
@@ -201,7 +217,12 @@ async fn run_session(conn: Stream, shutdown_rx: &mut oneshot::Receiver<()>) -> S
     let mut next_id = 1u64;
 
     // Subscribe to `system` so we notice owner shutdown, and to keep the session non-idle.
-    let sub = ClientFrame { id: next_id, op: ClientOp::Subscribe { topics: vec![Topic::System] } };
+    let sub = ClientFrame {
+        id: next_id,
+        op: ClientOp::Subscribe {
+            topics: vec![Topic::System],
+        },
+    };
     next_id += 1;
     if write_line(&conn, &sub).await.is_err() {
         return "disconnected".to_string();
@@ -292,7 +313,11 @@ mod tests {
         w.write_all(&buf).await.unwrap();
         w.flush().await.unwrap();
         // Hold the connection briefly so the client sees an established session.
-        let _ = tokio::time::timeout(Duration::from_millis(50), reader.read_line(&mut String::new())).await;
+        let _ = tokio::time::timeout(
+            Duration::from_millis(50),
+            reader.read_line(&mut String::new()),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -335,7 +360,9 @@ mod tests {
             reason: Some("bad_token".to_string()),
         };
         let server = tokio::spawn(serve_hello(listener, ack));
-        let err = connect_and_hello(test_instance(endpoint.clone(), "wrong")).await.unwrap_err();
+        let err = connect_and_hello(test_instance(endpoint.clone(), "wrong"))
+            .await
+            .unwrap_err();
         server.abort();
         let _ = std::fs::remove_file(&endpoint);
         assert_eq!(err, "bad_token");
@@ -344,7 +371,10 @@ mod tests {
     #[tokio::test]
     async fn missing_core_is_reported() {
         let err = connect_and_hello(test_instance(
-            std::env::temp_dir().join("ytt-gw-nope.sock").to_string_lossy().into_owned(),
+            std::env::temp_dir()
+                .join("ytt-gw-nope.sock")
+                .to_string_lossy()
+                .into_owned(),
             "tok",
         ))
         .await

@@ -54,10 +54,22 @@ pub enum InKind {
 
 impl InEnvelope {
     pub fn res(id: u64, payload: serde_json::Value) -> Self {
-        InEnvelope { v: 1, id: Some(id), kind: InKind::Res, topic: None, payload: Some(payload) }
+        InEnvelope {
+            v: 1,
+            id: Some(id),
+            kind: InKind::Res,
+            topic: None,
+            payload: Some(payload),
+        }
     }
     pub fn conn(payload: serde_json::Value) -> Self {
-        InEnvelope { v: 1, id: None, kind: InKind::Conn, topic: None, payload: Some(payload) }
+        InEnvelope {
+            v: 1,
+            id: None,
+            kind: InKind::Conn,
+            topic: None,
+            payload: Some(payload),
+        }
     }
     pub fn event(topic: &str, payload: serde_json::Value) -> Self {
         InEnvelope {
@@ -159,8 +171,14 @@ mod tests {
 
     #[test]
     fn win_ops_parse() {
-        assert_eq!(dispatch(r#"{"v":1,"kind":"win","name":"hide"}"#), BridgeAction::Win(WinOp::Hide));
-        assert_eq!(dispatch(r#"{"v":1,"kind":"win","name":"drag"}"#), BridgeAction::Win(WinOp::Drag));
+        assert_eq!(
+            dispatch(r#"{"v":1,"kind":"win","name":"hide"}"#),
+            BridgeAction::Win(WinOp::Hide)
+        );
+        assert_eq!(
+            dispatch(r#"{"v":1,"kind":"win","name":"drag"}"#),
+            BridgeAction::Win(WinOp::Drag)
+        );
         assert_eq!(
             dispatch(r#"{"v":1,"kind":"win","name":"startDaemon"}"#),
             BridgeAction::Win(WinOp::StartDaemon)
@@ -186,7 +204,10 @@ mod tests {
     #[test]
     fn malformed_is_ignored() {
         assert_eq!(dispatch("{not json}"), BridgeAction::Ignore);
-        assert_eq!(dispatch(r#"{"v":1,"kind":"bogus","name":"x"}"#), BridgeAction::Ignore);
+        assert_eq!(
+            dispatch(r#"{"v":1,"kind":"bogus","name":"x"}"#),
+            BridgeAction::Ignore
+        );
     }
 
     #[test]

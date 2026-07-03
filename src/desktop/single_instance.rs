@@ -53,7 +53,11 @@ unsafe impl Send for WindowsMutex {}
 pub fn acquire() -> io::Result<Acquire> {
     use std::os::unix::io::AsRawFd;
     let path = lock_path()?;
-    let file = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&path)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)?;
     // Advisory, non-blocking exclusive lock on the open file description.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
@@ -73,7 +77,10 @@ pub fn acquire() -> io::Result<Acquire> {
 pub fn acquire() -> io::Result<Acquire> {
     use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
     use windows_sys::Win32::System::Threading::CreateMutexW;
-    let wide: Vec<u16> = MUTEX_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = MUTEX_NAME
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, wide.as_ptr()) };
     if handle.is_null() {
         return Err(io::Error::last_os_error());
@@ -82,13 +89,18 @@ pub fn acquire() -> io::Result<Acquire> {
         unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
         Ok(Acquire::AlreadyRunning)
     } else {
-        Ok(Acquire::Primary(InstanceGuard { _handle: WindowsMutex(handle) }))
+        Ok(Acquire::Primary(InstanceGuard {
+            _handle: WindowsMutex(handle),
+        }))
     }
 }
 
 #[cfg(unix)]
 fn lock_path() -> io::Result<PathBuf> {
-    Ok(runtime::app_runtime_dir()?.join(format!("ytm-tui-desktop-{}.lock", runtime::filesystem_user_tag())))
+    Ok(runtime::app_runtime_dir()?.join(format!(
+        "ytm-tui-desktop-{}.lock",
+        runtime::filesystem_user_tag()
+    )))
 }
 
 /// Per-user endpoint the second instance pings to activate the first.
@@ -114,7 +126,10 @@ pub fn spawn_activate_listener(on_activate: impl Fn() + Send + 'static) -> io::R
     std::thread::Builder::new()
         .name("ytt-desktop-activate".to_string())
         .spawn(move || {
-            let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
                 return;
             };
             rt.block_on(async move {
@@ -139,7 +154,10 @@ pub fn signal_activate() {
     let Ok(endpoint) = activate_endpoint() else {
         return;
     };
-    let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
         return;
     };
     rt.block_on(async move {
@@ -161,14 +179,27 @@ mod tests {
     #[test]
     fn exclusive_flock_blocks_a_second_holder() {
         let path = std::env::temp_dir().join(format!("ytt-si-test-{}.lock", std::process::id()));
-        let a = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&path).unwrap();
+        let a = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
         let rc_a = unsafe { libc::flock(a.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         assert_eq!(rc_a, 0, "first holder should acquire");
 
         // A distinct open file description on the same path must fail non-blocking.
-        let b = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&path).unwrap();
+        let b = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
         let rc_b = unsafe { libc::flock(b.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        assert_eq!(rc_b, -1, "second holder must be blocked while the first holds the lock");
+        assert_eq!(
+            rc_b, -1,
+            "second holder must be blocked while the first holds the lock"
+        );
 
         drop(a); // releasing lets the next holder in
         let rc_b2 = unsafe { libc::flock(b.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };

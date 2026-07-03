@@ -69,7 +69,8 @@ pub struct MonitorRect {
 impl DesktopState {
     /// `desktop.json` beside the persistent config (`config.json`).
     pub fn path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.config_dir().join("desktop.json"))
+        directories::ProjectDirs::from("", "", "ytm-tui")
+            .map(|d| d.config_dir().join("desktop.json"))
     }
 
     /// Load persisted state, or defaults when absent/corrupt (never fails a launch).
@@ -125,8 +126,18 @@ pub fn clamp_to_monitors(rect: WindowRect, monitors: &[MonitorRect]) -> WindowRe
 mod tests {
     use super::*;
 
-    const PRIMARY: MonitorRect = MonitorRect { x: 0, y: 0, w: 1920, h: 1080 };
-    const SECOND: MonitorRect = MonitorRect { x: 1920, y: 0, w: 1920, h: 1080 };
+    const PRIMARY: MonitorRect = MonitorRect {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1080,
+    };
+    const SECOND: MonitorRect = MonitorRect {
+        x: 1920,
+        y: 0,
+        w: 1920,
+        h: 1080,
+    };
 
     #[test]
     fn defaults_close_to_tray() {
@@ -137,22 +148,42 @@ mod tests {
 
     #[test]
     fn on_screen_rect_is_unchanged() {
-        let rect = WindowRect { x: 100, y: 80, w: 1200, h: 800, maximized: false };
+        let rect = WindowRect {
+            x: 100,
+            y: 80,
+            w: 1200,
+            h: 800,
+            maximized: false,
+        };
         assert_eq!(clamp_to_monitors(rect, &[PRIMARY, SECOND]), rect);
     }
 
     #[test]
     fn rect_on_removed_monitor_recenters_onto_primary() {
         // Saved on the second monitor, which is now gone (only primary present).
-        let rect = WindowRect { x: 2200, y: 200, w: 1200, h: 800, maximized: false };
+        let rect = WindowRect {
+            x: 2200,
+            y: 200,
+            w: 1200,
+            h: 800,
+            maximized: false,
+        };
         let clamped = clamp_to_monitors(rect, &[PRIMARY]);
-        assert!(clamped.x >= PRIMARY.x && clamped.x + clamped.w as i32 <= PRIMARY.x + PRIMARY.w as i32);
+        assert!(
+            clamped.x >= PRIMARY.x && clamped.x + clamped.w as i32 <= PRIMARY.x + PRIMARY.w as i32
+        );
         assert!(clamped.y >= PRIMARY.y);
     }
 
     #[test]
     fn partially_offscreen_rect_is_nudged_fully_on() {
-        let rect = WindowRect { x: 1400, y: 900, w: 1200, h: 800, maximized: false };
+        let rect = WindowRect {
+            x: 1400,
+            y: 900,
+            w: 1200,
+            h: 800,
+            maximized: false,
+        };
         let clamped = clamp_to_monitors(rect, &[PRIMARY]);
         assert_eq!(clamped.x, 1920 - 1200);
         assert_eq!(clamped.y, 1080 - 800);
@@ -161,7 +192,13 @@ mod tests {
     #[test]
     fn round_trips_through_json() {
         let s = DesktopState {
-            main: Some(WindowRect { x: 1, y: 2, w: 1200, h: 800, maximized: true }),
+            main: Some(WindowRect {
+                x: 1,
+                y: 2,
+                w: 1200,
+                h: 800,
+                maximized: true,
+            }),
             mini: Some(Point { x: 10, y: 20 }),
             close_to_tray: false,
             keep_webview_alive: true,

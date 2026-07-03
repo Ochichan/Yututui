@@ -83,9 +83,16 @@ impl MainWindow {
 
     pub fn show(&self) {
         if self.webview.borrow().is_none() {
-            match build_webview(&self.window, &self.boot_json, self.dev_url.as_deref(), &self.on_message) {
+            match build_webview(
+                &self.window,
+                &self.boot_json,
+                self.dev_url.as_deref(),
+                &self.on_message,
+            ) {
                 Ok(webview) => *self.webview.borrow_mut() = Some(webview),
-                Err(e) => tracing::warn!(target: "ytt_desktop", error = %e, "could not rebuild main webview"),
+                Err(e) => {
+                    tracing::warn!(target: "ytt_desktop", error = %e, "could not rebuild main webview")
+                }
             }
         }
         self.window.set_visible(true);
@@ -138,7 +145,9 @@ fn build_webview(
     let on_message = std::rc::Rc::clone(on_message);
     // U+2028/2029 are valid JSON but illegal in a JS source position; escape them so the
     // injected object literal parses (mirrors panel.rs json_for_script).
-    let safe_boot = boot_json.replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
+    let safe_boot = boot_json
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
     let init = format!("window.__YTM_BOOT__ = {safe_boot};");
 
     let start_url = dev_url.unwrap_or("ytm://app/index.html").to_string();
@@ -200,12 +209,18 @@ mod tests {
         assert!(is_allowed("https://ytm.app/assets/x.js", None));
         assert!(!is_allowed("https://evil.example/x", None));
         assert!(!is_allowed("http://localhost:5173/", None));
-        assert!(is_allowed("http://localhost:5173/", Some("http://localhost:5173")));
+        assert!(is_allowed(
+            "http://localhost:5173/",
+            Some("http://localhost:5173")
+        ));
     }
 
     #[test]
     fn origin_extraction() {
-        assert_eq!(origin_of("http://localhost:5173/src/main.ts").as_deref(), Some("http://localhost:5173"));
+        assert_eq!(
+            origin_of("http://localhost:5173/src/main.ts").as_deref(),
+            Some("http://localhost:5173")
+        );
         assert_eq!(origin_of("not a url"), None);
     }
 }

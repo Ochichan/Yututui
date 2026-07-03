@@ -19,8 +19,8 @@ use crate::desktop::platform::main_window::MainWindow;
 use crate::desktop::platform::panel_window::MiniPlayerPanel;
 use crate::desktop::single_instance::{self, Acquire};
 use crate::desktop::startup::{self, StartupStatus};
-use crate::desktop::window_state::DesktopState;
 use crate::desktop::status::{self, PollConfig, PollUpdate};
+use crate::desktop::window_state::DesktopState;
 use crate::desktop::{bridge, gateway};
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
 
@@ -205,10 +205,7 @@ impl MacTrayApp {
         }
     }
 
-    fn init(
-        &mut self,
-        target: &EventLoopWindowTarget<UserEvent>,
-    ) -> Result<(), Box<dyn Error>> {
+    fn init(&mut self, target: &EventLoopWindowTarget<UserEvent>) -> Result<(), Box<dyn Error>> {
         let menu = MacMenu::new(&self.last_update.state)?;
         let icon = template_icon()?;
         let tray = TrayIconBuilder::new()

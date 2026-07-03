@@ -46,8 +46,9 @@ impl fmt::Display for StartupError {
 impl std::error::Error for StartupError {}
 
 pub fn install() -> Result<String, StartupError> {
-    let exe = std::env::current_exe()
-        .map_err(|e| StartupError::CurrentExe(format!("could not resolve ytt-desktop path: {e}")))?;
+    let exe = std::env::current_exe().map_err(|e| {
+        StartupError::CurrentExe(format!("could not resolve ytt-desktop path: {e}"))
+    })?;
     install_for_exe(&exe)
 }
 
