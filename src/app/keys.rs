@@ -235,6 +235,7 @@ impl App {
                     return Vec::new();
                 }
                 Action::ToggleAnimations => return self.toggle_animations(),
+                Action::ToggleZoomWheelLock => return self.toggle_zoom_wheel_lock(),
                 Action::ToggleStreaming => {
                     self.autoplay_streaming = !self.autoplay_streaming;
                     self.status.text = format!(

@@ -369,6 +369,10 @@ pub struct Config {
     /// Applied only on terminals that pass the startup probe, so a config saved under
     /// kitty stays harmless elsewhere.
     pub text_zoom: Option<u16>,
+    /// Freeze the Ctrl+wheel zoom gesture (`ToggleZoomWheelLock`, default Ctrl+L): while
+    /// locked, Ctrl+wheel scrolls like a plain wheel and only the Ctrl+-/= keys zoom.
+    /// `None` → unlocked.
+    pub zoom_wheel_lock: Option<bool>,
     /// Gapless playback. `None` → on. Takes effect at the next launch (an mpv flag).
     pub gapless: Option<bool>,
     /// Shuffle playback order. `None` → off.
@@ -483,6 +487,7 @@ impl Default for Config {
             seek_seconds: None,
             mouse_wheel_volume: None,
             text_zoom: None,
+            zoom_wheel_lock: None,
             gapless: None,
             shuffle: None,
             repeat: Repeat::default(),
@@ -710,6 +715,11 @@ impl Config {
     /// The persisted text-zoom percent, snapped to the nearest supported level.
     pub fn effective_text_zoom(&self) -> u16 {
         crate::zoom::snap(self.text_zoom.unwrap_or(100))
+    }
+
+    /// Whether the Ctrl+wheel zoom gesture is frozen (default unlocked).
+    pub fn effective_zoom_wheel_lock(&self) -> bool {
+        self.zoom_wheel_lock.unwrap_or(false)
     }
 
     /// Whether gapless playback is on (default on).
@@ -942,6 +952,7 @@ mod tests {
             seek_seconds: Some(15.0),
             mouse_wheel_volume: Some(false),
             text_zoom: Some(150),
+            zoom_wheel_lock: Some(true),
             gapless: Some(false),
             shuffle: Some(true),
             repeat: Repeat::One,

@@ -766,7 +766,10 @@ impl App {
         row: u16,
         ctrl: bool,
     ) -> Vec<Cmd> {
-        if ctrl {
+        // While the wheel-zoom lock is on, Ctrl+wheel degrades to a plain wheel scroll
+        // (the whole point: modifier-assisted scrolling without accidental zooming);
+        // the Ctrl+-/= keys keep zooming either way.
+        if ctrl && !self.config.effective_zoom_wheel_lock() {
             return self.zoom_step(up);
         }
         let n = MOUSE_SCROLL_LINES;

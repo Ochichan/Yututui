@@ -890,6 +890,25 @@ impl App {
         vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
     }
 
+    /// Toggle the Ctrl+wheel zoom lock (`ToggleZoomWheelLock`). Persisted, so a
+    /// deliberately frozen gesture stays frozen across sessions.
+    pub(in crate::app) fn toggle_zoom_wheel_lock(&mut self) -> Vec<Cmd> {
+        let locked = !self.config.effective_zoom_wheel_lock();
+        self.config.zoom_wheel_lock = Some(locked);
+        self.status.kind = StatusKind::Info;
+        self.status.text = if locked {
+            t!(
+                "Ctrl+wheel zoom locked (Ctrl+-/= still zoom)",
+                "Ctrl+휠 확대 잠금 켜짐 (Ctrl+-/= 는 그대로 동작)"
+            )
+        } else {
+            t!("Ctrl+wheel zoom unlocked", "Ctrl+휠 확대 잠금 꺼짐")
+        }
+        .to_owned();
+        self.dirty = true;
+        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+    }
+
     fn dispatch(&mut self, msg: Msg) -> Vec<Cmd> {
         match msg {
             Msg::Key(k) => return self.on_key(k),

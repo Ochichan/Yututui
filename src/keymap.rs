@@ -84,6 +84,7 @@ pub enum Action {
     WhyAi,
     TextZoomIn,
     TextZoomOut,
+    ToggleZoomWheelLock,
     // Player extras: copy link + external mpv video overlay.
     CopyLink,
     PlayVideo,
@@ -344,6 +345,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "text_zoom_out",
         "Text size down",
         "글자 축소",
+    ),
+    (
+        Action::ToggleZoomWheelLock,
+        "toggle_zoom_wheel_lock",
+        "Ctrl+wheel zoom lock",
+        "Ctrl+휠 확대 잠금",
     ),
     (
         Action::CopyLink,
@@ -963,6 +970,9 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // with the text sizing protocol; elsewhere the reducer answers with a hint toast.
         (C::Global, A::TextZoomIn, ctrl('=')),
         (C::Global, A::TextZoomOut, ctrl('-')),
+        // Freezes the Ctrl+wheel zoom gesture (an easy thing to fire by accident while
+        // scrolling with a modifier held); the Ctrl+-/= keys stay live either way.
+        (C::Global, A::ToggleZoomWheelLock, ctrl('l')),
         (C::Global, A::Quit, ctrl('q')),
         // Library list commands.
         (C::Library, A::Confirm, key(KeyCode::Enter)),
@@ -2303,6 +2313,10 @@ mod tests {
         assert_eq!(
             km.global_action(parse_chord("ctrl+-").unwrap()),
             Some(Action::TextZoomOut)
+        );
+        assert_eq!(
+            km.global_action(parse_chord("ctrl+l").unwrap()),
+            Some(Action::ToggleZoomWheelLock)
         );
         // Ctrl chords are non-typeable, so the zoom keys keep working inside the search
         // and DJ Gem text fields (`is_typeable` gates global suppression there).

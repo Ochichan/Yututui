@@ -8219,3 +8219,39 @@ fn decdhl_terminals_step_straight_to_double_size() {
     app.update(Msg::Key(ctrl(KeyCode::Char('-'))));
     assert_eq!(app.zoom.percent(), 100);
 }
+
+#[test]
+fn zoom_wheel_lock_freezes_the_gesture_but_not_the_keys() {
+    let mut app = app_playing(3, 0);
+    app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
+
+    // Ctrl+L locks, persists, and explains itself.
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('l'))));
+    assert_eq!(app.config.zoom_wheel_lock, Some(true));
+    assert!(matches!(cmds.as_slice(), [Cmd::SaveConfig(_)]));
+    assert!(!app.status.text.is_empty());
+
+    // Ctrl+wheel now scrolls instead of zooming.
+    app.update(Msg::MouseScroll {
+        up: true,
+        col: 5,
+        row: 5,
+        ctrl: true,
+    });
+    assert_eq!(app.zoom.percent(), 100, "locked gesture must not zoom");
+
+    // The keyboard chords stay live.
+    app.update(Msg::Key(ctrl(KeyCode::Char('='))));
+    assert_eq!(app.zoom.percent(), 125);
+
+    // Ctrl+L again unlocks and the wheel zooms once more.
+    app.update(Msg::Key(ctrl(KeyCode::Char('l'))));
+    assert_eq!(app.config.zoom_wheel_lock, Some(false));
+    app.update(Msg::MouseScroll {
+        up: true,
+        col: 5,
+        row: 5,
+        ctrl: true,
+    });
+    assert_eq!(app.zoom.percent(), 150);
+}
