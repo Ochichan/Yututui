@@ -47,10 +47,20 @@ impl App {
 
     /// Kill the video overlay if one is open (no-op otherwise). Called from the main loop's
     /// clean-exit path so the overlay never outlives the app, regardless of how we quit.
+    /// Also unlinks the overlay's IPC socket; its client task ends on its own when mpv
+    /// closes the connection (Windows named pipes self-clean).
     pub fn close_video(&mut self) {
         if let Some(mut child) = self.video.proc.take() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        #[cfg(unix)]
+        if let Some(path) = self.video.ipc_path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+        #[cfg(not(unix))]
+        {
+            self.video.ipc_path = None;
         }
     }
 
@@ -104,23 +114,67 @@ impl App {
         result
     }
 
+    /// Spawn the overlay window for YouTube id `id` in `layout` and wire up its IPC client
+    /// under a fresh spawn generation. Returns `false` when mpv failed to launch. When the
+    /// IPC endpoint path can't be prepared, the window still opens — it just degrades to
+    /// the pre-IPC fire-and-forget behavior (no EOF detection, no auto-continue).
+    fn open_video_overlay(
+        &mut self,
+        id: &str,
+        layout: crate::config::VideoOverlay,
+        cmds: &mut Vec<Cmd>,
+    ) -> bool {
+        let url = format!("https://www.youtube.com/watch?v={id}");
+        let cookies = self.config.cookies_file.clone();
+        self.video.generation = self.video.generation.wrapping_add(1);
+        let generation = self.video.generation;
+        let ipc_path = crate::player::mpv::video_ipc_path(generation)
+            .inspect_err(|e| tracing::warn!(error = %e, "video overlay IPC path unavailable"))
+            .ok();
+        match spawn_video_overlay(&url, cookies.as_deref(), layout, ipc_path.as_deref()) {
+            Some(child) => {
+                self.video.proc = Some(child);
+                self.video.ipc_path = ipc_path.clone();
+                if let Some(ipc_path) = ipc_path {
+                    cmds.push(Cmd::VideoConnect {
+                        ipc_path,
+                        generation,
+                    });
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Close the overlay and resume the audio the overlay paused (per
+    /// [`Video::paused_audio`]), leaving `status` as the transient info line. Shared by
+    /// the manual close (`v`), the overlay's own end/quit events, and the fallback paths.
+    fn finish_video_overlay(&mut self, status: &str) -> Vec<Cmd> {
+        let mut cmds = Vec::new();
+        self.close_video();
+        if self.video.paused_audio {
+            self.video.paused_audio = false;
+            self.playback.paused = false;
+            cmds.push(Cmd::Player(PlayerCmd::SetProperty {
+                name: "pause".to_owned(),
+                value: serde_json::Value::Bool(false),
+            }));
+        }
+        self.status.kind = StatusKind::Info;
+        self.status.text = status.to_owned();
+        self.dirty = true;
+        cmds
+    }
+
     /// `v`: toggle the external mpv video overlay. Open → close it and resume the audio we
     /// paused; closed → launch it for the current track and pause the audio.
     pub(in crate::app) fn toggle_video_overlay(&mut self) -> Vec<Cmd> {
         let mut cmds = Vec::new();
         if self.video_open() {
-            self.close_video();
-            if self.video.paused_audio {
-                self.video.paused_audio = false;
-                self.playback.paused = false;
-                cmds.push(Cmd::Player(PlayerCmd::SetProperty {
-                    name: "pause".to_owned(),
-                    value: serde_json::Value::Bool(false),
-                }));
-            }
-            self.status.kind = StatusKind::Info;
-            self.status.text = t!("Video closed", "영상 닫음").to_owned();
-        } else if let Some(song) = self.queue.current().cloned() {
+            return self.finish_video_overlay(t!("Video closed", "영상 닫음"));
+        }
+        if let Some(song) = self.queue.current().cloned() {
             let Some(id) = self.recover_youtube_id(&song) else {
                 // Local-only track with no recoverable YouTube origin → nothing to show.
                 self.status.text = t!(
@@ -131,27 +185,20 @@ impl App {
                 self.dirty = true;
                 return cmds;
             };
-            let url = format!("https://www.youtube.com/watch?v={id}");
-            let cookies = self.config.cookies_file.clone();
-            match spawn_video_overlay(&url, cookies.as_deref(), self.config.video_layout) {
-                Some(child) => {
-                    self.video.proc = Some(child);
-                    if !self.playback.paused {
-                        self.playback.paused = true;
-                        self.video.paused_audio = true;
-                        cmds.push(Cmd::Player(PlayerCmd::SetProperty {
-                            name: "pause".to_owned(),
-                            value: serde_json::Value::Bool(true),
-                        }));
-                    }
-                    self.status.kind = StatusKind::Info;
-                    self.status.text =
-                        t!("Opening video in mpv…", "mpv에서 영상을 여는 중…").to_owned();
+            if self.open_video_overlay(&id, self.config.video_layout, &mut cmds) {
+                if !self.playback.paused {
+                    self.playback.paused = true;
+                    self.video.paused_audio = true;
+                    cmds.push(Cmd::Player(PlayerCmd::SetProperty {
+                        name: "pause".to_owned(),
+                        value: serde_json::Value::Bool(true),
+                    }));
                 }
-                None => {
-                    self.status.text =
-                        t!("Failed to launch mpv", "mpv 실행에 실패했습니다").to_owned();
-                }
+                self.status.kind = StatusKind::Info;
+                self.status.text =
+                    t!("Opening video in mpv…", "mpv에서 영상을 여는 중…").to_owned();
+            } else {
+                self.status.text = t!("Failed to launch mpv", "mpv 실행에 실패했습니다").to_owned();
             }
         } else {
             self.status.text = t!("No track playing", "재생 중인 곡이 없습니다").to_owned();
@@ -178,33 +225,131 @@ impl App {
             self.close_video();
             match id {
                 Some(id) => {
-                    let url = format!("https://www.youtube.com/watch?v={id}");
-                    let cookies = self.config.cookies_file.clone();
-                    self.video.proc = spawn_video_overlay(&url, cookies.as_deref(), layout);
+                    if !self.open_video_overlay(&id, layout, &mut cmds) {
+                        // The respawn failed: resume audio rather than strand it paused
+                        // behind a window that no longer exists.
+                        cmds.extend(self.finish_video_overlay(t!(
+                            "Failed to launch mpv",
+                            "mpv 실행에 실패했습니다"
+                        )));
+                        self.status.kind = StatusKind::Error;
+                        return cmds;
+                    }
                     // Audio stays paused (video.paused_audio unchanged).
                 }
                 None => {
-                    if self.video.paused_audio {
-                        self.video.paused_audio = false;
-                        self.playback.paused = false;
-                        cmds.push(Cmd::Player(PlayerCmd::SetProperty {
-                            name: "pause".to_owned(),
-                            value: serde_json::Value::Bool(false),
-                        }));
-                    }
-                    self.status.kind = StatusKind::Info;
-                    self.status.text = t!(
+                    cmds.extend(self.finish_video_overlay(t!(
                         "This track is local-only — no video",
                         "로컬 전용 트랙이라 영상이 없어요"
-                    )
-                    .to_owned();
-                    self.dirty = true;
+                    )));
                     return cmds;
                 }
             }
         }
         self.status.kind = StatusKind::Info;
         self.status.text = format!("{}: {}", t!("Video", "영상"), layout.label());
+        self.dirty = true;
+        cmds
+    }
+
+    /// An event from the overlay window's IPC client ([`Msg::VideoOverlay`]). Events carry
+    /// the spawn generation they were connected for; anything from a window we already
+    /// closed (`v`) or respawned (`Shift+V`) is stale and ignored.
+    pub(in crate::app) fn on_video_overlay_event(
+        &mut self,
+        generation: u64,
+        event: crate::player::video::VideoEvent,
+    ) -> Vec<Cmd> {
+        use crate::player::video::VideoEvent;
+        if generation != self.video.generation || self.video.proc.is_none() {
+            return Vec::new();
+        }
+        match event {
+            VideoEvent::Eof => {
+                if self.config.effective_auto_continue_videos() {
+                    self.video_continue_next()
+                } else {
+                    // Pre-IPC, an ended video meant audio stayed stranded paused until the
+                    // user pressed `v` twice; with EOF observable it reads as a close.
+                    self.finish_video_overlay(t!("Video ended", "영상이 끝났어요"))
+                }
+            }
+            VideoEvent::Failed(detail) => {
+                let msg = if detail.is_empty() {
+                    t!("Video playback failed", "영상 재생에 실패했어요").to_owned()
+                } else {
+                    format!(
+                        "{} ({detail})",
+                        t!("Video playback failed", "영상 재생에 실패했어요")
+                    )
+                };
+                let cmds = self.finish_video_overlay(&msg);
+                self.status.kind = StatusKind::Error;
+                cmds
+            }
+            VideoEvent::Quit => self.finish_video_overlay(t!("Video closed", "영상 닫음")),
+            VideoEvent::Closed => {
+                // Act only when the process is genuinely gone: an IPC hiccup with a live
+                // window degrades to the pre-IPC behavior instead of yanking the overlay.
+                if self.video_open() {
+                    return Vec::new();
+                }
+                self.finish_video_overlay(t!("Video closed", "영상 닫음"))
+            }
+        }
+    }
+
+    /// Auto-continue (Settings › Playback): the overlay reached the current video's end —
+    /// advance the queue exactly like an audio EOF, keep the audio engine paused
+    /// underneath, and load the next track's video into the same window.
+    pub(in crate::app) fn video_continue_next(&mut self) -> Vec<Cmd> {
+        // Identical bookkeeping to the audio EOF path (`Msg::PlayerEof`): full-play
+        // signal, repeat/shuffle-aware advance, streaming top-up — so queue semantics
+        // never diverge between audio and video continuation.
+        let mut cmds = self.record_outgoing(true);
+        cmds.extend(self.advance(true));
+        if self.prefetch.loaded_video_id.is_none() {
+            // Queue ended (advance loaded nothing): close the overlay and drop the stale
+            // paused track from mpv, mirroring the audio queue-end (mpv idle, paused).
+            self.close_video();
+            self.video.paused_audio = false;
+            cmds.push(Cmd::Player(PlayerCmd::Stop));
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!("Queue ended", "큐가 끝났어요").to_owned();
+            self.dirty = true;
+            return cmds;
+        }
+        // advance()→load_song() loaded the next track into the (still paused) audio
+        // engine, but reset_progress() cleared our pause flag — re-pin both sides so
+        // audio never plays under the video and a later close resumes at this track.
+        self.playback.paused = true;
+        self.video.paused_audio = true;
+        cmds.push(Cmd::Player(PlayerCmd::SetProperty {
+            name: "pause".to_owned(),
+            value: serde_json::Value::Bool(true),
+        }));
+        match self
+            .queue
+            .current()
+            .cloned()
+            .and_then(|song| self.recover_youtube_id(&song))
+        {
+            Some(id) => {
+                cmds.push(Cmd::VideoLoad(format!(
+                    "https://www.youtube.com/watch?v={id}"
+                )));
+                self.status.kind = StatusKind::Info;
+                self.status.text = t!("Next video…", "다음 영상…").to_owned();
+            }
+            None => {
+                // The next track is local-only (no recoverable video): fall back to
+                // audio playback instead of skipping tracks hunting for one.
+                cmds.extend(self.finish_video_overlay(t!(
+                    "This track is local-only — continuing with audio",
+                    "로컬 전용 트랙이라 소리로 이어서 재생해요"
+                )));
+            }
+        }
         self.dirty = true;
         cmds
     }

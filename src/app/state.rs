@@ -207,6 +207,13 @@ pub struct Video {
     /// Whether opening the video overlay is what paused the audio, so closing it only resumes
     /// playback we paused (not audio the user had paused themselves).
     pub paused_audio: bool,
+    /// Monotonic spawn counter. Overlay IPC events carry the generation they were connected
+    /// for, so events from a window that was already closed (`v`) or respawned (`Shift+V`)
+    /// are recognized as stale and ignored.
+    pub generation: u64,
+    /// The overlay's IPC endpoint, kept so closing can unlink the Unix socket file
+    /// (Windows named pipes self-clean).
+    pub ipc_path: Option<String>,
 }
 
 /// Live playback transport: position, track length, pause state, output volume, and speed.

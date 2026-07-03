@@ -99,8 +99,9 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, e
     }
 }
 
-/// Write one newline-terminated JSON command to mpv.
-async fn write_json(conn: &Stream, json: &str) -> io::Result<()> {
+/// Write one newline-terminated JSON command to mpv. Shared with the video-overlay
+/// client ([`super::video`]), which drives a second mpv over the same wire format.
+pub(super) async fn write_json(conn: &Stream, json: &str) -> io::Result<()> {
     let mut writer = conn;
     writer.write_all(json.as_bytes()).await?;
     writer.write_all(b"\n").await?;

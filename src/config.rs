@@ -388,6 +388,9 @@ pub struct Config {
     /// Auto-play the restored last track as soon as the app launches. `None` → off
     /// (opt-in; a fresh launch otherwise seeds the track paused and idle).
     pub autoplay_on_start: Option<bool>,
+    /// When the `v` video overlay is open, auto-play the next queue track's video as the
+    /// current one ends (TUI only; the overlay doesn't exist in the daemon). `None` → off.
+    pub auto_continue_videos: Option<bool>,
     /// Search source selection, enabled providers, and provider identifiers.
     pub search: SearchConfig,
     /// Local streaming engine tuning (scoring weights, diversity, cooldown). Defaults ship a
@@ -494,6 +497,7 @@ impl Default for Config {
             enqueue_next: None,
             autoplay_streaming: None,
             autoplay_on_start: None,
+            auto_continue_videos: None,
             search: SearchConfig::default(),
             streaming: StreamingConfig::default(),
             animations: AnimationsConfig::default(),
@@ -752,6 +756,11 @@ impl Config {
         self.autoplay_on_start.unwrap_or(false)
     }
 
+    /// Whether the video overlay auto-continues into the next track's video (default off).
+    pub fn effective_auto_continue_videos(&self) -> bool {
+        self.auto_continue_videos.unwrap_or(false)
+    }
+
     /// Search provider settings with a valid selected source.
     pub fn effective_search(&self) -> SearchConfig {
         self.search.clone().normalized()
@@ -959,6 +968,7 @@ mod tests {
             enqueue_next: Some(true),
             autoplay_streaming: Some(true),
             autoplay_on_start: Some(true),
+            auto_continue_videos: Some(true),
             search: SearchConfig::default(),
             streaming: StreamingConfig::default(),
             animations: AnimationsConfig {
@@ -1161,6 +1171,7 @@ mod tests {
         assert!(!d.effective_enqueue_next());
         assert!(!d.effective_autoplay_streaming());
         assert!(!d.effective_autoplay_on_start());
+        assert!(!d.effective_auto_continue_videos());
 
         // Preset gains feed through when no hand-tuned bands are set.
         let preset = Config {

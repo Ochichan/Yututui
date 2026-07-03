@@ -1020,6 +1020,9 @@ impl App {
                 cmds.extend(self.advance(true));
                 return cmds;
             }
+            Msg::VideoOverlay { generation, event } => {
+                return self.on_video_overlay_event(generation, event);
+            }
             Msg::PlayerError(e) => {
                 // Log *which* track failed and whether it came from a (possibly stale)
                 // prefetched URL. `e` already carries mpv's own reason (its `file_error`
@@ -1685,16 +1688,23 @@ fn copy_to_clipboard(text: &str) {
 /// caller can track and later close it. Stdio is nulled so mpv can't touch the TUI's terminal.
 /// Cookies are forwarded to mpv's bundled yt-dlp (same option as the audio instance) when set;
 /// `--no-config` is intentionally omitted so the user's own mpv config applies to the video.
+/// With `ipc_path`, the window exposes a JSON IPC endpoint and gets `--keep-open=yes`, so a
+/// natural end pauses on the last frame (observable, and re-loadable) instead of exiting.
 fn spawn_video_overlay(
     url: &str,
     cookies: Option<&std::path::Path>,
     layout: crate::config::VideoOverlay,
+    ipc_path: Option<&str>,
 ) -> Option<std::process::Child> {
     use std::process::Stdio;
     let mut cmd = process::std_command("mpv", process::ProcessProfile::Media);
     cmd.arg(url);
     for arg in layout.mpv_window_args() {
         cmd.arg(arg);
+    }
+    if let Some(path) = ipc_path {
+        cmd.arg(format!("--input-ipc-server={path}"));
+        cmd.arg("--keep-open=yes");
     }
     if let Some(path) = cookies {
         cmd.arg(format!(

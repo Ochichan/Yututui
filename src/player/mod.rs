@@ -9,6 +9,7 @@ pub mod ipc;
 pub mod lifetime;
 pub mod mpv;
 pub mod proto;
+pub mod video;
 
 use std::path::PathBuf;
 use std::sync::Arc;

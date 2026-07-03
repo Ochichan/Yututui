@@ -21,6 +21,11 @@ pub enum RuntimeEvent {
     Lyrics(crate::lyrics::LyricsEvent),
     Player(crate::player::PlayerEvent),
     Remote(crate::remote::server::RemoteEvent),
+    /// From the video-overlay mpv's IPC client, tagged with its spawn generation.
+    Video {
+        generation: u64,
+        event: crate::player::video::VideoEvent,
+    },
     Resolver(crate::resolver::ResolverEvent),
     Scrobble(crate::scrobble::ScrobbleEvent),
     Signal(crate::player::lifetime::SignalEvent),
@@ -147,6 +152,7 @@ impl From<RuntimeEvent> for Msg {
             RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(cmd, reply)) => {
                 Msg::Remote(cmd, reply)
             }
+            RuntimeEvent::Video { generation, event } => Msg::VideoOverlay { generation, event },
             RuntimeEvent::Remote(crate::remote::server::RemoteEvent::SessionSubscribe {
                 ..
             }) => {
@@ -191,6 +197,10 @@ pub struct RuntimeHandles {
     pending_player_cmds: Vec<PlayerCmd>,
     player_failed: bool,
     _mpv_guard: Option<crate::player::Mpv>,
+    /// Command sender for the *current* video overlay's IPC client. Replaced wholesale
+    /// on every `Cmd::VideoConnect` (each spawn generation gets a fresh client); sends
+    /// to a dead client are silent no-ops.
+    video_handle: Option<UnboundedSender<crate::player::video::VideoCmd>>,
     api_handle: crate::api::ApiHandle,
     lyrics_handle: crate::lyrics::LyricsHandle,
     artwork_handle: crate::artwork::ArtworkHandle,
@@ -223,6 +233,7 @@ impl RuntimeHandles {
             pending_player_cmds: Vec::new(),
             player_failed: false,
             _mpv_guard: None,
+            video_handle: None,
             api_handle,
             lyrics_handle,
             artwork_handle,
@@ -298,6 +309,26 @@ impl RuntimeHandles {
                     p.send(pc);
                 } else if !self.player_failed {
                     self.pending_player_cmds.push(pc);
+                }
+            }
+            // dispatch runs synchronously right after each update, so the connect for a
+            // spawn generation is always installed before any VideoLoad that follows it.
+            Cmd::VideoConnect {
+                ipc_path,
+                generation,
+            } => {
+                let tx = self.worker_tx.clone();
+                self.video_handle = Some(crate::player::video::connect(
+                    ipc_path,
+                    generation,
+                    move |generation, event| {
+                        let _ = tx.send(RuntimeEvent::Video { generation, event });
+                    },
+                ));
+            }
+            Cmd::VideoLoad(url) => {
+                if let Some(v) = &self.video_handle {
+                    let _ = v.send(crate::player::video::VideoCmd::Load(url));
                 }
             }
             Cmd::Search {

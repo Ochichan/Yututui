@@ -2756,8 +2756,9 @@ fn settings_band_edit_sets_custom_and_emits_filter() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..6 {
-        // Speed → Seek → Wheel volume → Gapless → Media controls → EqPreset → Band(0) at row 6.
+    for _ in 0..7 {
+        // Speed → Seek → Wheel volume → Gapless → Media controls → Auto-continue videos
+        // → EqPreset → Band(0) at row 7.
         app.update(Msg::Key(key(KeyCode::Down)));
     }
     let cmds = app.update(Msg::Key(key(KeyCode::Right))); // raise the band
@@ -2780,8 +2781,8 @@ fn settings_close_reasserts_audio_and_persists_volume() {
     app.playback.volume = 55; // a `=`/`-` change during the session
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..6 {
-        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 6
+    for _ in 0..7 {
+        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 7
     }
     app.update(Msg::Key(key(KeyCode::Right))); // raise it (draft = Custom)
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
@@ -2798,8 +2799,8 @@ fn settings_preset_selector_snaps_from_custom_to_flat() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char(',')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..6 {
-        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 6
+    for _ in 0..7 {
+        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 7
     }
     app.update(Msg::Key(key(KeyCode::Right))); // hand-tune → Custom
     assert_eq!(
@@ -8254,4 +8255,167 @@ fn zoom_wheel_lock_freezes_the_gesture_but_not_the_keys() {
         ctrl: true,
     });
     assert_eq!(app.zoom.percent(), 150);
+}
+
+// --- Video overlay: auto-continue (`Settings › Playback`) ----------------
+
+use crate::player::video::VideoEvent;
+
+/// A live stand-in for the overlay mpv process, so `on_video_overlay_event`'s
+/// "window still open" guard holds during a test. Killed via `close_video()`.
+#[cfg(unix)]
+fn fake_overlay_proc() -> std::process::Child {
+    std::process::Command::new("sleep")
+        .arg("30")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn test child")
+}
+
+#[test]
+fn video_continue_advances_queue_paused_and_loads_next_video() {
+    let mut app = app_playing(3, 0);
+    // The overlay paused the audio when it opened.
+    app.playback.paused = true;
+    app.video.paused_audio = true;
+
+    let cmds = app.video_continue_next();
+
+    assert_eq!(current(&app), "id1");
+    // The next track loads into the audio engine (position tracking)…
+    assert!(load_url(&cmds).is_some());
+    // …but both sides stay pinned paused: video owns playback until the overlay closes.
+    assert!(app.playback.paused);
+    assert!(app.video.paused_audio);
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::Player(PlayerCmd::SetProperty { name, value })
+            if name == "pause" && value == &serde_json::Value::Bool(true)
+    )));
+    // The same overlay window is asked to show the next track's video.
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::VideoLoad(url) if url == "https://www.youtube.com/watch?v=id1"
+    )));
+}
+
+#[test]
+fn video_continue_at_queue_end_stops_like_audio() {
+    let mut app = app_playing(2, 1);
+    app.playback.paused = true;
+    app.video.paused_audio = true;
+
+    let cmds = app.video_continue_next();
+
+    // Mirrors the audio queue-end: nothing left loaded, mpv told to drop the file.
+    assert!(has_stop(&cmds));
+    assert!(!cmds.iter().any(|c| matches!(c, Cmd::VideoLoad(_))));
+    assert!(app.prefetch.loaded_video_id.is_none());
+    // Nothing to resume when the (already closed) overlay state is cleaned up.
+    assert!(!app.video.paused_audio);
+    assert!(app.playback.paused);
+}
+
+#[test]
+fn video_continue_repeat_one_reloads_the_same_video() {
+    let mut app = app_playing(2, 0);
+    app.queue.repeat = crate::queue::Repeat::One;
+    app.playback.paused = true;
+    app.video.paused_audio = true;
+
+    let cmds = app.video_continue_next();
+
+    assert_eq!(current(&app), "id0");
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::VideoLoad(url) if url == "https://www.youtube.com/watch?v=id0"
+    )));
+}
+
+#[test]
+fn video_event_after_close_is_ignored() {
+    let mut app = app_playing(2, 0);
+    app.config.auto_continue_videos = Some(true);
+    // The overlay was already closed (`v`): a late Eof from its IPC client is stale.
+    let generation = app.video.generation;
+    let cmds = app.update(Msg::VideoOverlay {
+        generation,
+        event: VideoEvent::Eof,
+    });
+    assert!(cmds.is_empty());
+    assert_eq!(current(&app), "id0");
+}
+
+#[cfg(unix)]
+#[test]
+fn video_eof_with_toggle_off_closes_and_resumes_audio() {
+    let mut app = app_playing(2, 0);
+    app.video.proc = Some(fake_overlay_proc());
+    app.playback.paused = true;
+    app.video.paused_audio = true;
+
+    let generation = app.video.generation;
+    let cmds = app.update(Msg::VideoOverlay {
+        generation,
+        event: VideoEvent::Eof,
+    });
+
+    // Toggle off: an ended video reads as a close — window reaped, audio resumed.
+    assert!(app.video.proc.is_none());
+    assert!(!app.playback.paused);
+    assert!(!app.video.paused_audio);
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::Player(PlayerCmd::SetProperty { name, value })
+            if name == "pause" && value == &serde_json::Value::Bool(false)
+    )));
+    assert_eq!(current(&app), "id0", "no advance with the toggle off");
+}
+
+#[cfg(unix)]
+#[test]
+fn video_eof_with_toggle_on_keeps_the_window_and_advances() {
+    let mut app = app_playing(3, 0);
+    app.config.auto_continue_videos = Some(true);
+    app.video.proc = Some(fake_overlay_proc());
+    app.playback.paused = true;
+    app.video.paused_audio = true;
+
+    let generation = app.video.generation;
+    let cmds = app.update(Msg::VideoOverlay {
+        generation,
+        event: VideoEvent::Eof,
+    });
+
+    assert!(
+        app.video.proc.is_some(),
+        "the window stays open for the next video"
+    );
+    assert_eq!(current(&app), "id1");
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::VideoLoad(url) if url == "https://www.youtube.com/watch?v=id1"
+    )));
+    app.close_video();
+}
+
+#[cfg(unix)]
+#[test]
+fn video_event_from_an_older_generation_is_ignored() {
+    let mut app = app_playing(2, 0);
+    app.config.auto_continue_videos = Some(true);
+    app.video.proc = Some(fake_overlay_proc());
+    app.video.generation = 3;
+
+    // A Quit from the window that Shift+V already replaced must not close the new one.
+    let cmds = app.update(Msg::VideoOverlay {
+        generation: 2,
+        event: VideoEvent::Quit,
+    });
+
+    assert!(cmds.is_empty());
+    assert!(app.video.proc.is_some());
+    app.close_video();
 }

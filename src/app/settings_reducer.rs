@@ -43,6 +43,7 @@ impl App {
             mouse_wheel_volume: self.config.effective_mouse_wheel_volume(),
             gapless: self.config.effective_gapless(),
             media_controls: self.config.effective_media_controls(),
+            auto_continue_videos: self.config.effective_auto_continue_videos(),
             autoplay_streaming: self.autoplay_streaming,
             streaming_mode: self.config.streaming.mode,
             eq_preset: self.audio.preset,
@@ -349,6 +350,11 @@ impl App {
             Field::MediaControls => {
                 let s = self.settings_mut();
                 s.draft.media_controls = !s.draft.media_controls;
+                Vec::new()
+            }
+            Field::AutoContinueVideos => {
+                let s = self.settings_mut();
+                s.draft.auto_continue_videos = !s.draft.auto_continue_videos;
                 Vec::new()
             }
             Field::AutoplayOnStart => {

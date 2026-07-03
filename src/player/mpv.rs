@@ -33,6 +33,25 @@ pub fn ipc_path() -> Result<String> {
     }
 }
 
+/// IPC endpoint for the *video overlay* mpv ([`crate::player::video`]), unique per
+/// (pid, spawn generation) so a `Shift+V` respawn never races the previous window's
+/// socket/pipe.
+pub fn video_ipc_path(generation: u64) -> Result<String> {
+    let pid = std::process::id();
+    #[cfg(windows)]
+    {
+        Ok(format!(r"\\.\pipe\ytm-tui-mpv-video-{pid}-{generation}"))
+    }
+    #[cfg(unix)]
+    {
+        Ok(runtime::app_runtime_dir()
+            .context("prepare mpv IPC runtime dir")?
+            .join(format!("ytm-tui-mpv-video-{pid}-{generation}.sock"))
+            .to_string_lossy()
+            .into_owned())
+    }
+}
+
 /// Spawn mpv listening on `ipc_path`. `kill_on_drop(true)` is the tokio-level half of
 /// the no-orphan guarantee: if the owning [`super::Mpv`] is dropped, the child is
 /// SIGKILLed. The OS-enforced backstops (signals, panic hook, Job Object) live in

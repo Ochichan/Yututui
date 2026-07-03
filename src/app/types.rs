@@ -83,6 +83,13 @@ pub enum Msg {
     PlayerEof,
     /// mpv reported a playback error.
     PlayerError(String),
+    /// An event from the video-overlay mpv's IPC client, tagged with the spawn
+    /// generation it was connected for — the reducer drops events from a window it
+    /// already closed (`v`) or respawned (`Shift+V`).
+    VideoOverlay {
+        generation: u64,
+        event: crate::player::video::VideoEvent,
+    },
     /// Search returned results (possibly empty) for `query`.
     SearchResults {
         query: String,
@@ -228,6 +235,13 @@ pub enum Msg {
 /// Side effects the reducer asks the run loop to perform.
 pub enum Cmd {
     Player(PlayerCmd),
+    /// Connect the IPC client for a freshly spawned video-overlay mpv.
+    VideoConnect {
+        ipc_path: String,
+        generation: u64,
+    },
+    /// `loadfile <url> replace` into the live overlay window (auto-continue).
+    VideoLoad(String),
     Search {
         query: String,
         source: SearchSource,
