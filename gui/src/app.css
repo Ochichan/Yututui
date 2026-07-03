@@ -1,0 +1,123 @@
+/* Design tokens (docs/gui/06). Two layers: role variables (dynamic, written by
+   theme.svelte.ts from the core) and static component tokens. The role values below are
+   fallbacks so the window is themed even before the first theme push — the seed is the
+   mini player's Catppuccin palette (src/tray/panel.rs). */
+
+:root {
+  /* --- role fallbacks (overwritten live by theme.svelte.ts) --- */
+  --role-background: #1e1e2e;
+  --role-text-primary: #cdd6f4;
+  --role-text-muted: #a6adc8;
+  --role-text-subtle: #7f849c;
+  --role-text-inverse: #1e1e2e;
+  --role-border-primary: #45475a;
+  --role-border-focused: #89b4fa;
+  --role-border-muted: #313244;
+  --role-accent: #cba6f7;
+  --role-accent-alt: #f5c2e7;
+  --role-success: #a6e3a1;
+  --role-warning: #f9e2af;
+  --role-error: #f38ba8;
+  --role-selection-fg: #1e1e2e;
+  --role-selection-bg: #cba6f7;
+  --role-selection-inactive-fg: #cdd6f4;
+  --role-selection-inactive-bg: #45475a;
+  --role-gauge-filled: #cba6f7;
+  --role-gauge-empty: #45475a;
+  --role-player-control: #cdd6f4;
+  --role-player-label: #a6adc8;
+  --role-help-group: #f9e2af;
+  --role-help-key: #89b4fa;
+  --role-help-action: #cdd6f4;
+  --role-settings-group: #f9e2af;
+  --role-settings-label: #a6adc8;
+  --role-settings-value: #cdd6f4;
+  --role-settings-value-focused: #89b4fa;
+  --role-ai-user: #89b4fa;
+  --role-ai-assistant: #a6e3a1;
+  --role-ai-error: #f38ba8;
+  --role-ai-thinking: #7f849c;
+  --role-lyrics-current: #cba6f7;
+  --role-lyrics-dim: #7f849c;
+
+  /* --- surfaces: JS-computed on theme push; these are fallbacks --- */
+  --surface-0: var(--role-background);
+  --surface-1: #26263a;
+  --surface-2: #2e2e44;
+
+  /* --- spacing (4px base) --- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* --- radii (26px = mini-player cushion) --- */
+  --radius-s: 6px;
+  --radius-m: 10px;
+  --radius-l: 16px;
+  --radius-xl: 26px;
+  --radius-pill: 999px;
+
+  /* --- elevation (panel.rs two-shadow recipe) --- */
+  --elev-1: 0 1px 2px rgb(0 0 0 / 0.18);
+  --elev-2: 0 6px 18px rgb(0 0 0 / 0.28), 0 2px 6px rgb(0 0 0 / 0.22);
+  --elev-3: 0 16px 48px rgb(0 0 0 / 0.4), 0 4px 12px rgb(0 0 0 / 0.28);
+
+  /* --- fonts (verbatim from panel.rs) --- */
+  --font-ui: ui-rounded, 'SF Pro Rounded', -apple-system, 'Segoe UI Variable Text',
+    'Segoe UI', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Segoe UI Mono', monospace;
+
+  color-scheme: dark;
+}
+
+/* --- minimal reset --- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-ui);
+  background: var(--surface-0);
+  color: var(--role-text-primary);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+#app {
+  height: 100vh;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--role-border-focused);
+  outline-offset: 2px;
+}
+
+/* Master animations-off disables transitions outright (docs/gui/06 §5). */
+.no-anim * {
+  transition: none !important;
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

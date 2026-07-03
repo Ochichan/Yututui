@@ -1,6 +1,11 @@
 /target
 /dist
 
+# Frontend workspace: deps and build output are never vendored (package-lock.json is
+# the reproducibility stance; gui/src/generated/ IS committed and drift-gated).
+gui/node_modules/
+gui/dist/
+
 # Browser cookie exports (login secrets — never commit)
 cookies.txt
 *cookies*.txt

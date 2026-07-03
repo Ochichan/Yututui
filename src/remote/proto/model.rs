@@ -13,6 +13,11 @@ use crate::search_source::SearchSource;
 /// Rating note (docs/gui/02 §11.2): there is no stored tri-state rating in the core —
 /// the TUI's 👍/–/👎 cycle is synthesized from library-favorite membership plus
 /// `signals.disliked`. The wire carries exactly those two booleans.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackModel {
     pub video_id: String,
@@ -21,6 +26,9 @@ pub struct TrackModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub album: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // ms fit a JS number safely; ts-rs would otherwise map u64 → bigint, but JSON.parse
+    // yields a number at runtime (docs/gui/05 §12 risk 3 — keep the wire type honest).
+    #[cfg_attr(feature = "ts-export", ts(type = "number | null"))]
     pub duration_ms: Option<u64>,
     pub source: SearchSource,
     #[serde(default)]
@@ -48,6 +56,11 @@ pub struct TrackModel {
 
 /// A reference to the on-disk artwork cache — bytes never ride the socket
 /// (docs/gui/02 §12). The GUI serves it to its webview at `ytm://app/art/<key>`.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtworkRef {
     /// Cache key (`video_id`, or `local:<path>`-derived for local files).

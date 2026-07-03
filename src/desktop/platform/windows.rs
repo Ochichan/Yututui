@@ -11,14 +11,14 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWi
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use crate::desktop::control;
+use crate::desktop::launch;
+use crate::desktop::menu_model::{self, MenuAction, MenuEntry, MenuItem as ModelItem, TrayState};
+use crate::desktop::panel::PanelCommand;
+use crate::desktop::platform::panel_window::MiniPlayerPanel;
+use crate::desktop::startup::{self, StartupStatus};
+use crate::desktop::status::{self, PollConfig, PollUpdate};
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
-use crate::tray::control;
-use crate::tray::launch;
-use crate::tray::menu_model::{self, MenuAction, MenuEntry, MenuItem as ModelItem, TrayState};
-use crate::tray::panel::PanelCommand;
-use crate::tray::platform::panel_window::MiniPlayerPanel;
-use crate::tray::startup::{self, StartupStatus};
-use crate::tray::status::{self, PollConfig, PollUpdate};
 
 const APP_ID: &str = "io.github.ochi.ytm-tui.tray";
 const POLL_THREAD_NAME: &str = "ytt-tray-status";
@@ -41,7 +41,11 @@ enum UserEvent {
     Quit,
 }
 
-pub fn run() -> Result<(), Box<dyn Error>> {
+pub fn run(open_main: bool) -> Result<(), Box<dyn Error>> {
+    // The Windows main-window + gateway wiring mirrors the macOS path (docs/gui/03 §3) but
+    // needs a Windows box to verify; it lands with the Windows M0 sign-off. Tray/mini are
+    // unchanged for now.
+    let _ = open_main;
     let log_guard = init_file_logging();
     install_tray_panic_hook();
     set_app_user_model_id();

@@ -2110,8 +2110,8 @@ const PANEL_HTML: &str = r#"<!doctype html>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desktop::control::ControlError;
     use crate::remote::proto::{InstanceMode, QueueItemSnapshot, StatusSnapshot};
-    use crate::tray::control::ControlError;
 
     fn playing_update() -> PollUpdate {
         PollUpdate::connected(StatusSnapshot {

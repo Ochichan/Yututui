@@ -39,11 +39,17 @@ pub struct HelloBody {
 }
 
 /// The server's answer to a [`HelloRequest`], and the session's capability surface.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloAck {
     pub ok: bool,
     /// The version this session will speak.
     pub version: u8,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub session_id: u64,
     /// Live per-owner feature strings (docs/gui/02 §10); mirrors the instance descriptor.
     pub capabilities: Vec<String>,
@@ -105,6 +111,11 @@ pub enum ServerFrame {
 }
 
 /// A domain channel a session subscribes to (docs/gui/02 §7).
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Topic {
@@ -166,6 +177,11 @@ impl Topic {
 /// The payload of a push [`ServerFrame::Event`]. Internally tagged by `kind` so new
 /// event kinds are additive; B1+ milestones extend this enum (lyrics, artwork, library
 /// invalidations, ticketed results, …).
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PushEvent {

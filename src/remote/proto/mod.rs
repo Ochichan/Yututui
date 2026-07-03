@@ -43,6 +43,11 @@ pub const PROTOCOL_VERSION: u8 = 8;
 /// what the owner can speak.
 pub const PROTOCOL_VERSION_V7: u8 = 7;
 
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstanceMode {

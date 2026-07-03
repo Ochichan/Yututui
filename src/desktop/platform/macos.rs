@@ -11,14 +11,18 @@ use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
+use crate::desktop::control;
+use crate::desktop::launch;
+use crate::desktop::menu_model::{self, MenuAction, MenuEntry, MenuItem as ModelItem, TrayState};
+use crate::desktop::panel::PanelCommand;
+use crate::desktop::platform::main_window::MainWindow;
+use crate::desktop::platform::panel_window::MiniPlayerPanel;
+use crate::desktop::single_instance::{self, Acquire};
+use crate::desktop::startup::{self, StartupStatus};
+use crate::desktop::window_state::DesktopState;
+use crate::desktop::status::{self, PollConfig, PollUpdate};
+use crate::desktop::{bridge, gateway};
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
-use crate::tray::control;
-use crate::tray::launch;
-use crate::tray::menu_model::{self, MenuAction, MenuEntry, MenuItem as ModelItem, TrayState};
-use crate::tray::panel::PanelCommand;
-use crate::tray::platform::panel_window::MiniPlayerPanel;
-use crate::tray::startup::{self, StartupStatus};
-use crate::tray::status::{self, PollConfig, PollUpdate};
 
 const POLL_THREAD_NAME: &str = "ytt-tray-status";
 const COMMAND_THREAD_NAME: &str = "ytt-tray-command";
@@ -34,18 +38,52 @@ enum UserEvent {
     DaemonPrimary,
     Refresh,
     StartupChanged,
+    /// Live connection state from the persistent v8 gateway thread (docs/gui/03 §3.2).
+    Gateway(gateway::GatewayEvent),
+    /// A request concerning the main window: an IPC line from its webview, or an activate.
+    Main(MainRequest),
     Quit,
 }
 
-pub fn run() -> Result<(), Box<dyn Error>> {
+#[derive(Debug)]
+enum MainRequest {
+    /// One IPC envelope line posted by the main window's webview.
+    Ipc(String),
+    /// A second instance asked us to surface the main window.
+    Activate,
+}
+
+pub fn run(open_main: bool) -> Result<(), Box<dyn Error>> {
     let log_guard = init_file_logging();
     install_tray_panic_hook();
+
+    // Single GUI instance (docs/gui/03 §6): a second launch activates the first and exits.
+    // Held until the process exits (tao's run() diverges, so this never drops early).
+    let _instance = match single_instance::acquire() {
+        Ok(Acquire::Primary(guard)) => Some(guard),
+        Ok(Acquire::AlreadyRunning) => {
+            single_instance::signal_activate();
+            return Ok(());
+        }
+        Err(e) => {
+            report_error(format_args!("single-instance lock unavailable: {e}"));
+            None
+        }
+    };
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
     event_loop.set_dock_visibility(false);
 
     let proxy = event_loop.create_proxy();
+
+    // A second launch pings the activate endpoint; surface the main window when it does.
+    let _ = single_instance::spawn_activate_listener({
+        let proxy = proxy.clone();
+        move || {
+            let _ = proxy.send_event(UserEvent::Main(MainRequest::Activate));
+        }
+    });
 
     MenuEvent::set_event_handler(Some({
         let proxy = proxy.clone();
@@ -56,16 +94,22 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         }
     }));
 
-    let mut app = MacTrayApp::new(proxy.clone(), log_guard);
+    let mut app = MacTrayApp::new(proxy.clone(), log_guard, open_main);
 
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::NewEvents(StartCause::Init) => {
-                if let Err(e) = app.init() {
+                if let Err(e) = app.init(target) {
                     report_error(e);
                     *control_flow = ControlFlow::Exit;
                 }
+            }
+            Event::UserEvent(UserEvent::Gateway(ev)) => {
+                app.handle_gateway(ev);
+            }
+            Event::UserEvent(UserEvent::Main(req)) => {
+                app.handle_main(req, target);
             }
             Event::UserEvent(UserEvent::Status(update)) => {
                 app.apply_update(update);
@@ -118,6 +162,10 @@ struct MacTrayApp {
     tray: Option<TrayIcon>,
     menu: Option<MacMenu>,
     panel: Option<MiniPlayerPanel>,
+    main_window: Option<MainWindow>,
+    gateway: Option<gateway::GatewayHandle>,
+    last_conn: gateway::ConnState,
+    open_main: bool,
     last_update: PollUpdate,
     poll_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     // Held until LoopDestroyed: tao's run() never returns (it exits the process), so
@@ -130,19 +178,27 @@ impl MacTrayApp {
     fn new(
         proxy: EventLoopProxy<UserEvent>,
         log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+        open_main: bool,
     ) -> Self {
         Self {
             proxy,
             tray: None,
             menu: None,
             panel: None,
+            main_window: None,
+            gateway: None,
+            last_conn: gateway::ConnState::Connecting,
+            open_main,
             last_update: PollUpdate::disconnected(control::ControlError::NotRunning),
             poll_shutdown: None,
             log_guard,
         }
     }
 
-    fn init(&mut self) -> Result<(), Box<dyn Error>> {
+    fn init(
+        &mut self,
+        target: &EventLoopWindowTarget<UserEvent>,
+    ) -> Result<(), Box<dyn Error>> {
         let menu = MacMenu::new(&self.last_update.state)?;
         let icon = template_icon()?;
         let tray = TrayIconBuilder::new()
@@ -159,7 +215,88 @@ impl MacTrayApp {
         self.menu = Some(menu);
         self.start_polling();
         self.request_status_now();
+        self.start_gateway();
+        if self.open_main {
+            self.open_main_window(target);
+        }
         Ok(())
+    }
+
+    /// Spawn the persistent v8 session thread; connection-state events route back to the
+    /// loop as `UserEvent::Gateway` (docs/gui/03 §3.2).
+    fn start_gateway(&mut self) {
+        if self.gateway.is_some() {
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.gateway = Some(gateway::spawn(move |ev| {
+            let _ = proxy.send_event(UserEvent::Gateway(ev));
+        }));
+    }
+
+    fn open_main_window(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
+        if let Some(main) = &self.main_window {
+            main.show();
+            return;
+        }
+        let boot = boot_json(&self.last_conn);
+        let proxy = self.proxy.clone();
+        match MainWindow::create(target, boot, None, move |body| {
+            let _ = proxy.send_event(UserEvent::Main(MainRequest::Ipc(body)));
+        }) {
+            Ok(main) => {
+                // Seed the page with the current connection state right away.
+                main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
+                    self.last_conn.to_conn_payload(),
+                )));
+                self.main_window = Some(main);
+            }
+            Err(e) => report_error(e),
+        }
+    }
+
+    fn handle_gateway(&mut self, ev: gateway::GatewayEvent) {
+        let gateway::GatewayEvent::Connection(state) = ev;
+        self.last_conn = state;
+        if let Some(main) = &self.main_window {
+            main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
+                self.last_conn.to_conn_payload(),
+            )));
+        }
+    }
+
+    fn handle_main(&mut self, req: MainRequest, target: &EventLoopWindowTarget<UserEvent>) {
+        match req {
+            MainRequest::Activate => self.open_main_window(target),
+            MainRequest::Ipc(body) => match bridge::dispatch(&body) {
+                bridge::BridgeAction::Reply(env) => {
+                    if let Some(main) = &self.main_window {
+                        main.eval(&bridge::receive_script(&env));
+                    }
+                }
+                bridge::BridgeAction::Win(op) => self.handle_win_op(op),
+                // Command/subscription forwarding to the gateway lands at M1.
+                bridge::BridgeAction::ToGateway(_) | bridge::BridgeAction::Ignore => {}
+            },
+        }
+    }
+
+    fn handle_win_op(&mut self, op: bridge::WinOp) {
+        match op {
+            bridge::WinOp::Hide => {
+                if let Some(main) = &self.main_window {
+                    main.hide();
+                }
+            }
+            bridge::WinOp::Drag => {
+                if let Some(main) = &self.main_window {
+                    main.start_drag();
+                }
+            }
+            bridge::WinOp::StartDaemon => self.start_daemon(false),
+            // copyText/openUrl/openDevtools/persist land at M1; ignore unknowns.
+            _ => {}
+        }
     }
 
     fn start_polling(&mut self) {
@@ -301,11 +438,29 @@ impl MacTrayApp {
         }
     }
 
+    /// Persist the main window's current geometry so relaunch restores it (docs/gui/03 §8).
+    fn persist_main_geometry(&self) {
+        if let Some(main) = &self.main_window
+            && let Some(rect) = main.geometry()
+        {
+            let mut state = DesktopState::load();
+            state.main = Some(rect);
+            state.save();
+        }
+    }
+
     fn handle_window_close(&self, window_id: tao::window::WindowId) {
         if let Some(panel) = &self.panel
             && panel.window_id() == window_id
         {
             panel.hide();
+        }
+        // Main window close button → hide to tray (docs/gui/03 §4), saving geometry first.
+        if let Some(main) = &self.main_window
+            && main.window_id() == window_id
+        {
+            self.persist_main_geometry();
+            main.hide();
         }
     }
 
@@ -316,6 +471,13 @@ impl MacTrayApp {
             .is_some_and(|panel| panel.window_id() == window_id)
         {
             self.panel = None;
+        }
+        if self
+            .main_window
+            .as_ref()
+            .is_some_and(|main| main.window_id() == window_id)
+        {
+            self.main_window = None;
         }
     }
 
@@ -390,9 +552,12 @@ impl MacTrayApp {
     }
 
     fn shutdown(&mut self) {
+        self.persist_main_geometry();
         if let Some(tx) = self.poll_shutdown.take() {
             let _ = tx.send(());
         }
+        // Tear down the gateway session cleanly (drops the handle → signals shutdown).
+        self.gateway.take();
         // Flush the log before tao exits the process. (muda's event handler lives in
         // a set-once cell — unsetting it here was always a no-op, so we don't.)
         drop(self.log_guard.take());
@@ -730,6 +895,27 @@ fn install_tray_panic_hook() {
         }
         previous(info);
     }));
+}
+
+/// Build the `window.__YTM_BOOT__` object literal injected at page load (docs/gui/04 §3.3).
+/// M0 injects no theme — the frontend falls back to its app.css role defaults (static-themed).
+fn boot_json(conn: &gateway::ConnState) -> String {
+    let owner = match conn {
+        gateway::ConnState::Online { owner_mode, .. } => serde_json::to_value(owner_mode).ok(),
+        _ => None,
+    };
+    serde_json::json!({
+        "platform": "macos",
+        "version": env!("CARGO_PKG_VERSION"),
+        "coreVersion": serde_json::Value::Null,
+        "protocolVersion": crate::remote::proto::PROTOCOL_VERSION,
+        "ownerMode": owner,
+        "locale": "en",
+        "theme": serde_json::Value::Null,
+        "uiState": serde_json::Value::Null,
+        "devFlags": { "devFrontend": false },
+    })
+    .to_string()
 }
 
 fn report_error(message: impl std::fmt::Display) {

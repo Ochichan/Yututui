@@ -9,8 +9,8 @@ use tao::event_loop::EventLoopWindowTarget;
 use tao::window::{Window, WindowBuilder, WindowId};
 use wry::{WebView, WebViewBuilder};
 
-use crate::tray::panel::{self, PanelCommand};
-use crate::tray::status::PollUpdate;
+use crate::desktop::panel::{self, PanelCommand};
+use crate::desktop::status::PollUpdate;
 
 // The window is frameless and transparent: the HTML draws a rounded "cushion" with
 // its own shadow, so the extra margin baked into these dimensions is the shadow's

@@ -47,5 +47,13 @@ pub mod ui;
 pub mod util;
 pub mod zoom;
 
-#[cfg(feature = "desktop-tray")]
-pub mod tray;
+#[cfg(feature = "desktop")]
+pub mod desktop;
+
+/// Back-compat shim: `src/tray/` became `src/desktop/` when the tray grew into the full
+/// desktop shell (docs/gui/03 §2). Keep the old `crate::tray` path resolving for one
+/// release cycle so any external references (and the pre-rename bin) keep building.
+#[cfg(feature = "desktop")]
+pub mod tray {
+    pub use crate::desktop::*;
+}

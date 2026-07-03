@@ -3,9 +3,9 @@
 use std::fmt;
 
 use crate::daemon::{self, DaemonError, StartOptions};
+use crate::desktop::launch;
 use crate::remote::client::{self, ClientError};
 use crate::remote::proto::{RemoteCommand, RemoteResponse, StatusSnapshot};
-use crate::tray::launch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlError {

@@ -25,7 +25,16 @@ required-features = ["desktop-tray"]
 
 [features]
 default = []
-desktop-tray = ["dep:tao", "dep:tray-icon", "dep:wry"]
+# The desktop GUI shell: main window + tray + mini player, one process, socket-only to
+# the core. `desktop-tray` stays as a one-release forwarding alias so existing
+# `--features desktop-tray` invocations (CI, installers, muscle memory) keep working
+# while docs and pipelines migrate to `--features desktop`.
+desktop = ["dep:tao", "dep:tray-icon", "dep:wry"]
+desktop-tray = ["desktop"]
+# Build/test-time only: derive ts-rs bindings for the v8 protocol read models and export
+# them to gui/src/generated/protocol/. Never enabled in a release binary — `desktop` does
+# NOT pull it, so it has zero runtime/size impact on the shipped `ytt`/`ytt-desktop`.
+ts-export = ["dep:ts-rs"]
 
 [dependencies]
 anyhow = "1.0.103"
@@ -90,6 +99,10 @@ throbber-widgets-tui = "0.11"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "process", "sync", "io-util", "net", "time", "signal"] }
 tracing = "0.1.44"
 tray-icon = { version = "0.24.1", optional = true }
+# ts-rs generates the TypeScript protocol types the GUI is typed against, honoring the
+# serde attributes the wire already relies on (rename_all, internally-tagged enums).
+# Optional + gated behind `ts-export`: build/test-time only, never in a release binary.
+ts-rs = { version = "10", optional = true }
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # The transport strip lays out wide media glyphs (⏮ ⏯ ⏭) and registers click rects by
@@ -99,7 +112,7 @@ unicode-width = "0.2"
 # NFKC normalization for Spotify↔YTM track matching (fullwidth ASCII, compat forms —
 # endemic in K-pop/J-pop metadata). Pure Rust, shared unicode tables philosophy as above.
 unicode-normalization = "0.1"
-wry = { version = "0.55.1", default-features = false, features = ["os-webview"], optional = true }
+wry = { version = "0.55.1", default-features = false, features = ["os-webview", "protocol"], optional = true }
 
 [build-dependencies]
 embed-resource = "3.0.9"
@@ -127,6 +140,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_JobObjects",
     "Win32_System_Console",
     "Win32_System_Registry",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }
 

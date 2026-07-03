@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     #[cfg(windows)]
     if !matches!(
         args.first().map(String::as_str),
-        None | Some("--background")
+        None | Some("--background") | Some("--main-window")
     ) {
         attach_parent_console();
     }
@@ -30,7 +30,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("ytt-tray {}", env!("CARGO_PKG_VERSION"));
         }
         Some("--help") | Some("-h") => print_help(),
-        Some("--background") => run_default()?,
+        // Launched from a startup entry → tray only; launched from the app icon (no args)
+        // or with --main-window → open the main window (docs/gui/03 §1.4).
+        Some("--background") => run_default(false)?,
+        Some("--main-window") => run_default(true)?,
         Some("--once") => block_on(print_once()),
         Some("--install-startup") => install_startup(),
         Some("--uninstall-startup") => uninstall_startup(),
@@ -54,7 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("ytt-tray: unknown option `{other}` (try `ytt-tray --help`)");
             std::process::exit(2);
         }
-        None => run_default()?,
+        None => run_default(true)?,
     }
     Ok(())
 }
@@ -67,7 +70,9 @@ fn print_help() {
     println!("Desktop companion for ytm-tui.");
     println!();
     println!("Options:");
-    println!("      --background Run the tray companion from a startup entry");
+    println!("      --background Run the tray companion from a startup entry (tray only)");
+    println!("      --main-window");
+    println!("                   Open the main window (default when launched from the app icon)");
     println!("      --install-startup");
     println!("                   Enable login startup for ytt-tray");
     println!("      --uninstall-startup");
@@ -119,17 +124,18 @@ async fn print_once() {
     print_menu_update(&update);
 }
 
-fn run_default() -> Result<(), Box<dyn Error>> {
+fn run_default(open_main: bool) -> Result<(), Box<dyn Error>> {
     #[cfg(target_os = "macos")]
     {
-        ytm_tui::tray::platform::macos::run()
+        ytm_tui::tray::platform::macos::run(open_main)
     }
     #[cfg(target_os = "windows")]
     {
-        ytm_tui::tray::platform::windows::run()
+        ytm_tui::tray::platform::windows::run(open_main)
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
+        let _ = open_main;
         block_on(run_polling());
         Ok(())
     }
