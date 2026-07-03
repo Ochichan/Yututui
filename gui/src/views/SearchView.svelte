@@ -1,18 +1,17 @@
 <script lang="ts">
   // Search (docs/gui/07 §3): query input + the 6-catalog source chip row + results list.
-  // The execution wire (ticketed RunSearch → search topic) is pending; the whole results
-  // surface goes through the patch-bay gate until then.
+  // Ticketed execution lives in search.svelte.ts; this view just drives it and renders the
+  // per-source groups (each with a play-on-double-click row and a + enqueue action).
   import type { AppCtx } from '../lib/ctx';
   import type { SearchSource } from '../generated/protocol/SearchSource';
-  import PendingSurface from '../lib/components/PendingSurface.svelte';
-  import WireTag from '../lib/components/WireTag.svelte';
+  import TrackRow from '../lib/components/TrackRow.svelte';
 
   interface Props {
     ctx: AppCtx;
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { wip } = ctx;
+  const { search } = ctx;
 
   const SOURCES: Array<{ id: SearchSource; label: string }> = [
     { id: 'all', label: 'All' },
@@ -23,15 +22,15 @@
     { id: 'internet_archive', label: 'Internet Archive' },
     { id: 'radio_browser', label: 'Radio Browser' },
   ];
+  const LABELS: Record<SearchSource, string> = Object.fromEntries(
+    SOURCES.map((s) => [s.id, s.label]),
+  ) as Record<SearchSource, string>;
 
   let query = $state('');
   let source = $state<SearchSource>('youtube');
 
   function run() {
-    if (query.trim().length === 0) return;
-    // TODO(wire:M2/search.run): replace with search.svelte.ts run(ticket, query, source)
-    // once the ticketed wire lands; the gate auto-opens on the `search-v8` capability.
-    wip.gate('search.run');
+    search.run(query, source);
   }
 </script>
 
@@ -68,17 +67,41 @@
   </header>
 
   <div class="results">
-    <PendingSurface
-      id="search.run"
-      {wip}
-      glyph="⌕"
-      body="Results from YTM, SoundCloud, Audius, Jamendo, Internet Archive, and Radio Browser will list here — Enter or double-click plays, the + button enqueues, station rows get badges."
-    />
+    {#if search.pending}
+      <p class="hint">Searching “{search.query}”…</p>
+    {:else if !search.ran}
+      <p class="hint">
+        Results from YTM, SoundCloud, Audius, Jamendo, Internet Archive, and Radio Browser list here
+        — double-click a row to play, the + button enqueues.
+      </p>
+    {:else if search.empty}
+      <p class="hint">No results for “{search.query}”.</p>
+    {:else}
+      <div class="groups" role="list">
+        {#each search.groups as g (g.source)}
+          {#if g.tracks.length > 0 || g.error}
+            <section class="group">
+              {#if source === 'all' || g.error}
+                <h3 class="ghead">
+                  <span>{LABELS[g.source] ?? g.source}</span>
+                  {#if g.error}<span class="err" title={g.error}>⚠ {g.error}</span>{/if}
+                </h3>
+              {/if}
+              {#each g.tracks as t (t.video_id)}
+                <TrackRow track={t} ondblclick={() => search.play(t)}>
+                  {#snippet actions()}
+                    <button class="enq" title="Add to queue" onclick={() => search.enqueue(t)}
+                      >＋</button
+                    >
+                  {/snippet}
+                </TrackRow>
+              {/each}
+            </section>
+          {/if}
+        {/each}
+      </div>
+    {/if}
   </div>
-
-  <footer class="foot">
-    <WireTag id="search.run" {wip} />
-  </footer>
 </div>
 
 <style>
@@ -149,12 +172,58 @@
   }
   .results {
     flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .hint {
     display: grid;
     place-items: center;
-    min-height: 0;
+    height: 100%;
+    max-width: 46ch;
+    margin: 0 auto;
+    text-align: center;
+    color: var(--role-text-subtle);
+    font-size: 13px;
+    line-height: 1.6;
   }
-  .foot {
+  .groups {
     display: flex;
-    justify-content: flex-end;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+  .group {
+    display: flex;
+    flex-direction: column;
+  }
+  .ghead {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    margin: 0 0 var(--space-1);
+    padding: 0 var(--space-2);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--role-text-muted);
+  }
+  .err {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 500;
+    color: var(--role-text-warning, var(--role-accent-alt));
+  }
+  .enq {
+    border: none;
+    background: transparent;
+    color: var(--role-text-subtle);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-s);
+    font-size: 15px;
+    line-height: 1;
+  }
+  .enq:hover {
+    background: var(--surface-2);
+    color: var(--role-text-primary);
   }
 </style>

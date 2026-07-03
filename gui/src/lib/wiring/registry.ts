@@ -17,7 +17,6 @@
 // Full handoff narrative: gui/WIRING.md.
 
 export type FeatureId =
-  | 'search.run'
   | 'library.fetch'
   | 'library.playlists'
   | 'downloads.manage'
@@ -54,17 +53,6 @@ export interface WiringSpec {
 }
 
 export const WIRING: Record<FeatureId, WiringSpec> = {
-  'search.run': {
-    title: 'Search (all 6 catalogs)',
-    milestone: 'M2',
-    brief: 'docs/gui/07-feature-briefs.md §3',
-    protocol:
-      'cmd run_search { ticket, query, source } → `search` topic push SearchCompleted { ticket, page }; play/enqueue via play_tracks / enqueue_tracks',
-    seam: 'create gui/src/lib/stores/search.svelte.ts; replace the wip() seams in gui/src/views/SearchView.svelte',
-    capability: 'search-v8',
-    notes:
-      'Ticketed async: keep a monotonically increasing ticket, drop stale completions. Per-source error chips (e.g. "Jamendo: no client id") link to Settings→General.',
-  },
   'library.fetch': {
     title: 'Library pages',
     milestone: 'M2',

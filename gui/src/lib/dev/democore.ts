@@ -107,6 +107,9 @@ export class DemoCoreTransport implements Transport {
   #elapsedMs = 38_000;
   #anchor = performance.now();
   #endTimer: ReturnType<typeof setTimeout> | null = null;
+  // Every track the last search surfaced, keyed by its (source-prefixed) video_id, so
+  // play_tracks / enqueue_tracks can resolve an id the user clicked back to a real track.
+  #searchIndex = new Map<string, TrackModel>();
 
   onMessage(cb: (env: InEnvelope) => void): void {
     this.#cb = cb;
@@ -207,6 +210,18 @@ export class DemoCoreTransport implements Transport {
       case 'rate':
         this.#rate(String(p.video_id ?? ''));
         break;
+      case 'run_search':
+        // Its own topic push, no playback change — return before the trailing player push.
+        this.#runSearch(
+          Number(p.ticket ?? 0),
+          String(p.query ?? ''),
+          String(p.source ?? 'youtube'),
+        );
+        return;
+      case 'play_tracks':
+      case 'enqueue_tracks':
+        this.#addTracks((p.video_ids as string[] | undefined) ?? [], name === 'play_tracks');
+        break;
       default:
         // Unknown command: a real core would reject reason-coded; the demo just ignores.
         return;
@@ -294,6 +309,82 @@ export class DemoCoreTransport implements Transport {
     } else t.disliked = false;
     this.#rev++;
     this.#pushQueue();
+  }
+
+  // ── search ───────────────────────────────────────────────────────────────────────────
+
+  #runSearch(ticket: number, query: string, source: string): void {
+    const q = query.trim().toLowerCase();
+    const hits = CATALOG.filter(
+      (t) => t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q),
+    );
+    // Always surface *something* so the results UI is exercised even for a gibberish query.
+    const pool = hits.length ? hits : this.#generated(query);
+    const catalogs = [
+      'youtube',
+      'sound_cloud',
+      'audius',
+      'jamendo',
+      'internet_archive',
+      'radio_browser',
+    ];
+    const wanted = source === 'all' ? catalogs : [source];
+
+    this.#searchIndex.clear();
+    const groups = wanted.map((src) => {
+      // Jamendo stands in for the per-source error chip (registry note: "no client id").
+      if (src === 'jamendo') {
+        return { source: src, tracks: [], error: 'no client id — set one in Settings → General' };
+      }
+      const tracks = pool.map((t) => ({
+        ...t,
+        source: src as TrackModel['source'],
+        video_id: `${src}:${t.video_id}`,
+      }));
+      for (const t of tracks) this.#searchIndex.set(t.video_id, t);
+      return { source: src, tracks, error: null };
+    });
+
+    this.#emit({
+      v: 1,
+      kind: 'event',
+      topic: 'search',
+      // PROVISIONAL shape — see SearchCompleted in stores/search.svelte.ts.
+      payload: { kind: 'search_completed', ticket, query, source, groups },
+    });
+  }
+
+  #generated(query: string): TrackModel[] {
+    const stub = query.trim() || 'meow';
+    return [1, 2, 3].map((n) =>
+      track(
+        `gen-${n}`,
+        `${stub} — take ${n}`,
+        'The Search Cats',
+        'Live Results',
+        120_000 + n * 24_000,
+      ),
+    );
+  }
+
+  /** play_tracks / enqueue_tracks: resolve ids to real tracks, then splice or append. */
+  #addTracks(videoIds: string[], playNow: boolean): void {
+    const picked = videoIds
+      .map((id) => this.#searchIndex.get(id) ?? this.#queue.find((t) => t.video_id === id))
+      .filter((t): t is TrackModel => t != null)
+      .map((t) => ({ ...t }));
+    if (picked.length === 0) return;
+    if (playNow) {
+      const at = this.#queue.length ? this.#pos + 1 : 0;
+      this.#queue.splice(at, 0, ...picked);
+      this.#rev++;
+      this.#pushQueue();
+      this.#jumpTo(at); // start the first inserted track now
+    } else {
+      this.#queue.push(...picked);
+      this.#rev++;
+      this.#pushQueue();
+    }
   }
 
   // ── pushes ──────────────────────────────────────────────────────────────────────────
