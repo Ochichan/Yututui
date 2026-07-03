@@ -17,7 +17,6 @@
 // Full handoff narrative: gui/WIRING.md.
 
 export type FeatureId =
-  | 'library.fetch'
   | 'library.playlists'
   | 'downloads.manage'
   | 'queue.reorder'
@@ -53,16 +52,6 @@ export interface WiringSpec {
 }
 
 export const WIRING: Record<FeatureId, WiringSpec> = {
-  'library.fetch': {
-    title: 'Library pages',
-    milestone: 'M2',
-    brief: 'docs/gui/07-feature-briefs.md §4',
-    protocol:
-      'req fetch_library_page { scope, filter, offset, limit } + `library` topic invalidation push; library_play / library_remove',
-    seam: 'create gui/src/lib/stores/library.svelte.ts; replace the wip() seams in gui/src/views/LibraryView.svelte',
-    capability: 'library-v8',
-    notes: 'Windowed paging cursor per scope; filter debounce lives client-side.',
-  },
   'library.playlists': {
     title: 'Playlists (drill-down + CRUD modals)',
     milestone: 'M2',

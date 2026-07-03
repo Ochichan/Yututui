@@ -1,18 +1,21 @@
 <script lang="ts">
-  // Library (docs/gui/07 §4): tab bar, filter box, list, Play All / Enqueue All. Radio
-  // mode swaps the tab set. The page-fetch wire (library topic + Fetch(LibraryPage)) is
-  // pending, so every tab shows its designed empty state through the patch-bay gate.
+  // Library (docs/gui/07 §4): tab bar, filter box, list, Play All / Enqueue All. Radio mode
+  // swaps the tab set. The scope tabs (all/favorites/history + the radio pair) pull windowed
+  // pages from library.svelte.ts; the downloads / playlists tabs are their own features and
+  // still show their designed empty state through the patch-bay gate.
   import type { AppCtx } from '../lib/ctx';
   import type { LibraryTab } from '../lib/stores/ui.svelte';
+  import type { LibraryScope } from '../lib/stores/library.svelte';
   import PendingSurface from '../lib/components/PendingSurface.svelte';
   import WireTag from '../lib/components/WireTag.svelte';
+  import TrackRow from '../lib/components/TrackRow.svelte';
 
   interface Props {
     ctx: AppCtx;
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { ui, wip, playback } = ctx;
+  const { ui, wip, playback, library } = ctx;
 
   const MUSIC_TABS: Array<{ id: LibraryTab; label: string }> = [
     { id: 'all', label: 'All' },
@@ -30,8 +33,20 @@
 
   let filter = $state('');
 
+  const SCOPES: readonly LibraryTab[] = [
+    'all',
+    'favorites',
+    'history',
+    'radio_likes',
+    'radio_history',
+  ];
+  function isScope(t: LibraryTab): t is LibraryScope {
+    return SCOPES.includes(t);
+  }
+  const removable = (t: LibraryTab) => t !== 'all';
+
   const EMPTY_BODY: Record<LibraryTab, string> = {
-    all: 'Every track you have played, liked, or downloaded lists here with filter-as-you-type.',
+    all: 'Nothing here yet — play, like, or download a track and it shows up.',
     favorites: 'Tracks you ♥ collect here; the heart on any row toggles membership.',
     history: 'Your listening history, newest first.',
     downloads:
@@ -41,17 +56,28 @@
     radio_history: 'Stations you tuned in radio mode, newest first.',
   };
 
-  function pendingId(t: LibraryTab) {
-    return t === 'playlists'
-      ? 'library.playlists'
-      : t === 'downloads'
-        ? 'downloads.manage'
-        : 'library.fetch';
+  function pendingId(t: LibraryTab): 'downloads.manage' | 'library.playlists' {
+    return t === 'downloads' ? 'downloads.manage' : 'library.playlists';
   }
 
+  // Pull the active scope, debounced on the filter so typing doesn't spam the core.
+  let debounce: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    const t = tab;
+    const f = filter;
+    if (!isScope(t)) return;
+    clearTimeout(debounce);
+    debounce = setTimeout(() => void library.load(t, f.trim()), 180);
+    return () => clearTimeout(debounce);
+  });
+
   function playAll() {
-    // TODO(wire:M2/library.fetch): LibraryPlay { scope, filter } once the wire lands.
-    wip.gate('library.fetch');
+    if (isScope(tab)) library.playAll();
+    else wip.gate(pendingId(tab));
+  }
+  function enqueueAll() {
+    if (isScope(tab)) library.enqueueAll();
+    else wip.gate(pendingId(tab));
   }
 </script>
 
@@ -77,7 +103,7 @@
         aria-label="Filter library"
       />
       <button class="act" onclick={playAll}>▶ Play all</button>
-      <button class="act" onclick={playAll}>+ Enqueue all</button>
+      <button class="act" onclick={enqueueAll}>+ Enqueue all</button>
       {#if tab === 'playlists'}
         <button class="act" onclick={() => wip.gate('library.playlists')}>＋ New playlist</button>
       {/if}
@@ -85,11 +111,41 @@
   </header>
 
   <div class="body">
-    <PendingSurface id={pendingId(tab)} {wip} glyph="📚" body={EMPTY_BODY[tab]} />
+    {#if !isScope(tab)}
+      <div class="center">
+        <PendingSurface id={pendingId(tab)} {wip} glyph="📚" body={EMPTY_BODY[tab]} />
+      </div>
+    {:else if library.loading && library.tracks.length === 0}
+      <div class="center"><p class="hint">Loading…</p></div>
+    {:else if library.empty}
+      <div class="center"><p class="hint">{EMPTY_BODY[tab]}</p></div>
+    {:else}
+      <div class="list" role="list">
+        {#each library.tracks as t, i (`${t.video_id}:${i}`)}
+          <TrackRow track={t} index={i + 1} ondblclick={() => library.play(t)}>
+            {#snippet actions()}
+              <button class="ri" title="Add to queue" onclick={() => library.enqueue(t)}>＋</button>
+              {#if removable(tab)}
+                <button class="ri" title="Remove" onclick={() => library.remove(t)}>✕</button>
+              {/if}
+            {/snippet}
+          </TrackRow>
+        {/each}
+        {#if library.hasMore}
+          <button class="more" onclick={() => void library.more()}>
+            Load more · {library.total - library.tracks.length} left
+          </button>
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <footer class="foot">
-    <WireTag id={pendingId(tab)} {wip} />
+    {#if isScope(tab)}
+      <span class="count mono">{library.total} tracks</span>
+    {:else}
+      <WireTag id={pendingId(tab)} {wip} />
+    {/if}
   </footer>
 </div>
 
@@ -150,12 +206,58 @@
   }
   .body {
     flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .center {
     display: grid;
     place-items: center;
-    min-height: 0;
+    height: 100%;
+  }
+  .hint {
+    max-width: 46ch;
+    margin: 0;
+    text-align: center;
+    color: var(--role-text-subtle);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .list {
+    display: flex;
+    flex-direction: column;
+  }
+  .ri {
+    border: none;
+    background: transparent;
+    color: var(--role-text-subtle);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-s);
+    font-size: 13px;
+    line-height: 1;
+  }
+  .ri:hover {
+    background: var(--surface-2);
+    color: var(--role-text-primary);
+  }
+  .more {
+    margin: var(--space-3) auto;
+    padding: var(--space-2) var(--space-5);
+    border: 1px solid var(--role-border-muted);
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--role-text-muted);
+    font-size: 12px;
+  }
+  .more:hover {
+    background: var(--surface-2);
+    color: var(--role-text-primary);
   }
   .foot {
     display: flex;
     justify-content: flex-end;
+  }
+  .count {
+    font-size: 11px;
+    color: var(--role-text-subtle);
   }
 </style>

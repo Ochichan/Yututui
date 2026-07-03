@@ -15,6 +15,7 @@ import { UiStore } from '../src/lib/stores/ui.svelte';
 import { PlaybackStore } from '../src/lib/stores/playback.svelte';
 import { QueueStore } from '../src/lib/stores/queue.svelte';
 import { SearchStore } from '../src/lib/stores/search.svelte';
+import { LibraryStore } from '../src/lib/stores/library.svelte';
 import { LyricsStore } from '../src/lib/stores/lyrics.svelte';
 import { ToastStore } from '../src/lib/stores/toasts.svelte';
 import { WipStore } from '../src/lib/wiring/wip.svelte';
@@ -34,11 +35,12 @@ function assemble(): AppCtx {
     playback: new PlaybackStore(client),
     queue: new QueueStore(client),
     search: new SearchStore(client),
+    library: new LibraryStore(client),
     lyrics: new LyricsStore(client),
     toasts,
     wip: new WipStore(connection),
   };
-  client.sub(['player', 'queue', 'lyrics', 'search', 'system']);
+  client.sub(['player', 'queue', 'lyrics', 'search', 'library', 'system']);
   return ctx;
 }
 
@@ -63,9 +65,9 @@ describe('App against the demo core', () => {
     render(App, { props: { ctx } });
     await settle();
 
-    ctx.wip.gate('library.fetch');
+    ctx.wip.gate('library.playlists');
     await settle();
-    expect(ctx.wip.active).toBe('library.fetch');
+    expect(ctx.wip.active).toBe('library.playlists');
     expect(screen.getByText('Not wired up yet')).toBeTruthy();
     expect(screen.getByText('Copy agent brief')).toBeTruthy();
   });

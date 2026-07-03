@@ -110,6 +110,23 @@ export class DemoCoreTransport implements Transport {
   // Every track the last search surfaced, keyed by its (source-prefixed) video_id, so
   // play_tracks / enqueue_tracks can resolve an id the user clicked back to a real track.
   #searchIndex = new Map<string, TrackModel>();
+  // Fake radio stations for the radio_likes / radio_history library scopes.
+  #stations: TrackModel[] = [
+    track('radio-1', 'ON AIR · 밤샘 코딩 라디오', 'ytm-tui.fm', null, null, {
+      source: 'radio_browser',
+      watch_url: null,
+    }),
+    track('radio-2', 'Lofi Alley — 24/7', 'Stray Signal', null, null, {
+      source: 'radio_browser',
+      watch_url: null,
+    }),
+    track('radio-3', 'Jazz for Naps', 'Catnip FM', null, null, {
+      source: 'radio_browser',
+      watch_url: null,
+    }),
+  ];
+  // `<scope>:<video_id>` entries the user removed via library_remove.
+  #removed = new Set<string>();
 
   onMessage(cb: (env: InEnvelope) => void): void {
     this.#cb = cb;
@@ -139,6 +156,19 @@ export class DemoCoreTransport implements Transport {
       case 'req':
         if (env.name === 'ping') {
           this.#emit({ v: 1, id: env.id, kind: 'res', payload: 'pong (demo)' });
+        } else if (env.name === 'fetch_library_page') {
+          const p = (env.payload ?? {}) as Record<string, unknown>;
+          this.#emit({
+            v: 1,
+            id: env.id,
+            kind: 'res',
+            payload: this.#libraryPage(
+              String(p.scope ?? 'all'),
+              String(p.filter ?? ''),
+              Number(p.offset ?? 0),
+              Number(p.limit ?? 50),
+            ),
+          });
         } else {
           this.#emit({ v: 1, id: env.id, kind: 'err', payload: { reason: 'not_supported' } });
         }
@@ -222,6 +252,31 @@ export class DemoCoreTransport implements Transport {
       case 'enqueue_tracks':
         this.#addTracks((p.video_ids as string[] | undefined) ?? [], name === 'play_tracks');
         break;
+      case 'library_play':
+      case 'library_enqueue': {
+        const list = this.#libraryPage(
+          String(p.scope ?? 'all'),
+          String(p.filter ?? ''),
+          0,
+          9999,
+        ).tracks;
+        if (list.length === 0) return;
+        if (name === 'library_play') {
+          this.#queue = list.map((t) => ({ ...t }));
+          this.#rev++;
+          this.#pushQueue();
+          this.#jumpTo(0);
+        } else {
+          this.#queue.push(...list.map((t) => ({ ...t })));
+          this.#rev++;
+          this.#pushQueue();
+        }
+        break;
+      }
+      case 'library_remove':
+        this.#removed.add(`${String(p.scope ?? 'all')}:${String(p.video_id ?? '')}`);
+        this.#pushLibrary(); // invalidate → the store re-fetches the shrunken scope
+        return;
       default:
         // Unknown command: a real core would reject reason-coded; the demo just ignores.
         return;
@@ -369,8 +424,13 @@ export class DemoCoreTransport implements Transport {
 
   /** play_tracks / enqueue_tracks: resolve ids to real tracks, then splice or append. */
   #addTracks(videoIds: string[], playNow: boolean): void {
+    const resolve = (id: string) =>
+      this.#searchIndex.get(id) ??
+      this.#queue.find((t) => t.video_id === id) ??
+      CATALOG.find((t) => t.video_id === id) ??
+      this.#stations.find((t) => t.video_id === id);
     const picked = videoIds
-      .map((id) => this.#searchIndex.get(id) ?? this.#queue.find((t) => t.video_id === id))
+      .map(resolve)
       .filter((t): t is TrackModel => t != null)
       .map((t) => ({ ...t }));
     if (picked.length === 0) return;
@@ -385,6 +445,48 @@ export class DemoCoreTransport implements Transport {
       this.#rev++;
       this.#pushQueue();
     }
+  }
+
+  // ── library ──────────────────────────────────────────────────────────────────────────
+
+  /** The full track list for a scope, minus anything library_remove dropped. */
+  #libraryScope(scope: string): TrackModel[] {
+    const base =
+      scope === 'favorites'
+        ? CATALOG.filter((t) => t.favorite)
+        : scope === 'history'
+          ? [...CATALOG].reverse()
+          : scope === 'radio_likes'
+            ? this.#stations
+            : scope === 'radio_history'
+              ? [...this.#stations].reverse()
+              : CATALOG; // 'all'
+    return base.filter((t) => !this.#removed.has(`${scope}:${t.video_id}`));
+  }
+
+  /** A filtered, windowed page — the `fetch_library_page` response body. */
+  #libraryPage(scope: string, filter: string, offset: number, limit: number) {
+    const q = filter.trim().toLowerCase();
+    const all = this.#libraryScope(scope).filter(
+      (t) => !q || t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q),
+    );
+    return {
+      scope,
+      filter,
+      offset,
+      total: all.length,
+      tracks: all.slice(offset, offset + limit).map((t) => ({ ...t })),
+    };
+  }
+
+  #pushLibrary(): void {
+    // PROVISIONAL invalidation — the store just re-fetches; see LibraryStore.
+    this.#emit({
+      v: 1,
+      kind: 'event',
+      topic: 'library',
+      payload: { kind: 'library_invalidated' },
+    });
   }
 
   // ── pushes ──────────────────────────────────────────────────────────────────────────
