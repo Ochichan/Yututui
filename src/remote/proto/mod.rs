@@ -1,9 +1,15 @@
 //! Remote-control wire protocol: newline-delimited JSON over a per-user local socket.
 //!
 //! A `ytt -r <command>` client sends one [`RemoteRequest`] line and reads one
-//! [`RemoteResponse`] line. The running instance authenticates the client with a per-run
-//! token it published in the [`InstanceFile`]; the token guards against accidental /
-//! cross-user cross-talk (the real boundary is the runtime dir's `0700` perms).
+//! [`RemoteResponse`] line (the frozen **one-shot** mode). The running instance
+//! authenticates the client with a per-run token it published in the [`InstanceFile`];
+//! the token guards against accidental / cross-user cross-talk (the real boundary is the
+//! runtime dir's `0700` perms).
+//!
+//! Protocol v8 (docs/gui/02) adds a long-lived **session** mode beside one-shot on the
+//! same listener. The v7 one-shot request/response byte shapes are frozen forever —
+//! additive fields only (`#[serde(default)]` + `skip_serializing_if`); the golden corpus
+//! in [`freeze`] locks them.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,10 +18,22 @@ use crate::queue::Repeat;
 use crate::search_source::SearchSource;
 use crate::streaming::StreamingMode;
 
-/// Bumped on any breaking change to the request/response shape. The server rejects a
-/// mismatch with `bad_version`, so an old client against a new server fails loudly
-/// instead of misbehaving.
-pub const PROTOCOL_VERSION: u8 = 7;
+mod command;
+#[cfg(test)]
+mod freeze;
+
+pub use command::{RemoteCommand, RemoteSettingChange};
+
+/// The version this build speaks. Servers accept one-shot requests in the
+/// `PROTOCOL_VERSION_V7..=PROTOCOL_VERSION` range (an old client keeps working forever);
+/// anything outside fails loudly with `bad_version` instead of misbehaving.
+pub const PROTOCOL_VERSION: u8 = 8;
+
+/// The frozen legacy one-shot version, and the floor of the accepted range. Also the
+/// conservative default for instance descriptors that predate the `protocol_version`
+/// field — such files come from old builds, so assuming anything newer would overstate
+/// what the owner can speak.
+pub const PROTOCOL_VERSION_V7: u8 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -23,87 +41,6 @@ pub enum InstanceMode {
     #[default]
     StandaloneTui,
     Daemon,
-}
-
-/// A semantic player command. Applied through the same reducer path a keypress uses, so
-/// it works regardless of the TUI's current input mode (Search text entry, Settings, …).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case")]
-pub enum RemoteCommand {
-    Next,
-    Prev,
-    TogglePause,
-    Play {
-        query: String,
-    },
-    Enqueue {
-        query: String,
-    },
-    VolumeUp,
-    VolumeDown,
-    /// Set the output volume to an absolute percent (`0..=100`). Additive since v7:
-    /// an older server rejects it as `bad_request` instead of misbehaving.
-    SetVolume {
-        percent: i64,
-    },
-    SeekBack,
-    SeekForward,
-    /// Absolute seek within the current track, in milliseconds. Additive since v7.
-    SeekTo {
-        ms: u64,
-    },
-    ToggleShuffle,
-    CycleRepeat,
-    QueuePlay {
-        position: usize,
-    },
-    QueueRemove {
-        position: usize,
-    },
-    #[serde(alias = "radio")]
-    Streaming {
-        state: ToggleState,
-    },
-    SetSetting {
-        change: RemoteSettingChange,
-    },
-    ResumeSession,
-    Status,
-    Quit,
-}
-
-/// A single persisted/live setting mutation from companion surfaces such as the tray panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "setting", rename_all = "snake_case")]
-pub enum RemoteSettingChange {
-    AutoplayStreaming {
-        value: bool,
-    },
-    StreamingMode {
-        value: StreamingMode,
-    },
-    StreamingSource {
-        value: SearchSource,
-    },
-    /// Playback speed in tenths: `10` means `1.0x`, `15` means `1.5x`.
-    Speed {
-        tenths: u16,
-    },
-    SeekSeconds {
-        seconds: u16,
-    },
-    Normalize {
-        value: bool,
-    },
-    Gapless {
-        value: bool,
-    },
-    AiEnabled {
-        value: bool,
-    },
-    RadioMode {
-        state: ToggleState,
-    },
 }
 
 /// A three-way toggle: flip the current value, or set it explicitly.
@@ -298,14 +235,14 @@ pub struct InstanceFile {
     pub created_unix: u64,
     #[serde(default)]
     pub mode: InstanceMode,
-    #[serde(default = "current_protocol_version")]
+    #[serde(default = "legacy_protocol_version")]
     pub protocol_version: u8,
     #[serde(default)]
     pub capabilities: Vec<String>,
 }
 
-fn current_protocol_version() -> u8 {
-    PROTOCOL_VERSION
+fn legacy_protocol_version() -> u8 {
+    PROTOCOL_VERSION_V7
 }
 
 #[cfg(test)]
@@ -436,7 +373,9 @@ mod tests {
         let line = r#"{"app_pid":7,"endpoint":"sock","token":"tok","created_unix":1}"#;
         let file: InstanceFile = serde_json::from_str(line).unwrap();
         assert_eq!(file.mode, InstanceMode::StandaloneTui);
-        assert_eq!(file.protocol_version, PROTOCOL_VERSION);
+        // A descriptor predating the field comes from an old build: assume the frozen
+        // legacy version, never the current one (a session gate must not fire on it).
+        assert_eq!(file.protocol_version, PROTOCOL_VERSION_V7);
         assert!(file.capabilities.is_empty());
     }
 }

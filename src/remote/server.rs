@@ -24,7 +24,8 @@ use tokio::time::timeout;
 
 use super::endpoint;
 use super::proto::{
-    InstanceFile, InstanceMode, PROTOCOL_VERSION, RemoteCommand, RemoteRequest, RemoteResponse,
+    InstanceFile, InstanceMode, PROTOCOL_VERSION, PROTOCOL_VERSION_V7, RemoteCommand,
+    RemoteRequest, RemoteResponse,
 };
 
 /// How long the single-instance probe waits for the existing server to answer a connect.
@@ -373,7 +374,9 @@ async fn build_response(line: &str, token: &str, emit: &EventSink) -> RemoteResp
         Ok(r) => r,
         Err(_) => return RemoteResponse::err("bad_request"),
     };
-    if req.version != PROTOCOL_VERSION {
+    // Range, not equality: the v7 one-shot shapes are frozen, so a v8 server keeps
+    // serving shipped v7 clients (`ytt -r`, the tray) forever (docs/gui/02 §9).
+    if !(PROTOCOL_VERSION_V7..=PROTOCOL_VERSION).contains(&req.version) {
         return RemoteResponse::err("bad_version");
     }
     if req.token != token {
@@ -447,6 +450,27 @@ mod tests {
         let resp = parse(&send_line(&path, &serde_json::to_string(&req).unwrap()).await);
         assert!(resp.ok);
         assert_eq!(resp.message.as_deref(), Some("pong"));
+
+        // A legacy v7 client (shipped `ytt -r` / tray) is accepted forever: the version
+        // check is a range, not equality.
+        let legacy = RemoteRequest {
+            version: PROTOCOL_VERSION_V7,
+            token: "secret".to_string(),
+            command: RemoteCommand::TogglePause,
+        };
+        let resp = parse(&send_line(&path, &serde_json::to_string(&legacy).unwrap()).await);
+        assert!(resp.ok, "v7 one-shot must keep working: {resp:?}");
+        assert_eq!(resp.message.as_deref(), Some("pong"));
+
+        // Anything below the frozen floor fails loudly.
+        let ancient = RemoteRequest {
+            version: 6,
+            token: "secret".to_string(),
+            command: RemoteCommand::TogglePause,
+        };
+        let resp = parse(&send_line(&path, &serde_json::to_string(&ancient).unwrap()).await);
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("bad_version"));
 
         // Wrong token → rejected before reaching the reducer.
         let bad = RemoteRequest {
