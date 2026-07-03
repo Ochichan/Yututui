@@ -6,9 +6,12 @@
 //! callback (the platform code wraps them in its `UserEvent`). Daemon spawn/stop never run
 //! here — that would freeze the socket ([01 §9]); the gateway only observes and reports.
 //!
-//! M0 scope: connect + Hello + live connection state + reconnect. Command/subscription
-//! forwarding and topic push fan-out land at M1 (the `player`/`queue` stores).
+//! M1 scope: connect + Hello + live connection state + reconnect, plus the command path —
+//! the loop forwards webview `cmd`/`req`/`sub`/`unsub` envelopes into the session
+//! ([`GatewayHandle::send`]) and the session fans `event`/`reply` server frames back to the
+//! window as [`GatewayEvent::Frame`] (rendered via `bridge::receive_script`).
 
+use std::collections::HashMap;
 use std::io;
 use std::time::Duration;
 
@@ -16,13 +19,14 @@ use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
+use crate::desktop::bridge::{InEnvelope, OutEnvelope, OutKind};
 use crate::remote::endpoint;
 use crate::remote::proto::{
     ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, InstanceFile, InstanceMode,
-    PROTOCOL_VERSION, PushEvent, ServerFrame, Topic,
+    PROTOCOL_VERSION, PushEvent, RemoteCommand, RemoteResponse, ServerFrame, Topic,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
@@ -75,12 +79,16 @@ impl ConnState {
 #[derive(Debug, Clone)]
 pub enum GatewayEvent {
     Connection(ConnState),
+    /// An inbound server frame (topic push or correlated reply) already rendered as the
+    /// webview envelope the loop feeds to `bridge::receive_script` (M1 fan-out).
+    Frame(InEnvelope),
 }
 
 /// Handle to the gateway thread; dropping it (or calling [`GatewayHandle::stop`]) tears the
 /// session down.
 pub struct GatewayHandle {
     shutdown: Option<oneshot::Sender<()>>,
+    commands: mpsc::UnboundedSender<OutEnvelope>,
 }
 
 impl GatewayHandle {
@@ -88,6 +96,13 @@ impl GatewayHandle {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
+    }
+
+    /// Forward a webview envelope (`cmd`/`req`/`sub`/`unsub`) to the live session. Queued
+    /// commands are dropped when the session next (re)connects, so a send while offline is a
+    /// harmless no-op rather than a stale replay.
+    pub fn send(&self, env: OutEnvelope) {
+        let _ = self.commands.send(env);
     }
 }
 
@@ -107,6 +122,7 @@ where
     F: Fn(GatewayEvent) + Send + 'static,
 {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let builder = std::thread::Builder::new().name("ytt-desktop-gateway".to_string());
     if let Err(e) = builder.spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread()
@@ -118,16 +134,21 @@ where
             }));
             return;
         };
-        rt.block_on(run(emit, shutdown_rx));
+        rt.block_on(run(emit, shutdown_rx, cmd_rx));
     }) {
         tracing::warn!(target: "ytt_desktop", error = %e, "could not start gateway thread");
     }
     GatewayHandle {
         shutdown: Some(shutdown_tx),
+        commands: cmd_tx,
     }
 }
 
-async fn run<F: Fn(GatewayEvent)>(emit: F, mut shutdown_rx: oneshot::Receiver<()>) {
+async fn run<F: Fn(GatewayEvent)>(
+    emit: F,
+    mut shutdown_rx: oneshot::Receiver<()>,
+    mut cmd_rx: mpsc::UnboundedReceiver<OutEnvelope>,
+) {
     let mut backoff = BACKOFF_MIN;
     loop {
         emit(GatewayEvent::Connection(ConnState::Connecting));
@@ -139,7 +160,7 @@ async fn run<F: Fn(GatewayEvent)>(emit: F, mut shutdown_rx: oneshot::Receiver<()
                     capabilities: ack.capabilities,
                     owner_mode: ack.owner_mode,
                 }));
-                let reason = run_session(conn, &mut shutdown_rx).await;
+                let reason = run_session(conn, &mut shutdown_rx, &mut cmd_rx, &emit).await;
                 emit(GatewayEvent::Connection(ConnState::Offline {
                     reason: reason.clone(),
                 }));
@@ -212,11 +233,24 @@ async fn connect_and_hello(instance: InstanceFile) -> Result<(Stream, HelloAck),
 }
 
 /// Drive an established session until it closes; returns the machine reason.
-async fn run_session(conn: Stream, shutdown_rx: &mut oneshot::Receiver<()>) -> String {
+async fn run_session<F: Fn(GatewayEvent)>(
+    conn: Stream,
+    shutdown_rx: &mut oneshot::Receiver<()>,
+    cmd_rx: &mut mpsc::UnboundedReceiver<OutEnvelope>,
+    emit: &F,
+) -> String {
     let mut reader = BufReader::new(&conn);
     let mut next_id = 1u64;
+    // Session id of a forwarded `req` → the frontend's own request id, so its `reply` can be
+    // correlated back. Only `req` frames insert; every reply removes; the map dies with the
+    // session, so it cannot leak across reconnects.
+    let mut pending: HashMap<u64, u64> = HashMap::new();
 
-    // Subscribe to `system` so we notice owner shutdown, and to keep the session non-idle.
+    // Commands queued while we were offline are stale on this fresh session — discard them.
+    while cmd_rx.try_recv().is_ok() {}
+
+    // Subscribe to `system` so we notice owner shutdown even with no window open, and to keep
+    // the session non-idle. The window adds its own subs (player/queue/…) when it loads.
     let sub = ClientFrame {
         id: next_id,
         op: ClientOp::Subscribe {
@@ -246,19 +280,127 @@ async fn run_session(conn: Stream, shutdown_rx: &mut oneshot::Receiver<()>) -> S
                 }
                 awaiting_pong = true;
             }
+            maybe = cmd_rx.recv() => {
+                if let Some(env) = maybe
+                    && let Some(reason) =
+                        forward_command(&conn, env, &mut next_id, &mut pending, emit).await
+                {
+                    return reason;
+                }
+                // `None` = the handle was dropped; the shutdown branch will fire too.
+            }
             line = read_line(&mut reader) => match line {
                 Ok(Some(l)) => match serde_json::from_str::<ServerFrame>(l.trim()) {
                     Ok(ServerFrame::Pong { .. }) => awaiting_pong = false,
                     Ok(ServerFrame::Goodbye { reason }) => return reason,
-                    Ok(ServerFrame::Event { event: PushEvent::ShuttingDown, .. }) => {
-                        return "shutting_down".to_string();
+                    Ok(ServerFrame::Reply { id, resp }) => {
+                        if let Some(fid) = pending.remove(&id) {
+                            emit(GatewayEvent::Frame(reply_envelope(fid, resp)));
+                        }
+                        // Unmapped ids are the gateway's own subscribe/ping replies — ignore.
                     }
-                    // M0 ignores snapshots/replies; M1 fans them out to the stores.
-                    Ok(_) | Err(_) => {}
+                    Ok(ServerFrame::Event { topic, event, .. }) => {
+                        let payload =
+                            serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
+                        emit(GatewayEvent::Frame(InEnvelope::event(topic.wire_str(), payload)));
+                        if matches!(event, PushEvent::ShuttingDown) {
+                            return "shutting_down".to_string();
+                        }
+                    }
+                    Err(_) => {}
                 },
                 Ok(None) | Err(_) => return "disconnected".to_string(),
             }
         }
+    }
+}
+
+/// Translate a webview envelope into a [`ClientFrame`] and write it to the session. Returns
+/// `Some(reason)` only on a socket write failure (which ends the session); a command that
+/// can't be translated is rejected (for `req`) or dropped (for `cmd`) without tearing down.
+async fn forward_command<F: Fn(GatewayEvent)>(
+    conn: &Stream,
+    env: OutEnvelope,
+    next_id: &mut u64,
+    pending: &mut HashMap<u64, u64>,
+    emit: &F,
+) -> Option<String> {
+    let op = match env.kind {
+        OutKind::Cmd | OutKind::Req => match to_remote_command(&env.name, &env.payload) {
+            Some(cmd) => ClientOp::Command(cmd),
+            None => {
+                // Unsupported command name/shape. A correlated req must not hang for its 10 s
+                // timeout, so reject it; a fire-and-forget cmd is just logged and dropped.
+                if let (OutKind::Req, Some(fid)) = (env.kind, env.id) {
+                    emit(GatewayEvent::Frame(InEnvelope::err(
+                        fid,
+                        serde_json::json!({ "reason": "bad_command" }),
+                    )));
+                } else {
+                    tracing::debug!(
+                        target: "ytt_desktop",
+                        name = %env.name,
+                        "dropping unsupported gateway command"
+                    );
+                }
+                return None;
+            }
+        },
+        OutKind::Sub => match parse_topics(&env.payload) {
+            Some(topics) => ClientOp::Subscribe { topics },
+            None => return None,
+        },
+        OutKind::Unsub => match parse_topics(&env.payload) {
+            Some(topics) => ClientOp::Unsubscribe { topics },
+            None => return None,
+        },
+        // `win` never reaches the gateway (bridge routes it natively); ignore defensively.
+        OutKind::Win => return None,
+    };
+
+    let sid = *next_id;
+    *next_id += 1;
+    if let (OutKind::Req, Some(fid)) = (env.kind, env.id) {
+        pending.insert(sid, fid);
+    }
+    let frame = ClientFrame { id: sid, op };
+    if write_line(conn, &frame).await.is_err() {
+        return Some("disconnected".to_string());
+    }
+    None
+}
+
+/// Build a `{"cmd": name, ...payload}` object and parse it as a [`RemoteCommand`]. The command
+/// enum is `#[serde(tag = "cmd")]` snake_case, so the frontend's `name` is the tag and its
+/// `payload` supplies the fields. Returns `None` for names/shapes the core doesn't model.
+fn to_remote_command(name: &str, payload: &serde_json::Value) -> Option<RemoteCommand> {
+    let mut obj = match payload {
+        serde_json::Value::Object(map) => map.clone(),
+        serde_json::Value::Null => serde_json::Map::new(),
+        _ => return None,
+    };
+    obj.insert(
+        "cmd".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
+    serde_json::from_value(serde_json::Value::Object(obj)).ok()
+}
+
+/// A `sub`/`unsub` payload is a JSON array of wire topic strings. Empty is treated as nothing
+/// to do (the client already guards this, but be defensive).
+fn parse_topics(payload: &serde_json::Value) -> Option<Vec<Topic>> {
+    let topics: Vec<Topic> = serde_json::from_value(payload.clone()).ok()?;
+    (!topics.is_empty()).then_some(topics)
+}
+
+/// Render a correlated [`RemoteResponse`] as the `res`/`err` envelope the frontend awaits.
+fn reply_envelope(fid: u64, resp: RemoteResponse) -> InEnvelope {
+    if resp.ok {
+        let payload = serde_json::to_value(&resp).unwrap_or(serde_json::Value::Null);
+        InEnvelope::res(fid, payload)
+    } else {
+        let reason = resp.reason.unwrap_or_else(|| "error".to_string());
+        InEnvelope::err(fid, serde_json::json!({ "reason": reason }))
     }
 }
 
@@ -274,6 +416,102 @@ async fn read_line<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> io::Result<Opt
     let mut line = String::new();
     let n = reader.read_line(&mut line).await?;
     Ok((n != 0).then_some(line))
+}
+
+// Envelope→frame translation is platform-agnostic, so these run on every target (the socket
+// tests below need a unix domain path and are gated separately).
+#[cfg(test)]
+mod translate_tests {
+    use super::*;
+    use crate::desktop::bridge::InKind;
+    use crate::remote::proto::{RemoteCommand, ToggleState};
+
+    #[test]
+    fn cmd_names_and_payloads_map_to_remote_commands() {
+        assert_eq!(
+            to_remote_command("toggle_pause", &serde_json::Value::Null),
+            Some(RemoteCommand::TogglePause)
+        );
+        assert_eq!(
+            to_remote_command("next", &serde_json::json!({})),
+            Some(RemoteCommand::Next)
+        );
+        assert_eq!(
+            to_remote_command("seek_to", &serde_json::json!({ "ms": 1000 })),
+            Some(RemoteCommand::SeekTo { ms: 1000 })
+        );
+        assert_eq!(
+            to_remote_command("set_volume", &serde_json::json!({ "percent": 42 })),
+            Some(RemoteCommand::SetVolume { percent: 42 })
+        );
+        assert_eq!(
+            to_remote_command("queue_play", &serde_json::json!({ "position": 3 })),
+            Some(RemoteCommand::QueuePlay { position: 3 })
+        );
+        assert_eq!(
+            to_remote_command("streaming", &serde_json::json!({ "state": "on" })),
+            Some(RemoteCommand::Streaming {
+                state: ToggleState::On
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_or_malformed_commands_are_none() {
+        // A v8 command the core doesn't model yet (queue/rating extensions).
+        assert_eq!(
+            to_remote_command(
+                "rate",
+                &serde_json::json!({ "video_id": "x", "rating": "cycle" })
+            ),
+            None
+        );
+        assert_eq!(
+            to_remote_command("not_a_command", &serde_json::Value::Null),
+            None
+        );
+        // Right name, wrong field type.
+        assert_eq!(
+            to_remote_command("seek_to", &serde_json::json!({ "ms": "soon" })),
+            None
+        );
+        // Non-object, non-null payloads can't carry command fields.
+        assert_eq!(to_remote_command("next", &serde_json::json!(7)), None);
+    }
+
+    #[test]
+    fn topics_parse_from_the_wire_array() {
+        assert_eq!(
+            parse_topics(&serde_json::json!(["player", "queue", "system"])),
+            Some(vec![Topic::Player, Topic::Queue, Topic::System])
+        );
+        assert_eq!(parse_topics(&serde_json::json!([])), None);
+        assert_eq!(parse_topics(&serde_json::json!("player")), None);
+        assert_eq!(parse_topics(&serde_json::json!(["bogus"])), None);
+    }
+
+    #[test]
+    fn reply_envelope_maps_ok_and_error() {
+        let ok = reply_envelope(5, RemoteResponse::ok("done".to_string()));
+        assert_eq!(ok.id, Some(5));
+        assert_eq!(ok.kind, InKind::Res);
+
+        let bad = reply_envelope(
+            6,
+            RemoteResponse {
+                ok: false,
+                reason: Some("bad_request".to_string()),
+                message: None,
+                status: None,
+            },
+        );
+        assert_eq!(bad.id, Some(6));
+        assert_eq!(bad.kind, InKind::Err);
+        assert_eq!(
+            bad.payload,
+            Some(serde_json::json!({ "reason": "bad_request" }))
+        );
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -380,5 +618,90 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err, "connect_failed");
+    }
+
+    /// Accept one connection and return the first line the client writes.
+    async fn accept_one_line(listener: Listener) -> String {
+        let conn = listener.accept().await.unwrap();
+        let mut reader = BufReader::new(&conn);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        line
+    }
+
+    async fn connect(endpoint: &str) -> Stream {
+        let name = endpoint.to_fs_name::<GenericFilePath>().unwrap();
+        Stream::connect(name).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn forward_cmd_translates_and_rewrites_the_id() {
+        let endpoint = std::env::temp_dir()
+            .join(format!("ytt-gw-fwd-{}.sock", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        let listener = bind(&endpoint);
+        let server = tokio::spawn(accept_one_line(listener));
+        let conn = connect(&endpoint).await;
+
+        // The frontend's own id (99) must never reach the wire — the session allocates its own.
+        let env = OutEnvelope {
+            v: 1,
+            id: Some(99),
+            kind: OutKind::Cmd,
+            name: "seek_to".to_string(),
+            payload: serde_json::json!({ "ms": 1234 }),
+        };
+        let mut next_id = 5u64;
+        let mut pending = HashMap::new();
+        let reason = forward_command(&conn, env, &mut next_id, &mut pending, &|_| {}).await;
+        assert!(reason.is_none(), "a good write must not end the session");
+
+        let line = server.await.unwrap();
+        let _ = std::fs::remove_file(&endpoint);
+        let frame: ClientFrame = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(
+            frame.id, 5,
+            "wire id is session-allocated, not the frontend's 99"
+        );
+        assert_eq!(
+            frame.op,
+            ClientOp::Command(RemoteCommand::SeekTo { ms: 1234 })
+        );
+        assert_eq!(next_id, 6, "id counter advanced");
+        assert!(
+            pending.is_empty(),
+            "a fire-and-forget cmd is not correlated"
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_req_records_the_reply_correlation() {
+        let endpoint = std::env::temp_dir()
+            .join(format!("ytt-gw-req-{}.sock", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
+        let listener = bind(&endpoint);
+        let server = tokio::spawn(accept_one_line(listener));
+        let conn = connect(&endpoint).await;
+
+        let env = OutEnvelope {
+            v: 1,
+            id: Some(77),
+            kind: OutKind::Req,
+            name: "status".to_string(),
+            payload: serde_json::Value::Null,
+        };
+        let mut next_id = 1u64;
+        let mut pending = HashMap::new();
+        forward_command(&conn, env, &mut next_id, &mut pending, &|_| {}).await;
+
+        let line = server.await.unwrap();
+        let _ = std::fs::remove_file(&endpoint);
+        let frame: ClientFrame = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(frame.id, 1);
+        assert_eq!(frame.op, ClientOp::Command(RemoteCommand::Status));
+        // Session id 1 maps back to the frontend's request id 77 so its reply can be routed.
+        assert_eq!(pending.get(&1), Some(&77));
     }
 }

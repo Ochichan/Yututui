@@ -62,6 +62,15 @@ impl InEnvelope {
             payload: Some(payload),
         }
     }
+    pub fn err(id: u64, payload: serde_json::Value) -> Self {
+        InEnvelope {
+            v: 1,
+            id: Some(id),
+            kind: InKind::Err,
+            topic: None,
+            payload: Some(payload),
+        }
+    }
     pub fn conn(payload: serde_json::Value) -> Self {
         InEnvelope {
             v: 1,

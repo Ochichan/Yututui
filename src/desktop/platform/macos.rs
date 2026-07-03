@@ -263,12 +263,23 @@ impl MacTrayApp {
     }
 
     fn handle_gateway(&mut self, ev: gateway::GatewayEvent) {
-        let gateway::GatewayEvent::Connection(state) = ev;
-        self.last_conn = state;
-        if let Some(main) = &self.main_window {
-            main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
-                self.last_conn.to_conn_payload(),
-            )));
+        match ev {
+            gateway::GatewayEvent::Connection(state) => {
+                self.last_conn = state;
+                if let Some(main) = &self.main_window {
+                    main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
+                        self.last_conn.to_conn_payload(),
+                    )));
+                }
+            }
+            // A topic push or correlated reply from the session — hand it straight to the
+            // page. Frames that arrive with no window open are dropped; the window re-subs
+            // and gets fresh snapshots when it next loads (docs/gui/03 §3.2).
+            gateway::GatewayEvent::Frame(env) => {
+                if let Some(main) = &self.main_window {
+                    main.eval(&bridge::receive_script(&env));
+                }
+            }
         }
     }
 
@@ -282,8 +293,14 @@ impl MacTrayApp {
                     }
                 }
                 bridge::BridgeAction::Win(op) => self.handle_win_op(op),
-                // Command/subscription forwarding to the gateway lands at M1.
-                bridge::BridgeAction::ToGateway(_) | bridge::BridgeAction::Ignore => {}
+                // Commands/requests/subscriptions go to the live v8 session; its replies and
+                // topic pushes come back as `UserEvent::Gateway(Frame(..))`.
+                bridge::BridgeAction::ToGateway(env) => {
+                    if let Some(gw) = &self.gateway {
+                        gw.send(env);
+                    }
+                }
+                bridge::BridgeAction::Ignore => {}
             },
         }
     }
