@@ -221,8 +221,11 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     .with_instance_metadata(InstanceMode::Daemon, daemon_capabilities());
 
     let remote_event_tx = event_tx.clone();
-    let _guard =
+    let (_guard, session_hub) =
         server.start(move |event| remote_event_tx.send(DaemonEvent::Remote(event)).is_ok());
+    // The v8 publisher runs on this loop (the owner lane), next to the media/scrobble
+    // post-event observers below.
+    let mut publisher = crate::remote::publish::Publisher::new(session_hub);
 
     let signal_event_tx = event_tx.clone();
     crate::player::lifetime::spawn_signal_handlers(move |_| {
@@ -284,9 +287,20 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
                 let _ = reply.send(response);
                 dispatch_engine_effects(&api, effects);
                 if shutdown {
+                    publisher.shutting_down();
                     tokio::time::sleep(SHUTDOWN_REPLY_GRACE).await;
                     break;
                 }
+            }
+            // Owner lane (docs/gui/02 §8/§14): initial snapshots + reply from current
+            // engine state, in order, into this session's queue.
+            DaemonEvent::Remote(RemoteEvent::SessionSubscribe {
+                session,
+                frame_id,
+                topics,
+            }) => {
+                publisher.handle_subscribe(&engine.core_view(), &session, frame_id, &topics);
+                continue;
             }
             DaemonEvent::Player(event) => {
                 let effects = engine.handle_player_event(event).await;
@@ -312,7 +326,12 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
         let snapshot = engine.media_snapshot();
         scrobble.observe(&snapshot);
         media.publish(snapshot);
+        // v8 push: fingerprint-diffed; time-tick events change nothing it watches.
+        publisher.observe(&engine.core_view());
     }
+    // A `Signal`/media-quit exit reaches here without the remote-Quit goodbye above;
+    // shutting_down is idempotent (the registry is already empty on the second call).
+    publisher.shutting_down();
     // Bounded best-effort delivery of queued scrobbles; leftovers flush next launch.
     let _ = tokio::time::timeout(Duration::from_millis(1500), scrobble.shutdown_flush()).await;
     EXIT_OK
@@ -463,6 +482,8 @@ fn daemon_capabilities() -> Vec<String> {
         "session-resume".to_string(),
         "autoplay-streaming".to_string(),
         "search-playback".to_string(),
+        // v8 sessions with live push (docs/gui/02 §10).
+        "events-v8".to_string(),
     ]
 }
 

@@ -147,6 +147,14 @@ impl From<RuntimeEvent> for Msg {
             RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(cmd, reply)) => {
                 Msg::Remote(cmd, reply)
             }
+            RuntimeEvent::Remote(crate::remote::server::RemoteEvent::SessionSubscribe {
+                ..
+            }) => {
+                // Session ops are intercepted in the run loop (the Publisher's owner
+                // lane) before Msg conversion — the reducer never sees sessions
+                // (docs/gui/02 §14). Reaching here means a host forgot the intercept.
+                unreachable!("SessionSubscribe must be handled in the owner loop, not the reducer")
+            }
             RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Resolved {
                 video_id,
                 stream_url,

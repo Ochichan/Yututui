@@ -124,6 +124,27 @@ pub enum Topic {
 }
 
 impl Topic {
+    /// The exact wire string (serde snake_case). Used by the session writer to splice
+    /// event envelopes around pre-serialized payloads without re-serializing the enum;
+    /// a test pins each string to its serde form.
+    pub fn wire_str(self) -> &'static str {
+        match self {
+            Topic::Player => "player",
+            Topic::Queue => "queue",
+            Topic::Lyrics => "lyrics",
+            Topic::Artwork => "artwork",
+            Topic::Library => "library",
+            Topic::Playlists => "playlists",
+            Topic::Search => "search",
+            Topic::Settings => "settings",
+            Topic::Ai => "ai",
+            Topic::Downloads => "downloads",
+            Topic::Transfer => "transfer",
+            Topic::Accounts => "accounts",
+            Topic::System => "system",
+        }
+    }
+
     /// Every topic, for "subscribe to everything" clients and exhaustiveness tests.
     pub const ALL: [Topic; 13] = [
         Topic::Player,
@@ -189,6 +210,7 @@ mod tests {
         for (topic, want) in Topic::ALL.iter().zip(expect) {
             let got = serde_json::to_string(topic).unwrap();
             assert_eq!(got, format!("\"{want}\""));
+            assert_eq!(topic.wire_str(), want, "wire_str must match serde");
             let back: Topic = serde_json::from_str(&got).unwrap();
             assert_eq!(back, *topic);
         }

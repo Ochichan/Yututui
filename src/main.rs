@@ -773,7 +773,15 @@ async fn run(
     // is accepting and the reducer will answer promptly. `_remote_guard` lives to end of `run`;
     // its Drop removes the descriptor (and best-effort the socket) on exit. `None` => remote
     // control unavailable this run; the app still works as a normal player.
-    let _remote_guard = remote.map(|server| server.start(runtime::remote_sink(worker_tx.clone())));
+    let (mut publisher, _remote_guard) = match remote {
+        Some(server) => {
+            let (guard, hub) = server.start(runtime::remote_sink(worker_tx.clone()));
+            // The v8 publisher shares the server's session hub; it runs on this loop
+            // (the owner lane) right next to the media/scrobble post-turn observers.
+            (Some(remote::publish::Publisher::new(hub)), Some(guard))
+        }
+        None => (None, None),
+    };
 
     while !app.should_quit {
         if app.dirty {
@@ -801,7 +809,20 @@ async fn run(
                 Some(Err(_)) => continue,
                 None => break,
             },
-            Some(event) = worker_rx.recv() => event.into(),
+            Some(event) = worker_rx.recv() => {
+                // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here,
+                // between reducer turns, and never become a Msg — the Publisher emits
+                // the initial snapshots + reply from current state.
+                if let RuntimeEvent::Remote(remote::server::RemoteEvent::SessionSubscribe {
+                    session, frame_id, topics,
+                }) = event {
+                    if let Some(publisher) = publisher.as_mut() {
+                        publisher.handle_subscribe(&app.core_view(), &session, frame_id, &topics);
+                    }
+                    continue;
+                }
+                event.into()
+            },
             Some(result) = player_ready_rx.recv() => {
                 handles.handle_player_ready(result, &player_runtime, &mut app);
                 if app.dirty {
@@ -850,6 +871,12 @@ async fn run(
             let snapshot = app.media_snapshot();
             handles.scrobble_observe(&snapshot);
             media.publish(snapshot);
+            // v8 push: fingerprint-diffed, so this is a cheap compare when nothing
+            // session-visible changed. Shares the inert gate — AnimTick/StatusTick
+            // turns can't change anything the publisher watches (audited by tests).
+            if let Some(publisher) = publisher.as_mut() {
+                publisher.observe(&app.core_view());
+            }
         }
 
         // The frame rate may have changed in Settings (committed to `config.animations` on close).
@@ -868,6 +895,12 @@ async fn run(
         perf.maybe_log(&app);
     }
 
+    // Tell v8 sessions the owner is going away (`system` event + Goodbye) before the
+    // guard below removes the descriptor — clients start their reconnect/daemon logic
+    // off this, not off a bare EOF (docs/gui/02 §7).
+    if let Some(publisher) = publisher.as_ref() {
+        publisher.shutting_down();
+    }
     // Close the video overlay (if one is open) so it doesn't outlive the app. This is the single
     // cleanup chokepoint: every quit path just sets `should_quit` and falls out of the loop here.
     app.close_video();

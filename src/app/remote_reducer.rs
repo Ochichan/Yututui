@@ -352,6 +352,45 @@ impl App {
                 .map(|duration| (duration.max(0.0) * 1000.0) as u64),
         }
     }
+
+    /// The v8 publisher's read view of this owner (docs/gui/02 §14). Same interpolation
+    /// math as [`status_snapshot`](Self::status_snapshot) / the OS media session, so a
+    /// pushed snapshot's position is fresh at emit time.
+    pub fn core_view(&self) -> crate::remote::publish::CoreView<'_> {
+        let cur = self.queue.current();
+        crate::remote::publish::CoreView {
+            queue: &self.queue,
+            paused: self.playback.paused,
+            volume: self.playback.volume,
+            speed_tenths: (self.playback.speed * 10.0).round() as u16,
+            elapsed_ms: cur.and(self.playback.time_pos).map(|mut pos| {
+                if !self.playback.paused
+                    && let Some(at) = self.playback.time_pos_at
+                {
+                    pos += at.elapsed().as_secs_f64() * self.playback.speed;
+                }
+                if let Some(duration) = self.playback.duration {
+                    pos = pos.min(duration);
+                }
+                (pos.max(0.0) * 1000.0) as u64
+            }),
+            duration_ms: cur
+                .and(self.playback.duration)
+                .map(|duration| (duration.max(0.0) * 1000.0) as u64),
+            position_epoch: self.playback.position_epoch,
+            streaming: self.autoplay_streaming,
+            radio_mode: self.radio_dedicated_mode,
+            stream_now_playing: self
+                .playback
+                .stream_now_playing
+                .as_ref()
+                .map(|now| now.label()),
+            owner_mode: InstanceMode::StandaloneTui,
+            eq_preset: self.audio.preset.label().to_string(),
+            eq_bands: self.audio.bands,
+            eq_normalize: self.audio.normalize,
+        }
+    }
 }
 
 #[cfg(test)]

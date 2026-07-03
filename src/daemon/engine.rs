@@ -643,6 +643,42 @@ impl DaemonEngine {
         }
     }
 
+    /// The v8 publisher's read view of this owner (the daemon analog of
+    /// `App::core_view`; docs/gui/02 §14). Interpolates elapsed to "now" from the same
+    /// anchor the OS media session uses. EQ reflects config (the daemon's live EQ apply
+    /// lands at S4/B3); the daemon has no ICY now-playing surface yet.
+    pub(crate) fn core_view(&self) -> crate::remote::publish::CoreView<'_> {
+        let cur = self.queue.current();
+        crate::remote::publish::CoreView {
+            queue: &self.queue,
+            paused: self.playback.paused,
+            volume: self.playback.volume,
+            speed_tenths: (self.playback.speed * 10.0).round() as u16,
+            elapsed_ms: cur.and(self.playback.time_pos).map(|mut pos| {
+                if !self.playback.paused
+                    && let Some(at) = self.playback.time_pos_at
+                {
+                    pos += at.elapsed().as_secs_f64() * self.playback.speed;
+                }
+                if let Some(duration) = self.playback.duration {
+                    pos = pos.min(duration);
+                }
+                (pos.max(0.0) * 1000.0) as u64
+            }),
+            duration_ms: cur
+                .and(self.playback.duration)
+                .map(|duration| (duration.max(0.0) * 1000.0) as u64),
+            position_epoch: self.playback.position_epoch,
+            streaming: self.streaming,
+            radio_mode: self.last_mode == LastMode::Radio,
+            stream_now_playing: None,
+            owner_mode: crate::remote::proto::InstanceMode::Daemon,
+            eq_preset: self.config.eq_preset.label().to_string(),
+            eq_bands: self.config.effective_eq_bands(),
+            eq_normalize: self.config.effective_normalize(),
+        }
+    }
+
     /// Build the OS media-session snapshot from engine state (the daemon analog of
     /// the TUI's `App::media_snapshot`).
     pub fn media_snapshot(&self) -> crate::media::MediaSnapshot {

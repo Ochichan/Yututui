@@ -15,7 +15,10 @@ pub mod args;
 pub mod client;
 pub mod endpoint;
 pub mod proto;
+pub mod publish;
 pub mod server;
 mod sessions;
+
+pub use sessions::{RemoteSessionHub, RemoteSessionRef};
 
 pub use server::{BindOutcome, RemoteServer, bind_or_detect};

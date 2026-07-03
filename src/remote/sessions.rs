@@ -11,10 +11,10 @@
 //! wedged client can never block the owner loop and can never pin unbounded memory.
 //! `Ping` is answered directly on the session task — it never enters the owner loop.
 //!
-//! Subscribe/Unsubscribe currently record the subscription set and reply `ok`; the
-//! initial-snapshot-before-Reply emission arrives with the Publisher (B0 slice 5) —
-//! until then the owner does not advertise the `events-v8` capability, so no shipping
-//! client attempts a session.
+//! Subscribe frames are forwarded to the owner loop, where the
+//! [`crate::remote::publish::Publisher`] records the subscription set, emits one initial
+//! snapshot per newly subscribed topic, and then the `Reply` — all into this session's
+//! outbound queue, making the snapshot-before-Reply order structural (docs/gui/02 §6).
 
 use std::collections::HashMap;
 use std::io;
@@ -70,6 +70,7 @@ enum CloseReason {
     IdleTimeout,
     ClientGone,
     BadFrame,
+    ShuttingDown,
 }
 
 impl CloseReason {
@@ -78,21 +79,97 @@ impl CloseReason {
             CloseReason::SlowConsumer => Some("slow_consumer"),
             CloseReason::IdleTimeout => Some("idle_timeout"),
             CloseReason::BadFrame => Some("bad_request"),
+            CloseReason::ShuttingDown => Some("shutting_down"),
             CloseReason::ClientGone => None,
         }
     }
 }
 
+/// One outbound line: either a fully-serialized raw frame, or a push event whose
+/// payload is shared across sessions (`Arc`) with the tiny per-session envelope —
+/// `{"frame":"event","seq":N,"topic":"…","event":<payload>}` — spliced by the writer at
+/// write time. Serialize-once fan-out without a per-session payload copy.
+pub(crate) enum SessionLine {
+    Raw(Vec<u8>),
+    Event {
+        seq: u64,
+        topic: Topic,
+        payload: Arc<Vec<u8>>,
+    },
+}
+
+impl SessionLine {
+    fn cost(&self) -> usize {
+        match self {
+            SessionLine::Raw(bytes) => bytes.len(),
+            // Envelope overhead is ~64 bytes; close enough for the byte budget.
+            SessionLine::Event { payload, .. } => payload.len() + 64,
+        }
+    }
+}
+
 /// One registered session as the hub sees it.
-struct RemoteSessionHandle {
-    line_tx: mpsc::Sender<Vec<u8>>,
+pub(crate) struct RemoteSessionHandle {
+    line_tx: mpsc::Sender<SessionLine>,
     queued_bytes: Arc<AtomicUsize>,
     subscriptions: Mutex<std::collections::HashSet<Topic>>,
+    /// Per-session monotonic event sequence (docs/gui/02 §6).
+    seq: AtomicU64,
+    /// Set on eviction: every further enqueue fails, so the reader tears down on its
+    /// next frame (worst case it lingers until the idle GC; pushes stop immediately).
+    evicted: std::sync::atomic::AtomicBool,
+}
+
+/// A host-visible reference to one live session, carried inside
+/// [`RemoteEvent::SessionSubscribe`] so the owner loop (the Publisher) can emit the
+/// initial snapshots and the reply into exactly this session's outbound queue.
+#[derive(Clone)]
+pub struct RemoteSessionRef {
+    pub(crate) session_id: u64,
+    pub(crate) handle: Arc<RemoteSessionHandle>,
+}
+
+impl std::fmt::Debug for RemoteSessionRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteSessionRef")
+            .field("session_id", &self.session_id)
+            .finish()
+    }
+}
+
+impl RemoteSessionRef {
+    /// Record subscriptions, returning only the newly added topics (idempotence).
+    pub(crate) fn subscribe(&self, topics: &[Topic]) -> Vec<Topic> {
+        self.handle.subscribe(topics)
+    }
+}
+
+/// Test-only: a hub with one registered session, exposed as the host-visible ref plus
+/// the raw outbound receiver so Publisher tests can assert enqueue order directly.
+#[cfg(test)]
+pub(crate) fn test_register(
+    tuning: SessionTuning,
+) -> (
+    Arc<RemoteSessionHub>,
+    RemoteSessionRef,
+    mpsc::Receiver<SessionLine>,
+) {
+    let hub = Arc::new(RemoteSessionHub::new(
+        InstanceMode::StandaloneTui,
+        vec!["events-v8".to_string()],
+        tuning,
+    ));
+    let (session_id, handle, rx) = hub.register().expect("fresh hub has room");
+    (
+        Arc::clone(&hub),
+        RemoteSessionRef { session_id, handle },
+        rx,
+    )
 }
 
 /// The per-owner session registry. The server's accept path registers sessions here;
-/// the Publisher (B0 slice 5) fans events out through it.
-pub(crate) struct RemoteSessionHub {
+/// the Publisher fans events out through [`broadcast`](Self::broadcast).
+pub struct RemoteSessionHub {
     next_id: AtomicU64,
     sessions: Mutex<HashMap<u64, Arc<RemoteSessionHandle>>>,
     tuning: SessionTuning,
@@ -115,17 +192,22 @@ impl RemoteSessionHub {
         }
     }
 
-    fn register(&self) -> Option<(u64, Arc<RemoteSessionHandle>, mpsc::Receiver<Vec<u8>>)> {
+    pub(crate) fn register(
+        &self,
+    ) -> Option<(u64, Arc<RemoteSessionHandle>, mpsc::Receiver<SessionLine>)> {
         let mut sessions = self.sessions.lock().expect("session registry poisoned");
         if sessions.len() >= MAX_SESSIONS {
             return None;
         }
-        // +1 so the goodbye line always has a slot even when the data queue is full.
+        // +1 as a best-effort goodbye reserve: pushes may consume it under sustained
+        // overflow (the goodbye is then dropped — eviction itself never depends on it).
         let (line_tx, line_rx) = mpsc::channel(self.tuning.max_queued_items + 1);
         let handle = Arc::new(RemoteSessionHandle {
             line_tx,
             queued_bytes: Arc::new(AtomicUsize::new(0)),
             subscriptions: Mutex::new(std::collections::HashSet::new()),
+            seq: AtomicU64::new(0),
+            evicted: std::sync::atomic::AtomicBool::new(false),
         });
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         sessions.insert(id, Arc::clone(&handle));
@@ -139,6 +221,98 @@ impl RemoteSessionHub {
             .remove(&id);
     }
 
+    /// Whether any live session subscribes to `topic` — lets the Publisher skip building
+    /// a model nobody would receive.
+    pub(crate) fn any_subscribed(&self, topic: Topic) -> bool {
+        self.sessions
+            .lock()
+            .expect("session registry poisoned")
+            .values()
+            .any(|handle| handle.subscribed(topic))
+    }
+
+    /// Fan one pre-serialized push payload out to every session subscribed to `topic`.
+    /// A session whose outbound budget trips is evicted with `slow_consumer` — the
+    /// owner loop never blocks on a wedged client.
+    pub(crate) fn broadcast(&self, topic: Topic, payload: &Arc<Vec<u8>>) {
+        let subscribed: Vec<(u64, Arc<RemoteSessionHandle>)> = {
+            let sessions = self.sessions.lock().expect("session registry poisoned");
+            sessions
+                .iter()
+                .filter(|(_, handle)| handle.subscribed(topic))
+                .map(|(id, handle)| (*id, Arc::clone(handle)))
+                .collect()
+        };
+        for (id, handle) in subscribed {
+            if !handle.push_event(topic, payload, self.tuning.max_queued_bytes) {
+                self.evict(id, &handle);
+            }
+        }
+    }
+
+    /// Push one event into a single session (initial snapshots on subscribe). Returns
+    /// `false` after evicting the session on overflow.
+    pub(crate) fn send_event_to(
+        &self,
+        session: &RemoteSessionRef,
+        topic: Topic,
+        payload: &Arc<Vec<u8>>,
+    ) -> bool {
+        if session
+            .handle
+            .push_event(topic, payload, self.tuning.max_queued_bytes)
+        {
+            true
+        } else {
+            self.evict(session.session_id, &session.handle);
+            false
+        }
+    }
+
+    /// Send one raw frame to a single session (replies). Returns `false` after evicting.
+    pub(crate) fn send_raw_to(&self, session: &RemoteSessionRef, frame: &ServerFrame) -> bool {
+        if session
+            .handle
+            .try_send_line(SessionLine::Raw(frame_line(frame)))
+            && !session
+                .handle
+                .over_byte_budget(self.tuning.max_queued_bytes)
+        {
+            true
+        } else {
+            self.evict(session.session_id, &session.handle);
+            false
+        }
+    }
+
+    /// Broadcast a goodbye to every live session and drop them — the owner is exiting.
+    /// Best-effort: full queues just close without the goodbye.
+    pub(crate) fn shutdown_all(&self) {
+        let all: Vec<Arc<RemoteSessionHandle>> = {
+            let mut sessions = self.sessions.lock().expect("session registry poisoned");
+            let drained = sessions.values().cloned().collect();
+            sessions.clear();
+            drained
+        };
+        for handle in all {
+            let _ = handle.try_send_line(SessionLine::Raw(frame_line(&ServerFrame::Goodbye {
+                reason: "shutting_down".to_string(),
+            })));
+            handle.evicted.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Evict one session: best-effort goodbye through the reserve slot, then remove it
+    /// from the registry. Its reader notices on the next frame (its replies stop
+    /// enqueueing) and tears the connection down.
+    fn evict(&self, id: u64, handle: &RemoteSessionHandle) {
+        let _ = handle.try_send_line(SessionLine::Raw(frame_line(&ServerFrame::Goodbye {
+            reason: "slow_consumer".to_string(),
+        })));
+        handle.evicted.store(true, Ordering::Relaxed);
+        self.unregister(id);
+    }
+
     #[cfg(test)]
     fn active(&self) -> usize {
         self.sessions
@@ -149,20 +323,53 @@ impl RemoteSessionHub {
 }
 
 impl RemoteSessionHandle {
-    /// Enqueue one serialized frame line. `false` means the byte/item budget tripped —
-    /// the caller must evict the session (`slow_consumer`).
-    fn try_send_line(&self, line: Vec<u8>) -> bool {
-        // Budget check first so a huge backlog of bytes trips even under the item cap.
+    /// Enqueue one outbound line. `false` means the session was evicted, the item
+    /// budget tripped, or the writer is gone — the caller must treat it as dead.
+    fn try_send_line(&self, line: SessionLine) -> bool {
+        if self.evicted.load(Ordering::Relaxed) {
+            return false;
+        }
         // (Ordering is Relaxed: the counter is advisory backpressure, not a lock.)
-        self.queued_bytes.fetch_add(line.len(), Ordering::Relaxed);
+        self.queued_bytes.fetch_add(line.cost(), Ordering::Relaxed);
         match self.line_tx.try_send(line) {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(line))
             | Err(mpsc::error::TrySendError::Closed(line)) => {
-                self.queued_bytes.fetch_sub(line.len(), Ordering::Relaxed);
+                self.queued_bytes.fetch_sub(line.cost(), Ordering::Relaxed);
                 false
             }
         }
+    }
+
+    /// Enqueue one push event with the next per-session `seq`; `false` on budget trip.
+    fn push_event(&self, topic: Topic, payload: &Arc<Vec<u8>>, max_bytes: usize) -> bool {
+        if self.over_byte_budget(max_bytes) {
+            return false;
+        }
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        self.try_send_line(SessionLine::Event {
+            seq,
+            topic,
+            payload: Arc::clone(payload),
+        })
+    }
+
+    pub(crate) fn subscribed(&self, topic: Topic) -> bool {
+        self.subscriptions
+            .lock()
+            .expect("subscriptions poisoned")
+            .contains(&topic)
+    }
+
+    /// Record subscriptions, returning the topics that were newly added (idempotence:
+    /// duplicates produce no second snapshot stream).
+    pub(crate) fn subscribe(&self, topics: &[Topic]) -> Vec<Topic> {
+        let mut subs = self.subscriptions.lock().expect("subscriptions poisoned");
+        topics
+            .iter()
+            .copied()
+            .filter(|topic| subs.insert(*topic))
+            .collect()
     }
 
     fn over_byte_budget(&self, max_bytes: usize) -> bool {
@@ -235,16 +442,30 @@ pub(crate) async fn run_session(
         return Ok(());
     }
 
-    // --- Writer task: drains the outbound queue to the socket. Ends when the channel
-    // closes (reader side dropped every sender) or the socket dies.
+    // --- Writer task: drains the outbound queue to the socket, splicing the tiny event
+    // envelope around shared payloads at write time (serialize-once fan-out). Ends when
+    // the channel closes (reader side dropped every sender) or the socket dies.
     let queued_bytes = Arc::clone(&handle.queued_bytes);
     let writer = tokio::spawn(async move {
         while let Some(line) = line_rx.recv().await {
-            queued_bytes.fetch_sub(line.len(), Ordering::Relaxed);
-            if write_half.write_all(&line).await.is_err() {
-                break;
-            }
-            if write_half.flush().await.is_err() {
+            queued_bytes.fetch_sub(line.cost(), Ordering::Relaxed);
+            let ok = match line {
+                SessionLine::Raw(bytes) => write_half.write_all(&bytes).await.is_ok(),
+                SessionLine::Event {
+                    seq,
+                    topic,
+                    payload,
+                } => {
+                    let prefix = format!(
+                        "{{\"frame\":\"event\",\"seq\":{seq},\"topic\":\"{}\",\"event\":",
+                        topic.wire_str()
+                    );
+                    write_half.write_all(prefix.as_bytes()).await.is_ok()
+                        && write_half.write_all(&payload).await.is_ok()
+                        && write_half.write_all(b"}\n").await.is_ok()
+                }
+            };
+            if !ok || write_half.flush().await.is_err() {
                 break;
             }
         }
@@ -278,20 +499,24 @@ pub(crate) async fn run_session(
 
         let reply = match frame.op {
             // Pings never touch the owner loop: answered right here.
-            ClientOp::Ping => ServerFrame::Pong { id: frame.id },
+            ClientOp::Ping => Some(ServerFrame::Pong { id: frame.id }),
+            // Subscribe runs on the owner loop (docs/gui/02 §8): the Publisher records
+            // the subscriptions, emits one initial snapshot per newly subscribed topic,
+            // and only then enqueues the Reply — all into this session's queue, so the
+            // snapshot-before-Reply order is structural, not raced.
             ClientOp::Subscribe { topics } => {
-                let mut subs = handle.subscriptions.lock().expect("subscriptions poisoned");
-                for topic in topics {
-                    subs.insert(topic);
+                let session = RemoteSessionRef {
+                    session_id,
+                    handle: Arc::clone(&handle),
+                };
+                if !emit(RemoteEvent::SessionSubscribe {
+                    session,
+                    frame_id: frame.id,
+                    topics,
+                }) {
+                    break CloseReason::ShuttingDown;
                 }
-                drop(subs);
-                // TODO(B0 publisher slice): emit one initial snapshot per newly
-                // subscribed topic BEFORE this reply (docs/gui/02 §6). Until then the
-                // owner does not advertise `events-v8`.
-                ServerFrame::Reply {
-                    id: frame.id,
-                    resp: RemoteResponse::ok("subscribed".to_string()),
-                }
+                None
             }
             ClientOp::Unsubscribe { topics } => {
                 let mut subs = handle.subscriptions.lock().expect("subscriptions poisoned");
@@ -299,10 +524,10 @@ pub(crate) async fn run_session(
                     subs.remove(&topic);
                 }
                 drop(subs);
-                ServerFrame::Reply {
+                Some(ServerFrame::Reply {
                     id: frame.id,
                     resp: RemoteResponse::ok("unsubscribed".to_string()),
-                }
+                })
             }
             ClientOp::Command(command) => {
                 let (reply_tx, reply_rx) = oneshot::channel();
@@ -314,12 +539,13 @@ pub(crate) async fn run_session(
                 } else {
                     RemoteResponse::err("shutting_down")
                 };
-                ServerFrame::Reply { id: frame.id, resp }
+                Some(ServerFrame::Reply { id: frame.id, resp })
             }
         };
 
-        if !handle.try_send_line(frame_line(&reply))
-            || handle.over_byte_budget(tuning.max_queued_bytes)
+        if let Some(reply) = reply
+            && (!handle.try_send_line(SessionLine::Raw(frame_line(&reply)))
+                || handle.over_byte_budget(tuning.max_queued_bytes))
         {
             break CloseReason::SlowConsumer;
         }
@@ -328,9 +554,9 @@ pub(crate) async fn run_session(
     // --- Teardown: best-effort goodbye through the reserved queue slot, then close the
     // outbound lane so the writer drains and exits.
     if let Some(reason) = close_reason.goodbye() {
-        let _ = handle.try_send_line(frame_line(&ServerFrame::Goodbye {
+        let _ = handle.try_send_line(SessionLine::Raw(frame_line(&ServerFrame::Goodbye {
             reason: reason.to_string(),
-        }));
+        })));
     }
     hub.unregister(session_id);
     drop(handle);
@@ -384,17 +610,56 @@ mod tests {
         let hub = hub(tuning);
         let (_, handle, _rx) = hub.register().unwrap();
 
+        let raw = |n: usize| SessionLine::Raw(vec![b'a'; n]);
+
         // Item cap: capacity is max_queued_items + 1 (goodbye reserve); the reserve slot
         // still accepts, then the queue is full.
-        assert!(handle.try_send_line(vec![b'a'; 8]));
-        assert!(handle.try_send_line(vec![b'a'; 8]));
-        assert!(handle.try_send_line(vec![b'a'; 8]), "goodbye reserve slot");
-        assert!(!handle.try_send_line(vec![b'a'; 8]), "item cap trips");
+        assert!(handle.try_send_line(raw(8)));
+        assert!(handle.try_send_line(raw(8)));
+        assert!(handle.try_send_line(raw(8)), "goodbye reserve slot");
+        assert!(!handle.try_send_line(raw(8)), "item cap trips");
 
         // Byte budget: a fresh session with a fat line crosses max_queued_bytes and the
         // caller-visible check reports it even though the item queue accepted it.
         let (_, fat, _rx2) = hub.register().unwrap();
-        assert!(fat.try_send_line(vec![b'a'; 65]));
+        assert!(fat.try_send_line(raw(65)));
         assert!(fat.over_byte_budget(tuning.max_queued_bytes));
+    }
+
+    #[test]
+    fn broadcast_reaches_only_subscribers_with_per_session_seq_and_evicts_overflow() {
+        let tuning = SessionTuning {
+            max_queued_items: 2,
+            max_queued_bytes: 1024,
+            ..SessionTuning::default()
+        };
+        let hub = hub(tuning);
+        let (_, sub, mut sub_rx) = hub.register().unwrap();
+        let (_, other, mut other_rx) = hub.register().unwrap();
+        assert_eq!(sub.subscribe(&[Topic::Player]), vec![Topic::Player]);
+        assert!(sub.subscribe(&[Topic::Player]).is_empty(), "idempotent");
+        other.subscribe(&[Topic::Queue]);
+
+        let payload = Arc::new(br#"{"kind":"shutting_down"}"#.to_vec());
+        // Fill without draining: capacity is max_items+1 (best-effort goodbye reserve),
+        // so pushes 1–3 land, push 4 trips and evicts the subscriber.
+        for _ in 0..4 {
+            hub.broadcast(Topic::Player, &payload);
+        }
+        assert_eq!(hub.active(), 1, "overflowing subscriber evicted");
+        assert!(other_rx.try_recv().is_err(), "non-subscriber got nothing");
+        assert!(
+            !sub.try_send_line(SessionLine::Raw(vec![b'x'])),
+            "evicted sessions accept nothing"
+        );
+        for want_seq in 1..=3u64 {
+            match sub_rx.try_recv().expect("queued events survive eviction") {
+                SessionLine::Event { seq, topic, .. } => {
+                    assert_eq!(seq, want_seq, "per-session monotonic");
+                    assert_eq!(topic, Topic::Player);
+                }
+                SessionLine::Raw(_) => panic!("expected event"),
+            }
+        }
     }
 }

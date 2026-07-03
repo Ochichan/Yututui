@@ -27,9 +27,11 @@ use tokio::time::timeout;
 use super::endpoint;
 use super::proto::{
     HelloRequest, InstanceFile, InstanceMode, PROTOCOL_VERSION, PROTOCOL_VERSION_V7, RemoteCommand,
-    RemoteRequest, RemoteResponse,
+    RemoteRequest, RemoteResponse, Topic,
 };
-use super::sessions::{RemoteSessionHub, SESSION_MAX_FRAME_BYTES, SessionTuning, run_session};
+use super::sessions::{
+    RemoteSessionHub, RemoteSessionRef, SESSION_MAX_FRAME_BYTES, SessionTuning, run_session,
+};
 
 /// How long the single-instance probe waits for the existing server to answer a connect.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -53,6 +55,15 @@ pub enum BindOutcome {
 /// Events emitted by the remote-control server.
 pub enum RemoteEvent {
     Command(RemoteCommand, oneshot::Sender<RemoteResponse>),
+    /// A session sent `Subscribe`. Handled on the owner loop — never the reducer — by
+    /// the [`crate::remote::publish::Publisher`]: it records the subscriptions, emits
+    /// one initial snapshot per newly subscribed topic, then the `Reply`, all in order
+    /// into this session's outbound queue (docs/gui/02 §6/§8).
+    SessionSubscribe {
+        session: RemoteSessionRef,
+        frame_id: u64,
+        topics: Vec<Topic>,
+    },
 }
 
 pub(crate) type EventSink = Arc<dyn Fn(RemoteEvent) -> bool + Send + Sync>;
@@ -84,7 +95,9 @@ impl RemoteServer {
     /// endpoint that nothing was yet accepting on, so a `ytt -r` fired during cold start saw a
     /// live descriptor but got no reply. Keep the returned guard alive for the whole session;
     /// dropping it removes the descriptor (and best-effort the socket).
-    pub fn start<F>(self, emit: F) -> InstanceGuard
+    /// Returns the cleanup guard plus the session hub the host hands to its
+    /// [`crate::remote::publish::Publisher`].
+    pub fn start<F>(self, emit: F) -> (InstanceGuard, Arc<RemoteSessionHub>)
     where
         F: Fn(RemoteEvent) -> bool + Send + Sync + 'static,
     {
@@ -97,7 +110,7 @@ impl RemoteServer {
             self.listener,
             Arc::clone(&self.token),
             Arc::new(emit),
-            hub,
+            Arc::clone(&hub),
         ));
         if self.owns_instance_file
             && let Err(e) = endpoint::write_instance(&InstanceFile {
@@ -114,10 +127,13 @@ impl RemoteServer {
             // find us, so remote control is effectively off this run — log and degrade.
             tracing::warn!(error = %e, "remote: could not write instance descriptor; no remote control");
         }
-        InstanceGuard {
-            socket: self.endpoint,
-            owns_instance_file: self.owns_instance_file,
-        }
+        (
+            InstanceGuard {
+                socket: self.endpoint,
+                owns_instance_file: self.owns_instance_file,
+            },
+            hub,
+        )
     }
 }
 
@@ -272,6 +288,9 @@ fn default_capabilities() -> Vec<String> {
         "remote-control".to_string(),
         "status".to_string(),
         "queue-control".to_string(),
+        // v8 sessions with live push (docs/gui/02 §10) — advertised now that subscribe
+        // delivers initial snapshots through the owner-lane Publisher.
+        "events-v8".to_string(),
     ]
 }
 
@@ -633,14 +652,38 @@ mod session_socket_tests {
         }
     }
 
-    /// Bind + serve with a pong-stub reducer; returns the endpoint.
+    /// Bind + serve with a mini owner-loop stand-in: commands get a pong, subscribes go
+    /// through a real Publisher over a fixed one-track queue (snapshot-before-reply).
     fn start_server(tag: &str, hub: Arc<RemoteSessionHub>) -> String {
         let ep = test_endpoint(tag);
         let listener = bind(&ep).unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteEvent>();
+        let publisher_hub = Arc::clone(&hub);
         tokio::spawn(async move {
-            while let Some(RemoteEvent::Command(_cmd, reply)) = rx.recv().await {
-                let _ = reply.send(RemoteResponse::ok("pong".to_string()));
+            let mut publisher = crate::remote::publish::Publisher::new(publisher_hub);
+            let mut queue = crate::queue::Queue::default();
+            queue.set(
+                vec![crate::api::Song::remote("vid", "Song", "Artist", "3:45")],
+                0,
+            );
+            while let Some(event) = rx.recv().await {
+                match event {
+                    RemoteEvent::Command(_cmd, reply) => {
+                        let _ = reply.send(RemoteResponse::ok("pong".to_string()));
+                    }
+                    RemoteEvent::SessionSubscribe {
+                        session,
+                        frame_id,
+                        topics,
+                    } => {
+                        publisher.handle_subscribe(
+                            &crate::remote::publish::test_view(&queue),
+                            &session,
+                            frame_id,
+                            &topics,
+                        );
+                    }
+                }
             }
         });
         tokio::spawn(serve(
@@ -729,6 +772,22 @@ mod session_socket_tests {
             },
         )
         .await;
+        // The initial player snapshot precedes the Reply (docs/gui/02 §6); `system`
+        // is event-only and produces no snapshot.
+        match read_json_line::<_, ServerFrame>(&mut reader).await {
+            ServerFrame::Event { seq, topic, event } => {
+                assert_eq!(seq, 1);
+                assert_eq!(topic, Topic::Player);
+                assert!(
+                    matches!(
+                        event,
+                        crate::remote::proto::PushEvent::PlayerSnapshot { .. }
+                    ),
+                    "got {event:?}"
+                );
+            }
+            other => panic!("expected the initial player snapshot, got {other:?}"),
+        }
         match read_json_line::<_, ServerFrame>(&mut reader).await {
             ServerFrame::Reply { id, resp } => {
                 assert_eq!(id, 1);
