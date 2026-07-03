@@ -128,6 +128,14 @@ impl Queue {
         self.rev
     }
 
+    /// Test-only: pin the shuffle RNG so two queues driven by the same command script
+    /// produce identical permutations (the App↔Daemon parity harness needs shuffle to
+    /// be deterministic across owners; the policy itself is what's under test).
+    #[cfg(test)]
+    pub(crate) fn seed_rng(&mut self, seed: u64) {
+        self.rng = fastrand::Rng::with_seed(seed);
+    }
+
     fn bump_rev(&mut self) {
         self.rev = next_queue_rev();
     }

@@ -46,6 +46,15 @@ pub struct EngineOptions {
     pub resume: bool,
 }
 
+/// The persisted state the engine runs on. [`DaemonEngine::start`] fills it from disk;
+/// the parity harness fills it with defaults so engine construction stays hermetic.
+pub(crate) struct EngineState {
+    pub config: Config,
+    pub station: StationStore,
+    pub library: Library,
+    pub signals: Signals,
+}
+
 #[derive(Debug)]
 pub enum EngineError {
     Player(String),
@@ -153,21 +162,51 @@ impl DaemonEngine {
     where
         F: Fn(PlayerEvent) + Send + Sync + 'static,
     {
-        let mut config = Config::load();
-        let station = StationStore::load();
+        if let Some(dir) = data_dir() {
+            player::lifetime::reap_orphans(&dir);
+        }
+        let mut engine = Self::with_state(
+            EngineState {
+                config: Config::load(),
+                station: StationStore::load(),
+                library: Library::load(),
+                signals: Signals::load(),
+            },
+            Arc::new(emit),
+        );
+
+        if options.resume {
+            engine.restore_last_session();
+            if engine.queue.current().is_some() {
+                engine.load_current().await?;
+            }
+        }
+
+        Ok(engine)
+    }
+
+    /// Construct the engine from explicit state — the single init path [`start`] wraps
+    /// with disk loads, and the App↔Daemon parity harness constructs hermetically
+    /// (docs/gui/10 §4; the engine must be buildable without touching `ProjectDirs`).
+    pub(crate) fn with_state(
+        state: EngineState,
+        player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync>,
+    ) -> Self {
+        let EngineState {
+            mut config,
+            station,
+            library,
+            signals,
+        } = state;
         if let Some(profile) = &station.active {
             config.streaming.mode = profile.explore.to_mode();
         }
 
-        if let Some(dir) = data_dir() {
-            player::lifetime::reap_orphans(&dir);
-        }
-        let player_emit: Arc<dyn Fn(PlayerEvent) + Send + Sync> = Arc::new(emit);
         let mut queue = Queue::default();
         queue.repeat = config.effective_repeat();
         queue.set_shuffle(config.effective_shuffle());
 
-        let mut engine = Self {
+        Self {
             player: None,
             player_emit,
             queue,
@@ -182,8 +221,8 @@ impl DaemonEngine {
             },
             streaming: config.effective_autoplay_streaming(),
             config,
-            library: Library::load(),
-            signals: Signals::load(),
+            library,
+            signals,
             station,
             loaded_video_id: None,
             streaming_pending: false,
@@ -196,16 +235,21 @@ impl DaemonEngine {
             inactive_radio_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
-        };
-
-        if options.resume {
-            engine.restore_last_session();
-            if engine.queue.current().is_some() {
-                engine.load_current().await?;
-            }
         }
+    }
 
-        Ok(engine)
+    /// Test-only queue seeding through the real snapshot-restore path (the same
+    /// mechanism `restore_last_session` uses), so parity tests never reach for mpv
+    /// or the on-disk session cache. The RNG seed keeps shuffle deterministic across
+    /// the two owners under the shared parity script.
+    #[cfg(test)]
+    pub(crate) fn restore_queue_snapshot(
+        &mut self,
+        snapshot: crate::queue::QueueSnapshot,
+        rng_seed: u64,
+    ) {
+        self.queue.restore_snapshot(snapshot);
+        self.queue.seed_rng(rng_seed);
     }
 
     pub fn api_cookie(&self) -> Option<String> {

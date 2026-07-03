@@ -15,6 +15,8 @@ use crate::remote::server::{self, BindOutcome, RemoteEvent};
 use crate::util::process::{self, ProcessProfile};
 
 mod engine;
+#[cfg(test)]
+mod parity_tests;
 
 const EXIT_OK: i32 = 0;
 const EXIT_TRANSPORT: i32 = 1;

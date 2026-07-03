@@ -12,9 +12,9 @@
 //! playing changes only `elapsed_ms`, which is deliberately **outside** the player
 //! fingerprint — a time-tick turn emits nothing, ever. Clients interpolate.
 //!
-//! Architecture rule: this module reads core state only through [`CoreView`] — it must
-//! never import `crate::app::Msg` (`scripts/check-architecture.sh` enforces the same
-//! boundary for the rest of `src/remote`).
+//! Architecture rule: this module reads core state only through [`CoreView`] — reducer
+//! message types stay out of `src/remote` entirely (`scripts/check-architecture.sh`
+//! enforces that boundary).
 
 use std::sync::Arc;
 
@@ -188,7 +188,9 @@ fn event_payload(event: &PushEvent) -> Arc<Vec<u8>> {
     Arc::new(serde_json::to_vec(event).unwrap_or_else(|_| b"{\"kind\":\"shutting_down\"}".to_vec()))
 }
 
-fn player_model(view: &CoreView<'_>) -> PlayerModel {
+/// Build the wire player model from a view. `pub(crate)` for the App↔Daemon parity
+/// harness (docs/gui/10 §4), which compares exactly these projections across hosts.
+pub(crate) fn player_model(view: &CoreView<'_>) -> PlayerModel {
     let (pos, len) = view.queue.position();
     PlayerModel {
         track: view.queue.current().map(track_model),
@@ -214,7 +216,7 @@ fn player_model(view: &CoreView<'_>) -> PlayerModel {
     }
 }
 
-fn queue_model(view: &CoreView<'_>) -> QueueModel {
+pub(crate) fn queue_model(view: &CoreView<'_>) -> QueueModel {
     QueueModel {
         rev: view.queue.rev(),
         items: view.queue.ordered_iter().map(track_model).collect(),
