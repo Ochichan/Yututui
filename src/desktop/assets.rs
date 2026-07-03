@@ -127,7 +127,8 @@ fn serve_art(key: &str, art: impl Fn(&str) -> Option<PathBuf>) -> Served {
 }
 
 /// Content-type from magic bytes — art keys are content-addressed, not extension-tagged.
-fn sniff_image(bytes: &[u8]) -> &'static str {
+/// Also used by the mini player's data-URI art (panel.rs).
+pub(crate) fn sniff_image(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         "image/jpeg"
     } else if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {

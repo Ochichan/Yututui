@@ -11,6 +11,53 @@ use crate::streaming::StreamingMode;
 use super::menu_model::{self, MenuAction, TrayState, TrayStateKind};
 use super::status::PollUpdate;
 
+/// A mini player skin. Presentation-only tray state: picked from the panel's own UI,
+/// persisted in `desktop.json` (`DesktopState::mini_theme`), never sent to the core —
+/// the remote protocol stays theme-free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelTheme {
+    Default,
+    Minimal,
+    Tamagotchi,
+}
+
+impl PanelTheme {
+    pub const ALL: [PanelTheme; 3] = [
+        PanelTheme::Default,
+        PanelTheme::Minimal,
+        PanelTheme::Tamagotchi,
+    ];
+
+    /// Stable snake_case id (same convention as the TUI's `ThemePreset::id`). Also
+    /// spliced verbatim into the page's `data-theme` attribute, so ids must stay
+    /// `[a-z_]` (a test guards this).
+    pub fn id(self) -> &'static str {
+        match self {
+            PanelTheme::Default => "default",
+            PanelTheme::Minimal => "minimal",
+            PanelTheme::Tamagotchi => "tamagotchi",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|theme| theme.id() == id)
+    }
+
+    /// Logical window size, including the transparent margin the page reserves for
+    /// its drop shadow (the same breathing room the 398×602 default always had).
+    /// Only `Minimal` has an expanded (⋯) state; the host keeps the window's bottom
+    /// edge anchored while it grows, so the extra controls unfold on-screen.
+    pub fn window_size(self, expanded: bool) -> (f64, f64) {
+        match (self, expanded) {
+            (PanelTheme::Default, _) => (398.0, 602.0),
+            (PanelTheme::Minimal, false) => (306.0, 90.0),
+            (PanelTheme::Minimal, true) => (306.0, 276.0),
+            (PanelTheme::Tamagotchi, _) => (290.0, 346.0),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelCommand {
@@ -47,6 +94,10 @@ pub enum PanelCommand {
     Hide,
     /// Begin a native window drag (the frameless panel's header is the drag region).
     Drag,
+    /// Switch the panel skin. Handled tray-locally: resize + persist, no socket traffic.
+    SetTheme(PanelTheme),
+    /// The minimal theme's ⋯ expansion toggled; the host resizes the window to match.
+    SetExpanded(bool),
 }
 
 impl PanelCommand {
@@ -80,7 +131,10 @@ impl PanelCommand {
             PanelCommand::StopDaemon => Some(MenuAction::StopDaemon),
             PanelCommand::OpenTui => Some(MenuAction::OpenTui),
             PanelCommand::Refresh => Some(MenuAction::Refresh),
-            PanelCommand::Hide | PanelCommand::Drag => None,
+            PanelCommand::Hide
+            | PanelCommand::Drag
+            | PanelCommand::SetTheme(_)
+            | PanelCommand::SetExpanded(_) => None,
         }
     }
 
@@ -183,6 +237,8 @@ fn parse_panel_command(message: PanelIpcMessage) -> Result<PanelCommand, serde_j
         "refresh" => PanelCommand::Refresh,
         "hide" => PanelCommand::Hide,
         "drag" => PanelCommand::Drag,
+        "set_theme" => PanelCommand::SetTheme(parse_panel_theme(required_str(value)?)?),
+        "set_expanded" => PanelCommand::SetExpanded(required_bool(value)?),
         _ => return Err(serde::de::Error::custom("unknown panel action")),
     };
     Ok(command)
@@ -238,6 +294,10 @@ fn parse_streaming_mode(value: String) -> Result<StreamingMode, serde_json::Erro
         "discovery" => Ok(StreamingMode::Discovery),
         _ => Err(serde::de::Error::custom("unknown streaming mode")),
     }
+}
+
+fn parse_panel_theme(value: String) -> Result<PanelTheme, serde_json::Error> {
+    PanelTheme::from_id(&value).ok_or_else(|| serde::de::Error::custom("unknown panel theme"))
 }
 
 fn parse_search_source(value: String) -> Result<SearchSource, serde_json::Error> {
@@ -464,11 +524,23 @@ fn repeat_label(repeat: Repeat) -> &'static str {
     }
 }
 
-pub fn html(initial: &PollUpdate) -> String {
-    PANEL_HTML.replace(
-        "__INITIAL_PAYLOAD__",
-        &json_for_script(&payload_for_update(initial)),
-    )
+/// Render the page for a (re)build. `art_uri` is baked in rather than pushed after
+/// load: `evaluate_script` against a still-loading page lands on the boot document
+/// and vanishes, and the host's art memo would then suppress the natural 2s retry.
+/// Theme ids are `[a-z_]` enum constants (guarded by a test), so splicing them into
+/// the `data-theme` attribute needs no escaping.
+pub fn html(initial: &PollUpdate, theme: PanelTheme, art_uri: Option<&str>) -> String {
+    let art = match art_uri {
+        Some(uri) => json_for_script(&uri),
+        None => "null".to_string(),
+    };
+    PANEL_HTML
+        .replace(
+            "__INITIAL_PAYLOAD__",
+            &json_for_script(&payload_for_update(initial)),
+        )
+        .replace("__PANEL_THEME__", theme.id())
+        .replace("__INITIAL_ART__", &art)
 }
 
 pub fn update_script(update: &PollUpdate) -> String {
@@ -476,6 +548,56 @@ pub fn update_script(update: &PollUpdate) -> String {
         "window.ytmTuiApply && window.ytmTuiApply({});",
         json_for_script(&payload_for_update(update))
     )
+}
+
+/// Cap for panel art files. The media-art cache stores small covers (≤512²,
+/// tens of KB); anything bigger is likely not ours and not worth base64-ing
+/// into the webview on every track change.
+pub const MAX_PANEL_ART_BYTES: u64 = 2 * 1024 * 1024;
+
+/// `data:<mime>;base64,…` for raw image bytes (mime sniffed from magic bytes).
+pub fn art_data_uri(bytes: &[u8]) -> String {
+    use base64::Engine;
+    format!(
+        "data:{};base64,{}",
+        super::assets::sniff_image(bytes),
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
+/// Read + encode an artwork cache file; `None` when missing, unreadable, or
+/// oversized (best-effort — the panel just keeps its placeholder).
+pub fn load_art_data_uri(path: &std::path::Path) -> Option<String> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() <= MAX_PANEL_ART_BYTES => {}
+        Ok(meta) => {
+            tracing::debug!(target: "ytt_tray", path = %path.display(), len = meta.len(), "panel art too large");
+            return None;
+        }
+        Err(e) => {
+            tracing::debug!(target: "ytt_tray", path = %path.display(), error = %e, "panel art unreadable");
+            return None;
+        }
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => Some(art_data_uri(&bytes)),
+        Err(e) => {
+            tracing::debug!(target: "ytt_tray", path = %path.display(), error = %e, "panel art unreadable");
+            None
+        }
+    }
+}
+
+/// Push artwork into the live page, off the status-payload path: art is only
+/// (re)sent when it changes, never on the 2s poll. `None` clears to placeholders.
+pub fn art_script(data_uri: Option<&str>) -> String {
+    match data_uri {
+        Some(uri) => format!(
+            "window.ytmTuiApplyArt && window.ytmTuiApplyArt({});",
+            json_for_script(&uri)
+        ),
+        None => "window.ytmTuiApplyArt && window.ytmTuiApplyArt(null);".to_string(),
+    }
 }
 
 fn action_enabled(model: &menu_model::MenuModel, action: MenuAction) -> bool {
@@ -548,1564 +670,7 @@ fn json_for_script<T: Serialize>(value: &T) -> String {
         .replace('\u{2029}', "\\u2029")
 }
 
-const PANEL_HTML: &str = r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    /* Catppuccin Macchiato — official palette (github.com/catppuccin/catppuccin) */
-    :root {
-      color-scheme: dark;
-      --rosewater: #f4dbd6;
-      --flamingo: #f0c6c6;
-      --pink: #f5bde6;
-      --mauve: #c6a0f6;
-      --red: #ed8796;
-      --maroon: #ee99a0;
-      --peach: #f5a97f;
-      --yellow: #eed49f;
-      --green: #a6da95;
-      --teal: #8bd5ca;
-      --sky: #91d7e3;
-      --sapphire: #7dc4e4;
-      --blue: #8aadf4;
-      --lavender: #b7bdf8;
-      --text: #cad3f5;
-      --subtext1: #b8c0e0;
-      --subtext0: #a5adcb;
-      --overlay2: #939ab7;
-      --overlay1: #8087a2;
-      --overlay0: #6e738d;
-      --surface2: #5b6078;
-      --surface1: #494d64;
-      --surface0: #363a4f;
-      --base: #24273a;
-      --mantle: #1e2030;
-      --crust: #181926;
-    }
-
-    * {
-      box-sizing: border-box;
-      -webkit-tap-highlight-color: transparent;
-    }
-
-    html,
-    body {
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      overflow: hidden;
-      background: transparent;
-      color: var(--text);
-      font-family: ui-rounded, "SF Pro Rounded", -apple-system, "Segoe UI Variable Text",
-        "Segoe UI", system-ui, sans-serif;
-      font-size: 12px;
-      user-select: none;
-      cursor: default;
-    }
-
-    body {
-      padding: 13px;
-    }
-
-    /* The whole player is one soft rounded cushion floating on a transparent window. */
-    .cushion {
-      display: grid;
-      grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
-      gap: 9px;
-      width: 100%;
-      height: 100%;
-      padding: 13px 13px 11px;
-      border: 1.5px solid rgba(91, 96, 120, 0.6);
-      border-radius: 26px;
-      background:
-        radial-gradient(130% 80% at 50% 0%, rgba(198, 160, 246, 0.14) 0%, rgba(198, 160, 246, 0) 46%),
-        linear-gradient(180deg, #262a40 0%, var(--base) 42%, var(--mantle) 100%);
-      box-shadow:
-        0 18px 44px rgba(12, 12, 20, 0.55),
-        0 2px 10px rgba(12, 12, 20, 0.35);
-      overflow: hidden;
-    }
-
-    /* ---------- header ---------- */
-
-    header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 0;
-      padding: 1px 2px;
-      cursor: grab;
-    }
-
-    header:active {
-      cursor: grabbing;
-    }
-
-    .brand {
-      display: inline-flex;
-      flex: none;
-      align-items: center;
-      gap: 7px;
-      color: var(--lavender);
-      font-size: 13.5px;
-      font-weight: 800;
-      letter-spacing: 0.2px;
-      white-space: nowrap;
-    }
-
-    .brand .cat {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      height: 22px;
-      padding: 0 9px;
-      border-radius: 999px;
-      background: linear-gradient(135deg, rgba(198, 160, 246, 0.28), rgba(245, 189, 230, 0.24));
-      color: var(--pink);
-      font-size: 10px;
-      font-weight: 800;
-      letter-spacing: 0.5px;
-    }
-
-    .chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      min-width: 0;
-      max-width: 100%;
-      margin-left: auto;
-      overflow: hidden;
-      padding: 4px 11px;
-      border: 1.5px solid var(--surface1);
-      border-radius: 999px;
-      background: var(--mantle);
-      color: var(--subtext1);
-      font-size: 11px;
-      font-weight: 750;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
-
-    .chip::before {
-      content: "";
-      flex: none;
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--overlay0);
-    }
-
-    .chip[data-state="playing"] {
-      border-color: rgba(166, 218, 149, 0.5);
-      color: var(--green);
-    }
-
-    .chip[data-state="playing"]::before {
-      background: var(--green);
-      box-shadow: 0 0 8px rgba(166, 218, 149, 0.9);
-      animation: pulse 2.2s ease-in-out infinite;
-    }
-
-    .chip[data-state="paused"] {
-      border-color: rgba(245, 169, 127, 0.5);
-      color: var(--peach);
-    }
-
-    .chip[data-state="paused"]::before {
-      background: var(--peach);
-    }
-
-    .chip[data-state="idle"] {
-      border-color: rgba(145, 215, 227, 0.45);
-      color: var(--sky);
-    }
-
-    .chip[data-state="idle"]::before {
-      background: var(--sky);
-    }
-
-    .chip[data-state="disconnected"] {
-      border-color: rgba(237, 135, 150, 0.45);
-      color: var(--red);
-    }
-
-    .chip[data-state="disconnected"]::before {
-      background: var(--red);
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.45; }
-    }
-
-    .icon-btn {
-      flex: none;
-      width: 26px;
-      height: 26px;
-      padding: 0;
-      border-radius: 50%;
-      font-size: 12px;
-    }
-
-    button.icon-btn#hide {
-      color: var(--overlay1);
-    }
-
-    button.icon-btn#hide:hover:not(:disabled) {
-      border-color: rgba(237, 135, 150, 0.55);
-      background: rgba(237, 135, 150, 0.14);
-      color: var(--red);
-    }
-
-    /* ---------- mode switch (Music / Radio) ---------- */
-
-    .mode-switch {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 4px;
-      padding: 4px;
-      border-radius: 999px;
-      background: var(--crust);
-    }
-
-    .mode-switch button {
-      height: 30px;
-      border: none;
-      border-radius: 999px;
-      background: transparent;
-      color: var(--subtext0);
-      font-size: 12px;
-      font-weight: 750;
-    }
-
-    .mode-switch button.on {
-      background: linear-gradient(135deg, var(--mauve), var(--pink));
-      color: var(--crust);
-      box-shadow: 0 3px 12px rgba(198, 160, 246, 0.35);
-    }
-
-    .mode-switch button#modeRadio.on {
-      background: linear-gradient(135deg, var(--teal), var(--sky));
-      box-shadow: 0 3px 12px rgba(139, 213, 202, 0.35);
-    }
-
-    .mode-switch button:disabled {
-      opacity: 0.45;
-    }
-
-    /* ---------- tabs ---------- */
-
-    .tabs {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 4px;
-      padding: 4px;
-      border-radius: 999px;
-      background: var(--mantle);
-    }
-
-    .tab {
-      height: 26px;
-      padding: 0;
-      border: none;
-      border-radius: 999px;
-      background: transparent;
-      color: var(--subtext0);
-      font-size: 11.5px;
-    }
-
-    .tab.active {
-      background: var(--surface0);
-      color: var(--mauve);
-      box-shadow: 0 2px 8px rgba(24, 25, 38, 0.55);
-    }
-
-    main {
-      min-height: 0;
-    }
-
-    .tab-panel {
-      display: none;
-      height: 100%;
-      min-height: 0;
-    }
-
-    .tab-panel.active {
-      display: grid;
-      gap: 8px;
-      align-content: start;
-    }
-
-    /* Spread the Now sections over the full height instead of pooling slack at
-       the bottom; let the queue list flex to whatever height is left. */
-    .tab-panel[data-panel="now"].active {
-      align-content: space-between;
-    }
-
-    .tab-panel[data-panel="queue"].active {
-      grid-template-rows: auto minmax(0, 1fr);
-      align-content: stretch;
-    }
-
-    /* ---------- now playing ---------- */
-
-    .now-card {
-      display: grid;
-      gap: 3px;
-      padding: 11px 13px 12px;
-      border-radius: 20px;
-      background: rgba(30, 32, 48, 0.75);
-    }
-
-    .title {
-      min-width: 0;
-      overflow: hidden;
-      color: var(--text);
-      font-size: 18px;
-      font-weight: 800;
-      line-height: 1.2;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .artist {
-      min-width: 0;
-      overflow: hidden;
-      color: var(--subtext1);
-      font-size: 12.5px;
-      font-weight: 650;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .meta {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      min-width: 0;
-      overflow: hidden;
-      margin-top: 3px;
-      color: var(--overlay1);
-      font-size: 10.5px;
-      font-weight: 650;
-      white-space: nowrap;
-    }
-
-    .meta span {
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .meta .onair {
-      display: inline-flex;
-      flex: none;
-      align-items: center;
-      gap: 4px;
-      padding: 1px 8px;
-      border-radius: 999px;
-      background: rgba(139, 213, 202, 0.14);
-      color: var(--teal);
-    }
-
-    /* The explicit display above beats the UA's [hidden] rule — restore it. */
-    .meta .onair[hidden] {
-      display: none;
-    }
-
-    .meta .onair::before {
-      content: "";
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: var(--teal);
-      animation: pulse 1.6s ease-in-out infinite;
-    }
-
-    /* progress row: [-N] [bar] [+N] */
-    .progress-row {
-      display: grid;
-      grid-template-columns: 30px minmax(0, 1fr) 30px;
-      gap: 8px;
-      align-items: center;
-      margin-top: 8px;
-    }
-
-    .progress-row .step {
-      width: 30px;
-      height: 30px;
-      padding: 0;
-      border-radius: 50%;
-      color: var(--subtext0);
-      font-size: 9.5px;
-      font-weight: 800;
-    }
-
-    .bar {
-      position: relative;
-      height: 18px;
-      border-radius: 999px;
-      touch-action: none;
-    }
-
-    .bar .track {
-      position: absolute;
-      inset: 6px 0;
-      overflow: hidden;
-      border-radius: 999px;
-      background: var(--surface0);
-    }
-
-    .bar .fill {
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: 0%;
-      border-radius: 999px;
-      background: linear-gradient(90deg, var(--mauve), var(--pink));
-      transition: width 0.15s linear;
-    }
-
-    .bar .knob {
-      position: absolute;
-      top: 50%;
-      left: 0%;
-      width: 13px;
-      height: 13px;
-      border-radius: 50%;
-      background: var(--rosewater);
-      box-shadow: 0 1px 6px rgba(12, 12, 20, 0.6);
-      transform: translate(-50%, -50%);
-      transition: left 0.15s linear;
-    }
-
-    .bar.dragging .fill,
-    .bar.dragging .knob {
-      transition: none;
-    }
-
-    #progressBar.disabled {
-      opacity: 0.4;
-    }
-
-    #progressBar.live .fill {
-      width: 100% !important;
-      background: repeating-linear-gradient(
-        -45deg,
-        rgba(139, 213, 202, 0.85) 0 10px,
-        rgba(145, 215, 227, 0.55) 10px 20px
-      );
-      animation: crawl 1.2s linear infinite;
-    }
-
-    #progressBar.live .knob {
-      display: none;
-    }
-
-    @keyframes crawl {
-      from { background-position: 0 0; }
-      to { background-position: 28px 0; }
-    }
-
-    .times {
-      display: flex;
-      justify-content: space-between;
-      padding: 0 40px;
-      color: var(--overlay1);
-      font-size: 10px;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .times .live-tag {
-      color: var(--teal);
-      letter-spacing: 1px;
-    }
-
-    /* transport */
-    .transport {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 18px;
-      padding: 2px 0 0;
-    }
-
-    .transport .skip {
-      width: 42px;
-      height: 42px;
-      padding: 0;
-      border-radius: 50%;
-      color: var(--lavender);
-      font-size: 12px;
-    }
-
-    .transport .primary {
-      width: 56px;
-      height: 56px;
-      padding: 0;
-      border: none;
-      border-radius: 50%;
-      background: linear-gradient(135deg, var(--mauve), var(--pink));
-      color: var(--crust);
-      font-size: 19px;
-      box-shadow: 0 6px 20px rgba(198, 160, 246, 0.4);
-    }
-
-    .transport .primary:hover:not(:disabled) {
-      border-color: transparent;
-      box-shadow: 0 6px 24px rgba(245, 189, 230, 0.55);
-    }
-
-    /* shuffle / repeat / streaming pills */
-    .pill-row {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 6px;
-    }
-
-    .pill-row button {
-      height: 30px;
-      border-radius: 999px;
-      font-size: 11px;
-    }
-
-    button#shuffle.on {
-      border-color: rgba(139, 213, 202, 0.6);
-      background: rgba(139, 213, 202, 0.13);
-      color: var(--teal);
-    }
-
-    button#repeat.on {
-      border-color: rgba(245, 189, 230, 0.6);
-      background: rgba(245, 189, 230, 0.12);
-      color: var(--pink);
-    }
-
-    button#streaming.on {
-      border-color: rgba(166, 218, 149, 0.6);
-      background: rgba(166, 218, 149, 0.12);
-      color: var(--green);
-    }
-
-    /* volume row */
-    .volume-row {
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr) 40px;
-      gap: 9px;
-      align-items: center;
-      padding: 7px 12px;
-      border-radius: 999px;
-      background: var(--mantle);
-    }
-
-    .volume-row .vol-ico {
-      color: var(--subtext0);
-      font-size: 13px;
-    }
-
-    #volumeBar .fill {
-      background: linear-gradient(90deg, var(--teal), var(--sky));
-    }
-
-    #volumeBar.disabled {
-      opacity: 0.4;
-    }
-
-    #volumePct {
-      color: var(--subtext1);
-      font-size: 11px;
-      font-weight: 800;
-      font-variant-numeric: tabular-nums;
-      text-align: right;
-    }
-
-    /* ---------- queue ---------- */
-
-    .queue-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      min-width: 0;
-      padding: 0 2px;
-    }
-
-    .queue-list {
-      display: grid;
-      gap: 6px;
-      align-content: start;
-      min-height: 0;
-      overflow-y: auto;
-      padding-right: 4px;
-    }
-
-    .queue-list::-webkit-scrollbar {
-      width: 6px;
-    }
-
-    .queue-list::-webkit-scrollbar-thumb {
-      border-radius: 999px;
-      background: var(--surface1);
-    }
-
-    .queue-item {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 30px;
-      gap: 6px;
-      align-items: center;
-      min-width: 0;
-    }
-
-    button.queue-track {
-      display: grid;
-      grid-template-columns: 26px minmax(0, 1fr) auto;
-      gap: 9px;
-      align-items: center;
-      width: 100%;
-      height: auto;
-      padding: 7px 11px 7px 8px;
-      border-color: transparent;
-      border-radius: 16px;
-      background: var(--mantle);
-      text-align: left;
-    }
-
-    button.queue-track:hover:not(:disabled) {
-      border-color: var(--surface2);
-    }
-
-    .queue-item.current button.queue-track {
-      border-color: rgba(198, 160, 246, 0.55);
-      background: rgba(198, 160, 246, 0.12);
-      box-shadow: 0 2px 10px rgba(198, 160, 246, 0.18);
-    }
-
-    .queue-number {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 24px;
-      height: 24px;
-      border-radius: 50%;
-      background: var(--surface0);
-      color: var(--subtext0);
-      font-size: 10px;
-      font-weight: 800;
-    }
-
-    .queue-item.current .queue-number {
-      background: var(--mauve);
-      color: var(--crust);
-    }
-
-    .queue-text {
-      display: grid;
-      gap: 1px;
-      min-width: 0;
-    }
-
-    .queue-title,
-    .queue-artist {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .queue-title {
-      color: var(--text);
-      font-size: 12px;
-      font-weight: 750;
-    }
-
-    .queue-artist {
-      color: var(--subtext0);
-      font-size: 10.5px;
-      font-weight: 600;
-    }
-
-    .queue-duration {
-      color: var(--overlay1);
-      font-size: 10.5px;
-      font-weight: 650;
-      font-variant-numeric: tabular-nums;
-    }
-
-    button.queue-remove {
-      width: 30px;
-      height: 30px;
-      padding: 0;
-      border-color: transparent;
-      border-radius: 50%;
-      background: transparent;
-      color: var(--red);
-      font-size: 11px;
-    }
-
-    button.queue-remove:hover:not(:disabled) {
-      border-color: rgba(237, 135, 150, 0.4);
-      background: rgba(237, 135, 150, 0.14);
-    }
-
-    .empty {
-      display: grid;
-      gap: 4px;
-      place-items: center;
-      min-height: 150px;
-      border: 2px dashed var(--surface1);
-      border-radius: 20px;
-      color: var(--subtext0);
-      font-size: 12px;
-      font-weight: 700;
-    }
-
-    .empty .kaomoji {
-      color: var(--overlay1);
-      font-size: 16px;
-      letter-spacing: 1px;
-    }
-
-    /* ---------- settings rows ---------- */
-
-    .settings {
-      display: grid;
-      gap: 7px;
-      align-content: start;
-    }
-
-    .row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      min-height: 40px;
-      padding: 4px 5px 4px 12px;
-      border-radius: 16px;
-      background: var(--mantle);
-    }
-
-    .label {
-      color: var(--subtext1);
-      font-size: 12px;
-      font-weight: 750;
-    }
-
-    .sub-label {
-      color: var(--overlay0);
-      font-size: 10px;
-      font-weight: 650;
-    }
-
-    .value {
-      min-width: 44px;
-      color: var(--text);
-      font-size: 12px;
-      font-weight: 800;
-      font-variant-numeric: tabular-nums;
-      text-align: center;
-    }
-
-    .segmented {
-      display: inline-flex;
-      gap: 4px;
-      padding: 3px;
-      border-radius: 999px;
-      background: var(--crust);
-    }
-
-    .segmented button {
-      height: 26px;
-      padding: 0 10px;
-      border: none;
-      border-radius: 999px;
-      background: transparent;
-      color: var(--subtext0);
-      font-size: 11px;
-    }
-
-    .segmented button.on {
-      background: var(--mauve);
-      color: var(--crust);
-    }
-
-    .stepper {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-
-    .stepper button {
-      width: 30px;
-      height: 30px;
-      padding: 0;
-      border-radius: 50%;
-      font-size: 14px;
-    }
-
-    .toggle {
-      min-width: 58px;
-      height: 30px;
-      border-radius: 999px;
-    }
-
-    .toggle.on {
-      border-color: rgba(166, 218, 149, 0.6);
-      background: rgba(166, 218, 149, 0.14);
-      color: var(--green);
-    }
-
-    select {
-      height: 32px;
-      max-width: 190px;
-      padding: 0 10px;
-      border: 1.5px solid var(--surface1);
-      border-radius: 14px;
-      background: var(--surface0);
-      color: var(--text);
-      font: inherit;
-      font-size: 12px;
-      font-weight: 650;
-      outline: none;
-    }
-
-    /* ---------- dock ---------- */
-
-    .dock {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 6px;
-      padding: 6px;
-      border-radius: 18px;
-      background: var(--mantle);
-    }
-
-    .dock button {
-      height: 30px;
-      border-color: transparent;
-      border-radius: 12px;
-      font-size: 11px;
-    }
-
-    button#startDaemon {
-      color: var(--green);
-    }
-
-    button#startDaemon:hover:not(:disabled) {
-      border-color: rgba(166, 218, 149, 0.6);
-    }
-
-    button#resumeDaemon {
-      color: var(--teal);
-    }
-
-    button#resumeDaemon:hover:not(:disabled) {
-      border-color: rgba(139, 213, 202, 0.6);
-    }
-
-    button#stopDaemon {
-      color: var(--red);
-    }
-
-    button#stopDaemon:hover:not(:disabled) {
-      border-color: rgba(237, 135, 150, 0.6);
-    }
-
-    button#openTui {
-      color: var(--lavender);
-    }
-
-    button#openTui:hover:not(:disabled) {
-      border-color: rgba(183, 189, 248, 0.6);
-    }
-
-    /* ---------- error toast ---------- */
-
-    /* Inline toast row between the tabs' content and the dock: when hidden its
-       grid row collapses, so it never overlaps the controls. */
-    .alert {
-      overflow: hidden;
-      padding: 7px 14px;
-      border: 1.5px solid rgba(237, 135, 150, 0.5);
-      border-radius: 999px;
-      background: rgba(237, 135, 150, 0.1);
-      color: var(--red);
-      font-size: 11px;
-      font-weight: 650;
-      text-align: center;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .alert[hidden] {
-      display: none;
-    }
-
-    /* ---------- shared button base ---------- */
-
-    button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      min-width: 0;
-      height: 34px;
-      padding: 0 10px;
-      border: 1.5px solid var(--surface1);
-      border-radius: 16px;
-      background: var(--surface0);
-      color: var(--text);
-      font: inherit;
-      font-size: 12px;
-      font-weight: 700;
-      white-space: nowrap;
-      outline: none;
-      transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease,
-        color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
-    }
-
-    button:hover:not(:disabled) {
-      border-color: var(--mauve);
-    }
-
-    button:active:not(:disabled) {
-      transform: scale(0.92);
-    }
-
-    button:focus-visible {
-      border-color: var(--lavender);
-      box-shadow: 0 0 0 3px rgba(183, 189, 248, 0.25);
-    }
-
-    button:disabled,
-    select:disabled {
-      opacity: 0.38;
-    }
-  </style>
-</head>
-<body>
-  <div class="cushion">
-    <header id="dragRegion">
-      <div class="brand"><span class="cat">=^..^=</span> YtmTui</div>
-      <div class="chip" id="stateLabel" data-state="disconnected">Disconnected</div>
-      <button class="icon-btn" data-action="refresh" id="refreshTop" title="Refresh">&#8635;</button>
-      <button class="icon-btn" data-action="hide" id="hide" title="Hide">&#10005;</button>
-    </header>
-
-    <div class="mode-switch" id="modeSwitch" title="Switch between normal playback and the dedicated radio mode">
-      <button id="modeMusic" data-mode="music">&#9834; Music</button>
-      <button id="modeRadio" data-mode="radio">&#128251; Radio</button>
-    </div>
-
-    <div class="tabs" role="tablist">
-      <button class="tab active" data-tab="now" id="tabNow">Now</button>
-      <button class="tab" data-tab="queue" id="tabQueue">Queue</button>
-      <button class="tab" data-tab="streaming" id="tabStreaming">Stream</button>
-      <button class="tab" data-tab="playback" id="tabPlayback">Tune</button>
-    </div>
-
-    <main>
-      <section class="tab-panel active" data-panel="now">
-        <div class="now-card">
-          <div class="title" id="title">ytm-tui is not running</div>
-          <div class="artist" id="artist">YtmTui</div>
-          <div class="meta">
-            <span id="ownerLabel">Offline</span>
-            <span>&#183;</span>
-            <span id="queueLabel">Queue unavailable</span>
-            <span class="onair" id="onAir" hidden>on air &#9834;</span>
-          </div>
-
-          <div class="progress-row">
-            <button class="step" data-action="seek_back" id="seekBack" title="Seek back">-10</button>
-            <div class="bar" id="progressBar">
-              <div class="track"><div class="fill" id="progressFill"></div></div>
-              <div class="knob" id="progressKnob"></div>
-            </div>
-            <button class="step" data-action="seek_forward" id="seekForward" title="Seek forward">+10</button>
-          </div>
-          <div class="times">
-            <span id="timeElapsed">-:--</span>
-            <span id="timeTotal">-:--</span>
-          </div>
-        </div>
-
-        <div class="transport">
-          <button class="skip" data-action="previous" id="previous" title="Previous" aria-label="Previous">&#9664;&#9664;</button>
-          <button class="primary" data-action="play_pause" id="playPause" title="Play or pause" aria-label="Play or pause">&#9654;</button>
-          <button class="skip" data-action="next" id="next" title="Next" aria-label="Next">&#9654;&#9654;</button>
-        </div>
-
-        <div class="pill-row">
-          <button data-action="toggle_shuffle" id="shuffle" title="Shuffle" aria-label="Toggle shuffle">&#8644; Shuffle</button>
-          <button data-action="cycle_repeat" id="repeat" title="Repeat" aria-label="Cycle repeat">&#8635; <span id="repeatText">Off</span></button>
-          <button data-action="set_streaming" id="streaming" title="Autoplay streaming">&#9835; Stream</button>
-        </div>
-
-        <div class="volume-row">
-          <span class="vol-ico">&#9834;</span>
-          <div class="bar" id="volumeBar" title="Scroll or drag to change the volume">
-            <div class="track"><div class="fill" id="volumeFill"></div></div>
-            <div class="knob" id="volumeKnob"></div>
-          </div>
-          <span id="volumePct">--</span>
-        </div>
-      </section>
-
-      <section class="tab-panel" data-panel="queue">
-        <div class="queue-head">
-          <span class="label" id="queueSummary">Queue unavailable</span>
-          <button class="icon-btn" data-action="refresh" id="queueRefresh" title="Refresh">&#8635;</button>
-        </div>
-        <div class="queue-list" id="queueList"></div>
-      </section>
-
-      <section class="tab-panel" data-panel="streaming">
-        <div class="settings">
-          <div class="row">
-            <span class="label">Streaming</span>
-            <button class="toggle" data-action="set_streaming" id="streamingToggle">Off</button>
-          </div>
-          <div class="row">
-            <span class="label">Mode</span>
-            <div class="segmented">
-              <button class="mode" data-action="set_streaming_mode" data-value="focused" id="modeFocused">Focused</button>
-              <button class="mode" data-action="set_streaming_mode" data-value="balanced" id="modeBalanced">Balanced</button>
-              <button class="mode" data-action="set_streaming_mode" data-value="discovery" id="modeDiscovery">Discovery</button>
-            </div>
-          </div>
-          <div class="row">
-            <span class="label">Source</span>
-            <select id="streamingSource" data-action="set_streaming_source"></select>
-          </div>
-          <div class="row">
-            <span class="label">DJ Gem</span>
-            <button class="toggle" data-action="set_ai_enabled" id="aiEnabled">On</button>
-          </div>
-          <div class="row">
-            <span class="label">Radio mode <span class="sub-label" id="radioHint"></span></span>
-            <button class="toggle" data-action="set_radio_mode" id="radioMode">Off</button>
-          </div>
-        </div>
-      </section>
-
-      <section class="tab-panel" data-panel="playback">
-        <div class="settings">
-          <div class="row">
-            <span class="label">Speed</span>
-            <div class="stepper">
-              <button data-action="speed_delta" data-delta="-1" id="speedDown">-</button>
-              <span class="value" id="speedLabel">1.0x</span>
-              <button data-action="speed_delta" data-delta="1" id="speedUp">+</button>
-            </div>
-          </div>
-          <div class="row">
-            <span class="label">Seek step</span>
-            <div class="stepper">
-              <button data-action="seek_delta" data-delta="-1" id="seekDown">-</button>
-              <span class="value" id="seekLabel">10s</span>
-              <button data-action="seek_delta" data-delta="1" id="seekUp">+</button>
-            </div>
-          </div>
-          <div class="row">
-            <span class="label">Normalize</span>
-            <button class="toggle" data-action="set_normalize" id="normalize">Off</button>
-          </div>
-          <div class="row">
-            <span class="label">Gapless</span>
-            <button class="toggle" data-action="set_gapless" id="gapless">On</button>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <div class="alert" id="error" hidden></div>
-
-    <div class="dock">
-      <button data-action="start_daemon" id="startDaemon">Start</button>
-      <button data-action="resume_daemon" id="resumeDaemon">Resume</button>
-      <button data-action="stop_daemon" id="stopDaemon">Stop</button>
-      <button data-action="open_tui" id="openTui">Open TUI</button>
-    </div>
-  </div>
-
-  <script>
-    window.__YTM_TUI_INITIAL__ = __INITIAL_PAYLOAD__;
-
-    let currentPayload = window.__YTM_TUI_INITIAL__;
-    let lastQueueKey = null;
-    let lastSourceOptionsKey = null;
-
-    const els = {};
-    [
-      "stateLabel", "title", "artist", "ownerLabel", "queueLabel", "onAir", "error",
-      "previous", "playPause", "next", "shuffle", "repeat", "repeatText", "streaming",
-      "seekBack", "seekForward", "progressBar", "progressFill", "progressKnob",
-      "timeElapsed", "timeTotal", "volumeBar", "volumeFill", "volumeKnob", "volumePct",
-      "modeMusic", "modeRadio", "radioHint",
-      "queueSummary", "queueList", "queueRefresh", "refreshTop", "hide",
-      "streamingToggle", "modeFocused", "modeBalanced", "modeDiscovery", "streamingSource",
-      "aiEnabled", "radioMode", "speedDown", "speedUp", "speedLabel",
-      "seekDown", "seekUp", "seekLabel", "normalize", "gapless",
-      "startDaemon", "resumeDaemon", "stopDaemon", "openTui", "dragRegion"
-    ].forEach(id => { els[id] = document.getElementById(id); });
-
-    function send(action, value) {
-      if (window.ipc && window.ipc.postMessage) {
-        const message = value === undefined ? { action } : { action, value };
-        window.ipc.postMessage(JSON.stringify(message));
-      }
-    }
-
-    function enabled(button, value) {
-      button.disabled = !value;
-    }
-
-    function setTab(tab) {
-      document.querySelectorAll("[data-tab]").forEach(button => {
-        button.classList.toggle("active", button.dataset.tab === tab);
-      });
-      document.querySelectorAll("[data-panel]").forEach(panel => {
-        panel.classList.toggle("active", panel.dataset.panel === tab);
-      });
-    }
-
-    function setToggle(button, on, onText, offText) {
-      button.textContent = on ? onText : offText;
-      button.classList.toggle("on", on);
-    }
-
-    function chipState(payload) {
-      if (!payload.connected) return "disconnected";
-      const state = String(payload.stateLabel || "").toLowerCase();
-      return state === "playing" || state === "paused" ? state : "idle";
-    }
-
-    function escapeHtml(value) {
-      return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-    }
-
-    function fmtTime(ms) {
-      if (ms == null || !isFinite(ms)) return "-:--";
-      const total = Math.max(0, Math.floor(ms / 1000));
-      const h = Math.floor(total / 3600);
-      const m = Math.floor((total % 3600) / 60);
-      const s = total % 60;
-      const two = n => String(n).padStart(2, "0");
-      return h > 0 ? h + ":" + two(m) + ":" + two(s) : m + ":" + two(s);
-    }
-
-    /* ---------- window drag (frameless) ---------- */
-
-    els.dragRegion.addEventListener("mousedown", event => {
-      if (event.button !== 0) return;
-      if (event.target.closest("button")) return;
-      send("drag");
-    });
-
-    /* ---------- progress bar: live interpolation + click/drag seek ---------- */
-
-    const prog = {
-      anchorMs: null,
-      anchorAt: 0,
-      playing: false,
-      speed: 1,
-      durationMs: null,
-      live: false,
-      canSeek: false,
-      holdUntil: 0,
-      dragging: false
-    };
-
-    function shownElapsed() {
-      if (prog.anchorMs == null) return null;
-      let value = prog.anchorMs;
-      if (prog.playing && !prog.dragging) {
-        value += (performance.now() - prog.anchorAt) * prog.speed;
-      }
-      if (prog.durationMs != null) value = Math.min(value, prog.durationMs);
-      return Math.max(0, value);
-    }
-
-    function renderProgress() {
-      const elapsed = shownElapsed();
-      const isLive = prog.live;
-      els.progressBar.classList.toggle("live", isLive);
-      els.progressBar.classList.toggle("disabled", !prog.canSeek && !isLive);
-      if (isLive) {
-        els.timeElapsed.textContent = "on air";
-        els.timeTotal.innerHTML = '<span class="live-tag">LIVE</span>';
-        return;
-      }
-      const pct = prog.durationMs && elapsed != null
-        ? Math.min(100, (elapsed / prog.durationMs) * 100)
-        : 0;
-      els.progressFill.style.width = pct + "%";
-      els.progressKnob.style.left = pct + "%";
-      els.timeElapsed.textContent = fmtTime(elapsed);
-      els.timeTotal.textContent = prog.durationMs != null ? fmtTime(prog.durationMs) : "-:--";
-    }
-
-    function syncProgress(payload) {
-      if (performance.now() < prog.holdUntil || prog.dragging) return;
-      prog.anchorMs = payload.elapsedMs;
-      prog.anchorAt = performance.now();
-      prog.playing = payload.connected && !payload.paused && payload.elapsedMs != null;
-      prog.speed = (payload.settings.speedTenths || 10) / 10;
-      prog.durationMs = payload.durationMs;
-      prog.live = payload.connected
-        && payload.durationMs == null
-        && payload.elapsedMs != null;
-      prog.canSeek = payload.canSeek;
-      renderProgress();
-    }
-
-    setInterval(renderProgress, 250);
-
-    function barFraction(bar, clientX) {
-      const rect = bar.getBoundingClientRect();
-      if (rect.width <= 0) return 0;
-      return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    }
-
-    els.progressBar.addEventListener("pointerdown", event => {
-      if (!prog.canSeek || prog.durationMs == null) return;
-      prog.dragging = true;
-      els.progressBar.classList.add("dragging");
-      els.progressBar.setPointerCapture(event.pointerId);
-      prog.anchorMs = barFraction(els.progressBar, event.clientX) * prog.durationMs;
-      renderProgress();
-    });
-
-    els.progressBar.addEventListener("pointermove", event => {
-      if (!prog.dragging) return;
-      prog.anchorMs = barFraction(els.progressBar, event.clientX) * prog.durationMs;
-      renderProgress();
-    });
-
-    function endSeekDrag(event) {
-      if (!prog.dragging) return;
-      prog.dragging = false;
-      els.progressBar.classList.remove("dragging");
-      const target = Math.round(barFraction(els.progressBar, event.clientX) * prog.durationMs);
-      prog.anchorMs = target;
-      prog.anchorAt = performance.now();
-      prog.holdUntil = performance.now() + 1500;
-      send("seek_to", target);
-      renderProgress();
-    }
-
-    els.progressBar.addEventListener("pointerup", endSeekDrag);
-    els.progressBar.addEventListener("pointercancel", () => {
-      prog.dragging = false;
-      els.progressBar.classList.remove("dragging");
-    });
-
-    /* ---------- volume bar: wheel + click/drag ---------- */
-
-    const vol = {
-      local: null,
-      localUntil: 0,
-      canVolume: false,
-      dragging: false,
-      sendTimer: null,
-      pending: null
-    };
-
-    function currentVolume() {
-      return vol.local != null ? vol.local : currentPayload.volume;
-    }
-
-    function renderVolume() {
-      const value = currentVolume();
-      const pct = Math.min(100, Math.max(0, value));
-      els.volumeFill.style.width = pct + "%";
-      els.volumeKnob.style.left = pct + "%";
-      els.volumePct.textContent = currentPayload.connected ? pct + "%" : "--";
-      els.volumeBar.classList.toggle("disabled", !vol.canVolume);
-    }
-
-    function queueVolumeSend(value) {
-      vol.pending = value;
-      if (vol.sendTimer) return;
-      vol.sendTimer = setTimeout(() => {
-        vol.sendTimer = null;
-        send("set_volume", vol.pending);
-      }, 70);
-    }
-
-    function setVolumeLocal(value) {
-      if (!vol.canVolume) return;
-      const next = Math.min(100, Math.max(0, Math.round(value)));
-      vol.local = next;
-      vol.localUntil = performance.now() + 1800;
-      queueVolumeSend(next);
-      renderVolume();
-    }
-
-    els.volumeBar.addEventListener("wheel", event => {
-      event.preventDefault();
-      if (!vol.canVolume) return;
-      const step = event.shiftKey ? 1 : 5;
-      const dir = (event.deltaY || event.deltaX) < 0 ? 1 : -1;
-      setVolumeLocal(currentVolume() + dir * step);
-    }, { passive: false });
-
-    els.volumeBar.addEventListener("pointerdown", event => {
-      if (!vol.canVolume) return;
-      vol.dragging = true;
-      els.volumeBar.classList.add("dragging");
-      els.volumeBar.setPointerCapture(event.pointerId);
-      setVolumeLocal(barFraction(els.volumeBar, event.clientX) * 100);
-    });
-
-    els.volumeBar.addEventListener("pointermove", event => {
-      if (!vol.dragging) return;
-      setVolumeLocal(barFraction(els.volumeBar, event.clientX) * 100);
-    });
-
-    function endVolumeDrag() {
-      vol.dragging = false;
-      els.volumeBar.classList.remove("dragging");
-    }
-
-    els.volumeBar.addEventListener("pointerup", endVolumeDrag);
-    els.volumeBar.addEventListener("pointercancel", endVolumeDrag);
-
-    /* ---------- streaming source select ---------- */
-
-    function renderSourceOptions(settings) {
-      const selected = settings.streamingSource;
-      const sources = settings.streamingSources.slice();
-      // Protocol skew safety net: an unknown current value still shows up instead
-      // of leaving the select blank.
-      if (!sources.some(source => source.value === selected)) {
-        sources.push({ value: selected, label: settings.streamingSourceLabel || selected });
-      }
-      // Rebuild <option>s only when the option list itself changes; comparing against
-      // innerHTML never matched (browsers re-serialize attributes), which used to
-      // rebuild + reset this select on every poll.
-      const optionsKey = JSON.stringify(sources);
-      if (optionsKey !== lastSourceOptionsKey) {
-        lastSourceOptionsKey = optionsKey;
-        els.streamingSource.innerHTML = sources.map(source =>
-          `<option value="${escapeHtml(source.value)}">${escapeHtml(source.label)}</option>`
-        ).join("");
-      }
-      if (els.streamingSource.value !== selected) {
-        els.streamingSource.value = selected;
-      }
-    }
-
-    /* ---------- queue ---------- */
-
-    function renderQueue(payload) {
-      els.queueSummary.textContent = payload.queueLabel;
-      // Skip the innerHTML rebuild unless the queue actually changed — rebuilding on
-      // every 2s poll ate in-flight clicks and thrashed layout on large queues.
-      const queueKey = JSON.stringify(payload.queue);
-      if (queueKey === lastQueueKey) return;
-      lastQueueKey = queueKey;
-
-      if (!payload.queue.length) {
-        els.queueList.innerHTML = `<div class="empty"><span class="kaomoji">=^..^=</span><span>queue is napping&#8230;</span></div>`;
-        return;
-      }
-
-      els.queueList.innerHTML = payload.queue.map(item => {
-        const number = item.current ? "&#9654;" : String(item.index + 1);
-        const duration = item.duration ? escapeHtml(item.duration) : "";
-        const current = item.current ? " current" : "";
-        return `
-          <div class="queue-item${current}">
-            <button class="queue-track" data-action="queue_play" data-position="${item.index}" title="Play ${escapeHtml(item.title)}">
-              <span class="queue-number">${number}</span>
-              <span class="queue-text">
-                <span class="queue-title">${escapeHtml(item.title)}</span>
-                <span class="queue-artist">${escapeHtml(item.artist)}</span>
-              </span>
-              <span class="queue-duration">${duration}</span>
-            </button>
-            <button class="queue-remove" data-action="queue_remove" data-position="${item.index}" title="Remove" aria-label="Remove">&#10005;</button>
-          </div>`;
-      }).join("");
-    }
-
-    /* ---------- apply a status payload ---------- */
-
-    function apply(payload) {
-      currentPayload = payload;
-      const settings = payload.settings;
-
-      els.stateLabel.textContent = payload.stateLabel;
-      els.stateLabel.dataset.state = chipState(payload);
-      els.title.textContent = payload.title;
-      els.artist.textContent = payload.artist;
-      els.ownerLabel.textContent = payload.ownerLabel;
-      els.queueLabel.textContent = payload.queueLabel;
-      els.onAir.hidden = !payload.streaming;
-      els.playPause.innerHTML = payload.paused ? "&#9654;" : "&#10073;&#10073;";
-      els.repeatText.textContent = payload.repeatLabel;
-      renderQueue(payload);
-
-      els.shuffle.classList.toggle("on", payload.shuffle);
-      els.repeat.classList.toggle("on", payload.repeat !== "off");
-      els.streaming.classList.toggle("on", settings.autoplayStreaming);
-      setToggle(els.streamingToggle, settings.autoplayStreaming, "On", "Off");
-      setToggle(els.aiEnabled, settings.aiEnabled, "On", "Off");
-      setToggle(els.radioMode, settings.radioMode, "On", "Off");
-      setToggle(els.normalize, settings.normalize, "On", "Off");
-      setToggle(els.gapless, settings.gapless, "On", "Off");
-
-      els.modeMusic.classList.toggle("on", !settings.radioMode);
-      els.modeRadio.classList.toggle("on", settings.radioMode);
-      enabled(els.modeMusic, settings.canRadioMode && settings.radioMode);
-      enabled(els.modeRadio, settings.canRadioMode && !settings.radioMode);
-      els.radioHint.textContent = settings.canRadioMode ? "" : "(TUI only)";
-
-      els.modeFocused.classList.toggle("on", settings.streamingMode === "focused");
-      els.modeBalanced.classList.toggle("on", settings.streamingMode === "balanced");
-      els.modeDiscovery.classList.toggle("on", settings.streamingMode === "discovery");
-      renderSourceOptions(settings);
-      els.speedLabel.textContent = settings.speedLabel;
-      els.seekBack.textContent = "-" + settings.seekSeconds;
-      els.seekForward.textContent = "+" + settings.seekSeconds;
-      els.seekLabel.textContent = settings.seekLabel;
-
-      enabled(els.previous, payload.canPlayback);
-      enabled(els.playPause, payload.canPlayback);
-      enabled(els.next, payload.canPlayback);
-      enabled(els.shuffle, payload.connected);
-      enabled(els.repeat, payload.connected);
-      enabled(els.queueRefresh, payload.connected);
-      enabled(els.seekBack, payload.canSeek);
-      enabled(els.seekForward, payload.canSeek);
-      enabled(els.streaming, payload.canToggleStreaming);
-      enabled(els.streamingToggle, payload.canToggleStreaming);
-      enabled(els.modeFocused, payload.connected);
-      enabled(els.modeBalanced, payload.connected);
-      enabled(els.modeDiscovery, payload.connected);
-      els.streamingSource.disabled = !payload.connected;
-      enabled(els.aiEnabled, payload.connected);
-      enabled(els.radioMode, settings.canRadioMode);
-      enabled(els.speedDown, payload.connected && settings.speedTenths > 5);
-      enabled(els.speedUp, payload.connected && settings.speedTenths < 20);
-      enabled(els.seekDown, payload.connected && settings.seekSeconds > 1);
-      enabled(els.seekUp, payload.connected && settings.seekSeconds < 60);
-      enabled(els.normalize, payload.connected);
-      enabled(els.gapless, payload.connected);
-      enabled(els.startDaemon, payload.canStartDaemon);
-      enabled(els.resumeDaemon, payload.canResumeDaemon);
-      enabled(els.stopDaemon, payload.canStopDaemon);
-
-      vol.canVolume = payload.canVolume;
-      if (performance.now() > vol.localUntil) {
-        vol.local = null;
-      }
-      renderVolume();
-      syncProgress(payload);
-
-      if (payload.error) {
-        els.error.hidden = false;
-        els.error.textContent = payload.error;
-      } else {
-        els.error.hidden = true;
-        els.error.textContent = "";
-      }
-    }
-
-    /* ---------- clicks ---------- */
-
-    document.addEventListener("click", event => {
-      const tab = event.target.closest("button[data-tab]");
-      if (tab) {
-        setTab(tab.dataset.tab);
-        return;
-      }
-
-      const mode = event.target.closest("button[data-mode]");
-      if (mode && !mode.disabled) {
-        const settings = currentPayload.settings;
-        const wantRadio = mode.dataset.mode === "radio";
-        if (wantRadio !== settings.radioMode) {
-          settings.radioMode = wantRadio;
-          send("set_radio_mode", wantRadio);
-          apply(currentPayload);
-        }
-        return;
-      }
-
-      const button = event.target.closest("button[data-action]");
-      if (!button || button.disabled) return;
-      const action = button.dataset.action;
-      const settings = currentPayload.settings;
-
-      // Setter clicks update currentPayload optimistically so rapid clicks compute
-      // from the newest value instead of the last poll; the next status payload
-      // remains authoritative and overwrites everything.
-      if (action === "set_streaming") {
-        settings.autoplayStreaming = !settings.autoplayStreaming;
-        send(action, settings.autoplayStreaming);
-        apply(currentPayload);
-      } else if (action === "toggle_shuffle" || action === "cycle_repeat") {
-        send(action);
-      } else if (action === "queue_play" || action === "queue_remove") {
-        send(action, Number(button.dataset.position));
-      } else if (action === "set_streaming_mode") {
-        settings.streamingMode = button.dataset.value;
-        send(action, button.dataset.value);
-        apply(currentPayload);
-      } else if (action === "set_ai_enabled") {
-        settings.aiEnabled = !settings.aiEnabled;
-        send(action, settings.aiEnabled);
-        apply(currentPayload);
-      } else if (action === "set_radio_mode") {
-        settings.radioMode = !settings.radioMode;
-        send(action, settings.radioMode);
-        apply(currentPayload);
-      } else if (action === "set_normalize") {
-        settings.normalize = !settings.normalize;
-        send(action, settings.normalize);
-        apply(currentPayload);
-      } else if (action === "set_gapless") {
-        settings.gapless = !settings.gapless;
-        send(action, settings.gapless);
-        apply(currentPayload);
-      } else if (action === "speed_delta") {
-        const next = Math.max(5, Math.min(20, settings.speedTenths + Number(button.dataset.delta)));
-        if (next !== settings.speedTenths) {
-          settings.speedTenths = next;
-          settings.speedLabel = (next / 10).toFixed(1) + "x";
-          send("set_speed", next);
-          apply(currentPayload);
-        }
-      } else if (action === "seek_delta") {
-        const next = Math.max(1, Math.min(60, settings.seekSeconds + Number(button.dataset.delta)));
-        if (next !== settings.seekSeconds) {
-          settings.seekSeconds = next;
-          settings.seekLabel = next + "s";
-          send("set_seek_seconds", next);
-          apply(currentPayload);
-        }
-      } else {
-        send(action);
-      }
-    });
-
-    els.streamingSource.addEventListener("change", event => {
-      send("set_streaming_source", event.target.value);
-    });
-
-    window.ytmTuiApply = apply;
-    apply(window.__YTM_TUI_INITIAL__);
-  </script>
-</body>
-</html>
-"#;
+const PANEL_HTML: &str = include_str!("panel.html");
 
 #[cfg(test)]
 mod tests {
@@ -2142,6 +707,7 @@ mod tests {
             repeat: Repeat::All,
             elapsed_ms: Some(42_000),
             duration_ms: Some(180_000),
+            artwork: None,
         })
     }
 
@@ -2212,6 +778,7 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            artwork: None,
         });
         let payload = payload_for_update(&update);
         assert_eq!(payload.title, "Nothing playing");
@@ -2342,7 +909,7 @@ mod tests {
         if let TrayState::Connected(status) = &mut update.state {
             status.title = Some("</script><script>alert(1)</script><!--".to_string());
         }
-        let html = html(&update);
+        let html = html(&update, PanelTheme::Default, None);
         assert!(html.contains(r"\u003c/script>\u003cscript>alert(1)"));
         assert!(html.contains(r"\u003c!--"));
         assert!(!html.contains("</script><script>alert"));
@@ -2397,5 +964,187 @@ mod tests {
         assert!(PANEL_HTML.contains("data-action=\"cycle_repeat\""));
         assert!(PANEL_HTML.contains("data-action=\"queue_play\""));
         assert!(PANEL_HTML.contains("data-action=\"queue_remove\""));
+    }
+
+    #[test]
+    fn theme_ids_round_trip() {
+        for theme in PanelTheme::ALL {
+            assert_eq!(PanelTheme::from_id(theme.id()), Some(theme));
+        }
+        assert_eq!(PanelTheme::from_id("bogus"), None);
+    }
+
+    #[test]
+    fn theme_ids_are_substitution_safe() {
+        // Ids are spliced verbatim into the page's data-theme attribute.
+        for theme in PanelTheme::ALL {
+            assert!(
+                theme
+                    .id()
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{} is not attribute-safe",
+                theme.id()
+            );
+        }
+    }
+
+    #[test]
+    fn window_size_expands_only_minimal() {
+        for theme in PanelTheme::ALL {
+            let collapsed = theme.window_size(false);
+            let expanded = theme.window_size(true);
+            if theme == PanelTheme::Minimal {
+                assert!(expanded.1 > collapsed.1);
+                assert_eq!(expanded.0, collapsed.0, "expansion only grows downward");
+            } else {
+                assert_eq!(expanded, collapsed);
+            }
+        }
+    }
+
+    #[test]
+    fn ipc_message_parses_theme_commands() {
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"set_theme","value":"minimal"}"#).unwrap(),
+            PanelCommand::SetTheme(PanelTheme::Minimal)
+        );
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"set_theme","value":"tamagotchi"}"#).unwrap(),
+            PanelCommand::SetTheme(PanelTheme::Tamagotchi)
+        );
+        assert!(parse_ipc_message(r#"{"action":"set_theme","value":"bogus"}"#).is_err());
+        assert!(parse_ipc_message(r#"{"action":"set_theme"}"#).is_err());
+        assert_eq!(
+            parse_ipc_message(r#"{"action":"set_expanded","value":true}"#).unwrap(),
+            PanelCommand::SetExpanded(true)
+        );
+        assert!(parse_ipc_message(r#"{"action":"set_expanded","value":"yes"}"#).is_err());
+    }
+
+    #[test]
+    fn theme_commands_stay_tray_local() {
+        // Skin changes must never produce socket traffic or menu actions.
+        for command in [
+            PanelCommand::SetTheme(PanelTheme::Minimal),
+            PanelCommand::SetExpanded(true),
+        ] {
+            assert_eq!(command.remote_command(), None);
+            assert_eq!(command.menu_action(), None);
+        }
+    }
+
+    #[test]
+    fn panel_html_exposes_theme_switching() {
+        // The CSS switch rules and the shared picker must survive redesigns.
+        assert!(PANEL_HTML.contains(r#"html[data-theme="minimal"]"#));
+        assert!(PANEL_HTML.contains(r#"html[data-theme="tamagotchi"]"#));
+        assert!(PANEL_HTML.contains(r#"data-action="set_theme""#));
+        for theme in PanelTheme::ALL {
+            assert!(
+                PANEL_HTML.contains(&format!(r#"data-value="{}""#, theme.id())),
+                "picker misses {}",
+                theme.id()
+            );
+        }
+    }
+
+    #[test]
+    fn panel_html_exposes_minimal_theme_controls() {
+        assert!(PANEL_HTML.contains(r#"id="minimalRoot""#));
+        assert!(PANEL_HTML.contains(r#"id="mnCapsule""#));
+        assert!(PANEL_HTML.contains(r#"id="mnExpand""#));
+        assert!(PANEL_HTML.contains(r#"id="mnMore""#));
+        assert!(PANEL_HTML.contains(r#"id="mnVolBar""#));
+        assert!(PANEL_HTML.contains(r#"id="mnSeekBar""#));
+        assert!(PANEL_HTML.contains(r#""set_expanded""#));
+    }
+
+    #[test]
+    fn panel_html_has_exactly_one_theme_slot() {
+        assert_eq!(PANEL_HTML.matches("__PANEL_THEME__").count(), 1);
+        assert!(PANEL_HTML.contains(r#"data-theme="__PANEL_THEME__""#));
+    }
+
+    #[test]
+    fn html_bakes_the_selected_theme() {
+        let page = html(&playing_update(), PanelTheme::Minimal, None);
+        assert!(page.contains(r#"data-theme="minimal""#));
+        assert!(!page.contains("__PANEL_THEME__"));
+    }
+
+    #[test]
+    fn panel_html_exposes_tamagotchi_pet_and_screen() {
+        assert!(PANEL_HTML.contains(r#"id="tamaRoot""#));
+        assert!(PANEL_HTML.contains(r#"id="tmScreen""#));
+        assert!(PANEL_HTML.contains(r#"id="tmVolBar""#));
+        assert!(PANEL_HTML.contains(r#"id="tmSeekBar""#));
+        // The pet state machine and its LCD look must survive redesigns.
+        assert!(PANEL_HTML.contains(r#"[data-pet="dance"]"#));
+        assert!(PANEL_HTML.contains(r#"[data-pet="sleep"]"#));
+        assert!(PANEL_HTML.contains(r#"[data-pet="off"]"#));
+        assert!(PANEL_HTML.contains(r#"shape-rendering="crispEdges""#));
+        assert!(PANEL_HTML.contains("image-rendering: pixelated"));
+    }
+
+    #[test]
+    fn panel_html_has_exactly_one_art_slot() {
+        assert_eq!(PANEL_HTML.matches("__INITIAL_ART__").count(), 1);
+        assert!(PANEL_HTML.contains("ytmTuiApplyArt"));
+    }
+
+    #[test]
+    fn html_bakes_initial_art() {
+        let uri = "data:image/png;base64,iVBORw0KGgo=";
+        let page = html(&playing_update(), PanelTheme::Minimal, Some(uri));
+        assert!(page.contains(&format!("window.__YTM_TUI_INITIAL_ART__ = \"{uri}\";")));
+
+        let artless = html(&playing_update(), PanelTheme::Minimal, None);
+        assert!(artless.contains("window.__YTM_TUI_INITIAL_ART__ = null;"));
+        assert!(!artless.contains("__INITIAL_ART__"));
+    }
+
+    #[test]
+    fn art_data_uri_sniffs_common_formats() {
+        assert!(art_data_uri(&[0xFF, 0xD8, 0xFF, 0x00]).starts_with("data:image/jpeg;base64,"));
+        assert!(art_data_uri(b"\x89PNG\r\n\x1a\n").starts_with("data:image/png;base64,"));
+        assert!(
+            art_data_uri(b"RIFF\x00\x00\x00\x00WEBPVP8 ").starts_with("data:image/webp;base64,")
+        );
+        assert!(art_data_uri(b"not an image").starts_with("data:application/octet-stream;base64,"));
+    }
+
+    #[test]
+    fn art_script_splices_or_clears() {
+        assert_eq!(
+            art_script(None),
+            "window.ytmTuiApplyArt && window.ytmTuiApplyArt(null);"
+        );
+        let script = art_script(Some("data:image/png;base64,AA=="));
+        assert_eq!(
+            script,
+            "window.ytmTuiApplyArt && window.ytmTuiApplyArt(\"data:image/png;base64,AA==\");"
+        );
+    }
+
+    #[test]
+    fn load_art_data_uri_handles_missing_and_oversized() {
+        let dir = std::env::temp_dir();
+        assert_eq!(
+            load_art_data_uri(&dir.join("ytt-panel-art-missing.bin")),
+            None
+        );
+
+        let ok_path = dir.join(format!("ytt-panel-art-ok-{}.bin", std::process::id()));
+        std::fs::write(&ok_path, [0xFF, 0xD8, 0xFF, 0x00]).unwrap();
+        let uri = load_art_data_uri(&ok_path);
+        std::fs::remove_file(&ok_path).ok();
+        assert!(uri.unwrap().starts_with("data:image/jpeg;base64,"));
+
+        let big_path = dir.join(format!("ytt-panel-art-big-{}.bin", std::process::id()));
+        std::fs::write(&big_path, vec![0u8; (MAX_PANEL_ART_BYTES + 1) as usize]).unwrap();
+        let rejected = load_art_data_uri(&big_path);
+        std::fs::remove_file(&big_path).ok();
+        assert_eq!(rejected, None);
     }
 }

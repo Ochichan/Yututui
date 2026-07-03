@@ -160,6 +160,11 @@ pub struct StatusSnapshot {
     /// Current track length in milliseconds; `None` for live streams / unknown.
     #[serde(default)]
     pub duration_ms: Option<u64>,
+    /// Current track's cached artwork file, when the media-art cache has resolved
+    /// one for it. Additive since v8; skip-serialized so pre-artwork shapes (and
+    /// the freeze goldens) stay byte-identical when it is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork: Option<ArtworkRef>,
 }
 
 /// A queue row in the currently effective play order.
@@ -315,6 +320,7 @@ mod tests {
         let snap: StatusSnapshot = serde_json::from_str(line).unwrap();
         assert_eq!(snap.elapsed_ms, None);
         assert_eq!(snap.duration_ms, None);
+        assert_eq!(snap.artwork, None);
     }
 
     #[test]
@@ -353,6 +359,7 @@ mod tests {
             repeat: Repeat::Off,
             elapsed_ms: None,
             duration_ms: None,
+            artwork: None,
         };
         let line = snap.human_line();
         assert!(line.contains("nothing playing"));
@@ -376,6 +383,7 @@ mod tests {
             repeat: Repeat::Off,
             elapsed_ms: None,
             duration_ms: None,
+            artwork: None,
         };
         let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
         assert!(line.contains("\"owner_mode\":\"daemon\""), "got {line}");

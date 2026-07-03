@@ -261,6 +261,7 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            artwork: None,
         };
         let response = serde_json::to_string(&RemoteResponse::status(snapshot.clone())).unwrap();
         let server = tokio::spawn(serve_one_response(listener, response));

@@ -34,6 +34,11 @@ pub struct DesktopState {
     pub close_to_tray: bool,
     #[serde(default)]
     pub keep_webview_alive: bool,
+    /// Mini player skin id (`PanelTheme::id`). Stored as a plain string so an id
+    /// written by a newer build degrades to the default theme instead of failing
+    /// the whole file; `None` means the default theme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mini_theme: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -42,7 +47,13 @@ fn default_true() -> bool {
 
 impl Default for DesktopState {
     fn default() -> Self {
-        DesktopState { main: None, mini: None, close_to_tray: true, keep_webview_alive: false }
+        DesktopState {
+            main: None,
+            mini: None,
+            close_to_tray: true,
+            keep_webview_alive: false,
+            mini_theme: None,
+        }
     }
 }
 
@@ -154,8 +165,19 @@ mod tests {
             mini: Some(Point { x: 10, y: 20 }),
             close_to_tray: false,
             keep_webview_alive: true,
+            mini_theme: Some("minimal".to_string()),
         };
         let line = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<DesktopState>(&line).unwrap(), s);
+    }
+
+    #[test]
+    fn state_without_mini_theme_still_parses() {
+        // A desktop.json written before the theme field existed.
+        let line = r#"{"main":{"x":1,"y":2,"w":1200,"h":800},"close_to_tray":true,"keep_webview_alive":false}"#;
+        let s: DesktopState = serde_json::from_str(line).unwrap();
+        assert_eq!(s.mini_theme, None);
+        // And an absent theme never appears on disk (keeps old builds parsing it).
+        assert!(!serde_json::to_string(&s).unwrap().contains("mini_theme"));
     }
 }

@@ -14,10 +14,11 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 use crate::desktop::control;
 use crate::desktop::launch;
 use crate::desktop::menu_model::{self, MenuAction, MenuEntry, MenuItem as ModelItem, TrayState};
-use crate::desktop::panel::PanelCommand;
+use crate::desktop::panel::{PanelCommand, PanelTheme};
 use crate::desktop::platform::panel_window::MiniPlayerPanel;
 use crate::desktop::startup::{self, StartupStatus};
 use crate::desktop::status::{self, PollConfig, PollUpdate};
+use crate::desktop::window_state::DesktopState;
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
 
 const APP_ID: &str = "io.github.ochi.ytm-tui.tray";
@@ -25,6 +26,9 @@ const POLL_THREAD_NAME: &str = "ytt-desktop-status";
 const COMMAND_THREAD_NAME: &str = "ytt-desktop-command";
 const ICO_BYTES: &[u8] = include_bytes!("../../../assets/icons/ytm-tui.ico");
 
+// Status carries the poll snapshot inline; events are dispatched one at a time
+// (never queued in bulk), so boxing would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum UserEvent {
     Status(PollUpdate),
@@ -138,6 +142,13 @@ pub fn run(open_main: bool) -> Result<(), Box<dyn Error>> {
             }
             Event::WindowEvent {
                 window_id,
+                event: WindowEvent::Focused(false),
+                ..
+            } => {
+                app.handle_panel_blur(window_id);
+            }
+            Event::WindowEvent {
+                window_id,
                 event: WindowEvent::Destroyed,
                 ..
             } => {
@@ -163,6 +174,11 @@ struct WindowsTrayApp {
     // to flush the final log lines.
     log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
     menu_dismissed_at: Option<Instant>,
+    // When a focus loss auto-hid the minimal panel. A tray click arrives as
+    // mousedown (blur → hide) then mouseup (ShowMiniPlayer); swallowing the show
+    // shortly after a blur-hide makes that click read as toggle-close instead of
+    // an instant reopen (mirrors menu_dismissed_at).
+    panel_blur_hidden_at: Option<Instant>,
 }
 
 impl WindowsTrayApp {
@@ -179,6 +195,7 @@ impl WindowsTrayApp {
             poll_shutdown: None,
             log_guard,
             menu_dismissed_at: None,
+            panel_blur_hidden_at: None,
         }
     }
 
@@ -320,6 +337,15 @@ impl WindowsTrayApp {
         target: &EventLoopWindowTarget<UserEvent>,
         anchor: Option<(f64, f64)>,
     ) {
+        // The tray click that requested this show may itself have blur-hidden the
+        // minimal panel on mousedown; swallowing it turns the click into a toggle.
+        if self
+            .panel_blur_hidden_at
+            .take()
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(300))
+        {
+            return;
+        }
         if let Some(panel) = &self.panel {
             if let Some(anchor) = anchor {
                 panel.position_near(anchor);
@@ -329,8 +355,14 @@ impl WindowsTrayApp {
             return;
         }
 
+        // Unknown / corrupt persisted ids degrade to the default skin.
+        let theme = DesktopState::load()
+            .mini_theme
+            .as_deref()
+            .and_then(PanelTheme::from_id)
+            .unwrap_or(PanelTheme::Default);
         let proxy = self.proxy.clone();
-        match MiniPlayerPanel::create(target, &self.last_update, move |command| {
+        match MiniPlayerPanel::create(target, &self.last_update, theme, move |command| {
             let _ = proxy.send_event(UserEvent::Panel(command));
         }) {
             Ok(panel) => {
@@ -357,6 +389,21 @@ impl WindowsTrayApp {
                     panel.start_drag();
                 }
             }
+            PanelCommand::SetTheme(theme) => {
+                if let Some(panel) = &self.panel {
+                    panel.set_theme(theme);
+                }
+                // Same load-mutate-save as the main-window geometry persist, so
+                // concurrent writes are never clobbered.
+                let mut state = DesktopState::load();
+                state.mini_theme = Some(theme.id().to_string());
+                state.save();
+            }
+            PanelCommand::SetExpanded(expanded) => {
+                if let Some(panel) = &self.panel {
+                    panel.set_expanded(expanded);
+                }
+            }
             command => {
                 if let Some(remote) = command.remote_command() {
                     self.send_panel_remote(
@@ -367,6 +414,17 @@ impl WindowsTrayApp {
                     self.handle_action(action);
                 }
             }
+        }
+    }
+
+    /// The minimal skin dismisses on click-away like a real tray popup.
+    fn handle_panel_blur(&mut self, window_id: tao::window::WindowId) {
+        if let Some(panel) = &self.panel
+            && panel.window_id() == window_id
+            && panel.wants_blur_hide()
+        {
+            panel.hide();
+            self.panel_blur_hidden_at = Some(Instant::now());
         }
     }
 
@@ -983,6 +1041,7 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            artwork: None,
         });
         assert_eq!(tooltip_for_state(&state), "Paused: Artist - Song");
         let idle_daemon = TrayState::Connected(StatusSnapshot {
@@ -1000,6 +1059,7 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            artwork: None,
         });
         assert_eq!(tooltip_for_state(&idle_daemon), "ytm-tui daemon idle");
         assert_eq!(
@@ -1022,6 +1082,7 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            artwork: None,
         }));
         assert_eq!(long.chars().count(), 124);
         assert!(long.ends_with("..."));

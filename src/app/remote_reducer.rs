@@ -8,8 +8,8 @@
 
 use super::*;
 use crate::remote::proto::{
-    InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse, RemoteSettingChange,
-    SettingsSnapshot, StatusSnapshot, ToggleState,
+    ArtworkRef, InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse,
+    RemoteSettingChange, SettingsSnapshot, StatusSnapshot, ToggleState,
 };
 
 impl App {
@@ -350,6 +350,18 @@ impl App {
             duration_ms: cur
                 .and(self.playback.duration)
                 .map(|duration| (duration.max(0.0) * 1000.0) as u64),
+            // Same current-track gate as the OS media snapshot (media_reducer): stale
+            // art from the previous track never rides a status reply.
+            artwork: cur.and_then(|song| {
+                self.media_art
+                    .as_ref()
+                    .filter(|art| art.key == song.video_id)
+                    .map(|art| ArtworkRef {
+                        key: art.key.clone(),
+                        path: Some(art.path.to_string_lossy().into_owned()),
+                        mime: None,
+                    })
+            }),
         }
     }
 
@@ -687,6 +699,28 @@ mod tests {
         assert_eq!(snap.position, 1);
         assert!(snap.streaming);
         assert_eq!(snap.title.as_deref(), Some("Zero"));
+    }
+
+    #[test]
+    fn status_artwork_only_matches_current_track() {
+        let mut app = two_track_app();
+        // Art for a *different* track is not surfaced (mirrors the media snapshot gate).
+        app.media_art = Some(crate::media::artwork::MediaArtworkReady {
+            key: "id1".to_owned(),
+            path: std::path::PathBuf::from("/tmp/id1.jpg"),
+        });
+        let (resp, _) = app.apply_remote(RemoteCommand::Status);
+        assert!(resp.status.expect("status").artwork.is_none());
+
+        app.media_art = Some(crate::media::artwork::MediaArtworkReady {
+            key: "id0".to_owned(),
+            path: std::path::PathBuf::from("/tmp/id0.jpg"),
+        });
+        let (resp, _) = app.apply_remote(RemoteCommand::Status);
+        let art = resp.status.expect("status").artwork.expect("artwork");
+        assert_eq!(art.key, "id0");
+        assert_eq!(art.path.as_deref(), Some("/tmp/id0.jpg"));
+        assert_eq!(art.mime, None);
     }
 
     #[test]

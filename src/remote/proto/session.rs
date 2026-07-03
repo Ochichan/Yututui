@@ -86,6 +86,9 @@ pub enum ClientOp {
 }
 
 /// One server line: a correlated reply, a subscribed push, a pong, or the goodbye.
+// Reply carries the full RemoteResponse inline; frames are built, serialized, and
+// dropped one at a time (never stored in bulk), so boxing would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frame", rename_all = "snake_case")]
 pub enum ServerFrame {

@@ -1,0 +1,2616 @@
+<!doctype html>
+<html lang="en" data-theme="__PANEL_THEME__">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    /* Catppuccin Macchiato — official palette (github.com/catppuccin/catppuccin) */
+    :root {
+      color-scheme: dark;
+      --rosewater: #f4dbd6;
+      --flamingo: #f0c6c6;
+      --pink: #f5bde6;
+      --mauve: #c6a0f6;
+      --red: #ed8796;
+      --maroon: #ee99a0;
+      --peach: #f5a97f;
+      --yellow: #eed49f;
+      --green: #a6da95;
+      --teal: #8bd5ca;
+      --sky: #91d7e3;
+      --sapphire: #7dc4e4;
+      --blue: #8aadf4;
+      --lavender: #b7bdf8;
+      --text: #cad3f5;
+      --subtext1: #b8c0e0;
+      --subtext0: #a5adcb;
+      --overlay2: #939ab7;
+      --overlay1: #8087a2;
+      --overlay0: #6e738d;
+      --surface2: #5b6078;
+      --surface1: #494d64;
+      --surface0: #363a4f;
+      --base: #24273a;
+      --mantle: #1e2030;
+      --crust: #181926;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+      color: var(--text);
+      font-family: ui-rounded, "SF Pro Rounded", -apple-system, "Segoe UI Variable Text",
+        "Segoe UI", system-ui, sans-serif;
+      font-size: 12px;
+      user-select: none;
+      cursor: default;
+    }
+
+    body {
+      padding: 13px;
+    }
+
+    /* The whole player is one soft rounded cushion floating on a transparent window. */
+    .cushion {
+      display: grid;
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+      gap: 9px;
+      width: 100%;
+      height: 100%;
+      padding: 13px 13px 11px;
+      border: 1.5px solid rgba(91, 96, 120, 0.6);
+      border-radius: 26px;
+      background:
+        radial-gradient(130% 80% at 50% 0%, rgba(198, 160, 246, 0.14) 0%, rgba(198, 160, 246, 0) 46%),
+        linear-gradient(180deg, #262a40 0%, var(--base) 42%, var(--mantle) 100%);
+      box-shadow:
+        0 18px 44px rgba(12, 12, 20, 0.55),
+        0 2px 10px rgba(12, 12, 20, 0.35);
+      overflow: hidden;
+    }
+
+    /* ---------- header ---------- */
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 1px 2px;
+      cursor: grab;
+    }
+
+    header:active {
+      cursor: grabbing;
+    }
+
+    .brand {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      gap: 7px;
+      color: var(--lavender);
+      font-size: 13.5px;
+      font-weight: 800;
+      letter-spacing: 0.2px;
+      white-space: nowrap;
+    }
+
+    .brand .cat {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 22px;
+      padding: 0 9px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(198, 160, 246, 0.28), rgba(245, 189, 230, 0.24));
+      color: var(--pink);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: 100%;
+      margin-left: auto;
+      overflow: hidden;
+      padding: 4px 11px;
+      border: 1.5px solid var(--surface1);
+      border-radius: 999px;
+      background: var(--mantle);
+      color: var(--subtext1);
+      font-size: 11px;
+      font-weight: 750;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .chip::before {
+      content: "";
+      flex: none;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--overlay0);
+    }
+
+    .chip[data-state="playing"] {
+      border-color: rgba(166, 218, 149, 0.5);
+      color: var(--green);
+    }
+
+    .chip[data-state="playing"]::before {
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(166, 218, 149, 0.9);
+      animation: pulse 2.2s ease-in-out infinite;
+    }
+
+    .chip[data-state="paused"] {
+      border-color: rgba(245, 169, 127, 0.5);
+      color: var(--peach);
+    }
+
+    .chip[data-state="paused"]::before {
+      background: var(--peach);
+    }
+
+    .chip[data-state="idle"] {
+      border-color: rgba(145, 215, 227, 0.45);
+      color: var(--sky);
+    }
+
+    .chip[data-state="idle"]::before {
+      background: var(--sky);
+    }
+
+    .chip[data-state="disconnected"] {
+      border-color: rgba(237, 135, 150, 0.45);
+      color: var(--red);
+    }
+
+    .chip[data-state="disconnected"]::before {
+      background: var(--red);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+
+    .icon-btn {
+      flex: none;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border-radius: 50%;
+      font-size: 12px;
+    }
+
+    button.icon-btn#hide {
+      color: var(--overlay1);
+    }
+
+    button.icon-btn#hide:hover:not(:disabled) {
+      border-color: rgba(237, 135, 150, 0.55);
+      background: rgba(237, 135, 150, 0.14);
+      color: var(--red);
+    }
+
+    /* ---------- mode switch (Music / Radio) ---------- */
+
+    .mode-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      background: var(--crust);
+    }
+
+    .mode-switch button {
+      height: 30px;
+      border: none;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--subtext0);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .mode-switch button.on {
+      background: linear-gradient(135deg, var(--mauve), var(--pink));
+      color: var(--crust);
+      box-shadow: 0 3px 12px rgba(198, 160, 246, 0.35);
+    }
+
+    .mode-switch button#modeRadio.on {
+      background: linear-gradient(135deg, var(--teal), var(--sky));
+      box-shadow: 0 3px 12px rgba(139, 213, 202, 0.35);
+    }
+
+    .mode-switch button:disabled {
+      opacity: 0.45;
+    }
+
+    /* ---------- tabs ---------- */
+
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      background: var(--mantle);
+    }
+
+    .tab {
+      height: 26px;
+      padding: 0;
+      border: none;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--subtext0);
+      font-size: 11.5px;
+    }
+
+    .tab.active {
+      background: var(--surface0);
+      color: var(--mauve);
+      box-shadow: 0 2px 8px rgba(24, 25, 38, 0.55);
+    }
+
+    main {
+      min-height: 0;
+    }
+
+    .tab-panel {
+      display: none;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .tab-panel.active {
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+
+    /* Spread the Now sections over the full height instead of pooling slack at
+       the bottom; let the queue list flex to whatever height is left. */
+    .tab-panel[data-panel="now"].active {
+      align-content: space-between;
+    }
+
+    .tab-panel[data-panel="queue"].active {
+      grid-template-rows: auto minmax(0, 1fr);
+      align-content: stretch;
+    }
+
+    /* ---------- now playing ---------- */
+
+    .now-card {
+      display: grid;
+      gap: 3px;
+      padding: 11px 13px 12px;
+      border-radius: 20px;
+      background: rgba(30, 32, 48, 0.75);
+    }
+
+    .title {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.2;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .artist {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--subtext1);
+      font-size: 12.5px;
+      font-weight: 650;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .meta {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      overflow: hidden;
+      margin-top: 3px;
+      color: var(--overlay1);
+      font-size: 10.5px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .meta span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .meta .onair {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      background: rgba(139, 213, 202, 0.14);
+      color: var(--teal);
+    }
+
+    /* The explicit display above beats the UA's [hidden] rule — restore it. */
+    .meta .onair[hidden] {
+      display: none;
+    }
+
+    .meta .onair::before {
+      content: "";
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--teal);
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+
+    /* progress row: [-N] [bar] [+N] */
+    .progress-row {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) 30px;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    .progress-row .step {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-radius: 50%;
+      color: var(--subtext0);
+      font-size: 9.5px;
+      font-weight: 800;
+    }
+
+    .bar {
+      position: relative;
+      height: 18px;
+      border-radius: 999px;
+      touch-action: none;
+    }
+
+    .bar .track {
+      position: absolute;
+      inset: 6px 0;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--surface0);
+    }
+
+    .bar .fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 0%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--mauve), var(--pink));
+      transition: width 0.15s linear;
+    }
+
+    .bar .knob {
+      position: absolute;
+      top: 50%;
+      left: 0%;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: var(--rosewater);
+      box-shadow: 0 1px 6px rgba(12, 12, 20, 0.6);
+      transform: translate(-50%, -50%);
+      transition: left 0.15s linear;
+    }
+
+    .bar.dragging .fill,
+    .bar.dragging .knob {
+      transition: none;
+    }
+
+    #progressBar.disabled {
+      opacity: 0.4;
+    }
+
+    #progressBar.live .fill {
+      width: 100% !important;
+      background: repeating-linear-gradient(
+        -45deg,
+        rgba(139, 213, 202, 0.85) 0 10px,
+        rgba(145, 215, 227, 0.55) 10px 20px
+      );
+      animation: crawl 1.2s linear infinite;
+    }
+
+    #progressBar.live .knob {
+      display: none;
+    }
+
+    @keyframes crawl {
+      from { background-position: 0 0; }
+      to { background-position: 28px 0; }
+    }
+
+    .times {
+      display: flex;
+      justify-content: space-between;
+      padding: 0 40px;
+      color: var(--overlay1);
+      font-size: 10px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .times .live-tag {
+      color: var(--teal);
+      letter-spacing: 1px;
+    }
+
+    /* transport */
+    .transport {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      padding: 2px 0 0;
+    }
+
+    .transport .skip {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      border-radius: 50%;
+      color: var(--lavender);
+      font-size: 12px;
+    }
+
+    .transport .primary {
+      width: 56px;
+      height: 56px;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--mauve), var(--pink));
+      color: var(--crust);
+      font-size: 19px;
+      box-shadow: 0 6px 20px rgba(198, 160, 246, 0.4);
+    }
+
+    .transport .primary:hover:not(:disabled) {
+      border-color: transparent;
+      box-shadow: 0 6px 24px rgba(245, 189, 230, 0.55);
+    }
+
+    /* shuffle / repeat / streaming pills */
+    .pill-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .pill-row button {
+      height: 30px;
+      border-radius: 999px;
+      font-size: 11px;
+    }
+
+    button#shuffle.on {
+      border-color: rgba(139, 213, 202, 0.6);
+      background: rgba(139, 213, 202, 0.13);
+      color: var(--teal);
+    }
+
+    button#repeat.on {
+      border-color: rgba(245, 189, 230, 0.6);
+      background: rgba(245, 189, 230, 0.12);
+      color: var(--pink);
+    }
+
+    button#streaming.on {
+      border-color: rgba(166, 218, 149, 0.6);
+      background: rgba(166, 218, 149, 0.12);
+      color: var(--green);
+    }
+
+    /* volume row */
+    .volume-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) 40px;
+      gap: 9px;
+      align-items: center;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: var(--mantle);
+    }
+
+    .volume-row .vol-ico {
+      color: var(--subtext0);
+      font-size: 13px;
+    }
+
+    #volumeBar .fill {
+      background: linear-gradient(90deg, var(--teal), var(--sky));
+    }
+
+    #volumeBar.disabled {
+      opacity: 0.4;
+    }
+
+    #volumePct {
+      color: var(--subtext1);
+      font-size: 11px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    /* ---------- queue ---------- */
+
+    .queue-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      padding: 0 2px;
+    }
+
+    .queue-list {
+      display: grid;
+      gap: 6px;
+      align-content: start;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .queue-list::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .queue-list::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      background: var(--surface1);
+    }
+
+    .queue-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 30px;
+      gap: 6px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    button.queue-track {
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr) auto;
+      gap: 9px;
+      align-items: center;
+      width: 100%;
+      height: auto;
+      padding: 7px 11px 7px 8px;
+      border-color: transparent;
+      border-radius: 16px;
+      background: var(--mantle);
+      text-align: left;
+    }
+
+    button.queue-track:hover:not(:disabled) {
+      border-color: var(--surface2);
+    }
+
+    .queue-item.current button.queue-track {
+      border-color: rgba(198, 160, 246, 0.55);
+      background: rgba(198, 160, 246, 0.12);
+      box-shadow: 0 2px 10px rgba(198, 160, 246, 0.18);
+    }
+
+    .queue-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--surface0);
+      color: var(--subtext0);
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .queue-item.current .queue-number {
+      background: var(--mauve);
+      color: var(--crust);
+    }
+
+    .queue-text {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .queue-title,
+    .queue-artist {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .queue-title {
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .queue-artist {
+      color: var(--subtext0);
+      font-size: 10.5px;
+      font-weight: 600;
+    }
+
+    .queue-duration {
+      color: var(--overlay1);
+      font-size: 10.5px;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+    }
+
+    button.queue-remove {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-color: transparent;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--red);
+      font-size: 11px;
+    }
+
+    button.queue-remove:hover:not(:disabled) {
+      border-color: rgba(237, 135, 150, 0.4);
+      background: rgba(237, 135, 150, 0.14);
+    }
+
+    .empty {
+      display: grid;
+      gap: 4px;
+      place-items: center;
+      min-height: 150px;
+      border: 2px dashed var(--surface1);
+      border-radius: 20px;
+      color: var(--subtext0);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .empty .kaomoji {
+      color: var(--overlay1);
+      font-size: 16px;
+      letter-spacing: 1px;
+    }
+
+    /* ---------- settings rows ---------- */
+
+    .settings {
+      display: grid;
+      gap: 7px;
+      align-content: start;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 40px;
+      padding: 4px 5px 4px 12px;
+      border-radius: 16px;
+      background: var(--mantle);
+    }
+
+    .label {
+      color: var(--subtext1);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .sub-label {
+      color: var(--overlay0);
+      font-size: 10px;
+      font-weight: 650;
+    }
+
+    .value {
+      min-width: 44px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+    }
+
+    .segmented {
+      display: inline-flex;
+      gap: 4px;
+      padding: 3px;
+      border-radius: 999px;
+      background: var(--crust);
+    }
+
+    .segmented button {
+      height: 26px;
+      padding: 0 10px;
+      border: none;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--subtext0);
+      font-size: 11px;
+    }
+
+    .segmented button.on {
+      background: var(--mauve);
+      color: var(--crust);
+    }
+
+    .stepper {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .stepper button {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-radius: 50%;
+      font-size: 14px;
+    }
+
+    .toggle {
+      min-width: 58px;
+      height: 30px;
+      border-radius: 999px;
+    }
+
+    .toggle.on {
+      border-color: rgba(166, 218, 149, 0.6);
+      background: rgba(166, 218, 149, 0.14);
+      color: var(--green);
+    }
+
+    select {
+      height: 32px;
+      max-width: 190px;
+      padding: 0 10px;
+      border: 1.5px solid var(--surface1);
+      border-radius: 14px;
+      background: var(--surface0);
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
+      outline: none;
+    }
+
+    /* ---------- dock ---------- */
+
+    .dock {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+      padding: 6px;
+      border-radius: 18px;
+      background: var(--mantle);
+    }
+
+    .dock button {
+      height: 30px;
+      border-color: transparent;
+      border-radius: 12px;
+      font-size: 11px;
+    }
+
+    button#startDaemon {
+      color: var(--green);
+    }
+
+    button#startDaemon:hover:not(:disabled) {
+      border-color: rgba(166, 218, 149, 0.6);
+    }
+
+    button#resumeDaemon {
+      color: var(--teal);
+    }
+
+    button#resumeDaemon:hover:not(:disabled) {
+      border-color: rgba(139, 213, 202, 0.6);
+    }
+
+    button#stopDaemon {
+      color: var(--red);
+    }
+
+    button#stopDaemon:hover:not(:disabled) {
+      border-color: rgba(237, 135, 150, 0.6);
+    }
+
+    button#openTui {
+      color: var(--lavender);
+    }
+
+    button#openTui:hover:not(:disabled) {
+      border-color: rgba(183, 189, 248, 0.6);
+    }
+
+    /* ---------- error toast ---------- */
+
+    /* Inline toast row between the tabs' content and the dock: when hidden its
+       grid row collapses, so it never overlaps the controls. */
+    .alert {
+      overflow: hidden;
+      padding: 7px 14px;
+      border: 1.5px solid rgba(237, 135, 150, 0.5);
+      border-radius: 999px;
+      background: rgba(237, 135, 150, 0.1);
+      color: var(--red);
+      font-size: 11px;
+      font-weight: 650;
+      text-align: center;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .alert[hidden] {
+      display: none;
+    }
+
+    /* ---------- shared button base ---------- */
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-width: 0;
+      height: 34px;
+      padding: 0 10px;
+      border: 1.5px solid var(--surface1);
+      border-radius: 16px;
+      background: var(--surface0);
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+      outline: none;
+      transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease,
+        color 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    button:hover:not(:disabled) {
+      border-color: var(--mauve);
+    }
+
+    button:active:not(:disabled) {
+      transform: scale(0.92);
+    }
+
+    button:focus-visible {
+      border-color: var(--lavender);
+      box-shadow: 0 0 0 3px rgba(183, 189, 248, 0.25);
+    }
+
+    button:disabled,
+    select:disabled {
+      opacity: 0.38;
+    }
+
+    /* ================================================================
+       Theme system. `data-theme` on <html> (spliced by the host, flipped
+       live by the picker) selects which root is drawn; everything below
+       is append-only and scoped so the default cushion above renders
+       exactly as before. An unreplaced/unknown value degrades to the
+       cushion because none of the hide rules match it.
+       ================================================================ */
+
+    #minimalRoot,
+    #tamaRoot {
+      display: none;
+    }
+
+    html[data-theme="minimal"] .cushion,
+    html[data-theme="tamagotchi"] .cushion {
+      display: none;
+    }
+
+    html[data-theme="minimal"] #minimalRoot {
+      display: grid;
+    }
+
+    html[data-theme="tamagotchi"] #tamaRoot {
+      display: grid;
+    }
+
+    /* ================= theme: minimal ================= */
+    /* A Spotify-popup-sized capsule: art square, text that swaps to transport on
+       hover, and a ⋯ expansion card the host grows the window for. */
+
+    #minimalRoot {
+      width: 100%;
+      height: 100%;
+      grid-template-rows: auto minmax(0, 1fr);
+      align-content: start;
+      gap: 8px;
+    }
+
+    .mn-capsule {
+      display: grid;
+      grid-template-columns: 64px minmax(0, 1fr) auto;
+      align-items: center;
+      height: 64px;
+      border: 1.5px solid rgba(91, 96, 120, 0.6);
+      border-radius: 16px;
+      background: linear-gradient(180deg, #262a40 0%, var(--mantle) 100%);
+      box-shadow:
+        0 8px 24px rgba(12, 12, 20, 0.5),
+        0 1px 6px rgba(12, 12, 20, 0.35);
+      overflow: hidden;
+      cursor: grab;
+    }
+
+    .mn-capsule:active {
+      cursor: grabbing;
+    }
+
+    .mn-art {
+      position: relative;
+      display: grid;
+      place-items: center;
+      width: 64px;
+      height: 100%;
+      background: var(--crust);
+    }
+
+    .mn-art img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .mn-art img[hidden] {
+      display: none;
+    }
+
+    .mn-art-ph {
+      color: var(--overlay0);
+      font-size: 22px;
+    }
+
+    .mn-body {
+      position: relative;
+      display: grid;
+      align-items: center;
+      min-width: 0;
+      height: 100%;
+      padding: 0 10px;
+    }
+
+    .mn-text,
+    .mn-controls {
+      grid-area: 1 / 1;
+      transition: opacity 0.12s ease, visibility 0.12s;
+    }
+
+    .mn-text {
+      min-width: 0;
+    }
+
+    .mn-title {
+      font-size: 12.5px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .mn-artist {
+      margin-top: 2px;
+      color: var(--subtext0);
+      font-size: 10.5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .mn-controls {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    .mn-body:hover .mn-text {
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    .mn-body:hover .mn-controls {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    /* No hover (touch): transport stays visible instead of the text. */
+    @media (hover: none) {
+      .mn-controls {
+        opacity: 1;
+        visibility: visible;
+      }
+
+      .mn-text {
+        opacity: 0;
+        visibility: hidden;
+      }
+    }
+
+    .mn-controls button {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-radius: 50%;
+      font-size: 11px;
+    }
+
+    .mn-controls .mn-play {
+      width: 34px;
+      height: 34px;
+      border: none;
+      background: linear-gradient(135deg, var(--mauve), var(--pink));
+      color: var(--crust);
+      font-size: 13px;
+    }
+
+    .mn-side {
+      display: grid;
+      align-content: center;
+      justify-items: center;
+      gap: 2px;
+      padding: 4px 8px 4px 0;
+    }
+
+    .mn-side button {
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--overlay1);
+      font-size: 12px;
+    }
+
+    .mn-side button:hover:not(:disabled) {
+      border-color: transparent;
+      background: var(--surface0);
+      color: var(--text);
+    }
+
+    #mnHide {
+      opacity: 0;
+      font-size: 10px;
+    }
+
+    .mn-capsule:hover #mnHide {
+      opacity: 0.85;
+    }
+
+    #mnMore.on {
+      color: var(--mauve);
+    }
+
+    .mn-expand {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1.5px solid rgba(91, 96, 120, 0.6);
+      border-radius: 16px;
+      background: linear-gradient(180deg, #262a40 0%, var(--mantle) 100%);
+      box-shadow: 0 8px 24px rgba(12, 12, 20, 0.5);
+    }
+
+    .mn-expand[hidden] {
+      display: none;
+    }
+
+    .mn-pills {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .mn-pills button {
+      height: 28px;
+      border-radius: 999px;
+      font-size: 11px;
+    }
+
+    #mnShuffle.on {
+      border-color: rgba(139, 213, 202, 0.6);
+      background: rgba(139, 213, 202, 0.13);
+      color: var(--teal);
+    }
+
+    #mnRepeat.on {
+      border-color: rgba(245, 189, 230, 0.6);
+      background: rgba(245, 189, 230, 0.12);
+      color: var(--pink);
+    }
+
+    .mn-slider {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      color: var(--subtext0);
+      font-size: 10.5px;
+    }
+
+    .mn-slider-ico {
+      color: var(--overlay1);
+    }
+
+    .mn-slider-val {
+      min-width: 30px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .mn-expand .bar.disabled {
+      opacity: 0.4;
+    }
+
+    .mn-theme {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .mn-theme-label {
+      color: var(--subtext0);
+      font-size: 10.5px;
+    }
+
+    .mn-theme .segmented {
+      justify-self: end;
+    }
+
+    /* ================= theme: tamagotchi ================= */
+    /* A mint egg with an LCD screen: a 1-bit pixel fox dances while music plays,
+       sleeps on pause, and the screen flashes pixelated cover art on track
+       changes. Everything is drawn by the page; the window stays transparent. */
+
+    #tamaRoot {
+      --tama-shell: #aee7d2;
+      --tama-shell-hi: #d9f6ea;
+      --tama-shell-dk: #7cc9ae;
+      --tama-bezel: #49a58a;
+      --tama-bezel-dk: #2e7a63;
+      --tama-lcd: #c6e3c0;
+      --tama-lcd-dk: #a9c8a4;
+      --tama-ink: #23402f;
+      --tama-ink-dim: rgba(35, 64, 47, 0.45);
+      --tama-btn: #8fd8bf;
+      --tama-btn-hi: #c2efdd;
+      width: 100%;
+      height: 100%;
+      place-items: center;
+    }
+
+    .tm-shell {
+      position: relative;
+      display: grid;
+      grid-template-rows: auto auto auto auto;
+      align-content: start;
+      justify-items: center;
+      row-gap: 8px;
+      width: 248px;
+      height: 308px;
+      /* Deep enough that the bezel's top corners sit where the egg is already
+         wide enough to contain them (the top curve narrows fast). */
+      padding-top: 34px;
+      border: 2.5px solid var(--tama-bezel-dk);
+      border-radius: 50% 50% 47% 47% / 57% 57% 43% 43%;
+      background:
+        radial-gradient(90% 70% at 32% 22%, var(--tama-shell-hi), transparent 55%),
+        linear-gradient(180deg, var(--tama-shell) 45%, var(--tama-shell-dk));
+      box-shadow: 0 14px 30px rgba(20, 60, 45, 0.35);
+      cursor: grab;
+    }
+
+    .tm-shell:active {
+      cursor: grabbing;
+    }
+
+    .tm-dots {
+      color: var(--tama-bezel-dk);
+      font-size: 9px;
+      letter-spacing: 5px;
+      line-height: 1;
+      opacity: 0.75;
+    }
+
+    #tmHide {
+      position: absolute;
+      top: 30px;
+      right: 36px;
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--tama-bezel-dk);
+      font-size: 10px;
+      opacity: 0;
+      transition: opacity 0.12s ease;
+    }
+
+    .tm-shell:hover #tmHide {
+      opacity: 0.8;
+    }
+
+    #tmHide:hover:not(:disabled) {
+      border-color: transparent;
+      background: rgba(46, 122, 99, 0.18);
+      color: var(--tama-ink);
+    }
+
+    .tm-bezel {
+      box-sizing: content-box;
+      width: 166px;
+      height: 132px;
+      border: 9px solid var(--tama-bezel);
+      border-radius: 24px;
+      background: var(--tama-lcd);
+      box-shadow:
+        inset 0 2px 6px rgba(35, 64, 47, 0.35),
+        0 1px 0 rgba(217, 246, 234, 0.7);
+    }
+
+    .tm-screen {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      border-radius: 14px;
+      color: var(--tama-ink);
+    }
+
+    /* Faint LCD scanlines. */
+    .tm-screen::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent 0 3px,
+        rgba(35, 64, 47, 0.05) 3px 4px
+      );
+    }
+
+    .tm-pet {
+      position: absolute;
+      inset: 0 0 20px 0;
+    }
+
+    .pf {
+      position: absolute;
+      inset: 0;
+      margin: auto;
+      width: 96px;
+      height: 96px;
+      opacity: 0;
+    }
+
+    .pf rect {
+      fill: var(--tama-ink);
+    }
+
+    [data-pet="off"] .pf rect {
+      fill: var(--tama-ink-dim);
+    }
+
+    /* Two stacked frames sharing one keyframes with a phase delay = a flipbook. */
+    [data-pet="dance"] .pf-dance-a { animation: pet2 0.84s steps(1, end) infinite; }
+    [data-pet="dance"] .pf-dance-b { animation: pet2 0.84s steps(1, end) -0.42s infinite; }
+    [data-pet="dance"] .tm-pet { animation: pet-bob 0.84s steps(2, jump-none) infinite; }
+    [data-pet="sleep"] .pf-sleep-a { animation: pet2 2.8s steps(1, end) infinite; }
+    [data-pet="sleep"] .pf-sleep-b { animation: pet2 2.8s steps(1, end) -1.4s infinite; }
+    [data-pet="off"] .pf-off { opacity: 1; }
+
+    @keyframes pet2 {
+      0%, 49.9% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+
+    @keyframes pet-bob {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-2px); }
+    }
+
+    /* Pixelated cover-art flash on track change (menu mode wins). */
+    .tm-art {
+      position: absolute;
+      inset: 0 0 20px 0;
+      display: none;
+      place-items: center;
+    }
+
+    .tm-art img {
+      width: 96px;
+      height: 96px;
+      border: 2px solid var(--tama-ink);
+      image-rendering: pixelated;
+    }
+
+    .tm-screen.flash .tm-art { display: grid; }
+    .tm-screen.flash .tm-pet { display: none; }
+
+    .tm-marquee {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 3px;
+      height: 17px;
+      overflow: hidden;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 17px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .tm-mq {
+      display: inline-flex;
+      white-space: nowrap;
+    }
+
+    .tm-mq .mq-text {
+      padding-right: 26px;
+    }
+
+    .tm-mq:not(.scroll) {
+      width: 100%;
+      justify-content: center;
+    }
+
+    /* No width clamp on the single copy: updateMarquee() reads its natural
+       offsetWidth to decide whether to scroll (the holder clips overflow). */
+    .tm-mq:not(.scroll) .mq-text {
+      padding-right: 0;
+    }
+
+    .tm-mq:not(.scroll) .mq-text + .mq-text {
+      display: none;
+    }
+
+    .tm-mq.scroll {
+      animation: tm-mq var(--mq-dur, 9s) steps(90) infinite;
+    }
+
+    @keyframes tm-mq {
+      to { transform: translateX(-50%); }
+    }
+
+    /* In-screen menu (⋯): chunky 1-bit rows. No window resize, no IPC. */
+    .tm-menu {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      display: none;
+      align-content: center;
+      gap: 8px;
+      padding: 8px 10px;
+    }
+
+    .tm-screen.menu .tm-menu { display: grid; }
+    .tm-screen.menu .tm-pet,
+    .tm-screen.menu .tm-art,
+    .tm-screen.menu .tm-marquee { display: none; }
+
+    .tm-mrow {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 10px;
+    }
+
+    .tm-mrow.tm-mbuttons {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .tm-mlabel {
+      min-width: 28px;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+
+    #tamaRoot .tm-menu button {
+      height: 22px;
+      padding: 0 6px;
+      border: 2px solid var(--tama-ink);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--tama-ink);
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+
+    #tamaRoot .tm-menu button:hover:not(:disabled) {
+      border-color: var(--tama-ink);
+      background: rgba(35, 64, 47, 0.12);
+      box-shadow: none;
+    }
+
+    #tamaRoot .tm-menu button.on {
+      background: var(--tama-ink);
+      color: var(--tama-lcd);
+    }
+
+    #tamaRoot .tm-menu .segmented {
+      justify-self: stretch;
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px;
+      padding: 0;
+      background: transparent;
+    }
+
+    #tamaRoot .bar .track {
+      border-radius: 2px;
+      background: var(--tama-lcd-dk);
+    }
+
+    #tamaRoot .bar .fill {
+      border-radius: 2px;
+      background: var(--tama-ink);
+    }
+
+    #tamaRoot .bar .knob {
+      width: 8px;
+      height: 14px;
+      border-radius: 2px;
+      background: var(--tama-ink);
+      box-shadow: none;
+    }
+
+    #tamaRoot .bar.disabled {
+      opacity: 0.4;
+    }
+
+    /* Physical buttons: three round keys in a shallow arc + a small ⋯. */
+    .tm-btns {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+    }
+
+    #tamaRoot .tm-btn {
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      border: 2.5px solid var(--tama-bezel-dk);
+      border-radius: 50%;
+      background:
+        radial-gradient(70% 70% at 32% 26%, var(--tama-btn-hi), transparent 60%),
+        linear-gradient(180deg, var(--tama-btn), var(--tama-shell-dk));
+      color: var(--tama-ink);
+      font-size: 12px;
+      box-shadow: 0 3px 0 rgba(46, 122, 99, 0.55);
+    }
+
+    #tamaRoot .tm-btn:hover:not(:disabled) {
+      border-color: var(--tama-bezel-dk);
+      filter: brightness(1.05);
+      box-shadow: 0 3px 0 rgba(46, 122, 99, 0.55);
+    }
+
+    #tamaRoot .tm-btn:active:not(:disabled) {
+      transform: translateY(2px);
+      box-shadow: 0 1px 0 rgba(46, 122, 99, 0.55);
+    }
+
+    .tm-btn.tm-mid {
+      transform: translateY(6px);
+    }
+
+    #tamaRoot .tm-btn.tm-mid:active:not(:disabled) {
+      transform: translateY(8px);
+    }
+
+    #tamaRoot .tm-more {
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 2px solid var(--tama-bezel-dk);
+      border-radius: 50%;
+      background: linear-gradient(180deg, var(--tama-btn), var(--tama-shell-dk));
+      color: var(--tama-ink);
+      font-size: 11px;
+      box-shadow: 0 2px 0 rgba(46, 122, 99, 0.55);
+    }
+
+    #tamaRoot .tm-more:hover:not(:disabled) {
+      border-color: var(--tama-bezel-dk);
+      filter: brightness(1.05);
+    }
+
+    #tamaRoot .tm-more.on {
+      background: var(--tama-ink);
+      color: var(--tama-lcd);
+    }
+  </style>
+</head>
+<body>
+  <div class="cushion">
+    <header id="dragRegion">
+      <div class="brand"><span class="cat">=^..^=</span> YtmTui</div>
+      <div class="chip" id="stateLabel" data-state="disconnected">Disconnected</div>
+      <button class="icon-btn" data-action="refresh" id="refreshTop" title="Refresh">&#8635;</button>
+      <button class="icon-btn" data-action="hide" id="hide" title="Hide">&#10005;</button>
+    </header>
+
+    <div class="mode-switch" id="modeSwitch" title="Switch between normal playback and the dedicated radio mode">
+      <button id="modeMusic" data-mode="music">&#9834; Music</button>
+      <button id="modeRadio" data-mode="radio">&#128251; Radio</button>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="now" id="tabNow">Now</button>
+      <button class="tab" data-tab="queue" id="tabQueue">Queue</button>
+      <button class="tab" data-tab="streaming" id="tabStreaming">Stream</button>
+      <button class="tab" data-tab="playback" id="tabPlayback">Tune</button>
+    </div>
+
+    <main>
+      <section class="tab-panel active" data-panel="now">
+        <div class="now-card">
+          <div class="title" id="title">ytm-tui is not running</div>
+          <div class="artist" id="artist">YtmTui</div>
+          <div class="meta">
+            <span id="ownerLabel">Offline</span>
+            <span>&#183;</span>
+            <span id="queueLabel">Queue unavailable</span>
+            <span class="onair" id="onAir" hidden>on air &#9834;</span>
+          </div>
+
+          <div class="progress-row">
+            <button class="step" data-action="seek_back" id="seekBack" title="Seek back">-10</button>
+            <div class="bar" id="progressBar">
+              <div class="track"><div class="fill" id="progressFill"></div></div>
+              <div class="knob" id="progressKnob"></div>
+            </div>
+            <button class="step" data-action="seek_forward" id="seekForward" title="Seek forward">+10</button>
+          </div>
+          <div class="times">
+            <span id="timeElapsed">-:--</span>
+            <span id="timeTotal">-:--</span>
+          </div>
+        </div>
+
+        <div class="transport">
+          <button class="skip" data-action="previous" id="previous" title="Previous" aria-label="Previous">&#9664;&#9664;</button>
+          <button class="primary" data-action="play_pause" id="playPause" title="Play or pause" aria-label="Play or pause">&#9654;</button>
+          <button class="skip" data-action="next" id="next" title="Next" aria-label="Next">&#9654;&#9654;</button>
+        </div>
+
+        <div class="pill-row">
+          <button data-action="toggle_shuffle" id="shuffle" title="Shuffle" aria-label="Toggle shuffle">&#8644; Shuffle</button>
+          <button data-action="cycle_repeat" id="repeat" title="Repeat" aria-label="Cycle repeat">&#8635; <span id="repeatText">Off</span></button>
+          <button data-action="set_streaming" id="streaming" title="Autoplay streaming">&#9835; Stream</button>
+        </div>
+
+        <div class="volume-row">
+          <span class="vol-ico">&#9834;</span>
+          <div class="bar" id="volumeBar" title="Scroll or drag to change the volume">
+            <div class="track"><div class="fill" id="volumeFill"></div></div>
+            <div class="knob" id="volumeKnob"></div>
+          </div>
+          <span id="volumePct">--</span>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-panel="queue">
+        <div class="queue-head">
+          <span class="label" id="queueSummary">Queue unavailable</span>
+          <button class="icon-btn" data-action="refresh" id="queueRefresh" title="Refresh">&#8635;</button>
+        </div>
+        <div class="queue-list" id="queueList"></div>
+      </section>
+
+      <section class="tab-panel" data-panel="streaming">
+        <div class="settings">
+          <div class="row">
+            <span class="label">Streaming</span>
+            <button class="toggle" data-action="set_streaming" id="streamingToggle">Off</button>
+          </div>
+          <div class="row">
+            <span class="label">Mode</span>
+            <div class="segmented">
+              <button class="mode" data-action="set_streaming_mode" data-value="focused" id="modeFocused">Focused</button>
+              <button class="mode" data-action="set_streaming_mode" data-value="balanced" id="modeBalanced">Balanced</button>
+              <button class="mode" data-action="set_streaming_mode" data-value="discovery" id="modeDiscovery">Discovery</button>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Source</span>
+            <select id="streamingSource" data-action="set_streaming_source"></select>
+          </div>
+          <div class="row">
+            <span class="label">DJ Gem</span>
+            <button class="toggle" data-action="set_ai_enabled" id="aiEnabled">On</button>
+          </div>
+          <div class="row">
+            <span class="label">Radio mode <span class="sub-label" id="radioHint"></span></span>
+            <button class="toggle" data-action="set_radio_mode" id="radioMode">Off</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-panel="playback">
+        <div class="settings">
+          <div class="row">
+            <span class="label">Speed</span>
+            <div class="stepper">
+              <button data-action="speed_delta" data-delta="-1" id="speedDown">-</button>
+              <span class="value" id="speedLabel">1.0x</span>
+              <button data-action="speed_delta" data-delta="1" id="speedUp">+</button>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Seek step</span>
+            <div class="stepper">
+              <button data-action="seek_delta" data-delta="-1" id="seekDown">-</button>
+              <span class="value" id="seekLabel">10s</span>
+              <button data-action="seek_delta" data-delta="1" id="seekUp">+</button>
+            </div>
+          </div>
+          <div class="row">
+            <span class="label">Normalize</span>
+            <button class="toggle" data-action="set_normalize" id="normalize">Off</button>
+          </div>
+          <div class="row">
+            <span class="label">Gapless</span>
+            <button class="toggle" data-action="set_gapless" id="gapless">On</button>
+          </div>
+          <div class="row">
+            <span class="label">Theme</span>
+            <div class="segmented theme-pick">
+              <button class="theme-opt" data-action="set_theme" data-value="default">Cushion</button>
+              <button class="theme-opt" data-action="set_theme" data-value="minimal">Mini</button>
+              <button class="theme-opt" data-action="set_theme" data-value="tamagotchi">Tama</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="alert" id="error" hidden></div>
+
+    <div class="dock">
+      <button data-action="start_daemon" id="startDaemon">Start</button>
+      <button data-action="resume_daemon" id="resumeDaemon">Resume</button>
+      <button data-action="stop_daemon" id="stopDaemon">Stop</button>
+      <button data-action="open_tui" id="openTui">Open TUI</button>
+    </div>
+  </div>
+
+  <div id="minimalRoot">
+    <div class="mn-capsule" id="mnCapsule">
+      <div class="mn-art">
+        <img id="mnArtImg" alt="" draggable="false" hidden>
+        <span class="mn-art-ph">&#9834;</span>
+      </div>
+      <div class="mn-body">
+        <div class="mn-text">
+          <div class="mn-title" id="mnTitle">Nothing playing</div>
+          <div class="mn-artist" id="mnArtist">YtmTui</div>
+        </div>
+        <div class="mn-controls">
+          <button data-action="previous" id="mnPrev" title="Previous" aria-label="Previous">&#9664;&#9664;</button>
+          <button class="mn-play" data-action="play_pause" id="mnPlay" title="Play or pause" aria-label="Play or pause">&#9654;</button>
+          <button data-action="next" id="mnNext" title="Next" aria-label="Next">&#9654;&#9654;</button>
+        </div>
+      </div>
+      <div class="mn-side">
+        <button id="mnHide" data-action="hide" title="Hide" aria-label="Hide">&#10005;</button>
+        <button id="mnMore" title="More controls" aria-label="More controls">&#8943;</button>
+      </div>
+    </div>
+    <div class="mn-expand" id="mnExpand" hidden>
+      <div class="mn-pills">
+        <button data-action="toggle_shuffle" id="mnShuffle" title="Shuffle" aria-label="Toggle shuffle">&#8644; Shuffle</button>
+        <button data-action="cycle_repeat" id="mnRepeat" title="Repeat" aria-label="Cycle repeat">&#8635; <span id="mnRepeatText">Off</span></button>
+      </div>
+      <div class="mn-slider">
+        <span class="mn-slider-ico">&#9834;</span>
+        <div class="bar" id="mnVolBar" title="Scroll or drag to change the volume">
+          <div class="track"><div class="fill" id="mnVolFill"></div></div>
+          <div class="knob" id="mnVolKnob"></div>
+        </div>
+        <span class="mn-slider-val" id="mnVolPct">--</span>
+      </div>
+      <div class="mn-slider">
+        <span class="mn-slider-val" id="mnTimeElapsed">-:--</span>
+        <div class="bar" id="mnSeekBar" title="Drag to seek">
+          <div class="track"><div class="fill" id="mnSeekFill"></div></div>
+          <div class="knob" id="mnSeekKnob"></div>
+        </div>
+        <span class="mn-slider-val" id="mnTimeTotal">-:--</span>
+      </div>
+      <div class="mn-theme">
+        <span class="mn-theme-label">Theme</span>
+        <div class="segmented theme-pick">
+          <button class="theme-opt" data-action="set_theme" data-value="default">Cushion</button>
+          <button class="theme-opt" data-action="set_theme" data-value="minimal">Mini</button>
+          <button class="theme-opt" data-action="set_theme" data-value="tamagotchi">Tama</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tamaRoot">
+    <div class="tm-shell" id="tmShell">
+      <button id="tmHide" data-action="hide" title="Hide" aria-label="Hide">&#10005;</button>
+      <div class="tm-dots" aria-hidden="true">&#183; &#183; &#8226; &#183; &#8226; &#183; &#183;</div>
+      <div class="tm-bezel">
+        <div class="tm-screen" id="tmScreen" data-pet="off">
+          <div class="tm-pet" aria-hidden="true">
+            <svg class="pf pf-dance-a" viewBox="0 0 16 16" shape-rendering="crispEdges">
+              <rect x="3" y="1" width="1" height="1"/><rect x="12" y="1" width="1" height="1"/>
+              <rect x="3" y="2" width="2" height="1"/><rect x="11" y="2" width="2" height="1"/>
+              <rect x="3" y="3" width="10" height="1"/>
+              <rect x="2" y="4" width="12" height="1"/>
+              <rect x="2" y="5" width="3" height="1"/><rect x="6" y="5" width="4" height="1"/><rect x="11" y="5" width="3" height="1"/>
+              <rect x="2" y="6" width="12" height="1"/>
+              <rect x="3" y="7" width="10" height="1"/>
+              <rect x="2" y="8" width="2" height="1"/><rect x="5" y="8" width="6" height="1"/>
+              <rect x="4" y="9" width="8" height="1"/><rect x="13" y="9" width="2" height="1"/>
+              <rect x="4" y="10" width="8" height="1"/><rect x="12" y="10" width="3" height="1"/>
+              <rect x="4" y="11" width="8" height="1"/><rect x="13" y="11" width="2" height="1"/>
+              <rect x="5" y="12" width="6" height="1"/>
+              <rect x="5" y="13" width="2" height="1"/><rect x="9" y="13" width="2" height="1"/>
+            </svg>
+            <svg class="pf pf-dance-b" viewBox="0 0 16 16" shape-rendering="crispEdges">
+              <rect x="3" y="1" width="1" height="1"/><rect x="12" y="1" width="1" height="1"/>
+              <rect x="3" y="2" width="2" height="1"/><rect x="11" y="2" width="2" height="1"/>
+              <rect x="3" y="3" width="10" height="1"/>
+              <rect x="2" y="4" width="12" height="1"/>
+              <rect x="2" y="5" width="3" height="1"/><rect x="6" y="5" width="4" height="1"/><rect x="11" y="5" width="3" height="1"/>
+              <rect x="2" y="6" width="12" height="1"/>
+              <rect x="3" y="7" width="10" height="1"/>
+              <rect x="5" y="8" width="6" height="1"/><rect x="12" y="8" width="2" height="1"/>
+              <rect x="1" y="9" width="2" height="1"/><rect x="4" y="9" width="8" height="1"/>
+              <rect x="1" y="10" width="3" height="1"/><rect x="4" y="10" width="8" height="1"/>
+              <rect x="1" y="11" width="2" height="1"/><rect x="4" y="11" width="8" height="1"/>
+              <rect x="5" y="12" width="6" height="1"/>
+              <rect x="5" y="13" width="2" height="1"/><rect x="9" y="13" width="2" height="1"/>
+            </svg>
+            <svg class="pf pf-sleep-a" viewBox="0 0 16 16" shape-rendering="crispEdges">
+              <rect x="11" y="2" width="3" height="1"/><rect x="12" y="3" width="1" height="1"/><rect x="11" y="4" width="3" height="1"/>
+              <rect x="3" y="6" width="2" height="1"/>
+              <rect x="3" y="7" width="9" height="1"/>
+              <rect x="2" y="8" width="6" height="1"/><rect x="10" y="8" width="3" height="1"/>
+              <rect x="2" y="9" width="11" height="1"/>
+              <rect x="1" y="10" width="13" height="1"/>
+              <rect x="2" y="11" width="12" height="1"/>
+              <rect x="3" y="12" width="10" height="1"/>
+            </svg>
+            <svg class="pf pf-sleep-b" viewBox="0 0 16 16" shape-rendering="crispEdges">
+              <rect x="11" y="0" width="4" height="1"/><rect x="12" y="1" width="2" height="1"/><rect x="11" y="2" width="4" height="1"/>
+              <rect x="3" y="6" width="2" height="1"/>
+              <rect x="3" y="7" width="9" height="1"/>
+              <rect x="2" y="8" width="6" height="1"/><rect x="10" y="8" width="3" height="1"/>
+              <rect x="2" y="9" width="11" height="1"/>
+              <rect x="1" y="10" width="13" height="1"/>
+              <rect x="2" y="11" width="12" height="1"/>
+              <rect x="3" y="12" width="10" height="1"/>
+            </svg>
+            <svg class="pf pf-off" viewBox="0 0 16 16" shape-rendering="crispEdges">
+              <rect x="3" y="9" width="2" height="1"/>
+              <rect x="3" y="10" width="9" height="1"/>
+              <rect x="1" y="11" width="13" height="1"/>
+              <rect x="2" y="12" width="12" height="1"/>
+            </svg>
+          </div>
+          <div class="tm-art"><img id="tmArtImg" alt="" draggable="false"></div>
+          <div class="tm-menu">
+            <div class="tm-mrow tm-mbuttons">
+              <button data-action="toggle_shuffle" id="tmShuffle" title="Shuffle" aria-label="Toggle shuffle">SHUF</button>
+              <button data-action="cycle_repeat" id="tmRepeat" title="Repeat" aria-label="Cycle repeat">REP <span id="tmRepeatText">Off</span></button>
+            </div>
+            <div class="tm-mrow">
+              <span class="tm-mlabel">VOL</span>
+              <div class="bar" id="tmVolBar" title="Scroll or drag to change the volume">
+                <div class="track"><div class="fill" id="tmVolFill"></div></div>
+                <div class="knob" id="tmVolKnob"></div>
+              </div>
+            </div>
+            <div class="tm-mrow">
+              <span class="tm-mlabel">POS</span>
+              <div class="bar" id="tmSeekBar" title="Drag to seek">
+                <div class="track"><div class="fill" id="tmSeekFill"></div></div>
+                <div class="knob" id="tmSeekKnob"></div>
+              </div>
+            </div>
+            <div class="tm-mrow">
+              <span class="tm-mlabel">SKIN</span>
+              <div class="segmented theme-pick">
+                <button class="theme-opt" data-action="set_theme" data-value="default">CUSH</button>
+                <button class="theme-opt" data-action="set_theme" data-value="minimal">MINI</button>
+                <button class="theme-opt" data-action="set_theme" data-value="tamagotchi">TAMA</button>
+              </div>
+            </div>
+          </div>
+          <div class="tm-marquee"><span class="tm-mq" id="tmMarquee"><span class="mq-text" id="tmTitleA"></span><span class="mq-text" aria-hidden="true" id="tmTitleB"></span></span></div>
+        </div>
+      </div>
+      <div class="tm-btns">
+        <button class="tm-btn" data-action="previous" id="tmPrev" title="Previous" aria-label="Previous">&#9664;</button>
+        <button class="tm-btn tm-mid" data-action="play_pause" id="tmPlay" title="Play or pause" aria-label="Play or pause">&#9654;</button>
+        <button class="tm-btn" data-action="next" id="tmNext" title="Next" aria-label="Next">&#9654;</button>
+      </div>
+      <button class="tm-more" id="tmMenuBtn" title="Menu" aria-label="Menu">&#8943;</button>
+    </div>
+  </div>
+
+  <script>
+    window.__YTM_TUI_INITIAL__ = __INITIAL_PAYLOAD__;
+    window.__YTM_TUI_INITIAL_ART__ = __INITIAL_ART__;
+
+    let currentPayload = window.__YTM_TUI_INITIAL__;
+    let lastQueueKey = null;
+    let lastSourceOptionsKey = null;
+
+    const els = {};
+    [
+      "stateLabel", "title", "artist", "ownerLabel", "queueLabel", "onAir", "error",
+      "previous", "playPause", "next", "shuffle", "repeat", "repeatText", "streaming",
+      "seekBack", "seekForward", "progressBar", "progressFill", "progressKnob",
+      "timeElapsed", "timeTotal", "volumeBar", "volumeFill", "volumeKnob", "volumePct",
+      "modeMusic", "modeRadio", "radioHint",
+      "queueSummary", "queueList", "queueRefresh", "refreshTop", "hide",
+      "streamingToggle", "modeFocused", "modeBalanced", "modeDiscovery", "streamingSource",
+      "aiEnabled", "radioMode", "speedDown", "speedUp", "speedLabel",
+      "seekDown", "seekUp", "seekLabel", "normalize", "gapless",
+      "startDaemon", "resumeDaemon", "stopDaemon", "openTui", "dragRegion",
+      "mnCapsule", "mnArtImg", "mnTitle", "mnArtist", "mnPrev", "mnPlay", "mnNext",
+      "mnHide", "mnMore", "mnExpand", "mnShuffle", "mnRepeat", "mnRepeatText",
+      "mnVolBar", "mnVolFill", "mnVolKnob", "mnVolPct",
+      "mnSeekBar", "mnSeekFill", "mnSeekKnob", "mnTimeElapsed", "mnTimeTotal",
+      "tmShell", "tmScreen", "tmArtImg", "tmMarquee", "tmTitleA", "tmTitleB",
+      "tmPrev", "tmPlay", "tmNext", "tmMenuBtn", "tmShuffle", "tmRepeat", "tmRepeatText",
+      "tmVolBar", "tmVolFill", "tmVolKnob", "tmSeekBar", "tmSeekFill", "tmSeekKnob"
+    ].forEach(id => { els[id] = document.getElementById(id); });
+
+    function send(action, value) {
+      if (window.ipc && window.ipc.postMessage) {
+        const message = value === undefined ? { action } : { action, value };
+        window.ipc.postMessage(JSON.stringify(message));
+      }
+    }
+
+    function enabled(button, value) {
+      button.disabled = !value;
+    }
+
+    function setTab(tab) {
+      document.querySelectorAll("[data-tab]").forEach(button => {
+        button.classList.toggle("active", button.dataset.tab === tab);
+      });
+      document.querySelectorAll("[data-panel]").forEach(panel => {
+        panel.classList.toggle("active", panel.dataset.panel === tab);
+      });
+    }
+
+    function setToggle(button, on, onText, offText) {
+      button.textContent = on ? onText : offText;
+      button.classList.toggle("on", on);
+    }
+
+    /* ---------- theme switching ---------- */
+
+    function syncThemeButtons() {
+      const active = document.documentElement.dataset.theme;
+      document.querySelectorAll(".theme-opt").forEach(button => {
+        button.classList.toggle("on", button.dataset.value === active);
+      });
+    }
+
+    // Flip the page to the picked skin; the host resizes the window, persists the
+    // choice, and bakes it into future rebuilds. `data-theme` on <html> is the one
+    // source of truth for the active theme (never carried in status payloads).
+    function setTheme(id) {
+      if (document.documentElement.dataset.theme === id) return;
+      document.documentElement.dataset.theme = id;
+      resetThemeLocalUi();
+      send("set_theme", id);
+      syncThemeButtons();
+      updateMarquee(); // tama text was unmeasurable while display:none
+    }
+
+    // Per-theme transient UI that must not leak across a switch. Extended by the
+    // minimal (⋯ expansion) and tamagotchi (menu/flash) sections below.
+    const themeResets = [];
+
+    function resetThemeLocalUi() {
+      themeResets.forEach(reset => reset());
+    }
+
+    function chipState(payload) {
+      if (!payload.connected) return "disconnected";
+      const state = String(payload.stateLabel || "").toLowerCase();
+      return state === "playing" || state === "paused" ? state : "idle";
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function fmtTime(ms) {
+      if (ms == null || !isFinite(ms)) return "-:--";
+      const total = Math.max(0, Math.floor(ms / 1000));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+      const two = n => String(n).padStart(2, "0");
+      return h > 0 ? h + ":" + two(m) + ":" + two(s) : m + ":" + two(s);
+    }
+
+    /* ---------- window drag (frameless) ---------- */
+
+    // Any theme's shape (cushion header / minimal capsule / tama shell) can start a
+    // native move; interactive children opt out via the closest() guard.
+    function bindDrag(el) {
+      if (!el) return;
+      el.addEventListener("mousedown", event => {
+        if (event.button !== 0) return;
+        if (event.target.closest("button, .bar, select")) return;
+        send("drag");
+      });
+    }
+
+    bindDrag(els.dragRegion);
+    bindDrag(els.mnCapsule);
+    bindDrag(els.tmShell);
+
+    /* ---------- progress bar: live interpolation + click/drag seek ---------- */
+
+    const prog = {
+      anchorMs: null,
+      anchorAt: 0,
+      playing: false,
+      speed: 1,
+      durationMs: null,
+      live: false,
+      canSeek: false,
+      holdUntil: 0,
+      dragging: false
+    };
+
+    function shownElapsed() {
+      if (prog.anchorMs == null) return null;
+      let value = prog.anchorMs;
+      if (prog.playing && !prog.dragging) {
+        value += (performance.now() - prog.anchorAt) * prog.speed;
+      }
+      if (prog.durationMs != null) value = Math.min(value, prog.durationMs);
+      return Math.max(0, value);
+    }
+
+    // Every theme's seek bar renders from the shared `prog` state; the label
+    // elements are optional (the tamagotchi menu shows a bare bar).
+    const seekBars = [
+      { bar: els.progressBar, fill: els.progressFill, knob: els.progressKnob,
+        elapsed: els.timeElapsed, total: els.timeTotal },
+      { bar: els.mnSeekBar, fill: els.mnSeekFill, knob: els.mnSeekKnob,
+        elapsed: els.mnTimeElapsed, total: els.mnTimeTotal },
+      { bar: els.tmSeekBar, fill: els.tmSeekFill, knob: els.tmSeekKnob },
+    ];
+
+    function renderProgress() {
+      const elapsed = shownElapsed();
+      const isLive = prog.live;
+      const pct = !isLive && prog.durationMs && elapsed != null
+        ? Math.min(100, (elapsed / prog.durationMs) * 100)
+        : 0;
+      for (const entry of seekBars) {
+        entry.bar.classList.toggle("live", isLive);
+        entry.bar.classList.toggle("disabled", !prog.canSeek && !isLive);
+        if (isLive) {
+          if (entry.elapsed) entry.elapsed.textContent = "on air";
+          if (entry.total) entry.total.innerHTML = '<span class="live-tag">LIVE</span>';
+          continue;
+        }
+        entry.fill.style.width = pct + "%";
+        entry.knob.style.left = pct + "%";
+        if (entry.elapsed) entry.elapsed.textContent = fmtTime(elapsed);
+        if (entry.total) {
+          entry.total.textContent = prog.durationMs != null ? fmtTime(prog.durationMs) : "-:--";
+        }
+      }
+    }
+
+    function syncProgress(payload) {
+      if (performance.now() < prog.holdUntil || prog.dragging) return;
+      prog.anchorMs = payload.elapsedMs;
+      prog.anchorAt = performance.now();
+      prog.playing = payload.connected && !payload.paused && payload.elapsedMs != null;
+      prog.speed = (payload.settings.speedTenths || 10) / 10;
+      prog.durationMs = payload.durationMs;
+      prog.live = payload.connected
+        && payload.durationMs == null
+        && payload.elapsedMs != null;
+      prog.canSeek = payload.canSeek;
+      renderProgress();
+    }
+
+    setInterval(renderProgress, 250);
+
+    function barFraction(bar, clientX) {
+      const rect = bar.getBoundingClientRect();
+      if (rect.width <= 0) return 0;
+      return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    }
+
+    function bindSeekBar(entry) {
+      const bar = entry.bar;
+      bar.addEventListener("pointerdown", event => {
+        if (!prog.canSeek || prog.durationMs == null) return;
+        prog.dragging = true;
+        bar.classList.add("dragging");
+        bar.setPointerCapture(event.pointerId);
+        prog.anchorMs = barFraction(bar, event.clientX) * prog.durationMs;
+        renderProgress();
+      });
+
+      bar.addEventListener("pointermove", event => {
+        if (!prog.dragging) return;
+        prog.anchorMs = barFraction(bar, event.clientX) * prog.durationMs;
+        renderProgress();
+      });
+
+      bar.addEventListener("pointerup", event => {
+        if (!prog.dragging) return;
+        prog.dragging = false;
+        bar.classList.remove("dragging");
+        const target = Math.round(barFraction(bar, event.clientX) * prog.durationMs);
+        prog.anchorMs = target;
+        prog.anchorAt = performance.now();
+        prog.holdUntil = performance.now() + 1500;
+        send("seek_to", target);
+        renderProgress();
+      });
+
+      bar.addEventListener("pointercancel", () => {
+        prog.dragging = false;
+        bar.classList.remove("dragging");
+      });
+    }
+
+    seekBars.forEach(bindSeekBar);
+
+    /* ---------- volume bar: wheel + click/drag ---------- */
+
+    const vol = {
+      local: null,
+      localUntil: 0,
+      canVolume: false,
+      dragging: false,
+      sendTimer: null,
+      pending: null
+    };
+
+    function currentVolume() {
+      return vol.local != null ? vol.local : currentPayload.volume;
+    }
+
+    // Every theme's volume bar renders from the shared `vol` state; the percent
+    // label is optional.
+    const volBars = [
+      { bar: els.volumeBar, fill: els.volumeFill, knob: els.volumeKnob, pct: els.volumePct },
+      { bar: els.mnVolBar, fill: els.mnVolFill, knob: els.mnVolKnob, pct: els.mnVolPct },
+      { bar: els.tmVolBar, fill: els.tmVolFill, knob: els.tmVolKnob },
+    ];
+
+    function renderVolume() {
+      const value = currentVolume();
+      const pct = Math.min(100, Math.max(0, value));
+      for (const entry of volBars) {
+        entry.fill.style.width = pct + "%";
+        entry.knob.style.left = pct + "%";
+        if (entry.pct) entry.pct.textContent = currentPayload.connected ? pct + "%" : "--";
+        entry.bar.classList.toggle("disabled", !vol.canVolume);
+      }
+    }
+
+    function queueVolumeSend(value) {
+      vol.pending = value;
+      if (vol.sendTimer) return;
+      vol.sendTimer = setTimeout(() => {
+        vol.sendTimer = null;
+        send("set_volume", vol.pending);
+      }, 70);
+    }
+
+    function setVolumeLocal(value) {
+      if (!vol.canVolume) return;
+      const next = Math.min(100, Math.max(0, Math.round(value)));
+      vol.local = next;
+      vol.localUntil = performance.now() + 1800;
+      queueVolumeSend(next);
+      renderVolume();
+    }
+
+    function bindVolumeBar(entry) {
+      const bar = entry.bar;
+      bar.addEventListener("wheel", event => {
+        event.preventDefault();
+        if (!vol.canVolume) return;
+        const step = event.shiftKey ? 1 : 5;
+        const dir = (event.deltaY || event.deltaX) < 0 ? 1 : -1;
+        setVolumeLocal(currentVolume() + dir * step);
+      }, { passive: false });
+
+      bar.addEventListener("pointerdown", event => {
+        if (!vol.canVolume) return;
+        vol.dragging = true;
+        bar.classList.add("dragging");
+        bar.setPointerCapture(event.pointerId);
+        setVolumeLocal(barFraction(bar, event.clientX) * 100);
+      });
+
+      bar.addEventListener("pointermove", event => {
+        if (!vol.dragging) return;
+        setVolumeLocal(barFraction(bar, event.clientX) * 100);
+      });
+
+      const endVolumeDrag = () => {
+        vol.dragging = false;
+        bar.classList.remove("dragging");
+      };
+
+      bar.addEventListener("pointerup", endVolumeDrag);
+      bar.addEventListener("pointercancel", endVolumeDrag);
+    }
+
+    volBars.forEach(bindVolumeBar);
+
+    /* ---------- minimal theme: ⋯ expansion ---------- */
+
+    // Reveal/hide the extra-controls card; the host grows the window downward
+    // (bottom-anchored) to make room, so the page just flips visibility.
+    function setExpanded(open) {
+      els.mnExpand.hidden = !open;
+      els.mnMore.classList.toggle("on", open);
+      send("set_expanded", open);
+    }
+
+    els.mnMore.addEventListener("click", () => setExpanded(els.mnExpand.hidden));
+
+    // Leaving (or re-entering) a theme always lands collapsed; the host resets its
+    // window size the same way, so no set_expanded round trip is needed here.
+    themeResets.push(() => {
+      els.mnExpand.hidden = true;
+      els.mnMore.classList.remove("on");
+    });
+
+    /* ---------- tamagotchi theme: screen menu, pet state, marquee ---------- */
+
+    // ⋯ flips the LCD into a chunky in-screen menu — no window resize, no IPC.
+    els.tmMenuBtn.addEventListener("click", () => {
+      const open = els.tmScreen.classList.toggle("menu");
+      if (open) {
+        clearTimeout(artFlashTimer);
+        els.tmScreen.classList.remove("flash");
+      }
+      els.tmMenuBtn.classList.toggle("on", open);
+    });
+
+    themeResets.push(() => {
+      clearTimeout(artFlashTimer);
+      els.tmScreen.classList.remove("menu", "flash");
+      els.tmMenuBtn.classList.remove("on");
+    });
+
+    function petState(payload) {
+      const state = chipState(payload);
+      if (state === "disconnected") return "off";
+      return state === "playing" ? "dance" : "sleep";
+    }
+
+    /* Marquee: two copies sliding by -50%; measured because `scrollWidth` is 0
+       while #tamaRoot is display:none, so it re-measures on tama entry. */
+    let marqueeTitle = null;
+
+    function setMarqueeTitle(title) {
+      const text = title || "";
+      if (marqueeTitle === text) return;
+      marqueeTitle = text;
+      els.tmTitleA.textContent = text;
+      els.tmTitleB.textContent = text;
+      updateMarquee();
+    }
+
+    function updateMarquee() {
+      if (document.documentElement.dataset.theme !== "tamagotchi") return;
+      requestAnimationFrame(() => {
+        const holder = els.tmMarquee.parentElement;
+        const width = els.tmTitleA.offsetWidth; // includes the padding-right gap
+        const scroll = width > holder.clientWidth;
+        els.tmMarquee.classList.toggle("scroll", scroll);
+        if (scroll) {
+          els.tmMarquee.style.setProperty("--mq-dur", (width / 28).toFixed(2) + "s");
+        }
+      });
+    }
+
+    /* ---------- artwork (pushed separately from status payloads) ---------- */
+
+    // The host bakes the boot art into __YTM_TUI_INITIAL_ART__ and then only calls
+    // ytmTuiApplyArt when the artwork actually changes (never on the 2s poll).
+    let currentArt = null;
+    let artSeen = false;
+    let artFlashTimer = null;
+    const pixelCache = { src: null, out: null };
+
+    function renderArt() {
+      els.mnArtImg.src = currentArt || "";
+      els.mnArtImg.hidden = !currentArt;
+      renderTamaArt();
+    }
+
+    // The tama LCD wants chunky mosaic, and covers are larger than the screen, so
+    // `image-rendering: pixelated` alone would change nothing on the downscale.
+    // Round-trip through a 32×32 canvas to force big pixels; cached per source.
+    function renderTamaArt() {
+      if (!currentArt) {
+        els.tmArtImg.removeAttribute("src");
+        return;
+      }
+      if (pixelCache.src === currentArt) {
+        els.tmArtImg.src = pixelCache.out;
+        return;
+      }
+      const source = currentArt;
+      const img = new Image();
+      img.onload = () => {
+        if (source !== currentArt) return;
+        const canvas = document.createElement("canvas");
+        canvas.width = 32;
+        canvas.height = 32;
+        canvas.getContext("2d").drawImage(img, 0, 0, 32, 32);
+        pixelCache.src = source;
+        pixelCache.out = canvas.toDataURL("image/png");
+        els.tmArtImg.src = pixelCache.out;
+      };
+      img.src = source;
+    }
+
+    // Show the cover on the tama screen for a few seconds, then back to the pet.
+    // Re-armed on rapid track changes; the in-screen menu always wins.
+    function startArtFlash() {
+      clearTimeout(artFlashTimer);
+      els.tmScreen.classList.add("flash");
+      artFlashTimer = setTimeout(() => els.tmScreen.classList.remove("flash"), 4000);
+    }
+
+    window.ytmTuiApplyArt = uri => {
+      uri = uri || null;
+      const changed = uri !== currentArt;
+      currentArt = uri;
+      renderArt();
+      if (!changed || !artSeen) return;       // boot/rebuild populates, never flashes
+      if (!uri) return;                       // art removed → no flash
+      if (!els.tmScreen.classList.contains("menu")) startArtFlash();
+    };
+
+    /* ---------- streaming source select ---------- */
+
+    function renderSourceOptions(settings) {
+      const selected = settings.streamingSource;
+      const sources = settings.streamingSources.slice();
+      // Protocol skew safety net: an unknown current value still shows up instead
+      // of leaving the select blank.
+      if (!sources.some(source => source.value === selected)) {
+        sources.push({ value: selected, label: settings.streamingSourceLabel || selected });
+      }
+      // Rebuild <option>s only when the option list itself changes; comparing against
+      // innerHTML never matched (browsers re-serialize attributes), which used to
+      // rebuild + reset this select on every poll.
+      const optionsKey = JSON.stringify(sources);
+      if (optionsKey !== lastSourceOptionsKey) {
+        lastSourceOptionsKey = optionsKey;
+        els.streamingSource.innerHTML = sources.map(source =>
+          `<option value="${escapeHtml(source.value)}">${escapeHtml(source.label)}</option>`
+        ).join("");
+      }
+      if (els.streamingSource.value !== selected) {
+        els.streamingSource.value = selected;
+      }
+    }
+
+    /* ---------- queue ---------- */
+
+    function renderQueue(payload) {
+      els.queueSummary.textContent = payload.queueLabel;
+      // Skip the innerHTML rebuild unless the queue actually changed — rebuilding on
+      // every 2s poll ate in-flight clicks and thrashed layout on large queues.
+      const queueKey = JSON.stringify(payload.queue);
+      if (queueKey === lastQueueKey) return;
+      lastQueueKey = queueKey;
+
+      if (!payload.queue.length) {
+        els.queueList.innerHTML = `<div class="empty"><span class="kaomoji">=^..^=</span><span>queue is napping&#8230;</span></div>`;
+        return;
+      }
+
+      els.queueList.innerHTML = payload.queue.map(item => {
+        const number = item.current ? "&#9654;" : String(item.index + 1);
+        const duration = item.duration ? escapeHtml(item.duration) : "";
+        const current = item.current ? " current" : "";
+        return `
+          <div class="queue-item${current}">
+            <button class="queue-track" data-action="queue_play" data-position="${item.index}" title="Play ${escapeHtml(item.title)}">
+              <span class="queue-number">${number}</span>
+              <span class="queue-text">
+                <span class="queue-title">${escapeHtml(item.title)}</span>
+                <span class="queue-artist">${escapeHtml(item.artist)}</span>
+              </span>
+              <span class="queue-duration">${duration}</span>
+            </button>
+            <button class="queue-remove" data-action="queue_remove" data-position="${item.index}" title="Remove" aria-label="Remove">&#10005;</button>
+          </div>`;
+      }).join("");
+    }
+
+    /* ---------- apply a status payload ---------- */
+
+    function apply(payload) {
+      currentPayload = payload;
+      const settings = payload.settings;
+
+      els.stateLabel.textContent = payload.stateLabel;
+      els.stateLabel.dataset.state = chipState(payload);
+      els.title.textContent = payload.title;
+      els.artist.textContent = payload.artist;
+      els.ownerLabel.textContent = payload.ownerLabel;
+      els.queueLabel.textContent = payload.queueLabel;
+      els.onAir.hidden = !payload.streaming;
+      els.playPause.innerHTML = payload.paused ? "&#9654;" : "&#10073;&#10073;";
+      els.repeatText.textContent = payload.repeatLabel;
+      renderQueue(payload);
+
+      els.mnTitle.textContent = payload.title;
+      els.mnArtist.textContent = payload.artist;
+      els.mnPlay.innerHTML = payload.paused ? "&#9654;" : "&#10073;&#10073;";
+      els.mnRepeatText.textContent = payload.repeatLabel;
+      els.mnShuffle.classList.toggle("on", payload.shuffle);
+      els.mnRepeat.classList.toggle("on", payload.repeat !== "off");
+      enabled(els.mnPrev, payload.canPlayback);
+      enabled(els.mnPlay, payload.canPlayback);
+      enabled(els.mnNext, payload.canPlayback);
+      enabled(els.mnShuffle, payload.connected);
+      enabled(els.mnRepeat, payload.connected);
+
+      els.tmScreen.dataset.pet = petState(payload);
+      setMarqueeTitle(payload.title);
+      els.tmPlay.innerHTML = payload.paused ? "&#9654;" : "&#10073;&#10073;";
+      els.tmRepeatText.textContent = payload.repeatLabel;
+      els.tmShuffle.classList.toggle("on", payload.shuffle);
+      els.tmRepeat.classList.toggle("on", payload.repeat !== "off");
+      enabled(els.tmPrev, payload.canPlayback);
+      enabled(els.tmPlay, payload.canPlayback);
+      enabled(els.tmNext, payload.canPlayback);
+      enabled(els.tmShuffle, payload.connected);
+      enabled(els.tmRepeat, payload.connected);
+
+      els.shuffle.classList.toggle("on", payload.shuffle);
+      els.repeat.classList.toggle("on", payload.repeat !== "off");
+      els.streaming.classList.toggle("on", settings.autoplayStreaming);
+      setToggle(els.streamingToggle, settings.autoplayStreaming, "On", "Off");
+      setToggle(els.aiEnabled, settings.aiEnabled, "On", "Off");
+      setToggle(els.radioMode, settings.radioMode, "On", "Off");
+      setToggle(els.normalize, settings.normalize, "On", "Off");
+      setToggle(els.gapless, settings.gapless, "On", "Off");
+
+      els.modeMusic.classList.toggle("on", !settings.radioMode);
+      els.modeRadio.classList.toggle("on", settings.radioMode);
+      enabled(els.modeMusic, settings.canRadioMode && settings.radioMode);
+      enabled(els.modeRadio, settings.canRadioMode && !settings.radioMode);
+      els.radioHint.textContent = settings.canRadioMode ? "" : "(TUI only)";
+
+      els.modeFocused.classList.toggle("on", settings.streamingMode === "focused");
+      els.modeBalanced.classList.toggle("on", settings.streamingMode === "balanced");
+      els.modeDiscovery.classList.toggle("on", settings.streamingMode === "discovery");
+      renderSourceOptions(settings);
+      els.speedLabel.textContent = settings.speedLabel;
+      els.seekBack.textContent = "-" + settings.seekSeconds;
+      els.seekForward.textContent = "+" + settings.seekSeconds;
+      els.seekLabel.textContent = settings.seekLabel;
+
+      enabled(els.previous, payload.canPlayback);
+      enabled(els.playPause, payload.canPlayback);
+      enabled(els.next, payload.canPlayback);
+      enabled(els.shuffle, payload.connected);
+      enabled(els.repeat, payload.connected);
+      enabled(els.queueRefresh, payload.connected);
+      enabled(els.seekBack, payload.canSeek);
+      enabled(els.seekForward, payload.canSeek);
+      enabled(els.streaming, payload.canToggleStreaming);
+      enabled(els.streamingToggle, payload.canToggleStreaming);
+      enabled(els.modeFocused, payload.connected);
+      enabled(els.modeBalanced, payload.connected);
+      enabled(els.modeDiscovery, payload.connected);
+      els.streamingSource.disabled = !payload.connected;
+      enabled(els.aiEnabled, payload.connected);
+      enabled(els.radioMode, settings.canRadioMode);
+      enabled(els.speedDown, payload.connected && settings.speedTenths > 5);
+      enabled(els.speedUp, payload.connected && settings.speedTenths < 20);
+      enabled(els.seekDown, payload.connected && settings.seekSeconds > 1);
+      enabled(els.seekUp, payload.connected && settings.seekSeconds < 60);
+      enabled(els.normalize, payload.connected);
+      enabled(els.gapless, payload.connected);
+      enabled(els.startDaemon, payload.canStartDaemon);
+      enabled(els.resumeDaemon, payload.canResumeDaemon);
+      enabled(els.stopDaemon, payload.canStopDaemon);
+
+      vol.canVolume = payload.canVolume;
+      if (performance.now() > vol.localUntil) {
+        vol.local = null;
+      }
+      renderVolume();
+      syncProgress(payload);
+
+      if (payload.error) {
+        els.error.hidden = false;
+        els.error.textContent = payload.error;
+      } else {
+        els.error.hidden = true;
+        els.error.textContent = "";
+      }
+
+      syncThemeButtons();
+    }
+
+    /* ---------- clicks ---------- */
+
+    document.addEventListener("click", event => {
+      const tab = event.target.closest("button[data-tab]");
+      if (tab) {
+        setTab(tab.dataset.tab);
+        return;
+      }
+
+      const mode = event.target.closest("button[data-mode]");
+      if (mode && !mode.disabled) {
+        const settings = currentPayload.settings;
+        const wantRadio = mode.dataset.mode === "radio";
+        if (wantRadio !== settings.radioMode) {
+          settings.radioMode = wantRadio;
+          send("set_radio_mode", wantRadio);
+          apply(currentPayload);
+        }
+        return;
+      }
+
+      const button = event.target.closest("button[data-action]");
+      if (!button || button.disabled) return;
+      const action = button.dataset.action;
+      const settings = currentPayload.settings;
+
+      // Setter clicks update currentPayload optimistically so rapid clicks compute
+      // from the newest value instead of the last poll; the next status payload
+      // remains authoritative and overwrites everything.
+      if (action === "set_streaming") {
+        settings.autoplayStreaming = !settings.autoplayStreaming;
+        send(action, settings.autoplayStreaming);
+        apply(currentPayload);
+      } else if (action === "toggle_shuffle" || action === "cycle_repeat") {
+        send(action);
+      } else if (action === "queue_play" || action === "queue_remove") {
+        send(action, Number(button.dataset.position));
+      } else if (action === "set_streaming_mode") {
+        settings.streamingMode = button.dataset.value;
+        send(action, button.dataset.value);
+        apply(currentPayload);
+      } else if (action === "set_ai_enabled") {
+        settings.aiEnabled = !settings.aiEnabled;
+        send(action, settings.aiEnabled);
+        apply(currentPayload);
+      } else if (action === "set_radio_mode") {
+        settings.radioMode = !settings.radioMode;
+        send(action, settings.radioMode);
+        apply(currentPayload);
+      } else if (action === "set_normalize") {
+        settings.normalize = !settings.normalize;
+        send(action, settings.normalize);
+        apply(currentPayload);
+      } else if (action === "set_gapless") {
+        settings.gapless = !settings.gapless;
+        send(action, settings.gapless);
+        apply(currentPayload);
+      } else if (action === "speed_delta") {
+        const next = Math.max(5, Math.min(20, settings.speedTenths + Number(button.dataset.delta)));
+        if (next !== settings.speedTenths) {
+          settings.speedTenths = next;
+          settings.speedLabel = (next / 10).toFixed(1) + "x";
+          send("set_speed", next);
+          apply(currentPayload);
+        }
+      } else if (action === "seek_delta") {
+        const next = Math.max(1, Math.min(60, settings.seekSeconds + Number(button.dataset.delta)));
+        if (next !== settings.seekSeconds) {
+          settings.seekSeconds = next;
+          settings.seekLabel = next + "s";
+          send("set_seek_seconds", next);
+          apply(currentPayload);
+        }
+      } else if (action === "set_theme") {
+        setTheme(button.dataset.value);
+      } else {
+        send(action);
+      }
+    });
+
+    els.streamingSource.addEventListener("change", event => {
+      send("set_streaming_source", event.target.value);
+    });
+
+    window.ytmTuiApply = apply;
+    apply(window.__YTM_TUI_INITIAL__);
+    window.ytmTuiApplyArt(window.__YTM_TUI_INITIAL_ART__);
+    artSeen = true; // boot art (baked or absent) is now on screen; later changes flash
+  </script>
+</body>
+</html>

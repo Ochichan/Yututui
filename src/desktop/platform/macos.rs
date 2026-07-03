@@ -14,7 +14,7 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use crate::desktop::control;
 use crate::desktop::launch;
 use crate::desktop::menu_model::{self, MenuAction, MenuEntry, MenuItem as ModelItem, TrayState};
-use crate::desktop::panel::PanelCommand;
+use crate::desktop::panel::{PanelCommand, PanelTheme};
 use crate::desktop::platform::main_window::MainWindow;
 use crate::desktop::platform::panel_window::MiniPlayerPanel;
 use crate::desktop::single_instance::{self, Acquire};
@@ -27,6 +27,9 @@ use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
 const POLL_THREAD_NAME: &str = "ytt-desktop-status";
 const COMMAND_THREAD_NAME: &str = "ytt-desktop-command";
 
+// Status carries the poll snapshot inline; events are dispatched one at a time
+// (never queued in bulk), so boxing would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum UserEvent {
     Status(PollUpdate),
@@ -141,6 +144,13 @@ pub fn run(open_main: bool) -> Result<(), Box<dyn Error>> {
                 ..
             } => {
                 app.handle_window_close(window_id);
+            }
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::Focused(false),
+                ..
+            } => {
+                app.handle_panel_blur(window_id);
             }
             Event::WindowEvent {
                 window_id,
@@ -401,8 +411,14 @@ impl MacTrayApp {
             return;
         }
 
+        // Unknown / corrupt persisted ids degrade to the default skin.
+        let theme = DesktopState::load()
+            .mini_theme
+            .as_deref()
+            .and_then(PanelTheme::from_id)
+            .unwrap_or(PanelTheme::Default);
         let proxy = self.proxy.clone();
-        match MiniPlayerPanel::create(target, &self.last_update, move |command| {
+        match MiniPlayerPanel::create(target, &self.last_update, theme, move |command| {
             let _ = proxy.send_event(UserEvent::Panel(command));
         }) {
             Ok(panel) => {
@@ -423,6 +439,21 @@ impl MacTrayApp {
             PanelCommand::Drag => {
                 if let Some(panel) = &self.panel {
                     panel.start_drag();
+                }
+            }
+            PanelCommand::SetTheme(theme) => {
+                if let Some(panel) = &self.panel {
+                    panel.set_theme(theme);
+                }
+                // Same load-mutate-save as persist_main_geometry, so concurrent
+                // geometry writes are never clobbered.
+                let mut state = DesktopState::load();
+                state.mini_theme = Some(theme.id().to_string());
+                state.save();
+            }
+            PanelCommand::SetExpanded(expanded) => {
+                if let Some(panel) = &self.panel {
+                    panel.set_expanded(expanded);
                 }
             }
             command => {
@@ -446,6 +477,18 @@ impl MacTrayApp {
             let mut state = DesktopState::load();
             state.main = Some(rect);
             state.save();
+        }
+    }
+
+    /// The minimal skin dismisses on click-away like a real tray popup. The menu
+    /// path self-heals: opening the tray menu blurs (hides) the panel, and the
+    /// "Show Mini Player" item simply re-shows it.
+    fn handle_panel_blur(&self, window_id: tao::window::WindowId) {
+        if let Some(panel) = &self.panel
+            && panel.window_id() == window_id
+            && panel.wants_blur_hide()
+        {
+            panel.hide();
         }
     }
 
@@ -996,6 +1039,7 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            artwork: None,
         });
         assert_eq!(tooltip_for_state(&state), "Paused: Artist - Song");
         let idle_daemon = TrayState::Connected(StatusSnapshot {
@@ -1013,6 +1057,7 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            artwork: None,
         });
         assert_eq!(tooltip_for_state(&idle_daemon), "ytm-tui daemon idle");
         assert_eq!(

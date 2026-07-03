@@ -237,6 +237,7 @@ fn golden_v7_status_response_is_byte_stable() {
         repeat: Repeat::All,
         elapsed_ms: Some(61_500),
         duration_ms: Some(194_000),
+        artwork: None,
     };
     let line = serde_json::to_string(&RemoteResponse::status(snap)).unwrap();
     assert_eq!(
@@ -248,6 +249,44 @@ fn golden_v7_status_response_is_byte_stable() {
 \"ai_enabled\":false,\"radio_mode\":false},\"queue\":[{\"title\":\"Song\",\"artist\":\"Artist\",\"duration\":\"3:14\",\
 \"current\":true}],\"shuffle\":true,\"repeat\":\"all\",\"elapsed_ms\":61500,\"duration_ms\":194000}}"
     );
+}
+
+#[test]
+fn golden_v8_status_artwork_is_additive() {
+    let artless = StatusSnapshot {
+        title: None,
+        artist: None,
+        paused: true,
+        volume: 30,
+        position: 0,
+        total: 0,
+        streaming: false,
+        owner_mode: InstanceMode::StandaloneTui,
+        settings: SettingsSnapshot::default(),
+        queue: Vec::new(),
+        shuffle: false,
+        repeat: Repeat::Off,
+        elapsed_ms: None,
+        duration_ms: None,
+        artwork: None,
+    };
+    // Absent artwork never appears on the wire (v7 byte stability).
+    assert!(!serde_json::to_string(&artless).unwrap().contains("artwork"));
+
+    // Present artwork serializes as a nested ref with `mime` omitted when unknown,
+    // and round-trips.
+    let with_art = StatusSnapshot {
+        artwork: Some(ArtworkRef {
+            key: "vid".to_string(),
+            path: Some("/tmp/vid.jpg".to_string()),
+            mime: None,
+        }),
+        ..artless
+    };
+    let line = serde_json::to_string(&with_art).unwrap();
+    assert!(line.contains(r#""artwork":{"key":"vid","path":"/tmp/vid.jpg"}"#));
+    let back: StatusSnapshot = serde_json::from_str(&line).unwrap();
+    assert_eq!(back, with_art);
 }
 
 #[test]

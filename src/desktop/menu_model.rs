@@ -10,6 +10,9 @@ pub enum TrayStateKind {
     Disconnected,
 }
 
+// Connected carries the full snapshot inline; one lives at a time (2s poll cadence,
+// never collected in bulk), so boxing would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayState {
     Connected(StatusSnapshot),
@@ -265,6 +268,7 @@ mod tests {
             repeat: Default::default(),
             elapsed_ms: None,
             duration_ms: None,
+            artwork: None,
         }
     }
 

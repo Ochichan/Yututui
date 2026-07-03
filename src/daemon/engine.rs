@@ -13,8 +13,8 @@ use crate::library::Library;
 use crate::player::{self, PlayerCmd, PlayerEvent, PlayerHandle};
 use crate::queue::{Queue, QueueSnapshot};
 use crate::remote::proto::{
-    InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse, RemoteSettingChange,
-    SettingsSnapshot, StatusSnapshot, ToggleState,
+    ArtworkRef, InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse,
+    RemoteSettingChange, SettingsSnapshot, StatusSnapshot, ToggleState,
 };
 use crate::search_source::SearchConfig;
 use crate::session::{LastMode, SessionCache};
@@ -476,6 +476,18 @@ impl DaemonEngine {
             duration_ms: current
                 .and(self.playback.duration)
                 .map(|duration| (duration.max(0.0) * 1000.0) as u64),
+            // Same current-track gate as the media snapshot below: stale art from the
+            // previous track never rides a status reply.
+            artwork: current.and_then(|song| {
+                self.media_art
+                    .as_ref()
+                    .filter(|art| art.key == song.video_id)
+                    .map(|art| ArtworkRef {
+                        key: art.key.clone(),
+                        path: Some(art.path.to_string_lossy().into_owned()),
+                        mime: None,
+                    })
+            }),
         }
     }
 
@@ -1735,6 +1747,25 @@ mod tests {
             session_events: VecDeque::new(),
             media_art: None,
         }
+    }
+
+    #[test]
+    fn status_artwork_only_matches_current_track() {
+        let mut engine = engine_with_queue(&["seed"]);
+        // Art for a *different* track is not surfaced (mirrors the media snapshot gate).
+        engine.set_media_art(crate::media::artwork::MediaArtworkReady {
+            key: "other".to_owned(),
+            path: std::path::PathBuf::from("/tmp/other.jpg"),
+        });
+        assert!(engine.status().artwork.is_none());
+
+        engine.set_media_art(crate::media::artwork::MediaArtworkReady {
+            key: "seed".to_owned(),
+            path: std::path::PathBuf::from("/tmp/seed.jpg"),
+        });
+        let art = engine.status().artwork.expect("artwork");
+        assert_eq!(art.key, "seed");
+        assert_eq!(art.path.as_deref(), Some("/tmp/seed.jpg"));
     }
 
     #[test]
