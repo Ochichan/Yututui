@@ -10,6 +10,7 @@ import type { PlaybackStore } from './stores/playback.svelte';
 import type { QueueStore } from './stores/queue.svelte';
 import type { SearchStore } from './stores/search.svelte';
 import type { LibraryStore } from './stores/library.svelte';
+import type { AiStore } from './stores/ai.svelte';
 import type { LyricsStore } from './stores/lyrics.svelte';
 import type { ToastStore } from './stores/toasts.svelte';
 import type { WipStore } from './wiring/wip.svelte';
@@ -26,6 +27,7 @@ export interface AppCtx {
   queue: QueueStore;
   search: SearchStore;
   library: LibraryStore;
+  ai: AiStore;
   lyrics: LyricsStore;
   toasts: ToastStore;
   wip: WipStore;

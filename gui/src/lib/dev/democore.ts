@@ -127,6 +127,9 @@ export class DemoCoreTransport implements Transport {
   ];
   // `<scope>:<video_id>` entries the user removed via library_remove.
   #removed = new Set<string>();
+  // DJ Gem transcript (role + text), grown by ask_ai.
+  #aiMessages: Array<{ role: 'user' | 'assistant'; text: string }> = [];
+  #aiTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMessage(cb: (env: InEnvelope) => void): void {
     this.#cb = cb;
@@ -276,6 +279,9 @@ export class DemoCoreTransport implements Transport {
       case 'library_remove':
         this.#removed.add(`${String(p.scope ?? 'all')}:${String(p.video_id ?? '')}`);
         this.#pushLibrary(); // invalidate → the store re-fetches the shrunken scope
+        return;
+      case 'ask_ai':
+        this.#askAi(String(p.prompt ?? ''));
         return;
       default:
         // Unknown command: a real core would reject reason-coded; the demo just ignores.
@@ -486,6 +492,45 @@ export class DemoCoreTransport implements Transport {
       kind: 'event',
       topic: 'library',
       payload: { kind: 'library_invalidated' },
+    });
+  }
+
+  // ── DJ Gem ───────────────────────────────────────────────────────────────────────────
+
+  #askAi(prompt: string): void {
+    this.#aiMessages = [...this.#aiMessages, { role: 'user', text: prompt }];
+    this.#pushAi(true, []); // thinking, no suggestions yet
+    if (this.#aiTimer) clearTimeout(this.#aiTimer);
+    this.#aiTimer = setTimeout(() => {
+      const picks = this.#djPicks(prompt);
+      const names = picks.map((t) => t.title).join(', ');
+      this.#aiMessages = [
+        ...this.#aiMessages,
+        {
+          role: 'assistant',
+          text: `For "${prompt}" try ${names}. Tap one to play — say the word for more. =^..^=`,
+        },
+      ];
+      this.#pushAi(false, picks);
+    }, 400);
+  }
+
+  /** Deterministic picks: catalog rows matching a word in the prompt, else the first few. */
+  #djPicks(prompt: string): TrackModel[] {
+    const q = prompt.trim().toLowerCase();
+    const hits = CATALOG.filter(
+      (t) => t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q),
+    );
+    return (hits.length ? hits : CATALOG).slice(0, 3).map((t) => ({ ...t }));
+  }
+
+  #pushAi(thinking: boolean, suggestions: TrackModel[]): void {
+    this.#emit({
+      v: 1,
+      kind: 'event',
+      topic: 'ai',
+      // PROVISIONAL shape — see AiState in stores/ai.svelte.ts.
+      payload: { kind: 'ai_state', messages: this.#aiMessages, thinking, suggestions },
     });
   }
 

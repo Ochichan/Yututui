@@ -25,7 +25,6 @@ export type FeatureId =
   | 'settings.theme-editor'
   | 'settings.animations'
   | 'settings.accounts'
-  | 'ai.chat'
   | 'ai.whygem'
   | 'transfer.wizard'
   | 'radio.mode'
@@ -131,17 +130,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
       'cmd lastfm_connect { ticket } / spotify_connect { ticket } / listen_brainz_configure; `accounts` topic events (LastfmAuthUrl → LastfmConnected, …) — the GUI opens the browser via win:openUrl',
     seam: 'create gui/src/lib/stores/accounts.svelte.ts; replace the wip() seams in AccountsTab.svelte',
     capability: 'accounts-v8',
-  },
-  'ai.chat': {
-    title: 'DJ Gem chat',
-    milestone: 'M4',
-    brief: 'docs/gui/07-feature-briefs.md §12',
-    protocol:
-      'cmd ask_ai { ticket, prompt }; `ai` topic (transcript appends, thinking flag, suggestions); suggestion play via play_tracks',
-    seam: 'create gui/src/lib/stores/ai.svelte.ts; replace the wip() seams in gui/src/views/AiView.svelte',
-    capability: 'ai',
-    notes:
-      'Disabled state has two flavors: ai_enabled off (enable CTA) vs capability missing on this owner.',
   },
   'ai.whygem': {
     title: 'Why-DJ-Gem popover',

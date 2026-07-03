@@ -1,28 +1,25 @@
 <script lang="ts">
-  // DJ Gem chat (docs/gui/07 §12). The transcript/suggestions wire (ticketed AskAi + the
-  // `ai` topic) is pending — so DJ Gem's first message *is* the patch-bay notice, in
-  // character, inside the finished chat frame.
+  // DJ Gem chat (docs/gui/07 §12): transcript + composer. Wired to ai.svelte.ts — asks go
+  // out ticketed, the `ai` topic pushes the transcript + thinking flag + playable
+  // suggestions back. Suggestions play through play_tracks with one click.
   import type { AppCtx } from '../lib/ctx';
-  import { WIRING } from '../lib/wiring/registry';
-  import WireTag from '../lib/components/WireTag.svelte';
 
   interface Props {
     ctx: AppCtx;
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { wip } = ctx;
+  const { ai } = ctx;
 
   let prompt = $state('');
 
   function send() {
     if (prompt.trim().length === 0) return;
-    // TODO(wire:M4/ai.chat): replace with ai.svelte.ts ask(ticket, prompt) once wired;
-    // the gate auto-opens on the `ai` capability.
-    wip.gate('ai.chat');
+    ai.ask(prompt);
+    prompt = '';
   }
 
-  const SUGGESTION_HINTS = [
+  const STARTERS = [
     'something upbeat for cleaning',
     '비 오는 날 코딩할 때 듣기 좋은 곡',
     'more like the last track',
@@ -31,23 +28,42 @@
 
 <div class="ai">
   <div class="transcript" aria-label="DJ Gem conversation">
-    <div class="bubble assistant">
-      <span class="who">✦ DJ Gem</span>
-      <p>
-        Hey — I'm DJ Gem. My chat wire hasn't been patched into the core yet ({WIRING['ai.chat']
-          .milestone} brings it). Once it lands I'll take requests, explain my autoplay picks, and drop
-        suggestions you can play with one click.
-      </p>
-      <p class="meta-line">
-        <WireTag id="ai.chat" {wip} />
-      </p>
-    </div>
-
-    <div class="suggestions" aria-hidden="true">
-      {#each SUGGESTION_HINTS as s (s)}
-        <button class="sugg" onclick={() => (prompt = s)}>{s}</button>
+    {#if !ai.started}
+      <div class="bubble assistant">
+        <span class="who">✦ DJ Gem</span>
+        <p>
+          Hey — I'm DJ Gem. Tell me a mood, an activity, or a track and I'll pull something up. Tap
+          a suggestion to play it straight away.
+        </p>
+      </div>
+      <div class="suggestions">
+        {#each STARTERS as s (s)}
+          <button class="sugg" onclick={() => (prompt = s)}>{s}</button>
+        {/each}
+      </div>
+    {:else}
+      {#each ai.messages as m, i (i)}
+        <div class="bubble {m.role}">
+          {#if m.role === 'assistant'}<span class="who">✦ DJ Gem</span>{/if}
+          <p>{m.text}</p>
+        </div>
       {/each}
-    </div>
+      {#if ai.thinking}
+        <div class="bubble assistant thinking" aria-label="DJ Gem is thinking">
+          <span class="who">✦ DJ Gem</span>
+          <span class="dots"><i></i><i></i><i></i></span>
+        </div>
+      {/if}
+      {#if ai.suggestions.length > 0}
+        <div class="suggestions" aria-label="Suggested tracks">
+          {#each ai.suggestions as t (t.video_id)}
+            <button class="sugg play" title="Play" onclick={() => ai.play(t)}
+              >▶ {t.display_title ?? t.title}</button
+            >
+          {/each}
+        </div>
+      {/if}
+    {/if}
   </div>
 
   <form
@@ -102,6 +118,12 @@
     border: 1px solid var(--role-border-muted);
     border-left: 3px solid var(--role-ai-assistant);
   }
+  .user {
+    align-self: flex-end;
+    background: var(--role-accent);
+    color: var(--role-text-inverse);
+    white-space: pre-wrap;
+  }
   .who {
     display: block;
     margin-bottom: var(--space-1);
@@ -109,8 +131,36 @@
     font-weight: 700;
     color: var(--role-ai-assistant);
   }
-  .meta-line {
-    margin: 0;
+  .thinking .dots {
+    display: inline-flex;
+    gap: 4px;
+  }
+  .thinking .dots i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--role-text-subtle);
+    animation: blink 1.2s infinite ease-in-out both;
+  }
+  .thinking .dots i:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+  .thinking .dots i:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+  @keyframes blink {
+    0%,
+    80%,
+    100% {
+      opacity: 0.25;
+    }
+    40% {
+      opacity: 1;
+    }
+  }
+  .sugg.play {
+    border-color: var(--role-accent);
+    color: var(--role-accent);
   }
   .suggestions {
     display: flex;

@@ -16,6 +16,7 @@ import { PlaybackStore } from '../src/lib/stores/playback.svelte';
 import { QueueStore } from '../src/lib/stores/queue.svelte';
 import { SearchStore } from '../src/lib/stores/search.svelte';
 import { LibraryStore } from '../src/lib/stores/library.svelte';
+import { AiStore } from '../src/lib/stores/ai.svelte';
 import { LyricsStore } from '../src/lib/stores/lyrics.svelte';
 import { ToastStore } from '../src/lib/stores/toasts.svelte';
 import { WipStore } from '../src/lib/wiring/wip.svelte';
@@ -36,11 +37,12 @@ function assemble(): AppCtx {
     queue: new QueueStore(client),
     search: new SearchStore(client),
     library: new LibraryStore(client),
+    ai: new AiStore(client),
     lyrics: new LyricsStore(client),
     toasts,
     wip: new WipStore(connection),
   };
-  client.sub(['player', 'queue', 'lyrics', 'search', 'library', 'system']);
+  client.sub(['player', 'queue', 'lyrics', 'search', 'library', 'ai', 'system']);
   return ctx;
 }
 
