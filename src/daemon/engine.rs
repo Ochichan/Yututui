@@ -417,9 +417,13 @@ impl DaemonEngine {
                 }
                 Vec::new()
             }
+            // Playlist search/import is a TUI-only flow; the daemon never issues those
+            // commands, so their answers are inert here.
             ApiEvent::ModeResolved { .. }
             | ApiEvent::SearchResults { .. }
-            | ApiEvent::SearchError { .. } => Vec::new(),
+            | ApiEvent::SearchError { .. }
+            | ApiEvent::PlaylistTracks { .. }
+            | ApiEvent::PlaylistTracksError { .. } => Vec::new(),
         }
     }
 
