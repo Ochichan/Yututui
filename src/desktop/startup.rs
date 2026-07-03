@@ -47,8 +47,25 @@ impl std::error::Error for StartupError {}
 
 pub fn install() -> Result<String, StartupError> {
     let exe = std::env::current_exe()
-        .map_err(|e| StartupError::CurrentExe(format!("could not resolve ytt-tray path: {e}")))?;
+        .map_err(|e| StartupError::CurrentExe(format!("could not resolve ytt-desktop path: {e}")))?;
     install_for_exe(&exe)
+}
+
+/// Re-register the login-startup entry when it points at a stale exe path — a rename
+/// (`ytt-desktop` → `ytt-desktop`) or a moved install (docs/gui/03 §1.3). No-op unless startup
+/// is currently enabled. The registry value-name / LaunchAgent label are stable (the
+/// `io.github.ochi.ytm-tui.tray` family), so re-installing overwrites rather than duplicates.
+/// Best-effort: called on every desktop start so upgrades heal themselves silently.
+pub fn self_heal() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let want = startup_command_for(&exe);
+    if let Ok(StartupStatus::Enabled { command }) = status()
+        && command != want
+    {
+        let _ = install();
+    }
 }
 
 pub fn uninstall() -> Result<(), StartupError> {
@@ -461,10 +478,10 @@ mod tests {
 
     #[test]
     fn startup_command_quotes_exe_and_uses_background_flag() {
-        let command = startup_command_for(Path::new(r"C:\Program Files\YtmTui\ytt-tray.exe"));
+        let command = startup_command_for(Path::new(r"C:\Program Files\YtmTui\ytt-desktop.exe"));
         assert_eq!(
             command,
-            r#""C:\Program Files\YtmTui\ytt-tray.exe" --background"#
+            r#""C:\Program Files\YtmTui\ytt-desktop.exe" --background"#
         );
     }
 
@@ -472,7 +489,7 @@ mod tests {
     #[test]
     fn launch_agent_plist_round_trips_program_arguments() {
         let plist = launch_agent_plist(
-            Path::new("/Applications/YtmTuiTray.app/Contents/MacOS/ytt-tray"),
+            Path::new("/Applications/YtmTuiTray.app/Contents/MacOS/ytt-desktop"),
             Path::new("/Users/me/Library/Caches/ytm-tui/logs/out.log"),
             Path::new("/Users/me/Library/Caches/ytm-tui/logs/err.log"),
         );
@@ -480,7 +497,7 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "/Applications/YtmTuiTray.app/Contents/MacOS/ytt-tray".to_string(),
+                "/Applications/YtmTuiTray.app/Contents/MacOS/ytt-desktop".to_string(),
                 "--background".to_string()
             ]
         );

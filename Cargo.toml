@@ -19,9 +19,9 @@ name = "ytt"
 path = "src/main.rs"
 
 [[bin]]
-name = "ytt-tray"
-path = "src/bin/ytt-tray.rs"
-required-features = ["desktop-tray"]
+name = "ytt-desktop"
+path = "src/bin/ytt-desktop.rs"
+required-features = ["desktop"]
 
 [features]
 default = []

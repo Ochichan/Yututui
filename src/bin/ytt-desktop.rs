@@ -5,12 +5,12 @@
 
 use std::error::Error;
 
-use ytm_tui::tray::launch;
-use ytm_tui::tray::menu_model::{self, MenuEntry};
-use ytm_tui::tray::startup::{self, StartupStatus};
-use ytm_tui::tray::status;
+use ytm_tui::desktop::launch;
+use ytm_tui::desktop::menu_model::{self, MenuEntry};
+use ytm_tui::desktop::startup::{self, StartupStatus};
+use ytm_tui::desktop::status;
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-use ytm_tui::tray::status::PollConfig;
+use ytm_tui::desktop::status::PollConfig;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     match args.first().map(String::as_str) {
         Some("--version") | Some("-V") => {
-            println!("ytt-tray {}", env!("CARGO_PKG_VERSION"));
+            println!("ytt-desktop {}", env!("CARGO_PKG_VERSION"));
         }
         Some("--help") | Some("-h") => print_help(),
         // Launched from a startup entry → tray only; launched from the app icon (no args)
@@ -49,12 +49,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some("--open-tui") => match launch::open_tui() {
             Ok(plan) => println!("launched {} {}", plan.program, plan.args.join(" ")),
             Err(e) => {
-                eprintln!("ytt-tray: {e}");
+                eprintln!("ytt-desktop: {e}");
                 std::process::exit(1);
             }
         },
         Some(other) => {
-            eprintln!("ytt-tray: unknown option `{other}` (try `ytt-tray --help`)");
+            eprintln!("ytt-desktop: unknown option `{other}` (try `ytt-desktop --help`)");
             std::process::exit(2);
         }
         None => run_default(true)?,
@@ -63,9 +63,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn print_help() {
-    println!("ytt-tray {}", env!("CARGO_PKG_VERSION"));
+    println!("ytt-desktop {}", env!("CARGO_PKG_VERSION"));
     println!();
-    println!("Usage: ytt-tray [OPTIONS]");
+    println!("Usage: ytt-desktop [OPTIONS]");
     println!();
     println!("Desktop companion for ytm-tui.");
     println!();
@@ -74,9 +74,9 @@ fn print_help() {
     println!("      --main-window");
     println!("                   Open the main window (default when launched from the app icon)");
     println!("      --install-startup");
-    println!("                   Enable login startup for ytt-tray");
+    println!("                   Enable login startup for ytt-desktop");
     println!("      --uninstall-startup");
-    println!("                   Disable login startup for ytt-tray");
+    println!("                   Disable login startup for ytt-desktop");
     println!("      --startup-status");
     println!("                   Print the current startup registration state");
     println!("      --once       Print the current OS-neutral menu model and exit");
@@ -91,7 +91,7 @@ fn install_startup() {
     match startup::install() {
         Ok(command) => println!("installed startup entry: {command}"),
         Err(e) => {
-            eprintln!("ytt-tray: {e}");
+            eprintln!("ytt-desktop: {e}");
             std::process::exit(1);
         }
     }
@@ -101,7 +101,7 @@ fn uninstall_startup() {
     match startup::uninstall() {
         Ok(()) => println!("removed startup entry"),
         Err(e) => {
-            eprintln!("ytt-tray: {e}");
+            eprintln!("ytt-desktop: {e}");
             std::process::exit(1);
         }
     }
@@ -113,7 +113,7 @@ fn print_startup_status() {
         Ok(StartupStatus::Disabled) => println!("disabled"),
         Ok(StartupStatus::Unsupported) => println!("unsupported"),
         Err(e) => {
-            eprintln!("ytt-tray: {e}");
+            eprintln!("ytt-desktop: {e}");
             std::process::exit(1);
         }
     }
@@ -125,13 +125,15 @@ async fn print_once() {
 }
 
 fn run_default(open_main: bool) -> Result<(), Box<dyn Error>> {
+    // Heal a stale login-startup entry (e.g. a prior `ytt-tray` install) on every launch.
+    startup::self_heal();
     #[cfg(target_os = "macos")]
     {
-        ytm_tui::tray::platform::macos::run(open_main)
+        ytm_tui::desktop::platform::macos::run(open_main)
     }
     #[cfg(target_os = "windows")]
     {
-        ytm_tui::tray::platform::windows::run(open_main)
+        ytm_tui::desktop::platform::windows::run(open_main)
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
@@ -144,7 +146,7 @@ fn run_default(open_main: bool) -> Result<(), Box<dyn Error>> {
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 async fn run_polling() {
     eprintln!(
-        "ytt-tray foundation mode: polling ytt status until Ctrl-C. Native tray backends come next."
+        "ytt-desktop foundation mode: polling ytt status until Ctrl-C. Native tray backends come next."
     );
     let shutdown = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -178,7 +180,7 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("start ytt-tray runtime");
+        .expect("start ytt-desktop runtime");
     rt.block_on(future)
 }
 

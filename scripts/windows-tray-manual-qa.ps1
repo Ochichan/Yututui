@@ -22,7 +22,7 @@ if (-not $YttPath) {
     $YttPath = Join-Path $RepoRoot "target\$Target\$Profile\ytt.exe"
 }
 if (-not $TrayPath) {
-    $TrayPath = Join-Path $RepoRoot "target\$Target\$Profile\ytt-tray.exe"
+    $TrayPath = Join-Path $RepoRoot "target\$Target\$Profile\ytt-desktop.exe"
 }
 if (-not $EvidenceDir) {
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -30,7 +30,7 @@ if (-not $EvidenceDir) {
 }
 
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$RunName = "YtmTui Tray"
+$RunName = "YtmTui Desktop"
 $createdTrayPid = $null
 $hadRunValue = $false
 $oldRunValue = $null
@@ -105,7 +105,7 @@ function Assert-NoProcessList {
 function Assert-TrayProcessRunning {
     param([string]$Label)
     if ($null -eq $createdTrayPid) {
-        throw "ytt-tray.exe was not launched before $Label"
+        throw "ytt-desktop.exe was not launched before $Label"
     }
     Get-Process -Id $createdTrayPid -ErrorAction Stop | Out-Null
 }
@@ -117,7 +117,7 @@ function Assert-TrayProcessStopped {
     }
     $running = Get-Process -Id $createdTrayPid -ErrorAction SilentlyContinue
     if ($null -ne $running) {
-        throw "ytt-tray.exe process id $createdTrayPid was still running after $Label"
+        throw "ytt-desktop.exe process id $createdTrayPid was still running after $Label"
     }
 }
 
@@ -188,7 +188,7 @@ function Capture-Screen {
 
 function Record-ProcessSample {
     param([string]$Name)
-    return Save-ProcessList -Name $Name -ProcessName "ytt-tray"
+    return Save-ProcessList -Name $Name -ProcessName "ytt-desktop"
 }
 
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
@@ -198,8 +198,8 @@ try {
     Assert-FileExists $YttPath
     Assert-FileExists $TrayPath
 
-    $preexistingTray = @(Save-ProcessList -Name "tray-process-before" -ProcessName "ytt-tray")
-    Assert-NoProcessList -Label "ytt-tray.exe" -Processes $preexistingTray
+    $preexistingTray = @(Save-ProcessList -Name "tray-process-before" -ProcessName "ytt-desktop")
+    Assert-NoProcessList -Label "ytt-desktop.exe" -Processes $preexistingTray
     $preexistingYtt = @(Save-ProcessList -Name "ytt-process-before" -ProcessName "ytt")
     Assert-NoProcessList -Label "ytt.exe" -Processes $preexistingYtt
     $preexistingMpv = @(Save-ProcessList -Name "mpv-process-before" -ProcessName "mpv")
@@ -218,11 +218,11 @@ try {
         throw "ytt.exe should use the Windows console subsystem"
     }
     if ($results["ytt_tray_subsystem"] -ne 2) {
-        throw "ytt-tray.exe should use the Windows GUI subsystem"
+        throw "ytt-desktop.exe should use the Windows GUI subsystem"
     }
 
     Assert-CaptureSuccess (Invoke-Capture -Name "ytt-version" -File $YttPath -Arguments @("--version"))
-    Assert-CaptureSuccess (Invoke-Capture -Name "ytt-tray-version" -File $TrayPath -Arguments @("--version"))
+    Assert-CaptureSuccess (Invoke-Capture -Name "ytt-desktop-version" -File $TrayPath -Arguments @("--version"))
     Assert-CaptureSuccess (Invoke-Capture -Name "startup-status-before" -File $TrayPath -Arguments @("--startup-status"))
     Assert-CaptureSuccess (Invoke-Capture -Name "open-tui-plan" -File $TrayPath -Arguments @("--print-open-tui-plan"))
 
@@ -243,18 +243,18 @@ try {
     $results["startup_roundtrip"] = $startupAfter.Output.Trim() -eq "disabled"
 
     Write-Host ""
-    Write-Host "Launching ytt-tray. Move the icon out of overflow if needed, then perform the visual checks."
+    Write-Host "Launching ytt-desktop. Move the icon out of overflow if needed, then perform the visual checks."
     $trayProcess = Start-Process -FilePath $TrayPath -ArgumentList @("--background") -PassThru
     $createdTrayPid = $trayProcess.Id
     Start-Sleep -Seconds 3
     Assert-TrayProcessRunning -Label "tray launch"
     Record-ProcessSample -Name "tray-process-start" | Out-Null
 
-    Ask-Check -Key "no_console_window" -Prompt "No console window remains open for ytt-tray.exe"
+    Ask-Check -Key "no_console_window" -Prompt "No console window remains open for ytt-desktop.exe"
     Ask-Check -Key "notification_icon_visible" -Prompt "Notification-area icon is visible or present in overflow"
-    Ask-Check -Key "left_click_menu_opens" -Prompt "Left click opens the tray context menu and ytt-tray.exe stays running"
+    Ask-Check -Key "left_click_menu_opens" -Prompt "Left click opens the tray context menu and ytt-desktop.exe stays running"
     Assert-TrayProcessRunning -Label "left click tray menu"
-    Ask-Check -Key "right_click_menu_opens" -Prompt "Right click opens the tray context menu and ytt-tray.exe stays running"
+    Ask-Check -Key "right_click_menu_opens" -Prompt "Right click opens the tray context menu and ytt-desktop.exe stays running"
     Assert-TrayProcessRunning -Label "right click tray menu"
     Read-Host "Use the tray menu to choose Show Mini Player, then press Enter"
     Assert-TrayProcessRunning -Label "Show Mini Player"
@@ -311,12 +311,12 @@ try {
         Ask-Check -Key "stop_daemon_reaped_mpv" -Prompt "Stop Music Daemon removed the daemon descriptor and reaped mpv"
     }
 
-    Ask-Check -Key "quit_player_keeps_tray" -Prompt "Quit Player was tested while a player was running and left ytt-tray.exe alive"
+    Ask-Check -Key "quit_player_keeps_tray" -Prompt "Quit Player was tested while a player was running and left ytt-desktop.exe alive"
     Assert-TrayProcessRunning -Label "Quit Player"
     Record-ProcessSample -Name "tray-process-after-quit-player" | Out-Null
-    Ask-Check -Key "quit_tray_exits_only_tray" -Prompt "Quit Tray exits ytt-tray.exe without killing unrelated processes"
+    Ask-Check -Key "quit_tray_exits_only_tray" -Prompt "Quit Tray exits ytt-desktop.exe without killing unrelated processes"
     Wait-TrayProcessStopped -Label "Quit Tray"
-    Save-ProcessList -Name "tray-process-after-quit-tray" -ProcessName "ytt-tray" | Out-Null
+    Save-ProcessList -Name "tray-process-after-quit-tray" -ProcessName "ytt-desktop" | Out-Null
 
     $logDir = Join-Path $env:LOCALAPPDATA "ytm-tui\cache"
     $appLog = Join-Path $logDir "ytm-tui.log"

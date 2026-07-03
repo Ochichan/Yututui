@@ -213,7 +213,7 @@ pub fn open_tui_with_path(ytt_path: &Path) -> Result<LaunchPlan, LaunchError> {
                 // Reap the launcher when it exits — a dropped Child sits as a zombie
                 // for the whole life of the long-running tray process on Unix.
                 let _ = thread::Builder::new()
-                    .name("ytt-tray-reap".to_string())
+                    .name("ytt-desktop-reap".to_string())
                     .spawn(move || {
                         let _ = child.wait();
                     });
@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn resolve_ytt_path_prefers_executable_sibling() {
         let dir = temp_test_dir("sibling");
-        let tray = dir.join("ytt-tray");
+        let tray = dir.join("ytt-desktop");
         let ytt = dir.join("ytt");
         write_executable(&tray);
         write_executable(&ytt);
@@ -404,7 +404,7 @@ mod tests {
     fn resolve_ytt_path_uses_path_when_sibling_is_missing() {
         let app_dir = temp_test_dir("missing-sibling");
         let bin_dir = temp_test_dir("path");
-        let tray = app_dir.join("ytt-tray");
+        let tray = app_dir.join("ytt-desktop");
         let ytt = bin_dir.join("ytt");
         write_executable(&tray);
         write_executable(&ytt);

@@ -16,7 +16,7 @@ if (-not $isWindowsPlatform) {
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $BinDir = Join-Path $RepoRoot "target\$Target\$Profile"
 $Ytt = Join-Path $BinDir "ytt.exe"
-$Tray = Join-Path $BinDir "ytt-tray.exe"
+$Tray = Join-Path $BinDir "ytt-desktop.exe"
 $WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ytm-tui-windows-smoke-" + [Guid]::NewGuid().ToString("N"))
 $BackupRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ytm-tui-windows-smoke-backup-" + [Guid]::NewGuid().ToString("N"))
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"

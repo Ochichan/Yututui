@@ -15,7 +15,7 @@ if (-not $isWindowsPlatform) {
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $BinDir = Join-Path $RepoRoot "target\$Target\$Profile"
-$Tray = Join-Path $BinDir "ytt-tray.exe"
+$Tray = Join-Path $BinDir "ytt-desktop.exe"
 $Ytt = Join-Path $BinDir "ytt.exe"
 $LogPath = Join-Path $env:LOCALAPPDATA "ytm-tui\cache\ytm-tui.log"
 $createdTrayPid = $null
@@ -55,10 +55,10 @@ try {
     Assert-FileExists $Tray
     Assert-FileExists $Ytt
 
-    $preexistingTray = @(Get-Process -Name "ytt-tray" -ErrorAction SilentlyContinue)
+    $preexistingTray = @(Get-Process -Name "ytt-desktop" -ErrorAction SilentlyContinue)
     if ($preexistingTray.Count -ne 0) {
         $ids = ($preexistingTray | ForEach-Object { $_.Id }) -join ", "
-        throw "ytt-tray.exe was already running before smoke: $ids"
+        throw "ytt-desktop.exe was already running before smoke: $ids"
     }
 
     $preexistingMpv = @(Get-Process -Name "mpv" -ErrorAction SilentlyContinue)
@@ -74,30 +74,30 @@ try {
     $trayProcess = Start-Process -FilePath $Tray -ArgumentList @("--background") -PassThru
     $createdTrayPid = $trayProcess.Id
 
-    Wait-Until -Label "ytt-tray process to stay alive" -TimeoutSeconds 10 -Condition {
+    Wait-Until -Label "ytt-desktop process to stay alive" -TimeoutSeconds 10 -Condition {
         $proc = Get-Process -Id $createdTrayPid -ErrorAction SilentlyContinue
         return $null -ne $proc -and -not $proc.HasExited
     }
 
-    Wait-Until -Label "ytt-tray log initialization" -TimeoutSeconds 10 -Condition {
+    Wait-Until -Label "ytt-desktop log initialization" -TimeoutSeconds 10 -Condition {
         if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf)) {
             return $false
         }
         $text = Get-Content -LiteralPath $LogPath -Raw
-        return $text.Contains("ytt-tray logging initialized")
+        return $text.Contains("ytt-desktop logging initialized")
     }
 
     Start-Sleep -Seconds $IdleSeconds
 
     $trayProcess.Refresh()
     if ($trayProcess.HasExited) {
-        throw "ytt-tray.exe exited during idle smoke with code $($trayProcess.ExitCode)"
+        throw "ytt-desktop.exe exited during idle smoke with code $($trayProcess.ExitCode)"
     }
 
     $sample = Get-Process -Id $createdTrayPid |
         Select-Object Id, ProcessName, CPU, WorkingSet64, PrivateMemorySize64, StartTime
     if ($sample.WorkingSet64 -le 0 -or $sample.PrivateMemorySize64 -le 0) {
-        throw "ytt-tray.exe memory sample was invalid: $($sample | Format-List | Out-String)"
+        throw "ytt-desktop.exe memory sample was invalid: $($sample | Format-List | Out-String)"
     }
 
     $children = Get-ChildProcesses -ParentPid $createdTrayPid
@@ -105,12 +105,12 @@ try {
         $children | Where-Object { $_.Name -in @("ytt.exe", "mpv.exe") }
     )
     if ($unexpectedChildren.Count -ne 0) {
-        throw "ytt-tray.exe spawned unexpected playback child processes: $($unexpectedChildren | Format-List | Out-String)"
+        throw "ytt-desktop.exe spawned unexpected playback child processes: $($unexpectedChildren | Format-List | Out-String)"
     }
 
     $newMpv = @(Get-Process -Name "mpv" -ErrorAction SilentlyContinue)
     if ($newMpv.Count -ne 0) {
-        throw "ytt-tray.exe idle smoke started mpv unexpectedly: $($newMpv.Id -join ', ')"
+        throw "ytt-desktop.exe idle smoke started mpv unexpectedly: $($newMpv.Id -join ', ')"
     }
 
     Write-Host "Windows tray process smoke passed"
@@ -118,7 +118,7 @@ try {
 } finally {
     if ($createdTrayPid) {
         Stop-Process -Id $createdTrayPid -Force -ErrorAction SilentlyContinue
-        Wait-Until -Label "ytt-tray process exit" -TimeoutSeconds 5 -Condition {
+        Wait-Until -Label "ytt-desktop process exit" -TimeoutSeconds 5 -Condition {
             return $null -eq (Get-Process -Id $createdTrayPid -ErrorAction SilentlyContinue)
         }
     }

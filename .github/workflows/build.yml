@@ -44,6 +44,30 @@ jobs:
         run: cargo audit
       - name: Dependency policy
         run: cargo deny check
+      # --- GUI frontend gates (docs/gui/04 §5) ---
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: GUI frontend (typecheck, test, build)
+        run: |
+          cd gui
+          npm ci
+          npm run check
+          npm run test
+          npm run build
+      - name: GUI protocol type drift
+        # Regenerating the ts-rs bindings must produce no diff (committed types stay honest).
+        run: scripts/check-gui-types.sh
+      - name: Feature graph invariants
+        # `default` stays empty; `desktop` must not pull the build/test-only ts-export tooling
+        # into a shipped binary (keeps ytt/ytt-desktop free of ts-rs).
+        run: |
+          grep -qE '^default = \[\]' Cargo.toml
+          if grep -E '^desktop = \[' Cargo.toml | grep -q 'ts-export'; then
+            echo "error: the desktop feature must not enable ts-export" >&2
+            exit 1
+          fi
 
   dependency-review:
     name: Dependency review
@@ -123,7 +147,7 @@ jobs:
       - name: Clippy tray helper
         if: runner.os != 'Linux'
         run: |
-          cargo clippy --features desktop-tray --target ${{ matrix.target }} --bin ytt-tray -- -D warnings
+          cargo clippy --features desktop --target ${{ matrix.target }} --bin ytt-desktop -- -D warnings
 
       - name: Test
         run: cargo test --target ${{ matrix.target }}
@@ -131,7 +155,7 @@ jobs:
       - name: Test tray helper
         if: runner.os != 'Linux'
         run: |
-          cargo test --features desktop-tray --target ${{ matrix.target }} tray::
+          cargo test --features desktop --target ${{ matrix.target }} desktop::
 
       - name: Release build
         if: runner.os == 'Linux'
@@ -140,7 +164,7 @@ jobs:
       - name: Release build (macOS + tray)
         if: runner.os == 'macOS'
         run: |
-          cargo build --release --features desktop-tray --target ${{ matrix.target }} --bin ytt --bin ytt-tray
+          cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin ytt-desktop
 
       # Non-blocking + time-bounded. This daemon-lifecycle smoke is new (added after v1.5.8)
       # and still flaky under CI runner load (intermittent wait_until timeouts, one arch of a
@@ -156,14 +180,14 @@ jobs:
       - name: Smoke macOS tray CLI
         if: runner.os == 'macOS'
         run: |
-          out="$(target/${{ matrix.target }}/release/ytt-tray --version)"
+          out="$(target/${{ matrix.target }}/release/ytt-desktop --version)"
           echo "$out"
-          case "$out" in ytt-tray\ *) ;; *) echo "unexpected --version output" >&2; exit 1 ;; esac
+          case "$out" in ytt-desktop\ *) ;; *) echo "unexpected --version output" >&2; exit 1 ;; esac
 
       - name: Release build (Windows + tray)
         if: runner.os == 'Windows'
         run: |
-          cargo build --release --features desktop-tray --target ${{ matrix.target }} --bin ytt --bin ytt-tray
+          cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin ytt-desktop
 
       - name: Verify Windows subsystem split
         if: runner.os == 'Windows'
@@ -177,13 +201,13 @@ jobs:
           }
 
           $ytt = Get-PeSubsystem "target/${{ matrix.target }}/release/ytt.exe"
-          $tray = Get-PeSubsystem "target/${{ matrix.target }}/release/ytt-tray.exe"
+          $tray = Get-PeSubsystem "target/${{ matrix.target }}/release/ytt-desktop.exe"
 
           if ($ytt -ne 3) {
             throw "ytt.exe should use the Windows console subsystem, found $ytt"
           }
           if ($tray -ne 2) {
-            throw "ytt-tray.exe should use the Windows GUI subsystem, found $tray"
+            throw "ytt-desktop.exe should use the Windows GUI subsystem, found $tray"
           }
 
       - name: Validate Windows PowerShell scripts
@@ -265,7 +289,7 @@ jobs:
             "ytt-process-before.txt",
             "mpv-process-before.txt",
             "ytt-version.txt",
-            "ytt-tray-version.txt",
+            "ytt-desktop-version.txt",
             "startup-status-before.txt",
             "startup-uninstall-before.txt",
             "startup-install.txt",
@@ -290,14 +314,14 @@ jobs:
             Write-Evidence -Name $name
           }
 
-          Write-Evidence -Name "startup-registry-installed.txt" -Text '"C:\fake\ytt-tray.exe" --background'
-          Write-Evidence -Name "startup-status-installed.txt" -Text 'enabled: "C:\fake\ytt-tray.exe" --background'
+          Write-Evidence -Name "startup-registry-installed.txt" -Text '"C:\fake\ytt-desktop.exe" --background'
+          Write-Evidence -Name "startup-status-installed.txt" -Text 'enabled: "C:\fake\ytt-desktop.exe" --background'
           Write-Evidence -Name "startup-status-after-uninstall.txt" -Text "disabled"
           Write-Evidence -Name "open-tui-plan.txt" -Text "wt.exe C:\fake\ytt.exe"
 
           $trayProcess = @"
           Id : 1234
-          ProcessName : ytt-tray
+          ProcessName : ytt-desktop
           WorkingSet64 : 1048576
           PrivateMemorySize64 : 2097152
           "@
@@ -322,7 +346,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($name in @("ytt.exe", "ytt-tray.exe")) {
+          foreach ($name in @("ytt.exe", "ytt-desktop.exe")) {
             $path = "target/${{ matrix.target }}/release/$name"
             $size = (Get-Item -LiteralPath $path).Length
             "{0}: {1:N0} bytes" -f $name, $size
@@ -358,8 +382,8 @@ jobs:
         timeout-minutes: 8
         run: ./scripts/windows-daemon-smoke.ps1 -Target "${{ matrix.target }}" -Profile release -AllowProfileMove
 
-      # macOS ships the bare binaries (ytt + the ytt-tray menu-bar helper) alongside their
-      # YtmTui.app / YtmTuiTray.app bundles (icon + Info.plist); Linux ships the bare binary
+      # macOS ships the bare binaries (ytt + the ytt-desktop menu-bar helper) alongside their
+      # YtmTui.app / YtmTuiDesktop.app bundles (icon + Info.plist); Linux ships the bare binary
       # (MPRIS lives in ytt itself); Windows ships ytt.exe plus the notification-area helper.
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -370,7 +394,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           listing="$(tar -tzf "${{ matrix.archive }}")"
-          for entry in ytt ytt-tray YtmTui.app/Contents/MacOS/ytt YtmTuiTray.app/Contents/MacOS/ytt-tray; do
+          for entry in ytt ytt-desktop YtmTui.app/Contents/MacOS/ytt YtmTuiDesktop.app/Contents/MacOS/ytt-desktop; do
             if ! grep -qx "$entry" <<<"$listing"; then
               echo "macOS archive is missing $entry" >&2
               exit 1
@@ -396,7 +420,7 @@ jobs:
         run: |
           Compress-Archive -Path `
             "target/${{ matrix.target }}/release/ytt.exe", `
-            "target/${{ matrix.target }}/release/ytt-tray.exe" `
+            "target/${{ matrix.target }}/release/ytt-desktop.exe" `
             -DestinationPath "${{ matrix.archive }}"
 
       - name: Verify Windows package contents
@@ -407,7 +431,7 @@ jobs:
           Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
           Expand-Archive -Path "${{ matrix.archive }}" -DestinationPath $stage
 
-          foreach ($name in @("ytt.exe", "ytt-tray.exe")) {
+          foreach ($name in @("ytt.exe", "ytt-desktop.exe")) {
             $path = Join-Path $stage $name
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Windows archive is missing $name"
@@ -415,16 +439,16 @@ jobs:
           }
 
           $manifest = Get-Content packaging/scoop/ytm-tui.json.tmpl -Raw | ConvertFrom-Json
-          foreach ($name in @("ytt.exe", "ytt-tray.exe")) {
+          foreach ($name in @("ytt.exe", "ytt-desktop.exe")) {
             if ($manifest.bin -notcontains $name) {
               throw "Scoop manifest does not expose $name in bin"
             }
           }
           $shortcut = @($manifest.shortcuts) | Where-Object {
-            $_[0] -eq "ytt-tray.exe" -and $_[1] -eq "YtmTui Tray"
+            $_[0] -eq "ytt-desktop.exe" -and $_[1] -eq "YtmTui Desktop"
           }
           if (-not $shortcut) {
-            throw "Scoop manifest is missing the YtmTui Tray shortcut"
+            throw "Scoop manifest is missing the YtmTui Desktop shortcut"
           }
 
       # One SHA-256 sidecar per archive in `sha256sum`/`shasum` format (`<hash>  <file>`). bash

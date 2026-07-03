@@ -66,17 +66,17 @@ chmod +x "$stage_dir/YtmTui.app/Contents/MacOS/ytt"
 
 archive_items=("$bin_name" "YtmTui.app")
 
-if [[ -x "$release_dir/ytt-tray" ]]; then
-  mkdir -p "$stage_dir/YtmTuiTray.app/Contents/MacOS" \
-    "$stage_dir/YtmTuiTray.app/Contents/Resources"
-  cp "$release_dir/ytt-tray" "$stage_dir/ytt-tray"
-  cp "$release_dir/ytt-tray" "$stage_dir/YtmTuiTray.app/Contents/MacOS/ytt-tray"
-  # Keep `ytt` beside `ytt-tray` inside the helper bundle so the tray's "Open TUI"
+if [[ -x "$release_dir/ytt-desktop" ]]; then
+  mkdir -p "$stage_dir/YtmTuiDesktop.app/Contents/MacOS" \
+    "$stage_dir/YtmTuiDesktop.app/Contents/Resources"
+  cp "$release_dir/ytt-desktop" "$stage_dir/ytt-desktop"
+  cp "$release_dir/ytt-desktop" "$stage_dir/YtmTuiDesktop.app/Contents/MacOS/ytt-desktop"
+  # Keep `ytt` beside `ytt-desktop` inside the helper bundle so the tray's "Open TUI"
   # action can launch an absolute bundled path even when the archive root is moved.
-  cp "$release_dir/$bin_name" "$stage_dir/YtmTuiTray.app/Contents/MacOS/ytt"
-  cp assets/icons/ytm-tui.icns "$stage_dir/YtmTuiTray.app/Contents/Resources/ytm-tui.icns"
+  cp "$release_dir/$bin_name" "$stage_dir/YtmTuiDesktop.app/Contents/MacOS/ytt"
+  cp assets/icons/ytm-tui.icns "$stage_dir/YtmTuiDesktop.app/Contents/Resources/ytm-tui.icns"
 
-  cat > "$stage_dir/YtmTuiTray.app/Contents/Info.plist" <<PLIST
+  cat > "$stage_dir/YtmTuiDesktop.app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -84,9 +84,9 @@ if [[ -x "$release_dir/ytt-tray" ]]; then
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>YtmTui Tray</string>
+  <string>YtmTui Desktop</string>
   <key>CFBundleExecutable</key>
-  <string>ytt-tray</string>
+  <string>ytt-desktop</string>
   <key>CFBundleIconFile</key>
   <string>ytm-tui</string>
   <key>CFBundleIdentifier</key>
@@ -94,7 +94,7 @@ if [[ -x "$release_dir/ytt-tray" ]]; then
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>YtmTuiTray</string>
+  <string>YtmTuiDesktop</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -111,11 +111,11 @@ if [[ -x "$release_dir/ytt-tray" ]]; then
 </plist>
 PLIST
 
-  printf 'APPL????' > "$stage_dir/YtmTuiTray.app/Contents/PkgInfo"
-  chmod +x "$stage_dir/ytt-tray" \
-    "$stage_dir/YtmTuiTray.app/Contents/MacOS/ytt-tray" \
-    "$stage_dir/YtmTuiTray.app/Contents/MacOS/ytt"
-  archive_items+=("ytt-tray" "YtmTuiTray.app")
+  printf 'APPL????' > "$stage_dir/YtmTuiDesktop.app/Contents/PkgInfo"
+  chmod +x "$stage_dir/ytt-desktop" \
+    "$stage_dir/YtmTuiDesktop.app/Contents/MacOS/ytt-desktop" \
+    "$stage_dir/YtmTuiDesktop.app/Contents/MacOS/ytt"
+  archive_items+=("ytt-desktop" "YtmTuiDesktop.app")
 fi
 
 tar -czf "$out_dir/$archive" -C "$stage_dir" "${archive_items[@]}"

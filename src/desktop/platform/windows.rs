@@ -1,4 +1,4 @@
-//! Windows notification-area backend for `ytt-tray`.
+//! Windows notification-area backend for `ytt-desktop`.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -21,8 +21,8 @@ use crate::desktop::status::{self, PollConfig, PollUpdate};
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
 
 const APP_ID: &str = "io.github.ochi.ytm-tui.tray";
-const POLL_THREAD_NAME: &str = "ytt-tray-status";
-const COMMAND_THREAD_NAME: &str = "ytt-tray-command";
+const POLL_THREAD_NAME: &str = "ytt-desktop-status";
+const COMMAND_THREAD_NAME: &str = "ytt-desktop-command";
 const ICO_BYTES: &[u8] = include_bytes!("../../../assets/icons/ytm-tui.ico");
 
 #[derive(Debug)]
@@ -595,7 +595,7 @@ fn make_menu_item(item: &ModelItem, disabled_index: usize) -> MenuItem {
         MenuItem::with_id(action_menu_id(action), &item.label, item.enabled, None)
     } else {
         MenuItem::with_id(
-            MenuId::new(format!("ytt-tray:disabled:{disabled_index}")),
+            MenuId::new(format!("ytt-desktop:disabled:{disabled_index}")),
             &item.label,
             item.enabled,
             None,
@@ -614,7 +614,7 @@ fn make_startup_menu_item(item: &ModelItem) -> CheckMenuItem {
     )
 }
 
-const DAEMON_PRIMARY_ID: &str = "ytt-tray:daemon_primary";
+const DAEMON_PRIMARY_ID: &str = "ytt-desktop:daemon_primary";
 
 fn is_daemon_primary(action: Option<MenuAction>) -> bool {
     matches!(
@@ -637,11 +637,11 @@ fn user_event_from_menu_id(id: &MenuId) -> Option<UserEvent> {
 }
 
 fn action_menu_id(action: MenuAction) -> MenuId {
-    MenuId::new(format!("ytt-tray:{}", action_slug(action)))
+    MenuId::new(format!("ytt-desktop:{}", action_slug(action)))
 }
 
 fn action_from_menu_id(id: &MenuId) -> Option<MenuAction> {
-    let slug = id.as_ref().strip_prefix("ytt-tray:")?;
+    let slug = id.as_ref().strip_prefix("ytt-desktop:")?;
     match slug {
         "play_pause" => Some(MenuAction::PlayPause),
         "next" => Some(MenuAction::Next),
@@ -809,7 +809,7 @@ fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         tracing::info!(
             target: "ytt_tray",
             path = %dir.join("ytm-tui.log").display(),
-            "ytt-tray logging initialized"
+            "ytt-desktop logging initialized"
         );
     }
     guard
@@ -819,10 +819,10 @@ fn install_tray_panic_hook() {
     // panic = "abort" kills the process before tracing-appender's worker thread can
     // flush, so mirror every panic synchronously into a plain file next to the log.
     let panic_log = directories::ProjectDirs::from("", "", "ytm-tui")
-        .map(|dirs| dirs.cache_dir().join("ytt-tray-panic.log"));
+        .map(|dirs| dirs.cache_dir().join("ytt-desktop-panic.log"));
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
-        tracing::error!(target: "ytt_tray", panic = %info, "ytt-tray panic");
+        tracing::error!(target: "ytt_tray", panic = %info, "ytt-desktop panic");
         if let Some(path) = &panic_log
             && let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
@@ -834,7 +834,7 @@ fn install_tray_panic_hook() {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_secs())
                 .unwrap_or_default();
-            let _ = writeln!(file, "[unix {unix_secs}] ytt-tray panic: {info}");
+            let _ = writeln!(file, "[unix {unix_secs}] ytt-desktop panic: {info}");
         }
         previous(info);
     }));
@@ -842,9 +842,9 @@ fn install_tray_panic_hook() {
 
 fn report_error(message: impl std::fmt::Display) {
     let message = message.to_string();
-    tracing::error!(target: "ytt_tray", "ytt-tray: {message}");
+    tracing::error!(target: "ytt_tray", "ytt-desktop: {message}");
     #[cfg(debug_assertions)]
-    eprintln!("ytt-tray: {message}");
+    eprintln!("ytt-desktop: {message}");
 }
 
 fn app_icon() -> Result<Icon, Box<dyn Error>> {

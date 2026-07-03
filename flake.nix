@@ -58,10 +58,63 @@
               platforms = systems;
             };
           };
+          # ---- Full GUI desktop app (darwin-only; docs/gui/04 §6) ----
+          # tao/wry are non-target-gated optional deps, so building this on Linux would pull
+          # webkit2gtk for a platform D9 excludes; the output is only exposed on darwin below.
+          desktopSrc = lib.cleanSourceWith {
+            src = ./.;
+            filter = path: type:
+              let base = baseNameOf path;
+              in base != "target" && base != "result" && lib.cleanSourceFilter path type;
+          };
+          # Offline, lockfile-driven build of gui/dist. REGENERATE npmDepsHash on any
+          # gui/package-lock.json change: `nix build .#ytm-tui-desktop` fails and prints the
+          # correct hash to paste here (docs/gui/04 §9 risk 2).
+          guiDist = pkgs.buildNpmPackage {
+            pname = "ytm-tui-gui";
+            version = "1.5.9";
+            src = ./gui;
+            npmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            dontNpmInstall = true;
+            installPhase = ''
+              runHook preInstall
+              cp -r dist "$out"
+              runHook postInstall
+            '';
+          };
+          ytm-tui-desktop = pkgs.rustPlatform.buildRustPackage {
+            pname = "ytm-tui-desktop";
+            version = "1.5.9"; # keep in sync with Cargo.toml + gui/package.json
+            src = desktopSrc;
+            cargoLock.lockFile = ./Cargo.lock;
+            nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config ];
+            buildInputs = lib.optionals pkgs.stdenv.isLinux [ pkgs.openssl ];
+            # Embed the prebuilt dist and require it (no stub page in a shipped binary).
+            YTM_TUI_GUI_DIST = guiDist;
+            YTM_TUI_REQUIRE_DIST = "1";
+            cargoBuildFlags = [ "--features" "desktop" "--bin" "ytt-desktop" ];
+            # Unit tests run via `cargo test` in CI/local; the feature build is the gate here.
+            doCheck = false;
+            postFixup = ''
+              wrapProgram $out/bin/ytt-desktop \
+                --prefix PATH : ${lib.makeBinPath [ pkgs.mpv pkgs.ffmpeg ]} \
+                --suffix PATH : ${lib.makeBinPath [ pkgs.yt-dlp ]}
+            '';
+            meta = {
+              description = "The full graphical desktop app for ytm-tui (macOS + Windows; this output is macOS).";
+              homepage = "https://github.com/Ochichan/ytm-tui";
+              license = lib.licenses.mit;
+              mainProgram = "ytt-desktop";
+              platforms = lib.platforms.darwin;
+            };
+          };
         in
         {
           default = ytm-tui;
           ytm-tui = ytm-tui;
+          # Opt-in: `nix build .#ytm-tui-desktop` (darwin only — see the note above).
+        } // lib.optionalAttrs pkgs.stdenv.isDarwin {
+          ytm-tui-desktop = ytm-tui-desktop;
         });
 
       # `nix run github:Ochichan/ytm-tui` → launches ytt with mpv/ffmpeg/yt-dlp wrapped in.
@@ -85,6 +138,8 @@
             pkgs.mpv
             pkgs.yt-dlp
             pkgs.ffmpeg
+            # Frontend build for the desktop GUI (gui/): Vite + Svelte (docs/gui/04 §6).
+            pkgs.nodejs_22
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.openssl ];
         };
       });
