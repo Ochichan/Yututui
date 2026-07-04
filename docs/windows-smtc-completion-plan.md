@@ -406,7 +406,11 @@ the QA script) — and adopt whichever works before release.
 - [x] Idempotent registration command (doctor family)
 - [x] install.ps1 step + scoop `post_install`
 - [x] .ico shipped in Windows zip
-- [ ] Phase-3 decision: registry-only vs .lnk fallback → adopt + record here
+- [x] Phase-3 decision: registry-only vs .lnk fallback → **adopt .lnk** (on-HW QA
+  2026-07-04 proved the HKCU key alone shows "Unknown app"; the AUMID-stamped
+  Start-Menu shortcut fixes the flyout). Landed in
+  `src/media/identity.rs::write_start_menu_shortcut` (called from
+  `register_cli` alongside the registry write); both are kept.
 
 ## 5. Verification Tooling
 

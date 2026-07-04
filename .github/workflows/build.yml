@@ -448,10 +448,10 @@ jobs:
             }
           }
           $shortcut = @($manifest.shortcuts) | Where-Object {
-            $_[0] -eq "ytt-desktop.exe" -and $_[1] -eq "YtmTui Desktop"
+            $_[0] -eq "ytt-desktop.exe" -and $_[1] -eq "YtmTui Tray"
           }
           if (-not $shortcut) {
-            throw "Scoop manifest is missing the YtmTui Desktop shortcut"
+            throw "Scoop manifest is missing the YtmTui Tray shortcut"
           }
           if (-not $manifest.post_install) {
             throw "Scoop manifest is missing the media-identity post_install"

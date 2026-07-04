@@ -132,8 +132,12 @@ libc = "0.2"
 # Storage_Streams/Foundation trio is the session + thumbnail surface, Win32_System_WinRT
 # is `GetForWindow` interop + RoInitialize, and the UI/Gdi/LibraryLoader features are
 # just the hidden top-level window SMTC requires (WNDCLASSW lives behind Graphics_Gdi).
+# The Shell/Com quartet (Win32_UI_Shell{,_PropertiesSystem}, Win32_System_Com{,_StructuredStorage})
+# is classic COM for the AUMID-stamped Start-Menu shortcut the media flyout resolves
+# our name+icon from (`src/media/identity.rs::write_start_menu_shortcut` — IShellLinkW +
+# IPropertyStore(PKEY_AppUserModel_ID) + IPersistFile).
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", default-features = false, features = ["Media", "Storage_Streams", "Foundation", "Win32_Foundation", "Win32_System_WinRT", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi"] }
+windows = { version = "0.62", default-features = false, features = ["Media", "Storage_Streams", "Foundation", "Win32_Foundation", "Win32_System_WinRT", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

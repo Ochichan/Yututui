@@ -72,7 +72,8 @@ fn print_help() {
     println!("Options:");
     println!("      --background Run the tray companion from a startup entry (tray only)");
     println!("      --main-window");
-    println!("                   Open the main window (default when launched from the app icon)");
+    println!("                   Open the main window (default when launched from the app icon;");
+    println!("                   macOS only — no-op on Windows until the M0 sign-off)");
     println!("      --install-startup");
     println!("                   Enable login startup for ytt-desktop");
     println!("      --uninstall-startup");

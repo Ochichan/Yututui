@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | 
 ```
 
 > `curl | bash` とソースビルドは `ytt` **だけ**を入れます。補助ツールは自分で入れるか（`brew install mpv yt-dlp ffmpeg`、`sudo apt install mpv yt-dlp ffmpeg`、`sudo pacman -S mpv yt-dlp ffmpeg`）— インストール後に `ytt doctor` で何が足りないか確認してください。
-> Windows では Scoop が `ytt-tray.exe` と **YtmTui Tray** ショートカットも入れます — 通知領域のミニプレイヤーです（[詳細は下](#メディアキー--os-統合)）。ターミナルで動いている `ytt` セッションのタスクバーボタンは、これまでどおり Windows Terminal のものです。
+> Windows では Scoop が `ytt-desktop.exe` と **YtmTui Tray** ショートカットも入れます — 通知領域のミニプレイヤーです（[詳細は下](#メディアキー--os-統合)）。ターミナルで動いている `ytt` セッションのタスクバーボタンは、これまでどおり Windows Terminal のものです。
 > macOS でも Homebrew とリリースアーカイブに `ytt-tray` が同梱されます — 同じ相棒がメニューバーに住み着きます（v1.5.8 より後のリリース）。
 > トレイのスタートアップ登録はどちらも任意です。有効化は `ytt-tray --install-startup`、解除は `ytt-tray --uninstall-startup`。
 > バックグラウンド再生: `ytt daemon start --resume` で保存済みキューから headless 音楽デーモンを起動し、`ytt -r status`、`ytt -r pp`、`ytt -r next`、`ytt -r play "lofi"`、`ytt daemon stop` で操作します。
@@ -158,7 +158,7 @@ ytt daemon stop             # デーモン停止 + mpv の後始末
 `ytt` は OS が音楽を表示するすべての場所に現れます — 初期設定でオン、設定 → 再生 → *OS メディアコントロール* で切れます。TUI でもデーモンでも同じように動きます。
 
 - **macOS** — コントロールセンターの本物の Now Playing カード: アートワーク、ちゃんと動くシークバー、次へ/前へ、Like ボタンまで。AirPods の軸をつまむ操作も期待どおりに効きます。さらに **YtmTui Tray** の相棒がメニューバーに（`ytt-tray`、brew とリリースアーカイブに同梱）— Windows と同じミニプレイヤーとメニューが、時計の隣のワンクリックに。
-- **Windows** — アートワークとシーク付きの SMTC メディアオーバーレイ、そして任意の **YtmTui Tray** 相棒（Scoop が入れます）: 左クリックで Now / Queue / Stream / Tune タブのミニプレイヤー、右クリックでフルメニュー — デーモンの起動/停止、前回セッションの再開、TUI を開く。ログイン時の自動起動は `ytt-tray --install-startup`（任意）。インストーラーはアプリの識別情報も登録するのでフライアウトには **YtmTui** と表示されます — もし「不明なアプリ」と出たら `ytt register-media-identity` を一度実行してください。
+- **Windows** — アートワークとシーク付きの SMTC メディアオーバーレイ、そして任意の **YtmTui Tray** 相棒（Scoop が入れます）: 左クリックで Now / Queue / Stream / Tune タブのミニプレイヤー、右クリックでフルメニュー — デーモンの起動/停止、前回セッションの再開、TUI を開く。ログイン時の自動起動は `ytt-desktop --install-startup`（任意）。インストーラーはアプリの識別情報も登録するのでフライアウトには **YtmTui** と表示されます — もし「不明なアプリ」と出たら `ytt register-media-identity` を一度実行してください。
 - **Linux** — 堂々たる MPRIS プレイヤー（`org.mpris.MediaPlayer2.ytmtui`）: playerctl、GNOME/KDE のメディアウィジェット、waybar が全部そのまま認識します。
 
 ---

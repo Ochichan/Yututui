@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | 
 ```
 
 > The `curl | bash` and from-source paths install **only** `ytt`. Install the helpers yourself (`brew install mpv yt-dlp ffmpeg`, `sudo apt install mpv yt-dlp ffmpeg`, `sudo pacman -S mpv yt-dlp ffmpeg`) — or just run `ytt doctor` afterward to see what's missing.
-> On Windows, Scoop also installs `ytt-tray.exe` and a **YtmTui Tray** shortcut — the notification-area mini player ([details below](#media-keys--os-integration)). A terminal-hosted `ytt` session still belongs to Windows Terminal's taskbar button.
+> On Windows, Scoop also installs `ytt-desktop.exe` and a **YtmTui Tray** shortcut — the notification-area mini player ([details below](#media-keys--os-integration)). A terminal-hosted `ytt` session still belongs to Windows Terminal's taskbar button.
 > On macOS, Homebrew and the release archive ship `ytt-tray` too — the same companion, living in your menu bar (releases after v1.5.8).
 > Tray startup is opt-in on both: `ytt-tray --install-startup` to enable, `ytt-tray --uninstall-startup` to remove.
 > Background playback: `ytt daemon start --resume` starts the headless music daemon from your saved queue; control it with `ytt -r status`, `ytt -r pp`, `ytt -r next`, `ytt -r play "lofi"`, and `ytt daemon stop`.
@@ -158,7 +158,7 @@ Launching `ytt` twice won't start a second player fighting over your speakers �
 `ytt` shows up wherever your OS shows music — on by default, toggle under Settings → Playback → *OS media controls*. Works from the TUI and the daemon alike.
 
 - **macOS** — the real Now Playing card in Control Center: artwork, a working scrubber, next/previous, and a Like button. Play/pause from your AirPods' stem does what it should. And the **YtmTui Tray** companion rides the menu bar (`ytt-tray`, included with brew and the release archive) — the same mini player and menu as Windows, one click from the clock.
-- **Windows** — the SMTC media overlay with artwork and seek, plus the optional **YtmTui Tray** companion (installed by Scoop): left-click for a mini player with Now / Queue / Stream / Tune tabs, right-click for the full menu — start/stop the daemon, resume the last session, open the TUI. `ytt-tray --install-startup` makes it start at login; it's opt-in. Installers also register the app identity so the flyout says **YtmTui** — if it ever shows "Unknown app", run `ytt register-media-identity` once.
+- **Windows** — the SMTC media overlay with artwork and seek, plus the optional **YtmTui Tray** companion (installed by Scoop): left-click for a mini player with Now / Queue / Stream / Tune tabs, right-click for the full menu — start/stop the daemon, resume the last session, open the TUI. `ytt-desktop --install-startup` makes it start at login; it's opt-in. Installers also register the app identity so the flyout says **YtmTui** — if it ever shows "Unknown app", run `ytt register-media-identity` once.
 - **Linux** — a first-class MPRIS player (`org.mpris.MediaPlayer2.ytmtui`): playerctl, GNOME/KDE media widgets, and waybar all just work.
 
 ---

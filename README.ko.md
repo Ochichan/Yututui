@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | 
 ```
 
 > `curl | bash`와 소스 빌드 방식은 `ytt`만 설치합니다. 보조 프로그램은 직접 설치하거나(`brew install mpv yt-dlp ffmpeg`, `sudo apt install mpv yt-dlp ffmpeg`, `sudo pacman -S mpv yt-dlp ffmpeg`) — 설치 후 `ytt doctor`로 뭐가 빠졌는지 확인하세요.
-> Windows에서는 Scoop이 `ytt-tray.exe`와 **YtmTui Tray** 바로 가기도 설치합니다 — 알림 영역의 미니 플레이어예요([아래 상세](#미디어-키--os-통합)). 터미널에서 실행 중인 `ytt` 세션의 작업 표시줄 버튼은 여전히 Windows Terminal에 속합니다.
+> Windows에서는 Scoop이 `ytt-desktop.exe`와 **YtmTui Tray** 바로 가기도 설치합니다 — 알림 영역의 미니 플레이어예요([아래 상세](#미디어-키--os-통합)). 터미널에서 실행 중인 `ytt` 세션의 작업 표시줄 버튼은 여전히 Windows Terminal에 속합니다.
 > macOS에서도 Homebrew와 릴리스 아카이브에 `ytt-tray`가 함께 들어갑니다 — 같은 동반 앱이 메뉴 바에 상주해요(v1.5.8 이후 릴리스).
 > 트레이 시작 프로그램 등록은 양쪽 모두 선택 사항입니다. 켜려면 `ytt-tray --install-startup`, 제거하려면 `ytt-tray --uninstall-startup`.
 > 백그라운드 재생: `ytt daemon start --resume`으로 저장된 큐를 headless 음악 데몬에서 시작하고, `ytt -r status`, `ytt -r pp`, `ytt -r next`, `ytt -r play "lofi"`, `ytt daemon stop`으로 제어하세요.
@@ -158,7 +158,7 @@ ytt daemon stop             # 데몬 중지 + mpv 정리
 `ytt` 는 OS가 음악을 보여주는 모든 곳에 나타납니다 — 기본으로 켜져 있고, 설정 → 재생 → *OS 미디어 컨트롤*에서 끌 수 있어요. TUI든 데몬이든 똑같이 동작합니다.
 
 - **macOS** — Control Center의 진짜 Now Playing 카드: 앨범 아트, 실제로 움직이는 시크바, 다음/이전, 좋아요 버튼까지. AirPods 꼭지 클릭도 기대한 대로 동작합니다. 그리고 **YtmTui Tray** 동반 앱이 메뉴 바에 상주해요(`ytt-tray`, brew와 릴리스 아카이브에 포함) — Windows와 같은 미니 플레이어와 메뉴가 시계 옆 한 클릭 거리에.
-- **Windows** — 앨범 아트와 시크가 있는 SMTC 미디어 오버레이, 그리고 선택형 **YtmTui Tray** 동반 앱(Scoop이 설치): 왼쪽 클릭이면 Now / Queue / Stream / Tune 탭의 미니 플레이어, 오른쪽 클릭이면 전체 메뉴 — 데몬 시작/중지, 마지막 세션 이어듣기, TUI 열기. 로그인 시 자동 실행은 `ytt-tray --install-startup`(선택 사항). 설치 스크립트가 앱 아이덴티티도 등록해 플라이아웃에 **YtmTui**로 표시됩니다 — 혹시 "알 수 없는 앱"으로 나오면 `ytt register-media-identity`를 한 번 실행하세요.
+- **Windows** — 앨범 아트와 시크가 있는 SMTC 미디어 오버레이, 그리고 선택형 **YtmTui Tray** 동반 앱(Scoop이 설치): 왼쪽 클릭이면 Now / Queue / Stream / Tune 탭의 미니 플레이어, 오른쪽 클릭이면 전체 메뉴 — 데몬 시작/중지, 마지막 세션 이어듣기, TUI 열기. 로그인 시 자동 실행은 `ytt-desktop --install-startup`(선택 사항). 설치 스크립트가 앱 아이덴티티도 등록해 플라이아웃에 **YtmTui**로 표시됩니다 — 혹시 "알 수 없는 앱"으로 나오면 `ytt register-media-identity`를 한 번 실행하세요.
 - **Linux** — 당당한 MPRIS 플레이어(`org.mpris.MediaPlayer2.ytmtui`): playerctl, GNOME/KDE 미디어 위젯, waybar가 전부 그냥 인식합니다.
 
 ---
