@@ -31,6 +31,49 @@ pub fn truncate_to_width(s: &str, max: usize) -> String {
     out
 }
 
+/// Word-wrap `text` to at most `width` display cells per line (CJK-aware). Splits on
+/// whitespace, collapses runs of whitespace to a single break, and hard-breaks a single
+/// word longer than `width` at the cell boundary so nothing ever overflows. `width` is
+/// floored at 1. Empty / whitespace-only input yields a single empty line.
+pub fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize;
+    for word in text.split_whitespace() {
+        let word_w = UnicodeWidthStr::width(word);
+        if cur.is_empty() {
+            push_word(&mut out, &mut cur, &mut cur_w, word, width);
+        } else if cur_w + 1 + word_w <= width {
+            cur.push(' ');
+            cur.push_str(word);
+            cur_w += 1 + word_w;
+        } else {
+            out.push(std::mem::take(&mut cur));
+            cur_w = 0;
+            push_word(&mut out, &mut cur, &mut cur_w, word, width);
+        }
+    }
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Append `word` to the current line, hard-breaking it across lines when it alone exceeds
+/// `width` (never splitting a wide character).
+fn push_word(out: &mut Vec<String>, cur: &mut String, cur_w: &mut usize, word: &str, width: usize) {
+    for ch in word.chars() {
+        let ch_w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if *cur_w > 0 && *cur_w + ch_w > width {
+            out.push(std::mem::take(cur));
+            *cur_w = 0;
+        }
+        cur.push(ch);
+        *cur_w += ch_w;
+    }
+}
+
 /// Truncate an owned string in place when needed, avoiding a second allocation for the common
 /// already-fitting path.
 pub fn truncate_owned_to_width(mut s: String, max: usize) -> String {
@@ -80,5 +123,38 @@ mod tests {
     fn truncate_owned_reuses_fitting_string() {
         assert_eq!(truncate_owned_to_width("abcdef".to_owned(), 6), "abcdef");
         assert_eq!(truncate_owned_to_width("가나다".to_owned(), 5), "가나");
+    }
+
+    #[test]
+    fn wrap_breaks_on_word_boundaries() {
+        // Wraps between words, packing as many as fit in `width`.
+        assert_eq!(
+            wrap_to_width("the quick brown fox", 10),
+            vec!["the quick", "brown fox"]
+        );
+        // No line ever exceeds the width.
+        for line in wrap_to_width("the quick brown fox jumps over", 12) {
+            assert!(UnicodeWidthStr::width(line.as_str()) <= 12);
+        }
+    }
+
+    #[test]
+    fn wrap_hard_breaks_an_overlong_word() {
+        // A single word longer than the width splits at the cell boundary.
+        assert_eq!(wrap_to_width("supercalifragilistic", 5), vec![
+            "super", "calif", "ragil", "istic"
+        ]);
+    }
+
+    #[test]
+    fn wrap_measures_display_width_for_cjk() {
+        // Each Korean syllable is 2 cells, so 3 fit in a width of 6, not 5.
+        let wrapped = wrap_to_width("가나다라마", 6);
+        assert_eq!(wrapped, vec!["가나다", "라마"]);
+        for line in &wrapped {
+            assert!(UnicodeWidthStr::width(line.as_str()) <= 6);
+        }
+        // Empty input still yields one (empty) line.
+        assert_eq!(wrap_to_width("", 8), vec![String::new()]);
     }
 }

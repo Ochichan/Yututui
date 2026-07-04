@@ -21,6 +21,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         area,
         t!(" Help · keybindings ", " 도움말 · 단축키 "),
         (80, 80),
+        SheetStyle::Compact,
         help_groups(app),
     );
 }
@@ -33,9 +34,28 @@ pub fn render_mouse(frame: &mut Frame, app: &App, area: Rect) {
         area,
         t!(" Help · mouse ", " 도움말 · 마우스 "),
         (84, 82),
+        SheetStyle::Roomy,
         mouse_help_groups(),
     );
 }
+
+/// How each row of a cheat-sheet is laid out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SheetStyle {
+    /// One line per row — a right-aligned key column then a short label. Used by the
+    /// keybindings sheet, whose right-hand labels are short and always fit.
+    Compact,
+    /// Each item stacked and spaced — the gesture label bold on its own line, the
+    /// description word-wrapped and indented on the line(s) below, with a blank line
+    /// between items. Used by the mouse sheet, whose descriptions are full sentences.
+    Roomy,
+}
+
+/// Left indent of a Roomy gesture label; its description sits two cells further in.
+const LABEL_INDENT: usize = 2;
+const DESC_INDENT: usize = 4;
+/// Gap kept between the two columns so wrapped text never collides across the seam.
+const COL_GUTTER: usize = 2;
 
 /// Shared cheat-sheet popup. Two columns when there's room (the whole list fits without
 /// scrolling on most terminals); on narrow grids (small terminals, or text zoom shrinking
@@ -47,6 +67,7 @@ fn render_sheet(
     area: Rect,
     title: &str,
     (pct_w, pct_h): (u16, u16),
+    style: SheetStyle,
     groups: Vec<(String, Vec<(String, String)>)>,
 ) {
     // Two ~38-col columns need ~76 usable columns; below that, one column reads better
@@ -66,12 +87,37 @@ fn render_sheet(
         .style(crate::ui::popup_style(app, R::TextPrimary));
     let inner = block.inner(popup);
 
-    let columns: Vec<Vec<Line<'static>>> = if narrow {
-        vec![flat_lines(app, groups)]
+    // Column rects first: wrapping needs the real column width before lines are built.
+    let two_col = !narrow;
+    let rects: Vec<Rect> = if two_col {
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(inner)
+            .to_vec()
     } else {
-        let (left, right) = split_groups(app, groups);
-        vec![left, right]
+        vec![inner]
     };
+    // Wrap to the narrower column, minus a gutter so the two columns never touch.
+    let gutter = if two_col { COL_GUTTER } else { 0 };
+    let text_w = rects
+        .iter()
+        .map(|r| usize::from(r.width))
+        .min()
+        .unwrap_or(0)
+        .saturating_sub(gutter);
+
+    // Build one line-block per group (pre-wrapped, so `len` below counts real rows and the
+    // existing scroll math keeps working), then place whole groups into columns.
+    let blocks: Vec<Vec<Line<'static>>> = groups
+        .into_iter()
+        .map(|(gtitle, rows)| build_group(app, style, &gtitle, &rows, text_w))
+        .collect();
+    let columns: Vec<Vec<Line<'static>>> = if two_col {
+        let (left, right) = split_blocks(blocks);
+        vec![left, right]
+    } else {
+        vec![blocks.into_iter().flatten().collect()]
+    };
+
     let len = columns.iter().map(Vec::len).max().unwrap_or(0);
     let offset = app.bridges.help_scroll.view(inner.height, len) as u16;
 
@@ -88,13 +134,6 @@ fn render_sheet(
     };
     frame.render_widget(block, popup);
 
-    let rects: Vec<Rect> = if columns.len() == 2 {
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(inner)
-            .to_vec()
-    } else {
-        vec![inner]
-    };
     for (lines, rect) in columns.into_iter().zip(rects) {
         frame.render_widget(
             Paragraph::new(lines)
@@ -107,62 +146,99 @@ fn render_sheet(
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
-/// All groups as one flowing column (the narrow-grid layout).
-fn flat_lines(app: &App, groups: Vec<(String, Vec<(String, String)>)>) -> Vec<Line<'static>> {
+/// Build the lines for one cheat-sheet group, wrapped to `text_w` display cells. The header
+/// is always a bold group title; the row layout follows `style`.
+fn build_group(
+    app: &App,
+    style: SheetStyle,
+    title: &str,
+    rows: &[(String, String)],
+    text_w: usize,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
-    for (title, rows) in groups {
-        lines.push(Line::from(Span::styled(
-            title,
-            crate::ui::popup_style(app, R::HelpGroup).add_modifier(Modifier::BOLD),
-        )));
-        for (key, label) in &rows {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{key:>8}  "),
-                    crate::ui::popup_style(app, R::HelpKey),
-                ),
-                Span::styled(label.to_owned(), crate::ui::popup_style(app, R::HelpAction)),
-            ]));
+    lines.push(Line::from(Span::styled(
+        title.to_owned(),
+        crate::ui::popup_style(app, R::HelpGroup).add_modifier(Modifier::BOLD),
+    )));
+
+    match style {
+        SheetStyle::Compact => {
+            for (key, label) in rows {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{key:>8}  "),
+                        crate::ui::popup_style(app, R::HelpKey),
+                    ),
+                    Span::styled(label.to_owned(), crate::ui::popup_style(app, R::HelpAction)),
+                ]));
+            }
+            // A little padding after each group so the sections breathe.
+            lines.push(Line::from(""));
         }
-        lines.push(Line::from(""));
+        SheetStyle::Roomy => {
+            let key_style = crate::ui::popup_style(app, R::HelpKey).add_modifier(Modifier::BOLD);
+            let desc_style = crate::ui::popup_style(app, R::HelpAction);
+            // A blank line under the header, then each item stacked and spaced.
+            lines.push(Line::from(""));
+            for (label, desc) in rows {
+                // Gesture label on its own line; wrap it too on the rare over-long label,
+                // hanging the continuation two cells past the label indent.
+                let label_w = text_w.saturating_sub(LABEL_INDENT);
+                for (i, seg) in crate::ui::text::wrap_to_width(label, label_w)
+                    .into_iter()
+                    .enumerate()
+                {
+                    let indent = if i == 0 { LABEL_INDENT } else { LABEL_INDENT + 2 };
+                    lines.push(Line::from(Span::styled(
+                        format!("{}{seg}", " ".repeat(indent)),
+                        key_style,
+                    )));
+                }
+                // Description word-wrapped and indented under the label.
+                let desc_w = text_w.saturating_sub(DESC_INDENT);
+                for seg in crate::ui::text::wrap_to_width(desc, desc_w) {
+                    lines.push(Line::from(Span::styled(
+                        format!("{}{seg}", " ".repeat(DESC_INDENT)),
+                        desc_style,
+                    )));
+                }
+                // One blank line between items.
+                lines.push(Line::from(""));
+            }
+        }
     }
     lines
 }
 
-/// Split the cheat-sheet lines across two columns at a group boundary.
-fn split_groups(
-    app: &App,
-    groups: Vec<(String, Vec<(String, String)>)>,
-) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-    // Each group occupies its header + bindings + one trailing blank as padding.
-    let total: usize = groups.iter().map(|(_, rows)| rows.len() + 2).sum();
+/// Place whole group-blocks into two columns, choosing the boundary that best balances the
+/// two columns' heights (whole groups stay intact). Mirrors `settings.rs::render_keys`.
+fn split_blocks(blocks: Vec<Vec<Line<'static>>>) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    let heights: Vec<usize> = blocks.iter().map(Vec::len).collect();
+    let total: usize = heights.iter().sum();
+    let n = heights.len();
+
+    // `best_k` = how many leading groups go in the left column. Try 1..n so neither column
+    // is empty; pick the split that minimizes the height difference.
+    let mut best_k = 1usize;
+    let mut best_diff = usize::MAX;
+    let mut left_sum = 0usize;
+    for k in 1..n {
+        left_sum += heights[k - 1];
+        let diff = left_sum.abs_diff(total - left_sum);
+        if diff < best_diff {
+            best_diff = diff;
+            best_k = k;
+        }
+    }
 
     let mut left: Vec<Line> = Vec::new();
     let mut right: Vec<Line> = Vec::new();
-    let mut placed = 0usize;
-    for (title, rows) in groups {
-        // Once the left column holds roughly half the rows, spill into the right one.
-        let col = if placed * 2 < total {
-            &mut left
+    for (i, block) in blocks.into_iter().enumerate() {
+        if i < best_k {
+            left.extend(block);
         } else {
-            &mut right
-        };
-        col.push(Line::from(Span::styled(
-            title,
-            crate::ui::popup_style(app, R::HelpGroup).add_modifier(Modifier::BOLD),
-        )));
-        for (key, label) in &rows {
-            col.push(Line::from(vec![
-                Span::styled(
-                    format!("{key:>8}  "),
-                    crate::ui::popup_style(app, R::HelpKey),
-                ),
-                Span::styled(label.to_owned(), crate::ui::popup_style(app, R::HelpAction)),
-            ]));
+            right.extend(block);
         }
-        // A little padding after each group so the sections breathe.
-        col.push(Line::from(""));
-        placed += rows.len() + 2;
     }
     (left, right)
 }
@@ -474,6 +550,62 @@ fn centered(area: Rect, pct_w: u16, pct_h: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Flatten a rendered line's spans back into plain text for width/prefix assertions.
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|sp| sp.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn roomy_group_wraps_long_description_and_spaces_items() {
+        use unicode_width::UnicodeWidthStr;
+        let _guard = crate::i18n::lock_for_test();
+        let app = App::new(100);
+        let rows = vec![
+            (
+                "Ctrl + wheel".to_owned(),
+                "Zoom the text like a browser (also Ctrl+-/=; kitty, Windows Terminal, …)."
+                    .to_owned(),
+            ),
+            ("Seek bar".to_owned(), "Click a position to seek there.".to_owned()),
+        ];
+        let text_w = 28;
+        let lines = build_group(&app, SheetStyle::Roomy, "Player", &rows, text_w);
+
+        // Nothing overflows the wrap width (display cells, not scalar count).
+        for line in &lines {
+            assert!(
+                UnicodeWidthStr::width(line_text(line).as_str()) <= text_w,
+                "line exceeds width: {:?}",
+                line_text(line)
+            );
+        }
+        // The long description wrapped onto more than one indented line.
+        let desc_lines = lines
+            .iter()
+            .filter(|l| line_text(l).starts_with("    ") && !line_text(l).trim().is_empty())
+            .count();
+        assert!(desc_lines > rows.len(), "descriptions should wrap: {desc_lines} lines");
+        // A blank under the header plus one after each of the two items.
+        let blanks = lines
+            .iter()
+            .filter(|l| line_text(l).trim().is_empty())
+            .count();
+        assert_eq!(blanks, 3, "header spacer + one blank between each item");
+    }
+
+    #[test]
+    fn compact_group_keeps_one_line_rows() {
+        let _guard = crate::i18n::lock_for_test();
+        let app = App::new(100);
+        let rows = vec![("Space".to_owned(), "Play / pause".to_owned())];
+        let lines = build_group(&app, SheetStyle::Compact, "Player", &rows, 40);
+        // Header, one packed key+label row, one trailing blank — the pre-existing shape.
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[0]), "Player");
+        assert_eq!(line_text(&lines[1]), "   Space  Play / pause");
+        assert_eq!(line_text(&lines[2]), "");
+    }
 
     #[test]
     fn search_enter_rows_are_listed_as_fixed_help_rows() {
