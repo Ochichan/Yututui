@@ -76,7 +76,31 @@ END
     embed_resource::compile(&rc, embed_resource::NONE)
         .manifest_required()
         .expect("failed to embed Windows icon resource");
+
+    // PerMonitorV2 DPI manifest, scoped to the `ytt-desktop` bin only (docs/gui/03 §7):
+    // WebView2 renders crisply on mixed-DPI setups. Passed as a per-bin LINKER input —
+    // MSVC merges every /MANIFESTINPUT with rustc's default manifest — because a
+    // crate-wide `1 24` resource would leak into `ytt.exe` and risk duplicate-manifest
+    // link errors.
+    let manifest = out_dir.join("ytt-desktop.manifest");
+    std::fs::write(&manifest, DPI_MANIFEST).expect("failed to write ytt-desktop manifest");
+    println!("cargo:rustc-link-arg-bin=ytt-desktop=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg-bin=ytt-desktop=/MANIFESTINPUT:{}",
+        manifest.display()
+    );
 }
+
+const DPI_MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>
+"#;
 
 /// Emit `OUT_DIR/gui_assets.rs`: a static table of the built frontend dist, stored **raw**
 /// (no gzip — WKURLSchemeHandler bypasses content-decoding on macOS; docs/gui/04 §3.1).
