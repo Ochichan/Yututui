@@ -308,6 +308,18 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
                 let effects = engine.handle_player_event(event).await;
                 dispatch_engine_effects(&api, effects);
             }
+            // GUI-search answers are owner-lane fan-out, not engine state: index the
+            // rows for play_tracks/enqueue_tracks, then push on the `search` topic
+            // (same loop-level role as `handle_subscribe` above).
+            DaemonEvent::Api(crate::api::ApiEvent::GuiSearchCompleted {
+                ticket,
+                query,
+                source,
+                groups,
+            }) => {
+                engine.index_gui_search(&groups);
+                publisher.search_completed(ticket, &query, source, &groups);
+            }
             DaemonEvent::Api(event) => {
                 let effects = engine.handle_api_event(event).await;
                 dispatch_engine_effects(&api, effects);
@@ -507,6 +519,12 @@ fn dispatch_engine_effects(api: &crate::api::ApiHandle, effects: Vec<engine::Eng
                 mode,
                 config,
             } => api.streaming_preflight(seed_video_id, picks, fallback, mode, config),
+            engine::EngineEffect::GuiSearch {
+                ticket,
+                query,
+                source,
+                config,
+            } => api.gui_search(ticket, query, source, config),
         }
     }
 }

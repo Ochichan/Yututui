@@ -199,6 +199,31 @@ pub enum PushEvent {
     OwnerChanged { mode: InstanceMode },
     /// `system` topic: the owner is shutting down; a `Goodbye` follows.
     ShuttingDown,
+    /// `search` topic: one completed [`RunSearch`](super::RemoteCommand::RunSearch),
+    /// grouped per concrete catalog. `ticket` echoes the request so the frontend can
+    /// drop stale replies; `source` echoes the requested scope (may be `all`).
+    SearchCompleted {
+        #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+        ticket: u64,
+        query: String,
+        source: crate::search_source::SearchSource,
+        groups: Vec<SearchGroup>,
+    },
+}
+
+/// One catalog's slice of a completed search: a concrete source (never `all`), its
+/// result rows, and a per-source failure string surfaced as a chip (e.g. "jamendo:
+/// no client id") — `None` on success.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchGroup {
+    pub source: crate::search_source::SearchSource,
+    pub tracks: Vec<super::model::TrackModel>,
+    pub error: Option<String>,
 }
 
 #[cfg(test)]

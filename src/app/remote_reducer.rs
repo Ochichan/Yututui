@@ -35,6 +35,14 @@ impl App {
             RemoteCommand::Play { .. } | RemoteCommand::Enqueue { .. } => {
                 (RemoteResponse::err("daemon_required"), Vec::new())
             }
+            // GUI-session verbs (docs/gui/02): like Play/Enqueue, searches need the api
+            // actor lane the standalone TUI reserves for its own Search screen — the GUI
+            // is expected to talk to a daemon owner.
+            RemoteCommand::RunSearch { .. }
+            | RemoteCommand::PlayTracks { .. }
+            | RemoteCommand::EnqueueTracks { .. } => {
+                (RemoteResponse::err("daemon_required"), Vec::new())
+            }
             RemoteCommand::VolumeUp => {
                 let cmds = self.on_player_action(Action::VolUp);
                 (RemoteResponse::ok(self.vol_line()), cmds)

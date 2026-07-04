@@ -55,6 +55,24 @@ pub enum RemoteCommand {
     ResumeSession,
     Status,
     Quit,
+    /// GUI search (additive, v8 sessions): run a grouped multi-catalog search and push
+    /// the outcome on the `search` topic as
+    /// [`PushEvent::SearchCompleted`](super::PushEvent::SearchCompleted), keyed by
+    /// `ticket`. Fire-and-forget: the reply only acknowledges the dispatch.
+    RunSearch {
+        ticket: u64,
+        query: String,
+        source: SearchSource,
+    },
+    /// Play these exact rows now: first replaces the current track, the rest queue up
+    /// next. Ids come from rows a prior search/library push handed the client.
+    PlayTracks {
+        video_ids: Vec<String>,
+    },
+    /// Append these exact rows to the queue (honoring the enqueue-next setting).
+    EnqueueTracks {
+        video_ids: Vec<String>,
+    },
 }
 
 /// A single persisted/live setting mutation from companion surfaces such as the tray panel.

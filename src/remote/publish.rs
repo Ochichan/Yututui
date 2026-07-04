@@ -173,6 +173,34 @@ impl Publisher {
         );
     }
 
+    /// Fan a completed GUI search out on the `search` topic (one-off event, not a
+    /// snapshot — the host loop calls this straight from the api-answer lane).
+    pub fn search_completed(
+        &self,
+        ticket: u64,
+        query: &str,
+        source: crate::search_source::SearchSource,
+        groups: &[crate::api::GuiSearchGroup],
+    ) {
+        if !self.hub.any_subscribed(Topic::Search) {
+            return;
+        }
+        let payload = event_payload(&PushEvent::SearchCompleted {
+            ticket,
+            query: query.to_string(),
+            source,
+            groups: groups
+                .iter()
+                .map(|group| super::proto::SearchGroup {
+                    source: group.source,
+                    tracks: group.songs.iter().map(track_model).collect(),
+                    error: group.error.clone(),
+                })
+                .collect(),
+        });
+        self.hub.broadcast(Topic::Search, &payload);
+    }
+
     /// The owner is exiting: `shutting_down` on the `system` topic for subscribers,
     /// then a `Goodbye` to every session (docs/gui/02 §7).
     pub fn shutting_down(&self) {

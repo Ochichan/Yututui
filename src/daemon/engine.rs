@@ -95,6 +95,14 @@ pub enum EngineEffect {
         mode: StreamingMode,
         config: StreamingConfig,
     },
+    /// Run a GUI-session search off-loop (`RemoteCommand::RunSearch`); the answer
+    /// returns as [`ApiEvent::GuiSearchCompleted`] and is pushed on the `search` topic.
+    GuiSearch {
+        ticket: u64,
+        query: String,
+        source: crate::search_source::SearchSource,
+        config: SearchConfig,
+    },
 }
 
 pub struct DaemonEngine {
@@ -120,6 +128,10 @@ pub struct DaemonEngine {
     /// The media-session artwork cache's resolved file for a track, keyed by
     /// `video_id`; surfaced in [`Self::media_snapshot`] while the keys match.
     media_art: Option<crate::media::artwork::MediaArtworkReady>,
+    /// Rows the GUI can address by bare `video_id` (`play_tracks`/`enqueue_tracks`):
+    /// the songs of the most recently completed GUI search. Replaced wholesale per
+    /// search — the GUI only ever acts on the results it currently shows.
+    gui_search_index: std::collections::HashMap<String, Song>,
 }
 
 struct PlayerRuntime {
@@ -235,6 +247,7 @@ impl DaemonEngine {
             inactive_radio_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
+            gui_search_index: std::collections::HashMap::new(),
         }
     }
 
@@ -341,8 +354,119 @@ impl DaemonEngine {
                 effects.extend(self.force_autoplay_extend());
                 response
             }
+            RemoteCommand::RunSearch {
+                ticket,
+                query,
+                source,
+            } => {
+                let query = query.trim().to_string();
+                if query.is_empty() {
+                    RemoteResponse::err("empty_query")
+                } else {
+                    // Off-loop: the api actor answers with GuiSearchCompleted, which the
+                    // host loop indexes here and pushes on the `search` topic.
+                    effects.push(EngineEffect::GuiSearch {
+                        ticket,
+                        query,
+                        source,
+                        config: self.config.effective_search(),
+                    });
+                    RemoteResponse::ok("searching".to_string())
+                }
+            }
+            RemoteCommand::PlayTracks { video_ids } => {
+                let response = self.play_tracks(video_ids).await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
+            RemoteCommand::EnqueueTracks { video_ids } => {
+                let response = self.enqueue_tracks(video_ids).await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
         };
         (response, shutdown, effects)
+    }
+
+    /// Record a completed GUI search so `play_tracks`/`enqueue_tracks` can address its
+    /// rows by bare `video_id`. Wholesale replace: the GUI acts on what it shows.
+    pub fn index_gui_search(&mut self, groups: &[crate::api::GuiSearchGroup]) {
+        self.gui_search_index.clear();
+        for group in groups {
+            for song in &group.songs {
+                self.gui_search_index
+                    .insert(song.video_id.clone(), song.clone());
+            }
+        }
+    }
+
+    /// Resolve a GUI-addressed `video_id` to a playable [`Song`]: the last search's
+    /// rows first, then the library (favorites/history), then a bare row mpv resolves
+    /// at load time (covers e.g. AI suggestion chips that never went through search).
+    fn resolve_video_id(&self, video_id: &str) -> Song {
+        if let Some(song) = self.gui_search_index.get(video_id) {
+            return song.clone();
+        }
+        if let Some(song) = self
+            .library
+            .favorites
+            .iter()
+            .chain(self.library.history.iter())
+            .find(|s| s.video_id == video_id)
+        {
+            return song.clone();
+        }
+        Song::remote(video_id, video_id, "", "")
+    }
+
+    async fn play_tracks(&mut self, video_ids: Vec<String>) -> RemoteResponse {
+        let mut songs = video_ids.iter().map(|id| self.resolve_video_id(id));
+        let Some(first) = songs.next() else {
+            return RemoteResponse::err("empty_selection");
+        };
+        let rest: Vec<Song> = songs.collect();
+        if !self.queue.play_now(first) {
+            return RemoteResponse::err("queue_full");
+        }
+        if !rest.is_empty() {
+            self.queue.insert_next_many(rest);
+        }
+        self.save_session();
+        self.load_current()
+            .await
+            .map(|_| RemoteResponse::status(self.status()))
+            .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
+    }
+
+    async fn enqueue_tracks(&mut self, video_ids: Vec<String>) -> RemoteResponse {
+        if video_ids.is_empty() {
+            return RemoteResponse::err("empty_selection");
+        }
+        let songs: Vec<Song> = video_ids
+            .iter()
+            .map(|id| self.resolve_video_id(id))
+            .collect();
+        let old_len = self.queue.len();
+        let was_idle = self.loaded_video_id.is_none();
+        let added = if self.config.effective_enqueue_next() && !was_idle {
+            self.queue.insert_next_many(songs)
+        } else {
+            self.queue.extend(songs)
+        };
+        if added == 0 {
+            return RemoteResponse::err("queue_full");
+        }
+        self.save_session();
+        if was_idle {
+            self.queue
+                .goto(old_len.min(self.queue.len().saturating_sub(1)));
+            return self
+                .load_current()
+                .await
+                .map(|_| RemoteResponse::status(self.status()))
+                .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
+        }
+        RemoteResponse::status(self.status())
     }
 
     pub async fn handle_player_event(&mut self, event: PlayerEvent) -> Vec<EngineEffect> {
@@ -389,6 +513,9 @@ impl DaemonEngine {
             // Track resolution belongs to the TUI's "what's playing" overlay; the
             // headless engine never issues one.
             ApiEvent::TrackResolved { .. } => Vec::new(),
+            // Intercepted by the host loop (index + `search` topic push) before it
+            // reaches the engine; defensive no-op if it ever lands here.
+            ApiEvent::GuiSearchCompleted { .. } => Vec::new(),
             ApiEvent::StreamingResults {
                 seed_video_id,
                 candidates,
@@ -1752,6 +1879,7 @@ mod tests {
             inactive_radio_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
+            gui_search_index: std::collections::HashMap::new(),
         }
     }
 

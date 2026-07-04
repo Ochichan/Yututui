@@ -29,7 +29,8 @@ pub use command::{RemoteCommand, RemoteSettingChange};
 pub use model::{ArtworkRef, TrackModel};
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use session::{
-    ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, PushEvent, ServerFrame, Topic,
+    ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, PushEvent, SearchGroup, ServerFrame,
+    Topic,
 };
 
 /// The version this build speaks. Servers accept one-shot requests in the

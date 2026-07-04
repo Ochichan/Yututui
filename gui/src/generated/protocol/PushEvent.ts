@@ -2,10 +2,12 @@
 import type { InstanceMode } from "./InstanceMode";
 import type { PlayerModel } from "./PlayerModel";
 import type { QueueModel } from "./QueueModel";
+import type { SearchGroup } from "./SearchGroup";
+import type { SearchSource } from "./SearchSource";
 
 /**
  * The payload of a push [`ServerFrame::Event`]. Internally tagged by `kind` so new
  * event kinds are additive; B1+ milestones extend this enum (lyrics, artwork, library
  * invalidations, ticketed results, …).
  */
-export type PushEvent = { "kind": "player_snapshot", model: PlayerModel, } | { "kind": "queue_snapshot", model: QueueModel, } | { "kind": "owner_changed", mode: InstanceMode, } | { "kind": "shutting_down" };
+export type PushEvent = { "kind": "player_snapshot", model: PlayerModel, } | { "kind": "queue_snapshot", model: QueueModel, } | { "kind": "owner_changed", mode: InstanceMode, } | { "kind": "shutting_down" } | { "kind": "search_completed", ticket: number, query: string, source: SearchSource, groups: Array<SearchGroup>, };

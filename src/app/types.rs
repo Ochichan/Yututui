@@ -8,6 +8,9 @@ use super::*;
 
 /// Everything that can change the application state.
 pub enum Msg {
+    /// Inert. Runtime events with no standalone-TUI meaning (e.g. daemon-only
+    /// GUI-session answers) still need a total `RuntimeEvent → Msg` mapping.
+    Noop,
     Key(KeyEvent),
     /// A left-click at a terminal cell (1-based crossterm coords); may hit the seekbar.
     MouseClick {

@@ -503,6 +503,33 @@ mod translate_tests {
                 state: ToggleState::On
             })
         );
+        // The GUI-session verbs the frontend already sends (search + row playback).
+        assert_eq!(
+            to_remote_command(
+                "run_search",
+                &serde_json::json!({ "ticket": 3, "query": "queen", "source": "all" })
+            ),
+            Some(RemoteCommand::RunSearch {
+                ticket: 3,
+                query: "queen".to_string(),
+                source: crate::search_source::SearchSource::All,
+            })
+        );
+        assert_eq!(
+            to_remote_command(
+                "play_tracks",
+                &serde_json::json!({ "video_ids": ["a", "b"] })
+            ),
+            Some(RemoteCommand::PlayTracks {
+                video_ids: vec!["a".to_string(), "b".to_string()],
+            })
+        );
+        assert_eq!(
+            to_remote_command("enqueue_tracks", &serde_json::json!({ "video_ids": ["c"] })),
+            Some(RemoteCommand::EnqueueTracks {
+                video_ids: vec!["c".to_string()],
+            })
+        );
     }
 
     #[test]
