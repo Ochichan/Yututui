@@ -502,8 +502,9 @@ jobs:
       - name: Verify tag matches Cargo version
         run: |
           tag="${GITHUB_REF_NAME#v}"
+          tag_base="${tag%%-*}"
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-          if [ "$tag" != "$version" ]; then
+          if [ "$tag_base" != "$version" ]; then
             echo "::error::release tag v$tag does not match Cargo.toml version $version"
             exit 1
           fi
@@ -564,6 +565,7 @@ jobs:
             checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             ytm-tui-*.tar.gz
             ytm-tui-*.zip
@@ -584,7 +586,7 @@ jobs:
   # documented in packaging/README.md.
 
   publish-homebrew:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     needs: release
     runs-on: ubuntu-latest
     steps:
@@ -622,7 +624,7 @@ jobs:
           git push
 
   publish-scoop:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     needs: release
     runs-on: ubuntu-latest
     steps:
@@ -654,7 +656,7 @@ jobs:
           git push
 
   publish-aur:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     needs: release
     runs-on: ubuntu-latest
     env:
