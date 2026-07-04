@@ -1032,6 +1032,592 @@ fn loading_a_new_track_clears_stale_stream_metadata() {
     assert!(app.playback.stream_now_playing.is_none());
 }
 
+// --- Radio live transport: sync verdict + re-sync (M2) -------------------
+
+/// An app playing one live radio station (loaded into mpv).
+fn radio_playing(id: &str) -> App {
+    let mut app = App::new(100);
+    app.queue.set(vec![radio_station(id)], 0);
+    app.load_song(app.queue.current().cloned());
+    app
+}
+
+#[test]
+fn cache_time_updates_playback_and_coalesces_redraws() {
+    let mut app = radio_playing("groove");
+    app.dirty = false;
+    app.update(Msg::PlayerCacheTime(Some(100.2)));
+    assert_eq!(app.playback.cache_time, Some(100.2));
+    assert!(app.playback.cache_time_at.is_some());
+    assert!(app.dirty);
+
+    app.dirty = false;
+    app.update(Msg::PlayerCacheTime(Some(100.7)));
+    assert!(!app.dirty, "same whole second must not redraw");
+    app.update(Msg::PlayerCacheTime(Some(101.3)));
+    assert!(app.dirty);
+
+    app.dirty = false;
+    app.update(Msg::PlayerCacheTime(None));
+    assert_eq!(app.playback.cache_time, None);
+    assert!(app.playback.cache_time_at.is_none());
+    assert!(
+        app.dirty,
+        "Some→None must redraw so the glyph can't go stale"
+    );
+}
+
+#[test]
+fn radio_live_sync_verdict_follows_behind_distance() {
+    let mut app = radio_playing("groove");
+    app.update(Msg::PlayerTimePos(100.0));
+    app.update(Msg::PlayerCacheTime(Some(105.0)));
+    assert_eq!(app.radio_behind_secs().map(|b| b as i64), Some(5));
+    assert_eq!(app.radio_live_synced(), Some(true));
+
+    app.update(Msg::PlayerCacheTime(Some(180.0)));
+    assert_eq!(app.radio_live_synced(), Some(false));
+
+    // A regular track never gets a verdict, even with cache reports flowing.
+    let mut music = app_playing(1, 0);
+    music.update(Msg::PlayerTimePos(10.0));
+    music.update(Msg::PlayerCacheTime(Some(60.0)));
+    assert_eq!(music.radio_live_synced(), None);
+}
+
+#[test]
+fn stale_cache_time_degrades_synced_to_unknown_but_keeps_behind() {
+    let mut app = radio_playing("groove");
+    app.update(Msg::PlayerTimePos(100.0));
+    app.update(Msg::PlayerCacheTime(Some(103.0)));
+    // An old at-edge report proves nothing while playing (mpv freezes the property
+    // once the forward buffer saturates) → unknown.
+    app.playback.cache_time_at = Some(Instant::now() - Duration::from_secs(30));
+    assert_eq!(app.radio_live_synced(), None);
+    // But an old report showing a big gap is still a valid lower bound → behind.
+    app.playback.cache_time = Some(200.0);
+    assert_eq!(app.radio_live_synced(), Some(false));
+    // While paused the frozen report stays authoritative (behind only grows).
+    app.playback.cache_time = Some(103.0);
+    app.playback.paused = true;
+    assert_eq!(app.radio_live_synced(), Some(true));
+}
+
+#[test]
+fn radio_repeat_key_resyncs_with_a_seek_to_the_live_edge() {
+    let mut app = radio_playing("groove");
+    app.update(Msg::PlayerTimePos(100.0));
+    app.update(Msg::PlayerCacheTime(Some(200.0)));
+    app.playback.paused = true;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
+
+    // Re-sync resumes playback and seeks just short of the newest demuxed data.
+    assert!(!app.playback.paused);
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Player(PlayerCmd::CyclePause)))
+    );
+    let target = cmds.iter().find_map(|c| match c {
+        Cmd::Player(PlayerCmd::SeekAbsolute(s)) => Some(*s),
+        _ => None,
+    });
+    assert_eq!(target, Some(198.0));
+    // The queue's repeat mode is untouched and nothing is persisted.
+    assert!(save_config(&cmds).is_none());
+    assert_eq!(app.queue.repeat, crate::queue::Repeat::Off);
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert!(app.radio_resync_at.is_some());
+}
+
+#[test]
+fn radio_repeat_key_reconnects_when_no_cache_info() {
+    let mut app = radio_playing("groove");
+    app.update(Msg::PlayerTimePos(100.0));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
+
+    assert!(
+        load_url(&cmds)
+            .expect("stream reconnect")
+            .contains("groove")
+    );
+    assert_eq!(app.queue.repeat, crate::queue::Repeat::Off);
+}
+
+#[test]
+fn radio_resync_escalates_to_reconnect_when_seek_does_not_take() {
+    let mut app = radio_playing("groove");
+    app.update(Msg::PlayerTimePos(100.0));
+    app.update(Msg::PlayerCacheTime(Some(200.0)));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
+    assert!(load_url(&cmds).is_none(), "first re-sync seeks");
+
+    // Seconds later the playhead hasn't moved (an unseekable live cache) — the retry
+    // inside the window escalates to a stream reconnect.
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
+    assert!(
+        load_url(&cmds)
+            .expect("escalated reconnect")
+            .contains("groove")
+    );
+}
+
+#[test]
+fn radio_shift_s_reports_sync_state_without_touching_shuffle() {
+    let mut app = radio_playing("groove");
+    app.update(Msg::PlayerTimePos(100.0));
+    app.update(Msg::PlayerCacheTime(Some(103.0)));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('S'))));
+
+    assert!(cmds.is_empty(), "the sync note is read-only");
+    assert!(!app.queue.shuffle);
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert!(!app.status.text.is_empty());
+}
+
+#[test]
+fn loading_a_new_track_clears_cache_time() {
+    let mut app = radio_playing("groove");
+    app.update(Msg::PlayerCacheTime(Some(50.0)));
+    assert!(app.playback.cache_time.is_some());
+
+    app.queue.set(songs(1), 0);
+    app.load_song(app.queue.current().cloned());
+
+    assert!(app.playback.cache_time.is_none());
+    assert!(app.playback.cache_time_at.is_none());
+    assert!(app.radio_resync_at.is_none());
+}
+
+// --- "What's playing" (지듣노) identify overlay (M3) ----------------------
+
+/// A radio app with DJ Gem up and an ICY title playing.
+fn radio_with_title(title: &str) -> App {
+    let mut app = radio_playing("groove");
+    app.ai.available = true;
+    app.update(Msg::PlayerMetadata(
+        serde_json::json!({ "icy-title": title }),
+    ));
+    app
+}
+
+fn identify_cmd(cmds: &[Cmd]) -> Option<(u64, &str)> {
+    cmds.iter().find_map(|c| match c {
+        Cmd::IdentifyNowPlaying { seq, raw_title, .. } => Some((*seq, raw_title.as_str())),
+        _ => None,
+    })
+}
+
+fn identified(title: &str) -> IdentifiedNowPlaying {
+    IdentifiedNowPlaying {
+        artist: Some("Artist".to_owned()),
+        title: Some(title.to_owned()),
+        kind: IdentifiedKind::Song,
+        confidence: IdentifyConfidence::High,
+        note: None,
+    }
+}
+
+#[test]
+fn identify_key_needs_a_radio_stream_and_a_key() {
+    // Music mode: an info note, no overlay, no call.
+    let mut app = app_playing(1, 0);
+    app.ai.available = true;
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    assert!(cmds.is_empty());
+    assert!(app.now_playing_overlay.is_none());
+    assert_eq!(app.status.kind, StatusKind::Info);
+
+    // Radio but DJ Gem off: the key explains instead of opening.
+    let mut app = radio_playing("groove");
+    app.ai.available = false;
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    assert!(cmds.is_empty());
+    assert!(app.now_playing_overlay.is_none());
+    assert_eq!(app.status.kind, StatusKind::Info);
+}
+
+#[test]
+fn identify_without_metadata_answers_no_metadata_without_an_api_call() {
+    let mut app = radio_playing("groove");
+    app.ai.available = true;
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    assert!(cmds.is_empty(), "no metadata → never spend an API call");
+    let overlay = app.now_playing_overlay.as_ref().expect("overlay opens");
+    assert_eq!(overlay.state, NowPlayingOverlayState::NoMetadata);
+}
+
+#[test]
+fn identify_opens_loading_and_folds_the_reply_into_the_overlay_and_cache() {
+    let mut app = radio_with_title("Artist - Track");
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let (seq, raw) = identify_cmd(&cmds).expect("one identify call");
+    assert_eq!(raw, "Artist - Track");
+    assert!(matches!(
+        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        Some(NowPlayingOverlayState::Loading)
+    ));
+
+    app.update(Msg::NowPlayingIdentified {
+        seq,
+        result: Ok(identified("Track")),
+    });
+    assert!(matches!(
+        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        Some(NowPlayingOverlayState::Identified(id)) if id.title.as_deref() == Some("Track")
+    ));
+
+    // Close and reopen while the same title plays: a cache hit — instant, no call.
+    app.update(Msg::Key(key(KeyCode::Char('i'))));
+    assert!(app.now_playing_overlay.is_none(), "the key toggles");
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    assert!(identify_cmd(&cmds).is_none(), "re-open must be a cache hit");
+    assert!(matches!(
+        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        Some(NowPlayingOverlayState::Identified(_))
+    ));
+}
+
+#[test]
+fn identify_replies_are_dropped_once_stale() {
+    let mut app = radio_with_title("Artist - Track");
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let (seq, _) = identify_cmd(&cmds).expect("identify call");
+
+    // Overlay closed before the reply lands → dropped, nothing reopens.
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(app.now_playing_overlay.is_none());
+    app.update(Msg::NowPlayingIdentified {
+        seq,
+        result: Ok(identified("Track")),
+    });
+    assert!(app.now_playing_overlay.is_none());
+
+    // And a reply for a superseded seq is ignored by the open overlay.
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let (seq2, _) = identify_cmd(&cmds).expect("second identify call");
+    app.update(Msg::NowPlayingIdentified {
+        seq: seq2.wrapping_sub(1),
+        result: Ok(identified("Wrong")),
+    });
+    assert!(matches!(
+        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        Some(NowPlayingOverlayState::Loading)
+    ));
+}
+
+#[test]
+fn identify_errors_show_and_soft_negative_cache_briefly() {
+    let mut app = radio_with_title("Artist - Track");
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let (seq, _) = identify_cmd(&cmds).expect("identify call");
+    app.update(Msg::NowPlayingIdentified {
+        seq,
+        result: Err("timed out".to_owned()),
+    });
+    assert!(matches!(
+        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        Some(NowPlayingOverlayState::Error(m)) if m == "timed out"
+    ));
+    // Re-open inside the soft-negative window re-shows the error without a new call.
+    app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    assert!(identify_cmd(&cmds).is_none());
+    assert!(matches!(
+        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        Some(NowPlayingOverlayState::Error(_))
+    ));
+}
+
+#[test]
+fn title_change_mid_loading_reissues_for_the_fresh_title() {
+    let mut app = radio_with_title("Artist - Track");
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let (old_seq, _) = identify_cmd(&cmds).expect("first call");
+
+    let cmds = app.update(Msg::PlayerMetadata(serde_json::json!({
+        "icy-title": "Other - Song"
+    })));
+    let (new_seq, raw) = identify_cmd(&cmds).expect("re-issued for the new title");
+    assert_ne!(new_seq, old_seq);
+    assert_eq!(raw, "Other - Song");
+
+    // The old title's reply is stale now.
+    app.update(Msg::NowPlayingIdentified {
+        seq: old_seq,
+        result: Ok(identified("Track")),
+    });
+    assert!(matches!(
+        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        Some(NowPlayingOverlayState::Loading)
+    ));
+    // The fresh one lands.
+    app.update(Msg::NowPlayingIdentified {
+        seq: new_seq,
+        result: Ok(identified("Song")),
+    });
+    assert!(matches!(
+        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        Some(NowPlayingOverlayState::Identified(id)) if id.title.as_deref() == Some("Song")
+    ));
+}
+
+#[test]
+fn title_change_leaves_a_displayed_identification_alone() {
+    let mut app = radio_with_title("Artist - Track");
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let (seq, _) = identify_cmd(&cmds).expect("identify call");
+    app.update(Msg::NowPlayingIdentified {
+        seq,
+        result: Ok(identified("Track")),
+    });
+
+    let cmds = app.update(Msg::PlayerMetadata(serde_json::json!({
+        "icy-title": "Other - Song"
+    })));
+    assert!(
+        identify_cmd(&cmds).is_none(),
+        "a shown card is not re-keyed"
+    );
+    assert!(matches!(
+        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        Some(NowPlayingOverlayState::Identified(id)) if id.title.as_deref() == Some("Track")
+    ));
+}
+
+fn resolve_track_cmd(cmds: &[Cmd]) -> Option<(u64, &str)> {
+    cmds.iter().find_map(|c| match c {
+        Cmd::ResolveTrack { seq, query, .. } => Some((*seq, query.as_str())),
+        _ => None,
+    })
+}
+
+fn ask_ai_prompt(cmds: &[Cmd]) -> Option<&str> {
+    cmds.iter().find_map(|c| match c {
+        Cmd::AskAi { prompt, .. } => Some(prompt.as_str()),
+        _ => None,
+    })
+}
+
+/// A radio app with an open, already-identified overlay.
+fn radio_identified(confidence: IdentifyConfidence) -> App {
+    let mut app = radio_with_title("Artist - Track");
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let (seq, _) = identify_cmd(&cmds).expect("identify call");
+    app.update(Msg::NowPlayingIdentified {
+        seq,
+        result: Ok(IdentifiedNowPlaying {
+            confidence,
+            ..identified("Track")
+        }),
+    });
+    app
+}
+
+#[test]
+fn overlay_favorite_resolves_then_adds_to_music_favorites_once() {
+    let mut app = radio_identified(IdentifyConfidence::High);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+    let (seq, query) = resolve_track_cmd(&cmds).expect("one resolve");
+    assert_eq!(query, "Artist Track");
+    assert!(
+        app.now_playing_overlay
+            .as_ref()
+            .is_some_and(|o| o.resolving)
+    );
+
+    // A second press while resolving is a no-op (debounced).
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+    assert!(resolve_track_cmd(&cmds).is_none());
+
+    let cmds = app.update(Msg::TrackResolved {
+        seq,
+        result: Ok(vec![
+            Song::remote("vid1", "Track", "Artist", "3:00"),
+            Song::remote("vid2", "Track (Live)", "Artist", "4:00"),
+        ]),
+    });
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(
+        app.library.is_favorite("vid1"),
+        "best match lands in favorites"
+    );
+    assert!(
+        app.library.favorites.iter().any(|s| s.video_id == "vid1"),
+        "a Youtube-source track routes to the MUSIC favorites"
+    );
+    assert!(
+        app.library
+            .radio_favorites
+            .iter()
+            .all(|s| s.video_id != "vid1")
+    );
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert!(app.status.text.contains("Track"));
+
+    // Repeat press: the resolved song rides the overlay — no re-search, and the
+    // toggle-precheck must NOT remove the favorite.
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+    assert!(resolve_track_cmd(&cmds).is_none());
+    assert!(app.library.is_favorite("vid1"));
+
+    // Re-open the card for the same title: the cache carries the resolution too.
+    app.update(Msg::Key(key(KeyCode::Char('i'))));
+    app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+    assert!(
+        resolve_track_cmd(&cmds).is_none(),
+        "cache-attached resolution reused"
+    );
+    assert!(app.library.is_favorite("vid1"));
+}
+
+#[test]
+fn overlay_favorite_resolve_failures_keep_the_overlay_and_write_nothing() {
+    let mut app = radio_identified(IdentifyConfidence::High);
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+    let (seq, _) = resolve_track_cmd(&cmds).expect("resolve");
+
+    // Empty result: an error toast, the overlay stays, nothing is written.
+    let cmds = app.update(Msg::TrackResolved {
+        seq,
+        result: Ok(Vec::new()),
+    });
+    assert!(cmds.is_empty());
+    assert!(app.now_playing_overlay.is_some());
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.library.favorites.is_empty());
+
+    // Stale seq: dropped entirely.
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
+    let (seq2, _) = resolve_track_cmd(&cmds).expect("second resolve");
+    app.update(Msg::TrackResolved {
+        seq: seq2.wrapping_sub(1),
+        result: Ok(vec![Song::remote("vid9", "Wrong", "X", "1:00")]),
+    });
+    assert!(
+        app.library.favorites.is_empty(),
+        "stale reply must not write"
+    );
+    assert!(
+        app.now_playing_overlay
+            .as_ref()
+            .is_some_and(|o| o.resolving)
+    );
+}
+
+#[test]
+fn overlay_ask_ai_hands_off_with_a_seeded_context_block() {
+    let mut app = radio_identified(IdentifyConfidence::High);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('g'))));
+    let prompt = ask_ai_prompt(&cmds).expect("one AskAi");
+
+    assert_eq!(app.mode, Mode::Ai);
+    assert!(
+        app.now_playing_overlay.is_none(),
+        "the card closes on handoff"
+    );
+    assert!(app.ai.thinking);
+    // The model gets the labeled block: station, untrusted raw title, identification.
+    assert!(prompt.starts_with("<now_playing>"));
+    assert!(prompt.contains("station: Station groove — KR / MP3"));
+    assert!(prompt.contains("raw_title (untrusted, as sent by the stream): Artist - Track"));
+    assert!(prompt.contains("identified: Track — Artist (confidence: high, kind: song)"));
+    assert!(prompt.contains("</now_playing>"));
+    assert!(
+        !prompt.contains("acknowledge that first"),
+        "a high-confidence identification needs no uncertainty preamble"
+    );
+    // The transcript shows the compact line, not the block.
+    let last = app.ai.messages.last().expect("transcript line");
+    assert_eq!(last.role, AiRole::User);
+    assert!(!last.text.contains("<now_playing>"));
+    assert!(last.text.contains("Track — Artist"));
+}
+
+#[test]
+fn overlay_ask_ai_inherits_uncertainty_and_respects_the_thinking_guard() {
+    // Medium confidence → the seed instructs the model to acknowledge uncertainty.
+    let mut app = radio_identified(IdentifyConfidence::Medium);
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('g'))));
+    let prompt = ask_ai_prompt(&cmds).expect("AskAi");
+    assert!(prompt.contains("confidence: medium"));
+    assert!(prompt.contains("acknowledge that first"));
+
+    // DJ Gem busy → an info note; the card stays put and nothing is sent.
+    let mut app = radio_identified(IdentifyConfidence::High);
+    app.ai.thinking = true;
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('g'))));
+    assert!(ask_ai_prompt(&cmds).is_none());
+    assert!(app.now_playing_overlay.is_some());
+    assert_eq!(app.status.kind, StatusKind::Info);
+}
+
+#[test]
+fn overlay_actions_respect_the_identified_kind() {
+    // An ad verdict offers neither favorite nor ask.
+    let mut app = radio_with_title("Werbung");
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let (seq, _) = identify_cmd(&cmds).expect("identify");
+    app.update(Msg::NowPlayingIdentified {
+        seq,
+        result: Ok(IdentifiedNowPlaying {
+            artist: None,
+            title: None,
+            kind: IdentifiedKind::Ad,
+            confidence: IdentifyConfidence::High,
+            note: None,
+        }),
+    });
+    assert!(!app.now_playing_can_favorite());
+    assert!(!app.now_playing_can_ask());
+    assert!(app.update(Msg::Key(key(KeyCode::Char('f')))).is_empty());
+    assert!(app.update(Msg::Key(key(KeyCode::Char('g')))).is_empty());
+    assert!(app.library.favorites.is_empty());
+
+    // Unknown still allows asking (the seed says so), but never favoriting.
+    let mut app = radio_with_title("mystery noise");
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
+    let (seq, _) = identify_cmd(&cmds).expect("identify");
+    app.update(Msg::NowPlayingIdentified {
+        seq,
+        result: Ok(IdentifiedNowPlaying {
+            artist: None,
+            title: None,
+            kind: IdentifiedKind::Unknown,
+            confidence: IdentifyConfidence::Low,
+            note: None,
+        }),
+    });
+    assert!(!app.now_playing_can_favorite());
+    assert!(app.now_playing_can_ask());
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('g'))));
+    let prompt = ask_ai_prompt(&cmds).expect("AskAi");
+    assert!(prompt.contains("identified: unknown"));
+    assert!(prompt.contains("acknowledge that first"));
+}
+
+#[test]
+fn identify_overlay_swallows_player_keys_and_esc_closes() {
+    let mut app = radio_with_title("Artist - Track");
+    app.update(Msg::Key(key(KeyCode::Char('i'))));
+    assert!(app.now_playing_overlay.is_some());
+
+    // `n` (next track) must not leak through to the player underneath.
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    assert!(cmds.is_empty());
+    assert_eq!(current(&app), "rad:groove");
+    assert!(app.now_playing_overlay.is_some());
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(app.now_playing_overlay.is_none());
+}
+
 #[test]
 fn eof_auto_advances_to_next_track() {
     let mut app = app_playing(3, 0);
@@ -1408,11 +1994,57 @@ fn radio_mode_theme_edits_do_not_overwrite_normal_config_theme() {
         app.config.theme.preset, "midnight",
         "normal theme in config should survive Radio-mode theme edits"
     );
+    assert_eq!(
+        app.config.radio_theme.as_ref().map(|t| t.preset.as_str()),
+        Some("rose_pine"),
+        "a Radio-mode theme edit should persist into its own config slot"
+    );
 
     app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
     assert_eq!(app.theme.preset, "midnight");
     app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
     assert_eq!(app.theme.preset, "rose_pine");
+}
+
+#[test]
+fn persisted_radio_theme_survives_restart_into_radio_session() {
+    // Quit while in radio mode with a saved radio theme, relaunch: the session restore
+    // must find the persisted radio theme instead of falling back to Dario.
+    let mut cfg = crate::config::Config::default();
+    let mut radio_theme = crate::theme::ThemeConfig::default();
+    radio_theme.set_preset(crate::theme::ThemePreset::RosePine);
+    cfg.radio_theme = Some(radio_theme);
+
+    let mut app = App::new(100);
+    app.apply_config(&cfg);
+    app.library.record_play(&radio_station("latest"));
+    app.restore_last_session_from_library(true);
+
+    assert!(app.radio_dedicated_mode);
+    assert_eq!(app.theme.preset, "rose_pine");
+}
+
+#[test]
+fn persisted_radio_theme_applies_on_radio_reentry_after_relaunch() {
+    // Quit in NORMAL mode (radio theme saved earlier), relaunch, then re-enter radio
+    // mode: the stash seeded from config must win over the Dario fallback, and exiting
+    // must return to the normal theme untouched.
+    let mut cfg = crate::config::Config::default();
+    let mut normal = crate::theme::ThemeConfig::default();
+    normal.set_preset(crate::theme::ThemePreset::Midnight);
+    cfg.theme = normal;
+    let mut radio_theme = crate::theme::ThemeConfig::default();
+    radio_theme.set_preset(crate::theme::ThemePreset::RosePine);
+    cfg.radio_theme = Some(radio_theme);
+
+    let mut app = App::new(100);
+    app.apply_config(&cfg);
+    assert_eq!(app.theme.preset, "midnight");
+
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    assert_eq!(app.theme.preset, "rose_pine");
+    app.apply_radio_mode_confirm(RadioModeConfirm::Exit);
+    assert_eq!(app.theme.preset, "midnight");
 }
 
 #[test]

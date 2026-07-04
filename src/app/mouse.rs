@@ -55,6 +55,23 @@ impl App {
                 }
             }
         }
+        // The "what's playing" identify overlay is modal: only its own buttons act; a
+        // click anywhere else closes it (no click-through to the player/seekbar).
+        if self.now_playing_overlay.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(
+                    t @ (MouseTarget::NowPlayingFavorite
+                    | MouseTarget::NowPlayingAskAi
+                    | MouseTarget::CloseNowPlaying),
+                ) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.close_now_playing_overlay();
+                    return Vec::new();
+                }
+            }
+        }
         // Settings confirmations are modal: only their Confirm/Cancel buttons act; a click
         // anywhere else backs out without changing the draft.
         if self.pending_settings_confirm.is_some() {
@@ -453,6 +470,12 @@ impl App {
             MouseTarget::CancelRadioMode => {
                 self.pending_radio_mode_confirm = None;
                 self.dirty = true;
+                Vec::new()
+            }
+            MouseTarget::NowPlayingFavorite => self.now_playing_favorite(),
+            MouseTarget::NowPlayingAskAi => self.now_playing_ask_ai(),
+            MouseTarget::CloseNowPlaying => {
+                self.close_now_playing_overlay();
                 Vec::new()
             }
             // Click the `ytm-tui` brand to open the About card.

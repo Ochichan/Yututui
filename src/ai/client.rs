@@ -275,6 +275,76 @@ impl GeminiError {
             GeminiError::ModelNotFound | GeminiError::Server(_) | GeminiError::RateLimited
         )
     }
+
+    /// A short, human-facing description for the transcript / overlay. `Display` stays
+    /// verbose for logs; this one never dumps a raw response body at the user — an HTTP
+    /// error is mined for Google's own `error.message` (with the invalid-key case folded
+    /// into the key guidance) and firmly truncated.
+    pub fn user_message(&self) -> String {
+        let key_help = || {
+            crate::t!(
+                "The Gemini API key was rejected — check it in Settings.",
+                "Gemini API 키가 거부됐어요 — 설정에서 키를 확인해 주세요."
+            )
+            .to_owned()
+        };
+        match self {
+            GeminiError::Auth => key_help(),
+            GeminiError::ModelNotFound => crate::t!(
+                "That Gemini model isn't available — pick another in Settings.",
+                "이 Gemini 모델은 사용할 수 없어요 — 설정에서 다른 모델을 골라 주세요."
+            )
+            .to_owned(),
+            GeminiError::RateLimited => crate::t!(
+                "Gemini is rate-limiting us — try again in a moment.",
+                "요청이 너무 잦아요 — 잠시 후 다시 시도해 주세요."
+            )
+            .to_owned(),
+            GeminiError::Server(_) => crate::t!(
+                "Gemini had a server hiccup — try again shortly.",
+                "Gemini 서버 오류예요 — 잠시 후 다시 시도해 주세요."
+            )
+            .to_owned(),
+            GeminiError::Network(_) => crate::t!(
+                "Couldn't reach Gemini — check your network.",
+                "Gemini에 연결하지 못했어요 — 네트워크를 확인해 주세요."
+            )
+            .to_owned(),
+            GeminiError::Decode(_) => crate::t!(
+                "Couldn't parse Gemini's reply.",
+                "Gemini 응답을 해석하지 못했어요."
+            )
+            .to_owned(),
+            GeminiError::Http(raw) => {
+                // Google reports a bad key as HTTP 400 API_KEY_INVALID, not 401/403.
+                if raw.contains("API_KEY_INVALID") || raw.contains("API key not valid") {
+                    return key_help();
+                }
+                let rejected =
+                    crate::t!("Gemini rejected the request", "Gemini가 요청을 거부했어요");
+                match http_error_detail(raw) {
+                    Some(detail) => format!("{rejected} ({detail})"),
+                    None => format!("{rejected}."),
+                }
+            }
+        }
+    }
+}
+
+/// Pull Google's `error.message` out of an `HTTP <code>: <json body>` string, truncated
+/// to one short parenthetical. `None` when the body isn't the expected JSON shape.
+fn http_error_detail(raw: &str) -> Option<String> {
+    let body = &raw[raw.find('{')?..];
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let msg = v.get("error")?.get("message")?.as_str()?.trim();
+    if msg.is_empty() {
+        return None;
+    }
+    let mut out: String = msg.chars().take(100).collect();
+    if out.len() < msg.len() {
+        out.push('…');
+    }
+    Some(out)
 }
 
 // --- Client -----------------------------------------------------------------
@@ -422,6 +492,51 @@ mod tests {
         let out = truncate(&cjk);
         assert!(out.ends_with('…'));
         assert!(out.len() <= ERR_BODY_CAP + '…'.len_utf8());
+    }
+
+    #[test]
+    fn user_messages_stay_short_and_key_failures_guide_to_settings() {
+        // Google reports a bad key as HTTP 400 API_KEY_INVALID — fold into key guidance.
+        let e = GeminiError::Http(
+            "HTTP 400: {\"error\":{\"code\":400,\"message\":\"API key not valid. Please pass a valid API key.\",\"status\":\"INVALID_ARGUMENT\"}}"
+                .to_owned(),
+        );
+        let msg = e.user_message();
+        assert!(msg.contains("Settings"), "got: {msg}");
+        assert!(!msg.contains('{'), "no raw JSON reaches the user: {msg}");
+
+        // Other HTTP errors surface Google's own message, sans the JSON shell.
+        let e = GeminiError::Http(
+            "HTTP 400: {\"error\":{\"message\":\"Invalid JSON payload received.\"}}".to_owned(),
+        );
+        let msg = e.user_message();
+        assert!(msg.contains("Invalid JSON payload received."), "got: {msg}");
+        assert!(!msg.contains('{'));
+
+        // An unparseable body degrades to the generic one-liner, still no dump.
+        let e = GeminiError::Http("HTTP 418: teapot".to_owned());
+        assert_eq!(e.user_message(), "Gemini rejected the request.");
+
+        // A huge Google message truncates to one short parenthetical.
+        let long = "x".repeat(500);
+        let e = GeminiError::Http(format!(
+            "HTTP 400: {{\"error\":{{\"message\":\"{long}\"}}}}"
+        ));
+        let msg = e.user_message();
+        assert!(
+            msg.chars().count() < 140,
+            "got {} chars",
+            msg.chars().count()
+        );
+        assert!(msg.contains('…'));
+
+        // The non-HTTP variants are fixed one-liners.
+        assert!(GeminiError::Auth.user_message().contains("Settings"));
+        assert!(
+            !GeminiError::Network("io".into())
+                .user_message()
+                .contains("io")
+        );
     }
 
     #[test]

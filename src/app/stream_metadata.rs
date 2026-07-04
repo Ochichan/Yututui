@@ -124,7 +124,9 @@ fn normalize_key(s: &str) -> String {
         .collect()
 }
 
-fn normalize_compare(s: &str) -> String {
+/// Whitespace-collapsed, ASCII-lowercased comparison form. Preserves non-ASCII (CJK
+/// titles must stay distinct), so it also keys the now-playing identify cache.
+pub(in crate::app) fn normalize_compare(s: &str) -> String {
     collapse_spaces(s).to_ascii_lowercase()
 }
 

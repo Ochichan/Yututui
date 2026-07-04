@@ -181,6 +181,35 @@ impl App {
             return Vec::new();
         }
 
+        // The "what's playing" identify overlay is modal: its own remappable actions
+        // (`KeyContext::NowPlaying` — favorite / ask DJ Gem, listed in the cheat sheet
+        // and editable in Settings › Keys) work, its toggle (`i`) / Esc / Enter / Back
+        // close it, Quit still works, and everything else is swallowed so nothing leaks
+        // into the player underneath.
+        if self.now_playing_overlay.is_some() {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return self.quit_app();
+            }
+            match self.keymap.context_action(KeyContext::NowPlaying, chord) {
+                Some(Action::NowPlayingFavorite) => return self.now_playing_favorite(),
+                Some(Action::NowPlayingAskAi) => return self.now_playing_ask_ai(),
+                _ => {}
+            }
+            let close = matches!(
+                self.keymap.action(KeyContext::Player, chord),
+                Some(Action::IdentifyNowPlaying)
+            ) || k.code == KeyCode::Esc
+                || k.code == KeyCode::Enter
+                || matches!(
+                    self.keymap.action(KeyContext::Common, chord),
+                    Some(Action::Back)
+                );
+            if close {
+                self.close_now_playing_overlay();
+            }
+            return Vec::new();
+        }
+
         // The "Why DJ Gem" overlay behaves like the About card: while it's up, swallow input; its own
         // toggle (`w`) / Esc / Back dismiss it, and Quit still works.
         if self.why_ai_visible {

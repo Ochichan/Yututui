@@ -1536,6 +1536,9 @@ impl App {
         self.theme = st.draft.theme.normalized();
         if self.radio_dedicated_mode {
             self.radio_mode_theme = Some(self.theme.clone());
+            // Persist the radio theme in its own slot; `config.theme` stays the normal
+            // theme (below) so a radio-mode save can't clobber it.
+            self.config.radio_theme = Some(self.theme.clone());
             if let Some(normal_theme) = normal_theme {
                 self.normal_mode_theme = Some(normal_theme.clone());
                 self.config.theme = normal_theme;

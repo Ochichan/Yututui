@@ -99,7 +99,9 @@ impl App {
                 vec![Cmd::Player(PlayerCmd::SeekAbsolute(pos))]
             }
             MediaCommand::SetShuffle(on) => {
-                if self.queue.shuffle == on {
+                // On a live radio stream shuffle is meaningless (the TUI slot shows the
+                // live-sync state instead) — an OS widget toggle must not mutate it.
+                if self.current_is_radio_stream() || self.queue.shuffle == on {
                     return Vec::new();
                 }
                 self.queue.set_shuffle(on);
@@ -107,7 +109,8 @@ impl App {
                 vec![self.save_playback_modes_cmd()]
             }
             MediaCommand::SetRepeat(mode) => {
-                if self.queue.repeat == mode {
+                // Same radio guard as SetShuffle — and never remote-trigger a re-sync.
+                if self.current_is_radio_stream() || self.queue.repeat == mode {
                     return Vec::new();
                 }
                 self.queue.repeat = mode;
@@ -494,6 +497,28 @@ mod tests {
         );
         assert!(!app.media_snapshot().caps.can_seek);
         assert!(app.media_snapshot().track.unwrap().is_live);
+    }
+
+    #[test]
+    fn shuffle_repeat_ignored_for_live_radio() {
+        let mut app = App::new(50);
+        let mut station = Song::remote("radio1", "Some FM", "", "");
+        station.playable = Some(crate::api::PlayableRef::RadioStream {
+            url: "https://radio.example/stream".to_owned(),
+        });
+        app.queue.set(vec![station], 0);
+        // The TUI reinterprets these slots as live-sync controls on radio; an OS widget
+        // toggle must neither mutate queue modes nor trigger a re-sync.
+        assert!(
+            app.update(Msg::Media(MediaCommand::SetShuffle(true)))
+                .is_empty()
+        );
+        assert!(!app.queue.shuffle);
+        assert!(
+            app.update(Msg::Media(MediaCommand::SetRepeat(Repeat::All)))
+                .is_empty()
+        );
+        assert_eq!(app.queue.repeat, Repeat::Off);
     }
 
     #[test]

@@ -249,6 +249,14 @@ pub struct Playback {
     pub speed: f64,
     /// Current live-radio now-playing metadata, when the active stream exposes it.
     pub stream_now_playing: Option<StreamNowPlaying>,
+    /// mpv `demuxer-cache-time`: the newest demuxed timestamp. On a live radio stream this
+    /// approximates the live edge, so `cache_time − time_pos` is how far behind live the
+    /// playhead sits (the timeshift depth).
+    pub cache_time: Option<f64>,
+    /// When `cache_time` last updated. mpv stops updating it once the forward buffer
+    /// saturates, so the live-sync verdict treats an old report as unknown rather than
+    /// trusting it (see `App::radio_behind_secs`).
+    pub cache_time_at: Option<Instant>,
 }
 
 /// Prefetch / load tracking: the pre-resolved stream-URL cache, whether the current track

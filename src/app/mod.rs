@@ -55,6 +55,8 @@ mod library;
 mod library_reducer;
 mod media_reducer;
 mod mouse;
+mod now_playing;
+mod now_playing_reducer;
 mod player;
 mod playlists_reducer;
 mod queue;
@@ -181,6 +183,15 @@ pub struct App {
     /// autoplay-streaming refill went through the DJ Gem reranker; lists why each track was chosen (slot
     /// role + reason codes + confidence). Esc / `w` / Back dismiss it, like the About card.
     pub why_ai_visible: bool,
+    /// The "what's playing" (지듣노) overlay — the radio identify card with favorite /
+    /// ask-DJ Gem actions. `None` = closed. Opened by `Action::IdentifyNowPlaying` (`i`).
+    pub now_playing_overlay: Option<NowPlayingOverlay>,
+    /// Short-TTL cache of identify results keyed on (station, title), so re-opening on
+    /// the same song and the "tell me more" handoff never re-spend an API call.
+    pub(in crate::app) now_playing_cache: now_playing::NowPlayingCache,
+    /// Identify epoch: replies must carry the open overlay's snapshot of this counter or
+    /// they're stale (overlay closed / stream title moved on).
+    now_playing_seq: u64,
 
     // Playback ----------------------------------------------------------------
     /// Live playback transport: position, duration, pause state, volume, and speed
@@ -310,6 +321,12 @@ pub struct App {
 
     /// Last whole second we redrew for, so sub-second `time-pos` spam is coalesced.
     last_shown_sec: i64,
+    /// Same coalescing for `demuxer-cache-time` (`-1` = none shown yet).
+    last_shown_cache_sec: i64,
+    /// When the last radio re-sync (seek-to-live or reconnect) was issued. A second
+    /// re-sync inside [`crate::app::player::RESYNC_RETRY_WINDOW`] while still behind
+    /// means the seek didn't take, so the action escalates to a stream reconnect.
+    pub(in crate::app) radio_resync_at: Option<Instant>,
 
     /// Monotonic animation frame counter, bumped on each [`Msg::AnimTick`] (~30 fps) while
     /// animations are active. Drives every effect's phase; wraps harmlessly. `0` at rest.
@@ -362,6 +379,9 @@ impl App {
             about_visible: false,
             about_icon: RefCell::new(None),
             why_ai_visible: false,
+            now_playing_overlay: None,
+            now_playing_cache: now_playing::NowPlayingCache::default(),
+            now_playing_seq: 0,
             playback: Playback {
                 volume: volume.clamp(0, VOLUME_MAX),
                 speed: 1.0,
@@ -424,6 +444,8 @@ impl App {
             prefetch: Prefetch::default(),
             bridges: RenderBridges::default(),
             last_shown_sec: -1,
+            last_shown_cache_sec: -1,
+            radio_resync_at: None,
             anim_draw_credit: 0,
             anim_last_draw_fps: 0,
             focused: true,
@@ -447,6 +469,11 @@ impl App {
         self.ai.model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
         let normal_theme = cfg.effective_theme();
+        // Seed the radio-mode theme stash from its persisted slot. Guarded so a config
+        // without one never clobbers a theme picked live earlier in this session.
+        if let Some(radio_theme) = cfg.effective_radio_theme() {
+            self.radio_mode_theme = Some(radio_theme);
+        }
         if self.radio_dedicated_mode {
             self.normal_mode_theme = Some(normal_theme);
             self.theme = self
@@ -989,6 +1016,18 @@ impl App {
                 self.playback.duration = Some(d);
                 self.dirty = true;
             }
+            Msg::PlayerCacheTime(t) => {
+                let had = self.playback.cache_time.is_some();
+                self.playback.cache_time = t;
+                self.playback.cache_time_at = t.map(|_| Instant::now());
+                // Redraw at most once per second (mpv reports far more often), plus on
+                // Some↔None transitions so the live-sync glyph never shows stale state.
+                let sec = t.map_or(-1, |v| v as i64);
+                if sec != self.last_shown_cache_sec || had != t.is_some() {
+                    self.last_shown_cache_sec = sec;
+                    self.dirty = true;
+                }
+            }
             Msg::PlayerPaused(p) => {
                 self.playback.paused = p;
                 self.dirty = true;
@@ -1012,7 +1051,16 @@ impl App {
                 if self.playback.stream_now_playing != parsed {
                     self.playback.stream_now_playing = parsed;
                     self.dirty = true;
+                    // The song moved on: an identify in flight for the old title is
+                    // stale, and a Loading overlay re-keys onto the fresh title.
+                    return self.on_stream_title_changed();
                 }
+            }
+            Msg::NowPlayingIdentified { seq, result } => {
+                self.on_now_playing_identified(seq, result);
+            }
+            Msg::TrackResolved { seq, result } => {
+                return self.on_track_resolved(seq, result);
             }
             Msg::PlayerEof => {
                 tracing::info!("track ended (eof)");

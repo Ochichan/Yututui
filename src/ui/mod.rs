@@ -59,6 +59,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.why_ai_visible {
         views::why_ai::render(frame, app, area);
     }
+    // The "what's playing" identify card (radio): the result + favorite / ask-DJ Gem
+    // actions. Below the mode confirmations so those stay on top.
+    if app.now_playing_overlay.is_some() {
+        views::now_playing::render(frame, app, area);
+    }
     // Radio mode switching is a global UI-mode confirmation.
     if let Some(confirm) = app.pending_radio_mode_confirm {
         views::player::render_radio_mode_confirm(frame, app, area, confirm);

@@ -91,6 +91,11 @@ pub enum Action {
     CopyLink,
     PlayVideo,
     ToggleVideoLayout,
+    /// The "what's playing" (지듣노) radio identify overlay.
+    IdentifyNowPlaying,
+    // Inside the "what's playing" card.
+    NowPlayingFavorite,
+    NowPlayingAskAi,
 }
 
 /// Stable id (for config keys) + English + Korean human label (for the editor and
@@ -343,6 +348,24 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "DJ Gem 선곡 이유 보기",
     ),
     (
+        Action::IdentifyNowPlaying,
+        "identify_now_playing",
+        "What's playing (radio)",
+        "지금 듣는 노래 (라디오)",
+    ),
+    (
+        Action::NowPlayingFavorite,
+        "now_playing_favorite",
+        "Save to music favorites",
+        "음악 즐겨찾기에 추가",
+    ),
+    (
+        Action::NowPlayingAskAi,
+        "now_playing_ask_ai",
+        "Tell me more (DJ Gem)",
+        "DJ Gem에게 더 알아보기",
+    ),
+    (
         Action::TextZoomIn,
         "text_zoom_in",
         "Text size up",
@@ -477,10 +500,18 @@ pub enum KeyContext {
     Settings,
     AiInput,
     AiSuggestions,
+    /// The "what's playing" (지듣노) identify card over the player.
+    NowPlaying,
 }
 
 const CONTEXT_META: &[(KeyContext, &str, &str, &str)] = &[
     (KeyContext::Player, "player", "Player", "플레이어"),
+    (
+        KeyContext::NowPlaying,
+        "now_playing",
+        "What's playing card",
+        "지금 듣는 노래 카드",
+    ),
     (
         KeyContext::Common,
         "common",
@@ -949,6 +980,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::Download, ch('d')),
         (C::Player, A::ToggleShuffle, ch('S')),
         (C::Player, A::CycleRepeat, ch('r')),
+        (C::Player, A::IdentifyNowPlaying, ch('i')),
         (C::Player, A::CycleEq, ch('e')),
         (C::Player, A::ToggleNormalize, ch('N')),
         (C::Player, A::SpeedUp, ch('>')),
@@ -961,6 +993,10 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::PlayVideo, ch('v')),
         (C::Player, A::ToggleVideoLayout, ch('V')),
         (C::Player, A::Back, ch('q')),
+        // The "what's playing" card's own actions (modal; `i`/Esc/Enter close it). `f`/`g`
+        // deliberately mirror the player's favorite / DJ Gem keys.
+        (C::NowPlaying, A::NowPlayingFavorite, ch('f')),
+        (C::NowPlaying, A::NowPlayingAskAi, ch('g')),
         // Shared navigation (fallback for every list/text screen).
         (C::Common, A::MoveUp, key(KeyCode::Up)),
         (C::Common, A::MoveDown, key(KeyCode::Down)),

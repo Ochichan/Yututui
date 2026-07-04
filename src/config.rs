@@ -441,6 +441,10 @@ pub struct Config {
     // Theme -------------------------------------------------------------------
     /// Color theme preset plus per-role `#RRGGBB` overrides.
     pub theme: ThemeConfig,
+    /// Dedicated-radio-mode theme. `theme` always holds the *normal* theme (a radio-mode
+    /// settings save deliberately keeps it that way), so the radio theme needs its own
+    /// persisted slot or it dies with the process. `None` → Dario default on radio entry.
+    pub radio_theme: Option<ThemeConfig>,
     /// Linux basic TTY compatibility mode: English UI, Retro theme, ASCII-safe rendering.
     pub retro_mode: bool,
 
@@ -528,6 +532,7 @@ impl Default for Config {
             ai_enabled: None,
             romanized_titles: None,
             theme: ThemeConfig::default(),
+            radio_theme: None,
             retro_mode: false,
             language: Language::default(),
             keybindings: std::collections::BTreeMap::new(),
@@ -848,6 +853,12 @@ impl Config {
         self.theme.normalized()
     }
 
+    /// The persisted dedicated-radio-mode theme, normalized. `None` when the user has
+    /// never saved a theme inside radio mode.
+    pub fn effective_radio_theme(&self) -> Option<ThemeConfig> {
+        self.radio_theme.as_ref().map(ThemeConfig::normalized)
+    }
+
     /// The UI language to apply at runtime (default English).
     pub fn effective_language(&self) -> Language {
         if self.retro_mode {
@@ -968,6 +979,8 @@ mod tests {
         theme
             .set_override(crate::theme::ThemeRole::BorderPrimary, "#123456")
             .unwrap();
+        let mut radio_theme = ThemeConfig::default();
+        radio_theme.set_preset(crate::theme::ThemePreset::RosePine);
         let c = Config {
             cookie: Some("SID=abc".to_owned()),
             cookies_file: Some(PathBuf::from("/tmp/cookies.txt")),
@@ -1004,6 +1017,7 @@ mod tests {
             ai_enabled: Some(false),
             romanized_titles: Some(true),
             theme,
+            radio_theme: Some(radio_theme),
             retro_mode: true,
             language: Language::Korean,
             keybindings: std::collections::BTreeMap::new(),
@@ -1080,6 +1094,16 @@ mod tests {
                 .map(String::as_str),
             Some("#123456")
         );
+        assert_eq!(
+            back.radio_theme.as_ref().map(|t| t.preset.as_str()),
+            Some("rose_pine")
+        );
+        assert_eq!(
+            back.effective_radio_theme().map(|t| t.preset),
+            Some("rose_pine".to_owned())
+        );
+        assert!(Config::default().radio_theme.is_none());
+        assert!(Config::default().effective_radio_theme().is_none());
     }
 
     #[test]

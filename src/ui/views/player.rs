@@ -137,11 +137,25 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Seekbar. Ratio + label (incl. the None/zero-duration handling) live in `format` so the
     // edge cases are unit-tested without a frame buffer. With the seekbar animation on, the
     // fill also interpolates between mpv's ~1 Hz position reports (the label stays on whole
-    // seconds), so the gauge glides instead of stepping.
-    let ratio = crate::ui::anim::smooth_seek_ratio(
-        app,
-        format::seekbar_ratio(app.playback.time_pos, app.playback.duration),
-    );
+    // seconds), so the gauge glides instead of stepping. A live radio stream has no duration,
+    // so its gauge shows the timeshift state instead (full = live edge, backed off = behind);
+    // the position-interpolating smoother would fight that meaning, so radio skips it.
+    let (ratio, label) = if app.current_is_radio_stream() {
+        format::radio_seekbar(
+            app.playback.time_pos,
+            app.radio_behind_secs(),
+            app.radio_live_synced(),
+        )
+    } else {
+        let ratio = crate::ui::anim::smooth_seek_ratio(
+            app,
+            format::seekbar_ratio(app.playback.time_pos, app.playback.duration),
+        );
+        (
+            ratio,
+            format::seekbar_label(app.playback.time_pos, app.playback.duration),
+        )
+    };
     let seekbar = Gauge::default()
         .gauge_style(
             Style::default()
@@ -149,10 +163,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .bg(app.theme.color(R::GaugeEmpty)),
         )
         .ratio(ratio)
-        .label(format::seekbar_label(
-            app.playback.time_pos,
-            app.playback.duration,
-        ));
+        .label(label);
     frame.render_widget(seekbar, rows[3]);
     // A bright comet sweeps the filled portion when the seekbar animation is on (no-op
     // otherwise), and a short ripple marks the head right after a seek.
@@ -250,6 +261,28 @@ fn repeat_glyph(mode: Repeat, retro: bool) -> &'static str {
     }
 }
 
+/// The shuffle slot's stand-in on a live radio stream: the `LIVE:` sync verdict. Same
+/// width discipline as [`shuffle_glyph`] — every state pads to the emoji pair's two cells
+/// non-retro, and retro picks single-cell CP437 glyphs (the `v`/`x` check/cross convention,
+/// `-` for unknown) at the source.
+fn live_sync_glyph(synced: Option<bool>, retro: bool) -> &'static str {
+    match (retro, synced) {
+        (false, Some(true)) => "✓ ",
+        (false, Some(false)) => "✗ ",
+        (false, None) => "· ",
+        (true, Some(true)) => "v",
+        (true, Some(false)) => "x",
+        (true, None) => "-",
+    }
+}
+
+/// The repeat slot's stand-in on a live radio stream: the `SYNC:` re-sync action. One
+/// state only, so the width invariant is trivial — but it still matches its non-radio
+/// sibling's cells (two non-retro, one CP437 retro).
+fn resync_glyph(retro: bool) -> &'static str {
+    if retro { "»" } else { "🔄" }
+}
+
 /// The transport status line: state, queue position, rating, shuffle, repeat, speed, EQ, etc.
 ///
 /// Rendered as click segments rather than one string so `R:` (toggles repeat) and
@@ -342,16 +375,44 @@ fn status_line_parts_at(
     // one display width, so the line's layout never shifts as they toggle or appear. Each
     // carries its media glyph — `S:🔀` shuffle, `R:🔁`/`R:🔂` repeat — or a padded cross when
     // off, so they read the same in every UI language.
-    parts.push((None, Cow::Owned(gap.to_owned())));
-    parts.push((
-        Some(MouseTarget::Player(Action::ToggleShuffle)),
-        Cow::Owned(format!("S:{}", shuffle_glyph(app.queue.shuffle, retro))),
-    ));
-    parts.push((None, Cow::Owned(gap.to_owned())));
-    parts.push((
-        Some(MouseTarget::Player(Action::CycleRepeat)),
-        Cow::Owned(format!("R:{}", repeat_glyph(app.queue.repeat, retro))),
-    ));
+    // On a live radio stream the same two slots (and the same actions/keys behind them)
+    // read as the live transport instead: `LIVE:` sync verdict, `SYNC:` re-sync.
+    if app.current_is_radio_stream() {
+        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((
+            Some(MouseTarget::Player(Action::ToggleShuffle)),
+            Cow::Owned(format!(
+                "LIVE:{}",
+                live_sync_glyph(app.radio_live_synced(), retro)
+            )),
+        ));
+        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((
+            Some(MouseTarget::Player(Action::CycleRepeat)),
+            Cow::Owned(format!("SYNC:{}", resync_glyph(retro))),
+        ));
+        // The "what's playing" identify card — DJ Gem-backed, so only offered while the
+        // assistant is up. A text label, not a glyph: EAW-ambiguous symbols (♪ …) render
+        // wide on some CJK terminals and would drift every later hit rect.
+        if app.ai.available {
+            parts.push((None, Cow::Owned(gap.to_owned())));
+            parts.push((
+                Some(MouseTarget::Player(Action::IdentifyNowPlaying)),
+                Cow::Borrowed(t!("ID?", "지듣노")),
+            ));
+        }
+    } else {
+        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((
+            Some(MouseTarget::Player(Action::ToggleShuffle)),
+            Cow::Owned(format!("S:{}", shuffle_glyph(app.queue.shuffle, retro))),
+        ));
+        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((
+            Some(MouseTarget::Player(Action::CycleRepeat)),
+            Cow::Owned(format!("R:{}", repeat_glyph(app.queue.repeat, retro))),
+        ));
+    }
     if !minimal && (app.playback.speed - 1.0).abs() > f64::EPSILON {
         parts.push((None, Cow::Owned(format!("{gap}{:.1}x", app.playback.speed))));
     }
@@ -1452,6 +1513,151 @@ mod tests {
             assert!(
                 widths.windows(2).all(|w| w[0] == w[1]),
                 "retro={retro}: line width changed across toggle states: {widths:?}"
+            );
+        }
+    }
+
+    fn radio_song() -> Song {
+        Song::from_source(
+            crate::search_source::SearchSource::RadioBrowser,
+            "groove",
+            "Groove FM",
+            "KR / MP3",
+            "",
+            crate::api::PlayableRef::RadioStream {
+                url: "https://example.com/groove.mp3".to_owned(),
+            },
+        )
+    }
+
+    #[test]
+    fn radio_stream_swaps_shuffle_repeat_for_live_transport_controls() {
+        let mut app = App::new(100);
+        app.queue.set(vec![radio_song()], 0);
+        let parts = status_line_parts_at(&app, "    ", false);
+        // The same two actions stay clickable, but read as the live transport.
+        let live = parts
+            .iter()
+            .find(|(t, _)| matches!(t, Some(MouseTarget::Player(Action::ToggleShuffle))))
+            .expect("live-sync segment");
+        assert!(live.1.starts_with("LIVE:"), "got {:?}", live.1);
+        let sync = parts
+            .iter()
+            .find(|(t, _)| matches!(t, Some(MouseTarget::Player(Action::CycleRepeat))))
+            .expect("re-sync segment");
+        assert!(sync.1.starts_with("SYNC:"), "got {:?}", sync.1);
+        assert!(
+            !parts
+                .iter()
+                .any(|(_, s)| s.starts_with("S:") || s.starts_with("R:")),
+            "music-mode shuffle/repeat labels must not appear on radio"
+        );
+        // The minimal responsive tier keeps both controls reachable.
+        let parts = status_line_parts_at(&app, " ", true);
+        assert!(has_target(&parts, |t| matches!(
+            t,
+            MouseTarget::Player(Action::ToggleShuffle)
+        )));
+        assert!(has_target(&parts, |t| matches!(
+            t,
+            MouseTarget::Player(Action::CycleRepeat)
+        )));
+    }
+
+    #[test]
+    fn identify_segment_is_offered_only_on_radio_with_dj_gem_up() {
+        let mut app = App::new(100);
+        app.queue.set(vec![radio_song()], 0);
+        // Radio but DJ Gem down: no identify affordance.
+        let parts = status_line_parts_at(&app, "    ", false);
+        assert!(!has_target(&parts, |t| matches!(
+            t,
+            MouseTarget::Player(Action::IdentifyNowPlaying)
+        )));
+        // Radio + DJ Gem up: offered (and it survives the minimal tier — it's a control).
+        app.ai.available = true;
+        for minimal in [false, true] {
+            let parts = status_line_parts_at(&app, " ", minimal);
+            assert!(has_target(&parts, |t| matches!(
+                t,
+                MouseTarget::Player(Action::IdentifyNowPlaying)
+            )));
+        }
+        // Music mode never offers it, DJ Gem or not.
+        let mut app = App::new(100);
+        app.ai.available = true;
+        app.queue.set(vec![Song::remote("a", "A", "x", "1:00")], 0);
+        let parts = status_line_parts_at(&app, "    ", false);
+        assert!(!has_target(&parts, |t| matches!(
+            t,
+            MouseTarget::Player(Action::IdentifyNowPlaying)
+        )));
+    }
+
+    #[test]
+    fn live_transport_glyphs_share_one_width_per_mode() {
+        let w = UnicodeWidthStr::width;
+        for retro in [false, true] {
+            let widths: Vec<usize> = [Some(true), Some(false), None]
+                .iter()
+                .map(|s| w(live_sync_glyph(*s, retro)))
+                .collect();
+            assert!(
+                widths.windows(2).all(|p| p[0] == p[1]),
+                "retro={retro}: live-sync widths differ: {widths:?}"
+            );
+            // The stand-ins must occupy their slot's exact cells so swapping the labels
+            // in radio mode is the only width change (LIVE:/SYNC: vs S:/R:).
+            assert_eq!(
+                w(live_sync_glyph(Some(true), retro)),
+                w(shuffle_glyph(true, retro))
+            );
+            assert_eq!(w(resync_glyph(retro)), w(repeat_glyph(Repeat::All, retro)));
+        }
+        // Retro stand-ins are single-cell CP437 glyphs, distinct per state.
+        assert_eq!(UnicodeWidthStr::width(resync_glyph(true)), 1);
+        for s in [Some(true), Some(false), None] {
+            assert_eq!(UnicodeWidthStr::width(live_sync_glyph(s, true)), 1);
+        }
+        assert_ne!(
+            live_sync_glyph(Some(true), true),
+            live_sync_glyph(Some(false), true)
+        );
+        assert_ne!(
+            live_sync_glyph(Some(true), true),
+            live_sync_glyph(None, true)
+        );
+        assert_ne!(
+            live_sync_glyph(Some(false), true),
+            live_sync_glyph(None, true)
+        );
+    }
+
+    #[test]
+    fn status_line_width_is_invariant_across_radio_sync_states() {
+        let mut app = App::new(100);
+        app.queue.set(vec![radio_song()], 0);
+        for retro in [false, true] {
+            app.config.retro_mode = retro;
+            let mut widths = Vec::new();
+            // Synced, behind, and unknown must all measure the same.
+            for (pos, edge) in [
+                (Some(100.0), Some(103.0)),
+                (Some(100.0), Some(300.0)),
+                (None, None),
+            ] {
+                app.playback.time_pos = pos;
+                app.playback.cache_time = edge;
+                app.playback.cache_time_at = edge.map(|_| std::time::Instant::now());
+                let total: usize = status_line_parts_at(&app, "    ", false)
+                    .iter()
+                    .map(|(_, s)| UnicodeWidthStr::width(s.as_ref()))
+                    .sum();
+                widths.push(total);
+            }
+            assert!(
+                widths.windows(2).all(|w| w[0] == w[1]),
+                "retro={retro}: line width changed across sync states: {widths:?}"
             );
         }
     }

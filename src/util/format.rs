@@ -33,6 +33,28 @@ pub fn seekbar_label(pos: Option<f64>, dur: Option<f64>) -> String {
     format!("{} / {right}", time(pos.unwrap_or(0.0)))
 }
 
+/// The nominal timeshift depth one full seekbar width represents on a live radio stream.
+/// The real depth is whatever fits mpv's back-buffer; this only scales the *rendered*
+/// backoff so a few seconds behind reads as a sliver and minutes behind as a clear gap.
+const RADIO_RENDER_WINDOW_SECS: f64 = 600.0;
+
+/// `(ratio, label)` of the seekbar for a live radio stream, where a duration-based gauge
+/// is meaningless. At (or presumed at) the live edge the bar is full and labeled `LIVE`;
+/// a timeshifted playhead backs the bar off the right edge proportionally to how far
+/// behind it sits and labels the gap (`-Ns`). With no position at all this falls back to
+/// the ordinary unknown-duration label so a connecting stream looks like today.
+pub fn radio_seekbar(pos: Option<f64>, behind: Option<f64>, synced: Option<bool>) -> (f64, String) {
+    let elapsed = time(pos.unwrap_or(0.0));
+    match (pos, behind, synced) {
+        (_, Some(b), Some(false)) => {
+            let ratio = (1.0 - b / RADIO_RENDER_WINDOW_SECS).clamp(0.05, 1.0);
+            (ratio, format!("{elapsed} · -{}s", b as i64))
+        }
+        (_, Some(_), _) | (Some(_), None, _) => (1.0, format!("{elapsed} · LIVE")),
+        (None, None, _) => (0.0, seekbar_label(pos, None)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,5 +94,38 @@ mod tests {
         assert_eq!(seekbar_label(Some(75.0), None), "1:15 / --:--");
         assert_eq!(seekbar_label(Some(75.0), Some(0.0)), "1:15 / --:--");
         assert_eq!(seekbar_label(Some(75.0), Some(200.0)), "1:15 / 3:20");
+    }
+
+    #[test]
+    fn radio_seekbar_full_bar_and_live_label_at_the_edge() {
+        assert_eq!(
+            radio_seekbar(Some(75.0), Some(3.0), Some(true)),
+            (1.0, "1:15 · LIVE".to_owned())
+        );
+        // Unknown sync state but a running position: presume live (the glyph carries
+        // the uncertainty; cache-less streams are effectively always at the edge).
+        assert_eq!(
+            radio_seekbar(Some(75.0), None, None),
+            (1.0, "1:15 · LIVE".to_owned())
+        );
+    }
+
+    #[test]
+    fn radio_seekbar_backs_off_proportionally_when_behind() {
+        let (ratio, label) = radio_seekbar(Some(75.0), Some(60.0), Some(false));
+        assert_eq!(label, "1:15 · -60s");
+        assert!((ratio - 0.9).abs() < 1e-9);
+        // A huge timeshift clamps to a visible sliver rather than an empty/negative bar.
+        let (ratio, label) = radio_seekbar(Some(75.0), Some(100_000.0), Some(false));
+        assert_eq!(label, "1:15 · -100000s");
+        assert_eq!(ratio, 0.05);
+    }
+
+    #[test]
+    fn radio_seekbar_connecting_stream_matches_todays_empty_state() {
+        assert_eq!(
+            radio_seekbar(None, None, None),
+            (0.0, "0:00 / --:--".to_owned())
+        );
     }
 }

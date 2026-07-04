@@ -5,6 +5,7 @@ pub mod about;
 pub mod ai;
 pub mod help;
 pub mod library;
+pub mod now_playing;
 pub mod player;
 pub mod search;
 pub mod settings;

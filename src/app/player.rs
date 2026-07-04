@@ -2,6 +2,19 @@
 
 use super::*;
 
+/// How far behind the live edge still counts as "in sync" (a healthy at-edge stream keeps
+/// a single-digit-seconds forward buffer; 15 avoids false ✗ on bursty stations while
+/// catching any real pause-behind).
+pub(in crate::app) const LIVE_SYNC_THRESHOLD_SECS: f64 = 15.0;
+/// Re-sync seeks this far short of the newest demuxed data, never into the undemuxed tail.
+pub(in crate::app) const LIVE_EDGE_SEEK_MARGIN_SECS: f64 = 2.0;
+/// A `demuxer-cache-time` older than this (while playing) no longer proves we're at the
+/// edge — mpv stops updating it once the forward buffer saturates.
+pub(in crate::app) const CACHE_TIME_STALE_SECS: f64 = 5.0;
+/// A second re-sync inside this window while still behind means the seek didn't take
+/// (an unseekable live cache), so re-sync escalates to a stream reconnect.
+pub(in crate::app) const RESYNC_RETRY_WINDOW_SECS: f64 = 10.0;
+
 /// Memoized result of [`App::recover_youtube_id`]'s library title scan, keyed on the
 /// track and the same rev/length fingerprint the library row cache uses.
 pub(in crate::app) struct YidMemo {
@@ -556,6 +569,14 @@ impl App {
                 Some(song) => self.start_download(song),
                 None => Vec::new(),
             },
+            // On a live radio stream the shuffle/repeat slots are reinterpreted as the
+            // live-transport controls: sync indicator (read-only note) and re-sync. The
+            // queue's shuffle/repeat state stays untouched so leaving radio restores the
+            // music-mode toggles exactly as they were.
+            Action::ToggleShuffle if self.current_is_radio_stream() => {
+                self.radio_sync_status_note()
+            }
+            Action::CycleRepeat if self.current_is_radio_stream() => self.resync_radio_to_live(),
             Action::ToggleShuffle => {
                 self.queue.toggle_shuffle();
                 self.dirty = true;
@@ -601,6 +622,7 @@ impl App {
                 self.enter_ai();
                 Vec::new()
             }
+            Action::IdentifyNowPlaying => self.open_now_playing_overlay(),
             Action::OpenSearch => {
                 self.mode = Mode::Search;
                 self.search.focus = SearchFocus::Input;
@@ -957,7 +979,11 @@ impl App {
                 self.playback.duration = None;
                 self.playback.paused = true;
                 self.playback.stream_now_playing = None;
+                self.playback.cache_time = None;
+                self.playback.cache_time_at = None;
                 self.last_shown_sec = -1;
+                self.last_shown_cache_sec = -1;
+                self.radio_resync_at = None;
                 self.prefetch.loaded_video_id = None;
                 self.clear_artwork();
                 Vec::new()
@@ -969,6 +995,122 @@ impl App {
         self.queue.current().is_some_and(|song| {
             self.prefetch.loaded_video_id.as_deref() != Some(song.video_id.as_str())
         })
+    }
+
+    /// Whether the current queue item is a live radio stream. A property of the *track*,
+    /// not the dedicated-radio UI mode — a station playing in normal mode gets the same
+    /// live-transport rules (sync indicator, re-sync, timeshift seekbar).
+    pub fn current_is_radio_stream(&self) -> bool {
+        self.queue.current().is_some_and(Song::is_radio_station)
+    }
+
+    /// Seconds the playhead sits behind the live edge (`demuxer-cache-time − time-pos`),
+    /// or `None` when it can't be known. A stale report while playing proves nothing
+    /// about being *at* the edge, but a stale edge is still a lower bound — so a clearly
+    /// behind verdict survives staleness, while a "synced" one degrades to unknown.
+    /// While paused the last report is kept (the buffer saturates and freezes; being
+    /// behind only grows).
+    pub fn radio_behind_secs(&self) -> Option<f64> {
+        if !self.current_is_radio_stream() {
+            return None;
+        }
+        let edge = self.playback.cache_time?;
+        let at = self.playback.cache_time_at?;
+        let behind = (edge - self.playback.time_pos?).max(0.0);
+        let stale = !self.playback.paused && at.elapsed().as_secs_f64() > CACHE_TIME_STALE_SECS;
+        if stale && behind <= LIVE_SYNC_THRESHOLD_SECS {
+            return None;
+        }
+        Some(behind)
+    }
+
+    /// The live-sync verdict for the current radio stream: `Some(true)` at the live edge,
+    /// `Some(false)` behind (timeshifted), `None` unknown (no usable cache info).
+    pub fn radio_live_synced(&self) -> Option<bool> {
+        self.radio_behind_secs()
+            .map(|behind| behind <= LIVE_SYNC_THRESHOLD_SECS)
+    }
+
+    /// The shuffle slot's radio behavior: report the live-sync state as an Info toast.
+    /// Deliberately read-only — an accidental press must never seek or mutate the queue.
+    pub(in crate::app) fn radio_sync_status_note(&mut self) -> Vec<Cmd> {
+        self.status.kind = StatusKind::Info;
+        self.status.text = match self.radio_behind_secs() {
+            Some(b) if b <= LIVE_SYNC_THRESHOLD_SECS => {
+                t!("Live: at the live edge", "라이브: 실시간 재생 중").to_owned()
+            }
+            Some(b) => {
+                let key = self.keymap.label_for_display(
+                    crate::keymap::KeyContext::Player,
+                    Action::CycleRepeat,
+                    self.retro_mode(),
+                );
+                if crate::i18n::is_korean() {
+                    format!("라이브: {}초 뒤처짐 — {key} 키로 다시 맞추기", b as i64)
+                } else {
+                    format!("Live: {}s behind — press {key} to re-sync", b as i64)
+                }
+            }
+            None => t!(
+                "Live: sync state unknown",
+                "라이브: 동기화 상태를 알 수 없어요"
+            )
+            .to_owned(),
+        };
+        self.dirty = true;
+        Vec::new()
+    }
+
+    /// The repeat slot's radio behavior: return to the live edge. Seeks to the newest
+    /// demuxed data when a usable edge is known; reconnects the stream when it isn't, or
+    /// when a recent seek demonstrably didn't take. Resumes playback either way.
+    pub(in crate::app) fn resync_radio_to_live(&mut self) -> Vec<Cmd> {
+        let Some(song) = self.queue.current().cloned() else {
+            return Vec::new();
+        };
+        let behind = self.radio_behind_secs();
+        if let Some(b) = behind
+            && b <= LIVE_SYNC_THRESHOLD_SECS
+            && !self.playback.paused
+        {
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!("Live: at the live edge", "라이브: 실시간 재생 중").to_owned();
+            self.dirty = true;
+            return Vec::new();
+        }
+        let seek_failed_recently = self
+            .radio_resync_at
+            .is_some_and(|at| at.elapsed().as_secs_f64() < RESYNC_RETRY_WINDOW_SECS);
+        self.radio_resync_at = Some(Instant::now());
+        self.status.kind = StatusKind::Info;
+        if let Some(edge) = self.playback.cache_time
+            && behind.is_some()
+            && !seek_failed_recently
+        {
+            // Optimistic unpause, like TogglePause: mpv confirms via `pause`.
+            let mut cmds = Vec::new();
+            if self.playback.paused {
+                self.playback.paused = false;
+                self.video.paused_audio = false;
+                cmds.push(Cmd::Player(PlayerCmd::CyclePause));
+            }
+            cmds.push(Cmd::Player(PlayerCmd::SeekAbsolute(
+                (edge - LIVE_EDGE_SEEK_MARGIN_SECS).max(0.0),
+            )));
+            self.status.text = t!("Re-synced to live", "실시간으로 다시 맞췄어요").to_owned();
+            self.dirty = true;
+            return cmds;
+        }
+        // No usable edge (cache-less stream) or the seek didn't take → reconnect. A fresh
+        // connection starts at the live edge by construction; `load_song` resets progress
+        // (incl. `paused = false`).
+        self.status.text = t!(
+            "Reconnected to the live stream",
+            "라이브 스트림에 다시 연결했어요"
+        )
+        .to_owned();
+        self.dirty = true;
+        self.load_song(Some(song))
     }
 
     /// Whether we lack lyrics for the current track (so a fetch is warranted).
@@ -991,6 +1133,10 @@ impl App {
         self.playback.duration = None;
         self.playback.paused = false;
         self.playback.stream_now_playing = None;
+        self.playback.cache_time = None;
+        self.playback.cache_time_at = None;
         self.last_shown_sec = -1;
+        self.last_shown_cache_sec = -1;
+        self.radio_resync_at = None;
     }
 }

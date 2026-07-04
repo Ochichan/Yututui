@@ -350,7 +350,12 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
             if selected.is_some_and(|(start, end)| abs >= start && abs <= end) {
                 Line::from(line.copy.clone()).style(selection_style)
             } else {
-                Line::from(line.copy.clone()).style(line.style)
+                Line::from(
+                    line.spans
+                        .iter()
+                        .map(|(text, style)| Span::styled(text.clone(), *style))
+                        .collect::<Vec<Span>>(),
+                )
             }
         })
         .collect();
@@ -375,87 +380,241 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
 
 #[derive(Debug, Clone)]
 struct TranscriptLine {
+    /// The plain rendered text — markdown markers already stripped — so drag-copy and
+    /// the selection highlight yield exactly what's on screen.
     copy: String,
-    style: Style,
+    /// The same text split into styled runs (their concatenation equals `copy`).
+    spans: Vec<(String, Style)>,
+}
+
+impl TranscriptLine {
+    fn blank() -> Self {
+        Self {
+            copy: String::new(),
+            spans: Vec::new(),
+        }
+    }
+
+    fn plain(text: String, style: Style) -> Self {
+        Self {
+            spans: vec![(text.clone(), style)],
+            copy: text,
+        }
+    }
 }
 
 fn build_transcript_lines(app: &App, width: usize) -> Vec<TranscriptLine> {
     let mut lines = Vec::new();
     let width = width.max(1);
+    let accent = app.theme.style(R::Accent);
     for m in &app.ai.messages {
+        // A blank line between messages so exchanges breathe instead of stacking.
+        if !lines.is_empty() {
+            lines.push(TranscriptLine::blank());
+        }
         let (prefix, role) = match m.role {
             AiRole::User => (t!("you ", "나    "), R::AiUser),
             AiRole::Ai => (t!("gem ", "Gem   "), R::AiAssistant),
             AiRole::Error => (t!("err ", "오류  "), R::AiError),
         };
-        push_wrapped_message(&mut lines, prefix, &m.text, width, app.theme.style(role));
+        let base = app.theme.style(role);
+        // Only assistant replies speak markdown; user prompts and errors stay verbatim.
+        let chars = if m.role == AiRole::Ai {
+            markdown_styled_chars(&m.text, base, accent)
+        } else {
+            m.text.chars().map(|c| (c, base)).collect()
+        };
+        push_wrapped_styled(&mut lines, prefix, base, &chars, width);
     }
     if app.ai.thinking {
+        if !lines.is_empty() {
+            lines.push(TranscriptLine::blank());
+        }
         // Animated dots while a request is in flight (the static text when the flag is off).
         let text = match crate::ui::anim::activity_dots(app) {
             Some(dots) => format!("{}{dots}", t!("…thinking", "…생각 중")),
             None => t!("…thinking", "…생각 중").to_owned(),
         };
-        push_wrapped_message(
-            &mut lines,
-            t!("gem ", "Gem   "),
-            &text,
-            width,
-            app.theme.style(R::AiThinking),
-        );
+        let style = app.theme.style(R::AiThinking);
+        let chars: Vec<(char, Style)> = text.chars().map(|c| (c, style)).collect();
+        push_wrapped_styled(&mut lines, t!("gem ", "Gem   "), style, &chars, width);
     }
     if lines.is_empty() {
-        lines.push(TranscriptLine {
-            copy: t!(
+        lines.push(TranscriptLine::plain(
+            t!(
                 "Ask me to play, queue, or find music.",
                 "재생, 대기열 추가, 음악 찾기를 부탁해 보세요."
             )
             .to_owned(),
-            style: app.theme.style(R::TextMuted),
-        });
+            app.theme.style(R::TextMuted),
+        ));
     }
     lines
 }
 
-fn push_wrapped_message(
+/// Wrap one styled message under its role tag. The tag renders as a reversed-video chip
+/// (its trailing padding stays plain) so who-said-what reads at a glance; continuation
+/// lines hang-indent under the message body exactly as before.
+fn push_wrapped_styled(
     out: &mut Vec<TranscriptLine>,
     prefix: &str,
-    text: &str,
+    prefix_style: Style,
+    chars: &[(char, Style)],
     width: usize,
-    style: Style,
 ) {
     let prefix_w = UnicodeWidthStr::width(prefix);
     let body_w = width.saturating_sub(prefix_w).max(1);
     let indent = " ".repeat(prefix_w);
+    let chip = prefix.trim_end();
+    let pad = &prefix[chip.len()..];
+    let chip_style = prefix_style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
     let mut first = true;
-    for segment in wrap_text_cells(text, body_w) {
-        let head = if first { prefix } else { indent.as_str() };
-        out.push(TranscriptLine {
-            copy: format!("{head}{segment}"),
-            style,
-        });
+    for segment in wrap_styled_cells(chars, body_w) {
+        let mut spans: Vec<(String, Style)> = Vec::with_capacity(4);
+        if first {
+            if !chip.is_empty() {
+                spans.push((chip.to_owned(), chip_style));
+            }
+            if !pad.is_empty() {
+                spans.push((pad.to_owned(), prefix_style));
+            }
+        } else {
+            spans.push((indent.clone(), prefix_style));
+        }
+        spans.extend(group_style_runs(&segment));
+        let copy: String = spans.iter().map(|(text, _)| text.as_str()).collect();
+        out.push(TranscriptLine { copy, spans });
         first = false;
     }
 }
 
-fn wrap_text_cells(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
+/// Collapse per-char styles into contiguous `(text, style)` runs.
+fn group_style_runs(chars: &[(char, Style)]) -> Vec<(String, Style)> {
+    let mut out: Vec<(String, Style)> = Vec::new();
+    for &(c, style) in chars {
+        match out.last_mut() {
+            Some((text, s)) if *s == style => text.push(c),
+            _ => out.push((c.to_string(), style)),
+        }
+    }
+    out
+}
+
+/// Markdown-lite styling for assistant replies — the subset Gemini actually emits:
+/// `**bold**`, `` `code` ``, `-`/`*` bullets, and `#` headings. Markers are stripped
+/// from the rendered text (and therefore from drag-copy). Anything unclosed stays
+/// literal, so a title like "*ハロー、プラネット。" is never eaten.
+fn markdown_styled_chars(text: &str, base: Style, accent: Style) -> Vec<(char, Style)> {
+    let bold = base.add_modifier(Modifier::BOLD);
     let mut out = Vec::new();
-    for para in text.split('\n') {
-        if para.trim().is_empty() {
-            out.push(String::new());
+    let mut first_line = true;
+    for line in text.split('\n') {
+        if !first_line {
+            out.push(('\n', base));
+        }
+        first_line = false;
+        let trimmed = line.trim_start();
+        let lead = &line[..line.len() - trimmed.len()];
+        out.extend(lead.chars().map(|c| (c, base)));
+
+        // Heading: `#`s + a space → the hashes vanish, the line renders bold.
+        let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+        if hashes > 0
+            && let Some(heading) = trimmed[hashes..].strip_prefix(' ')
+        {
+            inline_styled_chars(heading, bold, bold, accent, &mut out);
             continue;
         }
+        // Bullet: `- ` / `* ` → an accent-colored `•`.
+        if let Some(item) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            out.push(('•', accent));
+            out.push((' ', base));
+            inline_styled_chars(item, base, bold, accent, &mut out);
+            continue;
+        }
+        inline_styled_chars(trimmed, base, bold, accent, &mut out);
+    }
+    out
+}
 
-        let mut cur = String::new();
+/// Inline spans within one line: `**bold**` and `` `code` `` (code renders in the
+/// accent color). Unclosed or empty markers fall through as literal text.
+fn inline_styled_chars(
+    text: &str,
+    base: Style,
+    bold: Style,
+    code: Style,
+    out: &mut Vec<(char, Style)>,
+) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '`'
+            && let Some(close) = (i + 1..chars.len()).find(|&j| chars[j] == '`')
+            && close > i + 1
+        {
+            out.extend(chars[i + 1..close].iter().map(|&c| (c, code)));
+            i = close + 1;
+            continue;
+        }
+        if chars[i] == '*'
+            && chars.get(i + 1) == Some(&'*')
+            && let Some(close) = (i + 2..chars.len().saturating_sub(1))
+                .find(|&j| chars[j] == '*' && chars[j + 1] == '*')
+            && close > i + 2
+        {
+            out.extend(chars[i + 2..close].iter().map(|&c| (c, bold)));
+            i = close + 2;
+            continue;
+        }
+        out.push((chars[i], base));
+        i += 1;
+    }
+}
+
+/// Plain-text wrapper kept as the styled wrap's shadow so the original wrapping tests
+/// keep pinning the shared behavior (word wrap, whitespace collapse, long-word split).
+#[cfg(test)]
+fn wrap_text_cells(text: &str, width: usize) -> Vec<String> {
+    let chars: Vec<(char, Style)> = text.chars().map(|c| (c, Style::default())).collect();
+    wrap_styled_cells(&chars, width)
+        .into_iter()
+        .map(|seg| seg.into_iter().map(|(c, _)| c).collect())
+        .collect()
+}
+
+/// Word-wrap styled chars to `width` display cells: paragraphs split on `\n`, runs of
+/// whitespace collapse to one space, and a word longer than the width splits at the
+/// cell boundary — the exact behavior the plain wrapper always had, carried per char so
+/// markdown runs survive wrapping.
+fn wrap_styled_cells(chars: &[(char, Style)], width: usize) -> Vec<Vec<(char, Style)>> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for para in chars.split(|(c, _)| *c == '\n') {
+        if para.iter().all(|(c, _)| c.is_whitespace()) {
+            out.push(Vec::new());
+            continue;
+        }
+        let mut cur: Vec<(char, Style)> = Vec::new();
         let mut cur_w = 0usize;
-        for word in para.split_whitespace() {
-            let word_w = UnicodeWidthStr::width(word);
+        for word in para
+            .split(|(c, _)| c.is_whitespace())
+            .filter(|w| !w.is_empty())
+        {
+            let word_w: usize = word
+                .iter()
+                .map(|(c, _)| UnicodeWidthChar::width(*c).unwrap_or(0))
+                .sum();
             if cur.is_empty() {
                 push_word_wrapped(&mut out, &mut cur, &mut cur_w, word, width);
             } else if cur_w + 1 + word_w <= width {
-                cur.push(' ');
-                cur.push_str(word);
+                // The joining space carries the upcoming word's leading style (it's
+                // invisible either way — this just keeps runs mergeable).
+                cur.push((' ', word[0].1));
+                cur.extend_from_slice(word);
                 cur_w += 1 + word_w;
             } else {
                 out.push(std::mem::take(&mut cur));
@@ -471,19 +630,19 @@ fn wrap_text_cells(text: &str, width: usize) -> Vec<String> {
 }
 
 fn push_word_wrapped(
-    out: &mut Vec<String>,
-    cur: &mut String,
+    out: &mut Vec<Vec<(char, Style)>>,
+    cur: &mut Vec<(char, Style)>,
     cur_w: &mut usize,
-    word: &str,
+    word: &[(char, Style)],
     width: usize,
 ) {
-    for ch in word.chars() {
+    for &(ch, style) in word {
         let ch_w = UnicodeWidthChar::width(ch).unwrap_or(0);
         if *cur_w > 0 && cur_w.saturating_add(ch_w) > width {
             out.push(std::mem::take(cur));
             *cur_w = 0;
         }
-        cur.push(ch);
+        cur.push((ch, style));
         *cur_w += ch_w;
     }
 }
@@ -698,8 +857,8 @@ fn render_send_button(frame: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_text_cells;
-    use unicode_width::UnicodeWidthStr;
+    use super::*;
+    use crate::app::AiMessage;
 
     #[test]
     fn wraps_on_words_when_possible() {
@@ -718,5 +877,108 @@ mod tests {
                 .iter()
                 .all(|line| UnicodeWidthStr::width(line.as_str()) <= 3)
         );
+    }
+
+    fn plain_text(chars: &[(char, Style)]) -> String {
+        chars.iter().map(|(c, _)| c).collect()
+    }
+
+    #[test]
+    fn markdown_strips_markers_and_styles_runs() {
+        let base = Style::default();
+        let accent = Style::default().fg(Color::Cyan);
+        let bold = base.add_modifier(Modifier::BOLD);
+        let out = markdown_styled_chars("a **bold** and `code` end", base, accent);
+        assert_eq!(plain_text(&out), "a bold and code end");
+        let style_of = |needle: char| out.iter().find(|(c, _)| *c == needle).unwrap().1;
+        assert_eq!(style_of('b'), bold);
+        assert_eq!(style_of('o'), bold);
+        assert_eq!(style_of('c'), accent);
+        assert_eq!(style_of('a'), base);
+    }
+
+    #[test]
+    fn markdown_leaves_unclosed_markers_literal() {
+        let base = Style::default();
+        let accent = Style::default().fg(Color::Cyan);
+        // The M3 identify examples contain exactly this shape — it must never be eaten.
+        let out = markdown_styled_chars("*ハロー、プラネット。", base, accent);
+        assert_eq!(plain_text(&out), "*ハロー、プラネット。");
+        let out = markdown_styled_chars("a ** b and `tick", base, accent);
+        assert_eq!(plain_text(&out), "a ** b and `tick");
+        // Empty markers stay literal too.
+        let out = markdown_styled_chars("**** and ``", base, accent);
+        assert_eq!(plain_text(&out), "**** and ``");
+    }
+
+    #[test]
+    fn markdown_renders_bullets_and_headings() {
+        let base = Style::default();
+        let accent = Style::default().fg(Color::Cyan);
+        let out = markdown_styled_chars("## Head\n- item one\n* item two\n#tag", base, accent);
+        assert_eq!(plain_text(&out), "Head\n• item one\n• item two\n#tag");
+        // Heading text is bold; the bullet dot carries the accent.
+        assert_eq!(
+            out.iter().find(|(c, _)| *c == 'H').unwrap().1,
+            base.add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(out.iter().find(|(c, _)| *c == '•').unwrap().1, accent);
+    }
+
+    #[test]
+    fn transcript_chips_roles_separates_messages_and_strips_markdown() {
+        let mut app = App::new(100);
+        app.ai.messages.push(AiMessage {
+            role: AiRole::User,
+            text: "who sings this?".to_owned(),
+        });
+        app.ai.messages.push(AiMessage {
+            role: AiRole::Ai,
+            text: "It's **YOASOBI**.".to_owned(),
+        });
+        let lines = build_transcript_lines(&app, 60);
+
+        // Message, blank separator, message.
+        assert_eq!(lines.len(), 3);
+        assert!(lines[1].copy.is_empty() && lines[1].spans.is_empty());
+
+        // The role tag renders as a reversed chip; its text stays in the copy line.
+        assert_eq!(lines[0].copy, "you who sings this?");
+        assert_eq!(lines[0].spans[0].0, "you");
+        assert!(
+            lines[0].spans[0]
+                .1
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+
+        // Markdown markers are stripped from both the render and the drag-copy text.
+        assert_eq!(lines[2].copy, "gem It's YOASOBI.");
+        assert!(
+            lines[2]
+                .spans
+                .iter()
+                .any(|(text, style)| text.contains("YOASOBI")
+                    && style.add_modifier.contains(Modifier::BOLD))
+        );
+        // Spans always reassemble exactly into the copy text.
+        for line in &lines {
+            let joined: String = line.spans.iter().map(|(t, _)| t.as_str()).collect();
+            assert_eq!(joined, line.copy);
+        }
+    }
+
+    #[test]
+    fn transcript_styled_wrap_keeps_hanging_indent() {
+        let mut app = App::new(100);
+        app.ai.messages.push(AiMessage {
+            role: AiRole::Ai,
+            text: "**alpha beta** gamma".to_owned(),
+        });
+        // Width 14 = 4 ("gem " chip+pad) + 10 body cells: the bold pair fills line one,
+        // and the continuation hang-indents under the body, not under the chip.
+        let lines = build_transcript_lines(&app, 14);
+        assert_eq!(lines[0].copy, "gem alpha beta");
+        assert_eq!(lines[1].copy, "    gamma");
     }
 }

@@ -53,6 +53,10 @@ pub enum PlayerEvent {
     Paused(bool),
     Volume(f64),
     Metadata(Value),
+    /// `demuxer-cache-time`: the timestamp of the newest demuxed data — for a live radio
+    /// stream, the live edge. `None` when mpv reports the property as unavailable (the
+    /// reducer must see the loss, unlike the always-numeric `time-pos`).
+    CacheTime(Option<f64>),
     Eof,
     Error(String),
 }

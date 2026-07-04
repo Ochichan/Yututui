@@ -83,10 +83,16 @@ impl From<RuntimeEvent> for Msg {
                     keys,
                     entries,
                 },
+                crate::ai::AiEvent::NowPlayingIdentified { seq, result } => {
+                    Msg::NowPlayingIdentified { seq, result }
+                }
             },
             RuntimeEvent::Api(event) => match event {
                 crate::api::ApiEvent::ModeResolved { mode, had_cookie } => {
                     Msg::ApiModeResolved { mode, had_cookie }
+                }
+                crate::api::ApiEvent::TrackResolved { seq, result } => {
+                    Msg::TrackResolved { seq, result }
                 }
                 crate::api::ApiEvent::SearchResults {
                     query,
@@ -158,6 +164,7 @@ impl From<RuntimeEvent> for Msg {
                 crate::player::PlayerEvent::Paused(paused) => Msg::PlayerPaused(paused),
                 crate::player::PlayerEvent::Volume(volume) => Msg::PlayerVolume(volume),
                 crate::player::PlayerEvent::Metadata(metadata) => Msg::PlayerMetadata(metadata),
+                crate::player::PlayerEvent::CacheTime(t) => Msg::PlayerCacheTime(t),
                 crate::player::PlayerEvent::Eof => Msg::PlayerEof,
                 crate::player::PlayerEvent::Error(error) => Msg::PlayerError(error),
             },
@@ -429,6 +436,27 @@ impl RuntimeHandles {
             Cmd::AskAi { prompt, context } => {
                 if let Some(h) = &self.ai_handle {
                     h.ask(prompt, context);
+                }
+            }
+            Cmd::ResolveTrack { seq, query, config } => {
+                self.api_handle.resolve_track(seq, query, config);
+            }
+            Cmd::IdentifyNowPlaying {
+                seq,
+                station,
+                raw_title,
+            } => {
+                if let Some(h) = &self.ai_handle {
+                    h.identify_now_playing(seq, station, raw_title);
+                } else {
+                    // Actor torn down between keypress and dispatch — resolve the
+                    // overlay's Loading state instead of leaving it stuck.
+                    let _ = self
+                        .worker_tx
+                        .send(RuntimeEvent::App(Msg::NowPlayingIdentified {
+                            seq,
+                            result: Err("DJ Gem is not available".to_owned()),
+                        }));
                 }
             }
             Cmd::AiRerank {

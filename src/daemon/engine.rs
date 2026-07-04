@@ -373,6 +373,9 @@ impl DaemonEngine {
                 Vec::new()
             }
             PlayerEvent::Metadata(_) => Vec::new(),
+            // The headless engine has no live-sync surface; timeshift state is the TUI
+            // reducer's concern (`Msg::PlayerCacheTime`).
+            PlayerEvent::CacheTime(_) => Vec::new(),
             PlayerEvent::Eof => {
                 self.record_outgoing(true);
                 self.advance_after_end().await
@@ -383,6 +386,9 @@ impl DaemonEngine {
 
     pub async fn handle_api_event(&mut self, event: ApiEvent) -> Vec<EngineEffect> {
         match event {
+            // Track resolution belongs to the TUI's "what's playing" overlay; the
+            // headless engine never issues one.
+            ApiEvent::TrackResolved { .. } => Vec::new(),
             ApiEvent::StreamingResults {
                 seed_video_id,
                 candidates,

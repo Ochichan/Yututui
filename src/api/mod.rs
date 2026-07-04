@@ -363,6 +363,14 @@ pub enum ApiCmd {
         mode: StreamingMode,
         config: StreamingConfig,
     },
+    /// Resolve free-text artist/title (e.g. an AI-identified radio song) to real YouTube
+    /// tracks, WITHOUT touching the Search screen — the reply is its own event, keyed by
+    /// `seq`, not [`ApiEvent::SearchResults`].
+    ResolveTrack {
+        seq: u64,
+        query: String,
+        config: SearchConfig,
+    },
     /// Search public YouTube playlists by name (YouTube-only; other providers have no
     /// playlist catalog here). Results return as ordinary [`ApiEvent::SearchResults`]
     /// rows whose ids carry [`PLAYLIST_ID_PREFIX`].
@@ -402,6 +410,11 @@ pub enum ApiEvent {
     StreamingError {
         seed_video_id: String,
         error: String,
+    },
+    /// Best-match tracks answering [`ApiCmd::ResolveTrack`] (possibly empty).
+    TrackResolved {
+        seq: u64,
+        result: Result<Vec<Song>, String>,
     },
     /// A remote playlist's tracks, answering [`ApiCmd::PlaylistTracks`].
     PlaylistTracks {
@@ -462,6 +475,14 @@ impl ApiHandle {
             picks,
             fallback,
             mode,
+            config,
+        });
+    }
+
+    pub fn resolve_track(&self, seq: u64, query: impl Into<String>, config: SearchConfig) {
+        let _ = self.tx.send(ApiCmd::ResolveTrack {
+            seq,
+            query: query.into(),
             config,
         });
     }
@@ -550,6 +571,21 @@ where
                     }
                 };
                 emit(event);
+            }
+            ApiCmd::ResolveTrack { seq, query, config } => {
+                // The same innertube→yt-dlp search as the Search screen, but the answer
+                // stays out of screen state — the caller matches it back up by `seq`.
+                let result = api
+                    .search_songs(&query, SearchSource::Youtube, &config)
+                    .await
+                    .map_err(|e| sanitize::sanitize_error_text(format!("{e:#}")));
+                match &result {
+                    Ok(songs) => {
+                        tracing::info!(count = songs.len(), query = %query, "track resolved")
+                    }
+                    Err(error) => tracing::warn!(error = %error, "track resolve failed"),
+                }
+                emit(ApiEvent::TrackResolved { seq, result });
             }
             ApiCmd::SearchPlaylists { query } => {
                 let event = match api.search_playlists(&query).await {

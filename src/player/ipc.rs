@@ -45,6 +45,7 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, e
         (3, "pause"),
         (4, "volume"),
         (5, "metadata"),
+        (6, "demuxer-cache-time"),
     ] {
         if let Err(e) = write_json(&conn, &proto::cmd_observe(id, prop)).await {
             tracing::warn!(error = %e, property = prop, "failed to observe mpv property");
@@ -55,13 +56,14 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, e
     let mut line = String::new();
     let mut request_id: u64 = 10;
     let mut last_sent_time_sec: Option<i64> = None;
+    let mut last_sent_cache_sec: Option<i64> = None;
 
     loop {
         line.clear();
         tokio::select! {
             read = reader.read_line(&mut line) => match read {
                 Ok(0) | Err(_) => break, // mpv closed the connection
-                Ok(_) => dispatch_incoming(&line, &emit, &mut last_sent_time_sec),
+                Ok(_) => dispatch_incoming(&line, &emit, &mut last_sent_time_sec, &mut last_sent_cache_sec),
             },
             cmd = cmd_rx.recv() => match cmd {
                 None => break, // all senders dropped: shutting down
@@ -70,10 +72,12 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, e
                     let json = match cmd {
                         PlayerCmd::Load(url) => {
                             last_sent_time_sec = None;
+                            last_sent_cache_sec = None;
                             proto::cmd_loadfile(&url, "replace", request_id)
                         },
                         PlayerCmd::Stop => {
                             last_sent_time_sec = None;
+                            last_sent_cache_sec = None;
                             proto::cmd_stop(request_id)
                         },
                         PlayerCmd::CyclePause => proto::cmd_cycle("pause", request_id),
@@ -120,7 +124,12 @@ struct TimePosLine<'a> {
 }
 
 /// Translate one mpv line into a player event for the runtime.
-fn dispatch_incoming(line: &str, emit: &EventSink, last_sent_time_sec: &mut Option<i64>) {
+fn dispatch_incoming(
+    line: &str,
+    emit: &EventSink,
+    last_sent_time_sec: &mut Option<i64>,
+    last_sent_cache_sec: &mut Option<i64>,
+) {
     // Fast path: dedup time-pos before allocating anything. A borrow-mode parse fails on
     // any other event shape (missing fields, null/escaped data) and falls through to the
     // general path below, so behavior is unchanged — e.g. `data:null` still ends up in
@@ -168,15 +177,34 @@ fn dispatch_incoming(line: &str, emit: &EventSink, last_sent_time_sec: &mut Opti
             "metadata" => {
                 emit(PlayerEvent::Metadata(value));
             }
+            "demuxer-cache-time" => match value.as_f64() {
+                // High-rate like time-pos → dedup to whole seconds.
+                Some(t) => {
+                    let sec = t as i64;
+                    if *last_sent_cache_sec != Some(sec) {
+                        *last_sent_cache_sec = Some(sec);
+                        emit(PlayerEvent::CacheTime(Some(t)));
+                    }
+                }
+                // Unlike time-pos, a null here is a signal the reducer needs: the
+                // property became unavailable (stream teardown, cache-less demuxer).
+                None => {
+                    if last_sent_cache_sec.take().is_some() {
+                        emit(PlayerEvent::CacheTime(None));
+                    }
+                }
+            },
             _ => {}
         },
         MpvIncoming::EndFile { reason, file_error } => match reason.as_str() {
             "eof" => {
                 *last_sent_time_sec = None;
+                *last_sent_cache_sec = None;
                 emit(PlayerEvent::Eof);
             }
             "error" => {
                 *last_sent_time_sec = None;
+                *last_sent_cache_sec = None;
                 // Surface mpv's own reason when it gives one — it's the closest thing to a
                 // "why" (HTTP 403, unsupported format, …); otherwise a generic message.
                 let msg = match file_error {
@@ -204,11 +232,13 @@ mod tests {
             let _ = tx.send(event);
         });
         let mut last_sent_time_sec = None;
+        let mut last_sent_cache_sec = None;
 
         dispatch_incoming(
             r#"{"event":"property-change","id":5,"name":"metadata","data":{"icy-title":"Artist - Track"}}"#,
             &emit,
             &mut last_sent_time_sec,
+            &mut last_sent_cache_sec,
         );
 
         match rx.try_recv().expect("metadata message") {
@@ -226,11 +256,17 @@ mod tests {
             let _ = tx.send(event);
         });
         let mut last_sent_time_sec = None;
+        let mut last_sent_cache_sec = None;
 
         for data in ["1.1", "1.4", "1.9", "2.0"] {
             let line =
                 format!(r#"{{"event":"property-change","id":1,"name":"time-pos","data":{data}}}"#);
-            dispatch_incoming(&line, &emit, &mut last_sent_time_sec);
+            dispatch_incoming(
+                &line,
+                &emit,
+                &mut last_sent_time_sec,
+                &mut last_sent_cache_sec,
+            );
         }
 
         // 1.1 emits (second 1), 1.4/1.9 dedup away, 2.0 emits (second 2).
@@ -246,14 +282,71 @@ mod tests {
             let _ = tx.send(event);
         });
         let mut last_sent_time_sec = Some(3);
+        let mut last_sent_cache_sec = None;
 
         dispatch_incoming(
             r#"{"event":"property-change","id":1,"name":"time-pos","data":null}"#,
             &emit,
             &mut last_sent_time_sec,
+            &mut last_sent_cache_sec,
         );
 
         assert!(rx.try_recv().is_err());
         assert_eq!(last_sent_time_sec, Some(3));
+    }
+
+    #[test]
+    fn cache_time_forwards_and_dedups_to_whole_seconds() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut last_sent_time_sec = None;
+        let mut last_sent_cache_sec = None;
+
+        for data in ["100.2", "100.7", "101.3"] {
+            let line = format!(
+                r#"{{"event":"property-change","id":6,"name":"demuxer-cache-time","data":{data}}}"#
+            );
+            dispatch_incoming(
+                &line,
+                &emit,
+                &mut last_sent_time_sec,
+                &mut last_sent_cache_sec,
+            );
+        }
+
+        assert!(matches!(rx.try_recv(), Ok(PlayerEvent::CacheTime(Some(t))) if t == 100.2));
+        assert!(matches!(rx.try_recv(), Ok(PlayerEvent::CacheTime(Some(t))) if t == 101.3));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn null_cache_time_reports_loss_once() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut last_sent_time_sec = None;
+        let mut last_sent_cache_sec = Some(42);
+
+        let line = r#"{"event":"property-change","id":6,"name":"demuxer-cache-time","data":null}"#;
+        // First null after a real value → the loss is reported and the dedup resets…
+        dispatch_incoming(
+            line,
+            &emit,
+            &mut last_sent_time_sec,
+            &mut last_sent_cache_sec,
+        );
+        assert!(matches!(rx.try_recv(), Ok(PlayerEvent::CacheTime(None))));
+        assert_eq!(last_sent_cache_sec, None);
+        // …and repeated nulls (a stream that never has a cache) stay silent.
+        dispatch_incoming(
+            line,
+            &emit,
+            &mut last_sent_time_sec,
+            &mut last_sent_cache_sec,
+        );
+        assert!(rx.try_recv().is_err());
     }
 }
