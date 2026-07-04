@@ -2,10 +2,10 @@
 //
 // Relationship to the core theme engine (docs/gui/06 §1–3): the 13 core presets stay
 // core-resolved and the GUI embeds none of them; these local themes are a separate,
-// deliberately small set (a working theme switcher shipped ahead of the settings-v8
-// wire). When TODO(wire:M3/settings.theme-editor) lands, the wiring agent decides per
-// theme: promote into a core preset, or keep as GUI-only skins layered over the pushed
-// model. Every palette must define all 34 roles — tests/wiring.test.ts enforces it.
+// deliberately small set of GUI-only skins. Precedence with the live core theme is settled
+// (settings.theme-editor, stores/theme.svelte.ts): a chosen local skin layers on top of the
+// pushed model and survives pushes until the user edits the core theme, which hands control
+// back. Every palette must define all 34 roles — tests/wiring.test.ts enforces it.
 
 export interface LocalTheme {
   id: string;

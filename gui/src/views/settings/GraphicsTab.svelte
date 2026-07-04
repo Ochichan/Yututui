@@ -1,15 +1,13 @@
 <script lang="ts">
   // Settings → Graphics (docs/gui/07 §9): preset gallery, the 34-role color editor, and
-  // the 25-effect animation grid. The color rows read LIVE values from the CSS custom
-  // properties (what the window is actually painted with right now); edits gate through
-  // the patch bay until settings-v8.
+  // the 25-effect animation grid — all live now.
   //
-  // The LOCAL themes section is fully functional (frontend-owned skins, applied live and
-  // persisted); the core's 13 presets and per-role editing stay behind the patch bay.
-  // The Animations block is now wired: it binds the live `settings` animations model and
-  // sends `apply { group: 'animations' }` (see stores/anim.svelte.ts for the runtime).
-  //
-  // TODO(wire:M3/settings.theme-editor): Apply(Theme(...)) with optimistic CSS-var apply.
+  // The LOCAL themes section is frontend-owned skins (applied live, persisted). The core
+  // theme is wired (settings.theme-editor): the preset gallery renders from the pushed
+  // `theme.presets` previews and switching applies live; the 34-role editor writes optimistic
+  // CSS-var overrides reconciled by the `settings` push (stores/theme.svelte.ts owns the
+  // pipeline + local-skin precedence). The Animations block binds the live `settings`
+  // animations model via `apply { group: 'animations' }` (stores/anim.svelte.ts).
   import type { AppCtx } from '../../lib/ctx';
   import { LOCAL_THEMES } from '../../lib/theme/local';
   import { ROLES } from '../../lib/theme/roles';
@@ -23,32 +21,23 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { wip, theme, toasts, settings } = ctx;
+  const { theme, toasts, settings, client } = ctx;
 
-  const themeStub = () => wip.gate('settings.theme-editor');
   const anim = $derived(settings.animations);
 
-  const PRESETS = [
-    'Default',
-    'Retro',
-    'Dario',
-    'Midnight',
-    'Light',
-    'High Contrast',
-    'Terminal Green',
-    'Gruvbox',
-    'Nord',
-    'Dracula',
-    'Tokyo Night',
-    'Solarized',
-    'Rosé Pine',
-  ];
-
-  // Live values: what the window is painted with right now (theme push or fallbacks).
-  // Recomputed when the active local theme changes so the rows track the repaint.
+  // A role's current hex: the authoritative core theme when we have it, else whatever the
+  // window is painted with (before the first push / under a local skin fallback).
   function liveHex(role: string): string {
     void theme.localId;
     return getComputedStyle(document.documentElement).getPropertyValue(`--role-${role}`).trim();
+  }
+  function roleHex(role: string): string {
+    return theme.model?.roles[role] ?? liveHex(role);
+  }
+  // The native <input type=color> needs a 6-hex; transparent/none roles fall back to black.
+  function colorFor(role: string): string {
+    const h = roleHex(role);
+    return /^#[0-9a-f]{6}$/i.test(h) ? h : '#000000';
   }
 
   const ANIM_GROUPS: Array<{ title: string; tui?: boolean; effects: EffectId[] }> = [
@@ -105,47 +94,70 @@
 
 <SettingSection title="Core presets">
   <div class="gallery">
-    {#each PRESETS as name (name)}
-      <button class="preset" onclick={themeStub}>
+    {#each theme.model?.presets ?? [] as p (p.name)}
+      <button
+        class="preset"
+        class:on={theme.localId === null && theme.model?.preset === p.name}
+        style:background={p.swatch['background']}
+        style:color={p.swatch['text-primary']}
+        onclick={() => theme.setPreset(p.name, client)}
+      >
         <span class="strip">
-          <i style:background="var(--role-accent)"></i>
-          <i style:background="var(--role-accent-alt)"></i>
-          <i style:background="var(--role-success)"></i>
-          <i style:background="var(--role-warning)"></i>
-          <i style:background="var(--role-error)"></i>
+          <i style:background={p.swatch['accent']}></i>
+          <i style:background={p.swatch['accent-alt']}></i>
+          <i style:background={p.swatch['success']}></i>
+          <i style:background={p.swatch['warning']}></i>
+          <i style:background={p.swatch['error']}></i>
         </span>
-        <span class="pname">{name}</span>
+        <span class="pname">{p.name}</span>
       </button>
     {/each}
-    <p class="gallery-hint">
-      The 13 TUI presets, resolved core-side — live previews + switching arrive with the settings
-      wire (M3).
-    </p>
+    <p class="gallery-hint">The 13 TUI presets, resolved core-side — switching applies live.</p>
   </div>
   <SettingRow
     label="Background: none"
     hint="(terminal transparency) — GUI substitutes the preset's opaque background"
   >
-    <Toggle checked={false} onchange={themeStub} />
+    <Toggle
+      checked={theme.model?.background_none ?? false}
+      onchange={(v) => theme.setBackgroundNone(v, client)}
+    />
   </SettingRow>
   <SettingRow
     label="Retro mode"
     tag="(TUI)"
     hint="CP437-safe console rendering — does not change the GUI"
   >
-    <Toggle checked={false} onchange={themeStub} />
+    <Toggle checked={theme.model?.retro ?? false} onchange={(v) => theme.setRetro(v, client)} />
   </SettingRow>
 </SettingSection>
 
 <SettingSection title="Colors — 34 roles, live editor">
   <div class="roles">
     {#each ROLES as [role, label] (role)}
-      {@const hex = liveHex(role)}
-      <button class="role-row" onclick={themeStub} title="Edit {label}">
-        <span class="swatch" style:background={hex || 'transparent'}></span>
+      {@const hex = roleHex(role)}
+      {@const over = theme.isOverridden(role)}
+      <div class="role-row" class:over>
+        <label class="swatch-wrap" title="Edit {label}">
+          <span class="swatch" style:background={hex || 'transparent'}></span>
+          <input
+            class="color-in"
+            type="color"
+            value={colorFor(role)}
+            onchange={(e) => theme.setOverride(role, e.currentTarget.value, client)}
+            aria-label="Edit {label}"
+          />
+        </label>
         <span class="rl">{label}</span>
         <span class="hex mono">{hex || 'none'}</span>
-      </button>
+        {#if over}
+          <button
+            class="reset"
+            title="Reset to preset"
+            onclick={() => theme.clearOverride(role, client)}>↺</button
+          >
+        {/if}
+      </div>
     {/each}
   </div>
 </SettingSection>
@@ -268,12 +280,46 @@
   .role-row:hover {
     background: var(--surface-2);
   }
-  .swatch {
+  .swatch-wrap {
+    position: relative;
     width: 16px;
     height: 16px;
     flex: none;
+    cursor: pointer;
+  }
+  .swatch {
+    display: block;
+    width: 16px;
+    height: 16px;
     border-radius: 4px;
     border: 1px solid var(--role-border-muted);
+  }
+  /* The native color popover, laid transparently over the swatch — click the swatch to edit. */
+  .color-in {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: none;
+    opacity: 0;
+    cursor: pointer;
+  }
+  .reset {
+    flex: none;
+    padding: 0 6px;
+    border: 1px solid var(--role-border-muted);
+    border-radius: var(--radius-s);
+    background: transparent;
+    color: var(--role-accent);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .reset:hover {
+    background: var(--surface-2);
+  }
+  .role-row.over .rl {
+    color: var(--role-accent);
   }
   .rl {
     flex: 1;

@@ -20,7 +20,6 @@ export type FeatureId =
   | 'library.playlists'
   | 'queue.reorder'
   | 'settings.hotkeys'
-  | 'settings.theme-editor'
   | 'settings.accounts'
   | 'ai.whygem'
   | 'transfer.wizard'
@@ -75,17 +74,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
     capability: 'settings-v8',
     notes:
       'Korean IME 3-branch rule is normative (05 §8.4). Cross-check chord.ts against gui/src/generated/chord-fixtures.json once the Rust export lands.',
-  },
-  'settings.theme-editor': {
-    title: 'Live theme editor (13 presets + 34 roles)',
-    milestone: 'M3',
-    brief: 'docs/gui/07-feature-briefs.md §9 + docs/gui/06-design-system.md §1–3',
-    protocol:
-      'cmd apply { theme: Preset/SetOverride/ClearOverride/BackgroundNone }; theme block of the `settings` push; preset preview palettes from the core',
-    seam: 'extend gui/src/lib/stores/theme.svelte.ts (live push + oklab surface mix); replace the wip() seams in GraphicsTab.svelte',
-    capability: 'settings-v8',
-    notes:
-      'Apply optimistically to the CSS var, reconcile on push (<100 ms target). The swatch rows already read live values from the CSS custom properties.',
   },
   'settings.accounts': {
     title: 'Accounts (Last.fm / ListenBrainz / Spotify)',

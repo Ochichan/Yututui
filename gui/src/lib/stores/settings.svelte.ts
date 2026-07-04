@@ -5,16 +5,18 @@
 // rest persist (a slow round-trip must not revert an in-progress edit).
 //
 // This is the M3 keystone: the store holds the full model so its wires read their own block
-// without a second source of truth. `settings.animations` is live (stores/anim.svelte.ts
-// reads `model.animations`); `settings.theme-editor` and `settings.hotkeys` will read
-// `model.{theme,keymap}` the same way. The desktop bridge forwards `apply` once the core
-// advertises `settings-v8`; until then the in-page demo core answers (gui/WIRING.md).
+// without a second source of truth. `settings.animations` (stores/anim.svelte.ts reads
+// `model.animations`) and `settings.theme-editor` (stores/theme.svelte.ts reads
+// `model.theme`) are live; `settings.hotkeys` will read `model.keymap` the same way. The
+// desktop bridge forwards `apply` once the core advertises `settings-v8`; until then the
+// in-page demo core answers (gui/WIRING.md).
 
 import type { EqModel } from '../../generated/protocol/EqModel';
 import type { Repeat } from '../../generated/protocol/Repeat';
 import type { SearchSource } from '../../generated/protocol/SearchSource';
 import type { Client } from '../ipc/client';
 import type { AnimationsModel } from './anim.svelte';
+import type { ThemeModel } from './theme.svelte';
 
 // ── PROVISIONAL wire shapes — only the demo core speaks them today. Faithful to the model
 // in docs/gui/02 §11.6; reconcile with the ts-rs `SettingsModelV8` + `SettingChangeV8`
@@ -83,8 +85,10 @@ export interface SettingsModelV8 {
   storage: StorageSettings;
   /** Live as of the settings.animations wire (mirrors the core's AnimationsConfig). */
   animations: AnimationsModel;
-  // theme / keymap / accounts blocks are added by their own wires (theme-editor · hotkeys ·
-  // accounts) — the demo core need not emit them yet.
+  /** Live as of the settings.theme-editor wire (the resolved 34 roles + preset/overrides). */
+  theme: ThemeModel;
+  // keymap / accounts blocks are added by their own wires (hotkeys · accounts) — the demo
+  // core need not emit them yet.
 }
 
 export interface SettingsSnapshot {
@@ -93,7 +97,7 @@ export interface SettingsSnapshot {
 }
 
 export type SettingGroup =
-  'playback' | 'eq' | 'streaming' | 'search' | 'ui' | 'storage' | 'animations';
+  'playback' | 'eq' | 'streaming' | 'search' | 'ui' | 'storage' | 'animations' | 'theme';
 
 /** The provisional uniform mutation. The real wire is the grouped `SettingChangeV8` (§13.3). */
 export interface SettingChange {

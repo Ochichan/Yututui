@@ -34,7 +34,7 @@ function assemble(): AppCtx {
     client,
     demo: true,
     connection,
-    theme: new ThemeStore(),
+    theme: new ThemeStore(client),
     ui: new UiStore(),
     playback: new PlaybackStore(client),
     queue: new QueueStore(client),

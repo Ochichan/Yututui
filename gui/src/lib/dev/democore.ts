@@ -17,6 +17,7 @@ import type { Repeat } from '../../generated/protocol/Repeat';
 import type { LyricLine } from '../stores/lyrics.svelte';
 import type { DownloadStatus } from '../stores/downloads.svelte';
 import type { SettingGroup, SettingsModelV8 } from '../stores/settings.svelte';
+import type { ThemeModel } from '../stores/theme.svelte';
 import { defaultAnimations } from '../stores/anim.svelte';
 
 // ── the demo catalog (original fictional tracks — the cat is the brand, =^..^=) ──────
@@ -105,6 +106,131 @@ const EQ_PRESETS: Record<string, Bands> = {
   rock: [4, 3, 0, -2, -1, 1, 3, 4, 3, 2],
 };
 
+// ── theme fixture (docs/gui/06 §1–3) ────────────────────────────────────────────────
+//
+// The real core resolves a preset + overrides to 34 hexes via `ThemeConfig::effective_hex`;
+// the demo derives all 34 from a compact per-preset seed (this is fixture fidelity, not the
+// real resolver). Seeds are recognizable palettes so switching presets visibly repaints.
+
+interface ThemeSeed {
+  bg: string;
+  surface: string; // border-muted / raised-surface base
+  text: string;
+  textMuted: string;
+  textSubtle: string;
+  textInverse: string;
+  borderPrimary: string;
+  borderFocused: string;
+  accent: string;
+  accentAlt: string;
+  success: string;
+  warning: string;
+  error: string;
+  selFg: string;
+  selBg: string;
+}
+
+// The 13 TUI presets (ThemePreset, src/theme.rs) — compact seeds, faithful hues.
+const THEME_SEEDS: Record<string, ThemeSeed> = {
+  // prettier-ignore
+  Default: { bg: '#12141a', surface: '#2a2e3a', text: '#e6e8ee', textMuted: '#a0a6b4', textSubtle: '#6b7180', textInverse: '#0b0d12', borderPrimary: '#3a3f4d', borderFocused: '#5b8cff', accent: '#5b8cff', accentAlt: '#8f6bff', success: '#4ec98a', warning: '#e0b341', error: '#e5556b', selFg: '#ffffff', selBg: '#2f3646' },
+  // prettier-ignore
+  Retro: { bg: '#001100', surface: '#003300', text: '#33ff66', textMuted: '#22aa44', textSubtle: '#157a30', textInverse: '#001100', borderPrimary: '#0a5a1a', borderFocused: '#66ff99', accent: '#33ff66', accentAlt: '#99ff33', success: '#66ff66', warning: '#ffff33', error: '#ff5555', selFg: '#001100', selBg: '#33ff66' },
+  // prettier-ignore
+  Dario: { bg: '#1a1410', surface: '#3a2e22', text: '#f4e8d8', textMuted: '#b8a488', textSubtle: '#7a6a52', textInverse: '#14100a', borderPrimary: '#4a3c2c', borderFocused: '#ff9d3c', accent: '#ff9d3c', accentAlt: '#ffca6b', success: '#9ccf4e', warning: '#e0b341', error: '#e5556b', selFg: '#14100a', selBg: '#ff9d3c' },
+  // prettier-ignore
+  Midnight: { bg: '#0a0e1a', surface: '#1c2438', text: '#dce3f0', textMuted: '#8b96b0', textSubtle: '#566178', textInverse: '#0a0e1a', borderPrimary: '#2a3450', borderFocused: '#4d7cff', accent: '#4d7cff', accentAlt: '#7a5cff', success: '#4ec98a', warning: '#e0b341', error: '#e5556b', selFg: '#ffffff', selBg: '#22304e' },
+  // prettier-ignore
+  Light: { bg: '#f7f8fa', surface: '#e2e5ea', text: '#1a1d24', textMuted: '#565b68', textSubtle: '#8a909e', textInverse: '#ffffff', borderPrimary: '#cdd2db', borderFocused: '#2f6bff', accent: '#2f6bff', accentAlt: '#7a4dff', success: '#1f9d57', warning: '#b7791f', error: '#d13c50', selFg: '#ffffff', selBg: '#2f6bff' },
+  // prettier-ignore
+  'High Contrast': { bg: '#000000', surface: '#1a1a1a', text: '#ffffff', textMuted: '#d0d0d0', textSubtle: '#a0a0a0', textInverse: '#000000', borderPrimary: '#ffffff', borderFocused: '#ffff00', accent: '#ffff00', accentAlt: '#00ffff', success: '#00ff00', warning: '#ffaa00', error: '#ff0000', selFg: '#000000', selBg: '#ffff00' },
+  // prettier-ignore
+  'Terminal Green': { bg: '#0b1a0b', surface: '#163a16', text: '#b8ffb8', textMuted: '#6fd06f', textSubtle: '#3f8f3f', textInverse: '#0b1a0b', borderPrimary: '#245c24', borderFocused: '#4dff4d', accent: '#4dff4d', accentAlt: '#a6ff4d', success: '#4dff4d', warning: '#d0ff4d', error: '#ff6b6b', selFg: '#0b1a0b', selBg: '#4dff4d' },
+  // prettier-ignore
+  Gruvbox: { bg: '#282828', surface: '#3c3836', text: '#ebdbb2', textMuted: '#a89984', textSubtle: '#7c6f64', textInverse: '#282828', borderPrimary: '#504945', borderFocused: '#fabd2f', accent: '#fabd2f', accentAlt: '#fe8019', success: '#b8bb26', warning: '#fabd2f', error: '#fb4934', selFg: '#282828', selBg: '#d79921' },
+  // prettier-ignore
+  Nord: { bg: '#2e3440', surface: '#3b4252', text: '#eceff4', textMuted: '#d8dee9', textSubtle: '#7b88a1', textInverse: '#2e3440', borderPrimary: '#434c5e', borderFocused: '#88c0d0', accent: '#88c0d0', accentAlt: '#81a1c1', success: '#a3be8c', warning: '#ebcb8b', error: '#bf616a', selFg: '#2e3440', selBg: '#5e81ac' },
+  // prettier-ignore
+  Dracula: { bg: '#282a36', surface: '#383a4c', text: '#f8f8f2', textMuted: '#b8b9c4', textSubtle: '#6272a4', textInverse: '#282a36', borderPrimary: '#44475a', borderFocused: '#bd93f9', accent: '#bd93f9', accentAlt: '#ff79c6', success: '#50fa7b', warning: '#f1fa8c', error: '#ff5555', selFg: '#f8f8f2', selBg: '#44475a' },
+  // prettier-ignore
+  'Tokyo Night': { bg: '#1a1b26', surface: '#24283b', text: '#c0caf5', textMuted: '#9aa5ce', textSubtle: '#565f89', textInverse: '#1a1b26', borderPrimary: '#2f334d', borderFocused: '#7aa2f7', accent: '#7aa2f7', accentAlt: '#bb9af7', success: '#9ece6a', warning: '#e0af68', error: '#f7768e', selFg: '#c0caf5', selBg: '#33467c' },
+  // prettier-ignore
+  Solarized: { bg: '#002b36', surface: '#073642', text: '#eee8d5', textMuted: '#93a1a1', textSubtle: '#586e75', textInverse: '#002b36', borderPrimary: '#0a4a58', borderFocused: '#268bd2', accent: '#268bd2', accentAlt: '#2aa198', success: '#859900', warning: '#b58900', error: '#dc322f', selFg: '#eee8d5', selBg: '#094a58' },
+  // prettier-ignore
+  'Rosé Pine': { bg: '#191724', surface: '#26233a', text: '#e0def4', textMuted: '#908caa', textSubtle: '#6e6a86', textInverse: '#191724', borderPrimary: '#302d41', borderFocused: '#ebbcba', accent: '#ebbcba', accentAlt: '#c4a7e7', success: '#9ccfd8', warning: '#f6c177', error: '#eb6f92', selFg: '#191724', selBg: '#403d52' },
+};
+
+const PRESET_NAMES = Object.keys(THEME_SEEDS);
+
+/** Derive the full 34-role palette from a preset seed (mirrors roles.ts ids exactly). */
+function presetPalette(name: string): Record<string, string> {
+  const s = THEME_SEEDS[name] ?? THEME_SEEDS.Default;
+  return {
+    background: s.bg,
+    'text-primary': s.text,
+    'text-muted': s.textMuted,
+    'text-subtle': s.textSubtle,
+    'text-inverse': s.textInverse,
+    'border-primary': s.borderPrimary,
+    'border-focused': s.borderFocused,
+    'border-muted': s.surface,
+    accent: s.accent,
+    'accent-alt': s.accentAlt,
+    success: s.success,
+    warning: s.warning,
+    error: s.error,
+    'selection-fg': s.selFg,
+    'selection-bg': s.selBg,
+    'selection-inactive-fg': s.textMuted,
+    'selection-inactive-bg': s.surface,
+    'gauge-filled': s.accent,
+    'gauge-empty': s.surface,
+    'player-control': s.accent,
+    'player-label': s.textMuted,
+    'help-group': s.accentAlt,
+    'help-key': s.accent,
+    'help-action': s.text,
+    'settings-group': s.accentAlt,
+    'settings-label': s.textMuted,
+    'settings-value': s.text,
+    'settings-value-focused': s.accent,
+    'ai-user': s.accent,
+    'ai-assistant': s.text,
+    'ai-error': s.error,
+    'ai-thinking': s.accentAlt,
+    'lyrics-current': s.accent,
+    'lyrics-dim': s.textSubtle,
+  };
+}
+
+/** The gallery preview — the strip colors + card bg/text, derived from the full palette. */
+function themePreview(name: string): { name: string; swatch: Record<string, string> } {
+  const p = presetPalette(name);
+  return {
+    name,
+    swatch: {
+      accent: p.accent,
+      'accent-alt': p['accent-alt'],
+      success: p.success,
+      warning: p.warning,
+      error: p.error,
+      background: p.background,
+      'text-primary': p['text-primary'],
+    },
+  };
+}
+
+function defaultTheme(): ThemeModel {
+  return {
+    preset: 'Default',
+    roles: presetPalette('Default'),
+    overrides: {},
+    background_none: false,
+    retro: false,
+    presets: PRESET_NAMES.map(themePreview),
+  };
+}
+
 function defaultSettings(): SettingsModelV8 {
   return {
     rev: 1,
@@ -143,6 +269,8 @@ function defaultSettings(): SettingsModelV8 {
     // Core defaults: every effect off, pause-unfocused on, 30 fps (the generic setter mutates
     // this block on `apply { group: 'animations' }`, like every other group).
     animations: defaultAnimations(),
+    // Default preset, all 34 roles resolved, no overrides (settings.theme-editor).
+    theme: defaultTheme(),
   };
 }
 
@@ -370,6 +498,12 @@ export class DemoCoreTransport implements Transport {
         );
         return;
       }
+      case 'theme_set_override':
+        this.#themeSetOverride(String(p.role ?? ''), String(p.hex ?? ''));
+        return;
+      case 'theme_clear_override':
+        this.#themeClearOverride(String(p.role ?? ''));
+        return;
       case 'set_gemini_key':
         // Write-only: the key never round-trips; only presence flips.
         this.#settings.streaming.has_gemini_key = String(p.key ?? '').length > 0;
@@ -704,7 +838,32 @@ export class DemoCoreTransport implements Transport {
       this.#settings.eq.bands = EQ_PRESETS[String(value)] ?? this.#settings.eq.bands;
     } else if (group === 'eq' && field === 'bands') {
       this.#settings.eq.preset = 'custom';
+    } else if (group === 'theme' && field === 'preset') {
+      // Re-resolve the 34 roles for the new preset, keeping the user's overrides on top —
+      // the demo stand-in for ThemeConfig::effective_hex(preset, overrides).
+      this.#settings.theme.roles = {
+        ...presetPalette(String(value)),
+        ...this.#settings.theme.overrides,
+      };
     }
+    this.#settings.rev++;
+    this.#pushSettings();
+  }
+
+  /** Per-role override: hold it and bake it into the resolved roles (settings.theme-editor). */
+  #themeSetOverride(role: string, hex: string): void {
+    if (!role) return;
+    this.#settings.theme.overrides[role] = hex;
+    this.#settings.theme.roles[role] = hex;
+    this.#settings.rev++;
+    this.#pushSettings();
+  }
+
+  /** Drop an override → the role reverts to the current preset's resolved value. */
+  #themeClearOverride(role: string): void {
+    if (!(role in this.#settings.theme.overrides)) return;
+    delete this.#settings.theme.overrides[role];
+    this.#settings.theme.roles[role] = presetPalette(this.#settings.theme.preset)[role];
     this.#settings.rev++;
     this.#pushSettings();
   }

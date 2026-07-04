@@ -32,8 +32,9 @@ const transport: Transport = window.ipc ? new WryTransport() : new DemoCoreTrans
 const client = new Client(transport);
 
 // Apply the theme before mount so the first paint is themed: core-provided boot theme
-// first, then the user's persisted local skin (lib/theme/local.ts) on top.
-const theme = new ThemeStore();
+// first, then the user's persisted local skin (lib/theme/local.ts) on top. The store also
+// subscribes to the `settings` theme push for the live editor (settings.theme-editor).
+const theme = new ThemeStore(client);
 theme.boot(boot.theme);
 
 const connection = new ConnectionStore(client);

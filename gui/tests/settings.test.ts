@@ -62,6 +62,7 @@ function baseModel(): SettingsModelV8 {
     ui: { language: 'en', mouse: true, album_art: true, romanized_titles: false },
     storage: { download_dir: '~/Music/ytm-tui', cookies_file: null, download_concurrency: 3 },
     animations: defaultAnimations(),
+    theme: { preset: 'Default', roles: {}, overrides: {}, background_none: false, retro: false, presets: [] },
   };
 }
 
