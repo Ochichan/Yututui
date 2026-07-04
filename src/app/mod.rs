@@ -943,6 +943,7 @@ impl App {
 
     fn dispatch(&mut self, msg: Msg) -> Vec<Cmd> {
         match msg {
+            Msg::Noop => return Vec::new(),
             Msg::Key(k) => return self.on_key(k),
             Msg::MouseClick { col, row } => return self.on_mouse_click(col, row),
             Msg::MouseDoubleClick { col, row } => return self.on_mouse_double_click(col, row),

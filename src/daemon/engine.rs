@@ -102,6 +102,14 @@ pub enum EngineEffect {
         video_id: String,
         tools: crate::config::ToolsConfig,
     },
+    /// Run a GUI-session search off-loop (`RemoteCommand::RunSearch`); the answer
+    /// returns as [`ApiEvent::GuiSearchCompleted`] and is pushed on the `search` topic.
+    GuiSearch {
+        ticket: u64,
+        query: String,
+        source: crate::search_source::SearchSource,
+        config: SearchConfig,
+    },
 }
 
 pub struct DaemonEngine {
@@ -132,6 +140,10 @@ pub struct DaemonEngine {
     /// The media-session artwork cache's resolved file for a track, keyed by
     /// `video_id`; surfaced in [`Self::media_snapshot`] while the keys match.
     media_art: Option<crate::media::artwork::MediaArtworkReady>,
+    /// Rows the GUI can address by bare `video_id` (`play_tracks`/`enqueue_tracks`):
+    /// the songs of the most recently completed GUI search. Replaced wholesale per
+    /// search — the GUI only ever acts on the results it currently shows.
+    gui_search_index: std::collections::HashMap<String, Song>,
 }
 
 struct PlayerRuntime {
@@ -257,6 +269,7 @@ impl DaemonEngine {
             inactive_radio_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
+            gui_search_index: std::collections::HashMap::new(),
         }
     }
 
@@ -363,8 +376,503 @@ impl DaemonEngine {
                 effects.extend(self.force_autoplay_extend());
                 response
             }
+            RemoteCommand::RunSearch {
+                ticket,
+                query,
+                source,
+            } => {
+                let query = query.trim().to_string();
+                if query.is_empty() {
+                    RemoteResponse::err("empty_query")
+                } else {
+                    // Off-loop: the api actor answers with GuiSearchCompleted, which the
+                    // host loop indexes here and pushes on the `search` topic.
+                    effects.push(EngineEffect::GuiSearch {
+                        ticket,
+                        query,
+                        source,
+                        config: self.config.effective_search(),
+                    });
+                    RemoteResponse::ok("searching".to_string())
+                }
+            }
+            RemoteCommand::PlayTracks { video_ids } => {
+                let response = self.play_tracks(video_ids).await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
+            RemoteCommand::EnqueueTracks { video_ids } => {
+                let response = self.enqueue_tracks(video_ids).await;
+                effects.extend(self.maybe_autoplay_extend());
+                response
+            }
+            RemoteCommand::Apply { change } => {
+                let (response, setting_effects) = self.apply_gui_setting(change);
+                effects.extend(setting_effects);
+                response
+            }
+            RemoteCommand::SetGeminiKey { key } => {
+                let key = key.trim();
+                self.config.gemini_api_key = (!key.is_empty()).then(|| key.to_string());
+                self.save_config("daemon gemini key");
+                RemoteResponse::ok("gemini key updated".to_string())
+            }
+            RemoteCommand::ResetAllSettings => {
+                // Danger zone (GUI double-confirms). Keep playback rolling; the fresh
+                // defaults apply live where cheap and at next launch elsewhere.
+                self.config = Config::default();
+                self.save_config("daemon settings reset");
+                RemoteResponse::ok("settings reset".to_string())
+            }
         };
         (response, shutdown, effects)
+    }
+
+    /// Route one GUI `apply { group.field = value }` onto the live config. Fields that
+    /// already have a [`RemoteSettingChange`] lane reuse it (live player/effect hooks
+    /// included); the rest write config directly. Every accepted change is followed by
+    /// a `settings_snapshot` push (the publisher diffs post-turn).
+    fn apply_gui_setting(
+        &mut self,
+        change: crate::remote::proto::GuiSettingChange,
+    ) -> (RemoteResponse, Vec<EngineEffect>) {
+        use crate::remote::proto::RemoteSettingChange as S;
+        let crate::remote::proto::GuiSettingChange {
+            group,
+            field,
+            value,
+        } = change;
+
+        let as_bool = || value.as_bool();
+        let as_u16 = || value.as_u64().and_then(|v| u16::try_from(v).ok());
+        let as_str = || value.as_str().map(str::to_string);
+        let bad = || (RemoteResponse::err("bad_value"), Vec::new());
+        let ok = |this: &Self| (RemoteResponse::status(this.status()), Vec::new());
+
+        match (group.as_str(), field.as_str()) {
+            ("playback", "speed_tenths") => match as_u16() {
+                Some(tenths) => self.set_setting(S::Speed { tenths }),
+                None => bad(),
+            },
+            ("playback", "seek_seconds") => match as_u16() {
+                Some(seconds) => self.set_setting(S::SeekSeconds { seconds }),
+                None => bad(),
+            },
+            ("playback", "gapless") => match as_bool() {
+                Some(value) => self.set_setting(S::Gapless { value }),
+                None => bad(),
+            },
+            ("playback", "enqueue_next") => match as_bool() {
+                Some(v) => {
+                    self.config.enqueue_next = Some(v);
+                    self.save_config("daemon enqueue-next setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("playback", "autoplay_on_start") => match as_bool() {
+                Some(v) => {
+                    self.config.autoplay_on_start = Some(v);
+                    self.save_config("daemon autoplay-on-start setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("playback", "mouse_wheel_volume") => match as_bool() {
+                Some(v) => {
+                    self.config.mouse_wheel_volume = Some(v);
+                    self.save_config("daemon wheel-volume setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("playback", "media_controls") => match as_bool() {
+                Some(v) => {
+                    // The OS session itself is created at daemon start; the toggle
+                    // takes full effect on the next launch (same as the TUI).
+                    self.config.media_controls = Some(v);
+                    self.save_config("daemon media-controls setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("playback", "volume") => match value.as_i64() {
+                Some(v) => (self.set_volume(v), Vec::new()),
+                None => bad(),
+            },
+            ("playback", "shuffle") => match as_bool() {
+                Some(v) => {
+                    if self.queue.shuffle != v {
+                        self.queue.toggle_shuffle();
+                        self.config.shuffle = Some(self.queue.shuffle);
+                        self.save_config("daemon shuffle setting");
+                        self.save_session();
+                    }
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("playback", "repeat") => match serde_json::from_value(value.clone()) {
+                Ok(repeat) => {
+                    self.queue.repeat = repeat;
+                    self.config.repeat = repeat;
+                    self.save_config("daemon repeat setting");
+                    self.save_session();
+                    ok(self)
+                }
+                Err(_) => bad(),
+            },
+            ("eq", "preset") => match as_str()
+                .and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok())
+            {
+                Some(preset) => {
+                    self.config.eq_preset = preset;
+                    self.config.eq_bands = None; // preset gains take over
+                    self.apply_audio_filter();
+                    self.save_config("daemon eq preset");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("eq", "bands") => match serde_json::from_value::<[f64; 10]>(value.clone()) {
+                Ok(bands) => {
+                    self.config.eq_bands = Some(bands);
+                    self.config.eq_preset = crate::eq::EqPreset::Custom;
+                    self.apply_audio_filter();
+                    self.save_config("daemon eq bands");
+                    ok(self)
+                }
+                Err(_) => bad(),
+            },
+            ("eq", "normalize") => match as_bool() {
+                Some(value) => self.set_setting(S::Normalize { value }),
+                None => bad(),
+            },
+            ("streaming", "ai_enabled") => match as_bool() {
+                Some(value) => self.set_setting(S::AiEnabled { value }),
+                None => bad(),
+            },
+            ("streaming", "autoplay") => match as_bool() {
+                Some(value) => self.set_setting(S::AutoplayStreaming { value }),
+                None => bad(),
+            },
+            ("streaming", "mode") => match serde_json::from_value(value.clone()) {
+                Ok(value) => self.set_setting(S::StreamingMode { value }),
+                Err(_) => bad(),
+            },
+            ("streaming", "gemini_model") => {
+                let parsed = as_str().and_then(|s| {
+                    crate::ai::GeminiModel::CYCLE
+                        .into_iter()
+                        .find(|m| m.api_id() == s)
+                        .or_else(|| {
+                            serde_json::from_value(serde_json::Value::String(s.clone())).ok()
+                        })
+                });
+                match parsed {
+                    Some(model) => {
+                        self.config.gemini_model = model;
+                        self.save_config("daemon gemini model");
+                        ok(self)
+                    }
+                    None => bad(),
+                }
+            }
+            ("search", "default_source") => match serde_json::from_value(value.clone()) {
+                Ok(source) => {
+                    self.config.search.source = source;
+                    self.save_config("daemon search source");
+                    ok(self)
+                }
+                Err(_) => bad(),
+            },
+            (
+                "search",
+                flag @ ("soundcloud_enabled"
+                | "audius_enabled"
+                | "jamendo_enabled"
+                | "internet_archive_enabled"
+                | "radio_browser_enabled"),
+            ) => match as_bool() {
+                Some(v) => {
+                    match flag {
+                        "soundcloud_enabled" => self.config.search.soundcloud = v,
+                        "audius_enabled" => self.config.search.audius = v,
+                        "jamendo_enabled" => self.config.search.jamendo = v,
+                        "internet_archive_enabled" => self.config.search.internet_archive = v,
+                        _ => self.config.search.radio_browser = v,
+                    }
+                    self.save_config("daemon search catalogs");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("search", "audius_app_name") => match as_str() {
+                Some(s) => {
+                    self.config.search.audius_app_name =
+                        (!s.trim().is_empty()).then(|| s.trim().to_string());
+                    self.save_config("daemon audius app name");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("search", "jamendo_client_id") => match as_str() {
+                Some(s) => {
+                    self.config.search.jamendo_client_id =
+                        (!s.trim().is_empty()).then(|| s.trim().to_string());
+                    self.save_config("daemon jamendo client id");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("ui", "language") => match as_str().as_deref() {
+                Some("en") => {
+                    self.config.language = crate::i18n::Language::English;
+                    self.save_config("daemon language");
+                    ok(self)
+                }
+                Some("ko") => {
+                    self.config.language = crate::i18n::Language::Korean;
+                    self.save_config("daemon language");
+                    ok(self)
+                }
+                _ => bad(),
+            },
+            ("ui", "mouse") => match as_bool() {
+                Some(v) => {
+                    self.config.mouse = Some(v);
+                    self.save_config("daemon mouse setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("ui", "album_art") => match as_bool() {
+                Some(v) => {
+                    self.config.album_art = Some(v);
+                    self.save_config("daemon album art setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("ui", "romanized_titles") => match as_bool() {
+                Some(v) => {
+                    self.config.romanized_titles = Some(v);
+                    self.save_config("daemon romanized titles setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("storage", "download_dir") => match as_str() {
+                Some(s) => {
+                    self.config.download_dir =
+                        (!s.trim().is_empty()).then(|| std::path::PathBuf::from(s.trim()));
+                    self.save_config("daemon download dir");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("storage", "cookies_file") => match as_str() {
+                Some(s) => {
+                    self.config.cookies_file =
+                        (!s.trim().is_empty()).then(|| std::path::PathBuf::from(s.trim()));
+                    self.save_config("daemon cookies file");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("storage", "download_concurrency") => match value.as_u64() {
+                Some(v @ 1..=16) => {
+                    self.config.download_concurrency = Some(v as usize);
+                    self.save_config("daemon download concurrency");
+                    ok(self)
+                }
+                _ => bad(),
+            },
+            ("animations", field) => match self.apply_animation_field(field, &value) {
+                true => {
+                    self.save_config("daemon animations setting");
+                    ok(self)
+                }
+                false => bad(),
+            },
+            ("theme", "preset") => match as_str() {
+                Some(name) => {
+                    // Clone-then-normalize: a fresh ThemeConfig cache (Clone resets it)
+                    // so the direct preset write can't leave a stale resolved palette.
+                    let mut theme = self.config.theme.clone();
+                    theme.preset = name;
+                    self.config.theme = theme.normalized();
+                    self.save_config("daemon theme preset");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("theme", "retro") => match as_bool() {
+                Some(v) => {
+                    self.config.retro_mode = v;
+                    self.save_config("daemon retro mode");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("theme", role_id) => {
+                let role = crate::theme::ThemeRole::ALL
+                    .into_iter()
+                    .find(|role| role.id() == role_id);
+                match (role, as_str()) {
+                    (Some(role), Some(hex)) => {
+                        let mut theme = self.config.theme.clone();
+                        match theme.set_override(role, &hex) {
+                            Ok(()) => {
+                                self.config.theme = theme;
+                                self.save_config("daemon theme override");
+                                ok(self)
+                            }
+                            Err(_) => bad(),
+                        }
+                    }
+                    _ => (RemoteResponse::err("unknown_setting"), Vec::new()),
+                }
+            }
+            _ => (RemoteResponse::err("unknown_setting"), Vec::new()),
+        }
+    }
+
+    /// Set one [`AnimationsConfig`] field by its wire name; `false` = unknown field or
+    /// wrong value type.
+    fn apply_animation_field(&mut self, field: &str, value: &serde_json::Value) -> bool {
+        let anim = &mut self.config.animations;
+        if field == "fps" {
+            let Some(fps) = value.as_u64().and_then(|v| u16::try_from(v).ok()) else {
+                return false;
+            };
+            anim.fps = fps.clamp(crate::config::FPS_MIN, crate::config::FPS_MAX);
+            return true;
+        }
+        let Some(v) = value.as_bool() else {
+            return false;
+        };
+        let slot = match field {
+            "master" => &mut anim.master,
+            "pause_unfocused" => &mut anim.pause_unfocused,
+            "title" => &mut anim.title,
+            "heart" => &mut anim.heart,
+            "seekbar" => &mut anim.seekbar,
+            "spinner" => &mut anim.spinner,
+            "eq_bars" => &mut anim.eq_bars,
+            "controls" => &mut anim.controls,
+            "border" => &mut anim.border,
+            "track_intro" => &mut anim.track_intro,
+            "lyrics" => &mut anim.lyrics,
+            "toast" => &mut anim.toast,
+            "volume_flash" => &mut anim.volume_flash,
+            "like_burst" => &mut anim.like_burst,
+            "seek_flash" => &mut anim.seek_flash,
+            "selection" => &mut anim.selection,
+            "stagger" => &mut anim.stagger,
+            "caret" => &mut anim.caret,
+            "tabs" => &mut anim.tabs,
+            "popup_fade" => &mut anim.popup_fade,
+            "activity" => &mut anim.activity,
+            "about_fx" => &mut anim.about_fx,
+            "visualizer" => &mut anim.visualizer,
+            "rain" => &mut anim.rain,
+            "donut" => &mut anim.donut,
+            "starfield" => &mut anim.starfield,
+            "bounce" => &mut anim.bounce,
+            _ => return false,
+        };
+        *slot = v;
+        true
+    }
+
+    /// Re-send the current audio filter chain (EQ + normalize) to the live player.
+    fn apply_audio_filter(&mut self) {
+        let af = self.current_audio_filter();
+        if let Some(player) = &self.player {
+            player.handle.send(PlayerCmd::SetAudioFilter(af));
+        }
+    }
+
+    /// Record a completed GUI search so `play_tracks`/`enqueue_tracks` can address its
+    /// rows by bare `video_id`. Wholesale replace: the GUI acts on what it shows.
+    pub fn index_gui_search(&mut self, groups: &[crate::api::GuiSearchGroup]) {
+        self.gui_search_index.clear();
+        for group in groups {
+            for song in &group.songs {
+                self.gui_search_index
+                    .insert(song.video_id.clone(), song.clone());
+            }
+        }
+    }
+
+    /// Resolve a GUI-addressed `video_id` to a playable [`Song`]: the last search's
+    /// rows first, then the library (favorites/history), then a bare row mpv resolves
+    /// at load time (covers e.g. AI suggestion chips that never went through search).
+    fn resolve_video_id(&self, video_id: &str) -> Song {
+        if let Some(song) = self.gui_search_index.get(video_id) {
+            return song.clone();
+        }
+        if let Some(song) = self
+            .library
+            .favorites
+            .iter()
+            .chain(self.library.history.iter())
+            .find(|s| s.video_id == video_id)
+        {
+            return song.clone();
+        }
+        Song::remote(video_id, video_id, "", "")
+    }
+
+    async fn play_tracks(&mut self, video_ids: Vec<String>) -> RemoteResponse {
+        let mut songs = video_ids.iter().map(|id| self.resolve_video_id(id));
+        let Some(first) = songs.next() else {
+            return RemoteResponse::err("empty_selection");
+        };
+        let rest: Vec<Song> = songs.collect();
+        if !self.queue.play_now(first) {
+            return RemoteResponse::err("queue_full");
+        }
+        if !rest.is_empty() {
+            self.queue.insert_next_many(rest);
+        }
+        self.save_session();
+        self.load_current()
+            .await
+            .map(|_| RemoteResponse::status(self.status()))
+            .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
+    }
+
+    async fn enqueue_tracks(&mut self, video_ids: Vec<String>) -> RemoteResponse {
+        if video_ids.is_empty() {
+            return RemoteResponse::err("empty_selection");
+        }
+        let songs: Vec<Song> = video_ids
+            .iter()
+            .map(|id| self.resolve_video_id(id))
+            .collect();
+        let old_len = self.queue.len();
+        let was_idle = self.loaded_video_id.is_none();
+        let added = if self.config.effective_enqueue_next() && !was_idle {
+            self.queue.insert_next_many(songs)
+        } else {
+            self.queue.extend(songs)
+        };
+        if added == 0 {
+            return RemoteResponse::err("queue_full");
+        }
+        self.save_session();
+        if was_idle {
+            self.queue
+                .goto(old_len.min(self.queue.len().saturating_sub(1)));
+            return self
+                .load_current()
+                .await
+                .map(|_| RemoteResponse::status(self.status()))
+                .unwrap_or_else(|e| RemoteResponse::err(e.reason()));
+        }
+        RemoteResponse::status(self.status())
     }
 
     pub async fn handle_player_event(&mut self, event: PlayerEvent) -> Vec<EngineEffect> {
@@ -411,6 +919,9 @@ impl DaemonEngine {
             // Track resolution belongs to the TUI's "what's playing" overlay; the
             // headless engine never issues one.
             ApiEvent::TrackResolved { .. } => Vec::new(),
+            // Intercepted by the host loop (index + `search` topic push) before it
+            // reaches the engine; defensive no-op if it ever lands here.
+            ApiEvent::GuiSearchCompleted { .. } => Vec::new(),
             ApiEvent::StreamingResults {
                 seed_video_id,
                 candidates,
@@ -764,6 +1275,19 @@ impl DaemonEngine {
             eq_preset: self.config.eq_preset.label().to_string(),
             eq_bands: self.config.effective_eq_bands(),
             eq_normalize: self.config.effective_normalize(),
+            config: &self.config,
+            // Same current-track gate as status()/media_snapshot: stale art from the
+            // previous track never rides a push.
+            artwork: cur.and_then(|song| {
+                self.media_art
+                    .as_ref()
+                    .filter(|art| art.key == song.video_id)
+                    .map(|art| ArtworkRef {
+                        key: art.key.clone(),
+                        path: Some(art.path.to_string_lossy().into_owned()),
+                        mime: None,
+                    })
+            }),
         }
     }
 
@@ -1829,6 +2353,7 @@ mod tests {
             inactive_radio_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
+            gui_search_index: std::collections::HashMap::new(),
         }
     }
 

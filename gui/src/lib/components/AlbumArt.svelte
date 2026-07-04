@@ -16,8 +16,11 @@
   }
   const { track, size = '56px', radius = 'var(--radius-m)', elevated = false }: Props = $props();
 
+  // Origin-relative on purpose: the page is ytm://app/… on macOS but https://ytm.app/…
+  // on Windows (wry rides custom schemes on https there), and a hardcoded ytm:// URL is
+  // an unknown scheme the Windows webview drops. Relative resolves correctly on both.
   const url = $derived(
-    track?.artwork?.path != null ? `ytm://app/art/${encodeURIComponent(track.artwork.key)}` : null,
+    track?.artwork?.path != null ? `/art/${encodeURIComponent(track.artwork.key)}` : null,
   );
   const hue = $derived(hueOf(track ? `${track.title}·${track.artist}` : 'ytm-tui'));
   const glyph = $derived(track ? [...(track.display_title ?? track.title)][0].toUpperCase() : '♪');

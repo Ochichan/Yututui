@@ -39,9 +39,19 @@ export class PlaybackStore {
     return this.model?.paused ?? true;
   }
 
-  /** Live stream ⇒ "ON AIR" seek treatment (docs/gui/07 §1). */
+  /** Live stream ⇒ "ON AIR" seek treatment (docs/gui/07 §1). Keyed on the core's real
+   * radio-station flag — a missing duration is just a track mpv hasn't measured yet
+   * (mid-load, paused-at-rest restore) and must NOT freeze the transport as LIVE. */
   get live(): boolean {
-    return this.model != null && this.model.duration_ms == null && this.model.elapsed_ms != null;
+    return this.model?.track?.is_live === true;
+  }
+
+  /** Player-measured duration, else the track's own metadata (so the seekbar has a
+   * scale even before mpv reports one). */
+  get durationMs(): number | null {
+    const m = this.model;
+    if (!m) return null;
+    return m.duration_ms ?? m.track?.duration_ms ?? null;
   }
 
   /** Interpolated position; null when nothing is playing. */

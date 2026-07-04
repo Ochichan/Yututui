@@ -30,7 +30,10 @@ if (-not $EvidenceDir) {
 }
 
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$RunName = "YtmTui Desktop"
+# Must match RUN_VALUE_NAME in src/desktop/startup.rs ("YtmTui Tray"); the binary
+# writes/reads/deletes the Run entry under this exact name, so a mismatch makes the
+# post-install Get-ItemProperty throw and aborts the whole QA before any visual check.
+$RunName = "YtmTui Tray"
 $createdTrayPid = $null
 $hadRunValue = $false
 $oldRunValue = $null
@@ -59,9 +62,32 @@ function Invoke-Capture {
         [string]$File,
         [string[]]$Arguments
     )
-    $output = & $File @Arguments 2>&1
-    $code = $LASTEXITCODE
-    $text = ($output | ForEach-Object { $_.ToString() }) -join "`n"
+    # ytt-desktop.exe is a GUI-subsystem binary. PowerShell's `$out = & gui.exe` neither
+    # WAITS for it nor CAPTURES its AttachConsole output: the variable comes back empty and
+    # the next statement runs while the child is still alive. That silently broke evidence
+    # capture and — worse — raced consecutive registry writers (the --uninstall-startup /
+    # --install-startup pair ran concurrently, so the delete could land after the write and
+    # wipe the value the next line reads). Start-Process -Wait guarantees the child exits
+    # before we return, and RedirectStandard* captures real stdout/stderr + exit code.
+    $outFile = Join-Path $EvidenceDir "$Name.out.tmp"
+    $errFile = Join-Path $EvidenceDir "$Name.err.tmp"
+    $spArgs = @{
+        FilePath               = $File
+        Wait                   = $true
+        NoNewWindow            = $true
+        PassThru               = $true
+        RedirectStandardOutput = $outFile
+        RedirectStandardError  = $errFile
+    }
+    if ($Arguments -and $Arguments.Count -gt 0) {
+        $spArgs.ArgumentList = $Arguments
+    }
+    $proc = Start-Process @spArgs
+    $code = $proc.ExitCode
+    $out = (Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)
+    $err = (Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
+    Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    $text = (@($out, $err) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd("`r", "`n") }) -join "`n"
     Save-Text -Name "$Name.txt" -Text $text | Out-Null
     return [pscustomobject]@{
         Name = $Name

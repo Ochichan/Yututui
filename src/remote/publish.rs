@@ -46,6 +46,12 @@ pub struct CoreView<'a> {
     pub eq_preset: String,
     pub eq_bands: [f64; 10],
     pub eq_normalize: bool,
+    /// The live config, projected into the `settings` topic model.
+    pub config: &'a crate::config::Config,
+    /// The media-art cache's resolved file for the CURRENT track (already gated by the
+    /// host — stale art from a previous track never appears here). Rides the player
+    /// snapshot so the GUI can fetch `ytm://app/art/<key>`.
+    pub artwork: Option<super::proto::ArtworkRef>,
 }
 
 /// The player-topic change fingerprint. **`elapsed_ms` is deliberately absent** — see
@@ -68,6 +74,10 @@ struct PlayerFingerprint {
     eq_normalize: bool,
     queue_pos: usize,
     queue_len: usize,
+    /// Art resolves ~1–2 s AFTER a track starts (async cache fetch); keying on it makes
+    /// that arrival its own push, or the GUI would show the placeholder until the next
+    /// unrelated change.
+    artwork_key: Option<String>,
 }
 
 impl PlayerFingerprint {
@@ -90,6 +100,7 @@ impl PlayerFingerprint {
             eq_normalize: view.eq_normalize,
             queue_pos: if len == 0 { 0 } else { pos.saturating_sub(1) },
             queue_len: len,
+            artwork_key: view.artwork.as_ref().map(|art| art.key.clone()),
         }
     }
 }
@@ -99,6 +110,11 @@ pub struct Publisher {
     hub: Arc<RemoteSessionHub>,
     last_player: Option<PlayerFingerprint>,
     last_queue_rev: u64,
+    /// Serialized settings model (rev 0) from the last turn — the settings fingerprint.
+    /// Byte comparison over a ~2 KB projection per event turn is comfortably cheap and
+    /// immune to forgotten-field drift, unlike a hand-listed fingerprint struct.
+    last_settings: Option<Vec<u8>>,
+    settings_rev: u64,
 }
 
 impl Publisher {
@@ -107,6 +123,8 @@ impl Publisher {
             hub,
             last_player: None,
             last_queue_rev: 0,
+            last_settings: None,
+            settings_rev: 0,
         }
     }
 
@@ -134,6 +152,23 @@ impl Publisher {
                 self.hub.broadcast(Topic::Queue, &payload);
             }
         }
+
+        let mut settings_now = settings_model(view, 0);
+        let settings_bytes = serde_json::to_vec(&settings_now).unwrap_or_default();
+        if self.last_settings.as_deref() != Some(settings_bytes.as_slice()) {
+            let primed = self.last_settings.is_some();
+            self.last_settings = Some(settings_bytes);
+            self.settings_rev += 1;
+            // The very first observe primes the baseline (nothing changed yet) —
+            // matching how the player/queue baselines behave before any subscriber.
+            if primed && self.hub.any_subscribed(Topic::Settings) {
+                settings_now.rev = self.settings_rev;
+                let payload = event_payload(&PushEvent::SettingsSnapshot {
+                    model: Box::new(settings_now),
+                });
+                self.hub.broadcast(Topic::Settings, &payload);
+            }
+        }
     }
 
     /// Owner-lane handler for [`super::server::RemoteEvent::SessionSubscribe`]: record
@@ -154,8 +189,11 @@ impl Publisher {
                 Topic::Queue => Some(event_payload(&PushEvent::QueueSnapshot {
                     model: queue_model(view),
                 })),
-                // Event-only in B0 (system) or not yet served (B1+ topics): registered,
-                // no initial snapshot.
+                Topic::Settings => Some(event_payload(&PushEvent::SettingsSnapshot {
+                    model: Box::new(settings_model(view, self.settings_rev)),
+                })),
+                // Event-only (system, search) or not yet served (B1+ topics):
+                // registered, no initial snapshot.
                 _ => None,
             };
             if let Some(payload) = payload
@@ -171,6 +209,34 @@ impl Publisher {
                 resp: RemoteResponse::ok("subscribed".to_string()),
             },
         );
+    }
+
+    /// Fan a completed GUI search out on the `search` topic (one-off event, not a
+    /// snapshot — the host loop calls this straight from the api-answer lane).
+    pub fn search_completed(
+        &self,
+        ticket: u64,
+        query: &str,
+        source: crate::search_source::SearchSource,
+        groups: &[crate::api::GuiSearchGroup],
+    ) {
+        if !self.hub.any_subscribed(Topic::Search) {
+            return;
+        }
+        let payload = event_payload(&PushEvent::SearchCompleted {
+            ticket,
+            query: query.to_string(),
+            source,
+            groups: groups
+                .iter()
+                .map(|group| super::proto::SearchGroup {
+                    source: group.source,
+                    tracks: group.songs.iter().map(track_model).collect(),
+                    error: group.error.clone(),
+                })
+                .collect(),
+        });
+        self.hub.broadcast(Topic::Search, &payload);
     }
 
     /// The owner is exiting: `shutting_down` on the `system` topic for subscribers,
@@ -193,7 +259,11 @@ fn event_payload(event: &PushEvent) -> Arc<Vec<u8>> {
 pub(crate) fn player_model(view: &CoreView<'_>) -> PlayerModel {
     let (pos, len) = view.queue.position();
     PlayerModel {
-        track: view.queue.current().map(track_model),
+        track: view.queue.current().map(|song| {
+            let mut track = track_model(song);
+            track.artwork = view.artwork.clone();
+            track
+        }),
         paused: view.paused,
         volume: view.volume,
         speed_tenths: view.speed_tenths,
@@ -223,6 +293,134 @@ pub(crate) fn queue_model(view: &CoreView<'_>) -> QueueModel {
     }
 }
 
+/// Project the live [`Config`](crate::config::Config) into the `settings` wire model.
+/// Option defaults mirror the documented config semantics (`gapless: None → on`, …).
+pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::SettingsModelV8 {
+    use super::proto::{
+        AnimationsModel, KeymapSettingsModel, PlaybackSettingsModel, SearchSettingsModel,
+        SettingsModelV8, StorageSettingsModel, StreamingSettingsModel, ThemePresetModel,
+        ThemeSettingsModel, UiSettingsModel,
+    };
+    use crate::theme::{ThemePreset, ThemeRole};
+
+    let c = view.config;
+    let anim = &c.animations;
+    let has_key = std::env::var_os("GEMINI_API_KEY").is_some_and(|v| !v.is_empty())
+        || c.gemini_api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty());
+
+    SettingsModelV8 {
+        rev,
+        playback: PlaybackSettingsModel {
+            speed_tenths: view.speed_tenths,
+            seek_seconds: c.seek_seconds.unwrap_or(10.0).round() as u16,
+            gapless: c.gapless.unwrap_or(true),
+            enqueue_next: c.enqueue_next.unwrap_or(false),
+            autoplay_on_start: c.autoplay_on_start.unwrap_or(false),
+            mouse_wheel_volume: c.mouse_wheel_volume.unwrap_or(true),
+            media_controls: c.media_controls.unwrap_or(true),
+            volume: view.volume,
+            shuffle: view.queue.shuffle,
+            repeat: view.queue.repeat,
+        },
+        eq: EqModel {
+            preset: view.eq_preset.clone(),
+            bands: view.eq_bands,
+            normalize: view.eq_normalize,
+        },
+        streaming: StreamingSettingsModel {
+            ai_enabled: c.ai_enabled.unwrap_or(true),
+            gemini_model: c.gemini_model.api_id().to_string(),
+            autoplay: c.autoplay_streaming.unwrap_or(false),
+            mode: serde_json::to_value(c.streaming.mode)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| "balanced".to_string()),
+            has_gemini_key: has_key,
+        },
+        search: SearchSettingsModel {
+            default_source: c.search.source,
+            soundcloud_enabled: c.search.soundcloud,
+            audius_enabled: c.search.audius,
+            jamendo_enabled: c.search.jamendo,
+            internet_archive_enabled: c.search.internet_archive,
+            radio_browser_enabled: c.search.radio_browser,
+            audius_app_name: c.search.audius_app_name.clone(),
+            jamendo_client_id: c.search.jamendo_client_id.clone(),
+        },
+        ui: UiSettingsModel {
+            language: match c.language {
+                crate::i18n::Language::English => "en".to_string(),
+                crate::i18n::Language::Korean => "ko".to_string(),
+            },
+            mouse: c.mouse.unwrap_or(true),
+            album_art: c.album_art.unwrap_or(false),
+            romanized_titles: c.romanized_titles.unwrap_or(false),
+        },
+        storage: StorageSettingsModel {
+            download_dir: c.download_dir.as_ref().map(|p| p.display().to_string()),
+            cookies_file: c.cookies_file.as_ref().map(|p| p.display().to_string()),
+            download_concurrency: c.download_concurrency.unwrap_or(3) as u32,
+        },
+        animations: AnimationsModel {
+            master: anim.master,
+            pause_unfocused: anim.pause_unfocused,
+            fps: anim.effective_fps(),
+            title: anim.title,
+            heart: anim.heart,
+            seekbar: anim.seekbar,
+            spinner: anim.spinner,
+            eq_bars: anim.eq_bars,
+            controls: anim.controls,
+            border: anim.border,
+            track_intro: anim.track_intro,
+            lyrics: anim.lyrics,
+            toast: anim.toast,
+            volume_flash: anim.volume_flash,
+            like_burst: anim.like_burst,
+            seek_flash: anim.seek_flash,
+            selection: anim.selection,
+            stagger: anim.stagger,
+            caret: anim.caret,
+            tabs: anim.tabs,
+            popup_fade: anim.popup_fade,
+            activity: anim.activity,
+            about_fx: anim.about_fx,
+            visualizer: anim.visualizer,
+            rain: anim.rain,
+            donut: anim.donut,
+            starfield: anim.starfield,
+            bounce: anim.bounce,
+        },
+        theme: ThemeSettingsModel {
+            preset: c.theme.preset.clone(),
+            roles: ThemeRole::ALL
+                .into_iter()
+                .map(|role| (role.id().to_string(), c.theme.effective_hex(role)))
+                .collect(),
+            overrides: c.theme.overrides.clone(),
+            background_none: c.theme.is_role_transparent(ThemeRole::Background),
+            retro: c.retro_mode,
+            presets: ThemePreset::ALL
+                .into_iter()
+                .map(|preset| ThemePresetModel {
+                    name: preset.id().to_string(),
+                    swatch: ThemeRole::ALL
+                        .into_iter()
+                        .take(6)
+                        .map(|role| (role.id().to_string(), role.default_hex(preset).to_string()))
+                        .collect(),
+                })
+                .collect(),
+        },
+        keymap: KeymapSettingsModel {
+            bindings: c.keybindings.clone(),
+            actions: Vec::new(),
+        },
+    }
+}
+
 /// Project a [`Song`] to the wire track shape. B0 carries what the `Song` itself knows;
 /// favorite/disliked/display/artwork enrichment lands with its milestone (B1/B2).
 fn track_model(song: &Song) -> TrackModel {
@@ -241,6 +439,7 @@ fn track_model(song: &Song) -> TrackModel {
         display_artist: None,
         artwork: None,
         watch_url: None,
+        is_live: song.is_radio_station(),
     }
 }
 
@@ -266,7 +465,9 @@ fn song_duration_ms(song: &Song) -> Option<u64> {
 }
 
 /// Test-only view over a bare queue with fixed transport values — shared with the
-/// server's session socket tests, which need an owner-lane stand-in.
+/// server's session socket tests, which need an owner-lane stand-in. The config is a
+/// leaked default: `CoreView` borrows, tests want a one-liner, and a handful of leaked
+/// defaults per test process is free.
 #[cfg(test)]
 pub(crate) fn test_view(queue: &Queue) -> CoreView<'_> {
     CoreView {
@@ -284,6 +485,8 @@ pub(crate) fn test_view(queue: &Queue) -> CoreView<'_> {
         eq_preset: "Flat".to_string(),
         eq_bands: [0.0; 10],
         eq_normalize: false,
+        config: Box::leak(Box::new(crate::config::Config::default())),
+        artwork: None,
     }
 }
 

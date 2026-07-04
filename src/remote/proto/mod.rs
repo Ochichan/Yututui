@@ -23,13 +23,20 @@ mod command;
 mod freeze;
 mod model;
 mod model_player;
+mod model_settings;
 mod session;
 
-pub use command::{RemoteCommand, RemoteSettingChange};
+pub use command::{GuiSettingChange, RemoteCommand, RemoteSettingChange};
 pub use model::{ArtworkRef, TrackModel};
 pub use model_player::{EqModel, PlayerModel, QueueModel};
+pub use model_settings::{
+    ActionInfoModel, AnimationsModel, KeymapSettingsModel, PlaybackSettingsModel,
+    SearchSettingsModel, SettingsModelV8, StorageSettingsModel, StreamingSettingsModel,
+    ThemePresetModel, ThemeSettingsModel, UiSettingsModel,
+};
 pub use session::{
-    ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, PushEvent, ServerFrame, Topic,
+    ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, PushEvent, SearchGroup, ServerFrame,
+    Topic,
 };
 
 /// The version this build speaks. Servers accept one-shot requests in the

@@ -61,7 +61,8 @@ pub struct HelloAck {
 
 /// One client line after Hello: a client-monotonic id plus the operation, flattened so
 /// the wire form is a single flat object (`{"id":1,"op":"subscribe","topics":[…]}`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// (`Eq` gone with [`RemoteCommand`]'s — the GUI settings value is a JSON float.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientFrame {
     /// Client-monotonic; echoed in [`ServerFrame::Reply`] / [`ServerFrame::Pong`].
     pub id: u64,
@@ -69,7 +70,7 @@ pub struct ClientFrame {
     pub op: ClientOp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ClientOp {
     Subscribe {
@@ -199,6 +200,37 @@ pub enum PushEvent {
     OwnerChanged { mode: InstanceMode },
     /// `system` topic: the owner is shutting down; a `Goodbye` follows.
     ShuttingDown,
+    /// `search` topic: one completed [`RunSearch`](super::RemoteCommand::RunSearch),
+    /// grouped per concrete catalog. `ticket` echoes the request so the frontend can
+    /// drop stale replies; `source` echoes the requested scope (may be `all`).
+    SearchCompleted {
+        #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+        ticket: u64,
+        query: String,
+        source: crate::search_source::SearchSource,
+        groups: Vec<SearchGroup>,
+    },
+    /// `settings` topic: the full settings projection — the initial snapshot and the
+    /// push after every accepted mutation (the GUI's pending overlay reconciles on it).
+    /// Boxed like the player model: it dwarfs the unit variants.
+    SettingsSnapshot {
+        model: Box<super::model_settings::SettingsModelV8>,
+    },
+}
+
+/// One catalog's slice of a completed search: a concrete source (never `all`), its
+/// result rows, and a per-source failure string surfaced as a chip (e.g. "jamendo:
+/// no client id") — `None` on success.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchGroup {
+    pub source: crate::search_source::SearchSource,
+    pub tracks: Vec<super::model::TrackModel>,
+    pub error: Option<String>,
 }
 
 #[cfg(test)]
@@ -375,6 +407,7 @@ mod tests {
             display_artist: None,
             artwork: None,
             watch_url: Some("https://music.youtube.com/watch?v=vid".to_string()),
+            is_live: false,
         };
         let player = PushEvent::PlayerSnapshot {
             model: Box::new(PlayerModel {

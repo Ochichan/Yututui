@@ -53,6 +53,11 @@ impl MainWindow {
             .with_min_inner_size(LogicalSize::new(MIN_W, MIN_H))
             .with_resizable(true)
             .with_visible(true);
+        // Title-bar + taskbar identity; macOS draws the bundle icon, so this is Windows-only.
+        #[cfg(windows)]
+        {
+            builder = builder.with_window_icon(crate::desktop::platform::windows::window_icon());
+        }
         // Restore saved geometry (the event loop clamps to live monitors on move/resize via
         // window_state::clamp_to_monitors; a fully off-screen restore is the rare edge case).
         if let Some(rect) = state.main {
@@ -153,7 +158,23 @@ fn build_webview(
     let start_url = dev_url.unwrap_or("ytm://app/index.html").to_string();
     let dev_origin = dev_url.and_then(origin_of);
 
-    let webview = WebViewBuilder::new()
+    // Windows: point WebView2 at the shared user-data folder (docs/gui/03 §3) so the
+    // main window and the mini player ride one browser-process set. macOS ignores the
+    // web context, so the default builder keeps the signed-off WKWebView path untouched.
+    #[cfg(windows)]
+    let mut web_context = crate::desktop::platform::shared_web_context();
+    #[cfg(windows)]
+    let builder = {
+        use wry::WebViewBuilderExtWindows;
+        // WebView2 has no real custom schemes; wry rides them on `{http|https}://ytm.…`
+        // and defaults to http — which the navigation lock below (rightly) denies, so the
+        // window rendered black. https matches the lock + gives the page a secure context.
+        WebViewBuilder::new_with_web_context(&mut web_context).with_https_scheme(true)
+    };
+    #[cfg(not(windows))]
+    let builder = WebViewBuilder::new();
+
+    let webview = builder
         .with_url(start_url)
         .with_initialization_script(init)
         .with_custom_protocol("ytm".to_string(), ytm_protocol)
@@ -168,10 +189,13 @@ fn build_webview(
     Ok(webview)
 }
 
-/// The `ytm://app` custom-protocol handler. Serves embedded assets + (M1) artwork, each with
-/// the CSP header. M0 has no artwork resolver yet, so `art/*` 404s.
+/// The `ytm://app` custom-protocol handler: embedded assets + artwork from the media-art
+/// disk cache (deterministic layout, so no engine state is needed), each with the CSP.
 fn ytm_protocol(_id: &str, request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
-    let served = assets::resolve(&request.uri().to_string(), |_key| None);
+    let served = assets::resolve(
+        &request.uri().to_string(),
+        crate::media::artwork::cached_art_path,
+    );
     let mut builder = Response::builder()
         .status(served.status)
         .header("Content-Type", served.content_type.as_ref())

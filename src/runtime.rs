@@ -141,6 +141,9 @@ impl From<RuntimeEvent> for Msg {
                     seed_video_id,
                     error,
                 },
+                // Daemon-owner lane only: the standalone TUI rejects `run_search`
+                // (`daemon_required`), so its api actor never produces this.
+                crate::api::ApiEvent::GuiSearchCompleted { .. } => Msg::Noop,
             },
             RuntimeEvent::Artwork(crate::artwork::ArtworkEvent::Result { video_id, image }) => {
                 Msg::ArtworkResult { video_id, image }

@@ -12,7 +12,10 @@ use super::ToggleState;
 
 /// A semantic player command. Applied through the same reducer path a keypress uses, so
 /// it works regardless of the TUI's current input mode (Search text entry, Settings, …).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Eq` is deliberately absent: [`GuiSettingChange`] carries a free-form JSON value
+/// (floats included), which only supports `PartialEq`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum RemoteCommand {
     Next,
@@ -55,6 +58,46 @@ pub enum RemoteCommand {
     ResumeSession,
     Status,
     Quit,
+    /// GUI search (additive, v8 sessions): run a grouped multi-catalog search and push
+    /// the outcome on the `search` topic as
+    /// [`PushEvent::SearchCompleted`](super::PushEvent::SearchCompleted), keyed by
+    /// `ticket`. Fire-and-forget: the reply only acknowledges the dispatch.
+    RunSearch {
+        ticket: u64,
+        query: String,
+        source: SearchSource,
+    },
+    /// Play these exact rows now: first replaces the current track, the rest queue up
+    /// next. Ids come from rows a prior search/library push handed the client.
+    PlayTracks {
+        video_ids: Vec<String>,
+    },
+    /// Append these exact rows to the queue (honoring the enqueue-next setting).
+    EnqueueTracks {
+        video_ids: Vec<String>,
+    },
+    /// GUI settings mutation (v8 sessions): one `group.field = value` edit. Every
+    /// accepted apply is followed by a `settings_snapshot` push carrying the new state
+    /// (the GUI's optimistic pending overlay clears against it).
+    Apply {
+        change: GuiSettingChange,
+    },
+    /// Store (or clear, when empty) the Gemini API key. Write-only: snapshots carry
+    /// only `has_gemini_key`.
+    SetGeminiKey {
+        key: String,
+    },
+    /// Danger zone: reset the whole config to defaults (the GUI double-confirms).
+    ResetAllSettings,
+}
+
+/// One GUI settings edit: `group` and `field` name a [`super::SettingsModelV8`] slot;
+/// `value` is the raw JSON the frontend sent (validated by the owner per field).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GuiSettingChange {
+    pub group: String,
+    pub field: String,
+    pub value: serde_json::Value,
 }
 
 /// A single persisted/live setting mutation from companion surfaces such as the tray panel.

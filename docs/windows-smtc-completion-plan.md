@@ -406,11 +406,20 @@ the QA script) — and adopt whichever works before release.
 - [x] Idempotent registration command (doctor family)
 - [x] install.ps1 step + scoop `post_install`
 - [x] .ico shipped in Windows zip
-- [x] Phase-3 decision: registry-only vs .lnk fallback → **adopt .lnk** (on-HW QA
-  2026-07-04 proved the HKCU key alone shows "Unknown app"; the AUMID-stamped
-  Start-Menu shortcut fixes the flyout). Landed in
-  `src/media/identity.rs::write_start_menu_shortcut` (called from
-  `register_cli` alongside the registry write); both are kept.
+- [x] Phase-3 decision: registry-only vs .lnk fallback → **adopt the .lnk**
+      (see below + `windows-smtc-qa-results-2026-07-04.md`)
+
+**Phase-3 decision (on-hardware, Win11 26200, 2026-07-04):** registry-only is
+**insufficient** — the flyout stayed "Unknown app" even after a sign-out/in. A
+Start-Menu shortcut carrying `System.AppUserModel.ID` = `io.github.ochi.ytm-tui`
+(PKEY_AppUserModel_ID {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3},5), created via
+IShellLinkW + IPropertyStore, flipped the flyout to "YtmTui" + icon
+**immediately, no logout**. **DONE (windows-gui branch, 2026-07-04):**
+`register-media-identity` (`src/media/identity.rs::write_start_menu_shortcut`)
+now writes the stamped shortcut alongside the HKCU key (kept for toast
+identity), idempotent, with an AUMID readback guard; verified on-hardware via
+independent Shell-COM readback of the freshly created `.lnk`. Full results +
+implementation notes in `windows-smtc-qa-results-2026-07-04.md`.
 
 ## 5. Verification Tooling
 

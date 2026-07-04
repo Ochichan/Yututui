@@ -50,6 +50,7 @@ function track(
     display_artist: null,
     artwork: null,
     watch_url: `https://music.youtube.com/watch?v=${id}`,
+    is_live: false,
     ...extra,
   };
 }

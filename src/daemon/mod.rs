@@ -314,6 +314,18 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
                 let effects = engine.handle_player_event(event).await;
                 dispatch_engine_effects(&api, &event_tx, effects);
             }
+            // GUI-search answers are owner-lane fan-out, not engine state: index the
+            // rows for play_tracks/enqueue_tracks, then push on the `search` topic
+            // (same loop-level role as `handle_subscribe` above).
+            DaemonEvent::Api(crate::api::ApiEvent::GuiSearchCompleted {
+                ticket,
+                query,
+                source,
+                groups,
+            }) => {
+                engine.index_gui_search(&groups);
+                publisher.search_completed(ticket, &query, source, &groups);
+            }
             DaemonEvent::Api(event) => {
                 let effects = engine.handle_api_event(event).await;
                 dispatch_engine_effects(&api, &event_tx, effects);
@@ -534,6 +546,12 @@ fn dispatch_engine_effects(
                     let _ = tx.send(DaemonEvent::YtdlpHeal { video_id, updated });
                 });
             }
+            engine::EngineEffect::GuiSearch {
+                ticket,
+                query,
+                source,
+                config,
+            } => api.gui_search(ticket, query, source, config),
         }
     }
 }
@@ -579,6 +597,28 @@ fn spawn_daemon_process(options: &StartOptions) -> Result<(), DaemonError> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
+        // The Stdio::null() above only sets the daemon's OWN std handles; the spawn
+        // still runs with bInheritHandles=TRUE (std needs it to pass those NULs), which
+        // leaks every *inheritable* handle in this client into the daemon — including
+        // the write end of whatever pipe captures `ytt daemon start`'s output. A shell
+        // reading that pipe then never sees EOF while the daemon lives (`$out = ytt
+        // daemon start | Out-String` hung forever; the CI smoke's Invoke-Checked hit
+        // the same). The client is about to exit and spawns nothing else, so stripping
+        // the inherit flag from its std handles closes the leak at the source.
+        unsafe {
+            use windows_sys::Win32::Foundation::{
+                HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+            };
+            use windows_sys::Win32::System::Console::{
+                GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+            };
+            for kind in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                let handle = GetStdHandle(kind);
+                if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                    let _ = SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
     }
 
     cmd.spawn()

@@ -348,6 +348,15 @@ pub enum ApiCmd {
         source: SearchSource,
         config: SearchConfig,
     },
+    /// A GUI-session search (`RemoteCommand::RunSearch`): per-catalog result groups,
+    /// answered as [`ApiEvent::GuiSearchCompleted`] keyed by `ticket` — its own lane, so
+    /// it never disturbs the TUI Search screen's [`ApiEvent::SearchResults`].
+    GuiSearch {
+        ticket: u64,
+        query: String,
+        source: SearchSource,
+        config: SearchConfig,
+    },
     Streaming {
         seed: String,
         seed_video_id: String,
@@ -427,6 +436,21 @@ pub enum ApiEvent {
         title: String,
         error: String,
     },
+    /// Per-catalog groups answering [`ApiCmd::GuiSearch`], keyed by `ticket`.
+    GuiSearchCompleted {
+        ticket: u64,
+        query: String,
+        source: SearchSource,
+        groups: Vec<GuiSearchGroup>,
+    },
+}
+
+/// One catalog's slice of a [`ApiCmd::GuiSearch`] answer, still in [`Song`] terms —
+/// the publisher projects it to wire [`TrackModel`](crate::remote::proto::TrackModel)s.
+pub struct GuiSearchGroup {
+    pub source: SearchSource,
+    pub songs: Vec<Song>,
+    pub error: Option<String>,
 }
 
 /// Handle for issuing API requests; results return as [`ApiEvent`]s.
@@ -437,6 +461,21 @@ pub struct ApiHandle {
 impl ApiHandle {
     pub fn search(&self, query: impl Into<String>, source: SearchSource, config: SearchConfig) {
         let _ = self.tx.send(ApiCmd::Search {
+            query: query.into(),
+            source,
+            config,
+        });
+    }
+
+    pub fn gui_search(
+        &self,
+        ticket: u64,
+        query: impl Into<String>,
+        source: SearchSource,
+        config: SearchConfig,
+    ) {
+        let _ = self.tx.send(ApiCmd::GuiSearch {
+            ticket,
             query: query.into(),
             source,
             config,
@@ -526,6 +565,48 @@ where
     ApiHandle { tx }
 }
 
+/// Run one GUI search: per-catalog groups. A concrete `source` yields one group; `All`
+/// fans out over the enabled catalogs (like the TUI's merged path) but keeps results
+/// separated and failures per-source. A pasted YouTube URL short-circuits to a single
+/// youtube group — resolving it once, not once per catalog.
+async fn gui_search_groups(
+    api: &ytmusic::YtMusicApi,
+    query: &str,
+    source: SearchSource,
+    config: &SearchConfig,
+) -> Vec<GuiSearchGroup> {
+    let url_like = crate::media::parse_youtube_playlist_id(query).is_some()
+        || crate::media::parse_youtube_video_id(query).is_some();
+    let targets: Vec<SearchSource> = if source == SearchSource::All && !url_like {
+        let enabled = config.enabled_sources();
+        if enabled.is_empty() {
+            vec![SearchSource::Youtube]
+        } else {
+            enabled
+        }
+    } else if source == SearchSource::All {
+        vec![SearchSource::Youtube]
+    } else {
+        vec![source]
+    };
+    let mut groups = Vec::with_capacity(targets.len());
+    for target in targets {
+        match api.search_songs(query, target, config).await {
+            Ok(songs) => groups.push(GuiSearchGroup {
+                source: target,
+                songs,
+                error: None,
+            }),
+            Err(e) => groups.push(GuiSearchGroup {
+                source: target,
+                songs: Vec::new(),
+                error: Some(sanitize::sanitize_error_text(format!("{e:#}"))),
+            }),
+        }
+    }
+    groups
+}
+
 async fn init_api(cookie: Option<String>) -> (ytmusic::YtMusicApi, ApiMode) {
     let (api, mode) = match cookie {
         Some(c) => match ytmusic::YtMusicApi::from_cookie(&c).await {
@@ -571,6 +652,27 @@ where
                     }
                 };
                 emit(event);
+            }
+            ApiCmd::GuiSearch {
+                ticket,
+                query,
+                source,
+                config,
+            } => {
+                let groups = gui_search_groups(&api, &query, source, &config).await;
+                tracing::info!(
+                    ticket,
+                    query = %query,
+                    source = %source.code(),
+                    groups = groups.len(),
+                    "gui search completed"
+                );
+                emit(ApiEvent::GuiSearchCompleted {
+                    ticket,
+                    query,
+                    source,
+                    groups,
+                });
             }
             ApiCmd::ResolveTrack { seq, query, config } => {
                 // The same innertube→yt-dlp search as the Search screen, but the answer

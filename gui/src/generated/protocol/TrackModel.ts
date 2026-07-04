@@ -26,4 +26,11 @@ display_title: string | null, display_artist: string | null, artwork: ArtworkRef
 /**
  * Built server-side, for copy-link.
  */
-watch_url: string | null, };
+watch_url: string | null, 
+/**
+ * A genuine endless live stream (radio station). THE live signal — clients must
+ * not infer "live" from a missing duration, which is just a track mpv hasn't
+ * measured yet (paused-at-rest restore, mid-load). Omitted when false so the
+ * common case stays byte-identical to the pre-field wire.
+ */
+is_live: boolean, };

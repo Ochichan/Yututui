@@ -1,7 +1,7 @@
-#![cfg_attr(
-    all(target_os = "windows", not(debug_assertions)),
-    windows_subsystem = "windows"
-)]
+// GUI subsystem in EVERY profile: a console window popping up alongside the app reads
+// as broken to GUI users, debug builds included. Diagnostics live in the log file, and
+// the CLI verbs still print via AttachConsole when launched from a terminal.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use std::error::Error;
 

@@ -135,7 +135,8 @@ libc = "0.2"
 # The Shell/Com quartet (Win32_UI_Shell{,_PropertiesSystem}, Win32_System_Com{,_StructuredStorage})
 # is classic COM for the AUMID-stamped Start-Menu shortcut the media flyout resolves
 # our name+icon from (`src/media/identity.rs::write_start_menu_shortcut` — IShellLinkW +
-# IPropertyStore(PKEY_AppUserModel_ID) + IPersistFile).
+# IPropertyStore(PKEY_AppUserModel_ID) + IPersistFile). Registry-only registration was
+# proven insufficient on Win11 26200 (docs/windows-smtc-qa-results-2026-07-04.md).
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", default-features = false, features = ["Media", "Storage_Streams", "Foundation", "Win32_Foundation", "Win32_System_WinRT", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage"] }
 windows-sys = { version = "0.61", features = [

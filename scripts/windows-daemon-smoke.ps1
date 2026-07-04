@@ -92,6 +92,8 @@ function Get-DaemonStatus {
 
 function Get-NewMpvProcesses {
     param([int[]]$Baseline)
+    # NOTE: callers must wrap this in @(..) — PowerShell unrolls a returned array,
+    # so an empty result arrives as $null and `.Count` throws under StrictMode.
     $all = @(Get-Process -Name "mpv" -ErrorAction SilentlyContinue)
     return @($all | Where-Object { $_.Id -notin $Baseline })
 }
@@ -314,7 +316,7 @@ try {
             return $false
         }
     }
-    $idleMpv = Get-NewMpvProcesses -Baseline $mpvBaseline
+    $idleMpv = @(Get-NewMpvProcesses -Baseline $mpvBaseline)
     if ($idleMpv.Count -ne 0) {
         throw "idle daemon spawned mpv unexpectedly: $($idleMpv.Id -join ', ')"
     }
@@ -329,7 +331,7 @@ try {
         }
     }
     Wait-Until -Label "mpv child after resume" -Condition {
-        $newMpv = Get-NewMpvProcesses -Baseline $mpvBaseline
+        $newMpv = @(Get-NewMpvProcesses -Baseline $mpvBaseline)
         return $newMpv.Count -ge 1
     }
 
@@ -380,7 +382,7 @@ try {
         }
     }
     Wait-Until -Label "mpv cleanup" -Condition {
-        $newMpv = Get-NewMpvProcesses -Baseline $mpvBaseline
+        $newMpv = @(Get-NewMpvProcesses -Baseline $mpvBaseline)
         return $newMpv.Count -eq 0
     }
 

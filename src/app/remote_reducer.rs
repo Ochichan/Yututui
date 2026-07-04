@@ -35,6 +35,21 @@ impl App {
             RemoteCommand::Play { .. } | RemoteCommand::Enqueue { .. } => {
                 (RemoteResponse::err("daemon_required"), Vec::new())
             }
+            // GUI-session verbs (docs/gui/02): like Play/Enqueue, searches need the api
+            // actor lane the standalone TUI reserves for its own Search screen — the GUI
+            // is expected to talk to a daemon owner. Settings WRITES are also daemon-only
+            // for now: the TUI's Settings screen state derives from config at draw time,
+            // so a remote mutation would need the same reducer plumbing its keypresses
+            // use (follow-up); settings READS already work (the snapshot projects
+            // `self.config` via core_view).
+            RemoteCommand::RunSearch { .. }
+            | RemoteCommand::PlayTracks { .. }
+            | RemoteCommand::EnqueueTracks { .. }
+            | RemoteCommand::Apply { .. }
+            | RemoteCommand::SetGeminiKey { .. }
+            | RemoteCommand::ResetAllSettings => {
+                (RemoteResponse::err("daemon_required"), Vec::new())
+            }
             RemoteCommand::VolumeUp => {
                 let cmds = self.on_player_action(Action::VolUp);
                 (RemoteResponse::ok(self.vol_line()), cmds)
@@ -401,6 +416,18 @@ impl App {
             eq_preset: self.audio.preset.label().to_string(),
             eq_bands: self.audio.bands,
             eq_normalize: self.audio.normalize,
+            config: &self.config,
+            // Same current-track gate as status_snapshot above.
+            artwork: cur.and_then(|song| {
+                self.media_art
+                    .as_ref()
+                    .filter(|art| art.key == song.video_id)
+                    .map(|art| ArtworkRef {
+                        key: art.key.clone(),
+                        path: Some(art.path.to_string_lossy().into_owned()),
+                        mime: None,
+                    })
+            }),
         }
     }
 }
