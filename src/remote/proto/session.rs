@@ -61,7 +61,8 @@ pub struct HelloAck {
 
 /// One client line after Hello: a client-monotonic id plus the operation, flattened so
 /// the wire form is a single flat object (`{"id":1,"op":"subscribe","topics":[…]}`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// (`Eq` gone with [`RemoteCommand`]'s — the GUI settings value is a JSON float.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientFrame {
     /// Client-monotonic; echoed in [`ServerFrame::Reply`] / [`ServerFrame::Pong`].
     pub id: u64,
@@ -69,7 +70,7 @@ pub struct ClientFrame {
     pub op: ClientOp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ClientOp {
     Subscribe {
@@ -208,6 +209,12 @@ pub enum PushEvent {
         query: String,
         source: crate::search_source::SearchSource,
         groups: Vec<SearchGroup>,
+    },
+    /// `settings` topic: the full settings projection — the initial snapshot and the
+    /// push after every accepted mutation (the GUI's pending overlay reconciles on it).
+    /// Boxed like the player model: it dwarfs the unit variants.
+    SettingsSnapshot {
+        model: Box<super::model_settings::SettingsModelV8>,
     },
 }
 

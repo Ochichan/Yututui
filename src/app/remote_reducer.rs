@@ -37,10 +37,17 @@ impl App {
             }
             // GUI-session verbs (docs/gui/02): like Play/Enqueue, searches need the api
             // actor lane the standalone TUI reserves for its own Search screen — the GUI
-            // is expected to talk to a daemon owner.
+            // is expected to talk to a daemon owner. Settings WRITES are also daemon-only
+            // for now: the TUI's Settings screen state derives from config at draw time,
+            // so a remote mutation would need the same reducer plumbing its keypresses
+            // use (follow-up); settings READS already work (the snapshot projects
+            // `self.config` via core_view).
             RemoteCommand::RunSearch { .. }
             | RemoteCommand::PlayTracks { .. }
-            | RemoteCommand::EnqueueTracks { .. } => {
+            | RemoteCommand::EnqueueTracks { .. }
+            | RemoteCommand::Apply { .. }
+            | RemoteCommand::SetGeminiKey { .. }
+            | RemoteCommand::ResetAllSettings => {
                 (RemoteResponse::err("daemon_required"), Vec::new())
             }
             RemoteCommand::VolumeUp => {
@@ -409,6 +416,7 @@ impl App {
             eq_preset: self.audio.preset.label().to_string(),
             eq_bands: self.audio.bands,
             eq_normalize: self.audio.normalize,
+            config: &self.config,
         }
     }
 }
