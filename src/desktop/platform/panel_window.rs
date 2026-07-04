@@ -392,7 +392,15 @@ fn build_webview(
     on_command: &Rc<dyn Fn(PanelCommand)>,
 ) -> Result<WebView, Box<dyn Error>> {
     let on_command = Rc::clone(on_command);
-    let webview = WebViewBuilder::new()
+    // Windows: share the WebView2 user-data folder with the main window (docs/gui/03 §3)
+    // so both surfaces cost one browser-process set. macOS ignores the web context.
+    #[cfg(windows)]
+    let mut web_context = crate::desktop::platform::shared_web_context();
+    #[cfg(windows)]
+    let builder = WebViewBuilder::new_with_web_context(&mut web_context);
+    #[cfg(not(windows))]
+    let builder = WebViewBuilder::new();
+    let webview = builder
         .with_transparent(true)
         .with_html(panel::html(update, theme, art_uri))
         .with_ipc_handler(

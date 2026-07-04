@@ -15,10 +15,13 @@ use crate::desktop::control;
 use crate::desktop::launch;
 use crate::desktop::menu_model::{self, MenuAction, MenuEntry, MenuItem as ModelItem, TrayState};
 use crate::desktop::panel::{PanelCommand, PanelTheme};
+use crate::desktop::platform::main_window::MainWindow;
 use crate::desktop::platform::panel_window::MiniPlayerPanel;
+use crate::desktop::single_instance::{self, Acquire};
 use crate::desktop::startup::{self, StartupStatus};
 use crate::desktop::status::{self, PollConfig, PollUpdate};
 use crate::desktop::window_state::DesktopState;
+use crate::desktop::{bridge, gateway};
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
 
 const APP_ID: &str = "io.github.ochi.ytm-tui.tray";
@@ -42,20 +45,50 @@ enum UserEvent {
     DaemonPrimary,
     Refresh,
     StartupChanged,
+    /// Live connection state from the persistent v8 gateway thread (docs/gui/03 §3.2).
+    Gateway(gateway::GatewayEvent),
+    /// A request concerning the main window: an IPC line from its webview, or an activate.
+    Main(MainRequest),
     Quit,
 }
 
+#[derive(Debug)]
+enum MainRequest {
+    /// One IPC envelope line posted by the main window's webview.
+    Ipc(String),
+    /// A second instance asked us to surface the main window.
+    Activate,
+}
+
 pub fn run(open_main: bool) -> Result<(), Box<dyn Error>> {
-    // The Windows main-window + gateway wiring mirrors the macOS path (docs/gui/03 §3) but
-    // needs a Windows box to verify; it lands with the Windows M0 sign-off. Tray/mini are
-    // unchanged for now.
-    let _ = open_main;
     let log_guard = init_file_logging();
     install_tray_panic_hook();
     set_app_user_model_id();
 
+    // Single GUI instance (docs/gui/03 §6): a second launch activates the first and exits.
+    // Held until the process exits (tao's run() diverges, so this never drops early).
+    let _instance = match single_instance::acquire() {
+        Ok(Acquire::Primary(guard)) => Some(guard),
+        Ok(Acquire::AlreadyRunning) => {
+            single_instance::signal_activate();
+            return Ok(());
+        }
+        Err(e) => {
+            report_error(format_args!("single-instance lock unavailable: {e}"));
+            None
+        }
+    };
+
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
+
+    // A second launch pings the activate endpoint; surface the main window when it does.
+    let _ = single_instance::spawn_activate_listener({
+        let proxy = proxy.clone();
+        move || {
+            let _ = proxy.send_event(UserEvent::Main(MainRequest::Activate));
+        }
+    });
 
     MenuEvent::set_event_handler(Some({
         let proxy = proxy.clone();
@@ -95,16 +128,22 @@ pub fn run(open_main: bool) -> Result<(), Box<dyn Error>> {
         }
     }));
 
-    let mut app = WindowsTrayApp::new(proxy.clone(), log_guard);
+    let mut app = WindowsTrayApp::new(proxy.clone(), log_guard, open_main);
 
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::NewEvents(StartCause::Init) => {
-                if let Err(e) = app.init() {
+                if let Err(e) = app.init(target) {
                     report_error(e);
                     *control_flow = ControlFlow::Exit;
                 }
+            }
+            Event::UserEvent(UserEvent::Gateway(ev)) => {
+                app.handle_gateway(ev);
+            }
+            Event::UserEvent(UserEvent::Main(req)) => {
+                app.handle_main(req, target);
             }
             Event::UserEvent(UserEvent::Status(update)) => {
                 app.apply_update(update);
@@ -167,6 +206,10 @@ struct WindowsTrayApp {
     tray: Option<TrayIcon>,
     menu: Option<WindowsMenu>,
     panel: Option<MiniPlayerPanel>,
+    main_window: Option<MainWindow>,
+    gateway: Option<gateway::GatewayHandle>,
+    last_conn: gateway::ConnState,
+    open_main: bool,
     last_update: PollUpdate,
     poll_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     // Held until LoopDestroyed: tao's run() never returns (it exits the process), so
@@ -185,12 +228,17 @@ impl WindowsTrayApp {
     fn new(
         proxy: EventLoopProxy<UserEvent>,
         log_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+        open_main: bool,
     ) -> Self {
         Self {
             proxy,
             tray: None,
             menu: None,
             panel: None,
+            main_window: None,
+            gateway: None,
+            last_conn: gateway::ConnState::Connecting,
+            open_main,
             last_update: PollUpdate::disconnected(control::ControlError::NotRunning),
             poll_shutdown: None,
             log_guard,
@@ -199,7 +247,7 @@ impl WindowsTrayApp {
         }
     }
 
-    fn init(&mut self) -> Result<(), Box<dyn Error>> {
+    fn init(&mut self, target: &EventLoopWindowTarget<UserEvent>) -> Result<(), Box<dyn Error>> {
         let menu = WindowsMenu::new(&self.last_update.state)?;
         let icon = app_icon()?;
         let tray = TrayIconBuilder::new()
@@ -217,7 +265,116 @@ impl WindowsTrayApp {
         self.menu = Some(menu);
         self.start_polling();
         self.request_status_now();
+        self.start_gateway();
+        if self.open_main {
+            self.open_main_window(target);
+        }
         Ok(())
+    }
+
+    /// Spawn the persistent v8 session thread; connection-state events route back to the
+    /// loop as `UserEvent::Gateway` (docs/gui/03 §3.2).
+    fn start_gateway(&mut self) {
+        if self.gateway.is_some() {
+            return;
+        }
+        let proxy = self.proxy.clone();
+        self.gateway = Some(gateway::spawn(move |ev| {
+            let _ = proxy.send_event(UserEvent::Gateway(ev));
+        }));
+    }
+
+    fn open_main_window(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
+        if let Some(main) = &self.main_window {
+            main.show();
+            return;
+        }
+        let boot = boot_json(&self.last_conn);
+        let proxy = self.proxy.clone();
+        match MainWindow::create(target, boot, None, move |body| {
+            let _ = proxy.send_event(UserEvent::Main(MainRequest::Ipc(body)));
+        }) {
+            Ok(main) => {
+                // Seed the page with the current connection state right away.
+                main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
+                    self.last_conn.to_conn_payload(),
+                )));
+                self.main_window = Some(main);
+            }
+            Err(e) => report_error(e),
+        }
+    }
+
+    fn handle_gateway(&mut self, ev: gateway::GatewayEvent) {
+        match ev {
+            gateway::GatewayEvent::Connection(state) => {
+                self.last_conn = state;
+                if let Some(main) = &self.main_window {
+                    main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
+                        self.last_conn.to_conn_payload(),
+                    )));
+                }
+            }
+            // A topic push or correlated reply from the session — hand it straight to the
+            // page. Frames that arrive with no window open are dropped; the window re-subs
+            // and gets fresh snapshots when it next loads (docs/gui/03 §3.2).
+            gateway::GatewayEvent::Frame(env) => {
+                if let Some(main) = &self.main_window {
+                    main.eval(&bridge::receive_script(&env));
+                }
+            }
+        }
+    }
+
+    fn handle_main(&mut self, req: MainRequest, target: &EventLoopWindowTarget<UserEvent>) {
+        match req {
+            MainRequest::Activate => self.open_main_window(target),
+            MainRequest::Ipc(body) => match bridge::dispatch(&body) {
+                bridge::BridgeAction::Reply(env) => {
+                    if let Some(main) = &self.main_window {
+                        main.eval(&bridge::receive_script(&env));
+                    }
+                }
+                bridge::BridgeAction::Win(op) => self.handle_win_op(op),
+                // Commands/requests/subscriptions go to the live v8 session; its replies and
+                // topic pushes come back as `UserEvent::Gateway(Frame(..))`.
+                bridge::BridgeAction::ToGateway(env) => {
+                    if let Some(gw) = &self.gateway {
+                        gw.send(env);
+                    }
+                }
+                bridge::BridgeAction::Ignore => {}
+            },
+        }
+    }
+
+    fn handle_win_op(&mut self, op: bridge::WinOp) {
+        match op {
+            bridge::WinOp::Hide => {
+                if let Some(main) = &self.main_window {
+                    main.hide();
+                }
+            }
+            bridge::WinOp::Drag => {
+                if let Some(main) = &self.main_window {
+                    main.start_drag();
+                }
+            }
+            bridge::WinOp::StartDaemon => self.start_daemon(false),
+            // copyText/openUrl/openDevtools/persist land at M1; ignore unknowns.
+            _ => {}
+        }
+    }
+
+    /// Persist the main window's current geometry so relaunch restores it (docs/gui/03 §8).
+    fn persist_main_geometry(&self) {
+        if let Some(main) = &self.main_window
+            && let Some(rect) = main.geometry()
+        {
+            let mut state = DesktopState::load();
+            state.main = Some(rect);
+            state.save();
+        }
     }
 
     fn start_polling(&mut self) {
@@ -434,6 +591,13 @@ impl WindowsTrayApp {
         {
             panel.hide();
         }
+        // Main window close button → hide to tray (docs/gui/03 §4), saving geometry first.
+        if let Some(main) = &self.main_window
+            && main.window_id() == window_id
+        {
+            self.persist_main_geometry();
+            main.hide();
+        }
     }
 
     fn handle_window_destroyed(&mut self, window_id: tao::window::WindowId) {
@@ -443,6 +607,13 @@ impl WindowsTrayApp {
             .is_some_and(|panel| panel.window_id() == window_id)
         {
             self.panel = None;
+        }
+        if self
+            .main_window
+            .as_ref()
+            .is_some_and(|main| main.window_id() == window_id)
+        {
+            self.main_window = None;
         }
     }
 
@@ -517,9 +688,12 @@ impl WindowsTrayApp {
     }
 
     fn shutdown(&mut self) {
+        self.persist_main_geometry();
         if let Some(tx) = self.poll_shutdown.take() {
             let _ = tx.send(());
         }
+        // Tear down the gateway session cleanly (drops the handle → signals shutdown).
+        self.gateway.take();
         // Flush the log before tao exits the process. (muda/tray-icon handlers live
         // in set-once cells — unsetting them here was always a no-op, so we don't.)
         drop(self.log_guard.take());
@@ -836,6 +1010,27 @@ where
     }
 }
 
+/// Build the `window.__YTM_BOOT__` object literal injected at page load (docs/gui/04 §3.3).
+/// M0 injects no theme — the frontend falls back to its app.css role defaults (static-themed).
+fn boot_json(conn: &gateway::ConnState) -> String {
+    let owner = match conn {
+        gateway::ConnState::Online { owner_mode, .. } => serde_json::to_value(owner_mode).ok(),
+        _ => None,
+    };
+    serde_json::json!({
+        "platform": "windows",
+        "version": env!("CARGO_PKG_VERSION"),
+        "coreVersion": serde_json::Value::Null,
+        "protocolVersion": crate::remote::proto::PROTOCOL_VERSION,
+        "ownerMode": owner,
+        "locale": "en",
+        "theme": serde_json::Value::Null,
+        "uiState": serde_json::Value::Null,
+        "devFlags": { "devFrontend": false },
+    })
+    .to_string()
+}
+
 fn set_app_user_model_id() {
     use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
 
@@ -1094,6 +1289,24 @@ mod tests {
             user_event_from_menu_id(&MenuId::new(DAEMON_PRIMARY_ID)),
             Some(UserEvent::DaemonPrimary)
         ));
+    }
+
+    #[test]
+    fn boot_json_tags_windows_and_reflects_owner_mode() {
+        let offline = boot_json(&crate::desktop::gateway::ConnState::Offline {
+            reason: "no_core".to_string(),
+        });
+        let parsed: serde_json::Value = serde_json::from_str(&offline).unwrap();
+        assert_eq!(parsed["platform"], "windows");
+        assert!(parsed["ownerMode"].is_null());
+
+        let online = boot_json(&crate::desktop::gateway::ConnState::Online {
+            protocol_version: 8,
+            capabilities: vec!["events-v8".to_string()],
+            owner_mode: InstanceMode::Daemon,
+        });
+        let parsed: serde_json::Value = serde_json::from_str(&online).unwrap();
+        assert_eq!(parsed["ownerMode"], "daemon");
     }
 
     #[test]

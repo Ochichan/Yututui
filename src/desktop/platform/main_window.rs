@@ -153,7 +153,23 @@ fn build_webview(
     let start_url = dev_url.unwrap_or("ytm://app/index.html").to_string();
     let dev_origin = dev_url.and_then(origin_of);
 
-    let webview = WebViewBuilder::new()
+    // Windows: point WebView2 at the shared user-data folder (docs/gui/03 §3) so the
+    // main window and the mini player ride one browser-process set. macOS ignores the
+    // web context, so the default builder keeps the signed-off WKWebView path untouched.
+    #[cfg(windows)]
+    let mut web_context = crate::desktop::platform::shared_web_context();
+    #[cfg(windows)]
+    let builder = {
+        use wry::WebViewBuilderExtWindows;
+        // WebView2 has no real custom schemes; wry rides them on `{http|https}://ytm.…`
+        // and defaults to http — which the navigation lock below (rightly) denies, so the
+        // window rendered black. https matches the lock + gives the page a secure context.
+        WebViewBuilder::new_with_web_context(&mut web_context).with_https_scheme(true)
+    };
+    #[cfg(not(windows))]
+    let builder = WebViewBuilder::new();
+
+    let webview = builder
         .with_url(start_url)
         .with_initialization_script(init)
         .with_custom_protocol("ytm".to_string(), ytm_protocol)
