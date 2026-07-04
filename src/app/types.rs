@@ -442,6 +442,11 @@ pub enum MouseTarget {
     SearchSubmit,
     /// The search query input box.
     SearchInput,
+    /// The `⌕ Filter` button next to the search bar — opens the results-filter popup.
+    SearchFilterOpen,
+    /// A row in the results-filter popup, by *display* index into the filtered rows.
+    /// Single-click selects; double-click plays; right-click enqueues.
+    SearchFilterRow(usize),
     /// Open/close the search-source dropdown.
     SearchSourceMenu,
     /// Pick a source from the search-source dropdown.
@@ -538,6 +543,8 @@ pub struct MouseButtonRegion {
 pub enum ScrollSurface {
     Library,
     Search,
+    /// The search results-filter popup's list.
+    SearchFilter,
     AiTranscript,
     AiSuggestions,
     Settings,

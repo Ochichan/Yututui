@@ -161,6 +161,10 @@ impl App {
         {
             return true;
         }
+        // The results-filter popup's query input is always live while it's open.
+        if self.search_filter.open {
+            return true;
+        }
         match self.mode {
             Mode::Search => self.search.focus == SearchFocus::Input,
             Mode::Ai => self.ai.focus == AiFocus::Input,
@@ -498,6 +502,7 @@ impl App {
             | ((self.library_ui.create_input.is_some() as u16) << 12)
             | ((self.library_ui.confirm_playlist_delete.is_some() as u16) << 13)
             | ((self.playlist_picker.is_some() as u16) << 14)
+            | ((self.search_filter.open as u16) << 15)
     }
 
     /// Track overlay/screen transitions that can cover native terminal graphics. Ratatui's normal

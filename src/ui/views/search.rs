@@ -75,20 +75,29 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if app.dropdowns.search_source_open {
         render_source_dropdown(frame, app, inner);
     }
+    // The results-filter popup draws over the whole search screen (below the global
+    // overlays, like the queue window on the player). Its rect is a per-frame output.
+    app.search_filter.rect.set(None);
+    if app.search_filter.open {
+        render_filter_popup(frame, app, inner);
+    }
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
-    // A source chip on the left, the input box in the middle, and a themed Search button on
-    // the right. Enter and the button submit; the chip changes the provider.
+    // A source chip on the left, the input box in the middle, and themed Search + Filter
+    // buttons on the right. Enter and the button submit; the chip changes the provider;
+    // the filter button opens the results-filter popup.
     let cols = Layout::horizontal([
         Constraint::Length(SEARCH_SOURCE_W),
         Constraint::Min(0),
         Constraint::Length(SEARCH_BTN_W),
+        Constraint::Length(SEARCH_FILTER_BTN_W),
     ])
     .split(area);
     let source_area = cols[0];
     let input_area = cols[1];
     let button_area = cols[2];
+    let filter_area = cols[3];
 
     render_source_chip(frame, app, source_area);
 
@@ -155,6 +164,7 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(para.block(block), input_area);
     app.register_mouse_button(input_area, MouseTarget::SearchInput);
     render_search_button(frame, app, button_area);
+    render_filter_button(frame, app, filter_area);
 }
 
 /// Width of the left source chip cluster (border + `ALL▾`).
@@ -162,6 +172,9 @@ const SEARCH_SOURCE_W: u16 = 6;
 
 /// Width of the Search button cluster (border + " Search ").
 const SEARCH_BTN_W: u16 = 10;
+
+/// Width of the Filter button cluster (border + " ⌕ Filter ").
+const SEARCH_FILTER_BTN_W: u16 = 10;
 
 /// The source chip to the left of the input box. Clicking it opens the provider dropdown.
 fn render_source_chip(frame: &mut Frame, app: &App, area: Rect) {
@@ -196,6 +209,28 @@ fn render_search_button(frame: &mut Frame, app: &App, area: Rect) {
         .alignment(Alignment::Center);
     frame.render_widget(Paragraph::new(label), inner);
     app.register_mouse_button(area, MouseTarget::SearchSubmit);
+}
+
+/// The themed Filter button next to the Search button: clicking it opens the results-filter
+/// popup, the same as pressing `/` on the results. Muted while there is nothing to filter
+/// (the click is a no-op then). Bordered to match; the whole cluster is the click rect.
+fn render_filter_button(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(app.theme.style(R::BorderMuted))
+        .style(app.theme.style(R::TextPrimary));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let style = if app.search.results.is_empty() {
+        app.theme.style(R::TextMuted)
+    } else {
+        app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
+    };
+    let label = Line::from(t!("⌕ Filter", "⌕ 필터"))
+        .style(style)
+        .alignment(Alignment::Center);
+    frame.render_widget(Paragraph::new(label), inner);
+    app.register_mouse_button(area, MouseTarget::SearchFilterOpen);
 }
 
 fn render_results(frame: &mut Frame, app: &App, area: Rect) {
@@ -262,7 +297,9 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
             };
             // The focused, visible cursor row marquees when clipped — the source tag and
             // heart gutter stay put while the text crawls (see `anim::selected_marquee`).
-            let text = if focused && visible_sel == Some(i) {
+            // Suppressed while the filter popup is open: its cursor row marquees instead,
+            // and the two would fight over the single shared phase cell.
+            let text = if focused && visible_sel == Some(i) && !app.search_filter.open {
                 crate::ui::anim::selected_marquee(
                     app,
                     crate::app::ScrollSurface::Search,
@@ -438,6 +475,204 @@ fn render_dropdown(
         frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
         app.register_mouse_button(row, *target);
     }
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
+/// The results-filter popup ("추가 창"): a centered window over the Search view holding a
+/// live filter input and the narrowed result rows. Typing edits the query, ↑↓/PgUp/PgDn/
+/// Home/End move within the matches, Enter or a double-click plays the highlighted one, a
+/// right-click enqueues it (popup stays open), Esc or a click outside closes.
+fn render_filter_popup(frame: &mut Frame, app: &App, area: Rect) {
+    let rows_all = app.search_filter_rows();
+    let total = app.search.results.len();
+
+    // ~3/5 wide like the queue window (a little wider floor so `title — artist (time)`
+    // rows stay readable), tall enough for the matches but capped to ~70% of the screen.
+    let max_w = area.width.saturating_sub(2).max(24);
+    let box_w = (area.width * 3 / 5).clamp(44.min(max_w), max_w);
+    let max_h = (area.height * 7 / 10).max(5);
+    let box_h = (rows_all.len().max(1) as u16 + 4).min(max_h);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(box_w) / 2,
+        y: area.y + area.height.saturating_sub(box_h) / 2,
+        width: box_w,
+        height: box_h,
+    }
+    .intersection(area);
+    if popup.is_empty() {
+        return;
+    }
+    app.search_filter.rect.set(Some(popup));
+
+    crate::ui::render_popup_background(frame, app, popup);
+    let block = Block::default()
+        .title(t!(" ⌕ Filter results ", " ⌕ 결과 필터 "))
+        .borders(Borders::ALL)
+        .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.height < 3 || inner.width < 8 {
+        crate::ui::seal_popup_background(frame, app, popup);
+        crate::ui::mark_art_rows_for_popup(frame, app, popup);
+        return;
+    }
+
+    let sections = Layout::vertical([
+        Constraint::Length(1), // filter input line
+        Constraint::Min(1),    // narrowed rows
+        Constraint::Length(1), // hint
+    ])
+    .split(inner);
+
+    // `filter: <query>█  [k/N]` — the Library filter's visual language, inside the popup.
+    let count_hint = if rows_all.is_empty() {
+        t!("  (no matches)", "  (일치 없음)").to_owned()
+    } else if crate::i18n::is_korean() {
+        format!("  [{}/{total}개]", rows_all.len())
+    } else {
+        format!("  [{}/{total}]", rows_all.len())
+    };
+    let query_shown = crate::ui::text::truncate_owned_to_width(
+        app.search_filter.query.clone(),
+        (sections[0].width as usize)
+            .saturating_sub(10 + UnicodeWidthStr::width(count_hint.as_str())),
+    );
+    let input = Line::from(vec![
+        Span::styled(
+            t!("  filter: ", "  필터: "),
+            crate::ui::popup_style(app, R::TextMuted),
+        ),
+        Span::styled(query_shown, crate::ui::popup_style(app, R::TextPrimary)),
+        crate::ui::anim::caret_span(
+            app,
+            crate::ui::popup_style(app, R::Accent),
+            crate::ui::popup_bg(app),
+        ),
+        Span::styled(count_hint, crate::ui::popup_style(app, R::TextMuted)),
+    ]);
+    frame.render_widget(Paragraph::new(input), sections[0]);
+
+    let list_area = sections[1];
+    if rows_all.is_empty() {
+        let msg = if crate::i18n::is_korean() {
+            format!("'{}' 와 일치하는 결과가 없어요.", app.search_filter.query)
+        } else {
+            format!("No results match \"{}\".", app.search_filter.query)
+        };
+        let msg =
+            crate::ui::text::truncate_owned_to_width(format!("  {msg}"), list_area.width as usize);
+        frame.render_widget(
+            Paragraph::new(Line::from(msg).style(crate::ui::popup_style(app, R::TextMuted))),
+            list_area,
+        );
+    } else {
+        let len = rows_all.len();
+        let cursor = app.search_filter.cursor.min(len - 1);
+        // The wheel scrolls this viewport freely; the render only nudges it to keep a
+        // keyboard-moved cursor on-screen with a margin (see `ui::scroll`).
+        let visible = list_area.height as usize;
+        let start = app.search_filter.scroll.resolve(
+            cursor,
+            list_area.height,
+            len,
+            crate::ui::scroll::SCROLLOFF,
+        );
+        let body_w = list_area.width as usize;
+        for (vis, (display_idx, (orig, song))) in rows_all
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible)
+            .enumerate()
+        {
+            let y = list_area.y + vis as u16;
+            let selected = display_idx == cursor;
+            let marker = if selected { "▶ " } else { "  " };
+            let heart = if app.library.is_favorite(&song.video_id) {
+                "♥ "
+            } else {
+                "  "
+            };
+            let source = if song.youtube_playlist_id().is_some() {
+                "[PL]".to_owned()
+            } else {
+                format!("[{}]", song.source.code())
+            };
+            let source = crate::ui::text::pad_to_width(&source, 6);
+            let title = app.display_title(song);
+            let artist = app.display_artist(song);
+            let text = if song.duration.is_empty() {
+                format!("{title} — {artist}")
+            } else {
+                format!("{title} — {artist}  ({})", song.duration)
+            };
+            // The cursor row marquees when clipped, keyed by the *original* row index so
+            // retyping (which shifts display positions) doesn't restart a crawl that is
+            // still on the same song. The marker/source/heart gutter (10 cols) stays put.
+            let text = if selected {
+                crate::ui::anim::selected_marquee(
+                    app,
+                    ScrollSurface::SearchFilter,
+                    *orig,
+                    &text,
+                    body_w.saturating_sub(11),
+                )
+            } else {
+                text
+            };
+            let body = crate::ui::text::truncate_owned_to_width(
+                format!("{marker}{source}{heart}{text}"),
+                body_w.saturating_sub(1),
+            );
+            let style = if selected {
+                crate::ui::anim::selection_style(
+                    app,
+                    Style::default()
+                        .fg(app.theme.color(R::SelectionFg))
+                        .bg(app.theme.color(R::SelectionBg))
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                crate::ui::popup_style(app, R::TextPrimary)
+            };
+            let row = Rect {
+                x: list_area.x,
+                y,
+                width: list_area.width,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(Line::from(body).style(style)), row);
+            app.register_mouse_button(row, MouseTarget::SearchFilterRow(display_idx));
+        }
+
+        // Scrollbar on the popup's right border, hidden when the matches fit.
+        buttons::render_list_scrollbar(
+            frame,
+            app,
+            Rect {
+                x: list_area.right(),
+                y: list_area.y,
+                width: 1,
+                height: list_area.height,
+            },
+            ScrollSurface::SearchFilter,
+            len,
+            start,
+            visible,
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(t!(
+            "↑↓ move · Enter play · Esc close",
+            "↑↓ 이동 · Enter 재생 · Esc 닫기"
+        ))
+        .alignment(Alignment::Center)
+        .style(crate::ui::popup_style(app, R::TextMuted)),
+        sections[2],
+    );
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }

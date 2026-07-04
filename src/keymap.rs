@@ -78,6 +78,8 @@ pub enum Action {
     ChangeIncrease,
     // Search / DJ Gem results.
     FocusInput,
+    /// Search results: open the results-filter popup.
+    SearchFilter,
     // Global (active in any non-text-entry context).
     ToggleStreaming,
     ToggleRadioMode,
@@ -275,6 +277,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "library_filter",
         "Filter library",
         "라이브러리 필터",
+    ),
+    (
+        Action::SearchFilter,
+        "search_filter",
+        "Filter results (popup)",
+        "결과 필터 (팝업)",
     ),
     (
         Action::PlayAll,
@@ -1080,6 +1088,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::SearchResults, A::Favorite, ch('f')),
         (C::SearchResults, A::Download, ch('d')),
         (C::SearchResults, A::AddToPlaylist, ch('p')),
+        (C::SearchResults, A::SearchFilter, ch('/')),
         (C::SearchResults, A::Back, ch('q')),
         // DJ Gem box (text entry; Enter→send is handled in the input handler).
         (C::AiInput, A::SelectAll, ctrl('a')),
@@ -1805,6 +1814,15 @@ mod tests {
         assert_eq!(
             km.action(KeyContext::SearchResults, parse_chord("q").unwrap()),
             Some(Action::Back)
+        );
+        // `/` filters in every browse context: inline in the Library, popup in Search.
+        assert_eq!(
+            km.action(KeyContext::SearchResults, parse_chord("/").unwrap()),
+            Some(Action::SearchFilter)
+        );
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("/").unwrap()),
+            Some(Action::LibraryFilter)
         );
         assert_eq!(
             km.global_action(parse_chord("ctrl+q").unwrap()),

@@ -71,7 +71,9 @@ impl App {
             .collect()
     }
 
-    fn song_matches_filter(&self, s: &Song, needle: &str) -> bool {
+    /// Shared by the Library filter and the Search results-filter popup so both narrow
+    /// with identical semantics (`needle` is expected pre-trimmed and lowercased).
+    pub(in crate::app) fn song_matches_filter(&self, s: &Song, needle: &str) -> bool {
         s.title.to_lowercase().contains(needle)
             || s.artist.to_lowercase().contains(needle)
             || self.display_title(s).to_lowercase().contains(needle)

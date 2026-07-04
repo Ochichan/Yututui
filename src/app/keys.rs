@@ -81,6 +81,13 @@ impl App {
             return self.on_key_playlist_picker(k);
         }
 
+        // The search results-filter popup captures the keyboard while open (its query
+        // input is always live, so every typeable key belongs to it) — before Search-Enter
+        // and globals so nothing leaks into the list underneath.
+        if self.search_filter.open {
+            return self.on_key_search_filter(k);
+        }
+
         // Search submit/select is fixed to the physical Enter key. Handle it before
         // remappable globals so Enter stays local to Search while every other screen keeps
         // using the user's keymap.
@@ -338,6 +345,10 @@ impl App {
             .as_ref()
             .is_some_and(|p| p.naming.is_some())
         {
+            return true;
+        }
+        // The results-filter popup's query input is always live while it's open.
+        if self.search_filter.open {
             return true;
         }
         match self.mode {

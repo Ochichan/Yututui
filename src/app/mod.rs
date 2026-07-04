@@ -226,6 +226,9 @@ pub struct App {
     /// Queue-window overlay state: open flag, selection cursor + anchor, on-screen rect
     /// bridge, and wheel-scroll offset (see [`QueuePopup`]).
     pub queue_popup: QueuePopup,
+    /// Search results-filter popup state: open flag, live query, cursor, on-screen rect
+    /// bridge, and wheel-scroll offset (see [`SearchFilterPopup`]).
+    pub search_filter: SearchFilterPopup,
 
     // Settings ----------------------------------------------------------------
     /// The persisted config, kept so the settings screen can save the full file.
@@ -401,6 +404,7 @@ impl App {
             autoplay_streaming: false,
             dropdowns: Dropdowns::default(),
             queue_popup: QueuePopup::default(),
+            search_filter: SearchFilterPopup::default(),
             config: Config::default(),
             settings: None,
             ai: AiState {
@@ -588,6 +592,7 @@ impl App {
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
+        self.search_filter.close();
         self.dirty = true;
         Vec::new()
     }
@@ -676,6 +681,7 @@ impl App {
         self.queue_popup.open = false;
         self.queue_popup.cursor = 0;
         self.queue_popup.anchor = 0;
+        self.search_filter.close();
         self.streaming.pending = false;
         self.streaming.pending_rerank = None;
         self.ai.thinking = false;
@@ -1253,6 +1259,9 @@ impl App {
                     return Vec::new();
                 }
                 self.search.searching = false;
+                // The filter popup indexes into the rows it opened over; a fresh result
+                // set makes those stale, so it closes rather than filtering the new list.
+                self.search_filter.close();
                 if songs.is_empty() {
                     self.status.text = if crate::i18n::is_korean() {
                         format!("\"{query}\" 검색 결과 없음")
@@ -1690,6 +1699,7 @@ impl App {
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
+        self.search_filter.close();
         self.library_ui.confirm_delete = None;
         self.playlist_picker = None;
         self.reset_playlist_ui_state();
@@ -1741,6 +1751,7 @@ impl App {
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
         self.queue_popup.open = false;
+        self.search_filter.close();
         self.library_ui.confirm_delete = None;
         // Popup-like playlist surfaces dismiss on any navigation (the drill-down itself is
         // content state — it resets only on a fresh Library entry below).

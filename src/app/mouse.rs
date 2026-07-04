@@ -149,6 +149,33 @@ impl App {
                 }
             }
         }
+        // The search results-filter popup is modal like the queue window: a click outside
+        // it closes it; inside it only its own rows / scrollbar act, so a click landing on
+        // the list underneath can't leak through.
+        if self.search_filter.open {
+            let inside = self
+                .search_filter
+                .rect
+                .get()
+                .is_some_and(|r| rect_contains(r, col, row));
+            if !inside {
+                self.search_filter.close();
+                self.drag_scrollbar = None;
+                self.dirty = true;
+                return Vec::new();
+            }
+            match self.mouse_region_at(col, row) {
+                Some(MouseButtonRegion {
+                    target: MouseTarget::Scrollbar(ScrollSurface::SearchFilter),
+                    rect,
+                }) => return self.on_scrollbar_press(ScrollSurface::SearchFilter, rect, row),
+                Some(MouseButtonRegion {
+                    target: t @ MouseTarget::SearchFilterRow(_),
+                    ..
+                }) => return self.on_mouse_target(t),
+                _ => return Vec::new(),
+            }
+        }
         if self.help_visible {
             self.help_visible = false;
             self.dirty = true;
@@ -293,6 +320,18 @@ impl App {
                 Vec::new()
             }
             MouseTarget::SearchInput => Vec::new(),
+            // The `⌕ Filter` button opens the results-filter popup (a no-op with no results).
+            MouseTarget::SearchFilterOpen if self.mode == Mode::Search => self.open_search_filter(),
+            MouseTarget::SearchFilterOpen => Vec::new(),
+            // Single-click a filter-popup row: move the popup cursor there (double-click plays).
+            MouseTarget::SearchFilterRow(i) if self.search_filter.open => {
+                if i < self.search_filter_rows().len() {
+                    self.search_filter.cursor = i;
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            MouseTarget::SearchFilterRow(_) => Vec::new(),
             MouseTarget::SearchSourceMenu if self.mode == Mode::Search => {
                 self.dropdowns.eq_open = false;
                 self.dropdowns.streaming_open = false;
@@ -516,6 +555,22 @@ impl App {
         {
             return self.on_mouse_click(col, row);
         }
+        // Double-clicking a filter-popup row plays it (the mouse Enter), mirroring the
+        // queue window's inside/outside split.
+        if self.search_filter.open {
+            let inside = self
+                .search_filter
+                .rect
+                .get()
+                .is_some_and(|r| rect_contains(r, col, row));
+            if inside {
+                if let Some(MouseTarget::SearchFilterRow(i)) = self.mouse_target_at(col, row) {
+                    return self.search_filter_activate(i);
+                }
+                return Vec::new();
+            }
+            return self.on_mouse_click(col, row); // outside -> close, same as single click
+        }
         if self.queue_popup.open {
             let inside = self
                 .queue_popup
@@ -725,6 +780,7 @@ impl App {
         Some(match surface {
             ScrollSurface::Library => &self.bridges.library_scroll,
             ScrollSurface::Search => &self.bridges.search_scroll,
+            ScrollSurface::SearchFilter => &self.search_filter.scroll,
             ScrollSurface::AiTranscript => &self.bridges.ai_transcript_scroll,
             ScrollSurface::AiSuggestions => &self.bridges.ai_scroll,
             ScrollSurface::Settings => &self.bridges.settings_scroll,
@@ -736,6 +792,7 @@ impl App {
         Some(match surface {
             ScrollSurface::Library => self.library_len(),
             ScrollSurface::Search => self.search.results.len(),
+            ScrollSurface::SearchFilter => self.search_filter_rows().len(),
             ScrollSurface::AiTranscript => self.bridges.ai_transcript_copy_lines.borrow().len(),
             ScrollSurface::AiSuggestions => self.ai.suggestions.len(),
             ScrollSurface::Settings => self.settings_field_display_len()?,
@@ -804,6 +861,12 @@ impl App {
         }
         if self.queue_popup.open {
             self.queue_popup.scroll.wheel(up, n, self.queue.len());
+            self.dirty = true;
+            return Vec::new();
+        }
+        if self.search_filter.open {
+            let len = self.search_filter_rows().len();
+            self.search_filter.scroll.wheel(up, n, len);
             self.dirty = true;
             return Vec::new();
         }
@@ -894,13 +957,9 @@ impl App {
     /// double-click just selects.
     pub(in crate::app) fn on_list_row_activate(&mut self, index: usize) -> Vec<Cmd> {
         match self.mode {
-            Mode::Search if index < self.search.results.len() => {
-                self.search.selected = index;
-                match self.selected_search_song() {
-                    Some(song) => self.play_now(song),
-                    None => Vec::new(),
-                }
-            }
+            // The shared activation path, so a double-clicked playlist row fetches its
+            // tracks first (like Enter) instead of trying to play the row itself.
+            Mode::Search if index < self.search.results.len() => self.activate_search_index(index),
             Mode::Library if index < self.library_len() => {
                 self.library_ui.selected = index;
                 // At the Playlists root a double-click opens the playlist (the row is a
@@ -933,6 +992,29 @@ impl App {
             || self.library_ui.create_input.is_some()
             || self.playlist_picker.is_some()
         {
+            return Vec::new();
+        }
+
+        // Right-click a filter-popup row: enqueue it *without* closing the popup — filter
+        // once, stack up several matches (the main results list's right-click semantics).
+        if self.search_filter.open {
+            let inside = self
+                .search_filter
+                .rect
+                .get()
+                .is_some_and(|r| rect_contains(r, col, row));
+            if !inside {
+                return Vec::new();
+            }
+            if let Some(MouseTarget::SearchFilterRow(i)) = self.mouse_target_at(col, row)
+                && let Some(&(idx, _)) = self.search_filter_rows().get(i)
+            {
+                self.search_filter.cursor = i;
+                self.dirty = true;
+                if let Some(song) = self.search.results.get(idx).cloned() {
+                    return self.enqueue(song);
+                }
+            }
             return Vec::new();
         }
 

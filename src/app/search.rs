@@ -111,13 +111,9 @@ impl App {
             }
             // Enter plays the highlighted result right now, keeping the existing queue
             // intact. A playlist row fetches its tracks first, then replaces the queue.
-            SearchFocus::Results if k.code == KeyCode::Enter => match self.selected_search_song() {
-                Some(song) => match song.youtube_playlist_id() {
-                    Some(_) => self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Play),
-                    None => self.play_now(song),
-                },
-                None => Vec::new(),
-            },
+            SearchFocus::Results if k.code == KeyCode::Enter => {
+                self.activate_search_index(self.search.selected)
+            }
             SearchFocus::Results
                 if matches!(
                     self.keymap
@@ -132,6 +128,9 @@ impl App {
             SearchFocus::Results => match self.keymap.action(KeyContext::SearchResults, k.into()) {
                 Some(Action::ToggleSearchSourceMenu) => self.toggle_search_source_menu(),
                 Some(Action::ToggleSearchKind) => self.toggle_search_kind(),
+                // `/` opens the results-filter popup (like the Library filter, but as its
+                // own window over the list).
+                Some(Action::SearchFilter) => self.open_search_filter(),
                 // `\` adds the highlighted result to the queue without interrupting playback.
                 // A playlist row appends its whole track list.
                 Some(Action::Enqueue) => match self.selected_search_song() {
@@ -258,6 +257,135 @@ impl App {
                 _ => Vec::new(),
             },
         }
+    }
+
+    // --- Results-filter popup ------------------------------------------------
+
+    /// Play (or fetch-and-play, for a playlist row) the result at `idx`, landing the main
+    /// cursor on it. The one activation path shared by Enter on the results list, Enter /
+    /// double-click in the filter popup, and a results-row double-click — so a playlist
+    /// row behaves the same everywhere.
+    pub(in crate::app) fn activate_search_index(&mut self, idx: usize) -> Vec<Cmd> {
+        let Some(song) = self.search.results.get(idx).cloned() else {
+            return Vec::new();
+        };
+        self.search.selected = idx;
+        self.search.focus = SearchFocus::Results;
+        self.dirty = true;
+        match song.youtube_playlist_id() {
+            Some(_) => self.fetch_playlist_tracks(&song, crate::api::PlaylistIntent::Play),
+            None => self.play_now(song),
+        }
+    }
+
+    /// The filter popup's rows: `(original results index, row)` pairs whose title or
+    /// artist matches the popup query — the Library filter's semantics exactly. An empty
+    /// query keeps every row, so the popup opens showing the full result set.
+    pub fn search_filter_rows(&self) -> Vec<(usize, &Song)> {
+        let needle = self.search_filter.query.trim().to_lowercase();
+        self.search
+            .results
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| needle.is_empty() || self.song_matches_filter(s, &needle))
+            .collect()
+    }
+
+    /// Open the results-filter popup (`/` on the results focus, or the `⌕ Filter` button).
+    /// No-op without results — there is nothing to narrow.
+    pub(in crate::app) fn open_search_filter(&mut self) -> Vec<Cmd> {
+        if self.search.results.is_empty() {
+            return Vec::new();
+        }
+        self.dropdowns.search_source_open = false;
+        self.search.focus = SearchFocus::Results;
+        self.search.select_all = false;
+        self.search_filter.open_fresh();
+        self.dirty = true;
+        Vec::new()
+    }
+
+    /// Activate filter-popup row `display_idx` (Enter / double-click): close the popup
+    /// and play that result via the shared activation path. No-op with no matches, so an
+    /// Enter on an empty narrowed list doesn't dismiss the query being refined.
+    pub(in crate::app) fn search_filter_activate(&mut self, display_idx: usize) -> Vec<Cmd> {
+        let Some(&(idx, _)) = self.search_filter_rows().get(display_idx) else {
+            return Vec::new();
+        };
+        self.search_filter.close();
+        self.dirty = true;
+        self.activate_search_index(idx)
+    }
+
+    /// After the popup query changes, snap the cursor/scroll back to the first match so
+    /// the narrowed list reads from the top (fzf-style, like the Library filter).
+    fn after_search_filter_change(&mut self) {
+        self.search_filter.cursor = 0;
+        self.search_filter.scroll.reset();
+        self.dirty = true;
+    }
+
+    /// Keystrokes while the filter popup is open: typed chars always edit the query (the
+    /// list narrows live), the arrows/paging keys move within the filtered rows, Enter
+    /// plays the highlighted match (closing the popup), Esc closes. Raw keycodes, like
+    /// the picker/create popups, so a user rebind can never break text entry.
+    pub(in crate::app) fn on_key_search_filter(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        let len = self.search_filter_rows().len();
+        let clamp_last = len.saturating_sub(1);
+        match k.code {
+            KeyCode::Esc => {
+                self.search_filter.close();
+                self.dirty = true;
+            }
+            KeyCode::Enter => {
+                return self.search_filter_activate(self.search_filter.cursor.min(clamp_last));
+            }
+            KeyCode::Backspace => {
+                if self.search_filter.query.pop().is_some() {
+                    self.after_search_filter_change();
+                }
+            }
+            KeyCode::Up => {
+                self.search_filter.cursor = self.search_filter.cursor.saturating_sub(1);
+                self.dirty = true;
+            }
+            KeyCode::Down => {
+                if self.search_filter.cursor + 1 < len {
+                    self.search_filter.cursor += 1;
+                }
+                self.dirty = true;
+            }
+            KeyCode::PageUp => {
+                let step = self.search_filter.scroll.viewport().max(1);
+                self.search_filter.cursor = self.search_filter.cursor.saturating_sub(step);
+                self.dirty = true;
+            }
+            KeyCode::PageDown => {
+                let step = self.search_filter.scroll.viewport().max(1);
+                self.search_filter.cursor = (self.search_filter.cursor + step).min(clamp_last);
+                self.dirty = true;
+            }
+            KeyCode::Home => {
+                self.search_filter.cursor = 0;
+                self.dirty = true;
+            }
+            KeyCode::End => {
+                self.search_filter.cursor = clamp_last;
+                self.dirty = true;
+            }
+            // Plain typed characters extend the query; ignore Ctrl/Alt combos (matching
+            // the Library filter's gate so chords can't smuggle text in).
+            KeyCode::Char(c)
+                if !k
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.search_filter.query.push(c);
+                self.after_search_filter_change();
+            }
+            _ => {}
+        }
+        Vec::new()
     }
 
     pub(in crate::app) fn submit_search_query(&mut self) -> Vec<Cmd> {

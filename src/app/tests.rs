@@ -5222,6 +5222,213 @@ fn enter_commits_filter_and_esc_clears_it() {
     assert_eq!(app.library_len(), 2);
 }
 
+// --- search results-filter popup (`/`) -----------------------------------------
+
+/// Search screen with three results loaded; results arrival focuses the list.
+fn app_with_search_results() -> App {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.update(Msg::SearchResults {
+        query: "x".to_owned(),
+        source: SearchSource::Youtube,
+        songs: vec![
+            fsong("a", "Lovely", "Billie Eilish"),
+            fsong("b", "Bad Guy", "Billie Eilish"),
+            fsong("c", "Anti-Hero", "Taylor Swift"),
+        ],
+    });
+    assert_eq!(app.search.focus, SearchFocus::Results);
+    app
+}
+
+fn filter_row_ids(app: &App) -> Vec<String> {
+    app.search_filter_rows()
+        .iter()
+        .map(|(_, s)| s.video_id.clone())
+        .collect()
+}
+
+#[test]
+fn slash_is_bound_to_search_filter() {
+    let app = App::new(100);
+    let slash = Chord::new(KeyCode::Char('/'), KeyModifiers::empty());
+    assert_eq!(
+        app.keymap.action(KeyContext::SearchResults, slash),
+        Some(Action::SearchFilter)
+    );
+}
+
+#[test]
+fn slash_opens_the_filter_popup_and_typing_narrows_it() {
+    let mut app = app_with_search_results();
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    assert!(app.search_filter.open);
+    // The popup opens fresh: empty query shows the full result set.
+    assert_eq!(filter_row_ids(&app), vec!["a", "b", "c"]);
+
+    // Case-insensitive title/artist matching, exactly like the Library filter.
+    for c in "BILLIE".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    assert_eq!(app.search_filter.query, "BILLIE");
+    assert_eq!(filter_row_ids(&app), vec!["a", "b"]);
+    assert_eq!(app.search_filter.cursor, 0);
+
+    // A query with no matches leaves the popup open (still refining); Enter is a no-op.
+    for c in " zzz".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    assert!(filter_row_ids(&app).is_empty());
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(cmds.is_empty());
+    assert!(app.search_filter.open);
+    assert_eq!(app.mode, Mode::Search);
+
+    // Backspace re-widens.
+    for _ in 0..4 {
+        app.update(Msg::Key(key(KeyCode::Backspace)));
+    }
+    assert_eq!(filter_row_ids(&app), vec!["a", "b"]);
+}
+
+#[test]
+fn filter_popup_does_not_capture_slash_in_the_input_focus() {
+    let mut app = app_with_search_results();
+    app.search.focus = SearchFocus::Input;
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    // While the query box is focused, `/` must type, not open the popup.
+    assert!(!app.search_filter.open);
+    assert_eq!(app.search.input, "/");
+}
+
+#[test]
+fn filter_popup_enter_plays_the_highlighted_match_and_closes() {
+    let mut app = app_with_search_results();
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "anti".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    assert_eq!(filter_row_ids(&app), vec!["c"]);
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(!app.search_filter.open);
+    // The main cursor lands on the played row (original index), and playback starts.
+    assert_eq!(app.search.selected, 2);
+    assert_eq!(app.mode, Mode::Player);
+    assert!(load_url(&cmds).expect("a Load cmd").contains('c'));
+}
+
+#[test]
+fn filter_popup_esc_closes_without_acting() {
+    let mut app = app_with_search_results();
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    for c in "anti".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(c))));
+    }
+    let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(cmds.is_empty());
+    assert!(!app.search_filter.open);
+    assert!(app.search_filter.query.is_empty());
+    assert_eq!(app.mode, Mode::Search);
+    assert_eq!(app.queue.len(), 0);
+}
+
+#[test]
+fn fresh_results_close_the_filter_popup() {
+    let mut app = app_with_search_results();
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    assert!(app.search_filter.open);
+    // A search that was already in flight lands: the rows the popup indexed are gone.
+    app.update(Msg::SearchResults {
+        query: "y".to_owned(),
+        source: SearchSource::Youtube,
+        songs: vec![fsong("z", "Zeta", "Nobody")],
+    });
+    assert!(!app.search_filter.open);
+}
+
+#[test]
+fn filter_button_opens_the_popup_and_clicking_rows_selects_and_plays() {
+    let mut app = app_with_search_results();
+    // The `⌕ Filter` button is registered on render and opens the popup.
+    click_target(&mut app, MouseTarget::SearchFilterOpen);
+    assert!(app.search_filter.open);
+    // Single-click a popup row: the popup cursor moves there, nothing plays yet.
+    let cmds = click_target(&mut app, MouseTarget::SearchFilterRow(1));
+    assert!(cmds.is_empty());
+    assert!(app.search_filter.open);
+    assert_eq!(app.search_filter.cursor, 1);
+    // Double-click plays it and closes the popup, landing the main cursor on the row.
+    let cmds = double_click_target(&mut app, MouseTarget::SearchFilterRow(1));
+    assert!(!app.search_filter.open);
+    assert_eq!(app.search.selected, 1);
+    assert_eq!(app.mode, Mode::Player);
+    assert!(load_url(&cmds).expect("a Load cmd").contains('b'));
+}
+
+#[test]
+fn filter_popup_right_click_enqueues_without_closing() {
+    // Something is already playing, so the right-click must not interrupt it.
+    let mut app = app_playing(2, 0);
+    app.mode = Mode::Search;
+    app.update(Msg::SearchResults {
+        query: "x".to_owned(),
+        source: SearchSource::Youtube,
+        songs: vec![fsong("r0", "R0", "A"), fsong("r1", "R1", "B")],
+    });
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    assert!(app.search_filter.open);
+    render_app(&app);
+    let (col, row) = button_center(&app, MouseTarget::SearchFilterRow(1));
+    let before = app.queue.len();
+    app.update(Msg::MouseRightClick { col, row });
+    // The row got enqueued and the popup stayed open for further picks.
+    assert_eq!(app.queue.len(), before + 1);
+    assert!(app.search_filter.open);
+    assert_eq!(app.search_filter.cursor, 1);
+}
+
+#[test]
+fn filter_popup_click_outside_closes_it() {
+    let mut app = app_with_search_results();
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    render_app(&app);
+    // (0, 0) is the screen corner, well outside the centered popup.
+    app.update(Msg::MouseClick { col: 0, row: 0 });
+    assert!(!app.search_filter.open);
+    assert_eq!(app.mode, Mode::Search);
+}
+
+#[test]
+fn filter_popup_wheel_scrolls_its_own_viewport() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    let songs = (0..40)
+        .map(|i| fsong(&format!("id{i}"), &format!("Song {i}"), "A"))
+        .collect();
+    app.update(Msg::SearchResults {
+        query: "x".to_owned(),
+        source: SearchSource::Youtube,
+        songs,
+    });
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    render_app(&app); // records the popup viewport + rect
+    let (col, row) = app
+        .search_filter
+        .rect
+        .get()
+        .map(|r| (r.x + r.width / 2, r.y + r.height / 2))
+        .expect("an open popup rect");
+    app.update(Msg::MouseScroll {
+        up: false,
+        col,
+        row,
+        ctrl: false,
+    });
+    assert!(app.search_filter.scroll.offset() > 0);
+    // The main results viewport underneath did not move.
+    assert_eq!(app.bridges.search_scroll.offset(), 0);
+}
+
 #[test]
 fn esc_while_editing_cancels_the_filter() {
     let mut app = app_with_favorites(vec![fsong("a", "One", "x"), fsong("b", "Two", "x")]);
@@ -7293,6 +7500,10 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     app.mouse_help_visible = true;
     assert_eq!(app.art_overlay_mask(), 1 << 11);
     app.mouse_help_visible = false;
+    assert_eq!(app.art_overlay_mask(), 0);
+    app.search_filter.open = true;
+    assert_eq!(app.art_overlay_mask(), 1 << 15);
+    app.search_filter.open = false;
     assert_eq!(app.art_overlay_mask(), 0);
 }
 

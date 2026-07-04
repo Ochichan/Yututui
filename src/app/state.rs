@@ -511,6 +511,46 @@ pub struct PlaylistPicker {
     pub naming: Option<String>,
 }
 
+/// The search results-filter popup ("추가 창"): a transient fzf-style window over the
+/// Search view that narrows the current results as you type. Fresh (empty query) on each
+/// open — it is a picker, not a persistent filter like the Library's. Grouping the
+/// `Cell`/scroll bridges here keeps them next to the overlay state they belong to,
+/// mirroring [`QueuePopup`].
+#[derive(Default)]
+pub struct SearchFilterPopup {
+    /// Whether the popup is showing. Search-only overlay; while open it captures the
+    /// keyboard (typed chars edit `query`, arrows move `cursor`, Enter plays, Esc closes).
+    pub open: bool,
+    /// The live filter text; the popup's row list narrows to matches as it changes.
+    pub query: String,
+    /// The highlighted row, as a *display* index into [`crate::app::App::search_filter_rows`].
+    pub cursor: usize,
+    /// Screen rect of the open popup, written each render so a click outside it can be
+    /// detected (which closes it). `Cell` because render only has `&App`.
+    pub rect: Cell<Option<Rect>>,
+    /// Decoupled wheel-scroll offset for the popup's list (see [`crate::ui::scroll`]).
+    pub scroll: crate::ui::scroll::ScrollState,
+}
+
+impl SearchFilterPopup {
+    /// Reset to a fresh, open popup (empty query, cursor at the top).
+    pub(in crate::app) fn open_fresh(&mut self) {
+        self.open = true;
+        self.query.clear();
+        self.cursor = 0;
+        self.scroll.reset();
+    }
+
+    /// Close and drop the transient state so a later open starts fresh.
+    pub(in crate::app) fn close(&mut self) {
+        self.open = false;
+        self.query.clear();
+        self.cursor = 0;
+        self.rect.set(None);
+        self.scroll.reset();
+    }
+}
+
 /// Queue-window overlay state: whether it's open, the selection cursor + anchor, its
 /// on-screen rect (a render→reducer bridge), and its wheel-scroll offset. Grouping the
 /// `Cell`/scroll bridges here keeps them next to the overlay state they belong to.

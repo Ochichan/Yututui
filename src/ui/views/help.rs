@@ -412,6 +412,12 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                     "현재 검색어로 검색합니다.",
                 ),
                 mouse_row(
+                    "Filter button",
+                    "필터 버튼",
+                    "Open the results-filter popup (keyboard: `/`).",
+                    "결과 필터 팝업을 엽니다 (키보드는 `/`).",
+                ),
+                mouse_row(
                     "Result click",
                     "결과 클릭",
                     "Single-click selects; double-click plays now.",
@@ -520,6 +526,12 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                     "드롭다운 행",
                     "Click a row to select it; click elsewhere to close.",
                     "행을 클릭해 선택하고, 바깥을 클릭해 닫습니다.",
+                ),
+                mouse_row(
+                    "Filter popup",
+                    "필터 팝업",
+                    "Click selects; double-click plays; right-click enqueues; wheel scrolls.",
+                    "클릭 선택, 더블클릭 재생, 우클릭 큐 추가, 휠 스크롤.",
                 ),
                 mouse_row(
                     "Help/About",
