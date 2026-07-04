@@ -6,16 +6,15 @@
   import type { AppCtx } from '../lib/ctx';
   import type { LibraryTab } from '../lib/stores/ui.svelte';
   import type { LibraryScope } from '../lib/stores/library.svelte';
-  import PendingSurface from '../lib/components/PendingSurface.svelte';
-  import WireTag from '../lib/components/WireTag.svelte';
   import TrackRow from '../lib/components/TrackRow.svelte';
+  import PlaylistsPane from './library/PlaylistsPane.svelte';
 
   interface Props {
     ctx: AppCtx;
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { ui, wip, playback, library, downloads } = ctx;
+  const { ui, playback, library, downloads, playlists } = ctx;
 
   const MUSIC_TABS: Array<{ id: LibraryTab; label: string }> = [
     { id: 'all', label: 'All' },
@@ -69,11 +68,9 @@
 
   function playAll() {
     if (isScope(tab)) library.playAll();
-    else if (tab === 'playlists') wip.gate('library.playlists');
   }
   function enqueueAll() {
     if (isScope(tab)) library.enqueueAll();
-    else if (tab === 'playlists') wip.gate('library.playlists');
   }
 </script>
 
@@ -98,10 +95,9 @@
         bind:value={filter}
         aria-label="Filter library"
       />
-      <button class="act" onclick={playAll}>▶ Play all</button>
-      <button class="act" onclick={enqueueAll}>+ Enqueue all</button>
-      {#if tab === 'playlists'}
-        <button class="act" onclick={() => wip.gate('library.playlists')}>＋ New playlist</button>
+      {#if isScope(tab)}
+        <button class="act" onclick={playAll}>▶ Play all</button>
+        <button class="act" onclick={enqueueAll}>+ Enqueue all</button>
       {/if}
     </div>
   </header>
@@ -130,10 +126,8 @@
           {/each}
         </div>
       {/if}
-    {:else if !isScope(tab)}
-      <div class="center">
-        <PendingSurface id="library.playlists" {wip} glyph="📚" body={EMPTY_BODY[tab]} />
-      </div>
+    {:else if tab === 'playlists'}
+      <PlaylistsPane {ctx} {filter} />
     {:else if library.loading && library.tracks.length === 0}
       <div class="center"><p class="hint">Loading…</p></div>
     {:else if library.empty}
@@ -145,6 +139,9 @@
             {#snippet actions()}
               <button class="ri" title="Download" onclick={() => downloads.download(t)}>⬇</button>
               <button class="ri" title="Add to queue" onclick={() => library.enqueue(t)}>＋</button>
+              <button class="ri" title="Add to playlist" onclick={() => playlists.beginAdd(t)}
+                >≡</button
+              >
               {#if removable(tab)}
                 <button class="ri" title="Remove" onclick={() => library.remove(t)}>✕</button>
               {/if}
@@ -166,7 +163,7 @@
     {:else if isScope(tab)}
       <span class="count mono">{library.total} tracks</span>
     {:else}
-      <WireTag id="library.playlists" {wip} />
+      <span class="count mono">{playlists.list.length} playlists</span>
     {/if}
   </footer>
 </div>

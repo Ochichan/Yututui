@@ -18,6 +18,9 @@ import { SearchStore } from '../src/lib/stores/search.svelte';
 import { LibraryStore } from '../src/lib/stores/library.svelte';
 import { AiStore } from '../src/lib/stores/ai.svelte';
 import { DownloadsStore } from '../src/lib/stores/downloads.svelte';
+import { PlaylistsStore } from '../src/lib/stores/playlists.svelte';
+import { TransferStore } from '../src/lib/stores/transfer.svelte';
+import { AccountsStore } from '../src/lib/stores/accounts.svelte';
 import { SettingsStore } from '../src/lib/stores/settings.svelte';
 import { AnimStore } from '../src/lib/stores/anim.svelte';
 import { KeymapStore } from '../src/lib/stores/keymap.svelte';
@@ -43,6 +46,9 @@ function assemble(): AppCtx {
     library: new LibraryStore(client),
     ai: new AiStore(client),
     downloads: new DownloadsStore(client),
+    playlists: new PlaylistsStore(client),
+    transfer: new TransferStore(client),
+    accounts: new AccountsStore(client),
     settings: new SettingsStore(client),
     anim: new AnimStore(client),
     keymap: new KeymapStore(client),
@@ -56,8 +62,11 @@ function assemble(): AppCtx {
     'lyrics',
     'search',
     'library',
+    'playlists',
     'ai',
     'downloads',
+    'transfer',
+    'accounts',
     'settings',
     'system',
   ]);
@@ -85,11 +94,26 @@ describe('App against the demo core', () => {
     render(App, { props: { ctx } });
     await settle();
 
-    ctx.wip.gate('library.playlists');
+    ctx.wip.gate('queue.reorder');
     await settle();
-    expect(ctx.wip.active).toBe('library.playlists');
+    expect(ctx.wip.active).toBe('queue.reorder');
     expect(screen.getByText('Not wired up yet')).toBeTruthy();
     expect(screen.getByText('Copy agent brief')).toBeTruthy();
+  });
+
+  it('the library playlists tab lists demo playlists (wired, not the pending card)', async () => {
+    const ctx = assemble();
+    const { container } = render(App, { props: { ctx } });
+    const q = within(container);
+    await settle();
+
+    ctx.ui.view = 'library';
+    ctx.ui.libraryTab = 'playlists';
+    await settle();
+
+    // The demo core seeds two playlists on the `playlists` topic.
+    expect(q.getByText('Late-night coding')).toBeTruthy();
+    expect(q.queryByText('Wire pending — lands in M2')).toBeNull();
   });
 
   it('the keymap dispatcher routes a real keypress to its action', async () => {

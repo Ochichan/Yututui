@@ -18,6 +18,9 @@ import type { LyricLine } from '../stores/lyrics.svelte';
 import type { DownloadStatus } from '../stores/downloads.svelte';
 import type { SettingGroup, SettingsModelV8 } from '../stores/settings.svelte';
 import type { ThemeModel } from '../stores/theme.svelte';
+import type { PlaylistDetail, PlaylistSummary } from '../stores/playlists.svelte';
+import type { SpotifyPlaylist, TransferSpec, TransferState } from '../stores/transfer.svelte';
+import type { AccountsSnapshot } from '../stores/accounts.svelte';
 import { defaultAnimations } from '../stores/anim.svelte';
 import { defaultKeymap, type KeyContext } from '../stores/keymap.svelte';
 
@@ -326,6 +329,34 @@ export class DemoCoreTransport implements Transport {
   #settings: SettingsModelV8 = defaultSettings();
   // Fake romanization cache size, drained by clear_romanization_cache.
   #romanizationCache = 12;
+  // Local playlists (the `playlists` topic) — summaries + their track lists by id.
+  #playlists: PlaylistSummary[] = [
+    { id: 'pl-1', name: 'Late-night coding', count: 3, description: 'ship it =^..^=' },
+    { id: 'pl-2', name: 'Favorites', count: 2, description: null },
+  ];
+  #playlistTracks = new Map<string, TrackModel[]>([
+    ['pl-1', [CATALOG[3], CATALOG[5], CATALOG[7]].map((t) => ({ ...t }))],
+    ['pl-2', CATALOG.filter((t) => t.favorite).map((t) => ({ ...t }))],
+  ]);
+  #nextPlaylist = 3;
+  // Spotify import wizard state (the `transfer` topic).
+  #transfer: TransferState = {
+    kind: 'transfer_state',
+    phase: 'idle',
+    sources: [],
+    job: null,
+    report: null,
+    error: null,
+  };
+  #transferTimers: Array<ReturnType<typeof setTimeout>> = [];
+  // Account connection state (the `accounts` topic).
+  #accounts: AccountsSnapshot = {
+    kind: 'accounts_snapshot',
+    lastfm: { connected: false, user: null, scrobbling: false, love_sync: false },
+    listenbrainz: { submit: false, has_token: false, custom_url: null },
+    spotify: { connected: false, user: null, client_id: null, redirect_port: null },
+    scrobble_local: false,
+  };
 
   onMessage(cb: (env: InEnvelope) => void): void {
     this.#cb = cb;
@@ -372,6 +403,14 @@ export class DemoCoreTransport implements Transport {
               Number(p.limit ?? 50),
             ),
           });
+        } else if (env.name === 'fetch_playlist_detail') {
+          const p = (env.payload ?? {}) as Record<string, unknown>;
+          this.#emit({
+            v: 1,
+            id: env.id,
+            kind: 'res',
+            payload: this.#playlistDetail(String(p.playlist_id ?? '')),
+          });
         } else if (env.name === 'keymap_bind') {
           const p = (env.payload ?? {}) as Record<string, unknown>;
           const conflict = this.#keymapBind(
@@ -392,6 +431,8 @@ export class DemoCoreTransport implements Transport {
         if (topics.includes('queue')) this.#pushQueue();
         if (topics.includes('lyrics')) this.#pushLyrics();
         if (topics.includes('settings')) this.#pushSettings();
+        if (topics.includes('playlists')) this.#pushPlaylists();
+        if (topics.includes('accounts')) this.#pushAccounts();
         return;
       }
       case 'cmd':
@@ -541,6 +582,42 @@ export class DemoCoreTransport implements Transport {
       case 'delete_download':
         this.#downloads = this.#downloads.filter((d) => d.video_id !== String(p.video_id ?? ''));
         this.#pushDownloads();
+        return;
+      case 'playlist_create':
+        this.#playlistCreate(String(p.name ?? ''));
+        return;
+      case 'playlist_delete':
+        this.#playlistDelete(String(p.playlist_id ?? ''));
+        return;
+      case 'playlist_add_tracks':
+        this.#playlistAddTracks(String(p.playlist_id ?? ''), (p.video_ids as string[]) ?? []);
+        return;
+      case 'playlist_remove_track':
+        this.#playlistRemoveTrack(String(p.playlist_id ?? ''), String(p.video_id ?? ''));
+        return;
+      case 'playlist_play':
+        this.#playlistPlay(String(p.playlist_id ?? ''));
+        return;
+      case 'transfer_list_spotify':
+        this.#transferList();
+        return;
+      case 'transfer_start':
+        this.#transferStart((p.spec ?? {}) as TransferSpec);
+        return;
+      case 'transfer_cancel':
+        this.#transferCancel();
+        return;
+      case 'lastfm_connect':
+        this.#accountConnect('lastfm');
+        return;
+      case 'spotify_connect':
+        this.#accountConnect('spotify');
+        return;
+      case 'listen_brainz_configure':
+        this.#listenBrainzConfigure(p);
+        return;
+      case 'account_set':
+        this.#accountSet(String(p.service ?? ''), String(p.field ?? ''), p.value);
         return;
       default:
         // Unknown command: a real core would reject reason-coded; the demo just ignores.
@@ -938,6 +1015,261 @@ export class DemoCoreTransport implements Transport {
         kind: 'settings_snapshot',
         model: JSON.parse(JSON.stringify(this.#settings)) as SettingsModelV8,
       },
+    });
+  }
+
+  // ── playlists (library.playlists) ─────────────────────────────────────────────────────
+
+  /** The fetch_playlist_detail response body, or null if the id is gone. */
+  #playlistDetail(id: string): PlaylistDetail | null {
+    const summary = this.#playlists.find((p) => p.id === id);
+    if (!summary) return null;
+    return {
+      id,
+      name: summary.name,
+      description: summary.description,
+      tracks: (this.#playlistTracks.get(id) ?? []).map((t) => ({ ...t })),
+    };
+  }
+
+  /** Keep a summary's count in step with its track list. */
+  #reconcileCount(id: string): void {
+    const summary = this.#playlists.find((p) => p.id === id);
+    if (summary) summary.count = this.#playlistTracks.get(id)?.length ?? 0;
+  }
+
+  #playlistCreate(name: string): void {
+    const n = name.trim();
+    if (!n) return;
+    const id = `pl-${this.#nextPlaylist++}`;
+    this.#playlists = [...this.#playlists, { id, name: n, count: 0, description: null }];
+    this.#playlistTracks.set(id, []);
+    this.#pushPlaylists();
+  }
+
+  #playlistDelete(id: string): void {
+    this.#playlists = this.#playlists.filter((p) => p.id !== id);
+    this.#playlistTracks.delete(id);
+    this.#pushPlaylists();
+  }
+
+  #playlistAddTracks(id: string, videoIds: string[]): void {
+    const list = this.#playlistTracks.get(id);
+    if (!list) return;
+    const resolve = (v: string) =>
+      this.#searchIndex.get(v) ??
+      CATALOG.find((t) => t.video_id === v) ??
+      this.#queue.find((t) => t.video_id === v);
+    for (const v of videoIds) {
+      if (list.some((t) => t.video_id === v)) continue; // no dupes, like the real playlist
+      const t = resolve(v);
+      if (t) list.push({ ...t });
+    }
+    this.#reconcileCount(id);
+    this.#pushPlaylists();
+  }
+
+  #playlistRemoveTrack(id: string, videoId: string): void {
+    const list = this.#playlistTracks.get(id);
+    if (!list) return;
+    this.#playlistTracks.set(
+      id,
+      list.filter((t) => t.video_id !== videoId),
+    );
+    this.#reconcileCount(id);
+    this.#pushPlaylists();
+  }
+
+  #playlistPlay(id: string): void {
+    const list = this.#playlistTracks.get(id);
+    if (!list || list.length === 0) return;
+    this.#queue = list.map((t) => ({ ...t }));
+    this.#rev++;
+    this.#pushQueue();
+    this.#jumpTo(0);
+    this.#pushPlayer();
+  }
+
+  #pushPlaylists(): void {
+    this.#emit({
+      v: 1,
+      kind: 'event',
+      topic: 'playlists',
+      // PROVISIONAL shape — see PlaylistsSnapshot in stores/playlists.svelte.ts.
+      payload: { kind: 'playlists_snapshot', items: this.#playlists.map((p) => ({ ...p })) },
+    });
+  }
+
+  // ── transfer wizard (transfer.wizard) ─────────────────────────────────────────────────
+
+  #clearTransferTimers(): void {
+    for (const t of this.#transferTimers) clearTimeout(t);
+    this.#transferTimers = [];
+  }
+
+  #transferList(): void {
+    this.#clearTransferTimers();
+    this.#transfer = { ...this.#transfer, phase: 'listing', report: null, error: null };
+    this.#pushTransfer();
+    this.#transferTimers.push(
+      setTimeout(() => {
+        const sources: SpotifyPlaylist[] = [
+          { id: 'sp-1', name: 'Discover Weekly (archive)', count: 30 },
+          { id: 'sp-2', name: 'Focus Flow', count: 42 },
+          { id: 'sp-3', name: 'Roadtrip 2025', count: 18 },
+        ];
+        this.#transfer = { ...this.#transfer, phase: 'ready', sources, job: null };
+        this.#pushTransfer();
+      }, 200),
+    );
+  }
+
+  #transferStart(spec: TransferSpec): void {
+    const ids = Array.isArray(spec.source_ids) ? spec.source_ids : [];
+    const total = this.#transfer.sources
+      .filter((s) => ids.includes(s.id))
+      .reduce((n, s) => n + s.count, 0);
+    if (total === 0) return;
+    this.#clearTransferTimers();
+    const destLabel =
+      spec.dest?.kind === 'new'
+        ? `new playlist “${spec.dest.name}”`
+        : `existing playlist ${(spec.dest as { playlist_id: string })?.playlist_id ?? ''}`;
+    this.#transfer = {
+      ...this.#transfer,
+      phase: 'running',
+      job: { done: 0, total, matched: 0, failed: 0 },
+      report: null,
+      error: null,
+    };
+    this.#pushTransfer();
+
+    // Coalesced progress: a handful of ticks, not one-per-track (the real wire coalesces).
+    const ticks = 4;
+    for (let i = 1; i <= ticks; i++) {
+      this.#transferTimers.push(
+        setTimeout(() => {
+          if (this.#transfer.phase !== 'running') return; // cancelled
+          const done = Math.round((total * i) / ticks);
+          const failed = Math.round(done * 0.08);
+          this.#transfer = {
+            ...this.#transfer,
+            job: { done, total, matched: done - failed, failed },
+          };
+          this.#pushTransfer();
+        }, 150 * i),
+      );
+    }
+    this.#transferTimers.push(
+      setTimeout(
+        () => {
+          if (this.#transfer.phase !== 'running') return;
+          const failed = Math.round(total * 0.08);
+          this.#transfer = {
+            ...this.#transfer,
+            phase: 'done',
+            job: { done: total, total, matched: total - failed, failed },
+            report: {
+              matched: total - failed,
+              failed,
+              skipped: 0,
+              unmatched: ['Obscure B-side (live)', 'Untitled demo #7'].slice(0, failed ? 2 : 0),
+              dest: destLabel,
+            },
+          };
+          this.#pushTransfer();
+        },
+        150 * (ticks + 1),
+      ),
+    );
+  }
+
+  #transferCancel(): void {
+    this.#clearTransferTimers();
+    this.#transfer = {
+      kind: 'transfer_state',
+      phase: 'idle',
+      sources: this.#transfer.sources,
+      job: null,
+      report: null,
+      error: null,
+    };
+    this.#pushTransfer();
+  }
+
+  #pushTransfer(): void {
+    this.#emit({
+      v: 1,
+      kind: 'event',
+      topic: 'transfer',
+      // PROVISIONAL shape — see TransferState in stores/transfer.svelte.ts.
+      payload: JSON.parse(JSON.stringify(this.#transfer)) as TransferState,
+    });
+  }
+
+  // ── accounts (settings.accounts) ──────────────────────────────────────────────────────
+
+  #accountConnect(service: 'lastfm' | 'spotify'): void {
+    // Browser-approval: hand the GUI an auth URL first (it opens it via win:openUrl).
+    this.#emit({
+      v: 1,
+      kind: 'event',
+      topic: 'accounts',
+      // PROVISIONAL shape — see AccountsAuthUrl in stores/accounts.svelte.ts.
+      payload: {
+        kind: 'accounts_auth_url',
+        service,
+        url: `https://example.com/${service}/authorize?demo=1`,
+      },
+    });
+    // …then the approval lands and the snapshot flips connected.
+    setTimeout(() => {
+      if (service === 'lastfm') {
+        this.#accounts.lastfm = {
+          connected: true,
+          user: 'demo_listener',
+          scrobbling: true,
+          love_sync: this.#accounts.lastfm.love_sync,
+        };
+      } else {
+        this.#accounts.spotify = {
+          ...this.#accounts.spotify,
+          connected: true,
+          user: 'demo_spotify',
+        };
+      }
+      this.#pushAccounts();
+    }, 200);
+  }
+
+  #listenBrainzConfigure(p: Record<string, unknown>): void {
+    const lb = this.#accounts.listenbrainz;
+    if ('submit' in p) lb.submit = Boolean(p.submit);
+    if ('token' in p) lb.has_token = String(p.token ?? '').length > 0; // write-only presence
+    if ('custom_url' in p) lb.custom_url = String(p.custom_url ?? '') || null;
+    this.#pushAccounts();
+  }
+
+  #accountSet(service: string, field: string, value: unknown): void {
+    if (field === 'scrobble_local') {
+      this.#accounts.scrobble_local = Boolean(value);
+    } else if (service === 'lastfm') {
+      (this.#accounts.lastfm as unknown as Record<string, unknown>)[field] = value;
+    } else if (service === 'spotify') {
+      (this.#accounts.spotify as unknown as Record<string, unknown>)[field] = value;
+    } else if (service === 'listenbrainz') {
+      (this.#accounts.listenbrainz as unknown as Record<string, unknown>)[field] = value;
+    }
+    this.#pushAccounts();
+  }
+
+  #pushAccounts(): void {
+    this.#emit({
+      v: 1,
+      kind: 'event',
+      topic: 'accounts',
+      // PROVISIONAL shape — see AccountsSnapshot in stores/accounts.svelte.ts.
+      payload: JSON.parse(JSON.stringify(this.#accounts)) as AccountsSnapshot,
     });
   }
 

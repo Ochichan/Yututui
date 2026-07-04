@@ -27,12 +27,12 @@ the right shapes today.
 `gui/src/lib/wiring/registry.ts` is the **single source of truth** for every feature whose
 UI is finished but whose wire is not. Current entries (delete each as you wire it):
 
-`library.playlists` · `queue.reorder` · `settings.accounts` · `ai.whygem` ·
-`transfer.wizard` · `lyrics.live` · `artwork.live` · `i18n.catalog`
+`queue.reorder` · `ai.whygem` · `lyrics.live` · `artwork.live` · `i18n.catalog`
 
 (`search.run`, `library.fetch`, `ai.chat`, `downloads.manage`, `radio.mode`,
-`settings.apply`, `settings.animations`, `settings.theme-editor`, `settings.hotkeys`, and
-`help.keymap` are now wired — deleted from the registry.)
+`settings.apply`, `settings.animations`, `settings.theme-editor`, `settings.hotkeys`,
+`help.keymap`, `library.playlists`, `settings.accounts`, and `transfer.wizard` are now
+wired — deleted from the registry.)
 
 Each entry carries milestone, spec section, protocol surface, frontend seam, and notes.
 In the running app, every pending surface shows either a **WireTag** chip (⚡ M2 · wiring
@@ -56,7 +56,15 @@ registry by `agentBrief()`, so it cannot drift from this file or the spec.
   shape (reconcile with ts-rs `SettingsModelV8`/`SettingChangeV8` §11.6/§13.3 when
   `settings-v8` lands). The Graphics tab's **Animations** and **Theme** blocks and the
   **Hotkeys** tab are now wired (theme rides `settings.theme` via `stores/theme.svelte.ts`,
-  keymap rides `settings.keymap`); Accounts still renders defaults under its own wire.
+  keymap rides `settings.keymap`); the **Accounts** tab is now wired too, on its own
+  `accounts` topic via `stores/accounts.svelte.ts` (connect flows open the browser through
+  win:openUrl), with the Spotify import wizard on the `transfer` topic
+  (`stores/transfer.svelte.ts` + `views/wizards/SpotifyImport.svelte`).
+- **Playlists** (wired): `stores/playlists.svelte.ts` mirrors the `playlists` topic + pulls a
+  drill-down with `fetch_playlist_detail`; `views/library/PlaylistsPane.svelte` renders the
+  list, detail, and the Create / Delete / Add-to-playlist dialogs. All PROVISIONAL shapes
+  (`playlists_snapshot`, `PlaylistDetail`, `transfer_state`, `accounts_snapshot`,
+  `accounts_auth_url`) live only in the demo core — reconcile with the M2/M4 core wires.
 - **Local-theme precedence** (settled by `settings.theme-editor`): a chosen local skin layers
   over the pushed core theme and survives pushes until the user edits the core theme editor
   (picks a preset / edits or clears a role / toggles background-none), which hands control

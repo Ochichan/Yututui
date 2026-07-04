@@ -12,6 +12,9 @@ import type { SearchStore } from './stores/search.svelte';
 import type { LibraryStore } from './stores/library.svelte';
 import type { AiStore } from './stores/ai.svelte';
 import type { DownloadsStore } from './stores/downloads.svelte';
+import type { PlaylistsStore } from './stores/playlists.svelte';
+import type { TransferStore } from './stores/transfer.svelte';
+import type { AccountsStore } from './stores/accounts.svelte';
 import type { SettingsStore } from './stores/settings.svelte';
 import type { AnimStore } from './stores/anim.svelte';
 import type { KeymapStore } from './stores/keymap.svelte';
@@ -33,6 +36,12 @@ export interface AppCtx {
   library: LibraryStore;
   ai: AiStore;
   downloads: DownloadsStore;
+  /** Local playlists: list + drill-down detail + the Create/Delete/Add-to-playlist dialogs. */
+  playlists: PlaylistsStore;
+  /** Spotify import wizard: the `transfer` topic job lifecycle + list/start/cancel. */
+  transfer: TransferStore;
+  /** Last.fm / ListenBrainz / Spotify connection state + browser-approval connect flows. */
+  accounts: AccountsStore;
   settings: SettingsStore;
   /** Animation runtime: the shared fps-gated rAF ticker + the master/reduced-motion contract. */
   anim: AnimStore;

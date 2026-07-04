@@ -17,14 +17,7 @@
 // Full handoff narrative: gui/WIRING.md.
 
 export type FeatureId =
-  | 'library.playlists'
-  | 'queue.reorder'
-  | 'settings.accounts'
-  | 'ai.whygem'
-  | 'transfer.wizard'
-  | 'lyrics.live'
-  | 'artwork.live'
-  | 'i18n.catalog';
+  'queue.reorder' | 'ai.whygem' | 'lyrics.live' | 'artwork.live' | 'i18n.catalog';
 
 export interface WiringSpec {
   /** Human title shown in the not-wired-yet modal. */
@@ -44,15 +37,6 @@ export interface WiringSpec {
 }
 
 export const WIRING: Record<FeatureId, WiringSpec> = {
-  'library.playlists': {
-    title: 'Playlists (drill-down + CRUD modals)',
-    milestone: 'M2',
-    brief: 'docs/gui/07-feature-briefs.md §5',
-    protocol:
-      'playlist_create / playlist_delete / playlist_add_tracks / playlist_remove_track / playlist_play; `playlists` topic + req fetch_playlist_detail',
-    seam: 'create gui/src/lib/stores/playlists.svelte.ts + gui/src/views/library/PlaylistDetail.svelte + the three modals (Create / Delete / Add-to-playlist)',
-    capability: 'library-v8',
-  },
   'queue.reorder': {
     title: 'Queue drag-reorder',
     milestone: 'M2',
@@ -62,15 +46,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
     notes:
       'Pointer events, NOT HTML5 DnD (unreliable in WKWebView). Auto-scroll during drag needs care.',
   },
-  'settings.accounts': {
-    title: 'Accounts (Last.fm / ListenBrainz / Spotify)',
-    milestone: 'M4',
-    brief: 'docs/gui/07-feature-briefs.md §11 + docs/gui/02 §13.4',
-    protocol:
-      'cmd lastfm_connect { ticket } / spotify_connect { ticket } / listen_brainz_configure; `accounts` topic events (LastfmAuthUrl → LastfmConnected, …) — the GUI opens the browser via win:openUrl',
-    seam: 'create gui/src/lib/stores/accounts.svelte.ts; replace the wip() seams in AccountsTab.svelte',
-    capability: 'accounts-v8',
-  },
   'ai.whygem': {
     title: 'Why-DJ-Gem popover',
     milestone: 'M4',
@@ -79,17 +54,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
       'explanation per queue-item id (inlined in `queue` items or req fetch_why_gem { video_id })',
     seam: 'WhyGemPopover.svelte + the "why?" affordance on autoplay-added queue rows',
     capability: 'ai',
-  },
-  'transfer.wizard': {
-    title: 'Spotify import wizard',
-    milestone: 'M4',
-    brief: 'docs/gui/07-feature-briefs.md §14',
-    protocol:
-      'cmd transfer_list_spotify { ticket } / transfer_start { ticket, spec } / transfer_cancel; `transfer` topic (job lifecycle + coalesced progress + report)',
-    seam: 'create gui/src/lib/stores/transfer.svelte.ts + gui/src/views/wizards/SpotifyImport.svelte',
-    capability: 'transfer-v8',
-    notes:
-      'Dest must surface YtmExistingPlaylist — dev-mode Spotify apps 403 on playlist creation since mid-2026, so append-to-existing is the mainline path, not an edge case.',
   },
   'lyrics.live': {
     title: 'Synced lyrics topic',

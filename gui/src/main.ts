@@ -18,6 +18,9 @@ import { SearchStore } from './lib/stores/search.svelte';
 import { LibraryStore } from './lib/stores/library.svelte';
 import { AiStore } from './lib/stores/ai.svelte';
 import { DownloadsStore } from './lib/stores/downloads.svelte';
+import { PlaylistsStore } from './lib/stores/playlists.svelte';
+import { TransferStore } from './lib/stores/transfer.svelte';
+import { AccountsStore } from './lib/stores/accounts.svelte';
 import { SettingsStore } from './lib/stores/settings.svelte';
 import { AnimStore } from './lib/stores/anim.svelte';
 import { KeymapStore } from './lib/stores/keymap.svelte';
@@ -55,6 +58,9 @@ const ctx: AppCtx = {
   library: new LibraryStore(client),
   ai: new AiStore(client),
   downloads: new DownloadsStore(client),
+  playlists: new PlaylistsStore(client),
+  transfer: new TransferStore(client),
+  accounts: new AccountsStore(client),
   settings: new SettingsStore(client),
   anim: new AnimStore(client),
   keymap: new KeymapStore(client),
@@ -71,8 +77,11 @@ client.sub([
   'lyrics',
   'search',
   'library',
+  'playlists',
   'ai',
   'downloads',
+  'transfer',
+  'accounts',
   'settings',
   'system',
 ]);
