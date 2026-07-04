@@ -27,12 +27,15 @@ the right shapes today.
 `gui/src/lib/wiring/registry.ts` is the **single source of truth** for every feature whose
 UI is finished but whose wire is not. Current entries (delete each as you wire it):
 
-`queue.reorder` · `ai.whygem` · `lyrics.live` · `artwork.live` · `i18n.catalog`
+`lyrics.live` · `artwork.live`
+
+(these two are B1 reconciles — the stores already consume the PROVISIONAL demo shapes; they
+can only be *verified/aligned* against a real core push once B1 lands.)
 
 (`search.run`, `library.fetch`, `ai.chat`, `downloads.manage`, `radio.mode`,
 `settings.apply`, `settings.animations`, `settings.theme-editor`, `settings.hotkeys`,
-`help.keymap`, `library.playlists`, `settings.accounts`, and `transfer.wizard` are now
-wired — deleted from the registry.)
+`help.keymap`, `library.playlists`, `settings.accounts`, `transfer.wizard`, `ai.whygem`,
+`queue.reorder`, and `i18n.catalog` are now wired — deleted from the registry.)
 
 Each entry carries milestone, spec section, protocol surface, frontend seam, and notes.
 In the running app, every pending surface shows either a **WireTag** chip (⚡ M2 · wiring
@@ -69,6 +72,21 @@ registry by `agentBrief()`, so it cannot drift from this file or the spec.
   over the pushed core theme and survives pushes until the user edits the core theme editor
   (picks a preset / edits or clears a role / toggles background-none), which hands control
   back to the core theme (`stores/theme.svelte.ts`).
+- **Why-Gem** (wired, `ai.whygem`): `stores/whygem.svelte.ts` reads a PROVISIONAL
+  `{ kind: 'why_gem_provenance', video_ids }` event on the `ai` topic (which rows are DJ-Gem
+  autoplay picks → where the "why?" affordance shows) and fetches the explanation on open with
+  `req fetch_why_gem { video_id }` → `{ slot, reasons, confidence }`. Both shapes live only in
+  the demo core; reconcile with the M4 core wire + ts-rs types when they land.
+- **Queue reorder** (wired, `queue.reorder`): `cmd queue_move { from, to, expected_rev }` is a
+  v8 command the frozen `command.rs` + core dispatch must still add — the desktop seam forwards
+  it the moment the variant exists (like the other deferred v8 commands). `lib/dnd/reorder.ts`
+  holds the pure index/scroll math; `VirtualList.svelte` drives pointer-drag from any row's
+  `[data-drag-handle]`.
+- **i18n** (wired, `i18n.catalog`): frontend-owned flat catalog `src/i18n/{en,ko}.json` +
+  reactive `t()` in `lib/i18n.svelte.ts`; the language rides `settings.ui.language` (App's
+  `$effect` syncs it, live switch, no reload). Chrome only — romanized titles stay core-side
+  (`TrackModel.display_*`), never romanized in the GUI. `tests/i18n.test.ts` pins en/ko key
+  parity, placeholder alignment, and that every literal `t()` key exists.
 
 ## Conventions (enforced by `tests/wiring.test.ts`)
 
@@ -100,13 +118,15 @@ Gates (run in `gui/`): `npm run check && npm test && npm run build` — plus
 ## Layout of the new frontend
 
 ```
+src/i18n/           en.json · ko.json (flat keyed catalog; i18n.svelte.ts holds reactive t())
 src/lib/wiring/     registry.ts (the patch bay) · wip.svelte.ts (gate + modal state)
 src/lib/theme/      roles.ts (the 34 roles) · local.ts (GUI-owned skins)
 src/lib/keyboard/   chord.ts · dispatcher.ts · actions.ts · korean2set.ts (live dispatcher)
+src/lib/dnd/        reorder.ts (pure drag index/scroll math for queue.reorder)
 src/lib/dev/        democore.ts (stateful fake core for browsers)
-src/lib/stores/     connection · theme · ui · playback · queue · lyrics · toasts
+src/lib/stores/     connection · theme · ui · playback · queue · lyrics · whygem · toasts
 src/lib/components/ Modal WipModal WireTag PendingSurface Toggle Kbd VirtualList
-                    AlbumArt SeekBar VolumeBar TrackRow
+                    AlbumArt SeekBar VolumeBar TrackRow WhyGemPopover
 src/views/          NowPlaying · SearchView · LibraryView · AiView · TransportBar ·
                     QueuePanel · settings/{SettingsView,+6 tabs,SettingRow,SettingSection} ·
                     overlays/{HelpOverlay,AboutCard}

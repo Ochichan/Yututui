@@ -6,6 +6,7 @@
   import type { AppCtx } from '../../lib/ctx';
   import Modal from '../../lib/components/Modal.svelte';
   import Kbd from '../../lib/components/Kbd.svelte';
+  import { t } from '../../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -31,16 +32,16 @@
   });
 </script>
 
-<Modal title="Keyboard shortcuts" onclose={() => (ui.helpOpen = false)} width="520px">
+<Modal title={t('help.title')} onclose={() => (ui.helpOpen = false)} width="520px">
   <input
     class="search"
     type="search"
-    placeholder="Filter shortcuts…"
+    placeholder={t('help.filterPlaceholder')}
     bind:value={query}
-    aria-label="Filter shortcuts"
+    aria-label={t('help.filterAria')}
   />
   {#if groups.length === 0}
-    <p class="empty">{keymap.model ? 'No shortcuts match.' : 'Loading the keymap…'}</p>
+    <p class="empty">{keymap.model ? t('help.noMatch') : t('help.loading')}</p>
   {/if}
   <div class="groups">
     {#each groups as g (g.context)}
@@ -62,14 +63,14 @@
     {/each}
   </div>
   <p class="foot">
-    Customize in Settings → Hotkeys
+    {t('help.customize')}
     <button
       class="link"
       onclick={() => {
         ui.helpOpen = false;
         ui.setView('settings');
         ui.settingsTab = 'hotkeys';
-      }}>open</button
+      }}>{t('help.open')}</button
     >
   </p>
 </Modal>

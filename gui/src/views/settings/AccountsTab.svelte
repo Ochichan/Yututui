@@ -8,6 +8,7 @@
   import SettingRow from './SettingRow.svelte';
   import Toggle from '../../lib/components/Toggle.svelte';
   import SpotifyImport from '../wizards/SpotifyImport.svelte';
+  import { t } from '../../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -27,22 +28,29 @@
 </script>
 
 <SettingSection title="Last.fm">
-  <SettingRow label="Scrobbling">
+  <SettingRow label={t('settings.accounts.scrobbling')}>
     <Toggle
       checked={acc.lastfm.scrobbling}
       disabled={!acc.lastfm.connected}
       onchange={(v) => accounts.setLastfmScrobbling(v)}
     />
   </SettingRow>
-  <SettingRow label="Account" hint="Browser approval flow; status updates push live">
+  <SettingRow
+    label={t('settings.accounts.account')}
+    hint={t('settings.accounts.lastfmAccountHint')}
+  >
     {#if acc.lastfm.connected}
-      <span class="pill on">Connected{acc.lastfm.user ? ` · ${acc.lastfm.user}` : ''}</span>
+      <span class="pill on"
+        >{t('settings.accounts.connected')}{acc.lastfm.user ? ` · ${acc.lastfm.user}` : ''}</span
+      >
     {:else}
-      <span class="pill off">Not connected</span>
-      <button class="connect" onclick={() => accounts.connectLastfm()}>Connect…</button>
+      <span class="pill off">{t('settings.accounts.notConnected')}</span>
+      <button class="connect" onclick={() => accounts.connectLastfm()}
+        >{t('settings.accounts.connect')}</button
+      >
     {/if}
   </SettingRow>
-  <SettingRow label="Love sync" hint="♥ in the library also loves the track on Last.fm">
+  <SettingRow label={t('settings.accounts.loveSync')} hint={t('settings.accounts.loveSyncHint')}>
     <Toggle
       checked={acc.lastfm.love_sync}
       disabled={!acc.lastfm.connected}
@@ -52,22 +60,24 @@
 </SettingSection>
 
 <SettingSection title="ListenBrainz">
-  <SettingRow label="Submit listens">
+  <SettingRow label={t('settings.accounts.submitListens')}>
     <Toggle
       checked={acc.listenbrainz.submit}
       onchange={(v) => accounts.configureListenBrainz({ submit: v })}
     />
   </SettingRow>
-  <SettingRow label="Token" hint="Write-only, like every secret on the wire">
+  <SettingRow label={t('settings.accounts.token')} hint={t('settings.accounts.tokenHint')}>
     <input
       class="ti"
       type="password"
-      placeholder={acc.listenbrainz.has_token ? '•••••••• (set)' : 'token'}
+      placeholder={acc.listenbrainz.has_token
+        ? t('settings.accounts.tokenSet')
+        : t('settings.accounts.tokenPlaceholder')}
       size="18"
       onchange={(e) => accounts.configureListenBrainz({ token: e.currentTarget.value })}
     />
   </SettingRow>
-  <SettingRow label="Custom URL" hint="Self-hosted instances">
+  <SettingRow label={t('settings.accounts.customUrl')} hint={t('settings.accounts.customUrlHint')}>
     <input
       class="ti"
       placeholder="https://api.listenbrainz.org"
@@ -79,16 +89,16 @@
 </SettingSection>
 
 <SettingSection title="Spotify">
-  <SettingRow label="Client ID" hint="Your own Spotify app (dev mode) — PKCE, no secret">
+  <SettingRow label={t('settings.accounts.clientId')} hint={t('settings.accounts.clientIdHint')}>
     <input
       class="ti"
-      placeholder="client id"
+      placeholder={t('settings.accounts.clientIdPlaceholder')}
       size="20"
       value={acc.spotify.client_id ?? ''}
       onchange={(e) => accounts.setSpotifyClientId(e.currentTarget.value)}
     />
   </SettingRow>
-  <SettingRow label="Redirect port">
+  <SettingRow label={t('settings.accounts.redirectPort')}>
     <input
       class="ti"
       type="number"
@@ -98,24 +108,28 @@
       onchange={(e) => accounts.setSpotifyRedirectPort(Number(e.currentTarget.value))}
     />
   </SettingRow>
-  <SettingRow label="Account">
+  <SettingRow label={t('settings.accounts.account')}>
     {#if acc.spotify.connected}
-      <span class="pill on">Connected{acc.spotify.user ? ` · ${acc.spotify.user}` : ''}</span>
+      <span class="pill on"
+        >{t('settings.accounts.connected')}{acc.spotify.user ? ` · ${acc.spotify.user}` : ''}</span
+      >
     {:else}
-      <span class="pill off">Not connected</span>
-      <button class="connect" onclick={() => accounts.connectSpotify()}>Connect…</button>
+      <span class="pill off">{t('settings.accounts.notConnected')}</span>
+      <button class="connect" onclick={() => accounts.connectSpotify()}
+        >{t('settings.accounts.connect')}</button
+      >
     {/if}
   </SettingRow>
   <SettingRow
-    label="Import playlists"
-    hint="The transfer wizard: pick playlists, choose a destination, watch the match report"
+    label={t('settings.accounts.importPlaylists')}
+    hint={t('settings.accounts.importPlaylistsHint')}
   >
-    <button class="connect" onclick={openWizard}>Import…</button>
+    <button class="connect" onclick={openWizard}>{t('settings.accounts.import')}</button>
   </SettingRow>
 </SettingSection>
 
-<SettingSection title="Scrobble scope">
-  <SettingRow label="Scrobble local files">
+<SettingSection title={t('settings.accounts.scrobbleScope')}>
+  <SettingRow label={t('settings.accounts.scrobbleLocalFiles')}>
     <Toggle checked={acc.scrobble_local} onchange={(v) => accounts.setScrobbleLocal(v)} />
   </SettingRow>
 </SettingSection>

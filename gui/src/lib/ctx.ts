@@ -19,6 +19,7 @@ import type { SettingsStore } from './stores/settings.svelte';
 import type { AnimStore } from './stores/anim.svelte';
 import type { KeymapStore } from './stores/keymap.svelte';
 import type { LyricsStore } from './stores/lyrics.svelte';
+import type { WhyGemStore } from './stores/whygem.svelte';
 import type { ToastStore } from './stores/toasts.svelte';
 import type { WipStore } from './wiring/wip.svelte';
 
@@ -48,6 +49,8 @@ export interface AppCtx {
   /** The remappable keymap read model + the in-webview dispatcher's source of truth. */
   keymap: KeymapStore;
   lyrics: LyricsStore;
+  /** Why-DJ-Gem provenance + the anchored popover fetch (docs/gui/07 §13). */
+  whygem: WhyGemStore;
   toasts: ToastStore;
   wip: WipStore;
 }

@@ -15,6 +15,7 @@
   import SettingSection from './SettingSection.svelte';
   import SettingRow from './SettingRow.svelte';
   import Toggle from '../../lib/components/Toggle.svelte';
+  import { t } from '../../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -40,59 +41,59 @@
     return /^#[0-9a-f]{6}$/i.test(h) ? h : '#000000';
   }
 
-  const ANIM_GROUPS: Array<{ title: string; tui?: boolean; effects: EffectId[] }> = [
+  const ANIM_GROUPS: Array<{ title: string; tui?: boolean; effects: EffectId[] }> = $derived([
     {
-      title: 'Element',
+      title: t('settings.graphics.animGroup.element'),
       effects: ['title', 'heart', 'seekbar', 'spinner', 'eq_bars', 'controls', 'border'],
     },
     {
-      title: 'One-shot',
+      title: t('settings.graphics.animGroup.oneShot'),
       effects: ['track_intro', 'lyrics', 'toast', 'volume_flash', 'like_burst', 'seek_flash'],
     },
     {
-      title: 'UI-wide',
+      title: t('settings.graphics.animGroup.uiWide'),
       effects: ['selection', 'stagger', 'caret', 'tabs', 'popup_fade', 'activity', 'about_fx'],
     },
     {
-      title: 'Filler / terminal-only',
+      title: t('settings.graphics.animGroup.filler'),
       tui: true,
       effects: ['visualizer', 'rain', 'donut', 'starfield', 'bounce'],
     },
-  ];
+  ]);
   const TUI_ONLY = new Set(['rain', 'donut', 'starfield', 'bounce']);
 </script>
 
-<SettingSection title="Local themes — applies instantly">
+<SettingSection title={t('settings.graphics.localThemes')}>
   <div class="gallery">
-    {#each LOCAL_THEMES as t (t.id)}
+    {#each LOCAL_THEMES as lt (lt.id)}
       <button
         class="preset local"
-        class:on={theme.localId === t.id}
-        style:background={t.roles['background']}
-        style:color={t.roles['text-primary']}
+        class:on={theme.localId === lt.id}
+        style:background={lt.roles['background']}
+        style:color={lt.roles['text-primary']}
         onclick={() => {
-          theme.applyLocal(t);
-          toasts.show('success', `Theme: ${t.name}`);
+          theme.applyLocal(lt);
+          toasts.show('success', t('settings.graphics.themeApplied', { name: lt.name }));
         }}
       >
         <span class="strip">
-          <i style:background={t.roles['accent']}></i>
-          <i style:background={t.roles['accent-alt']}></i>
-          <i style:background={t.roles['success']}></i>
-          <i style:background={t.roles['warning']}></i>
-          <i style:background={t.roles['error']}></i>
+          <i style:background={lt.roles['accent']}></i>
+          <i style:background={lt.roles['accent-alt']}></i>
+          <i style:background={lt.roles['success']}></i>
+          <i style:background={lt.roles['warning']}></i>
+          <i style:background={lt.roles['error']}></i>
         </span>
-        <span class="pname">{t.name}</span>
-        <span class="ptag" style:color={t.roles['text-muted']}>{t.tagline}</span>
+        <span class="pname">{lt.name}</span>
+        <span class="ptag" style:color={lt.roles['text-muted']}>{lt.tagline}</span>
       </button>
     {/each}
     <p class="gallery-hint">
-      GUI-owned skins, saved per window. The core's presets below stay core-resolved.
+      {t('settings.graphics.localThemesHint')}
     </p>
   </div>
 </SettingSection>
 
-<SettingSection title="Core presets">
+<SettingSection title={t('settings.graphics.corePresets')}>
   <div class="gallery">
     {#each theme.model?.presets ?? [] as p (p.name)}
       <button
@@ -112,40 +113,36 @@
         <span class="pname">{p.name}</span>
       </button>
     {/each}
-    <p class="gallery-hint">The 13 TUI presets, resolved core-side — switching applies live.</p>
+    <p class="gallery-hint">{t('settings.graphics.corePresetsHint')}</p>
   </div>
   <SettingRow
-    label="Background: none"
-    hint="(terminal transparency) — GUI substitutes the preset's opaque background"
+    label={t('settings.graphics.backgroundNone')}
+    hint={t('settings.graphics.backgroundNoneHint')}
   >
     <Toggle
       checked={theme.model?.background_none ?? false}
       onchange={(v) => theme.setBackgroundNone(v, client)}
     />
   </SettingRow>
-  <SettingRow
-    label="Retro mode"
-    tag="(TUI)"
-    hint="CP437-safe console rendering — does not change the GUI"
-  >
+  <SettingRow label="Retro mode" tag="(TUI)" hint={t('settings.graphics.retroModeHint')}>
     <Toggle checked={theme.model?.retro ?? false} onchange={(v) => theme.setRetro(v, client)} />
   </SettingRow>
 </SettingSection>
 
-<SettingSection title="Colors — 34 roles, live editor">
+<SettingSection title={t('settings.graphics.colors')}>
   <div class="roles">
     {#each ROLES as [role, label] (role)}
       {@const hex = roleHex(role)}
       {@const over = theme.isOverridden(role)}
       <div class="role-row" class:over>
-        <label class="swatch-wrap" title="Edit {label}">
+        <label class="swatch-wrap" title={t('settings.graphics.editRole', { role: label })}>
           <span class="swatch" style:background={hex || 'transparent'}></span>
           <input
             class="color-in"
             type="color"
             value={colorFor(role)}
             onchange={(e) => theme.setOverride(role, e.currentTarget.value, client)}
-            aria-label="Edit {label}"
+            aria-label={t('settings.graphics.editRole', { role: label })}
           />
         </label>
         <span class="rl">{label}</span>
@@ -153,7 +150,7 @@
         {#if over}
           <button
             class="reset"
-            title="Reset to preset"
+            title={t('settings.graphics.resetToPreset')}
             onclick={() => theme.clearOverride(role, client)}>↺</button
           >
         {/if}
@@ -162,15 +159,15 @@
   </div>
 </SettingSection>
 
-<SettingSection title="Animations">
-  <SettingRow label="Master" hint="Off cancels the animation loop outright — zero overhead">
+<SettingSection title={t('settings.graphics.animations')}>
+  <SettingRow label={t('settings.graphics.master')} hint={t('settings.graphics.masterHint')}>
     <Toggle
       checked={anim?.master ?? false}
       onchange={(v) => settings.apply('animations', 'master', v)}
     />
   </SettingRow>
   {@const fps = anim?.fps ?? FPS_DEFAULT}
-  <SettingRow label="FPS" hint="5–60; one-shots run full rate, canvas 20, ambient 12">
+  <SettingRow label="FPS" hint={t('settings.graphics.fpsHint')}>
     <input
       class="range"
       type="range"
@@ -183,7 +180,7 @@
     />
     <span class="val mono">{fps}</span>
   </SettingRow>
-  <SettingRow label="Pause when unfocused">
+  <SettingRow label={t('settings.graphics.pauseUnfocused')}>
     <Toggle
       checked={anim?.pause_unfocused ?? true}
       onchange={(v) => settings.apply('animations', 'pause_unfocused', v)}

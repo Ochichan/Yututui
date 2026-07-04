@@ -6,6 +6,7 @@
   import type { AppCtx } from '../../lib/ctx';
   import Modal from '../../lib/components/Modal.svelte';
   import TrackRow from '../../lib/components/TrackRow.svelte';
+  import { t } from '../../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -34,29 +35,33 @@
     {@const d = playlists.detail}
     <div class="detail">
       <div class="dhead">
-        <button class="back" onclick={() => playlists.closeDetail()}>← Playlists</button>
+        <button class="back" onclick={() => playlists.closeDetail()}
+          >← {t('playlists.backToList')}</button
+        >
         <div class="dmeta">
           <h3>{d.name}</h3>
-          <span class="sub mono">{d.tracks.length} tracks</span>
+          <span class="sub mono">{t('playlists.trackCount', { count: d.tracks.length })}</span>
         </div>
         <button class="act" disabled={d.tracks.length === 0} onclick={() => playlists.play(d.id)}
-          >▶ Play all</button
+          >▶ {t('playlists.playAll')}</button
         >
       </div>
       {#if d.tracks.length === 0}
-        <p class="hint">This playlist is empty — add tracks from the library or search.</p>
+        <p class="hint">{t('playlists.emptyDetail')}</p>
       {:else}
         <div class="list" role="list">
-          {#each d.tracks as t, i (`${t.video_id}:${i}`)}
-            <TrackRow track={t} index={i + 1} ondblclick={() => library.play(t)}>
+          {#each d.tracks as tr, i (`${tr.video_id}:${i}`)}
+            <TrackRow track={tr} index={i + 1} ondblclick={() => library.play(tr)}>
               {#snippet actions()}
-                <button class="ri" title="Add to queue" onclick={() => library.enqueue(t)}
-                  >＋</button
+                <button
+                  class="ri"
+                  title={t('playlists.addToQueue')}
+                  onclick={() => library.enqueue(tr)}>＋</button
                 >
                 <button
                   class="ri"
-                  title="Remove from playlist"
-                  onclick={() => playlists.removeTrack(d.id, t.video_id)}>✕</button
+                  title={t('playlists.removeFromPlaylist')}
+                  onclick={() => playlists.removeTrack(d.id, tr.video_id)}>✕</button
                 >
               {/snippet}
             </TrackRow>
@@ -66,13 +71,13 @@
     </div>
   {:else}
     <div class="toolbar">
-      <button class="act primary" onclick={() => playlists.beginCreate()}>＋ New playlist</button>
+      <button class="act primary" onclick={() => playlists.beginCreate()}
+        >＋ {t('playlists.newPlaylist')}</button
+      >
     </div>
     {#if shown.length === 0}
       <p class="hint">
-        {playlists.list.length === 0
-          ? 'No playlists yet — “＋ New playlist” starts one.'
-          : 'No playlist matches the filter.'}
+        {playlists.list.length === 0 ? t('playlists.emptyNone') : t('playlists.emptyFiltered')}
       </p>
     {:else}
       <div class="plist" role="list">
@@ -80,12 +85,16 @@
           <div class="prow" role="listitem">
             <button class="popen" onclick={() => void playlists.open(p.id)}>
               <span class="pname">{p.name}</span>
-              <span class="pcount mono">{p.count} tracks</span>
+              <span class="pcount mono">{t('playlists.trackCount', { count: p.count })}</span>
               {#if p.description}<span class="pdesc">{p.description}</span>{/if}
             </button>
-            <button class="ri" title="Play" onclick={() => playlists.play(p.id)}>▶</button>
-            <button class="ri" title="Delete playlist" onclick={() => playlists.beginDelete(p)}
-              >✕</button
+            <button class="ri" title={t('playlists.play')} onclick={() => playlists.play(p.id)}
+              >▶</button
+            >
+            <button
+              class="ri"
+              title={t('playlists.deletePlaylist')}
+              onclick={() => playlists.beginDelete(p)}>✕</button
             >
           </div>
         {/each}
@@ -96,7 +105,7 @@
 
 <!-- Create -->
 {#if playlists.createOpen}
-  <Modal title="New playlist" width="420px" onclose={() => playlists.cancelCreate()}>
+  <Modal title={t('playlists.newPlaylist')} width="420px" onclose={() => playlists.cancelCreate()}>
     <form
       class="form"
       onsubmit={(e) => {
@@ -104,18 +113,22 @@
         submitCreate();
       }}
     >
-      <label class="fl" for="pl-name">Name</label>
+      <label class="fl" for="pl-name">{t('playlists.name')}</label>
       <!-- svelte-ignore a11y_autofocus -->
       <input
         id="pl-name"
         class="ti"
         bind:value={newName}
-        placeholder="Late-night coding"
+        placeholder={t('playlists.namePlaceholder')}
         autofocus
       />
       <div class="frow">
-        <button type="button" class="btn" onclick={() => playlists.cancelCreate()}>Cancel</button>
-        <button type="submit" class="btn primary" disabled={!newName.trim()}>Create</button>
+        <button type="button" class="btn" onclick={() => playlists.cancelCreate()}
+          >{t('common.cancel')}</button
+        >
+        <button type="submit" class="btn primary" disabled={!newName.trim()}
+          >{t('playlists.create')}</button
+        >
       </div>
     </form>
   </Modal>
@@ -124,13 +137,19 @@
 <!-- Delete confirm -->
 {#if playlists.deleteTarget}
   {@const target = playlists.deleteTarget}
-  <Modal title="Delete playlist" width="420px" onclose={() => playlists.cancelDelete()}>
+  <Modal
+    title={t('playlists.deletePlaylist')}
+    width="420px"
+    onclose={() => playlists.cancelDelete()}
+  >
     <p class="confirm">
-      Delete <strong>{target.name}</strong> ({target.count} tracks)? This can't be undone.
+      {t('playlists.deleteConfirm', { name: target.name, count: target.count })}
     </p>
     <div class="frow">
-      <button class="btn" onclick={() => playlists.cancelDelete()}>Cancel</button>
-      <button class="btn danger" onclick={() => playlists.confirmDelete()}>Delete</button>
+      <button class="btn" onclick={() => playlists.cancelDelete()}>{t('common.cancel')}</button>
+      <button class="btn danger" onclick={() => playlists.confirmDelete()}
+        >{t('common.delete')}</button
+      >
     </div>
   </Modal>
 {/if}
@@ -138,12 +157,12 @@
 <!-- Add to playlist -->
 {#if playlists.addTarget}
   {@const track = playlists.addTarget}
-  <Modal title="Add to playlist" width="440px" onclose={() => playlists.cancelAdd()}>
+  <Modal title={t('playlists.addToPlaylist')} width="440px" onclose={() => playlists.cancelAdd()}>
     <p class="confirm">
-      Add <strong>{track.display_title ?? track.title}</strong> to…
+      {t('playlists.addTrackTo', { name: track.display_title ?? track.title })}
     </p>
     {#if playlists.list.length === 0}
-      <p class="hint">No playlists yet — create one first.</p>
+      <p class="hint">{t('playlists.emptyNoneAdd')}</p>
     {:else}
       <div class="picklist" role="list">
         {#each playlists.list as p (p.id)}
@@ -155,7 +174,7 @@
       </div>
     {/if}
     <div class="frow">
-      <button class="btn" onclick={() => playlists.cancelAdd()}>Cancel</button>
+      <button class="btn" onclick={() => playlists.cancelAdd()}>{t('common.cancel')}</button>
     </div>
   </Modal>
 {/if}

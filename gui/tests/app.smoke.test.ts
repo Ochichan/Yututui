@@ -25,6 +25,7 @@ import { SettingsStore } from '../src/lib/stores/settings.svelte';
 import { AnimStore } from '../src/lib/stores/anim.svelte';
 import { KeymapStore } from '../src/lib/stores/keymap.svelte';
 import { LyricsStore } from '../src/lib/stores/lyrics.svelte';
+import { WhyGemStore } from '../src/lib/stores/whygem.svelte';
 import { ToastStore } from '../src/lib/stores/toasts.svelte';
 import { WipStore } from '../src/lib/wiring/wip.svelte';
 
@@ -53,6 +54,7 @@ function assemble(): AppCtx {
     anim: new AnimStore(client),
     keymap: new KeymapStore(client),
     lyrics: new LyricsStore(client),
+    whygem: new WhyGemStore(client),
     toasts,
     wip: new WipStore(connection),
   };
@@ -94,9 +96,9 @@ describe('App against the demo core', () => {
     render(App, { props: { ctx } });
     await settle();
 
-    ctx.wip.gate('queue.reorder');
+    ctx.wip.gate('lyrics.live');
     await settle();
-    expect(ctx.wip.active).toBe('queue.reorder');
+    expect(ctx.wip.active).toBe('lyrics.live');
     expect(screen.getByText('Not wired up yet')).toBeTruthy();
     expect(screen.getByText('Copy agent brief')).toBeTruthy();
   });

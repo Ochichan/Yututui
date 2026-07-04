@@ -3,6 +3,7 @@
   // plus the M0 IPC self-test relocated here as a diagnostics line.
   import type { AppCtx } from '../../lib/ctx';
   import Modal from '../../lib/components/Modal.svelte';
+  import { t } from '../../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -32,24 +33,26 @@
   <div class="about">
     <p class="kaomoji mono" aria-hidden="true">=^..^=</p>
     <h2>ytm-tui</h2>
-    <p class="tag">a fast terminal UI for YouTube Music — now with a desktop shell</p>
+    <p class="tag">{t('about.tagline')}</p>
     <dl class="mono">
-      <dt>desktop</dt>
+      <dt>{t('about.desktop')}</dt>
       <dd>v{boot.version} ({boot.platform})</dd>
-      <dt>core</dt>
+      <dt>{t('about.core')}</dt>
       <dd>{connection.info.coreVersion ?? '—'}</dd>
-      <dt>protocol</dt>
+      <dt>{t('about.protocol')}</dt>
       <dd>v{connection.info.protocolVersion ?? boot.protocolVersion}</dd>
-      <dt>owner</dt>
+      <dt>{t('about.owner')}</dt>
       <dd>{connection.info.ownerMode ?? '—'}</dd>
-      <dt>ipc</dt>
+      <dt>{t('about.ipc')}</dt>
       <dd>
-        <button class="ping" onclick={selfTest}>{ping === 'idle' ? 'run self-test' : ping}</button>
+        <button class="ping" onclick={selfTest}
+          >{ping === 'idle' ? t('about.selfTest') : ping}</button
+        >
       </dd>
     </dl>
     <div class="links">
       <button class="link" onclick={openRepo}>GitHub</button>
-      <span class="lic">MIT License</span>
+      <span class="lic">{t('about.license')}</span>
     </div>
   </div>
 </Modal>

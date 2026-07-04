@@ -5,6 +5,7 @@
   import type { Snippet } from 'svelte';
   import type { TrackModel } from '../../generated/protocol/TrackModel';
   import { fmtTime } from '../format';
+  import { t } from '../i18n.svelte';
   import AlbumArt from './AlbumArt.svelte';
 
   interface Props {
@@ -25,7 +26,7 @@
 
 <div class="row" class:current {ondblclick} role="row" tabindex="-1">
   {#if current}
-    <span class="vu" aria-label="Playing">
+    <span class="vu" aria-label={t('track.playing')}>
       <i></i><i></i><i></i>
     </span>
   {:else if index != null}
@@ -39,9 +40,9 @@
   <div class="text">
     <div class="title">
       {title}
-      {#if track.favorite}<span class="heart" title="In favorites">♥</span>{/if}
-      {#if track.downloaded}<span class="dl" title="Downloaded">⬇</span>{/if}
-      {#if track.duration_ms == null}<span class="live-badge">LIVE</span>{/if}
+      {#if track.favorite}<span class="heart" title={t('track.inFavorites')}>♥</span>{/if}
+      {#if track.downloaded}<span class="dl" title={t('track.downloaded')}>⬇</span>{/if}
+      {#if track.duration_ms == null}<span class="live-badge">{t('track.live')}</span>{/if}
     </div>
     <div class="artist">
       {artist}{#if track.album}&nbsp;·&nbsp;{track.album}{/if}

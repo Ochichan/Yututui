@@ -25,6 +25,7 @@ import { SettingsStore } from './lib/stores/settings.svelte';
 import { AnimStore } from './lib/stores/anim.svelte';
 import { KeymapStore } from './lib/stores/keymap.svelte';
 import { LyricsStore } from './lib/stores/lyrics.svelte';
+import { WhyGemStore } from './lib/stores/whygem.svelte';
 import { ToastStore } from './lib/stores/toasts.svelte';
 import { WipStore } from './lib/wiring/wip.svelte';
 
@@ -65,6 +66,7 @@ const ctx: AppCtx = {
   anim: new AnimStore(client),
   keymap: new KeymapStore(client),
   lyrics: new LyricsStore(client),
+  whygem: new WhyGemStore(client),
   toasts,
   wip: new WipStore(connection),
 };

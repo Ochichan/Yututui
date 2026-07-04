@@ -6,6 +6,7 @@
   import SettingSection from './SettingSection.svelte';
   import SettingRow from './SettingRow.svelte';
   import Toggle from '../../lib/components/Toggle.svelte';
+  import { t } from '../../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -18,26 +19,26 @@
   const ui = $derived(settings.ui);
   let reveal = $state(false);
 
-  const MODES: Array<[string, string]> = [
-    ['focused', 'Focused'],
-    ['balanced', 'Balanced'],
-    ['discovery', 'Discovery'],
-  ];
+  const MODES: Array<[string, string]> = $derived([
+    ['focused', t('settings.djgem.modeFocused')],
+    ['balanced', t('settings.djgem.modeBalanced')],
+    ['discovery', t('settings.djgem.modeDiscovery')],
+  ]);
 
   async function clearCache(): Promise<void> {
     const n = await settings.clearRomanizationCache();
-    toasts.show('success', `Cleared ${n} romanization${n === 1 ? '' : 's'}.`);
+    toasts.show('success', t('settings.djgem.cacheCleared', { n }));
   }
 </script>
 
 <SettingSection title="DJ Gem">
-  <SettingRow label="Enable DJ Gem" hint="AI DJ: autoplay picks, chat, why-this-track explanations">
+  <SettingRow label={t('settings.djgem.enable')} hint={t('settings.djgem.enableHint')}>
     <Toggle
       checked={st?.ai_enabled ?? false}
       onchange={(v) => settings.apply('streaming', 'ai_enabled', v)}
     />
   </SettingRow>
-  <SettingRow label="Gemini model">
+  <SettingRow label={t('settings.djgem.geminiModel')}>
     <select
       class="sel"
       onchange={(e) => settings.apply('streaming', 'gemini_model', e.currentTarget.value)}
@@ -49,32 +50,32 @@
       {/each}
     </select>
   </SettingRow>
-  <SettingRow label="API key" hint="Write-only: the core stores it; only presence is reported back">
+  <SettingRow label={t('settings.djgem.apiKey')} hint={t('settings.djgem.apiKeyHint')}>
     <input
       class="ti key"
       type={reveal ? 'text' : 'password'}
-      placeholder={st?.has_gemini_key ? '•••••••• (saved)' : 'AIza…'}
+      placeholder={st?.has_gemini_key ? t('settings.djgem.keySaved') : 'AIza…'}
       onchange={(e) => {
         const key = e.currentTarget.value;
         if (key) settings.setGeminiKey(key);
         e.currentTarget.value = '';
       }}
     />
-    <button class="mini" onclick={() => (reveal = !reveal)} title="Reveal"
+    <button class="mini" onclick={() => (reveal = !reveal)} title={t('settings.djgem.reveal')}
       >{reveal ? '🙈' : '👁'}</button
     >
   </SettingRow>
 </SettingSection>
 
-<SettingSection title="Autoplay streaming">
-  <SettingRow label="Autoplay" hint="DJ Gem keeps the queue fed when it runs dry">
+<SettingSection title={t('settings.djgem.autoplayStreaming')}>
+  <SettingRow label={t('settings.djgem.autoplay')} hint={t('settings.djgem.autoplayHint')}>
     <Toggle
       checked={st?.autoplay ?? false}
       onchange={(v) => settings.apply('streaming', 'autoplay', v)}
     />
   </SettingRow>
-  <SettingRow label="Mode">
-    <div class="seg" role="radiogroup" aria-label="Streaming mode">
+  <SettingRow label={t('settings.djgem.mode')}>
+    <div class="seg" role="radiogroup" aria-label={t('settings.djgem.streamingModeAria')}>
       {#each MODES as [value, label] (value)}
         <button
           class="seg-btn"
@@ -90,18 +91,21 @@
   </SettingRow>
 </SettingSection>
 
-<SettingSection title="Titles">
+<SettingSection title={t('settings.djgem.titles')}>
   <SettingRow
-    label="Romanized titles"
-    hint="Core-resolved display override — the GUI never romanizes itself"
+    label={t('settings.djgem.romanizedTitles')}
+    hint={t('settings.djgem.romanizedTitlesHint')}
   >
     <Toggle
       checked={ui?.romanized_titles ?? false}
       onchange={(v) => settings.apply('ui', 'romanized_titles', v)}
     />
   </SettingRow>
-  <SettingRow label="Romanization cache" hint="Clears cached romanizations; reports the count">
-    <button class="mini wide" onclick={clearCache}>Clear cache</button>
+  <SettingRow
+    label={t('settings.djgem.romanizationCache')}
+    hint={t('settings.djgem.romanizationCacheHint')}
+  >
+    <button class="mini wide" onclick={clearCache}>{t('settings.djgem.clearCache')}</button>
   </SettingRow>
 </SettingSection>
 

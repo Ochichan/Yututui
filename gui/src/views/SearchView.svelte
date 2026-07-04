@@ -5,6 +5,7 @@
   import type { AppCtx } from '../lib/ctx';
   import type { SearchSource } from '../generated/protocol/SearchSource';
   import TrackRow from '../lib/components/TrackRow.svelte';
+  import { t } from '../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -13,18 +14,18 @@
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
   const { search, downloads } = ctx;
 
-  const SOURCES: Array<{ id: SearchSource; label: string }> = [
-    { id: 'all', label: 'All' },
+  const SOURCES: Array<{ id: SearchSource; label: string }> = $derived([
+    { id: 'all', label: t('common.all') },
     { id: 'youtube', label: 'YTM' },
     { id: 'sound_cloud', label: 'SoundCloud' },
     { id: 'audius', label: 'Audius' },
     { id: 'jamendo', label: 'Jamendo' },
     { id: 'internet_archive', label: 'Internet Archive' },
     { id: 'radio_browser', label: 'Radio Browser' },
-  ];
-  const LABELS: Record<SearchSource, string> = Object.fromEntries(
-    SOURCES.map((s) => [s.id, s.label]),
-  ) as Record<SearchSource, string>;
+  ]);
+  const LABELS: Record<SearchSource, string> = $derived(
+    Object.fromEntries(SOURCES.map((s) => [s.id, s.label])) as Record<SearchSource, string>,
+  );
 
   let query = $state('');
   let source = $state<SearchSource>('youtube');
@@ -47,14 +48,14 @@
       <input
         class="ti"
         type="search"
-        placeholder="Search songs, artists, stations…"
+        placeholder={t('search.placeholder')}
         bind:value={query}
-        aria-label="Search query"
+        aria-label={t('search.queryLabel')}
         data-kctx="SearchInput"
       />
-      <button class="go" type="submit">Search</button>
+      <button class="go" type="submit">{t('search.submit')}</button>
     </form>
-    <div class="chips" role="tablist" aria-label="Search source">
+    <div class="chips" role="tablist" aria-label={t('search.sourceLabel')}>
       {#each SOURCES as s (s.id)}
         <button
           class="chip"
@@ -69,14 +70,11 @@
 
   <div class="results">
     {#if search.pending}
-      <p class="hint">Searching “{search.query}”…</p>
+      <p class="hint">{t('search.searching', { query: search.query })}</p>
     {:else if !search.ran}
-      <p class="hint">
-        Results from YTM, SoundCloud, Audius, Jamendo, Internet Archive, and Radio Browser list here
-        — double-click a row to play, the + button enqueues.
-      </p>
+      <p class="hint">{t('search.emptyHint')}</p>
     {:else if search.empty}
-      <p class="hint">No results for “{search.query}”.</p>
+      <p class="hint">{t('search.noResults', { query: search.query })}</p>
     {:else}
       <div class="groups" role="list">
         {#each search.groups as g (g.source)}
@@ -88,14 +86,18 @@
                   {#if g.error}<span class="err" title={g.error}>⚠ {g.error}</span>{/if}
                 </h3>
               {/if}
-              {#each g.tracks as t (t.video_id)}
-                <TrackRow track={t} ondblclick={() => search.play(t)}>
+              {#each g.tracks as track (track.video_id)}
+                <TrackRow {track} ondblclick={() => search.play(track)}>
                   {#snippet actions()}
-                    <button class="enq" title="Download" onclick={() => downloads.download(t)}
-                      >⬇</button
+                    <button
+                      class="enq"
+                      title={t('search.download')}
+                      onclick={() => downloads.download(track)}>⬇</button
                     >
-                    <button class="enq" title="Add to queue" onclick={() => search.enqueue(t)}
-                      >＋</button
+                    <button
+                      class="enq"
+                      title={t('search.addToQueue')}
+                      onclick={() => search.enqueue(track)}>＋</button
                     >
                   {/snippet}
                 </TrackRow>

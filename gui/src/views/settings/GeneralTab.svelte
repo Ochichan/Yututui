@@ -3,6 +3,7 @@
   // sends `apply` and shows optimistically until the confirming push (docs/gui/05 §5.2).
   import type { AppCtx } from '../../lib/ctx';
   import type { SearchSource } from '../../generated/protocol/SearchSource';
+  import { t, LANGUAGES } from '../../lib/i18n.svelte';
   import SettingSection from './SettingSection.svelte';
   import SettingRow from './SettingRow.svelte';
   import Toggle from '../../lib/components/Toggle.svelte';
@@ -19,56 +20,59 @@
   const storage = $derived(settings.storage);
   const pb = $derived(settings.playback);
 
-  // TODO(wire:M5/i18n.catalog): once the en/ko catalog lands, every literal string in
-  // these tabs sweeps through t() and this language select drives the live switch.
-  const LANGS: Array<[string, string]> = [
-    ['en', 'English'],
-    ['ko', '한국어'],
-  ];
-  const SOURCES: Array<[SearchSource, string]> = [
+  // Source names are proper nouns (kept verbatim); only "All" is a translatable label, so
+  // the list is derived to live-switch with the language.
+  const SOURCES = $derived<Array<[SearchSource, string]>>([
     ['youtube', 'YouTube Music'],
     ['sound_cloud', 'SoundCloud'],
     ['audius', 'Audius'],
     ['jamendo', 'Jamendo'],
     ['internet_archive', 'Internet Archive'],
     ['radio_browser', 'Radio Browser'],
-    ['all', 'All'],
-  ];
+    ['all', t('common.all')],
+  ]);
 
   let confirmingReset = $state(false);
   function resetAll(): void {
     settings.resetAll();
     confirmingReset = false;
-    toasts.show('success', 'Settings reset to defaults.');
+    toasts.show('success', t('settings.general.resetDone'));
   }
 </script>
 
-<SettingSection title="Interface">
-  <SettingRow label="Language" hint="Live-switches every label, no reload">
+<SettingSection title={t('settings.general.interface')}>
+  <SettingRow label={t('settings.general.language')} hint={t('settings.general.languageHint')}>
     <select class="sel" onchange={(e) => settings.apply('ui', 'language', e.currentTarget.value)}>
-      {#each LANGS as [code, label] (code)}
+      {#each LANGUAGES as { code, label } (code)}
         <option value={code} selected={(ui?.language ?? 'en') === code}>{label}</option>
       {/each}
     </select>
   </SettingRow>
-  <SettingRow label="Album art" hint="Show artwork in the player and lists">
+  <SettingRow label={t('settings.general.albumArt')} hint={t('settings.general.albumArtHint')}>
     <Toggle
       checked={ui?.album_art ?? true}
       onchange={(v) => settings.apply('ui', 'album_art', v)}
     />
   </SettingRow>
-  <SettingRow label="Mouse support" tag="(TUI)" hint="Terminal mouse capture — GUI unaffected">
+  <SettingRow
+    label={t('settings.general.mouse')}
+    tag="(TUI)"
+    hint={t('settings.general.mouseHint')}
+  >
     <Toggle checked={ui?.mouse ?? true} onchange={(v) => settings.apply('ui', 'mouse', v)} />
   </SettingRow>
-  <SettingRow label="Autoplay on start" hint="Resume the last session when the player starts">
+  <SettingRow
+    label={t('settings.general.autoplayStart')}
+    hint={t('settings.general.autoplayStartHint')}
+  >
     <Toggle
       checked={pb?.autoplay_on_start ?? false}
       onchange={(v) => settings.apply('playback', 'autoplay_on_start', v)}
     />
   </SettingRow>
   <SettingRow
-    label="Enqueue next"
-    hint="New plays insert after the current track instead of replacing"
+    label={t('settings.general.enqueueNext')}
+    hint={t('settings.general.enqueueNextHint')}
   >
     <Toggle
       checked={pb?.enqueue_next ?? false}
@@ -77,8 +81,8 @@
   </SettingRow>
 </SettingSection>
 
-<SettingSection title="Search sources">
-  <SettingRow label="Default source">
+<SettingSection title={t('settings.general.searchSources')}>
+  <SettingRow label={t('settings.general.defaultSource')}>
     <select
       class="sel"
       onchange={(e) =>
@@ -95,10 +99,10 @@
       onchange={(v) => settings.apply('search', 'soundcloud_enabled', v)}
     />
   </SettingRow>
-  <SettingRow label="Audius" hint="App name identifies you to the Audius API">
+  <SettingRow label="Audius" hint={t('settings.general.audiusHint')}>
     <input
       class="ti"
-      placeholder="app name"
+      placeholder={t('settings.general.appNamePlaceholder')}
       size="14"
       value={search?.audius_app_name ?? ''}
       onchange={(e) => settings.apply('search', 'audius_app_name', e.currentTarget.value || null)}
@@ -108,10 +112,10 @@
       onchange={(v) => settings.apply('search', 'audius_enabled', v)}
     />
   </SettingRow>
-  <SettingRow label="Jamendo" hint="Requires a free client id">
+  <SettingRow label="Jamendo" hint={t('settings.general.jamendoHint')}>
     <input
       class="ti"
-      placeholder="client id"
+      placeholder={t('settings.general.clientIdPlaceholder')}
       size="14"
       value={search?.jamendo_client_id ?? ''}
       onchange={(e) => settings.apply('search', 'jamendo_client_id', e.currentTarget.value || null)}
@@ -135,11 +139,8 @@
   </SettingRow>
 </SettingSection>
 
-<SettingSection title="Storage">
-  <SettingRow
-    label="Cookies file"
-    hint="Netscape-format cookies for YTM personal results (v1: plain paths, like the TUI)"
-  >
+<SettingSection title={t('settings.general.storage')}>
+  <SettingRow label={t('settings.general.cookiesFile')} hint={t('settings.general.cookiesHint')}>
     <input
       class="ti path"
       placeholder="~/cookies.txt"
@@ -147,7 +148,7 @@
       onchange={(e) => settings.apply('storage', 'cookies_file', e.currentTarget.value || null)}
     />
   </SettingRow>
-  <SettingRow label="Download directory">
+  <SettingRow label={t('settings.general.downloadDir')}>
     <input
       class="ti path"
       placeholder="~/Music/ytm-tui"
@@ -157,16 +158,18 @@
   </SettingRow>
 </SettingSection>
 
-<SettingSection title="Danger zone">
-  <SettingRow label="Reset keybindings" hint="Restore every chord to its default">
-    <button class="danger" onclick={() => keymap.resetAll()}>Reset</button>
+<SettingSection title={t('settings.general.dangerZone')}>
+  <SettingRow label={t('settings.general.resetKeys')} hint={t('settings.general.resetKeysHint')}>
+    <button class="danger" onclick={() => keymap.resetAll()}>{t('common.reset')}</button>
   </SettingRow>
-  <SettingRow label="Reset all settings" hint="Everything back to factory — asks for confirmation">
+  <SettingRow label={t('settings.general.resetAll')} hint={t('settings.general.resetAllHint')}>
     {#if confirmingReset}
-      <button class="mini" onclick={() => (confirmingReset = false)}>Cancel</button>
-      <button class="danger" onclick={resetAll}>Confirm — reset everything</button>
+      <button class="mini" onclick={() => (confirmingReset = false)}>{t('common.cancel')}</button>
+      <button class="danger" onclick={resetAll}>{t('settings.general.resetAllConfirm')}</button>
     {:else}
-      <button class="danger" onclick={() => (confirmingReset = true)}>Reset all…</button>
+      <button class="danger" onclick={() => (confirmingReset = true)}
+        >{t('settings.general.resetAllCta')}</button
+      >
     {/if}
   </SettingRow>
 </SettingSection>

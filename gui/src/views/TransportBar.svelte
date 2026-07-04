@@ -7,6 +7,7 @@
   import AlbumArt from '../lib/components/AlbumArt.svelte';
   import SeekBar from '../lib/components/SeekBar.svelte';
   import VolumeBar from '../lib/components/VolumeBar.svelte';
+  import { t } from '../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -24,7 +25,7 @@
   <button
     class="meta"
     onclick={() => ui.setView('now')}
-    title="Open Now Playing"
+    title={t('transport.openNowPlaying')}
     disabled={track == null}
   >
     <AlbumArt {track} size="44px" />
@@ -33,18 +34,27 @@
         <span class="t">{track.display_title ?? track.title}</span>
         <span class="a">{track.display_artist ?? track.artist}</span>
       {:else}
-        <span class="t idle">Nothing playing</span>
-        <span class="a">search or pick from the library</span>
+        <span class="t idle">{t('transport.nothingPlaying')}</span>
+        <span class="a">{t('transport.idleHint')}</span>
       {/if}
     </span>
   </button>
 
   <div class="controls">
-    <button class="ctl" onclick={() => playback.prev()} {disabled} title="Previous">⏮</button>
-    <button class="ctl play" onclick={() => playback.togglePause()} {disabled} title="Play / pause">
+    <button class="ctl" onclick={() => playback.prev()} {disabled} title={t('transport.previous')}
+      >⏮</button
+    >
+    <button
+      class="ctl play"
+      onclick={() => playback.togglePause()}
+      {disabled}
+      title={t('transport.playPause')}
+    >
       {playback.paused ? '▶' : '⏸'}
     </button>
-    <button class="ctl" onclick={() => playback.next()} {disabled} title="Next">⏭</button>
+    <button class="ctl" onclick={() => playback.next()} {disabled} title={t('transport.next')}
+      >⏭</button
+    >
   </div>
 
   <div class="seek">
@@ -62,7 +72,7 @@
       <button
         class="chip mono"
         onclick={() => ui.toggleQueue()}
-        title="Queue position — toggle the queue panel"
+        title={t('transport.queuePosition')}
       >
         {model.queue_len === 0 ? '–/–' : `${model.queue_pos + 1}/${model.queue_len}`}
       </button>
@@ -71,17 +81,20 @@
         class:on={model.shuffle}
         onclick={() => playback.toggleShuffle()}
         {disabled}
-        title="Shuffle">⇄</button
+        title={t('transport.shuffle')}>⇄</button
       >
       <button
         class="chip"
         class:on={model.repeat !== 'off'}
         onclick={() => playback.cycleRepeat()}
         {disabled}
-        title="Repeat: {model.repeat}">{model.repeat === 'one' ? '🔂' : '🔁'}</button
+        title={t('transport.repeatMode', { mode: t(`repeat.${model.repeat}`) })}
+        >{model.repeat === 'one' ? '🔂' : '🔁'}</button
       >
       {#if fmtSpeed(model.speed_tenths)}
-        <span class="chip mono passive" title="Playback speed">{fmtSpeed(model.speed_tenths)}</span>
+        <span class="chip mono passive" title={t('transport.playbackSpeed')}
+          >{fmtSpeed(model.speed_tenths)}</span
+        >
       {/if}
       {#if model.eq.preset !== 'flat'}
         <button
@@ -90,11 +103,11 @@
             ui.setView('settings');
             ui.settingsTab = 'playback';
           }}
-          title="EQ preset — open Settings → Playback">EQ:{model.eq.preset}</button
+          title={t('transport.eqPreset')}>EQ:{model.eq.preset}</button
         >
       {/if}
       {#if model.streaming}
-        <span class="chip on passive" title="DJ Gem autoplay on">✦</span>
+        <span class="chip on passive" title={t('transport.autoplayOn')}>✦</span>
       {/if}
     {/if}
     {#if downloads.active > 0}
@@ -104,7 +117,7 @@
           ui.setView('library');
           ui.libraryTab = 'downloads';
         }}
-        title="Downloads in progress — open the Downloads tab">⬇ {downloads.active}</button
+        title={t('transport.downloadsInProgress')}>⬇ {downloads.active}</button
       >
     {/if}
   </div>
@@ -115,7 +128,7 @@
     class="queue-btn"
     class:on={ui.queueOpen}
     onclick={() => ui.toggleQueue()}
-    title="Toggle queue panel">☰ {queue.items.length}</button
+    title={t('transport.toggleQueue')}>☰ {queue.items.length}</button
   >
 </footer>
 

@@ -8,6 +8,7 @@
   import SettingSection from './SettingSection.svelte';
   import SettingRow from './SettingRow.svelte';
   import Kbd from '../../lib/components/Kbd.svelte';
+  import { t } from '../../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -24,7 +25,7 @@
 </script>
 
 {#if groups.length === 0}
-  <p class="empty">Loading the keymap…</p>
+  <p class="empty">{t('settings.hotkeys.loading')}</p>
 {/if}
 
 {#each groups as g (g.context)}
@@ -36,18 +37,25 @@
         {#if chord}
           <Kbd {chord} />
         {:else}
-          <span class="unbound">unbound</span>
+          <span class="unbound">{t('settings.hotkeys.unbound')}</span>
         {/if}
         {#if conflicted}
-          <span class="conflict" title="Also bound to {labelFor(keymap.conflict!.shadows)}">
+          <span
+            class="conflict"
+            title={t('settings.hotkeys.alsoBoundTo', {
+              name: labelFor(keymap.conflict!.shadows),
+            })}
+          >
             ⚠ {labelFor(keymap.conflict!.shadows)}
           </span>
         {/if}
-        <button class="mini" onclick={() => keymap.startCapture(a.context, a.id)}>Rebind</button>
+        <button class="mini" onclick={() => keymap.startCapture(a.context, a.id)}
+          >{t('settings.hotkeys.rebind')}</button
+        >
         {#if chord !== a.default_chord}
           <button
             class="mini ghost"
-            title="Reset to {a.default_chord}"
+            title={t('settings.hotkeys.resetToChord', { chord: a.default_chord })}
             onclick={() => keymap.resetBinding(a)}>↺</button
           >
         {/if}
@@ -57,9 +65,11 @@
 {/each}
 
 {#if groups.length}
-  <SettingSection title="Danger zone">
-    <SettingRow label="Reset all keybindings" hint="Restore every chord to its default">
-      <button class="mini danger" onclick={() => keymap.resetAll()}>Reset all…</button>
+  <SettingSection title={t('settings.hotkeys.dangerZone')}>
+    <SettingRow label={t('settings.hotkeys.resetAll')} hint={t('settings.hotkeys.resetAllHint')}>
+      <button class="mini danger" onclick={() => keymap.resetAll()}
+        >{t('settings.hotkeys.resetAllButton')}</button
+      >
     </SettingRow>
   </SettingSection>
 {/if}

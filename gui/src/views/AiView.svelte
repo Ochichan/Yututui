@@ -3,6 +3,7 @@
   // out ticketed, the `ai` topic pushes the transcript + thinking flag + playable
   // suggestions back. Suggestions play through play_tracks with one click.
   import type { AppCtx } from '../lib/ctx';
+  import { t } from '../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -19,22 +20,19 @@
     prompt = '';
   }
 
-  const STARTERS = [
-    'something upbeat for cleaning',
-    '비 오는 날 코딩할 때 듣기 좋은 곡',
-    'more like the last track',
-  ];
+  const STARTERS = $derived([
+    t('ai.starter.cleaning'),
+    t('ai.starter.coding'),
+    t('ai.starter.moreLikeLast'),
+  ]);
 </script>
 
 <div class="ai">
-  <div class="transcript" aria-label="DJ Gem conversation">
+  <div class="transcript" aria-label={t('ai.conversationLabel')}>
     {#if !ai.started}
       <div class="bubble assistant">
         <span class="who">✦ DJ Gem</span>
-        <p>
-          Hey — I'm DJ Gem. Tell me a mood, an activity, or a track and I'll pull something up. Tap
-          a suggestion to play it straight away.
-        </p>
+        <p>{t('ai.intro')}</p>
       </div>
       <div class="suggestions">
         {#each STARTERS as s (s)}
@@ -49,16 +47,16 @@
         </div>
       {/each}
       {#if ai.thinking}
-        <div class="bubble assistant thinking" aria-label="DJ Gem is thinking">
+        <div class="bubble assistant thinking" aria-label={t('ai.thinkingLabel')}>
           <span class="who">✦ DJ Gem</span>
           <span class="dots"><i></i><i></i><i></i></span>
         </div>
       {/if}
       {#if ai.suggestions.length > 0}
-        <div class="suggestions" aria-label="Suggested tracks">
-          {#each ai.suggestions as t (t.video_id)}
-            <button class="sugg play" title="Play" onclick={() => ai.play(t)}
-              >▶ {t.display_title ?? t.title}</button
+        <div class="suggestions" aria-label={t('ai.suggestedTracks')}>
+          {#each ai.suggestions as sug (sug.video_id)}
+            <button class="sugg play" title={t('ai.play')} onclick={() => ai.play(sug)}
+              >▶ {sug.display_title ?? sug.title}</button
             >
           {/each}
         </div>
@@ -75,12 +73,12 @@
   >
     <input
       class="ti"
-      placeholder="Ask DJ Gem for music…"
+      placeholder={t('ai.placeholder')}
       bind:value={prompt}
-      aria-label="Message DJ Gem"
+      aria-label={t('ai.messageLabel')}
       data-kctx="AiInput"
     />
-    <button class="send" type="submit" title="Send">➤</button>
+    <button class="send" type="submit" title={t('ai.send')}>➤</button>
   </form>
 </div>
 

@@ -16,8 +16,7 @@
 //
 // Full handoff narrative: gui/WIRING.md.
 
-export type FeatureId =
-  'queue.reorder' | 'ai.whygem' | 'lyrics.live' | 'artwork.live' | 'i18n.catalog';
+export type FeatureId = 'lyrics.live' | 'artwork.live';
 
 export interface WiringSpec {
   /** Human title shown in the not-wired-yet modal. */
@@ -37,24 +36,6 @@ export interface WiringSpec {
 }
 
 export const WIRING: Record<FeatureId, WiringSpec> = {
-  'queue.reorder': {
-    title: 'Queue drag-reorder',
-    milestone: 'M2',
-    brief: 'docs/gui/07-feature-briefs.md §2 + docs/gui/05-frontend.md §7',
-    protocol: 'cmd queue_move { from, to, expected_rev } (rev-guarded; stale_rev ⇒ snap back)',
-    seam: 'pointer-events drag inside gui/src/lib/components/VirtualList.svelte + optimistic reorder in gui/src/lib/stores/queue.svelte.ts',
-    notes:
-      'Pointer events, NOT HTML5 DnD (unreliable in WKWebView). Auto-scroll during drag needs care.',
-  },
-  'ai.whygem': {
-    title: 'Why-DJ-Gem popover',
-    milestone: 'M4',
-    brief: 'docs/gui/07-feature-briefs.md §13',
-    protocol:
-      'explanation per queue-item id (inlined in `queue` items or req fetch_why_gem { video_id })',
-    seam: 'WhyGemPopover.svelte + the "why?" affordance on autoplay-added queue rows',
-    capability: 'ai',
-  },
   'lyrics.live': {
     title: 'Synced lyrics topic',
     milestone: 'B1',
@@ -70,16 +51,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
     protocol:
       '`artwork` topic + ytm://app/art/<key> custom-scheme serving (already implemented shell-side in src/desktop/assets.rs)',
     seam: 'gui/src/lib/components/AlbumArt.svelte already resolves ArtworkRef → URL; verify against a real core push, then delete the generated-placeholder fallback note',
-  },
-  'i18n.catalog': {
-    title: 'i18n (en/ko catalog)',
-    milestone: 'M5',
-    brief: 'docs/gui/05-frontend.md §9',
-    protocol:
-      'frontend-owned keyed catalog; `settings` model carries language; live switch, no reload',
-    seam: 'create gui/src/i18n/{en,ko}.json + i18n.svelte.ts; sweep every literal string in gui/src/views/** through t()',
-    notes:
-      'Seed with scripts/harvest-i18n.sh. Romanized titles stay core-side (display_* fields) — never romanize in the GUI.',
   },
 };
 

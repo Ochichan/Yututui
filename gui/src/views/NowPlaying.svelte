@@ -5,6 +5,7 @@
   // (WKWebView performance — docs/gui/06 §4).
   import type { AppCtx } from '../lib/ctx';
   import { hueOf } from '../lib/format';
+  import { t } from '../lib/i18n.svelte';
   import AlbumArt from '../lib/components/AlbumArt.svelte';
   import SeekBar from '../lib/components/SeekBar.svelte';
 
@@ -42,7 +43,7 @@
     // Fire-and-forget per protocol; the mpv window spawns core-side once the desktop
     // bridge forwards commands (gui/WIRING.md "already-wired tier").
     client.cmd('play_video', { video_id: track.video_id });
-    toasts.show('info', 'Video window requested.');
+    toasts.show('info', t('np.videoRequested'));
   }
 </script>
 
@@ -92,21 +93,23 @@
             class:down={rating === 'down'}
             onclick={() => playback.cycleRating()}
             disabled={disabled || !track}
-            title="Cycle rating (👍 / – / 👎)"
+            title={t('np.cycleRating')}
             >{rating === 'up' ? '👍' : rating === 'down' ? '👎' : '–'}</button
           >
-          <button class="tp" onclick={() => playback.prev()} {disabled} title="Previous">⏮</button>
+          <button class="tp" onclick={() => playback.prev()} {disabled} title={t('np.previous')}
+            >⏮</button
+          >
           <button
             class="tp"
             onclick={() => playback.seekTo(Math.max(0, (playback.positionMs ?? 0) - 5000))}
             disabled={disabled || playback.live}
-            title="Seek back 5s">⏪</button
+            title={t('np.seekBack')}>⏪</button
           >
           <button
             class="tp play"
             onclick={() => playback.togglePause()}
             {disabled}
-            title="Play / pause"
+            title={t('np.playPause')}
           >
             {playback.paused ? '▶' : '⏸'}
           </button>
@@ -114,14 +117,16 @@
             class="tp"
             onclick={() => playback.seekTo((playback.positionMs ?? 0) + 5000)}
             disabled={disabled || playback.live}
-            title="Seek forward 5s">⏩</button
+            title={t('np.seekForward')}>⏩</button
           >
-          <button class="tp" onclick={() => playback.next()} {disabled} title="Next">⏭</button>
+          <button class="tp" onclick={() => playback.next()} {disabled} title={t('np.next')}
+            >⏭</button
+          >
           <button
             class="tp"
             onclick={video}
             disabled={disabled || track.watch_url == null}
-            title="Open video window (mpv)">🎬</button
+            title={t('np.openVideo')}>🎬</button
           >
         </div>
 
@@ -133,7 +138,7 @@
               onclick={() => playback.toggleShuffle()}
               {disabled}
             >
-              ⇄ shuffle
+              ⇄ {t('np.shuffle')}
             </button>
             <button
               class="chip"
@@ -141,7 +146,7 @@
               onclick={() => playback.cycleRepeat()}
               {disabled}
             >
-              🔁 {model.repeat}
+              🔁 {t(`repeat.${model.repeat}`)}
             </button>
             <button
               class="chip"
@@ -149,7 +154,8 @@
               onclick={() => client.cmd('streaming', { state: model.streaming ? 'off' : 'on' })}
               {disabled}
             >
-              ✦ DJ Gem {model.streaming ? 'on' : 'off'}
+              ✦ {t('np.djGem')}
+              {t(model.streaming ? 'common.on' : 'common.off')}
             </button>
             <button
               class="chip mono"
@@ -157,14 +163,14 @@
                 ui.setView('settings');
                 ui.settingsTab = 'playback';
               }}
-              title="Open Settings → Playback">EQ: {model.eq.preset}</button
+              title={t('np.openEq')}>EQ: {model.eq.preset}</button
             >
           </div>
         {/if}
       </section>
 
       {#if lyrics.lines.length > 0}
-        <aside class="lyrics" bind:this={lyricsPane} aria-label="Lyrics">
+        <aside class="lyrics" bind:this={lyricsPane} aria-label={t('np.lyrics')}>
           {#each lyrics.lines as line, i (i)}
             <button
               class="line"
@@ -181,11 +187,11 @@
   {:else}
     <div class="empty">
       <p class="kaomoji mono">=^..^=</p>
-      <h1>Nothing playing</h1>
-      <p class="sub">Find something to purr about.</p>
+      <h1>{t('np.nothingPlaying')}</h1>
+      <p class="sub">{t('np.nothingSub')}</p>
       <div class="empty-actions">
-        <button class="primary" onclick={() => ui.setView('search')}>Search</button>
-        <button class="ghost" onclick={() => ui.setView('library')}>Open Library</button>
+        <button class="primary" onclick={() => ui.setView('search')}>{t('nav.search')}</button>
+        <button class="ghost" onclick={() => ui.setView('library')}>{t('np.openLibrary')}</button>
       </div>
     </div>
   {/if}

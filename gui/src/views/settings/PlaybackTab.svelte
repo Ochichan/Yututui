@@ -7,6 +7,7 @@
   import SettingSection from './SettingSection.svelte';
   import SettingRow from './SettingRow.svelte';
   import Toggle from '../../lib/components/Toggle.svelte';
+  import { t } from '../../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -30,8 +31,8 @@
   }
 </script>
 
-<SettingSection title="Now playing">
-  <SettingRow label="Playback speed" hint="0.5× – 2.0×, step 0.1">
+<SettingSection title={t('settings.playback.nowPlaying')}>
+  <SettingRow label={t('settings.playback.speed')} hint={t('settings.playback.speedHint')}>
     <input
       class="range"
       type="range"
@@ -44,29 +45,40 @@
     />
     <span class="val mono">{speed.toFixed(1)}×</span>
   </SettingRow>
-  <SettingRow label="Seek interval" hint="Arrow-key / button seek step">
+  <SettingRow
+    label={t('settings.playback.seekInterval')}
+    hint={t('settings.playback.seekIntervalHint')}
+  >
     <select
       class="sel"
       onchange={(e) => settings.apply('playback', 'seek_seconds', Number(e.currentTarget.value))}
     >
       {#each SEEKS as s (s)}
-        <option value={s} selected={(pb?.seek_seconds ?? 5) === s}>{s} s</option>
+        <option value={s} selected={(pb?.seek_seconds ?? 5) === s}
+          >{t('settings.playback.secondsValue', { n: s })}</option
+        >
       {/each}
     </select>
   </SettingRow>
-  <SettingRow label="Wheel volume" hint="Mouse wheel over the player adjusts volume">
+  <SettingRow
+    label={t('settings.playback.wheelVolume')}
+    hint={t('settings.playback.wheelVolumeHint')}
+  >
     <Toggle
       checked={pb?.mouse_wheel_volume ?? true}
       onchange={(v) => settings.apply('playback', 'mouse_wheel_volume', v)}
     />
   </SettingRow>
-  <SettingRow label="Gapless playback">
+  <SettingRow label={t('settings.playback.gapless')}>
     <Toggle
       checked={pb?.gapless ?? true}
       onchange={(v) => settings.apply('playback', 'gapless', v)}
     />
   </SettingRow>
-  <SettingRow label="OS media controls" hint="Media keys + system now-playing integration">
+  <SettingRow
+    label={t('settings.playback.mediaControls')}
+    hint={t('settings.playback.mediaControlsHint')}
+  >
     <Toggle
       checked={pb?.media_controls ?? true}
       onchange={(v) => settings.apply('playback', 'media_controls', v)}
@@ -74,27 +86,30 @@
   </SettingRow>
 </SettingSection>
 
-<SettingSection title="Equalizer">
-  <SettingRow label="Preset" hint="Applies live through mpv's audio filter chain">
+<SettingSection title={t('settings.playback.equalizer')}>
+  <SettingRow label={t('settings.playback.preset')} hint={t('settings.playback.presetHint')}>
     <select class="sel" onchange={(e) => settings.apply('eq', 'preset', e.currentTarget.value)}>
       {#each ['flat', 'bass', 'vocal', 'rock', 'custom'] as preset (preset)}
         <option value={preset} selected={(eq?.preset ?? 'flat') === preset}>{preset}</option>
       {/each}
     </select>
   </SettingRow>
-  <SettingRow label="Normalize loudness">
+  <SettingRow label={t('settings.playback.normalize')}>
     <Toggle
       checked={eq?.normalize ?? false}
       onchange={(v) => settings.apply('eq', 'normalize', v)}
     />
   </SettingRow>
-  <div class="bank" role="group" aria-label="EQ bands">
+  <div class="bank" role="group" aria-label={t('settings.playback.eqBandsAria')}>
     {#each BAND_LABELS as label, i (label)}
       {@const gain = eq?.bands[i] ?? 0}
       <button
         class="band"
         onclick={() => zeroBand(i)}
-        title="{label} Hz · {gain > 0 ? '+' : ''}{gain} dB — click to zero"
+        title={t('settings.playback.bandTitle', {
+          freq: label,
+          gain: `${gain > 0 ? '+' : ''}${gain}`,
+        })}
       >
         <span class="col">
           <span class="fill" style:height="{((gain + 12) / 24) * 100}%"></span>
@@ -102,7 +117,7 @@
         <span class="freq mono">{label}</span>
       </button>
     {/each}
-    <p class="bank-hint">±12 dB per ISO band — click a band to zero it</p>
+    <p class="bank-hint">{t('settings.playback.bankHint')}</p>
   </div>
 </SettingSection>
 

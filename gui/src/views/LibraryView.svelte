@@ -8,6 +8,7 @@
   import type { LibraryScope } from '../lib/stores/library.svelte';
   import TrackRow from '../lib/components/TrackRow.svelte';
   import PlaylistsPane from './library/PlaylistsPane.svelte';
+  import { t } from '../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -16,17 +17,17 @@
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
   const { ui, playback, library, downloads, playlists } = ctx;
 
-  const MUSIC_TABS: Array<{ id: LibraryTab; label: string }> = [
-    { id: 'all', label: 'All' },
-    { id: 'favorites', label: 'Favorites' },
-    { id: 'history', label: 'History' },
-    { id: 'downloads', label: 'Downloads' },
-    { id: 'playlists', label: 'Playlists' },
-  ];
-  const RADIO_TABS: Array<{ id: LibraryTab; label: string }> = [
-    { id: 'radio_likes', label: 'Radio Likes' },
-    { id: 'radio_history', label: 'Radio History' },
-  ];
+  const MUSIC_TABS: Array<{ id: LibraryTab; label: string }> = $derived([
+    { id: 'all', label: t('common.all') },
+    { id: 'favorites', label: t('library.favorites') },
+    { id: 'history', label: t('library.history') },
+    { id: 'downloads', label: t('library.downloads') },
+    { id: 'playlists', label: t('library.playlists') },
+  ]);
+  const RADIO_TABS: Array<{ id: LibraryTab; label: string }> = $derived([
+    { id: 'radio_likes', label: t('library.radioLikes') },
+    { id: 'radio_history', label: t('library.radioHistory') },
+  ]);
   const tabs = $derived(playback.model?.radio_mode ? RADIO_TABS : MUSIC_TABS);
   const tab = $derived(tabs.some((t) => t.id === ui.libraryTab) ? ui.libraryTab : tabs[0].id);
 
@@ -44,16 +45,15 @@
   }
   const removable = (t: LibraryTab) => t !== 'all';
 
-  const EMPTY_BODY: Record<LibraryTab, string> = {
-    all: 'Nothing here yet — play, like, or download a track and it shows up.',
-    favorites: 'Tracks you ♥ collect here; the heart on any row toggles membership.',
-    history: 'Your listening history, newest first.',
-    downloads:
-      'No downloads yet — press ⬇ on a track. Rows show Running % / Done / Failed with retry.',
-    playlists: 'Local playlists with drill-down, plus Create / Delete / Add-to-playlist dialogs.',
-    radio_likes: 'Stations you liked in radio mode.',
-    radio_history: 'Stations you tuned in radio mode, newest first.',
-  };
+  const EMPTY_BODY: Record<LibraryTab, string> = $derived({
+    all: t('library.emptyAll'),
+    favorites: t('library.emptyFavorites'),
+    history: t('library.emptyHistory'),
+    downloads: t('library.emptyDownloads'),
+    playlists: t('library.emptyPlaylists'),
+    radio_likes: t('library.emptyRadioLikes'),
+    radio_history: t('library.emptyRadioHistory'),
+  });
 
   // Pull the active scope, debounced on the filter so typing doesn't spam the core.
   let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -76,7 +76,7 @@
 
 <div class="library">
   <header>
-    <div class="tabs" role="tablist" aria-label="Library tabs">
+    <div class="tabs" role="tablist" aria-label={t('library.tabsLabel')}>
       {#each tabs as t (t.id)}
         <button
           class="tab"
@@ -91,13 +91,13 @@
       <input
         class="ti filter"
         type="search"
-        placeholder="Filter…  (/)"
+        placeholder={t('library.filterPlaceholder')}
         bind:value={filter}
-        aria-label="Filter library"
+        aria-label={t('library.filterLabel')}
       />
       {#if isScope(tab)}
-        <button class="act" onclick={playAll}>▶ Play all</button>
-        <button class="act" onclick={enqueueAll}>+ Enqueue all</button>
+        <button class="act" onclick={playAll}>▶ {t('library.playAll')}</button>
+        <button class="act" onclick={enqueueAll}>+ {t('library.enqueueAll')}</button>
       {/if}
     </div>
   </header>
@@ -113,14 +113,18 @@
               <span class="dtitle">{d.title}</span>
               <span class="dstate mono">
                 {#if d.state === 'running'}⬇ {d.pct}%
-                {:else if d.state === 'done'}✓ Done
+                {:else if d.state === 'done'}✓ {t('library.done')}
                 {:else}⚠ {d.error}{/if}
               </span>
               {#if d.state === 'failed'}
-                <button class="ri" title="Retry" onclick={() => downloads.retry(d)}>↻</button>
+                <button class="ri" title={t('common.retry')} onclick={() => downloads.retry(d)}
+                  >↻</button
+                >
               {/if}
-              <button class="ri" title="Delete download" onclick={() => downloads.remove(d, true)}
-                >✕</button
+              <button
+                class="ri"
+                title={t('library.deleteDownload')}
+                onclick={() => downloads.remove(d, true)}>✕</button
               >
             </div>
           {/each}
@@ -129,28 +133,40 @@
     {:else if tab === 'playlists'}
       <PlaylistsPane {ctx} {filter} />
     {:else if library.loading && library.tracks.length === 0}
-      <div class="center"><p class="hint">Loading…</p></div>
+      <div class="center"><p class="hint">{t('library.loading')}</p></div>
     {:else if library.empty}
       <div class="center"><p class="hint">{EMPTY_BODY[tab]}</p></div>
     {:else}
       <div class="list" role="list">
-        {#each library.tracks as t, i (`${t.video_id}:${i}`)}
-          <TrackRow track={t} index={i + 1} ondblclick={() => library.play(t)}>
+        {#each library.tracks as track, i (`${track.video_id}:${i}`)}
+          <TrackRow {track} index={i + 1} ondblclick={() => library.play(track)}>
             {#snippet actions()}
-              <button class="ri" title="Download" onclick={() => downloads.download(t)}>⬇</button>
-              <button class="ri" title="Add to queue" onclick={() => library.enqueue(t)}>＋</button>
-              <button class="ri" title="Add to playlist" onclick={() => playlists.beginAdd(t)}
-                >≡</button
+              <button
+                class="ri"
+                title={t('library.download')}
+                onclick={() => downloads.download(track)}>⬇</button
+              >
+              <button
+                class="ri"
+                title={t('library.addToQueue')}
+                onclick={() => library.enqueue(track)}>＋</button
+              >
+              <button
+                class="ri"
+                title={t('library.addToPlaylist')}
+                onclick={() => playlists.beginAdd(track)}>≡</button
               >
               {#if removable(tab)}
-                <button class="ri" title="Remove" onclick={() => library.remove(t)}>✕</button>
+                <button class="ri" title={t('common.remove')} onclick={() => library.remove(track)}
+                  >✕</button
+                >
               {/if}
             {/snippet}
           </TrackRow>
         {/each}
         {#if library.hasMore}
           <button class="more" onclick={() => void library.more()}>
-            Load more · {library.total - library.tracks.length} left
+            {t('library.loadMore', { n: library.total - library.tracks.length })}
           </button>
         {/if}
       </div>
@@ -159,11 +175,16 @@
 
   <footer class="foot">
     {#if tab === 'downloads'}
-      <span class="count mono">{downloads.active} active · {downloads.items.length} total</span>
+      <span class="count mono"
+        >{t('library.downloadsCount', {
+          active: downloads.active,
+          total: downloads.items.length,
+        })}</span
+      >
     {:else if isScope(tab)}
-      <span class="count mono">{library.total} tracks</span>
+      <span class="count mono">{t('library.tracksCount', { n: library.total })}</span>
     {:else}
-      <span class="count mono">{playlists.list.length} playlists</span>
+      <span class="count mono">{t('library.playlistsCount', { n: playlists.list.length })}</span>
     {/if}
   </footer>
 </div>

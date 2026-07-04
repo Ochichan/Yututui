@@ -21,6 +21,7 @@ import type { ThemeModel } from '../stores/theme.svelte';
 import type { PlaylistDetail, PlaylistSummary } from '../stores/playlists.svelte';
 import type { SpotifyPlaylist, TransferSpec, TransferState } from '../stores/transfer.svelte';
 import type { AccountsSnapshot } from '../stores/accounts.svelte';
+import type { WhyGem } from '../stores/whygem.svelte';
 import { defaultAnimations } from '../stores/anim.svelte';
 import { defaultKeymap, type KeyContext } from '../stores/keymap.svelte';
 
@@ -321,6 +322,31 @@ export class DemoCoreTransport implements Transport {
   // DJ Gem transcript (role + text), grown by ask_ai.
   #aiMessages: Array<{ role: 'user' | 'assistant'; text: string }> = [];
   #aiTimer: ReturnType<typeof setTimeout> | null = null;
+  // Why-DJ-Gem explanations by video_id (ai.whygem) — the "autoplay-added" queue rows.
+  // Seeded with two picks; enqueuing a DJ-Gem suggestion adds more. PROVISIONAL, demo-only.
+  #whyGem = new Map<string, WhyGem>([
+    [
+      'demo-006',
+      {
+        slot: 'More like this',
+        reasons: [
+          'Stays in the airy synth-pop lane you were on',
+          'High skip-survival across similar late-night sessions',
+        ],
+        confidence: 0.86,
+      },
+    ],
+    [
+      'demo-008',
+      {
+        slot: 'Deep cut',
+        reasons: ['Same label family as your last ♥', 'Tempo matches the current run'],
+        confidence: 0.71,
+      },
+    ],
+  ]);
+  // The video_ids of the most recent DJ-Gem suggestion set, so enqueuing one marks it a pick.
+  #lastAiSuggestions = new Set<string>();
   // Tracked downloads by video_id (the `downloads` topic snapshot).
   #downloads: DownloadStatus[] = [];
   // Music ⇄ Radio mode, flipped by set_setting { radio_mode }.
@@ -420,6 +446,14 @@ export class DemoCoreTransport implements Transport {
           );
           // Conflict detection stays core-side; the reply carries it for inline display.
           this.#emit({ v: 1, id: env.id, kind: 'res', payload: { ok: true, conflict } });
+        } else if (env.name === 'fetch_why_gem') {
+          const p = (env.payload ?? {}) as Record<string, unknown>;
+          this.#emit({
+            v: 1,
+            id: env.id,
+            kind: 'res',
+            payload: this.#whyGem.get(String(p.video_id ?? '')) ?? null,
+          });
         } else {
           this.#emit({ v: 1, id: env.id, kind: 'err', payload: { reason: 'not_supported' } });
         }
@@ -430,6 +464,7 @@ export class DemoCoreTransport implements Transport {
         if (topics.includes('player')) this.#pushPlayer();
         if (topics.includes('queue')) this.#pushQueue();
         if (topics.includes('lyrics')) this.#pushLyrics();
+        if (topics.includes('ai')) this.#pushWhyGem();
         if (topics.includes('settings')) this.#pushSettings();
         if (topics.includes('playlists')) this.#pushPlaylists();
         if (topics.includes('accounts')) this.#pushAccounts();
@@ -486,6 +521,9 @@ export class DemoCoreTransport implements Transport {
         this.#removePositions(positions);
         break;
       }
+      case 'queue_move':
+        this.#moveQueue(Number(p.from ?? -1), Number(p.to ?? -1));
+        break;
       case 'queue_clear_upcoming':
         this.#queue = this.#queue.slice(0, this.#pos + 1);
         this.#rev++;
@@ -696,6 +734,22 @@ export class DemoCoreTransport implements Transport {
     this.#pushQueue();
   }
 
+  /** Drag-reorder (queue_move): splice `from`→`to`, keeping the cursor on the same track. */
+  #moveQueue(from: number, to: number): void {
+    const n = this.#queue.length;
+    if (from < 0 || from >= n || to < 0 || to >= n || from === to) return;
+    const currentTrack = this.#queue[this.#pos] ?? null; // reference-tracked (dupe-safe)
+    const [moved] = this.#queue.splice(from, 1);
+    this.#queue.splice(to, 0, moved);
+    if (currentTrack) {
+      const idx = this.#queue.indexOf(currentTrack);
+      if (idx >= 0) this.#pos = idx;
+    }
+    this.#rev++;
+    this.#pushQueue();
+    this.#pushPlayer(); // queue_pos may have shifted
+  }
+
   #rate(videoId: string): void {
     const t = this.#queue.find((x) => x.video_id === videoId);
     if (!t) return;
@@ -776,6 +830,16 @@ export class DemoCoreTransport implements Transport {
       .filter((t): t is TrackModel => t != null)
       .map((t) => ({ ...t }));
     if (picked.length === 0) return;
+    // A track that came from the latest DJ-Gem suggestions becomes an autoplay pick with a
+    // "why?" explanation (ai.whygem provenance).
+    let gemAdded = false;
+    for (const t of picked) {
+      if (this.#lastAiSuggestions.has(t.video_id) && !this.#whyGem.has(t.video_id)) {
+        this.#whyGem.set(t.video_id, this.#gemFor(t));
+        gemAdded = true;
+      }
+    }
+    if (gemAdded) this.#pushWhyGem();
     if (playNow) {
       const at = this.#queue.length ? this.#pos + 1 : 0;
       this.#queue.splice(at, 0, ...picked);
@@ -861,12 +925,32 @@ export class DemoCoreTransport implements Transport {
   }
 
   #pushAi(thinking: boolean, suggestions: TrackModel[]): void {
+    if (suggestions.length) this.#lastAiSuggestions = new Set(suggestions.map((t) => t.video_id));
     this.#emit({
       v: 1,
       kind: 'event',
       topic: 'ai',
       // PROVISIONAL shape — see AiState in stores/ai.svelte.ts.
       payload: { kind: 'ai_state', messages: this.#aiMessages, thinking, suggestions },
+    });
+  }
+
+  /** A generated explanation for a DJ-Gem-suggested track the user just enqueued. */
+  #gemFor(t: TrackModel): WhyGem {
+    return {
+      slot: 'From your DJ Gem chat',
+      reasons: [`Picked up on your ask around ${t.artist}`, 'Available to stream on this source'],
+      confidence: 0.8,
+    };
+  }
+
+  /** The autoplay-provenance sibling event on the `ai` topic (ai.whygem). PROVISIONAL. */
+  #pushWhyGem(): void {
+    this.#emit({
+      v: 1,
+      kind: 'event',
+      topic: 'ai',
+      payload: { kind: 'why_gem_provenance', video_ids: [...this.#whyGem.keys()] },
     });
   }
 

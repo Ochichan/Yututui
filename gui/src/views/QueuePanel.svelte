@@ -1,71 +1,81 @@
 <script lang="ts">
   // The collapsible right queue dock (docs/gui/07 §2). Rows are TrackRow in a
   // VirtualList; the current row derives from player.queue_pos (the queue topic carries
-  // items only). Jump/remove/clear are live; drag-reorder is a pending wire.
+  // items only). Jump/remove/clear/drag-reorder are live; autoplay picks grow a why? popover.
   import type { AppCtx } from '../lib/ctx';
   import { fmtTime } from '../lib/format';
+  import { t } from '../lib/i18n.svelte';
   import VirtualList from '../lib/components/VirtualList.svelte';
   import TrackRow from '../lib/components/TrackRow.svelte';
-  import WireTag from '../lib/components/WireTag.svelte';
+  import WhyGemPopover from '../lib/components/WhyGemPopover.svelte';
 
   interface Props {
     ctx: AppCtx;
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { queue, playback, ui, wip } = ctx;
+  const { queue, playback, ui, whygem } = ctx;
 
   const currentPos = $derived(playback.model?.queue_pos ?? -1);
-  const totalMs = $derived(queue.items.reduce((n, t) => n + (t.duration_ms ?? 0), 0));
+  const totalMs = $derived(queue.items.reduce((n, track) => n + (track.duration_ms ?? 0), 0));
 
-  function grip() {
-    // TODO(wire:M2/queue.reorder): replace with pointer-drag once QueueMove is wired.
-    wip.open('queue.reorder');
+  /** Open the Why-Gem popover anchored to the affordance's bottom-left corner. */
+  function whyPick(videoId: string, e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    whygem.open(videoId, { x: r.left, y: r.bottom });
   }
-
-  // TODO(wire:M4/ai.whygem): autoplay-added rows grow a "why?" affordance here, anchored
-  // to the WhyGem popover (docs/gui/07 §13).
 </script>
 
-<aside class="dock" aria-label="Queue" data-kctx="Queue">
+<aside class="dock" aria-label={t('queue.title')} data-kctx="Queue">
   <header>
-    <h2>Queue</h2>
+    <h2>{t('queue.title')}</h2>
     <div class="head-actions">
       <button
         class="ha"
         onclick={() => queue.clearUpcoming()}
-        title="Clear upcoming tracks"
+        title={t('queue.clearUpcoming')}
         disabled={queue.items.length === 0}>⌫</button
       >
-      <button class="ha" onclick={() => ui.toggleQueue()} title="Close queue panel">✕</button>
+      <button class="ha" onclick={() => ui.toggleQueue()} title={t('queue.close')}>✕</button>
     </div>
   </header>
 
   <div class="list">
-    <VirtualList items={queue.items} rowHeight={52}>
+    <VirtualList items={queue.items} rowHeight={52} reorder={(from, to) => queue.move(from, to)}>
       {#snippet row(track, i)}
         <TrackRow {track} index={i + 1} current={i === currentPos} ondblclick={() => queue.play(i)}>
           {#snippet actions()}
-            <button class="ra" onclick={() => queue.play(i)} title="Play from here">▶</button>
-            <button class="ra" onclick={grip} title="Drag to reorder">⠿</button>
-            <button class="ra" onclick={() => queue.remove(i)} title="Remove">✕</button>
+            <button class="ra" onclick={() => queue.play(i)} title={t('queue.playFromHere')}
+              >▶</button
+            >
+            {#if whygem.has(track.video_id)}
+              <button
+                class="ra gem"
+                onclick={(e) => whyPick(track.video_id, e)}
+                title={t('whygem.affordance')}>?</button
+              >
+            {/if}
+            <button class="ra grip" data-drag-handle title={t('queue.dragReorder')}>⠿</button>
+            <button class="ra" onclick={() => queue.remove(i)} title={t('common.remove')}>✕</button>
           {/snippet}
         </TrackRow>
       {/snippet}
       {#snippet empty()}
         <div class="empty">
           <p class="kaomoji mono">=^..^=</p>
-          <p>queue is napping…</p>
+          <p>{t('queue.napping')}</p>
         </div>
       {/snippet}
     </VirtualList>
   </div>
 
   <footer>
-    <span class="mono">{queue.items.length} tracks · {fmtTime(totalMs)}</span>
-    <WireTag id="queue.reorder" {wip} />
+    <span class="mono">{t('queue.summary', { n: queue.items.length, time: fmtTime(totalMs) })}</span
+    >
   </footer>
 </aside>
+
+<WhyGemPopover {whygem} />
 
 <style>
   .dock {
@@ -148,5 +158,16 @@
   }
   .ra:hover {
     background: var(--surface-2);
+  }
+  .ra.gem {
+    color: var(--role-accent);
+    font-weight: 700;
+  }
+  .ra.grip {
+    cursor: grab;
+    touch-action: none;
+  }
+  .ra.grip:active {
+    cursor: grabbing;
   }
 </style>

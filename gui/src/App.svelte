@@ -5,6 +5,7 @@
   // honoring the user's remappable keymap.
   import type { AppCtx } from './lib/ctx';
   import { NAV_ITEMS } from './lib/stores/ui.svelte';
+  import { i18n, t } from './lib/i18n.svelte';
   import NowPlaying from './views/NowPlaying.svelte';
   import SearchView from './views/SearchView.svelte';
   import LibraryView from './views/LibraryView.svelte';
@@ -27,18 +28,21 @@
   // The ctx bundle is assembled once in main.ts and its identity never changes — the
   // stores inside are the reactive things, so capturing them at init is intended.
   // svelte-ignore state_referenced_locally
-  const { ui, connection, playback, toasts, wip, client, boot, demo, keymap } = ctx;
+  const { ui, connection, playback, settings, toasts, wip, client, boot, demo, keymap } = ctx;
+
+  // Live-switch the whole UI language off the settings model (i18n.catalog).
+  $effect(() => {
+    i18n.set(settings.ui?.language);
+  });
 
   const bannerText = $derived.by(() => {
     switch (connection.info.state) {
       case 'connecting':
-        return 'Connecting to player…';
+        return t('conn.connecting');
       case 'degraded':
-        return 'Reconnecting to player…';
+        return t('conn.reconnecting');
       case 'offline':
-        return connection.info.reason === 'no_core'
-          ? 'Player is not running.'
-          : 'Player connection lost — reconnecting…';
+        return connection.info.reason === 'no_core' ? t('conn.notRunning') : t('conn.lost');
       default:
         return '';
     }
@@ -84,61 +88,62 @@
     <span class="dot" style:background={stateColor}></span>
     <span>{bannerText}</span>
     {#if connection.info.state === 'offline'}
-      <button class="banner-action" onclick={() => client.win('startDaemon')}>Start daemon</button>
+      <button class="banner-action" onclick={() => client.win('startDaemon')}
+        >{t('conn.startDaemon')}</button
+      >
     {/if}
   </div>
 {/if}
 
 <div class="frame">
   <div class="shell">
-    <nav class="rail" aria-label="Primary">
+    <nav class="rail" aria-label={t('nav.primary')}>
       {#each NAV_ITEMS as item, i (item.id)}
         <button
           class="rail-btn"
           class:active={ui.view === item.id}
           aria-current={ui.view === item.id ? 'page' : undefined}
-          title="{item.label} ({i + 1})"
+          title="{t(`nav.${item.id}`)} ({i + 1})"
           onclick={() => ui.setView(item.id)}
         >
           <span class="glyph" aria-hidden="true">{item.glyph}</span>
-          <span class="rail-label">{item.label}</span>
+          <span class="rail-label">{t(`nav.${item.id}`)}</span>
         </button>
       {/each}
 
       <div class="rail-spacer"></div>
 
-      <div class="mode-switch" role="radiogroup" aria-label="Player mode">
+      <div class="mode-switch" role="radiogroup" aria-label={t('mode.group')}>
         <button
           class="mode"
           class:on={!radioMode}
           role="radio"
           aria-checked={!radioMode}
-          onclick={() => switchMode(false)}>♪ Music</button
+          onclick={() => switchMode(false)}>♪ {t('mode.music')}</button
         >
         <button
           class="mode"
           class:on={radioMode}
           role="radio"
           aria-checked={radioMode}
-          onclick={() => switchMode(true)}>📻 Radio</button
+          onclick={() => switchMode(true)}>📻 {t('mode.radio')}</button
         >
       </div>
 
       <div class="rail-foot">
-        <button class="foot-line" onclick={() => (ui.aboutOpen = true)} title="About ytm-tui">
+        <button class="foot-line" onclick={() => (ui.aboutOpen = true)} title={t('app.about')}>
           <span class="dot" style:background={stateColor}></span>
           <span class="mono">{connection.info.state}</span>
         </button>
         <span class="foot-line mono dim">
-          core {connection.info.coreVersion ?? '—'} · v{connection.info.protocolVersion ??
-            boot.protocolVersion}
+          {t('app.core', {
+            core: connection.info.coreVersion ?? '—',
+            proto: connection.info.protocolVersion ?? boot.protocolVersion,
+          })}
         </span>
         {#if demo}
-          <span
-            class="demo-chip mono"
-            title="Running against the in-page demo core — no Rust shell"
-          >
-            ● demo core
+          <span class="demo-chip mono" title={t('app.demoCoreHint')}>
+            {t('app.demoCore')}
           </span>
         {/if}
       </div>
@@ -176,9 +181,11 @@
 <ChordCapture {keymap} />
 
 <div class="toasts" aria-live="polite">
-  {#each toasts.toasts as t (t.id)}
-    <button class="toast {t.severity}" onclick={() => toasts.dismiss(t.id)} title="Dismiss"
-      >{t.text}</button
+  {#each toasts.toasts as toast (toast.id)}
+    <button
+      class="toast {toast.severity}"
+      onclick={() => toasts.dismiss(toast.id)}
+      title={t('common.dismiss')}>{toast.text}</button
     >
   {/each}
 </div>

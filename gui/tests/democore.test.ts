@@ -89,9 +89,9 @@ describe('DemoCoreTransport', () => {
 
   it('unknown req is rejected with not_supported (reason-coded, like the real core)', () => {
     const { t, frames } = boot();
-    // A request the demo core doesn't answer yet (fetch_playlist_detail IS answered now;
-    // fetch_why_gem is ai.whygem, still pending).
-    t.send({ v: 1, kind: 'req', id: 8, name: 'fetch_why_gem' });
+    // A request the demo core doesn't answer (fetch_playlist_detail / fetch_why_gem are
+    // both wired now; this stands in for any not-yet-wired req).
+    t.send({ v: 1, kind: 'req', id: 8, name: 'fetch_nonexistent' });
     vi.advanceTimersByTime(50);
     const err = frames.find((f) => f.kind === 'err' && f.id === 8);
     expect((err?.payload as { reason: string }).reason).toBe('not_supported');

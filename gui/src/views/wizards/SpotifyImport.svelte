@@ -8,6 +8,7 @@
   import type { AppCtx } from '../../lib/ctx';
   import type { TransferDest } from '../../lib/stores/transfer.svelte';
   import Modal from '../../lib/components/Modal.svelte';
+  import { t } from '../../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -56,20 +57,22 @@
   );
 </script>
 
-<Modal title="Import from Spotify" width="560px" onclose={close}>
+<Modal title={t('transfer.title')} width="560px" onclose={close}>
   {#if xfer.phase === 'idle' || xfer.phase === 'listing'}
     <div class="step center">
       {#if xfer.phase === 'listing'}
-        <p class="hint">Fetching your Spotify playlists…</p>
+        <p class="hint">{t('transfer.fetching')}</p>
       {:else}
-        <p class="hint">Connect to Spotify and list your playlists to import.</p>
-        <button class="btn primary" onclick={() => transfer.listSpotify()}>Connect Spotify</button>
+        <p class="hint">{t('transfer.connectHint')}</p>
+        <button class="btn primary" onclick={() => transfer.listSpotify()}
+          >{t('transfer.connectSpotify')}</button
+        >
       {/if}
     </div>
   {:else if xfer.phase === 'ready'}
     <div class="step">
-      <p class="lbl">1 · Pick playlists to import</p>
-      <div class="sources" role="group" aria-label="Spotify playlists">
+      <p class="lbl">1 · {t('transfer.step1')}</p>
+      <div class="sources" role="group" aria-label={t('transfer.sourcesLabel')}>
         {#each xfer.sources as s (s.id)}
           <label class="src">
             <input type="checkbox" checked={picked.has(s.id)} onchange={() => toggle(s.id)} />
@@ -79,16 +82,16 @@
         {/each}
       </div>
 
-      <p class="lbl">2 · Destination</p>
+      <p class="lbl">2 · {t('transfer.step2')}</p>
       <div class="dest">
         <label class="dopt">
           <input type="radio" name="dest" value="new" bind:group={destKind} />
-          <span>New playlist</span>
+          <span>{t('transfer.newPlaylist')}</span>
           <input
             class="ti"
             bind:value={newName}
             disabled={destKind !== 'new'}
-            placeholder="name"
+            placeholder={t('transfer.namePlaceholder')}
             size="18"
           />
         </label>
@@ -100,49 +103,63 @@
             bind:group={destKind}
             disabled={playlists.list.length === 0}
           />
-          <span>Append to existing</span>
+          <span>{t('transfer.appendExisting')}</span>
           <select class="ti" bind:value={existingId} disabled={destKind !== 'existing'}>
-            <option value="" disabled>choose…</option>
+            <option value="" disabled>{t('transfer.choose')}</option>
             {#each playlists.list as p (p.id)}
               <option value={p.id}>{p.name} ({p.count})</option>
             {/each}
           </select>
         </label>
         {#if playlists.list.length === 0}
-          <p class="note">No local playlists yet — create one to append, or import to a new one.</p>
+          <p class="note">{t('transfer.noLocalPlaylists')}</p>
         {/if}
       </div>
 
       <div class="frow">
-        <button class="btn" onclick={close}>Cancel</button>
-        <button class="btn primary" disabled={!canStart} onclick={start}>Import</button>
+        <button class="btn" onclick={close}>{t('common.cancel')}</button>
+        <button class="btn primary" disabled={!canStart} onclick={start}
+          >{t('transfer.import')}</button
+        >
       </div>
     </div>
   {:else if xfer.phase === 'running'}
     <div class="step">
-      <p class="lbl">Importing…</p>
+      <p class="lbl">{t('transfer.importing')}</p>
       <div class="bar"><span class="fill" style:width="{pct}%"></span></div>
       <p class="prog mono">
-        {xfer.job?.done ?? 0} / {xfer.job?.total ?? 0} · matched {xfer.job?.matched ?? 0} · failed
-        {xfer.job?.failed ?? 0}
+        {t('transfer.progress', {
+          done: xfer.job?.done ?? 0,
+          total: xfer.job?.total ?? 0,
+          matched: xfer.job?.matched ?? 0,
+          failed: xfer.job?.failed ?? 0,
+        })}
       </p>
       <div class="frow">
-        <button class="btn danger" onclick={() => transfer.cancel()}>Cancel</button>
+        <button class="btn danger" onclick={() => transfer.cancel()}>{t('common.cancel')}</button>
       </div>
     </div>
   {:else if xfer.phase === 'done'}
     <div class="step">
-      <p class="lbl">Done — imported to {xfer.report?.dest ?? 'your library'}</p>
+      <p class="lbl">
+        {t('transfer.doneImportedTo', { dest: xfer.report?.dest ?? t('transfer.yourLibrary') })}
+      </p>
       <div class="report">
-        <span class="stat ok mono">✓ {xfer.report?.matched ?? 0} matched</span>
-        <span class="stat warn mono">⚠ {xfer.report?.failed ?? 0} unmatched</span>
+        <span class="stat ok mono"
+          >✓ {t('transfer.matched', { count: xfer.report?.matched ?? 0 })}</span
+        >
+        <span class="stat warn mono"
+          >⚠ {t('transfer.unmatched', { count: xfer.report?.failed ?? 0 })}</span
+        >
         {#if (xfer.report?.skipped ?? 0) > 0}
-          <span class="stat mono">↷ {xfer.report?.skipped} skipped</span>
+          <span class="stat mono"
+            >↷ {t('transfer.skipped', { count: xfer.report?.skipped ?? 0 })}</span
+          >
         {/if}
       </div>
       {#if xfer.report && xfer.report.unmatched.length > 0}
         <details class="unmatched">
-          <summary>Couldn't match {xfer.report.unmatched.length}</summary>
+          <summary>{t('transfer.couldntMatch', { count: xfer.report.unmatched.length })}</summary>
           <ul>
             {#each xfer.report.unmatched as u (u)}
               <li>{u}</li>
@@ -151,14 +168,14 @@
         </details>
       {/if}
       <div class="frow">
-        <button class="btn" onclick={() => transfer.reset()}>Import more</button>
-        <button class="btn primary" onclick={close}>Done</button>
+        <button class="btn" onclick={() => transfer.reset()}>{t('transfer.importMore')}</button>
+        <button class="btn primary" onclick={close}>{t('transfer.done')}</button>
       </div>
     </div>
   {:else}
     <div class="step center">
-      <p class="hint err">{xfer.error ?? 'The import failed.'}</p>
-      <button class="btn" onclick={() => transfer.listSpotify()}>Try again</button>
+      <p class="hint err">{xfer.error ?? t('transfer.failed')}</p>
+      <button class="btn" onclick={() => transfer.listSpotify()}>{t('common.retry')}</button>
     </div>
   {/if}
 </Modal>

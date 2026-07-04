@@ -9,6 +9,7 @@
   import GraphicsTab from './GraphicsTab.svelte';
   import DjGemTab from './DjGemTab.svelte';
   import AccountsTab from './AccountsTab.svelte';
+  import { t } from '../../lib/i18n.svelte';
 
   interface Props {
     ctx: AppCtx;
@@ -17,25 +18,25 @@
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
   const { ui } = ctx;
 
-  const TABS: Array<{ id: SettingsTab; label: string }> = [
-    { id: 'general', label: 'General' },
-    { id: 'playback', label: 'Playback' },
-    { id: 'hotkeys', label: 'Hotkeys' },
-    { id: 'graphics', label: 'Graphics' },
-    { id: 'djgem', label: 'DJ Gem' },
-    { id: 'accounts', label: 'Accounts' },
-  ];
+  const TABS: Array<{ id: SettingsTab; label: string }> = $derived([
+    { id: 'general', label: t('settings.tab.general') },
+    { id: 'playback', label: t('settings.tab.playback') },
+    { id: 'hotkeys', label: t('settings.tab.hotkeys') },
+    { id: 'graphics', label: t('settings.tab.graphics') },
+    { id: 'djgem', label: t('settings.tab.djgem') },
+    { id: 'accounts', label: t('settings.tab.accounts') },
+  ]);
 </script>
 
 <div class="settings">
-  <div class="tabs" role="tablist" aria-label="Settings tabs">
-    {#each TABS as t (t.id)}
+  <div class="tabs" role="tablist" aria-label={t('settings.tabsAria')}>
+    {#each TABS as tab (tab.id)}
       <button
         class="tab"
-        class:on={ui.settingsTab === t.id}
+        class:on={ui.settingsTab === tab.id}
         role="tab"
-        aria-selected={ui.settingsTab === t.id}
-        onclick={() => (ui.settingsTab = t.id)}>{t.label}</button
+        aria-selected={ui.settingsTab === tab.id}
+        onclick={() => (ui.settingsTab = tab.id)}>{tab.label}</button
       >
     {/each}
   </div>
