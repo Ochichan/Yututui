@@ -133,7 +133,11 @@ libc = "0.2"
 # is `GetForWindow` interop + RoInitialize, and the UI/Gdi/LibraryLoader features are
 # just the hidden top-level window SMTC requires (WNDCLASSW lives behind Graphics_Gdi).
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", default-features = false, features = ["Media", "Storage_Streams", "Foundation", "Win32_Foundation", "Win32_System_WinRT", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi"] }
+# Win32_UI_Shell + PropertiesSystem + System_Com* power the AUMID-stamped Start-Menu
+# shortcut (IShellLinkW/IPropertyStore/IPersistFile) that fixes the media flyout's
+# "Unknown app" — registry-only registration was proven insufficient on Win11 26200
+# (docs/windows-smtc-qa-results-2026-07-04.md).
+windows = { version = "0.62", default-features = false, features = ["Media", "Storage_Streams", "Foundation", "Win32_Foundation", "Win32_System_WinRT", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

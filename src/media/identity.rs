@@ -90,17 +90,26 @@ pub fn register_cli(args: &[String]) -> i32 {
         None => None,
     };
 
-    match write_registration(icon.as_deref()) {
-        Ok(()) => {
-            println!("Registered media identity: {DISPLAY_NAME} ({APP_USER_MODEL_ID})");
-            match icon {
-                Some(path) => println!("  icon: {}", path.display()),
-                None => println!("  icon: none ({ICON_FILE} not found next to ytt.exe)"),
-            }
+    if let Err(message) = write_registration(icon.as_deref()) {
+        eprintln!("media identity registration failed: {message}");
+        return 1;
+    }
+    println!("Registered media identity: {DISPLAY_NAME} ({APP_USER_MODEL_ID})");
+    match &icon {
+        Some(path) => println!("  icon: {}", path.display()),
+        None => println!("  icon: none ({ICON_FILE} not found next to ytt.exe)"),
+    }
+
+    // The Start-Menu shortcut is what actually renames the media flyout entry —
+    // on-hardware QA proved the HKCU key alone still shows "Unknown app" (plan §4,
+    // results doc 2026-07-04). Keep both: the key covers toast identity.
+    match write_start_menu_shortcut(icon.as_deref()) {
+        Ok(path) => {
+            println!("  shortcut: {} (AppUserModelID stamped)", path.display());
             0
         }
         Err(message) => {
-            eprintln!("media identity registration failed: {message}");
+            eprintln!("start-menu shortcut failed (flyout may show \"Unknown app\"): {message}");
             1
         }
     }
@@ -178,6 +187,80 @@ fn write_registration(icon: Option<&std::path::Path>) -> Result<(), String> {
         RegCloseKey(key);
     }
     result
+}
+
+/// Write `%APPDATA%\Microsoft\Windows\Start Menu\Programs\YtmTui.lnk` targeting this
+/// exe, with `System.AppUserModel.ID` stamped to [`APP_USER_MODEL_ID`]. The Windows
+/// AppResolver maps a media session's explicit AUMID to a display name/icon **only**
+/// through a Start-Menu shortcut carrying that property (the Chrome/Spotify route) —
+/// the HKCU `AppUserModelId` key alone leaves the flyout on "Unknown app" (proven
+/// on-hardware, Win11 26200). Idempotent: overwrites and re-stamps every run. The
+/// readback before returning guards against a silently-ignored property write.
+#[cfg(windows)]
+fn write_start_menu_shortcut(icon: Option<&std::path::Path>) -> Result<std::path::PathBuf, String> {
+    use windows::Win32::Foundation::PROPERTYKEY;
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        CoUninitialize, IPersistFile,
+    };
+    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    use windows::core::{GUID, Interface, PCWSTR};
+
+    // propkey.h System.AppUserModel.ID — {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, 5.
+    const PKEY_APP_USER_MODEL_ID: PROPERTYKEY = PROPERTYKEY {
+        fmtid: GUID::from_u128(0x9F4C2855_9F79_4B39_A8D0_E1D42DE1D5F3),
+        pid: 5,
+    };
+
+    let appdata = std::env::var_os("APPDATA").ok_or("APPDATA is not set")?;
+    let programs = std::path::PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs");
+    // Must live in the Start Menu: the AppResolver only indexes Start-Menu shortcuts.
+    let lnk = programs.join(format!("{DISPLAY_NAME}.lnk"));
+    let exe = std::env::current_exe().map_err(|e| format!("could not resolve ytt.exe: {e}"))?;
+
+    struct ComGuard;
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            unsafe { CoUninitialize() };
+        }
+    }
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
+        .ok()
+        .map_err(|e| format!("CoInitializeEx failed: {e}"))?;
+    let _com = ComGuard;
+
+    let result: windows::core::Result<()> = (|| {
+        let link: IShellLinkW =
+            unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }?;
+        unsafe { link.SetPath(PCWSTR(wide(&exe.display().to_string()).as_ptr())) }?;
+        if let Some(icon) = icon {
+            unsafe { link.SetIconLocation(PCWSTR(wide(&icon.display().to_string()).as_ptr()), 0) }?;
+        }
+
+        let store: IPropertyStore = link.cast()?;
+        let value = PROPVARIANT::from(APP_USER_MODEL_ID);
+        unsafe { store.SetValue(&PKEY_APP_USER_MODEL_ID, &value) }?;
+        unsafe { store.Commit() }?;
+
+        let file: IPersistFile = link.cast()?;
+        unsafe { file.Save(PCWSTR(wide(&lnk.display().to_string()).as_ptr()), true) }?;
+
+        // Readback: the stamp must round-trip or the flyout will still say Unknown app.
+        let back = unsafe { store.GetValue(&PKEY_APP_USER_MODEL_ID) }?;
+        let back = back.to_string();
+        if back != APP_USER_MODEL_ID {
+            return Err(windows::core::Error::new(
+                windows::core::HRESULT(-1),
+                format!("AUMID readback mismatch: {back:?}"),
+            ));
+        }
+        Ok(())
+    })();
+
+    result.map_err(|e| format!("{e}"))?;
+    Ok(lnk)
 }
 
 #[cfg(windows)]
