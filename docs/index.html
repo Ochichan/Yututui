@@ -4,12 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>ytm-tui — YouTube Music in your terminal</title>
-<meta name="description" content="A fast, keyboard-driven YouTube Music client for your terminal. DJ Gem streaming, real album art, synced lyrics, Last.fm & ListenBrainz scrobbling, Spotify import, and remote control from anywhere. No browser, no ads. Rust + ratatui, MIT." />
+<meta name="description" content="A fast, keyboard-driven YouTube Music client for your terminal. DJ Gem streaming, live internet radio, real album art, synced lyrics, Last.fm & ListenBrainz scrobbling, Spotify import, and remote control from anywhere. No browser, no ads. Rust + ratatui, MIT." />
 
 <!-- Open Graph / social -->
 <meta property="og:type" content="website" />
 <meta property="og:title" content="ytm-tui — YouTube Music in your terminal" />
-<meta property="og:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, real album art, scrobbling, Spotify import, remote control. No browser, no ads." />
+<meta property="og:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, live radio, real album art, scrobbling, Spotify import, remote control. No browser, no ads." />
 <meta property="og:url" content="https://ochichan.github.io/ytm-tui/" />
 <meta property="og:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
 <meta name="twitter:card" content="summary" />
@@ -34,7 +34,7 @@
   "license": "https://opensource.org/licenses/MIT",
   "url": "https://ochichan.github.io/ytm-tui/",
   "downloadUrl": "https://github.com/Ochichan/ytm-tui/releases",
-  "description": "A fast, keyboard-driven YouTube Music client for the terminal: DJ Gem streaming, album art, synced lyrics, Last.fm/ListenBrainz scrobbling, Spotify playlist import/export, headless daemon and remote control."
+  "description": "A fast, keyboard-driven YouTube Music client for the terminal: DJ Gem streaming, live internet radio, album art, synced lyrics, Last.fm/ListenBrainz scrobbling, Spotify playlist import/export, headless daemon and remote control."
 }
 </script>
 
@@ -533,6 +533,48 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .feature.gol h3 { color: var(--gold); } .feature.foa h3 { color: var(--foam); }
 .feature.pin h3 { color: var(--pine); } .feature.ros h3 { color: var(--rose); }
 
+/* the closing card spans the whole grid row and lays out as a strip */
+.feature--wide { grid-column: 1 / -1; }
+@media (min-width: 900px) {
+  .feature--wide { display: flex; align-items: center; flex-wrap: wrap; gap: .8rem 2.2rem; padding-block: 1.5rem; }
+  .feature--wide .feature__top { margin-bottom: 0; }
+  .feature--wide h3 { flex: 0 0 auto; }
+  .feature--wide p { flex: 1 1 34ch; min-width: 28ch; }
+}
+
+/* compact ✓-fact lists — used instead of second paragraphs */
+.facts { list-style: none; padding: 0; margin-top: 1.2rem; display: flex; flex-direction: column; gap: .55rem; }
+.facts li { display: flex; gap: .65rem; align-items: baseline; color: var(--subtle); font-size: .85rem; line-height: 1.55; }
+.facts .ic { color: var(--pine); flex: none; }
+.facts code { color: var(--text); }
+
+/* ============================================================
+   Radio + Retro band — second grid flips sides on desktop
+   ============================================================ */
+.why-grid--flip { margin-top: clamp(3.2rem, 7vw, 5rem); }
+@media (min-width: 821px) { .why-grid--flip > .section-head { order: 2; } }
+
+/* radio-mode mock: live seekbar + the what's-playing overlay */
+.rmock { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.rmock__bar { display: flex; align-items: center; gap: .8rem; padding: .55rem .9rem; border-bottom: 1px solid var(--line); font-size: .78rem; background: color-mix(in srgb, var(--overlay) 55%, var(--surface)); }
+.rmock__bar .mode { color: var(--iris); white-space: nowrap; }
+.rmock__bar .st { color: var(--text); font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rmock__bar .live { color: var(--pine); font-weight: 700; white-space: nowrap; }
+.rmock__body { padding: 1.5rem 1.2rem 1.3rem; display: flex; flex-direction: column; gap: 1.05rem; align-items: center; text-align: center; }
+.idcard { width: min(420px, 100%); border: 1px solid var(--line); border-radius: 8px; background: var(--bg); text-align: left; overflow: hidden; box-shadow: 0 18px 40px -18px rgba(0,0,0,.45); }
+.idcard__bar { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .5rem .75rem; border-bottom: 1px solid var(--line); font-size: .76rem; color: var(--subtle); }
+.idcard__bar .k { color: var(--iris); }
+.idcard__body { padding: .7rem .8rem .8rem; }
+.idcard__song { color: var(--text); font-weight: 700; }
+.idcard__sub { color: var(--subtle); font-size: .78rem; margin-top: .25rem; }
+.idcard__hint { color: var(--muted); font-size: .75rem; margin-top: .65rem; }
+
+/* retro TTY mock — deliberately dark in both themes; a console is a console */
+.tty { border: 1px solid var(--line); border-radius: 10px; background: #0a0f0b; box-shadow: var(--shadow); overflow: hidden; }
+.tty pre { margin: 0; padding: 1.1rem 1.2rem; overflow-x: auto; font-size: .72rem; line-height: 1.32; color: #58a869; text-shadow: 0 0 7px rgba(110,231,138,.28); }
+.tty .b { color: #b8f0c0; }
+.tty .d { color: #3c6b48; }
+
 kbd {
   font-family: "JetBrains Mono", monospace; font-size: .74rem; line-height: 1;
   color: var(--subtle); background: var(--bg); border: 1px solid var(--line);
@@ -719,6 +761,7 @@ kbd {
     <nav class="topbar__nav" aria-label="Sections">
       <a href="#features" data-i18n="nav.features">Features</a>
       <a href="#streaming" data-i18n="nav.streaming">DJ Gem</a>
+      <a href="#radio" data-i18n="nav.radio">Radio</a>
       <a href="#spotify" data-i18n="nav.spotify">Spotify</a>
       <a href="#scrobble" data-i18n="nav.scrobble">Scrobbling</a>
       <a href="#everywhere" data-i18n="nav.everywhere">Everywhere</a>
@@ -751,9 +794,9 @@ kbd {
     </h1>
   </div>
   <p class="hero__sub" data-i18n="hero.sub">
-    A fast, keyboard-driven YouTube Music client that lives in your terminal. DJ Gem builds endless streaming
-    around what you're hearing, album art and synced lyrics render right in the TUI, every listen scrobbles
-    to Last.fm, and your Spotify library moves in with one command. No browser tab quietly eating your RAM. No ads.
+    A fast, keyboard-driven YouTube Music client that lives in your terminal — endless DJ Gem streaming,
+    live internet radio, album art and synced lyrics in the TUI, scrobbling, and one-command Spotify import.
+    No browser. No ads.
   </p>
   <div class="hero__cta">
     <a class="btn btn--primary" href="#install"><span aria-hidden="true">▸</span> <span data-i18n="hero.cta1">Install ytm-tui</span></a>
@@ -970,55 +1013,61 @@ kbd {
     <article class="feature iri">
       <div class="feature__top"><kbd>Ctrl R</kbd></div>
       <h3 class="display" data-i18n="f.streaming.h">DJ Gem streaming that reads the room</h3>
-      <p data-i18n-html="f.streaming.p">Press <code>Ctrl+R</code> and ytm-tui starts streaming built around what you're hearing. A Gemini-powered <em>Queue Director</em> lines up songs that fit the mood — Focused, Balanced, or Discovery. Press <code>w</code> for the plain-language reasoning.</p>
+      <p data-i18n-html="f.streaming.p">Press <code>Ctrl+R</code> and a Gemini-powered <em>Queue Director</em> lines up songs that fit the mood — Focused, Balanced, or Discovery. Press <code>w</code> for its reasoning, in plain words.</p>
     </article>
 
     <article class="feature gol">
       <div class="feature__top"><kbd>album art</kbd> <kbd>v</kbd></div>
       <h3 class="display" data-i18n="f.art.h">Album art, lyrics — and the video</h3>
-      <p data-i18n-html="f.art.p">Actual cover images drawn right in the Player, with time-synced lyrics scrolling underneath. And when hearing isn't enough: press <code>v</code> and the music video floats over your terminal in its own little mpv window — flip on <em>Auto-continue videos</em> and each one hands off to the next track's, in the same window.</p>
+      <p data-i18n-html="f.art.p">Real cover art drawn right in the Player, time-synced lyrics scrolling underneath — and <code>v</code> floats the music video over your terminal in a little mpv window, auto-continuing to the next track's if you let it.</p>
     </article>
 
     <article class="feature pin">
       <div class="feature__top"><kbd>Tab ▾</kbd></div>
       <h3 class="display" data-i18n="f.sources.h">Six catalogs, one search box</h3>
-      <p data-i18n-html="f.sources.p">YouTube Music is home base, but the search box also speaks SoundCloud, Audius, Jamendo, Internet Archive, and Radio Browser. Flip sources with <code>Tab</code>, or search them all at once — every result tagged <code>[SRC]</code>. Or turn the whole app into an internet-radio tuner with <code>Alt+Shift+R</code>.</p>
+      <p data-i18n-html="f.sources.p">YouTube Music is home base, but the same box searches SoundCloud, Audius, Jamendo, Internet Archive and Radio Browser. Flip sources with <code>Tab</code>, or hit them all at once — every result tagged <code>[SRC]</code>.</p>
     </article>
 
     <article class="feature lov">
-      <div class="feature__top"><kbd>scrobble</kbd></div>
-      <h3 class="display" data-i18n="f.scrobble.h">Every listen, on the record</h3>
-      <p data-i18n-html="f.scrobble.p">Last.fm and ListenBrainz, done properly: Now Playing updates, the half-track/4-minute rule, likes synced as loves. Offline listens queue on disk and deliver themselves when you're back — even from the headless daemon.</p>
+      <div class="feature__top"><kbd>Alt ⇧ R</kbd> <kbd>i</kbd></div>
+      <h3 class="display" data-i18n="f.radio.h">Live radio that knows the song</h3>
+      <p data-i18n-html="f.radio.p"><code>Alt+Shift+R</code> turns the whole app into an internet-radio tuner — true live streams that re-sync themselves to the live edge, with radio-only favorites, history, even its own theme. Press <code>i</code> and Gemini names what's playing right now; <code>f</code> favorites it.</p>
     </article>
 
     <article class="feature foa">
       <div class="feature__top"><kbd>ytt transfer</kbd></div>
       <h3 class="display" data-i18n="f.spotify.h">Move in from Spotify</h3>
-      <p data-i18n-html="f.spotify.p">Liked songs and playlists migrate to YouTube Music with one command — checkpointed, resumable, CJK-safe matching, and a report for anything it wasn't sure about. Works the other way too, plus JSON/CSV backups of everything.</p>
+      <p data-i18n-html="f.spotify.p">Liked songs and playlists migrate to YouTube Music with one checkpointed, resumable command — CJK-safe matching, ambiguities reported instead of guessed. Works the other way too.</p>
     </article>
 
     <article class="feature ros">
       <div class="feature__top"><kbd>n</kbd> <kbd>d</kbd></div>
       <h3 class="display" data-i18n="f.playlists.h">Playlists and downloads, kept local</h3>
-      <p data-i18n-html="f.playlists.p">Build playlists right in the Library (DJ Gem can build them for you), drop Spotify imports into them, and press <code>d</code> to save any track as an m4a with cover art and tags — played offline from the Downloads tab.</p>
+      <p data-i18n-html="f.playlists.p">Build playlists in the Library (or let DJ Gem build them), and press <code>d</code> to save any track as a tagged m4a with cover art — played offline from the Downloads tab.</p>
     </article>
 
     <article class="feature foa">
       <div class="feature__top"><kbd>⏯ ⏭ ⏮</kbd></div>
       <h3 class="display" data-i18n="f.remote.h">Control it from everywhere</h3>
-      <p data-i18n-html="f.remote.p">Media keys, macOS Control Center, a menu-bar / tray mini player, Linux MPRIS widgets, <code>ytt -r</code> from any terminal — or no terminal at all with the headless daemon. The music doesn't care where the order came from.</p>
+      <p data-i18n-html="f.remote.p">Media keys, macOS Control Center, a menu-bar / tray mini player, Linux MPRIS, <code>ytt -r</code> from any shell — or no terminal at all with the headless daemon.</p>
+    </article>
+
+    <article class="feature gol">
+      <div class="feature__top"><kbd>scrobble</kbd></div>
+      <h3 class="display" data-i18n="f.scrobble.h">Every listen, on the record</h3>
+      <p data-i18n-html="f.scrobble.p">Last.fm and ListenBrainz, done properly: Now Playing updates, the half-track rule, likes synced as loves — and offline listens queue on disk until you're back.</p>
     </article>
 
     <article class="feature ros">
       <div class="feature__top"><kbd>,</kbd></div>
       <h3 class="display" data-i18n="f.custom.h">Unmistakably yours</h3>
-      <p data-i18n-html="f.custom.p">13 built-in themes (Gruvbox, Nord, Dracula, Tokyo Night, Rosé Pine…), all 34 color roles editable in hex, a 10-band EQ with presets from Flat to Jazz, 25 animations from a calm still screen to a spinning ASCII donut — and a retro mode that runs in a bare Linux console, ASCII album art included.</p>
+      <p data-i18n-html="f.custom.p">13 themes, all 34 color roles hex-editable, a 10-band EQ with presets, 25 animations up to a spinning ASCII donut — and a retro mode for a bare Linux console.</p>
     </article>
 
-    <article class="feature lov">
+    <article class="feature iri feature--wide">
       <div class="feature__top"><kbd>?</kbd></div>
       <h3 class="display" data-i18n="f.help.h">The app remembers the keys</h3>
-      <p data-i18n-html="f.help.p">Forget a shortcut? Press <code>?</code> for the full, always-current cheat sheet — in your language, with your custom bindings. Korean jamo work as-is (<code>ㅂ</code> = <code>q</code>), and everything on screen is clickable if the mouse is more your speed. Text too small? <code>Ctrl+-</code> / <code>Ctrl+=</code> (or Ctrl+wheel) zooms the whole UI.</p>
+      <p data-i18n-html="f.help.p">Press <code>?</code> for the always-current cheat sheet — your language, your custom bindings. Korean jamo work as-is (<code>ㅂ</code> = <code>q</code>), everything on screen is clickable, and <code>Ctrl+-</code> / <code>Ctrl+=</code> zooms the whole UI.</p>
     </article>
   </div>
 </section>
@@ -1029,7 +1078,12 @@ kbd {
     <div class="section-head reveal" style="margin-bottom:0">
       <p class="eyebrow"><span class="dot">●</span> <span data-i18n="why.eyebrow">Streaming with its reasons</span></p>
       <h2 class="display" id="why-h2" data-i18n="why.h2">It doesn't just autoplay. It can tell you why.</h2>
-      <p data-i18n-html="why.sub">Most players guess your next song and hope. ytm-tui's streaming plans a <em>set</em> — a core, a bridge, a discovery — then keeps the music flowing as your queue runs dry. Press <code>w</code> and it shows its work, in plain language, no math.</p>
+      <p data-i18n-html="why.sub">ytm-tui's streaming plans a <em>set</em> — a core, a bridge, a discovery — and keeps the music flowing as the queue runs dry. Press <code>w</code> and it shows its work, in plain language.</p>
+      <ul class="facts">
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="why.f1">Three moods: Focused, Balanced, Discovery.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="why.f2">DJ Gem remembers the conversation now — follow-up questions just work.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n-html="why.f3">Ask in plain words — “make me a rainy-day playlist” — and it builds it right in your Library.</span></li>
+      </ul>
     </div>
 
     <div class="why-card reveal" aria-label="Why these picks overlay">
@@ -1052,14 +1106,100 @@ kbd {
   </div>
 </section>
 
+<!-- ===================== RADIO MODE + RETRO MODE ===================== -->
+<section class="section wrap" id="radio" aria-labelledby="rad-h2">
+  <div class="why-grid">
+    <div class="section-head reveal" style="margin-bottom:0">
+      <p class="eyebrow"><span class="dot">●</span> <span data-i18n="rad.eyebrow">Internet radio · Alt+Shift+R</span></p>
+      <h2 class="display" id="rad-h2" data-i18n="rad.h2">Tune in. Then ask what's playing.</h2>
+      <p data-i18n-html="rad.sub"><code>Alt+Shift+R</code> flips the whole app into an internet-radio tuner — proper live broadcasts, pinned to LIVE. And when a song grabs you, one key tells you what it is.</p>
+      <ul class="facts">
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="rad.f1">True live streams — drift is detected and re-synced to the live edge on its own.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="rad.f2">Radio keeps its own favorites, history and theme, separate from the player's.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n-html="rad.f3">Press <code>i</code> — Gemini reads the live stream and names the song, right on the player.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n-html="rad.f4"><code>f</code> favorites the identified track; <code>g</code> hands it to DJ Gem for more like it.</span></li>
+      </ul>
+    </div>
+
+    <div class="rmock reveal" aria-label="Radio mode — a live stream with the what's-playing overlay">
+      <div class="rmock__bar">
+        <span class="mode">📻 radio</span>
+        <span class="st">Night Wave FM — City Pop 24/7</span>
+        <span class="live">LIVE:✓</span>
+      </div>
+      <div class="rmock__body">
+        <div class="seek2" aria-hidden="true" style="max-width:520px">
+          <div class="seek2__track"></div>
+          <div class="seek2__fill" style="width:100%"></div>
+          <div class="seek2__time">1:07:26 · LIVE</div>
+        </div>
+        <div class="controls2" aria-hidden="true">
+          <span>⇤</span>
+          <span class="play">‖</span>
+          <span>⇥</span>
+          <span class="vol">vol <span>−</span> <b>80%</b> <span>+</span></span>
+        </div>
+        <div class="idcard">
+          <div class="idcard__bar"><span><span class="k">[i]</span> <span data-i18n="rad.m.q">What's playing?</span></span><span data-i18n="rad.m.src">from the live stream</span></div>
+          <div class="idcard__body">
+            <div class="idcard__song">♪ プラスティック・ラブ — 竹内まりや</div>
+            <div class="idcard__sub">Plastic Love — Mariya Takeuchi</div>
+            <div class="idcard__hint"><kbd>f</kbd> <span data-i18n="rad.m.fav">favorite</span> · <kbd>g</kbd> <span data-i18n="rad.m.ask">more like this, via DJ Gem</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="why-grid why-grid--flip">
+    <div class="section-head reveal" style="margin-bottom:0">
+      <p class="eyebrow"><span class="dot">●</span> <span data-i18n="ret.eyebrow">Retro mode · CP437</span></p>
+      <h2 class="display" data-i18n="ret.h2">Runs where GUIs fear to boot.</h2>
+      <p data-i18n="ret.sub">One toggle (Settings → Graphics) makes every frame CP437-safe — exactly what a bare Linux console can draw. Great over a crusty SSH session, too.</p>
+      <ul class="facts">
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="ret.f1">Album art included — redrawn live as text-shade ASCII art.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="ret.f2">Icons, borders and gauges degrade to the classic VGA charset — nothing ever reflows.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="ret.f3">CJK titles get a romanized display name — the original metadata stays untouched.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n-html="ret.f4">Best tried on a real TTY: <code>Ctrl+Alt+F3</code>, log in, <code>ytt</code>.</span></li>
+      </ul>
+    </div>
+
+    <div class="tty reveal" aria-label="Retro mode running in a bare Linux console">
+<pre><span class="d">debian login: ochi
+Password:
+$ ytt</span>
+╔══════════════[ ytm-tui · Player ]══════════════╗
+║                                                ║
+║<span class="b">  ♪ Christmas Song - back number                </span>║
+║  [██████████████░░░░░░░░░░░]  3:12 / 5:42      ║
+║  &gt;playing   vol 80%   eq:Bass   S:x  R:x       ║
+║                                                ║
+║<span class="b">              ░░▒▒▓▓▓▓▓▓▓▓▓▓▓▓▒▒░░              </span>║
+║<span class="b">              ▒▒▓▓████████████▓▓▒▒              </span>║
+║<span class="b">              ▓▓██▒▒░░♪  ♪░░▒▒██▓▓              </span>║
+║<span class="b">              ▓▓██░░  ♪♪♪♪  ░░██▓▓              </span>║
+║<span class="b">              ▒▒▓▓████████████▓▓▒▒              </span>║
+║<span class="b">              ░░▒▒▓▓▓▓▓▓▓▓▓▓▓▓▒▒░░              </span>║
+║                                                ║
+║<span class="d">  [?] keys  [s] search  [c] queue  [q] back     </span>║
+╚════════════════════════════════════════════════╝</pre>
+    </div>
+  </div>
+</section>
+
 <!-- ===================== SPOTIFY MIGRATION ===================== -->
 <section class="section wrap" id="spotify" aria-labelledby="sp-h2">
   <div class="why-grid">
     <div class="section-head reveal" style="margin-bottom:0">
       <p class="eyebrow"><span class="dot">●</span> <span data-i18n="sp.eyebrow">Leaving Spotify?</span></p>
       <h2 class="display" id="sp-h2" data-i18n="sp.h2">Your library moves in with one command.</h2>
-      <p data-i18n-html="sp.sub">Liked songs, playlists, the lot — matched track by track (NFKC-normalized and CJK-safe, so K-pop and J-pop metadata survive), written to YouTube Music or into local playlists, with likes kept in order. Every job is checkpointed: rate limit, Ctrl-C, power cut — <code>resume</code> picks up where it left off. Nothing ambiguous is silently guessed; it lands in a report you can review.</p>
-      <p data-i18n-html="sp.sub2">Prefer to stay in the app? Settings → Accounts → <em>Import from Spotify…</em> picks a playlist and imports it in the background while the music keeps playing. Exports and Exportify-style CSV/JSON backups ride the same engine.</p>
+      <p data-i18n-html="sp.sub">Liked songs, playlists, the lot — matched track by track, written to YouTube Music or into local playlists, with likes kept in order.</p>
+      <ul class="facts">
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n-html="sp.f1">Checkpointed &amp; resumable — rate limit, Ctrl-C or power cut, <code>resume</code> continues where it stopped.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="sp.f2">CJK-safe matching — K-pop and J-pop metadata survive intact.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="sp.f3">Nothing ambiguous is silently guessed — it lands in a report you review.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="sp.f4">In-app too: Settings → Accounts imports in the background — exports and CSV/JSON backups included.</span></li>
+      </ul>
     </div>
 
     <div class="xfer reveal" aria-label="Playlist transfer example">
@@ -1083,8 +1223,13 @@ kbd {
     <div class="section-head reveal" style="margin-bottom:0">
       <p class="eyebrow"><span class="dot">●</span> <span data-i18n="sc.eyebrow">Last.fm · ListenBrainz</span></p>
       <h2 class="display" id="sc-h2" data-i18n="sc.h2">Your listening history, wherever you keep it.</h2>
-      <p data-i18n-html="sc.sub">ytm-tui scrobbles like a good citizen: Now Playing as the song starts, the scrobble itself at the classic half-track-or-4-minutes mark, and your in-app likes synced to Last.fm as loves. Connect from Settings → Accounts, or headless with <code>ytt auth lastfm</code>.</p>
-      <p data-i18n-html="sc.sub2">Listens are written to a crash-safe queue on disk <em>before</em> any network attempt — so a flight, a dead Wi-Fi, or a kill -9 loses nothing. They deliver themselves when you're back online, from the TUI or the daemon alike. Self-hosted ListenBrainz? Point <code>api_url</code> at it.</p>
+      <p data-i18n-html="sc.sub">Now Playing as the song starts, the scrobble at the classic half-track-or-4-minutes mark, likes synced to Last.fm as loves. Connect in Settings → Accounts, or with <code>ytt auth lastfm</code>.</p>
+      <ul class="facts">
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n-html="sc.f1">Written to a crash-safe queue on disk <em>before</em> any network attempt.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="sc.f2">Flights, dead Wi-Fi, kill -9 — nothing is lost; it delivers itself when you're back.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="sc.f3">The headless daemon scrobbles too.</span></li>
+        <li><span class="ic" aria-hidden="true">✓</span><span data-i18n-html="sc.f4">Self-hosted ListenBrainz? Point <code>api_url</code> at it.</span></li>
+      </ul>
     </div>
 
     <div class="ledger reveal" aria-label="Scrobble timeline example">
@@ -1105,7 +1250,7 @@ kbd {
   <div class="section-head reveal">
     <p class="eyebrow"><span class="dot">●</span> <span data-i18n="rem.eyebrow">Remote control · daemon · OS integration</span></p>
     <h2 class="display" id="rem-h2" data-i18n="rem.h2">The player is wherever you are</h2>
-    <p data-i18n-html="rem.sub">Once <code>ytt</code> is playing — or the headless daemon is, no terminal required — boss it around from anywhere: another shell, your media keys, Control Center, the tray. It does the one thing you asked, prints a tidy line, and gets out of the way.</p>
+    <p data-i18n-html="rem.sub">Once <code>ytt</code> is playing — or the headless daemon is — boss it around from any shell, your media keys, Control Center or the tray. One command, one tidy line back.</p>
   </div>
 
   <div class="remote-grid reveal">
@@ -1131,18 +1276,18 @@ kbd {
         <div style="color:var(--foam)">bindsym XF86AudioPlay exec ytt -r pp</div>
         <div style="color:var(--foam)">bindsym XF86AudioNext exec ytt -r next</div>
       </div>
-      <p style="color:var(--subtle);font-size:.85rem" data-i18n-html="rem.single">Launching <code>ytt</code> twice won't start a second player fighting over your speakers — it just hands you the controls. The daemon restores queue order, cursor, shuffle/repeat, and streaming state, and keeps scrobbling while it's at it.</p>
+      <p style="color:var(--subtle);font-size:.85rem" data-i18n-html="rem.single">Launching <code>ytt</code> twice never starts a second player — it just hands you the controls. The daemon restores queue, cursor, shuffle/repeat and streaming state, and keeps scrobbling.</p>
     </div>
   </div>
 
   <div class="os-grid reveal">
     <div class="os-card mac">
       <h3><span aria-hidden="true"></span> Control Center <span class="os">macOS</span></h3>
-      <p data-i18n-html="os.mac">The real Now Playing card: artwork, a working scrubber, next/previous, even a Like button. Your AirPods' stem click does what it should. And the same mini player rides your menu bar — <code>ytt-tray</code> ships with the macOS build.</p>
+      <p data-i18n-html="os.mac">The real Now Playing card: artwork, a working scrubber, even a Like button — and the same mini player rides your menu bar via <code>ytt-tray</code>, shipped with the macOS build.</p>
     </div>
     <div class="os-card win">
       <h3><span aria-hidden="true">▦</span> SMTC + <span data-i18n="os.win.tray">tray mini player</span> <span class="os">Windows</span></h3>
-      <p data-i18n-html="os.win">Media overlay with artwork and seek, plus an optional tray companion: left-click for a mini player (Now / Queue / Stream / Tune), right-click for the full menu. <code>ytt-tray --install-startup</code> if you want it at login.</p>
+      <p data-i18n-html="os.win">Media overlay with artwork and seek, plus a tray companion: left-click for the mini player, right-click for the full menu. <code>ytt-tray --install-startup</code> if you want it at login.</p>
     </div>
     <div class="os-card lin">
       <h3><span aria-hidden="true">◆</span> MPRIS <span class="os">Linux</span></h3>
@@ -1154,7 +1299,7 @@ kbd {
     <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.1h">No orphaned mpv. Ever.</span></h4><p data-i18n="rely.1p">Kill it, crash it, close the window, log off — signal hooks, a panic hook, a Windows Job Object, and a PID lifeline file make sure the audio dies with the app.</p></div>
     <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.2h">Instant skips</span></h4><p data-i18n="rely.2p">The next track's stream URL is resolved while the current one plays, so "next" starts in a blink, not in three seconds. Gapless by default.</p></div>
     <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.3h">Crash-safe by paranoia</span></h4><p data-i18n="rely.3p">Scrobbles hit disk before the network. Transfers checkpoint every few tracks. Config saves are atomic. Your data assumes the worst so you don't have to.</p></div>
-    <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.4h">ytt doctor</span></h4><p data-i18n="rely.4p">One command checks mpv, yt-dlp, ffmpeg and your folders, then tells you exactly what to fix — in plain words, not a stack trace.</p></div>
+    <div class="cell"><h4><span class="ic" aria-hidden="true">✓</span> <span data-i18n="rely.4h">Self-healing yt-dlp</span></h4><p data-i18n="rely.4p">YouTube changes weekly. ytt keeps its own current yt-dlp (SHA-256-verified), swaps it in when a track breaks, and retries — automatically. ytt doctor checks everything else.</p></div>
   </div>
 </section>
 
@@ -1258,7 +1403,7 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
   </div>
 
   <p class="disclaimer" data-i18n="foot.disclaimer">
-    Not affiliated with YouTube, Google, Spotify, Last.fm or ListenBrainz. Plays public songs anonymously; bring your own accounts if and when you want them. The DJ Gem assistant is optional and needs a free Gemini API key — everything else works without it.
+    Not affiliated with YouTube, Google, Spotify, Last.fm or ListenBrainz. Plays public songs anonymously; bring your own accounts if and when you want them. Gemini-powered features (DJ Gem, radio song ID) are optional and need a free Gemini API key — everything else works without them.
   </p>
 </footer>
 
@@ -1270,13 +1415,13 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
    ============================================================ */
 var KO = {
   "skip": "본문으로 건너뛰기",
-  "nav.features": "기능", "nav.streaming": "DJ Gem", "nav.spotify": "Spotify", "nav.scrobble": "스크로블",
+  "nav.features": "기능", "nav.streaming": "DJ Gem", "nav.radio": "라디오", "nav.spotify": "Spotify", "nav.scrobble": "스크로블",
   "nav.everywhere": "어디서든", "nav.install": "설치",
 
   "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
   "hero.h1a": "지금 재생 중 —",
   "hero.h1b": "터미널 안에서.",
-  "hero.sub": "빠르고 키보드로 다루는 유튜브 뮤직 클라이언트예요. DJ Gem이 지금 듣는 곡을 중심으로 끝없는 스트리밍을 이어주고, 앨범 아트와 싱크 가사가 TUI 안에 그대로 그려지고, 모든 감상은 Last.fm에 스크로블되고, Spotify 라이브러리는 명령 한 줄로 이사 옵니다. 램을 야금야금 먹는 브라우저 탭도, 광고도 없어요.",
+  "hero.sub": "빠르고 키보드로 다루는, 터미널 속 유튜브 뮤직 클라이언트 — 끝없는 DJ Gem 스트리밍, 라이브 인터넷 라디오, TUI 안의 앨범 아트와 싱크 가사, 스크로블, 명령 한 줄 Spotify 이사까지. 브라우저도, 광고도 없이.",
   "hero.cta1": "ytm-tui 설치하기",
   "hero.cta2": "GitHub에서 별 주기",
   "copy": "복사",
@@ -1310,27 +1455,49 @@ var KO = {
   "feat.h2": "모든 기능이, 키 하나로",
   "feat.sub": "전부 키보드로, 전부 빠르게, 전부 원하는 대로 재설정할 수 있어요. <code>ytt</code> 한 번이면 이 모든 게 시작됩니다.",
   "f.streaming.h": "분위기를 읽는 DJ Gem 스트리밍",
-  "f.streaming.p": "<code>Ctrl+R</code> 한 번이면 지금 듣는 곡을 중심으로 나만의 스트리밍이 시작돼요. Gemini 기반 <em>큐 디렉터</em>가 분위기에 맞는 곡을 골라 이어주죠 — Focused, Balanced, Discovery 모드 중에서. <code>w</code> 를 누르면 그 이유를 쉬운 말로 설명해 줍니다.",
+  "f.streaming.p": "<code>Ctrl+R</code> 하나면 Gemini 기반 <em>큐 디렉터</em>가 분위기에 맞는 곡을 이어줍니다 — Focused, Balanced, Discovery 중에서. <code>w</code> 를 누르면 고른 이유를 쉬운 말로.",
   "f.art.h": "앨범 아트, 가사 — 그리고 뮤직비디오",
-  "f.art.p": "진짜 커버 이미지가 플레이어에 그대로 그려지고, 그 아래로 싱크된 가사가 흘러갑니다. 듣는 것만으로 아쉬울 땐 <code>v</code> — 뮤직비디오가 터미널 위에 작은 mpv 창으로 뜹니다. <em>영상 자동 이어보기</em>를 켜면 다음 곡의 영상으로 같은 창에서 그대로 이어져요.",
+  "f.art.p": "진짜 커버 이미지가 플레이어에 그려지고, 그 아래로 싱크 가사가 흐릅니다 — <code>v</code> 를 누르면 뮤직비디오가 터미널 위 작은 mpv 창으로, 원하면 다음 곡 영상까지 자동으로 이어져요.",
   "f.sources.h": "카탈로그 여섯, 검색창 하나",
-  "f.sources.p": "본진은 YouTube Music이지만, 검색창은 SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser도 알아들어요. <code>Tab</code> 으로 소스를 넘기거나 전부 한꺼번에 — 결과마다 <code>[SRC]</code> 태그가 붙습니다. <code>Alt+Shift+R</code> 로 앱 전체를 인터넷 라디오 튜너로 바꿀 수도 있어요.",
+  "f.sources.p": "본진은 YouTube Music이지만, 같은 검색창이 SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser까지 뒤집니다. <code>Tab</code> 으로 전환하거나 전부 한꺼번에 — 결과마다 <code>[SRC]</code> 태그.",
+  "f.radio.h": "지금 나오는 곡까지 아는 라이브 라디오",
+  "f.radio.p": "<code>Alt+Shift+R</code> 로 앱 전체가 인터넷 라디오 튜너로 — 라이브 엣지에 스스로 재동기화되는 진짜 생방송 스트림에, 라디오 전용 즐겨찾기·기록·테마까지. <code>i</code> 를 누르면 Gemini가 지금 나오는 곡의 이름을 알려주고, <code>f</code> 로 바로 즐겨찾기.",
   "f.scrobble.h": "모든 감상을 기록으로",
-  "f.scrobble.p": "Last.fm과 ListenBrainz를 제대로: Now Playing 갱신, 하프트랙/4분 규칙, 좋아요는 love로 동기화. 오프라인 감상은 디스크에 줄을 섰다가 온라인이 되면 스스로 배달됩니다 — headless 데몬에서도요.",
+  "f.scrobble.p": "Last.fm과 ListenBrainz를 제대로: Now Playing 갱신, 하프트랙 규칙, 좋아요는 love로 — 오프라인 감상은 디스크에 줄 섰다가 돌아오면 배달됩니다.",
   "f.spotify.h": "Spotify에서 이사 오기",
-  "f.spotify.p": "좋아요와 플레이리스트가 명령 한 줄로 YouTube Music으로 옮겨져요 — 체크포인트, 이어하기, CJK에 안전한 매칭, 애매한 곡은 리포트로. 반대 방향도 되고, 전체를 JSON/CSV로 백업할 수도 있습니다.",
+  "f.spotify.p": "좋아요와 플레이리스트가 체크포인트·이어하기 되는 명령 한 줄로 YouTube Music에 — CJK 안전 매칭, 애매한 곡은 때려 맞추지 않고 리포트로. 반대 방향도 됩니다.",
   "f.playlists.h": "플레이리스트와 다운로드는 내 손안에",
-  "f.playlists.p": "라이브러리에서 바로 플레이리스트를 만들고(DJ Gem에게 시켜도 됩니다), Spotify에서 가져온 곡을 담고, <code>d</code> 를 누르면 커버 아트와 태그가 박힌 m4a로 저장 — 다운로드 탭에서 오프라인 재생.",
+  "f.playlists.p": "라이브러리에서 바로 플레이리스트를 만들고(DJ Gem에게 시켜도 됩니다), <code>d</code> 하나로 커버 아트·태그 박힌 m4a 저장 — 다운로드 탭에서 오프라인 재생.",
   "f.remote.h": "어디서든 조종하기",
-  "f.remote.p": "미디어 키, macOS Control Center, 메뉴 바/트레이 미니 플레이어, Linux MPRIS 위젯, 아무 터미널에서나 <code>ytt -r</code> — 아니면 터미널 없이 headless 데몬으로. 음악은 명령이 어디서 왔는지 신경 쓰지 않아요.",
+  "f.remote.p": "미디어 키, macOS Control Center, 메뉴 바/트레이 미니 플레이어, Linux MPRIS, 아무 셸에서나 <code>ytt -r</code> — 아니면 터미널 없이 headless 데몬으로.",
   "f.custom.h": "누가 봐도 내 취향",
-  "f.custom.p": "내장 테마 13종(Gruvbox, Nord, Dracula, Tokyo Night, Rosé Pine…), 색 역할 34개 전부 hex로 편집, Flat부터 Jazz까지 프리셋을 갖춘 10밴드 EQ, 고요한 정지 화면부터 빙글빙글 도는 ASCII 도넛까지 25가지 애니메이션 — 그리고 맨몸 리눅스 콘솔에서도 도는 레트로 모드, ASCII 앨범 아트 포함.",
+  "f.custom.p": "테마 13종, 색 역할 34개 전부 hex 편집, 프리셋 있는 10밴드 EQ, 도는 ASCII 도넛까지 25가지 애니메이션 — 그리고 맨몸 리눅스 콘솔용 레트로 모드.",
   "f.help.h": "단축키는 앱이 기억합니다",
-  "f.help.p": "단축키가 가물가물하세요? <code>?</code> 를 누르면 내 언어로, 내가 바꾼 키 그대로 최신 치트시트가 떠요. 한글 자모도 그대로 통하고(<code>ㅂ</code> = <code>q</code>), 마우스가 편하면 화면의 모든 것이 클릭됩니다. 글씨가 작나요? <code>Ctrl+-</code> / <code>Ctrl+=</code>(또는 Ctrl+휠)로 화면 전체를 확대할 수 있어요.",
+  "f.help.p": "<code>?</code> 를 누르면 내 언어·내가 바꾼 키 그대로 최신 치트시트가 뜹니다. 한글 자모도 그대로 통하고(<code>ㅂ</code> = <code>q</code>), 화면의 모든 게 클릭되고, <code>Ctrl+-</code> / <code>Ctrl+=</code> 로 화면 전체 확대까지.",
 
   "why.eyebrow": "이유까지 말하는 스트리밍",
   "why.h2": "그냥 자동 재생이 아니에요. 왜 골랐는지도 말해주죠.",
-  "why.sub": "대부분의 플레이어는 다음 곡을 찍어놓고 잘 맞기만 바라죠. ytm-tui의 스트리밍은 <em>한 세트</em>를 설계합니다 — 중심 곡, 연결 곡, 발견 곡 — 그리고 대기열이 비어갈 때마다 음악을 계속 채워줘요. <code>w</code> 를 누르면 복잡한 수식 없이 쉬운 말로 그 과정을 보여줍니다.",
+  "why.sub": "ytm-tui의 스트리밍은 <em>한 세트</em>를 설계합니다 — 중심 곡, 연결 곡, 발견 곡 — 그리고 대기열이 비어갈 때마다 음악을 채워줘요. <code>w</code> 를 누르면 그 과정을 쉬운 말로 보여줍니다.",
+  "why.f1": "무드는 셋: Focused, Balanced, Discovery.",
+  "why.f2": "이제 DJ Gem이 대화를 기억해요 — 이어지는 질문도 그냥 통합니다.",
+  "why.f3": "말로 시켜보세요 — “비 오는 날 플레이리스트 만들어줘” — 라이브러리에 바로 만들어 줍니다.",
+
+  "rad.eyebrow": "인터넷 라디오 · Alt+Shift+R",
+  "rad.h2": "주파수를 맞추고, 지금 나오는 곡을 물어보세요.",
+  "rad.sub": "<code>Alt+Shift+R</code> 이면 앱 전체가 인터넷 라디오 튜너가 됩니다 — LIVE에 고정된 진짜 생방송으로. 그리고 좋은 곡이 걸리면, 키 하나로 무슨 곡인지 알 수 있어요.",
+  "rad.f1": "진짜 라이브 스트림 — 밀림이 감지되면 라이브 엣지로 알아서 재동기화.",
+  "rad.f2": "라디오만의 즐겨찾기·기록·테마 — 플레이어와는 따로 갑니다.",
+  "rad.f3": "<code>i</code> 를 누르면 Gemini가 방송을 듣고 지금 나오는 곡을 플레이어 위에 바로 알려줍니다 — 이른바 지듣노.",
+  "rad.f4": "<code>f</code> 는 식별된 곡을 즐겨찾기로, <code>g</code> 는 DJ Gem에게 비슷한 곡을 부탁합니다.",
+  "rad.m.q": "지금 듣는 노래?", "rad.m.src": "라이브 스트림에서", "rad.m.fav": "즐겨찾기", "rad.m.ask": "비슷한 곡은 DJ Gem에게",
+
+  "ret.eyebrow": "레트로 모드 · CP437",
+  "ret.h2": "GUI가 부팅을 망설이는 곳에서도 돌아갑니다.",
+  "ret.sub": "토글 하나(설정 → 그래픽)면 모든 프레임이 CP437 안전 문자로만 그려집니다 — 맨몸 리눅스 콘솔이 표시할 수 있는 딱 그만큼. 낡은 SSH 세션에도 딱이에요.",
+  "ret.f1": "앨범 아트도 포함 — 텍스트 음영의 ASCII 아트로 실시간 변환.",
+  "ret.f2": "아이콘·테두리·게이지가 클래식 VGA 문자셋으로 낮춰져도, 레이아웃은 한 칸도 안 밀립니다.",
+  "ret.f3": "CJK 곡 제목은 로마자 표기로 표시 — 원본 메타데이터는 그대로 둔 채.",
+  "ret.f4": "진짜 TTY에서 써보길 권합니다: <code>Ctrl+Alt+F3</code>, 로그인, <code>ytt</code>.",
   "why.card.title": "이 DJ Gem 선곡의 이유",
   "why.r1.role": "중심", "why.r1.reason": "지금까지 듣던 템포를 그대로 유지합니다.",
   "why.r2.role": "연결", "why.r2.reason": "키는 유지, 드럼은 교체 — 이 곡 다음에 자주 재생돼요.",
@@ -1338,16 +1505,22 @@ var KO = {
 
   "sp.eyebrow": "Spotify를 떠나시나요?",
   "sp.h2": "라이브러리가 명령 한 줄로 이사 옵니다.",
-  "sp.sub": "좋아요, 플레이리스트, 전부 — 곡 단위로 매칭해서(NFKC 정규화 + CJK 안전, K-pop·J-pop 메타데이터도 무사히) YouTube Music이나 로컬 플레이리스트에 순서 그대로 씁니다. 모든 작업은 체크포인트가 있어요: 레이트 리밋, Ctrl-C, 정전 — <code>resume</code> 하면 끊긴 곳부터 이어집니다. 애매한 곡은 조용히 때려 맞추지 않고 리포트에 남겨요.",
-  "sp.sub2": "앱 안이 더 편하다면 설정 → 계정 → <em>Spotify에서 가져오기…</em> 로 플레이리스트를 고르면, 음악이 흐르는 동안 백그라운드에서 가져옵니다. 내보내기와 Exportify 스타일 CSV/JSON 백업도 같은 엔진 위에서 돌아가요.",
+  "sp.sub": "좋아요, 플레이리스트, 전부 — 곡 단위로 매칭해서 YouTube Music이나 로컬 플레이리스트에 순서 그대로 씁니다.",
+  "sp.f1": "체크포인트 & 이어하기 — 레이트 리밋, Ctrl-C, 정전 뒤에도 <code>resume</code> 하면 끊긴 곳부터.",
+  "sp.f2": "CJK 안전 매칭 — K-pop·J-pop 메타데이터도 무사히.",
+  "sp.f3": "애매한 곡은 조용히 때려 맞추지 않고 리포트로.",
+  "sp.f4": "앱 안에서도: 설정 → 계정에서 백그라운드 가져오기 — 내보내기·CSV/JSON 백업 포함.",
   "sp.t.fetch": "좋아요 목록 가져오는 중…", "sp.t.match": "매칭 중",
   "sp.t.matched": "매칭 완료", "sp.t.ambig": "애매함", "sp.t.nf": "못 찾음", "sp.t.report": "리포트 저장됨",
   "sp.t.resume": "끊겼나요? —",
 
   "sc.eyebrow": "Last.fm · ListenBrainz",
   "sc.h2": "당신의 감상 기록, 어디에 두든.",
-  "sc.sub": "ytm-tui는 스크로블 예절이 바릅니다: 곡이 시작되면 Now Playing, 하프트랙 또는 4분 시점에 스크로블, 앱 안의 좋아요는 Last.fm love로 동기화. 설정 → 계정에서 연결하거나, 터미널에서 <code>ytt auth lastfm</code> 으로도 됩니다.",
-  "sc.sub2": "감상 기록은 네트워크를 시도하기 <em>전에</em> 디스크의 크래시 안전 큐에 먼저 적혀요 — 비행기, 끊긴 와이파이, kill -9 에도 하나도 잃지 않습니다. 온라인이 되면 TUI든 데몬이든 알아서 배달해요. 셀프 호스팅 ListenBrainz는 <code>api_url</code> 만 바꾸면 됩니다.",
+  "sc.sub": "곡이 시작되면 Now Playing, 하프트랙 또는 4분 시점에 스크로블, 앱의 좋아요는 Last.fm love로. 설정 → 계정에서, 또는 <code>ytt auth lastfm</code> 으로 연결하세요.",
+  "sc.f1": "네트워크를 시도하기 <em>전에</em> 디스크의 크래시 안전 큐에 먼저 기록.",
+  "sc.f2": "비행기, 끊긴 와이파이, kill -9 — 하나도 잃지 않고, 돌아오면 알아서 배달.",
+  "sc.f3": "headless 데몬도 똑같이 스크로블합니다.",
+  "sc.f4": "셀프 호스팅 ListenBrainz는 <code>api_url</code> 만 바꾸면 끝.",
   "sc.card.title": "스크로블 로그 — 어느 저녁",
   "sc.e1": "Now Playing →", "sc.e2": "2:51에 스크로블", "sc.e2s": "하프트랙 규칙 — 아웃트로까지 기다리지 않아요",
   "sc.e3": "앱에서 좋아요 → Last.fm에서 love", "sc.e3s": "키 하나로 양쪽에",
@@ -1355,16 +1528,16 @@ var KO = {
 
   "rem.eyebrow": "원격 제어 · 데몬 · OS 통합",
   "rem.h2": "플레이어는 당신이 있는 곳에",
-  "rem.sub": "<code>ytt</code> 가 재생 중이면 — 터미널 없이 headless 데몬이 돌고 있어도 — 어디서든 부릴 수 있어요: 다른 셸, 미디어 키, Control Center, 트레이. 시킨 한 가지만 하고, 한 줄로 결과를 알려준 뒤, 비켜줍니다.",
+  "rem.sub": "<code>ytt</code> 가 재생 중이면 — 터미널 없는 headless 데몬이어도 — 아무 셸, 미디어 키, Control Center, 트레이에서 부릴 수 있어요. 명령 하나, 깔끔한 한 줄 응답.",
   "rem.pp": "재생 / 일시정지", "rem.next": "다음 곡으로", "rem.vol": "볼륨을 바로 지정",
   "rem.seek": "원하는 시점으로 점프", "rem.streaming": "무한 스트리밍 켜기", "rem.status": "지금 재생 정보, 스크립트에 바로",
   "rem.daemon": "headless: 저장된 큐를 복원해 재생", "rem.play": "데몬: 검색해서 첫 곡 재생", "rem.stopdaemon": "데몬 중지 및 mpv 정리",
   "rem.wire": "# 미디어 키에 연결 (i3 / sway)",
-  "rem.single": "<code>ytt</code> 를 두 번 실행해도 스피커를 두고 싸우는 두 번째 플레이어는 생기지 않아요 — 그냥 조종 방법을 알려줄 뿐. 데몬은 큐 순서, 커서, 셔플/반복, 스트리밍 상태를 복원하고, 그 와중에 스크로블도 계속합니다.",
+  "rem.single": "<code>ytt</code> 를 두 번 실행해도 두 번째 플레이어는 생기지 않아요 — 조종간만 넘겨줄 뿐. 데몬은 큐·커서·셔플/반복·스트리밍 상태를 복원하고, 그동안 스크로블도 계속합니다.",
 
-  "os.mac": "진짜 Now Playing 카드: 앨범 아트, 실제로 움직이는 시크바, 다음/이전, 좋아요 버튼까지. AirPods 꼭지를 눌러도 제대로 반응해요. 그리고 같은 미니 플레이어가 메뉴 바에도 — macOS 빌드에 <code>ytt-tray</code> 가 함께 들어 있습니다.",
+  "os.mac": "진짜 Now Playing 카드: 앨범 아트, 실제로 움직이는 시크바, 좋아요 버튼까지 — 같은 미니 플레이어가 메뉴 바에도, macOS 빌드에 동봉된 <code>ytt-tray</code> 로.",
   "os.win.tray": "트레이 미니 플레이어",
-  "os.win": "앨범 아트와 시크가 있는 미디어 오버레이, 그리고 선택형 트레이 동반자: 왼쪽 클릭으로 미니 플레이어(Now / Queue / Stream / Tune), 오른쪽 클릭으로 전체 메뉴. 로그인 시 자동 실행은 <code>ytt-tray --install-startup</code>.",
+  "os.win": "앨범 아트·시크 지원 미디어 오버레이에, 트레이 동반자까지: 왼쪽 클릭은 미니 플레이어, 오른쪽 클릭은 전체 메뉴. 로그인 시 자동 실행은 <code>ytt-tray --install-startup</code>.",
   "os.lin": "당당한 <code>org.mpris.MediaPlayer2</code> 시민: playerctl, GNOME·KDE 위젯, waybar — 전부 평범한 음악 플레이어로 인식해요. 실제로 그러니까요.",
 
   "rely.1h": "고아 mpv는 없습니다. 절대로.",
@@ -1373,8 +1546,8 @@ var KO = {
   "rely.2p": "다음 곡의 스트림 URL을 현재 곡이 재생되는 동안 미리 풀어둬서, \"다음\"이 3초가 아니라 눈 깜짝할 새에 시작됩니다. 갭리스는 기본값.",
   "rely.3h": "편집증적 크래시 안전",
   "rely.3p": "스크로블은 네트워크보다 디스크가 먼저. 전송은 몇 곡마다 체크포인트. 설정 저장은 원자적. 데이터가 최악을 가정하니, 당신은 안 그래도 됩니다.",
-  "rely.4h": "ytt doctor",
-  "rely.4p": "명령 하나로 mpv, yt-dlp, ffmpeg와 폴더를 점검하고, 뭘 고쳐야 하는지 스택 트레이스가 아니라 사람 말로 알려줍니다.",
+  "rely.4h": "yt-dlp 자가 치유",
+  "rely.4p": "유튜브는 매주 바뀝니다. ytt는 최신 yt-dlp를 스스로 관리하고(SHA-256 검증), 트랙이 막히면 바꿔 끼운 뒤 재시도까지 — 전부 자동으로. 나머지는 ytt doctor가 점검합니다.",
 
   "inst.eyebrow": "음악까지 2분",
   "inst.h2": "플랫폼을 고르고, 한 줄 붙여넣기.",
@@ -1393,18 +1566,18 @@ var KO = {
   "foot.thanks": "QA 영웅: <a href=\"https://github.com/ZZNN75\" target=\"_blank\" rel=\"noopener\">@ZZNN75</a> 님이 일부러 다 부숴본 덕분에, 여러분은 부술 일이 없습니다. 🫡",
   "foot.releases": "릴리스",
   "foot.made": "Rust · ratatui",
-  "foot.disclaimer": "YouTube, Google, Spotify, Last.fm, ListenBrainz와 무관합니다. 공개된 곡을 익명으로 재생하며, 계정 연결은 전부 선택 사항입니다. DJ Gem 어시스턴트는 무료 Gemini API 키가 필요한 선택 기능이고, 나머지는 키 없이도 전부 동작합니다."
+  "foot.disclaimer": "YouTube, Google, Spotify, Last.fm, ListenBrainz와 무관합니다. 공개된 곡을 익명으로 재생하며, 계정 연결은 전부 선택 사항입니다. Gemini 기반 기능(DJ Gem, 라디오 곡 식별)은 무료 Gemini API 키가 필요한 선택 기능이고, 나머지는 키 없이도 전부 동작합니다."
 };
 
 var JA = {
   "skip": "本文へスキップ",
-  "nav.features": "機能", "nav.streaming": "DJ Gem", "nav.spotify": "Spotify", "nav.scrobble": "スクロブル",
+  "nav.features": "機能", "nav.streaming": "DJ Gem", "nav.radio": "ラジオ", "nav.spotify": "Spotify", "nav.scrobble": "スクロブル",
   "nav.everywhere": "どこからでも", "nav.install": "インストール",
 
   "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
   "hero.h1a": "再生中 —",
   "hero.h1b": "ターミナルの中で。",
-  "hero.sub": "速くて、キーボードで操る YouTube Music クライアント。DJ Gem が今聴いている曲を軸に果てしないストリーミングをつなぎ、アルバムアートと同期歌詞は TUI の中にそのまま描かれ、すべての再生は Last.fm にスクロブルされ、Spotify のライブラリはコマンド一行で引っ越してきます。RAM をじわじわ食うブラウザのタブも、広告もなし。",
+  "hero.sub": "速くて、キーボードで操る、ターミナルの中の YouTube Music クライアント — 果てしない DJ Gem ストリーミング、ライブのインターネットラジオ、TUI に描かれるアルバムアートと同期歌詞、スクロブル、コマンド一行の Spotify 引っ越しまで。ブラウザも広告もなし。",
   "hero.cta1": "ytm-tui をインストール",
   "hero.cta2": "GitHub でスターを付ける",
   "copy": "コピー",
@@ -1438,27 +1611,49 @@ var JA = {
   "feat.h2": "すべての機能が、キー一つで",
   "feat.sub": "全部キーボードで、全部速く、全部好きなように再設定できます。<code>ytt</code> と打てば、その瞬間からすべてが始まります。",
   "f.streaming.h": "空気を読む DJ Gem ストリーミング",
-  "f.streaming.p": "<code>Ctrl+R</code> を押せば、今聴いている曲を軸にしたストリーミングが始まります。Gemini 搭載の<em>キュー・ディレクター</em>が雰囲気に合う曲を並べてくれます — Focused、Balanced、Discovery の中から。<code>w</code> を押せば、その理由をやさしい言葉で説明します。",
+  "f.streaming.p": "<code>Ctrl+R</code> 一つで、Gemini 搭載の<em>キュー・ディレクター</em>が雰囲気に合う曲を並べます — Focused、Balanced、Discovery の中から。<code>w</code> でその理由をやさしい言葉で。",
   "f.art.h": "アルバムアート、歌詞 — そして MV",
-  "f.art.p": "本物のカバー画像がプレイヤーにそのまま描かれ、その下を同期歌詞が流れていきます。聴くだけじゃ物足りないときは <code>v</code> — ミュージックビデオがターミナルの上に小さな mpv ウィンドウで浮かびます。<em>動画の自動連続</em>をオンにすれば、同じウィンドウで次の曲の映像へそのまま引き継がれます。",
+  "f.art.p": "本物のカバー画像がプレイヤーに描かれ、その下を同期歌詞が流れます — <code>v</code> で MV がターミナル上の小さな mpv ウィンドウに。望めば次の曲の映像へ自動で続きます。",
   "f.sources.h": "カタログは六つ、検索窓は一つ",
-  "f.sources.p": "ホームは YouTube Music ですが、検索窓は SoundCloud、Audius、Jamendo、Internet Archive、Radio Browser も話せます。<code>Tab</code> でソースを切り替えるか、全部まとめて — 結果には <code>[SRC]</code> タグ付き。<code>Alt+Shift+R</code> でアプリ全体をインターネットラジオのチューナーに切り替えることもできます。",
+  "f.sources.p": "ホームは YouTube Music。でも同じ検索窓で SoundCloud、Audius、Jamendo、Internet Archive、Radio Browser も探せます。<code>Tab</code> で切り替え、まとめて全部でも — 結果には <code>[SRC]</code> タグ付き。",
+  "f.radio.h": "いま流れている曲まで分かるライブラジオ",
+  "f.radio.p": "<code>Alt+Shift+R</code> でアプリ全体がインターネットラジオのチューナーに — ライブエッジへ自動で再同期する本物の生放送ストリームに、ラジオ専用のお気に入り・履歴・テーマまで。<code>i</code> を押せば Gemini がいま流れている曲名を教えてくれて、<code>f</code> でそのままお気に入りに。",
   "f.scrobble.h": "すべての再生を、記録に",
-  "f.scrobble.p": "Last.fm と ListenBrainz をきちんと: Now Playing の更新、ハーフトラック/4分ルール、いいねは love として同期。オフラインの再生はディスクに並んで、オンラインに戻ると自分で配達されます — headless デーモンからでも。",
+  "f.scrobble.p": "Last.fm と ListenBrainz をきちんと: Now Playing の更新、ハーフトラックルール、いいねは love として同期 — オフラインの再生はディスクに並び、戻れば配達されます。",
   "f.spotify.h": "Spotify から引っ越す",
-  "f.spotify.p": "いいねもプレイリストも、コマンド一行で YouTube Music へ — チェックポイント、再開、CJK に安全なマッチング、あいまいな曲はレポートへ。逆方向も、全体の JSON/CSV バックアップもできます。",
+  "f.spotify.p": "いいねもプレイリストも、チェックポイント付き・再開可能なコマンド一行で YouTube Music へ — CJK に安全なマッチング、あいまいな曲は当てずっぽうにせずレポートへ。逆方向も OK。",
   "f.playlists.h": "プレイリストとダウンロードは手元に",
-  "f.playlists.p": "ライブラリでそのままプレイリストを作り（DJ Gem に頼んでも OK）、Spotify から持ち込んだ曲を入れて、<code>d</code> を押せばカバーアートとタグ入りの m4a で保存 — ダウンロードタブからオフライン再生。",
+  "f.playlists.p": "ライブラリでそのままプレイリストを作り（DJ Gem に頼んでも OK）、<code>d</code> 一つでカバーアートとタグ入りの m4a に保存 — ダウンロードタブからオフライン再生。",
   "f.remote.h": "どこからでも操作",
-  "f.remote.p": "メディアキー、macOS のコントロールセンター、メニューバー/トレイのミニプレイヤー、Linux の MPRIS ウィジェット、どのターミナルからでも <code>ytt -r</code> — あるいはターミナルなしの headless デーモンで。音楽は命令がどこから来たか気にしません。",
+  "f.remote.p": "メディアキー、macOS のコントロールセンター、メニューバー/トレイのミニプレイヤー、Linux の MPRIS、どのシェルからでも <code>ytt -r</code> — あるいはターミナルなしの headless デーモンで。",
   "f.custom.h": "誰が見ても自分好み",
-  "f.custom.p": "内蔵テーマ13種（Gruvbox、Nord、Dracula、Tokyo Night、Rosé Pine…）、34の色ロールすべてを hex で編集、Flat から Jazz までのプリセット付き10バンド EQ、静かな静止画面からくるくる回る ASCII ドーナツまで25種のアニメーション — さらに素の Linux コンソールでも動くレトロモード、ASCII アルバムアート付き。",
+  "f.custom.p": "テーマ13種、34の色ロールすべて hex 編集、プリセット付き10バンド EQ、回る ASCII ドーナツまで25種のアニメーション — 素の Linux コンソール用レトロモードも。",
   "f.help.h": "ショートカットはアプリが覚えています",
-  "f.help.p": "うろ覚えでも大丈夫。<code>?</code> を押せば、あなたの言語で、あなたが変えたキーのまま最新のチートシートが出ます。ハングルの字母もそのまま通り（<code>ㅂ</code> = <code>q</code>）、マウス派なら画面のすべてがクリックできます。文字が小さい？ <code>Ctrl+-</code> / <code>Ctrl+=</code>（または Ctrl+ホイール）で画面全体を拡大できます。",
+  "f.help.p": "<code>?</code> を押せば、あなたの言語で、あなたが変えたキーのまま最新のチートシートが出ます。ハングルの字母もそのまま通り（<code>ㅂ</code> = <code>q</code>）、画面のすべてがクリックでき、<code>Ctrl+-</code> / <code>Ctrl+=</code> で全体を拡大。",
 
   "why.eyebrow": "理由まで語るストリーミング",
   "why.h2": "ただ自動再生するだけじゃない。なぜ選んだかも教えてくれる。",
-  "why.sub": "ほとんどのプレイヤーは次の曲を当てずっぽうで選んで、合うことを祈るだけ。ytm-tui のストリーミングは<em>ワンセット</em>を設計します — 軸、つなぎ、発見 — そしてキューが空きそうになるたびに音楽を満たし続けます。<code>w</code> を押せば、難しい数式なしでその過程を見せてくれます。",
+  "why.sub": "ytm-tui のストリーミングは<em>ワンセット</em>を設計します — 軸、つなぎ、発見 — そしてキューが空きそうになるたびに音楽を満たし続けます。<code>w</code> を押せば、その過程をやさしい言葉で。",
+  "why.f1": "ムードは三つ: Focused、Balanced、Discovery。",
+  "why.f2": "DJ Gem は会話を覚えています — 続きの質問もそのまま通じます。",
+  "why.f3": "言葉で頼めます — 「雨の日のプレイリストを作って」 — ライブラリにそのまま作ってくれます。",
+
+  "rad.eyebrow": "インターネットラジオ · Alt+Shift+R",
+  "rad.h2": "チューニングして、いま流れている曲を聞いてみる。",
+  "rad.sub": "<code>Alt+Shift+R</code> でアプリ全体がインターネットラジオのチューナーに — LIVE に張り付いた本物の生放送です。いい曲に出会ったら、キー一つで曲名が分かります。",
+  "rad.f1": "本物のライブストリーム — 遅れを検知したらライブエッジへ自動で再同期。",
+  "rad.f2": "ラジオ専用のお気に入り・履歴・テーマ — プレイヤーとは別持ち。",
+  "rad.f3": "<code>i</code> を押せば Gemini が放送を読んで、いま流れている曲名をプレイヤーの上に表示します。",
+  "rad.f4": "<code>f</code> で識別した曲をお気に入りに、<code>g</code> で似た曲を DJ Gem に。",
+  "rad.m.q": "いま流れている曲は？", "rad.m.src": "ライブストリームから", "rad.m.fav": "お気に入り", "rad.m.ask": "似た曲を DJ Gem に",
+
+  "ret.eyebrow": "レトロモード · CP437",
+  "ret.h2": "GUI が起動をためらう場所でも動く。",
+  "ret.sub": "トグル一つ（設定 → グラフィック）で、すべてのフレームを CP437 セーフな文字だけで描きます — 素の Linux コンソールが表示できる、ちょうどその範囲で。古びた SSH セッションにもどうぞ。",
+  "ret.f1": "アルバムアートも込み — テキスト濃淡の ASCII アートにリアルタイム変換。",
+  "ret.f2": "アイコン・枠線・ゲージがクラシックな VGA 文字セットに落ちても、レイアウトは1セルもずれません。",
+  "ret.f3": "CJK の曲名はローマ字表記で表示 — 元のメタデータはそのまま。",
+  "ret.f4": "本物の TTY でお試しを: <code>Ctrl+Alt+F3</code>、ログイン、<code>ytt</code>。",
   "why.card.title": "この DJ Gem 選曲の理由",
   "why.r1.role": "軸", "why.r1.reason": "ここまで聴いてきたテンポをそのまま保ちます。",
   "why.r2.role": "つなぎ", "why.r2.reason": "キーは保ったままドラムを交換 — この曲の後によく再生されています。",
@@ -1466,16 +1661,22 @@ var JA = {
 
   "sp.eyebrow": "Spotify を離れる？",
   "sp.h2": "ライブラリはコマンド一行で引っ越してきます。",
-  "sp.sub": "いいねも、プレイリストも、全部 — 曲単位でマッチングして（NFKC 正規化 + CJK 安全、K-pop・J-pop のメタデータも無事）、YouTube Music かローカルのプレイリストへ順番どおりに書き込みます。すべてのジョブにチェックポイント: レート制限、Ctrl-C、停電 — <code>resume</code> すれば途切れたところから続きます。あいまいな曲は黙って当てずっぽうにせず、レビューできるレポートに残します。",
-  "sp.sub2": "アプリの中が良ければ、設定 → アカウント → <em>Spotify からインポート…</em> でプレイリストを選ぶと、音楽を流したままバックグラウンドで取り込みます。エクスポートも Exportify 形式の CSV/JSON バックアップも同じエンジンで動きます。",
+  "sp.sub": "いいねも、プレイリストも、全部 — 曲単位でマッチングして、YouTube Music かローカルのプレイリストへ順番どおりに書き込みます。",
+  "sp.f1": "チェックポイント＆再開 — レート制限、Ctrl-C、停電のあとも <code>resume</code> 一つで続き。",
+  "sp.f2": "CJK に安全なマッチング — K-pop・J-pop のメタデータも無事。",
+  "sp.f3": "あいまいな曲は黙って推測せず、レポートへ。",
+  "sp.f4": "アプリ内でも: 設定 → アカウントからバックグラウンドで取り込み — エクスポートや CSV/JSON バックアップも。",
   "sp.t.fetch": "いいねを取得中…", "sp.t.match": "マッチング中",
   "sp.t.matched": "マッチ", "sp.t.ambig": "あいまい", "sp.t.nf": "見つからず", "sp.t.report": "レポート保存済み",
   "sp.t.resume": "中断した？ —",
 
   "sc.eyebrow": "Last.fm · ListenBrainz",
   "sc.h2": "あなたのリスニング履歴を、どこに置いても。",
-  "sc.sub": "ytm-tui のスクロブルは礼儀正しい: 曲が始まれば Now Playing、ハーフトラックまたは4分の時点でスクロブル、アプリ内のいいねは Last.fm の love として同期。設定 → アカウントから、またはターミナルで <code>ytt auth lastfm</code>。",
-  "sc.sub2": "再生記録はネットワークを試す<em>前に</em>ディスク上のクラッシュ安全なキューへ先に書かれます — フライトも、切れた Wi-Fi も、kill -9 も、一つも失いません。オンラインに戻れば TUI からでもデーモンからでも自動配達。セルフホストの ListenBrainz は <code>api_url</code> を向けるだけ。",
+  "sc.sub": "曲が始まれば Now Playing、ハーフトラックまたは4分の時点でスクロブル、アプリのいいねは Last.fm の love に。設定 → アカウントか <code>ytt auth lastfm</code> で接続。",
+  "sc.f1": "ネットワークを試す<em>前に</em>、ディスク上のクラッシュ安全なキューへ先に記録。",
+  "sc.f2": "フライトも、切れた Wi-Fi も、kill -9 も — 一つも失わず、戻れば自動で配達。",
+  "sc.f3": "headless デーモンも同じようにスクロブルします。",
+  "sc.f4": "セルフホストの ListenBrainz は <code>api_url</code> を向けるだけ。",
   "sc.card.title": "スクロブルログ — ある晩",
   "sc.e1": "Now Playing →", "sc.e2": "2:51 でスクロブル", "sc.e2s": "ハーフトラックルール — アウトロを待ちません",
   "sc.e3": "アプリでいいね → Last.fm で love", "sc.e3s": "キー一つで、両方に",
@@ -1483,16 +1684,16 @@ var JA = {
 
   "rem.eyebrow": "リモート操作 · デーモン · OS 統合",
   "rem.h2": "プレイヤーはあなたのいる場所に",
-  "rem.sub": "<code>ytt</code> が再生中なら — ターミナルなしで headless デーモンが動いていても — どこからでも操れます: 別のシェル、メディアキー、コントロールセンター、トレイ。頼んだ一つだけをこなして、一行で結果を伝え、すっと退きます。",
+  "rem.sub": "<code>ytt</code> が再生中なら — ターミナルなしの headless デーモンでも — どのシェルからでも、メディアキーでも、コントロールセンターでも、トレイからでも。コマンド一つ、返事は一行。",
   "rem.pp": "再生 / 一時停止", "rem.next": "次の曲へ", "rem.vol": "音量を直接指定",
   "rem.seek": "好きな時点へジャンプ", "rem.streaming": "無限ストリーミングをオン", "rem.status": "再生情報をスクリプトへそのまま",
   "rem.daemon": "headless: 保存したキューを復元して再生", "rem.play": "デーモン: 検索して最初の一曲を再生", "rem.stopdaemon": "デーモン停止と mpv の後始末",
   "rem.wire": "# メディアキーに割り当て (i3 / sway)",
-  "rem.single": "<code>ytt</code> を二度起動しても、スピーカーを取り合う二つ目のプレイヤーは生まれません — 操作方法を教えてくれるだけ。デーモンはキューの順序、カーソル、シャッフル/リピート、ストリーミング状態を復元し、その間もスクロブルを続けます。",
+  "rem.single": "<code>ytt</code> を二度起動しても二つ目のプレイヤーは生まれません — 操作を渡すだけ。デーモンはキュー・カーソル・シャッフル/リピート・ストリーミング状態を復元し、その間もスクロブルを続けます。",
 
-  "os.mac": "本物の Now Playing カード: アートワーク、ちゃんと動くシークバー、次へ/前へ、Like ボタンまで。AirPods の軸をつまんでも、期待どおりに動きます。同じミニプレイヤーはメニューバーにも — macOS ビルドには <code>ytt-tray</code> が同梱されています。",
+  "os.mac": "本物の Now Playing カード: アートワーク、ちゃんと動くシークバー、Like ボタンまで — 同じミニプレイヤーはメニューバーにも、macOS ビルド同梱の <code>ytt-tray</code> で。",
   "os.win.tray": "トレイ・ミニプレイヤー",
-  "os.win": "アートワークとシーク付きのメディアオーバーレイ、そして任意のトレイ相棒: 左クリックでミニプレイヤー（Now / Queue / Stream / Tune）、右クリックでフルメニュー。ログイン時に起動したければ <code>ytt-tray --install-startup</code>。",
+  "os.win": "アートワークとシーク付きのメディアオーバーレイに、トレイの相棒も: 左クリックでミニプレイヤー、右クリックでフルメニュー。ログイン時起動は <code>ytt-tray --install-startup</code>。",
   "os.lin": "堂々たる <code>org.mpris.MediaPlayer2</code> の市民: playerctl、GNOME・KDE のウィジェット、waybar — どれも普通の音楽プレイヤーとして認識します。実際そうですから。",
 
   "rely.1h": "孤児 mpv は残しません。絶対に。",
@@ -1501,8 +1702,8 @@ var JA = {
   "rely.2p": "次の曲のストリーム URL を再生中に先に解決しておくので、「次へ」は3秒ではなく瞬きの間に始まります。ギャップレスは初期設定でオン。",
   "rely.3h": "心配性なクラッシュ安全",
   "rely.3p": "スクロブルはネットワークよりディスクが先。転送は数曲ごとにチェックポイント。設定保存はアトミック。データが最悪を想定するので、あなたはしなくて大丈夫。",
-  "rely.4h": "ytt doctor",
-  "rely.4p": "コマンド一つで mpv、yt-dlp、ffmpeg とフォルダを点検し、直すべきことをスタックトレースではなく人間の言葉で教えてくれます。",
+  "rely.4h": "yt-dlp は自己治癒",
+  "rely.4p": "YouTube は毎週変わります。ytt は最新の yt-dlp を自分で管理し（SHA-256 検証）、トラックが詰まれば差し替えて自動で再試行。残りは ytt doctor が点検します。",
 
   "inst.eyebrow": "音楽まで2分",
   "inst.h2": "プラットフォームを選んで、一行貼り付け。",
@@ -1521,7 +1722,7 @@ var JA = {
   "foot.thanks": "QA ヒーロー：<a href=\"https://github.com/ZZNN75\" target=\"_blank\" rel=\"noopener\">@ZZNN75</a> さんがわざと全部壊してくれたおかげで、あなたが壊す必要はありません。🫡",
   "foot.releases": "リリース",
   "foot.made": "Rust · ratatui",
-  "foot.disclaimer": "YouTube、Google、Spotify、Last.fm、ListenBrainz とは無関係です。公開曲を匿名で再生し、アカウント接続はすべて任意です。DJ Gem アシスタントは無料の Gemini API キーが必要なオプション機能で、それ以外はキーなしで全部動きます。"
+  "foot.disclaimer": "YouTube、Google、Spotify、Last.fm、ListenBrainz とは無関係です。公開曲を匿名で再生し、アカウント接続はすべて任意です。Gemini を使う機能（DJ Gem、ラジオの曲識別）は無料の Gemini API キーが必要なオプションで、それ以外はキーなしで全部動きます。"
 };
 
 var DICTS = { ko: KO, ja: JA };
