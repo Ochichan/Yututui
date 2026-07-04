@@ -410,3 +410,8 @@ try {
     Remove-Item -LiteralPath $WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $BackupRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# The cleanup block intentionally probes `ytt daemon stop` after the smoke already stopped
+# the daemon. GitHub Actions' pwsh wrapper can otherwise propagate that native
+# `$LASTEXITCODE` even though the expected cleanup failure was caught above.
+$global:LASTEXITCODE = 0
