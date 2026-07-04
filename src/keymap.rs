@@ -26,6 +26,7 @@ pub enum Action {
     SeekForward,
     VolUp,
     VolDown,
+    ToggleMute,
     NextTrack,
     PrevTrack,
     Favorite,
@@ -117,6 +118,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     ),
     (Action::VolUp, "vol_up", "Volume up", "볼륨 올리기"),
     (Action::VolDown, "vol_down", "Volume down", "볼륨 내리기"),
+    (
+        Action::ToggleMute,
+        "toggle_mute",
+        "Mute / unmute",
+        "음소거 / 해제",
+    ),
     (Action::NextTrack, "next_track", "Next track", "다음 곡"),
     (Action::PrevTrack, "prev_track", "Previous track", "이전 곡"),
     (
@@ -970,8 +977,11 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::SeekForward, key(KeyCode::Right)),
         (C::Player, A::VolUp, key(KeyCode::Up)),
         (C::Player, A::VolDown, key(KeyCode::Down)),
-        (C::Player, A::PrevTrack, ch('p')),
-        (C::Player, A::NextTrack, ch('n')),
+        (C::Player, A::ToggleMute, ch('m')),
+        // mpv-style transport: `,`/`.` skip tracks (mpv's `<`/`>`), since a music player has
+        // no use for mpv's frame-step on `,`/`.`.
+        (C::Player, A::PrevTrack, ch(',')),
+        (C::Player, A::NextTrack, ch('.')),
         (C::Player, A::CycleRating, ch('f')),
         (C::Player, A::OpenLibrary, ch('l')),
         (C::Player, A::OpenQueue, ch('c')),
@@ -983,9 +993,10 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Player, A::IdentifyNowPlaying, ch('i')),
         (C::Player, A::CycleEq, ch('e')),
         (C::Player, A::ToggleNormalize, ch('N')),
-        (C::Player, A::SpeedUp, ch('>')),
-        (C::Player, A::SpeedDown, ch('<')),
-        (C::Player, A::OpenSettings, ch(',')),
+        // Playback speed on `[`/`]` to match mpv (frees `<`/`>`).
+        (C::Player, A::SpeedUp, ch(']')),
+        (C::Player, A::SpeedDown, ch('[')),
+        (C::Player, A::OpenSettings, ch('o')),
         (C::Player, A::OpenAi, ch('g')),
         (C::Player, A::OpenSearch, ch('s')),
         (C::Player, A::AddToPlaylist, ch('P')),
@@ -1713,9 +1724,32 @@ mod tests {
             Some(Action::VolDown)
         );
         assert_eq!(
-            km.action(KeyContext::Player, parse_chord("n").unwrap()),
+            km.action(KeyContext::Player, parse_chord(".").unwrap()),
             Some(Action::NextTrack)
         );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord(",").unwrap()),
+            Some(Action::PrevTrack)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("m").unwrap()),
+            Some(Action::ToggleMute)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("]").unwrap()),
+            Some(Action::SpeedUp)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("[").unwrap()),
+            Some(Action::SpeedDown)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("o").unwrap()),
+            Some(Action::OpenSettings)
+        );
+        // `p`/`n` are no longer Player transport keys (freed by the mpv remap).
+        assert_eq!(km.action(KeyContext::Player, parse_chord("n").unwrap()), None);
+        assert_eq!(km.action(KeyContext::Player, parse_chord("p").unwrap()), None);
         assert_eq!(
             km.action(KeyContext::Player, parse_chord("s").unwrap()),
             Some(Action::OpenSearch)
@@ -2065,13 +2099,13 @@ mod tests {
     #[test]
     fn common_rebind_can_be_shadowed_by_player_binding() {
         let mut km = KeyMap::default();
-        let n = parse_chord("n").unwrap();
+        let dot = parse_chord(".").unwrap();
 
-        km.rebind(KeyContext::Common, Action::PageDown, n).unwrap();
+        km.rebind(KeyContext::Common, Action::PageDown, dot).unwrap();
 
-        assert_eq!(km.action(KeyContext::Player, n), Some(Action::NextTrack));
+        assert_eq!(km.action(KeyContext::Player, dot), Some(Action::NextTrack));
         assert_eq!(
-            km.action(KeyContext::SearchResults, n),
+            km.action(KeyContext::SearchResults, dot),
             Some(Action::PageDown)
         );
     }

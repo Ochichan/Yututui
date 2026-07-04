@@ -496,7 +496,7 @@ fn search_submit_stays_enter_when_common_confirm_is_remapped() {
 #[test]
 fn settings_global_key_capture_rejects_player_overlap() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
     for _ in 0..2 {
         app.update(Msg::Key(key(KeyCode::Tab))); // -> Hotkeys tab
     }
@@ -513,13 +513,13 @@ fn settings_global_key_capture_rejects_player_overlap() {
         Some((KeyContext::Global, Action::ToggleHelp))
     );
 
-    app.update(Msg::Key(key(KeyCode::Char('n')))); // Player next-track owns `n`.
+    app.update(Msg::Key(key(KeyCode::Char('.')))); // Player next-track owns `.`.
     let conflict = app
         .key_conflict
         .expect("global overlap should raise a conflict warning");
     assert_eq!(conflict.ctx, KeyContext::Player);
     assert_eq!(conflict.existing, Action::NextTrack);
-    assert_eq!(conflict.chord, crate::keymap::parse_chord("n").unwrap());
+    assert_eq!(conflict.chord, crate::keymap::parse_chord(".").unwrap());
 }
 
 #[test]
@@ -1609,7 +1609,7 @@ fn identify_overlay_swallows_player_keys_and_esc_closes() {
     assert!(app.now_playing_overlay.is_some());
 
     // `n` (next track) must not leak through to the player underneath.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert!(cmds.is_empty());
     assert_eq!(current(&app), "rad:groove");
     assert!(app.now_playing_overlay.is_some());
@@ -1690,11 +1690,11 @@ fn successful_playback_resets_the_error_streak() {
 }
 
 #[test]
-fn n_advances_and_p_goes_back() {
+fn next_and_prev_keys_move_through_queue() {
     let mut app = app_playing(3, 0);
-    app.update(Msg::Key(key(KeyCode::Char('n'))));
+    app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert_eq!(current(&app), "id1");
-    app.update(Msg::Key(key(KeyCode::Char('p'))));
+    app.update(Msg::Key(key(KeyCode::Char(','))));
     assert_eq!(current(&app), "id0");
 }
 
@@ -1780,13 +1780,13 @@ fn shift_n_toggles_normalization() {
 #[test]
 fn speed_up_and_down_clamp_and_emit() {
     let mut app = app_playing(3, 0);
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('>'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char(']'))));
     assert!((app.playback.speed - 1.1).abs() < 1e-9);
     assert!(cmds.iter().any(|c| matches!(c,
         Cmd::Player(PlayerCmd::SetProperty { name, .. }) if name == "speed")));
     // Floor at SPEED_MIN no matter how many times we press down.
     for _ in 0..50 {
-        app.update(Msg::Key(key(KeyCode::Char('<'))));
+        app.update(Msg::Key(key(KeyCode::Char('['))));
     }
     assert!((app.playback.speed - SPEED_MIN).abs() < 1e-9);
 }
@@ -2367,7 +2367,7 @@ fn load_song_reapplies_active_eq_chain() {
     app.audio.bands = EqPreset::BassBoost.gains();
     // A manual skip reloads the track and must re-send the EQ chain (gapless rebuild
     // can otherwise drop the labeled bands).
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert!(
         af(&cmds)
             .expect("a SetAudioFilter cmd")
@@ -2812,7 +2812,7 @@ fn ai_mascot_animation_redraws_only_when_pose_can_change() {
 fn toggling_animations_while_settings_open_survives_close() {
     let mut app = app_playing(1, 0);
     // Open settings; the draft is seeded from the (off) live config.
-    app.update(Msg::Key(key(KeyCode::Char(','))));
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
     assert!(app.settings.is_some());
     assert!(!app.config.animations.master);
     // Toggle via the shared path (what both the `A` key and the ✨ click call).
@@ -2833,9 +2833,9 @@ fn toggling_animations_while_settings_open_survives_close() {
 }
 
 #[test]
-fn comma_opens_settings_and_q_closes_without_quitting() {
+fn settings_key_opens_and_q_closes_without_quitting() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(','))));
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
     assert_eq!(app.mode, Mode::Settings);
     assert!(app.settings.is_some());
     app.update(Msg::Key(key(KeyCode::Char('q'))));
@@ -2847,7 +2847,7 @@ fn comma_opens_settings_and_q_closes_without_quitting() {
 #[test]
 fn settings_tab_cycles_through_all_tabs() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General);
     app.update(Msg::Key(key(KeyCode::Tab)));
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Playback);
@@ -2867,7 +2867,7 @@ fn settings_tab_cycles_through_all_tabs() {
 fn settings_accounts_tab_renders_service_sections() {
     let mut app = App::new(100);
     app.config.retro_mode = true; // English labels for stable assertions
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
     app.settings.as_mut().unwrap().tab = SettingsTab::Accounts;
 
     let buf = render_app_buffer(&app, 120, 40);
@@ -2897,7 +2897,7 @@ fn settings_accounts_tab_renders_service_sections() {
 fn settings_keys_lists_radio_normal_mode_binding() {
     let mut app = App::new(100);
     app.config.retro_mode = true;
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
     app.settings.as_mut().unwrap().tab = SettingsTab::Keys;
 
     let buf = render_app_buffer(&app, 120, 40);
@@ -3028,7 +3028,7 @@ fn remapped_focus_keys_switch_library_and_settings_tabs() {
     assert_eq!(app.library_ui.tab, LibraryTab::All);
 
     app.update(Msg::Key(key(KeyCode::Char('q'))));
-    app.update(Msg::Key(key(KeyCode::Char(','))));
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General);
     app.update(Msg::Key(key(KeyCode::F(5))));
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Playback);
@@ -3077,7 +3077,7 @@ fn streaming_mode_cycles_on_the_ai_tab_and_persists() {
     let _guard = crate::i18n::lock_for_test();
     use crate::streaming::StreamingMode;
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (General)
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
@@ -3105,7 +3105,7 @@ fn curating_mode_cycles_on_the_ai_tab_and_persists_to_ai_enabled() {
     use crate::streaming::CuratingMode;
     let mut app = app_playing(1, 0);
     assert!(app.config.streaming.ai.enabled); // default → DJ Gem
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (General)
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab
     }
@@ -3129,7 +3129,7 @@ fn curating_mode_cycles_on_the_ai_tab_and_persists_to_ai_enabled() {
 fn streaming_source_cycles_on_general_tab_and_persists() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (General)
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General);
     // Fields: Language(0), SearchSource(1), StreamingSource(2).
     app.update(Msg::Key(key(KeyCode::Down)));
@@ -3149,7 +3149,7 @@ fn streaming_source_cycles_on_general_tab_and_persists() {
 #[test]
 fn clear_romanized_title_cache_button_is_hidden_in_retro_draft() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (General)
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab
     }
@@ -3179,7 +3179,7 @@ fn clear_romanized_title_cache_confirms_and_discards_stale_results() {
     assert!(app.romanization.cache.ensure_local(&song));
     assert!(app.romanization.cache.entry_for(&song).is_some());
 
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (General)
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab
     }
@@ -3226,7 +3226,7 @@ fn clear_romanized_title_cache_confirms_and_discards_stale_results() {
 #[test]
 fn settings_key_capture_accepts_ctrl_chords() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
     for _ in 0..2 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → Hotkeys tab (index 2)
     }
@@ -3260,7 +3260,7 @@ fn settings_key_capture_accepts_ctrl_chords() {
 #[test]
 fn settings_key_capture_conflict_raises_modal_warning() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
     for _ in 0..2 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → Hotkeys tab (index 2)
     }
@@ -3302,7 +3302,7 @@ fn settings_key_capture_conflict_raises_modal_warning() {
 
 /// Move the General-tab cursor onto the Reset-all button.
 fn focus_reset_all(app: &mut App) {
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General tab)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (General tab)
     for _ in 0..SettingsTab::General.fields().len() - 1 {
         app.update(Msg::Key(key(KeyCode::Down)));
     }
@@ -3314,7 +3314,7 @@ fn focus_reset_all(app: &mut App) {
 
 /// Move the General-tab cursor onto the Reset-keybindings button.
 fn focus_reset_keybindings(app: &mut App) {
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General tab)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (General tab)
     let idx = SettingsTab::General
         .fields()
         .iter()
@@ -3438,7 +3438,7 @@ fn reset_all_button_cancel_leaves_settings_untouched() {
 #[test]
 fn settings_theme_persists_when_closed_with_back() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
     for _ in 0..3 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → Graphics tab (index 3); row 0 = ThemePreset
     }
@@ -3460,7 +3460,7 @@ fn settings_theme_persists_when_closed_with_back() {
 #[test]
 fn settings_color_overrides_persist_when_quitting() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
     let role = crate::theme::ThemeRole::Accent;
     {
         let st = app.settings.as_mut().unwrap();
@@ -3486,7 +3486,7 @@ fn settings_color_overrides_persist_when_quitting() {
 #[test]
 fn settings_close_applies_and_persists() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open (General)
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab; row 0 = Speed
     app.update(Msg::Key(key(KeyCode::Right))); // speed 1.0 -> 1.1 (draft)
     assert!(
@@ -3506,7 +3506,7 @@ fn settings_close_applies_and_persists() {
 #[test]
 fn settings_close_persists_live_audio() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback; Speed
     app.update(Msg::Key(key(KeyCode::Right))); // draft speed -> 1.1
     let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // save+quit
@@ -3530,7 +3530,7 @@ fn settings_close_persists_live_audio() {
 #[test]
 fn settings_band_edit_sets_custom_and_emits_filter() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
     for _ in 0..7 {
         // Speed → Seek → Wheel volume → Gapless → Media controls → Auto-continue videos
@@ -3555,7 +3555,7 @@ fn settings_band_edit_sets_custom_and_emits_filter() {
 fn settings_close_reasserts_audio_and_persists_volume() {
     let mut app = app_playing(1, 0);
     app.playback.volume = 55; // a `=`/`-` change during the session
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
     for _ in 0..7 {
         app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 7
@@ -3573,7 +3573,7 @@ fn settings_close_reasserts_audio_and_persists_volume() {
 #[test]
 fn settings_preset_selector_snaps_from_custom_to_flat() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
     for _ in 0..7 {
         app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 7
@@ -3601,7 +3601,7 @@ fn settings_preset_selector_snaps_from_custom_to_flat() {
 #[test]
 fn settings_text_field_edits_path_buffer() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General); row 0 = language
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open (General); row 0 = language
     let cookies_row = SettingsTab::General
         .fields()
         .iter()
@@ -3630,7 +3630,7 @@ fn settings_text_field_edits_path_buffer() {
 fn settings_ai_tab_switches_model_live_and_persists() {
     let mut app = app_playing(1, 0);
     let start = app.ai.model;
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open (General)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open (General)
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
@@ -3655,7 +3655,7 @@ fn settings_ai_tab_switches_model_live_and_persists() {
 #[test]
 fn settings_ai_tab_edits_masked_api_key() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
@@ -3697,7 +3697,7 @@ fn api_key_persists_when_leaving_settings_via_close() {
     // The reported bug: type a key, then leave with Esc/q (the intuitive move) — the
     // key must survive.
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
@@ -3724,7 +3724,7 @@ fn opening_then_leaving_key_editor_empty_keeps_existing_key() {
     // restore the saved key, not wipe it.
     let mut app = app_playing(1, 0);
     app.config.gemini_api_key = Some("KEEPME".to_owned());
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft seeds from config)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open (draft seeds from config)
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
@@ -3743,7 +3743,7 @@ fn opening_then_leaving_key_editor_empty_keeps_existing_key() {
 fn editing_existing_api_key_starts_fresh_not_appended() {
     let mut app = app_playing(1, 0);
     app.config.gemini_api_key = Some("OLDKEY".to_owned());
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft seeds from config)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open (draft seeds from config)
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
@@ -3775,7 +3775,7 @@ fn clicking_away_from_secret_editor_keeps_the_saved_key() {
     // edit-finish that restores the secret.)
     let mut app = app_playing(1, 0);
     app.config.gemini_api_key = Some("KEEPME".to_owned());
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft seeds from config)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open (draft seeds from config)
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
@@ -3807,7 +3807,7 @@ fn reset_all_re_enables_ai() {
     // otherwise a user who disabled DJ Gem then reset would be stranded with DJ Gem off.
     let mut app = app_playing(1, 0);
     app.config.ai_enabled = Some(false);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open (draft.ai_enabled seeds false)
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open (draft.ai_enabled seeds false)
     assert!(!app.settings.as_ref().unwrap().draft.ai_enabled);
     app.settings_reset_all();
     assert!(
@@ -4127,7 +4127,7 @@ fn autoplay_extends_when_queue_runs_low() {
     app.autoplay_streaming = true;
     // A manual next advances and should fetch the candidate pool first (both DJ Gem and non-DJ Gem
     // paths share one pool; the DJ Gem reranks it once it returns).
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert!(
         streaming_fallback(&cmds).is_some(),
         "autoplay should fetch a candidate pool"
@@ -4142,7 +4142,7 @@ fn autoplay_extends_when_queue_runs_low() {
         "the rerank only starts once the pool returns"
     );
     // The cooldown / in-flight guard blocks an immediate second request.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert!(streaming_fallback(&cmds).is_none());
 }
 
@@ -4708,7 +4708,7 @@ fn autoplay_uses_streaming_fallback_without_ai_key() {
     let mut app = app_playing(2, 0); // remaining = 1 (<= threshold)
     app.autoplay_streaming = true;
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert!(
         ask_ai(&cmds).is_none(),
         "no Gemini request without an API key"
@@ -4812,7 +4812,7 @@ fn f_toggles_favorite_of_current_track() {
 #[test]
 fn playing_records_history_most_recent_first() {
     let mut app = app_playing(3, 0); // loads id0 -> history [id0]
-    app.update(Msg::Key(key(KeyCode::Char('n')))); // id1 -> [id1, id0]
+    app.update(Msg::Key(key(KeyCode::Char('.')))); // id1 -> [id1, id0]
     let hist: Vec<&str> = app
         .library
         .history
@@ -6028,7 +6028,7 @@ fn advancing_track_clears_lyrics_and_refetches_when_open() {
         lines: lyric_lines(),
     });
     assert!(app.lyrics.track.is_some());
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n')))); // -> id1
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.')))); // -> id1
     assert!(app.lyrics.track.is_none());
     assert!(app.lyrics.loading);
     assert!(
@@ -6043,7 +6043,7 @@ fn advancing_track_clears_lyrics_and_refetches_when_open() {
 fn album_art_off_emits_no_fetch() {
     let mut app = app_playing(3, 0);
     // Opt-in: off by default → advancing a track issues no artwork fetch.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::FetchArtwork { .. })));
     assert!(!app.art.loading);
 }
@@ -6056,7 +6056,7 @@ fn album_art_on_fetches_remote_then_builds_protocol() {
     let (resize_tx, _) = tokio::sync::mpsc::unbounded_channel();
     app.set_art_resize_tx(resize_tx);
     // Advancing to id1 now fetches its thumbnail from the remote source.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert!(app.art.loading);
     assert!(cmds.iter().any(|c| matches!(
         c,
@@ -6208,7 +6208,7 @@ fn skip_uses_prefetched_url_when_available() {
         stream_url: "https://cdn.example/stream-id1".to_owned(),
     });
     // Skip: id1 should load via the prefetched direct URL, not its watch URL.
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     let url = load_url(&cmds).expect("a Load cmd");
     assert_eq!(url, "https://cdn.example/stream-id1");
     // And it should now prefetch id2.
@@ -6218,7 +6218,7 @@ fn skip_uses_prefetched_url_when_available() {
 #[test]
 fn skip_without_prefetch_falls_back_to_watch_url() {
     let mut app = app_playing(3, 0);
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n')))); // no Resolved arrived
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.')))); // no Resolved arrived
     let url = load_url(&cmds).expect("a Load cmd");
     assert!(url.contains("music.youtube.com/watch") && url.contains("id1"));
 }
@@ -6794,7 +6794,7 @@ fn rating_radio_toggles_radio_favorite_without_signals() {
 fn manual_next_records_signals_then_advances() {
     let mut app = app_playing(3, 0);
     let id = current(&app).to_owned();
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     // The skipped track is persisted (SaveSignals) and playback advances.
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
     assert_ne!(current(&app), id);
@@ -6813,7 +6813,7 @@ fn manual_next_from_radio_does_not_record_signals() {
     app.mode = Mode::Player;
     app.load_song(app.queue.current().cloned());
 
-    let cmds = app.update(Msg::Key(key(KeyCode::Char('n'))));
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
 
     assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
     assert_eq!(current(&app), "id0");
@@ -6893,7 +6893,7 @@ fn rendering_settings_registers_clickable_controls() {
     // click changes/activates the value rather than only moving the cursor onto it.
     let render_targets = |tab: SettingsTab| -> Vec<MouseTarget> {
         let mut app = app_playing(1, 0);
-        app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (mode → Settings)
+        app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (mode → Settings)
         app.settings.as_mut().unwrap().tab = tab;
         let backend = TestBackend::new(80, 32);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6963,7 +6963,7 @@ fn settings_control_hit_rects_land_on_their_glyphs() {
     // If the gutter/label-width offsets were wrong, the arrow rects would miss the glyphs.
     let cell_at = |tab: SettingsTab, want: MouseTarget| -> String {
         let mut app = app_playing(1, 0);
-        app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+        app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
         app.settings.as_mut().unwrap().tab = tab;
         let backend = TestBackend::new(80, 32);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -8090,7 +8090,7 @@ fn clicking_a_library_tab_switches_it() {
 #[test]
 fn clicking_a_settings_tab_switches_it() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General);
     // SettingsTab::ALL[1] is Playback.
     click_target(&mut app, MouseTarget::SettingsTab(1));

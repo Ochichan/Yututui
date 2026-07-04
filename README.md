@@ -82,7 +82,8 @@ Press **`?`** in the app for the complete, live cheat sheet — it reflects *you
 | `Space` | Play / pause |
 | `←` / `→` | Seek back / forward |
 | `↑` / `↓` | Volume up / down |
-| `n` / `p` | Next / previous |
+| `m` | Mute / unmute |
+| `,` / `.` | Previous / next |
 | `s` | Search (`Tab` picks the source) |
 | `l` | Library · `a` play whole tab · `\` enqueue · `/` filter |
 | `c` | Queue |
@@ -97,9 +98,9 @@ Press **`?`** in the app for the complete, live cheat sheet — it reflects *you
 | `g` | DJ Gem assistant |
 | `Shift+S` / `r` | Shuffle / repeat cycle |
 | `e` | EQ preset (Flat · Bass · Treble · Vocal · Rock · Jazz) |
-| `<` / `>` | Playback speed (0.5×–2×) |
+| `[` / `]` | Playback speed (0.5×–2×) |
 | `Ctrl+-` / `Ctrl+=` | Text zoom out / in (also Ctrl+wheel, or Settings → Large text; kitty, Windows Terminal, …) |
-| `,` | Settings |
+| `o` | Settings |
 | `Ctrl+Q` | Quit |
 
 > **Korean keyboard?** Shortcuts understand 두벌식 jamo, so `ㅂ` works like `q` and `ㄱ` like `r` — no need to switch input. Prefer the mouse? Everything on screen is clickable, and the wheel rides the volume.

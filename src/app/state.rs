@@ -245,6 +245,10 @@ pub struct Playback {
     pub paused: bool,
     /// Output volume, 0-100.
     pub volume: i64,
+    /// Volume to restore on unmute. `Some(prev)` means muted (volume is held at 0); `None`
+    /// means not muted. Cleared whenever the user changes volume directly, so a later unmute
+    /// never restores a stale level.
+    pub pre_mute_volume: Option<i64>,
     /// Playback speed multiplier (1.0 = normal).
     pub speed: f64,
     /// Current live-radio now-playing metadata, when the active stream exposes it.

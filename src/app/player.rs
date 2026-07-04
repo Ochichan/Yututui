@@ -450,12 +450,29 @@ impl App {
                 self.audio.seek_seconds,
             ))],
             Action::VolUp => {
+                // A manual volume change takes over from mute, so a later `m` doesn't restore.
+                self.playback.pre_mute_volume = None;
                 self.playback.volume = (self.playback.volume + VOLUME_STEP).min(VOLUME_MAX);
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetVolume(self.playback.volume))]
             }
             Action::VolDown => {
+                self.playback.pre_mute_volume = None;
                 self.playback.volume = (self.playback.volume - VOLUME_STEP).max(0);
+                self.dirty = true;
+                vec![Cmd::Player(PlayerCmd::SetVolume(self.playback.volume))]
+            }
+            // mpv-style mute: remember the level and drop to 0; toggling restores it. The
+            // volume readout naturally shows 0 while muted, and the change rides the existing
+            // SetVolume path so the daemon / OS media session stay in sync.
+            Action::ToggleMute => {
+                match self.playback.pre_mute_volume.take() {
+                    Some(prev) => self.playback.volume = prev,
+                    None => {
+                        self.playback.pre_mute_volume = Some(self.playback.volume);
+                        self.playback.volume = 0;
+                    }
+                }
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetVolume(self.playback.volume))]
             }
