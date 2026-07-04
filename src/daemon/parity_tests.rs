@@ -118,6 +118,7 @@ fn b0_script() -> Vec<RemoteCommand> {
         RemoteCommand::VolumeDown,
         RemoteCommand::SetVolume { percent: 100 }, // upper clamp behavior
         RemoteCommand::VolumeUp,
+        RemoteCommand::QueueRemove { position: 0 }, // before the cursor: no track load
         RemoteCommand::ToggleShuffle,
         RemoteCommand::CycleRepeat,
         RemoteCommand::CycleRepeat,
@@ -136,9 +137,8 @@ fn b0_script() -> Vec<RemoteCommand> {
         RemoteCommand::Streaming {
             state: ToggleState::Toggle,
         },
-        RemoteCommand::QueueRemove { position: 0 }, // before the cursor: no track load
-        RemoteCommand::ToggleShuffle,               // back to natural order
-        RemoteCommand::CycleRepeat,                 // Off → All → One → Off completes
+        RemoteCommand::ToggleShuffle, // back to natural order
+        RemoteCommand::CycleRepeat,   // Off → All → One → Off completes
     ]
 }
 
