@@ -63,7 +63,7 @@ impl MiniPlayerPanel {
         let (width, height) = theme.window_size(false);
         let size = LogicalSize::new(width, height);
         let builder = WindowBuilder::new()
-            .with_title("YtmTui Mini Player")
+            .with_title("YPlayer Mini Player")
             .with_inner_size(size)
             .with_min_inner_size(size)
             .with_max_inner_size(size)

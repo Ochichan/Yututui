@@ -618,7 +618,7 @@ fn title_for_state(state: &TrayState) -> String {
 fn artist_for_state(state: &TrayState) -> String {
     match state.status().and_then(|status| status.artist.as_deref()) {
         Some(artist) if !artist.is_empty() => artist.to_string(),
-        _ => "YtmTui".to_string(),
+        _ => "YPlayer".to_string(),
     }
 }
 

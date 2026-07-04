@@ -48,7 +48,7 @@ impl MainWindow {
     {
         let state = DesktopState::load();
         let mut builder = WindowBuilder::new()
-            .with_title("YtmTui")
+            .with_title("YPlayer")
             .with_inner_size(LogicalSize::new(DEFAULT_W, DEFAULT_H))
             .with_min_inner_size(LogicalSize::new(MIN_W, MIN_H))
             .with_resizable(true)

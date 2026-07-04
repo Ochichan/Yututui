@@ -140,7 +140,7 @@ pub fn build_menu(state: &TrayState) -> MenuModel {
     };
 
     let entries = vec![
-        item("YtmTui", false, None),
+        item("YPlayer", false, None),
         item(track_label(state), false, None),
         item(state_label(state), false, None),
         MenuEntry::Separator,
