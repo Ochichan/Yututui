@@ -150,6 +150,11 @@ async fn run<F: Fn(GatewayEvent)>(
     mut cmd_rx: mpsc::UnboundedReceiver<OutEnvelope>,
 ) {
     let mut backoff = BACKOFF_MIN;
+    // The union of topics any window asked for, kept ACROSS sessions. Subscriptions are
+    // declarations of interest, not one-shot actions: a window that booted while the core
+    // was down (or that outlives a core restart) sent its one `sub` into a dead session,
+    // so every fresh session must replay the set or that window stays empty forever.
+    let mut desired: Vec<Topic> = Vec::new();
     loop {
         emit(GatewayEvent::Connection(ConnState::Connecting));
         match open_session().await {
@@ -160,7 +165,8 @@ async fn run<F: Fn(GatewayEvent)>(
                     capabilities: ack.capabilities,
                     owner_mode: ack.owner_mode,
                 }));
-                let reason = run_session(conn, &mut shutdown_rx, &mut cmd_rx, &emit).await;
+                let reason =
+                    run_session(conn, &mut shutdown_rx, &mut cmd_rx, &mut desired, &emit).await;
                 emit(GatewayEvent::Connection(ConnState::Offline {
                     reason: reason.clone(),
                 }));
@@ -237,6 +243,7 @@ async fn run_session<F: Fn(GatewayEvent)>(
     conn: Stream,
     shutdown_rx: &mut oneshot::Receiver<()>,
     cmd_rx: &mut mpsc::UnboundedReceiver<OutEnvelope>,
+    desired: &mut Vec<Topic>,
     emit: &F,
 ) -> String {
     let mut reader = BufReader::new(&conn);
@@ -246,15 +253,20 @@ async fn run_session<F: Fn(GatewayEvent)>(
     // session, so it cannot leak across reconnects.
     let mut pending: HashMap<u64, u64> = HashMap::new();
 
-    // Commands queued while we were offline are stale on this fresh session — discard them.
-    while cmd_rx.try_recv().is_ok() {}
+    // Commands queued while we were offline are stale on this fresh session — discard them,
+    // EXCEPT sub/unsub, which fold into `desired` so the (re)subscribe below replays them.
+    while let Ok(env) = cmd_rx.try_recv() {
+        track_subscriptions(&env, desired);
+    }
 
-    // Subscribe to `system` so we notice owner shutdown even with no window open, and to keep
-    // the session non-idle. The window adds its own subs (player/queue/…) when it loads.
+    // Subscribe to `system` (so we notice owner shutdown even with no window open, and to
+    // keep the session non-idle) plus every topic a window already declared. New sessions
+    // send fresh snapshots for all of these, which is exactly the rehydrate the frontend
+    // expects after a reconnect.
     let sub = ClientFrame {
         id: next_id,
         op: ClientOp::Subscribe {
-            topics: vec![Topic::System],
+            topics: initial_topics(desired),
         },
     };
     next_id += 1;
@@ -281,11 +293,13 @@ async fn run_session<F: Fn(GatewayEvent)>(
                 awaiting_pong = true;
             }
             maybe = cmd_rx.recv() => {
-                if let Some(env) = maybe
-                    && let Some(reason) =
+                if let Some(env) = maybe {
+                    track_subscriptions(&env, desired);
+                    if let Some(reason) =
                         forward_command(&conn, env, &mut next_id, &mut pending, emit).await
-                {
-                    return reason;
+                    {
+                        return reason;
+                    }
                 }
                 // `None` = the handle was dropped; the shutdown branch will fire too.
             }
@@ -393,6 +407,41 @@ fn parse_topics(payload: &serde_json::Value) -> Option<Vec<Topic>> {
     (!topics.is_empty()).then_some(topics)
 }
 
+/// Fold a `sub`/`unsub` envelope into the reconnect-surviving desired-topic set; every other
+/// kind passes through untouched. Order-preserving and deduplicated (the set stays small —
+/// at most the 13 wire topics).
+fn track_subscriptions(env: &OutEnvelope, desired: &mut Vec<Topic>) {
+    match env.kind {
+        OutKind::Sub => {
+            if let Some(topics) = parse_topics(&env.payload) {
+                for topic in topics {
+                    if !desired.contains(&topic) {
+                        desired.push(topic);
+                    }
+                }
+            }
+        }
+        OutKind::Unsub => {
+            if let Some(topics) = parse_topics(&env.payload) {
+                desired.retain(|topic| !topics.contains(topic));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The session-opening subscribe: `system` first (the gateway's own keep-alive/shutdown
+/// listener), then every window-declared topic.
+fn initial_topics(desired: &[Topic]) -> Vec<Topic> {
+    let mut topics = vec![Topic::System];
+    for topic in desired {
+        if !topics.contains(topic) {
+            topics.push(*topic);
+        }
+    }
+    topics
+}
+
 /// Render a correlated [`RemoteResponse`] as the `res`/`err` envelope the frontend awaits.
 fn reply_envelope(fid: u64, resp: RemoteResponse) -> InEnvelope {
     if resp.ok {
@@ -488,6 +537,62 @@ mod translate_tests {
         assert_eq!(parse_topics(&serde_json::json!([])), None);
         assert_eq!(parse_topics(&serde_json::json!("player")), None);
         assert_eq!(parse_topics(&serde_json::json!(["bogus"])), None);
+    }
+
+    fn sub_env(kind: OutKind, topics: serde_json::Value) -> OutEnvelope {
+        OutEnvelope {
+            v: 1,
+            id: None,
+            kind,
+            name: String::new(),
+            payload: topics,
+        }
+    }
+
+    #[test]
+    fn subscriptions_fold_into_the_desired_set_across_kinds() {
+        let mut desired = Vec::new();
+        track_subscriptions(
+            &sub_env(OutKind::Sub, serde_json::json!(["player", "queue"])),
+            &mut desired,
+        );
+        // Overlapping re-sub dedups instead of duplicating.
+        track_subscriptions(
+            &sub_env(OutKind::Sub, serde_json::json!(["queue", "settings"])),
+            &mut desired,
+        );
+        track_subscriptions(
+            &sub_env(OutKind::Unsub, serde_json::json!(["queue"])),
+            &mut desired,
+        );
+        assert_eq!(desired, vec![Topic::Player, Topic::Settings]);
+
+        // Non-subscription envelopes never touch the set.
+        track_subscriptions(
+            &OutEnvelope {
+                v: 1,
+                id: Some(1),
+                kind: OutKind::Cmd,
+                name: "next".to_string(),
+                payload: serde_json::Value::Null,
+            },
+            &mut desired,
+        );
+        assert_eq!(desired, vec![Topic::Player, Topic::Settings]);
+    }
+
+    #[test]
+    fn initial_subscribe_replays_desired_topics_after_system() {
+        assert_eq!(initial_topics(&[]), vec![Topic::System]);
+        assert_eq!(
+            initial_topics(&[Topic::Player, Topic::Queue]),
+            vec![Topic::System, Topic::Player, Topic::Queue]
+        );
+        // A window that explicitly subscribed to system doesn't double it.
+        assert_eq!(
+            initial_topics(&[Topic::System, Topic::Player]),
+            vec![Topic::System, Topic::Player]
+        );
     }
 
     #[test]
