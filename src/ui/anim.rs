@@ -526,36 +526,35 @@ pub fn seek_flash_overlay(frame: &mut Frame, app: &App, area: Rect, ratio: f64) 
     }
 }
 
-/// A transient volume gauge flashed on the blank row under the transport strip whenever the
-/// volume changes (keys, wheel, or remote) — hold for two thirds of the window, fade out over
-/// the last third. `█`/`░` cells only, so retro mode shows it verbatim.
+/// A transient volume gauge flashed directly over the transport strip's `vol - 50% +`
+/// cluster whenever the volume changes (keys, wheel, or remote) — hold for two thirds of
+/// the window, fade out over the last third. `area` is the cluster's own rect (the caller
+/// computes it for the `VolumeArea` hit rect anyway) and the gauge spans it exactly, so it
+/// reads as the controls momentarily morphing into a level meter. Paint only: the -/+ hit
+/// rects registered underneath are untouched, so the buttons keep taking clicks while
+/// covered. `█`/`░` cells only, so retro mode shows it verbatim.
 pub fn volume_flash_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let a = app.animations();
-    if !(a.master && a.volume_flash) || area.height == 0 {
+    if !(a.master && a.volume_flash) || area.width == 0 || area.height == 0 {
         return;
     }
     let Some(t) = fx_t(app, app.fx.volume, fx_window::VOLUME_MS) else {
         return;
     };
-    const BAR_W: u16 = 14;
-    if area.width < BAR_W + 2 {
-        return;
-    }
     let alpha = ((1.0 - t) * 3.0).clamp(0.0, 1.0);
     let vol = (app.playback.volume.clamp(0, 100) as f64) / 100.0;
-    let filled = (vol * f64::from(BAR_W)).round() as u16;
-    let x0 = area.x + (area.width - BAR_W) / 2;
+    let filled = (vol * f64::from(area.width)).round() as u16;
     let bg = app.theme.color(R::Background);
     let on = lerp_color(bg, app.theme.color(R::GaugeFilled), alpha);
     let off = lerp_color(bg, app.theme.color(R::GaugeEmpty), alpha * 0.6);
     let buf = frame.buffer_mut();
-    for i in 0..BAR_W {
+    for i in 0..area.width {
         let (ch, color) = if i < filled {
             ('█', on)
         } else {
             ('░', off)
         };
-        put_char(buf, x0 + i, area.y, ch, Style::default().fg(color));
+        put_char(buf, area.x + i, area.y, ch, Style::default().fg(color));
     }
 }
 

@@ -37,6 +37,10 @@ use crate::theme::ThemeRole as R;
 pub struct Seg<'a> {
     pub target: Option<MouseTarget>,
     pub text: &'a str,
+    /// Extra cells of flanking air (each side) folded into the hit rect — the rendered
+    /// text is untouched. Lets a tiny control annex the dead spacing around it so its
+    /// whole word is an easy click.
+    pub hit_pad: u16,
 }
 
 impl<'a> Seg<'a> {
@@ -44,11 +48,28 @@ impl<'a> Seg<'a> {
         Self {
             target: Some(target),
             text,
+            hit_pad: 0,
+        }
+    }
+
+    /// A button whose hit rect grows `pad` cells into the air on each side of its text.
+    /// The caller must own that air (label spacing, not a neighbouring control's cells):
+    /// on overlap the later-registered rect wins (`App::mouse_region_at` scans newest
+    /// first), so padding into an earlier neighbour would steal its clicks.
+    pub fn padded_button(target: MouseTarget, text: &'a str, pad: u16) -> Self {
+        Self {
+            target: Some(target),
+            text,
+            hit_pad: pad,
         }
     }
 
     pub fn label(text: &'a str) -> Self {
-        Self { target: None, text }
+        Self {
+            target: None,
+            text,
+            hit_pad: 0,
+        }
     }
 }
 
@@ -86,11 +107,18 @@ pub fn render_segments(
     let mut spans = Vec::with_capacity(segments.len());
     for (seg, width) in segments.iter().zip(widths) {
         let style = if let Some(target) = seg.target {
+            // The rect hugs the text, plus any `hit_pad` cells of flanking air —
+            // clamped to `area` so padding never escapes the strip's row.
+            let x0 = x.saturating_sub(seg.hit_pad).max(area.x);
+            let end = x
+                .saturating_add(width)
+                .saturating_add(seg.hit_pad)
+                .min(area.right());
             app.register_mouse_button(
                 Rect {
-                    x,
+                    x: x0,
                     y: area.y,
-                    width,
+                    width: end.saturating_sub(x0),
                     height: area.height.min(1),
                 },
                 target,

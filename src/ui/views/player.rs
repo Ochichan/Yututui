@@ -172,10 +172,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
     app.bridges.seekbar_rect.set(Some(rows[3]));
 
+    // The transient volume-nudge gauge rides the strip's own `vol - 50% +` cells now (see
+    // `render_controls`), so the blank row below stays blank.
     render_controls(frame, app, rows[5]);
-    // A transient volume gauge flashes on the blank row under the transport strip right after
-    // a volume nudge (no-op outside its one-shot window).
-    crate::ui::anim::volume_flash_overlay(frame, app, rows[6]);
 
     render_status_line(frame, app, rows[7]);
 
@@ -302,14 +301,27 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
     };
     // The last tier also sheds the non-clickable decorations (state word, speed, norm, VU,
     // download tag), keeping every *control* reachable on even the tiniest grid.
-    let parts = [("    ", false), ("  ", false), (" ", false), (" ", true)]
+    let (gap_w, parts) = [("    ", false), ("  ", false), (" ", false), (" ", true)]
         .iter()
-        .map(|(gap, minimal)| status_line_parts_at(app, gap, *minimal))
-        .find(fits)
-        .unwrap_or_else(|| status_line_parts_at(app, " ", true));
+        .map(|(gap, minimal)| {
+            (
+                buttons::text_width(gap),
+                status_line_parts_at(app, gap, *minimal),
+            )
+        })
+        .find(|(_, parts)| fits(parts))
+        .unwrap_or_else(|| (1, status_line_parts_at(app, " ", true)));
+    // The identify chip (`ID?` / `지듣노`) is the smallest control on the line, and its
+    // trailing `?` sits right on its rect's edge — fold up to two cells of the flanking
+    // gaps into its hit rect (never more than the gap itself, so it can't annex a
+    // neighbouring control's cells).
+    let id_pad = gap_w.min(2);
     let segments: Vec<Seg> = parts
         .iter()
         .map(|(target, text)| match target {
+            Some(t @ MouseTarget::Player(Action::IdentifyNowPlaying)) => {
+                Seg::padded_button(*t, text.as_ref(), id_pad)
+            }
             Some(t) => Seg::button(*t, text.as_ref()),
             None => Seg::label(text.as_ref()),
         })
@@ -810,15 +822,13 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         0
     };
-    app.register_mouse_button(
-        Rect {
-            x,
-            y: area.y,
-            width,
-            height: area.height.min(1),
-        },
-        MouseTarget::VolumeArea,
-    );
+    let vol_rect = Rect {
+        x,
+        y: area.y,
+        width,
+        height: area.height.min(1),
+    };
+    app.register_mouse_button(vol_rect, MouseTarget::VolumeArea);
     let controls = crate::ui::anim::controls_style(
         app,
         app.theme
@@ -835,6 +845,11 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
         labels,
         Alignment::Center,
     );
+    // Right after a volume nudge, the transient gauge paints directly over the
+    // `vol - 50% +` cells (no-op outside its one-shot window). Paint only — the -/+ and
+    // wheel hit rects registered above stay live, so the buttons keep taking clicks
+    // while the gauge covers their glyphs (repeated +/+/+ nudges land blind).
+    crate::ui::anim::volume_flash_overlay(frame, app, vol_rect);
 }
 
 /// Blank rows framing the album art: one between the transport status line and the art,
