@@ -33,9 +33,9 @@ Each command installs `ytt` **and** its helpers (mpv, yt-dlp, ffmpeg) in one go.
 curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash
 ```
 
-> The `curl | bash` and from-source paths install **only** `ytt` — run `ytt doctor` afterward to see what's missing.
+> Direct installer/source-build paths install `ytt`; macOS and Windows release/source installs also place `ytt-desktop` beside it. Run `ytt doctor` afterward to see what's missing.
 > **yt-dlp keeps itself fresh.** YouTube changes weekly, so `ytt` maintains its own current yt-dlp (SHA-256-verified from github.com) and uses whichever of {managed, system} is newer. `ytt tools status` / `ytt tools update`; opt out with `"tools": {"ytdlp_managed": false}` in `config.json`.
-> Scoop (Windows) and brew (macOS) also ship the **YtmTui Tray** mini player. Start-at-login is opt-in: `ytt-tray --install-startup`.
+> Scoop (Windows), brew (macOS), and the direct release installers also ship the **YtmTui Tray** mini player. Start-at-login is opt-in: `ytt-desktop --install-startup`.
 
 ## Quick start
 

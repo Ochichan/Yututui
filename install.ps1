@@ -1,4 +1,5 @@
 # ytm-tui installer (Windows) — makes `ytt` runnable from any terminal, no manual setup.
+# Release/source installs also place the `ytt-desktop` tray companion beside it.
 #
 #   irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
 #                                                            # download a prebuilt — no clone needed
@@ -11,6 +12,7 @@
 
 $ErrorActionPreference = 'Stop'
 $Bin = 'ytt'
+$DesktopBin = 'ytt-desktop'
 $RepoSlug = 'Ochichan/ytm-tui'
 
 # $PSScriptRoot is reliably set for script-file execution; fall back to the CWD when the script
@@ -25,6 +27,7 @@ function Die($m)  { Write-Host "error: $m" -ForegroundColor Red; exit 1 }
 
 $ForceBuild = $args -contains '--build'
 $Prebuilt   = Join-Path $ScriptDir 'dist\ytt.exe'
+$script:TrayInstalled = $false
 
 # These drive the install directory below; on Server Core / some CI / redirected-profile
 # environments they can be unset, which would silently produce a bogus root-relative path.
@@ -44,6 +47,14 @@ function Install-File($srcExe) {
         Copy-Item $srcIcon (Join-Path $script:InstallDir 'ytm-tui.ico') -Force
     }
     Ok "Installed -> $dest"
+
+    $srcTray = Join-Path (Split-Path $srcExe -Parent) "$DesktopBin.exe"
+    if (Test-Path $srcTray) {
+        $trayDest = Join-Path $script:InstallDir "$DesktopBin.exe"
+        Copy-Item $srcTray $trayDest -Force
+        $script:TrayInstalled = $true
+        Ok "Installed tray companion -> $trayDest"
+    }
 }
 
 # Download the prebuilt zip from GitHub Releases, verify its SHA-256 against checksums.txt,
@@ -95,11 +106,15 @@ function Install-ViaCargo {
         Die "Rust (cargo) is not installed or not on PATH - required for --build.`n  Install Rust: https://rustup.rs  then re-run."
     }
     Info "Building from source with cargo - this can take a few minutes the first time..."
-    cargo install --path . --force
+    cargo install --path . --force --features desktop --bin $Bin --bin $DesktopBin
     if ($LASTEXITCODE -ne 0) { Die "cargo install failed." }
     # cargo installs into %USERPROFILE%\.cargo\bin, already on PATH via rustup.
     $script:InstallDir = Join-Path $env:USERPROFILE '.cargo\bin'
     Ok "Built and installed -> $(Join-Path $script:InstallDir "$Bin.exe")"
+    if (Test-Path (Join-Path $script:InstallDir "$DesktopBin.exe")) {
+        $script:TrayInstalled = $true
+        Ok "Built tray companion -> $(Join-Path $script:InstallDir "$DesktopBin.exe")"
+    }
 }
 
 # --- choose a strategy -----------------------------------------------------------------
@@ -184,4 +199,9 @@ if ($supportsIdentity) {
 }
 
 Write-Host ""
-Ok "Done. Start it with:  $Bin"
+if ($script:TrayInstalled) {
+    Ok "Done. Start it with:  $Bin   Tray: $DesktopBin"
+}
+else {
+    Ok "Done. Start it with:  $Bin"
+}

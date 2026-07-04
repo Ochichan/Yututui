@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
 # ytm-tui installer (macOS / Linux) — makes `ytt` runnable from anywhere, no manual setup.
+# macOS release/source installs also place the `ytt-desktop` menu-bar companion beside it.
 #
 #   curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash
 #                                 # download a prebuilt binary for this OS/arch — no clone needed
@@ -16,6 +17,7 @@
 set -euo pipefail
 
 BIN=ytt
+DESKTOP_BIN=ytt-desktop
 REPO_SLUG="Ochichan/ytm-tui"
 DOWNLOAD_TMP=""
 cleanup_download_tmp() {
@@ -71,6 +73,31 @@ install_prebuilt() {
     xattr -d com.apple.quarantine "$INSTALL_DIR/$BIN" 2>/dev/null || true
   fi
   ok "Installed prebuilt binary -> $INSTALL_DIR/$BIN"
+  install_macos_desktop_companion "$(dirname "$src")" "$INSTALL_DIR"
+}
+
+install_macos_desktop_companion() {
+  local src_dir="$1" dest_dir="$2" companion src dest
+  [ "$OS" = Darwin ] || return 0
+
+  if [ -f "$src_dir/$DESKTOP_BIN" ]; then
+    companion="$DESKTOP_BIN"
+  elif [ -f "$src_dir/ytt-tray" ]; then
+    # Backward-compatible with older pinned release archives.
+    companion="ytt-tray"
+  else
+    return 0
+  fi
+
+  src="$src_dir/$companion"
+  dest="$dest_dir/$companion"
+  if [ "$src" != "$dest" ]; then
+    install -m 0755 "$src" "$dest"
+  else
+    chmod 0755 "$dest"
+  fi
+  xattr -d com.apple.quarantine "$dest" 2>/dev/null || true
+  ok "Installed menu-bar companion -> $dest  (keep it at login: $companion --install-startup)"
 }
 
 # Install the Linux launcher entry + icon into the XDG user dirs so `ytt` appears in app
@@ -111,13 +138,19 @@ install_via_cargo() {
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   then re-run ./install.sh   (or grab a prebuilt binary from the project's Releases page)."
   info "Building from source with cargo — this can take a few minutes the first time…"
-  cargo install --path . --force
+  if [ "$OS" = Darwin ]; then
+    cargo install --path . --force --features desktop --bin "$BIN" --bin "$DESKTOP_BIN"
+  else
+    cargo install --path . --force
+  fi
   # cargo installs into \$CARGO_HOME/bin (default ~/.cargo/bin), already on PATH via rustup.
   INSTALL_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
   ok "Built and installed -> $INSTALL_DIR/$BIN"
+  install_macos_desktop_companion "$INSTALL_DIR" "$INSTALL_DIR"
 
   # If an older HOME-local install appears earlier on PATH than cargo's bin dir, refresh
   # that visible command too; otherwise `ytt` would still launch the stale binary.
+  local visible cargo_install_dir
   visible="$(command -v "$BIN" 2>/dev/null || true)"
   if [ -n "$visible" ] && [ "$visible" != "$INSTALL_DIR/$BIN" ]; then
     case "$visible" in
@@ -126,7 +159,9 @@ install_via_cargo() {
         if [ "$OS" = Darwin ]; then
           xattr -d com.apple.quarantine "$visible" 2>/dev/null || true
         fi
+        cargo_install_dir="$INSTALL_DIR"
         INSTALL_DIR="$(dirname "$visible")"
+        install_macos_desktop_companion "$cargo_install_dir" "$INSTALL_DIR"
         ok "Updated PATH-visible binary -> $visible"
         ;;
       *)
@@ -187,14 +222,12 @@ download_release() {
   ok "Checksum verified"
   info "Extracting…"
   tar -xzf "$tmp/$archive" -C "$tmp" "$BIN" || die "archive did not contain $BIN"
-  install_prebuilt "$tmp/$BIN"
-  # macOS archives also carry `ytt-tray`, the menu-bar companion (releases after v1.5.8).
-  # Install it beside ytt when present; older archives just skip this quietly.
-  if [ "$OS" = Darwin ] && tar -xzf "$tmp/$archive" -C "$tmp" ytt-tray 2>/dev/null; then
-    install -m 0755 "$tmp/ytt-tray" "$INSTALL_DIR/ytt-tray"
-    xattr -d com.apple.quarantine "$INSTALL_DIR/ytt-tray" 2>/dev/null || true
-    ok "Installed menu-bar companion -> $INSTALL_DIR/ytt-tray  (keep it at login: ytt-tray --install-startup)"
+  if [ "$OS" = Darwin ]; then
+    tar -xzf "$tmp/$archive" -C "$tmp" "$DESKTOP_BIN" 2>/dev/null \
+      || tar -xzf "$tmp/$archive" -C "$tmp" ytt-tray 2>/dev/null \
+      || true
   fi
+  install_prebuilt "$tmp/$BIN"
   # Linux archives also carry a .desktop entry + icon (releases after v1.5.9); place them in
   # the XDG user dirs. Older archives just skip this quietly.
   if [ "$OS" = Linux ] && tar -xzf "$tmp/$archive" -C "$tmp" ytm-tui.desktop ytm-tui.png 2>/dev/null; then
