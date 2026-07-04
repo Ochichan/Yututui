@@ -439,6 +439,7 @@ fn track_model(song: &Song) -> TrackModel {
         display_artist: None,
         artwork: None,
         watch_url: None,
+        is_live: song.is_radio_station(),
     }
 }
 

@@ -52,6 +52,12 @@ pub struct TrackModel {
     /// Built server-side, for copy-link.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch_url: Option<String>,
+    /// A genuine endless live stream (radio station). THE live signal — clients must
+    /// not infer "live" from a missing duration, which is just a track mpv hasn't
+    /// measured yet (paused-at-rest restore, mid-load). Omitted when false so the
+    /// common case stays byte-identical to the pre-field wire.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_live: bool,
 }
 
 /// A reference to the on-disk artwork cache — bytes never ride the socket
@@ -103,6 +109,7 @@ mod tests {
             display_artist: None,
             artwork: None,
             watch_url: None,
+            is_live: false,
         };
         let line = serde_json::to_string(&track).unwrap();
         assert_eq!(

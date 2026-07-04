@@ -76,7 +76,7 @@
         <div class="seek-row">
           <SeekBar
             positionMs={playback.positionMs}
-            durationMs={model?.duration_ms ?? null}
+            durationMs={playback.durationMs}
             live={playback.live}
             {disabled}
             onseek={(ms) => playback.seekTo(ms)}

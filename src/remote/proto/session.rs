@@ -407,6 +407,7 @@ mod tests {
             display_artist: None,
             artwork: None,
             watch_url: Some("https://music.youtube.com/watch?v=vid".to_string()),
+            is_live: false,
         };
         let player = PushEvent::PlayerSnapshot {
             model: Box::new(PlayerModel {

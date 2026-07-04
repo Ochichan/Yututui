@@ -102,6 +102,7 @@ mod tests {
             display_artist: None,
             artwork: None,
             watch_url: None,
+            is_live: false,
         }
     }
 
