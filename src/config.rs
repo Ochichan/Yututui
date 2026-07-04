@@ -49,6 +49,12 @@ pub const DOWNLOAD_CONCURRENCY_DEFAULT: usize = 2;
 pub struct AnimationsConfig {
     /// Global enable. Off → the player renders identically to today, zero overhead.
     pub master: bool,
+    /// Dedicated-Radio-mode override for `master`. `None` inherits `master` (existing
+    /// configs keep behaving as one global switch); the first ✨/`A` toggle taken while in
+    /// Radio mode pins it, after which the two modes animate independently. A scope
+    /// selector, not an effect — deliberately excluded from [`Self::any_effect`]. Resolved
+    /// through [`Self::effective`]; there is no Settings row for it.
+    pub radio_master: Option<bool>,
     // Element-level effects (restyle existing widgets in place) -----------------
     /// Shimmer + marquee scroll on the now-playing title line.
     pub title: bool,
@@ -132,6 +138,7 @@ impl Default for AnimationsConfig {
     fn default() -> Self {
         Self {
             master: false,
+            radio_master: None,
             title: false,
             heart: false,
             seekbar: false,
@@ -203,6 +210,21 @@ impl AnimationsConfig {
     /// effect is enabled. When this is `false`, the per-frame animation clock stays asleep.
     pub fn active(&self) -> bool {
         self.master && self.any_effect()
+    }
+
+    /// The config as the render/gating layer should see it in the given mode: `master`
+    /// resolves to the Radio override while dedicated Radio mode is active (`None` =
+    /// inherit). Callers must keep persisting the *stored* config — saving this resolved
+    /// copy would bake the inherit link into the file.
+    pub fn effective(self, radio: bool) -> Self {
+        Self {
+            master: if radio {
+                self.radio_master.unwrap_or(self.master)
+            } else {
+                self.master
+            },
+            ..self
+        }
     }
 }
 
@@ -973,6 +995,7 @@ mod tests {
             streaming: StreamingConfig::default(),
             animations: AnimationsConfig {
                 master: true,
+                radio_master: Some(false),
                 rain: true,
                 ..Default::default()
             },
@@ -1030,6 +1053,7 @@ mod tests {
         assert_eq!(back.ai_enabled, Some(false));
         assert_eq!(back.romanized_titles, Some(true));
         assert!(back.animations.master);
+        assert_eq!(back.animations.radio_master, Some(false));
         assert!(back.animations.rain);
         assert!(!back.animations.donut);
         assert_eq!(back.gemini_api_key.as_deref(), Some("AIzaSecret"));
@@ -1056,6 +1080,36 @@ mod tests {
                 .map(String::as_str),
             Some("#123456")
         );
+    }
+
+    #[test]
+    fn animations_effective_resolves_radio_master() {
+        let inherit = AnimationsConfig {
+            master: true,
+            ..Default::default()
+        };
+        // `None` inherits the music master in radio mode (legacy behavior, one switch).
+        assert!(inherit.effective(true).master);
+        assert!(inherit.effective(false).master);
+
+        let split = AnimationsConfig {
+            master: true,
+            radio_master: Some(false),
+            ..Default::default()
+        };
+        assert!(
+            !split.effective(true).master,
+            "radio resolves to its own switch once pinned"
+        );
+        assert!(
+            split.effective(false).master,
+            "music mode ignores the radio override"
+        );
+
+        // Configs written before the split (no `radio_master` key) keep the inherit link.
+        let legacy: AnimationsConfig = serde_json::from_str(r#"{"master":true}"#).unwrap();
+        assert_eq!(legacy.radio_master, None);
+        assert!(legacy.effective(true).master);
     }
 
     #[test]

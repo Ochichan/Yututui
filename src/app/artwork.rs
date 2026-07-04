@@ -71,16 +71,25 @@ impl App {
     /// a no-op on terminals that don't report focus (`focused` stays `true`). Overlays do not
     /// park the animation; they draw above the scene, matching the queue popup behavior.
     pub fn animation_active(&self) -> bool {
+        let a = self.animations();
         let player_running = matches!(self.mode, Mode::Player)
             && !self.playback.paused
             && self.queue.current().is_some();
-        let radio_art_running =
-            player_running && self.radio_dedicated_mode && self.config.animations.master;
-        let running = (player_running && (self.config.animations.active() || radio_art_running))
+        // The radio set piece sways on `master` alone (no per-effect flag), but only while
+        // it is actually on screen — the album-art toggle hides it (`render_radio_filler`).
+        let radio_art_running = player_running
+            && self.radio_dedicated_mode
+            && self.config.effective_album_art()
+            && a.master;
+        let running = (player_running && (a.active() || radio_art_running))
             || self.ai_mascot_active()
             || self.fx_active()
-            || self.ambient_animation_running();
-        running && (!self.config.animations.pause_unfocused || self.focused)
+            || self.ambient_animation_running()
+            // A clipped selected row is marqueeing. Deliberately independent of both
+            // animation masters (reading a row shouldn't require eye-candy); set by the
+            // render pass, so it lags a frame at most.
+            || self.bridges.marquee_ran.get();
+        running && (!a.pause_unfocused || self.focused)
     }
 
     /// Whether any one-shot feedback effect is still inside its window. While true the clock
@@ -98,7 +107,7 @@ impl App {
     /// player's lyrics glow. Checked every run-loop iteration, so everything here is a plain
     /// field read — no row formatting or allocation.
     fn ambient_animation_running(&self) -> bool {
-        let a = &self.config.animations;
+        let a = self.animations();
         if !a.master {
             return false;
         }
@@ -176,7 +185,7 @@ impl App {
     /// when its pose can change.
     pub fn animation_draw_fps(&self) -> u16 {
         let fps = self.animation_tick_fps();
-        let a = &self.config.animations;
+        let a = self.animations();
         if self.fx_active() {
             // One-shots are short and motion-dense; let them draw at the full tick rate.
             return fps;
@@ -190,7 +199,10 @@ impl App {
         let player_running = matches!(self.mode, Mode::Player)
             && !self.playback.paused
             && self.queue.current().is_some();
-        if player_running && a.master && (a.any_effect() || self.radio_dedicated_mode) {
+        if player_running
+            && a.master
+            && (a.any_effect() || (self.radio_dedicated_mode && self.config.effective_album_art()))
+        {
             return fps;
         }
         if self.ambient_animation_running() {
@@ -198,6 +210,11 @@ impl App {
         }
         if self.ai_mascot_active() {
             return (fps / 10).max(1);
+        }
+        if self.bridges.marquee_ran.get() {
+            // Only the marquee is awake (both masters may be off): it advances one column
+            // every 6 ticks, so redraw only on the steps instead of at the full tick rate.
+            return (fps / 6).max(1);
         }
         fps
     }
@@ -262,7 +279,7 @@ impl App {
     /// under `master`, so with everything off this never arms the clock.
     pub(in crate::app) fn detect_fx(&mut self, status_changed: bool, seeked: bool) {
         use crate::ui::anim::fx_window as w;
-        let a = self.config.animations;
+        let a = self.animations();
         let on = |flag: bool| a.master && flag;
 
         // Track change → title intro. Also remembered so this turn's liked-flag flip (a
@@ -390,7 +407,7 @@ impl App {
     /// status redraws avoid the extra escape traffic; album art and canvas animation keep the
     /// atomic swap that prevents tearing/ghosting on terminals that support it.
     pub fn synchronized_draw_active(&self) -> bool {
-        let a = &self.config.animations;
+        let a = self.animations();
         self.art_active()
             || (matches!(self.mode, Mode::Player)
                 && a.master
@@ -408,13 +425,15 @@ impl App {
             && self.ai.messages.is_empty()
             && !self.playback.paused
             && self.queue.current().is_some()
-            && self.config.animations.master
+            && self.animations().master
     }
 
-    /// The live animation config (per-effect toggles); read by the player view each frame and by
-    /// the nav bar's ✨ toggle.
-    pub fn animations(&self) -> &crate::config::AnimationsConfig {
-        &self.config.animations
+    /// The live animation config (per-effect toggles) with `master` resolved for the
+    /// current mode (music vs dedicated Radio); read by the player view each frame and by
+    /// the nav bar's ✨ toggle. Returned by value — persist `self.config`, never this copy,
+    /// or the Radio/music inherit link gets baked into the file.
+    pub fn animations(&self) -> crate::config::AnimationsConfig {
+        self.config.animations.effective(self.radio_dedicated_mode)
     }
 
     /// Current animation frame counter — advances ~30×/s while [`Self::animation_active`].
@@ -422,22 +441,38 @@ impl App {
         self.anim_frame
     }
 
-    /// Flip the global animation master switch and persist it. Shared by the `A` shortcut
-    /// ([`Action::ToggleAnimations`]) and the ✨ nav-bar button, so both paths behave identically
-    /// (DRY). Shows a transient ✓/✗ toast (auto-expired centrally by [`App::update`]).
+    /// Flip the animation master switch *for the current mode* and persist it. Music and
+    /// dedicated Radio mode each keep their own switch (`master` / `radio_master`, where the
+    /// radio one inherits `master` until first toggled), so muting the eye-candy in one mode
+    /// doesn't dim the other. Shared by the `A` shortcut ([`Action::ToggleAnimations`]) and
+    /// the ✨ nav-bar button, so both paths behave identically (DRY). Shows a transient ✓/✗
+    /// toast (auto-expired centrally by [`App::update`]).
     pub(in crate::app) fn toggle_animations(&mut self) -> Vec<Cmd> {
-        let on = !self.config.animations.master;
-        self.config.animations.master = on;
+        let on = !self.animations().master;
+        if self.radio_dedicated_mode {
+            self.config.animations.radio_master = Some(on);
+        } else {
+            self.config.animations.master = on;
+        }
         // If the Settings screen is open, its draft is the source of truth on close
         // (`SettingsDraft::apply_to` copies `draft.animations` wholesale), so mirror the flip there
         // too — otherwise closing Settings would silently revert what the user just toggled.
+        let radio = self.radio_dedicated_mode;
         if let Some(s) = self.settings.as_mut() {
-            s.draft.animations.master = on;
+            if radio {
+                s.draft.animations.radio_master = Some(on);
+            } else {
+                s.draft.animations.master = on;
+            }
         }
         self.status.kind = StatusKind::Info;
         self.status.text = format!(
             "{}: {}",
-            t!("Animations", "애니메이션"),
+            if radio {
+                t!("Animations (Radio)", "애니메이션(라디오)")
+            } else {
+                t!("Animations", "애니메이션")
+            },
             if on { "✓" } else { "✗" }
         );
         self.dirty = true;

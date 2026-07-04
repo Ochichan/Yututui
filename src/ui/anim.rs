@@ -34,7 +34,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, ScrollSurface};
 use crate::theme::ThemeRole as R;
 
 /// One-shot effect windows, in wall-clock milliseconds. `App::detect_fx` arms the clock with
@@ -168,6 +168,50 @@ fn col_window(s: &str, start_col: usize, width: usize) -> String {
         taken += w;
     }
     out
+}
+
+/// One marquee column-step per this many animation frames (~5 cols/s at the default
+/// 30 fps tick — slow enough to read along), and how many steps the window holds at the
+/// text's head before it starts crawling, so a freshly selected row reads naturally from
+/// its beginning.
+const MARQUEE_FRAME_DIV: u64 = 6;
+const MARQUEE_START_HOLD: u64 = 4;
+
+/// The always-on selected-row marquee: the visible slice of the focused list's cursor-row
+/// text. When it fits in `avail` columns it comes back unchanged; when it overflows, a
+/// wrap-around window (three-space gap) crawls left one column per [`MARQUEE_FRAME_DIV`]
+/// frames, restarting from the head whenever the cursor moves to a different row.
+///
+/// Unlike every other effect this runs with the animation masters OFF too — reading a
+/// clipped row shouldn't require opting into eye-candy. Recording the row in
+/// `bridges.marquee_ran` is what keeps the animation clock awake for it
+/// (`App::animation_active` ORs the flag in), so the phase source below never freezes
+/// while a clipped row is selected.
+pub fn selected_marquee(
+    app: &App,
+    surface: ScrollSurface,
+    index: usize,
+    text: &str,
+    avail: usize,
+) -> String {
+    let total = UnicodeWidthStr::width(text);
+    if avail <= 4 || total <= avail {
+        return text.to_owned();
+    }
+    let key = Some((surface, index));
+    if app.bridges.marquee_key.get() != key {
+        app.bridges.marquee_key.set(key);
+        app.bridges.marquee_origin.set(app.anim_frame());
+    }
+    app.bridges.marquee_ran.set(true);
+    let loop_s = format!("{text}   ");
+    let period = UnicodeWidthStr::width(loop_s.as_str()).max(1);
+    let elapsed = app
+        .anim_frame()
+        .wrapping_sub(app.bridges.marquee_origin.get());
+    let start =
+        ((elapsed / MARQUEE_FRAME_DIV).saturating_sub(MARQUEE_START_HOLD)) as usize % period;
+    col_window(&format!("{loop_s}{loop_s}"), start, avail)
 }
 
 // ── element-level effects ───────────────────────────────────────────────────

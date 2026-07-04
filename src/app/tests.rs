@@ -1500,6 +1500,8 @@ fn radio_mode_nav_labels_player_as_radio_without_shifting_tabs() {
 #[test]
 fn radio_mode_renders_custom_radio_art() {
     let mut app = App::new(100);
+    // The set piece rides the album-art toggle (off by default).
+    app.config.album_art = Some(true);
 
     app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
     let radio = render_app_buffer(&app, 80, 24);
@@ -1548,6 +1550,8 @@ fn radio_separator_renders_only_in_radio_mode() {
 #[test]
 fn radio_art_animates_when_animation_master_is_on() {
     let mut app = App::new(100);
+    // The set piece rides the album-art toggle (off by default).
+    app.config.album_art = Some(true);
     app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
     app.queue.set(vec![radio_station("moving")], 0);
     app.playback.paused = false;
@@ -1577,6 +1581,120 @@ fn radio_art_animates_when_animation_master_is_on() {
     assert_ne!(
         first_text, later_text,
         "radio mode art should move on a slower animation phase"
+    );
+}
+
+/// Read one buffer row as a string of cell symbols (index == column, one symbol per cell).
+fn buffer_row(buf: &ratatui::buffer::Buffer, y: u16) -> String {
+    (0..buf.area.width)
+        .map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+#[test]
+fn radio_art_hidden_when_album_art_disabled() {
+    let mut app = App::new(100);
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    app.queue.set(vec![radio_station("plain")], 0);
+    app.playback.paused = false;
+    app.config.animations.master = true;
+
+    let radio = render_app_buffer(&app, 80, 24);
+    let text: String = radio
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_owned())
+        .collect();
+    assert!(
+        !text.contains("⢸⣿⣿⣉⣉⣉⣹⣿"),
+        "album art off must hide the radio set piece"
+    );
+    assert!(
+        !text.contains("♫♪.ılılı"),
+        "album art off must hide the one-line art too"
+    );
+    assert!(
+        !app.animation_active(),
+        "with the set piece hidden and no effects enabled the clock must stay asleep"
+    );
+}
+
+#[test]
+fn radio_mode_keeps_gap_and_animates_canvas_below_separator() {
+    let mut app = App::new(100);
+    app.config.album_art = Some(true);
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    app.queue.set(vec![radio_station("canvas")], 0);
+    app.playback.paused = false;
+    app.config.animations.master = true;
+    app.config.animations.rain = true;
+
+    app.anim_frame = 0;
+    let first = render_app_buffer(&app, 100, 36);
+    let sep_y = (0..36)
+        .find(|&y| buffer_row(&first, y).contains("ılılı"))
+        .expect("one-line art row");
+
+    // Two luxury rows sit between the set piece's bottom edge and the one-line art
+    // (the art's own blank-braille pad row is ⠀ glyphs, not spaces, so a collapsed gap
+    // would show up here).
+    for dy in 1..=2u16 {
+        let interior: String = buffer_row(&first, sep_y - dy)
+            .chars()
+            .skip(1)
+            .take(97)
+            .collect();
+        assert!(
+            interior.trim().is_empty(),
+            "row {dy} above the one-line art should be blank, got: {interior:?}"
+        );
+    }
+
+    // The music-mode canvas (rain) animates in the blank band below the one-line art.
+    app.anim_frame = 40;
+    let later = render_app_buffer(&app, 100, 36);
+    let below = |buf: &ratatui::buffer::Buffer| -> String {
+        (sep_y + 1..34).map(|y| buffer_row(buf, y)).collect()
+    };
+    assert_ne!(
+        below(&first),
+        below(&later),
+        "the filler canvas below the one-line art should animate in radio mode"
+    );
+}
+
+#[test]
+fn toggle_animations_in_radio_mode_flips_radio_master_not_master() {
+    let mut app = App::new(100);
+    app.config.animations.master = true;
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    assert!(
+        app.animations().master,
+        "radio inherits the music master until first toggled"
+    );
+
+    let cmds = app.toggle_animations();
+
+    assert!(
+        app.config.animations.master,
+        "the music-mode switch must stay untouched"
+    );
+    assert_eq!(app.config.animations.radio_master, Some(false));
+    assert!(
+        !app.animations().master,
+        "radio mode now resolves to its own switch"
+    );
+    // The raw config (music master intact) is what gets persisted, never the resolved copy.
+    assert!(matches!(
+        &cmds[..],
+        [Cmd::SaveConfig(c)] if c.animations.master && c.animations.radio_master == Some(false)
+    ));
+
+    app.radio_dedicated_mode = false;
+    assert!(
+        app.animations().master,
+        "music mode keeps animating independently of the radio switch"
     );
 }
 
@@ -8160,6 +8278,177 @@ fn narrow_nav_arrows_navigate_on_click() {
         row: rect.y,
     });
     assert_eq!(app.mode, Mode::Search, "◀ pages to the previous screen");
+}
+
+#[test]
+fn nav_arrows_hollow_at_first_and_last_tab() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+
+    // First tab (Player): can't go left — the left arrow renders hollow.
+    let (_, top) = render_at(&app, 40, 12);
+    assert!(
+        top.contains('◁') && !top.contains('◀'),
+        "first tab: left arrow should be hollow: {top:?}"
+    );
+    assert!(top.contains('▶'), "right arrow stays filled: {top:?}");
+
+    // Last tab (DJ Gem): can't go right — the right arrow renders hollow.
+    app.mode = Mode::Ai;
+    let (_, top) = render_at(&app, 40, 12);
+    assert!(
+        top.contains('▷') && !top.contains('▶'),
+        "last tab: right arrow should be hollow: {top:?}"
+    );
+    assert!(top.contains('◀'), "left arrow stays filled: {top:?}");
+}
+
+#[test]
+fn ai_model_label_yields_to_nav_when_narrow() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    app.mode = Mode::Ai;
+    // Pin the model so the label under test is stable (the reported artifact was the
+    // "Latest" label surviving as a clipped "est" after the nav's ▶ arrow).
+    app.ai.model = crate::ai::GeminiModel::Latest;
+
+    // Wide: the model label rides the right end of the border row, as before.
+    let (_, top) = render_at(&app, 100, 30);
+    assert!(
+        top.contains("Latest"),
+        "wide: the model label should show: {top:?}"
+    );
+
+    // Narrow: the nav strip needs the row — the label disappears entirely instead of
+    // leaving a clipped tail (this used to render as a stray \"est\" after the ▶ arrow).
+    let (_, top) = render_at(&app, 30, 30);
+    assert!(
+        !top.contains("Latest") && !top.contains("est"),
+        "narrow: no label and no clipped remnant: {top:?}"
+    );
+}
+
+#[test]
+fn search_rows_keep_alignment_when_selection_scrolls_off() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.search.focus = SearchFocus::Results;
+    app.search.results = songs(40);
+    app.search.selected = 0;
+
+    // Column of each row's leading `[` source tag.
+    let bracket_cols = |buf: &ratatui::buffer::Buffer| -> Vec<usize> {
+        (0..24)
+            .filter_map(|y| buffer_row(buf, y).chars().position(|c| c == '['))
+            .collect()
+    };
+
+    let before = render_app_buffer(&app, 80, 24);
+    let cols_before = bracket_cols(&before);
+    assert!(!cols_before.is_empty(), "results should be on screen");
+
+    // Wheel far past the keyboard selection (which stays on row 0, now off-screen).
+    for _ in 0..10 {
+        app.update(Msg::MouseScroll {
+            up: false,
+            col: 40,
+            row: 12,
+            ctrl: false,
+        });
+    }
+    let after = render_app_buffer(&app, 80, 24);
+    let cols_after = bracket_cols(&after);
+    assert!(
+        app.bridges.search_scroll.offset() > 0,
+        "the wheel must actually scroll the viewport"
+    );
+    assert_eq!(
+        cols_before[0], cols_after[0],
+        "rows must not shift left when the selection leaves the viewport (the ▶ gutter is reserved unconditionally)"
+    );
+    assert!(
+        cols_after.iter().all(|&c| c == cols_after[0]),
+        "every visible row shares one tag column: {cols_after:?}"
+    );
+}
+
+#[test]
+fn search_hearts_reserve_a_fixed_slot() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.search.focus = SearchFocus::Results;
+    app.search.results = songs(2);
+    let fav = app.search.results[0].clone();
+    app.library.toggle_favorite(&fav);
+
+    let buf = render_app_buffer(&app, 80, 24);
+    let title_col = |needle: &str| -> usize {
+        (0..24)
+            .map(|y| buffer_row(&buf, y))
+            .find_map(|row| row.find(needle).map(|byte| row[..byte].chars().count()))
+            .unwrap_or_else(|| panic!("row containing {needle:?}"))
+    };
+    assert_eq!(
+        title_col("t0"),
+        title_col("t1"),
+        "favorited and plain rows must start their titles in the same column"
+    );
+}
+
+#[test]
+fn selected_row_marquee_scrolls_with_animations_off() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.search.focus = SearchFocus::Results;
+    app.search.results = vec![
+        Song::remote(
+            "long",
+            "An Extremely Long Title That Cannot Possibly Fit In A Narrow Terminal Row",
+            "Some Artist",
+            "3:00",
+        ),
+        Song::remote("short", "Tiny", "A", "0:10"),
+    ];
+    app.search.selected = 0;
+    assert!(
+        !app.config.animations.master,
+        "every animation toggle is off"
+    );
+
+    app.anim_frame = 0;
+    let first = render_app_buffer(&app, 40, 15);
+    assert!(
+        app.animation_active(),
+        "a clipped selected row must keep the clock awake with the masters off"
+    );
+
+    let long_y = (1..15)
+        .find(|&y| buffer_row(&first, y).contains("Extremely"))
+        .expect("selected row");
+    let short_y = (1..15)
+        .find(|&y| buffer_row(&first, y).contains("Tiny"))
+        .expect("neighbor row");
+
+    app.anim_frame = 60;
+    let later = render_app_buffer(&app, 40, 15);
+    assert_ne!(
+        buffer_row(&first, long_y),
+        buffer_row(&later, long_y),
+        "the clipped selected row crawls so its whole text can be read"
+    );
+    assert_eq!(
+        buffer_row(&first, short_y),
+        buffer_row(&later, short_y),
+        "non-selected rows stay byte-identical"
+    );
+
+    // Selecting a row that fits lets the clock sleep again.
+    app.search.selected = 1;
+    let _ = render_app_buffer(&app, 40, 15);
+    assert!(
+        !app.animation_active(),
+        "a fitting selected row must not keep the clock awake"
+    );
 }
 
 #[test]

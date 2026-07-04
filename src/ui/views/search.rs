@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget, ScrollSurface, SearchFocus, SearchKind, StatusKind};
@@ -214,9 +214,23 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let focused = app.search.focus == SearchFocus::Results;
-    // Fresh results cascade in top-to-bottom while the stagger window runs. The offset is
-    // resolved further down, but new results always land with the viewport at the top, so
-    // styling by absolute row index is the visible order.
+    // The wheel scrolls this viewport freely; the render keeps a keyboard-moved cursor on
+    // screen with a margin (see `ui::scroll`). Resolved before the rows are built because
+    // the selection only highlights — and only marquees — while actually inside the window.
+    let len = app.search.results.len();
+    let offset = app.bridges.search_scroll.resolve(
+        app.search.selected.min(len.saturating_sub(1)),
+        area.height,
+        len,
+        crate::ui::scroll::SCROLLOFF,
+    );
+    let visible_sel = (len > 0)
+        .then(|| app.search.selected.min(len - 1))
+        .filter(|sel| (offset..offset + area.height as usize).contains(sel));
+
+    // Fresh results cascade in top-to-bottom while the stagger window runs. New results
+    // always land with the viewport at the top, so styling by absolute row index is the
+    // visible order.
     let items: Vec<ListItem> = app
         .search
         .results
@@ -225,22 +239,41 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         .map(|(i, s)| {
             let title = app.display_title(s);
             let artist = app.display_artist(s);
+            // Fixed-width heart slot (like the library lists) so favoriting a row never
+            // shifts its title relative to its neighbors.
             let heart = if app.library.is_favorite(&s.video_id) {
                 "♥ "
             } else {
-                ""
+                "  "
             };
             // Playlist rows get their own tag so they read as containers, not tracks.
+            // Codes vary in width ([YT] vs [RAD]); pad to one column so titles align
+            // across mixed-source (ALL) results.
             let source = if s.youtube_playlist_id().is_some() {
-                "[PL] ".to_owned()
+                "[PL]".to_owned()
             } else {
-                format!("[{}] ", s.source.code())
+                format!("[{}]", s.source.code())
             };
-            let line = if s.duration.is_empty() {
-                format!("{source}{heart}{title} — {artist}")
+            let source = crate::ui::text::pad_to_width(&source, 6);
+            let text = if s.duration.is_empty() {
+                format!("{title} — {artist}")
             } else {
-                format!("{source}{heart}{title} — {artist}  ({})", s.duration)
+                format!("{title} — {artist}  ({})", s.duration)
             };
+            // The focused, visible cursor row marquees when clipped — the source tag and
+            // heart gutter stay put while the text crawls (see `anim::selected_marquee`).
+            let text = if focused && visible_sel == Some(i) {
+                crate::ui::anim::selected_marquee(
+                    app,
+                    crate::app::ScrollSurface::Search,
+                    i,
+                    &text,
+                    (area.width as usize).saturating_sub(2 + 8),
+                )
+            } else {
+                text
+            };
+            let line = format!("{source}{heart}{text}");
             ListItem::new(line).style(crate::ui::anim::stagger_style(
                 app,
                 crate::app::Mode::Search,
@@ -266,24 +299,18 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
     let list = List::new(items)
         .highlight_style(highlight)
         .style(app.theme.style(R::TextPrimary))
-        .highlight_symbol("▶ ");
+        .highlight_symbol("▶ ")
+        // Reserve the ▶ gutter even while the selection is scrolled off-view
+        // (`state.select` below is skipped then) — otherwise every visible row
+        // shifts 2 cells left the moment the wheel moves the cursor out of the
+        // viewport and snaps back when it returns.
+        .highlight_spacing(HighlightSpacing::Always);
 
-    // The wheel scrolls this viewport freely; the render keeps a keyboard-moved cursor on
-    // screen with a margin (see `ui::scroll`). Pre-seed the offset so ratatui honors it; only
-    // highlight the selection while it is actually visible, so the wheel can scroll past it.
-    let len = app.search.results.len();
-    let offset = app.bridges.search_scroll.resolve(
-        app.search.selected.min(len.saturating_sub(1)),
-        area.height,
-        len,
-        crate::ui::scroll::SCROLLOFF,
-    );
+    // Pre-seed the wheel offset so ratatui honors it; only highlight the selection while
+    // it is actually visible, so the wheel can scroll past it.
     let mut state = ListState::default().with_offset(offset);
-    if len > 0 {
-        let sel = app.search.selected.min(len - 1);
-        if (offset..offset + area.height as usize).contains(&sel) {
-            state.select(Some(sel));
-        }
+    if let Some(sel) = visible_sel {
+        state.select(Some(sel));
     }
     frame.render_stateful_widget(list, area, &mut state);
     // Each visible row is a click target: single-click selects, double-click plays.

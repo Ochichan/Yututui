@@ -67,6 +67,15 @@ pub struct RenderBridges {
     /// enough — they never show together). Reset when either overlay opens; the render pass
     /// records the viewport and clamps to the sheet's real length like every other list.
     pub help_scroll: crate::ui::scroll::ScrollState,
+    /// Selected-row marquee bridge (see `ui::anim::selected_marquee`): which list row is
+    /// crawling (`surface + index`, to restart the phase when the cursor moves), the
+    /// anim-frame its phase started at, and whether *this* frame's render actually produced
+    /// a scrolling row. `marquee_ran` is reset at the top of `ui::render` and read by
+    /// `App::animation_active`, which keeps the clock ticking for it independently of every
+    /// animation toggle — that independence is the feature, not an accident.
+    pub marquee_key: Cell<Option<(ScrollSurface, usize)>>,
+    pub marquee_origin: Cell<u64>,
+    pub marquee_ran: Cell<bool>,
 }
 
 impl RenderBridges {

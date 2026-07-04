@@ -127,7 +127,10 @@ const NAV_ITEMS: [Mode; 5] = [
 /// grid), it degrades to a paged strip: `◀ ▶` arrows that switch to the previous / next
 /// screen on click, around a window of tabs centered on the active one — so every screen
 /// stays reachable by mouse no matter how little width remains.
-pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
+///
+/// Returns the strip's used width in cells, so a caller sharing the row (the DJ Gem
+/// model label rides the same border line) can tell how much space remains to its right.
+pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) -> u16 {
     const GAP: &str = "  ";
     const BRAND: &str = "ytm-tui";
     const SEP: &str = " │ ";
@@ -158,8 +161,7 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
             .sum::<u16>()
         + text_width(GAP) * (items.len() as u16 - 1);
     if full > area.width {
-        render_nav_paged(frame, app, area, items, active, muted);
-        return;
+        return render_nav_paged(frame, app, area, items, active, muted);
     }
 
     // Left-aligned strip starting at the inner edge. Brand + separator are static labels;
@@ -241,12 +243,14 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) {
         ..area
     };
     frame.render_widget(Paragraph::new(Line::from(spans)), strip);
+    used
 }
 
 /// The narrow-width nav: `◀` and `▶` page to the previous / next screen, and between them
 /// sits a window of tabs centered on the active screen, grown outward while width lasts.
 /// Clicking an arrow both navigates and (because the window follows the active tab) slides
 /// hidden tabs into view — two clicks reach any screen on even the tiniest grid.
+/// Returns the strip's used width, like [`render_nav`].
 fn render_nav_paged(
     frame: &mut Frame,
     app: &App,
@@ -254,7 +258,7 @@ fn render_nav_paged(
     items: &[Mode],
     active: Style,
     muted: Style,
-) {
+) -> u16 {
     const MARGIN: &str = " ";
     let arrow_on = app.theme.style(R::Accent).add_modifier(Modifier::BOLD);
     let active_idx = items.iter().position(|m| *m == app.mode).unwrap_or(0);
@@ -290,7 +294,9 @@ fn render_nav_paged(
     };
 
     push(&mut spans, &mut x, MARGIN, muted);
-    // `◀`: one screen back. Dimmed (and inert) at the first screen, like a scrollbar end.
+    // `◀`: one screen back. Hollow (`◁`) and inert at the first screen, like a scrollbar
+    // end — shape, not color, carries the on/off signal, since Accent vs TextMuted are
+    // near-identical in some themes.
     if active_idx > 0 {
         app.register_mouse_button(
             Rect {
@@ -303,7 +309,7 @@ fn render_nav_paged(
         );
         push(&mut spans, &mut x, "◀ ", arrow_on);
     } else {
-        push(&mut spans, &mut x, "◀ ", muted);
+        push(&mut spans, &mut x, "◁ ", muted);
     }
 
     for (i, mode) in items.iter().enumerate().take(hi + 1).skip(lo) {
@@ -331,7 +337,7 @@ fn render_nav_paged(
         push(&mut spans, &mut x, " ", style);
     }
 
-    // `▶`: one screen forward.
+    // `▶`: one screen forward. Hollow (`▷`) and inert at the last screen.
     if active_idx + 1 < items.len() {
         app.register_mouse_button(
             Rect {
@@ -344,7 +350,7 @@ fn render_nav_paged(
         );
         push(&mut spans, &mut x, " ▶", arrow_on);
     } else {
-        push(&mut spans, &mut x, " ▶", muted);
+        push(&mut spans, &mut x, " ▷", muted);
     }
 
     let used = x.saturating_sub(area.x).min(area.width);
@@ -353,6 +359,7 @@ fn render_nav_paged(
         ..area
     };
     frame.render_widget(Paragraph::new(Line::from(spans)), strip);
+    used
 }
 
 /// Register a `ListRow(i)` click target over each visible row of a ratatui `List`. Call

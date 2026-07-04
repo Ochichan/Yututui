@@ -780,6 +780,10 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
 /// one between the art's bottom edge and the lyrics block.
 const ART_TOP_GAP: u16 = 1;
 const ART_LYRICS_GAP: u16 = 1;
+/// Breathing room between the radio set piece's bottom edge and the one-line art. A
+/// luxury, not a reservation: it collapses row-by-row on short terminals before the
+/// separator or the lyrics window would lose space (see [`render_radio_filler`]).
+const RADIO_ART_SEP_GAP: u16 = 2;
 /// Smallest lyrics window (rows) we keep below the art when both are shown.
 const MIN_LYRICS_ROWS: u16 = 3;
 
@@ -789,7 +793,10 @@ const MIN_LYRICS_ROWS: u16 = 3;
 /// the whole area, and an empty area draws nothing.
 fn render_filler(frame: &mut Frame, app: &App, area: Rect) {
     app.art.rect.set(None);
-    if app.radio_dedicated_mode {
+    // The radio set piece rides the album-art toggle: with it off, radio mode falls
+    // through to the plain music-mode arms below (`art_active()` is hard-false in radio
+    // mode, so those resolve to the no-art layout — lyrics, or the bare animation canvas).
+    if app.radio_dedicated_mode && app.config.effective_album_art() {
         render_radio_filler(frame, app, area);
         return;
     }
@@ -846,7 +853,9 @@ fn render_art_animation_separator(frame: &mut Frame, app: &App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    const MOTIF: &str = "♫♪.ılılıll|̲̅●̲̅|̲̅=̲̅|̲̅●̲̅|llılılı.♫♪";
+    // The trailing space is deliberate: the motif is tiled edge-to-edge, and it keeps
+    // each repetition from butting straight into the next one's leading note.
+    const MOTIF: &str = "♫♪.ılılıll|̲̅●̲̅|̲̅=̲̅|̲̅●̲̅|llılılı.♫♪ ";
     let width = usize::from(area.width);
     let offset = if radio_art_animation_on(app) {
         (app.anim_frame() / 6) as usize
@@ -913,7 +922,19 @@ fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {
     let band = art_band(area, ART_TOP_GAP, cap);
     match draw_radio_ascii(frame, app, band) {
         Some(radio) => {
-            let separator_y = radio.bottom();
+            // Give the one-line art breathing room below the set piece, shrinking the
+            // gap first when the terminal is short: the separator row itself and (with
+            // lyrics on) a readable lyrics window always win over the luxury rows.
+            let reserved_below = 1 + if app.lyrics.visible {
+                ART_LYRICS_GAP + MIN_LYRICS_ROWS
+            } else {
+                0
+            };
+            let slack = area
+                .bottom()
+                .saturating_sub(radio.bottom())
+                .saturating_sub(reserved_below);
+            let separator_y = radio.bottom() + RADIO_ART_SEP_GAP.min(slack);
             if separator_y < area.bottom() {
                 render_art_animation_separator(
                     frame,
@@ -927,6 +948,22 @@ fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {
                 );
             }
             if !app.lyrics.visible {
+                // Music-mode filler animations run in radio mode too: the canvas gets
+                // the blank band below the one-line art, mirroring the album-art arm
+                // of `render_filler`.
+                let below = separator_y.saturating_add(ART_LYRICS_GAP);
+                if below < area.bottom() {
+                    crate::ui::anim::render_canvas(
+                        frame,
+                        app,
+                        Rect {
+                            x: area.x,
+                            y: below,
+                            width: area.width,
+                            height: area.bottom() - below,
+                        },
+                    );
+                }
                 return;
             }
             let lyrics_y = separator_y.saturating_add(ART_LYRICS_GAP);
@@ -939,7 +976,9 @@ fn render_radio_filler(frame: &mut Frame, app: &App, area: Rect) {
             render_lyrics(frame, app, lyrics_area);
         }
         None if app.lyrics.visible => render_lyrics(frame, app, area),
-        _ => {}
+        // Too small for the set piece and no lyrics: the whole filler is canvas, like
+        // the music-mode no-art arm.
+        None => crate::ui::anim::render_canvas(frame, app, area),
     }
 }
 

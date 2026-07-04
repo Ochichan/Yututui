@@ -8,7 +8,9 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap,
+};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{AiFocus, AiRole, App, MouseTarget, ScrollSurface, StatusKind};
@@ -21,13 +23,6 @@ const SUGGESTIONS_HEIGHT: u16 = 7;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
-        // Model indicator: kept as metadata but moved to the right of the border line so it
-        // doesn't collide with the nav strip that now rides the left of the same line.
-        .title(
-            Line::from(format!(" {} ", app.ai.model.label()))
-                .style(app.theme.style(R::TextMuted))
-                .alignment(Alignment::Right),
-        )
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderPrimary))
         .style(app.theme.style(R::TextPrimary));
@@ -43,7 +38,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // The nav strip rides the top border line itself; `render_nav` overlays only the cells
     // its text covers, so the border keeps drawing on either side of it.
-    buttons::render_nav(
+    let nav_used = buttons::render_nav(
         frame,
         app,
         Rect {
@@ -53,6 +48,23 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             height: 1,
         },
     );
+
+    // Model indicator on the right end of the same border line — metadata, not chrome.
+    // Drawn only when it fully clears the nav strip: a partially covered label reads as
+    // stray garbage (a narrow window used to leave "est" of " Latest " past the strip).
+    let label = format!(" {} ", app.ai.model.label());
+    let label_w = buttons::text_width(&label);
+    if inner.width.saturating_sub(nav_used) >= label_w.saturating_add(1) {
+        frame.render_widget(
+            Paragraph::new(Line::from(label).style(app.theme.style(R::TextMuted))),
+            Rect {
+                x: inner.right().saturating_sub(label_w),
+                y: area.y,
+                width: label_w,
+                height: 1,
+            },
+        );
+    }
 
     let rows = Layout::vertical([
         Constraint::Length(2), // reserved top band (aligns with Settings/Library)
@@ -509,20 +521,50 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // The wheel scrolls this viewport freely; the render keeps a keyboard-moved cursor on
+    // screen with a margin (see `ui::scroll`). Resolved before the rows are built because
+    // the selection only highlights — and only marquees — while actually inside the window.
+    let len = app.ai.suggestions.len();
+    let offset = app.bridges.ai_scroll.resolve(
+        app.ai.suggestions_selected.min(len.saturating_sub(1)),
+        inner.height,
+        len,
+        crate::ui::scroll::SCROLLOFF,
+    );
+    let visible_sel = (len > 0)
+        .then(|| app.ai.suggestions_selected.min(len - 1))
+        .filter(|sel| (offset..offset + inner.height as usize).contains(sel));
+
     let items: Vec<ListItem> = app
         .ai
         .suggestions
         .iter()
-        .map(|s| {
+        .enumerate()
+        .map(|(i, s)| {
             let title = app.display_title(s);
             let artist = app.display_artist(s);
+            // Fixed-width heart slot (like the library lists) so favoriting a row never
+            // shifts its title relative to its neighbors.
             let heart = if app.library.is_favorite(&s.video_id) {
                 "♥ "
             } else {
-                ""
+                "  "
             };
-            ListItem::new(format!("{heart}{title} — {artist}"))
-                .style(app.theme.style(R::TextPrimary))
+            let text = format!("{title} — {artist}");
+            // The focused, visible cursor row marquees when clipped (the heart gutter
+            // stays put); the extra column keeps it clear of the overlaid scrollbar.
+            let text = if focused && visible_sel == Some(i) {
+                crate::ui::anim::selected_marquee(
+                    app,
+                    ScrollSurface::AiSuggestions,
+                    i,
+                    &text,
+                    (inner.width as usize).saturating_sub(2 + 2 + 1),
+                )
+            } else {
+                text
+            };
+            ListItem::new(format!("{heart}{text}")).style(app.theme.style(R::TextPrimary))
         })
         .collect();
 
@@ -542,23 +584,18 @@ fn render_suggestions(frame: &mut Frame, app: &App, area: Rect) {
     let list = List::new(items)
         .style(app.theme.style(R::TextPrimary))
         .highlight_style(highlight)
-        .highlight_symbol("▶ ");
+        .highlight_symbol("▶ ")
+        // Reserve the ▶ gutter even while the selection is scrolled off-view
+        // (`state.select` below is skipped then) — otherwise every visible row
+        // shifts 2 cells left whenever the wheel moves the cursor out of the
+        // viewport. Mirrors the Search results and Settings lists.
+        .highlight_spacing(HighlightSpacing::Always);
 
-    // The wheel scrolls this viewport freely; the render keeps a keyboard-moved cursor on
-    // screen with a margin (see `ui::scroll`). Only highlight the selection while visible.
-    let len = app.ai.suggestions.len();
-    let offset = app.bridges.ai_scroll.resolve(
-        app.ai.suggestions_selected.min(len.saturating_sub(1)),
-        inner.height,
-        len,
-        crate::ui::scroll::SCROLLOFF,
-    );
+    // Pre-seed the wheel offset so ratatui honors it; only highlight the selection while
+    // it is actually visible, so the wheel can scroll past it.
     let mut state = ListState::default().with_offset(offset);
-    if len > 0 {
-        let sel = app.ai.suggestions_selected.min(len - 1);
-        if (offset..offset + inner.height as usize).contains(&sel) {
-            state.select(Some(sel));
-        }
+    if let Some(sel) = visible_sel {
+        state.select(Some(sel));
     }
     frame.render_stateful_widget(list, inner, &mut state);
     register_suggestion_rows(app, inner, state.offset(), len);

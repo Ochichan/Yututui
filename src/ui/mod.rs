@@ -33,6 +33,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     // re-anchor the (still-transmitted) kitty image under a popup and bleed it through as a stray
     // vertical bar. Player mode re-sets it below before any popup reads it.
     app.art.rect.set(None);
+    // The selected-row marquee flag is a per-frame output too: a list view sets it while it
+    // renders a scrolling cursor row; `animation_active` reads the latest frame's verdict.
+    app.bridges.marquee_ran.set(false);
     match app.mode {
         Mode::Player => views::player::render(frame, app, area),
         Mode::Search => views::search::render(frame, app, area),

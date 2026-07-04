@@ -305,12 +305,29 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect, rows: &[&crate::api::So
         };
         let title = app.display_title(song);
         let artist = app.display_artist(song);
-        let body = if song.duration.is_empty() {
-            format!("{marker}{heart}{title} — {artist}")
+        let text = if song.duration.is_empty() {
+            format!("{title} — {artist}")
         } else {
-            format!("{marker}{heart}{title} — {artist}  ({})", song.duration)
+            format!("{title} — {artist}  ({})", song.duration)
         };
-        let body = crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1));
+        // The cursor row marquees when clipped (the 4-cell marker+heart gutter stays
+        // put) so the full text stays readable even in a sliver-narrow window; every
+        // other row hard-truncates as before.
+        let text = if i == cursor {
+            crate::ui::anim::selected_marquee(
+                app,
+                ScrollSurface::Library,
+                i,
+                &text,
+                body_w.saturating_sub(5),
+            )
+        } else {
+            text
+        };
+        let body = crate::ui::text::truncate_owned_to_width(
+            format!("{marker}{heart}{text}"),
+            body_w.saturating_sub(1),
+        );
 
         let base = if selected {
             crate::ui::anim::selection_style(
@@ -440,13 +457,28 @@ fn render_playlist_list(frame: &mut Frame, app: &App, area: Rect) {
         let selected = i == cursor;
         let marker = if selected { "▶ " } else { "  " };
         let count = playlist.songs.len();
-        let body = if crate::i18n::is_korean() {
-            format!("{marker}♪ {} — {count}곡", playlist.name)
+        let text = if crate::i18n::is_korean() {
+            format!("♪ {} — {count}곡", playlist.name)
         } else {
             let noun = if count == 1 { "track" } else { "tracks" };
-            format!("{marker}♪ {} — {count} {noun}", playlist.name)
+            format!("♪ {} — {count} {noun}", playlist.name)
         };
-        let body = crate::ui::text::truncate_owned_to_width(body, body_w.saturating_sub(1));
+        // Long playlist names on the cursor row marquee like the track lists do.
+        let text = if selected {
+            crate::ui::anim::selected_marquee(
+                app,
+                ScrollSurface::Library,
+                i,
+                &text,
+                body_w.saturating_sub(3),
+            )
+        } else {
+            text
+        };
+        let body = crate::ui::text::truncate_owned_to_width(
+            format!("{marker}{text}"),
+            body_w.saturating_sub(1),
+        );
 
         let base = if selected {
             crate::ui::anim::selection_style(

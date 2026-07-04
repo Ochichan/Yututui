@@ -68,10 +68,12 @@ fn replacement_for(c: char) -> &'static str {
         }
         '▶' | '▸' | '➤' => "►",
         '⇥' => "→",
-        '›' | '»' => ">",
+        // Hollow nav arrows map to plain angle brackets so the filled/hollow (active/inert)
+        // distinction survives CP437, where only the filled ►/◄ exist.
+        '›' | '»' | '▷' => ">",
         '◀' | '◂' => "◄",
         '⇤' => "←",
-        '‹' | '«' => "<",
+        '‹' | '«' | '◁' => "<",
         '↗' | '➚' | '⤴' => "→",
         '‖' | 'Ⅱ' => "║",
         '©' => "c",
