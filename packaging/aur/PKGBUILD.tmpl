@@ -34,5 +34,9 @@ package() {
   # Launcher entry + icon (bundled in the release tarball): gives ytt an app-menu entry and
   # lets MPRIS media widgets resolve its icon by the "ytm-tui" theme name.
   install -Dm644 "$srcdir/ytm-tui.desktop" "$pkgdir/usr/share/applications/ytm-tui.desktop"
-  install -Dm644 "$srcdir/ytm-tui.png" "$pkgdir/usr/share/icons/hicolor/1024x1024/apps/ytm-tui.png"
+  # 512x512 is a standard hicolor size; 1024x1024 is not one the icon theme spec searches,
+  # so an icon left there never resolves by name and the launcher shows a blank icon.
+  install -Dm644 "$srcdir/ytm-tui.png" "$pkgdir/usr/share/icons/hicolor/512x512/apps/ytm-tui.png"
+  # Belt-and-suspenders: pixmaps is scanned as a fallback regardless of the active icon theme.
+  install -Dm644 "$srcdir/ytm-tui.png" "$pkgdir/usr/share/pixmaps/ytm-tui.png"
 }

@@ -80,10 +80,20 @@ install_linux_desktop() {
   local desktop_src="$1" icon_src="$2"
   local data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
   local apps_dir="$data_dir/applications"
-  local icon_dir="$data_dir/icons/hicolor/1024x1024/apps"
-  mkdir -p "$apps_dir" "$icon_dir"
+  # The freedesktop icon theme spec only searches size dirs that hicolor's index.theme
+  # declares. 1024x1024 is NOT a standard entry, so an icon dropped there is never resolved
+  # by name and the launcher shows a blank icon. 512x512 IS standard on every modern hicolor
+  # theme, and icon loaders downscale our 1024px source cleanly. We also drop a copy into the
+  # pixmaps dir, which implementations scan as a fallback regardless of the active theme.
+  local icon_dir="$data_dir/icons/hicolor/512x512/apps"
+  local pixmaps_dir="$data_dir/pixmaps"
+  mkdir -p "$apps_dir" "$icon_dir" "$pixmaps_dir"
   install -m 0644 "$desktop_src" "$apps_dir/ytm-tui.desktop"
   install -m 0644 "$icon_src" "$icon_dir/ytm-tui.png"
+  install -m 0644 "$icon_src" "$pixmaps_dir/ytm-tui.png"
+  # Sweep away an icon left in the old non-standard 1024x1024 dir by earlier installers so
+  # the stale copy doesn't linger (it was never resolvable anyway).
+  rm -f "$data_dir/icons/hicolor/1024x1024/apps/ytm-tui.png" 2>/dev/null || true
   update-desktop-database "$apps_dir" >/dev/null 2>&1 || true
   gtk-update-icon-cache -q -t "$data_dir/icons/hicolor" >/dev/null 2>&1 || true
   ok "Installed launcher + icon -> $apps_dir/ytm-tui.desktop"
