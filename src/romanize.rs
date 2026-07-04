@@ -82,10 +82,8 @@ impl RomanizeCache {
         let Some(path) = cache_path() else {
             return Self::default();
         };
-        safe_fs::read_to_string_no_symlink(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Self>(&s).ok())
-            .unwrap_or_default()
+        // Schema-drift tolerant: keeps cached romanizations across incompatible changes.
+        safe_fs::load_json_or_default::<RomanizeCache>(&path)
     }
 
     pub fn save(&self) -> std::io::Result<()> {

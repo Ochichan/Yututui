@@ -8,7 +8,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::{Map, Value};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -233,6 +235,195 @@ pub fn append_private_jsonl(path: &Path, line: &str) -> io::Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Schema-drift-tolerant JSON loading
+//
+// Persisted state (config, play history, caches) is read by whatever build is
+// installed today, but was written by whatever build was installed last time. A
+// strict `from_str::<T>` fails the instant ONE field's stored value no longer
+// deserializes — a renamed enum variant, a retyped field, an un-aliased rename —
+// after which the caller falls back to `T::default()`, wiping the WHOLE file. On a
+// `.app` reinstall (new binary reading the previous install's files) that reads as
+// "all my settings and history reset again."
+//
+// `recover_lenient` bounds the blast radius: it keeps every field that still fits
+// and defaults only the specific incompatible leaves (recursing into nested objects
+// and pruning individual bad elements out of arrays), so a single schema change can
+// never again reset an entire file.
+// ---------------------------------------------------------------------------
+
+/// Element-wise array recovery costs one `T` deserialization per element; skip it for
+/// pathologically large arrays and keep the (empty) default instead of stalling startup.
+const MAX_ELEMENTWISE_ARRAY: usize = 20_000;
+
+/// Load `T` from `path` with schema-drift recovery.
+///
+/// - missing / unreadable / not a regular file → `T::default()`
+/// - valid JSON (even if schema-drifted) → recovered value, preserving all still-valid fields
+/// - present but not valid JSON at all → the file is moved aside to `*.corrupt.bak` (so the
+///   next `save` cannot silently destroy it) and `T::default()` is returned
+pub fn load_json_or_default<T>(path: &Path) -> T
+where
+    T: DeserializeOwned + Serialize + Default,
+{
+    let Ok(text) = read_to_string_no_symlink(path) else {
+        return T::default();
+    };
+    // Fast path: byte-for-byte the previous behaviour when nothing drifted.
+    if let Ok(value) = serde_json::from_str::<T>(&text) {
+        return value;
+    }
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value) => recover_lenient::<T>(value),
+        Err(_) => {
+            let _ = backup_aside(path);
+            T::default()
+        }
+    }
+}
+
+/// Deserialize `T` from an in-memory JSON `value`, preserving every field that still fits
+/// and defaulting only the leaves that no longer deserialize. See the module note above.
+pub fn recover_lenient<T>(value: Value) -> T
+where
+    T: DeserializeOwned + Serialize + Default,
+{
+    // Fast path — nothing drifted.
+    if let Ok(value) = T::deserialize(&value) {
+        return value;
+    }
+    // Graft the on-disk value onto defaults (always valid) key by key, keeping only what
+    // still lets the whole thing deserialize as `T`.
+    let Ok(mut root) = serde_json::to_value(T::default()) else {
+        return T::default();
+    };
+    if let (Value::Object(_), Value::Object(incoming)) = (&root, &value) {
+        let incoming = incoming.clone();
+        let mut path: Vec<String> = Vec::new();
+        for (key, sub) in &incoming {
+            path.push(key.clone());
+            graft::<T>(&mut root, &mut path, sub);
+            path.pop();
+        }
+    }
+    T::deserialize(&root).unwrap_or_default()
+}
+
+/// Fold on-disk `incoming` into `root` at `path`. Invariant: on entry `root` deserializes as
+/// `T`; on exit it still does, now holding the richest value at `path` that keeps that true.
+/// Sibling keys are all still at their (valid) defaults or already-grafted-valid state, so
+/// only the key at `path` can introduce invalidity — which is what makes the single-key /
+/// single-element validity checks below accurate.
+fn graft<T>(root: &mut Value, path: &mut Vec<String>, incoming: &Value)
+where
+    T: DeserializeOwned,
+{
+    let current = path_get(root, path).cloned();
+
+    // Try the whole subtree wholesale first.
+    path_set(root, path, incoming.clone());
+    if T::deserialize(&*root).is_ok() {
+        return;
+    }
+
+    match (current.as_ref(), incoming) {
+        // Both objects: restore the default subtree, then fold child keys individually so a
+        // single bad leaf drops only itself instead of the whole section.
+        (Some(Value::Object(_)), Value::Object(sub)) => {
+            path_set(root, path, current.clone().unwrap());
+            for (key, child) in sub {
+                path.push(key.clone());
+                graft::<T>(root, path, child);
+                path.pop();
+            }
+        }
+        // Both arrays: keep only the elements that individually deserialize, so a drifted
+        // record drops out of a history log without taking the rest of the log with it.
+        (Some(Value::Array(_)), Value::Array(items)) => {
+            let mut kept: Vec<Value> = Vec::new();
+            if items.len() <= MAX_ELEMENTWISE_ARRAY {
+                for item in items {
+                    path_set(root, path, Value::Array(vec![item.clone()]));
+                    if T::deserialize(&*root).is_ok() {
+                        kept.push(item.clone());
+                    }
+                }
+            }
+            path_set(root, path, Value::Array(kept));
+        }
+        // Incompatible leaf or type mismatch (renamed enum, retyped scalar, …): keep default.
+        _ => match current {
+            Some(value) => path_set(root, path, value),
+            None => path_remove(root, path),
+        },
+    }
+}
+
+fn path_get<'a>(root: &'a Value, path: &[String]) -> Option<&'a Value> {
+    let mut cur = root;
+    for key in path {
+        cur = cur.as_object()?.get(key)?;
+    }
+    Some(cur)
+}
+
+/// Set `root` at `path` to `value`, creating intermediate objects as needed.
+fn path_set(root: &mut Value, path: &[String], value: Value) {
+    let Some((last, parents)) = path.split_last() else {
+        *root = value;
+        return;
+    };
+    let mut cur = root;
+    for key in parents {
+        if !cur.is_object() {
+            *cur = Value::Object(Map::new());
+        }
+        cur = cur
+            .as_object_mut()
+            .unwrap()
+            .entry(key.clone())
+            .or_insert_with(|| Value::Object(Map::new()));
+    }
+    if !cur.is_object() {
+        *cur = Value::Object(Map::new());
+    }
+    cur.as_object_mut().unwrap().insert(last.clone(), value);
+}
+
+fn path_remove(root: &mut Value, path: &[String]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut cur = root;
+    for key in parents {
+        match cur.as_object_mut().and_then(|obj| obj.get_mut(key)) {
+            Some(next) => cur = next,
+            None => return,
+        }
+    }
+    if let Some(obj) = cur.as_object_mut() {
+        obj.remove(last);
+    }
+}
+
+/// Move an unparseable file aside so a fresh default won't silently destroy it. Never
+/// overwrites an existing backup (numbered `*.corrupt.N.bak`).
+pub fn backup_aside(path: &Path) -> io::Result<PathBuf> {
+    reject_symlink(path)?;
+    for n in 0..1000 {
+        let bak = if n == 0 {
+            path.with_extension("corrupt.bak")
+        } else {
+            path.with_extension(format!("corrupt.{n}.bak"))
+        };
+        if !bak.exists() {
+            fs::rename(path, &bak)?;
+            return Ok(bak);
+        }
+    }
+    Err(io::Error::other("too many corrupt backups"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +475,137 @@ mod tests {
         symlink(&real, &link).unwrap();
         assert!(read_no_symlink(&link).is_err());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    mod recover {
+        use super::*;
+        use serde::{Deserialize, Serialize};
+        use serde_json::json;
+
+        #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Mode {
+            #[default]
+            Balanced,
+            Aggressive,
+        }
+
+        #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(default)]
+        struct Inner {
+            mode: Mode,
+            weight: f32,
+            label: String,
+        }
+
+        #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(default)]
+        struct Row {
+            id: String,
+            kind: Mode,
+        }
+
+        #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+        #[serde(default)]
+        struct Store {
+            volume: u8,
+            name: String,
+            inner: Inner,
+            log: Vec<Row>,
+        }
+
+        #[test]
+        fn valid_input_is_returned_unchanged() {
+            let store = Store {
+                volume: 42,
+                name: "hi".into(),
+                inner: Inner {
+                    mode: Mode::Aggressive,
+                    weight: 0.7,
+                    label: "x".into(),
+                },
+                log: vec![Row {
+                    id: "a".into(),
+                    kind: Mode::Balanced,
+                }],
+            };
+            let value = serde_json::to_value(&store).unwrap();
+            assert_eq!(recover_lenient::<Store>(value), store);
+        }
+
+        #[test]
+        fn unknown_nested_enum_defaults_only_that_field() {
+            // `inner.mode` is a variant this build no longer knows; everything else survives.
+            let value = json!({
+                "volume": 55,
+                "name": "keep me",
+                "inner": { "mode": "wild", "weight": 0.9, "label": "still here" },
+                "log": [],
+            });
+            let recovered = recover_lenient::<Store>(value);
+            assert_eq!(recovered.volume, 55, "sibling scalar preserved");
+            assert_eq!(recovered.name, "keep me");
+            assert_eq!(recovered.inner.mode, Mode::Balanced, "bad enum -> default");
+            assert_eq!(recovered.inner.weight, 0.9, "sibling in same object preserved");
+            assert_eq!(recovered.inner.label, "still here");
+        }
+
+        #[test]
+        fn retyped_scalar_defaults_only_that_field() {
+            let value = json!({ "volume": "loud", "name": "kept" });
+            let recovered = recover_lenient::<Store>(value);
+            assert_eq!(recovered.volume, 0, "string-where-u8-expected -> default");
+            assert_eq!(recovered.name, "kept");
+        }
+
+        #[test]
+        fn bad_array_element_is_dropped_not_the_whole_log() {
+            let value = json!({
+                "log": [
+                    { "id": "a", "kind": "balanced" },
+                    { "id": "b", "kind": "wild" },        // drifted enum
+                    { "id": "c", "kind": "aggressive" },
+                ],
+            });
+            let recovered = recover_lenient::<Store>(value);
+            assert_eq!(
+                recovered.log,
+                vec![
+                    Row { id: "a".into(), kind: Mode::Balanced },
+                    Row { id: "c".into(), kind: Mode::Aggressive },
+                ],
+                "only the drifted record is dropped",
+            );
+        }
+
+        #[test]
+        fn unrelated_json_falls_back_to_default() {
+            assert_eq!(recover_lenient::<Store>(json!({ "nope": 1 })), Store::default());
+            assert_eq!(recover_lenient::<Store>(json!([1, 2, 3])), Store::default());
+        }
+
+        #[test]
+        fn corrupt_file_is_backed_up_and_defaulted() {
+            let dir = temp_root("recover-corrupt");
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("store.json");
+            fs::write(&path, b"this is not { json").unwrap();
+
+            let recovered = load_json_or_default::<Store>(&path);
+            assert_eq!(recovered, Store::default());
+            assert!(
+                dir.join("store.corrupt.bak").exists(),
+                "unparseable file must be preserved as a backup, not destroyed",
+            );
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        #[test]
+        fn missing_file_is_default_without_backup() {
+            let dir = temp_root("recover-missing");
+            let path = dir.join("store.json");
+            assert_eq!(load_json_or_default::<Store>(&path), Store::default());
+            assert!(!dir.join("store.corrupt.bak").exists());
+        }
     }
 }

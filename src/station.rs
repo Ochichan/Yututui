@@ -103,13 +103,11 @@ pub struct StationStore {
 impl StationStore {
     /// Load from disk, falling back to empty if absent or unreadable.
     pub fn load() -> Self {
-        if let Some(path) = station_path()
-            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
-            && let Ok(s) = serde_json::from_str::<StationStore>(&text)
-        {
-            return s;
-        }
-        StationStore::default()
+        let Some(path) = station_path() else {
+            return StationStore::default();
+        };
+        // Schema-drift tolerant: preserves the active station across incompatible changes.
+        safe_fs::load_json_or_default::<StationStore>(&path)
     }
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.

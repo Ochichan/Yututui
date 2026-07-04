@@ -550,11 +550,20 @@ impl Config {
     pub fn load() -> Self {
         if let Some(path) = config_path()
             && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
-            && let Ok(cfg) = serde_json::from_str::<Config>(&text)
         {
-            return cfg;
+            // Fast path: schema unchanged since this file was written.
+            if let Ok(cfg) = serde_json::from_str::<Config>(&text) {
+                return cfg;
+            }
+            // Schema drifted (a renamed enum, retyped field, …): keep every field that still
+            // fits instead of resetting the whole config to defaults.
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                return safe_fs::recover_lenient::<Config>(value);
+            }
+            // Present but not JSON at all: preserve it as a backup rather than clobbering.
+            let _ = safe_fs::backup_aside(&path);
         }
-        // First run (or unreadable): migrate from the old app, then persist.
+        // First run (or unreadable/corrupt): migrate from the old app, then persist.
         let mut cfg = Config::default();
         if let Some(old) = old_config_path() {
             import_old_from(&old, &mut cfg);
@@ -970,6 +979,44 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.volume, 100);
         assert!(c.cookie.is_none());
+    }
+
+    #[test]
+    fn drifted_enum_recovers_instead_of_wiping_the_whole_config() {
+        // A config written by a previous build whose `video_layout` value this build no
+        // longer understands. Under the old strict load this reset the ENTIRE file (and
+        // overwrote it) — the "settings reset after every install" bug. Now only the drifted
+        // field falls back to default and every sibling survives.
+        let mut original = Config::default();
+        original.volume = 42;
+        original.cookie = Some("SID=keepme".to_owned());
+        original.gemini_api_key = Some("AIzaKeep".to_owned());
+        original.theme.set_preset(crate::theme::ThemePreset::Midnight);
+
+        let mut value = serde_json::to_value(&original).unwrap();
+        value["video_layout"] = serde_json::Value::String("hologram".into());
+
+        // Strict parse fails outright (the behaviour that caused the reset)...
+        assert!(
+            serde_json::from_str::<Config>(&value.to_string()).is_err(),
+            "a drifted enum must break the strict parse, or this test proves nothing",
+        );
+
+        // ...but recovery keeps everything except the one drifted field.
+        let recovered = safe_fs::recover_lenient::<Config>(value);
+        assert_eq!(recovered.volume, 42, "sibling scalar preserved");
+        assert_eq!(
+            recovered.cookie.as_deref(),
+            Some("SID=keepme"),
+            "login preserved",
+        );
+        assert_eq!(recovered.gemini_api_key.as_deref(), Some("AIzaKeep"));
+        assert_eq!(recovered.theme.preset, "midnight", "theme preserved");
+        assert_eq!(
+            recovered.video_layout,
+            VideoOverlay::default(),
+            "only the drifted field falls back to default",
+        );
     }
 
     #[test]

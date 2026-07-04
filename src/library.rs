@@ -47,14 +47,13 @@ pub struct Library {
 impl Library {
     /// Load from disk, falling back to an empty library if absent or unreadable.
     pub fn load() -> Self {
-        if let Some(path) = library_path()
-            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
-            && let Ok(mut lib) = serde_json::from_str::<Library>(&text)
-        {
-            lib.trim_to_caps();
-            return lib;
-        }
-        Library::default()
+        let Some(path) = library_path() else {
+            return Library::default();
+        };
+        // Schema-drift tolerant: one changed field no longer discards saved tracks/history.
+        let mut lib = safe_fs::load_json_or_default::<Library>(&path);
+        lib.trim_to_caps();
+        lib
     }
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.

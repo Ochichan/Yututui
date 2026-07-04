@@ -46,13 +46,11 @@ pub struct Playlists {
 impl Playlists {
     /// Load from disk, falling back to empty if absent or unreadable.
     pub fn load() -> Self {
-        if let Some(path) = playlists_path()
-            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
-            && let Ok(p) = serde_json::from_str::<Playlists>(&text)
-        {
-            return p;
-        }
-        Playlists::default()
+        let Some(path) = playlists_path() else {
+            return Playlists::default();
+        };
+        // Schema-drift tolerant: one changed field no longer discards saved playlists.
+        safe_fs::load_json_or_default::<Playlists>(&path)
     }
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.

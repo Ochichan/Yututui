@@ -83,14 +83,13 @@ pub struct Signals {
 impl Signals {
     /// Load from disk, falling back to empty if absent or unreadable.
     pub fn load() -> Self {
-        if let Some(path) = signals_path()
-            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
-            && let Ok(mut sig) = serde_json::from_str::<Signals>(&text)
-        {
-            sig.enforce_caps();
-            return sig;
-        }
-        Signals::default()
+        let Some(path) = signals_path() else {
+            return Signals::default();
+        };
+        // Schema-drift tolerant: a renamed field can no longer wipe the whole play history.
+        let mut sig = safe_fs::load_json_or_default::<Signals>(&path);
+        sig.enforce_caps();
+        sig
     }
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.

@@ -32,14 +32,13 @@ pub struct DownloadStore {
 impl DownloadStore {
     /// Load from disk, falling back to an empty store if absent or unreadable.
     pub fn load() -> Self {
-        if let Some(path) = store_path()
-            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
-            && let Ok(mut store) = serde_json::from_str::<DownloadStore>(&text)
-        {
-            store.tracks.truncate(STORE_MAX);
-            return store;
-        }
-        DownloadStore::default()
+        let Some(path) = store_path() else {
+            return DownloadStore::default();
+        };
+        // Schema-drift tolerant: one changed field no longer discards download history.
+        let mut store = safe_fs::load_json_or_default::<DownloadStore>(&path);
+        store.tracks.truncate(STORE_MAX);
+        store
     }
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.

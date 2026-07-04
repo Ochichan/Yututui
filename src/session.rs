@@ -78,12 +78,8 @@ impl SessionCache {
     }
 
     fn load_from_path(path: &Path) -> Self {
-        if let Ok(text) = safe_fs::read_to_string_no_symlink(path)
-            && let Ok(cache) = serde_json::from_str::<SessionCache>(&text)
-        {
-            return cache;
-        }
-        Self::default()
+        // Schema-drift tolerant: a changed field no longer drops the resume state wholesale.
+        safe_fs::load_json_or_default::<SessionCache>(path)
     }
 
     fn save_to_path(&self, path: &Path) -> std::io::Result<()> {
