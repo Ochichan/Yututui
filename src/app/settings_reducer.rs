@@ -2,6 +2,31 @@
 
 use super::*;
 
+/// Decide the Spotify account row's state from the saved token's embedded Client ID
+/// (`None` = no token) and the configured Client ID. Returns
+/// `(connected, stale, effective_client_id)`:
+/// - `connected`: a token exists at all.
+/// - `stale`: a token exists but the connection is *orphaned* — config has no Client ID,
+///   or it no longer matches the token's. The row then offers a browser reconnect
+///   instead of disconnect. (A merely-expired-but-matching token is *not* stale: it
+///   refreshes on its own, and forcing re-auth there would drop the disconnect action.)
+/// - `effective_client_id`: the configured Client ID, or — when config lost it — the one
+///   recovered from the token, so a one-press reconnect has an ID to authorize with.
+fn spotify_row_state(token_client_id: Option<&str>, cfg_client_id: &str) -> (bool, bool, String) {
+    let cfg = cfg_client_id.trim();
+    let connected = token_client_id.is_some();
+    let effective = if cfg.is_empty() {
+        token_client_id.unwrap_or_default().trim().to_owned()
+    } else {
+        cfg_client_id.to_owned()
+    };
+    let stale = token_client_id.is_some_and(|tok| {
+        let tok = tok.trim();
+        cfg.is_empty() || (!tok.is_empty() && cfg != tok)
+    });
+    (connected, stale, effective)
+}
+
 impl App {
     // --- Settings screen ----------------------------------------------------
 
@@ -28,6 +53,15 @@ impl App {
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()
         };
+        // Spotify connection state, decided once (one token-file read). See
+        // `spotify_row_state`: recovers a lost Client ID from the token and flags an
+        // orphaned connection so the row can offer a browser reconnect.
+        let spotify_token = crate::spotify::auth::SpotifyToken::load();
+        let cfg_spotify_client_id = self.config.spotify.client_id.clone().unwrap_or_default();
+        let (spotify_connected, spotify_stale, spotify_client_id) = spotify_row_state(
+            spotify_token.as_ref().map(|t| t.client_id.as_str()),
+            &cfg_spotify_client_id,
+        );
         let draft = SettingsDraft {
             cookies_file: path_str(&self.config.cookies_file),
             download_dir: path_str(&self.config.download_dir),
@@ -89,16 +123,17 @@ impl App {
                 .clone()
                 .unwrap_or_default(),
             scrobble_local_files: self.config.effective_scrobble_local_files(),
-            spotify_client_id: self.config.spotify.client_id.clone().unwrap_or_default(),
+            spotify_client_id,
             spotify_redirect_port: self
                 .config
                 .spotify
                 .redirect_port
                 .map(|p| p.to_string())
                 .unwrap_or_default(),
-            // Connection state = "a token file exists"; the display name arrives only
-            // when a connect flow completes in this session.
-            spotify_connected: crate::spotify::auth::SpotifyToken::load().is_some(),
+            // Connection state computed above; the display name arrives only when a
+            // connect flow completes in this session.
+            spotify_connected,
+            spotify_stale,
             spotify_username: String::new(),
         };
         self.settings = Some(Box::new(SettingsState {
@@ -788,10 +823,11 @@ impl App {
                     }
                 }
                 Field::SpotifyConnect => {
-                    let (connected, client_id, port) = {
+                    let (connected, stale, client_id, port) = {
                         let st = self.settings_mut();
                         (
                             st.draft.spotify_connected,
+                            st.draft.spotify_stale,
                             st.draft.spotify_client_id.trim().to_owned(),
                             st.draft
                                 .spotify_redirect_port
@@ -800,7 +836,10 @@ impl App {
                                 .unwrap_or(crate::config::SPOTIFY_REDIRECT_PORT_DEFAULT),
                         )
                     };
-                    if connected {
+                    // A healthy connection disconnects. Everything else — no token, or an
+                    // orphaned/stale one — takes the browser (re)connect path instead, so
+                    // the user always has a way to open the approval page.
+                    if connected && !stale {
                         self.settings_request_confirm(SettingsConfirm::SpotifyDisconnect);
                         return Vec::new();
                     }
@@ -814,11 +853,15 @@ impl App {
                         self.status.kind = StatusKind::Error;
                         return Vec::new();
                     }
-                    self.status.text = t!(
-                        "Starting Spotify authorization…",
-                        "Spotify 인증을 시작합니다…"
-                    )
-                    .to_owned();
+                    self.status.text = if stale {
+                        t!("Reconnecting Spotify…", "Spotify 재연결 중…").to_owned()
+                    } else {
+                        t!(
+                            "Starting Spotify authorization…",
+                            "Spotify 인증을 시작합니다…"
+                        )
+                        .to_owned()
+                    };
                     self.status.kind = StatusKind::Info;
                     vec![Cmd::Transfer(
                         crate::transfer::actor::TransferCmd::AuthStart { client_id, port },
@@ -941,9 +984,15 @@ impl App {
                 self.status.kind = StatusKind::Info;
             }
             TransferEvent::AuthDone { display_name } => {
+                let mut used_client_id = None;
                 if let Some(st) = self.settings.as_mut() {
                     st.draft.spotify_connected = true;
+                    st.draft.spotify_stale = false;
                     st.draft.spotify_username = display_name.clone();
+                    let cid = st.draft.spotify_client_id.trim().to_owned();
+                    if !cid.is_empty() {
+                        used_client_id = Some(cid);
+                    }
                 }
                 self.status.text = if crate::i18n::is_korean() {
                     format!("Spotify 연결됨: {display_name}")
@@ -951,6 +1000,15 @@ impl App {
                     format!("Spotify connected as {display_name}")
                 };
                 self.status.kind = StatusKind::Info;
+                // Repair config if it had lost or mismatched the Client ID (recovered
+                // from the token for this reconnect), so the orphaned "needs reconnect"
+                // state doesn't come back on the next launch.
+                if let Some(cid) = used_client_id
+                    && self.config.spotify.client_id.as_deref() != Some(cid.as_str())
+                {
+                    self.config.spotify.client_id = Some(cid);
+                    return vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
+                }
             }
             TransferEvent::AuthError(error) => {
                 self.status.text = format!(
@@ -963,6 +1021,7 @@ impl App {
             TransferEvent::Disconnected => {
                 if let Some(st) = self.settings.as_mut() {
                     st.draft.spotify_connected = false;
+                    st.draft.spotify_stale = false;
                     st.draft.spotify_username.clear();
                 }
                 self.status.text =
@@ -1633,5 +1692,62 @@ impl App {
             });
         }
         cmds
+    }
+}
+
+#[cfg(test)]
+mod spotify_state_tests {
+    use super::spotify_row_state;
+
+    #[test]
+    fn no_token_is_not_connected() {
+        let (connected, stale, cid) = spotify_row_state(None, "");
+        assert!(!connected);
+        assert!(!stale);
+        assert_eq!(cid, "");
+        // A configured Client ID with no token is still "not connected", not stale.
+        let (connected, stale, cid) = spotify_row_state(None, "cfg-id");
+        assert!(!connected);
+        assert!(!stale);
+        assert_eq!(cid, "cfg-id");
+    }
+
+    #[test]
+    fn matching_client_id_is_healthy_connected() {
+        // Config knows the same Client ID the token was minted with → disconnect, not reconnect.
+        let (connected, stale, cid) = spotify_row_state(Some("app-123"), "app-123");
+        assert!(connected);
+        assert!(!stale);
+        assert_eq!(cid, "app-123");
+        // Whitespace differences don't count as a mismatch.
+        let (_, stale, _) = spotify_row_state(Some("app-123"), "  app-123  ");
+        assert!(!stale);
+    }
+
+    #[test]
+    fn orphaned_client_id_is_stale_and_recovers_from_token() {
+        // The reported bug: config lost the Client ID but the token still embeds it.
+        let (connected, stale, cid) = spotify_row_state(Some("app-123"), "");
+        assert!(connected);
+        assert!(stale, "orphaned connection should offer reconnect");
+        assert_eq!(cid, "app-123", "Client ID recovered from the token");
+    }
+
+    #[test]
+    fn mismatched_client_id_is_stale_but_keeps_configured_value() {
+        // Config points at a different app than the saved token → reconnect.
+        let (connected, stale, cid) = spotify_row_state(Some("token-app"), "config-app");
+        assert!(connected);
+        assert!(stale);
+        assert_eq!(cid, "config-app");
+    }
+
+    #[test]
+    fn token_without_embedded_id_is_not_stale_when_config_has_one() {
+        // Legacy token with no embedded Client ID: nothing to mismatch against.
+        let (connected, stale, cid) = spotify_row_state(Some(""), "config-app");
+        assert!(connected);
+        assert!(!stale);
+        assert_eq!(cid, "config-app");
     }
 }

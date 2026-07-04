@@ -777,6 +777,10 @@ pub struct SettingsDraft {
     /// Display-only: whether a saved token exists (checked when the screen opens) /
     /// the display name once a connect flow completes this session.
     pub spotify_connected: bool,
+    /// A saved token exists but the connection is *orphaned*: config lost the Client
+    /// ID (e.g. an older reset) or it no longer matches the token's. The row then
+    /// offers a one-press browser reconnect instead of disconnect.
+    pub spotify_stale: bool,
     pub spotify_username: String,
 }
 
@@ -952,6 +956,12 @@ impl SettingsDraft {
             Field::SpotifyConnect => {
                 if !self.spotify_connected {
                     t!("↵ connect in browser", "↵ Enter로 브라우저 연결").to_owned()
+                } else if self.spotify_stale {
+                    t!(
+                        "needs reconnect · ↵ reconnect in browser",
+                        "재연결 필요 · ↵ Enter로 브라우저 재연결"
+                    )
+                    .to_owned()
                 } else if self.spotify_username.trim().is_empty() {
                     t!("connected · ↵ disconnect", "연결됨 · ↵ 연결 해제").to_owned()
                 } else if crate::i18n::is_korean() {
@@ -1184,6 +1194,7 @@ mod tests {
             spotify_client_id: String::new(),
             spotify_redirect_port: String::new(),
             spotify_connected: false,
+            spotify_stale: false,
             spotify_username: String::new(),
         }
     }
@@ -1543,6 +1554,7 @@ mod tests {
             spotify_client_id: "  spotify-cid  ".to_owned(),
             spotify_redirect_port: "9333".to_owned(),
             spotify_connected: true,
+            spotify_stale: false,
             spotify_username: "listener".to_owned(),
         };
 

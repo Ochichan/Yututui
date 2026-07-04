@@ -50,6 +50,8 @@ pub(crate) struct SessionTuning {
     pub max_queued_bytes: usize,
     /// How long a `Command` frame may wait on the owner loop for its reply.
     pub reply_timeout: Duration,
+    /// How long playback-loading `Command` frames may wait on the owner loop.
+    pub playback_reply_timeout: Duration,
 }
 
 impl Default for SessionTuning {
@@ -59,6 +61,7 @@ impl Default for SessionTuning {
             max_queued_items: 256,
             max_queued_bytes: 8 * 1024 * 1024,
             reply_timeout: Duration::from_secs(2),
+            playback_reply_timeout: Duration::from_secs(20),
         }
     }
 }
@@ -530,9 +533,14 @@ pub(crate) async fn run_session(
                 })
             }
             ClientOp::Command(command) => {
+                let reply_timeout = if super::reply_timeout_for(&command) > tuning.reply_timeout {
+                    tuning.playback_reply_timeout
+                } else {
+                    tuning.reply_timeout
+                };
                 let (reply_tx, reply_rx) = oneshot::channel();
                 let resp = if emit(RemoteEvent::Command(command, reply_tx)) {
-                    match timeout(tuning.reply_timeout, reply_rx).await {
+                    match timeout(reply_timeout, reply_rx).await {
                         Ok(Ok(resp)) => resp,
                         _ => RemoteResponse::err("timeout"),
                     }

@@ -11,6 +11,8 @@
 //! `App::apply_remote` → `on_player_action`), so they are independent of the TUI's current
 //! input mode: `ytt -r next` skips a track even while the UI is in Search text entry.
 
+use std::time::Duration;
+
 pub mod args;
 pub mod client;
 pub mod endpoint;
@@ -22,3 +24,24 @@ mod sessions;
 pub use sessions::{RemoteSessionHub, RemoteSessionRef};
 
 pub use server::{BindOutcome, RemoteServer, bind_or_detect};
+
+const QUICK_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+const PLAYBACK_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
+
+pub(crate) fn reply_timeout_for(command: &proto::RemoteCommand) -> Duration {
+    use proto::RemoteCommand;
+
+    match command {
+        RemoteCommand::Next
+        | RemoteCommand::Prev
+        | RemoteCommand::TogglePause
+        | RemoteCommand::Play { .. }
+        | RemoteCommand::Enqueue { .. }
+        | RemoteCommand::QueuePlay { .. }
+        | RemoteCommand::QueueRemove { .. }
+        | RemoteCommand::ResumeSession
+        | RemoteCommand::PlayTracks { .. }
+        | RemoteCommand::EnqueueTracks { .. } => PLAYBACK_REPLY_TIMEOUT,
+        _ => QUICK_REPLY_TIMEOUT,
+    }
+}

@@ -37,8 +37,6 @@ use super::sessions::{
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 /// How long a connection may take to deliver its one request line before we drop it.
 const READ_TIMEOUT: Duration = Duration::from_millis(500);
-/// How long to wait for the reducer to compute a reply (it runs on the main loop).
-const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 /// Normal remote requests are tiny JSON objects. Bound one line to avoid unbounded buffering.
 const MAX_REQUEST_BYTES: usize = 4 * 1024;
 
@@ -448,11 +446,12 @@ async fn build_response(req: RemoteRequest, token: &str, emit: &EventSink) -> Re
         return RemoteResponse::err("bad_token");
     }
 
+    let reply_timeout = super::reply_timeout_for(&req.command);
     let (reply_tx, reply_rx) = oneshot::channel();
     if !emit(RemoteEvent::Command(req.command, reply_tx)) {
         return RemoteResponse::err("shutting_down");
     }
-    match timeout(REPLY_TIMEOUT, reply_rx).await {
+    match timeout(reply_timeout, reply_rx).await {
         Ok(Ok(resp)) => resp,
         _ => RemoteResponse::err("timeout"),
     }

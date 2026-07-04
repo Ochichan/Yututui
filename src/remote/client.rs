@@ -21,8 +21,6 @@ use super::endpoint;
 use super::proto::{InstanceFile, PROTOCOL_VERSION, RemoteCommand, RemoteRequest, RemoteResponse};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
-const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
-const SEARCH_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_REPLY_BYTES: usize = 4096;
 
 const EXIT_OK: i32 = 0;
@@ -119,7 +117,7 @@ async fn send_to_instance(
         _ => return Err(ClientError::ConnectFailed),
     };
 
-    let reply_timeout = reply_timeout_for(&command);
+    let reply_timeout = super::reply_timeout_for(&command);
     let req = RemoteRequest {
         version: PROTOCOL_VERSION,
         token: instance.token,
@@ -149,13 +147,6 @@ async fn send_to_instance(
         Err(_) => return Err(ClientError::NoResponse),
     };
     serde_json::from_str(line.trim()).map_err(|_| ClientError::MalformedResponse)
-}
-
-fn reply_timeout_for(command: &RemoteCommand) -> Duration {
-    match command {
-        RemoteCommand::Play { .. } | RemoteCommand::Enqueue { .. } => SEARCH_REPLY_TIMEOUT,
-        _ => REPLY_TIMEOUT,
-    }
 }
 
 async fn exchange_for_cli(parsed: Parsed) -> i32 {
