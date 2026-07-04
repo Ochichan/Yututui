@@ -19,7 +19,6 @@
 export type FeatureId =
   | 'library.playlists'
   | 'queue.reorder'
-  | 'settings.hotkeys'
   | 'settings.accounts'
   | 'ai.whygem'
   | 'transfer.wizard'
@@ -63,17 +62,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
     seam: 'pointer-events drag inside gui/src/lib/components/VirtualList.svelte + optimistic reorder in gui/src/lib/stores/queue.svelte.ts',
     notes:
       'Pointer events, NOT HTML5 DnD (unreliable in WKWebView). Auto-scroll during drag needs care.',
-  },
-  'settings.hotkeys': {
-    title: 'Hotkeys (keymap model + capture + dispatcher)',
-    milestone: 'M3',
-    brief: 'docs/gui/07-feature-briefs.md §8 + docs/gui/05-frontend.md §8',
-    protocol:
-      'keymap read model (bindings + ActionInfo) in the `settings` topic; cmd apply { keymap: Bind/Unbind/ResetAll } — conflict detection stays core-side',
-    seam: 'create gui/src/lib/keyboard/{chord,dispatcher,korean2set}.ts + ChordCapture.svelte; replace the provisional key handling in App.svelte and the wip() seams in HotkeysTab.svelte',
-    capability: 'settings-v8',
-    notes:
-      'Korean IME 3-branch rule is normative (05 §8.4). Cross-check chord.ts against gui/src/generated/chord-fixtures.json once the Rust export lands.',
   },
   'settings.accounts': {
     title: 'Accounts (Last.fm / ListenBrainz / Spotify)',

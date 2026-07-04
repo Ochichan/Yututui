@@ -20,6 +20,7 @@ import { AiStore } from './lib/stores/ai.svelte';
 import { DownloadsStore } from './lib/stores/downloads.svelte';
 import { SettingsStore } from './lib/stores/settings.svelte';
 import { AnimStore } from './lib/stores/anim.svelte';
+import { KeymapStore } from './lib/stores/keymap.svelte';
 import { LyricsStore } from './lib/stores/lyrics.svelte';
 import { ToastStore } from './lib/stores/toasts.svelte';
 import { WipStore } from './lib/wiring/wip.svelte';
@@ -56,6 +57,7 @@ const ctx: AppCtx = {
   downloads: new DownloadsStore(client),
   settings: new SettingsStore(client),
   anim: new AnimStore(client),
+  keymap: new KeymapStore(client),
   lyrics: new LyricsStore(client),
   toasts,
   wip: new WipStore(connection),

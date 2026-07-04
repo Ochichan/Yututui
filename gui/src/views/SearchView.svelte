@@ -50,6 +50,7 @@
         placeholder="Search songs, artists, stations…"
         bind:value={query}
         aria-label="Search query"
+        data-kctx="SearchInput"
       />
       <button class="go" type="submit">Search</button>
     </form>

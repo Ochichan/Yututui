@@ -12,7 +12,7 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { settings, wip, toasts } = ctx;
+  const { settings, keymap, toasts } = ctx;
 
   const ui = $derived(settings.ui);
   const search = $derived(settings.search);
@@ -159,7 +159,7 @@
 
 <SettingSection title="Danger zone">
   <SettingRow label="Reset keybindings" hint="Restore every chord to its default">
-    <button class="danger" onclick={() => wip.gate('settings.hotkeys')}>Reset</button>
+    <button class="danger" onclick={() => keymap.resetAll()}>Reset</button>
   </SettingRow>
   <SettingRow label="Reset all settings" hint="Everything back to factory — asks for confirmation">
     {#if confirmingReset}

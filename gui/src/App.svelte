@@ -1,8 +1,8 @@
 <script lang="ts">
   // The global frame (docs/gui/07 §0): nav rail · active view · collapsible queue dock,
   // persistent transport bar, connection banner, toast host, overlay hosts (help / about /
-  // patch-bay). Keyboard is the provisional set (lib/keyboard/provisional.ts) until the
-  // M3 dispatcher honors the user's real keymap.
+  // patch-bay). Keyboard runs the real dispatcher (lib/keyboard/ + the keymap store),
+  // honoring the user's remappable keymap.
   import type { AppCtx } from './lib/ctx';
   import { NAV_ITEMS } from './lib/stores/ui.svelte';
   import NowPlaying from './views/NowPlaying.svelte';
@@ -15,6 +15,10 @@
   import HelpOverlay from './views/overlays/HelpOverlay.svelte';
   import AboutCard from './views/overlays/AboutCard.svelte';
   import WipModal from './lib/components/WipModal.svelte';
+  import ChordCapture from './lib/components/ChordCapture.svelte';
+  import { chordFromEvent, isTypeableTarget, isPlainTypeable } from './lib/keyboard/chord';
+  import { resolveContext } from './lib/keyboard/dispatcher';
+  import { runAction } from './lib/keyboard/actions';
 
   interface Props {
     ctx: AppCtx;
@@ -23,7 +27,7 @@
   // The ctx bundle is assembled once in main.ts and its identity never changes — the
   // stores inside are the reactive things, so capturing them at init is intended.
   // svelte-ignore state_referenced_locally
-  const { ui, connection, playback, toasts, wip, client, boot, demo } = ctx;
+  const { ui, connection, playback, toasts, wip, client, boot, demo, keymap } = ctx;
 
   const bannerText = $derived.by(() => {
     switch (connection.info.state) {
@@ -57,61 +61,19 @@
     playback.setRadioMode(radio);
   }
 
-  // Provisional keyboard (single source: lib/keyboard/provisional.ts — table shown in
-  // Help + Settings→Hotkeys). TODO(wire:M3/settings.hotkeys): replace with the dispatcher.
+  // The real keymap dispatcher (docs/gui/05 §8): normalize the chord (3-branch Korean rule),
+  // resolve the focus context, look it up in the user's keymap (specific → Common → Global),
+  // and run the action. The is_typeable guard keeps plain keys flowing into text fields.
   function onkeydown(e: KeyboardEvent) {
-    if (e.isComposing) return;
-    if (e.key === 'Escape') {
-      if (wip.active) {
-        wip.close();
-        e.preventDefault();
-      } else if (ui.closeTopOverlay()) {
-        e.preventDefault();
-      }
-      return;
-    }
-    // is_typeable guard (lite): never steal plain keys from fields or buttons.
-    const t = e.target;
-    if (
-      t instanceof HTMLElement &&
-      t.closest('input, textarea, select, button, [contenteditable]')
-    ) {
-      return;
-    }
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    switch (e.key) {
-      case ' ':
-        playback.togglePause();
-        break;
-      case 'ArrowLeft':
-        playback.seekTo(Math.max(0, (playback.positionMs ?? 0) - 5000));
-        break;
-      case 'ArrowRight':
-        playback.seekTo((playback.positionMs ?? 0) + 5000);
-        break;
-      case 'ArrowUp':
-        playback.setVolume(playback.volume + 5);
-        break;
-      case 'ArrowDown':
-        playback.setVolume(playback.volume - 5);
-        break;
-      case '1':
-      case '2':
-      case '3':
-      case '4':
-      case '5':
-        ui.setView(NAV_ITEMS[Number(e.key) - 1].id);
-        break;
-      case 'q':
-        ui.toggleQueue();
-        break;
-      case '?':
-        ui.helpOpen = !ui.helpOpen;
-        break;
-      default:
-        return;
-    }
-    e.preventDefault();
+    // While a chord is being captured, ChordCapture owns the keyboard.
+    if (keymap.capture) return;
+    const chord = chordFromEvent(e);
+    if (!chord) return;
+    if (isTypeableTarget(e.target) && isPlainTypeable(e)) return;
+    const context = resolveContext(ui.view, document.activeElement);
+    const action = keymap.match(context, chord);
+    if (!action) return;
+    if (runAction(action, ctx)) e.preventDefault();
   }
 </script>
 
@@ -211,6 +173,7 @@
   <AboutCard {ctx} />
 {/if}
 <WipModal {wip} {client} {toasts} transportLive={!demo} />
+<ChordCapture {keymap} />
 
 <div class="toasts" aria-live="polite">
   {#each toasts.toasts as t (t.id)}

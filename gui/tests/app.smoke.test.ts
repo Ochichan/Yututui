@@ -20,6 +20,7 @@ import { AiStore } from '../src/lib/stores/ai.svelte';
 import { DownloadsStore } from '../src/lib/stores/downloads.svelte';
 import { SettingsStore } from '../src/lib/stores/settings.svelte';
 import { AnimStore } from '../src/lib/stores/anim.svelte';
+import { KeymapStore } from '../src/lib/stores/keymap.svelte';
 import { LyricsStore } from '../src/lib/stores/lyrics.svelte';
 import { ToastStore } from '../src/lib/stores/toasts.svelte';
 import { WipStore } from '../src/lib/wiring/wip.svelte';
@@ -44,6 +45,7 @@ function assemble(): AppCtx {
     downloads: new DownloadsStore(client),
     settings: new SettingsStore(client),
     anim: new AnimStore(client),
+    keymap: new KeymapStore(client),
     lyrics: new LyricsStore(client),
     toasts,
     wip: new WipStore(connection),
@@ -88,5 +90,20 @@ describe('App against the demo core', () => {
     expect(ctx.wip.active).toBe('library.playlists');
     expect(screen.getByText('Not wired up yet')).toBeTruthy();
     expect(screen.getByText('Copy agent brief')).toBeTruthy();
+  });
+
+  it('the keymap dispatcher routes a real keypress to its action', async () => {
+    const ctx = assemble();
+    render(App, { props: { ctx } });
+    await settle(); // let the settings push seed the keymap model
+
+    expect(ctx.ui.view).toBe('now');
+    // '2' is Global view_search; the dispatcher resolves + runs it against the live keymap.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', bubbles: true }));
+    expect(ctx.ui.view).toBe('search');
+
+    // '?' is Global help.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true }));
+    expect(ctx.ui.helpOpen).toBe(true);
   });
 });

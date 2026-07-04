@@ -19,6 +19,7 @@ import type { DownloadStatus } from '../stores/downloads.svelte';
 import type { SettingGroup, SettingsModelV8 } from '../stores/settings.svelte';
 import type { ThemeModel } from '../stores/theme.svelte';
 import { defaultAnimations } from '../stores/anim.svelte';
+import { defaultKeymap, type KeyContext } from '../stores/keymap.svelte';
 
 // ── the demo catalog (original fictional tracks — the cat is the brand, =^..^=) ──────
 
@@ -271,6 +272,8 @@ function defaultSettings(): SettingsModelV8 {
     animations: defaultAnimations(),
     // Default preset, all 34 roles resolved, no overrides (settings.theme-editor).
     theme: defaultTheme(),
+    // The remappable keymap read model — bindings + ActionInfo (settings.hotkeys).
+    keymap: defaultKeymap(),
   };
 }
 
@@ -369,6 +372,15 @@ export class DemoCoreTransport implements Transport {
               Number(p.limit ?? 50),
             ),
           });
+        } else if (env.name === 'keymap_bind') {
+          const p = (env.payload ?? {}) as Record<string, unknown>;
+          const conflict = this.#keymapBind(
+            String(p.context ?? '') as KeyContext,
+            String(p.action ?? ''),
+            String(p.chord ?? ''),
+          );
+          // Conflict detection stays core-side; the reply carries it for inline display.
+          this.#emit({ v: 1, id: env.id, kind: 'res', payload: { ok: true, conflict } });
         } else {
           this.#emit({ v: 1, id: env.id, kind: 'err', payload: { reason: 'not_supported' } });
         }
@@ -503,6 +515,14 @@ export class DemoCoreTransport implements Transport {
         return;
       case 'theme_clear_override':
         this.#themeClearOverride(String(p.role ?? ''));
+        return;
+      case 'keymap_unbind':
+        this.#keymapUnbind(String(p.context ?? '') as KeyContext, String(p.action ?? ''));
+        return;
+      case 'keymap_reset_all':
+        this.#settings.keymap = defaultKeymap();
+        this.#settings.rev++;
+        this.#pushSettings();
         return;
       case 'set_gemini_key':
         // Write-only: the key never round-trips; only presence flips.
@@ -864,6 +884,45 @@ export class DemoCoreTransport implements Transport {
     if (!(role in this.#settings.theme.overrides)) return;
     delete this.#settings.theme.overrides[role];
     this.#settings.theme.roles[role] = presetPalette(this.#settings.theme.preset)[role];
+    this.#settings.rev++;
+    this.#pushSettings();
+  }
+
+  // ── keymap (settings.hotkeys) ────────────────────────────────────────────────────────
+
+  /** Bind a chord; returns any core-side shadow conflict (detection stays here, not the GUI). */
+  #keymapBind(context: KeyContext, action: string, chord: string): { shadows: string } | null {
+    if (!context || !action || !chord) return null;
+    const conflict = this.#keymapConflict(context, action, chord);
+    this.#settings.keymap.bindings[`${context}.${action}`] = chord;
+    this.#settings.rev++;
+    this.#pushSettings();
+    return conflict;
+  }
+
+  /** The first other action whose chord this bind collides with, across the effective contexts. */
+  #keymapConflict(context: KeyContext, action: string, chord: string): { shadows: string } | null {
+    const order: KeyContext[] =
+      context === 'Common'
+        ? ['Common', 'Global']
+        : context === 'Global'
+          ? ['Global']
+          : [context, 'Common', 'Global'];
+    const self = `${context}.${action}`;
+    for (const ctx of order) {
+      for (const a of this.#settings.keymap.actions) {
+        if (a.context !== ctx) continue;
+        const key = `${ctx}.${a.id}`;
+        if (key === self) continue;
+        if (this.#settings.keymap.bindings[key] === chord) return { shadows: a.id };
+      }
+    }
+    return null;
+  }
+
+  #keymapUnbind(context: KeyContext, action: string): void {
+    if (!context || !action) return;
+    delete this.#settings.keymap.bindings[`${context}.${action}`];
     this.#settings.rev++;
     this.#pushSettings();
   }

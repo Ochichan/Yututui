@@ -27,7 +27,7 @@
   // to the WhyGem popover (docs/gui/07 §13).
 </script>
 
-<aside class="dock" aria-label="Queue">
+<aside class="dock" aria-label="Queue" data-kctx="Queue">
   <header>
     <h2>Queue</h2>
     <div class="head-actions">

@@ -5,9 +5,9 @@
 // rest persist (a slow round-trip must not revert an in-progress edit).
 //
 // This is the M3 keystone: the store holds the full model so its wires read their own block
-// without a second source of truth. `settings.animations` (stores/anim.svelte.ts reads
-// `model.animations`) and `settings.theme-editor` (stores/theme.svelte.ts reads
-// `model.theme`) are live; `settings.hotkeys` will read `model.keymap` the same way. The
+// without a second source of truth — `settings.animations` (stores/anim.svelte.ts reads
+// `model.animations`), `settings.theme-editor` (stores/theme.svelte.ts reads `model.theme`),
+// and `settings.hotkeys` (stores/keymap.svelte.ts reads `model.keymap`) are all live. The
 // desktop bridge forwards `apply` once the core advertises `settings-v8`; until then the
 // in-page demo core answers (gui/WIRING.md).
 
@@ -17,6 +17,7 @@ import type { SearchSource } from '../../generated/protocol/SearchSource';
 import type { Client } from '../ipc/client';
 import type { AnimationsModel } from './anim.svelte';
 import type { ThemeModel } from './theme.svelte';
+import type { KeymapModel } from './keymap.svelte';
 
 // ── PROVISIONAL wire shapes — only the demo core speaks them today. Faithful to the model
 // in docs/gui/02 §11.6; reconcile with the ts-rs `SettingsModelV8` + `SettingChangeV8`
@@ -87,8 +88,9 @@ export interface SettingsModelV8 {
   animations: AnimationsModel;
   /** Live as of the settings.theme-editor wire (the resolved 34 roles + preset/overrides). */
   theme: ThemeModel;
-  // keymap / accounts blocks are added by their own wires (hotkeys · accounts) — the demo
-  // core need not emit them yet.
+  /** Live as of the settings.hotkeys wire (the remappable binding table + ActionInfo). */
+  keymap: KeymapModel;
+  // The accounts block is added by its own wire — the demo core need not emit it yet.
 }
 
 export interface SettingsSnapshot {

@@ -14,6 +14,7 @@ import type { AiStore } from './stores/ai.svelte';
 import type { DownloadsStore } from './stores/downloads.svelte';
 import type { SettingsStore } from './stores/settings.svelte';
 import type { AnimStore } from './stores/anim.svelte';
+import type { KeymapStore } from './stores/keymap.svelte';
 import type { LyricsStore } from './stores/lyrics.svelte';
 import type { ToastStore } from './stores/toasts.svelte';
 import type { WipStore } from './wiring/wip.svelte';
@@ -35,6 +36,8 @@ export interface AppCtx {
   settings: SettingsStore;
   /** Animation runtime: the shared fps-gated rAF ticker + the master/reduced-motion contract. */
   anim: AnimStore;
+  /** The remappable keymap read model + the in-webview dispatcher's source of truth. */
+  keymap: KeymapStore;
   lyrics: LyricsStore;
   toasts: ToastStore;
   wip: WipStore;

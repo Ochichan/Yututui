@@ -78,6 +78,7 @@
       placeholder="Ask DJ Gem for music…"
       bind:value={prompt}
       aria-label="Message DJ Gem"
+      data-kctx="AiInput"
     />
     <button class="send" type="submit" title="Send">➤</button>
   </form>

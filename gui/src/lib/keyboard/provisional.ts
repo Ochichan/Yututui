@@ -1,8 +1,9 @@
-// The GUI's provisional shortcut set — hardcoded until the real keymap dispatcher lands.
+// The GUI's provisional shortcut set — a static fallback list.
 //
-// TODO(wire:M3/settings.hotkeys): delete this module when lib/keyboard/{chord,dispatcher}
-// consume the pushed keymap read model. Until then this table is the single source for
-// App.svelte's handler, the Help overlay, and Settings→Hotkeys, so the three can't drift.
+// The dispatcher and Settings→Hotkeys now consume the live keymap read model
+// (lib/stores/keymap.svelte.ts + lib/keyboard/); this table is the Help overlay's last
+// remaining consumer.
+// TODO(wire:M5/help.keymap): delete this module when HelpOverlay reads the keymap model too.
 
 export interface ProvisionalShortcut {
   chord: string;

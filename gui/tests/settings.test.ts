@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '../src/lib/ipc/client';
 import { SettingsStore, type SettingsModelV8 } from '../src/lib/stores/settings.svelte';
 import { defaultAnimations } from '../src/lib/stores/anim.svelte';
+import { defaultKeymap } from '../src/lib/stores/keymap.svelte';
 import { DemoCoreTransport } from '../src/lib/dev/democore';
 import type { Transport } from '../src/lib/ipc/transport';
 import type { InEnvelope, OutEnvelope } from '../src/lib/ipc/envelope';
@@ -63,6 +64,7 @@ function baseModel(): SettingsModelV8 {
     storage: { download_dir: '~/Music/ytm-tui', cookies_file: null, download_concurrency: 3 },
     animations: defaultAnimations(),
     theme: { preset: 'Default', roles: {}, overrides: {}, background_none: false, retro: false, presets: [] },
+    keymap: defaultKeymap(),
   };
 }
 
