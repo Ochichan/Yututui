@@ -414,10 +414,12 @@ the QA script) — and adopt whichever works before release.
 Start-Menu shortcut carrying `System.AppUserModel.ID` = `io.github.ochi.ytm-tui`
 (PKEY_AppUserModel_ID {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3},5), created via
 IShellLinkW + IPropertyStore, flipped the flyout to "YtmTui" + icon
-**immediately, no logout**. TODO: create that shortcut from
-`register-media-identity` (`src/media/identity.rs`), keeping the HKCU key too
-(toast identity). Full results + Rust implementation notes in
-`windows-smtc-qa-results-2026-07-04.md`.
+**immediately, no logout**. **DONE (windows-gui branch, 2026-07-04):**
+`register-media-identity` (`src/media/identity.rs::write_start_menu_shortcut`)
+now writes the stamped shortcut alongside the HKCU key (kept for toast
+identity), idempotent, with an AUMID readback guard; verified on-hardware via
+independent Shell-COM readback of the freshly created `.lnk`. Full results +
+implementation notes in `windows-smtc-qa-results-2026-07-04.md`.
 
 ## 5. Verification Tooling
 
