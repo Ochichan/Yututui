@@ -53,6 +53,11 @@ impl MainWindow {
             .with_min_inner_size(LogicalSize::new(MIN_W, MIN_H))
             .with_resizable(true)
             .with_visible(true);
+        // Title-bar + taskbar identity; macOS draws the bundle icon, so this is Windows-only.
+        #[cfg(windows)]
+        {
+            builder = builder.with_window_icon(crate::desktop::platform::windows::window_icon());
+        }
         // Restore saved geometry (the event loop clamps to live monitors on move/resize via
         // window_state::clamp_to_monitors; a fully off-screen restore is the rare edge case).
         if let Some(rect) = state.main {

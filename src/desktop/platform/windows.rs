@@ -1110,6 +1110,19 @@ fn app_icon() -> Result<Icon, Box<dyn Error>> {
     Ok(Icon::from_rgba(image.into_raw(), width, height)?)
 }
 
+/// Title-bar/taskbar icon for tao windows (the main window). Same .ico the tray uses;
+/// 32 px is the classic small-icon slot, and tao/Windows scale the rest.
+pub(crate) fn window_icon() -> Option<tao::window::Icon> {
+    let entry = find_ico_entry(ICO_BYTES, 32)
+        .or_else(|| find_ico_entry(ICO_BYTES, 48))
+        .or_else(|| find_ico_entry(ICO_BYTES, 256))?;
+    let image = image::load_from_memory(&ICO_BYTES[entry.offset..entry.end()])
+        .ok()?
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    tao::window::Icon::from_rgba(image.into_raw(), width, height).ok()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IcoEntry {
     width: u32,
