@@ -35,3 +35,44 @@ pub fn bounded_channel<T>(policy: QueuePolicy) -> (mpsc::Sender<T>, mpsc::Receiv
         .expect("bounded_channel requires a bounded policy");
     mpsc::channel(capacity)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_policies_expose_their_configured_capacity() {
+        assert_eq!(DOWNLOAD_QUEUE.capacity(), Some(128));
+        assert_eq!(RESOLVER_QUEUE.capacity(), Some(64));
+        assert_eq!(
+            QueuePolicy::Bounded {
+                name: "tiny",
+                capacity: 1,
+            }
+            .capacity(),
+            Some(1)
+        );
+        assert_eq!(
+            QueuePolicy::CoalescedByKey {
+                name: "dedupe",
+                capacity: 7,
+            }
+            .capacity(),
+            Some(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_channel_enforces_policy_capacity_without_dropping_messages() {
+        let (tx, mut rx) = bounded_channel(QueuePolicy::Bounded {
+            name: "test",
+            capacity: 1,
+        });
+
+        tx.try_send("first").expect("first slot is available");
+        assert!(tx.try_send("second").is_err(), "capacity must be enforced");
+        assert_eq!(rx.recv().await, Some("first"));
+        tx.try_send("second").expect("slot frees after receive");
+        assert_eq!(rx.recv().await, Some("second"));
+    }
+}

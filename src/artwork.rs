@@ -138,3 +138,66 @@ async fn decode_scaled(bytes: Vec<u8>) -> Option<DynamicImage> {
     .ok()
     .flatten()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::time::Duration;
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(width, height, image::Rgb([12, 34, 56]));
+        let mut out = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(img)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
+
+    #[tokio::test]
+    async fn decode_scaled_rejects_invalid_image_bytes() {
+        assert!(decode_scaled(b"not an image".to_vec()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn decode_scaled_keeps_small_images_at_original_size() {
+        let img = decode_scaled(png_bytes(64, 32)).await.unwrap();
+
+        assert_eq!((img.width(), img.height()), (64, 32));
+    }
+
+    #[tokio::test]
+    async fn decode_scaled_downscales_large_images_to_max_dimension() {
+        let img = decode_scaled(png_bytes(1024, 512)).await.unwrap();
+
+        assert_eq!((img.width(), img.height()), (MAX_DIM, MAX_DIM / 2));
+    }
+
+    #[tokio::test]
+    async fn actor_emits_none_for_missing_local_artwork() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = spawn(move |event| {
+            tx.send(event).unwrap();
+        });
+
+        handle.fetch(
+            "missing-local".to_owned(),
+            ArtSource::Local(
+                std::env::temp_dir()
+                    .join(format!("ytm-tui-missing-artwork-{}", std::process::id())),
+            ),
+        );
+        drop(handle);
+
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("actor should emit a result")
+            .expect("result channel should stay open until emit");
+        match event {
+            ArtworkEvent::Result { video_id, image } => {
+                assert_eq!(video_id, "missing-local");
+                assert!(image.is_none());
+            }
+        }
+    }
+}

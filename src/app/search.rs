@@ -279,16 +279,33 @@ impl App {
     }
 
     /// The filter popup's rows: `(original results index, row)` pairs whose title or
-    /// artist matches the popup query — the Library filter's semantics exactly. An empty
-    /// query keeps every row, so the popup opens showing the full result set.
+    /// artist matches the popup query — the Library filter's semantics exactly. Reads the
+    /// cached [`SearchFilterPopup::matches`] (kept fresh by [`Self::refresh_search_filter_matches`]),
+    /// so this is a cheap index map, not a re-filter. `.get` guards a hypothetically stale
+    /// index by dropping the row rather than panicking.
     pub fn search_filter_rows(&self) -> Vec<(usize, &Song)> {
+        self.search_filter
+            .matches
+            .iter()
+            .filter_map(|&i| self.search.results.get(i).map(|s| (i, s)))
+            .collect()
+    }
+
+    /// Recompute the cached match indices for the current query against the current results.
+    /// The only moments the (query, results) pair changes while the popup is open are opening
+    /// it and editing the query, so refreshing at exactly those two call sites keeps the cache
+    /// exact without a per-frame re-filter. An empty query matches every row.
+    fn refresh_search_filter_matches(&mut self) {
         let needle = self.search_filter.query.trim().to_lowercase();
-        self.search
+        let matches: Vec<usize> = self
+            .search
             .results
             .iter()
             .enumerate()
             .filter(|(_, s)| needle.is_empty() || self.song_matches_filter(s, &needle))
-            .collect()
+            .map(|(i, _)| i)
+            .collect();
+        self.search_filter.matches = matches;
     }
 
     /// Open the results-filter popup (`/` on the results focus, or the `⌕ Filter` button).
@@ -301,6 +318,7 @@ impl App {
         self.search.focus = SearchFocus::Results;
         self.search.select_all = false;
         self.search_filter.open_fresh();
+        self.refresh_search_filter_matches();
         self.dirty = true;
         Vec::new()
     }
@@ -309,7 +327,7 @@ impl App {
     /// and play that result via the shared activation path. No-op with no matches, so an
     /// Enter on an empty narrowed list doesn't dismiss the query being refined.
     pub(in crate::app) fn search_filter_activate(&mut self, display_idx: usize) -> Vec<Cmd> {
-        let Some(&(idx, _)) = self.search_filter_rows().get(display_idx) else {
+        let Some(&idx) = self.search_filter.matches.get(display_idx) else {
             return Vec::new();
         };
         self.search_filter.close();
@@ -317,9 +335,11 @@ impl App {
         self.activate_search_index(idx)
     }
 
-    /// After the popup query changes, snap the cursor/scroll back to the first match so
-    /// the narrowed list reads from the top (fzf-style, like the Library filter).
+    /// After the popup query changes, refresh the match cache and snap the cursor/scroll back
+    /// to the first match so the narrowed list reads from the top (fzf-style, like the
+    /// Library filter).
     fn after_search_filter_change(&mut self) {
+        self.refresh_search_filter_matches();
         self.search_filter.cursor = 0;
         self.search_filter.scroll.reset();
         self.dirty = true;
@@ -330,7 +350,7 @@ impl App {
     /// plays the highlighted match (closing the popup), Esc closes. Raw keycodes, like
     /// the picker/create popups, so a user rebind can never break text entry.
     pub(in crate::app) fn on_key_search_filter(&mut self, k: KeyEvent) -> Vec<Cmd> {
-        let len = self.search_filter_rows().len();
+        let len = self.search_filter.matches.len();
         let clamp_last = len.saturating_sub(1);
         match k.code {
             KeyCode::Esc => {

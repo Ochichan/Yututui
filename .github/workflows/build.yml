@@ -1,12 +1,15 @@
 name: build
 
-# Builds, lints, tests, and packages ytm-tui release binaries on native runners (no
-# cross-compilation): macOS arm64 + x64, Windows x64, and Linux x64 + arm64. native-tls means
-# each OS uses its system TLS — Security.framework / SChannel / OpenSSL — so Windows needs no
-# NASM/C-crypto toolchain and Linux only needs libssl-dev. Every archive gets a SHA-256
-# sidecar; the release job folds them into a single checksums.txt. On a v* tag, three publish
-# jobs render the packaging/ templates from those checksums and push the Homebrew formula,
-# Scoop manifest, and AUR PKGBUILD to their external repos (see packaging/README.md).
+# Builds, lints, tests, and packages the current release surface on native runners (no
+# cross-compilation): `ytt` for every platform, plus the `ytt-desktop` tray companion on
+# macOS and Windows only. Linux ships the TUI binary only; its desktop integration lives in
+# `ytt` via MPRIS. The full GUI app is intentionally not a release artifact yet. native-tls
+# means each OS uses its system TLS — Security.framework / SChannel / OpenSSL — so Windows
+# needs no NASM/C-crypto toolchain and Linux only needs libssl-dev. Every archive gets a
+# SHA-256 sidecar; the release job folds them into a single checksums.txt. On a v* tag,
+# three publish jobs render the packaging/ templates from those checksums and push the
+# Homebrew formula, Scoop manifest, and AUR PKGBUILD to their external repos (see
+# packaging/README.md).
 
 on:
   push:
@@ -44,7 +47,9 @@ jobs:
         run: cargo audit
       - name: Dependency policy
         run: cargo deny check
-      # --- GUI frontend gates (docs/gui/04 §5) ---
+      # --- Non-shipping GUI/frontend contract gates (docs/gui/04 §5) ---
+      # The full GUI app is not published in this release. These still run so the protocol and
+      # future frontend do not drift while the shipped surface remains TUI + tray.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -163,17 +168,17 @@ jobs:
 
       - name: Release build (macOS + tray)
         if: runner.os == 'macOS'
+        env:
+          YTM_TUI_GUI_DIST: ${{ runner.temp }}/empty-gui-dist
         run: |
+          mkdir -p "$YTM_TUI_GUI_DIST"
           cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin ytt-desktop
 
-      # Non-blocking + time-bounded. This daemon-lifecycle smoke is new (added after v1.5.8)
-      # and still flaky under CI runner load (intermittent wait_until timeouts, one arch of a
-      # pair failing while the other passes on identical code). It reports but does not gate
-      # the release while it is stabilised — the build/clippy/test/package gates still block.
-      # TODO: re-require (drop continue-on-error) once the smoke is reliable.
+      # Release-gating daemon lifecycle smoke for the shipped Unix TUI. macOS disables the
+      # OS media session inside the script because hosted runners have no login session;
+      # Linux keeps MPRIS enabled so that path stays covered.
       - name: Smoke Unix daemon
         if: runner.os != 'Windows'
-        continue-on-error: true
         timeout-minutes: 6
         run: scripts/unix-daemon-smoke.sh --target "${{ matrix.target }}" --profile release
 
@@ -186,7 +191,10 @@ jobs:
 
       - name: Release build (Windows + tray)
         if: runner.os == 'Windows'
+        env:
+          YTM_TUI_GUI_DIST: ${{ runner.temp }}/empty-gui-dist
         run: |
+          New-Item -ItemType Directory -Force -Path $env:YTM_TUI_GUI_DIST | Out-Null
           cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin ytt-desktop
 
       - name: Verify Windows subsystem split
@@ -385,7 +393,7 @@ jobs:
         run: ./scripts/windows-daemon-smoke.ps1 -Target "${{ matrix.target }}" -Profile release -AllowProfileMove
 
       # macOS ships the bare binaries (ytt + the ytt-desktop menu-bar helper) alongside their
-      # YtmTui.app / YtmTuiDesktop.app bundles (icon + Info.plist); Linux ships the bare binary
+      # YtmTui.app / YPlayer.app bundles (icon + Info.plist); Linux ships the bare binary
       # (MPRIS lives in ytt itself); Windows ships ytt.exe plus the notification-area helper.
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -396,7 +404,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           listing="$(tar -tzf "${{ matrix.archive }}")"
-          for entry in ytt ytt-desktop YtmTui.app/Contents/MacOS/ytt YtmTuiDesktop.app/Contents/MacOS/ytt-desktop; do
+          for entry in ytt ytt-desktop YtmTui.app/Contents/MacOS/ytt YPlayer.app/Contents/MacOS/ytt-desktop YPlayer.app/Contents/MacOS/ytt; do
             if ! grep -qx "$entry" <<<"$listing"; then
               echo "macOS archive is missing $entry" >&2
               exit 1
@@ -491,9 +499,56 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v4
+      - name: Verify tag matches Cargo version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::release tag v$tag does not match Cargo.toml version $version"
+            exit 1
+          fi
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+      - name: Verify release artifact scope
+        run: |
+          expected="$RUNNER_TEMP/expected-artifacts.txt"
+          actual="$RUNNER_TEMP/actual-artifacts.txt"
+          printf '%s\n' \
+            ytm-tui-linux-arm64.tar.gz \
+            ytm-tui-linux-x64.tar.gz \
+            ytm-tui-macos-arm64.tar.gz \
+            ytm-tui-macos-x64.tar.gz \
+            ytm-tui-windows-x64.zip \
+            > "$expected"
+          find . -maxdepth 1 \( -name 'ytm-tui-*.tar.gz' -o -name 'ytm-tui-*.zip' \) \
+            -exec basename {} \; | sort > "$actual"
+          sort -o "$expected" "$expected"
+          if ! diff -u "$expected" "$actual"; then
+            echo "::error::unexpected release artifact set"
+            exit 1
+          fi
+
+          for archive in ytm-tui-linux-*.tar.gz; do
+            listing="$(tar -tzf "$archive")"
+            grep -qx 'ytt' <<<"$listing" || { echo "::error::$archive is missing ytt"; exit 1; }
+            if grep -Eq 'ytt-desktop|YPlayer\.app|YtmTui\.app' <<<"$listing"; then
+              echo "::error::$archive must ship Linux TUI only"
+              exit 1
+            fi
+          done
+
+          for archive in ytm-tui-macos-*.tar.gz; do
+            listing="$(tar -tzf "$archive")"
+            for entry in ytt ytt-desktop YtmTui.app/Contents/MacOS/ytt YPlayer.app/Contents/MacOS/ytt-desktop YPlayer.app/Contents/MacOS/ytt; do
+              grep -qx "$entry" <<<"$listing" || { echo "::error::$archive is missing $entry"; exit 1; }
+            done
+          done
+
+          unzip -Z1 ytm-tui-windows-x64.zip | sort > "$RUNNER_TEMP/windows-zip.txt"
+          for entry in ytt.exe ytt-desktop.exe ytm-tui.ico; do
+            grep -qx "$entry" "$RUNNER_TEMP/windows-zip.txt" || { echo "::error::Windows archive is missing $entry"; exit 1; }
+          done
       - name: Assemble checksums.txt
         # The Windows runner's Git-Bash sha256sum writes its sidecar in "binary mode" as
         # "<hash> *<file>" (one space + asterisk), whereas macOS/Linux emit text mode

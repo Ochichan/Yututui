@@ -257,11 +257,30 @@ fn prune_cache(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "ytm-tui-media-artwork-{name}-{}",
+            std::process::id()
+        ))
+    }
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(width, height, image::Rgb([90, 120, 150]));
+        let mut out = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
 
     #[test]
     fn youtube_ids_keep_their_name() {
         assert_eq!(cache_file_name("dQw4w9WgXcQ"), "dQw4w9WgXcQ.jpg");
         assert_eq!(cache_file_name("a-b_c"), "a-b_c.jpg");
+        let max_safe = "a".repeat(64);
+        assert_eq!(cache_file_name(&max_safe), format!("{max_safe}.jpg"));
     }
 
     #[test]
@@ -271,6 +290,14 @@ mod tests {
         assert!(!name.contains('/'));
         // Stable: the same key always maps to the same file.
         assert_eq!(name, cache_file_name("local:/home/user/음악/track.m4a"));
+
+        let empty = cache_file_name("");
+        assert!(empty.starts_with('h') && empty.ends_with(".jpg"), "{empty}");
+        let too_long = cache_file_name(&"a".repeat(65));
+        assert!(
+            too_long.starts_with('h') && too_long.ends_with(".jpg"),
+            "{too_long}"
+        );
     }
 
     #[test]
@@ -279,5 +306,32 @@ mod tests {
             remote_thumbnail_url("abc"),
             "https://i.ytimg.com/vi/abc/hqdefault.jpg"
         );
+    }
+
+    #[tokio::test]
+    async fn store_processed_rejects_invalid_image_bytes_without_creating_cache_file() {
+        let dir = temp_dir("invalid");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.jpg");
+
+        assert!(!store_processed(b"not an image".to_vec(), &path).await);
+        assert!(!path.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn store_processed_center_crops_and_downscales_to_square_jpeg() {
+        let dir = temp_dir("square");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover.jpg");
+
+        assert!(store_processed(png_bytes(1200, 800), &path).await);
+        let stored = image::open(&path).unwrap();
+        assert_eq!((stored.width(), stored.height()), (MAX_DIM, MAX_DIM));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -261,3 +261,56 @@ async fn write_stores(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::AssertUnwindSafe;
+
+    #[test]
+    fn debounce_windows_match_store_durability_policy() {
+        assert_eq!(debounce(StoreKind::Library), Duration::from_millis(300));
+        assert_eq!(debounce(StoreKind::Signals), Duration::from_millis(300));
+        assert_eq!(debounce(StoreKind::Downloads), Duration::from_millis(500));
+        assert_eq!(debounce(StoreKind::Config), Duration::from_millis(500));
+        assert_eq!(debounce(StoreKind::Playlists), Duration::from_millis(500));
+        assert_eq!(debounce(StoreKind::Station), Duration::from_millis(500));
+        assert_eq!(debounce(StoreKind::RomanizedTitles), Duration::from_secs(3));
+        assert_eq!(debounce(StoreKind::Session), Duration::ZERO);
+    }
+
+    #[test]
+    fn pending_lock_recovers_from_poisoned_mutex() {
+        let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+
+        let _ = std::panic::catch_unwind(AssertUnwindSafe({
+            let pending = Arc::clone(&pending);
+            move || {
+                let _guard = pending.lock().unwrap();
+                panic!("poison pending map");
+            }
+        }));
+
+        let guard = lock(&pending);
+        assert!(guard.is_empty());
+    }
+
+    #[tokio::test]
+    async fn write_stores_clears_stale_due_entries_when_snapshot_is_missing() {
+        let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+        let mut due = HashMap::from([(StoreKind::Library, tokio::time::Instant::now())]);
+
+        write_stores(&pending, &mut due, false).await;
+
+        assert!(due.is_empty());
+        assert!(lock(&pending).is_empty());
+    }
+
+    #[tokio::test]
+    async fn flush_acknowledges_when_there_is_no_pending_work() {
+        let handle = spawn();
+
+        assert!(handle.flush(Duration::from_secs(1)).await);
+        assert!(lock(&handle.pending()).is_empty());
+    }
+}

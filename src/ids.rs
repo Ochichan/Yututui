@@ -91,3 +91,53 @@ impl fmt::Display for StreamUrl {
         self.0.fmt(f)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_id_preserves_value_across_accessors_display_and_serde() {
+        let id = VideoId::from("dQw4w9WgXcQ");
+
+        assert_eq!(id.as_str(), "dQw4w9WgXcQ");
+        assert_eq!(id.to_string(), "dQw4w9WgXcQ");
+        assert_eq!(serde_json::to_string(&id).unwrap(), r#""dQw4w9WgXcQ""#);
+        assert_eq!(
+            serde_json::from_str::<VideoId>(r#""dQw4w9WgXcQ""#).unwrap(),
+            id
+        );
+        assert_eq!(id.into_string(), "dQw4w9WgXcQ");
+    }
+
+    #[test]
+    fn watch_url_preserves_value_across_accessors_display_and_serde() {
+        let url = WatchUrl::from("https://music.youtube.com/watch?v=dQw4w9WgXcQ");
+
+        assert_eq!(
+            url.as_str(),
+            "https://music.youtube.com/watch?v=dQw4w9WgXcQ"
+        );
+        assert_eq!(
+            url.to_string(),
+            "https://music.youtube.com/watch?v=dQw4w9WgXcQ"
+        );
+        assert_eq!(
+            serde_json::from_str::<WatchUrl>(r#""https://music.youtube.com/watch?v=dQw4w9WgXcQ""#)
+                .unwrap(),
+            url
+        );
+    }
+
+    #[test]
+    fn stream_url_preserves_value_across_display_and_serde() {
+        let url = StreamUrl::from("https://example.invalid/stream.m4a");
+
+        assert_eq!(url.to_string(), "https://example.invalid/stream.m4a");
+        assert_eq!(
+            serde_json::from_str::<StreamUrl>(r#""https://example.invalid/stream.m4a""#).unwrap(),
+            url.clone()
+        );
+        assert_eq!(url.into_string(), "https://example.invalid/stream.m4a");
+    }
+}

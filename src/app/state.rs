@@ -523,8 +523,13 @@ pub struct SearchFilterPopup {
     pub open: bool,
     /// The live filter text; the popup's row list narrows to matches as it changes.
     pub query: String,
-    /// The highlighted row, as a *display* index into [`crate::app::App::search_filter_rows`].
+    /// The highlighted row, as a *display* index into [`Self::matches`].
     pub cursor: usize,
+    /// Cached original-`results` indices of the rows matching `query`, in results order.
+    /// Recomputed only when the query (or the result set on open) changes — while the popup
+    /// is open nothing else mutates `results` (a fresh search closes it) — so the render,
+    /// nav, and hit-test paths read it in O(1) instead of re-filtering every frame/event.
+    pub(in crate::app) matches: Vec<usize>,
     /// Screen rect of the open popup, written each render so a click outside it can be
     /// detected (which closes it). `Cell` because render only has `&App`.
     pub rect: Cell<Option<Rect>>,
@@ -533,11 +538,13 @@ pub struct SearchFilterPopup {
 }
 
 impl SearchFilterPopup {
-    /// Reset to a fresh, open popup (empty query, cursor at the top).
+    /// Reset to a fresh, open popup (empty query, cursor at the top). The caller refreshes
+    /// [`Self::matches`] afterwards (it needs `App` context to filter).
     pub(in crate::app) fn open_fresh(&mut self) {
         self.open = true;
         self.query.clear();
         self.cursor = 0;
+        self.matches.clear();
         self.scroll.reset();
     }
 
@@ -546,6 +553,7 @@ impl SearchFilterPopup {
         self.open = false;
         self.query.clear();
         self.cursor = 0;
+        self.matches.clear();
         self.rect.set(None);
         self.scroll.reset();
     }

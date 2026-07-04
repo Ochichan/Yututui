@@ -920,3 +920,239 @@ fn ytm_job_error(e: anyhow::Error) -> JobError {
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transfer::matching::AmbiguousCandidate;
+
+    fn spec(dest: TransferDest) -> JobSpec {
+        JobSpec {
+            source: TransferSource::SpotifyLiked,
+            dest,
+            dry_run: false,
+            min_score: 0.80,
+            take_best: false,
+            rematch: false,
+        }
+    }
+
+    fn input(title: &str, artists: &[&str]) -> TrackInput {
+        TrackInput {
+            title: title.to_owned(),
+            artists: artists.iter().map(|s| (*s).to_owned()).collect(),
+            album: Some("Input Album".to_owned()),
+            duration_secs: Some(62),
+            isrc: None,
+            source_key: format!("src:{title}"),
+            known_video_id: None,
+        }
+    }
+
+    fn entry(input: TrackInput, outcome: Option<MatchOutcome>) -> TrackEntry {
+        TrackEntry {
+            input,
+            outcome,
+            written: false,
+        }
+    }
+
+    fn matched(key: &str) -> MatchOutcome {
+        MatchOutcome::Matched {
+            key: key.to_owned(),
+            score: 0.91,
+            display: format!("Matched {key}"),
+            title: None,
+            artist: None,
+            album: None,
+            duration_secs: None,
+        }
+    }
+
+    #[test]
+    fn default_dest_name_uses_explicit_names_and_source_fallbacks() {
+        assert_eq!(
+            default_dest_name(
+                &TransferDest::YtmNewPlaylist {
+                    name: Some("Road Trip".to_owned()),
+                },
+                "Source"
+            ),
+            "Road Trip"
+        );
+        assert_eq!(
+            default_dest_name(&TransferDest::YtmNewPlaylist { name: None }, "Source"),
+            "Source"
+        );
+        assert_eq!(
+            default_dest_name(
+                &TransferDest::LocalPlaylist {
+                    name: Some("   ".to_owned()),
+                },
+                "Local Source"
+            ),
+            "Local Source"
+        );
+        assert_eq!(
+            default_dest_name(
+                &TransferDest::YtmExistingPlaylist {
+                    name: "Existing".to_owned(),
+                },
+                "Ignored"
+            ),
+            "Existing"
+        );
+        assert_eq!(
+            default_dest_name(&TransferDest::YtmLikes, "Ignored"),
+            "Liked Music"
+        );
+        assert_eq!(
+            default_dest_name(
+                &TransferDest::File {
+                    path: std::path::PathBuf::from("backup.json"),
+                    format: FileFormat::Json,
+                },
+                "Ignored"
+            ),
+            "backup.json"
+        );
+    }
+
+    #[test]
+    fn read_file_inputs_rejects_unsupported_extensions_before_reading() {
+        let err = read_file_inputs(std::path::Path::new("playlist.TXT")).unwrap_err();
+
+        assert!(
+            err.to_string().contains("unsupported file type `txt`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
+        let cp = Checkpoint::new(
+            "job-report".to_owned(),
+            spec(TransferDest::YtmLikes),
+            vec![
+                entry(input("Matched Song", &["Artist A"]), Some(matched("vid-a"))),
+                entry(
+                    input("Maybe Song", &["Artist B"]),
+                    Some(MatchOutcome::Ambiguous {
+                        candidates: vec![
+                            AmbiguousCandidate {
+                                key: "vid-b".to_owned(),
+                                score: 0.79,
+                                display: "Artist B - Candidate 1".to_owned(),
+                            },
+                            AmbiguousCandidate {
+                                key: "vid-c".to_owned(),
+                                score: 0.64,
+                                display: "Artist B - Candidate 2".to_owned(),
+                            },
+                        ],
+                    }),
+                ),
+                entry(
+                    input("Missing Song", &["Artist C", "Feat D"]),
+                    Some(MatchOutcome::NotFound),
+                ),
+                entry(
+                    input("Skipped Local", &["Artist E"]),
+                    Some(MatchOutcome::SkippedLocal),
+                ),
+            ],
+        );
+
+        let report = build_report(&cp, 1);
+
+        assert_eq!(report.job_id, "job-report");
+        assert_eq!(report.total, 4);
+        assert_eq!(report.matched, 1);
+        assert_eq!(report.skipped_local, 1);
+        assert_eq!(report.ambiguous.len(), 1);
+        assert_eq!(report.ambiguous[0].title, "Maybe Song");
+        assert_eq!(report.ambiguous[0].artists, "Artist B");
+        assert_eq!(
+            report.ambiguous[0].note,
+            "Artist B - Candidate 1 (0.79) | Artist B - Candidate 2 (0.64)"
+        );
+        assert_eq!(report.not_found.len(), 1);
+        assert_eq!(report.not_found[0].artists, "Artist C, Feat D");
+        assert_eq!(report.not_found[0].note, "no match on the destination");
+    }
+
+    #[test]
+    fn song_for_entry_prefers_matched_catalog_metadata() {
+        let track = entry(
+            input("Input Title", &["Input Artist"]),
+            Some(MatchOutcome::Matched {
+                key: "vid-1".to_owned(),
+                score: 0.95,
+                display: "Matched Artist - Matched Title".to_owned(),
+                title: Some("Matched Title".to_owned()),
+                artist: Some("Matched Artist".to_owned()),
+                album: Some("Matched Album".to_owned()),
+                duration_secs: Some(225),
+            }),
+        );
+
+        let song = song_for_entry(&track, "vid-1");
+
+        assert_eq!(song.video_id, "vid-1");
+        assert_eq!(song.title, "Matched Title");
+        assert_eq!(song.artist, "Matched Artist");
+        assert_eq!(song.album.as_deref(), Some("Matched Album"));
+        assert_eq!(song.duration, "3:45");
+        assert_eq!(song.duration_secs, Some(225));
+    }
+
+    #[test]
+    fn song_for_entry_falls_back_to_source_input_when_candidate_metadata_is_missing() {
+        let track = entry(input("Input Title", &["Artist A", "Artist B"]), None);
+
+        let song = song_for_entry(&track, "vid-fallback");
+
+        assert_eq!(song.video_id, "vid-fallback");
+        assert_eq!(song.title, "Input Title");
+        assert_eq!(song.artist, "Artist A, Artist B");
+        assert_eq!(song.album.as_deref(), Some("Input Album"));
+        assert_eq!(song.duration, "1:02");
+        assert_eq!(song.duration_secs, Some(62));
+    }
+
+    #[test]
+    fn progress_write_reports_current_track_and_outcome_counts() {
+        let cp = Checkpoint::new(
+            "job-progress".to_owned(),
+            spec(TransferDest::YtmLikes),
+            vec![
+                entry(input("Matched Song", &["Artist A"]), Some(matched("vid-a"))),
+                entry(
+                    input("Maybe Song", &["Artist B"]),
+                    Some(MatchOutcome::Ambiguous {
+                        candidates: vec![AmbiguousCandidate {
+                            key: "vid-b".to_owned(),
+                            score: 0.70,
+                            display: "Artist B - Candidate".to_owned(),
+                        }],
+                    }),
+                ),
+                entry(
+                    input("Missing Song", &["Artist C"]),
+                    Some(MatchOutcome::NotFound),
+                ),
+            ],
+        );
+
+        let progress = progress_write(&cp, 2, 3, 1);
+
+        assert_eq!(progress.job_id, "job-progress");
+        assert_eq!(progress.stage, Stage::Writing);
+        assert_eq!(progress.done, 2);
+        assert_eq!(progress.total, 3);
+        assert_eq!(progress.matched, 1);
+        assert_eq!(progress.ambiguous, 1);
+        assert_eq!(progress.not_found, 1);
+        assert_eq!(progress.current, "Artist B — Maybe Song");
+    }
+}

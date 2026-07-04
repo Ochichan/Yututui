@@ -99,6 +99,24 @@ pub fn render(frame: &mut Frame, app: &App) {
     retro::scrub_frame(frame, app);
 }
 
+/// A centered popup sized to the queue-window proportions — about 3/5 of `area` wide and
+/// 7/10 tall — tall enough for `body_rows` list rows plus `chrome_rows` of border/input/hint,
+/// never narrower than `min_w`. Clamped so it always fits inside `area`. Shared by the queue
+/// window and the search results-filter popup so the two modal lists keep the same geometry.
+pub fn centered_list_popup(area: Rect, body_rows: usize, chrome_rows: u16, min_w: u16) -> Rect {
+    let max_w = area.width.saturating_sub(2).max(24);
+    let box_w = (area.width * 3 / 5).clamp(min_w.min(max_w), max_w);
+    let max_h = (area.height * 7 / 10).max(chrome_rows + 1);
+    let box_h = (body_rows as u16).saturating_add(chrome_rows).min(max_h);
+    Rect {
+        x: area.x + area.width.saturating_sub(box_w) / 2,
+        y: area.y + area.height.saturating_sub(box_h) / 2,
+        width: box_w,
+        height: box_h,
+    }
+    .intersection(area)
+}
+
 pub fn popup_bg(app: &App) -> Color {
     match app.theme.color(R::Background) {
         Color::Reset => app.theme.color(R::TextInverse),

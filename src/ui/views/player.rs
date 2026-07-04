@@ -486,17 +486,8 @@ fn render_queue_popup(frame: &mut Frame, app: &App, area: Rect) {
     let (pos, total) = app.queue.position();
     let current = app.queue.cursor_pos();
 
-    // ~60% wide, tall enough for the list but capped to ~70% of the screen.
-    let box_w = (area.width * 3 / 5).clamp(24, area.width.saturating_sub(2).max(24));
-    let max_h = (area.height * 7 / 10).max(3);
-    let box_h = (total_len as u16 + 2).min(max_h);
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(box_w) / 2,
-        y: area.y + area.height.saturating_sub(box_h) / 2,
-        width: box_w,
-        height: box_h,
-    }
-    .intersection(area);
+    // ~60% wide, tall enough for the list (+2 for the border) but capped to ~70% of the screen.
+    let popup = crate::ui::centered_list_popup(area, total_len, 2, 24);
     if popup.is_empty() {
         return;
     }

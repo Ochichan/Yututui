@@ -325,7 +325,7 @@ impl App {
             MouseTarget::SearchFilterOpen => Vec::new(),
             // Single-click a filter-popup row: move the popup cursor there (double-click plays).
             MouseTarget::SearchFilterRow(i) if self.search_filter.open => {
-                if i < self.search_filter_rows().len() {
+                if i < self.search_filter.matches.len() {
                     self.search_filter.cursor = i;
                     self.dirty = true;
                 }
@@ -792,7 +792,7 @@ impl App {
         Some(match surface {
             ScrollSurface::Library => self.library_len(),
             ScrollSurface::Search => self.search.results.len(),
-            ScrollSurface::SearchFilter => self.search_filter_rows().len(),
+            ScrollSurface::SearchFilter => self.search_filter.matches.len(),
             ScrollSurface::AiTranscript => self.bridges.ai_transcript_copy_lines.borrow().len(),
             ScrollSurface::AiSuggestions => self.ai.suggestions.len(),
             ScrollSurface::Settings => self.settings_field_display_len()?,
@@ -865,7 +865,7 @@ impl App {
             return Vec::new();
         }
         if self.search_filter.open {
-            let len = self.search_filter_rows().len();
+            let len = self.search_filter.matches.len();
             self.search_filter.scroll.wheel(up, n, len);
             self.dirty = true;
             return Vec::new();
@@ -1007,7 +1007,7 @@ impl App {
                 return Vec::new();
             }
             if let Some(MouseTarget::SearchFilterRow(i)) = self.mouse_target_at(col, row)
-                && let Some(&(idx, _)) = self.search_filter_rows().get(i)
+                && let Some(&idx) = self.search_filter.matches.get(i)
             {
                 self.search_filter.cursor = i;
                 self.dirty = true;

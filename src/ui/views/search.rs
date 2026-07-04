@@ -195,42 +195,90 @@ fn render_source_chip(frame: &mut Frame, app: &App, area: Rect) {
     app.register_mouse_button(area, MouseTarget::SearchSourceMenu);
 }
 
-/// The themed Search button next to the input box: clicking it submits the query, the same
-/// as pressing Enter. Bordered to match the input box; the whole cluster is the click rect.
-fn render_search_button(frame: &mut Frame, app: &App, area: Rect) {
+/// A themed, bordered button in the search bar's right cluster: a centered label whose whole
+/// rect is the click target. `style` is passed in so the Filter button can dim when there is
+/// nothing to filter. Shared by the Search and Filter buttons so the two siblings can't drift.
+fn render_search_bar_button(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    label: &str,
+    style: Style,
+    target: MouseTarget,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(app.theme.style(R::BorderMuted))
         .style(app.theme.style(R::TextPrimary));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let label = Line::from(t!("Search", "검색"))
-        .style(app.theme.style(R::Accent).add_modifier(Modifier::BOLD))
-        .alignment(Alignment::Center);
-    frame.render_widget(Paragraph::new(label), inner);
-    app.register_mouse_button(area, MouseTarget::SearchSubmit);
+    frame.render_widget(
+        Paragraph::new(Line::from(label).style(style).alignment(Alignment::Center)),
+        inner,
+    );
+    app.register_mouse_button(area, target);
+}
+
+/// The themed Search button next to the input box: clicking it submits the query, the same
+/// as pressing Enter.
+fn render_search_button(frame: &mut Frame, app: &App, area: Rect) {
+    render_search_bar_button(
+        frame,
+        app,
+        area,
+        t!("Search", "검색"),
+        app.theme.style(R::Accent).add_modifier(Modifier::BOLD),
+        MouseTarget::SearchSubmit,
+    );
 }
 
 /// The themed Filter button next to the Search button: clicking it opens the results-filter
 /// popup, the same as pressing `/` on the results. Muted while there is nothing to filter
-/// (the click is a no-op then). Bordered to match; the whole cluster is the click rect.
+/// (the click is a no-op then).
 fn render_filter_button(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(app.theme.style(R::BorderMuted))
-        .style(app.theme.style(R::TextPrimary));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
     let style = if app.search.results.is_empty() {
         app.theme.style(R::TextMuted)
     } else {
         app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
     };
-    let label = Line::from(t!("⌕ Filter", "⌕ 필터"))
-        .style(style)
-        .alignment(Alignment::Center);
-    frame.render_widget(Paragraph::new(label), inner);
-    app.register_mouse_button(area, MouseTarget::SearchFilterOpen);
+    render_search_bar_button(
+        frame,
+        app,
+        area,
+        t!("⌕ Filter", "⌕ 필터"),
+        style,
+        MouseTarget::SearchFilterOpen,
+    );
+}
+
+/// The shared cells of a search-result row — the padded source tag (`[YT]`/`[PL]`, width 6),
+/// the fixed-width heart gutter, and the un-marqueed `title — artist (dur)` body — so the
+/// results list and the filter popup format rows identically and never drift. Each caller
+/// applies its own leading marker and marquee/truncation on top.
+fn result_row_cells(app: &App, song: &crate::api::Song) -> (String, &'static str, String) {
+    // Fixed-width heart slot (like the library lists) so favoriting a row never shifts its
+    // title relative to its neighbors.
+    let heart = if app.library.is_favorite(&song.video_id) {
+        "♥ "
+    } else {
+        "  "
+    };
+    // Playlist rows get their own tag so they read as containers, not tracks. Codes vary in
+    // width ([YT] vs [RAD]); pad to a fixed column so titles align across mixed-source results.
+    let source = if song.youtube_playlist_id().is_some() {
+        "[PL]".to_owned()
+    } else {
+        format!("[{}]", song.source.code())
+    };
+    let source = crate::ui::text::pad_to_width(&source, 6);
+    let title = app.display_title(song);
+    let artist = app.display_artist(song);
+    let text = if song.duration.is_empty() {
+        format!("{title} — {artist}")
+    } else {
+        format!("{title} — {artist}  ({})", song.duration)
+    };
+    (source, heart, text)
 }
 
 fn render_results(frame: &mut Frame, app: &App, area: Rect) {
@@ -272,29 +320,7 @@ fn render_results(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let title = app.display_title(s);
-            let artist = app.display_artist(s);
-            // Fixed-width heart slot (like the library lists) so favoriting a row never
-            // shifts its title relative to its neighbors.
-            let heart = if app.library.is_favorite(&s.video_id) {
-                "♥ "
-            } else {
-                "  "
-            };
-            // Playlist rows get their own tag so they read as containers, not tracks.
-            // Codes vary in width ([YT] vs [RAD]); pad to one column so titles align
-            // across mixed-source (ALL) results.
-            let source = if s.youtube_playlist_id().is_some() {
-                "[PL]".to_owned()
-            } else {
-                format!("[{}]", s.source.code())
-            };
-            let source = crate::ui::text::pad_to_width(&source, 6);
-            let text = if s.duration.is_empty() {
-                format!("{title} — {artist}")
-            } else {
-                format!("{title} — {artist}  ({})", s.duration)
-            };
+            let (source, heart, text) = result_row_cells(app, s);
             // The focused, visible cursor row marquees when clipped — the source tag and
             // heart gutter stay put while the text crawls (see `anim::selected_marquee`).
             // Suppressed while the filter popup is open: its cursor row marquees instead,
@@ -487,19 +513,9 @@ fn render_filter_popup(frame: &mut Frame, app: &App, area: Rect) {
     let rows_all = app.search_filter_rows();
     let total = app.search.results.len();
 
-    // ~3/5 wide like the queue window (a little wider floor so `title — artist (time)`
-    // rows stay readable), tall enough for the matches but capped to ~70% of the screen.
-    let max_w = area.width.saturating_sub(2).max(24);
-    let box_w = (area.width * 3 / 5).clamp(44.min(max_w), max_w);
-    let max_h = (area.height * 7 / 10).max(5);
-    let box_h = (rows_all.len().max(1) as u16 + 4).min(max_h);
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(box_w) / 2,
-        y: area.y + area.height.saturating_sub(box_h) / 2,
-        width: box_w,
-        height: box_h,
-    }
-    .intersection(area);
+    // Same proportions as the queue window, with a wider floor so `title — artist (time)`
+    // rows stay readable and 4 chrome rows (border + filter input + hint) reserved.
+    let popup = crate::ui::centered_list_popup(area, rows_all.len().max(1), 4, 44);
     if popup.is_empty() {
         return;
     }
@@ -590,24 +606,7 @@ fn render_filter_popup(frame: &mut Frame, app: &App, area: Rect) {
             let y = list_area.y + vis as u16;
             let selected = display_idx == cursor;
             let marker = if selected { "▶ " } else { "  " };
-            let heart = if app.library.is_favorite(&song.video_id) {
-                "♥ "
-            } else {
-                "  "
-            };
-            let source = if song.youtube_playlist_id().is_some() {
-                "[PL]".to_owned()
-            } else {
-                format!("[{}]", song.source.code())
-            };
-            let source = crate::ui::text::pad_to_width(&source, 6);
-            let title = app.display_title(song);
-            let artist = app.display_artist(song);
-            let text = if song.duration.is_empty() {
-                format!("{title} — {artist}")
-            } else {
-                format!("{title} — {artist}  ({})", song.duration)
-            };
+            let (source, heart, text) = result_row_cells(app, song);
             // The cursor row marquees when clipped, keyed by the *original* row index so
             // retyping (which shifts display positions) doesn't restart a crawl that is
             // still on the same song. The marker/source/heart gutter (10 cols) stays put.
