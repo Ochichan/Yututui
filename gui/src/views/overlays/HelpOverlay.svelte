@@ -1,32 +1,64 @@
 <script lang="ts">
-  // Help overlay (docs/gui/07 §17). Until the keymap read model lands this shows the
-  // GUI's real provisional shortcuts (the exact table App.svelte executes) — never a
-  // fabricated TUI cheat sheet.
+  // Help overlay (docs/gui/07 §17): a cheat-sheet auto-generated from the live keymap read
+  // model — grouped by context title, each row a chord + localized action label, searchable.
+  // One source with Settings→Hotkeys and the dispatcher (lib/stores/keymap.svelte.ts), so the
+  // GUI's help reads exactly the bindings the app honors.
   import type { AppCtx } from '../../lib/ctx';
-  import { PROVISIONAL_SHORTCUTS } from '../../lib/keyboard/provisional';
   import Modal from '../../lib/components/Modal.svelte';
   import Kbd from '../../lib/components/Kbd.svelte';
-  import WireTag from '../../lib/components/WireTag.svelte';
 
   interface Props {
     ctx: AppCtx;
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { ui, wip } = ctx;
+  const { ui, keymap } = ctx;
+
+  let query = $state('');
+
+  const groups = $derived.by(() => {
+    const q = query.trim().toLowerCase();
+    return keymap.groups
+      .map((g) => ({
+        ...g,
+        rows: g.actions
+          .map((a) => ({ label: a.label, chord: keymap.chordFor(a) }))
+          .filter(
+            (r) => !q || r.label.toLowerCase().includes(q) || r.chord.toLowerCase().includes(q),
+          ),
+      }))
+      .filter((g) => g.rows.length > 0);
+  });
 </script>
 
-<Modal title="Keyboard shortcuts" onclose={() => (ui.helpOpen = false)} width="480px">
-  <p class="note">
-    GUI provisional set — the full remappable cheat sheet, auto-generated from your keymap, lands
-    with the M3 dispatcher. <WireTag id="help.keymap" {wip} />
-  </p>
-  <div class="rows">
-    {#each PROVISIONAL_SHORTCUTS as s (s.chord)}
-      <div class="row">
-        <Kbd chord={s.chord} />
-        <span class="action">{s.label}</span>
-      </div>
+<Modal title="Keyboard shortcuts" onclose={() => (ui.helpOpen = false)} width="520px">
+  <input
+    class="search"
+    type="search"
+    placeholder="Filter shortcuts…"
+    bind:value={query}
+    aria-label="Filter shortcuts"
+  />
+  {#if groups.length === 0}
+    <p class="empty">{keymap.model ? 'No shortcuts match.' : 'Loading the keymap…'}</p>
+  {/if}
+  <div class="groups">
+    {#each groups as g (g.context)}
+      <section>
+        <h3>{g.label}</h3>
+        <div class="rows">
+          {#each g.rows as r (r.label)}
+            <div class="row">
+              {#if r.chord}
+                <Kbd chord={r.chord} />
+              {:else}
+                <span class="unbound">—</span>
+              {/if}
+              <span class="action">{r.label}</span>
+            </div>
+          {/each}
+        </div>
+      </section>
     {/each}
   </div>
   <p class="foot">
@@ -43,11 +75,34 @@
 </Modal>
 
 <style>
-  .note {
+  .search {
+    width: 100%;
+    margin: 0 0 var(--space-4);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--role-border-muted);
+    border-radius: var(--radius-m);
+    background: var(--surface-1);
+    color: var(--role-text-primary);
+    font-size: 12.5px;
+  }
+  .empty {
     margin: 0 0 var(--space-4);
     font-size: 12px;
-    line-height: 1.5;
-    color: var(--role-text-muted);
+    color: var(--role-text-subtle);
+  }
+  .groups {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    max-height: 52vh;
+    overflow-y: auto;
+  }
+  h3 {
+    margin: 0 0 var(--space-2);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--role-help-group);
   }
   .rows {
     display: flex;
@@ -62,6 +117,12 @@
   .action {
     font-size: 12.5px;
     color: var(--role-help-action);
+  }
+  .unbound {
+    min-width: 20px;
+    text-align: center;
+    color: var(--role-text-subtle);
+    font-size: 11px;
   }
   .foot {
     margin: var(--space-6) 0 0;

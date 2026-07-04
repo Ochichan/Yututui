@@ -27,12 +27,12 @@ the right shapes today.
 `gui/src/lib/wiring/registry.ts` is the **single source of truth** for every feature whose
 UI is finished but whose wire is not. Current entries (delete each as you wire it):
 
-`library.playlists` · `queue.reorder` · `settings.hotkeys` · `settings.theme-editor` ·
-`settings.accounts` · `ai.whygem` · `transfer.wizard` · `help.keymap` · `lyrics.live` ·
-`artwork.live` · `i18n.catalog`
+`library.playlists` · `queue.reorder` · `settings.accounts` · `ai.whygem` ·
+`transfer.wizard` · `lyrics.live` · `artwork.live` · `i18n.catalog`
 
 (`search.run`, `library.fetch`, `ai.chat`, `downloads.manage`, `radio.mode`,
-`settings.apply`, and `settings.animations` are now wired — deleted from the registry.)
+`settings.apply`, `settings.animations`, `settings.theme-editor`, `settings.hotkeys`, and
+`help.keymap` are now wired — deleted from the registry.)
 
 Each entry carries milestone, spec section, protocol surface, frontend seam, and notes.
 In the running app, every pending surface shows either a **WireTag** chip (⚡ M2 · wiring
@@ -45,19 +45,22 @@ registry by `agentBrief()`, so it cannot drift from this file or the spec.
 - **Lyrics wire shape** `{ kind: 'lyrics_snapshot', lines: [{ ms, text }] }` in
   `lyrics.svelte.ts` — only the demo core speaks it. Align with the real B1 topic + ts-rs
   types when they exist.
-- **Keyboard**: `lib/keyboard/provisional.ts` is a hardcoded shortcut table (executed by
-  `App.svelte`, displayed by Help and Settings→Hotkeys — one source, three views). The M3
-  dispatcher replaces all of it.
+- **Keyboard** (wired): the live keymap read model (`stores/keymap.svelte.ts`) drives the
+  dispatcher (`lib/keyboard/{chord,dispatcher,actions,korean2set}.ts` + `App.svelte`),
+  Settings→Hotkeys, and the Help overlay from one source. The demo core speaks a PROVISIONAL
+  `keymap` block; the Korean 2-set table + chord format are self-consistent with the demo
+  bindings until the Rust chord-fixture cross-test (05 §8.5) lands.
 - **Settings tab values**: General / Playback / DJ Gem now bind the live `settings` read
   model via `stores/settings.svelte.ts` (model + pending overlay + dirty, docs/gui/05 §5.2);
   the demo core speaks the PROVISIONAL `settings_snapshot` + `apply {group,field,value}`
   shape (reconcile with ts-rs `SettingsModelV8`/`SettingChangeV8` §11.6/§13.3 when
-  `settings-v8` lands). The Graphics tab's **Animations** block is now wired (master/fps/
-  pause + the 25 effect flags bind `settings.animations`; runtime in `stores/anim.svelte.ts`);
-  theme-editor, Hotkeys, and Accounts still render defaults under their own wires.
-- **Local-theme precedence**: a chosen local skin currently wins over the boot theme;
-  reconcile with core-side theme state when `settings.theme-editor` lands (promote the
-  local skins into core presets, or keep them as GUI-side overlays — decide then).
+  `settings-v8` lands). The Graphics tab's **Animations** and **Theme** blocks and the
+  **Hotkeys** tab are now wired (theme rides `settings.theme` via `stores/theme.svelte.ts`,
+  keymap rides `settings.keymap`); Accounts still renders defaults under its own wire.
+- **Local-theme precedence** (settled by `settings.theme-editor`): a chosen local skin layers
+  over the pushed core theme and survives pushes until the user edits the core theme editor
+  (picks a preset / edits or clears a role / toggles background-none), which hands control
+  back to the core theme (`stores/theme.svelte.ts`).
 
 ## Conventions (enforced by `tests/wiring.test.ts`)
 
@@ -91,7 +94,7 @@ Gates (run in `gui/`): `npm run check && npm test && npm run build` — plus
 ```
 src/lib/wiring/     registry.ts (the patch bay) · wip.svelte.ts (gate + modal state)
 src/lib/theme/      roles.ts (the 34 roles) · local.ts (GUI-owned skins)
-src/lib/keyboard/   provisional.ts (temporary shortcut table)
+src/lib/keyboard/   chord.ts · dispatcher.ts · actions.ts · korean2set.ts (live dispatcher)
 src/lib/dev/        democore.ts (stateful fake core for browsers)
 src/lib/stores/     connection · theme · ui · playback · queue · lyrics · toasts
 src/lib/components/ Modal WipModal WireTag PendingSurface Toggle Kbd VirtualList

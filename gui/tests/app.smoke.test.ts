@@ -3,7 +3,7 @@
 // and demo core agree end to end.
 
 import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { render, screen, fireEvent, within } from '@testing-library/svelte';
 import App from '../src/App.svelte';
 import { Client } from '../src/lib/ipc/client';
 import { DemoCoreTransport } from '../src/lib/dev/democore';
@@ -105,5 +105,26 @@ describe('App against the demo core', () => {
     // '?' is Global help.
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true }));
     expect(ctx.ui.helpOpen).toBe(true);
+  });
+
+  it('the help overlay renders the live keymap cheat sheet and filters it', async () => {
+    const ctx = assemble();
+    // Scope to this render's subtree — the suite has no auto-cleanup, so prior renders linger.
+    const { container } = render(App, { props: { ctx } });
+    const q = within(container);
+    await settle(); // seed the keymap model
+
+    ctx.ui.helpOpen = true;
+    await settle();
+    // The grouped cheat sheet reads the keymap model (not a fabricated table). 'Global' and
+    // 'Common' are context group headers unique to the overlay.
+    expect(q.getByText('Global')).toBeTruthy();
+    expect(q.getByText('Common')).toBeTruthy();
+    expect(q.getAllByText('Play / pause').length).toBeGreaterThan(0);
+
+    // Filtering narrows the rows.
+    await fireEvent.input(q.getByLabelText('Filter shortcuts'), { target: { value: 'volume' } });
+    expect(q.getByText('Volume +5')).toBeTruthy();
+    expect(q.queryByText('Play / pause')).toBeNull();
   });
 });

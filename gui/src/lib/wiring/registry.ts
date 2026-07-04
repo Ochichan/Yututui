@@ -22,7 +22,6 @@ export type FeatureId =
   | 'settings.accounts'
   | 'ai.whygem'
   | 'transfer.wizard'
-  | 'help.keymap'
   | 'lyrics.live'
   | 'artwork.live'
   | 'i18n.catalog';
@@ -91,15 +90,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
     capability: 'transfer-v8',
     notes:
       'Dest must surface YtmExistingPlaylist — dev-mode Spotify apps 403 on playlist creation since mid-2026, so append-to-existing is the mainline path, not an edge case.',
-  },
-  'help.keymap': {
-    title: 'Help overlay (live keymap)',
-    milestone: 'M5',
-    brief: 'docs/gui/07-feature-briefs.md §17',
-    protocol:
-      'keymap read model with per-(context, action) display labels — auto-generate the cheat sheet',
-    seam: 'gui/src/views/overlays/HelpOverlay.svelte — swap DEFAULT_KEYMAP for the pushed model, add search',
-    capability: 'settings-v8',
   },
   'lyrics.live': {
     title: 'Synced lyrics topic',
