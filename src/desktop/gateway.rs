@@ -167,6 +167,7 @@ async fn run<F: Fn(GatewayEvent)>(
                 }));
                 let reason =
                     run_session(conn, &mut shutdown_rx, &mut cmd_rx, &mut desired, &emit).await;
+                tracing::info!(target: "ytt_desktop", %reason, "gateway session ended");
                 emit(GatewayEvent::Connection(ConnState::Offline {
                     reason: reason.clone(),
                 }));

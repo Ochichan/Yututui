@@ -339,8 +339,18 @@ impl WindowsTrayApp {
                 // Commands/requests/subscriptions go to the live v8 session; its replies and
                 // topic pushes come back as `UserEvent::Gateway(Frame(..))`.
                 bridge::BridgeAction::ToGateway(env) => {
+                    // The page's boot subscription doubles as its "JS is alive" signal:
+                    // conn frames eval'd before `window.__ytm` existed were silently
+                    // dropped, leaving the banner stuck on "connecting" even with a
+                    // healthy session. Re-seed the state now that the page can hear it.
+                    let reseed = env.kind == bridge::OutKind::Sub;
                     if let Some(gw) = &self.gateway {
                         gw.send(env);
+                    }
+                    if reseed && let Some(main) = &self.main_window {
+                        main.eval(&bridge::receive_script(&bridge::InEnvelope::conn(
+                            self.last_conn.to_conn_payload(),
+                        )));
                     }
                 }
                 bridge::BridgeAction::Ignore => {}

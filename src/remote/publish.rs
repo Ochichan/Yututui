@@ -48,6 +48,10 @@ pub struct CoreView<'a> {
     pub eq_normalize: bool,
     /// The live config, projected into the `settings` topic model.
     pub config: &'a crate::config::Config,
+    /// The media-art cache's resolved file for the CURRENT track (already gated by the
+    /// host — stale art from a previous track never appears here). Rides the player
+    /// snapshot so the GUI can fetch `ytm://app/art/<key>`.
+    pub artwork: Option<super::proto::ArtworkRef>,
 }
 
 /// The player-topic change fingerprint. **`elapsed_ms` is deliberately absent** — see
@@ -70,6 +74,10 @@ struct PlayerFingerprint {
     eq_normalize: bool,
     queue_pos: usize,
     queue_len: usize,
+    /// Art resolves ~1–2 s AFTER a track starts (async cache fetch); keying on it makes
+    /// that arrival its own push, or the GUI would show the placeholder until the next
+    /// unrelated change.
+    artwork_key: Option<String>,
 }
 
 impl PlayerFingerprint {
@@ -92,6 +100,7 @@ impl PlayerFingerprint {
             eq_normalize: view.eq_normalize,
             queue_pos: if len == 0 { 0 } else { pos.saturating_sub(1) },
             queue_len: len,
+            artwork_key: view.artwork.as_ref().map(|art| art.key.clone()),
         }
     }
 }
@@ -250,7 +259,11 @@ fn event_payload(event: &PushEvent) -> Arc<Vec<u8>> {
 pub(crate) fn player_model(view: &CoreView<'_>) -> PlayerModel {
     let (pos, len) = view.queue.position();
     PlayerModel {
-        track: view.queue.current().map(track_model),
+        track: view.queue.current().map(|song| {
+            let mut track = track_model(song);
+            track.artwork = view.artwork.clone();
+            track
+        }),
         paused: view.paused,
         volume: view.volume,
         speed_tenths: view.speed_tenths,
@@ -472,6 +485,7 @@ pub(crate) fn test_view(queue: &Queue) -> CoreView<'_> {
         eq_bands: [0.0; 10],
         eq_normalize: false,
         config: Box::leak(Box::new(crate::config::Config::default())),
+        artwork: None,
     }
 }
 

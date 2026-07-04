@@ -127,6 +127,15 @@ fn cache_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "ytm-tui").map(|dirs| dirs.cache_dir().join("media-art"))
 }
 
+/// Resolve a track key to its cached artwork file, if one exists. The cache layout is
+/// deterministic (`<cache>/media-art/<safe-or-hashed key>.jpg`), so any process — the
+/// desktop shell's `ytm://app/art/<key>` handler included — can resolve keys without
+/// engine state or a running cache actor.
+pub fn cached_art_path(key: &str) -> Option<PathBuf> {
+    let path = cache_dir()?.join(cache_file_name(key));
+    path.is_file().then_some(path)
+}
+
 /// A filesystem-safe cache file name for a track key. YouTube ids are already safe
 /// (`[A-Za-z0-9_-]`); anything else (e.g. `local:<path>` keys) is hashed.
 pub(crate) fn cache_file_name(key: &str) -> String {

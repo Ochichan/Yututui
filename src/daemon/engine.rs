@@ -1254,6 +1254,18 @@ impl DaemonEngine {
             eq_bands: self.config.effective_eq_bands(),
             eq_normalize: self.config.effective_normalize(),
             config: &self.config,
+            // Same current-track gate as status()/media_snapshot: stale art from the
+            // previous track never rides a push.
+            artwork: cur.and_then(|song| {
+                self.media_art
+                    .as_ref()
+                    .filter(|art| art.key == song.video_id)
+                    .map(|art| ArtworkRef {
+                        key: art.key.clone(),
+                        path: Some(art.path.to_string_lossy().into_owned()),
+                        mime: None,
+                    })
+            }),
         }
     }
 

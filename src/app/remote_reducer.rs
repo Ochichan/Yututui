@@ -417,6 +417,17 @@ impl App {
             eq_bands: self.audio.bands,
             eq_normalize: self.audio.normalize,
             config: &self.config,
+            // Same current-track gate as status_snapshot above.
+            artwork: cur.and_then(|song| {
+                self.media_art
+                    .as_ref()
+                    .filter(|art| art.key == song.video_id)
+                    .map(|art| ArtworkRef {
+                        key: art.key.clone(),
+                        path: Some(art.path.to_string_lossy().into_owned()),
+                        mime: None,
+                    })
+            }),
         }
     }
 }

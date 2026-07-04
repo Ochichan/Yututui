@@ -189,10 +189,13 @@ fn build_webview(
     Ok(webview)
 }
 
-/// The `ytm://app` custom-protocol handler. Serves embedded assets + (M1) artwork, each with
-/// the CSP header. M0 has no artwork resolver yet, so `art/*` 404s.
+/// The `ytm://app` custom-protocol handler: embedded assets + artwork from the media-art
+/// disk cache (deterministic layout, so no engine state is needed), each with the CSP.
 fn ytm_protocol(_id: &str, request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
-    let served = assets::resolve(&request.uri().to_string(), |_key| None);
+    let served = assets::resolve(
+        &request.uri().to_string(),
+        crate::media::artwork::cached_art_path,
+    );
     let mut builder = Response::builder()
         .status(served.status)
         .header("Content-Type", served.content_type.as_ref())
