@@ -29,6 +29,8 @@ pub enum RuntimeEvent {
     Resolver(crate::resolver::ResolverEvent),
     Scrobble(crate::scrobble::ScrobbleEvent),
     Signal(crate::player::lifetime::SignalEvent),
+    /// Managed yt-dlp maintenance progress (download %, installed, failed).
+    Tools(crate::tools::ToolsEvent),
     Transfer(crate::transfer::actor::TransferEvent),
 }
 
@@ -187,8 +189,14 @@ impl From<RuntimeEvent> for Msg {
                 video_id: video_id.into_string(),
                 stream_url: stream_url.into_string(),
             },
+            RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Failed { video_id }) => {
+                Msg::ResolveFailed {
+                    video_id: video_id.into_string(),
+                }
+            }
             RuntimeEvent::Scrobble(event) => Msg::Scrobble(event),
             RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit) => Msg::Quit,
+            RuntimeEvent::Tools(event) => Msg::Tools(event),
             RuntimeEvent::Transfer(event) => Msg::Transfer(event),
         }
     }
@@ -421,6 +429,27 @@ impl RuntimeHandles {
                 watch_url,
             } => {
                 self.resolver_handle.resolve_or_log(video_id, watch_url);
+            }
+            Cmd::YtdlpSelfHeal { video_id, tools } => {
+                // Off-loop: an update check downloads up to ~40 MiB. Progress rides the
+                // same Tools status-line events as the maintainer; the verdict returns
+                // as Msg::YtdlpHealResult for the reducer's retry-or-skip decision.
+                let tx = self.worker_tx.clone();
+                tokio::spawn(async move {
+                    let progress_tx = tx.clone();
+                    let outcome = crate::tools::ytdlp::check_and_update(&tools, &move |event| {
+                        let _ = progress_tx.send(RuntimeEvent::Tools(event));
+                    })
+                    .await;
+                    let updated = matches!(
+                        outcome,
+                        crate::tools::ytdlp::UpdateOutcome::Installed { .. }
+                    );
+                    let _ = tx.send(RuntimeEvent::App(Msg::YtdlpHealResult {
+                        video_id,
+                        updated,
+                    }));
+                });
             }
             Cmd::SaveConfig(cfg) => {
                 self.persist.save(crate::persist::Snapshot::Config(cfg));

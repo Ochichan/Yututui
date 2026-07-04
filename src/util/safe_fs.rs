@@ -8,8 +8,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 #[cfg(unix)]
@@ -546,7 +546,10 @@ mod tests {
             assert_eq!(recovered.volume, 55, "sibling scalar preserved");
             assert_eq!(recovered.name, "keep me");
             assert_eq!(recovered.inner.mode, Mode::Balanced, "bad enum -> default");
-            assert_eq!(recovered.inner.weight, 0.9, "sibling in same object preserved");
+            assert_eq!(
+                recovered.inner.weight, 0.9,
+                "sibling in same object preserved"
+            );
             assert_eq!(recovered.inner.label, "still here");
         }
 
@@ -571,8 +574,14 @@ mod tests {
             assert_eq!(
                 recovered.log,
                 vec![
-                    Row { id: "a".into(), kind: Mode::Balanced },
-                    Row { id: "c".into(), kind: Mode::Aggressive },
+                    Row {
+                        id: "a".into(),
+                        kind: Mode::Balanced
+                    },
+                    Row {
+                        id: "c".into(),
+                        kind: Mode::Aggressive
+                    },
                 ],
                 "only the drifted record is dropped",
             );
@@ -580,7 +589,10 @@ mod tests {
 
         #[test]
         fn unrelated_json_falls_back_to_default() {
-            assert_eq!(recover_lenient::<Store>(json!({ "nope": 1 })), Store::default());
+            assert_eq!(
+                recover_lenient::<Store>(json!({ "nope": 1 })),
+                Store::default()
+            );
             assert_eq!(recover_lenient::<Store>(json!([1, 2, 3])), Store::default());
         }
 

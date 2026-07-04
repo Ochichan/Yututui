@@ -1689,6 +1689,140 @@ fn successful_playback_resets_the_error_streak() {
     assert_eq!(current(&app), "id2");
 }
 
+/// The mpv `file_error` signature of a failed ytdl_hook resolution (stale yt-dlp),
+/// exactly as `player::ipc` wraps it.
+const EXTRACTION_ERR: &str = "mpv could not play this track (unrecognized file format)";
+
+fn heal_cmd_id(cmds: &[Cmd]) -> Option<&str> {
+    cmds.iter().find_map(|c| match c {
+        Cmd::YtdlpSelfHeal { video_id, .. } => Some(video_id.as_str()),
+        _ => None,
+    })
+}
+
+fn resolve_cmd_id(cmds: &[Cmd]) -> Option<&str> {
+    cmds.iter().find_map(|c| match c {
+        Cmd::Resolve { video_id, .. } => Some(video_id.as_str()),
+        _ => None,
+    })
+}
+
+#[test]
+fn extraction_error_triggers_ytdlp_self_heal_instead_of_skipping() {
+    let mut app = app_playing(3, 0);
+    let cmds = app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    assert_eq!(
+        heal_cmd_id(&cmds),
+        Some("id0"),
+        "runs a yt-dlp update check"
+    );
+    assert!(load_url(&cmds).is_none(), "no skip while the heal runs");
+    assert_eq!(current(&app), "id0", "cursor stays on the failed track");
+    assert!(app.status.text.contains("yt-dlp"));
+}
+
+#[test]
+fn heal_success_resolves_and_reloads_the_same_track() {
+    let mut app = app_playing(3, 0);
+    app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    // A new binary landed → the track re-resolves through the resolver (the session
+    // mpv keeps its stale spawn-time ytdl_hook, so a watch-URL reload wouldn't help).
+    let cmds = app.update(Msg::YtdlpHealResult {
+        video_id: "id0".to_owned(),
+        updated: true,
+    });
+    assert_eq!(resolve_cmd_id(&cmds), Some("id0"));
+    assert!(load_url(&cmds).is_none(), "load waits for the resolve");
+    // The fresh binary's direct CDN URL arrives → the SAME track reloads from it.
+    let cmds = app.update(Msg::Resolved {
+        video_id: "id0".to_owned(),
+        stream_url: "https://cdn.example/id0".to_owned(),
+    });
+    assert_eq!(load_url(&cmds), Some("https://cdn.example/id0"));
+    assert_eq!(current(&app), "id0");
+}
+
+#[test]
+fn heal_without_update_falls_back_to_skip() {
+    let mut app = app_playing(3, 0);
+    app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    let cmds = app.update(Msg::YtdlpHealResult {
+        video_id: "id0".to_owned(),
+        updated: false,
+    });
+    assert!(load_url(&cmds).expect("skips to next").contains("id1"));
+    assert_eq!(current(&app), "id1");
+    assert!(
+        app.status.text.contains("yt-dlp"),
+        "message names the cause"
+    );
+}
+
+#[test]
+fn heal_resolve_failure_falls_back_to_skip() {
+    let mut app = app_playing(3, 0);
+    app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    app.update(Msg::YtdlpHealResult {
+        video_id: "id0".to_owned(),
+        updated: true,
+    });
+    // The updated binary STILL can't resolve it (region lock, deleted video…).
+    let cmds = app.update(Msg::ResolveFailed {
+        video_id: "id0".to_owned(),
+    });
+    assert!(load_url(&cmds).expect("skips to next").contains("id1"));
+    assert_eq!(current(&app), "id1");
+}
+
+#[test]
+fn heal_runs_once_per_track_then_plain_skip() {
+    let mut app = app_playing(3, 0);
+    app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    app.update(Msg::YtdlpHealResult {
+        video_id: "id0".to_owned(),
+        updated: false,
+    });
+    assert_eq!(current(&app), "id1");
+    // Back on the same track later: no second heal (and the 30-min cooldown also
+    // bars other tracks from re-checking) — the plain skip path runs instead.
+    app.update(Msg::Key(key(KeyCode::Char(','))));
+    assert_eq!(current(&app), "id0");
+    let cmds = app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    assert!(
+        heal_cmd_id(&cmds).is_none(),
+        "one heal per track per session"
+    );
+    assert!(load_url(&cmds).expect("plain skip").contains("id1"));
+}
+
+#[test]
+fn stale_heal_result_is_ignored_after_user_moved_on() {
+    let mut app = app_playing(3, 0);
+    app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    // The user skips manually while the update check is still running.
+    app.update(Msg::Key(key(KeyCode::Char('.'))));
+    assert_eq!(current(&app), "id1");
+    let cmds = app.update(Msg::YtdlpHealResult {
+        video_id: "id0".to_owned(),
+        updated: true,
+    });
+    assert!(cmds.is_empty(), "stale heal result is dropped");
+    assert_eq!(current(&app), "id1");
+}
+
+#[test]
+fn non_extraction_error_never_triggers_a_heal() {
+    let mut app = app_playing(3, 0);
+    let cmds = app.update(Msg::PlayerError(
+        "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
+    ));
+    assert!(
+        heal_cmd_id(&cmds).is_none(),
+        "network errors skip as before"
+    );
+    assert!(load_url(&cmds).expect("plain skip").contains("id1"));
+}
+
 #[test]
 fn next_and_prev_keys_move_through_queue() {
     let mut app = app_playing(3, 0);

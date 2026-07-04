@@ -188,7 +188,11 @@ fn build_group(
                     .into_iter()
                     .enumerate()
                 {
-                    let indent = if i == 0 { LABEL_INDENT } else { LABEL_INDENT + 2 };
+                    let indent = if i == 0 {
+                        LABEL_INDENT
+                    } else {
+                        LABEL_INDENT + 2
+                    };
                     lines.push(Line::from(Span::styled(
                         format!("{}{seg}", " ".repeat(indent)),
                         key_style,
@@ -567,7 +571,10 @@ mod tests {
                 "Zoom the text like a browser (also Ctrl+-/=; kitty, Windows Terminal, …)."
                     .to_owned(),
             ),
-            ("Seek bar".to_owned(), "Click a position to seek there.".to_owned()),
+            (
+                "Seek bar".to_owned(),
+                "Click a position to seek there.".to_owned(),
+            ),
         ];
         let text_w = 28;
         let lines = build_group(&app, SheetStyle::Roomy, "Player", &rows, text_w);
@@ -585,7 +592,10 @@ mod tests {
             .iter()
             .filter(|l| line_text(l).starts_with("    ") && !line_text(l).trim().is_empty())
             .count();
-        assert!(desc_lines > rows.len(), "descriptions should wrap: {desc_lines} lines");
+        assert!(
+            desc_lines > rows.len(),
+            "descriptions should wrap: {desc_lines} lines"
+        );
         // A blank under the header plus one after each of the two items.
         let blanks = lines
             .iter()

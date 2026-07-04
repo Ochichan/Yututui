@@ -1748,8 +1748,14 @@ mod tests {
             Some(Action::OpenSettings)
         );
         // `p`/`n` are no longer Player transport keys (freed by the mpv remap).
-        assert_eq!(km.action(KeyContext::Player, parse_chord("n").unwrap()), None);
-        assert_eq!(km.action(KeyContext::Player, parse_chord("p").unwrap()), None);
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("n").unwrap()),
+            None
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("p").unwrap()),
+            None
+        );
         assert_eq!(
             km.action(KeyContext::Player, parse_chord("s").unwrap()),
             Some(Action::OpenSearch)
@@ -2101,7 +2107,8 @@ mod tests {
         let mut km = KeyMap::default();
         let dot = parse_chord(".").unwrap();
 
-        km.rebind(KeyContext::Common, Action::PageDown, dot).unwrap();
+        km.rebind(KeyContext::Common, Action::PageDown, dot)
+            .unwrap();
 
         assert_eq!(km.action(KeyContext::Player, dot), Some(Action::NextTrack));
         assert_eq!(

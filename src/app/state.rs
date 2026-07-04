@@ -279,6 +279,20 @@ pub struct Prefetch {
     pub loaded_video_id: Option<String>,
 }
 
+/// Playback self-heal driven by extraction-shaped errors (the stale-yt-dlp signature):
+/// update yt-dlp in the background, then retry the failed track exactly once via a
+/// resolver-resolved direct URL (the session mpv keeps its spawn-time `ytdl_path`, so a
+/// watch-URL reload through mpv would still use the old binary).
+#[derive(Default)]
+pub struct YtdlpHeal {
+    /// The track a heal is in flight for; cleared when its retry lands or fails.
+    pub pending_video_id: Option<String>,
+    /// Tracks that already got their one retry this session — no retry loops.
+    pub attempted: HashSet<String>,
+    /// When the last heal-triggered update check ran ([`crate::tools::HEAL_COOLDOWN`]).
+    pub last_check: Option<Instant>,
+}
+
 /// Download state, keyed by `video_id`: the in-flight/finished progress map shown in the UI,
 /// plus the original catalog metadata held while a download runs.
 #[derive(Default)]

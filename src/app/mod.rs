@@ -313,6 +313,9 @@ pub struct App {
     /// Prefetch / load tracking: stream-URL cache, last-load-was-prefetched flag, and the
     /// `video_id` currently loaded into mpv (see [`Prefetch`]).
     prefetch: Prefetch,
+    /// yt-dlp self-heal bookkeeping: the in-flight healed track, per-track one-shot
+    /// guard, and the update-check cooldown clock (see [`YtdlpHeal`]).
+    heal: YtdlpHeal,
 
     /// Render→reducer bridges: hit-test rects, the active list viewport height, the clickable
     /// button map, and the per-list wheel-scroll offsets — all written by render (`&App`) for
@@ -442,6 +445,7 @@ impl App {
             downloads: Downloads::default(),
             download_store: DownloadStore::default(),
             prefetch: Prefetch::default(),
+            heal: YtdlpHeal::default(),
             bridges: RenderBridges::default(),
             last_shown_sec: -1,
             last_shown_cache_sec: -1,
@@ -1098,6 +1102,42 @@ impl App {
                     prefetched = self.prefetch.last_load_prefetched,
                     "playback error"
                 );
+                let extraction = crate::tools::looks_like_extraction_failure(&e);
+                // Self-heal: an extraction-shaped failure on a yt-dlp-resolved track is
+                // the stale-yt-dlp signature. Update it in the background and retry this
+                // track ONCE — via a resolver-resolved direct URL, because the session
+                // mpv keeps its spawn-time ytdl_path (see player::mpv::spawn docs).
+                // Deliberately does not touch `consecutive_play_errors`: the heal is an
+                // extra chance, not a substitute for the circuit breaker.
+                if extraction
+                    && self.heal.pending_video_id.is_none()
+                    && let Some(song) = self.queue.current()
+                    && song.prefetch_target().is_some()
+                    && !self.heal.attempted.contains(&song.video_id)
+                    && self
+                        .heal
+                        .last_check
+                        .is_none_or(|at| at.elapsed() >= crate::tools::HEAL_COOLDOWN)
+                {
+                    let video_id = song.video_id.clone();
+                    self.heal.attempted.insert(video_id.clone());
+                    self.heal.last_check = Some(Instant::now());
+                    self.heal.pending_video_id = Some(video_id.clone());
+                    // The failed load may itself have been a stale prefetched URL —
+                    // drop it so the retry resolves fresh with the updated binary.
+                    self.prefetch.resolved.remove(&video_id);
+                    self.status.kind = StatusKind::Info;
+                    self.status.text = t!(
+                        "Stream resolution failed — updating yt-dlp…",
+                        "스트림 해석 실패 — yt-dlp 업데이트 중…"
+                    )
+                    .to_owned();
+                    self.dirty = true;
+                    return vec![Cmd::YtdlpSelfHeal {
+                        video_id,
+                        tools: self.config.tools.clone(),
+                    }];
+                }
                 self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
                 // A single bad track shouldn't strand the user: skip it and play on. The
                 // cursor moves, so the title refreshes to the next track. Bail out once too
@@ -1107,23 +1147,99 @@ impl App {
                 {
                     // `advance(false)` always moves on (ignores repeat-one), unlike an EOF.
                     let cmds = self.advance(false);
-                    self.status.text = t!(
-                        "⚠ Track unavailable — skipped to next",
-                        "⚠ 재생할 수 없는 곡 — 다음 곡으로 건너뜀"
-                    )
+                    self.status.text = if extraction {
+                        t!(
+                            "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
+                            "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀"
+                        )
+                    } else {
+                        t!(
+                            "⚠ Track unavailable — skipped to next",
+                            "⚠ 재생할 수 없는 곡 — 다음 곡으로 건너뜀"
+                        )
+                    }
                     .to_owned();
                     self.dirty = true;
                     return cmds;
                 }
                 self.status.text = if self.consecutive_play_errors > MAX_CONSECUTIVE_PLAY_ERRORS {
-                    t!(
-                        "Several tracks failed to play — stopped. Check your connection, or sign in (cookies) for gated tracks.",
-                        "여러 곡 재생에 실패해서 중단했어요. 연결을 확인하거나, 제한된 곡은 로그인(쿠키)하세요."
-                    ).to_owned()
+                    if extraction {
+                        t!(
+                            "Several tracks failed — yt-dlp may be outdated. Run `ytt tools update`, or check `ytt doctor`.",
+                            "여러 곡 재생 실패 — yt-dlp가 오래됐을 수 있어요. `ytt tools update` 또는 `ytt doctor`를 실행해 보세요."
+                        ).to_owned()
+                    } else {
+                        t!(
+                            "Several tracks failed to play — stopped. Check your connection, or sign in (cookies) for gated tracks.",
+                            "여러 곡 재생에 실패해서 중단했어요. 연결을 확인하거나, 제한된 곡은 로그인(쿠키)하세요."
+                        ).to_owned()
+                    }
                 } else {
                     format!("{}: {e}", t!("Playback error", "재생 오류"))
                 };
                 self.dirty = true;
+            }
+            Msg::YtdlpHealResult { video_id, updated } => {
+                if self.heal.pending_video_id.as_deref() != Some(video_id.as_str()) {
+                    return Vec::new(); // stale: the user already moved on
+                }
+                let still_current = self.queue.current().is_some_and(|s| s.video_id == video_id);
+                if updated && still_current {
+                    // A fresh binary landed. Resolve a direct URL with it (Msg::Resolved
+                    // below finishes the retry); Msg::ResolveFailed ends the heal.
+                    let watch_url = self.queue.current().and_then(Song::prefetch_target);
+                    if let Some(watch_url) = watch_url {
+                        return vec![Cmd::Resolve {
+                            video_id,
+                            watch_url,
+                        }];
+                    }
+                }
+                // No update available / track changed — give up on this heal and skip
+                // like the plain error path would have.
+                self.heal.pending_video_id = None;
+                if !still_current {
+                    return Vec::new();
+                }
+                self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
+                let cmds = if self.queue.peek_next().is_some() {
+                    self.advance(false)
+                } else {
+                    Vec::new()
+                };
+                self.status.kind = StatusKind::Error;
+                self.status.text = t!(
+                    "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
+                    "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀"
+                )
+                .to_owned();
+                self.dirty = true;
+                return cmds;
+            }
+            Msg::ResolveFailed { video_id } => {
+                // Only meaningful while a self-heal retry waits on this exact resolve;
+                // ordinary prefetch failures were already logged by the resolver.
+                if self.heal.pending_video_id.as_deref() != Some(video_id.as_str()) {
+                    return Vec::new();
+                }
+                self.heal.pending_video_id = None;
+                if self.queue.current().is_none_or(|s| s.video_id != video_id) {
+                    return Vec::new();
+                }
+                self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
+                let cmds = if self.queue.peek_next().is_some() {
+                    self.advance(false)
+                } else {
+                    Vec::new()
+                };
+                self.status.kind = StatusKind::Error;
+                self.status.text = t!(
+                    "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
+                    "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀"
+                )
+                .to_owned();
+                self.dirty = true;
+                return cmds;
             }
             Msg::SearchResults {
                 query,
@@ -1240,7 +1356,16 @@ impl App {
                 if self.prefetch.resolved.len() >= RESOLVED_MAX {
                     self.prefetch.resolved.clear();
                 }
-                self.prefetch.resolved.insert(video_id, stream_url);
+                self.prefetch.resolved.insert(video_id.clone(), stream_url);
+                // A pending self-heal retry: the freshly-updated yt-dlp resolved the
+                // failed track — reload it now through the direct CDN URL just cached
+                // (bypassing the session mpv's stale spawn-time ytdl_hook).
+                if self.heal.pending_video_id.as_deref() == Some(video_id.as_str()) {
+                    self.heal.pending_video_id = None;
+                    if self.queue.current().is_some_and(|s| s.video_id == video_id) {
+                        return self.load_song(self.queue.current().cloned());
+                    }
+                }
             }
             Msg::StreamingResults {
                 seed_video_id,
@@ -1504,6 +1629,38 @@ impl App {
                 return self.apply_romanized_titles(request_id, keys, entries);
             }
             Msg::Scrobble(event) => return self.on_scrobble_event(event),
+            Msg::Tools(event) => match event {
+                crate::tools::ToolsEvent::Progress { channel, percent } => {
+                    self.status.kind = StatusKind::Info;
+                    let label = channel.label();
+                    let head = t!("Downloading yt-dlp", "yt-dlp 다운로드 중");
+                    self.status.text = match percent {
+                        Some(p) => format!("{head} ({label})… {p}%"),
+                        None => format!("{head} ({label})…"),
+                    };
+                    self.dirty = true;
+                }
+                crate::tools::ToolsEvent::Installed { version } => {
+                    self.status.kind = StatusKind::Info;
+                    self.status.text = if crate::i18n::is_korean() {
+                        format!("yt-dlp {version} 준비 완료")
+                    } else {
+                        format!("yt-dlp {version} ready")
+                    };
+                    self.dirty = true;
+                }
+                crate::tools::ToolsEvent::Failed { error } => {
+                    // A failed background refresh of a *working* setup stays log-only
+                    // (check_and_update already traced it); only an app with no usable
+                    // yt-dlp at all needs the user's attention.
+                    if crate::tools::ytdlp_selection().is_none() {
+                        self.status.kind = StatusKind::Error;
+                        self.status.text =
+                            format!("{}: {error}", t!("yt-dlp unavailable", "yt-dlp 사용 불가"));
+                        self.dirty = true;
+                    }
+                }
+            },
             Msg::Transfer(event) => return self.on_transfer_event(event),
         }
         Vec::new()
@@ -1758,7 +1915,8 @@ fn spawn_video_overlay(
     ipc_path: Option<&str>,
 ) -> Option<std::process::Child> {
     use std::process::Stdio;
-    let mut cmd = process::std_command("mpv", process::ProcessProfile::Media);
+    let mut cmd =
+        process::std_command(&crate::tools::mpv_program(), process::ProcessProfile::Media);
     cmd.arg(url);
     // The audio instance already owns the OS media session; without this the
     // overlay mpv would register a second, duplicate entry (mpv ≥ 0.39 does so
@@ -1779,6 +1937,18 @@ fn spawn_video_overlay(
         cmd.arg(format!(
             "--ytdl-raw-options-append=cookies={}",
             path.display()
+        ));
+    }
+    // Pin ytdl_hook to the selected yt-dlp (managed/override), like the audio
+    // instance — but with `-append`: this spawn honors the user's mpv config, and
+    // plain `--script-opts=` would wipe their other script options.
+    if let Some(sel) = crate::tools::ytdlp_selection()
+        && let Some(pin) = sel.pin_for_mpv()
+    {
+        let pin = pin.canonicalize().unwrap_or_else(|_| pin.to_path_buf());
+        cmd.arg(format!(
+            "--script-opts-append=ytdl_hook-ytdl_path={}",
+            pin.display()
         ));
     }
     cmd.stdin(Stdio::null())

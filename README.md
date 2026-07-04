@@ -33,6 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | 
 ```
 
 > The `curl | bash` and from-source paths install **only** `ytt`. Install the helpers yourself (`brew install mpv yt-dlp ffmpeg`, `sudo apt install mpv yt-dlp ffmpeg`, `sudo pacman -S mpv yt-dlp ffmpeg`) — or just run `ytt doctor` afterward to see what's missing.
+> **yt-dlp keeps itself fresh.** YouTube changes weekly, so a distro-frozen yt-dlp (e.g. Debian stable's) eventually breaks playback. `ytt` therefore maintains its own current yt-dlp in `~/.local/share/ytm-tui/tools/` (official standalone build, nightly channel, SHA-256-verified from github.com) and uses whichever of {managed, system} is newer. Check with `ytt tools status`, force with `ytt tools update`, switch channel with `"tools": {"ytdlp_channel": "stable"}`, opt out entirely with `"tools": {"ytdlp_managed": false}` in `config.json` (then keeping yt-dlp current is on you). The download is integrity-checked, not provenance-signed — opt out if your threat model forbids apps fetching executables.
 > On Windows, Scoop also installs `ytt-desktop.exe` and a **YtmTui Tray** shortcut — the notification-area mini player ([details below](#media-keys--os-integration)). A terminal-hosted `ytt` session still belongs to Windows Terminal's taskbar button.
 > On macOS, Homebrew and the release archive ship `ytt-tray` too — the same companion, living in your menu bar (releases after v1.5.8).
 > Tray startup is opt-in on both: `ytt-tray --install-startup` to enable, `ytt-tray --uninstall-startup` to remove.
@@ -235,7 +236,8 @@ or *not found* instead of being silently guessed; re-run with `--take-best`,
 | --- | --- |
 | Nothing plays, or it errors on play | mpv or yt-dlp is missing or not on your `PATH`. Run `ytt doctor`. |
 | `ytt: command not found` | Open a fresh terminal. Still stuck? The installer printed the `PATH` line to add. |
-| Worked yesterday, not today | YouTube changed something — update yt-dlp (`brew upgrade yt-dlp`, `scoop update yt-dlp`, or your package manager). |
+| Worked yesterday, not today | YouTube changed something. `ytt` auto-updates its own yt-dlp (and retries the failed track once); if it's still stuck, run `ytt tools update`, or update a system yt-dlp with `brew upgrade yt-dlp` / `scoop update yt-dlp`. |
+| "Couldn't resolve the stream (yt-dlp may be outdated)" | Same cause as above — `ytt tools update`, then `ytt tools status` to confirm which yt-dlp is active. |
 | A specific song won't play | It may need sign-in — see Cookies below. |
 | No album art | Off by default, and terminal-dependent. Turn on **Album art** (Settings → General) and restart. |
 | `v` won't open the video | It launches a separate mpv window — check `ytt doctor`. Local-only tracks have no video to show. |

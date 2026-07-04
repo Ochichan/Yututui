@@ -5,9 +5,10 @@
 //! startup predictable and the footprint small. stdio is sent to null so mpv can never
 //! write into our terminal.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use tokio::process::Child;
@@ -16,32 +17,48 @@ use crate::util::process;
 #[cfg(unix)]
 use crate::util::runtime;
 
-/// Whether the installed mpv accepts `--media-controls` (added in mpv 0.39).
+/// Whether the installed mpv accepts `flag` — the version-independence gate for any
+/// option newer than our ~0.32 baseline. Older mpv must never see an unknown flag
+/// (they are fatal at startup), and version parsing breaks on git builds, so this
+/// runs a capability probe instead:
 ///
-/// mpv ≥ 0.39 registers its **own** OS media session by default — Windows SMTC
-/// and macOS Now Playing — even in headless/audio-only mode, which would sit in
-/// the flyout next to the session `crate::media` publishes as a duplicate entry
-/// with raw stream metadata. Both our spawns pass `--media-controls=no` when
-/// supported; older mpv must never see the flag (unknown options are fatal at
-/// startup), hence this one-time capability probe instead of version parsing
-/// (which breaks on git builds).
+/// ```text
+/// <mpv> --no-config <flag> --version
+/// ```
 ///
 /// The flag must come BEFORE `--version`: mpv validates only the options parsed
 /// before `--version` short-circuits, so the reversed order reports success for
-/// any flag. Probed once per process — the daemon respawns mpv on every
+/// any flag. Probed once per (process, flag) — the daemon respawns mpv on every
 /// stop→play cycle, and the answer can't change mid-run.
-pub fn media_controls_flag_supported() -> bool {
-    static SUPPORTED: OnceLock<bool> = OnceLock::new();
-    *SUPPORTED.get_or_init(|| {
-        process::std_command("mpv", process::ProcessProfile::Media)
-            .args(["--no-config", "--media-controls=no", "--version"])
+pub fn flag_supported(flag: &'static str) -> bool {
+    static CACHE: Mutex<Option<HashMap<&'static str, bool>>> = Mutex::new(None);
+    let mut cache = CACHE.lock().expect("mpv flag probe cache poisoned");
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some(&supported) = cache.get(flag) {
+        return supported;
+    }
+    let supported =
+        process::std_command(&crate::tools::mpv_program(), process::ProcessProfile::Media)
+            .args(["--no-config", flag, "--version"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .map(|status| status.success())
-            .unwrap_or(false)
-    })
+            .unwrap_or(false);
+    cache.insert(flag, supported);
+    supported
+}
+
+/// Whether mpv accepts `--media-controls` (added in mpv 0.39).
+///
+/// mpv ≥ 0.39 registers its **own** OS media session by default — Windows SMTC
+/// and macOS Now Playing — even in headless/audio-only mode, which would sit in
+/// the flyout next to the session `crate::media` publishes as a duplicate entry
+/// with raw stream metadata. Both our spawns pass `--media-controls=no` when
+/// supported (see [`flag_supported`]).
+pub fn media_controls_flag_supported() -> bool {
+    flag_supported("--media-controls=no")
 }
 
 /// A per-process IPC endpoint: a Unix socket path on macOS/Linux, a named pipe on
@@ -89,8 +106,16 @@ pub fn video_ipc_path(generation: u64) -> Result<String> {
 /// `cookies_file`, when present, is handed to mpv's bundled yt-dlp so authenticated
 /// streams resolve (age-gated / library tracks). yt-dlp owns stream resolution — PO
 /// tokens, signature deciphering, throttling — so we never touch those ourselves.
+///
+/// The yt-dlp that ytdl_hook runs is pinned to [`crate::tools`]' selection (managed/
+/// override) via `--script-opts=ytdl_hook-ytdl_path=…`; a system selection keeps
+/// mpv's own PATH lookup. ytdl_hook reads that option once at spawn, so the TUI's
+/// long-lived mpv keeps its spawn-time binary until restart — the playback self-heal
+/// therefore feeds mpv *resolved* CDN URLs (via the resolver) instead of watch URLs
+/// when a fresher yt-dlp lands mid-session; the daemon simply respawns its player.
 pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Result<Child> {
-    let mut cmd = process::tokio_command("mpv", process::ProcessProfile::Media);
+    let mut cmd =
+        process::tokio_command(&crate::tools::mpv_program(), process::ProcessProfile::Media);
     cmd.arg("--no-video")
         .arg("--no-terminal")
         .arg("--idle=yes")
@@ -115,6 +140,19 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
         cmd.arg(format!(
             "--ytdl-raw-options-append=cookies={}",
             path.display()
+        ));
+    }
+
+    // Pin ytdl_hook to the selected yt-dlp (managed/override). Ancient option, no
+    // probe needed; `--no-config` above means there are no user script-opts to
+    // clobber. Before YTM_MPV_EXTRA so last-option-wins keeps the user lever.
+    if let Some(sel) = crate::tools::ytdlp_selection()
+        && let Some(pin) = sel.pin_for_mpv()
+    {
+        let pin = pin.canonicalize().unwrap_or_else(|_| pin.to_path_buf());
+        cmd.arg(format!(
+            "--script-opts=ytdl_hook-ytdl_path={}",
+            pin.display()
         ));
     }
 

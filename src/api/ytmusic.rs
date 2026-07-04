@@ -449,7 +449,7 @@ async fn ytdlp_flat_search(
     } else {
         format!("{prefix}{limit}:{query}")
     };
-    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
+    let mut cmd = crate::tools::ytdlp_command();
     cmd.arg(&spec)
         .arg("--flat-playlist")
         .arg("--dump-single-json")
@@ -665,7 +665,7 @@ async fn ytdlp_playlist_search(query: &str) -> Result<Vec<Song>> {
         &[("search_query", query), ("sp", "EgIQAw==")],
     )
     .context("could not build the playlist search URL")?;
-    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
+    let mut cmd = crate::tools::ytdlp_command();
     cmd.arg(url.as_str())
         .arg("--flat-playlist")
         .arg("--dump-single-json")
@@ -794,7 +794,7 @@ async fn lookup_playlist_row(playlist_id: &str) -> Song {
 async fn ytdlp_playlist_json(playlist_id: &str, items: Option<&str>) -> Result<serde_json::Value> {
     let id = playlist_id.strip_prefix("VL").unwrap_or(playlist_id);
     let url = format!("https://www.youtube.com/playlist?list={id}");
-    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
+    let mut cmd = crate::tools::ytdlp_command();
     cmd.arg(&url)
         .arg("--flat-playlist")
         .arg("--dump-single-json")
@@ -851,7 +851,7 @@ struct EnrichedVideoMeta {
 
 async fn enrich_video_meta(video_id: &str) -> Result<EnrichedVideoMeta> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let mut cmd = process::tokio_command("yt-dlp", process::ProcessProfile::YtDlp);
+    let mut cmd = crate::tools::ytdlp_command();
     cmd.arg("--dump-single-json")
         .arg("--no-playlist")
         .arg("--no-warnings")

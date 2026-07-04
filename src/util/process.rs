@@ -209,7 +209,7 @@ fn should_inherit(key: &str, profile: ProcessProfile) -> bool {
     if matches!(profile, ProcessProfile::Daemon)
         && matches!(
             upper.as_str(),
-            "RUST_LOG" | "YTM_MPV_EXTRA" | "YTM_NO_MEDIA_SESSION"
+            "RUST_LOG" | "YTM_MPV_EXTRA" | "YTM_NO_MEDIA_SESSION" | "YTM_YTDLP" | "YTM_MPV"
         )
     {
         return true;
@@ -291,6 +291,11 @@ mod tests {
             "YTM_NO_MEDIA_SESSION",
             ProcessProfile::YtDlp
         ));
+        // Tool-path overrides must survive into the daemon child (env is cleared),
+        // or `YTM_YTDLP`/`YTM_MPV` would silently stop applying in daemon mode.
+        assert!(should_inherit("YTM_YTDLP", ProcessProfile::Daemon));
+        assert!(should_inherit("YTM_MPV", ProcessProfile::Daemon));
+        assert!(!should_inherit("YTM_YTDLP", ProcessProfile::YtDlp));
         assert!(!should_inherit("HTTPS_PROXY", ProcessProfile::Clipboard));
     }
 

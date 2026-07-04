@@ -39,14 +39,18 @@ pub(crate) fn on_path(bin: &str) -> bool {
     if path.is_absolute() || path.components().count() > 1 {
         return is_executable(path);
     }
+    resolve_on_path(bin).is_some()
+}
 
-    let Some(paths) = env::var_os("PATH") else {
-        return false;
-    };
-    env::split_paths(&paths).any(|dir| {
+/// The absolute path `bin` resolves to on `PATH`, if any — the same lookup the OS
+/// would do at spawn. Used by `crate::tools` to identify the system yt-dlp so its
+/// version can be probed (and probe-cached) against the managed copy.
+pub(crate) fn resolve_on_path(bin: &str) -> Option<PathBuf> {
+    let paths = env::var_os("PATH")?;
+    env::split_paths(&paths).find_map(|dir| {
         executable_candidates(&dir, bin)
             .into_iter()
-            .any(|candidate| is_executable(&candidate))
+            .find(|candidate| is_executable(candidate))
     })
 }
 
@@ -95,23 +99,31 @@ fn is_executable_metadata(_: &fs::Metadata) -> bool {
     true
 }
 
-/// The playback-critical tools that aren't on `PATH` (the startup preflight subset; ffmpeg is
-/// download-only and intentionally excluded).
+/// The playback-critical tools that aren't usable (the startup preflight subset; ffmpeg is
+/// download-only and intentionally excluded). Runs after `tools::init`, so a managed or
+/// override yt-dlp (not on `PATH`) and a configured mpv path both count as present; before
+/// init it degrades to the plain PATH check.
 pub fn missing() -> Vec<&'static str> {
     TOOLS
         .iter()
         .filter(|(_, need)| *need == Need::Core)
         .map(|(bin, _)| *bin)
-        .filter(|bin| !on_path(bin))
+        .filter(|bin| match *bin {
+            "yt-dlp" => crate::tools::ytdlp_selection().is_none() && !on_path(bin),
+            "mpv" => !on_path(&crate::tools::mpv_program()),
+            other => !on_path(other),
+        })
         .collect()
 }
 
 /// A one-line, OS-appropriate install hint for the given missing tools.
 pub fn install_hint(missing: &[&str]) -> String {
     let tools = missing.join(" ");
+    // yt-dlp has a package-manager-free path: the app can fetch its own copy.
+    let ytdlp_alt = missing.contains(&"yt-dlp");
     // Tool names and the brew/scoop commands stay verbatim in both languages; only the
     // surrounding guidance is localized.
-    if crate::i18n::is_korean() {
+    let mut hint = if crate::i18n::is_korean() {
         if cfg!(target_os = "macos") {
             format!("{tools} 없음 — 설치: brew install {tools}")
         } else if cfg!(target_os = "windows") {
@@ -125,7 +137,15 @@ pub fn install_hint(missing: &[&str]) -> String {
         format!("Missing {tools} — install with: scoop install {tools}  (or winget)")
     } else {
         format!("Missing {tools} — install via your package manager")
+    };
+    if ytdlp_alt {
+        hint.push_str(if crate::i18n::is_korean() {
+            "  (yt-dlp는 `ytt tools update`로도 받을 수 있어요)"
+        } else {
+            "  (yt-dlp: `ytt tools update` also works)"
+        });
     }
+    hint
 }
 
 #[cfg(test)]

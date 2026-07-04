@@ -141,9 +141,10 @@ mod tests {
     #[test]
     fn wrap_hard_breaks_an_overlong_word() {
         // A single word longer than the width splits at the cell boundary.
-        assert_eq!(wrap_to_width("supercalifragilistic", 5), vec![
-            "super", "calif", "ragil", "istic"
-        ]);
+        assert_eq!(
+            wrap_to_width("supercalifragilistic", 5),
+            vec!["super", "calif", "ragil", "istic"]
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use ytm_tui::{
     ai, api, app, artwork, auth_cli, config, daemon, deps, doctor, download, downloads, event,
     i18n, library, logging, lyrics, media, persist, player, playlists, remote, resolver, romanize,
-    runtime, scrobble, session, signals, station, transfer, tui, ui, zoom,
+    runtime, scrobble, session, signals, station, tools, transfer, tui, ui, zoom,
 };
 
 use anyhow::Result;
@@ -42,6 +42,9 @@ fn main() -> Result<()> {
                     "       ytt transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
                 );
                 println!("       ytt doctor           Check your environment and exit");
+                println!(
+                    "       ytt tools <cmd>      Manage the app-managed yt-dlp (status, update)"
+                );
                 println!();
                 println!("Launch the terminal YouTube Music player.");
                 println!();
@@ -83,6 +86,12 @@ fn main() -> Result<()> {
             // One-shot environment diagnostic; never touches the terminal. Exits with its
             // own status code (non-zero if a required tool or directory is unusable).
             "doctor" => std::process::exit(doctor::run()),
+            // Managed yt-dlp maintenance (status / forced update) — same one-shot,
+            // no-terminal shape as `doctor`.
+            "tools" => {
+                let rest: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(tools::cli::run(&rest));
+            }
             // Hidden maintenance command (run by install.ps1 / Scoop post_install): registers
             // the AppUserModelId so the Windows media flyout shows "YtmTui" + icon instead of
             // "Unknown app". Kept out of --help; errors out on other platforms.
@@ -612,11 +621,25 @@ async fn run(
         return Ok(());
     }
 
+    // Resolve which yt-dlp (managed vs system vs override) and mpv this process runs.
+    // After first draw (a cold probe spawns `yt-dlp --version`, several hundred ms),
+    // but before the deps preflight and the mpv spawn below, which both consume it.
+    tools::init(&cfg.tools).await;
+    startup.mark("tools_selected");
+
     // Preflight the external tools. If mpv/yt-dlp are missing, show an install hint up
     // front rather than surfacing an opaque spawn failure later.
-    let missing = deps::missing();
+    let mut missing = deps::missing();
     if !missing.is_empty() {
         tracing::warn!(missing = ?missing, "required external tools not found on PATH");
+        // A missing yt-dlp is about to be fetched by the maintainer spawned below —
+        // its "Downloading yt-dlp…" status supersedes the install nag. mpv stays a
+        // hard nag; there is no managed download for it.
+        if cfg.tools.managed_enabled() && tools::ytdlp::asset_name().is_some() {
+            missing.retain(|bin| *bin != "yt-dlp");
+        }
+    }
+    if !missing.is_empty() {
         app.status.text = deps::install_hint(&missing);
     }
     startup.mark("deps_checked");
@@ -648,6 +671,14 @@ async fn run(
 
     // Signals (SIGINT/TERM/HUP) kill mpv and ask the loop to quit.
     player::lifetime::spawn_signal_handlers(runtime::sink(worker_tx.clone(), RuntimeEvent::Signal));
+
+    // Keep the managed yt-dlp present and fresh in the background (the fix for
+    // distro-frozen yt-dlp breaking playback). Never blocks startup or playback;
+    // download progress and outcomes surface on the status line via Msg::Tools.
+    tools::ytdlp::spawn_maintainer(
+        cfg.tools.clone(),
+        runtime::sink(worker_tx.clone(), RuntimeEvent::Tools),
+    );
 
     // The remote-control accept loop is started — and the instance descriptor published — just
     // before the reducer loop below (see `remote.map(..server.start..)`), NOT here. Publishing

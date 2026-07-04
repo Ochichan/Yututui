@@ -33,6 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | 
 ```
 
 > `curl | bash` とソースビルドは `ytt` **だけ**を入れます。補助ツールは自分で入れるか（`brew install mpv yt-dlp ffmpeg`、`sudo apt install mpv yt-dlp ffmpeg`、`sudo pacman -S mpv yt-dlp ffmpeg`）— インストール後に `ytt doctor` で何が足りないか確認してください。
+> **yt-dlp は自動で最新に保たれます。** YouTube は毎週変わるため、ディストリビューションで凍結された yt-dlp（例: Debian stable）はいずれ再生できなくなります。そこで `ytt` は公式スタンドアロンビルド（nightly チャンネル、github.com から SHA-256 検証付き）を `~/.local/share/ytm-tui/tools/` に自前で保持し、{管理版, システム版} の新しい方を使います。`ytt tools status` で確認、`ytt tools update` で即時更新、`config.json` の `"tools": {"ytdlp_channel": "stable"}` でチャンネル変更、`"tools": {"ytdlp_managed": false}` で完全無効化（以後の yt-dlp 更新は自己管理）。ダウンロードは完全性検証のみで出所署名ではありません — アプリによる実行ファイル取得が許容できない場合は無効化してください。
 > Windows では Scoop が `ytt-desktop.exe` と **YtmTui Tray** ショートカットも入れます — 通知領域のミニプレイヤーです（[詳細は下](#メディアキー--os-統合)）。ターミナルで動いている `ytt` セッションのタスクバーボタンは、これまでどおり Windows Terminal のものです。
 > macOS でも Homebrew とリリースアーカイブに `ytt-tray` が同梱されます — 同じ相棒がメニューバーに住み着きます（v1.5.8 より後のリリース）。
 > トレイのスタートアップ登録はどちらも任意です。有効化は `ytt-tray --install-startup`、解除は `ytt-tray --uninstall-startup`。
@@ -231,7 +232,8 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 | --- | --- |
 | 何も再生されない、再生でエラー | mpv か yt-dlp がないか `PATH` にありません。`ytt doctor` を実行。 |
 | `ytt: command not found` | 新しいターミナルを開く。まだなら、インストーラが出力した `PATH` 行を追加。 |
-| 昨日は動いたのに今日は動かない | YouTube が何か変えました — yt-dlp を更新（`brew upgrade yt-dlp`、`scoop update yt-dlp`、またはパッケージマネージャ）。 |
+| 昨日は動いたのに今日は動かない | YouTube が何か変えました。`ytt` は自前の yt-dlp を自動更新し、失敗した曲を一度リトライします。それでもだめなら `ytt tools update` を実行するか、システムの yt-dlp を更新（`brew upgrade yt-dlp`、`scoop update yt-dlp`）。 |
+| 「ストリームを解決できない（yt-dlp が古い可能性）」 | 上と同じ原因 — `ytt tools update` の後、`ytt tools status` でどの yt-dlp が有効か確認。 |
 | 特定の曲だけ再生できない | サインインが必要かも — 下の Cookie 参照。 |
 | アルバムアートが出ない | 初期設定はオフで、ターミナル依存です。**アルバムアート**（設定 → 一般）をオンにして再起動。 |
 | `v` を押しても映像が出ない | 別の mpv ウィンドウを開く機能です — `ytt doctor` で mpv を確認。ローカル専用トラックには見せる映像がありません。 |

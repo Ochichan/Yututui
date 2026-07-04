@@ -255,6 +255,22 @@ pub enum Msg {
     /// An event from the scrobble actor: auth-flow progress or a service-health notice.
     /// Scrobbling itself is fire-and-forget and never surfaces here.
     Scrobble(crate::scrobble::ScrobbleEvent),
+    /// Managed yt-dlp maintenance: download progress / installed / failed. Progress and
+    /// success are informational; a failure is an error only when no usable yt-dlp
+    /// exists at all (a failed background refresh of a working setup stays log-only).
+    Tools(crate::tools::ToolsEvent),
+    /// A [`Cmd::YtdlpSelfHeal`] update check finished. `updated` means a new binary was
+    /// installed (a retry is worth it); anything else falls through to the skip path.
+    YtdlpHealResult {
+        video_id: String,
+        updated: bool,
+    },
+    /// The prefetch resolver failed to resolve `video_id`. Only meaningful while a
+    /// self-heal retry is pending for that track (normal prefetch failures just mean
+    /// a slower skip later and stay log-only).
+    ResolveFailed {
+        video_id: String,
+    },
     /// An event from the transfer actor: Spotify auth, playlist listings, job progress.
     Transfer(crate::transfer::actor::TransferEvent),
 }
@@ -315,6 +331,13 @@ pub enum Cmd {
     Resolve {
         video_id: String,
         watch_url: String,
+    },
+    /// Playback self-heal: run a yt-dlp update check now (extraction-shaped failure on
+    /// `video_id`). Answered by [`Msg::YtdlpHealResult`]; carries the tools config so
+    /// the runtime needs no config plumbing of its own.
+    YtdlpSelfHeal {
+        video_id: String,
+        tools: crate::config::ToolsConfig,
     },
     /// Persist the given config to disk (settings screen, on save).
     SaveConfig(Box<Config>),

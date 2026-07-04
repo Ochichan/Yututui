@@ -19,6 +19,15 @@ pub fn run() -> i32 {
     i18n::set_language(cfg.effective_language());
     let kr = i18n::is_korean();
 
+    // Resolve the yt-dlp/mpv selection exactly as the app would (doctor runs in the
+    // synchronous main path, so block on a throwaway current-thread runtime).
+    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        rt.block_on(crate::tools::init(&cfg.tools));
+    }
+
     // `ok` flips to false only on a problem that actually stops the app working
     // (a Core tool missing, or a required directory not writable).
     let mut ok = true;
@@ -37,18 +46,55 @@ pub fn run() -> i32 {
     );
     for &(bin, need) in deps::TOOLS {
         let role = tool_role(bin, kr);
-        if deps::on_path(bin) {
-            println!("  ✓ {bin:<8} ({role})");
-        } else {
-            // `install_hint` is already OS- and language-aware and accepts any tool name.
-            println!("  ✗ {bin:<8} ({role}) — {}", deps::install_hint(&[bin]));
-            // A missing playback-critical tool makes the app unusable; ffmpeg only blocks downloads.
-            if need == Need::Core {
-                ok = false;
+        match bin {
+            // yt-dlp reports the *selection* (managed/system/override), not bare PATH
+            // presence — the managed binary lives outside PATH by design.
+            "yt-dlp" => {
+                if let Some(sel) = crate::tools::ytdlp_selection() {
+                    println!(
+                        "  ✓ {bin:<8} ({role}) — {} {} · {}",
+                        sel.source.label(),
+                        sel.version.as_deref().unwrap_or("?"),
+                        sel.path.display()
+                    );
+                } else {
+                    println!("  ✗ {bin:<8} ({role}) — {}", deps::install_hint(&[bin]));
+                    ok = false;
+                }
+            }
+            // mpv honors the YTM_MPV / tools.mpv_path override.
+            "mpv" => {
+                let program = crate::tools::mpv_program();
+                if deps::on_path(&program) {
+                    if program == "mpv" {
+                        println!("  ✓ {bin:<8} ({role})");
+                    } else {
+                        println!("  ✓ {bin:<8} ({role}) — {program}");
+                    }
+                } else {
+                    println!("  ✗ {bin:<8} ({role}) — {}", deps::install_hint(&[bin]));
+                    ok = false;
+                }
+            }
+            _ => {
+                if deps::on_path(bin) {
+                    println!("  ✓ {bin:<8} ({role})");
+                } else {
+                    // `install_hint` is OS- and language-aware and accepts any tool name.
+                    println!("  ✗ {bin:<8} ({role}) — {}", deps::install_hint(&[bin]));
+                    // A missing playback-critical tool makes the app unusable; ffmpeg
+                    // only blocks downloads.
+                    if need == Need::Core {
+                        ok = false;
+                    }
+                }
             }
         }
     }
     println!();
+
+    // 1b) Managed yt-dlp status (the auto-updated copy in <data>/tools).
+    print_managed_ytdlp(&cfg, kr);
 
     // 2) Directories the app needs to write into.
     println!("{}", if kr { "디렉터리" } else { "Directories" });
@@ -109,6 +155,73 @@ pub fn run() -> i32 {
         );
         1
     }
+}
+
+/// The "Managed yt-dlp" section: whether the app-managed copy is enabled/installed,
+/// its channel, and how fresh the last update check is.
+fn print_managed_ytdlp(cfg: &config::Config, kr: bool) {
+    use crate::tools::ytdlp;
+
+    println!(
+        "{}",
+        if kr {
+            "관리형 yt-dlp"
+        } else {
+            "Managed yt-dlp"
+        }
+    );
+    if !cfg.tools.managed_enabled() {
+        println!(
+            "  - {}",
+            if kr {
+                "꺼짐 (tools.ytdlp_managed = false)"
+            } else {
+                "disabled (tools.ytdlp_managed = false)"
+            }
+        );
+        println!();
+        return;
+    }
+    if ytdlp::asset_name().is_none() {
+        println!(
+            "  - {}",
+            if kr {
+                "이 플랫폼용 공식 스탠드얼론 빌드가 없어 시스템 yt-dlp를 사용합니다"
+            } else {
+                "no official standalone build for this platform; the system yt-dlp is used"
+            }
+        );
+        println!();
+        return;
+    }
+
+    let state = ytdlp::load_state();
+    let channel = state.channel.unwrap_or_else(|| cfg.tools.channel());
+    match ytdlp::installed_managed_path() {
+        Some(path) => println!(
+            "  ✓ {} {} · {}",
+            channel.label(),
+            state.version.as_deref().unwrap_or("?"),
+            path.display()
+        ),
+        None => println!(
+            "  - {}",
+            if kr {
+                "설치되지 않음 — `ytt tools update`로 받거나, 앱 실행 시 자동으로 받습니다"
+            } else {
+                "not installed — fetch with `ytt tools update` (the app also fetches it automatically)"
+            }
+        ),
+    }
+    let checked = if kr { "마지막 확인" } else { "last check" };
+    match state.last_check_unix {
+        Some(at) => {
+            let age_h = ytdlp::now_unix().saturating_sub(at) / 3600;
+            println!("  - {checked}: {age_h}h");
+        }
+        None => println!("  - {checked}: {}", if kr { "없음" } else { "never" }),
+    }
+    println!();
 }
 
 /// A short, localized description of what a tool is for.

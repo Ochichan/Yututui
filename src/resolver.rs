@@ -37,6 +37,10 @@ pub enum ResolverEvent {
         video_id: VideoId,
         stream_url: StreamUrl,
     },
+    /// Resolution failed (yt-dlp error/timeout). Consumed by the playback self-heal's
+    /// retry (which must not hang on a silent failure); plain prefetch listeners
+    /// ignore it — a missed prefetch only means a slower skip later.
+    Failed { video_id: VideoId },
 }
 
 type EventSink = Arc<dyn Fn(ResolverEvent) + Send + Sync>;
@@ -103,7 +107,12 @@ where
                             stream_url: StreamUrl::from(stream_url),
                         });
                     }
-                    None => tracing::warn!(video_id = %video_id, "prefetch failed"),
+                    None => {
+                        tracing::warn!(video_id = %video_id, "prefetch failed");
+                        emit(ResolverEvent::Failed {
+                            video_id: video_id.clone(),
+                        });
+                    }
                 }
                 if let Ok(mut ids) = in_flight.lock() {
                     ids.remove(video_id.as_str());
@@ -116,7 +125,10 @@ where
 
 /// Resolve a watch URL to a direct audio stream URL via `yt-dlp -g`.
 async fn resolve_url(watch_url: &str, cookies: Option<&std::path::Path>) -> Option<String> {
-    resolve_url_with_program("yt-dlp", watch_url, cookies).await
+    // Looked up per invocation (not captured at actor spawn) so a managed yt-dlp
+    // installed mid-session — including by the playback self-heal — applies to the
+    // very next resolve.
+    resolve_url_with_program(&crate::tools::ytdlp_program(), watch_url, cookies).await
 }
 
 async fn resolve_url_with_program(

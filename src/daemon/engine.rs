@@ -95,6 +95,13 @@ pub enum EngineEffect {
         mode: StreamingMode,
         config: StreamingConfig,
     },
+    /// Playback self-heal: run a yt-dlp update check off-loop (extraction-shaped
+    /// failure on `video_id`). The serve loop answers with
+    /// [`DaemonEngine::handle_heal_result`].
+    YtdlpSelfHeal {
+        video_id: String,
+        tools: crate::config::ToolsConfig,
+    },
 }
 
 pub struct DaemonEngine {
@@ -113,6 +120,11 @@ pub struct DaemonEngine {
     consecutive_streaming_failures: u8,
     last_error: Option<String>,
     consecutive_play_errors: u8,
+    /// yt-dlp self-heal bookkeeping (mirrors the TUI's `YtdlpHeal`): the in-flight
+    /// healed track, the per-track one-shot guard, and the update-check cooldown.
+    heal_pending: Option<String>,
+    heal_attempted: HashSet<String>,
+    heal_last_check: Option<Instant>,
     last_mode: LastMode,
     inactive_normal_queue: Option<QueueSnapshot>,
     inactive_radio_queue: Option<QueueSnapshot>,
@@ -175,6 +187,13 @@ impl DaemonEngine {
             Arc::new(emit),
         );
 
+        // Resolve which yt-dlp/mpv this process runs (managed vs system vs override)
+        // before the first `ensure_player` — the mpv spawn pins ytdl_hook to it.
+        crate::tools::init(&engine.config.tools).await;
+        // Keep the managed copy fresh for long daemon runs. No-op emit: the daemon
+        // has no status line and `check_and_update` already logs its outcomes.
+        crate::tools::ytdlp::spawn_maintainer(engine.config.tools.clone(), |_| {});
+
         if options.resume {
             engine.restore_last_session();
             if engine.queue.current().is_some() {
@@ -230,6 +249,9 @@ impl DaemonEngine {
             consecutive_streaming_failures: 0,
             last_error: None,
             consecutive_play_errors: 0,
+            heal_pending: None,
+            heal_attempted: HashSet::new(),
+            heal_last_check: None,
             last_mode: LastMode::Normal,
             inactive_normal_queue: None,
             inactive_radio_queue: None,
@@ -1180,6 +1202,30 @@ impl DaemonEngine {
     }
 
     async fn handle_playback_error(&mut self, error: String) -> Vec<EngineEffect> {
+        // Self-heal (mirrors the TUI reducer): an extraction-shaped failure on a
+        // yt-dlp-resolved track is the stale-yt-dlp signature — update in the
+        // background and retry this track once. Unlike the TUI (whose session mpv
+        // keeps its spawn-time ytdl_path), the daemon can simply drop its player:
+        // the respawn re-pins ytdl_hook to the fresh binary.
+        if crate::tools::looks_like_extraction_failure(&error)
+            && self.heal_pending.is_none()
+            && let Some(song) = self.queue.current()
+            && song.prefetch_target().is_some()
+            && !self.heal_attempted.contains(&song.video_id)
+            && self
+                .heal_last_check
+                .is_none_or(|at| at.elapsed() >= crate::tools::HEAL_COOLDOWN)
+        {
+            let video_id = song.video_id.clone();
+            self.heal_attempted.insert(video_id.clone());
+            self.heal_last_check = Some(Instant::now());
+            self.heal_pending = Some(video_id.clone());
+            self.last_error = Some(error);
+            return vec![EngineEffect::YtdlpSelfHeal {
+                video_id,
+                tools: self.config.tools.clone(),
+            }];
+        }
         self.last_error = Some(error);
         self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
         if self.consecutive_play_errors <= MAX_CONSECUTIVE_PLAY_ERRORS
@@ -1195,6 +1241,34 @@ impl DaemonEngine {
             self.stop_playback();
             Vec::new()
         }
+    }
+
+    /// Finish a self-heal round: a new binary landed -> respawn mpv (fresh ytdl_hook
+    /// pin) and retry the same track once; otherwise fall back to the plain skip
+    /// path (the per-track `heal_attempted` guard keeps it from looping).
+    pub async fn handle_heal_result(
+        &mut self,
+        video_id: String,
+        updated: bool,
+    ) -> Vec<EngineEffect> {
+        if self.heal_pending.as_deref() != Some(video_id.as_str()) {
+            return Vec::new(); // stale: playback moved on
+        }
+        self.heal_pending = None;
+        let still_current = self.queue.current().is_some_and(|s| s.video_id == video_id);
+        if !still_current {
+            return Vec::new();
+        }
+        if updated {
+            self.player = None; // next ensure_player re-pins ytdl_hook
+            if let Err(e) = self.load_current().await {
+                self.last_error = Some(e.to_string());
+                self.stop_playback();
+            }
+            return Vec::new();
+        }
+        self.handle_playback_error("stream resolution failed (yt-dlp already current)".to_owned())
+            .await
     }
 
     async fn load_current(&mut self) -> Result<(), EngineError> {
@@ -1747,6 +1821,9 @@ mod tests {
             consecutive_streaming_failures: 0,
             last_error: None,
             consecutive_play_errors: 0,
+            heal_pending: None,
+            heal_attempted: HashSet::new(),
+            heal_last_check: None,
             last_mode: LastMode::Normal,
             inactive_normal_queue: None,
             inactive_radio_queue: None,
@@ -1870,5 +1947,96 @@ mod tests {
 
         assert_eq!(snapshot.cursor, 1);
         assert_eq!(snapshot.songs.len(), 2);
+    }
+
+    // yt-dlp self-heal parity with the TUI reducer (src/app/tests.rs). Single-track
+    // queues on the skip paths keep these hermetic: with no next track the engine
+    // stops instead of calling `load_current` (which would spawn a real mpv).
+
+    const EXTRACTION_ERR: &str = "mpv could not play this track (unrecognized file format)";
+
+    #[tokio::test]
+    async fn extraction_error_triggers_self_heal_effect() {
+        let mut engine = engine_with_queue(&["a", "b"]);
+        let effects = engine
+            .handle_player_event(PlayerEvent::Error(EXTRACTION_ERR.to_owned()))
+            .await;
+        assert!(
+            matches!(&effects[..], [EngineEffect::YtdlpSelfHeal { video_id, .. }] if video_id == "a"),
+            "runs an update check instead of skipping"
+        );
+        assert_eq!(
+            engine.queue.current().map(|s| s.video_id.as_str()),
+            Some("a"),
+            "cursor stays on the failed track while the heal runs"
+        );
+        assert_eq!(engine.consecutive_play_errors, 0, "heal is not a strike");
+    }
+
+    #[tokio::test]
+    async fn heal_without_update_falls_back_to_stop_on_single_track() {
+        let mut engine = engine_with_queue(&["a"]);
+        engine
+            .handle_player_event(PlayerEvent::Error(EXTRACTION_ERR.to_owned()))
+            .await;
+        let effects = engine.handle_heal_result("a".to_owned(), false).await;
+        assert!(effects.is_empty());
+        assert_eq!(
+            engine.consecutive_play_errors, 1,
+            "now it counts as a strike"
+        );
+        assert!(engine.last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn heal_runs_once_per_track_then_plain_error_path() {
+        let mut engine = engine_with_queue(&["a"]);
+        engine
+            .handle_player_event(PlayerEvent::Error(EXTRACTION_ERR.to_owned()))
+            .await;
+        engine.handle_heal_result("a".to_owned(), false).await;
+        // The same track failing again must not heal again (no retry loops).
+        let effects = engine
+            .handle_player_event(PlayerEvent::Error(EXTRACTION_ERR.to_owned()))
+            .await;
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, EngineEffect::YtdlpSelfHeal { .. })),
+            "one heal per track per session"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_heal_result_is_dropped() {
+        let mut engine = engine_with_queue(&["a", "b"]);
+        engine
+            .handle_player_event(PlayerEvent::Error(EXTRACTION_ERR.to_owned()))
+            .await;
+        // Playback moved on (remote Next) while the check ran.
+        engine.queue.next(false);
+        let effects = engine.handle_heal_result("a".to_owned(), true).await;
+        assert!(effects.is_empty(), "stale heal result is dropped");
+        assert_eq!(
+            engine.queue.current().map(|s| s.video_id.as_str()),
+            Some("b")
+        );
+    }
+
+    #[tokio::test]
+    async fn non_extraction_error_skips_without_healing() {
+        let mut engine = engine_with_queue(&["a"]);
+        let effects = engine
+            .handle_player_event(PlayerEvent::Error(
+                "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
+            ))
+            .await;
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, EngineEffect::YtdlpSelfHeal { .. })),
+            "network errors take the plain path"
+        );
+        assert_eq!(engine.consecutive_play_errors, 1);
     }
 }

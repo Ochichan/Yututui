@@ -111,7 +111,7 @@ async fn run_download(
     cookies: Option<&Path>,
     emit: &EventSink,
 ) -> Result<()> {
-    run_download_with_program("yt-dlp", song, dir, cookies, emit).await
+    run_download_with_program(&crate::tools::ytdlp_program(), song, dir, cookies, emit).await
 }
 
 async fn run_download_with_program(

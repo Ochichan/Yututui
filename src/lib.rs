@@ -41,6 +41,7 @@ pub mod spotify;
 pub mod station;
 pub mod streaming;
 pub mod theme;
+pub mod tools;
 pub mod transfer;
 pub mod tui;
 pub mod ui;

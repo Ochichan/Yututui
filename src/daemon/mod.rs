@@ -176,6 +176,12 @@ enum DaemonEvent {
     /// Scrobble-actor notices. The daemon has no UI and never runs the interactive auth
     /// flow (`ytt auth lastfm` does), so these only reach the log.
     Scrobble(crate::scrobble::ScrobbleEvent),
+    /// A playback-self-heal yt-dlp update check finished (see
+    /// [`engine::EngineEffect::YtdlpSelfHeal`]).
+    YtdlpHeal {
+        video_id: String,
+        updated: bool,
+    },
     Signal,
 }
 
@@ -270,7 +276,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let mut media_pump = tokio::time::interval(Duration::from_millis(100));
     media_pump.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    dispatch_engine_effects(&api, engine.initial_effects());
+    dispatch_engine_effects(&api, &event_tx, engine.initial_effects());
 
     loop {
         let event = tokio::select! {
@@ -287,7 +293,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => {
                 let (response, shutdown, effects) = engine.handle_remote(command).await;
                 let _ = reply.send(response);
-                dispatch_engine_effects(&api, effects);
+                dispatch_engine_effects(&api, &event_tx, effects);
                 if shutdown {
                     publisher.shutting_down();
                     tokio::time::sleep(SHUTDOWN_REPLY_GRACE).await;
@@ -306,20 +312,24 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             }
             DaemonEvent::Player(event) => {
                 let effects = engine.handle_player_event(event).await;
-                dispatch_engine_effects(&api, effects);
+                dispatch_engine_effects(&api, &event_tx, effects);
             }
             DaemonEvent::Api(event) => {
                 let effects = engine.handle_api_event(event).await;
-                dispatch_engine_effects(&api, effects);
+                dispatch_engine_effects(&api, &event_tx, effects);
             }
             DaemonEvent::Media(command) => {
                 let (shutdown, effects) = engine.handle_media(command).await;
-                dispatch_engine_effects(&api, effects);
+                dispatch_engine_effects(&api, &event_tx, effects);
                 if shutdown {
                     break;
                 }
             }
             DaemonEvent::MediaArt(ready) => engine.set_media_art(ready),
+            DaemonEvent::YtdlpHeal { video_id, updated } => {
+                let effects = engine.handle_heal_result(video_id, updated).await;
+                dispatch_engine_effects(&api, &event_tx, effects);
+            }
             DaemonEvent::Scrobble(event) => log_scrobble_event(event),
             DaemonEvent::Signal => break,
         }
@@ -489,7 +499,11 @@ fn daemon_capabilities() -> Vec<String> {
     ]
 }
 
-fn dispatch_engine_effects(api: &crate::api::ApiHandle, effects: Vec<engine::EngineEffect>) {
+fn dispatch_engine_effects(
+    api: &crate::api::ApiHandle,
+    event_tx: &mpsc::UnboundedSender<DaemonEvent>,
+    effects: Vec<engine::EngineEffect>,
+) {
     for effect in effects {
         match effect {
             engine::EngineEffect::StreamingFallback {
@@ -507,6 +521,19 @@ fn dispatch_engine_effects(api: &crate::api::ApiHandle, effects: Vec<engine::Eng
                 mode,
                 config,
             } => api.streaming_preflight(seed_video_id, picks, fallback, mode, config),
+            // Off-loop: the update check may download ~40 MiB. The verdict re-enters
+            // the serve loop as a DaemonEvent so the engine can retry or skip.
+            engine::EngineEffect::YtdlpSelfHeal { video_id, tools } => {
+                let tx = event_tx.clone();
+                tokio::spawn(async move {
+                    let outcome = crate::tools::ytdlp::check_and_update(&tools, &|_| {}).await;
+                    let updated = matches!(
+                        outcome,
+                        crate::tools::ytdlp::UpdateOutcome::Installed { .. }
+                    );
+                    let _ = tx.send(DaemonEvent::YtdlpHeal { video_id, updated });
+                });
+            }
         }
     }
 }

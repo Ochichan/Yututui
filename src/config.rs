@@ -349,6 +349,63 @@ pub struct SpotifyConfig {
 
 pub const SPOTIFY_REDIRECT_PORT_DEFAULT: u16 = 9271;
 
+/// External-tool management (the managed yt-dlp and binary-path overrides), grouped
+/// under one JSON key (`"tools"`), every field `#[serde(default)]` so older config
+/// files forward-migrate cleanly. See [`crate::tools`] for the selection policy this
+/// feeds.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ToolsConfig {
+    /// Let the app download/update its own yt-dlp standalone binary (the fix for
+    /// distro-frozen yt-dlp breaking playback). `None` → on. Users who refuse
+    /// networked executable downloads set `false` and own keeping yt-dlp current.
+    pub ytdlp_managed: Option<bool>,
+    /// Release channel for the managed binary. `None` → nightly (upstream's own
+    /// recommendation for YouTube users — extractor fixes land there within a day).
+    pub ytdlp_channel: Option<crate::tools::YtdlpChannel>,
+    /// Absolute path to a specific yt-dlp to use **unconditionally** (no version
+    /// compare). The `YTM_YTDLP` env var overrides even this.
+    pub ytdlp_path: Option<PathBuf>,
+    /// Absolute path to the mpv binary. `YTM_MPV` env var wins; `None` → `mpv` on
+    /// PATH. For old distros where a newer mpv lives outside PATH (flatpak, etc.).
+    pub mpv_path: Option<PathBuf>,
+}
+
+impl ToolsConfig {
+    /// Whether the managed yt-dlp is enabled (default on).
+    pub fn managed_enabled(&self) -> bool {
+        self.ytdlp_managed.unwrap_or(true)
+    }
+
+    /// The managed binary's release channel (default nightly).
+    pub fn channel(&self) -> crate::tools::YtdlpChannel {
+        self.ytdlp_channel.unwrap_or_default()
+    }
+
+    /// The unconditional yt-dlp override: `YTM_YTDLP` env var, else `ytdlp_path`.
+    pub fn ytdlp_override(&self) -> Option<PathBuf> {
+        if let Ok(env) = std::env::var("YTM_YTDLP")
+            && !env.trim().is_empty()
+        {
+            return Some(PathBuf::from(env.trim()));
+        }
+        self.ytdlp_path.clone()
+    }
+
+    /// The mpv program to spawn: `YTM_MPV` env var, else `mpv_path`, else `"mpv"`.
+    pub fn mpv_program(&self) -> String {
+        if let Ok(env) = std::env::var("YTM_MPV")
+            && !env.trim().is_empty()
+        {
+            return env.trim().to_owned();
+        }
+        match &self.mpv_path {
+            Some(p) => p.to_string_lossy().into_owned(),
+            None => "mpv".to_owned(),
+        }
+    }
+}
+
 // No `Debug`: this holds secrets (`cookie` raw header, `gemini_api_key`, the scrobbling
 // session key/token), so a stray `{:?}` must not be able to leak them — same reason
 // `GeminiClient` omits it.
@@ -476,6 +533,10 @@ pub struct Config {
     // Spotify transfer ------------------------------------------------------------
     /// Spotify Web API app registration for playlist import/export. See [`SpotifyConfig`].
     pub spotify: SpotifyConfig,
+
+    // External tools ----------------------------------------------------------------
+    /// Managed yt-dlp + binary-path overrides. See [`ToolsConfig`] and [`crate::tools`].
+    pub tools: ToolsConfig,
 }
 
 #[derive(Clone)]
@@ -540,6 +601,7 @@ impl Default for Config {
             media_controls: None,
             scrobble: ScrobbleConfig::default(),
             spotify: SpotifyConfig::default(),
+            tools: ToolsConfig::default(),
         }
     }
 }
@@ -987,11 +1049,15 @@ mod tests {
         // longer understands. Under the old strict load this reset the ENTIRE file (and
         // overwrote it) — the "settings reset after every install" bug. Now only the drifted
         // field falls back to default and every sibling survives.
-        let mut original = Config::default();
-        original.volume = 42;
-        original.cookie = Some("SID=keepme".to_owned());
-        original.gemini_api_key = Some("AIzaKeep".to_owned());
-        original.theme.set_preset(crate::theme::ThemePreset::Midnight);
+        let mut original = Config {
+            volume: 42,
+            cookie: Some("SID=keepme".to_owned()),
+            gemini_api_key: Some("AIzaKeep".to_owned()),
+            ..Config::default()
+        };
+        original
+            .theme
+            .set_preset(crate::theme::ThemePreset::Midnight);
 
         let mut value = serde_json::to_value(&original).unwrap();
         value["video_layout"] = serde_json::Value::String("hologram".into());
@@ -1091,6 +1157,12 @@ mod tests {
                 redirect_port: Some(9333),
                 market: Some("KR".to_owned()),
             },
+            tools: ToolsConfig {
+                ytdlp_managed: Some(false),
+                ytdlp_channel: Some(crate::tools::YtdlpChannel::Stable),
+                ytdlp_path: Some(PathBuf::from("/opt/yt-dlp")),
+                mpv_path: Some(PathBuf::from("/opt/mpv")),
+            },
         };
         let s = serde_json::to_string(&c).unwrap();
         let back: Config = serde_json::from_str(&s).unwrap();
@@ -1133,6 +1205,13 @@ mod tests {
         assert!(back.scrobble.lastfm.is_active());
         assert_eq!(back.spotify.client_id.as_deref(), Some("spotify-app-id"));
         assert_eq!(back.effective_spotify_port(), 9333);
+        assert_eq!(back.tools.ytdlp_managed, Some(false));
+        assert_eq!(
+            back.tools.ytdlp_channel,
+            Some(crate::tools::YtdlpChannel::Stable)
+        );
+        assert_eq!(back.tools.ytdlp_path, Some(PathBuf::from("/opt/yt-dlp")));
+        assert_eq!(back.tools.mpv_path, Some(PathBuf::from("/opt/mpv")));
         assert_eq!(back.theme.preset, "midnight");
         assert_eq!(
             back.theme
@@ -1361,6 +1440,41 @@ mod tests {
     fn missing_fields_use_defaults() {
         let back: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(back.volume, 100);
+    }
+
+    #[test]
+    fn tools_config_defaults_and_overrides() {
+        // A config written before the tools section existed forward-migrates to the
+        // managed-on / nightly defaults.
+        let back: Config = serde_json::from_str("{}").unwrap();
+        assert!(back.tools.managed_enabled());
+        assert_eq!(back.tools.channel(), crate::tools::YtdlpChannel::Nightly);
+        assert_eq!(back.tools.mpv_program(), "mpv");
+
+        let off = ToolsConfig {
+            ytdlp_managed: Some(false),
+            ..Default::default()
+        };
+        assert!(!off.managed_enabled());
+
+        let pinned = ToolsConfig {
+            ytdlp_path: Some(PathBuf::from("/pin/yt-dlp")),
+            mpv_path: Some(PathBuf::from("/pin/mpv")),
+            ..Default::default()
+        };
+        // SAFETY: single-threaded test; set+unset around the calls.
+        unsafe { std::env::remove_var("YTM_YTDLP") };
+        unsafe { std::env::remove_var("YTM_MPV") };
+        assert_eq!(pinned.ytdlp_override(), Some(PathBuf::from("/pin/yt-dlp")));
+        assert_eq!(pinned.mpv_program(), "/pin/mpv");
+
+        // Env vars beat the config paths.
+        unsafe { std::env::set_var("YTM_YTDLP", "/env/yt-dlp") };
+        unsafe { std::env::set_var("YTM_MPV", "/env/mpv") };
+        assert_eq!(pinned.ytdlp_override(), Some(PathBuf::from("/env/yt-dlp")));
+        assert_eq!(pinned.mpv_program(), "/env/mpv");
+        unsafe { std::env::remove_var("YTM_YTDLP") };
+        unsafe { std::env::remove_var("YTM_MPV") };
     }
 
     #[test]
