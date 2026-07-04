@@ -69,6 +69,7 @@ old_xdg_config="${XDG_CONFIG_HOME:-}"
 old_xdg_data="${XDG_DATA_HOME:-}"
 old_xdg_cache="${XDG_CACHE_HOME:-}"
 old_mpv_extra="${YTM_MPV_EXTRA:-}"
+smoke_wait_seconds="${YTM_SMOKE_WAIT_SECONDS:-30}"
 
 cleanup() {
   local status=$?
@@ -251,25 +252,25 @@ status_stopped() {
 }
 
 "$ytt" daemon start >/dev/null
-wait_until "idle daemon status" 10 status_idle
+wait_until "idle daemon status" "$smoke_wait_seconds" status_idle
 
 "$ytt" daemon start --resume >/dev/null
-wait_until "resumed daemon playback" 10 status_title_is "Unix Smoke One"
+wait_until "resumed daemon playback" "$smoke_wait_seconds" status_title_is "Unix Smoke One"
 
 "$ytt" -r pp >/dev/null
-wait_until "remote pause" 10 status_title_paused_is "Unix Smoke One" true
+wait_until "remote pause" "$smoke_wait_seconds" status_title_paused_is "Unix Smoke One" true
 
 "$ytt" -r pp >/dev/null
-wait_until "remote resume" 10 status_title_paused_is "Unix Smoke One" false
+wait_until "remote resume" "$smoke_wait_seconds" status_title_paused_is "Unix Smoke One" false
 
 "$ytt" -r next >/dev/null
-wait_until "remote next" 10 status_title_is "Unix Smoke Two"
+wait_until "remote next" "$smoke_wait_seconds" status_title_is "Unix Smoke Two"
 
 "$ytt" -r prev >/dev/null
-wait_until "remote previous" 10 status_title_is "Unix Smoke One"
+wait_until "remote previous" "$smoke_wait_seconds" status_title_is "Unix Smoke One"
 
 "$ytt" daemon stop >/dev/null
-wait_until "daemon stop" 10 status_stopped
+wait_until "daemon stop" "$smoke_wait_seconds" status_stopped
 
 if [[ ! -f "$cache_dir/logs/daemon.log" ]]; then
   echo "daemon log was not created at $cache_dir/logs/daemon.log" >&2

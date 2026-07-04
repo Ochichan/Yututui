@@ -21,7 +21,7 @@ mod parity_tests;
 const EXIT_OK: i32 = 0;
 const EXIT_TRANSPORT: i32 = 1;
 const EXIT_USAGE: i32 = 2;
-const READY_TIMEOUT: Duration = Duration::from_secs(5);
+const READY_TIMEOUT: Duration = Duration::from_secs(20);
 const SHUTDOWN_REPLY_GRACE: Duration = Duration::from_millis(50);
 
 const USAGE: &str = "\

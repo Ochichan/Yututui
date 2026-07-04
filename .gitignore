@@ -19,6 +19,28 @@ cookies.txt
 .DS_Store
 .claude/
 
+# Local one-off helper scripts
+/local-*.bat
+/local-*.cmd
+/local-*.ps1
+/local-*.sh
+/scratch-*.bat
+/scratch-*.cmd
+/scratch-*.ps1
+/scratch-*.sh
+/tmp-*.bat
+/tmp-*.cmd
+/tmp-*.ps1
+/tmp-*.sh
+/adhoc-*.bat
+/adhoc-*.cmd
+/adhoc-*.ps1
+/adhoc-*.sh
+/oneoff-*.bat
+/oneoff-*.cmd
+/oneoff-*.ps1
+/oneoff-*.sh
+
 # Local docs notes
 /docs/daemon-mode-completion-plan.md
 /docs/desktop-tray-companion-plan.md
