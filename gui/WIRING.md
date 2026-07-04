@@ -27,11 +27,12 @@ the right shapes today.
 `gui/src/lib/wiring/registry.ts` is the **single source of truth** for every feature whose
 UI is finished but whose wire is not. Current entries (delete each as you wire it):
 
-`search.run` · `library.fetch` · `library.playlists` · `downloads.manage` ·
-`queue.reorder` · `settings.apply` · `settings.hotkeys` · `settings.theme-editor` ·
-`settings.animations` · `settings.accounts` · `ai.chat` · `ai.whygem` ·
-`transfer.wizard` · `radio.mode` · `help.keymap` · `lyrics.live` · `artwork.live` ·
-`i18n.catalog`
+`library.playlists` · `queue.reorder` · `settings.hotkeys` · `settings.theme-editor` ·
+`settings.accounts` · `ai.whygem` · `transfer.wizard` · `help.keymap` · `lyrics.live` ·
+`artwork.live` · `i18n.catalog`
+
+(`search.run`, `library.fetch`, `ai.chat`, `downloads.manage`, `radio.mode`,
+`settings.apply`, and `settings.animations` are now wired — deleted from the registry.)
 
 Each entry carries milestone, spec section, protocol surface, frontend seam, and notes.
 In the running app, every pending surface shows either a **WireTag** chip (⚡ M2 · wiring
@@ -47,8 +48,13 @@ registry by `agentBrief()`, so it cannot drift from this file or the spec.
 - **Keyboard**: `lib/keyboard/provisional.ts` is a hardcoded shortcut table (executed by
   `App.svelte`, displayed by Help and Settings→Hotkeys — one source, three views). The M3
   dispatcher replaces all of it.
-- **Settings tab values**: representative defaults, flagged by the ribbon in
-  `SettingsView.svelte`. Swap to the pushed `settings` model at M3.
+- **Settings tab values**: General / Playback / DJ Gem now bind the live `settings` read
+  model via `stores/settings.svelte.ts` (model + pending overlay + dirty, docs/gui/05 §5.2);
+  the demo core speaks the PROVISIONAL `settings_snapshot` + `apply {group,field,value}`
+  shape (reconcile with ts-rs `SettingsModelV8`/`SettingChangeV8` §11.6/§13.3 when
+  `settings-v8` lands). The Graphics tab's **Animations** block is now wired (master/fps/
+  pause + the 25 effect flags bind `settings.animations`; runtime in `stores/anim.svelte.ts`);
+  theme-editor, Hotkeys, and Accounts still render defaults under their own wires.
 - **Local-theme precedence**: a chosen local skin currently wins over the boot theme;
   reconcile with core-side theme state when `settings.theme-editor` lands (promote the
   local skins into core presets, or keep them as GUI-side overlays — decide then).

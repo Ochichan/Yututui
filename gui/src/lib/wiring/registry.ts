@@ -19,10 +19,8 @@
 export type FeatureId =
   | 'library.playlists'
   | 'queue.reorder'
-  | 'settings.apply'
   | 'settings.hotkeys'
   | 'settings.theme-editor'
-  | 'settings.animations'
   | 'settings.accounts'
   | 'ai.whygem'
   | 'transfer.wizard'
@@ -67,17 +65,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
     notes:
       'Pointer events, NOT HTML5 DnD (unreliable in WKWebView). Auto-scroll during drag needs care.',
   },
-  'settings.apply': {
-    title: 'Settings read model + apply',
-    milestone: 'M3',
-    brief: 'docs/gui/07-feature-briefs.md §6–§7',
-    protocol:
-      'cmd apply { change: SettingChangeV8 } (grouped: playback/eq/streaming/ui/search/storage/scrobble); `settings` topic read model push',
-    seam: 'create gui/src/lib/stores/settings.svelte.ts (read model + pending overlay + dirty tracking, docs/gui/05 §5.2); replace the wip() seams across gui/src/views/settings/*.svelte',
-    capability: 'settings-v8',
-    notes:
-      'The tabs currently render TUI defaults so the forms are visually complete — swap them to the pushed model, keep the pending-overlay merge rule unit-tested.',
-  },
   'settings.hotkeys': {
     title: 'Hotkeys (keymap model + capture + dispatcher)',
     milestone: 'M3',
@@ -99,17 +86,6 @@ export const WIRING: Record<FeatureId, WiringSpec> = {
     capability: 'settings-v8',
     notes:
       'Apply optimistically to the CSS var, reconcile on push (<100 ms target). The swatch rows already read live values from the CSS custom properties.',
-  },
-  'settings.animations': {
-    title: 'Animation system (25 effects, two tickers)',
-    milestone: 'M3',
-    brief: 'docs/gui/06-design-system.md §5',
-    protocol:
-      'cmd apply { animations: Master/Fps/PauseUnfocused/Toggle }; animations block of the `settings` push',
-    seam: 'create gui/src/lib/stores/anim.svelte.ts (shared rAF ticker, self-suspend contract); replace the wip() seams in GraphicsTab.svelte',
-    capability: 'settings-v8',
-    notes:
-      'master off ⇒ cancelAnimationFrame outright, not a gated no-op. prefers-reduced-motion trumps config. Web equivalents land incrementally (most M5).',
   },
   'settings.accounts': {
     title: 'Accounts (Last.fm / ListenBrainz / Spotify)',

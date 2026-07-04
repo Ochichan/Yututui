@@ -18,6 +18,8 @@ import { SearchStore } from './lib/stores/search.svelte';
 import { LibraryStore } from './lib/stores/library.svelte';
 import { AiStore } from './lib/stores/ai.svelte';
 import { DownloadsStore } from './lib/stores/downloads.svelte';
+import { SettingsStore } from './lib/stores/settings.svelte';
+import { AnimStore } from './lib/stores/anim.svelte';
 import { LyricsStore } from './lib/stores/lyrics.svelte';
 import { ToastStore } from './lib/stores/toasts.svelte';
 import { WipStore } from './lib/wiring/wip.svelte';
@@ -51,6 +53,8 @@ const ctx: AppCtx = {
   library: new LibraryStore(client),
   ai: new AiStore(client),
   downloads: new DownloadsStore(client),
+  settings: new SettingsStore(client),
+  anim: new AnimStore(client),
   lyrics: new LyricsStore(client),
   toasts,
   wip: new WipStore(connection),
@@ -58,7 +62,17 @@ const ctx: AppCtx = {
 
 // One subscription for the whole window; the gateway aggregates across windows. Topics
 // without a live core wire yet simply never push (see gui/WIRING.md).
-client.sub(['player', 'queue', 'lyrics', 'search', 'library', 'ai', 'downloads', 'system']);
+client.sub([
+  'player',
+  'queue',
+  'lyrics',
+  'search',
+  'library',
+  'ai',
+  'downloads',
+  'settings',
+  'system',
+]);
 
 const app = mount(App, {
   target: document.getElementById('app')!,

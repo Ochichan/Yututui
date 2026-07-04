@@ -1,10 +1,8 @@
 <script lang="ts">
-  // Settings host (docs/gui/07 §6–§11): sub-tab bar + the six tabs. The ribbon states the
-  // honest ground truth — forms render representative defaults until settings-v8 pushes
-  // the live model.
+  // Settings host (docs/gui/07 §6–§11): sub-tab bar + the six tabs. General/Playback/DJ Gem
+  // bind the live `settings` read model; Hotkeys/Graphics/Accounts stay on their own wires.
   import type { AppCtx } from '../../lib/ctx';
   import type { SettingsTab } from '../../lib/stores/ui.svelte';
-  import PendingSurface from '../../lib/components/PendingSurface.svelte';
   import GeneralTab from './GeneralTab.svelte';
   import PlaybackTab from './PlaybackTab.svelte';
   import HotkeysTab from './HotkeysTab.svelte';
@@ -17,7 +15,7 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { ui, wip } = ctx;
+  const { ui } = ctx;
 
   const TABS: Array<{ id: SettingsTab; label: string }> = [
     { id: 'general', label: 'General' },
@@ -43,15 +41,6 @@
   </div>
 
   <div class="pane">
-    <div class="ribbon-slot">
-      <PendingSurface
-        id="settings.apply"
-        {wip}
-        slim
-        glyph="🔌"
-        body="Values below are representative defaults — the live model + apply wire land with settings-v8."
-      />
-    </div>
     {#if ui.settingsTab === 'general'}
       <GeneralTab {ctx} />
     {:else if ui.settingsTab === 'playback'}
@@ -105,8 +94,5 @@
     min-width: 0;
     overflow-y: auto;
     padding: var(--space-6) var(--space-8) var(--space-8) var(--space-4);
-  }
-  .ribbon-slot {
-    margin-bottom: var(--space-4);
   }
 </style>

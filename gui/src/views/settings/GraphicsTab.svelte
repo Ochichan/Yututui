@@ -6,12 +6,14 @@
   //
   // The LOCAL themes section is fully functional (frontend-owned skins, applied live and
   // persisted); the core's 13 presets and per-role editing stay behind the patch bay.
+  // The Animations block is now wired: it binds the live `settings` animations model and
+  // sends `apply { group: 'animations' }` (see stores/anim.svelte.ts for the runtime).
   //
   // TODO(wire:M3/settings.theme-editor): Apply(Theme(...)) with optimistic CSS-var apply.
-  // TODO(wire:M3/settings.animations): Apply(Animations(...)) + the anim store/ticker.
   import type { AppCtx } from '../../lib/ctx';
   import { LOCAL_THEMES } from '../../lib/theme/local';
   import { ROLES } from '../../lib/theme/roles';
+  import { FPS_MIN, FPS_MAX, FPS_DEFAULT, type EffectId } from '../../lib/stores/anim.svelte';
   import SettingSection from './SettingSection.svelte';
   import SettingRow from './SettingRow.svelte';
   import Toggle from '../../lib/components/Toggle.svelte';
@@ -21,10 +23,10 @@
   }
   const { ctx }: Props = $props();
   // svelte-ignore state_referenced_locally -- ctx is an immutable bundle; the stores inside are the reactive things
-  const { wip, theme, toasts } = ctx;
+  const { wip, theme, toasts, settings } = ctx;
 
   const themeStub = () => wip.gate('settings.theme-editor');
-  const animStub = () => wip.gate('settings.animations');
+  const anim = $derived(settings.animations);
 
   const PRESETS = [
     'Default',
@@ -49,7 +51,7 @@
     return getComputedStyle(document.documentElement).getPropertyValue(`--role-${role}`).trim();
   }
 
-  const ANIM_GROUPS: Array<{ title: string; tui?: boolean; effects: string[] }> = [
+  const ANIM_GROUPS: Array<{ title: string; tui?: boolean; effects: EffectId[] }> = [
     {
       title: 'Element',
       effects: ['title', 'heart', 'seekbar', 'spinner', 'eq_bars', 'controls', 'border'],
@@ -150,22 +152,44 @@
 
 <SettingSection title="Animations">
   <SettingRow label="Master" hint="Off cancels the animation loop outright — zero overhead">
-    <Toggle checked={true} onchange={animStub} />
+    <Toggle
+      checked={anim?.master ?? false}
+      onchange={(v) => settings.apply('animations', 'master', v)}
+    />
   </SettingRow>
+  {@const fps = anim?.fps ?? FPS_DEFAULT}
   <SettingRow label="FPS" hint="5–60; one-shots run full rate, canvas 20, ambient 12">
-    <input class="range" type="range" min="5" max="60" step="5" value={30} onchange={animStub} />
-    <span class="val mono">30</span>
+    <input
+      class="range"
+      type="range"
+      min={FPS_MIN}
+      max={FPS_MAX}
+      step="5"
+      value={fps}
+      disabled={!(anim?.master ?? false)}
+      onchange={(e) => settings.apply('animations', 'fps', e.currentTarget.valueAsNumber)}
+    />
+    <span class="val mono">{fps}</span>
   </SettingRow>
   <SettingRow label="Pause when unfocused">
-    <Toggle checked={true} onchange={animStub} />
+    <Toggle
+      checked={anim?.pause_unfocused ?? true}
+      onchange={(v) => settings.apply('animations', 'pause_unfocused', v)}
+    />
   </SettingRow>
-  <div class="anim-grid">
+  <div class="anim-grid" class:dim={!(anim?.master ?? false)}>
     {#each ANIM_GROUPS as g (g.title)}
       <div class="ag">
         <h4>{g.title}</h4>
         {#each g.effects as fx (fx)}
-          <button class="fx" class:tui={TUI_ONLY.has(fx)} onclick={animStub}>
-            <span class="dot on"></span>
+          {@const on = anim?.[fx] ?? false}
+          <button
+            class="fx"
+            class:tui={TUI_ONLY.has(fx)}
+            aria-pressed={on}
+            onclick={() => settings.apply('animations', fx, !on)}
+          >
+            <span class="dot" class:on></span>
             <span class="mono">{fx}</span>
             {#if TUI_ONLY.has(fx)}<span class="tui-tag">(TUI)</span>{/if}
           </button>
@@ -279,6 +303,11 @@
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: var(--space-4);
     padding: var(--space-4);
+    transition: opacity 140ms ease;
+  }
+  /* Master off: the per-effect flags still edit, but read as inert (nothing animates). */
+  .anim-grid.dim {
+    opacity: 0.5;
   }
   .ag h4 {
     margin: 0 0 var(--space-2);

@@ -16,6 +16,8 @@ import type { TrackModel } from '../../generated/protocol/TrackModel';
 import type { Repeat } from '../../generated/protocol/Repeat';
 import type { LyricLine } from '../stores/lyrics.svelte';
 import type { DownloadStatus } from '../stores/downloads.svelte';
+import type { SettingGroup, SettingsModelV8 } from '../stores/settings.svelte';
+import { defaultAnimations } from '../stores/anim.svelte';
 
 // ── the demo catalog (original fictional tracks — the cat is the brand, =^..^=) ──────
 
@@ -90,6 +92,60 @@ const LYRICS: Record<string, LyricLine[]> = {
   ],
 };
 
+// ── settings fixture (docs/gui/07 §6–§10) ───────────────────────────────────────────
+
+type Bands = SettingsModelV8['eq']['bands'];
+
+// Illustrative preset curves so the settings EQ bars actually move when the user switches
+// presets (the real core recomputes these; the demo just needs to look alive).
+const EQ_PRESETS: Record<string, Bands> = {
+  flat: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  bass: [6, 5, 4, 2, 0, 0, 0, 0, 0, 0],
+  vocal: [0, 0, 0, 2, 4, 4, 2, 0, 0, 0],
+  rock: [4, 3, 0, -2, -1, 1, 3, 4, 3, 2],
+};
+
+function defaultSettings(): SettingsModelV8 {
+  return {
+    rev: 1,
+    playback: {
+      speed_tenths: 10,
+      seek_seconds: 5,
+      gapless: true,
+      enqueue_next: false,
+      autoplay_on_start: false,
+      mouse_wheel_volume: true,
+      media_controls: true,
+      volume: 72,
+      shuffle: false,
+      repeat: 'off',
+    },
+    eq: { preset: 'flat', bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], normalize: false },
+    streaming: {
+      ai_enabled: false,
+      gemini_model: 'gemini-2.5-flash',
+      autoplay: false,
+      mode: 'balanced',
+      has_gemini_key: false,
+    },
+    search: {
+      default_source: 'youtube',
+      soundcloud_enabled: true,
+      audius_enabled: true,
+      jamendo_enabled: false,
+      internet_archive_enabled: true,
+      radio_browser_enabled: true,
+      audius_app_name: 'ytm-tui',
+      jamendo_client_id: null,
+    },
+    ui: { language: 'en', mouse: true, album_art: true, romanized_titles: false },
+    storage: { download_dir: '~/Music/ytm-tui', cookies_file: null, download_concurrency: 3 },
+    // Core defaults: every effect off, pause-unfocused on, 30 fps (the generic setter mutates
+    // this block on `apply { group: 'animations' }`, like every other group).
+    animations: defaultAnimations(),
+  };
+}
+
 // ── the core ─────────────────────────────────────────────────────────────────────────
 
 export class DemoCoreTransport implements Transport {
@@ -135,6 +191,10 @@ export class DemoCoreTransport implements Transport {
   #downloads: DownloadStatus[] = [];
   // Music ⇄ Radio mode, flipped by set_setting { radio_mode }.
   #radioMode = false;
+  // The `settings` topic read model (docs/gui/07 §6–§10), mutated by `apply`.
+  #settings: SettingsModelV8 = defaultSettings();
+  // Fake romanization cache size, drained by clear_romanization_cache.
+  #romanizationCache = 12;
 
   onMessage(cb: (env: InEnvelope) => void): void {
     this.#cb = cb;
@@ -164,6 +224,10 @@ export class DemoCoreTransport implements Transport {
       case 'req':
         if (env.name === 'ping') {
           this.#emit({ v: 1, id: env.id, kind: 'res', payload: 'pong (demo)' });
+        } else if (env.name === 'clear_romanization_cache') {
+          const cleared = this.#romanizationCache;
+          this.#romanizationCache = 0;
+          this.#emit({ v: 1, id: env.id, kind: 'res', payload: { cleared } });
         } else if (env.name === 'fetch_library_page') {
           const p = (env.payload ?? {}) as Record<string, unknown>;
           this.#emit({
@@ -187,6 +251,7 @@ export class DemoCoreTransport implements Transport {
         if (topics.includes('player')) this.#pushPlayer();
         if (topics.includes('queue')) this.#pushQueue();
         if (topics.includes('lyrics')) this.#pushLyrics();
+        if (topics.includes('settings')) this.#pushSettings();
         return;
       }
       case 'cmd':
@@ -296,6 +361,26 @@ export class DemoCoreTransport implements Transport {
         }
         break; // trailing pushPlayer reflects radio_mode
       }
+      case 'apply': {
+        const change = (p.change ?? {}) as Record<string, unknown>;
+        this.#applySetting(
+          String(change.group ?? '') as SettingGroup,
+          String(change.field ?? ''),
+          change.value,
+        );
+        return;
+      }
+      case 'set_gemini_key':
+        // Write-only: the key never round-trips; only presence flips.
+        this.#settings.streaming.has_gemini_key = String(p.key ?? '').length > 0;
+        this.#settings.rev++;
+        this.#pushSettings();
+        return;
+      case 'reset_all_settings':
+        this.#settings = defaultSettings();
+        this.#settings.rev++;
+        this.#pushSettings();
+        return;
       case 'download':
         this.#download(String(p.video_id ?? ''), String(p.title ?? ''));
         return;
@@ -604,6 +689,37 @@ export class DemoCoreTransport implements Transport {
       topic: 'downloads',
       // PROVISIONAL shape — see DownloadsSnapshot in stores/downloads.svelte.ts.
       payload: { kind: 'downloads_snapshot', items: this.#downloads },
+    });
+  }
+
+  // ── settings ─────────────────────────────────────────────────────────────────────────
+
+  /** Uniform provisional mutation: set model[group][field], then push. Cf. §13.3. */
+  #applySetting(group: SettingGroup, field: string, value: unknown): void {
+    const block = (this.#settings as unknown as Record<string, Record<string, unknown>>)[group];
+    if (!block || typeof block !== 'object') return;
+    block[field] = value;
+    // EQ preset and manual band edits keep each other honest, like the real af chain.
+    if (group === 'eq' && field === 'preset') {
+      this.#settings.eq.bands = EQ_PRESETS[String(value)] ?? this.#settings.eq.bands;
+    } else if (group === 'eq' && field === 'bands') {
+      this.#settings.eq.preset = 'custom';
+    }
+    this.#settings.rev++;
+    this.#pushSettings();
+  }
+
+  #pushSettings(): void {
+    this.#emit({
+      v: 1,
+      kind: 'event',
+      topic: 'settings',
+      // PROVISIONAL shape — see SettingsSnapshot in stores/settings.svelte.ts. A fresh clone
+      // per push so the store's authoritative model never aliases the demo's mutable state.
+      payload: {
+        kind: 'settings_snapshot',
+        model: JSON.parse(JSON.stringify(this.#settings)) as SettingsModelV8,
+      },
     });
   }
 
