@@ -33,9 +33,25 @@
 curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash
 ```
 
-> 직접 설치 스크립트/소스 빌드는 `ytt`를 설치하고, macOS와 Windows 릴리스/소스 설치에서는 `ytt-desktop`도 옆에 같이 둡니다. 설치 후 `ytt doctor`로 뭐가 빠졌는지 확인하세요.
+Windows 직접 설치:
+
+```powershell
+irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
+```
+
+**Tray 보조 앱:** macOS와 Windows 릴리스에는 메뉴바/알림 영역 미니 플레이어인 `ytt-desktop`이 들어갑니다.
+
+| 채널 | 설치되는 것 | Tray 시작 |
+| --- | --- | --- |
+| macOS Homebrew | `ytt`, `ytt-desktop`, 런타임 도구 | `ytt-desktop` |
+| Windows Scoop | `ytt.exe`, `ytt-desktop.exe`, 런타임 도구, 시작 메뉴 바로가기 | `ytt-desktop` 또는 **YtmTui Tray** |
+| 직접 설치 / 소스 빌드 스크립트 | `ytt`; macOS/Windows는 `ytt-desktop`도 함께 설치 | `ytt-desktop` |
+| Linux | MPRIS 미디어 연동이 들어간 `ytt` | 별도 tray 앱 없음 |
+
+로그인 시 자동 실행은 선택 사항입니다: `ytt-desktop --install-startup`.
+
+> 직접 설치나 소스 빌드 후에는 `ytt doctor`로 뭐가 빠졌는지 확인하세요.
 > **yt-dlp는 스스로 최신을 유지합니다.** YouTube는 매주 바뀌기 때문에 `ytt`는 자체 yt-dlp를 직접 관리하며(github.com에서 SHA-256 검증), {관리형, 시스템} 중 더 최신 쪽을 사용합니다. `ytt tools status` / `ytt tools update`, 끄려면 `config.json`에 `"tools": {"ytdlp_managed": false}`.
-> Scoop(Windows), brew(macOS), 직접 릴리스 설치에는 **YtmTui Tray** 미니 플레이어도 함께 들어갑니다. 로그인 시 자동 실행은 선택 사항: `ytt-desktop --install-startup`.
 
 ## 빠른 시작
 

@@ -33,9 +33,25 @@ Each command installs `ytt` **and** its helpers (mpv, yt-dlp, ffmpeg) in one go.
 curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash
 ```
 
-> Direct installer/source-build paths install `ytt`; macOS and Windows release/source installs also place `ytt-desktop` beside it. Run `ytt doctor` afterward to see what's missing.
+Windows direct installer:
+
+```powershell
+irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
+```
+
+**Tray companion:** macOS and Windows releases include `ytt-desktop`, the menu-bar / notification-area mini player.
+
+| Channel | What gets installed | How to start the tray |
+| --- | --- | --- |
+| macOS Homebrew | `ytt`, `ytt-desktop`, runtime tools | `ytt-desktop` |
+| Windows Scoop | `ytt.exe`, `ytt-desktop.exe`, runtime tools, Start Menu shortcut | `ytt-desktop` or **YtmTui Tray** |
+| Direct installers / source build scripts | `ytt`; macOS/Windows also get `ytt-desktop` | `ytt-desktop` |
+| Linux | `ytt` with MPRIS media integration | no separate tray app |
+
+Start-at-login is opt-in: `ytt-desktop --install-startup`.
+
+> After a direct installer or source build, run `ytt doctor` to see what's missing.
 > **yt-dlp keeps itself fresh.** YouTube changes weekly, so `ytt` maintains its own current yt-dlp (SHA-256-verified from github.com) and uses whichever of {managed, system} is newer. `ytt tools status` / `ytt tools update`; opt out with `"tools": {"ytdlp_managed": false}` in `config.json`.
-> Scoop (Windows), brew (macOS), and the direct release installers also ship the **YtmTui Tray** mini player. Start-at-login is opt-in: `ytt-desktop --install-startup`.
 
 ## Quick start
 

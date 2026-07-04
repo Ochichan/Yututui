@@ -33,9 +33,25 @@
 curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash
 ```
 
-> 直接インストーラ/ソースビルドは `ytt` を入れます。macOS と Windows のリリース/ソースインストールでは `ytt-desktop` も隣に入ります。インストール後に `ytt doctor` で何が足りないか確認してください。
+Windows 直接インストーラ:
+
+```powershell
+irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
+```
+
+**Tray 補助アプリ:** macOS と Windows のリリースには、メニューバー / 通知領域のミニプレイヤー `ytt-desktop` が含まれます。
+
+| チャンネル | インストールされるもの | Tray の起動 |
+| --- | --- | --- |
+| macOS Homebrew | `ytt`, `ytt-desktop`, ランタイムツール | `ytt-desktop` |
+| Windows Scoop | `ytt.exe`, `ytt-desktop.exe`, ランタイムツール, スタートメニューショートカット | `ytt-desktop` または **YtmTui Tray** |
+| 直接インストーラ / ソースビルドスクリプト | `ytt`; macOS/Windows では `ytt-desktop` も同梱 | `ytt-desktop` |
+| Linux | MPRIS メディア連携入りの `ytt` | 別の tray アプリはなし |
+
+ログイン時の自動起動は任意です: `ytt-desktop --install-startup`。
+
+> 直接インストーラやソースビルドの後は、`ytt doctor` で何が足りないか確認してください。
 > **yt-dlp は自動で最新に保たれます。** YouTube は毎週変わるため、`ytt` は自前の yt-dlp を保持し（github.com から SHA-256 検証付き）、{管理版, システム版} の新しい方を使います。`ytt tools status` / `ytt tools update`、無効化は `config.json` の `"tools": {"ytdlp_managed": false}`。
-> Scoop（Windows）、brew（macOS）、直接リリースインストーラには **YtmTui Tray** ミニプレイヤーも同梱されます。ログイン時の自動起動は任意: `ytt-desktop --install-startup`。
 
 ## クイックスタート
 
