@@ -370,15 +370,17 @@ jobs:
           if (-not $mpv) { throw "mpv.exe not found under $env:ChocolateyInstall\lib after choco install" }
           Split-Path $mpv.FullName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      # Non-blocking + time-bounded. This daemon/tray smoke is new (added after v1.5.8) and
-      # currently hangs on the CI runner — the daemon's OS media session (SMTC) can't attach
-      # in the detached, non-interactive process, and the YTM_NO_MEDIA_SESSION guard did not
-      # clear it, so the cause is still open. It reports but does not gate the release, and the
-      # timeout stops a hang from burning the 6h job budget. TODO: fix + re-require.
+      # GATING again (was continue-on-error while "the hang" was unexplained). Root cause
+      # found on real hardware 2026-07-04: `ytt daemon start` spawned the daemon with
+      # bInheritHandles=TRUE, leaking the client's inheritable std-pipe write end into the
+      # long-lived daemon — any shell CAPTURING the client's output then never saw EOF.
+      # Fixed at the spawn site (HANDLE_FLAG_INHERIT stripped, src/daemon/mod.rs); the
+      # SMTC guess in the old comment was wrong (YTM_NO_MEDIA_SESSION stays as a separate,
+      # still-needed guard for the runner's non-interactive session). The timeout stays as
+      # a cheap backstop against runner flakiness burning the job budget.
       - name: Smoke Windows daemon and tray CLI
         if: runner.os == 'Windows'
         shell: pwsh
-        continue-on-error: true
         timeout-minutes: 8
         run: ./scripts/windows-daemon-smoke.ps1 -Target "${{ matrix.target }}" -Profile release -AllowProfileMove
 
