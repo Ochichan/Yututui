@@ -406,7 +406,18 @@ the QA script) — and adopt whichever works before release.
 - [x] Idempotent registration command (doctor family)
 - [x] install.ps1 step + scoop `post_install`
 - [x] .ico shipped in Windows zip
-- [ ] Phase-3 decision: registry-only vs .lnk fallback → adopt + record here
+- [x] Phase-3 decision: registry-only vs .lnk fallback → **adopt the .lnk**
+      (see below + `windows-smtc-qa-results-2026-07-04.md`)
+
+**Phase-3 decision (on-hardware, Win11 26200, 2026-07-04):** registry-only is
+**insufficient** — the flyout stayed "Unknown app" even after a sign-out/in. A
+Start-Menu shortcut carrying `System.AppUserModel.ID` = `io.github.ochi.ytm-tui`
+(PKEY_AppUserModel_ID {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3},5), created via
+IShellLinkW + IPropertyStore, flipped the flyout to "YtmTui" + icon
+**immediately, no logout**. TODO: create that shortcut from
+`register-media-identity` (`src/media/identity.rs`), keeping the HKCU key too
+(toast identity). Full results + Rust implementation notes in
+`windows-smtc-qa-results-2026-07-04.md`.
 
 ## 5. Verification Tooling
 
