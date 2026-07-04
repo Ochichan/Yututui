@@ -269,7 +269,7 @@ impl App {
                     self.autoplay_streaming = !self.autoplay_streaming;
                     self.status.text = format!(
                         "{}: {}",
-                        t!("Autoplay streaming", "자동 스트리밍"),
+                        t!("Autoplay", "자동재생"),
                         if self.autoplay_streaming {
                             "✓"
                         } else {

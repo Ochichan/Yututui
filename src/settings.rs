@@ -18,7 +18,7 @@ use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
 use crate::keymap::{Action, KeyContext, KeyMap};
 use crate::search_source::SearchConfig;
-use crate::streaming::StreamingMode;
+use crate::streaming::{CuratingMode, StreamingMode};
 use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
 
@@ -174,6 +174,7 @@ impl SettingsTab {
                 Field::RomanizedTitles,
                 Field::ClearRomanizedTitleCache,
                 Field::AutoplayStreaming,
+                Field::CuratingMode,
                 Field::StreamingMode,
             ],
             // Per-service account sections; see `sections` for the headers.
@@ -214,6 +215,12 @@ impl SettingsTab {
                 ("ListenBrainz", 2),
                 ("Spotify", 4),
                 (t!("Scrobbling", "스크로블링"), 1),
+            ],
+            // Separate the chat/assistant config from the autoplay + curation trio so the
+            // "Autoplay / Curating mode / Curating style" group reads as one intuitive unit.
+            SettingsTab::Ai => vec![
+                (t!("Assistant", "어시스턴트"), 5),
+                (t!("Autoplay & curation", "자동재생 · 큐레이팅"), 3),
             ],
             _ => Vec::new(),
         }
@@ -278,6 +285,8 @@ pub enum Field {
     /// Remove cached Latin-script display overlays without touching source metadata.
     ClearRomanizedTitleCache,
     AutoplayStreaming,
+    /// Who curates the autoplay stream: YouTube-native local engine, or DJ Gem's AI rerank.
+    CuratingMode,
     /// The streaming station's adventurousness (Focused / Balanced / Discovery).
     StreamingMode,
     // Theme
@@ -532,6 +541,7 @@ impl Field {
             | Field::EqPreset
             | Field::GeminiModel
             | Field::ThemePreset
+            | Field::CuratingMode
             | Field::StreamingMode => FieldKind::Select,
             Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
                 FieldKind::Slider
@@ -617,12 +627,13 @@ impl Field {
             Field::AutoContinueVideos => {
                 t!("Auto-continue videos", "영상 자동 이어재생").to_owned()
             }
-            Field::AutoplayStreaming => t!("Autoplay streaming", "자동 스트리밍").to_owned(),
-            Field::StreamingMode => t!("Streaming mode", "스트리밍 모드").to_owned(),
+            Field::AutoplayStreaming => t!("Autoplay", "자동재생").to_owned(),
+            Field::CuratingMode => t!("Curating mode", "큐레이팅 방식").to_owned(),
+            Field::StreamingMode => t!("Curating style", "큐레이팅 스타일").to_owned(),
             Field::EqPreset => t!("Preset", "프리셋").to_owned(),
             Field::Band(i) => format!("{:>5}", freq_label(i)),
             Field::Normalize => t!("Normalize (loudness)", "음량 평준화").to_owned(),
-            Field::AiEnabled => t!("Enable DJ Gem", "DJ Gem 사용").to_owned(),
+            Field::AiEnabled => t!("DJ Gem chat", "DJ Gem 채팅").to_owned(),
             Field::GeminiModel => t!("Model", "모델").to_owned(),
             Field::ApiKey => t!("API key", "API 키").to_owned(),
             Field::RomanizedTitles => t!("Romanized titles", "제목 로마자 표기").to_owned(),
@@ -723,6 +734,8 @@ pub struct SettingsDraft {
     /// The video overlay auto-continues into the next queue track's video on EOF.
     pub auto_continue_videos: bool,
     pub autoplay_streaming: bool,
+    /// Who curates the autoplay stream (YT Native vs DJ Gem); persists to `streaming.ai.enabled`.
+    pub curating_mode: CuratingMode,
     /// The streaming station's adventurousness (drives MMR λ, sampling temperature, artist spacing).
     pub streaming_mode: StreamingMode,
     pub eq_preset: EqPreset,
@@ -832,6 +845,7 @@ impl SettingsDraft {
             Field::MediaControls => toggle_str(self.media_controls),
             Field::AutoContinueVideos => toggle_str(self.auto_continue_videos),
             Field::AutoplayStreaming => toggle_str(self.autoplay_streaming),
+            Field::CuratingMode => self.curating_mode.label().to_owned(),
             Field::StreamingMode => self.streaming_mode.label().to_owned(),
             Field::EqPreset => self.eq_preset.label().to_owned(),
             Field::Band(i) => format!("{:+.0} dB", self.eq_bands[i]),
@@ -1000,6 +1014,7 @@ impl SettingsDraft {
         cfg.auto_continue_videos = Some(self.auto_continue_videos);
         cfg.autoplay_streaming = Some(self.autoplay_streaming);
         cfg.streaming.mode = self.streaming_mode;
+        cfg.streaming.ai.enabled = self.curating_mode.uses_ai();
         cfg.eq_preset = self.eq_preset;
         // Store the explicit band array only when it diverges from the preset's gains, so
         // a plain preset choice stays compact in config.json.
@@ -1146,6 +1161,7 @@ mod tests {
             media_controls: true,
             auto_continue_videos: false,
             autoplay_streaming: false,
+            curating_mode: CuratingMode::DjGem,
             streaming_mode: StreamingMode::Balanced,
             eq_preset: EqPreset::Flat,
             eq_bands: EqPreset::Flat.gains(),
@@ -1377,9 +1393,13 @@ mod tests {
                 Field::RomanizedTitles,
                 Field::ClearRomanizedTitleCache,
                 Field::AutoplayStreaming,
+                Field::CuratingMode,
                 Field::StreamingMode,
             ]
         );
+        // Section header counts must partition the fields exactly, or the renderer drops the tail.
+        let secs: usize = SettingsTab::Ai.sections().iter().map(|(_, n)| n).sum();
+        assert_eq!(secs, SettingsTab::Ai.fields().len());
         assert_eq!(Field::AiEnabled.kind(), FieldKind::Toggle);
         assert!(!Field::AiEnabled.is_secret());
         // Enabled by default in a fresh draft.
@@ -1395,7 +1415,10 @@ mod tests {
             base_draft().value_display(Field::ClearRomanizedTitleCache),
             "↵ press Enter"
         );
-        // The streaming mode is a non-secret cycle field.
+        // Curating mode + style are non-secret cycle fields; both default to DJ Gem / Balanced.
+        assert_eq!(Field::CuratingMode.kind(), FieldKind::Select);
+        assert!(!Field::CuratingMode.is_secret());
+        assert_eq!(base_draft().value_display(Field::CuratingMode), "DJ Gem");
         assert_eq!(Field::StreamingMode.kind(), FieldKind::Select);
         assert!(!Field::StreamingMode.is_secret());
         assert_eq!(base_draft().value_display(Field::StreamingMode), "Balanced");
@@ -1491,6 +1514,7 @@ mod tests {
             media_controls: false,
             auto_continue_videos: true,
             autoplay_streaming: true,
+            curating_mode: CuratingMode::YtNative,
             streaming_mode: StreamingMode::Discovery,
             eq_preset: EqPreset::Custom,
             eq_bands: bands,
@@ -1549,6 +1573,8 @@ mod tests {
         assert_eq!(cfg.auto_continue_videos, Some(true));
         assert_eq!(cfg.autoplay_streaming, Some(true));
         assert_eq!(cfg.streaming.mode, StreamingMode::Discovery);
+        // Curating mode = YT Native → the AI rerank flag persists as false.
+        assert!(!cfg.streaming.ai.enabled);
         assert_eq!(cfg.scrobble.lastfm.enabled, Some(false));
         assert_eq!(cfg.scrobble.lastfm.love_sync, Some(false));
         assert_eq!(cfg.scrobble.lastfm.session_key.as_deref(), Some("sk-abc"));

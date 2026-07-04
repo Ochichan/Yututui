@@ -254,7 +254,7 @@ fn build_keys_column(
     let mut selected = None;
     // Pad every action label to the widest one (+2-cell gutter) by terminal *display* width, so
     // the key column lines up flush across both columns and in any language — long Korean labels
-    // like "자동 스트리밍 켜기 / 끄기" (~22 cells) would overflow a fixed width and shove their key
+    // like "자동재생 켜기 / 끄기" (~18 cells) would overflow a fixed width and shove their key
     // out of alignment.
     let label_w = entries
         .iter()

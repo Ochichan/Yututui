@@ -45,6 +45,9 @@ impl App {
             media_controls: self.config.effective_media_controls(),
             auto_continue_videos: self.config.effective_auto_continue_videos(),
             autoplay_streaming: self.autoplay_streaming,
+            curating_mode: crate::streaming::CuratingMode::from_ai(
+                self.config.streaming.ai.enabled,
+            ),
             streaming_mode: self.config.streaming.mode,
             eq_preset: self.audio.preset,
             eq_bands: self.audio.bands,
@@ -448,13 +451,21 @@ impl App {
                 s.draft.autoplay_streaming = !s.draft.autoplay_streaming;
                 Vec::new()
             }
+            Field::CuratingMode => {
+                let s = self.settings_mut();
+                let next = s.draft.curating_mode.cycled(dir >= 0);
+                s.draft.curating_mode = next;
+                self.status.text =
+                    format!("{}: {}", t!("Curating mode", "큐레이팅 방식"), next.label());
+                Vec::new()
+            }
             Field::StreamingMode => {
                 let s = self.settings_mut();
                 let next = s.draft.streaming_mode.cycled(dir >= 0);
                 s.draft.streaming_mode = next;
                 self.status.text = format!(
                     "{}: {}",
-                    t!("Streaming mode", "스트리밍 모드"),
+                    t!("Curating style", "큐레이팅 스타일"),
                     next.label()
                 );
                 Vec::new()
@@ -1239,6 +1250,7 @@ impl App {
             d.seek_seconds = def.effective_seek_seconds();
             d.gapless = def.effective_gapless();
             d.autoplay_streaming = def.effective_autoplay_streaming();
+            d.curating_mode = crate::streaming::CuratingMode::from_ai(def.streaming.ai.enabled);
             d.streaming_mode = def.streaming.mode;
             d.eq_preset = def.eq_preset;
             d.eq_bands = def.effective_eq_bands();

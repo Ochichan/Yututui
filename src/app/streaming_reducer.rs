@@ -45,8 +45,8 @@ impl App {
         self.streaming.last_extend = Some(Instant::now());
         self.streaming.pending = true;
         self.status.text = t!(
-            "Autoplay streaming: finding related tracks",
-            "자동 스트리밍: 관련 곡을 찾는 중"
+            "Autoplay: finding related tracks",
+            "자동재생: 관련 곡을 찾는 중"
         )
         .to_owned();
         self.dirty = true;
@@ -160,8 +160,8 @@ impl App {
         });
         self.ai.thinking = true;
         self.status.text = t!(
-            "Autoplay streaming: DJ Gem reranking",
-            "자동 스트리밍: DJ Gem이 순위를 매기는 중"
+            "Autoplay: DJ Gem reranking",
+            "자동재생: DJ Gem이 순위를 매기는 중"
         )
         .to_owned();
         self.dirty = true;
@@ -403,8 +403,8 @@ impl App {
         if added == 0 {
             return self.note_streaming_failure(
                 t!(
-                    "Autoplay streaming found no new tracks",
-                    "자동 스트리밍이 새 곡을 찾지 못했어요"
+                    "Autoplay found no new tracks",
+                    "자동재생이 새 곡을 찾지 못했어요"
                 )
                 .to_owned(),
             );
@@ -453,8 +453,8 @@ impl App {
                 disabled = true;
                 self.streaming.pending = false;
                 self.status.text = t!(
-                    "Autoplay streaming stopped (no related tracks found)",
-                    "자동 스트리밍을 멈췄어요 (관련 곡을 찾지 못함)"
+                    "Autoplay stopped (no related tracks found)",
+                    "자동재생을 멈췄어요 (관련 곡을 찾지 못함)"
                 )
                 .to_owned();
             } else {
@@ -556,11 +556,8 @@ impl App {
         {
             self.streaming.pending = true;
             self.status.kind = StatusKind::Info;
-            self.status.text = t!(
-                "Autoplay streaming: checking tracks",
-                "자동 스트리밍: 곡을 확인하는 중"
-            )
-            .to_owned();
+            self.status.text =
+                t!("Autoplay: checking tracks", "자동재생: 곡을 확인하는 중").to_owned();
             self.dirty = true;
             return vec![Cmd::StreamingPreflight {
                 seed_video_id: seed_video_id.to_owned(),

@@ -1368,7 +1368,7 @@ impl App {
                 if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
                     return self.note_streaming_failure(format!(
                         "{}: {error}",
-                        t!("Autoplay streaming failed", "자동 스트리밍 실패")
+                        t!("Autoplay failed", "자동재생 실패")
                     ));
                 } else {
                     self.dirty = true;

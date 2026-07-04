@@ -314,8 +314,8 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (
         Action::ToggleStreaming,
         "toggle_streaming",
-        "Toggle streaming",
-        "스트리밍 켜기 / 끄기",
+        "Toggle autoplay",
+        "자동재생 켜기 / 끄기",
     ),
     (
         Action::ToggleRadioMode,

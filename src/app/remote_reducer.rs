@@ -134,7 +134,7 @@ impl App {
         self.autoplay_streaming = on;
         self.status.text = format!(
             "{}: {}",
-            t!("Autoplay streaming", "자동 스트리밍"),
+            t!("Autoplay", "자동재생"),
             if on { "✓" } else { "✗" }
         );
         self.dirty = true;
@@ -159,7 +159,7 @@ impl App {
             }
             RemoteSettingChange::StreamingMode { value } => {
                 self.config.streaming.mode = value;
-                self.status.text = format!("Streaming mode: {}", value.label());
+                self.status.text = format!("Curating style: {}", value.label());
                 self.dirty = true;
                 let mut cmds = vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
                 if self.autoplay_streaming {

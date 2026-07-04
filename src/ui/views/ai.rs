@@ -414,7 +414,7 @@ fn build_transcript_lines(app: &App, width: usize) -> Vec<TranscriptLine> {
         }
         let (prefix, role) = match m.role {
             AiRole::User => (t!("you ", "나    "), R::AiUser),
-            AiRole::Ai => (t!("gem ", "Gem   "), R::AiAssistant),
+            AiRole::Ai => (t!("Gem ", "Gem   "), R::AiAssistant),
             AiRole::Error => (t!("err ", "오류  "), R::AiError),
         };
         let base = app.theme.style(role);
@@ -437,7 +437,7 @@ fn build_transcript_lines(app: &App, width: usize) -> Vec<TranscriptLine> {
         };
         let style = app.theme.style(R::AiThinking);
         let chars: Vec<(char, Style)> = text.chars().map(|c| (c, style)).collect();
-        push_wrapped_styled(&mut lines, t!("gem ", "Gem   "), style, &chars, width);
+        push_wrapped_styled(&mut lines, t!("Gem ", "Gem   "), style, &chars, width);
     }
     if lines.is_empty() {
         lines.push(TranscriptLine::plain(
@@ -953,7 +953,7 @@ mod tests {
         );
 
         // Markdown markers are stripped from both the render and the drag-copy text.
-        assert_eq!(lines[2].copy, "gem It's YOASOBI.");
+        assert_eq!(lines[2].copy, "Gem It's YOASOBI.");
         assert!(
             lines[2]
                 .spans
@@ -975,10 +975,10 @@ mod tests {
             role: AiRole::Ai,
             text: "**alpha beta** gamma".to_owned(),
         });
-        // Width 14 = 4 ("gem " chip+pad) + 10 body cells: the bold pair fills line one,
+        // Width 14 = 4 ("Gem " chip+pad) + 10 body cells: the bold pair fills line one,
         // and the continuation hang-indents under the body, not under the chip.
         let lines = build_transcript_lines(&app, 14);
-        assert_eq!(lines[0].copy, "gem alpha beta");
+        assert_eq!(lines[0].copy, "Gem alpha beta");
         assert_eq!(lines[1].copy, "    gamma");
     }
 }

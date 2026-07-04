@@ -3083,8 +3083,8 @@ fn streaming_mode_cycles_on_the_ai_tab_and_persists() {
     }
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
     // Fields: AiEnabled(0), Model(1), ApiKey(2), RomanizedTitles(3), Clear cache(4),
-    // AutoplayStreaming(5), StreamingMode(6).
-    for _ in 0..6 {
+    // AutoplayStreaming(5), CuratingMode(6), StreamingMode(7).
+    for _ in 0..7 {
         app.update(Msg::Key(key(KeyCode::Down)));
     }
     app.update(Msg::Key(key(KeyCode::Right))); // Balanced → Discovery
@@ -3092,10 +3092,36 @@ fn streaming_mode_cycles_on_the_ai_tab_and_persists() {
         app.settings.as_ref().unwrap().draft.streaming_mode,
         StreamingMode::Discovery
     );
-    assert!(app.status.text.contains("Streaming mode: Discovery"));
+    assert!(app.status.text.contains("Curating style: Discovery"));
     // Closing settings commits the draft into config + emits a save.
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
     assert_eq!(app.config.streaming.mode, StreamingMode::Discovery);
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+}
+
+#[test]
+fn curating_mode_cycles_on_the_ai_tab_and_persists_to_ai_enabled() {
+    let _guard = crate::i18n::lock_for_test();
+    use crate::streaming::CuratingMode;
+    let mut app = app_playing(1, 0);
+    assert!(app.config.streaming.ai.enabled); // default → DJ Gem
+    app.update(Msg::Key(key(KeyCode::Char(',')))); // open settings (General)
+    for _ in 0..4 {
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab
+    }
+    // Down to CuratingMode (index 6), then step it: DJ Gem → YT Native.
+    for _ in 0..6 {
+        app.update(Msg::Key(key(KeyCode::Down)));
+    }
+    app.update(Msg::Key(key(KeyCode::Right)));
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.curating_mode,
+        CuratingMode::YtNative
+    );
+    assert!(app.status.text.contains("Curating mode:"));
+    // Close → the AI rerank flag is now off.
+    let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(!app.config.streaming.ai.enabled);
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
 }
 
@@ -4091,7 +4117,7 @@ fn ai_streaming_circuit_breaker_disables_after_repeated_empties() {
         !app.autoplay_streaming,
         "streaming disabled after repeated empty extends"
     );
-    assert!(app.status.text.contains("Autoplay streaming stopped"));
+    assert!(app.status.text.contains("Autoplay stopped"));
 }
 
 #[test]
@@ -4752,7 +4778,7 @@ fn streaming_error_uses_circuit_breaker() {
 
     assert!(!app.streaming.pending);
     assert!(!app.autoplay_streaming);
-    assert!(app.status.text.contains("Autoplay streaming stopped"));
+    assert!(app.status.text.contains("Autoplay stopped"));
 }
 
 #[test]

@@ -23,7 +23,7 @@ use crate::signals::Signals;
 use crate::streaming::musicgate::GateAction;
 
 pub use candidate::{Candidate, CandidateSource};
-pub use config::{StreamingConfig, StreamingMode};
+pub use config::{CuratingMode, StreamingConfig, StreamingMode};
 pub use cooccurrence::Cooc;
 pub use pack::PackedCand;
 pub use score::{GateVerdict, classify_pool};

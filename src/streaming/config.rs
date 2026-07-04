@@ -1,8 +1,9 @@
 //! Tunable parameters for the local streaming engine, persisted under [`crate::config::Config`].
 //!
-//! Only a single tuned `Balanced` profile ships today (the user-facing mode toggle is
-//! deferred), but the per-mode parameters live here so enabling it later is config-only.
-//! Every field is `#[serde(default)]` so old `config.json` files keep loading.
+//! The user-facing "Curating style" selector cycles all three [`StreamingMode`] profiles;
+//! the "Curating mode" selector ([`CuratingMode`]) toggles the AI rerank via
+//! [`AiRerankConfig::enabled`]. Every field is `#[serde(default)]` so old `config.json`
+//! files keep loading.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +17,59 @@ pub enum StreamingMode {
     Balanced,
     /// Lean into discovery (more diverse, more exploratory sampling).
     Discovery,
+}
+
+/// Who curates the autoplay stream. A thin, user-facing wrapper over
+/// [`AiRerankConfig::enabled`]: `YtNative` = the local blended engine only, `DjGem` = the
+/// local engine plus the AI rerank pass. Kept as its own enum (rather than a raw bool) so
+/// the settings selector renders and cycles just like [`StreamingMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum CuratingMode {
+    /// YouTube-native: the local scoring engine (which already blends YTM continuation,
+    /// co-occurrence, seed affinity, and novelty) with no AI rerank.
+    YtNative,
+    /// DJ Gem: the local engine plus the AI rerank pass. The shipped default.
+    #[default]
+    DjGem,
+}
+
+impl CuratingMode {
+    /// Both modes in toggle order (the settings selector steps through these).
+    pub const CYCLE: [CuratingMode; 2] = [CuratingMode::YtNative, CuratingMode::DjGem];
+
+    /// A short human label for the settings field.
+    pub fn label(self) -> &'static str {
+        match self {
+            CuratingMode::YtNative => crate::t!("YT Native", "YT 기본"),
+            CuratingMode::DjGem => crate::t!("DJ Gem", "DJ Gem"),
+        }
+    }
+
+    /// The next mode when stepping the selector forward/backward (wraps both ways).
+    pub fn cycled(self, forward: bool) -> Self {
+        let i = Self::CYCLE.iter().position(|&m| m == self).unwrap_or(1);
+        let n = Self::CYCLE.len();
+        let j = if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        };
+        Self::CYCLE[j]
+    }
+
+    /// Whether this mode runs the AI rerank — the value stored in [`AiRerankConfig::enabled`].
+    pub fn uses_ai(self) -> bool {
+        matches!(self, CuratingMode::DjGem)
+    }
+
+    /// Recover the mode from the persisted [`AiRerankConfig::enabled`] flag.
+    pub fn from_ai(enabled: bool) -> Self {
+        if enabled {
+            CuratingMode::DjGem
+        } else {
+            CuratingMode::YtNative
+        }
+    }
 }
 
 impl StreamingMode {
@@ -412,7 +466,9 @@ impl Default for MusicGateConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StreamingConfig {
-    /// Active mode (only `Balanced` is surfaced today).
+    /// Active curating style (Focused / Balanced / Discovery), surfaced as the "Curating
+    /// style" selector. Whether the AI rerank runs is a separate axis ([`Self::ai`]`.enabled`,
+    /// the "Curating mode" selector via [`CuratingMode`]).
     pub mode: StreamingMode,
     pub weights: ScoreWeights,
     pub sim_weights: SimWeights,
@@ -457,6 +513,25 @@ mod tests {
     fn default_mode_is_balanced() {
         assert_eq!(StreamingMode::default(), StreamingMode::Balanced);
         assert_eq!(StreamingConfig::default().mode, StreamingMode::Balanced);
+    }
+
+    #[test]
+    fn curating_mode_bridges_the_ai_flag() {
+        // Default is DJ Gem, matching the shipped `AiRerankConfig.enabled == true`.
+        assert_eq!(CuratingMode::default(), CuratingMode::DjGem);
+        assert!(AiRerankConfig::default().enabled);
+        assert!(CuratingMode::DjGem.uses_ai());
+        assert!(!CuratingMode::YtNative.uses_ai());
+        // Round-trips through the persisted bool both ways.
+        assert_eq!(CuratingMode::from_ai(true), CuratingMode::DjGem);
+        assert_eq!(CuratingMode::from_ai(false), CuratingMode::YtNative);
+        for m in CuratingMode::CYCLE {
+            assert_eq!(CuratingMode::from_ai(m.uses_ai()), m);
+        }
+        // Two-value cycle wraps both directions.
+        assert_eq!(CuratingMode::YtNative.cycled(true), CuratingMode::DjGem);
+        assert_eq!(CuratingMode::DjGem.cycled(true), CuratingMode::YtNative);
+        assert_eq!(CuratingMode::YtNative.cycled(false), CuratingMode::DjGem);
     }
 
     #[test]
