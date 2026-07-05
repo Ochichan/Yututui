@@ -299,7 +299,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
             .sum::<u16>()
             <= area.width
     };
-    // The last tier also sheds the non-clickable decorations (state word, speed, norm, VU,
+    // The last tier also sheds the non-clickable decorations (state word, speed, VU,
     // download tag), keeping every *control* reachable on even the tiniest grid.
     let (gap_w, parts) = [("    ", false), ("  ", false), (" ", false), (" ", true)]
         .iter()
@@ -333,11 +333,11 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Build the transport status-line as `(target, text)` segments from app state — split out
 /// from [`render_status_line`] so the conditional assembly (queue position, rating, shuffle /
-/// repeat, speed, EQ, normalize, streaming mode, download tag) is unit-testable without a frame
+/// repeat, speed, EQ, streaming mode, download tag) is unit-testable without a frame
 /// buffer. A `None` target is a static label/spacing; spacing is its own label so a clickable
 /// segment's hit rect hugs just its text.
 /// The `minimal` variant is the last responsive tier: the playback state shrinks to its
-/// one-cell glyph and purely informational tags (speed, norm, VU bars, download progress)
+/// one-cell glyph and purely informational tags (speed, VU bars, download progress)
 /// drop away, so the clickable toggles never fall off the right edge.
 fn status_line_parts_at(
     app: &App,
@@ -444,9 +444,6 @@ fn status_line_parts_at(
     // Faux VU bars trail the EQ label when the EQ-bars animation is on (no-op otherwise).
     if !minimal && let Some(bars) = crate::ui::anim::eq_bars(app) {
         parts.push((None, Cow::Owned(format!("{gap}{bars}"))));
-    }
-    if !minimal && app.audio.normalize {
-        parts.push((None, Cow::Owned(format!("{gap}{}", t!("norm", "평준화")))));
     }
     if app.streaming_active() {
         // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
