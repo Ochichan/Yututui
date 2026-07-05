@@ -145,18 +145,23 @@ async fn async_main(new_instance: bool, mut startup: StartupTrace) -> Result<()>
         remote::BindOutcome::Unavailable => None,
     };
     startup.mark("remote_bound");
-    // Album art is opt-in: only probe the terminal for its graphics protocol + font size
-    // when the user enabled it, and do it BEFORE `tui::init` so the 1x1 probe image and its
-    // cursor-position reports never land on the app's alternate screen. The probe is fully
-    // synchronous (see `ratatui_image::picker`): it raw-modes the tty, queries, and restores the
-    // previous mode before returning — so it can't leave `tui::init`'s crossterm raw-mode setup
-    // racing a half-restored terminal, and it spawns no reader that could outlive it and steal
-    // input from the event loop. A failed/absent probe falls back to halfblocks.
-    let art_picker = if cfg.effective_album_art() {
-        Some(build_art_picker())
-    } else {
-        None
-    };
+    // Probe the terminal for its graphics protocol + font size, and do it BEFORE `tui::init`
+    // so the 1x1 probe image and its cursor-position reports never land on the app's alternate
+    // screen. The probe is fully synchronous (see `ratatui_image::picker`): it raw-modes the
+    // tty, queries, and restores the previous mode before returning — so it can't leave
+    // `tui::init`'s crossterm raw-mode setup racing a half-restored terminal, and it spawns no
+    // reader that could outlive it and steal input from the event loop. A failed/absent probe
+    // falls back to halfblocks.
+    //
+    // Unconditional (not gated on `album_art`): the About card's embedded icon needs the
+    // detected protocol to render at full resolution even when album art is off, and the probe
+    // can't be deferred to when About opens (mid-run it would fight the event loop for the
+    // terminal's query replies). Album art itself stays independently gated on
+    // `effective_album_art()` — see `App::art_active` / `App::artwork_source` — so a present
+    // picker never turns the feature on; it only means "a protocol is known." Repeat probes on
+    // terminals without native graphics are cheap: `build_art_picker` short-circuits via the
+    // 24h halfblocks cache.
+    let art_picker = Some(build_art_picker());
     startup.mark("art_picker_ready");
     // Shared by the zoom backend (draw scaling), the event translator (mouse-cell
     // mapping), and the reducer (Ctrl+wheel / Ctrl+-/= steps).
@@ -221,6 +226,15 @@ impl StartupTrace {
 /// that doesn't answer the control sequences), so album art still renders — just blocky.
 fn build_art_picker() -> ratatui_image::picker::Picker {
     use ratatui_image::picker::{Picker, cap_parser::QueryStdioOptions};
+    use std::io::IsTerminal;
+    // Now that this runs for every launch (not just album-art-on), skip the probe entirely when
+    // stdout isn't a terminal (`ytt > file`, a pipe, CI): the query bytes would otherwise be
+    // written into the redirect target and the poll would stall the full timeout waiting for a
+    // reply that can't come. Stdin-not-a-tty is already handled inside the probe (its
+    // `tcgetattr` errors out to halfblocks); this closes the stdout-redirected-but-stdin-tty gap.
+    if !std::io::stdout().is_terminal() {
+        return Picker::halfblocks();
+    }
     if image_protocol_override() == Some(ratatui_image::picker::ProtocolType::Halfblocks) {
         return Picker::halfblocks();
     }

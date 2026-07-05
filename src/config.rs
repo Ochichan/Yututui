@@ -437,9 +437,9 @@ pub struct Config {
     pub download_concurrency: Option<usize>,
     /// Capture the mouse for buttons and click-to-seek. `None` → enabled.
     pub mouse: Option<bool>,
-    /// Show album art / video thumbnail in the player view. `None` → off (opt-in: the
-    /// terminal is only probed for a graphics protocol when this is on, and turning it on
-    /// takes effect at the next launch). See [`crate::artwork`].
+    /// Show album art / video thumbnail in the player view. `None` → off (opt-in). The
+    /// terminal's graphics protocol is probed unconditionally at startup (the About icon needs
+    /// it regardless), so turning this on takes effect live. See [`crate::artwork`].
     pub album_art: Option<bool>,
 
     // Playback / EQ -----------------------------------------------------------

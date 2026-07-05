@@ -622,9 +622,7 @@ impl Field {
             Field::CookiesFile => t!("Cookies file", "쿠키 파일").to_owned(),
             Field::DownloadDir => t!("Download dir", "다운로드 폴더").to_owned(),
             Field::Mouse => t!("Mouse (next launch)", "마우스 (재시작 후 적용)").to_owned(),
-            Field::AlbumArt => {
-                t!("Album art (next launch)", "앨범 아트 (재시작 후 적용)").to_owned()
-            }
+            Field::AlbumArt => t!("Album art", "앨범 아트").to_owned(),
             Field::AutoplayOnStart => t!("Autoplay on launch", "앱 시작 시 자동재생").to_owned(),
             Field::EnqueueNext => t!("Enqueue as next", "큐 추가: 다음 곡").to_owned(),
             Field::ResetKeybindings => t!("Reset keybindings", "단축키 초기화").to_owned(),

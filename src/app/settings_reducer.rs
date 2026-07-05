@@ -1908,9 +1908,9 @@ impl App {
             self.config.scrobble_settings(),
         )));
         // React to an album-art toggle. Turning it off drops the held image (frees RAM).
-        // Turning it on fetches the current track's art live — but only when a protocol was
-        // detected at startup (`artwork_source` gates on the picker); a first-time enable
-        // with no picker takes effect next launch, as the field label says.
+        // Turning it on fetches the current track's art live: the graphics protocol is probed
+        // unconditionally at startup, so the picker is always present and `artwork_source`
+        // resolves as soon as the flag flips — no relaunch needed.
         if !self.config.effective_album_art() {
             self.clear_artwork();
         } else if let Some(song) = self.queue.current().cloned()
