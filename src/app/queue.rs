@@ -26,6 +26,22 @@ impl App {
         self.load_song(song)
     }
 
+    /// Move the queue-window cursor by `lines`, clamped to the queue. When `extend` is
+    /// false the anchor collapses onto the cursor (plain nav); when true the anchor stays
+    /// put so Shift+nav grows the inclusive selection range like a mouse drag.
+    pub(in crate::app) fn move_queue_cursor(&mut self, up: bool, lines: usize, extend: bool) {
+        let last = self.queue.len().saturating_sub(1);
+        self.queue_popup.cursor = if up {
+            self.queue_popup.cursor.saturating_sub(lines)
+        } else {
+            (self.queue_popup.cursor + lines).min(last)
+        };
+        if !extend {
+            self.queue_popup.anchor = self.queue_popup.cursor;
+        }
+        self.dirty = true;
+    }
+
     /// Remove the queue window's current selection (the inclusive anchor..=cursor range).
     pub(in crate::app) fn queue_popup_remove_selection(&mut self) -> Vec<Cmd> {
         let lo = self.queue_popup.cursor.min(self.queue_popup.anchor);
@@ -105,18 +121,57 @@ impl App {
                 Vec::new()
             }
             Some(Action::MoveUp) => {
-                self.queue_popup.cursor = self.queue_popup.cursor.saturating_sub(1);
-                self.queue_popup.anchor = self.queue_popup.cursor;
-                self.dirty = true;
+                let step = self.nav_repeat_step(Action::MoveUp);
+                self.move_queue_cursor(true, step, false);
                 Vec::new()
             }
             Some(Action::MoveDown) => {
-                let last = self.queue.len().saturating_sub(1);
-                if self.queue_popup.cursor < last {
-                    self.queue_popup.cursor += 1;
-                }
-                self.queue_popup.anchor = self.queue_popup.cursor;
-                self.dirty = true;
+                let step = self.nav_repeat_step(Action::MoveDown);
+                self.move_queue_cursor(false, step, false);
+                Vec::new()
+            }
+            Some(Action::PageUp) => {
+                self.move_queue_cursor(true, self.page_step(), false);
+                Vec::new()
+            }
+            Some(Action::PageDown) => {
+                self.move_queue_cursor(false, self.page_step(), false);
+                Vec::new()
+            }
+            Some(Action::JumpTop) => {
+                self.move_queue_cursor(true, self.queue.len(), false);
+                Vec::new()
+            }
+            Some(Action::JumpBottom) => {
+                self.move_queue_cursor(false, self.queue.len(), false);
+                Vec::new()
+            }
+            // Shift+nav grows the selection range (keyboard mirror of a mouse drag): move
+            // the cursor but leave the anchor fixed.
+            Some(Action::SelectUp) => {
+                let step = self.nav_repeat_step(Action::SelectUp);
+                self.move_queue_cursor(true, step, true);
+                Vec::new()
+            }
+            Some(Action::SelectDown) => {
+                let step = self.nav_repeat_step(Action::SelectDown);
+                self.move_queue_cursor(false, step, true);
+                Vec::new()
+            }
+            Some(Action::SelectPageUp) => {
+                self.move_queue_cursor(true, self.page_step(), true);
+                Vec::new()
+            }
+            Some(Action::SelectPageDown) => {
+                self.move_queue_cursor(false, self.page_step(), true);
+                Vec::new()
+            }
+            Some(Action::SelectToTop) => {
+                self.move_queue_cursor(true, self.queue.len(), true);
+                Vec::new()
+            }
+            Some(Action::SelectToBottom) => {
+                self.move_queue_cursor(false, self.queue.len(), true);
                 Vec::new()
             }
             Some(Action::Confirm) => {

@@ -19,6 +19,27 @@ impl App {
         self.dirty = true;
     }
 
+    /// Move the library cursor up/down by `lines`, clamped, **without** collapsing the
+    /// multi-select anchor — the keyboard mirror of a mouse drag-select (Shift+nav). At the
+    /// Playlists root, which has no multi-select (see `mouse.rs` drag handling), it falls
+    /// back to a plain collapsing move.
+    pub(in crate::app) fn extend_library_cursor(&mut self, up: bool, lines: usize) {
+        if self.playlists_root() {
+            self.move_library_cursor(up, lines);
+            return;
+        }
+        let len = self.library_len();
+        if len == 0 {
+            return;
+        }
+        self.library_ui.selected = if up {
+            self.library_ui.selected.saturating_sub(lines)
+        } else {
+            (self.library_ui.selected + lines).min(len - 1)
+        };
+        self.dirty = true;
+    }
+
     /// Stop capturing filter input, drop the query, and snap the cursor/scroll back to the top
     /// of the now-unfiltered list. Also used when switching tabs.
     pub(in crate::app) fn clear_library_filter(&mut self) {
@@ -162,18 +183,15 @@ impl App {
                 Vec::new()
             }
             Some(Action::MoveUp) => {
-                self.library_ui.selected = self.library_ui.selected.saturating_sub(1);
-                // Keyboard nav collapses the range to the cursor (like the queue window).
-                self.library_ui.anchor = self.library_ui.selected;
-                self.dirty = true;
+                // `move_library_cursor` collapses the range to the cursor (like the queue
+                // window). `nav_repeat_step` accelerates the move while the key is held.
+                let step = self.nav_repeat_step(Action::MoveUp);
+                self.move_library_cursor(true, step);
                 Vec::new()
             }
             Some(Action::MoveDown) => {
-                if self.library_ui.selected + 1 < len {
-                    self.library_ui.selected += 1;
-                }
-                self.library_ui.anchor = self.library_ui.selected;
-                self.dirty = true;
+                let step = self.nav_repeat_step(Action::MoveDown);
+                self.move_library_cursor(false, step);
                 Vec::new()
             }
             Some(Action::PageUp) => {
@@ -194,6 +212,34 @@ impl App {
                 self.library_ui.selected = len.saturating_sub(1);
                 self.library_ui.anchor = self.library_ui.selected;
                 self.dirty = true;
+                Vec::new()
+            }
+            // Shift+nav extends the multi-select range (keyboard mirror of a mouse drag):
+            // move the cursor but leave the anchor fixed. See `extend_library_cursor`.
+            Some(Action::SelectUp) => {
+                let step = self.nav_repeat_step(Action::SelectUp);
+                self.extend_library_cursor(true, step);
+                Vec::new()
+            }
+            Some(Action::SelectDown) => {
+                let step = self.nav_repeat_step(Action::SelectDown);
+                self.extend_library_cursor(false, step);
+                Vec::new()
+            }
+            Some(Action::SelectPageUp) => {
+                self.extend_library_cursor(true, self.page_step());
+                Vec::new()
+            }
+            Some(Action::SelectPageDown) => {
+                self.extend_library_cursor(false, self.page_step());
+                Vec::new()
+            }
+            Some(Action::SelectToTop) => {
+                self.extend_library_cursor(true, len);
+                Vec::new()
+            }
+            Some(Action::SelectToBottom) => {
+                self.extend_library_cursor(false, len);
                 Vec::new()
             }
             // Delete the selected range (mouse-drag or single row), per-tab semantics.

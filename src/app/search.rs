@@ -151,15 +151,16 @@ impl App {
                     if self.search.selected == 0 {
                         self.search.focus = SearchFocus::Input;
                     } else {
-                        self.search.selected -= 1;
+                        let step = self.nav_repeat_step(Action::MoveUp);
+                        self.search.selected = self.search.selected.saturating_sub(step);
                     }
                     self.dirty = true;
                     Vec::new()
                 }
                 Some(Action::MoveDown) => {
-                    if self.search.selected + 1 < self.search.results.len() {
-                        self.search.selected += 1;
-                    }
+                    let step = self.nav_repeat_step(Action::MoveDown);
+                    let last = self.search.results.len().saturating_sub(1);
+                    self.search.selected = (self.search.selected + step).min(last);
                     self.dirty = true;
                     Vec::new()
                 }

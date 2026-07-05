@@ -1,7 +1,9 @@
 //! Translate raw crossterm terminal events into application [`Msg`]s.
 //!
-//! Key *release*/*repeat* events (which Windows delivers in addition to presses) are
-//! filtered out here so the reducer only ever sees presses.
+//! Key *release* events (which Windows and the enhanced keyboard protocol deliver in
+//! addition to presses) are filtered out here. Key *repeat* events — held keys on
+//! enhanced terminals — are dropped too, except for the navigation keys, which are
+//! forwarded so holding an arrow keeps scrolling (see [`is_autorepeat_nav_key`]).
 
 use std::time::{Duration, Instant};
 
@@ -47,7 +49,15 @@ impl Translator {
                     self.update_held_modifier(modifier, k.kind);
                     return None;
                 }
-                if k.kind != KeyEventKind::Press {
+                if k.kind == KeyEventKind::Release {
+                    return None;
+                }
+                // Held keys stream as `Repeat` on enhanced terminals (plain terminals
+                // re-send `Press`). Forward `Repeat` only for the navigation keys — nav /
+                // seek / volume / value-change, all repeatable — so holding one keeps going;
+                // `Repeat` for chars, Enter, Space, etc. stays dropped so text entry and
+                // one-shot commands are never auto-spammed.
+                if k.kind == KeyEventKind::Repeat && !is_autorepeat_nav_key(k.code) {
                     return None;
                 }
                 k.modifiers |= self.held_modifiers;
@@ -143,6 +153,23 @@ impl Translator {
     }
 }
 
+/// Keys whose held-repeat we forward: arrows, Page, Home, End. Everywhere they resolve to
+/// repeatable semantics (list nav, seek, volume, settings value change), so auto-repeating
+/// them is always safe — unlike typed characters or one-shot commands.
+fn is_autorepeat_nav_key(code: KeyCode) -> bool {
+    matches!(
+        code,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End
+    )
+}
+
 fn modifier_key(code: KeyCode) -> Option<KeyModifiers> {
     let KeyCode::Modifier(code) = code else {
         return None;
@@ -184,10 +211,33 @@ mod tests {
                 )
                 .is_none()
         );
+        // A char repeat stays dropped so held letters don't auto-spam text fields / commands.
         assert!(
             input
                 .translate(
                     key(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Repeat,),
+                    1
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn forwards_repeat_for_nav_keys_but_still_drops_their_release() {
+        let mut input = Translator::default();
+        // Held arrow (Repeat) is forwarded so holding a nav key keeps scrolling.
+        assert!(matches!(
+            input.translate(
+                key(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Repeat),
+                1
+            ),
+            Some(Msg::Key(k)) if k.code == KeyCode::Down
+        ));
+        // Release is always dropped, even for a nav key.
+        assert!(
+            input
+                .translate(
+                    key(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Release),
                     1
                 )
                 .is_none()

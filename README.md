@@ -182,7 +182,8 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | `←` / `→` · `↑` / `↓` | Seek · volume |
 | `s` | Search (`Tab` picks the catalog) |
 | `l` / `c` | Library / queue |
-| `f` / `d` | Favorite / download (drag-select rows, then `d`, to grab many) |
+| hold `↑`/`↓` · `Shift`+`↑`/`↓` | Fast-scroll a list (accelerates) · extend the selection |
+| `f` / `d` | Favorite / download (select rows with `Shift`+`↑`/`↓` or drag, then `d`, to grab many) |
 | `Shift+D` | Download the whole list / playlist |
 | `Shift+L` | Synced lyrics |
 | `v` | Music-video overlay |

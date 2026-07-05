@@ -123,6 +123,34 @@ const MAX_CONSECUTIVE_PLAY_ERRORS: u8 = 3;
 const SPEED_STEP: f64 = 0.1;
 /// Idle gap (seconds) that ends a listening session, resetting the skip-confidence counter.
 const SESSION_GAP_SECS: i64 = 20 * 60;
+/// Max gap between two list-nav events still counted as one continuous hold. Wider than any
+/// key-repeat interval but far under the OS initial-repeat delay, so deliberate taps restart
+/// the ramp while a held key keeps it climbing. See [`NavRepeat`] / [`nav_step_for_hold`].
+const NAV_REPEAT_GAP: Duration = Duration::from_millis(180);
+
+/// Rows to advance per list-nav step as a function of how long the key has been held: one
+/// row for a tap or the first moments of a hold (precise), accelerating to a fast sweep the
+/// longer it's held. Per-view length clamping bounds the top tier on short lists.
+fn nav_step_for_hold(held: Duration) -> usize {
+    match held.as_millis() {
+        0..=399 => 1,
+        400..=999 => 2,
+        1000..=1999 => 4,
+        _ => 8,
+    }
+}
+
+/// Tracks a run of consecutive same-direction list-nav events (OS `Press` auto-repeats on
+/// plain terminals, enhanced-terminal `Repeat` events on kitty-class ones) so held
+/// navigation accelerates. `action` disambiguates directions — plain nav and Shift
+/// range-select each ramp on their own — while `started`/`last` drive a hold-duration ramp
+/// with no free-running timer (which would need key-release events plain terminals lack).
+#[derive(Debug, Default)]
+struct NavRepeat {
+    action: Option<Action>,
+    started: Option<Instant>,
+    last: Option<Instant>,
+}
 
 /// The whole application state.
 pub struct App {
@@ -307,6 +335,8 @@ pub struct App {
     /// don't re-emit. `None` = not scrubbing. Set on a seekbar press, cleared on the next press
     /// or on mouse-up (so a dropped terminal `Up` can't strand it).
     seekbar_drag: Option<u16>,
+    /// Held-key auto-repeat accelerator for list navigation (see [`NavRepeat`]). Idle at rest.
+    nav_repeat: NavRepeat,
 
     // Lyrics ------------------------------------------------------------------
     /// Lyrics-panel state: visibility, in-flight flag, and the fetched track lyrics.
@@ -461,6 +491,7 @@ impl App {
             drag_scrollbar: None,
             ai_transcript_drag: None,
             seekbar_drag: None,
+            nav_repeat: NavRepeat::default(),
             lyrics: Lyrics::default(),
             art: ArtState::default(),
             downloads: Downloads::default(),
@@ -1788,6 +1819,36 @@ impl App {
         } else {
             rows - 1
         }
+    }
+
+    /// How many rows a single `MoveUp`/`MoveDown`-style step should advance, given how long
+    /// the key has been held. Ramps up the longer the same direction repeats so holding an
+    /// arrow flies through a long list while a tap still moves exactly one row. See
+    /// [`NavRepeat`]; the timing core is split into [`Self::nav_repeat_step_at`] for tests.
+    fn nav_repeat_step(&mut self, action: Action) -> usize {
+        self.nav_repeat_step_at(Instant::now(), action)
+    }
+
+    /// Timing core of [`Self::nav_repeat_step`], split out so tests can supply a clock.
+    /// Consecutive same-direction events within [`NAV_REPEAT_GAP`] extend the hold; a gap or
+    /// a direction change restarts it. (The OS initial-repeat delay exceeds the gap, so the
+    /// ramp naturally begins once the fast auto-repeat stream kicks in.)
+    fn nav_repeat_step_at(&mut self, now: Instant, action: Action) -> usize {
+        let held_on = self.nav_repeat.action == Some(action)
+            && self
+                .nav_repeat
+                .last
+                .is_some_and(|t| now.duration_since(t) <= NAV_REPEAT_GAP);
+        if !held_on {
+            self.nav_repeat.started = Some(now);
+        }
+        self.nav_repeat.action = Some(action);
+        self.nav_repeat.last = Some(now);
+        let held = self
+            .nav_repeat
+            .started
+            .map_or(Duration::ZERO, |s| now.duration_since(s));
+        nav_step_for_hold(held)
     }
 
     /// Switch screens from a nav-bar click — the mouse equivalent of the `Open*` keys, but

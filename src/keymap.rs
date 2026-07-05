@@ -56,6 +56,15 @@ pub enum Action {
     PageDown,
     JumpTop,
     JumpBottom,
+    // Shift+nav range multi-select: extend the anchor..=cursor selection instead of
+    // collapsing it (the keyboard mirror of a mouse drag-select). Only the Library and
+    // Queue surfaces act on these; other list contexts ignore them.
+    SelectUp,
+    SelectDown,
+    SelectPageUp,
+    SelectPageDown,
+    SelectToTop,
+    SelectToBottom,
     Confirm,
     Enqueue,
     Back,
@@ -231,6 +240,42 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "jump_bottom",
         "Jump to bottom",
         "맨 아래로",
+    ),
+    (
+        Action::SelectUp,
+        "select_up",
+        "Extend selection up",
+        "선택 위로 확장",
+    ),
+    (
+        Action::SelectDown,
+        "select_down",
+        "Extend selection down",
+        "선택 아래로 확장",
+    ),
+    (
+        Action::SelectPageUp,
+        "select_page_up",
+        "Extend selection a page up",
+        "선택 페이지 위로",
+    ),
+    (
+        Action::SelectPageDown,
+        "select_page_down",
+        "Extend selection a page down",
+        "선택 페이지 아래로",
+    ),
+    (
+        Action::SelectToTop,
+        "select_to_top",
+        "Extend selection to top",
+        "선택 맨 위까지",
+    ),
+    (
+        Action::SelectToBottom,
+        "select_to_bottom",
+        "Extend selection to bottom",
+        "선택 맨 아래까지",
     ),
     (
         Action::Confirm,
@@ -1000,6 +1045,9 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
     let ch = |c| Chord::new(KeyCode::Char(c), KeyModifiers::empty());
     let ctrl = |c| Chord::new(KeyCode::Char(c), KeyModifiers::CONTROL);
     let alt_shift = |c| Chord::new(KeyCode::Char(c), KeyModifiers::ALT | KeyModifiers::SHIFT);
+    // Shift + a non-`Char` key (arrows / Page / Home / End). `Chord::new` preserves Shift
+    // for these, so `Shift+Up` stays distinct from `Up` and can bind range-select.
+    let shift = |code| Chord::new(code, KeyModifiers::SHIFT);
     vec![
         // Player (the main screen; self-contained transport + screen switches).
         (C::Player, A::TogglePause, ch(' ')),
@@ -1047,6 +1095,13 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Common, A::PageDown, key(KeyCode::PageDown)),
         (C::Common, A::JumpTop, key(KeyCode::Home)),
         (C::Common, A::JumpBottom, key(KeyCode::End)),
+        // Shift+nav range-select (extends the anchor..=cursor selection in Library/Queue).
+        (C::Common, A::SelectUp, shift(KeyCode::Up)),
+        (C::Common, A::SelectDown, shift(KeyCode::Down)),
+        (C::Common, A::SelectPageUp, shift(KeyCode::PageUp)),
+        (C::Common, A::SelectPageDown, shift(KeyCode::PageDown)),
+        (C::Common, A::SelectToTop, shift(KeyCode::Home)),
+        (C::Common, A::SelectToBottom, shift(KeyCode::End)),
         (C::Common, A::Confirm, key(KeyCode::Enter)),
         (C::Common, A::FocusPrev, key(KeyCode::BackTab)),
         (C::Common, A::FocusNext, key(KeyCode::Tab)),
@@ -1907,6 +1962,52 @@ mod tests {
             Action::PageDown,
             Action::JumpTop,
             Action::JumpBottom,
+        ] {
+            assert_ne!(a.id(), "?");
+            assert_ne!(a.human_label(), "?");
+        }
+    }
+
+    #[test]
+    fn shift_nav_resolves_to_select_actions() {
+        let km = KeyMap::default();
+        // Shift+nav lives in Common, so it falls through into the list contexts that act on
+        // it (Library, Queue) while staying distinct from the plain nav chords.
+        for ctx in [KeyContext::Library, KeyContext::Queue] {
+            assert_eq!(
+                km.action(ctx, parse_chord("shift+up").unwrap()),
+                Some(Action::SelectUp)
+            );
+            assert_eq!(
+                km.action(ctx, parse_chord("shift+down").unwrap()),
+                Some(Action::SelectDown)
+            );
+            assert_eq!(
+                km.action(ctx, parse_chord("shift+pageup").unwrap()),
+                Some(Action::SelectPageUp)
+            );
+            assert_eq!(
+                km.action(ctx, parse_chord("shift+pagedown").unwrap()),
+                Some(Action::SelectPageDown)
+            );
+            assert_eq!(
+                km.action(ctx, parse_chord("shift+home").unwrap()),
+                Some(Action::SelectToTop)
+            );
+            assert_eq!(
+                km.action(ctx, parse_chord("shift+end").unwrap()),
+                Some(Action::SelectToBottom)
+            );
+            // Plain nav is untouched — Shift didn't shadow it.
+            assert_eq!(km.action(ctx, parse_chord("up").unwrap()), Some(Action::MoveUp));
+        }
+        for a in [
+            Action::SelectUp,
+            Action::SelectDown,
+            Action::SelectPageUp,
+            Action::SelectPageDown,
+            Action::SelectToTop,
+            Action::SelectToBottom,
         ] {
             assert_ne!(a.id(), "?");
             assert_ne!(a.human_label(), "?");

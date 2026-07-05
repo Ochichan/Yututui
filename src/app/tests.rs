@@ -34,6 +34,15 @@ fn alt_shift(code: KeyCode) -> KeyEvent {
     }
 }
 
+fn shift(code: KeyCode) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers: KeyModifiers::SHIFT,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    }
+}
+
 /// The `af` chain set by a `SetAudioFilter` command among `cmds`, if any.
 fn af(cmds: &[Cmd]) -> Option<&str> {
     cmds.iter().find_map(|c| match c {
@@ -812,6 +821,130 @@ fn a_on_library_plays_the_whole_tab_as_a_fresh_queue() {
     assert_eq!(app.queue.len(), rows);
     assert!(app.queue.video_ids().all(|v| v != "id0" && v != "id1"));
     assert_eq!(app.prefetch.loaded_video_id.as_deref(), Some("f1"));
+}
+
+fn app_with_three_favorites() -> App {
+    let mut app = app_playing(2, 0);
+    app.library.favorites = vec![
+        Song::remote("f0", "F0", "A", "3:00"),
+        Song::remote("f1", "F1", "B", "3:00"),
+        Song::remote("f2", "F2", "C", "3:00"),
+    ];
+    app.mode = Mode::Library;
+    app.library_ui.tab = LibraryTab::Favorites;
+    app.library_ui.selected = 0;
+    app.library_ui.anchor = 0;
+    app
+}
+
+#[test]
+fn shift_down_extends_library_selection_without_collapsing_anchor() {
+    let mut app = app_with_three_favorites();
+
+    // Shift+Down twice grows the range from the anchor at row 0 to the cursor at row 2.
+    app.update(Msg::Key(shift(KeyCode::Down)));
+    app.update(Msg::Key(shift(KeyCode::Down)));
+    assert_eq!(app.library_ui.anchor, 0, "anchor stays put while extending");
+    assert_eq!(app.library_ui.selected, 2, "cursor advanced");
+
+    // The whole span feeds the existing bulk consumers.
+    let selected = app.selected_library_songs();
+    let ids: Vec<&str> = selected.iter().map(|s| s.video_id.as_str()).collect();
+    assert_eq!(ids, ["f0", "f1", "f2"]);
+}
+
+#[test]
+fn plain_down_collapses_library_selection_onto_the_cursor() {
+    let mut app = app_with_three_favorites();
+    // Build a range with Shift, then a plain Down collapses it (anchor follows the cursor).
+    app.update(Msg::Key(shift(KeyCode::Down)));
+    assert_eq!((app.library_ui.anchor, app.library_ui.selected), (0, 1));
+    app.update(Msg::Key(key(KeyCode::Down)));
+    assert_eq!(app.library_ui.selected, 2);
+    assert_eq!(app.library_ui.anchor, 2, "plain nav collapses the range");
+}
+
+#[test]
+fn shift_home_and_end_extend_library_selection_to_the_edges() {
+    let mut app = app_with_three_favorites();
+    app.library_ui.selected = 1;
+    app.library_ui.anchor = 1;
+
+    app.update(Msg::Key(shift(KeyCode::End)));
+    assert_eq!(app.library_ui.anchor, 1);
+    assert_eq!(app.library_ui.selected, 2, "Shift+End extends to the bottom");
+
+    app.library_ui.selected = 1;
+    app.library_ui.anchor = 1;
+    app.update(Msg::Key(shift(KeyCode::Home)));
+    assert_eq!(app.library_ui.anchor, 1);
+    assert_eq!(app.library_ui.selected, 0, "Shift+Home extends to the top");
+}
+
+#[test]
+fn shift_down_extends_queue_selection_and_delete_removes_the_range() {
+    let mut app = app_playing(5, 0);
+    app.update(Msg::Key(key(KeyCode::Char('c')))); // open the queue window at the playing row
+    assert!(app.queue_popup.open);
+    assert_eq!((app.queue_popup.anchor, app.queue_popup.cursor), (0, 0));
+
+    app.update(Msg::Key(shift(KeyCode::Down)));
+    app.update(Msg::Key(shift(KeyCode::Down)));
+    assert_eq!(app.queue_popup.anchor, 0, "queue anchor stays put");
+    assert_eq!(app.queue_popup.cursor, 2, "queue cursor advanced");
+
+    // Delete acts on the inclusive anchor..=cursor span (rows 0..=2), leaving 2 of 5.
+    app.update(Msg::Key(key(KeyCode::Delete)));
+    assert_eq!(app.queue.len(), 2);
+}
+
+#[test]
+fn nav_step_for_hold_ramps_up_with_hold_duration() {
+    use std::time::Duration;
+    assert_eq!(super::nav_step_for_hold(Duration::from_millis(0)), 1);
+    assert_eq!(super::nav_step_for_hold(Duration::from_millis(399)), 1);
+    assert_eq!(super::nav_step_for_hold(Duration::from_millis(400)), 2);
+    assert_eq!(super::nav_step_for_hold(Duration::from_millis(999)), 2);
+    assert_eq!(super::nav_step_for_hold(Duration::from_millis(1000)), 4);
+    assert_eq!(super::nav_step_for_hold(Duration::from_millis(1999)), 4);
+    assert_eq!(super::nav_step_for_hold(Duration::from_millis(2000)), 8);
+    assert_eq!(super::nav_step_for_hold(Duration::from_secs(10)), 8);
+}
+
+#[test]
+fn nav_repeat_step_accelerates_a_hold_but_resets_on_gap_or_direction_change() {
+    use std::time::{Duration, Instant};
+    let mut app = App::new(100);
+    let t0 = Instant::now();
+    // A steady cadence under NAV_REPEAT_GAP keeps one hold alive; cumulative hold time
+    // (not per-event spacing) drives the ramp.
+    let cadence = Duration::from_millis(150);
+
+    // Fresh press moves one row.
+    assert_eq!(app.nav_repeat_step_at(t0, Action::MoveDown), 1);
+    let mut now = t0;
+    let mut steps = Vec::new();
+    for _ in 0..8 {
+        now += cadence;
+        steps.push(app.nav_repeat_step_at(now, Action::MoveDown));
+    }
+    // Hold grows 150,300,450,600,750,900,1050,1200 ms → ramps as it crosses 400ms and 1s.
+    assert_eq!(steps, vec![1, 1, 2, 2, 2, 2, 4, 4]);
+
+    // A gap longer than NAV_REPEAT_GAP restarts the hold (a deliberate fresh tap).
+    let after_gap = now + super::NAV_REPEAT_GAP + Duration::from_millis(1);
+    assert_eq!(app.nav_repeat_step_at(after_gap, Action::MoveDown), 1);
+
+    // Switching direction also restarts, even within the window.
+    assert_eq!(
+        app.nav_repeat_step_at(after_gap + Duration::from_millis(10), Action::MoveDown),
+        1
+    );
+    assert_eq!(
+        app.nav_repeat_step_at(after_gap + Duration::from_millis(20), Action::MoveUp),
+        1,
+        "direction change resets the streak"
+    );
 }
 
 #[test]
