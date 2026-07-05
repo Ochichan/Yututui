@@ -139,7 +139,13 @@ fn draw_body(
             // runs with the animation masters OFF too, so a clipped title crawls regardless of
             // the animation toggle; it returns the text unchanged when it already fits.
             vec![Line::from(Span::styled(
-                crate::ui::anim::selected_marquee(app, ScrollSurface::NowPlaying, 0, &headline, width),
+                crate::ui::anim::selected_marquee(
+                    app,
+                    ScrollSurface::NowPlaying,
+                    0,
+                    &headline,
+                    width,
+                ),
                 primary,
             ))]
         }

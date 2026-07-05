@@ -236,6 +236,20 @@ fn should_inherit(key: &str, profile: ProcessProfile) -> bool {
         return true;
     }
 
+    // xdg-open needs these to resolve the default browser handler: Flatpak/Snap
+    // register their .desktop files via XDG_DATA_DIRS, and DE detection selects
+    // the right opener. Scoped to DesktopOpen only — mpv/yt-dlp/clipboard don't
+    // need them. Without XDG_DATA_DIRS, xdg-open can't find a Flatpak Firefox
+    // handler and fails silently.
+    if matches!(profile, ProcessProfile::DesktopOpen)
+        && matches!(
+            upper.as_str(),
+            "XDG_DATA_DIRS" | "XDG_CURRENT_DESKTOP" | "DESKTOP_SESSION" | "BROWSER"
+        )
+    {
+        return true;
+    }
+
     false
 }
 
@@ -297,6 +311,27 @@ mod tests {
         assert!(should_inherit("YTM_MPV", ProcessProfile::Daemon));
         assert!(!should_inherit("YTM_YTDLP", ProcessProfile::YtDlp));
         assert!(!should_inherit("HTTPS_PROXY", ProcessProfile::Clipboard));
+    }
+
+    #[test]
+    fn desktop_open_inherits_xdg_browser_discovery_keys() {
+        // xdg-open needs these to find a Flatpak/Snap/native default browser
+        // handler (env is otherwise cleared). Regression guard for the Flatpak
+        // Firefox "browser never opens" bug.
+        for key in [
+            "XDG_DATA_DIRS",
+            "XDG_CURRENT_DESKTOP",
+            "DESKTOP_SESSION",
+            "BROWSER",
+        ] {
+            assert!(
+                should_inherit(key, ProcessProfile::DesktopOpen),
+                "{key} must reach xdg-open"
+            );
+            // Scoped to DesktopOpen only — mpv/yt-dlp must not inherit them.
+            assert!(!should_inherit(key, ProcessProfile::YtDlp));
+            assert!(!should_inherit(key, ProcessProfile::Media));
+        }
     }
 
     #[cfg(target_os = "macos")]

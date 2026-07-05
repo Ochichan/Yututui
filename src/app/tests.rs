@@ -3895,9 +3895,9 @@ fn settings_band_edit_sets_custom_and_emits_filter() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..7 {
+    for _ in 0..8 {
         // Speed → Seek → Wheel volume → Gapless → Media controls → Auto-continue videos
-        // → EqPreset → Band(0) at row 7.
+        // → Video window → EqPreset → Band(0) at row 8.
         app.update(Msg::Key(key(KeyCode::Down)));
     }
     let cmds = app.update(Msg::Key(key(KeyCode::Right))); // raise the band
@@ -3920,8 +3920,8 @@ fn settings_close_reasserts_audio_and_persists_volume() {
     app.playback.volume = 55; // a `=`/`-` change during the session
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..7 {
-        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 7
+    for _ in 0..8 {
+        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 8
     }
     app.update(Msg::Key(key(KeyCode::Right))); // raise it (draft = Custom)
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
@@ -3938,8 +3938,8 @@ fn settings_preset_selector_snaps_from_custom_to_flat() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..7 {
-        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 7
+    for _ in 0..8 {
+        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 8
     }
     app.update(Msg::Key(key(KeyCode::Right))); // hand-tune → Custom
     assert_eq!(
@@ -4024,7 +4024,8 @@ fn settings_ai_tab_edits_masked_api_key() {
     }
     app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
     app.update(Msg::Key(key(KeyCode::Down))); // Model -> API key row
-    app.update(Msg::Key(key(KeyCode::Enter))); // start editing the key
+    app.update(Msg::Key(key(KeyCode::Enter))); // request edit → confirm popup
+    app.update(Msg::Key(key(KeyCode::Enter))); // confirm → start editing the key
     assert!(app.settings.as_ref().unwrap().editing_text);
     for c in "AIzaKey".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
@@ -4056,6 +4057,41 @@ fn settings_ai_tab_edits_masked_api_key() {
 }
 
 #[test]
+fn editing_api_key_requires_confirmation() {
+    // Activating the masked key row clears the buffer, so a stray Enter/click could blank the
+    // saved key. Guard it: the first activation asks first; only a confirm enters edit mode.
+    let mut app = app_playing(1, 0);
+    app.config.gemini_api_key = Some("KEEPME".to_owned());
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open (draft seeds from config)
+    for _ in 0..4 {
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
+    }
+    app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
+    app.update(Msg::Key(key(KeyCode::Down))); // → API key row
+
+    // Activation asks first — it does NOT drop straight into edit mode.
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(
+        app.pending_settings_confirm,
+        Some(crate::settings::SettingsConfirm::EditApiKey)
+    );
+    assert!(!app.settings.as_ref().unwrap().editing_text);
+
+    // Cancelling dismisses the popup and leaves the key untouched (never entered the editor).
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(app.pending_settings_confirm.is_none());
+    assert!(!app.settings.as_ref().unwrap().editing_text);
+    assert_eq!(app.settings.as_ref().unwrap().draft.gemini_api_key, "KEEPME");
+
+    // Ask again and confirm (Enter): now edit mode begins with a freshly cleared buffer.
+    app.update(Msg::Key(key(KeyCode::Enter))); // request
+    app.update(Msg::Key(key(KeyCode::Enter))); // confirm
+    assert!(app.pending_settings_confirm.is_none());
+    assert!(app.settings.as_ref().unwrap().editing_text);
+    assert_eq!(app.settings.as_ref().unwrap().draft.gemini_api_key, "");
+}
+
+#[test]
 fn api_key_persists_when_leaving_settings_via_close() {
     // The reported bug: type a key, then leave with Esc/q (the intuitive move) — the
     // key must survive.
@@ -4066,7 +4102,8 @@ fn api_key_persists_when_leaving_settings_via_close() {
     }
     app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
     app.update(Msg::Key(key(KeyCode::Down))); // Model -> API key row
-    app.update(Msg::Key(key(KeyCode::Enter))); // start editing
+    app.update(Msg::Key(key(KeyCode::Enter))); // request edit → confirm popup
+    app.update(Msg::Key(key(KeyCode::Enter))); // confirm → start editing
     for c in "AIzaPersist".chars() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
@@ -4093,7 +4130,8 @@ fn opening_then_leaving_key_editor_empty_keeps_existing_key() {
     }
     app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
     app.update(Msg::Key(key(KeyCode::Down))); // → API key row
-    app.update(Msg::Key(key(KeyCode::Enter))); // start editing -> buffer cleared
+    app.update(Msg::Key(key(KeyCode::Enter))); // request edit → confirm popup
+    app.update(Msg::Key(key(KeyCode::Enter))); // confirm → start editing -> buffer cleared
     let cmds = app.update(Msg::Key(key(KeyCode::Esc))); // leave editor without typing
     assert_eq!(
         save_config(&cmds).unwrap().gemini_api_key.as_deref(),
@@ -4112,7 +4150,8 @@ fn editing_existing_api_key_starts_fresh_not_appended() {
     }
     app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
     app.update(Msg::Key(key(KeyCode::Down))); // model -> API key row
-    app.update(Msg::Key(key(KeyCode::Enter))); // start editing -> masked buffer cleared
+    app.update(Msg::Key(key(KeyCode::Enter))); // request edit → confirm popup
+    app.update(Msg::Key(key(KeyCode::Enter))); // confirm → start editing -> masked buffer cleared
     assert_eq!(
         app.settings.as_ref().unwrap().draft.gemini_api_key,
         "",
@@ -4144,7 +4183,8 @@ fn clicking_away_from_secret_editor_keeps_the_saved_key() {
     }
     app.update(Msg::Key(key(KeyCode::Down))); // AiEnabled -> Model
     app.update(Msg::Key(key(KeyCode::Down))); // → API key row
-    app.update(Msg::Key(key(KeyCode::Enter))); // start editing -> buffer cleared, key stashed
+    app.update(Msg::Key(key(KeyCode::Enter))); // request edit → confirm popup
+    app.update(Msg::Key(key(KeyCode::Enter))); // confirm → start editing -> buffer cleared, key stashed
     assert_eq!(app.settings.as_ref().unwrap().draft.gemini_api_key, "");
 
     // A click on another control re-focuses its row through this path.

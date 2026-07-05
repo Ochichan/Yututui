@@ -1255,9 +1255,14 @@ impl App {
         match event {
             TransferEvent::AuthUrl(url) => {
                 open_in_browser(&url);
+                // Also copy the URL: xdg-open can fail silently (e.g. a Flatpak
+                // browser the cleared env can't resolve), and this is the only
+                // path that would otherwise leave the user no way to reach the
+                // approval page.
+                copy_to_clipboard(&url);
                 self.status.text = t!(
-                    "Approve ytm-tui in the browser…",
-                    "브라우저에서 ytm-tui를 승인해 주세요…"
+                    "Approve ytm-tui in the browser (link copied — paste it if nothing opened)",
+                    "브라우저에서 ytm-tui를 승인해 주세요 (링크를 클립보드에 복사했어요 — 안 열리면 붙여넣기)"
                 )
                 .to_owned();
                 self.status.kind = StatusKind::Info;
@@ -1398,9 +1403,14 @@ impl App {
         match event {
             ScrobbleEvent::AuthUrl(url) => {
                 open_in_browser(&url);
+                // Also copy the URL: xdg-open can fail silently (e.g. a Flatpak
+                // browser the cleared env can't resolve), and this is the only
+                // path that would otherwise leave the user no way to reach the
+                // approval page.
+                copy_to_clipboard(&url);
                 self.status.text = t!(
-                    "Approve ytm-tui in the browser…",
-                    "브라우저에서 ytm-tui를 승인해 주세요…"
+                    "Approve ytm-tui in the browser (link copied — paste it if nothing opened)",
+                    "브라우저에서 ytm-tui를 승인해 주세요 (링크를 클립보드에 복사했어요 — 안 열리면 붙여넣기)"
                 )
                 .to_owned();
                 self.status.kind = StatusKind::Info;
