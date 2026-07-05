@@ -255,4 +255,55 @@ mod tests {
         assert!(!is_korean());
         assert_eq!(t!("Settings", "설정"), "Settings");
     }
+
+    #[test]
+    fn dj_gem_language_cycle_wraps_both_ways() {
+        assert_eq!(DjGemLanguage::default(), DjGemLanguage::Auto);
+        // Auto leads; forward steps through the five languages and wraps back to Auto.
+        assert_eq!(DjGemLanguage::Auto.cycled(true), DjGemLanguage::English);
+        assert_eq!(
+            DjGemLanguage::ChineseTraditional.cycled(true),
+            DjGemLanguage::Auto
+        );
+        assert_eq!(
+            DjGemLanguage::Auto.cycled(false),
+            DjGemLanguage::ChineseTraditional
+        );
+    }
+
+    #[test]
+    fn dj_gem_reply_directive_matches_legacy_and_is_absent_for_auto() {
+        // Auto → no directive (the base prompt's "reply in the user's language" stays in charge).
+        assert!(DjGemLanguage::Auto.reply_directive().is_none());
+        // The Korean line must be byte-for-byte the string the app used before this setting, so a
+        // Korean UI keeps its exact prior behavior.
+        assert_eq!(
+            DjGemLanguage::Korean.reply_directive().unwrap(),
+            "Respond in Korean (한국어) regardless of the language the user writes in."
+        );
+        assert_eq!(
+            DjGemLanguage::ChineseSimplified.reply_directive().unwrap(),
+            "Respond in Simplified Chinese (简体中文) regardless of the language the user writes in."
+        );
+    }
+
+    #[test]
+    fn dj_gem_language_u8_mapping_round_trips() {
+        // The global is an `AtomicU8`; every variant must survive the `as u8` / `from_u8`
+        // round-trip the setter/getter rely on. Pure (no shared global) so it can't flake
+        // against parallel tests that touch the process-wide value.
+        for lang in DjGemLanguage::CYCLE {
+            assert_eq!(DjGemLanguage::from_u8(lang as u8), lang);
+        }
+    }
+
+    #[test]
+    fn dj_gem_serde_uses_snake_case_tags() {
+        assert_eq!(
+            serde_json::to_string(&DjGemLanguage::ChineseSimplified).unwrap(),
+            "\"chinese_simplified\""
+        );
+        let back: DjGemLanguage = serde_json::from_str("\"chinese_traditional\"").unwrap();
+        assert_eq!(back, DjGemLanguage::ChineseTraditional);
+    }
 }

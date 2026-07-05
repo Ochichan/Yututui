@@ -3425,6 +3425,70 @@ fn curating_mode_cycles_on_the_ai_tab_and_persists_to_ai_enabled() {
 }
 
 #[test]
+fn dj_gem_reply_language_cycles_on_the_ai_tab_and_persists() {
+    let _guard = crate::i18n::lock_for_test(); // English UI
+    use crate::i18n::DjGemLanguage;
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings (General)
+    for _ in 0..4 {
+        app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab
+    }
+    assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
+    // Down to Reply language (index 3: AiEnabled, Model, ApiKey, ReplyLanguage).
+    for _ in 0..3 {
+        app.update(Msg::Key(key(KeyCode::Down)));
+    }
+    assert_eq!(
+        app.settings.as_ref().unwrap().current_field(),
+        Some(Field::DjGemLanguage)
+    );
+    app.update(Msg::Key(key(KeyCode::Right))); // Auto → English (CYCLE order)
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.dj_gem_language,
+        DjGemLanguage::English
+    );
+    assert!(app.status.text.contains("Reply language:"));
+    // Closing commits the pick into config and emits a save.
+    let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert_eq!(app.config.dj_gem_language, DjGemLanguage::English);
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+}
+
+#[test]
+fn dj_gem_reply_language_is_locked_to_english_under_retro() {
+    let _guard = crate::i18n::lock_for_test();
+    use crate::i18n::DjGemLanguage;
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    for _ in 0..4 {
+        app.update(Msg::Key(key(KeyCode::Tab)));
+    }
+    app.settings.as_mut().unwrap().draft.retro_mode = true;
+    for _ in 0..3 {
+        app.update(Msg::Key(key(KeyCode::Down)));
+    }
+    assert_eq!(
+        app.settings.as_ref().unwrap().current_field(),
+        Some(Field::DjGemLanguage)
+    );
+    app.update(Msg::Key(key(KeyCode::Right)));
+    // The underlying pick is untouched (still Auto) and the row explains the lock.
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.dj_gem_language,
+        DjGemLanguage::Auto
+    );
+    assert!(app.status.text.contains("Retro mode replies in English"));
+    assert_eq!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .draft
+            .value_display(Field::DjGemLanguage),
+        "English (Retro mode)"
+    );
+}
+
+#[test]
 fn streaming_source_cycles_on_general_tab_and_persists() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);

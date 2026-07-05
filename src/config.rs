@@ -1836,4 +1836,40 @@ mod tests {
         assert_eq!(cfg.cookie.as_deref(), Some("SID=fromold"));
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn effective_dj_gem_language_resolves_retro_auto_and_concrete() {
+        // A concrete choice is used as-is, regardless of UI language.
+        let cfg = Config {
+            dj_gem_language: DjGemLanguage::Japanese,
+            language: Language::Korean,
+            ..Config::default()
+        };
+        assert_eq!(cfg.effective_dj_gem_language(), DjGemLanguage::Japanese);
+
+        // Auto + Korean UI → Korean (preserves the historical Korean-UI behavior).
+        let cfg = Config {
+            dj_gem_language: DjGemLanguage::Auto,
+            language: Language::Korean,
+            ..Config::default()
+        };
+        assert_eq!(cfg.effective_dj_gem_language(), DjGemLanguage::Korean);
+
+        // Auto + non-Korean UI → stays Auto (no forced directive; model replies in kind).
+        let cfg = Config {
+            dj_gem_language: DjGemLanguage::Auto,
+            language: Language::English,
+            ..Config::default()
+        };
+        assert_eq!(cfg.effective_dj_gem_language(), DjGemLanguage::Auto);
+
+        // Retro mode overrides any choice to English.
+        let cfg = Config {
+            dj_gem_language: DjGemLanguage::Korean,
+            retro_mode: true,
+            language: Language::Korean,
+            ..Config::default()
+        };
+        assert_eq!(cfg.effective_dj_gem_language(), DjGemLanguage::English);
+    }
 }
