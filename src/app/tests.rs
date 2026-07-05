@@ -3381,9 +3381,9 @@ fn streaming_mode_cycles_on_the_ai_tab_and_persists() {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab (index 4)
     }
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::Ai);
-    // Fields: AiEnabled(0), Model(1), ApiKey(2), RomanizedTitles(3), Clear cache(4),
-    // AutoplayStreaming(5), CuratingMode(6), StreamingMode(7).
-    for _ in 0..7 {
+    // Fields: AiEnabled(0), Model(1), ApiKey(2), ReplyLanguage(3), RomanizedTitles(4),
+    // Clear cache(5), AutoplayStreaming(6), CuratingMode(7), StreamingMode(8).
+    for _ in 0..8 {
         app.update(Msg::Key(key(KeyCode::Down)));
     }
     app.update(Msg::Key(key(KeyCode::Right))); // Balanced → Discovery
@@ -3408,8 +3408,8 @@ fn curating_mode_cycles_on_the_ai_tab_and_persists_to_ai_enabled() {
     for _ in 0..4 {
         app.update(Msg::Key(key(KeyCode::Tab))); // → DJ Gem tab
     }
-    // Down to CuratingMode (index 6), then step it: DJ Gem → YT Native.
-    for _ in 0..6 {
+    // Down to CuratingMode (index 7), then step it: DJ Gem → YT Native.
+    for _ in 0..7 {
         app.update(Msg::Key(key(KeyCode::Down)));
     }
     app.update(Msg::Key(key(KeyCode::Right)));
