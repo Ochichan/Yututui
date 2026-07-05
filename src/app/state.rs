@@ -253,6 +253,12 @@ pub struct Playback {
     pub speed: f64,
     /// Current live-radio now-playing metadata, when the active stream exposes it.
     pub stream_now_playing: Option<StreamNowPlaying>,
+    /// mpv `audio-codec-name` for the active stream (e.g. `mp3`, `aac`); the radio recorder
+    /// maps it to the passthrough container extension.
+    pub audio_codec: Option<String>,
+    /// mpv `file-format` (container) for the active stream; fallback/HLS signal for the
+    /// recorder's extension choice.
+    pub file_format: Option<String>,
     /// mpv `demuxer-cache-time`: the newest demuxed timestamp. On a live radio stream this
     /// approximates the live edge, so `cache_time − time_pos` is how far behind live the
     /// playhead sits (the timeshift depth).
@@ -310,6 +316,27 @@ pub struct SpotifyPicker {
     pub items: Vec<crate::transfer::actor::PickerPlaylist>,
     pub selected: usize,
 }
+
+/// The radio-recording settings popup (opened from the Playback tab's one radio item). Edits
+/// the live `SettingsDraft.recording_*` fields directly, so its values commit with the rest of
+/// the draft when Settings closes.
+#[derive(Default)]
+pub struct RecordingSettingsPopup {
+    /// Focused row: 0 mode · 1 min · 2 max · 3 folder · 4 past-tracks · 5 notify · 6 browse.
+    pub row: usize,
+    /// True while the output-folder text field is being typed into.
+    pub editing_dir: bool,
+}
+
+/// The recordings browser (Decide-mode save/discard/play over `recorder.history`).
+#[derive(Default)]
+pub struct RecordingsBrowser {
+    pub selected: usize,
+}
+
+/// Row count of the recording-settings popup: mode · min · max · folder · past-tracks ·
+/// notify · browse.
+pub const RECORDING_POPUP_ROWS: usize = 7;
 
 /// Lyrics-panel state: whether the panel is shown, the in-flight flag, and the fetched
 /// lyrics for the current track.

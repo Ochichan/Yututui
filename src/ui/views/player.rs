@@ -411,6 +411,16 @@ fn status_line_parts_at(
             Some(MouseTarget::Player(Action::IdentifyNowPlaying)),
             Cow::Borrowed(t!("ID?", "지듣노")),
         ));
+        // While the radio recorder is writing a track, a click-to-open `REC` chip. A plain
+        // text label (not a glyph) for the same EAW-neutral reason as `ID?` above — an
+        // ambiguous-width mark would drift later hit rects on some CJK terminals.
+        if app.recorder.is_recording() {
+            parts.push((None, Cow::Owned(gap.to_owned())));
+            parts.push((
+                Some(MouseTarget::Player(Action::ToggleRecordings)),
+                Cow::Borrowed(t!("REC", "녹음")),
+            ));
+        }
     } else {
         parts.push((None, Cow::Owned(gap.to_owned())));
         parts.push((

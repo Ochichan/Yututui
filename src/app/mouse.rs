@@ -806,7 +806,9 @@ impl App {
             return None;
         }
         let fields = st.fields();
-        let sections = st.tab.sections();
+        // `st.sections()` (not `st.tab.sections()`) so the scroll length matches the
+        // visibility-filtered field list in every mode.
+        let sections = st.sections();
         Some(if sections.is_empty() {
             fields.len()
         } else {

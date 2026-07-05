@@ -122,6 +122,10 @@ impl SettingsTab {
                     Field::Gapless,
                     Field::MediaControls,
                     Field::AutoContinueVideos,
+                    // Radio-only entry (the recording popup); filtered out by
+                    // `SettingsState::fields` when not in radio mode. Keep it last in the
+                    // "Now Playing" section so the static count below stays partition-correct.
+                    Field::RadioRecording,
                     Field::EqPreset,
                 ];
                 f.extend((0..eq::BANDS).map(Field::Band));
@@ -202,7 +206,10 @@ impl SettingsTab {
     pub fn sections(self) -> Vec<(&'static str, usize)> {
         match self {
             SettingsTab::Playback => vec![
-                (t!("Now Playing", "현재 재생"), 6),
+                // 7 = the 6 Now-Playing controls + the radio-only recording entry. When not
+                // in radio mode, `SettingsState::sections` decrements this back to 6 in
+                // lockstep with `SettingsState::fields` hiding `RadioRecording`.
+                (t!("Now Playing", "현재 재생"), 7),
                 (t!("EQ", "EQ"), eq::BANDS + 2),
             ],
             SettingsTab::Graphics => vec![
@@ -270,6 +277,9 @@ pub enum Field {
     /// When the `v` video overlay is open, auto-play the next queue track's video at the
     /// end of the current one (TUI only).
     AutoContinueVideos,
+    /// Opens the radio-recording settings popup. Radio-mode only — hidden outside it by
+    /// [`SettingsState::fields`]; lives in the "Now Playing" section.
+    RadioRecording,
     // EQ
     EqPreset,
     Band(usize),
@@ -549,6 +559,7 @@ impl Field {
             Field::ResetKeybindings
             | Field::ResetAll
             | Field::ClearRomanizedTitleCache
+            | Field::RadioRecording
             | Field::LastfmConnect
             | Field::SpotifyConnect
             | Field::SpotifyImport => FieldKind::Button,
@@ -627,6 +638,7 @@ impl Field {
             Field::AutoContinueVideos => {
                 t!("Auto-continue videos", "영상 자동 이어재생").to_owned()
             }
+            Field::RadioRecording => t!("Radio recording", "라디오 녹음").to_owned(),
             Field::AutoplayStreaming => t!("Autoplay", "자동재생").to_owned(),
             Field::CuratingMode => t!("Curating mode", "큐레이팅 방식").to_owned(),
             Field::StreamingMode => t!("Curating style", "큐레이팅 스타일").to_owned(),
@@ -782,12 +794,23 @@ pub struct SettingsDraft {
     /// offers a one-press browser reconnect instead of disconnect.
     pub spotify_stale: bool,
     pub spotify_username: String,
+    // Radio recording ----------------------------------------------------------
+    /// Recording mode (Off / Decide / Save all); the `RadioRecording` button summarizes it.
+    pub recording_mode: crate::recorder::RecordingMode,
+    pub recording_min_seconds: u32,
+    pub recording_max_seconds: u32,
+    /// Recordings folder ("" = the default). Edited inside the recording popup, not as a
+    /// top-level text field — so the Playback tab stays at one radio item.
+    pub recording_dir: String,
+    pub recording_past_tracks: usize,
+    pub recording_notify: bool,
 }
 
 impl SettingsDraft {
     /// Render the current value of `field` for display.
     pub fn value_display(&self, field: Field) -> String {
         match field {
+            Field::RadioRecording => self.recording_mode.label(),
             // Each language names itself, so this value is the same regardless of the active
             // UI language (English / 한국어).
             Field::Language => self.language.native_name().to_owned(),
@@ -1022,6 +1045,16 @@ impl SettingsDraft {
         cfg.gapless = Some(self.gapless);
         cfg.media_controls = Some(self.media_controls);
         cfg.auto_continue_videos = Some(self.auto_continue_videos);
+        // Radio recording. Keep max strictly above min so the two sliders can't invert.
+        cfg.recording.mode = self.recording_mode;
+        cfg.recording.min_duration_secs = self.recording_min_seconds;
+        cfg.recording.max_duration_secs = self
+            .recording_max_seconds
+            .max(self.recording_min_seconds + 1);
+        cfg.recording.track_directory =
+            blank_to_none(&self.recording_dir).map(std::path::PathBuf::from);
+        cfg.recording.past_tracks_count = self.recording_past_tracks;
+        cfg.recording.notify = self.recording_notify;
         cfg.autoplay_streaming = Some(self.autoplay_streaming);
         cfg.streaming.mode = self.streaming_mode;
         cfg.streaming.ai.enabled = self.curating_mode.uses_ai();
@@ -1091,16 +1124,49 @@ pub struct SettingsState {
     pub keymap: KeyMap,
     /// The binding being rebound (Keys tab), while waiting to capture its new key.
     pub capturing: Option<(KeyContext, Action)>,
+    /// Whether the user was in a radio context when Settings opened — dedicated Radio mode OR
+    /// a radio station currently loaded/playing. Gates the radio-only `RadioRecording` item's
+    /// visibility. Captured once at open (neither input can change while Settings is open), so
+    /// it never goes stale mid-session.
+    pub radio_mode: bool,
 }
 
 impl SettingsState {
-    /// The current tab's fields after applying draft-dependent visibility rules.
+    /// The current tab's fields after applying draft/mode-dependent visibility rules.
     pub fn fields(&self) -> Vec<Field> {
         let mut fields = self.tab.fields();
         if self.tab == SettingsTab::Ai && self.draft.retro_mode {
             fields.retain(|field| *field != Field::ClearRomanizedTitleCache);
         }
+        if self.tab == SettingsTab::Playback && !self.radio_mode {
+            fields.retain(|field| *field != Field::RadioRecording);
+        }
         fields
+    }
+
+    /// Section headers whose counts partition [`Self::fields`] exactly, after applying the
+    /// same visibility rules. `render_fields` and the mouse scroll-length math walk these in
+    /// lockstep with `fields()`, so both MUST go through this (not `self.tab.sections()`) — a
+    /// hidden field otherwise desyncs the counts and `fields[i]` panics. This also fixes the
+    /// pre-existing Ai+retro desync (Assistant count) for free.
+    pub fn sections(&self) -> Vec<(&'static str, usize)> {
+        let mut sections = self.tab.sections();
+        match self.tab {
+            // `RadioRecording` lives in "Now Playing" (section 0); hidden outside radio mode.
+            SettingsTab::Playback if !self.radio_mode => {
+                if let Some((_, n)) = sections.first_mut() {
+                    *n = n.saturating_sub(1);
+                }
+            }
+            // `ClearRomanizedTitleCache` lives in "Assistant" (section 0); hidden in retro mode.
+            SettingsTab::Ai if self.draft.retro_mode => {
+                if let Some((_, n)) = sections.first_mut() {
+                    *n = n.saturating_sub(1);
+                }
+            }
+            _ => {}
+        }
+        sections
     }
 
     /// The field the cursor is on, or `None` when the tab has no `Field`s (the Keys tab, which
@@ -1196,6 +1262,49 @@ mod tests {
             spotify_connected: false,
             spotify_stale: false,
             spotify_username: String::new(),
+            recording_mode: crate::recorder::RecordingMode::Nothing,
+            recording_min_seconds: 30,
+            recording_max_seconds: 900,
+            recording_dir: String::new(),
+            recording_past_tracks: 10,
+            recording_notify: true,
+        }
+    }
+
+    /// A `SettingsState` on the given tab for partition tests.
+    fn state_on(tab: SettingsTab, radio_mode: bool, retro: bool) -> SettingsState {
+        let mut draft = base_draft();
+        draft.retro_mode = retro;
+        SettingsState {
+            tab,
+            row: 0,
+            draft,
+            editing_text: false,
+            secret_restore: None,
+            keymap: KeyMap::default(),
+            capturing: None,
+            radio_mode,
+        }
+    }
+
+    #[test]
+    fn playback_sections_partition_in_both_radio_states() {
+        let _guard = crate::i18n::lock_for_test();
+        for radio in [false, true] {
+            let st = state_on(SettingsTab::Playback, radio, false);
+            let sum: usize = st.sections().iter().map(|(_, n)| n).sum();
+            assert_eq!(sum, st.fields().len(), "radio={radio}");
+            assert_eq!(st.fields().contains(&Field::RadioRecording), radio);
+        }
+    }
+
+    #[test]
+    fn ai_sections_partition_under_retro() {
+        let _guard = crate::i18n::lock_for_test();
+        for retro in [false, true] {
+            let st = state_on(SettingsTab::Ai, false, retro);
+            let sum: usize = st.sections().iter().map(|(_, n)| n).sum();
+            assert_eq!(sum, st.fields().len(), "retro={retro}");
         }
     }
 
@@ -1316,17 +1425,18 @@ mod tests {
     #[test]
     fn playback_tab_groups_now_playing_and_eq() {
         let f = SettingsTab::Playback.fields();
-        // Speed + SeekInterval + WheelVolume + Gapless + MediaControls + AutoContinueVideos,
-        // then EqPreset + ten bands + Normalize.
-        assert_eq!(f.len(), 6 + 1 + eq::BANDS + 1);
+        // Speed + SeekInterval + WheelVolume + Gapless + MediaControls + AutoContinueVideos +
+        // RadioRecording (radio-only), then EqPreset + ten bands + Normalize.
+        assert_eq!(f.len(), 7 + 1 + eq::BANDS + 1);
         assert_eq!(f[0], Field::Speed);
         assert_eq!(f[1], Field::SeekInterval);
         assert_eq!(f[2], Field::MouseWheelVolume);
         assert_eq!(f[3], Field::Gapless);
         assert_eq!(f[4], Field::MediaControls);
         assert_eq!(f[5], Field::AutoContinueVideos);
-        assert_eq!(f[6], Field::EqPreset);
-        assert_eq!(f[6 + eq::BANDS + 1], Field::Normalize);
+        assert_eq!(f[6], Field::RadioRecording);
+        assert_eq!(f[7], Field::EqPreset);
+        assert_eq!(f[7 + eq::BANDS + 1], Field::Normalize);
         assert_eq!(Field::MouseWheelVolume.kind(), FieldKind::Toggle);
         assert_eq!(base_draft().value_display(Field::MouseWheelVolume), "[x]");
         let total: usize = SettingsTab::Playback
@@ -1556,10 +1666,25 @@ mod tests {
             spotify_connected: true,
             spotify_stale: false,
             spotify_username: "listener".to_owned(),
+            recording_mode: crate::recorder::RecordingMode::Decide,
+            recording_min_seconds: 20,
+            recording_max_seconds: 1200,
+            recording_dir: "/tmp/recs".to_owned(),
+            recording_past_tracks: 25,
+            recording_notify: false,
         };
 
         let mut cfg = Config::default();
         draft.apply_to(&mut cfg);
+        assert_eq!(cfg.recording.mode, crate::recorder::RecordingMode::Decide);
+        assert_eq!(cfg.recording.min_duration_secs, 20);
+        assert_eq!(cfg.recording.max_duration_secs, 1200);
+        assert_eq!(
+            cfg.recording.track_directory,
+            Some(PathBuf::from("/tmp/recs"))
+        );
+        assert_eq!(cfg.recording.past_tracks_count, 25);
+        assert!(!cfg.recording.notify);
         assert_eq!(cfg.language, Language::Korean);
         assert_eq!(cfg.ai_enabled, Some(false));
         assert_eq!(cfg.romanized_titles, Some(true));

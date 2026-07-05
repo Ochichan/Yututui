@@ -177,7 +177,10 @@ impl App {
         self.prefetch.loaded_video_id = None;
         self.video.paused_audio = false;
         self.dirty = true;
-        vec![Cmd::Player(PlayerCmd::Stop)]
+        // Cut any in-progress radio recording before stopping mpv (mid-song → dropped).
+        let mut cmds = self.recorder_teardown();
+        cmds.push(Cmd::Player(PlayerCmd::Stop));
+        cmds
     }
 
     /// macOS like/dislike commands: a targeted set/clear of the same tri-state the

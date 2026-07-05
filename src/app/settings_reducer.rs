@@ -135,6 +135,12 @@ impl App {
             spotify_connected,
             spotify_stale,
             spotify_username: String::new(),
+            recording_mode: self.config.recording.mode,
+            recording_min_seconds: self.config.effective_recording_min(),
+            recording_max_seconds: self.config.effective_recording_max(),
+            recording_dir: path_str(&self.config.recording.track_directory),
+            recording_past_tracks: self.config.effective_recording_past_tracks(),
+            recording_notify: self.config.recording.notify,
         };
         self.settings = Some(Box::new(SettingsState {
             tab: SettingsTab::General,
@@ -144,6 +150,11 @@ impl App {
             secret_restore: None,
             keymap: self.keymap.clone(),
             capturing: None,
+            // Show the radio-recording item whenever the user is in a radio context —
+            // dedicated Radio mode OR a radio station is currently loaded/playing (recording
+            // runs on any station, not only in the dedicated UI), so it's never hidden when
+            // it's actually usable.
+            radio_mode: self.radio_dedicated_mode || self.current_is_radio_stream(),
         }));
         self.mode = Mode::Settings;
         self.pending_settings_confirm = None;
@@ -154,6 +165,12 @@ impl App {
     }
 
     pub(in crate::app) fn on_key_settings(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        // The recording-settings popup fully owns input while open (checked before the base
+        // text-edit path so the popup's own output-folder editor works). The recordings browser
+        // is intercepted higher up in `on_key`, since it can also open over the player.
+        if self.recording_settings.is_some() {
+            return self.recording_settings_key(k);
+        }
         // While editing a text field, keys feed the buffer until Enter/Esc commits it.
         if self.settings.as_ref().is_some_and(|s| s.editing_text) {
             return self.settings_edit_text(k);
@@ -705,6 +722,7 @@ impl App {
             | Field::ResetKeybindings
             | Field::ResetAll
             | Field::ClearRomanizedTitleCache
+            | Field::RadioRecording
             | Field::LastfmConnect
             | Field::SpotifyConnect
             | Field::SpotifyImport => Vec::new(),
@@ -900,6 +918,11 @@ impl App {
                         crate::transfer::actor::TransferCmd::ListSpotifyPlaylists,
                     )]
                 }
+                Field::RadioRecording => {
+                    self.recording_settings = Some(RecordingSettingsPopup::default());
+                    self.dirty = true;
+                    Vec::new()
+                }
                 _ => Vec::new(),
             },
             _ => Vec::new(),
@@ -963,6 +986,208 @@ impl App {
                 Vec::new()
             }
             _ => Vec::new(),
+        }
+    }
+
+    /// Keys while the radio-recording settings popup is open. Rows: 0 mode · 1 min · 2 max ·
+    /// 3 folder · 4 past-tracks · 5 notify · 6 browse. Edits go straight into the draft.
+    pub(in crate::app) fn recording_settings_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        // The output-folder text field captures every key until Enter/Esc commits it.
+        if self
+            .recording_settings
+            .as_ref()
+            .is_some_and(|p| p.editing_dir)
+        {
+            return self.recording_dir_edit(k);
+        }
+        let action = self
+            .keymap
+            .action(KeyContext::Settings, k.into())
+            .or_else(|| Self::settings_safety_action(k));
+        if self.recording_settings.is_none() {
+            return Vec::new();
+        }
+        self.dirty = true;
+        match action {
+            Some(Action::MoveUp) => {
+                if let Some(p) = self.recording_settings.as_mut() {
+                    p.row = p.row.saturating_sub(1);
+                }
+                Vec::new()
+            }
+            Some(Action::MoveDown) => {
+                if let Some(p) = self.recording_settings.as_mut() {
+                    p.row = (p.row + 1).min(RECORDING_POPUP_ROWS - 1);
+                }
+                Vec::new()
+            }
+            Some(Action::ChangeDecrease) => self.recording_settings_adjust(-1),
+            Some(Action::ChangeIncrease) => self.recording_settings_adjust(1),
+            Some(Action::Confirm) => self.recording_settings_confirm(),
+            Some(Action::SettingsCancel | Action::Back) => {
+                self.recording_settings = None;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Adjust the focused popup knob by one step (`dir >= 0` = increase).
+    fn recording_settings_adjust(&mut self, dir: i32) -> Vec<Cmd> {
+        use crate::config::{
+            RECORDING_MAX_SECONDS_MAX, RECORDING_MAX_SECONDS_MIN, RECORDING_MIN_SECONDS_MAX,
+            RECORDING_MIN_SECONDS_MIN, RECORDING_PAST_TRACKS_MAX, RECORDING_PAST_TRACKS_MIN,
+        };
+        let row = self.recording_settings.as_ref().map(|p| p.row).unwrap_or(0);
+        let up = dir >= 0;
+        let Some(st) = self.settings.as_mut() else {
+            return Vec::new();
+        };
+        let d = &mut st.draft;
+        match row {
+            0 => d.recording_mode = d.recording_mode.cycled(up),
+            1 => {
+                let step: i64 = 5;
+                let v = d.recording_min_seconds as i64 + if up { step } else { -step };
+                d.recording_min_seconds = v.clamp(
+                    RECORDING_MIN_SECONDS_MIN as i64,
+                    RECORDING_MIN_SECONDS_MAX as i64,
+                ) as u32;
+                // Keep max strictly above min.
+                if d.recording_max_seconds <= d.recording_min_seconds {
+                    d.recording_max_seconds =
+                        (d.recording_min_seconds + 60).min(RECORDING_MAX_SECONDS_MAX);
+                }
+            }
+            2 => {
+                let step: i64 = 60; // one minute
+                let v = d.recording_max_seconds as i64 + if up { step } else { -step };
+                let floor = (d.recording_min_seconds + 1) as i64;
+                d.recording_max_seconds = v
+                    .clamp(
+                        RECORDING_MAX_SECONDS_MIN as i64,
+                        RECORDING_MAX_SECONDS_MAX as i64,
+                    )
+                    .max(floor) as u32;
+            }
+            4 => {
+                let v = d.recording_past_tracks as i64 + if up { 1 } else { -1 };
+                d.recording_past_tracks = v.clamp(
+                    RECORDING_PAST_TRACKS_MIN as i64,
+                    RECORDING_PAST_TRACKS_MAX as i64,
+                ) as usize;
+            }
+            5 => d.recording_notify = !d.recording_notify,
+            _ => {}
+        }
+        self.dirty = true;
+        Vec::new()
+    }
+
+    /// Enter/Confirm on a popup row.
+    fn recording_settings_confirm(&mut self) -> Vec<Cmd> {
+        let row = self.recording_settings.as_ref().map(|p| p.row).unwrap_or(0);
+        match row {
+            3 => {
+                if let Some(p) = self.recording_settings.as_mut() {
+                    p.editing_dir = true;
+                }
+                self.dirty = true;
+                Vec::new()
+            }
+            6 => {
+                // Open the recordings browser (the popup stays behind it).
+                self.recordings_browser = Some(RecordingsBrowser::default());
+                self.dirty = true;
+                Vec::new()
+            }
+            // Mode / sliders / toggle: Enter nudges like ChangeIncrease.
+            _ => self.recording_settings_adjust(1),
+        }
+    }
+
+    /// Feed one key into the output-folder buffer while `editing_dir` is set.
+    fn recording_dir_edit(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        self.dirty = true;
+        match k.code {
+            KeyCode::Enter | KeyCode::Esc => {
+                if let Some(p) = self.recording_settings.as_mut() {
+                    p.editing_dir = false;
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(st) = self.settings.as_mut() {
+                    st.draft.recording_dir.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(st) = self.settings.as_mut() {
+                    st.draft.recording_dir.push(c);
+                }
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Keys while the recordings browser is open: ↑/↓ move, `s` save, `d` discard/cancel,
+    /// Enter play/reveal, its toggle / Esc / Back close it.
+    pub(in crate::app) fn recordings_browser_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        let chord = k.into();
+        let close = k.code == KeyCode::Esc
+            || matches!(
+                self.keymap.action(KeyContext::Common, chord),
+                Some(Action::Back)
+            )
+            || matches!(
+                self.keymap.action(KeyContext::Player, chord),
+                Some(Action::ToggleRecordings)
+            );
+        if close {
+            self.recordings_browser = None;
+            self.dirty = true;
+            return Vec::new();
+        }
+        let action = self
+            .keymap
+            .action(KeyContext::Settings, chord)
+            .or_else(|| Self::settings_safety_action(k));
+        let ids = self.recordings_browser_ids();
+        let selected = self
+            .recordings_browser
+            .as_ref()
+            .map(|b| b.selected.min(ids.len().saturating_sub(1)))
+            .unwrap_or(0);
+        self.dirty = true;
+        match action {
+            Some(Action::MoveUp) => {
+                if let Some(b) = self.recordings_browser.as_mut() {
+                    b.selected = selected.saturating_sub(1);
+                }
+                Vec::new()
+            }
+            Some(Action::MoveDown) => {
+                if let Some(b) = self.recordings_browser.as_mut() {
+                    b.selected = (selected + 1).min(ids.len().saturating_sub(1));
+                }
+                Vec::new()
+            }
+            _ => {
+                let id = ids.get(selected).copied();
+                match k.code {
+                    KeyCode::Char('s') => id.map(|id| self.recorder_save(id)).unwrap_or_default(),
+                    KeyCode::Char('d') => {
+                        id.map(|id| self.recorder_discard(id)).unwrap_or_default()
+                    }
+                    KeyCode::Enter => {
+                        if let Some(id) = id {
+                            self.recorder_reveal(id);
+                        }
+                        Vec::new()
+                    }
+                    _ => Vec::new(),
+                }
+            }
         }
     }
 
@@ -1329,6 +1554,13 @@ impl App {
             d.listenbrainz_enabled = true;
             d.scrobble_local_files = true;
             d.spotify_redirect_port = String::new();
+            // Radio recording: reset the settings, but never touch recordings already on disk.
+            d.recording_mode = def.recording.mode;
+            d.recording_min_seconds = def.effective_recording_min();
+            d.recording_max_seconds = def.effective_recording_max();
+            d.recording_dir = String::new();
+            d.recording_past_tracks = def.effective_recording_past_tracks();
+            d.recording_notify = def.recording.notify;
             st.keymap = KeyMap::default();
             st.editing_text = false;
         }

@@ -46,6 +46,9 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, e
         (4, "volume"),
         (5, "metadata"),
         (6, "demuxer-cache-time"),
+        // For the radio recorder: pick the passthrough container from the stream codec.
+        (7, "audio-codec-name"),
+        (8, "file-format"),
     ] {
         if let Err(e) = write_json(&conn, &proto::cmd_observe(id, prop)).await {
             tracing::warn!(error = %e, property = prop, "failed to observe mpv property");
@@ -176,6 +179,12 @@ fn dispatch_incoming(
             }
             "metadata" => {
                 emit(PlayerEvent::Metadata(value));
+            }
+            "audio-codec-name" => {
+                emit(PlayerEvent::AudioCodec(value.as_str().map(str::to_owned)));
+            }
+            "file-format" => {
+                emit(PlayerEvent::FileFormat(value.as_str().map(str::to_owned)));
             }
             "demuxer-cache-time" => match value.as_f64() {
                 // High-rate like time-pos → dedup to whole seconds.

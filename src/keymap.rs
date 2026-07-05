@@ -96,6 +96,8 @@ pub enum Action {
     ToggleVideoLayout,
     /// The "what's playing" (지듣노) radio identify overlay.
     IdentifyNowPlaying,
+    /// Open the radio recordings browser (Decide-mode save/discard/play).
+    ToggleRecordings,
     // Inside the "what's playing" card.
     NowPlayingFavorite,
     NowPlayingAskAi,
@@ -367,6 +369,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "identify_now_playing",
         "What's playing (radio)",
         "지금 듣는 노래 (라디오)",
+    ),
+    (
+        Action::ToggleRecordings,
+        "toggle_recordings",
+        "Radio recordings",
+        "라디오 녹음 목록",
     ),
     (
         Action::NowPlayingFavorite,
@@ -981,6 +989,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // Player (the main screen; self-contained transport + screen switches).
         (C::Player, A::TogglePause, ch(' ')),
         (C::Player, A::ToggleRadioMode, alt_shift('r')),
+        (C::Player, A::ToggleRecordings, alt_shift('e')),
         (C::Player, A::SeekBack, key(KeyCode::Left)),
         (C::Player, A::SeekForward, key(KeyCode::Right)),
         (C::Player, A::VolUp, key(KeyCode::Up)),

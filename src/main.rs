@@ -583,6 +583,14 @@ async fn run(
     startup.mark("cookies_resolved");
 
     let mut app = App::new(player_runtime.volume);
+    // Radio recorder: point it at its temp dir (wiped now — only explicitly-saved files
+    // persist across runs) and probe whether this mpv supports `stream-record`.
+    if let Some(d) = dirs.as_ref() {
+        app.recorder.temp_dir = d.cache_dir().join("recordings");
+        let _ = std::fs::remove_dir_all(&app.recorder.temp_dir);
+        let _ = std::fs::create_dir_all(&app.recorder.temp_dir);
+    }
+    app.recorder.supported = player::mpv::stream_record_supported();
     // Zoom wiring before `apply_config`, which restores the persisted scale (the handle
     // carries the probed mode, so an unsupported terminal never sees a scale above 1).
     app.zoom = zoom.clone();
@@ -801,6 +809,11 @@ async fn run(
     // expire it (and restore the title) ~3s after it was shown. Idle otherwise.
     let mut status_tick = tokio::time::interval(Duration::from_millis(250));
     status_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    // 1 Hz while a radio recording is in progress; parked otherwise (like the other guarded
+    // ticks). Drives the max-duration force-split.
+    let mut recording_tick = tokio::time::interval(Duration::from_secs(1));
+    recording_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     // Drives the optional player-view animations at the configured frame rate — but only ticks
     // while `app.animation_active()` holds (player view, master + an effect enabled, a track
     // playing, focused unless the user opted out of focus-pausing). With every animation toggle
@@ -885,6 +898,7 @@ async fn run(
             },
             _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
             _ = anim_tick.tick(), if app.animation_active() => Msg::AnimTick,
+            _ = recording_tick.tick(), if app.recorder_active() => Msg::RecordingTick,
             _ = media_pump.tick(), if media.wants_pump() => {
                 media.pump();
                 continue;

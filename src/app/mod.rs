@@ -60,6 +60,7 @@ mod now_playing_reducer;
 mod player;
 mod playlists_reducer;
 mod queue;
+mod recorder_reducer;
 mod remote_reducer;
 mod romanize;
 mod search;
@@ -162,6 +163,10 @@ pub struct App {
     /// The "Import from Spotify" playlist picker overlay (Settings › Accounts). ↑/↓
     /// select, Enter imports, Esc closes.
     pub spotify_picker: Option<SpotifyPicker>,
+    /// The radio-recording settings popup (over the Playback settings tab).
+    pub recording_settings: Option<RecordingSettingsPopup>,
+    /// The recordings browser (Decide-mode save/discard/play), opened from the popup or a key.
+    pub recordings_browser: Option<RecordingsBrowser>,
     /// A transfer job is running (guards double-starts; progress rides the status line).
     pub transfer_running: bool,
     /// Whether the About card overlay is showing. Opened by clicking the `ytm-tui` brand in the
@@ -197,6 +202,10 @@ pub struct App {
     /// Live playback transport: position, duration, pause state, volume, and speed
     /// (mirrors mpv's current state, distinct from the persisted defaults in `config`).
     pub playback: Playback,
+    /// Radio recorder (a Shortwave-style feature): the open segment, the bounded browser
+    /// history, and the mpv-support probe. All volatile — only [`crate::config::RecordingConfig`]
+    /// persists. See [`crate::recorder`].
+    pub recorder: crate::recorder::RecorderState,
     /// The media-session artwork cache's resolved local file for the current (or a
     /// recent) track, keyed by `video_id`. Set by [`Msg::MediaArtworkReady`]; read by
     /// [`App::media_snapshot`], which only surfaces it while the keys still match.
@@ -381,6 +390,8 @@ impl App {
             key_conflict: None,
             pending_settings_confirm: None,
             spotify_picker: None,
+            recording_settings: None,
+            recordings_browser: None,
             transfer_running: false,
             about_visible: false,
             about_icon: RefCell::new(None),
@@ -393,6 +404,7 @@ impl App {
                 speed: 1.0,
                 ..Default::default()
             },
+            recorder: crate::recorder::RecorderState::default(),
             media_art: None,
             queue: Queue::default(),
             status: Status::default(),
@@ -1039,6 +1051,19 @@ impl App {
                     self.dirty = true;
                 }
             }
+            Msg::PlayerAudioCodec(codec) => {
+                // Passthrough container hint for the recorder; no redraw needed.
+                self.playback.audio_codec = codec;
+            }
+            Msg::PlayerFileFormat(format) => {
+                self.playback.file_format = format;
+            }
+            Msg::RecordingTick => {
+                return self.recorder_on_tick();
+            }
+            Msg::Recorder(event) => {
+                return self.on_recorder_event(event);
+            }
             Msg::PlayerPaused(p) => {
                 self.playback.paused = p;
                 self.dirty = true;
@@ -1060,11 +1085,14 @@ impl App {
                     )
                 });
                 if self.playback.stream_now_playing != parsed {
-                    self.playback.stream_now_playing = parsed;
+                    self.playback.stream_now_playing = parsed.clone();
                     self.dirty = true;
-                    // The song moved on: an open card re-populates from the fresh ICY
-                    // title (and a favorite-resolve in flight for the old title is stale).
-                    return self.on_stream_title_changed();
+                    // Rotate the recorder first (finalize the ended track, start the next),
+                    // then let the overlay re-populate from the fresh ICY title (a
+                    // favorite-resolve in flight for the old title is now stale).
+                    let mut cmds = self.recorder_on_title(parsed.as_ref());
+                    cmds.extend(self.on_stream_title_changed());
+                    return cmds;
                 }
             }
             Msg::TrackResolved { seq, result } => {

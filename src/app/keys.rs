@@ -217,6 +217,16 @@ impl App {
             return Vec::new();
         }
 
+        // The recordings browser (Decide-mode save/discard/play) is modal wherever it opens —
+        // over the player, or on top of the recording-settings popup. Quit still works; its own
+        // keys (↑/↓, s/d/Enter) act on the selected track; its toggle / Esc / Back close it.
+        if self.recordings_browser.is_some() {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return self.quit_app();
+            }
+            return self.recordings_browser_key(k);
+        }
+
         // The "Why DJ Gem" overlay behaves like the About card: while it's up, swallow input; its own
         // toggle (`w`) / Esc / Back dismiss it, and Quit still works.
         if self.why_ai_visible {

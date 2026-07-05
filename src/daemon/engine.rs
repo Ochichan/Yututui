@@ -906,6 +906,8 @@ impl DaemonEngine {
             // The headless engine has no live-sync surface; timeshift state is the TUI
             // reducer's concern (`Msg::PlayerCacheTime`).
             PlayerEvent::CacheTime(_) => Vec::new(),
+            // Recording is a TUI-only feature; the headless engine ignores container hints.
+            PlayerEvent::AudioCodec(_) | PlayerEvent::FileFormat(_) => Vec::new(),
             PlayerEvent::Eof => {
                 self.record_outgoing(true);
                 self.advance_after_end().await

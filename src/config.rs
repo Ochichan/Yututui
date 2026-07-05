@@ -38,6 +38,18 @@ pub const DOWNLOAD_CONCURRENCY_MIN: usize = 1;
 pub const DOWNLOAD_CONCURRENCY_MAX: usize = 3;
 pub const DOWNLOAD_CONCURRENCY_DEFAULT: usize = 2;
 
+/// Radio recording (a Shortwave-style feature) bounds. Durations are seconds; the settings
+/// slider shows the max in minutes. Defaults match Shortwave (30s min, 15min max, 10 kept).
+pub const RECORDING_MIN_SECONDS_MIN: u32 = 5;
+pub const RECORDING_MIN_SECONDS_MAX: u32 = 600;
+pub const RECORDING_MIN_SECONDS_DEFAULT: u32 = 30;
+pub const RECORDING_MAX_SECONDS_MIN: u32 = 60;
+pub const RECORDING_MAX_SECONDS_MAX: u32 = 3600;
+pub const RECORDING_MAX_SECONDS_DEFAULT: u32 = 900;
+pub const RECORDING_PAST_TRACKS_MIN: usize = 1;
+pub const RECORDING_PAST_TRACKS_MAX: usize = 50;
+pub const RECORDING_PAST_TRACKS_DEFAULT: usize = 10;
+
 /// UI eye-candy toggles (the **Animations** settings tab). Every field is an
 /// independent on/off; **all default to `false`** so a fresh install behaves exactly like
 /// before (the app's whole identity is "fast and light"). `master` is a global kill-switch:
@@ -537,6 +549,43 @@ pub struct Config {
     // External tools ----------------------------------------------------------------
     /// Managed yt-dlp + binary-path overrides. See [`ToolsConfig`] and [`crate::tools`].
     pub tools: ToolsConfig,
+
+    // Radio recording -----------------------------------------------------------------
+    /// Shortwave-style recording of the live radio stream. See [`RecordingConfig`].
+    pub recording: RecordingConfig,
+}
+
+/// Radio recording (a Shortwave-style feature). Only takes effect while an internet-radio
+/// station plays. `#[serde(default)]` so older config files forward-migrate cleanly and an
+/// unknown `mode` string degrades to the default rather than resetting the whole file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordingConfig {
+    /// What to do with each track heard (Off / Decide / Save all). Defaults to Off (opt-in).
+    pub mode: crate::recorder::RecordingMode,
+    /// Discard tracks shorter than this many seconds. Clamped to [5, 600].
+    pub min_duration_secs: u32,
+    /// Force-split a track once it reaches this many seconds. Clamped to [60, 3600].
+    pub max_duration_secs: u32,
+    /// Where saved recordings go. `None` → `<music>/ytm-tui/recordings`.
+    pub track_directory: Option<PathBuf>,
+    /// Max recent tracks kept in the in-memory recordings browser. Clamped to [1, 50].
+    pub past_tracks_count: usize,
+    /// Show a toast when a track is recorded / saved. Defaults to on.
+    pub notify: bool,
+}
+
+impl Default for RecordingConfig {
+    fn default() -> Self {
+        Self {
+            mode: crate::recorder::RecordingMode::Nothing,
+            min_duration_secs: RECORDING_MIN_SECONDS_DEFAULT,
+            max_duration_secs: RECORDING_MAX_SECONDS_DEFAULT,
+            track_directory: None,
+            past_tracks_count: RECORDING_PAST_TRACKS_DEFAULT,
+            notify: true,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -602,6 +651,7 @@ impl Default for Config {
             scrobble: ScrobbleConfig::default(),
             spotify: SpotifyConfig::default(),
             tools: ToolsConfig::default(),
+            recording: RecordingConfig::default(),
         }
     }
 }
@@ -705,6 +755,43 @@ impl Config {
             return dir.clone();
         }
         default_download_dir()
+    }
+
+    /// Where saved recordings go. Precedence: `YTM_RECORDING_DIR` env override (tests), then
+    /// the configured `recording.track_directory`, then `<music>/ytm-tui/recordings`.
+    pub fn effective_recording_dir(&self) -> PathBuf {
+        if let Ok(env) = std::env::var("YTM_RECORDING_DIR")
+            && !env.is_empty()
+        {
+            return PathBuf::from(env);
+        }
+        self.recording
+            .track_directory
+            .clone()
+            .unwrap_or_else(default_recording_dir)
+    }
+
+    /// Minimum kept-track duration in seconds (clamped).
+    pub fn effective_recording_min(&self) -> u32 {
+        self.recording
+            .min_duration_secs
+            .clamp(RECORDING_MIN_SECONDS_MIN, RECORDING_MIN_SECONDS_MAX)
+    }
+
+    /// Maximum track duration before a force-split, in seconds (clamped, always `> min`).
+    pub fn effective_recording_max(&self) -> u32 {
+        let min = self.effective_recording_min();
+        self.recording
+            .max_duration_secs
+            .clamp(RECORDING_MAX_SECONDS_MIN, RECORDING_MAX_SECONDS_MAX)
+            .max(min + 1)
+    }
+
+    /// Max recent tracks kept in the recordings browser (clamped).
+    pub fn effective_recording_past_tracks(&self) -> usize {
+        self.recording
+            .past_tracks_count
+            .clamp(RECORDING_PAST_TRACKS_MIN, RECORDING_PAST_TRACKS_MAX)
     }
 
     /// Concurrent downloads, with an env override for quick one-off throttling.
@@ -961,6 +1048,13 @@ pub fn default_download_dir() -> PathBuf {
     default_ytm_dir().unwrap_or_else(|| PathBuf::from("ytm-tui"))
 }
 
+/// Default directory for saved radio recordings: `<music>/ytm-tui/recordings`.
+pub fn default_recording_dir() -> PathBuf {
+    default_ytm_dir()
+        .map(|d| d.join("recordings"))
+        .unwrap_or_else(|| PathBuf::from("ytm-tui/recordings"))
+}
+
 fn default_ytm_dir() -> Option<PathBuf> {
     directories::UserDirs::new()
         .and_then(|u| u.audio_dir().map(std::path::Path::to_path_buf))
@@ -1041,6 +1135,61 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.volume, 100);
         assert!(c.cookie.is_none());
+    }
+
+    #[test]
+    fn recording_defaults_and_clamps() {
+        let c = Config::default();
+        assert_eq!(c.recording.mode, crate::recorder::RecordingMode::Nothing);
+        assert_eq!(c.effective_recording_min(), 30);
+        assert_eq!(c.effective_recording_max(), 900);
+        assert_eq!(c.effective_recording_past_tracks(), 10);
+
+        let mut c = Config::default();
+        c.recording.min_duration_secs = 1; // below floor
+        c.recording.max_duration_secs = 999_999; // above ceil
+        c.recording.past_tracks_count = 9_999; // above ceil
+        assert_eq!(c.effective_recording_min(), RECORDING_MIN_SECONDS_MIN);
+        assert_eq!(c.effective_recording_max(), RECORDING_MAX_SECONDS_MAX);
+        assert_eq!(
+            c.effective_recording_past_tracks(),
+            RECORDING_PAST_TRACKS_MAX
+        );
+
+        // Max stays strictly above min even if hand-edited below it.
+        let mut c = Config::default();
+        c.recording.min_duration_secs = 600;
+        c.recording.max_duration_secs = 60;
+        assert!(c.effective_recording_max() > c.effective_recording_min());
+    }
+
+    #[test]
+    fn recording_config_round_trips_and_forward_migrates() {
+        // An old config with no `recording` key loads with the defaults (opt-in Off).
+        let old: Config = serde_json::from_str(r#"{"volume": 50}"#).unwrap();
+        assert_eq!(old.recording.mode, crate::recorder::RecordingMode::Nothing);
+
+        // A round-trip preserves an explicit recording block.
+        let mut c = Config::default();
+        c.recording.mode = crate::recorder::RecordingMode::Everything;
+        c.recording.min_duration_secs = 45;
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.recording.mode,
+            crate::recorder::RecordingMode::Everything
+        );
+        assert_eq!(back.recording.min_duration_secs, 45);
+
+        // A partial recording block fills the rest from defaults (nested serde default).
+        let partial: Config =
+            serde_json::from_str(r#"{"recording":{"min_duration_secs":45}}"#).unwrap();
+        assert_eq!(partial.recording.min_duration_secs, 45);
+        assert_eq!(partial.recording.past_tracks_count, 10);
+        assert_eq!(
+            partial.recording.mode,
+            crate::recorder::RecordingMode::Nothing
+        );
     }
 
     #[test]
@@ -1163,9 +1312,24 @@ mod tests {
                 ytdlp_path: Some(PathBuf::from("/opt/yt-dlp")),
                 mpv_path: Some(PathBuf::from("/opt/mpv")),
             },
+            recording: RecordingConfig {
+                mode: crate::recorder::RecordingMode::Decide,
+                min_duration_secs: 20,
+                max_duration_secs: 1200,
+                track_directory: Some(PathBuf::from("/tmp/recs")),
+                past_tracks_count: 25,
+                notify: false,
+            },
         };
         let s = serde_json::to_string(&c).unwrap();
         let back: Config = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.recording.mode, crate::recorder::RecordingMode::Decide);
+        assert_eq!(back.recording.min_duration_secs, 20);
+        assert_eq!(
+            back.recording.track_directory,
+            Some(PathBuf::from("/tmp/recs"))
+        );
+        assert!(!back.recording.notify);
         assert_eq!(back.volume, 70);
         assert_eq!(back.cookie.as_deref(), Some("SID=abc"));
         assert_eq!(back.download_dir, Some(PathBuf::from("/tmp/dl")));

@@ -61,6 +61,13 @@ pub fn media_controls_flag_supported() -> bool {
     flag_supported("--media-controls=no")
 }
 
+/// Whether mpv supports the `stream-record` property used by the radio recorder (a startup
+/// option since mpv ~0.31, so present on any mpv this app targets — probed anyway so an
+/// ancient build silently disables recording instead of erroring).
+pub fn stream_record_supported() -> bool {
+    flag_supported("--stream-record=")
+}
+
 /// A per-process IPC endpoint: a Unix socket path on macOS/Linux, a named pipe on
 /// Windows. Unique per pid so concurrent instances never collide.
 pub fn ipc_path() -> Result<String> {

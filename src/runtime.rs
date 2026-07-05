@@ -167,6 +167,8 @@ impl From<RuntimeEvent> for Msg {
                 crate::player::PlayerEvent::Volume(volume) => Msg::PlayerVolume(volume),
                 crate::player::PlayerEvent::Metadata(metadata) => Msg::PlayerMetadata(metadata),
                 crate::player::PlayerEvent::CacheTime(t) => Msg::PlayerCacheTime(t),
+                crate::player::PlayerEvent::AudioCodec(c) => Msg::PlayerAudioCodec(c),
+                crate::player::PlayerEvent::FileFormat(f) => Msg::PlayerFileFormat(f),
                 crate::player::PlayerEvent::Eof => Msg::PlayerEof,
                 crate::player::PlayerEvent::Error(error) => Msg::PlayerError(error),
             },
@@ -398,6 +400,16 @@ impl RuntimeHandles {
                 tokio::task::spawn_blocking(move || {
                     let songs = crate::library::scan_downloads(&dir);
                     let _ = tx.send(RuntimeEvent::App(Msg::DownloadsScanned(songs)));
+                });
+            }
+            Cmd::Recorder(job) => {
+                // Copy/tag/delete are blocking IO — keep them off the loop task. A `Save`
+                // reports back; `Discard`/`WipeTemp` are fire-and-forget.
+                let tx = self.worker_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    if let Some(event) = crate::recorder::job::run(job) {
+                        let _ = tx.send(RuntimeEvent::App(Msg::Recorder(event)));
+                    }
                 });
             }
             Cmd::FetchLyrics {

@@ -28,6 +28,7 @@ pub mod persist;
 pub mod player;
 pub mod playlists;
 pub mod queue;
+pub mod recorder;
 pub mod remote;
 pub mod resolver;
 pub mod romanize;

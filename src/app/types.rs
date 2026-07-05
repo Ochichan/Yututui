@@ -85,6 +85,14 @@ pub enum Msg {
     /// mpv `demuxer-cache-time`: the newest demuxed timestamp (≈ the live edge on a radio
     /// stream), or `None` when the property became unavailable.
     PlayerCacheTime(Option<f64>),
+    /// mpv `audio-codec-name` for the active stream (radio recorder container hint).
+    PlayerAudioCodec(Option<String>),
+    /// mpv `file-format` (container) for the active stream (radio recorder container hint).
+    PlayerFileFormat(Option<String>),
+    /// 1 Hz tick while a radio recording is in progress; drives the max-duration force-split.
+    RecordingTick,
+    /// A radio recorder disk job finished (a track was saved, or saving failed).
+    Recorder(crate::recorder::job::RecorderEvent),
     /// The current track reached its end.
     PlayerEof,
     /// mpv reported a playback error.
@@ -274,6 +282,9 @@ pub enum Msg {
 /// Side effects the reducer asks the run loop to perform.
 pub enum Cmd {
     Player(PlayerCmd),
+    /// Off-loop disk work for the radio recorder (copy/tag a saved track, delete a temp,
+    /// wipe the temp dir). Run via `spawn_blocking`; a `Save` reports back as `Msg::Recorder`.
+    Recorder(crate::recorder::job::RecorderJob),
     /// Connect the IPC client for a freshly spawned video-overlay mpv.
     VideoConnect {
         ipc_path: String,

@@ -80,6 +80,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.spotify_picker.is_some() {
         views::settings::render_spotify_picker(frame, app, area);
     }
+    // The radio-recording settings popup is modal over the Playback tab.
+    if app.recording_settings.is_some() {
+        views::settings::render_recording_settings(frame, app, area);
+    }
     // The create-playlist popup captures Library input while open.
     if app.library_ui.create_input.is_some() {
         views::library::render_playlist_create(frame, app, area);
@@ -95,6 +99,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     // The add-to-playlist picker floats over whichever screen opened it.
     if app.playlist_picker.is_some() {
         views::library::render_playlist_picker(frame, app, area);
+    }
+    // The recordings browser floats over the player or the recording-settings popup — drawn
+    // last so it sits on top of whatever opened it.
+    if app.recordings_browser.is_some() {
+        views::settings::render_recordings_browser(frame, app, area);
     }
     retro::scrub_frame(frame, app);
 }

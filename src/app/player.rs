@@ -640,6 +640,22 @@ impl App {
                 Vec::new()
             }
             Action::IdentifyNowPlaying => self.open_now_playing_overlay(),
+            Action::ToggleRecordings => {
+                if self.recordings_browser.is_some() {
+                    self.recordings_browser = None;
+                } else if self.current_is_radio_stream() || !self.recorder.history.is_empty() {
+                    self.recordings_browser = Some(RecordingsBrowser::default());
+                } else {
+                    self.status.kind = StatusKind::Info;
+                    self.status.text = t!(
+                        "Radio recordings appear here while a station plays",
+                        "라디오 방송 중에 녹음 목록이 여기에 표시돼요"
+                    )
+                    .to_owned();
+                }
+                self.dirty = true;
+                Vec::new()
+            }
             Action::OpenSearch => {
                 self.mode = Mode::Search;
                 self.search.focus = SearchFocus::Input;
@@ -944,7 +960,11 @@ impl App {
                     .cloned()
                     .unwrap_or_else(|| song.playback_target());
                 tracing::info!(url = %url, prefetched, "load track");
-                let mut cmds = vec![Cmd::Player(PlayerCmd::Load(url)), Cmd::SaveLibrary];
+                // Stop any in-progress radio recording BEFORE the new `Load`, so mpv can't
+                // append the incoming track onto the previous recording's temp file.
+                let mut cmds = self.recorder_teardown();
+                cmds.push(Cmd::Player(PlayerCmd::Load(url)));
+                cmds.push(Cmd::SaveLibrary);
                 // Re-apply the EQ/normalization chain: a gapless graph rebuild on track
                 // change can drop the labeled `@eqN` filters, so push it after every load.
                 // While the settings screen is open the *draft* is the source of truth (it's
@@ -1003,7 +1023,8 @@ impl App {
                 self.radio_resync_at = None;
                 self.prefetch.loaded_video_id = None;
                 self.clear_artwork();
-                Vec::new()
+                // Playback cleared: cut any in-progress recording (mid-song → dropped).
+                self.recorder_teardown()
             }
         }
     }

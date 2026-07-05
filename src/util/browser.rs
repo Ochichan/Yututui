@@ -29,3 +29,9 @@ pub fn open_in_browser(url: &str) {
         .stderr(Stdio::null())
         .spawn();
 }
+
+/// Open a local file or folder with the system's default handler (the same platform openers
+/// as [`open_in_browser`], which all accept a path). Fire-and-forget.
+pub fn open_path(path: &std::path::Path) {
+    open_in_browser(&path.to_string_lossy());
+}

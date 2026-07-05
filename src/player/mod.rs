@@ -57,6 +57,12 @@ pub enum PlayerEvent {
     /// stream, the live edge. `None` when mpv reports the property as unavailable (the
     /// reducer must see the loss, unlike the always-numeric `time-pos`).
     CacheTime(Option<f64>),
+    /// mpv `audio-codec-name` (e.g. `mp3`, `aac`) — the radio recorder maps it to the
+    /// passthrough container extension. `None` when the property is unavailable.
+    AudioCodec(Option<String>),
+    /// mpv `file-format` (container) — a fallback / HLS signal for the recorder's extension
+    /// choice. `None` when unavailable.
+    FileFormat(Option<String>),
     Eof,
     Error(String),
 }
