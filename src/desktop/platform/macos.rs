@@ -177,6 +177,9 @@ struct MacTrayApp {
     last_conn: gateway::ConnState,
     open_main: bool,
     last_update: PollUpdate,
+    // Menu/tooltip fingerprint of the last poll — lets `apply_update` skip the native menu
+    // rebuild + tooltip set when nothing the menu shows changed (see `menu_signature`).
+    last_menu_signature: menu_model::MenuSignature,
     poll_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     // Held until LoopDestroyed: tao's run() never returns (it exits the process), so
     // dropping this in shutdown() is the only chance the non-blocking appender gets
@@ -200,6 +203,8 @@ impl MacTrayApp {
             last_conn: gateway::ConnState::Connecting,
             open_main,
             last_update: PollUpdate::disconnected(control::ControlError::NotRunning),
+            // Matches the Disconnected menu built in `init`; the first real poll re-applies.
+            last_menu_signature: menu_model::MenuSignature::Disconnected,
             poll_shutdown: None,
             log_guard,
         }
@@ -358,11 +363,21 @@ impl MacTrayApp {
     }
 
     fn apply_update(&mut self, update: PollUpdate) {
-        if let Some(menu) = &self.menu {
-            menu.apply_state(&update.state);
-        }
-        if let Some(tray) = &self.tray {
-            let _ = tray.set_tooltip(Some(tooltip_for_state(&update.state)));
+        // The native menu + tooltip derive from only a small field subset (see
+        // `menu_model::menu_signature`); skip the allocating menu-model rebuild + the native
+        // per-item set_text/set_enabled walk + the tooltip set whenever that subset is
+        // unchanged from the last poll — which, during steady playback, is every poll. The
+        // mini-player panel consumes the full update (elapsed, artwork, …) and is always
+        // refreshed, so it is deliberately outside the guard.
+        let signature = menu_model::menu_signature(&update.state);
+        if signature != self.last_menu_signature {
+            if let Some(menu) = &self.menu {
+                menu.apply_state(&update.state);
+            }
+            if let Some(tray) = &self.tray {
+                let _ = tray.set_tooltip(Some(tooltip_for_state(&update.state)));
+            }
+            self.last_menu_signature = signature;
         }
         if let Some(panel) = &self.panel {
             panel.apply_update(&update);

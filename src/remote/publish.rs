@@ -153,20 +153,31 @@ impl Publisher {
             }
         }
 
-        let mut settings_now = settings_model(view, 0);
-        let settings_bytes = serde_json::to_vec(&settings_now).unwrap_or_default();
-        if self.last_settings.as_deref() != Some(settings_bytes.as_slice()) {
-            let primed = self.last_settings.is_some();
-            self.last_settings = Some(settings_bytes);
-            self.settings_rev += 1;
-            // The very first observe primes the baseline (nothing changed yet) —
-            // matching how the player/queue baselines behave before any subscriber.
-            if primed && self.hub.any_subscribed(Topic::Settings) {
-                settings_now.rev = self.settings_rev;
-                let payload = event_payload(&PushEvent::SettingsSnapshot {
-                    model: Box::new(settings_now),
-                });
-                self.hub.broadcast(Topic::Settings, &payload);
+        // Building + serializing the settings model is the most expensive part of a turn
+        // (the theme role/preset maps dominate), and it previously ran on *every* observe —
+        // i.e. every keypress/mouse/worker event — even with zero Settings subscribers, which
+        // is the default standalone config. Gate it on an actual subscriber. `last_settings
+        // .is_none()` still primes the baseline exactly once (the first observe, long before
+        // any subscriber), so the first real diff is correct. While unsubscribed the rev
+        // freezes and no bytes are produced; `handle_subscribe` sends a full *current* snapshot
+        // on connect, so a subscriber that joins after a change never misses it (test:
+        // `late_settings_subscriber_still_sees_changes`).
+        if self.hub.any_subscribed(Topic::Settings) || self.last_settings.is_none() {
+            let mut settings_now = settings_model(view, 0);
+            let settings_bytes = serde_json::to_vec(&settings_now).unwrap_or_default();
+            if self.last_settings.as_deref() != Some(settings_bytes.as_slice()) {
+                let primed = self.last_settings.is_some();
+                self.last_settings = Some(settings_bytes);
+                self.settings_rev += 1;
+                // The very first observe primes the baseline (nothing changed yet) —
+                // matching how the player/queue baselines behave before any subscriber.
+                if primed && self.hub.any_subscribed(Topic::Settings) {
+                    settings_now.rev = self.settings_rev;
+                    let payload = event_payload(&PushEvent::SettingsSnapshot {
+                        model: Box::new(settings_now),
+                    });
+                    self.hub.broadcast(Topic::Settings, &payload);
+                }
             }
         }
     }
@@ -624,6 +635,47 @@ mod tests {
             kinds(&lines),
             vec!["event:player"],
             "a track advance is a small player push, not a queue re-push"
+        );
+    }
+
+    #[test]
+    fn late_settings_subscriber_still_sees_changes() {
+        // The settings path in `observe` is gated on an actual Settings subscriber (perf: skip
+        // the model build + JSON serialize on every keypress when nobody is listening — the
+        // default standalone config). This guards the two properties that gate must not break:
+        // (1) a subscriber that connects *after* a settings change still learns the current
+        // value, and (2) a change made while subscribed still pushes.
+        let (hub, session, mut rx) = test_register(SessionTuning::default());
+        let mut publisher = Publisher::new(hub);
+        let mut queue = Queue::default();
+        queue.set(vec![song("a")], 0);
+
+        // First observe primes the baseline (no subscriber yet), as the real host does.
+        publisher.observe(&view(&queue));
+
+        // A setting changes while nobody is subscribed: the gate skips the serialize and pushes
+        // nothing, but the change must not be lost to a future subscriber.
+        let mut v = view(&queue);
+        v.eq_preset = "Rock".to_string();
+        publisher.observe(&v);
+        assert!(
+            drain(&mut rx).is_empty(),
+            "no subscriber yet → nothing pushed"
+        );
+
+        // Subscriber connects: `handle_subscribe` sends the current settings snapshot.
+        publisher.handle_subscribe(&v, &session, 1, &[Topic::Settings]);
+        assert!(
+            kinds(&drain(&mut rx)).contains(&"event:settings".to_string()),
+            "a new Settings subscriber receives the current snapshot despite the serialize gate"
+        );
+
+        // A further change while subscribed still pushes a settings snapshot.
+        v.eq_preset = "Jazz".to_string();
+        publisher.observe(&v);
+        assert!(
+            kinds(&drain(&mut rx)).contains(&"event:settings".to_string()),
+            "a subscribed settings change still pushes"
         );
     }
 

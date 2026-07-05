@@ -11,7 +11,33 @@ impl App {
         if self.playlists_root() {
             return self.filtered_playlists().len();
         }
-        self.library_rows().len()
+        self.library_rows_len()
+    }
+
+    /// Row count for the active tab *without* materializing the `Vec<&Song>` that
+    /// [`Self::library_rows`] allocates — rows are 1:1 with the cached slots (each slot
+    /// resolves to exactly one row; see [`Self::rows_from_slots`]). Called on every library
+    /// nav key and wheel-scroll, so this must stay O(1) on a cache hit rather than rebuilding
+    /// and throwing away a full row vector just to read its length.
+    fn library_rows_len(&self) -> usize {
+        let tab = self.effective_library_tab();
+        // Playlist drill-down rows are built uncached (an open playlist is small); count them
+        // the same way `library_rows` builds them, so the two never disagree.
+        if matches!(tab, LibraryTab::Playlists) {
+            return self.apply_library_filter(self.open_playlist_rows()).len();
+        }
+        let key = self.library_rows_key(tab);
+        if let Some(cache) = self.library_rows_cache.borrow().as_ref()
+            && cache.key == key
+        {
+            return cache.slots.len();
+        }
+        // Cache miss: build + store the slots exactly as `library_rows` would (so a following
+        // `library_rows` call in the same frame hits the cache), and return the slot count.
+        let slots = self.build_library_slots(tab);
+        let n = slots.len();
+        *self.library_rows_cache.borrow_mut() = Some(LibraryRowsCache { key, slots });
+        n
     }
 
     pub fn library_count_for(&self, tab: LibraryTab) -> usize {

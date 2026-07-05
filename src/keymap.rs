@@ -1999,7 +1999,10 @@ mod tests {
                 Some(Action::SelectToBottom)
             );
             // Plain nav is untouched — Shift didn't shadow it.
-            assert_eq!(km.action(ctx, parse_chord("up").unwrap()), Some(Action::MoveUp));
+            assert_eq!(
+                km.action(ctx, parse_chord("up").unwrap()),
+                Some(Action::MoveUp)
+            );
         }
         for a in [
             Action::SelectUp,

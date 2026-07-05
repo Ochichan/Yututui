@@ -597,14 +597,15 @@ async fn run(
     startup.mark("cookies_resolved");
 
     let mut app = App::new(player_runtime.volume);
-    // Radio recorder: point it at its temp dir (wiped now — only explicitly-saved files
-    // persist across runs) and probe whether this mpv supports `stream-record`.
+    // Radio recorder: point it at its temp dir. The dir wipe (only explicitly-saved files
+    // persist across runs) and the `stream-record` capability probe are deferred to just
+    // after `tools::init` below — off the pre-first-frame path. Neither is read by the first
+    // render (`recorder.supported` is only consulted when the user opens/uses the recorder),
+    // and the probe is an `mpv --version` fork/exec (~40-60ms) that must run *after*
+    // `tools::init` sets `mpv_program()`, so it probes the selected mpv, not the fallback.
     if let Some(d) = dirs.as_ref() {
         app.recorder.temp_dir = d.cache_dir().join("recordings");
-        let _ = std::fs::remove_dir_all(&app.recorder.temp_dir);
-        let _ = std::fs::create_dir_all(&app.recorder.temp_dir);
     }
-    app.recorder.supported = player::mpv::stream_record_supported();
     // Zoom wiring before `apply_config`, which restores the persisted scale (the handle
     // carries the probed mode, so an unsupported terminal never sees a scale above 1).
     app.zoom = zoom.clone();
@@ -648,6 +649,18 @@ async fn run(
     // but before the deps preflight and the mpv spawn below, which both consume it.
     tools::init(&cfg.tools).await;
     startup.mark("tools_selected");
+
+    // Radio recorder setup, deferred off the pre-first-frame path (see `App::new` above).
+    // Runs after `tools::init` so the capability probe hits the *selected* mpv (via
+    // `mpv_program()`), and before the event loop starts, so a recording (an explicit user
+    // action) can never race the temp-dir wipe.
+    if dirs.is_some() {
+        let temp_dir = app.recorder.temp_dir.clone();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::create_dir_all(&temp_dir);
+    }
+    app.recorder.supported = player::mpv::stream_record_supported();
+    startup.mark("recorder_ready");
 
     // Preflight the external tools. If mpv/yt-dlp are missing, show an install hint up
     // front rather than surfacing an opaque spawn failure later.
@@ -931,6 +944,25 @@ async fn run(
             perf.record_art_resize();
         }
 
+        // The frame rate may have changed in Settings (committed to `config.animations` on close).
+        // Rebuild the tick so the new rate applies without a relaunch — only when it actually
+        // changed, so the common path costs one `u16` compare. Kept before the draw so the new
+        // cadence is in force for this iteration.
+        let new_fps = app.animation_tick_fps();
+        if new_fps != anim_fps {
+            anim_fps = new_fps;
+            app.reset_animation_cadence();
+            anim_tick = anim_interval(anim_fps);
+        }
+
+        // Draw first, so the keypress lands on screen with the least latency. Everything below
+        // is pure output bookkeeping — it reads post-update state but feeds no rendering — so
+        // running it *after* the frame lags the OS/remote surfaces by well under one frame while
+        // leaving the resting on-screen output identical.
+        if app.dirty && draw_app_frame(terminal, &mut app, &mut perf)? {
+            finish_draw_cycle(&mut app);
+        }
+
         // Mirror the post-update state to the OS media session: the facade diffs, so
         // this is one comparison when nothing media-visible changed. The enabled flag
         // tracks the Settings toggle live. The scrobbler taps the same snapshot first —
@@ -948,20 +980,6 @@ async fn run(
             if let Some(publisher) = publisher.as_mut() {
                 publisher.observe(&app.core_view());
             }
-        }
-
-        // The frame rate may have changed in Settings (committed to `config.animations` on close).
-        // Rebuild the tick so the new rate applies without a relaunch — only when it actually
-        // changed, so the common path costs one `u16` compare.
-        let new_fps = app.animation_tick_fps();
-        if new_fps != anim_fps {
-            anim_fps = new_fps;
-            app.reset_animation_cadence();
-            anim_tick = anim_interval(anim_fps);
-        }
-
-        if app.dirty && draw_app_frame(terminal, &mut app, &mut perf)? {
-            finish_draw_cycle(&mut app);
         }
         perf.maybe_log(&app);
     }

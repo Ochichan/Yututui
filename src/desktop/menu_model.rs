@@ -37,6 +37,43 @@ impl TrayState {
     }
 }
 
+/// The exact subset of a poll state that the native menu **and** tooltip are derived from
+/// (`build_menu` + each platform's `tooltip_for_state`). Equal signatures ⇒ a byte-identical
+/// menu and tooltip, so a platform tray can skip the native rebuild — an allocating
+/// `Vec<String>` model build plus a per-item ObjC/Win32 `set_text`/`set_enabled` walk and the
+/// tooltip set — whenever this is unchanged between polls. During steady playback it *is*
+/// unchanged on every 2s poll: `position`/`volume`/`elapsed`/`queue`/`shuffle`/`repeat`/
+/// `artwork`/`settings` feed the mini-player panel, never the menu, so they are deliberately
+/// excluded. Keep this in lockstep with what `build_menu` + `tooltip_for_state` read (the
+/// `menu_signature_*` tests fail if a menu-relevant field is dropped or an irrelevant one is
+/// added).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuSignature {
+    Disconnected,
+    Connected {
+        title: Option<String>,
+        artist: Option<String>,
+        paused: bool,
+        total: usize,
+        owner_mode: InstanceMode,
+        streaming: bool,
+    },
+}
+
+pub fn menu_signature(state: &TrayState) -> MenuSignature {
+    match state {
+        TrayState::Disconnected => MenuSignature::Disconnected,
+        TrayState::Connected(s) => MenuSignature::Connected {
+            title: s.title.clone(),
+            artist: s.artist.clone(),
+            paused: s.paused,
+            total: s.total,
+            owner_mode: s.owner_mode,
+            streaming: s.streaming,
+        },
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MenuAction {
     PlayPause,
@@ -270,6 +307,56 @@ mod tests {
             duration_ms: None,
             artwork: None,
         }
+    }
+
+    #[test]
+    fn menu_signature_ignores_playback_only_fields() {
+        // These fields feed the mini-player panel, never the menu/tooltip — changing them must
+        // NOT change the signature, or the tray would rebuild the native menu on every poll
+        // during playback (the exact churn the guard removes).
+        let base = playing_status();
+        let sig = menu_signature(&TrayState::Connected(base.clone()));
+        let mut s = base.clone();
+        s.position += 1;
+        s.volume += 1;
+        s.elapsed_ms = Some(1_000);
+        s.duration_ms = Some(200_000);
+        s.queue = Vec::new();
+        s.shuffle = !base.shuffle;
+        s.repeat = Default::default();
+        assert_eq!(sig, menu_signature(&TrayState::Connected(s)));
+    }
+
+    #[test]
+    fn menu_signature_reflects_every_menu_field() {
+        // Every field `build_menu` + `tooltip_for_state` read must move the signature, so the
+        // guard can never suppress a real menu change.
+        let base = playing_status();
+        let sig = menu_signature(&TrayState::Connected(base.clone()));
+        let mut variants = Vec::new();
+        let mut s = base.clone();
+        s.title = Some("Other".to_string());
+        variants.push(s);
+        let mut s = base.clone();
+        s.artist = Some("Other".to_string());
+        variants.push(s);
+        let mut s = base.clone();
+        s.paused = !base.paused;
+        variants.push(s);
+        let mut s = base.clone();
+        s.total = base.total + 5;
+        variants.push(s);
+        let mut s = base.clone();
+        s.owner_mode = InstanceMode::Daemon;
+        variants.push(s);
+        let mut s = base.clone();
+        s.streaming = !base.streaming;
+        variants.push(s);
+        for s in variants {
+            assert_ne!(sig, menu_signature(&TrayState::Connected(s)));
+        }
+        // Disconnected is its own signature.
+        assert_ne!(sig, menu_signature(&TrayState::Disconnected));
     }
 
     #[test]

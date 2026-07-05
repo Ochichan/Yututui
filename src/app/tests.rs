@@ -872,7 +872,10 @@ fn shift_home_and_end_extend_library_selection_to_the_edges() {
 
     app.update(Msg::Key(shift(KeyCode::End)));
     assert_eq!(app.library_ui.anchor, 1);
-    assert_eq!(app.library_ui.selected, 2, "Shift+End extends to the bottom");
+    assert_eq!(
+        app.library_ui.selected, 2,
+        "Shift+End extends to the bottom"
+    );
 
     app.library_ui.selected = 1;
     app.library_ui.anchor = 1;

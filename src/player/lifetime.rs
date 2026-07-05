@@ -255,7 +255,14 @@ pub fn reap_orphans(dir: &Path) {
 
     use sysinfo::{Pid, ProcessesToUpdate, System};
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    // Refresh only the two pids we actually look up (the prior app + its mpv), not every
+    // process on the system — this runs on the cold-start path before the first frame. The
+    // two `process()` lookups below behave identically to a full `ProcessesToUpdate::All`
+    // refresh; this mirrors `kill_pid` above, which already scopes its refresh the same way.
+    sys.refresh_processes(
+        ProcessesToUpdate::Some(&[Pid::from_u32(record.app_pid), Pid::from_u32(record.mpv_pid)]),
+        true,
+    );
 
     let app_alive = sys.process(Pid::from_u32(record.app_pid)).is_some();
     if !app_alive
