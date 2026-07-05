@@ -1318,6 +1318,67 @@ fn radio_recording_popup_opens_edits_and_persists() {
 }
 
 #[test]
+fn recorder_saved_emits_desktop_notify_when_enabled() {
+    let _guard = crate::i18n::lock_for_test();
+    use crate::recorder::job::RecorderEvent;
+    let mut app = App::new(100);
+
+    // notify on → a saved recording returns a DesktopNotify command (the filename is the body),
+    // in addition to the in-app toast.
+    app.config.recording.notify = true;
+    let cmds = app.on_recorder_event(RecorderEvent::Saved {
+        id: 1,
+        final_path: std::path::PathBuf::from("/tmp/Artist - Track.mp3"),
+    });
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Cmd::DesktopNotify { body, .. } if body == "Artist - Track.mp3"
+        )),
+        "a saved recording fires a desktop notification with the filename as the body"
+    );
+
+    // notify off → no desktop notification.
+    app.config.recording.notify = false;
+    let cmds = app.on_recorder_event(RecorderEvent::Saved {
+        id: 2,
+        final_path: std::path::PathBuf::from("/tmp/Other.mp3"),
+    });
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::DesktopNotify { .. })),
+        "with notifications off, no desktop notification is fired"
+    );
+}
+
+#[test]
+fn recording_settings_popup_closed_by_navigation() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    app.radio_dedicated_mode = true;
+    app.open_settings();
+    {
+        let st = app.settings.as_mut().unwrap();
+        st.tab = crate::settings::SettingsTab::Playback;
+        st.row = st
+            .fields()
+            .iter()
+            .position(|f| *f == crate::settings::Field::RadioRecording)
+            .expect("radio item present in radio mode");
+    }
+    let _ = app.settings_activate();
+    assert!(app.recording_settings.is_some(), "the button opens the popup");
+
+    // Navigating Home must drop the top-level overlay so it can't strand over the Player
+    // (regression: it used to keep painting on top, unreachable).
+    let _ = app.go_home();
+    assert!(
+        app.recording_settings.is_none(),
+        "go_home clears the recording-settings popup"
+    );
+    assert_eq!(app.mode, Mode::Player);
+}
+
+#[test]
 fn radio_stream_metadata_updates_dj_gem_context() {
     let mut app = App::new(100);
     app.queue.set(vec![radio_station("groove")], 0);
