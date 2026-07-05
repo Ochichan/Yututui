@@ -2068,6 +2068,9 @@ fn spawn_video_overlay(
             path.display()
         ));
     }
+    if let Some(arg) = crate::tools::mpv_ytdl_js_runtime_arg() {
+        cmd.arg(arg);
+    }
     // Pin ytdl_hook to the selected yt-dlp (managed/override), like the audio
     // instance — but with `-append`: this spawn honors the user's mpv config, and
     // plain `--script-opts=` would wipe their other script options.

@@ -136,14 +136,9 @@ async fn resolve_url_with_program(
     watch_url: &str,
     cookies: Option<&std::path::Path>,
 ) -> Option<String> {
-    let mut cmd = process::tokio_command(program, process::ProcessProfile::YtDlp);
+    let mut cmd = crate::tools::ytdlp_command_for(program);
     cmd.args(["-f", "bestaudio", "-g", "--no-playlist"])
         .arg(watch_url);
-    // Match the mpv ytdl_hook path: name a non-default JS runtime for nsig solving when one is
-    // installed (Deno needs no flag). Keeps the skip-ahead resolver in sync with playback.
-    if let Some(rt) = crate::tools::js_runtimes_flag() {
-        cmd.args(["--js-runtimes", rt]);
-    }
     if let Some(c) = cookies {
         cmd.arg("--cookies").arg(c);
     }

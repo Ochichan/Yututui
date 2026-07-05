@@ -1,5 +1,6 @@
 //! Child process construction with explicit environment inheritance and bounded output capture.
 
+use std::io::Read;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::process::{Command as StdCommand, ExitStatus, Stdio};
@@ -38,6 +39,45 @@ pub fn tokio_command(program: &str, profile: ProcessProfile) -> TokioCommand {
 pub struct LimitedOutput {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
+}
+
+pub fn std_output_limited(
+    mut cmd: StdCommand,
+    timeout: Duration,
+    stdout_max: usize,
+) -> Result<LimitedOutput> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = cmd.spawn().context("spawn child process")?;
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().context("poll child process")? {
+            break status;
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("child process timed out");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    let mut out = Vec::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let limit = stdout_max.saturating_add(1) as u64;
+        stdout
+            .by_ref()
+            .take(limit)
+            .read_to_end(&mut out)
+            .context("read child stdout")?;
+    }
+    if out.len() > stdout_max {
+        bail!("child stdout too large: more than {stdout_max} bytes");
+    }
+
+    Ok(LimitedOutput {
+        status,
+        stdout: out,
+    })
 }
 
 pub async fn tokio_output_limited(
@@ -311,6 +351,20 @@ mod tests {
         assert!(should_inherit("YTM_MPV", ProcessProfile::Daemon));
         assert!(!should_inherit("YTM_YTDLP", ProcessProfile::YtDlp));
         assert!(!should_inherit("HTTPS_PROXY", ProcessProfile::Clipboard));
+    }
+
+    #[test]
+    fn std_output_limited_captures_and_bounds_stdout() {
+        let exe = std::env::current_exe().unwrap();
+        let mut ok = StdCommand::new(&exe);
+        ok.arg("--help");
+        let out = std_output_limited(ok, Duration::from_secs(5), 128 * 1024).unwrap();
+        assert!(out.status.success());
+        assert!(!out.stdout.is_empty());
+
+        let mut too_large = StdCommand::new(exe);
+        too_large.arg("--help");
+        assert!(std_output_limited(too_large, Duration::from_secs(5), 1).is_err());
     }
 
     #[test]

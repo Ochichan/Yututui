@@ -18,7 +18,7 @@ use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{Sender, error::TrySendError};
 
 use crate::api::Song;
-use crate::util::{backpressure, process, sanitize};
+use crate::util::{backpressure, sanitize};
 
 const OUTPUT_TEMPLATE: &str = "%(title)s [%(id)s].%(ext)s";
 const YTDLP_STDOUT_MAX: usize = 64 * 1024;
@@ -123,7 +123,7 @@ async fn run_download_with_program(
 ) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("create download dir {dir:?}"))?;
 
-    let mut cmd = process::tokio_command(program, process::ProcessProfile::YtDlp);
+    let mut cmd = crate::tools::ytdlp_command_for(program);
     cmd.arg(song.playback_target())
         .args(["-f", "bestaudio", "-x", "--audio-format", "m4a"])
         .args([

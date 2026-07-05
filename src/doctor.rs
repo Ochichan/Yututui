@@ -96,34 +96,71 @@ pub fn run() -> i32 {
     // 1b) Managed yt-dlp status (the auto-updated copy in <data>/tools).
     print_managed_ytdlp(&cfg, kr);
 
-    // 1c) Modern yt-dlp needs a JS runtime for YouTube nsig solving (deno is auto-used; node/bun/
-    // quickjs are wired via --js-runtimes). Soft-warn if none is installed — playback still
+    // 1c) Modern yt-dlp needs a supported JS runtime for YouTube nsig solving (deno is auto-used;
+    // node/bun/quickjs are wired via --js-runtimes). Soft-warn if none is usable — playback still
     // partially works via the tv-client fallback, so this doesn't fail the doctor.
-    match crate::tools::detect_js_runtime() {
-        Some(rt) if rt.flag_value().is_none() => println!(
+    let js = crate::tools::js_runtime_diagnostics();
+    if let Some(probe) = js.iter().find(|probe| probe.supported) {
+        let version = probe
+            .version
+            .as_ref()
+            .map(|v| format!(" {v}"))
+            .unwrap_or_default();
+        let rt = probe.runtime;
+        println!(
             "{}",
             if kr {
-                format!("JS 런타임: ✓ {} (자동 사용)", rt.label())
+                if rt.flag_value().is_none() {
+                    format!("JS 런타임: ✓ {}{} (자동 사용)", rt.label(), version)
+                } else {
+                    format!(
+                        "JS 런타임: ✓ {}{} (--js-runtimes 로 연결)",
+                        rt.label(),
+                        version
+                    )
+                }
+            } else if rt.flag_value().is_none() {
+                format!("JS runtime: ✓ {}{} (auto-used)", rt.label(), version)
             } else {
-                format!("JS runtime: ✓ {} (auto-used)", rt.label())
+                format!(
+                    "JS runtime: ✓ {}{} (wired via --js-runtimes)",
+                    rt.label(),
+                    version
+                )
             }
-        ),
-        Some(rt) => println!(
+        );
+    } else if let Some(probe) = js.first() {
+        let version = probe
+            .version
+            .as_ref()
+            .map(|v| format!(" {v}"))
+            .unwrap_or_default();
+        let reason = probe.reason.unwrap_or("unsupported version");
+        println!(
             "{}",
             if kr {
-                format!("JS 런타임: ✓ {} (--js-runtimes 로 연결)", rt.label())
+                format!(
+                    "JS 런타임: ✗ {}{} 미지원 — {reason}; `deno` 설치를 권장해요.",
+                    probe.runtime.label(),
+                    version
+                )
             } else {
-                format!("JS runtime: ✓ {} (wired via --js-runtimes)", rt.label())
+                format!(
+                    "JS runtime: ✗ {}{} unsupported — {reason}; install `deno`.",
+                    probe.runtime.label(),
+                    version
+                )
             }
-        ),
-        None => println!(
+        );
+    } else {
+        println!(
             "{}",
             if kr {
                 "JS 런타임: ✗ 없음 — YouTube 재생이 점차 불안정해질 수 있어요. `deno` 설치를 권장해요."
             } else {
                 "JS runtime: ✗ none — YouTube playback may degrade over time; install `deno`."
             }
-        ),
+        );
     }
     println!();
 

@@ -167,8 +167,8 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
     // if only a non-default runtime (node/bun/quickjs) is installed, name it via the same
     // ytdl_hook raw-options channel as cookies above. Bare name — the yt-dlp subprocess inherits
     // our PATH. Without this, ytdl_hook's yt-dlp warns and format availability degrades.
-    if let Some(rt) = crate::tools::js_runtimes_flag() {
-        cmd.arg(format!("--ytdl-raw-options-append=js-runtimes={rt}"));
+    if let Some(arg) = crate::tools::mpv_ytdl_js_runtime_arg() {
+        cmd.arg(arg);
     }
 
     // The OS media session is ours (`crate::media`), not mpv's — see the probe

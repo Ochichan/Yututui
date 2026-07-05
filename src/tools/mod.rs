@@ -13,7 +13,7 @@
 //! 1. An explicit override — `YTM_YTDLP` env var, then the `tools.ytdlp_path` config —
 //!    wins **unconditionally**. An override that could be out-voted by a version
 //!    compare would not be an override.
-//! 2. Otherwise the newest of {managed binary, system `yt-dlp` on PATH} by
+//! 2. Otherwise the newest of {enabled managed binary, system `yt-dlp` on PATH} by
 //!    [`compare_versions`]; a tie prefers managed (it's the one we can update, and the
 //!    one mpv's ytdl_hook gets pointed at). macOS exception: a usable system binary
 //!    always wins, because the standalone build pays a ~10s malware scan per exec
@@ -31,7 +31,7 @@ use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::RwLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -191,7 +191,16 @@ pub fn ytdlp_program() -> String {
 /// The one exec chokepoint: every yt-dlp subprocess in the app builds here so the
 /// selected binary (and the YtDlp env profile) applies uniformly.
 pub fn ytdlp_command() -> tokio::process::Command {
-    process::tokio_command(&ytdlp_program(), process::ProcessProfile::YtDlp)
+    ytdlp_command_for(&ytdlp_program())
+}
+
+/// Build a yt-dlp subprocess for a specific program path/name. Test seams and
+/// direct exec paths use this so they receive the same environment and runtime
+/// arguments as the process-wide selection.
+pub(crate) fn ytdlp_command_for(program: &str) -> tokio::process::Command {
+    let mut cmd = process::tokio_command(program, process::ProcessProfile::YtDlp);
+    append_ytdlp_js_runtime_args(&mut cmd);
+    cmd
 }
 
 /// The mpv program to spawn (`YTM_MPV` env > `tools.mpv_path` config > `"mpv"`).
@@ -241,22 +250,217 @@ impl JsRuntime {
     }
 }
 
-/// The best JS runtime for yt-dlp found on `PATH`, in yt-dlp's own preference order (Deno first —
-/// it's the default and needs no flag). `None` when none is installed. A cheap `PATH` stat; called
-/// per mpv spawn / resolve so a newly-installed runtime applies without a relaunch. The probe
-/// order also matches `qjs`, the standard quickjs-ng executable name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsRuntimeProbe {
+    pub runtime: JsRuntime,
+    pub path: PathBuf,
+    pub version: Option<String>,
+    pub supported: bool,
+    pub reason: Option<&'static str>,
+}
+
+#[derive(Clone)]
+struct JsRuntimeCache {
+    checked: Instant,
+    probes: Vec<JsRuntimeProbe>,
+}
+
+#[derive(Clone)]
+struct JsRuntimeSelectionCache {
+    checked: Instant,
+    runtime: Option<JsRuntime>,
+}
+
+static JS_RUNTIME_CACHE: RwLock<Option<JsRuntimeCache>> = RwLock::new(None);
+static JS_RUNTIME_SELECTION_CACHE: RwLock<Option<JsRuntimeSelectionCache>> = RwLock::new(None);
+const JS_RUNTIME_CACHE_TTL: Duration = Duration::from_secs(60);
+const JS_RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const JS_RUNTIME_PROBE_STDOUT_MAX: usize = 4096;
+
+/// The best *supported* JS runtime for yt-dlp found on `PATH`, in yt-dlp's own preference order
+/// (Deno first — it's the default and needs no flag). `None` when none is installed or only
+/// unsupported versions are present. Version probes are cached briefly so frequent search/resolve
+/// calls do not run `node --version`/`deno --version` for every yt-dlp subprocess.
 pub fn detect_js_runtime() -> Option<JsRuntime> {
-    for (bin, rt) in [
+    if let Some(cache) = JS_RUNTIME_SELECTION_CACHE
+        .read()
+        .expect("js runtime selection cache lock poisoned")
+        .clone()
+        && cache.checked.elapsed() < JS_RUNTIME_CACHE_TTL
+    {
+        return cache.runtime;
+    }
+
+    if let Some(cache) = JS_RUNTIME_CACHE
+        .read()
+        .expect("js runtime cache lock poisoned")
+        .clone()
+        && cache.checked.elapsed() < JS_RUNTIME_CACHE_TTL
+    {
+        let runtime = select_supported_js_runtime(&cache.probes);
+        *JS_RUNTIME_SELECTION_CACHE
+            .write()
+            .expect("js runtime selection cache lock poisoned") = Some(JsRuntimeSelectionCache {
+            checked: Instant::now(),
+            runtime,
+        });
+        return runtime;
+    }
+
+    let runtime = probe_supported_js_runtime_uncached();
+    *JS_RUNTIME_SELECTION_CACHE
+        .write()
+        .expect("js runtime selection cache lock poisoned") = Some(JsRuntimeSelectionCache {
+        checked: Instant::now(),
+        runtime,
+    });
+    runtime
+}
+
+fn select_supported_js_runtime(probes: &[JsRuntimeProbe]) -> Option<JsRuntime> {
+    probes
+        .iter()
+        .find(|probe| probe.supported)
+        .map(|probe| probe.runtime)
+}
+
+pub fn js_runtime_diagnostics() -> Vec<JsRuntimeProbe> {
+    if let Some(cache) = JS_RUNTIME_CACHE
+        .read()
+        .expect("js runtime cache lock poisoned")
+        .clone()
+        && cache.checked.elapsed() < JS_RUNTIME_CACHE_TTL
+    {
+        return cache.probes;
+    }
+
+    let probes = probe_js_runtimes_uncached();
+    *JS_RUNTIME_CACHE
+        .write()
+        .expect("js runtime cache lock poisoned") = Some(JsRuntimeCache {
+        checked: Instant::now(),
+        probes: probes.clone(),
+    });
+    probes
+}
+
+fn js_runtime_candidates() -> [(&'static str, JsRuntime); 4] {
+    [
         ("deno", JsRuntime::Deno),
         ("node", JsRuntime::Node),
         ("bun", JsRuntime::Bun),
         ("qjs", JsRuntime::QuickJs),
-    ] {
-        if crate::deps::resolve_on_path(bin).is_some() {
-            return Some(rt);
+    ]
+}
+
+fn probe_js_runtimes_uncached() -> Vec<JsRuntimeProbe> {
+    js_runtime_candidates()
+        .into_iter()
+        .filter_map(|(bin, runtime)| {
+            crate::deps::resolve_on_path(bin).map(|path| probe_one_js_runtime(runtime, path))
+        })
+        .collect()
+}
+
+fn probe_supported_js_runtime_uncached() -> Option<JsRuntime> {
+    for (bin, runtime) in js_runtime_candidates() {
+        let Some(path) = crate::deps::resolve_on_path(bin) else {
+            continue;
+        };
+        let probe = probe_one_js_runtime(runtime, path);
+        if probe.supported {
+            return Some(probe.runtime);
         }
     }
     None
+}
+
+fn probe_one_js_runtime(runtime: JsRuntime, path: PathBuf) -> JsRuntimeProbe {
+    let path_str = path.to_string_lossy();
+    let mut cmd = process::std_command(path_str.as_ref(), process::ProcessProfile::YtDlp);
+    cmd.arg("--version");
+    let stdout =
+        process::std_output_limited(cmd, JS_RUNTIME_PROBE_TIMEOUT, JS_RUNTIME_PROBE_STDOUT_MAX)
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+            .unwrap_or_default();
+
+    let version = parse_js_runtime_version(runtime, &stdout);
+    let (supported, reason) = js_runtime_support(runtime, version.as_deref(), &stdout);
+    JsRuntimeProbe {
+        runtime,
+        path,
+        version,
+        supported,
+        reason,
+    }
+}
+
+fn parse_js_runtime_version(_runtime: JsRuntime, output: &str) -> Option<String> {
+    first_version_like(output)
+}
+
+fn first_version_like(text: &str) -> Option<String> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    for (idx, ch) in chars {
+        if !ch.is_ascii_digit() {
+            continue;
+        }
+        let version: String = text[idx..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+            .collect();
+        if version.contains('.') || version.contains('-') {
+            return Some(version.replace('-', "."));
+        }
+    }
+    None
+}
+
+fn js_runtime_support(
+    runtime: JsRuntime,
+    version: Option<&str>,
+    raw_output: &str,
+) -> (bool, Option<&'static str>) {
+    match runtime {
+        JsRuntime::Deno => min_version_support(version, "2.3.0", "requires deno >= 2.3.0"),
+        JsRuntime::Node => min_version_support(version, "22.0.0", "requires node >= 22.0.0"),
+        JsRuntime::Bun => match version {
+            Some(v) if compare_versions(v, "1.2.11") == Ordering::Less => {
+                (false, Some("requires bun >= 1.2.11"))
+            }
+            Some(v) if compare_versions(v, "1.3.14") == Ordering::Greater => {
+                (false, Some("requires bun <= 1.3.14"))
+            }
+            Some(_) => (true, None),
+            None => (false, Some("could not read bun version")),
+        },
+        JsRuntime::QuickJs => {
+            let lower = raw_output.to_ascii_lowercase();
+            if lower.contains("quickjs-ng") || lower.contains("qjs-ng") {
+                return (true, None);
+            }
+            match version {
+                Some(v) if compare_versions(v, "2023.12.9") == Ordering::Less => {
+                    (false, Some("requires quickjs >= 2023.12.9"))
+                }
+                Some(_) | None => (true, None),
+            }
+        }
+    }
+}
+
+fn min_version_support(
+    version: Option<&str>,
+    minimum: &str,
+    reason: &'static str,
+) -> (bool, Option<&'static str>) {
+    match version {
+        Some(v) if compare_versions(v, minimum) != Ordering::Less => (true, None),
+        Some(_) => (false, Some(reason)),
+        None => (false, Some("could not read runtime version")),
+    }
 }
 
 /// The `--js-runtimes` token to hand yt-dlp so it uses an installed *non-default* runtime for
@@ -264,7 +468,29 @@ pub fn detect_js_runtime() -> Option<JsRuntime> {
 /// (nothing to pass; yt-dlp warns/degrades on its own). Passed as a bare name — the yt-dlp
 /// subprocess inherits our `PATH`, so no absolute path or quoting is needed.
 pub fn js_runtimes_flag() -> Option<&'static str> {
-    detect_js_runtime().and_then(JsRuntime::flag_value)
+    js_runtimes_flag_for(detect_js_runtime())
+}
+
+fn js_runtimes_flag_for(runtime: Option<JsRuntime>) -> Option<&'static str> {
+    runtime.and_then(JsRuntime::flag_value)
+}
+
+fn ytdlp_js_runtime_args_for(runtime: Option<JsRuntime>) -> Option<[&'static str; 2]> {
+    js_runtimes_flag_for(runtime).map(|rt| ["--js-runtimes", rt])
+}
+
+pub(crate) fn append_ytdlp_js_runtime_args(cmd: &mut tokio::process::Command) {
+    if let Some(args) = ytdlp_js_runtime_args_for(detect_js_runtime()) {
+        cmd.args(args);
+    }
+}
+
+fn mpv_ytdl_js_runtime_arg_for(runtime: Option<JsRuntime>) -> Option<String> {
+    js_runtimes_flag_for(runtime).map(|rt| format!("--ytdl-raw-options-append=js-runtimes={rt}"))
+}
+
+pub fn mpv_ytdl_js_runtime_arg() -> Option<String> {
+    mpv_ytdl_js_runtime_arg_for(detect_js_runtime())
 }
 
 /// Compare two yt-dlp version strings (`2025.04.30`, nightly `2026.07.03.234421`) by
@@ -340,7 +566,7 @@ async fn select(cfg: &ToolsConfig) -> Option<YtdlpSelection> {
         });
     }
 
-    let managed = ytdlp::installed_managed_path();
+    let managed = managed_candidate(cfg);
     let system = crate::deps::resolve_on_path("yt-dlp");
 
     // macOS exception to newest-wins: the standalone PyInstaller binary pays a
@@ -361,6 +587,14 @@ async fn select(cfg: &ToolsConfig) -> Option<YtdlpSelection> {
     }
 
     select_candidates(managed, system).await
+}
+
+fn managed_candidate(cfg: &ToolsConfig) -> Option<PathBuf> {
+    if cfg.managed_enabled() {
+        ytdlp::installed_managed_path()
+    } else {
+        None
+    }
 }
 
 /// Newest-wins between the managed and system candidates. A candidate whose version
@@ -467,6 +701,123 @@ mod tests {
         assert_eq!(YtdlpChannel::Nightly.repo(), "yt-dlp/yt-dlp-nightly-builds");
         assert_eq!(YtdlpChannel::Stable.repo(), "yt-dlp/yt-dlp");
         assert!(YtdlpChannel::Nightly.check_ttl() < YtdlpChannel::Stable.check_ttl());
+    }
+
+    #[test]
+    fn js_runtime_args_are_consistent_for_direct_ytdlp_and_mpv_hook() {
+        assert_eq!(js_runtimes_flag_for(Some(JsRuntime::Deno)), None);
+        assert_eq!(
+            ytdlp_js_runtime_args_for(Some(JsRuntime::Node)),
+            Some(["--js-runtimes", "node"])
+        );
+        assert_eq!(
+            ytdlp_js_runtime_args_for(Some(JsRuntime::Bun)),
+            Some(["--js-runtimes", "bun"])
+        );
+        assert_eq!(
+            ytdlp_js_runtime_args_for(Some(JsRuntime::QuickJs)),
+            Some(["--js-runtimes", "quickjs"])
+        );
+        assert_eq!(ytdlp_js_runtime_args_for(None), None);
+        assert_eq!(
+            mpv_ytdl_js_runtime_arg_for(Some(JsRuntime::Node)).as_deref(),
+            Some("--ytdl-raw-options-append=js-runtimes=node")
+        );
+        assert_eq!(mpv_ytdl_js_runtime_arg_for(Some(JsRuntime::Deno)), None);
+    }
+
+    #[test]
+    fn js_runtime_versions_are_parsed_from_common_binaries() {
+        assert_eq!(
+            parse_js_runtime_version(JsRuntime::Deno, "deno 2.3.0\nv8 14.0\n").as_deref(),
+            Some("2.3.0")
+        );
+        assert_eq!(
+            parse_js_runtime_version(JsRuntime::Node, "v22.11.0\n").as_deref(),
+            Some("22.11.0")
+        );
+        assert_eq!(
+            parse_js_runtime_version(JsRuntime::Bun, "1.3.14\n").as_deref(),
+            Some("1.3.14")
+        );
+        assert_eq!(
+            parse_js_runtime_version(JsRuntime::QuickJs, "QuickJS version 2025-04-26\n").as_deref(),
+            Some("2025.04.26")
+        );
+    }
+
+    #[test]
+    fn js_runtime_support_enforces_current_yt_dlp_bounds() {
+        assert_eq!(
+            js_runtime_support(JsRuntime::Deno, Some("2.2.9"), ""),
+            (false, Some("requires deno >= 2.3.0"))
+        );
+        assert_eq!(
+            js_runtime_support(JsRuntime::Deno, Some("2.3.0"), ""),
+            (true, None)
+        );
+        assert_eq!(
+            js_runtime_support(JsRuntime::Node, Some("20.19.4"), ""),
+            (false, Some("requires node >= 22.0.0"))
+        );
+        assert_eq!(
+            js_runtime_support(JsRuntime::Node, Some("22.0.0"), ""),
+            (true, None)
+        );
+        assert_eq!(
+            js_runtime_support(JsRuntime::Bun, Some("1.2.10"), ""),
+            (false, Some("requires bun >= 1.2.11"))
+        );
+        assert_eq!(
+            js_runtime_support(JsRuntime::Bun, Some("1.2.11"), ""),
+            (true, None)
+        );
+        assert_eq!(
+            js_runtime_support(JsRuntime::Bun, Some("1.3.15"), ""),
+            (false, Some("requires bun <= 1.3.14"))
+        );
+        assert_eq!(
+            js_runtime_support(JsRuntime::QuickJs, Some("2023.12.8"), ""),
+            (false, Some("requires quickjs >= 2023.12.9"))
+        );
+        assert_eq!(
+            js_runtime_support(JsRuntime::QuickJs, Some("2023.12.9"), ""),
+            (true, None)
+        );
+        assert_eq!(
+            js_runtime_support(JsRuntime::QuickJs, None, "quickjs-ng 0.10.0"),
+            (true, None)
+        );
+    }
+
+    #[test]
+    fn js_runtime_selection_skips_unsupported_candidates() {
+        let probes = vec![
+            JsRuntimeProbe {
+                runtime: JsRuntime::Deno,
+                path: PathBuf::from("/bin/deno"),
+                version: Some("2.2.9".to_owned()),
+                supported: false,
+                reason: Some("requires deno >= 2.3.0"),
+            },
+            JsRuntimeProbe {
+                runtime: JsRuntime::Node,
+                path: PathBuf::from("/bin/node"),
+                version: Some("22.0.0".to_owned()),
+                supported: true,
+                reason: None,
+            },
+        ];
+        assert_eq!(select_supported_js_runtime(&probes), Some(JsRuntime::Node));
+    }
+
+    #[test]
+    fn managed_disabled_excludes_managed_selection_candidate() {
+        let cfg = ToolsConfig {
+            ytdlp_managed: Some(false),
+            ..ToolsConfig::default()
+        };
+        assert_eq!(managed_candidate(&cfg), None);
     }
 
     #[cfg(unix)]
