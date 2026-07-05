@@ -244,10 +244,33 @@ impl App {
                 self.enter_ai();
                 Vec::new()
             }
-            Some(Action::Download) => match self.selected_library_song() {
-                Some(song) => self.start_download(song),
-                None => Vec::new(),
-            },
+            // `d` downloads the selection: a lone track immediately (unchanged), a drag-selected
+            // range behind the "Download N songs?" confirm popup. No-op at the Playlists root
+            // (no song rows there — that's `Shift+D`'s job).
+            Some(Action::Download) => {
+                if self.playlists_root() {
+                    Vec::new()
+                } else {
+                    let songs = self.selected_library_songs();
+                    match songs.len() {
+                        0 => Vec::new(),
+                        1 => self.start_download(songs.into_iter().next().unwrap()),
+                        _ => self.open_confirm_download(songs),
+                    }
+                }
+            }
+            // `Shift+D` downloads a whole list at once (deduped, behind the confirm popup): the
+            // highlighted playlist at the Playlists root, otherwise every row of the current tab.
+            Some(Action::DownloadAll) => {
+                let songs = if self.playlists_root() {
+                    self.selected_root_playlist()
+                        .map(|p| p.songs.clone())
+                        .unwrap_or_default()
+                } else {
+                    self.library_songs()
+                };
+                self.open_confirm_download(songs)
+            }
             // Un/favorite the highlighted track (removing shifts selection up).
             Some(Action::Favorite) => {
                 if let Some(song) = self.selected_library_song() {

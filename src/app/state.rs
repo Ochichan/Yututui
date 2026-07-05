@@ -308,6 +308,13 @@ pub struct Downloads {
     /// Original catalog metadata for in-flight downloads, keyed by `video_id`. Reducer-only
     /// (was a private App field) — `pub(in crate::app)` keeps it off the render-facing surface.
     pub(in crate::app) sources: HashMap<String, Song>,
+    /// Bulk-download overflow queue: deduped songs accepted for download but not yet handed to
+    /// the actor. `pump_downloads` drains it as in-flight slots free, so a large playlist can't
+    /// overrun the bounded command channel (`backpressure::DOWNLOAD_QUEUE`).
+    pub(in crate::app) pending: std::collections::VecDeque<Song>,
+    /// Downloads handed to the actor but not yet done/failed. Gates `pump_downloads` under the
+    /// channel bound; decremented as each `DownloadDone`/`DownloadError` arrives.
+    pub(in crate::app) dispatched: usize,
 }
 
 /// The Spotify playlist picker overlay (Settings › Accounts › Import from Spotify…):
@@ -522,6 +529,11 @@ pub struct LibraryView {
     /// (removes the whole list at once, so it's gated behind an explicit yes/no like the
     /// download-file delete). `None` when no modal is open.
     pub confirm_playlist_delete: Option<String>,
+    /// Pending bulk-download confirmation: the already-deduped batch queued behind a
+    /// "Download N songs?" yes/no (drag-selected range, or a whole list/playlist). `None`
+    /// when no modal is open. Shares the album-art overlay bit with `confirm_delete` — the
+    /// two Library confirm modals are mutually exclusive.
+    pub confirm_download: Option<Vec<Song>>,
 }
 
 /// The "add to playlist" picker popup: which songs are being added, the highlighted row,

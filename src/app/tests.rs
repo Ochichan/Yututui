@@ -5714,6 +5714,71 @@ fn bare_local(path: &str, title: &str) -> Song {
 }
 
 #[test]
+fn downloadable_batch_skips_local_downloaded_and_dupes() {
+    let mut app = App::new(100);
+    // Remember one track as already downloaded in a past session (manifest keeps its YT id).
+    let past = fsong("keep", "Kept", "A").with_local_path(PathBuf::from("/dl/keep.m4a"));
+    app.download_store.record(&past);
+
+    let batch = app.downloadable_batch(vec![
+        fsong("a", "A", "x"),               // fresh -> keep
+        bare_local("/dl/local.m4a", "Loc"), // local file -> skip
+        fsong("keep", "Kept", "A"),         // already downloaded -> skip
+        fsong("a", "A dup", "x"),           // duplicate id within batch -> skip
+        fsong("b", "B", "y"),               // fresh -> keep
+    ]);
+
+    let ids: Vec<&str> = batch.iter().map(|s| s.video_id.as_str()).collect();
+    assert_eq!(ids, vec!["a", "b"]);
+}
+
+#[test]
+fn bulk_download_confirm_flow_queues_and_emits() {
+    let mut app = App::new(100);
+
+    // A fully-skipped selection opens no modal and emits no downloads.
+    let cmds = app.open_confirm_download(vec![bare_local("/dl/x.m4a", "X")]);
+    assert!(cmds.is_empty());
+    assert!(app.library_ui.confirm_download.is_none());
+
+    // A real batch raises the confirm popup carrying the deduped count — still no downloads yet.
+    let cmds = app.open_confirm_download(vec![fsong("a", "A", "x"), fsong("b", "B", "y")]);
+    assert!(cmds.is_empty());
+    assert_eq!(app.library_ui.confirm_download.as_ref().map(Vec::len), Some(2));
+
+    // Confirming clears the modal, queues the batch, and emits one Cmd::Download per track.
+    let cmds = app.confirm_download_apply();
+    let downloads = cmds.iter().filter(|c| matches!(c, Cmd::Download(_))).count();
+    assert_eq!(downloads, 2);
+    assert!(app.library_ui.confirm_download.is_none());
+    assert_eq!(app.downloads.dispatched, 2);
+}
+
+#[test]
+fn bulk_download_stays_under_channel_bound_and_drips() {
+    let mut app = App::new(100);
+    let many: Vec<Song> = (0..100).map(|i| fsong(&format!("id{i}"), "T", "A")).collect();
+    app.library_ui.confirm_download = Some(app.downloadable_batch(many));
+
+    let cmds = app.confirm_download_apply();
+    // Only up to the in-flight cap dispatches; the overflow waits in `pending` (no channel flood).
+    assert_eq!(
+        cmds.iter().filter(|c| matches!(c, Cmd::Download(_))).count(),
+        96
+    );
+    assert_eq!(app.downloads.dispatched, 96);
+    assert_eq!(app.downloads.pending.len(), 4);
+
+    // Each completion frees a slot and drips the next queued download in, holding at the cap.
+    app.update(Msg::DownloadDone {
+        video_id: "id0".to_string(),
+        path: String::new(),
+    });
+    assert_eq!(app.downloads.dispatched, 96);
+    assert_eq!(app.downloads.pending.len(), 3);
+}
+
+#[test]
 fn local_file_recovers_embedded_id_from_filename() {
     // Our downloader names files `Title [<id>].m4a`; a rescan recovers the id + clean title.
     let tagged = Song::local_file(PathBuf::from("/tmp/My Song [dQw4w9WgXcQ].m4a"));
@@ -7562,6 +7627,12 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     app.library_ui.confirm_delete = Some(vec![std::path::PathBuf::from("track.mp3")]);
     assert_eq!(app.art_overlay_mask(), 1 << 9);
     app.library_ui.confirm_delete = None;
+    // The bulk-download confirm deliberately shares bit 9 with the file-delete confirm: the two
+    // Library confirm modals are mutually exclusive (each captures all keys while open) and share
+    // the same footprint, so one bit tracks both without a missed graphics-clear edge.
+    app.library_ui.confirm_download = Some(vec![fsong("z", "Z", "A")]);
+    assert_eq!(app.art_overlay_mask(), 1 << 9);
+    app.library_ui.confirm_download = None;
     app.mode = Mode::Search;
     assert_eq!(app.art_overlay_mask(), 1 << 10);
     app.mode = Mode::Player;

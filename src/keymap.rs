@@ -35,6 +35,9 @@ pub enum Action {
     OpenQueue,
     ToggleLyrics,
     Download,
+    /// Download every song in the current list/playlist at once (deduped), distinct from the
+    /// single-track `Download`.
+    DownloadAll,
     ToggleShuffle,
     CycleRepeat,
     CycleEq,
@@ -160,6 +163,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "download",
         "Download track",
         "곡 다운로드",
+    ),
+    (
+        Action::DownloadAll,
+        "download_all",
+        "Download all",
+        "전체 다운로드",
     ),
     (
         Action::ToggleShuffle,
@@ -468,6 +477,12 @@ impl Action {
                     "Delete playlist / remove song",
                     "플레이리스트 삭제 / 곡 제거"
                 )
+            }
+            (KeyContext::Library, Action::DownloadAll) => {
+                t!("Download whole list", "목록 전체 다운로드")
+            }
+            (KeyContext::Playlists, Action::DownloadAll) => {
+                t!("Download playlist", "플레이리스트 다운로드")
             }
             (KeyContext::Playlists, Action::Back) => t!("Back / close", "뒤로 / 닫기"),
             (KeyContext::Queue, Action::Confirm) => t!("Play / jump to track", "곡 재생 / 이동"),
@@ -1058,6 +1073,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Library, A::PlayAll, ch('a')),
         (C::Library, A::Favorite, ch('f')),
         (C::Library, A::Download, ch('d')),
+        (C::Library, A::DownloadAll, ch('D')),
         (C::Library, A::OpenAi, ch('g')),
         (C::Library, A::AddToPlaylist, ch('p')),
         (C::Library, A::LibraryRemove, key(KeyCode::Delete)),
@@ -1070,6 +1086,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Playlists, A::PlaylistCreate, ch('n')),
         (C::Playlists, A::Favorite, ch('f')),
         (C::Playlists, A::Download, ch('d')),
+        (C::Playlists, A::DownloadAll, ch('D')),
         (C::Playlists, A::OpenAi, ch('g')),
         (C::Playlists, A::AddToPlaylist, ch('p')),
         (C::Playlists, A::LibraryRemove, key(KeyCode::Delete)),
@@ -1819,6 +1836,20 @@ mod tests {
         assert_eq!(
             km.action(KeyContext::Library, parse_chord("q").unwrap()),
             Some(Action::Back)
+        );
+        // `d` downloads the selected track; `Shift+D` (uppercase, no modifier) downloads the
+        // whole list/playlist — distinct bindings in both list contexts.
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("d").unwrap()),
+            Some(Action::Download)
+        );
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("D").unwrap()),
+            Some(Action::DownloadAll)
+        );
+        assert_eq!(
+            km.action(KeyContext::Playlists, parse_chord("D").unwrap()),
+            Some(Action::DownloadAll)
         );
         assert_eq!(
             km.action(KeyContext::SearchResults, parse_chord("q").unwrap()),

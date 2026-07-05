@@ -947,6 +947,78 @@ pub fn render_confirm_delete(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
+/// A modal confirming a bulk download ("Download N songs?"), raised by a drag-selected range
+/// (`d`) or a whole list/playlist (`Shift+D`). The batch is already deduped, so `N` is the real
+/// number of fetches. Enter/`y` or the Download button confirm; Esc or a click elsewhere
+/// cancels. Publishes `ConfirmDownload` / `CancelDownload` hit rects for mouse use.
+pub fn render_confirm_download(frame: &mut Frame, app: &App, area: Rect) {
+    let count = app.library_ui.confirm_download.as_ref().map_or(0, Vec::len);
+    let popup = centered_fixed(area, 56, 9);
+    crate::ui::render_popup_background(frame, app, popup);
+
+    let block = Block::default()
+        .title(t!(" ⬇ Download songs ", " ⬇ 곡 다운로드 "))
+        .borders(Borders::ALL)
+        .border_style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // prompt
+        Constraint::Length(1), // detail
+        Constraint::Length(1), // spacer
+        Constraint::Min(1),    // buttons
+    ])
+    .split(inner);
+
+    let prompt = if crate::i18n::is_korean() {
+        format!("{count}곡을 다운로드할까요?")
+    } else {
+        let noun = if count == 1 { "song" } else { "songs" };
+        format!("Download {count} {noun}?")
+    };
+    frame.render_widget(
+        Paragraph::new(prompt)
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::TextPrimary)),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(t!(
+            "Already-downloaded tracks are skipped.",
+            "이미 받은 곡은 제외됩니다."
+        ))
+        .alignment(Alignment::Center)
+        .style(crate::ui::popup_style(app, R::TextMuted)),
+        rows[2],
+    );
+
+    let segs = [
+        buttons::Seg::button(
+            MouseTarget::ConfirmDownload,
+            t!(" Download (Enter) ", " 다운로드 (Enter) "),
+        ),
+        buttons::Seg::label("    "),
+        buttons::Seg::button(
+            MouseTarget::CancelDownload,
+            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+        ),
+    ];
+    buttons::render_segments(
+        frame,
+        app,
+        rows[4],
+        &segs,
+        crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+        crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+        Alignment::Center,
+    );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
 /// A `w`×`h` rect centered in `area`, clamped so it never exceeds the available space.
 fn centered_fixed(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);

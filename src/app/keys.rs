@@ -62,6 +62,19 @@ impl App {
             return Vec::new();
         }
 
+        // The bulk-download confirmation is modal the same way: Enter or `y` starts the batch,
+        // anything else backs out. Handled here so the key can't leak to the library list.
+        if self.library_ui.confirm_download.is_some() {
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            if confirmed {
+                return self.confirm_download_apply();
+            }
+            self.library_ui.confirm_download = None;
+            return Vec::new();
+        }
+
         // Deleting a playlist drops the whole list at once, so it's gated behind the same
         // modal: Enter or `y` confirms, anything else backs out.
         if self.library_ui.confirm_playlist_delete.is_some() {

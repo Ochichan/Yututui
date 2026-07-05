@@ -496,7 +496,12 @@ impl App {
             | ((self.key_conflict.is_some() as u16) << 6)
             | ((self.pending_radio_mode_confirm.is_some() as u16) << 7)
             | ((self.pending_settings_confirm.is_some() as u16) << 8)
-            | ((self.library_ui.confirm_delete.is_some() as u16) << 9)
+            // Bit 9 is shared by the two Library confirm modals (file-delete and bulk-download):
+            // they are mutually exclusive (each captures all keys while open) and share the same
+            // centered footprint, so one bit tracks both without missing a graphics-clear edge.
+            | (((self.library_ui.confirm_delete.is_some()
+                || self.library_ui.confirm_download.is_some()) as u16)
+                << 9)
             | ((!matches!(self.mode, Mode::Player) as u16) << 10)
             | ((self.mouse_help_visible as u16) << 11)
             | ((self.library_ui.create_input.is_some() as u16) << 12)

@@ -39,7 +39,7 @@ impl App {
     }
 
     /// The playlist under the root-level cursor, if any.
-    fn selected_root_playlist(&self) -> Option<&Playlist> {
+    pub(in crate::app) fn selected_root_playlist(&self) -> Option<&Playlist> {
         self.filtered_playlists()
             .get(self.library_ui.selected)
             .copied()

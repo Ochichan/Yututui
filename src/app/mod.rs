@@ -1356,6 +1356,7 @@ impl App {
                 self.downloads
                     .active
                     .insert(video_id.clone(), DownloadState::Done);
+                self.downloads.dispatched = self.downloads.dispatched.saturating_sub(1);
                 let saved = !path.trim().is_empty();
                 if saved {
                     let local = self
@@ -1370,18 +1371,24 @@ impl App {
                 self.status.kind = StatusKind::Info;
                 self.status.text = format!("{}: {path}", t!("Saved", "저장됨"));
                 self.dirty = true;
+                // A finished slot lets the next bulk-queued download start.
+                let mut cmds = self.pump_downloads();
                 if saved {
                     // Persist the manifest so the recovered YouTube id survives a restart.
-                    return vec![Cmd::SaveDownloads];
+                    cmds.push(Cmd::SaveDownloads);
                 }
+                return cmds;
             }
             Msg::DownloadError { video_id, error } => {
                 self.downloads
                     .active
                     .insert(video_id.clone(), DownloadState::Failed);
                 self.downloads.sources.remove(&video_id);
+                self.downloads.dispatched = self.downloads.dispatched.saturating_sub(1);
                 self.status.text = format!("{}: {error}", t!("Download failed", "다운로드 실패"));
                 self.dirty = true;
+                // Keep the batch flowing even when one track fails.
+                return self.pump_downloads();
             }
             Msg::Resolved {
                 video_id,
@@ -1726,6 +1733,7 @@ impl App {
         self.queue_popup.open = false;
         self.search_filter.close();
         self.library_ui.confirm_delete = None;
+        self.library_ui.confirm_download = None;
         self.playlist_picker = None;
         self.reset_playlist_ui_state();
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
@@ -1778,6 +1786,7 @@ impl App {
         self.queue_popup.open = false;
         self.search_filter.close();
         self.library_ui.confirm_delete = None;
+        self.library_ui.confirm_download = None;
         // Popup-like playlist surfaces dismiss on any navigation (the drill-down itself is
         // content state — it resets only on a fresh Library entry below).
         self.library_ui.create_input = None;

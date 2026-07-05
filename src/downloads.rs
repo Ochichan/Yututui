@@ -49,6 +49,12 @@ impl DownloadStore {
         safe_fs::write_private_atomic_json(&path, self)
     }
 
+    /// Whether any remembered download shares this YouTube id — the bulk-download dedup uses
+    /// it to skip tracks already fetched in a previous session.
+    pub fn contains_youtube_id(&self, yt: &str) -> bool {
+        self.tracks.iter().any(|s| s.youtube_id() == Some(yt))
+    }
+
     /// Remember an enriched downloaded track (dedup by `video_id`, newest first).
     pub fn record(&mut self, song: &Song) {
         self.tracks.retain(|s| s.video_id != song.video_id);

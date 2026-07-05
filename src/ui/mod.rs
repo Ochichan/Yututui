@@ -96,6 +96,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.library_ui.confirm_delete.is_some() {
         views::library::render_confirm_delete(frame, app, area);
     }
+    // The bulk-download confirmation floats over the library like the delete modals (mutually
+    // exclusive with them, so relative order doesn't matter).
+    if app.library_ui.confirm_download.is_some() {
+        views::library::render_confirm_download(frame, app, area);
+    }
     // The add-to-playlist picker floats over whichever screen opened it.
     if app.playlist_picker.is_some() {
         views::library::render_playlist_picker(frame, app, area);

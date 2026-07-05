@@ -100,6 +100,20 @@ impl App {
                 }
             }
         }
+        // The bulk-download confirmation is modal like the delete confirmations: only its own
+        // Download/Cancel buttons act; a click anywhere else backs out.
+        if self.library_ui.confirm_download.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(t @ (MouseTarget::ConfirmDownload | MouseTarget::CancelDownload)) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.library_ui.confirm_download = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
+        }
         // The playlist-delete confirmation is modal the same way.
         if self.library_ui.confirm_playlist_delete.is_some() {
             match self.mouse_target_at(col, row) {
@@ -483,6 +497,12 @@ impl App {
                 Vec::new()
             }
             // The "delete downloaded files" confirmation buttons.
+            MouseTarget::ConfirmDownload => self.confirm_download_apply(),
+            MouseTarget::CancelDownload => {
+                self.library_ui.confirm_download = None;
+                self.dirty = true;
+                Vec::new()
+            }
             MouseTarget::ConfirmDelete => self.confirm_delete_files_apply(),
             MouseTarget::CancelDelete => {
                 self.library_ui.confirm_delete = None;

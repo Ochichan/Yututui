@@ -509,6 +509,10 @@ pub enum MouseTarget {
     ConfirmDelete,
     /// Cancel button on the "delete downloaded files" modal.
     CancelDelete,
+    /// Confirm button on the bulk "download N songs" modal.
+    ConfirmDownload,
+    /// Cancel button on the bulk "download N songs" modal.
+    CancelDownload,
     /// Confirm button on a Settings confirmation modal.
     ConfirmSettings,
     /// Cancel button on a Settings confirmation modal.
