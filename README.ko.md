@@ -43,9 +43,9 @@ irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
 
 | 채널 | 설치되는 것 | Tray 시작 |
 | --- | --- | --- |
-| macOS Homebrew | `ytt`, `ytt-desktop`, 런타임 도구 | `ytt-desktop` |
-| Windows Scoop | `ytt.exe`, `ytt-desktop.exe`, 런타임 도구, 시작 메뉴 바로가기 | `ytt-desktop` 또는 **YtmTui Tray** |
-| 직접 설치 / 소스 빌드 스크립트 | `ytt`; macOS/Windows는 `ytt-desktop`도 함께 설치 | `ytt-desktop` |
+| macOS Homebrew | `ytt`, `ytt-desktop`, 런타임 도구 | `ytt-desktop --background` |
+| Windows Scoop | `ytt.exe`, `ytt-desktop.exe`, 런타임 도구, 시작 메뉴 바로가기 | `ytt-desktop --background` 또는 **YtmTui Tray** |
+| 직접 설치 / 소스 빌드 스크립트 | `ytt`; macOS/Windows는 `ytt-desktop`도 함께 설치 | `ytt-desktop --background` |
 | Linux | MPRIS 미디어 연동이 들어간 `ytt` | 별도 tray 앱 없음 |
 
 로그인 시 자동 실행은 선택 사항입니다: `ytt-desktop --install-startup`.

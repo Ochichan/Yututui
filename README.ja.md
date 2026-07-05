@@ -43,9 +43,9 @@ irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
 
 | チャンネル | インストールされるもの | Tray の起動 |
 | --- | --- | --- |
-| macOS Homebrew | `ytt`, `ytt-desktop`, ランタイムツール | `ytt-desktop` |
-| Windows Scoop | `ytt.exe`, `ytt-desktop.exe`, ランタイムツール, スタートメニューショートカット | `ytt-desktop` または **YtmTui Tray** |
-| 直接インストーラ / ソースビルドスクリプト | `ytt`; macOS/Windows では `ytt-desktop` も同梱 | `ytt-desktop` |
+| macOS Homebrew | `ytt`, `ytt-desktop`, ランタイムツール | `ytt-desktop --background` |
+| Windows Scoop | `ytt.exe`, `ytt-desktop.exe`, ランタイムツール, スタートメニューショートカット | `ytt-desktop --background` または **YtmTui Tray** |
+| 直接インストーラ / ソースビルドスクリプト | `ytt`; macOS/Windows では `ytt-desktop` も同梱 | `ytt-desktop --background` |
 | Linux | MPRIS メディア連携入りの `ytt` | 別の tray アプリはなし |
 
 ログイン時の自動起動は任意です: `ytt-desktop --install-startup`。

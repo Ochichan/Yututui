@@ -30,8 +30,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("ytt-desktop {}", env!("CARGO_PKG_VERSION"));
         }
         Some("--help") | Some("-h") => print_help(),
-        // Launched from a startup entry → tray only; launched from the app icon (no args)
-        // or with --main-window → open the main window (docs/gui/03 §1.4).
+        // Default to tray-only. The main window is still experimental and must be
+        // opened explicitly so package-manager users do not see an unfinished GUI.
         Some("--background") => run_default(false)?,
         Some("--main-window") => run_default(true)?,
         Some("--once") => block_on(print_once()),
@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("ytt-desktop: unknown option `{other}` (try `ytt-desktop --help`)");
             std::process::exit(2);
         }
-        None => run_default(true)?,
+        None => run_default(false)?,
     }
     Ok(())
 }
@@ -72,8 +72,7 @@ fn print_help() {
     println!("Options:");
     println!("      --background Run the tray companion from a startup entry (tray only)");
     println!("      --main-window");
-    println!("                   Open the main window (default when launched from the app icon;");
-    println!("                   macOS only — no-op on Windows until the M0 sign-off)");
+    println!("                   Open the experimental main window");
     println!("      --install-startup");
     println!("                   Enable login startup for ytt-desktop");
     println!("      --uninstall-startup");

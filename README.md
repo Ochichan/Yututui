@@ -43,9 +43,9 @@ irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
 
 | Channel | What gets installed | How to start the tray |
 | --- | --- | --- |
-| macOS Homebrew | `ytt`, `ytt-desktop`, runtime tools | `ytt-desktop` |
-| Windows Scoop | `ytt.exe`, `ytt-desktop.exe`, runtime tools, Start Menu shortcut | `ytt-desktop` or **YtmTui Tray** |
-| Direct installers / source build scripts | `ytt`; macOS/Windows also get `ytt-desktop` | `ytt-desktop` |
+| macOS Homebrew | `ytt`, `ytt-desktop`, runtime tools | `ytt-desktop --background` |
+| Windows Scoop | `ytt.exe`, `ytt-desktop.exe`, runtime tools, Start Menu shortcut | `ytt-desktop --background` or **YtmTui Tray** |
+| Direct installers / source build scripts | `ytt`; macOS/Windows also get `ytt-desktop` | `ytt-desktop --background` |
 | Linux | `ytt` with MPRIS media integration | no separate tray app |
 
 Start-at-login is opt-in: `ytt-desktop --install-startup`.

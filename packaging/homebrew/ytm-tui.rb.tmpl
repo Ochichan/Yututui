@@ -6,7 +6,8 @@
 # A prebuilt-binary formula: it installs the binaries straight from the GitHub release
 # (no Rust toolchain, no compile) and pulls in the three runtime tools as dependencies, so
 # `brew install Ochichan/tap/ytm-tui` is genuinely one command. macOS also gets `ytt-desktop`,
-# the menu-bar companion (run it once, or `ytt-desktop --install-startup` for login). The
+# the menu-bar companion (`ytt-desktop --background`, or `ytt-desktop --install-startup`
+# for login). The
 # tarball's YtmTui.app / YPlayer.app bundles are Finder conveniences; the formula
 # installs only the CLIs and ignores the .apps.
 class YtmTui < Formula
@@ -52,7 +53,7 @@ class YtmTui < Formula
     on_macos do
       <<~EOS
         The menu-bar companion is installed as `ytt-desktop`.
-        Start it now with `ytt-desktop`, or keep it at login with:
+        Start it now with `ytt-desktop --background`, or keep it at login with:
           ytt-desktop --install-startup
       EOS
     end
