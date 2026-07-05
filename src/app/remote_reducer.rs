@@ -522,7 +522,10 @@ mod tests {
         });
         // Clamped to off so the response still reads as a normal "off" (keeps app↔daemon parity).
         assert!(resp.ok);
-        assert!(!app.autoplay_streaming, "streaming stays off while repeat is on");
+        assert!(
+            !app.autoplay_streaming,
+            "streaming stays off while repeat is on"
+        );
     }
 
     #[test]

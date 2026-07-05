@@ -299,9 +299,11 @@ impl App {
                     // Radio mode: autoplay is meaningless — keep whatever the stored preference
                     // is (so it survives the round-trip) and just say why nothing changed.
                     if self.radio_dedicated_mode {
-                        self.status.text =
-                            t!("Autoplay stays off in Radio mode", "라디오 모드에서는 자동재생이 꺼져 있어요")
-                                .to_owned();
+                        self.status.text = t!(
+                            "Autoplay stays off in Radio mode",
+                            "라디오 모드에서는 자동재생이 꺼져 있어요"
+                        )
+                        .to_owned();
                         self.dirty = true;
                         return Vec::new();
                     }

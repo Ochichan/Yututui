@@ -1,7 +1,7 @@
 {
   "name": "ytm-tui-gui",
   "private": true,
-  "version": "1.6.0",
+  "version": "1.6.1",
   "type": "module",
   "description": "Svelte 5 frontend for the ytm-tui desktop app (embedded into ytt-desktop).",
   "scripts": {

@@ -2629,7 +2629,11 @@ fn cannot_enable_streaming_while_repeat_on() {
     assert!(!app.autoplay_streaming, "streaming stays off");
     assert!(!app.status.text.is_empty(), "a message is shown");
     assert!(save_config(&cmds).is_none(), "nothing persisted");
-    assert_eq!(app.queue.repeat, crate::queue::Repeat::All, "repeat untouched");
+    assert_eq!(
+        app.queue.repeat,
+        crate::queue::Repeat::All,
+        "repeat untouched"
+    );
 }
 
 #[test]
@@ -2637,7 +2641,11 @@ fn cannot_enable_repeat_while_streaming_on() {
     let mut app = app_playing(3, 0);
     app.autoplay_streaming = true;
     let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
-    assert_eq!(app.queue.repeat, crate::queue::Repeat::Off, "repeat stays off");
+    assert_eq!(
+        app.queue.repeat,
+        crate::queue::Repeat::Off,
+        "repeat stays off"
+    );
     assert!(app.autoplay_streaming, "streaming untouched");
     assert!(!app.status.text.is_empty(), "a message is shown");
     assert!(save_config(&cmds).is_none(), "nothing persisted");
@@ -2650,9 +2658,15 @@ fn streaming_toggle_in_radio_mode_keeps_preference() {
     app.radio_dedicated_mode = true;
     let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
     assert!(app.autoplay_streaming, "stored preference is preserved");
-    assert!(!app.streaming_active(), "but streaming is effectively off in radio mode");
+    assert!(
+        !app.streaming_active(),
+        "but streaming is effectively off in radio mode"
+    );
     assert!(!app.status.text.is_empty(), "a message explains why");
-    assert!(save_config(&cmds).is_none(), "no persist — the preference is untouched");
+    assert!(
+        save_config(&cmds).is_none(),
+        "no persist — the preference is untouched"
+    );
 }
 
 #[test]
@@ -5947,11 +5961,17 @@ fn bulk_download_confirm_flow_queues_and_emits() {
     // A real batch raises the confirm popup carrying the deduped count — still no downloads yet.
     let cmds = app.open_confirm_download(vec![fsong("a", "A", "x"), fsong("b", "B", "y")]);
     assert!(cmds.is_empty());
-    assert_eq!(app.library_ui.confirm_download.as_ref().map(Vec::len), Some(2));
+    assert_eq!(
+        app.library_ui.confirm_download.as_ref().map(Vec::len),
+        Some(2)
+    );
 
     // Confirming clears the modal, queues the batch, and emits one Cmd::Download per track.
     let cmds = app.confirm_download_apply();
-    let downloads = cmds.iter().filter(|c| matches!(c, Cmd::Download(_))).count();
+    let downloads = cmds
+        .iter()
+        .filter(|c| matches!(c, Cmd::Download(_)))
+        .count();
     assert_eq!(downloads, 2);
     assert!(app.library_ui.confirm_download.is_none());
     assert_eq!(app.downloads.dispatched, 2);
@@ -5960,13 +5980,17 @@ fn bulk_download_confirm_flow_queues_and_emits() {
 #[test]
 fn bulk_download_stays_under_channel_bound_and_drips() {
     let mut app = App::new(100);
-    let many: Vec<Song> = (0..100).map(|i| fsong(&format!("id{i}"), "T", "A")).collect();
+    let many: Vec<Song> = (0..100)
+        .map(|i| fsong(&format!("id{i}"), "T", "A"))
+        .collect();
     app.library_ui.confirm_download = Some(app.downloadable_batch(many));
 
     let cmds = app.confirm_download_apply();
     // Only up to the in-flight cap dispatches; the overflow waits in `pending` (no channel flood).
     assert_eq!(
-        cmds.iter().filter(|c| matches!(c, Cmd::Download(_))).count(),
+        cmds.iter()
+            .filter(|c| matches!(c, Cmd::Download(_)))
+            .count(),
         96
     );
     assert_eq!(app.downloads.dispatched, 96);
