@@ -51,7 +51,7 @@ irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
 Start-at-login is opt-in: `ytt-desktop --install-startup`.
 
 > After a direct installer or source build, run `ytt doctor` to see what's missing.
-> **yt-dlp keeps itself fresh.** YouTube changes weekly, so `ytt` maintains its own current yt-dlp (SHA-256-verified from github.com) and uses whichever of {managed, system} is newer. `ytt tools status` / `ytt tools update`; opt out with `"tools": {"ytdlp_managed": false}` in `config.json`.
+> **yt-dlp keeps itself fresh.** YouTube changes weekly, so `ytt` maintains its own current yt-dlp (SHA-256-verified from github.com) and uses whichever of {managed, system} is newer. Check with `ytt tools status --why`, update with `ytt tools update`, or pin a known-good binary with `ytt tools use system|managed|<path>`.
 
 ## Quick start
 
@@ -269,13 +269,36 @@ Matching is metadata-based (NFKC-normalized, CJK-safe). Anything ambiguous lands
 </details>
 
 <details>
+<summary><b>yt-dlp selection</b></summary>
+
+`ytt` may run a different yt-dlp than the one your shell prints with `yt-dlp --version`: the app can use its managed copy, a configured override, or the system binary on `PATH`. To see the actual choice and candidates:
+
+```sh
+ytt tools status --why
+```
+
+Recovery commands:
+
+```sh
+ytt tools update              # refresh the managed copy now
+ytt tools use system          # ignore managed yt-dlp and use PATH
+ytt tools use managed         # pin the installed managed copy
+ytt tools use /path/to/yt-dlp # pin a specific executable
+ytt tools unpin               # return to normal managed/system selection
+```
+
+`YTM_YTDLP` is still the strongest override. If you change it in your OS settings, open a fresh terminal or unset it before expecting `ytt tools use ...` to take over.
+
+</details>
+
+<details>
 <summary><b>Troubleshooting</b></summary>
 
 | Symptom | Fix |
 | --- | --- |
 | Nothing plays, or it errors on play | mpv or yt-dlp missing — run `ytt doctor`. |
 | `ytt: command not found` | Open a fresh terminal; still stuck, add the `PATH` line the installer printed. |
-| Worked yesterday, not today | YouTube changed something — `ytt tools update`, then `ytt tools status`. |
+| Worked yesterday, not today | YouTube changed something — `ytt tools update`, then `ytt tools status --why`; if a managed update is bad, `ytt tools use system`. |
 | A specific song won't play | It may need sign-in — see the cookies section above. |
 | No album art | Off by default: Settings → General → **Album art**, then restart. |
 | No Control Center / SMTC / MPRIS entry | Settings → Playback → **OS media controls**; it publishes once something has played. |

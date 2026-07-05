@@ -51,7 +51,7 @@ irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
 ログイン時の自動起動は任意です: `ytt-desktop --install-startup`。
 
 > 直接インストーラやソースビルドの後は、`ytt doctor` で何が足りないか確認してください。
-> **yt-dlp は自動で最新に保たれます。** YouTube は毎週変わるため、`ytt` は自前の yt-dlp を保持し（github.com から SHA-256 検証付き）、{管理版, システム版} の新しい方を使います。`ytt tools status` / `ytt tools update`、無効化は `config.json` の `"tools": {"ytdlp_managed": false}`。
+> **yt-dlp は自動で最新に保たれます。** YouTube は毎週変わるため、`ytt` は自前の yt-dlp を保持し（github.com から SHA-256 検証付き）、{管理版, システム版} の新しい方を使います。確認は `ytt tools status --why`、更新は `ytt tools update`、既知の正常なバイナリへの固定は `ytt tools use system|managed|<path>`。
 
 ## クイックスタート
 
@@ -269,13 +269,36 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 </details>
 
 <details>
+<summary><b>yt-dlp の選択</b></summary>
+
+`ytt` が実行する yt-dlp は、シェルで `yt-dlp --version` と打って見えるものと違う場合があります。アプリは管理版コピー、設定された override、または `PATH` 上のシステム版バイナリのいずれかを使います。実際の選択と候補を見るには:
+
+```sh
+ytt tools status --why
+```
+
+復旧用コマンド:
+
+```sh
+ytt tools update              # 管理版コピーを今すぐ更新
+ytt tools use system          # 管理版 yt-dlp を無視して PATH を使う
+ytt tools use managed         # インストール済みの管理版コピーに固定
+ytt tools use /path/to/yt-dlp # 特定の実行ファイルに固定
+ytt tools unpin               # 通常の managed/system 選択に戻す
+```
+
+`YTM_YTDLP` は引き続き最も強い override です。OS の設定で値を変えた場合は、新しいターミナルを開くか、その環境変数を解除してから `ytt tools use ...` の設定を反映させてください。
+
+</details>
+
+<details>
 <summary><b>トラブルシューティング</b></summary>
 
 | 症状 | 対処 |
 | --- | --- |
 | 何も再生されない、再生でエラー | mpv か yt-dlp がありません — `ytt doctor` を実行。 |
 | `ytt: command not found` | 新しいターミナルを開く。まだなら、インストーラが出力した `PATH` 行を追加。 |
-| 昨日は動いたのに今日は動かない | YouTube が何か変えました — `ytt tools update` の後、`ytt tools status`。 |
+| 昨日は動いたのに今日は動かない | YouTube が何か変えました — `ytt tools update` の後、`ytt tools status --why`; 管理版更新が原因なら `ytt tools use system`。 |
 | 特定の曲だけ再生できない | サインインが必要かも — 上の Cookie の項を参照。 |
 | アルバムアートが出ない | 初期設定はオフ: 設定 → 一般 → **アルバムアート**をオンにして再起動。 |
 | コントロールセンター / SMTC / MPRIS に出ない | 設定 → 再生 → **OS メディアコントロール**を確認。何かが一度再生されてから表示されます。 |
