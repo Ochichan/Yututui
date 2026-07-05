@@ -1782,6 +1782,12 @@ impl App {
         self.library_ui.confirm_delete = None;
         self.library_ui.confirm_download = None;
         self.playlist_picker = None;
+        // These three render as top-level overlays but route input only inside Settings-mode
+        // dispatch, so leaving the screen must drop them explicitly or they'd paint on top of
+        // the Player, unreachable. (`spotify_picker` shares the same shape.)
+        self.recording_settings = None;
+        self.recordings_browser = None;
+        self.spotify_picker = None;
         self.reset_playlist_ui_state();
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
         // when the input is re-entered later.

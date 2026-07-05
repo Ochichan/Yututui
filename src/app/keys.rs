@@ -240,6 +240,18 @@ impl App {
             return self.recordings_browser_key(k);
         }
 
+        // The recording-settings popup renders as a top-level overlay (`ui::mod`), so it must
+        // capture input here too — not only inside Settings-mode dispatch. Otherwise a global
+        // shortcut (`?`/`w`) or Home would open/enter another window *behind* it and strand the
+        // popup painting on top. Quit still works; the recordings browser (checked above) can
+        // still open on top of it; everything else routes to its own handler.
+        if self.recording_settings.is_some() {
+            if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
+                return self.quit_app();
+            }
+            return self.recording_settings_key(k);
+        }
+
         // The "Why DJ Gem" overlay behaves like the About card: while it's up, swallow input; its own
         // toggle (`w`) / Esc / Back dismiss it, and Quit still works.
         if self.why_ai_visible {

@@ -207,6 +207,66 @@ pub fn mpv_program() -> String {
     }
 }
 
+/// A JavaScript runtime yt-dlp can use for YouTube nsig/sig deciphering. Modern yt-dlp needs one
+/// (Deno is the built-in default; the others must be named via `--js-runtimes`), or YouTube
+/// extraction degrades toward failure. See <https://github.com/yt-dlp/yt-dlp/issues/15012>.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsRuntime {
+    Deno,
+    Node,
+    Bun,
+    QuickJs,
+}
+
+impl JsRuntime {
+    /// The bare `--js-runtimes` token yt-dlp expects. `None` for Deno — it's auto-detected on
+    /// `PATH` with no flag, so nothing needs to be passed.
+    pub fn flag_value(self) -> Option<&'static str> {
+        match self {
+            JsRuntime::Deno => None,
+            JsRuntime::Node => Some("node"),
+            JsRuntime::Bun => Some("bun"),
+            JsRuntime::QuickJs => Some("quickjs"),
+        }
+    }
+
+    /// Human label for diagnostics.
+    pub fn label(self) -> &'static str {
+        match self {
+            JsRuntime::Deno => "deno",
+            JsRuntime::Node => "node",
+            JsRuntime::Bun => "bun",
+            JsRuntime::QuickJs => "quickjs",
+        }
+    }
+}
+
+/// The best JS runtime for yt-dlp found on `PATH`, in yt-dlp's own preference order (Deno first —
+/// it's the default and needs no flag). `None` when none is installed. A cheap `PATH` stat; called
+/// per mpv spawn / resolve so a newly-installed runtime applies without a relaunch. The probe
+/// order also matches `qjs`, the standard quickjs-ng executable name.
+pub fn detect_js_runtime() -> Option<JsRuntime> {
+    for (bin, rt) in [
+        ("deno", JsRuntime::Deno),
+        ("node", JsRuntime::Node),
+        ("bun", JsRuntime::Bun),
+        ("qjs", JsRuntime::QuickJs),
+    ] {
+        if crate::deps::resolve_on_path(bin).is_some() {
+            return Some(rt);
+        }
+    }
+    None
+}
+
+/// The `--js-runtimes` token to hand yt-dlp so it uses an installed *non-default* runtime for
+/// YouTube nsig solving. `None` when Deno is present (auto-used, no flag) or nothing is found
+/// (nothing to pass; yt-dlp warns/degrades on its own). Passed as a bare name — the yt-dlp
+/// subprocess inherits our `PATH`, so no absolute path or quoting is needed.
+pub fn js_runtimes_flag() -> Option<&'static str> {
+    detect_js_runtime().and_then(JsRuntime::flag_value)
+}
+
 /// Compare two yt-dlp version strings (`2025.04.30`, nightly `2026.07.03.234421`) by
 /// numeric segments. Missing segments count as 0, so a nightly built from a stable
 /// tag (one extra segment) compares newer than the bare tag. Unparseable segments

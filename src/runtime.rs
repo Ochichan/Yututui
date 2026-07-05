@@ -559,6 +559,9 @@ impl RuntimeHandles {
                 });
                 handle.send(cmd);
             }
+            // Handled in the main loop (the OSC path writes to the terminal this scope doesn't
+            // own); never reaches here. Listed for exhaustiveness.
+            Cmd::DesktopNotify { .. } => {}
         }
     }
 }

@@ -333,12 +333,19 @@ pub struct RecordingSettingsPopup {
     pub row: usize,
     /// True while the output-folder text field is being typed into.
     pub editing_dir: bool,
+    /// Screen rect of the popup, written each render so a click outside it can be detected
+    /// (which closes it) and clicks inside can be hit-tested. `Cell` because render only has
+    /// `&App`.
+    pub rect: Cell<Option<Rect>>,
 }
 
 /// The recordings browser (Decide-mode save/discard/play over `recorder.history`).
 #[derive(Default)]
 pub struct RecordingsBrowser {
     pub selected: usize,
+    /// Screen rect of the browser, written each render (same role as
+    /// [`RecordingSettingsPopup::rect`]).
+    pub rect: Cell<Option<Rect>>,
 }
 
 /// Row count of the recording-settings popup: mode · min · max · folder · past-tracks ·

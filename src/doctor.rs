@@ -96,6 +96,37 @@ pub fn run() -> i32 {
     // 1b) Managed yt-dlp status (the auto-updated copy in <data>/tools).
     print_managed_ytdlp(&cfg, kr);
 
+    // 1c) Modern yt-dlp needs a JS runtime for YouTube nsig solving (deno is auto-used; node/bun/
+    // quickjs are wired via --js-runtimes). Soft-warn if none is installed — playback still
+    // partially works via the tv-client fallback, so this doesn't fail the doctor.
+    match crate::tools::detect_js_runtime() {
+        Some(rt) if rt.flag_value().is_none() => println!(
+            "{}",
+            if kr {
+                format!("JS 런타임: ✓ {} (자동 사용)", rt.label())
+            } else {
+                format!("JS runtime: ✓ {} (auto-used)", rt.label())
+            }
+        ),
+        Some(rt) => println!(
+            "{}",
+            if kr {
+                format!("JS 런타임: ✓ {} (--js-runtimes 로 연결)", rt.label())
+            } else {
+                format!("JS runtime: ✓ {} (wired via --js-runtimes)", rt.label())
+            }
+        ),
+        None => println!(
+            "{}",
+            if kr {
+                "JS 런타임: ✗ 없음 — YouTube 재생이 점차 불안정해질 수 있어요. `deno` 설치를 권장해요."
+            } else {
+                "JS runtime: ✗ none — YouTube playback may degrade over time; install `deno`."
+            }
+        ),
+    }
+    println!();
+
     // 2) Directories the app needs to write into.
     println!("{}", if kr { "디렉터리" } else { "Directories" });
     ok &= report_dir(

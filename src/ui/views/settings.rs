@@ -959,6 +959,24 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows[0]);
+    // Publish the popup rect (a click outside closes it) and one clickable rect per row so the
+    // mouse can focus + activate rows — mirrors the queue window. Each row is exactly one line.
+    popup.rect.set(Some(popup_rect));
+    for i in 0..entries.len() {
+        let y = rows[0].y + i as u16;
+        if y >= rows[0].bottom() {
+            break;
+        }
+        app.register_mouse_button(
+            Rect {
+                x: rows[0].x,
+                y,
+                width: rows[0].width,
+                height: 1,
+            },
+            MouseTarget::RecordingRow(i),
+        );
+    }
 
     let help = if popup.editing_dir {
         t!(
@@ -1011,6 +1029,8 @@ pub fn render_recordings_browser(frame: &mut Frame, app: &App, area: Rect) {
     let n = items.len();
     let h = ((n as u16) + 4).clamp(7, 20);
     let popup = centered_fixed(area, 64, h);
+    // Publish the browser rect so a click outside closes it (mirrors the queue window).
+    browser.rect.set(Some(popup));
     crate::ui::render_popup_background(frame, app, popup);
     let block = Block::default()
         .title(t!(" Radio recordings ", " 라디오 녹음 목록 "))
@@ -1050,6 +1070,18 @@ pub fn render_recordings_browser(frame: &mut Frame, app: &App, area: Rect) {
             })
             .collect();
         frame.render_widget(Paragraph::new(lines), rows[0]);
+        // One clickable rect per visible row → single-click selects that item.
+        for (vis_idx, i) in (first..n).take(visible).enumerate() {
+            app.register_mouse_button(
+                Rect {
+                    x: rows[0].x,
+                    y: rows[0].y + vis_idx as u16,
+                    width: rows[0].width,
+                    height: 1,
+                },
+                MouseTarget::RecordingBrowseRow(i),
+            );
+        }
     }
     frame.render_widget(
         Paragraph::new(t!(

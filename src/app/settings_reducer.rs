@@ -1138,8 +1138,9 @@ impl App {
         Vec::new()
     }
 
-    /// Enter/Confirm on a popup row.
-    fn recording_settings_confirm(&mut self) -> Vec<Cmd> {
+    /// Enter/Confirm on a popup row. `pub(in crate::app)` so the mouse handler can reuse it
+    /// (a row click = focus that row, then Confirm).
+    pub(in crate::app) fn recording_settings_confirm(&mut self) -> Vec<Cmd> {
         let row = self.recording_settings.as_ref().map(|p| p.row).unwrap_or(0);
         match row {
             3 => {
@@ -1876,6 +1877,11 @@ impl App {
     /// persisting it. This keeps `q`/Esc from silently discarding changed settings.
     pub(in crate::app) fn close_settings(&mut self) -> Vec<Cmd> {
         self.pending_settings_confirm = None;
+        // Drop the top-level overlays that live over the Settings screen so leaving it (Esc/q,
+        // or any early-return path below) can't strand them painting on top of the Player.
+        self.recording_settings = None;
+        self.recordings_browser = None;
+        self.spotify_picker = None;
         let Some(st) = self.settings.take() else {
             self.mode = Mode::Player;
             self.dirty = true;

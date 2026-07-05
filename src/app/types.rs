@@ -346,6 +346,13 @@ pub enum Cmd {
         video_id: String,
         tools: crate::config::ToolsConfig,
     },
+    /// Fire a desktop notification (radio-recording saved). Handled in the main loop where the
+    /// terminal is owned: emits an OSC 9/777 escape when the terminal supports it, else a native
+    /// `notify-rust` toast off-thread. Best-effort; the in-app status toast is the final fallback.
+    DesktopNotify {
+        title: String,
+        body: String,
+    },
     /// Persist the given config to disk (settings screen, on save).
     SaveConfig(Box<Config>),
     /// Persist the local playlists to disk (after a DJ Gem playlist mutation).
@@ -531,6 +538,12 @@ pub enum MouseTarget {
     AboutTitle,
     /// The GitHub link inside the About card — opens the repo in the system browser.
     AboutLink,
+    /// A row in the radio-recording settings popup, by row index (`0..7`). Clicking focuses the
+    /// row and activates it (mode cycles, sliders nudge up, folder edits, notify toggles, browse
+    /// opens the list) — the mouse equivalent of moving to the row and pressing Enter.
+    RecordingRow(usize),
+    /// A row in the radio-recordings browser, by item index. Single-click selects the row.
+    RecordingBrowseRow(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

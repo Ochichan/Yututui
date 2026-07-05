@@ -63,6 +63,11 @@ lofty = "0.24"
 # Last.fm `api_sig` request signing (md5 per their auth spec — a format requirement,
 # not a security choice). Pure Rust, tiny (RustCrypto).
 md-5 = "0.10"
+# Native desktop notifications (radio-recording saved) — the *fallback* tier used only when the
+# terminal doesn't support OSC 9/777 escape-sequence notifications (see `crate::notify`). One
+# crate, three backends: pure-Rust zbus/D-Bus on Linux, WinRT toast on Windows, NSUserNotification
+# on macOS. Default features (no `preview-macos-un`, which can't post from an unbundled binary).
+notify-rust = "4"
 ratatui = "0.30.2"
 # Album art in the player view. `default-features = false` drops `chafa-dyn` (its only C
 # dependency — would break the clean Windows cross-compile) and `image-defaults` (we pull

@@ -163,6 +163,14 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
         ));
     }
 
+    // Modern yt-dlp needs a JS runtime for YouTube nsig solving. Deno is auto-detected (no flag);
+    // if only a non-default runtime (node/bun/quickjs) is installed, name it via the same
+    // ytdl_hook raw-options channel as cookies above. Bare name — the yt-dlp subprocess inherits
+    // our PATH. Without this, ytdl_hook's yt-dlp warns and format availability degrades.
+    if let Some(rt) = crate::tools::js_runtimes_flag() {
+        cmd.arg(format!("--ytdl-raw-options-append=js-runtimes={rt}"));
+    }
+
     // The OS media session is ours (`crate::media`), not mpv's — see the probe
     // docs. Placed before YTM_MPV_EXTRA so mpv's last-option-wins rule keeps
     // `YTM_MPV_EXTRA=--media-controls=yes` working as a user override.

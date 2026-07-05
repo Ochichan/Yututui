@@ -271,6 +271,7 @@ impl App {
         ev: crate::recorder::job::RecorderEvent,
     ) -> Vec<Cmd> {
         use crate::recorder::job::RecorderEvent;
+        let mut cmds = Vec::new();
         match ev {
             RecorderEvent::Saved { id, final_path } => {
                 if let Some(track) = self.recorder.history.iter_mut().find(|t| t.id == id) {
@@ -282,12 +283,16 @@ impl App {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    self.status.kind = StatusKind::Info;
-                    self.status.text = if crate::i18n::is_korean() {
-                        format!("녹음 저장됨: {name}")
+                    let (title, body) = if crate::i18n::is_korean() {
+                        ("녹음 저장됨".to_owned(), name.clone())
                     } else {
-                        format!("Recording saved: {name}")
+                        ("Recording saved".to_owned(), name.clone())
                     };
+                    // In-app toast (always visible in the terminal) + a real desktop notification
+                    // (OSC / native, resolved in the main loop). The toast is the final fallback.
+                    self.status.kind = StatusKind::Info;
+                    self.status.text = format!("{title}: {name}");
+                    cmds.push(Cmd::DesktopNotify { title, body });
                 }
                 self.dirty = true;
             }
@@ -306,7 +311,7 @@ impl App {
                 self.dirty = true;
             }
         }
-        Vec::new()
+        cmds
     }
 }
 

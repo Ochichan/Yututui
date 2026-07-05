@@ -213,6 +213,52 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
+        // The recordings browser is modal wherever it opens (over the player, or on top of the
+        // recording-settings popup), so it's checked first: a click outside closes it, and inside
+        // only its own rows act — nothing leaks to whatever is beneath.
+        if self.recordings_browser.is_some() {
+            let inside = self
+                .recordings_browser
+                .as_ref()
+                .and_then(|b| b.rect.get())
+                .is_some_and(|r| rect_contains(r, col, row));
+            if !inside {
+                self.recordings_browser = None;
+                self.dirty = true;
+                return Vec::new();
+            }
+            if let Some(MouseTarget::RecordingBrowseRow(i)) = self.mouse_target_at(col, row) {
+                if let Some(b) = self.recordings_browser.as_mut() {
+                    b.selected = i;
+                }
+                self.dirty = true;
+            }
+            return Vec::new();
+        }
+        // The recording-settings popup is modal like the queue window: a click outside closes it,
+        // inside only its own rows act (no leak to the Settings form beneath). A row click focuses
+        // the row and activates it (mode cycles, sliders nudge up, folder edits, notify toggles,
+        // browse opens the list) — the mouse equivalent of moving there and pressing Enter.
+        if self.recording_settings.is_some() {
+            let inside = self
+                .recording_settings
+                .as_ref()
+                .and_then(|p| p.rect.get())
+                .is_some_and(|r| rect_contains(r, col, row));
+            if !inside {
+                self.recording_settings = None;
+                self.dirty = true;
+                return Vec::new();
+            }
+            if let Some(MouseTarget::RecordingRow(i)) = self.mouse_target_at(col, row) {
+                if let Some(p) = self.recording_settings.as_mut() {
+                    p.row = i;
+                }
+                self.dirty = true;
+                return self.recording_settings_confirm();
+            }
+            return Vec::new();
+        }
         // The queue window is modal: a click outside it closes it ("창 밖을 클릭하면 꺼지고"),
         // and inside it only its own rows / `✗` buttons act — underlying player buttons are
         // ignored so a click landing on the player beneath the popup doesn't leak through.
@@ -559,6 +605,9 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            // The recording popup/browser rows are handled by their own modal guards in
+            // `on_mouse_click` (which never fall through to here); listed for exhaustiveness.
+            MouseTarget::RecordingRow(_) | MouseTarget::RecordingBrowseRow(_) => Vec::new(),
         }
     }
 
@@ -577,6 +626,8 @@ impl App {
             || self.library_ui.confirm_playlist_delete.is_some()
             || self.library_ui.create_input.is_some()
             || self.playlist_picker.is_some()
+            || self.recordings_browser.is_some()
+            || self.recording_settings.is_some()
         {
             return self.on_mouse_click(col, row);
         }
@@ -916,6 +967,31 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
+        // The recording overlays capture the wheel so it moves their own selection/focus instead
+        // of leaking to the Settings form underneath. Browser (on top) wins over the popup.
+        if self.recordings_browser.is_some() {
+            let total = usize::from(self.recorder.current.is_some()) + self.recorder.history.len();
+            if let Some(b) = self.recordings_browser.as_mut() {
+                b.selected = if up {
+                    b.selected.saturating_sub(n)
+                } else {
+                    (b.selected + n).min(total.saturating_sub(1))
+                };
+            }
+            self.dirty = true;
+            return Vec::new();
+        }
+        if self.recording_settings.is_some() {
+            if let Some(p) = self.recording_settings.as_mut() {
+                p.row = if up {
+                    p.row.saturating_sub(n)
+                } else {
+                    (p.row + n).min(RECORDING_POPUP_ROWS - 1)
+                };
+            }
+            self.dirty = true;
+            return Vec::new();
+        }
         if self.queue_popup.open {
             self.queue_popup.scroll.wheel(up, n, self.queue.len());
             self.dirty = true;
@@ -1048,6 +1124,8 @@ impl App {
             || self.library_ui.confirm_playlist_delete.is_some()
             || self.library_ui.create_input.is_some()
             || self.playlist_picker.is_some()
+            || self.recordings_browser.is_some()
+            || self.recording_settings.is_some()
         {
             return Vec::new();
         }

@@ -1,11 +1,11 @@
 use ytm_tui::{
     ai, api, app, artwork, auth_cli, config, daemon, deps, doctor, download, downloads, event,
-    i18n, library, logging, lyrics, media, persist, player, playlists, remote, resolver, romanize,
-    runtime, scrobble, session, signals, station, tools, transfer, tui, ui, zoom,
+    i18n, library, logging, lyrics, media, notify, persist, player, playlists, remote, resolver,
+    romanize, runtime, scrobble, session, signals, station, tools, transfer, tui, ui, zoom,
 };
 
 use anyhow::Result;
-use app::{App, Msg};
+use app::{App, Cmd, Msg};
 use crossterm::event::EventStream;
 use futures::StreamExt;
 use player::PlayerHandle;
@@ -570,6 +570,10 @@ async fn run(
     }
     startup.mark("dirs_ready");
 
+    // Detect the terminal's desktop-notification support once (env-only). Used by the
+    // `Cmd::DesktopNotify` arm in the loop below to pick OSC vs. the native fallback.
+    let notifier = notify::Notifier::detect();
+
     // Wrap the terminal-restoring panic hook so a panic also kills mpv (matters under
     // `panic = "abort"`, where Drop never runs). Install after `tui::init`.
     player::lifetime::install_panic_hook();
@@ -938,6 +942,13 @@ async fn run(
         // allocates ~10 Strings, and AnimTick fires at up to the configured FPS).
         let media_inert = matches!(&msg, Msg::AnimTick | Msg::StatusTick);
         for cmd in app.update(msg) {
+            // Desktop notifications are handled here (not in `RuntimeHandles`) because the OSC
+            // path writes to the terminal's stdout, which this scope owns; do it between frames
+            // (before the draw below) so it never interleaves with a partial frame.
+            if let Cmd::DesktopNotify { title, body } = cmd {
+                notifier.emit(&title, &body);
+                continue;
+            }
             handles.dispatch(&mut app, cmd);
         }
         if resized_artwork {
