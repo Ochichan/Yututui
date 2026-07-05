@@ -303,6 +303,10 @@ pub struct App {
     /// Active DJ Gem transcript drag-copy selection. Stores rendered visual row indexes,
     /// not message indexes, so wrapping and copy behavior line up exactly.
     pub(crate) ai_transcript_drag: Option<AiTranscriptDrag>,
+    /// Active seekbar (progress-bar) scrub: the last column we seeked to, so intra-cell drags
+    /// don't re-emit. `None` = not scrubbing. Set on a seekbar press, cleared on the next press
+    /// or on mouse-up (so a dropped terminal `Up` can't strand it).
+    seekbar_drag: Option<u16>,
 
     // Lyrics ------------------------------------------------------------------
     /// Lyrics-panel state: visibility, in-flight flag, and the fetched track lyrics.
@@ -456,6 +460,7 @@ impl App {
             drag_selection: None,
             drag_scrollbar: None,
             ai_transcript_drag: None,
+            seekbar_drag: None,
             lyrics: Lyrics::default(),
             art: ArtState::default(),
             downloads: Downloads::default(),
@@ -485,6 +490,12 @@ impl App {
         self.queue.set_shuffle(cfg.effective_shuffle());
         self.queue.repeat = cfg.effective_repeat();
         self.autoplay_streaming = cfg.effective_autoplay_streaming();
+        // Music-mode invariant: a legacy or hand-edited config can carry both flags on. There is
+        // no interactive action to refuse here, so break the tie by dropping streaming and keeping
+        // the (more deliberate) repeat setting.
+        if self.autoplay_streaming && self.queue.repeat != crate::queue::Repeat::Off {
+            self.autoplay_streaming = false;
+        }
         self.ai.available = cfg.effective_ai_key().is_some();
         self.ai.model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
@@ -1583,6 +1594,8 @@ impl App {
                 return self.request_romanization_for_songs(&suggestions);
             }
             Msg::AiSetAutoplay(on) => {
+                // Music-mode invariant: DJ Gem can't enable autoplay while repeat is on.
+                let on = on && self.queue.repeat == crate::queue::Repeat::Off;
                 self.autoplay_streaming = on;
                 self.dirty = true;
                 let mut cmds = vec![self.save_playback_modes_cmd()];

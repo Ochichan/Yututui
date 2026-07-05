@@ -448,7 +448,7 @@ fn status_line_parts_at(
     if !minimal && app.audio.normalize {
         parts.push((None, Cow::Owned(format!("{gap}{}", t!("norm", "평준화")))));
     }
-    if app.autoplay_streaming {
+    if app.streaming_active() {
         // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
         // mode dropdown — same affordance as the `eq:` label next to it.
         parts.push((None, Cow::Owned(gap.to_owned())));

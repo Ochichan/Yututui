@@ -93,6 +93,11 @@ impl App {
                 )
             }
             RemoteCommand::CycleRepeat => {
+                // Music-mode invariant: refuse turning repeat on while autoplay is on (mirrors
+                // the daemon engine so parity holds). Off→All is the only enabling transition.
+                if self.queue.repeat == crate::queue::Repeat::Off && self.autoplay_streaming {
+                    return (RemoteResponse::status(self.status_snapshot()), Vec::new());
+                }
                 self.queue.cycle_repeat();
                 self.dirty = true;
                 (
@@ -145,7 +150,13 @@ impl App {
     /// Set/toggle autoplay streaming, mirroring the `ToggleStreaming` key handler (status toast +
     /// an immediate top-up when enabling, so a low queue doesn't gap before the next track).
     fn remote_set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<Cmd>) {
-        let on = state.resolve(self.autoplay_streaming);
+        let mut on = state.resolve(self.autoplay_streaming);
+        // Music-mode invariant: never enable autoplay while repeat is on. Clamping to `false`
+        // keeps the response shape identical to a normal "off" so app↔daemon parity holds
+        // (mirror of the daemon engine's `set_streaming`).
+        if on && self.queue.repeat != crate::queue::Repeat::Off {
+            on = false;
+        }
         self.autoplay_streaming = on;
         self.status.text = format!(
             "{}: {}",
@@ -500,6 +511,30 @@ mod tests {
             state: ToggleState::Toggle,
         });
         assert!(app.autoplay_streaming);
+    }
+
+    #[test]
+    fn remote_streaming_refused_while_repeat_on() {
+        let mut app = App::new(50);
+        app.queue.repeat = crate::queue::Repeat::One;
+        let (resp, _) = app.apply_remote(RemoteCommand::Streaming {
+            state: ToggleState::On,
+        });
+        // Clamped to off so the response still reads as a normal "off" (keeps app↔daemon parity).
+        assert!(resp.ok);
+        assert!(!app.autoplay_streaming, "streaming stays off while repeat is on");
+    }
+
+    #[test]
+    fn remote_cycle_repeat_refused_while_streaming_on() {
+        let mut app = App::new(50);
+        app.autoplay_streaming = true;
+        app.apply_remote(RemoteCommand::CycleRepeat);
+        assert_eq!(
+            app.queue.repeat,
+            crate::queue::Repeat::Off,
+            "repeat stays off while streaming is on"
+        );
     }
 
     #[test]

@@ -109,8 +109,13 @@ impl App {
                 vec![self.save_playback_modes_cmd()]
             }
             MediaCommand::SetRepeat(mode) => {
-                // Same radio guard as SetShuffle — and never remote-trigger a re-sync.
-                if self.current_is_radio_stream() || self.queue.repeat == mode {
+                // Same radio guard as SetShuffle — and never remote-trigger a re-sync. Also
+                // enforce the music-mode invariant: an OS widget can't enable repeat while
+                // autoplay streaming is on.
+                if self.current_is_radio_stream()
+                    || self.queue.repeat == mode
+                    || (mode != crate::queue::Repeat::Off && self.autoplay_streaming)
+                {
                     return Vec::new();
                 }
                 self.queue.repeat = mode;

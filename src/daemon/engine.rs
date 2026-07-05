@@ -250,7 +250,10 @@ impl DaemonEngine {
                 duration: None,
                 speed: config.effective_speed(),
             },
-            streaming: config.effective_autoplay_streaming(),
+            // Music-mode invariant: never start with both autoplay and repeat on (drop
+            // streaming, keep the deliberate repeat) — matches the App's `apply_config`.
+            streaming: config.effective_autoplay_streaming()
+                && config.effective_repeat() == crate::queue::Repeat::Off,
             config,
             library,
             signals,
@@ -345,11 +348,17 @@ impl DaemonEngine {
                 RemoteResponse::status(self.status())
             }
             RemoteCommand::CycleRepeat => {
-                self.queue.cycle_repeat();
-                self.config.repeat = self.queue.repeat;
-                self.save_config("daemon repeat setting");
-                self.save_session();
-                RemoteResponse::status(self.status())
+                // Music-mode invariant (mirrors the App reducer for parity): refuse turning
+                // repeat on while autoplay streaming is on. Off→All is the only enabling step.
+                if self.queue.repeat == crate::queue::Repeat::Off && self.streaming {
+                    RemoteResponse::status(self.status())
+                } else {
+                    self.queue.cycle_repeat();
+                    self.config.repeat = self.queue.repeat;
+                    self.save_config("daemon repeat setting");
+                    self.save_session();
+                    RemoteResponse::status(self.status())
+                }
             }
             RemoteCommand::QueuePlay { position } => {
                 let response = self.queue_play(position).await;
@@ -513,6 +522,12 @@ impl DaemonEngine {
                 None => bad(),
             },
             ("playback", "repeat") => match serde_json::from_value(value.clone()) {
+                // Music-mode invariant: can't enable repeat while autoplay streaming is on.
+                Ok(repeat)
+                    if repeat != crate::queue::Repeat::Off && self.streaming =>
+                {
+                    ok(self)
+                }
                 Ok(repeat) => {
                     self.queue.repeat = repeat;
                     self.config.repeat = repeat;
@@ -1119,7 +1134,10 @@ impl DaemonEngine {
                 }
             }
             MediaCommand::SetRepeat(mode) => {
-                if self.queue.repeat != mode {
+                // Music-mode invariant: an OS widget can't enable repeat while streaming is on.
+                if self.queue.repeat != mode
+                    && !(mode != crate::queue::Repeat::Off && self.streaming)
+                {
                     self.queue.repeat = mode;
                     self.config.repeat = mode;
                     self.save_config("daemon repeat setting");
@@ -1617,7 +1635,13 @@ impl DaemonEngine {
     }
 
     fn set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<EngineEffect>) {
-        self.streaming = state.resolve(self.streaming);
+        let mut on = state.resolve(self.streaming);
+        // Music-mode invariant (mirrors the App reducer for parity): never enable autoplay while
+        // repeat is on. Clamping to `false` keeps the response identical to a normal "off".
+        if on && self.queue.repeat != crate::queue::Repeat::Off {
+            on = false;
+        }
+        self.streaming = on;
         self.config.autoplay_streaming = Some(self.streaming);
         if self.streaming {
             self.consecutive_streaming_failures = 0;

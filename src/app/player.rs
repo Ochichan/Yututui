@@ -600,6 +600,17 @@ impl App {
                 vec![self.save_playback_modes_cmd()]
             }
             Action::CycleRepeat => {
+                // Music-mode invariant: turning repeat on while autoplay streaming is on is
+                // refused (they can't both be on). Off→All is the only transition that enables it.
+                if self.queue.repeat == crate::queue::Repeat::Off && self.autoplay_streaming {
+                    self.status.text = t!(
+                        "Can't use repeat while autoplay is on",
+                        "자동재생 중에는 반복을 켤 수 없어요"
+                    )
+                    .to_owned();
+                    self.dirty = true;
+                    return Vec::new();
+                }
                 self.queue.cycle_repeat();
                 self.dirty = true;
                 vec![self.save_playback_modes_cmd()]
@@ -1040,6 +1051,15 @@ impl App {
     /// live-transport rules (sync indicator, re-sync, timeshift seekbar).
     pub fn current_is_radio_stream(&self) -> bool {
         self.queue.current().is_some_and(Song::is_radio_station)
+    }
+
+    /// Whether autoplay streaming is *effectively* active right now. The stored
+    /// [`Self::autoplay_streaming`] preference is left untouched by radio; this getter reports
+    /// off whenever streaming would be meaningless — in dedicated Radio mode or while a live
+    /// station is the current track — so the engine skips top-ups and the status line hides the
+    /// `streaming:` indicator, yet the user's saved preference survives the radio round-trip.
+    pub fn streaming_active(&self) -> bool {
+        self.autoplay_streaming && !self.radio_dedicated_mode && !self.current_is_radio_stream()
     }
 
     /// Seconds the playhead sits behind the live edge (`demuxer-cache-time − time-pos`),

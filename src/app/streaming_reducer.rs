@@ -15,7 +15,10 @@ impl App {
     }
 
     fn autoplay_extend(&mut self, force: bool) -> Vec<Cmd> {
-        if !self.autoplay_streaming {
+        // `streaming_active()` (not the raw preference) so a top-up never fires in dedicated
+        // Radio mode or while a live station plays — the station early-return below stays as a
+        // defensive backstop.
+        if !self.streaming_active() {
             return Vec::new();
         }
         if !force && self.queue.remaining() > AUTOPLAY_THRESHOLD {

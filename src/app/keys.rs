@@ -296,6 +296,26 @@ impl App {
                 Action::ToggleAnimations => return self.toggle_animations(),
                 Action::ToggleZoomWheelLock => return self.toggle_zoom_wheel_lock(),
                 Action::ToggleStreaming => {
+                    // Radio mode: autoplay is meaningless — keep whatever the stored preference
+                    // is (so it survives the round-trip) and just say why nothing changed.
+                    if self.radio_dedicated_mode {
+                        self.status.text =
+                            t!("Autoplay stays off in Radio mode", "라디오 모드에서는 자동재생이 꺼져 있어요")
+                                .to_owned();
+                        self.dirty = true;
+                        return Vec::new();
+                    }
+                    // Music-mode invariant: autoplay and repeat can't both be on. Refuse the
+                    // enable and leave a brief message rather than silently flipping repeat off.
+                    if !self.autoplay_streaming && self.queue.repeat != crate::queue::Repeat::Off {
+                        self.status.text = t!(
+                            "Can't use autoplay while repeat is on",
+                            "반복 재생 중에는 자동재생을 켤 수 없어요"
+                        )
+                        .to_owned();
+                        self.dirty = true;
+                        return Vec::new();
+                    }
                     self.autoplay_streaming = !self.autoplay_streaming;
                     self.status.text = format!(
                         "{}: {}",

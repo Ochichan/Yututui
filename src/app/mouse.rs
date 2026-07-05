@@ -36,6 +36,9 @@ impl App {
     /// seekbar seeks to the matching fraction of the track. Hit rects are published by
     /// views each render.
     pub(in crate::app) fn on_mouse_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        // Every fresh press re-establishes drag context, so a prior seekbar scrub can't survive
+        // a dropped terminal `Up` and hijack the next gesture. Re-armed below if this click seeks.
+        self.seekbar_drag = None;
         // A click dismisses the modal conflict warning, same as a keypress.
         if self.key_conflict.take().is_some() {
             self.dirty = true;
@@ -270,6 +273,8 @@ impl App {
             let frac = f64::from(col - area.x) / f64::from(area.width);
             let target = (frac * dur).clamp(0.0, dur);
             tracing::info!(secs = target, "click seek");
+            // Arm the scrub: subsequent drags of this press seek continuously (see on_mouse_drag).
+            self.seekbar_drag = Some(col);
             self.dirty = true;
             return vec![Cmd::Player(PlayerCmd::SeekAbsolute(target))];
         }
@@ -625,6 +630,31 @@ impl App {
     /// A left-drag: extend a multi-select range to the row under the pointer (the anchor end
     /// stays fixed). Works in the queue window and, identically, in the Library list.
     pub(in crate::app) fn on_mouse_drag(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        // Seekbar scrub: a press that landed on the bar seeks continuously as the pointer moves.
+        // Keyed off the drag flag + x only (row is ignored — grab and drag anywhere horizontally).
+        if self.seekbar_drag.is_some() && self.mode == Mode::Player && !self.queue_popup.open {
+            if let Some(area) = self.bridges.seekbar_rect.get()
+                && let Some(dur) = self.playback.duration
+                && dur > 0.0
+                && area.width > 0
+            {
+                // Clamp to the bar so dragging past either end pins to 0%/100% (and `col - area.x`
+                // can't underflow u16).
+                let c = col.clamp(area.x, area.right().saturating_sub(1));
+                if self.seekbar_drag != Some(c) {
+                    // Intra-cell dedupe: only re-seek when the target cell actually changes.
+                    self.seekbar_drag = Some(c);
+                    let frac = f64::from(c - area.x) / f64::from(area.width);
+                    let target = (frac * dur).clamp(0.0, dur);
+                    self.dirty = true;
+                    return vec![Cmd::Player(PlayerCmd::SeekAbsolute(target))];
+                }
+                return Vec::new();
+            }
+            // Bar or duration vanished mid-drag (track ended / radio stream) — stop scrubbing.
+            self.seekbar_drag = None;
+            return Vec::new();
+        }
         if self.queue_popup.open {
             if let Some(drag) = self.drag_scrollbar {
                 self.drag_scrollbar_to(drag, row);
@@ -699,6 +729,7 @@ impl App {
     pub(in crate::app) fn on_mouse_left_up(&mut self) -> Vec<Cmd> {
         self.drag_selection = None;
         self.drag_scrollbar = None;
+        self.seekbar_drag = None;
 
         if let Some(drag) = self.ai_transcript_drag.take() {
             if drag.moved {

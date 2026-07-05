@@ -2006,10 +2006,12 @@ fn ctrl_r_toggles_autoplay_streaming() {
             .autoplay_streaming,
         Some(true)
     );
-    // Plain `r` still cycles repeat (not the autoplay toggle).
+    // Plain `r` while autoplay is on is now refused (they're mutually exclusive in music mode):
+    // repeat stays Off, a status message is shown, and autoplay is untouched.
     app.update(Msg::Key(key(KeyCode::Char('r'))));
     assert!(app.autoplay_streaming);
-    assert_eq!(app.queue.repeat, crate::queue::Repeat::All);
+    assert_eq!(app.queue.repeat, crate::queue::Repeat::Off);
+    assert!(!app.status.text.is_empty());
     let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
     assert!(!app.autoplay_streaming);
     assert_eq!(
@@ -2599,7 +2601,101 @@ fn apply_config_pushes_playback_settings() {
     assert!((app.audio.seek_seconds - 30.0).abs() < 1e-9);
     assert!(app.queue.shuffle);
     assert_eq!(app.queue.repeat, crate::queue::Repeat::One);
+    // Music-mode invariant: this config carries both repeat and autoplay on, which can't both be
+    // on — apply_config keeps the deliberate repeat and drops streaming.
+    assert!(!app.autoplay_streaming);
+}
+
+#[test]
+fn apply_config_with_autoplay_and_no_repeat_keeps_streaming() {
+    // The reconcile only fires when both are on: autoplay alone still pushes through.
+    let cfg = crate::config::Config {
+        repeat: crate::queue::Repeat::Off,
+        autoplay_streaming: Some(true),
+        ..crate::config::Config::default()
+    };
+    let mut app = App::new(100);
+    app.apply_config(&cfg);
+    assert_eq!(app.queue.repeat, crate::queue::Repeat::Off);
     assert!(app.autoplay_streaming);
+    assert!(app.streaming_active());
+}
+
+#[test]
+fn cannot_enable_streaming_while_repeat_on() {
+    let mut app = app_playing(3, 0);
+    app.queue.repeat = crate::queue::Repeat::All;
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
+    assert!(!app.autoplay_streaming, "streaming stays off");
+    assert!(!app.status.text.is_empty(), "a message is shown");
+    assert!(save_config(&cmds).is_none(), "nothing persisted");
+    assert_eq!(app.queue.repeat, crate::queue::Repeat::All, "repeat untouched");
+}
+
+#[test]
+fn cannot_enable_repeat_while_streaming_on() {
+    let mut app = app_playing(3, 0);
+    app.autoplay_streaming = true;
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
+    assert_eq!(app.queue.repeat, crate::queue::Repeat::Off, "repeat stays off");
+    assert!(app.autoplay_streaming, "streaming untouched");
+    assert!(!app.status.text.is_empty(), "a message is shown");
+    assert!(save_config(&cmds).is_none(), "nothing persisted");
+}
+
+#[test]
+fn streaming_toggle_in_radio_mode_keeps_preference() {
+    let mut app = app_playing(3, 0);
+    app.autoplay_streaming = true; // a real preference carried from music mode
+    app.radio_dedicated_mode = true;
+    let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('r'))));
+    assert!(app.autoplay_streaming, "stored preference is preserved");
+    assert!(!app.streaming_active(), "but streaming is effectively off in radio mode");
+    assert!(!app.status.text.is_empty(), "a message explains why");
+    assert!(save_config(&cmds).is_none(), "no persist — the preference is untouched");
+}
+
+#[test]
+fn streaming_active_false_in_radio_and_on_a_station() {
+    let mut app = app_playing(3, 0);
+    app.autoplay_streaming = true;
+    assert!(app.streaming_active());
+    app.radio_dedicated_mode = true;
+    assert!(!app.streaming_active(), "off in dedicated Radio mode");
+    app.radio_dedicated_mode = false;
+    assert!(app.streaming_active());
+    // A live station playing in normal mode also suppresses it.
+    let mut radio = radio_playing("groove");
+    radio.autoplay_streaming = true;
+    assert!(radio.current_is_radio_stream());
+    assert!(!radio.streaming_active(), "off while a live station plays");
+}
+
+#[test]
+fn settings_cannot_enable_autoplay_while_repeat_on() {
+    let mut app = app_playing(3, 0);
+    app.queue.repeat = crate::queue::Repeat::All;
+    app.open_settings();
+    {
+        let s = app.settings.as_mut().unwrap();
+        s.tab = crate::settings::SettingsTab::Playback;
+        s.row = s
+            .fields()
+            .iter()
+            .position(|f| *f == Field::AutoplayStreaming)
+            .expect("an AutoplayStreaming field");
+    }
+    assert_eq!(
+        app.settings.as_ref().unwrap().current_field(),
+        Some(Field::AutoplayStreaming)
+    );
+    assert!(!app.settings.as_ref().unwrap().draft.autoplay_streaming);
+    app.settings_change(1);
+    assert!(
+        !app.settings.as_ref().unwrap().draft.autoplay_streaming,
+        "draft not flipped while repeat is on"
+    );
+    assert!(!app.status.text.is_empty(), "a message is shown");
 }
 
 #[test]
@@ -6744,6 +6840,55 @@ fn click_does_nothing_outside_player_mode() {
     }));
     app.mode = Mode::Search;
     assert!(app.update(Msg::MouseClick { col: 50, row: 5 }).is_empty());
+}
+
+#[test]
+fn drag_on_seekbar_scrubs_continuously() {
+    let mut app = app_playing(1, 0);
+    app.playback.duration = Some(200.0);
+    app.bridges.seekbar_rect.set(Some(Rect {
+        x: 0,
+        y: 5,
+        width: 100,
+        height: 1,
+    }));
+    // Press on the bar arms the scrub and seeks (col 25 → 50 s).
+    match app.update(Msg::MouseClick { col: 25, row: 5 }).as_slice() {
+        [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 50.0).abs() < 1.0),
+        other => panic!("expected a SeekAbsolute from the press, got {other:?}"),
+    }
+    // Dragging to a new column seeks continuously — even off the bar's row (row ignored).
+    match app.update(Msg::MouseDrag { col: 75, row: 9 }).as_slice() {
+        [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 150.0).abs() < 1.0),
+        other => panic!("expected a SeekAbsolute from the drag, got {other:?}"),
+    }
+    // Same cell → no duplicate seek (intra-cell dedupe).
+    assert!(app.update(Msg::MouseDrag { col: 75, row: 9 }).is_empty());
+    // Dragging past the right end pins near the maximum (clamped to width-1, like click-seek).
+    match app.update(Msg::MouseDrag { col: 250, row: 5 }).as_slice() {
+        [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 198.0).abs() < 1.0),
+        other => panic!("expected a clamped SeekAbsolute, got {other:?}"),
+    }
+    // Release ends the scrub; a later stray drag does nothing.
+    app.update(Msg::MouseLeftUp);
+    assert!(
+        app.update(Msg::MouseDrag { col: 10, row: 5 }).is_empty(),
+        "no scrub after release"
+    );
+}
+
+#[test]
+fn drag_without_a_seekbar_press_does_not_seek() {
+    let mut app = app_playing(1, 0);
+    app.playback.duration = Some(200.0);
+    app.bridges.seekbar_rect.set(Some(Rect {
+        x: 0,
+        y: 5,
+        width: 100,
+        height: 1,
+    }));
+    // No prior press on the bar → a bare drag must not seek.
+    assert!(app.update(Msg::MouseDrag { col: 50, row: 5 }).is_empty());
 }
 
 #[test]
