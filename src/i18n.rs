@@ -54,6 +54,93 @@ impl Language {
     }
 }
 
+/// The language DJ Gem replies in, set in Settings → DJ Gem *independently* of the UI
+/// [`Language`]. [`Auto`](Self::Auto) reproduces the historical behavior — it follows the UI
+/// language (Korean UI → Korean replies, otherwise the model answers in whatever language the
+/// user writes in). Each concrete variant forces that language regardless of what the user
+/// types. Retro mode overrides all of this to English; that resolution happens once in
+/// [`crate::config::Config::effective_dj_gem_language`], and the *resolved* value is what the
+/// AI actor reads back via [`dj_gem_language`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DjGemLanguage {
+    #[default]
+    Auto,
+    English,
+    Korean,
+    Japanese,
+    ChineseSimplified,
+    ChineseTraditional,
+}
+
+impl DjGemLanguage {
+    /// All choices in the settings dropdown order (Auto first, then concrete languages).
+    pub const CYCLE: [DjGemLanguage; 6] = [
+        DjGemLanguage::Auto,
+        DjGemLanguage::English,
+        DjGemLanguage::Korean,
+        DjGemLanguage::Japanese,
+        DjGemLanguage::ChineseSimplified,
+        DjGemLanguage::ChineseTraditional,
+    ];
+
+    /// The label shown in the settings picker. Only [`Auto`](Self::Auto) is translated (it
+    /// isn't a language); every concrete language names itself in its own script, so the row
+    /// reads the same regardless of the active UI language.
+    pub fn picker_label(self) -> &'static str {
+        match self {
+            DjGemLanguage::Auto => crate::t!("Auto (interface)", "자동 (인터페이스)"),
+            DjGemLanguage::English => "English",
+            DjGemLanguage::Korean => "한국어",
+            DjGemLanguage::Japanese => "日本語",
+            DjGemLanguage::ChineseSimplified => "简体中文",
+            DjGemLanguage::ChineseTraditional => "繁體中文",
+        }
+    }
+
+    /// The next choice when stepping the dropdown forward/backward (wraps both ways).
+    pub fn cycled(self, forward: bool) -> Self {
+        let i = Self::CYCLE.iter().position(|&l| l == self).unwrap_or(0);
+        let n = Self::CYCLE.len();
+        let j = if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        };
+        Self::CYCLE[j]
+    }
+
+    /// The system-prompt line that forces the assistant to reply in this language, or `None`
+    /// to leave the base prompt's "reply in the user's language" in charge (the resolved
+    /// [`Auto`](Self::Auto) case). Concrete languages keep their native script in parentheses so
+    /// the model is unambiguous. The Korean line is byte-for-byte what the app sent before this
+    /// setting existed, so a Korean UI keeps its exact prior behavior.
+    pub fn reply_directive(self) -> Option<String> {
+        let named = match self {
+            DjGemLanguage::Auto => return None,
+            DjGemLanguage::English => "English",
+            DjGemLanguage::Korean => "Korean (한국어)",
+            DjGemLanguage::Japanese => "Japanese (日本語)",
+            DjGemLanguage::ChineseSimplified => "Simplified Chinese (简体中文)",
+            DjGemLanguage::ChineseTraditional => "Traditional Chinese (繁體中文)",
+        };
+        Some(format!(
+            "Respond in {named} regardless of the language the user writes in."
+        ))
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => DjGemLanguage::English,
+            2 => DjGemLanguage::Korean,
+            3 => DjGemLanguage::Japanese,
+            4 => DjGemLanguage::ChineseSimplified,
+            5 => DjGemLanguage::ChineseTraditional,
+            _ => DjGemLanguage::Auto,
+        }
+    }
+}
+
 /// The process-wide current language. An atomic (not a lock) so [`current`] is cheap to call
 /// from every render path; relaxed ordering is fine since it's a lone value nothing else
 /// synchronizes against.
@@ -75,6 +162,23 @@ pub fn current() -> Language {
 /// macro (which only works when both arms are string literals).
 pub fn is_korean() -> bool {
     current() == Language::Korean
+}
+
+/// The process-wide *resolved* DJ Gem reply language. Stored resolved (retro already folded to
+/// English, and `Auto` resolved against the UI language in
+/// [`crate::config::Config::effective_dj_gem_language`]) so the AI actor can read it with no
+/// knowledge of retro/UI state. Set at startup and on every settings save. Defaults to `Auto`,
+/// matching the config default, so any read before the first apply is still sane.
+static DJ_GEM: AtomicU8 = AtomicU8::new(DjGemLanguage::Auto as u8);
+
+/// Set the resolved DJ Gem reply language (see [`DjGemLanguage`]).
+pub fn set_dj_gem_language(lang: DjGemLanguage) {
+    DJ_GEM.store(lang as u8, Ordering::Relaxed);
+}
+
+/// The resolved DJ Gem reply language the assistant should answer in.
+pub fn dj_gem_language() -> DjGemLanguage {
+    DjGemLanguage::from_u8(DJ_GEM.load(Ordering::Relaxed))
 }
 
 /// Pick a `&'static str` by the active language: `t!("English text", "한국어 텍스트")`. Returns

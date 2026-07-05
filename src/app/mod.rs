@@ -520,6 +520,9 @@ impl App {
         // Keep the process-wide UI language in sync with the applied config (this is the
         // central apply path, called at startup and after a settings save).
         crate::i18n::set_language(cfg.effective_language());
+        // Same for the DJ Gem reply language (resolved: retro → English, `Auto` → the UI
+        // language). The AI actor reads this global when building its system prompt.
+        crate::i18n::set_dj_gem_language(cfg.effective_dj_gem_language());
         // Restore the persisted text zoom, but only on terminals with a working zoom
         // mechanism — a config written under kitty must not garble a later tmux session.
         // (`set` snaps to the mode's levels, so kitty's 150% reads as 200% on a

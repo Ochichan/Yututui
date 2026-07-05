@@ -94,6 +94,9 @@ impl App {
             gemini_api_key: self.config.gemini_api_key.clone().unwrap_or_default(),
             ai_enabled: self.config.effective_ai_enabled(),
             romanized_titles: self.config.effective_romanized_titles(),
+            // The raw pick (incl. `Auto`), so the picker shows the user's actual choice; retro's
+            // English override is applied at read time, not baked into the draft.
+            dj_gem_language: self.config.dj_gem_language,
             theme: self.theme.clone(),
             retro_mode: self.config.effective_retro_mode(),
             language: self.config.effective_language(),
@@ -551,6 +554,29 @@ impl App {
                 // the new language on the next frame; `close_settings` persists it.
                 crate::i18n::set_language(next);
                 self.status.text = format!("{}: {}", t!("Language", "언어"), next.native_name());
+                Vec::new()
+            }
+            Field::DjGemLanguage => {
+                let s = self.settings_mut();
+                // Retro pins replies to English; keep the underlying pick so disabling retro
+                // later restores it, and just explain the lock.
+                if s.draft.retro_mode {
+                    self.status.text = t!(
+                        "Retro mode replies in English",
+                        "레트로 모드는 영어로 답변합니다"
+                    )
+                    .to_owned();
+                    return Vec::new();
+                }
+                let next = s.draft.dj_gem_language.cycled(dir >= 0);
+                s.draft.dj_gem_language = next;
+                // The resolved value is pushed to the AI actor on save (close_settings); no DJ Gem
+                // request can fire while Settings is open, so there's nothing to update live here.
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Reply language", "답변 언어"),
+                    next.picker_label()
+                );
                 Vec::new()
             }
             Field::Normalize => {
@@ -1554,6 +1580,7 @@ impl App {
             d.gemini_api_key = String::new();
             d.ai_enabled = def.effective_ai_enabled(); // back to on (don't strand DJ Gem off)
             d.romanized_titles = def.effective_romanized_titles();
+            d.dj_gem_language = def.dj_gem_language; // Auto (follow the interface)
             d.theme = def.effective_theme();
             d.retro_mode = def.effective_retro_mode();
             d.language = def.effective_language();
@@ -1837,6 +1864,10 @@ impl App {
         };
         let old_zoom = self.zoom.percent();
         d.apply_to(&mut self.config);
+        // Push the resolved DJ Gem reply language to the AI actor. The UI language was set live
+        // as the user cycled it; this global isn't, so it's resolved and applied here on save
+        // (retro → English, `Auto` → the UI language, else the concrete pick).
+        crate::i18n::set_dj_gem_language(self.config.effective_dj_gem_language());
         // Push the (possibly toggled) large-text level to the renderer. The handle snaps
         // to what this terminal's zoom mode can draw; a change forces the full-clear
         // redraw path so nothing from the old grid survives.

@@ -175,6 +175,7 @@ impl SettingsTab {
                 Field::AiEnabled,
                 Field::GeminiModel,
                 Field::ApiKey,
+                Field::DjGemLanguage,
                 Field::RomanizedTitles,
                 Field::ClearRomanizedTitleCache,
                 Field::AutoplayStreaming,
@@ -226,7 +227,7 @@ impl SettingsTab {
             // Separate the chat/assistant config from the autoplay + curation trio so the
             // "Autoplay / Curating mode / Curating style" group reads as one intuitive unit.
             SettingsTab::Ai => vec![
-                (t!("Assistant", "어시스턴트"), 5),
+                (t!("Assistant", "어시스턴트"), 6),
                 (t!("Autoplay & curation", "자동재생 · 큐레이팅"), 3),
             ],
             _ => Vec::new(),
@@ -290,6 +291,9 @@ pub enum Field {
     AiEnabled,
     GeminiModel,
     ApiKey,
+    /// The language DJ Gem replies in (Auto / English / Korean / Japanese / Chinese), set
+    /// independently of the UI language. A Select field; retro mode pins it to English.
+    DjGemLanguage,
     /// Display Korean/Japanese/CJK track metadata as Latin-script overlays.
     RomanizedTitles,
     /// Remove cached Latin-script display overlays without touching source metadata.
@@ -552,6 +556,7 @@ impl Field {
             | Field::GeminiModel
             | Field::ThemePreset
             | Field::CuratingMode
+            | Field::DjGemLanguage
             | Field::StreamingMode => FieldKind::Select,
             Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
                 FieldKind::Slider
@@ -646,6 +651,7 @@ impl Field {
             Field::AiEnabled => t!("DJ Gem chat", "DJ Gem 채팅").to_owned(),
             Field::GeminiModel => t!("Model", "모델").to_owned(),
             Field::ApiKey => t!("API key", "API 키").to_owned(),
+            Field::DjGemLanguage => t!("Reply language", "답변 언어").to_owned(),
             Field::RomanizedTitles => t!("Romanized titles", "제목 로마자 표기").to_owned(),
             Field::ClearRomanizedTitleCache => {
                 t!("Clear romanized title cache", "로마자 제목 캐시 삭제").to_owned()
@@ -758,6 +764,10 @@ pub struct SettingsDraft {
     pub ai_enabled: bool,
     /// Whether CJK track names should be shown as Latin-script display overlays.
     pub romanized_titles: bool,
+    /// The language DJ Gem replies in, independent of `language`. Holds the *raw* choice
+    /// (including `Auto`); retro's English override is applied at read time in
+    /// [`Config::effective_dj_gem_language`], so toggling retro never discards the pick.
+    pub dj_gem_language: crate::i18n::DjGemLanguage,
     /// Color theme preset plus role overrides.
     pub theme: ThemeConfig,
     /// Linux basic TTY compatibility: English UI + Retro theme + ASCII-safe rendering.
@@ -877,6 +887,15 @@ impl SettingsDraft {
             Field::Normalize => toggle_str(self.normalize),
             Field::AiEnabled => toggle_str(self.ai_enabled),
             Field::GeminiModel => self.gemini_model.label().to_owned(),
+            // Retro mode forces English replies, so the row says so plainly instead of showing
+            // the (preserved-underneath) picked value that retro would ignore.
+            Field::DjGemLanguage => {
+                if self.retro_mode {
+                    t!("English (Retro mode)", "영어 (레트로 모드)").to_owned()
+                } else {
+                    self.dj_gem_language.picker_label().to_owned()
+                }
+            }
             Field::RomanizedTitles => toggle_str(self.romanized_titles),
             Field::RetroMode => toggle_str(self.retro_mode),
             Field::ThemePreset => self.theme.preset_enum().label().to_owned(),
@@ -1069,6 +1088,9 @@ impl SettingsDraft {
         cfg.gemini_api_key = blank_to_none(&self.gemini_api_key);
         cfg.ai_enabled = Some(self.ai_enabled);
         cfg.romanized_titles = Some(self.romanized_titles);
+        // Persist the raw choice (including `Auto`); retro's English override lives in
+        // `Config::effective_dj_gem_language`, so a save under retro never wipes the pick.
+        cfg.dj_gem_language = self.dj_gem_language;
         cfg.retro_mode = self.retro_mode;
         // The theme commits as edited even in retro mode (enabling retro only *seeds* the
         // Retro preset in the draft); retro keeps forcing the English UI, since basic TTY
@@ -1244,6 +1266,7 @@ mod tests {
             gemini_api_key: String::new(),
             ai_enabled: true,
             romanized_titles: false,
+            dj_gem_language: crate::i18n::DjGemLanguage::Auto,
             theme: ThemeConfig::default(),
             retro_mode: false,
             language: Language::English,
@@ -1509,6 +1532,7 @@ mod tests {
                 Field::AiEnabled,
                 Field::GeminiModel,
                 Field::ApiKey,
+                Field::DjGemLanguage,
                 Field::RomanizedTitles,
                 Field::ClearRomanizedTitleCache,
                 Field::AutoplayStreaming,
@@ -1527,6 +1551,13 @@ mod tests {
         assert_eq!(Field::ApiKey.kind(), FieldKind::Text);
         assert!(Field::ApiKey.is_secret());
         assert!(!Field::GeminiModel.is_secret());
+        // Reply language is a non-secret cycle field defaulting to Auto.
+        assert_eq!(Field::DjGemLanguage.kind(), FieldKind::Select);
+        assert!(!Field::DjGemLanguage.is_secret());
+        assert_eq!(
+            base_draft().value_display(Field::DjGemLanguage),
+            "Auto (interface)"
+        );
         assert_eq!(Field::RomanizedTitles.kind(), FieldKind::Toggle);
         assert_eq!(base_draft().value_display(Field::RomanizedTitles), "[ ]");
         assert_eq!(Field::ClearRomanizedTitleCache.kind(), FieldKind::Button);
@@ -1642,6 +1673,7 @@ mod tests {
             gemini_api_key: "  AIzaPersist  ".to_owned(),
             ai_enabled: false,
             romanized_titles: true,
+            dj_gem_language: crate::i18n::DjGemLanguage::Japanese,
             theme,
             retro_mode: false,
             language: Language::Korean,
@@ -1684,6 +1716,8 @@ mod tests {
         assert_eq!(cfg.recording.past_tracks_count, 25);
         assert!(!cfg.recording.notify);
         assert_eq!(cfg.language, Language::Korean);
+        // The raw pick round-trips (not retro-forced here); `Auto` would too.
+        assert_eq!(cfg.dj_gem_language, crate::i18n::DjGemLanguage::Japanese);
         assert_eq!(cfg.ai_enabled, Some(false));
         assert_eq!(cfg.romanized_titles, Some(true));
         assert!(cfg.animations.master);

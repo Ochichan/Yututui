@@ -386,14 +386,13 @@ impl AiActor {
     async fn converse(&mut self, prompt: String, ctx: AiContext) {
         let _guard = ThinkingGuard(self.emit.clone());
 
-        // When the UI is set to Korean, steer replies to Korean explicitly — the base prompt
-        // only says "reply in the user's language", which leaves English prompts ambiguous.
-        let system_text = if crate::i18n::is_korean() {
-            format!(
-                "{SYSTEM_PROMPT}\n\nRespond in Korean (한국어) regardless of the language the user writes in."
-            )
-        } else {
-            SYSTEM_PROMPT.to_owned()
+        // Steer the reply language to the user's DJ Gem choice (Settings → DJ Gem), resolved
+        // independently of the UI language. `Auto` yields no directive, leaving the base prompt's
+        // "reply in the user's language" in charge (a bare English prompt then stays ambiguous by
+        // design); retro mode has already been folded to English upstream.
+        let system_text = match crate::i18n::dj_gem_language().reply_directive() {
+            Some(directive) => format!("{SYSTEM_PROMPT}\n\n{directive}"),
+            None => SYSTEM_PROMPT.to_owned(),
         };
         let system = Content {
             role: None,

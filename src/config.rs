@@ -15,7 +15,7 @@ use crate::util::safe_fs;
 
 use crate::ai::GeminiModel;
 use crate::eq::{self, EqPreset};
-use crate::i18n::Language;
+use crate::i18n::{DjGemLanguage, Language};
 use crate::queue::Repeat;
 use crate::search_source::SearchConfig;
 use crate::streaming::StreamingConfig;
@@ -506,6 +506,10 @@ pub struct Config {
     /// This never mutates the source metadata; it only affects UI labels and may use Gemini to
     /// improve the local romanizer when an API key is configured.
     pub romanized_titles: Option<bool>,
+    /// The language DJ Gem replies in, independent of the UI [`language`](Self::language).
+    /// `Auto` (default) follows the UI language; a concrete choice forces that language.
+    /// Retro mode overrides it to English. See [`Self::effective_dj_gem_language`].
+    pub dj_gem_language: DjGemLanguage,
 
     // Theme -------------------------------------------------------------------
     /// Color theme preset plus per-role `#RRGGBB` overrides.
@@ -641,6 +645,7 @@ impl Default for Config {
             gemini_model: GeminiModel::default(),
             ai_enabled: None,
             romanized_titles: None,
+            dj_gem_language: DjGemLanguage::default(),
             theme: ThemeConfig::default(),
             radio_theme: None,
             retro_mode: false,
@@ -1030,6 +1035,22 @@ impl Config {
     pub fn effective_retro_mode(&self) -> bool {
         self.retro_mode
     }
+
+    /// The DJ Gem reply language to apply at runtime, resolved from the raw setting: retro mode
+    /// forces English; `Auto` follows the UI language (Korean UI → Korean, otherwise left as
+    /// `Auto` so the model replies in the user's own language); a concrete choice is used as-is.
+    /// The resolved value is pushed to [`crate::i18n::set_dj_gem_language`] at startup and on save.
+    pub fn effective_dj_gem_language(&self) -> DjGemLanguage {
+        if self.retro_mode {
+            return DjGemLanguage::English;
+        }
+        match self.dj_gem_language {
+            DjGemLanguage::Auto if self.effective_language() == Language::Korean => {
+                DjGemLanguage::Korean
+            }
+            other => other,
+        }
+    }
 }
 
 /// Default location for an optional exported Netscape cookies file.
@@ -1278,6 +1299,7 @@ mod tests {
             gemini_model: GeminiModel::Latest,
             ai_enabled: Some(false),
             romanized_titles: Some(true),
+            dj_gem_language: DjGemLanguage::ChineseTraditional,
             theme,
             radio_theme: Some(radio_theme),
             retro_mode: true,
@@ -1349,6 +1371,7 @@ mod tests {
         assert_eq!(back.autoplay_on_start, Some(true));
         assert_eq!(back.ai_enabled, Some(false));
         assert_eq!(back.romanized_titles, Some(true));
+        assert_eq!(back.dj_gem_language, DjGemLanguage::ChineseTraditional);
         assert!(back.animations.master);
         assert_eq!(back.animations.radio_master, Some(false));
         assert!(back.animations.rain);
