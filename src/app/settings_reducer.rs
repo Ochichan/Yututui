@@ -78,6 +78,7 @@ impl App {
             gapless: self.config.effective_gapless(),
             media_controls: self.config.effective_media_controls(),
             auto_continue_videos: self.config.effective_auto_continue_videos(),
+            video_layout: self.config.video_layout,
             autoplay_streaming: self.autoplay_streaming,
             curating_mode: crate::streaming::CuratingMode::from_ai(
                 self.config.streaming.ai.enabled,
@@ -534,6 +535,15 @@ impl App {
                     t!("Curating style", "큐레이팅 스타일"),
                     next.label()
                 );
+                Vec::new()
+            }
+            Field::VideoLayout => {
+                let s = self.settings_mut();
+                // Only the open default; `Shift+V` still cycles the live window. Persists on save
+                // via `apply_to`, like every other Select field.
+                let next = s.draft.video_layout.cycled(dir >= 0);
+                s.draft.video_layout = next;
+                self.status.text = format!("{}: {}", t!("Video window", "영상 창"), next.label());
                 Vec::new()
             }
             Field::Language => {

@@ -240,24 +240,35 @@ impl AnimationsConfig {
     }
 }
 
-/// Window layout for the external mpv video overlay launched from the player (`v`), toggled
-/// live with `Shift+V`. `Compact` docks a small ~30% window top-right; `Large` centers a
-/// ~50% window. Persisted in `config.json`.
+/// Window layout for the external mpv video overlay launched from the player (`v`), cycled
+/// live with `Shift+V` and chosen as the open default in Settings. `Compact` docks a small
+/// ~30% window top-right; `Large` centers a ~50% window; `Fullscreen` fills the screen.
+/// Persisted in `config.json`.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VideoOverlay {
     #[default]
     Compact,
     Large,
+    Fullscreen,
 }
 
 impl VideoOverlay {
-    /// The other layout (for the `Shift+V` toggle).
-    pub fn toggled(self) -> Self {
-        match self {
-            Self::Compact => Self::Large,
-            Self::Large => Self::Compact,
+    /// Step to the next/previous layout in the `Compact → Large → Fullscreen` cycle.
+    pub fn cycled(self, forward: bool) -> Self {
+        match (self, forward) {
+            (Self::Compact, true) => Self::Large,
+            (Self::Large, true) => Self::Fullscreen,
+            (Self::Fullscreen, true) => Self::Compact,
+            (Self::Compact, false) => Self::Fullscreen,
+            (Self::Large, false) => Self::Compact,
+            (Self::Fullscreen, false) => Self::Large,
         }
+    }
+
+    /// The next layout (for the forward-cycling `Shift+V` toggle).
+    pub fn toggled(self) -> Self {
+        self.cycled(true)
     }
 
     /// Short human label for the status toast.
@@ -265,21 +276,28 @@ impl VideoOverlay {
         match self {
             Self::Compact => t!("top-right · 30%", "우상단 · 30%"),
             Self::Large => t!("center · 50%", "가운데 · 50%"),
+            Self::Fullscreen => t!("fullscreen", "전체화면"),
         }
     }
 
-    /// mpv flags for a borderless, always-on-top overlay window. `Compact` docks top-right;
-    /// `Large` is left at mpv's default (centered) position, half size.
+    /// mpv flags for the overlay window. `Compact` docks a borderless top-right ~30% window;
+    /// `Large` a borderless centered ~50% window; `Fullscreen` fills the screen (borderless/
+    /// on-top/autofit are meaningless there, so they're dropped).
     pub fn mpv_window_args(self) -> Vec<String> {
-        let mut args = vec!["--ontop".to_owned(), "--no-border".to_owned()];
         match self {
-            Self::Compact => {
-                args.push("--autofit=30%".to_owned());
-                args.push("--geometry=-20+20".to_owned());
-            }
-            Self::Large => args.push("--autofit=50%".to_owned()),
+            Self::Compact => vec![
+                "--ontop".to_owned(),
+                "--no-border".to_owned(),
+                "--autofit=30%".to_owned(),
+                "--geometry=-20+20".to_owned(),
+            ],
+            Self::Large => vec![
+                "--ontop".to_owned(),
+                "--no-border".to_owned(),
+                "--autofit=50%".to_owned(),
+            ],
+            Self::Fullscreen => vec!["--fullscreen".to_owned()],
         }
-        args
     }
 }
 

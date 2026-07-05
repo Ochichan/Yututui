@@ -122,6 +122,7 @@ impl SettingsTab {
                     Field::Gapless,
                     Field::MediaControls,
                     Field::AutoContinueVideos,
+                    Field::VideoLayout,
                     // Radio-only entry (the recording popup); filtered out by
                     // `SettingsState::fields` when not in radio mode. Keep it last in the
                     // "Now Playing" section so the static count below stays partition-correct.
@@ -207,10 +208,10 @@ impl SettingsTab {
     pub fn sections(self) -> Vec<(&'static str, usize)> {
         match self {
             SettingsTab::Playback => vec![
-                // 7 = the 6 Now-Playing controls + the radio-only recording entry. When not
-                // in radio mode, `SettingsState::sections` decrements this back to 6 in
+                // 8 = the 7 Now-Playing controls + the radio-only recording entry. When not
+                // in radio mode, `SettingsState::sections` decrements this back to 7 in
                 // lockstep with `SettingsState::fields` hiding `RadioRecording`.
-                (t!("Now Playing", "현재 재생"), 7),
+                (t!("Now Playing", "현재 재생"), 8),
                 (t!("EQ", "EQ"), eq::BANDS + 2),
             ],
             SettingsTab::Graphics => vec![
@@ -278,6 +279,9 @@ pub enum Field {
     /// When the `v` video overlay is open, auto-play the next queue track's video at the
     /// end of the current one (TUI only).
     AutoContinueVideos,
+    /// Which layout the `v` video overlay opens in by default (Compact / Large / Fullscreen);
+    /// a Select field cycled like the others. `Shift+V` still cycles the live window.
+    VideoLayout,
     /// Opens the radio-recording settings popup. Radio-mode only — hidden outside it by
     /// [`SettingsState::fields`]; lives in the "Now Playing" section.
     RadioRecording,
@@ -568,6 +572,7 @@ impl Field {
             | Field::ThemePreset
             | Field::CuratingMode
             | Field::DjGemLanguage
+            | Field::VideoLayout
             | Field::StreamingMode => FieldKind::Select,
             Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
                 FieldKind::Slider
@@ -652,6 +657,7 @@ impl Field {
             Field::AutoContinueVideos => {
                 t!("Auto-continue videos", "영상 자동 이어재생").to_owned()
             }
+            Field::VideoLayout => t!("Video window", "영상 창").to_owned(),
             Field::RadioRecording => t!("Radio recording", "라디오 녹음").to_owned(),
             Field::AutoplayStreaming => t!("Autoplay", "자동재생").to_owned(),
             Field::CuratingMode => t!("Curating mode", "큐레이팅 방식").to_owned(),
@@ -760,6 +766,8 @@ pub struct SettingsDraft {
     pub media_controls: bool,
     /// The video overlay auto-continues into the next queue track's video on EOF.
     pub auto_continue_videos: bool,
+    /// Which layout the `v` video overlay opens in by default.
+    pub video_layout: crate::config::VideoOverlay,
     pub autoplay_streaming: bool,
     /// Who curates the autoplay stream (YT Native vs DJ Gem); persists to `streaming.ai.enabled`.
     pub curating_mode: CuratingMode,
@@ -890,6 +898,7 @@ impl SettingsDraft {
             Field::Gapless => toggle_str(self.gapless),
             Field::MediaControls => toggle_str(self.media_controls),
             Field::AutoContinueVideos => toggle_str(self.auto_continue_videos),
+            Field::VideoLayout => self.video_layout.label().to_owned(),
             Field::AutoplayStreaming => toggle_str(self.autoplay_streaming),
             Field::CuratingMode => self.curating_mode.label().to_owned(),
             Field::StreamingMode => self.streaming_mode.label().to_owned(),
@@ -1073,6 +1082,7 @@ impl SettingsDraft {
         cfg.gapless = Some(self.gapless);
         cfg.media_controls = Some(self.media_controls);
         cfg.auto_continue_videos = Some(self.auto_continue_videos);
+        cfg.video_layout = self.video_layout;
         // Radio recording. Keep max strictly above min so the two sliders can't invert.
         cfg.recording.mode = self.recording_mode;
         cfg.recording.min_duration_secs = self.recording_min_seconds;
@@ -1267,6 +1277,7 @@ mod tests {
             gapless: true,
             media_controls: true,
             auto_continue_videos: false,
+            video_layout: crate::config::VideoOverlay::Compact,
             autoplay_streaming: false,
             curating_mode: CuratingMode::DjGem,
             streaming_mode: StreamingMode::Balanced,
@@ -1458,17 +1469,18 @@ mod tests {
     fn playback_tab_groups_now_playing_and_eq() {
         let f = SettingsTab::Playback.fields();
         // Speed + SeekInterval + WheelVolume + Gapless + MediaControls + AutoContinueVideos +
-        // RadioRecording (radio-only), then EqPreset + ten bands + Normalize.
-        assert_eq!(f.len(), 7 + 1 + eq::BANDS + 1);
+        // VideoLayout + RadioRecording (radio-only), then EqPreset + ten bands + Normalize.
+        assert_eq!(f.len(), 8 + 1 + eq::BANDS + 1);
         assert_eq!(f[0], Field::Speed);
         assert_eq!(f[1], Field::SeekInterval);
         assert_eq!(f[2], Field::MouseWheelVolume);
         assert_eq!(f[3], Field::Gapless);
         assert_eq!(f[4], Field::MediaControls);
         assert_eq!(f[5], Field::AutoContinueVideos);
-        assert_eq!(f[6], Field::RadioRecording);
-        assert_eq!(f[7], Field::EqPreset);
-        assert_eq!(f[7 + eq::BANDS + 1], Field::Normalize);
+        assert_eq!(f[6], Field::VideoLayout);
+        assert_eq!(f[7], Field::RadioRecording);
+        assert_eq!(f[8], Field::EqPreset);
+        assert_eq!(f[8 + eq::BANDS + 1], Field::Normalize);
         assert_eq!(Field::MouseWheelVolume.kind(), FieldKind::Toggle);
         assert_eq!(base_draft().value_display(Field::MouseWheelVolume), "[x]");
         let total: usize = SettingsTab::Playback
@@ -1674,6 +1686,7 @@ mod tests {
             gapless: false,
             media_controls: false,
             auto_continue_videos: true,
+            video_layout: crate::config::VideoOverlay::Fullscreen,
             autoplay_streaming: true,
             curating_mode: CuratingMode::YtNative,
             streaming_mode: StreamingMode::Discovery,
@@ -1751,6 +1764,7 @@ mod tests {
         assert_eq!(cfg.gapless, Some(false));
         assert_eq!(cfg.media_controls, Some(false));
         assert_eq!(cfg.auto_continue_videos, Some(true));
+        assert_eq!(cfg.video_layout, crate::config::VideoOverlay::Fullscreen);
         assert_eq!(cfg.autoplay_streaming, Some(true));
         assert_eq!(cfg.streaming.mode, StreamingMode::Discovery);
         // Curating mode = YT Native → the AI rerank flag persists as false.
