@@ -524,7 +524,7 @@ impl App {
         // Music-mode invariant: a legacy or hand-edited config can carry both flags on. There is
         // no interactive action to refuse here, so break the tie by dropping streaming and keeping
         // the (more deliberate) repeat setting.
-        if self.autoplay_streaming && self.queue.repeat != crate::queue::Repeat::Off {
+        if self.autoplay_streaming && self.queue.repeat.is_on() {
             self.autoplay_streaming = false;
         }
         self.ai.available = cfg.effective_ai_key().is_some();

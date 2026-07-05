@@ -10,10 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
-use crate::config::{
-    AnimationsConfig, Config, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN,
-    default_cookies_file, default_download_dir,
-};
+use crate::config::{AnimationsConfig, Config, default_cookies_file, default_download_dir};
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
 use crate::keymap::{Action, KeyContext, KeyMap};
@@ -1244,15 +1241,10 @@ pub fn clamp_band(g: f64) -> f64 {
     g.clamp(BAND_GAIN_MIN, BAND_GAIN_MAX).round()
 }
 
-/// Clamp/round a speed value the way the controls do.
-pub fn clamp_speed(s: f64) -> f64 {
-    ((s * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX)
-}
-
-/// Clamp/round a seek step to whole seconds within the supported range.
-pub fn clamp_seek_seconds(s: f64) -> f64 {
-    s.round().clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
-}
+// Speed/seek clamps live in `config` — the single source both the TUI controls and the headless
+// daemon apply. Re-exported so existing `settings::clamp_speed` / `settings::clamp_seek_seconds`
+// call sites keep resolving.
+pub use crate::config::{clamp_seek_seconds, clamp_speed};
 
 #[cfg(test)]
 mod tests {
@@ -1893,8 +1885,8 @@ mod tests {
     fn band_and_speed_clamps() {
         assert_eq!(clamp_band(99.0), BAND_GAIN_MAX);
         assert_eq!(clamp_band(-99.0), BAND_GAIN_MIN);
-        assert_eq!(clamp_speed(9.0), SPEED_MAX);
-        assert_eq!(clamp_speed(0.0), SPEED_MIN);
+        assert_eq!(clamp_speed(9.0), crate::config::SPEED_MAX);
+        assert_eq!(clamp_speed(0.0), crate::config::SPEED_MIN);
     }
 
     #[test]

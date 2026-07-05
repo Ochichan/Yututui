@@ -114,7 +114,7 @@ impl App {
                 // autoplay streaming is on.
                 if self.current_is_radio_stream()
                     || self.queue.repeat == mode
-                    || (mode != crate::queue::Repeat::Off && self.autoplay_streaming)
+                    || (mode.is_on() && self.autoplay_streaming)
                 {
                     return Vec::new();
                 }

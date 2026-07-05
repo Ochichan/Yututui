@@ -504,7 +504,7 @@ impl App {
             }
             Field::AutoplayStreaming => {
                 // Music-mode invariant: can't enable autoplay while repeat is on.
-                let repeat_on = self.queue.repeat != crate::queue::Repeat::Off;
+                let repeat_on = self.queue.repeat.is_on();
                 if !self.settings_mut().draft.autoplay_streaming && repeat_on {
                     self.status.text = t!(
                         "Can't use autoplay while repeat is on",

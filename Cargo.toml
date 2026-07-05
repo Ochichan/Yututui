@@ -90,7 +90,11 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 # Spotify OAuth PKCE code challenge (SHA-256). RustCrypto, pure Rust.
 sha2 = "0.10"
-sysinfo = "0.39.5"
+# Only the process APIs are used (reaping a leaked mpv, the Windows kill backstop — see
+# `player::lifetime`), so drop the default disk/network/component/user feature groups: it
+# trims a slice of unused code on every platform (and the `objc2-open-directory` crate on
+# macOS) with zero behaviour change.
+sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
 tao = { version = "0.34", optional = true }
 # Optional player eye-candy (the Animations settings tab). A ratatui-native spinner used
 # for the "now playing" throbber; nothing renders unless the user enables it. Permissive

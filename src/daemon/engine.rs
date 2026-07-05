@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::api::ytmusic::YtMusicApi;
 use crate::api::{ApiEvent, Song};
-use crate::config::{Config, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
+use crate::config::{Config, clamp_seek_seconds, clamp_speed};
 use crate::eq;
 use crate::library::Library;
 use crate::player::{self, PlayerCmd, PlayerEvent, PlayerHandle};
@@ -33,14 +33,6 @@ const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
 const AUTOPLAY_MAX_FAILURES: u8 = 3;
 const MAX_CONSECUTIVE_PLAY_ERRORS: u8 = 3;
 const SESSION_EVENTS_CAP: usize = 20;
-
-fn clamp_speed(speed: f64) -> f64 {
-    ((speed * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX)
-}
-
-fn clamp_seek_seconds(seconds: f64) -> f64 {
-    seconds.round().clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
-}
 
 pub struct EngineOptions {
     pub resume: bool,
@@ -521,18 +513,20 @@ impl DaemonEngine {
                 }
                 None => bad(),
             },
-            ("playback", "repeat") => match serde_json::from_value(value.clone()) {
-                // Music-mode invariant: can't enable repeat while autoplay streaming is on.
-                Ok(repeat) if repeat != crate::queue::Repeat::Off && self.streaming => ok(self),
-                Ok(repeat) => {
-                    self.queue.repeat = repeat;
-                    self.config.repeat = repeat;
-                    self.save_config("daemon repeat setting");
-                    self.save_session();
-                    ok(self)
+            ("playback", "repeat") => {
+                match serde_json::from_value::<crate::queue::Repeat>(value.clone()) {
+                    // Music-mode invariant: can't enable repeat while autoplay streaming is on.
+                    Ok(repeat) if repeat.is_on() && self.streaming => ok(self),
+                    Ok(repeat) => {
+                        self.queue.repeat = repeat;
+                        self.config.repeat = repeat;
+                        self.save_config("daemon repeat setting");
+                        self.save_session();
+                        ok(self)
+                    }
+                    Err(_) => bad(),
                 }
-                Err(_) => bad(),
-            },
+            }
             ("eq", "preset") => match as_str()
                 .and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok())
             {
@@ -1131,9 +1125,7 @@ impl DaemonEngine {
             }
             MediaCommand::SetRepeat(mode) => {
                 // Music-mode invariant: an OS widget can't enable repeat while streaming is on.
-                if self.queue.repeat != mode
-                    && !(mode != crate::queue::Repeat::Off && self.streaming)
-                {
+                if self.queue.repeat != mode && !(mode.is_on() && self.streaming) {
                     self.queue.repeat = mode;
                     self.config.repeat = mode;
                     self.save_config("daemon repeat setting");
@@ -1634,7 +1626,7 @@ impl DaemonEngine {
         let mut on = state.resolve(self.streaming);
         // Music-mode invariant (mirrors the App reducer for parity): never enable autoplay while
         // repeat is on. Clamping to `false` keeps the response identical to a normal "off".
-        if on && self.queue.repeat != crate::queue::Repeat::Off {
+        if on && self.queue.repeat.is_on() {
             on = false;
         }
         self.streaming = on;

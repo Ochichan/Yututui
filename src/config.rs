@@ -32,6 +32,18 @@ pub const SEEK_SECONDS_MIN: f64 = 1.0;
 pub const SEEK_SECONDS_MAX: f64 = 60.0;
 pub const SEEK_SECONDS_DEFAULT: f64 = 10.0;
 
+/// Clamp/round a playback-speed multiplier to one decimal within the supported range. The
+/// single source of this rule — both the TUI (`settings`, re-exported) and the headless
+/// daemon (`daemon::engine`) apply it, so a bound change here can't drift between them.
+pub fn clamp_speed(s: f64) -> f64 {
+    ((s * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX)
+}
+
+/// Clamp/round a seek step to whole seconds within the supported range.
+pub fn clamp_seek_seconds(s: f64) -> f64 {
+    s.round().clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
+}
+
 /// Concurrent `yt-dlp`/ffmpeg downloads. Keep the default conservative because each download
 /// can spawn multiple external processes and dominate CPU/RAM outside this Rust process.
 pub const DOWNLOAD_CONCURRENCY_MIN: usize = 1;

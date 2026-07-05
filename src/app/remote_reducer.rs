@@ -154,7 +154,7 @@ impl App {
         // Music-mode invariant: never enable autoplay while repeat is on. Clamping to `false`
         // keeps the response shape identical to a normal "off" so app↔daemon parity holds
         // (mirror of the daemon engine's `set_streaming`).
-        if on && self.queue.repeat != crate::queue::Repeat::Off {
+        if on && self.queue.repeat.is_on() {
             on = false;
         }
         self.autoplay_streaming = on;

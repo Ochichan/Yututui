@@ -51,6 +51,13 @@ impl Repeat {
             Repeat::One => Repeat::Off,
         }
     }
+
+    /// Whether any repeat mode is active (i.e. not `Off`). Named so the streaming⇔repeat
+    /// mutual-exclusion invariant reads the same everywhere it is checked — in the App
+    /// reducers and, in lockstep, in `daemon::engine` — instead of a bare `!= Repeat::Off`.
+    pub fn is_on(self) -> bool {
+        self != Repeat::Off
+    }
 }
 
 /// A bounded play queue with shuffle and repeat.
@@ -494,6 +501,13 @@ mod tests {
 
     fn id(q: &Queue) -> &str {
         q.current().unwrap().video_id.as_str()
+    }
+
+    #[test]
+    fn repeat_is_on_is_true_for_every_mode_but_off() {
+        assert!(!Repeat::Off.is_on());
+        assert!(Repeat::All.is_on());
+        assert!(Repeat::One.is_on());
     }
 
     #[test]

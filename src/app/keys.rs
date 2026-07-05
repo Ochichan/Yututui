@@ -309,7 +309,7 @@ impl App {
                     }
                     // Music-mode invariant: autoplay and repeat can't both be on. Refuse the
                     // enable and leave a brief message rather than silently flipping repeat off.
-                    if !self.autoplay_streaming && self.queue.repeat != crate::queue::Repeat::Off {
+                    if !self.autoplay_streaming && self.queue.repeat.is_on() {
                         self.status.text = t!(
                             "Can't use autoplay while repeat is on",
                             "반복 재생 중에는 자동재생을 켤 수 없어요"
