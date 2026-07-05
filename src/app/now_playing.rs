@@ -1,108 +1,64 @@
-//! The "what's playing" (지듣노) identify flow's pure pieces: the deterministic pre-pass
-//! over untrusted ICY titles and the short-TTL result cache.
+//! The "what's playing" (지듣노) card's pure pieces: the deterministic pre-pass over
+//! untrusted ICY titles (sanitize + a light station-content classification) and a tiny
+//! favorite-resolution cache.
 //!
-//! The cache exists for rate limits and latency, not dollars (a Flash-Lite identify call
-//! costs fractions of a cent, but the free tier is ~15 req/min): re-opening the overlay
-//! while the same song plays, and the "tell me more" handoff, must never re-spend a
-//! call. Keys are **exact** `(station, normalized title, prompt version)` — never fuzzy;
-//! near-miss titles are different songs ("Idol — YOASOBI" vs "Idol — BTS").
+//! The card is populated synchronously from the stream's own ICY metadata — no API call —
+//! so there is nothing to cache for display. The one thing worth remembering is the
+//! YouTube track a favorite action resolved a title to, so re-opening the card (or a
+//! repeat favorite) while the same song plays never re-searches. Keys are **exact**
+//! `(station, normalized title)` — never fuzzy; near-miss titles are different songs
+//! ("Idol — YOASOBI" vs "Idol — BTS").
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
 
 use crate::api::Song;
 
 use super::stream_metadata::normalize_compare;
-use super::types::IdentifiedNowPlaying;
 
-/// Bumped whenever the identify prompt/schema contract changes, so cached results from
-/// an older contract are never served to newer presentation code.
-pub(in crate::app) const IDENTIFY_PROMPT_VERSION: u32 = 1;
 /// Global LRU capacity: enough to survive ad blocks and DJ re-announcements between
 /// plays of the same title, tiny enough to never matter in memory.
 const CACHE_CAP: usize = 16;
-/// TTL backstop — the *primary* invalidation is the current title moving on (a new
-/// title is a new key; old entries age out).
-const CACHE_TTL: Duration = Duration::from_secs(20 * 60);
-/// Soft-negative window after a failed identify: re-opening inside it re-shows the error
-/// instead of re-calling (a flapping network must not turn the button into an API drum),
-/// but a real result is never blocked for long — errors are NOT cached as results.
-const ERROR_RETRY_WINDOW: Duration = Duration::from_secs(10);
 /// ICY titles are protocol-capped well below this; anything longer is garbage or an
-/// attack, and it must not reach a prompt at full length.
+/// attack, and it must not reach the terminal at full length.
 const MAX_TITLE_CHARS: usize = 500;
 
-/// Exact-match cache key for one identified stream title.
+/// Exact-match cache key for one stream title (station + normalized title).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::app) struct NowPlayingKey {
     station: String,
     title: String,
-    version: u32,
 }
 
-/// One cached identification (+ the favorite resolution once attached).
+/// One cached favorite resolution: the YouTube track a title was resolved to, so a repeat
+/// favorite (or a re-open → favorite) never re-searches.
 pub(in crate::app) struct NowPlayingEntry {
     key: NowPlayingKey,
-    pub(in crate::app) result: IdentifiedNowPlaying,
-    /// The YouTube track the favorite action resolved this title to, so a repeat
-    /// favorite (or a re-open → favorite) never re-searches.
-    pub(in crate::app) resolved: Option<Song>,
-    at: Instant,
+    resolved: Song,
 }
 
-/// LRU + TTL cache of identify results. Success verdicts of every kind are cached —
-/// an "ad" or "unknown" verdict for a title is as reusable as a song — but transport
-/// errors never are (a single timeout must not condemn a song for its whole airtime).
+/// LRU cache of favorite resolutions, keyed by station + normalized title.
 #[derive(Default)]
 pub(in crate::app) struct NowPlayingCache {
     /// Most-recently-used last.
     entries: VecDeque<NowPlayingEntry>,
-    /// One-slot soft-negative memo of the last failure (never served as a result).
-    last_error: Option<(NowPlayingKey, Instant, String)>,
 }
 
 impl NowPlayingCache {
-    /// TTL-checked lookup; a hit is LRU-touched.
-    pub(in crate::app) fn get(&mut self, key: &NowPlayingKey) -> Option<&NowPlayingEntry> {
-        self.entries.retain(|e| e.at.elapsed() < CACHE_TTL);
+    /// Look up a cached favorite resolution; a hit is LRU-touched.
+    pub(in crate::app) fn get(&mut self, key: &NowPlayingKey) -> Option<&Song> {
         let idx = self.entries.iter().position(|e| &e.key == key)?;
         let entry = self.entries.remove(idx).expect("index just found");
         self.entries.push_back(entry);
-        self.entries.back()
+        self.entries.back().map(|e| &e.resolved)
     }
 
-    pub(in crate::app) fn put(&mut self, key: NowPlayingKey, result: IdentifiedNowPlaying) {
+    /// Remember the track a favorite resolved this title to.
+    pub(in crate::app) fn put_resolved(&mut self, key: NowPlayingKey, resolved: Song) {
         self.entries.retain(|e| e.key != key);
-        self.entries.push_back(NowPlayingEntry {
-            key,
-            result,
-            resolved: None,
-            at: Instant::now(),
-        });
+        self.entries.push_back(NowPlayingEntry { key, resolved });
         while self.entries.len() > CACHE_CAP {
             self.entries.pop_front();
         }
-        self.last_error = None;
-    }
-
-    /// Attach the favorite resolution to an existing entry (no-op if it aged out), so a
-    /// repeat favorite — or a re-open → favorite — never re-searches.
-    pub(in crate::app) fn attach_resolved(&mut self, key: &NowPlayingKey, song: Song) {
-        if let Some(entry) = self.entries.iter_mut().find(|e| &e.key == key) {
-            entry.resolved = Some(song);
-        }
-    }
-
-    /// The recent failure for this key, while inside the soft-negative window.
-    pub(in crate::app) fn recent_error(&self, key: &NowPlayingKey) -> Option<&str> {
-        self.last_error
-            .as_ref()
-            .filter(|(k, at, _)| k == key && at.elapsed() < ERROR_RETRY_WINDOW)
-            .map(|(_, _, msg)| msg.as_str())
-    }
-
-    pub(in crate::app) fn note_error(&mut self, key: NowPlayingKey, msg: String) {
-        self.last_error = Some((key, Instant::now(), msg));
     }
 
     #[cfg(test)]
@@ -116,7 +72,6 @@ pub(in crate::app) fn cache_key(station_id: &str, sanitized_title: &str) -> NowP
     NowPlayingKey {
         station: station_id.to_owned(),
         title: normalize_compare(sanitized_title),
-        version: IDENTIFY_PROMPT_VERSION,
     }
 }
 
@@ -146,6 +101,30 @@ pub(in crate::app) fn is_identifiable(sanitized: &str, reject_labels: &[&str]) -
         .iter()
         .map(|label| normalize_compare(label))
         .any(|label| !label.is_empty() && label == comparable)
+}
+
+/// A light, conservative local heuristic (no AI): does this sanitized title look like
+/// station content — an advertisement, jingle, or station id — rather than a song? Only a
+/// small set of unambiguous phrases (kept as multi-word markers, not bare words like "id"
+/// or "spot", so a real track rarely trips them) plus a promo-URL check. Easily tunable;
+/// when in doubt it defers to treating the title as a song.
+pub(in crate::app) fn looks_like_station_content(sanitized: &str) -> bool {
+    let lower = sanitized.to_ascii_lowercase();
+    if lower.contains("http://") || lower.contains("https://") || lower.contains("www.") {
+        return true;
+    }
+    const MARKERS: [&str; 9] = [
+        "advertisement",
+        "commercial break",
+        "sponsored by",
+        "station id",
+        "you are listening to",
+        "now playing on",
+        "werbung",    // German: advertisement
+        "publicidad", // Spanish: advertising
+        "pubblicità", // Italian: advertising
+    ];
+    MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
 /// Remove ANSI CSI (`ESC[…letter`) and OSC (`ESC]…BEL`/`ESC\`) sequences. Plain ESCs and
@@ -201,17 +180,10 @@ fn defuse_wrapper_tags(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::{IdentifiedKind, IdentifyConfidence};
     use super::*;
 
-    fn ident(title: &str) -> IdentifiedNowPlaying {
-        IdentifiedNowPlaying {
-            artist: Some("Artist".to_owned()),
-            title: Some(title.to_owned()),
-            kind: IdentifiedKind::Song,
-            confidence: IdentifyConfidence::High,
-            note: None,
-        }
+    fn song(id: &str) -> Song {
+        crate::api::Song::remote(id, "Track", "Artist", "3:00")
     }
 
     #[test]
@@ -246,6 +218,18 @@ mod tests {
     }
 
     #[test]
+    fn station_content_heuristic_flags_ads_and_urls_not_songs() {
+        assert!(looks_like_station_content("Werbung"));
+        assert!(looks_like_station_content("Commercial Break"));
+        assert!(looks_like_station_content("You are listening to Groove FM"));
+        assert!(looks_like_station_content("Groove FM - https://groove.fm"));
+        assert!(looks_like_station_content("visit www.groove.fm now"));
+        // Real songs are left alone.
+        assert!(!looks_like_station_content("YOASOBI - アイドル"));
+        assert!(!looks_like_station_content("NewJeans - Super Shy"));
+    }
+
+    #[test]
     fn cache_keys_are_exact_but_case_and_space_insensitive() {
         assert_eq!(
             cache_key("st", "Artist -  Track"),
@@ -260,16 +244,13 @@ mod tests {
     }
 
     #[test]
-    fn cache_hits_survive_reopen_and_lru_caps_at_16() {
+    fn resolution_cache_survives_reopen_and_lru_caps_at_16() {
         let mut cache = NowPlayingCache::default();
         let key = cache_key("st", "Artist - Track");
-        cache.put(key.clone(), ident("Track"));
-        assert_eq!(
-            cache.get(&key).map(|e| e.result.title.clone()),
-            Some(Some("Track".to_owned()))
-        );
+        cache.put_resolved(key.clone(), song("vid1"));
+        assert_eq!(cache.get(&key).map(|s| s.video_id.as_str()), Some("vid1"));
         for i in 0..CACHE_CAP {
-            cache.put(cache_key("st", &format!("t{i}")), ident("x"));
+            cache.put_resolved(cache_key("st", &format!("t{i}")), song("x"));
         }
         assert_eq!(cache.len(), CACHE_CAP);
         // The original key was the least-recently used → evicted.
@@ -277,54 +258,12 @@ mod tests {
     }
 
     #[test]
-    fn ad_and_unknown_verdicts_are_cached_like_songs() {
-        let mut cache = NowPlayingCache::default();
-        let key = cache_key("st", "Werbung");
-        cache.put(
-            key.clone(),
-            IdentifiedNowPlaying {
-                artist: None,
-                title: None,
-                kind: IdentifiedKind::Ad,
-                confidence: IdentifyConfidence::High,
-                note: None,
-            },
-        );
-        assert_eq!(
-            cache.get(&key).map(|e| e.result.kind),
-            Some(IdentifiedKind::Ad)
-        );
-    }
-
-    #[test]
-    fn errors_are_soft_negative_only_and_cleared_by_a_result() {
+    fn re_resolving_the_same_title_replaces_rather_than_duplicates() {
         let mut cache = NowPlayingCache::default();
         let key = cache_key("st", "Artist - Track");
-        cache.note_error(key.clone(), "timed out".to_owned());
-        assert_eq!(cache.recent_error(&key), Some("timed out"));
-        assert!(cache.get(&key).is_none(), "an error is never a result");
-        // A different title doesn't inherit the error.
-        assert!(cache.recent_error(&cache_key("st", "other")).is_none());
-        // A real result supersedes the memo.
-        cache.put(key.clone(), ident("Track"));
-        assert!(cache.recent_error(&key).is_none());
-    }
-
-    #[test]
-    fn attach_resolved_rides_the_entry() {
-        let mut cache = NowPlayingCache::default();
-        let key = cache_key("st", "Artist - Track");
-        cache.put(key.clone(), ident("Track"));
-        cache.attach_resolved(
-            &key,
-            crate::api::Song::remote("vid1", "Track", "Artist", "3:00"),
-        );
-        assert_eq!(
-            cache
-                .get(&key)
-                .and_then(|e| e.resolved.as_ref())
-                .map(|s| s.video_id.as_str()),
-            Some("vid1")
-        );
+        cache.put_resolved(key.clone(), song("vid1"));
+        cache.put_resolved(key.clone(), song("vid2"));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get(&key).map(|s| s.video_id.as_str()), Some("vid2"));
     }
 }

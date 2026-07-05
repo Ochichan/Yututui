@@ -242,13 +242,6 @@ pub enum Msg {
         keys: Vec<String>,
         entries: Vec<RomanizedResult>,
     },
-    /// Result of a "what's playing" identify one-shot (see [`Cmd::IdentifyNowPlaying`]).
-    /// Always delivered — `Err` carries a short user-safe message — so the overlay can
-    /// never stick on Loading. Dropped unless `seq` matches the open overlay's epoch.
-    NowPlayingIdentified {
-        seq: u64,
-        result: Result<IdentifiedNowPlaying, String>,
-    },
     /// Best-match tracks answering [`Cmd::ResolveTrack`] (possibly empty). Dropped
     /// unless `seq` matches the overlay's pending resolve epoch.
     TrackResolved {
@@ -362,14 +355,6 @@ pub enum Cmd {
     AskAi {
         prompt: String,
         context: Box<AiContext>,
-    },
-    /// One-shot "what's playing" identification of a radio stream title, pinned to the
-    /// LOWEST model tier (Flash-Lite, no fallback), no tools, JSON-only. The result
-    /// returns as [`Msg::NowPlayingIdentified`] with the same `seq`.
-    IdentifyNowPlaying {
-        seq: u64,
-        station: String,
-        raw_title: String,
     },
     /// Resolve free-text artist/title to real YouTube tracks (favorites need a
     /// `video_id`), off the Search screen. Answers as [`Msg::TrackResolved`].
@@ -816,65 +801,37 @@ impl RadioModeConfirm {
     }
 }
 
-/// What one radio stream title turned out to be, per the identify one-shot's `kind`
-/// classification (the model's finer jingle/station-id classes fold into `Ad`: station
-/// content, not a song).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IdentifiedKind {
-    Song,
-    Ad,
-    Unknown,
-}
-
-/// The identify one-shot's input-clarity confidence. An enum, not a probability — small
-/// models verbalize numeric confidence badly (systematic overconfidence), so the rubric
-/// classifies the *input* instead: high = clean `Artist - Title`, medium = a song is
-/// present but the split/order is ambiguous, low = fragmentary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IdentifyConfidence {
-    High,
-    Medium,
-    Low,
-}
-
-/// A "what's playing" identification extracted from a radio stream's ICY title by the
-/// FlashLite one-shot ([`Cmd::IdentifyNowPlaying`]). Both name fields are extractions
-/// from the (untrusted) stream text — never model recall — and stay untrusted data
-/// wherever they flow (overlay, DJ Gem seed, search query).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IdentifiedNowPlaying {
-    pub artist: Option<String>,
-    pub title: Option<String>,
-    pub kind: IdentifiedKind,
-    pub confidence: IdentifyConfidence,
-    /// One short model sentence about ambiguity/anomalies (shown muted), if any.
-    pub note: Option<String>,
-}
-
-/// What the "what's playing" overlay is currently showing.
+/// What the "what's playing" (지듣노) card is showing — populated synchronously from the
+/// live radio stream's own ICY metadata, no identification call. The name fields are
+/// (untrusted) stream text — never recall — and stay untrusted data wherever they flow
+/// (overlay, DJ Gem seed, search query).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NowPlayingOverlayState {
-    /// The identify call is in flight.
-    Loading,
-    /// The station exposes no usable ICY title — nothing to identify, no API call made.
+    /// The stream is exposing a usable title (sanitized). `artist` is present only when
+    /// the raw ICY title split cleanly into artist + title; otherwise `title` carries the
+    /// whole cleaned string.
+    Playing {
+        artist: Option<String>,
+        title: String,
+    },
+    /// The title looks like an advertisement, jingle, or station id — station content,
+    /// not a song (a light local heuristic, no AI).
+    StationContent,
+    /// No usable stream title right now: the station exposes none, or (right after tuning
+    /// in) mpv hasn't surfaced the first ICY tick yet.
     NoMetadata,
-    Identified(IdentifiedNowPlaying),
-    /// The identify call failed (short user-safe message). Never cached as a result.
-    Error(String),
 }
 
-/// The "what's playing" (지듣노) overlay: a compact card over the player identifying the
-/// current radio song, with favorite / ask-DJ Gem actions. `None` on [`crate::app::App`]
-/// = closed. Snapshots the station + sanitized title it was opened for, so replies and
-/// actions stay pinned to that moment even if the stream moves on underneath.
+/// The "what's playing" (지듣노) overlay: a compact card over the player showing the
+/// current radio song straight from the stream's ICY metadata, with favorite / ask-DJ Gem
+/// actions. `None` on [`crate::app::App`] = closed. Snapshots the station + sanitized
+/// title it was opened for, so the favorite action stays pinned to that moment even if the
+/// stream moves on underneath.
 #[derive(Debug, Clone)]
 pub struct NowPlayingOverlay {
-    /// Identify epoch — a reply must match [`crate::app::App`]'s live counter via this
-    /// snapshot or it's stale (overlay closed / title changed).
-    pub seq: u64,
-    /// The station `Song::video_id`, keying the identify cache.
+    /// The station `Song::video_id`, keying the favorite-resolution cache.
     pub station_id: String,
-    /// The station's display label (also fed to the identify prompt).
+    /// The station's display label.
     pub station_label: String,
     /// The sanitized ICY title this overlay is about.
     pub raw_title: String,
@@ -884,7 +841,8 @@ pub struct NowPlayingOverlay {
     pub resolved: Option<Song>,
     /// A favorite resolve is in flight (debounces the button).
     pub resolving: bool,
-    /// Resolve epoch, same staleness contract as `seq`.
+    /// Resolve epoch — a reply must match [`crate::app::App`]'s live counter via this
+    /// snapshot or it's stale (overlay closed / title changed).
     pub resolve_seq: u64,
 }
 

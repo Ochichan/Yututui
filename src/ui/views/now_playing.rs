@@ -1,10 +1,9 @@
-//! The "what's playing" (지듣노) card: a compact centered popup over the player that
-//! shows what the radio identify one-shot made of the current ICY title, with two
-//! actions — save the song to the music favorites, or hand off to DJ Gem for the story.
-//! Opened with `i` ([`crate::keymap::Action::IdentifyNowPlaying`]); its inner actions are
-//! remappable under [`crate::keymap::KeyContext::NowPlaying`]; `i` / Esc / Enter close.
-//! Confidence shapes the presentation: high reads as fact, medium as "(probably)", and
-//! low/unknown honestly says it couldn't tell — never a guess dressed up as an answer.
+//! The "what's playing" (지듣노) card: a compact centered popup over the player that shows
+//! the current radio song straight from the stream's ICY metadata, with two actions — save
+//! the song to the music favorites, or (when DJ Gem is connected) hand off to DJ Gem for
+//! the story. Opened with `i` ([`crate::keymap::Action::IdentifyNowPlaying`]); its inner
+//! actions are remappable under [`crate::keymap::KeyContext::NowPlaying`]; `i` / Esc /
+//! Enter close.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -12,10 +11,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{
-    App, IdentifiedKind, IdentifiedNowPlaying, IdentifyConfidence, MouseTarget,
-    NowPlayingOverlayState,
-};
+use crate::app::{App, MouseTarget, NowPlayingOverlayState};
 use crate::keymap::{Action, KeyContext};
 use crate::t;
 use crate::theme::ThemeRole as R;
@@ -119,7 +115,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
 }
 
-/// The state-dependent body: spinner text, the identification, or an honest miss.
+/// The state-dependent body: the playing song, a station-content notice, or an honest miss.
 fn draw_body(
     frame: &mut Frame,
     app: &App,
@@ -132,10 +128,27 @@ fn draw_body(
     let muted = crate::ui::popup_style(app, R::TextMuted);
 
     let lines: Vec<Line> = match state {
-        NowPlayingOverlayState::Loading => vec![Line::from(Span::styled(
-            t!("Identifying…", "확인 중…"),
-            muted,
-        ))],
+        NowPlayingOverlayState::Playing { artist, title } => {
+            let headline = match artist {
+                Some(artist) => format!("{title} — {artist}"),
+                None => title.clone(),
+            };
+            vec![Line::from(Span::styled(
+                truncate_to_width(&headline, width),
+                primary,
+            ))]
+        }
+        NowPlayingOverlayState::StationContent => vec![
+            Line::from(Span::styled(
+                t!(
+                    "Sounds like station content (ad / jingle), not a song.",
+                    "광고나 방송국 징글 같아요 — 노래가 아니에요"
+                ),
+                primary,
+            )),
+            Line::from(""),
+            Line::from(Span::styled(truncate_to_width(raw_title, width), muted)),
+        ],
         NowPlayingOverlayState::NoMetadata => vec![
             Line::from(Span::styled(
                 t!(
@@ -153,85 +166,8 @@ fn draw_body(
                 muted,
             )),
         ],
-        NowPlayingOverlayState::Error(message) => vec![
-            Line::from(Span::styled(
-                t!(
-                    "Couldn't identify this one.",
-                    "무슨 곡인지 알아내지 못했어요"
-                ),
-                primary,
-            )),
-            Line::from(""),
-            Line::from(Span::styled(truncate_to_width(message, width), muted)),
-        ],
-        NowPlayingOverlayState::Identified(id) => {
-            identified_lines(id, raw_title, width, primary, muted)
-        }
     };
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
-}
-
-/// Lines for a completed identification, shaped by kind + confidence.
-fn identified_lines(
-    id: &IdentifiedNowPlaying,
-    raw_title: &str,
-    width: usize,
-    primary: ratatui::style::Style,
-    muted: ratatui::style::Style,
-) -> Vec<Line<'static>> {
-    match id.kind {
-        IdentifiedKind::Ad => vec![
-            Line::from(Span::styled(
-                t!(
-                    "Sounds like station content (ad / jingle), not a song.",
-                    "광고나 방송국 징글 같아요 — 노래가 아니에요"
-                ),
-                primary,
-            )),
-            Line::from(""),
-            Line::from(Span::styled(truncate_to_width(raw_title, width), muted)),
-        ],
-        IdentifiedKind::Unknown => vec![
-            Line::from(Span::styled(
-                t!(
-                    "Couldn't identify this one.",
-                    "무슨 곡인지 알아내지 못했어요"
-                ),
-                primary,
-            )),
-            Line::from(""),
-            Line::from(Span::styled(truncate_to_width(raw_title, width), muted)),
-        ],
-        IdentifiedKind::Song => {
-            let name = match (&id.title, &id.artist) {
-                (Some(title), Some(artist)) => format!("{title} — {artist}"),
-                (Some(title), None) => title.clone(),
-                (None, Some(artist)) => artist.clone(),
-                (None, None) => raw_title.to_owned(),
-            };
-            let headline = match id.confidence {
-                IdentifyConfidence::High => name,
-                IdentifyConfidence::Medium => {
-                    format!("{}{name}", t!("(probably) ", "(아마도) "))
-                }
-                IdentifyConfidence::Low => {
-                    format!("{}{name}", t!("(uncertain) ", "(불확실) "))
-                }
-            };
-            let mut lines = vec![Line::from(Span::styled(
-                truncate_to_width(&headline, width),
-                primary,
-            ))];
-            if let Some(note) = &id.note {
-                lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    truncate_to_width(note, width),
-                    muted,
-                )));
-            }
-            lines
-        }
-    }
 }
 
 /// A `w`×`h` rect centered in `area`, clamped so it never exceeds the available space.

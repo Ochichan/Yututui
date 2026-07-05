@@ -75,7 +75,11 @@ fn clean_stream_title(raw: String) -> Option<String> {
 }
 
 fn split_now_playing(raw: &str) -> StreamNowPlaying {
-    for delimiter in [" - ", " – ", " — "] {
+    // Common "Artist{sep}Title" separators. The first part is taken as the artist (the
+    // dominant convention); a few stations use " | " / " · " instead of a dash. Reversed
+    // orderings aren't reliably detectable, so we don't try — a swapped guess still
+    // resolves the same YouTube track, and the raw title is always shown as the fallback.
+    for delimiter in [" - ", " – ", " — ", " | ", " · "] {
         if let Some((artist, title)) = raw.split_once(delimiter) {
             let artist = artist.trim();
             let title = title.trim();
@@ -179,6 +183,19 @@ mod tests {
         let parsed = parse_stream_now_playing(&meta, &[]).expect("metadata parsed");
 
         assert_eq!(parsed.label(), "Track — Artist");
+    }
+
+    #[test]
+    fn splits_on_pipe_and_middot_separators() {
+        let meta = json!({ "icy-title": "Artist | Song" });
+        let parsed = parse_stream_now_playing(&meta, &[]).expect("metadata parsed");
+        assert_eq!(parsed.artist.as_deref(), Some("Artist"));
+        assert_eq!(parsed.title.as_deref(), Some("Song"));
+
+        let meta = json!({ "icy-title": "Artist · Song" });
+        let parsed = parse_stream_now_playing(&meta, &[]).expect("metadata parsed");
+        assert_eq!(parsed.title.as_deref(), Some("Song"));
+        assert_eq!(parsed.artist.as_deref(), Some("Artist"));
     }
 
     #[test]

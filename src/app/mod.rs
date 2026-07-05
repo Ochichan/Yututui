@@ -1062,13 +1062,10 @@ impl App {
                 if self.playback.stream_now_playing != parsed {
                     self.playback.stream_now_playing = parsed;
                     self.dirty = true;
-                    // The song moved on: an identify in flight for the old title is
-                    // stale, and a Loading overlay re-keys onto the fresh title.
+                    // The song moved on: an open card re-populates from the fresh ICY
+                    // title (and a favorite-resolve in flight for the old title is stale).
                     return self.on_stream_title_changed();
                 }
-            }
-            Msg::NowPlayingIdentified { seq, result } => {
-                self.on_now_playing_identified(seq, result);
             }
             Msg::TrackResolved { seq, result } => {
                 return self.on_track_resolved(seq, result);

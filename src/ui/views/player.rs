@@ -403,16 +403,14 @@ fn status_line_parts_at(
             Some(MouseTarget::Player(Action::CycleRepeat)),
             Cow::Owned(format!("SYNC:{}", resync_glyph(retro))),
         ));
-        // The "what's playing" identify card — DJ Gem-backed, so only offered while the
-        // assistant is up. A text label, not a glyph: EAW-ambiguous symbols (♪ …) render
-        // wide on some CJK terminals and would drift every later hit rect.
-        if app.ai.available {
-            parts.push((None, Cow::Owned(gap.to_owned())));
-            parts.push((
-                Some(MouseTarget::Player(Action::IdentifyNowPlaying)),
-                Cow::Borrowed(t!("ID?", "지듣노")),
-            ));
-        }
+        // The "what's playing" card — now ICY-metadata-backed, so always offered on a live
+        // radio stream, DJ Gem or not. A text label, not a glyph: EAW-ambiguous symbols
+        // (♪ …) render wide on some CJK terminals and would drift every later hit rect.
+        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((
+            Some(MouseTarget::Player(Action::IdentifyNowPlaying)),
+            Cow::Borrowed(t!("ID?", "지듣노")),
+        ));
     } else {
         parts.push((None, Cow::Owned(gap.to_owned())));
         parts.push((
@@ -1571,17 +1569,11 @@ mod tests {
     }
 
     #[test]
-    fn identify_segment_is_offered_only_on_radio_with_dj_gem_up() {
+    fn identify_segment_is_offered_on_any_radio_stream() {
         let mut app = App::new(100);
         app.queue.set(vec![radio_song()], 0);
-        // Radio but DJ Gem down: no identify affordance.
-        let parts = status_line_parts_at(&app, "    ", false);
-        assert!(!has_target(&parts, |t| matches!(
-            t,
-            MouseTarget::Player(Action::IdentifyNowPlaying)
-        )));
-        // Radio + DJ Gem up: offered (and it survives the minimal tier — it's a control).
-        app.ai.available = true;
+        // Radio with DJ Gem down: still offered — 지듣노 is ICY-metadata-backed now — and it
+        // survives the minimal responsive tier because it's a control.
         for minimal in [false, true] {
             let parts = status_line_parts_at(&app, " ", minimal);
             assert!(has_target(&parts, |t| matches!(
@@ -1589,6 +1581,13 @@ mod tests {
                 MouseTarget::Player(Action::IdentifyNowPlaying)
             )));
         }
+        // DJ Gem up changes nothing on the radio path — still offered.
+        app.ai.available = true;
+        let parts = status_line_parts_at(&app, "    ", false);
+        assert!(has_target(&parts, |t| matches!(
+            t,
+            MouseTarget::Player(Action::IdentifyNowPlaying)
+        )));
         // Music mode never offers it, DJ Gem or not.
         let mut app = App::new(100);
         app.ai.available = true;

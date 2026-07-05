@@ -85,9 +85,6 @@ impl From<RuntimeEvent> for Msg {
                     keys,
                     entries,
                 },
-                crate::ai::AiEvent::NowPlayingIdentified { seq, result } => {
-                    Msg::NowPlayingIdentified { seq, result }
-                }
             },
             RuntimeEvent::Api(event) => match event {
                 crate::api::ApiEvent::ModeResolved { mode, had_cookie } => {
@@ -472,24 +469,6 @@ impl RuntimeHandles {
             }
             Cmd::ResolveTrack { seq, query, config } => {
                 self.api_handle.resolve_track(seq, query, config);
-            }
-            Cmd::IdentifyNowPlaying {
-                seq,
-                station,
-                raw_title,
-            } => {
-                if let Some(h) = &self.ai_handle {
-                    h.identify_now_playing(seq, station, raw_title);
-                } else {
-                    // Actor torn down between keypress and dispatch — resolve the
-                    // overlay's Loading state instead of leaving it stuck.
-                    let _ = self
-                        .worker_tx
-                        .send(RuntimeEvent::App(Msg::NowPlayingIdentified {
-                            seq,
-                            result: Err("DJ Gem is not available".to_owned()),
-                        }));
-                }
             }
             Cmd::AiRerank {
                 seed_video_id,

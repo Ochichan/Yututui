@@ -1,14 +1,17 @@
-//! The "what's playing" (지듣노) overlay reducer: the open flow (with its no-spend
-//! short-circuits), the identify round-trip, and the overlay's two actions.
+//! The "what's playing" (지듣노) card reducer: the open flow (populated synchronously from
+//! the live radio stream's own ICY metadata — no API call, so it works with DJ Gem off),
+//! the card's two actions (save the song to the music favorites, or hand off to DJ Gem for
+//! the story), and live re-population when the stream's title changes under an open card.
 
 use super::now_playing::{self};
 use super::*;
 
 impl App {
-    /// Open (or toggle-close) the "what's playing" overlay. Ordered so every path that
-    /// can answer without an API call does: not-radio / DJ Gem off → status note only;
-    /// no usable title → `NoMetadata`; cache hit → instant `Identified`; a failure
-    /// seconds ago → its error re-shown. Only a genuinely new title spends a call.
+    /// Open (or toggle-close) the "what's playing" card. It reads the current radio
+    /// stream's ICY title straight from `playback.stream_now_playing` and fills the card
+    /// synchronously — no identify call, so it always works, DJ Gem or not. A light local
+    /// heuristic routes obvious ads/station-ids to `StationContent`; a missing or
+    /// station-name-echo title to `NoMetadata`; anything else is the playing song.
     pub(in crate::app) fn open_now_playing_overlay(&mut self) -> Vec<Cmd> {
         if self.now_playing_overlay.is_some() {
             self.close_now_playing_overlay();
@@ -29,145 +32,97 @@ impl App {
             self.dirty = true;
             return Vec::new();
         };
-        if !self.ai.available {
-            self.status.kind = StatusKind::Info;
-            self.status.text = t!(
-                "DJ Gem is off — add a Gemini key in Settings to identify songs",
-                "DJ Gem이 꺼져 있어요 — 설정에서 Gemini 키를 추가하면 곡을 알 수 있어요"
-            )
-            .to_owned();
-            self.dirty = true;
-            return Vec::new();
-        }
         let station_label = self.display_song_label(&station);
-        let raw = self
-            .playback
-            .stream_now_playing
+        let stream_np = self.playback.stream_now_playing.clone();
+        let raw = stream_np
             .as_ref()
             .map(|np| np.raw.as_str())
             .unwrap_or_default();
         let sanitized = now_playing::sanitize_stream_title(raw);
-        self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
         let mut overlay = NowPlayingOverlay {
-            seq: self.now_playing_seq,
             station_id: station.video_id.clone(),
             station_label,
             raw_title: sanitized.clone(),
-            state: NowPlayingOverlayState::Loading,
+            state: NowPlayingOverlayState::NoMetadata,
             resolved: None,
             resolving: false,
             resolve_seq: 0,
         };
         self.dirty = true;
-        if !now_playing::is_identifiable(
+        if now_playing::is_identifiable(
             &sanitized,
             &[station.title.as_str(), overlay.station_label.as_str()],
         ) {
-            overlay.state = NowPlayingOverlayState::NoMetadata;
-            self.now_playing_overlay = Some(overlay);
-            return Vec::new();
+            if now_playing::looks_like_station_content(&sanitized) {
+                overlay.state = NowPlayingOverlayState::StationContent;
+            } else {
+                // Sanitize the already-parsed split for display too: the parser's
+                // title/artist are space/quote-cleaned but NOT ANSI/control/wrapper-tag
+                // defused — the raw ICY string is the only untrusted terminal input.
+                let title = stream_np
+                    .as_ref()
+                    .and_then(|np| np.title.as_deref())
+                    .map(now_playing::sanitize_stream_title)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| sanitized.clone());
+                let artist = stream_np
+                    .as_ref()
+                    .and_then(|np| np.artist.as_deref())
+                    .map(now_playing::sanitize_stream_title)
+                    .filter(|s| !s.is_empty());
+                // Reuse a prior favorite-resolution for this exact title, if cached.
+                let key = now_playing::cache_key(&overlay.station_id, &sanitized);
+                overlay.resolved = self.now_playing_cache.get(&key).cloned();
+                overlay.state = NowPlayingOverlayState::Playing { artist, title };
+            }
         }
-        let key = now_playing::cache_key(&overlay.station_id, &sanitized);
-        if let Some(entry) = self.now_playing_cache.get(&key) {
-            overlay.state = NowPlayingOverlayState::Identified(entry.result.clone());
-            overlay.resolved = entry.resolved.clone();
-            self.now_playing_overlay = Some(overlay);
-            return Vec::new();
-        }
-        if let Some(err) = self.now_playing_cache.recent_error(&key) {
-            overlay.state = NowPlayingOverlayState::Error(err.to_owned());
-            self.now_playing_overlay = Some(overlay);
-            return Vec::new();
-        }
-        let cmd = Cmd::IdentifyNowPlaying {
-            seq: overlay.seq,
-            station: overlay.station_label.clone(),
-            raw_title: sanitized,
-        };
         self.now_playing_overlay = Some(overlay);
-        vec![cmd]
+        Vec::new()
     }
 
     pub(in crate::app) fn close_now_playing_overlay(&mut self) {
         self.now_playing_overlay = None;
-        // Invalidate anything still in flight so a late reply can't reopen state.
+        // Invalidate a favorite-resolve still in flight so a late reply can't reopen state.
         self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
         self.dirty = true;
     }
 
-    /// Fold an identify reply into the overlay (and the cache). Stale replies — the
-    /// overlay closed, or the title moved on and re-keyed — are dropped by the seq guard.
-    pub(in crate::app) fn on_now_playing_identified(
-        &mut self,
-        seq: u64,
-        result: Result<IdentifiedNowPlaying, String>,
-    ) {
-        let Some(overlay) = self.now_playing_overlay.as_mut() else {
-            return;
-        };
-        if overlay.seq != seq {
-            return;
-        }
-        let key = now_playing::cache_key(&overlay.station_id, &overlay.raw_title);
-        match result {
-            Ok(identified) => {
-                // Every successful verdict is cacheable — an "ad"/"unknown" answer for
-                // this title is as reusable as a song.
-                self.now_playing_cache.put(key, identified.clone());
-                overlay.state = NowPlayingOverlayState::Identified(identified);
-            }
-            Err(message) => {
-                // Failures get a short soft-negative window, never a cached result.
-                self.now_playing_cache.note_error(key, message.clone());
-                overlay.state = NowPlayingOverlayState::Error(message);
-            }
-        }
-        self.dirty = true;
-    }
-
-    /// The ICY title changed under an open overlay. A `Loading` overlay re-runs the open
-    /// flow for the fresh title (the cache may answer for free); anything already
-    /// displayed stays — the song just ended, and the card is still what was asked for.
-    /// The seq bump in either path invalidates the in-flight reply for the old title.
+    /// The ICY title changed under an open card: re-populate it from the fresh (free,
+    /// synchronous) metadata. This also fills in the very first title after tuning in,
+    /// since mpv only surfaces ICY metadata once it first changes. The seq bump
+    /// invalidates any favorite-resolve still in flight for the old title.
     pub(in crate::app) fn on_stream_title_changed(&mut self) -> Vec<Cmd> {
-        match self.now_playing_overlay.as_ref().map(|o| &o.state) {
-            Some(NowPlayingOverlayState::Loading) => {
-                self.now_playing_overlay = None;
-                self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
-                self.open_now_playing_overlay()
-            }
-            Some(_) => {
-                self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
-                Vec::new()
-            }
-            None => Vec::new(),
+        if self.now_playing_overlay.is_none() {
+            return Vec::new();
         }
+        self.now_playing_overlay = None;
+        self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
+        self.open_now_playing_overlay()
     }
 
-    /// Whether the overlay's favorite action applies to its current state (an identified
-    /// song with at least a title to search for). `pub` — the overlay view mirrors it.
+    /// Whether the card's favorite action applies (a playing song to search for). `pub` —
+    /// the overlay view mirrors it.
     pub fn now_playing_can_favorite(&self) -> bool {
         matches!(
             self.now_playing_overlay.as_ref().map(|o| &o.state),
-            Some(NowPlayingOverlayState::Identified(id))
-                if id.kind == IdentifiedKind::Song && id.title.is_some()
+            Some(NowPlayingOverlayState::Playing { .. })
         )
     }
 
-    /// Whether the overlay's "tell me more" action applies (anything but station
-    /// content — an uncertain identification is still worth asking about). `pub` — the
-    /// overlay view mirrors it.
+    /// Whether the card's "tell me more" action applies. Gated on DJ Gem being connected,
+    /// so the button is hidden entirely when it isn't. `pub` — the overlay view mirrors it.
     pub fn now_playing_can_ask(&self) -> bool {
-        match self.now_playing_overlay.as_ref().map(|o| &o.state) {
-            Some(NowPlayingOverlayState::Identified(id)) => id.kind != IdentifiedKind::Ad,
-            _ => false,
-        }
+        self.ai.available
+            && matches!(
+                self.now_playing_overlay.as_ref().map(|o| &o.state),
+                Some(NowPlayingOverlayState::Playing { .. })
+            )
     }
 
     /// "Save to favorites": favorites are keyed by `video_id`, and a radio title has
-    /// none — so the identified artist/title is first resolved to a real YouTube track
-    /// (the resolved `Song` then rides the overlay AND the cache entry, so repeat
-    /// favorites and re-opens never re-search). A title-only entry is never inserted.
+    /// none — so the artist/title is first resolved to a real YouTube track (the resolved
+    /// `Song` then rides the overlay AND the cache, so repeat favorites and re-opens never
+    /// re-search).
     pub(in crate::app) fn now_playing_favorite(&mut self) -> Vec<Cmd> {
         if !self.now_playing_can_favorite() {
             return Vec::new();
@@ -181,13 +136,12 @@ impl App {
         if let Some(song) = overlay.resolved.clone() {
             return self.add_resolved_favorite(song);
         }
-        let NowPlayingOverlayState::Identified(id) = &overlay.state else {
+        let NowPlayingOverlayState::Playing { artist, title } = &overlay.state else {
             return Vec::new();
         };
-        let query = match (&id.artist, &id.title) {
-            (Some(artist), Some(title)) => format!("{artist} {title}"),
-            (None, Some(title)) => title.clone(),
-            _ => return Vec::new(),
+        let query = match artist {
+            Some(artist) => format!("{artist} {title}"),
+            None => title.clone(),
         };
         self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
         let seq = self.now_playing_seq;
@@ -230,7 +184,7 @@ impl App {
                 };
                 overlay.resolved = Some(song.clone());
                 let key = now_playing::cache_key(&overlay.station_id, &overlay.raw_title);
-                self.now_playing_cache.attach_resolved(&key, song.clone());
+                self.now_playing_cache.put_resolved(key, song.clone());
                 self.add_resolved_favorite(song)
             }
             Err(error) => {
@@ -263,13 +217,13 @@ impl App {
         vec![Cmd::SaveLibrary]
     }
 
-    /// "Tell me more": close the card and hand off to the DJ Gem view, seeding the
-    /// normal chat path (session model — follow-ups ride the same conversation) with a
-    /// labeled context block. The block, not an imperative sentence, carries the
-    /// stream-derived strings — they stay untrusted data even after identification —
-    /// and a medium/low confidence swaps in an acknowledge-the-uncertainty preamble so
-    /// a misidentification can't cascade into a confident essay about the wrong artist.
-    /// The transcript shows only a compact line; the full block goes to the model.
+    /// "Tell me more": close the card and hand off to the DJ Gem view, seeding the normal
+    /// chat path (session model — follow-ups ride the same conversation) with a labeled
+    /// context block and a request for a rich, structured rundown. The stream-derived
+    /// strings stay inside the `<now_playing>` block as untrusted DATA (never an imperative
+    /// sentence), with a standing caution that a stream title may be mislabeled — so a bad
+    /// title can't cascade into a confident essay about the wrong song. The transcript
+    /// shows a compact line; the full block goes to the model.
     pub(in crate::app) fn now_playing_ask_ai(&mut self) -> Vec<Cmd> {
         if !self.now_playing_can_ask() {
             return Vec::new();
@@ -287,69 +241,54 @@ impl App {
         let Some(overlay) = self.now_playing_overlay.take() else {
             return Vec::new();
         };
-        // The card is gone; anything still in flight for it is stale.
+        // The card is gone; any favorite-resolve still in flight for it is stale.
         self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
-        let NowPlayingOverlayState::Identified(id) = &overlay.state else {
+        let NowPlayingOverlayState::Playing { artist, title } = &overlay.state else {
             return Vec::new();
         };
-        let identified_line = match (&id.artist, &id.title) {
-            (Some(artist), Some(title)) => format!("{title} — {artist}"),
-            (None, Some(title)) => title.clone(),
-            (Some(artist), None) => artist.clone(),
-            (None, None) => "unknown".to_owned(),
+        let compact = match artist {
+            Some(artist) => format!("{title} — {artist}"),
+            None => title.clone(),
         };
-        let confidence = match id.confidence {
-            IdentifyConfidence::High => "high",
-            IdentifyConfidence::Medium => "medium",
-            IdentifyConfidence::Low => "low",
-        };
-        let kind = match id.kind {
-            IdentifiedKind::Song => "song",
-            IdentifiedKind::Ad => "ad",
-            IdentifiedKind::Unknown => "unknown",
+        let split_line = match artist {
+            Some(artist) => {
+                format!("parsed (best-effort local split): artist={artist} · title={title}\n")
+            }
+            None => String::new(),
         };
         let ask = t!(
-            "Tell me more about this song and its artist.",
-            "이 곡과 아티스트에 대해 더 알려줘."
+            "Give me a rich rundown of this song — the artist (background, notable work), \
+             the song itself (the release it's from, its meaning, any behind-the-scenes \
+             context), its genre and era, a couple of things worth knowing, and two or \
+             three similar tracks I might like. Keep each part short. If the title doesn't \
+             resolve to a real track, say so instead of inventing one.",
+            "이 곡을 풍부하게 소개해줘 — 아티스트(배경·대표작), 이 곡(수록 앨범/발매 정보·의미·\
+             비하인드), 장르와 시대, 알아두면 좋은 점, 그리고 좋아할 만한 비슷한 곡 두어 개 추천. \
+             각 항목은 짧게. 제목이 실제 곡으로 확인되지 않으면 지어내지 말고 그렇다고 말해줘."
         );
-        let preamble = if matches!(
-            id.confidence,
-            IdentifyConfidence::Medium | IdentifyConfidence::Low
-        ) || id.kind != IdentifiedKind::Song
-        {
-            t!(
-                "The identification is uncertain — acknowledge that first. ",
-                "곡 식별이 불확실해요 — 먼저 그 점을 짚고 시작해줘. "
-            )
-        } else {
-            ""
-        };
         let seed = format!(
             "<now_playing>\n\
-             station: {}\n\
-             raw_title (untrusted, as sent by the stream): {}\n\
-             identified: {} (confidence: {}, kind: {})\n\
+             station: {station}\n\
+             raw_title (untrusted, as sent by the radio stream): {raw}\n\
+             {split}\
+             note: this title came straight from the stream's ICY metadata and may be \
+             mislabeled, truncated, or split wrong — verify the artist/title before \
+             elaborating.\n\
              </now_playing>\n\
-             {}{}",
-            overlay.station_label,
-            overlay.raw_title,
-            identified_line,
-            confidence,
-            kind,
-            preamble,
-            ask
+             {ask}",
+            station = overlay.station_label,
+            raw = overlay.raw_title,
+            split = split_line,
+            ask = ask,
         );
         self.enter_ai();
-        self.push_ai_message(AiRole::User, format!("{ask} ({identified_line})"));
-        if !self.ai.available {
-            // Same onboarding path as a typed prompt (submit_ai_prompt).
-            self.push_ai_message(
-                AiRole::Error,
-                "No Gemini API key. Add one in Settings (press ,) or set GEMINI_API_KEY."
-                    .to_owned(),
-            );
-            return Vec::new();
-        }
+        self.push_ai_message(
+            AiRole::User,
+            format!(
+                "{} ({compact})",
+                t!("Tell me more about this track", "이 곡 더 알려줘")
+            ),
+        );
         self.ai.thinking = true;
         self.bridges.ai_transcript_scroll.scroll_to_end();
         vec![Cmd::AskAi {
