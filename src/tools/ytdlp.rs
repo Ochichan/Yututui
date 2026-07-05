@@ -54,6 +54,11 @@ pub struct ManagedState {
     pub version: Option<String>,
     /// Hex SHA-256 the installed binary was verified against.
     pub sha256: Option<String>,
+    /// Last verified mtime of the installed managed binary. A mismatch means the
+    /// metadata no longer describes the executable on disk.
+    pub installed_mtime_unix: Option<u64>,
+    /// Last verified byte length of the installed managed binary.
+    pub installed_len: Option<u64>,
     /// Unix seconds of the last *successful* update check.
     pub last_check_unix: Option<u64>,
     /// Unix seconds of the last check *attempt* (backoff for failing networks).
@@ -70,6 +75,14 @@ pub struct ProbeEntry {
     pub mtime_unix: u64,
     pub len: u64,
     pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryInspection {
+    pub version: String,
+    pub sha256: String,
+    pub mtime_unix: u64,
+    pub len: u64,
 }
 
 /// `<data dir>/tools`, the directory everything in this module lives in. The
@@ -121,6 +134,38 @@ pub fn save_state(state: &ManagedState) {
     }
 }
 
+pub fn clear_probe_cache() {
+    let mut state = load_state();
+    if state.probe_cache.is_empty() {
+        return;
+    }
+    state.probe_cache.clear();
+    save_state(&state);
+}
+
+pub fn remove_update_lock_if_free() -> Result<bool, String> {
+    let Some(dir) = tools_dir() else {
+        return Ok(false);
+    };
+    let lock_path = dir.join(".update.lock");
+    if !lock_path.exists() {
+        return Ok(false);
+    }
+    let Some(lock) = UpdateLock::try_acquire(&dir) else {
+        return Ok(false);
+    };
+    drop(lock);
+    std::fs::remove_file(&lock_path)
+        .map(|()| true)
+        .or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(false)
+            } else {
+                Err(format!("failed to remove {}: {e}", lock_path.display()))
+            }
+        })
+}
+
 pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -138,6 +183,73 @@ fn file_stamp(path: &Path) -> Option<(u64, u64)> {
         .ok()?
         .as_secs();
     Some((mtime, meta.len()))
+}
+
+pub fn sha256_file(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub async fn inspect_binary(path: &Path) -> Result<BinaryInspection, String> {
+    let (mtime_unix, len) =
+        file_stamp(path).ok_or_else(|| format!("cannot stat {}", path.display()))?;
+    let sha256 = sha256_file(path).map_err(|e| format!("cannot hash {}: {e}", path.display()))?;
+    let path_str = path.to_string_lossy().into_owned();
+    let version = super::probe_version(&path_str)
+        .await
+        .ok_or_else(|| format!("{} did not report a yt-dlp version", path.display()))?;
+    Ok(BinaryInspection {
+        version,
+        sha256,
+        mtime_unix,
+        len,
+    })
+}
+
+fn state_stamp_matches(path: &Path, state: &ManagedState) -> bool {
+    file_stamp(path).is_some_and(|(mtime, len)| {
+        state.installed_mtime_unix == Some(mtime) && state.installed_len == Some(len)
+    })
+}
+
+async fn managed_installation_matches(
+    dest: &Path,
+    state: &ManagedState,
+    channel: YtdlpChannel,
+    tag: &str,
+) -> Result<BinaryInspection, String> {
+    if state.channel != Some(channel) || state.version.as_deref() != Some(tag) {
+        return Err("metadata channel/version does not match latest tag".to_owned());
+    }
+    let actual = inspect_binary(dest).await?;
+    if actual.version != tag {
+        return Err(format!(
+            "metadata says {tag}, but binary reports {}",
+            actual.version
+        ));
+    }
+    if let Some(expected) = state.sha256.as_deref()
+        && !expected.eq_ignore_ascii_case(&actual.sha256)
+    {
+        return Err("metadata sha256 does not match installed binary".to_owned());
+    }
+    if let (Some(mtime), Some(len)) = (state.installed_mtime_unix, state.installed_len)
+        && (mtime != actual.mtime_unix || len != actual.len)
+    {
+        return Err("metadata file stamp does not match installed binary".to_owned());
+    }
+    Ok(actual)
 }
 
 /// Probe a binary's version through the persistent cache: a hit for the same
@@ -286,7 +398,8 @@ async fn check_and_update_inner(
     // Cross-process (and cross-task) single-flight. Only deduplicates bandwidth:
     // if two updaters *did* race, pid-unique temps + atomic rename still guarantee
     // a valid binary. Held until this function returns.
-    let Some(_lock) = UpdateLock::try_acquire(&dir) else {
+    let Some(_lock) = acquire_update_lock_observing(&dir).await else {
+        super::refresh_selection(cfg).await;
         return Unavailable("another update is already running".into());
     };
 
@@ -308,13 +421,27 @@ async fn check_and_update_inner(
         }
     };
 
-    if installed_managed_path().is_some()
+    if dest.is_file()
         && state.channel == Some(channel)
         && state.version.as_deref() == Some(tag.as_str())
     {
-        state.last_check_unix = Some(now_unix());
-        save_state(&state);
-        return UpdateOutcome::AlreadyCurrent;
+        match managed_installation_matches(&dest, &state, channel, &tag).await {
+            Ok(actual) => {
+                state.sha256 = Some(actual.sha256);
+                state.installed_mtime_unix = Some(actual.mtime_unix);
+                state.installed_len = Some(actual.len);
+                state.last_check_unix = Some(now_unix());
+                save_state(&state);
+                return UpdateOutcome::AlreadyCurrent;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %dest.display(),
+                    error = %e,
+                    "managed yt-dlp metadata mismatch; reinstalling"
+                );
+            }
+        }
     }
 
     progress(ToolsEvent::Progress {
@@ -368,10 +495,32 @@ async fn check_and_update_inner(
         save_state(&state);
         return Unavailable(format!("failed to install {}: {e}", dest.display()));
     }
+    let installed = match inspect_binary(&dest).await {
+        Ok(actual) => actual,
+        Err(e) => {
+            save_state(&state);
+            return Unavailable(format!("installed managed yt-dlp failed verification: {e}"));
+        }
+    };
+    if installed.sha256 != expected_sha {
+        save_state(&state);
+        return Unavailable(format!(
+            "installed checksum mismatch for {asset} {tag} — metadata not updated"
+        ));
+    }
+    if installed.version != tag {
+        save_state(&state);
+        return Unavailable(format!(
+            "installed yt-dlp reports {}, expected {tag}",
+            installed.version
+        ));
+    }
 
     state.channel = Some(channel);
     state.version = Some(tag.clone());
-    state.sha256 = Some(actual_sha);
+    state.sha256 = Some(installed.sha256);
+    state.installed_mtime_unix = Some(installed.mtime_unix);
+    state.installed_len = Some(installed.len);
     state.last_check_unix = Some(now_unix());
     // The fresh binary re-probes on next selection (its mtime/len changed anyway).
     let dest_str = dest.to_string_lossy().into_owned();
@@ -380,6 +529,19 @@ async fn check_and_update_inner(
 
     super::refresh_selection(cfg).await;
     UpdateOutcome::Installed { version: tag }
+}
+
+async fn acquire_update_lock_observing(dir: &Path) -> Option<UpdateLock> {
+    if let Some(lock) = UpdateLock::try_acquire(dir) {
+        return Some(lock);
+    }
+    for attempt in 0..6 {
+        tokio::time::sleep(Duration::from_millis(250 * (attempt + 1))).await;
+        if let Some(lock) = UpdateLock::try_acquire(dir) {
+            return Some(lock);
+        }
+    }
+    None
 }
 
 /// Don't retry after a failed check within this window (dead network, GitHub down).
@@ -424,7 +586,8 @@ async fn maintain_once(cfg: &ToolsConfig, emit: &(dyn Fn(ToolsEvent) + Sync)) {
     let state = load_state();
     let now = now_unix();
     let channel = cfg.channel();
-    let managed_fresh = installed_managed_path().is_some()
+    let managed_fresh = installed_managed_path()
+        .is_some_and(|path| state_stamp_matches(&path, &state))
         && state.channel == Some(channel)
         && state
             .last_check_unix
@@ -632,12 +795,36 @@ pub(crate) fn install_file(tmp: &Path, dest: &Path) -> std::io::Result<()> {
         std::fs::set_permissions(tmp, std::fs::Permissions::from_mode(0o755))?;
     }
     #[cfg(windows)]
-    if dest.exists() {
-        let old = dest.with_extension("old.exe");
-        let _ = std::fs::remove_file(&old);
-        let _ = std::fs::rename(dest, &old);
+    {
+        if dest.exists() {
+            let old = dest.with_extension("old.exe");
+            retry_file_op(|| {
+                let _ = std::fs::remove_file(&old);
+                std::fs::rename(dest, &old)
+            })?;
+        }
+        return retry_file_op(|| std::fs::rename(tmp, dest));
     }
+
+    #[cfg(not(windows))]
     std::fs::rename(tmp, dest)
+}
+
+#[cfg(windows)]
+fn retry_file_op(mut op: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+    let mut last = None;
+    for attempt in 0..5 {
+        match op() {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last = Some(e);
+                if attempt < 4 {
+                    std::thread::sleep(std::time::Duration::from_millis(75 * (attempt + 1)));
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("file operation failed")))
 }
 
 #[cfg(test)]
@@ -650,6 +837,8 @@ mod tests {
             channel: Some(YtdlpChannel::Nightly),
             version: Some("2026.07.03.234421".to_owned()),
             sha256: Some("ab".repeat(32)),
+            installed_mtime_unix: Some(1_780_000_050),
+            installed_len: Some(42),
             last_check_unix: Some(1_780_000_000),
             last_attempt_unix: Some(1_780_000_100),
             probe_cache: vec![ProbeEntry {
@@ -662,6 +851,8 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         let back: ManagedState = serde_json::from_str(&json).unwrap();
         assert_eq!(back.version.as_deref(), Some("2026.07.03.234421"));
+        assert_eq!(back.installed_mtime_unix, Some(1_780_000_050));
+        assert_eq!(back.installed_len, Some(42));
         assert_eq!(back.probe_cache, state.probe_cache);
 
         // An empty/older file loads as defaults (never fails).

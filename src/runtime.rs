@@ -449,6 +449,7 @@ impl RuntimeHandles {
                 let tx = self.worker_tx.clone();
                 tokio::spawn(async move {
                     let progress_tx = tx.clone();
+                    crate::tools::ytdlp::clear_probe_cache();
                     let outcome = crate::tools::ytdlp::check_and_update(&tools, &move |event| {
                         let _ = progress_tx.send(RuntimeEvent::Tools(event));
                     })

@@ -947,6 +947,27 @@ impl App {
         self.dirty = true;
         match song {
             Some(song) => {
+                if let Some(reason) = song.unplayable_youtube_ref_reason() {
+                    tracing::warn!(
+                        video_id = %song.video_id,
+                        title = %song.title,
+                        artist = %song.artist,
+                        reason = %reason,
+                        "skipping non-playable YouTube entry"
+                    );
+                    self.status.kind = StatusKind::Error;
+                    self.status.text = t!(
+                        "Skipped a non-playable YouTube entry",
+                        "재생할 수 없는 YouTube 항목을 건너뜀"
+                    )
+                    .to_owned();
+                    self.prefetch.loaded_video_id = None;
+                    return if self.queue.peek_next().is_some() {
+                        self.advance(false)
+                    } else {
+                        Vec::new()
+                    };
+                }
                 self.reset_progress();
                 // A new track is a clean slate: drop any stale status (e.g. a prior
                 // "Playback error" / "Track unavailable") so the UI matches what's loading.

@@ -46,12 +46,39 @@ pub(crate) fn on_path(bin: &str) -> bool {
 /// would do at spawn. Used by `crate::tools` to identify the system yt-dlp so its
 /// version can be probed (and probe-cached) against the managed copy.
 pub(crate) fn resolve_on_path(bin: &str) -> Option<PathBuf> {
-    let paths = env::var_os("PATH")?;
-    env::split_paths(&paths).find_map(|dir| {
-        executable_candidates(&dir, bin)
-            .into_iter()
-            .find(|candidate| is_executable(candidate))
-    })
+    resolve_all_on_path(bin).into_iter().next()
+}
+
+/// All executable paths `bin` resolves to on `PATH`, in the exact PATH order the
+/// OS lookup would consider them. Diagnostic code uses this to show shadowed
+/// candidates such as Scoop shims and Python Scripts entries.
+pub(crate) fn resolve_all_on_path(bin: &str) -> Vec<PathBuf> {
+    let Some(paths) = env::var_os("PATH") else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = Vec::new();
+    for dir in env::split_paths(&paths) {
+        for candidate in executable_candidates(&dir, bin) {
+            if is_executable(&candidate)
+                && !found.iter().any(|p| same_path(p.as_path(), &candidate))
+            {
+                found.push(candidate);
+            }
+        }
+    }
+    found
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        a == b
+    }
 }
 
 #[cfg(not(windows))]
@@ -109,7 +136,10 @@ pub fn missing() -> Vec<&'static str> {
         .filter(|(_, need)| *need == Need::Core)
         .map(|(bin, _)| *bin)
         .filter(|bin| match *bin {
-            "yt-dlp" => crate::tools::ytdlp_selection().is_none() && !on_path(bin),
+            "yt-dlp" => {
+                crate::tools::ytdlp_selection_error().is_some()
+                    || (crate::tools::ytdlp_selection().is_none() && !on_path(bin))
+            }
             "mpv" => !on_path(&crate::tools::mpv_program()),
             other => !on_path(other),
         })

@@ -14,6 +14,26 @@ use std::path::{Path, PathBuf};
 
 /// Run the diagnostic, printing a report, and return the process exit code.
 pub fn run() -> i32 {
+    run_inner(false)
+}
+
+pub fn run_with_args(args: &[String]) -> i32 {
+    let verbose = match args {
+        [] => false,
+        [arg] if arg == "--verbose" || arg == "-v" => true,
+        [arg] if arg == "--help" || arg == "-h" => {
+            println!("Usage: ytt doctor [--verbose]");
+            return 0;
+        }
+        _ => {
+            eprintln!("usage: ytt doctor [--verbose]");
+            return 2;
+        }
+    };
+    run_inner(verbose)
+}
+
+fn run_inner(verbose: bool) -> i32 {
     // Localize using the saved UI language, exactly as the TUI does at startup.
     let cfg = config::Config::load();
     i18n::set_language(cfg.effective_language());
@@ -57,6 +77,9 @@ pub fn run() -> i32 {
                         sel.version.as_deref().unwrap_or("?"),
                         sel.path.display()
                     );
+                } else if let Some(error) = crate::tools::ytdlp_selection_error() {
+                    println!("  ✗ {bin:<8} ({role}) — {error}");
+                    ok = false;
                 } else {
                     println!("  ✗ {bin:<8} ({role}) — {}", deps::install_hint(&[bin]));
                     ok = false;
@@ -95,6 +118,9 @@ pub fn run() -> i32 {
 
     // 1b) Managed yt-dlp status (the auto-updated copy in <data>/tools).
     print_managed_ytdlp(&cfg, kr);
+    if verbose {
+        print_ytdlp_verbose(&cfg);
+    }
 
     // 1c) Modern yt-dlp needs a supported JS runtime for YouTube nsig solving (deno is auto-used;
     // node/bun/quickjs are wired via --js-runtimes). Soft-warn if none is usable — playback still
@@ -290,6 +316,99 @@ fn print_managed_ytdlp(cfg: &config::Config, kr: bool) {
         None => println!("  - {checked}: {}", if kr { "없음" } else { "never" }),
     }
     println!();
+}
+
+fn print_ytdlp_verbose(cfg: &config::Config) {
+    use crate::tools::ytdlp;
+
+    println!("yt-dlp details");
+    if let Some(error) = crate::tools::ytdlp_selection_error() {
+        println!("  selection error: {error}");
+    }
+    match crate::tools::ytdlp_selection() {
+        Some(sel) => {
+            println!("  selected source: {}", sel.source.label());
+            println!("  selected path: {}", sel.path.display());
+            println!(
+                "  selected version: {}",
+                sel.version.as_deref().unwrap_or("?")
+            );
+            if let Some(actual) = inspect_sync(&sel.path) {
+                println!("  selected actual version: {}", actual.version);
+                println!("  selected sha256: {}", actual.sha256);
+                println!(
+                    "  selected file: mtime={} len={}",
+                    actual.mtime_unix, actual.len
+                );
+            }
+            if let Some(pin) = sel.pin_for_mpv() {
+                println!("  mpv ytdl_path: {}", pin.display());
+            }
+        }
+        None => println!("  selected: none"),
+    }
+
+    let state = ytdlp::load_state();
+    println!("  managed enabled: {}", cfg.tools.managed_enabled());
+    println!("  managed metadata channel: {:?}", state.channel);
+    println!(
+        "  managed metadata version: {}",
+        state.version.as_deref().unwrap_or("?")
+    );
+    println!(
+        "  managed metadata sha256: {}",
+        state.sha256.as_deref().unwrap_or("?")
+    );
+    println!(
+        "  managed metadata file: mtime={} len={}",
+        state
+            .installed_mtime_unix
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "?".to_owned()),
+        state
+            .installed_len
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "?".to_owned())
+    );
+    match ytdlp::installed_managed_path() {
+        Some(path) => {
+            println!("  managed path: {}", path.display());
+            match inspect_sync(&path) {
+                Some(actual) => {
+                    println!("  managed actual version: {}", actual.version);
+                    println!("  managed actual sha256: {}", actual.sha256);
+                    println!(
+                        "  managed actual file: mtime={} len={}",
+                        actual.mtime_unix, actual.len
+                    );
+                }
+                None => println!("  managed actual: probe failed"),
+            }
+        }
+        None => println!("  managed path: not installed"),
+    }
+
+    let candidates = deps::resolve_all_on_path("yt-dlp");
+    if candidates.is_empty() {
+        println!("  PATH candidates: none");
+    } else {
+        println!("  PATH candidates:");
+        for (idx, path) in candidates.iter().enumerate() {
+            let version = inspect_sync(path)
+                .map(|actual| actual.version)
+                .unwrap_or_else(|| "?".to_owned());
+            println!("    {}. {} · {}", idx + 1, version, path.display());
+        }
+    }
+    println!();
+}
+
+fn inspect_sync(path: &Path) -> Option<crate::tools::ytdlp::BinaryInspection> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()
+        .and_then(|rt| rt.block_on(crate::tools::ytdlp::inspect_binary(path)).ok())
 }
 
 /// A short, localized description of what a tool is for.

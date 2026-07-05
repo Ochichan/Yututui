@@ -17,6 +17,30 @@ use crate::util::sanitize;
 
 const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
+pub fn is_youtube_video_id(id: &str) -> bool {
+    id.len() == 11
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn is_definitely_non_video_youtube_ref(id: &str) -> bool {
+    if is_youtube_video_id(id) {
+        return false;
+    }
+    let known_prefix = id.starts_with("UC")
+        || id.starts_with("UU")
+        || id.starts_with("PL")
+        || id.starts_with("VL")
+        || id.starts_with("RD")
+        || id.starts_with("MPRE")
+        || id.starts_with("OLAK5uy");
+    known_prefix
+        || id.bytes().any(|b| {
+            !(b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b':' || b == b'.')
+        })
+}
+
 /// A search result track, trimmed to what the UI needs. Serializable so the local
 /// library (favorites/history) can persist tracks verbatim. `local_path` is set only for
 /// downloaded/local audio files; old persisted JSON omits it and still deserializes.
@@ -187,8 +211,7 @@ impl Song {
         let rest = stem.trim_end().strip_suffix(']')?;
         let open = rest.rfind('[')?;
         let id = &rest[open + 1..];
-        let is_id_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
-        if id.len() != 11 || !id.bytes().all(is_id_char) {
+        if !is_youtube_video_id(id) {
             return None;
         }
         let title = rest[..open].trim_end();
@@ -237,13 +260,30 @@ impl Song {
     /// becomes a `local:` identity. Playlist rows (`ytpl:` ids) are not videos.
     pub fn youtube_id(&self) -> Option<&str> {
         if let Some(id) = self.yt_video_id.as_deref() {
-            return Some(id);
+            return (!is_definitely_non_video_youtube_ref(id)).then_some(id);
         }
         if self.local_path.is_some() || self.source != SearchSource::Youtube {
             return None;
         }
-        (!self.video_id.starts_with("local:") && !self.video_id.starts_with(PLAYLIST_ID_PREFIX))
-            .then_some(self.video_id.as_str())
+        (!self.video_id.starts_with("local:")
+            && !self.video_id.starts_with(PLAYLIST_ID_PREFIX)
+            && !is_definitely_non_video_youtube_ref(&self.video_id))
+        .then_some(self.video_id.as_str())
+    }
+
+    pub fn unplayable_youtube_ref_reason(&self) -> Option<String> {
+        if self.local_path.is_some() || self.source != SearchSource::Youtube {
+            return None;
+        }
+        match &self.playable {
+            Some(PlayableRef::YoutubeVideo { id }) if is_definitely_non_video_youtube_ref(id) => {
+                Some(format!("not a YouTube video id: {id}"))
+            }
+            None if is_definitely_non_video_youtube_ref(&self.video_id) => {
+                Some(format!("not a YouTube video id: {}", self.video_id))
+            }
+            _ => None,
+        }
     }
 
     /// The YouTube playlist id when this row is a playlist search result (see
@@ -269,8 +309,11 @@ impl Song {
     /// A URL mpv/yt-dlp can resolve and play for catalog tracks.
     pub fn watch_url(&self) -> String {
         match &self.playable {
-            Some(PlayableRef::YoutubeVideo { id }) => {
+            Some(PlayableRef::YoutubeVideo { id }) if !is_definitely_non_video_youtube_ref(id) => {
                 format!("https://music.youtube.com/watch?v={id}")
+            }
+            Some(PlayableRef::YoutubeVideo { id }) => {
+                format!("https://music.youtube.com/channel/{id}")
             }
             Some(
                 PlayableRef::DirectUrl { url, .. }
@@ -280,7 +323,10 @@ impl Song {
                 | PlayableRef::RadioStream { url },
             ) => url.clone(),
             Some(PlayableRef::AudiusTrackId { id, app_name }) => audius_stream_url(id, app_name),
-            None => format!("https://music.youtube.com/watch?v={}", self.video_id),
+            None if !is_definitely_non_video_youtube_ref(&self.video_id) => {
+                format!("https://music.youtube.com/watch?v={}", self.video_id)
+            }
+            None => format!("https://music.youtube.com/channel/{}", self.video_id),
         }
     }
 
@@ -298,7 +344,10 @@ impl Song {
             Some(PlayableRef::YoutubeVideo { .. })
             | Some(PlayableRef::YtdlpUrl { .. })
             | Some(PlayableRef::AudiusTrackId { .. })
-            | None => Some(self.watch_url()),
+            | None => self
+                .unplayable_youtube_ref_reason()
+                .is_none()
+                .then(|| self.watch_url()),
         }
     }
 
@@ -951,5 +1000,23 @@ mod tests {
         let song = Song::from_search("id", "T", "A", "", Some("  ".to_owned()));
         assert_eq!(song.album, None);
         assert_eq!(song.duration_secs, None);
+    }
+
+    #[test]
+    fn youtube_video_id_shape_is_strict_for_external_inputs() {
+        assert!(is_youtube_video_id("dQw4w9WgXcQ"));
+        assert!(is_youtube_video_id("TAfHyXrULiM"));
+        assert!(!is_youtube_video_id("UCfLdIEPs1tYj4ieEdJnyNyw"));
+        assert!(!is_youtube_video_id("PL123456789012345"));
+        assert!(!is_youtube_video_id("too-short"));
+        assert!(!is_youtube_video_id("bad/id/value"));
+    }
+
+    #[test]
+    fn non_video_youtube_refs_do_not_become_playback_targets() {
+        let song = Song::remote("UCfLdIEPs1tYj4ieEdJnyNyw", "Lauv", "Lauv", "");
+        assert_eq!(song.youtube_id(), None);
+        assert!(song.prefetch_target().is_none());
+        assert!(song.unplayable_youtube_ref_reason().is_some());
     }
 }

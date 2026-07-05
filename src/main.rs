@@ -41,7 +41,7 @@ fn main() -> Result<()> {
                 println!(
                     "       ytt transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
                 );
-                println!("       ytt doctor           Check your environment and exit");
+                println!("       ytt doctor [-v]      Check your environment and exit");
                 println!(
                     "       ytt tools <cmd>      Manage the app-managed yt-dlp (status, update)"
                 );
@@ -85,7 +85,10 @@ fn main() -> Result<()> {
             "--new-instance" => new_instance = true,
             // One-shot environment diagnostic; never touches the terminal. Exits with its
             // own status code (non-zero if a required tool or directory is unusable).
-            "doctor" => std::process::exit(doctor::run()),
+            "doctor" => {
+                let rest: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(doctor::run_with_args(&rest));
+            }
             // Managed yt-dlp maintenance (status / forced update) — same one-shot,
             // no-terminal shape as `doctor`.
             "tools" => {

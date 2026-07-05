@@ -114,9 +114,10 @@ pub fn video_ipc_path(generation: u64) -> Result<String> {
 /// streams resolve (age-gated / library tracks). yt-dlp owns stream resolution — PO
 /// tokens, signature deciphering, throttling — so we never touch those ourselves.
 ///
-/// The yt-dlp that ytdl_hook runs is pinned to [`crate::tools`]' selection (managed/
-/// override) via `--script-opts=ytdl_hook-ytdl_path=…`; a system selection keeps
-/// mpv's own PATH lookup. ytdl_hook reads that option once at spawn, so the TUI's
+/// The yt-dlp that ytdl_hook runs is pinned to [`crate::tools`]' exact selection via
+/// `--script-opts=ytdl_hook-ytdl_path=…`; even a system selection is passed as an
+/// absolute path so mpv does not redo PATH lookup differently. ytdl_hook reads that
+/// option once at spawn, so the TUI's
 /// long-lived mpv keeps its spawn-time binary until restart — the playback self-heal
 /// therefore feeds mpv *resolved* CDN URLs (via the resolver) instead of watch URLs
 /// when a fresher yt-dlp lands mid-session; the daemon simply respawns its player.
@@ -150,13 +151,18 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
         ));
     }
 
-    // Pin ytdl_hook to the selected yt-dlp (managed/override). Ancient option, no
-    // probe needed; `--no-config` above means there are no user script-opts to
-    // clobber. Before YTM_MPV_EXTRA so last-option-wins keeps the user lever.
+    // Pin ytdl_hook to the selected yt-dlp. Ancient option, no probe needed;
+    // `--no-config` above means there are no user script-opts to clobber. Before
+    // YTM_MPV_EXTRA so last-option-wins keeps the user lever.
     if let Some(sel) = crate::tools::ytdlp_selection()
         && let Some(pin) = sel.pin_for_mpv()
     {
         let pin = pin.canonicalize().unwrap_or_else(|_| pin.to_path_buf());
+        tracing::info!(
+            source = sel.source.label(),
+            path = %pin.display(),
+            "mpv ytdl_hook pinned"
+        );
         cmd.arg(format!(
             "--script-opts=ytdl_hook-ytdl_path={}",
             pin.display()

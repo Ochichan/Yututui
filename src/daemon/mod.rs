@@ -538,6 +538,7 @@ fn dispatch_engine_effects(
             engine::EngineEffect::YtdlpSelfHeal { video_id, tools } => {
                 let tx = event_tx.clone();
                 tokio::spawn(async move {
+                    crate::tools::ytdlp::clear_probe_cache();
                     let outcome = crate::tools::ytdlp::check_and_update(&tools, &|_| {}).await;
                     let updated = matches!(
                         outcome,

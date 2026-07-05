@@ -91,8 +91,8 @@ pub enum ToolsEvent {
     Failed { error: String },
 }
 
-/// Where the active yt-dlp came from (doctor/status display, and whether the mpv
-/// spawns need an explicit `ytdl_path`).
+/// Where the active yt-dlp came from (doctor/status display, and the source label
+/// for the exact path pinned into mpv's `ytdl_path`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum YtdlpSource {
     /// `YTM_YTDLP` env var or `tools.ytdlp_path` config — used as-is.
@@ -125,15 +125,14 @@ pub struct YtdlpSelection {
 }
 
 impl YtdlpSelection {
-    /// Whether the mpv spawns should pass `--script-opts=ytdl_hook-ytdl_path=<path>`.
-    /// A system selection keeps mpv's default PATH lookup (identical behavior to
-    /// before this module existed); managed/override must be pinned explicitly or
-    /// mpv would silently run the possibly-stale system binary instead.
+    /// The exact yt-dlp path mpv spawns should receive through
+    /// `--script-opts=ytdl_hook-ytdl_path=<path>`.
+    ///
+    /// Even a system selection is pinned. Leaving mpv to do its own PATH lookup can
+    /// diverge from the path this process probed when Scoop shims, Python Scripts,
+    /// or PATH ordering change between selection and player spawn.
     pub fn pin_for_mpv(&self) -> Option<&Path> {
-        match self.source {
-            YtdlpSource::System => None,
-            YtdlpSource::Override | YtdlpSource::Managed => Some(&self.path),
-        }
+        Some(&self.path)
     }
 }
 
@@ -142,6 +141,7 @@ impl YtdlpSelection {
 /// exists anywhere), in which case exec sites fall back to the bare `"yt-dlp"`
 /// program name so the pre-existing "is it installed?" error path is preserved.
 static SELECTION: RwLock<Option<YtdlpSelection>> = RwLock::new(None);
+static SELECTION_ERROR: RwLock<Option<String>> = RwLock::new(None);
 
 /// The mpv program override (`YTM_MPV` env > `tools.mpv_path` config), captured at
 /// [`init`] so the player/probe call sites don't need config threading. `None` → "mpv".
@@ -158,18 +158,31 @@ pub async fn init(cfg: &ToolsConfig) {
 
 /// Re-run the selection (after the maintainer installs/updates the managed binary).
 pub async fn refresh_selection(cfg: &ToolsConfig) {
-    let sel = select(cfg).await;
-    if let Some(s) = &sel {
-        tracing::info!(
-            path = %s.path.display(),
-            version = s.version.as_deref().unwrap_or("?"),
-            source = s.source.label(),
-            "yt-dlp selected"
-        );
-    } else {
-        tracing::warn!("no usable yt-dlp found (managed, PATH, or override)");
+    let (sel, err) = match select(cfg).await {
+        Ok(sel) => (sel, None),
+        Err(e) => (None, Some(e)),
+    };
+    match (&sel, &err) {
+        (Some(s), None) => {
+            tracing::info!(
+                path = %s.path.display(),
+                version = s.version.as_deref().unwrap_or("?"),
+                source = s.source.label(),
+                "yt-dlp selected"
+            );
+        }
+        (None, Some(e)) => {
+            tracing::warn!(error = %e, "no usable yt-dlp selected");
+        }
+        (None, None) => {
+            tracing::warn!("no usable yt-dlp found (managed, PATH, or override)");
+        }
+        (Some(_), Some(_)) => unreachable!("selection cannot have both value and error"),
     }
     *SELECTION.write().expect("tools selection lock poisoned") = sel;
+    *SELECTION_ERROR
+        .write()
+        .expect("tools selection-error lock poisoned") = err;
 }
 
 /// The current selection, if any.
@@ -177,6 +190,13 @@ pub fn ytdlp_selection() -> Option<YtdlpSelection> {
     SELECTION
         .read()
         .expect("tools selection lock poisoned")
+        .clone()
+}
+
+pub fn ytdlp_selection_error() -> Option<String> {
+    SELECTION_ERROR
+        .read()
+        .expect("tools selection-error lock poisoned")
         .clone()
 }
 
@@ -554,16 +574,19 @@ pub(crate) async fn probe_version(program: &str) -> Option<String> {
 }
 
 /// Compute the selection per the policy in the module docs.
-async fn select(cfg: &ToolsConfig) -> Option<YtdlpSelection> {
-    // 1. Explicit override: used even if the probe fails (the user asked for it;
-    //    a broken override should fail loudly at exec, not silently fall back).
+async fn select(cfg: &ToolsConfig) -> Result<Option<YtdlpSelection>, String> {
+    // 1. Explicit override: wins over all candidates, but must be a real yt-dlp.
+    //    A broken override fails loudly instead of silently falling back.
     if let Some(path) = cfg.ytdlp_override() {
-        let version = ytdlp::cached_probe(&path).await;
-        return Some(YtdlpSelection {
+        let path = normalize_override_path(path)?;
+        let version = ytdlp::cached_probe(&path)
+            .await
+            .ok_or_else(|| format!("yt-dlp override did not run: {}", path.display()))?;
+        return Ok(Some(YtdlpSelection {
             path,
-            version,
+            version: Some(version),
             source: YtdlpSource::Override,
-        });
+        }));
     }
 
     let managed = managed_candidate(cfg);
@@ -579,14 +602,49 @@ async fn select(cfg: &ToolsConfig) -> Option<YtdlpSelection> {
         && let Some(path) = &system
         && let Some(version) = ytdlp::cached_probe(path).await
     {
-        return Some(YtdlpSelection {
+        return Ok(Some(YtdlpSelection {
             path: path.clone(),
             version: Some(version),
             source: YtdlpSource::System,
-        });
+        }));
     }
 
-    select_candidates(managed, system).await
+    Ok(select_candidates(managed, system).await)
+}
+
+fn normalize_override_path(path: PathBuf) -> Result<PathBuf, String> {
+    let raw = path.to_string_lossy();
+    if raw.chars().any(|c| c == '\0' || c == '\n' || c == '\r') {
+        return Err("yt-dlp override contains a line break or NUL byte".to_owned());
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("yt-dlp override is empty".to_owned());
+    }
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+        })
+        .unwrap_or(trimmed);
+    let candidate = PathBuf::from(unquoted);
+    let resolved = if candidate.is_absolute() || candidate.components().count() > 1 {
+        candidate
+    } else {
+        crate::deps::resolve_on_path(unquoted)
+            .ok_or_else(|| format!("yt-dlp override `{unquoted}` was not found on PATH"))?
+    };
+    let resolved_str = resolved.to_string_lossy();
+    if !crate::deps::on_path(resolved_str.as_ref()) {
+        return Err(format!(
+            "yt-dlp override is not an executable file: {}",
+            resolved.display()
+        ));
+    }
+    Ok(resolved)
 }
 
 fn managed_candidate(cfg: &ToolsConfig) -> Option<PathBuf> {
@@ -930,7 +988,14 @@ mod tests {
         }
 
         #[test]
-        fn pin_for_mpv_only_for_managed_and_override() {
+        fn override_path_rejects_line_breaks_before_path_lookup() {
+            let err = normalize_override_path(PathBuf::from("C:\n\\Users\\zznn\\yt-dlp.exe"))
+                .expect_err("newline override must be rejected");
+            assert!(err.contains("line break"));
+        }
+
+        #[test]
+        fn pin_for_mpv_uses_exact_selection_for_every_source() {
             let sel = |source| YtdlpSelection {
                 path: PathBuf::from("/x/yt-dlp"),
                 version: None,
@@ -938,7 +1003,7 @@ mod tests {
             };
             assert!(sel(YtdlpSource::Managed).pin_for_mpv().is_some());
             assert!(sel(YtdlpSource::Override).pin_for_mpv().is_some());
-            assert!(sel(YtdlpSource::System).pin_for_mpv().is_none());
+            assert!(sel(YtdlpSource::System).pin_for_mpv().is_some());
         }
     }
 }

@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{config, deps, i18n, tools};
+use crate::{config, deps, i18n, session, tools};
 
 pub fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
@@ -29,6 +29,8 @@ pub fn run(args: &[String]) -> i32 {
         Some("use") => use_ytdlp(&args[1..]),
         Some("unpin") => unpin_ytdlp(),
         Some("update") => update(),
+        Some("reset") => reset(&args[1..]),
+        Some("diagnose") => diagnose(),
         Some("--help" | "-h" | "help") => {
             help();
             0
@@ -50,6 +52,8 @@ fn help() {
     println!("  use      Pin yt-dlp to `system`, `managed`, or an explicit executable path");
     println!("  unpin    Return yt-dlp selection to the normal managed/system policy");
     println!("  update   Check the release channel now and install a newer yt-dlp if available");
+    println!("  reset    Clear transient playback/tool state (`ytt tools reset --playback`)");
+    println!("  diagnose Write a yt-dlp/mpv diagnostic bundle for bug reports");
 }
 
 /// A current-thread runtime for the one-shot commands (precedent: the auth/transfer
@@ -78,6 +82,10 @@ fn status(why: bool) -> i32 {
             selection_label(&cfg, &sel),
             sel.version.as_deref().unwrap_or("?"),
             sel.path.display()
+        ),
+        None if tools::ytdlp_selection_error().is_some() => println!(
+            "yt-dlp: {}",
+            tools::ytdlp_selection_error().unwrap_or_default()
         ),
         None => println!(
             "yt-dlp: {}",
@@ -111,12 +119,16 @@ fn status(why: bool) -> i32 {
         );
     } else {
         match tools::ytdlp::installed_managed_path() {
-            Some(path) => println!(
-                "managed: {} {} · {}",
-                channel.label(),
-                state.version.as_deref().unwrap_or("?"),
-                path.display()
-            ),
+            Some(path) => {
+                let actual = probe_ytdlp_path(&path).unwrap_or_else(|| "?".to_owned());
+                println!(
+                    "managed: {} metadata={} actual={} · {}",
+                    channel.label(),
+                    state.version.as_deref().unwrap_or("?"),
+                    actual,
+                    path.display()
+                );
+            }
             None => println!(
                 "managed: {} — {}",
                 channel.label(),
@@ -270,19 +282,22 @@ fn print_status_why(cfg: &config::Config, kr: bool) {
         }
     }
 
-    match deps::resolve_on_path("yt-dlp") {
-        Some(path) => {
-            let version = probe_ytdlp_path(&path).unwrap_or_else(|| "?".to_owned());
-            println!("  - system candidate: {version} · {}", path.display());
-        }
-        None => println!(
-            "  - system candidate: {}",
+    let system_candidates = deps::resolve_all_on_path("yt-dlp");
+    if system_candidates.is_empty() {
+        println!(
+            "  - system candidates: {}",
             if kr {
                 "PATH에서 찾지 못함"
             } else {
                 "not found on PATH"
             }
-        ),
+        );
+    } else {
+        println!("  - system candidates:");
+        for (idx, path) in system_candidates.iter().enumerate() {
+            let version = probe_ytdlp_path(path).unwrap_or_else(|| "?".to_owned());
+            println!("    {}. {version} · {}", idx + 1, path.display());
+        }
     }
 
     print_js_runtime_why(kr);
@@ -401,6 +416,279 @@ fn unpin_ytdlp() -> i32 {
     );
     warn_env_override(kr);
     0
+}
+
+fn reset(args: &[String]) -> i32 {
+    if args.len() != 1 || args[0] != "--playback" {
+        eprintln!("usage: ytt tools reset --playback");
+        return 2;
+    }
+    let cfg = config::Config::load();
+    i18n::set_language(cfg.effective_language());
+    let kr = i18n::is_korean();
+
+    let mut ok = true;
+    match session::SessionCache::clear() {
+        Ok(true) => println!(
+            "{}",
+            if kr {
+                "session cache: 삭제됨"
+            } else {
+                "session cache: cleared"
+            }
+        ),
+        Ok(false) => println!(
+            "{}",
+            if kr {
+                "session cache: 없음"
+            } else {
+                "session cache: not present"
+            }
+        ),
+        Err(e) => {
+            ok = false;
+            eprintln!("session cache: {e}");
+        }
+    }
+
+    tools::ytdlp::clear_probe_cache();
+    println!(
+        "{}",
+        if kr {
+            "yt-dlp probe cache: 삭제됨"
+        } else {
+            "yt-dlp probe cache: cleared"
+        }
+    );
+
+    match tools::ytdlp::remove_update_lock_if_free() {
+        Ok(true) => println!(
+            "{}",
+            if kr {
+                "yt-dlp update lock: stale lock 삭제됨"
+            } else {
+                "yt-dlp update lock: stale lock removed"
+            }
+        ),
+        Ok(false) => println!(
+            "{}",
+            if kr {
+                "yt-dlp update lock: 없음 또는 사용 중"
+            } else {
+                "yt-dlp update lock: absent or busy"
+            }
+        ),
+        Err(e) => {
+            ok = false;
+            eprintln!("yt-dlp update lock: {e}");
+        }
+    }
+
+    if block_on(tools::init(&cfg.tools)).is_none() {
+        ok = false;
+        eprintln!("ytt tools reset: failed to refresh tool selection");
+    }
+    if let Some(err) = tools::ytdlp_selection_error() {
+        ok = false;
+        eprintln!("yt-dlp selection: {err}");
+    }
+
+    if ok { 0 } else { 1 }
+}
+
+fn diagnose() -> i32 {
+    let cfg = config::Config::load();
+    i18n::set_language(cfg.effective_language());
+    let kr = i18n::is_korean();
+    if block_on(tools::init(&cfg.tools)).is_none() {
+        eprintln!("ytt tools diagnose: failed to refresh tool selection");
+        return 1;
+    }
+
+    let mut report = String::new();
+    push_report_line(
+        &mut report,
+        format!("ytm-tui {}", env!("CARGO_PKG_VERSION")),
+    );
+    push_report_line(&mut report, format!("target_os: {}", std::env::consts::OS));
+    push_report_line(
+        &mut report,
+        format!("target_arch: {}", std::env::consts::ARCH),
+    );
+    push_report_line(
+        &mut report,
+        format!(
+            "YTM_YTDLP: {}",
+            active_env_ytdlp_override().unwrap_or_else(|| "<unset>".to_owned())
+        ),
+    );
+    push_report_line(
+        &mut report,
+        format!(
+            "config ytdlp_path: {}",
+            cfg.tools
+                .ytdlp_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<unset>".to_owned())
+        ),
+    );
+    push_report_line(
+        &mut report,
+        format!("managed enabled: {}", cfg.tools.managed_enabled()),
+    );
+    if let Some(error) = tools::ytdlp_selection_error() {
+        push_report_line(&mut report, format!("selection error: {error}"));
+    }
+    match tools::ytdlp_selection() {
+        Some(sel) => {
+            push_report_line(
+                &mut report,
+                format!("selected source: {}", sel.source.label()),
+            );
+            push_report_line(
+                &mut report,
+                format!("selected path: {}", sel.path.display()),
+            );
+            push_report_line(
+                &mut report,
+                format!(
+                    "selected version: {}",
+                    sel.version.as_deref().unwrap_or("?")
+                ),
+            );
+            if let Some(pin) = sel.pin_for_mpv() {
+                push_report_line(&mut report, format!("mpv ytdl_path: {}", pin.display()));
+            }
+        }
+        None => push_report_line(&mut report, "selected: none"),
+    }
+
+    let state = tools::ytdlp::load_state();
+    push_report_line(
+        &mut report,
+        format!("managed metadata channel: {:?}", state.channel),
+    );
+    push_report_line(
+        &mut report,
+        format!(
+            "managed metadata version: {}",
+            state.version.as_deref().unwrap_or("?")
+        ),
+    );
+    push_report_line(
+        &mut report,
+        format!(
+            "managed metadata sha256: {}",
+            state.sha256.as_deref().unwrap_or("?")
+        ),
+    );
+    push_report_line(
+        &mut report,
+        format!(
+            "managed metadata file: mtime={} len={}",
+            state
+                .installed_mtime_unix
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".to_owned()),
+            state
+                .installed_len
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".to_owned())
+        ),
+    );
+    if let Some(path) = tools::ytdlp::installed_managed_path() {
+        push_report_line(&mut report, format!("managed path: {}", path.display()));
+        if let Some(actual) = inspect_ytdlp_path(&path) {
+            push_report_line(
+                &mut report,
+                format!("managed actual version: {}", actual.version),
+            );
+            push_report_line(
+                &mut report,
+                format!("managed actual sha256: {}", actual.sha256),
+            );
+            push_report_line(
+                &mut report,
+                format!(
+                    "managed actual file: mtime={} len={}",
+                    actual.mtime_unix, actual.len
+                ),
+            );
+        }
+    }
+
+    push_report_line(&mut report, "PATH candidates:");
+    for (idx, path) in deps::resolve_all_on_path("yt-dlp").iter().enumerate() {
+        let version = probe_ytdlp_path(path).unwrap_or_else(|| "?".to_owned());
+        push_report_line(
+            &mut report,
+            format!("  {}. {} · {}", idx + 1, version, path.display()),
+        );
+    }
+    push_report_line(&mut report, "JS runtimes:");
+    for probe in tools::js_runtime_diagnostics() {
+        push_report_line(
+            &mut report,
+            format!(
+                "  {} path={} version={} supported={} reason={}",
+                probe.runtime.label(),
+                probe.path.display(),
+                probe.version.as_deref().unwrap_or("?"),
+                probe.supported,
+                probe.reason.unwrap_or("")
+            ),
+        );
+    }
+
+    let Some(path) = diagnostic_path() else {
+        eprintln!("ytt tools diagnose: no cache directory on this platform");
+        return 1;
+    };
+    if let Some(dir) = path.parent()
+        && let Err(e) = crate::util::safe_fs::ensure_private_dir(dir)
+    {
+        eprintln!(
+            "ytt tools diagnose: failed to create {}: {e}",
+            dir.display()
+        );
+        return 1;
+    }
+    if let Err(e) = crate::util::safe_fs::write_private_atomic(&path, report.as_bytes()) {
+        eprintln!(
+            "ytt tools diagnose: failed to write {}: {e}",
+            path.display()
+        );
+        return 1;
+    }
+    println!(
+        "{} {}",
+        if kr {
+            "진단 파일:"
+        } else {
+            "diagnostic file:"
+        },
+        path.display()
+    );
+    0
+}
+
+fn push_report_line(out: &mut String, line: impl AsRef<str>) {
+    out.push_str(line.as_ref());
+    out.push('\n');
+}
+
+fn inspect_ytdlp_path(path: &Path) -> Option<tools::ytdlp::BinaryInspection> {
+    block_on(tools::ytdlp::inspect_binary(path)).and_then(Result::ok)
+}
+
+fn diagnostic_path() -> Option<PathBuf> {
+    let ts = tools::ytdlp::now_unix();
+    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| {
+        d.cache_dir()
+            .join("diagnostics")
+            .join(format!("tools-{ts}.txt"))
+    })
 }
 
 fn parse_use_target(raw: &str) -> Result<UseTarget, &'static str> {

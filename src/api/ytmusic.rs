@@ -1208,6 +1208,10 @@ fn parse_ytdlp_entry(source: SearchSource, e: &serde_json::Value) -> Option<Song
         .map(format::time)
         .unwrap_or_default();
     if source == SearchSource::Youtube {
+        if !super::is_youtube_video_id(&id) {
+            tracing::debug!(id = %id, title = %title, "skipping non-video YouTube search entry");
+            return None;
+        }
         return Some(Song::remote(id, title, artist, duration));
     }
     let url = e
@@ -1407,6 +1411,26 @@ mod tests {
                 .is_none()
             );
         }
+    }
+
+    #[test]
+    fn youtube_flat_search_skips_non_video_entries() {
+        let channel = serde_json::json!({
+            "id": "UCfLdIEPs1tYj4ieEdJnyNyw",
+            "title": "Lauv",
+            "uploader": "Lauv"
+        });
+        assert!(parse_ytdlp_entry(SearchSource::Youtube, &channel).is_none());
+
+        let video = serde_json::json!({
+            "id": "TAfHyXrULiM",
+            "title": "Paris in the Rain",
+            "uploader": "Lauv",
+            "duration": 198.0
+        });
+        let song = parse_ytdlp_entry(SearchSource::Youtube, &video).expect("video entry");
+        assert_eq!(song.youtube_id(), Some("TAfHyXrULiM"));
+        assert_eq!(song.duration, "3:18");
     }
 
     #[test]

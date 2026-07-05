@@ -1242,8 +1242,8 @@ impl App {
                 self.status.text = if self.consecutive_play_errors > MAX_CONSECUTIVE_PLAY_ERRORS {
                     if extraction {
                         t!(
-                            "Several tracks failed — yt-dlp may be outdated. Run `ytt tools update`, or check `ytt doctor`.",
-                            "여러 곡 재생 실패 — yt-dlp가 오래됐을 수 있어요. `ytt tools update` 또는 `ytt doctor`를 실행해 보세요."
+                            "Several tracks failed — run `ytt tools reset --playback`, then `ytt doctor --verbose` if it continues.",
+                            "여러 곡 재생 실패 — `ytt tools reset --playback` 실행 후 계속되면 `ytt doctor --verbose`를 확인하세요."
                         ).to_owned()
                     } else {
                         t!(
