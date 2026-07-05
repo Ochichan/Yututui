@@ -2678,7 +2678,7 @@ fn settings_cannot_enable_autoplay_while_repeat_on() {
     app.open_settings();
     {
         let s = app.settings.as_mut().unwrap();
-        s.tab = crate::settings::SettingsTab::Playback;
+        s.tab = crate::settings::SettingsTab::Ai;
         s.row = s
             .fields()
             .iter()
@@ -6855,19 +6855,19 @@ fn drag_on_seekbar_scrubs_continuously() {
     // Press on the bar arms the scrub and seeks (col 25 → 50 s).
     match app.update(Msg::MouseClick { col: 25, row: 5 }).as_slice() {
         [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 50.0).abs() < 1.0),
-        other => panic!("expected a SeekAbsolute from the press, got {other:?}"),
+        _ => panic!("expected a SeekAbsolute from the press"),
     }
     // Dragging to a new column seeks continuously — even off the bar's row (row ignored).
     match app.update(Msg::MouseDrag { col: 75, row: 9 }).as_slice() {
         [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 150.0).abs() < 1.0),
-        other => panic!("expected a SeekAbsolute from the drag, got {other:?}"),
+        _ => panic!("expected a SeekAbsolute from the drag"),
     }
     // Same cell → no duplicate seek (intra-cell dedupe).
     assert!(app.update(Msg::MouseDrag { col: 75, row: 9 }).is_empty());
     // Dragging past the right end pins near the maximum (clamped to width-1, like click-seek).
     match app.update(Msg::MouseDrag { col: 250, row: 5 }).as_slice() {
         [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 198.0).abs() < 1.0),
-        other => panic!("expected a clamped SeekAbsolute, got {other:?}"),
+        _ => panic!("expected a clamped SeekAbsolute"),
     }
     // Release ends the scrub; a later stray drag does nothing.
     app.update(Msg::MouseLeftUp);
