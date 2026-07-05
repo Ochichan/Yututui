@@ -41,7 +41,9 @@ impl App {
         songs
             .into_iter()
             .filter(|song| {
-                if song.is_local() {
+                // Local files are already on disk; radio stations are live streams, not
+                // downloadable tracks — neither belongs in a bulk fetch.
+                if song.is_local() || song.is_radio_station() {
                     return false;
                 }
                 if let Some(yt) = song.youtube_id()

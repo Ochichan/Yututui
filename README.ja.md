@@ -182,7 +182,8 @@ everywhere.png · themes.gif · animations.gif · retro.png · transfer.gif
 | `←` / `→` · `↑` / `↓` | シーク · 音量 |
 | `s` | 検索（`Tab` でカタログ選択） |
 | `l` / `c` | ライブラリ / キュー |
-| `f` / `d` | お気に入り / ダウンロード |
+| `f` / `d` | お気に入り / ダウンロード（ドラッグで複数選択して `d` → まとめて） |
+| `Shift+D` | リスト / プレイリスト全体をダウンロード |
 | `Shift+L` | 同期歌詞 |
 | `v` | MV オーバーレイ |
 | `Ctrl+R` | DJ Gem ストリーミング |
