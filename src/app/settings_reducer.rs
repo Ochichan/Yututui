@@ -821,6 +821,13 @@ impl App {
         };
         match field.kind() {
             FieldKind::Text => {
+                // The Gemini API key is a masked secret: activating it clears the buffer for a
+                // fresh key, so gate edit-mode entry behind an explicit confirmation (a stray
+                // Enter/click must not blank the saved key). The apply arm re-enters edit mode.
+                if field == Field::ApiKey {
+                    self.settings_request_confirm(SettingsConfirm::EditApiKey);
+                    return Vec::new();
+                }
                 let st = self.settings_mut();
                 if let Field::ThemeColor(role) = field {
                     st.draft.theme.ensure_override_for_edit(role);
@@ -1487,6 +1494,22 @@ impl App {
                 vec![Cmd::Transfer(
                     crate::transfer::actor::TransferCmd::Disconnect,
                 )]
+            }
+            SettingsConfirm::EditApiKey => {
+                // Confirmed: enter edit mode on the API-key row exactly as the (non-secret) text
+                // path would, including the secret-clear. The field cursor is still on `ApiKey`
+                // (the confirm is modal), so `settings_text_buf` targets `draft.gemini_api_key`.
+                // Clearing the masked buffer avoids blind append-corruption; the prior value is
+                // remembered in `secret_restore` so committing empty restores it (no accidental wipe).
+                let st = self.settings_mut();
+                st.secret_restore = Self::settings_text_buf(st).map(|buf| {
+                    let prev = buf.clone();
+                    buf.clear();
+                    prev
+                });
+                st.editing_text = true;
+                self.dirty = true;
+                Vec::new()
             }
         }
     }

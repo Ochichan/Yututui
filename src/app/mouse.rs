@@ -836,6 +836,8 @@ impl App {
             ScrollSurface::AiSuggestions => &self.bridges.ai_scroll,
             ScrollSurface::Settings => &self.bridges.settings_scroll,
             ScrollSurface::Queue => &self.queue_popup.scroll,
+            // Marquee-only surface with no scrollbar.
+            ScrollSurface::NowPlaying => return None,
         })
     }
 
@@ -848,6 +850,8 @@ impl App {
             ScrollSurface::AiSuggestions => self.ai.suggestions.len(),
             ScrollSurface::Settings => self.settings_field_display_len()?,
             ScrollSurface::Queue => self.queue.len(),
+            // Marquee-only surface with no scrollbar.
+            ScrollSurface::NowPlaying => return None,
         })
     }
 

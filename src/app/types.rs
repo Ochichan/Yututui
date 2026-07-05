@@ -549,6 +549,8 @@ pub enum ScrollSurface {
     AiSuggestions,
     Settings,
     Queue,
+    /// The radio "now playing" (지듣노) card's title line — marquee-only, no scrollbar.
+    NowPlaying,
 }
 
 /// Who authored a line in the DJ Gem chat transcript.

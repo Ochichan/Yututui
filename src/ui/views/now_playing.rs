@@ -11,7 +11,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{App, MouseTarget, NowPlayingOverlayState};
+use crate::app::{App, MouseTarget, NowPlayingOverlayState, ScrollSurface};
 use crate::keymap::{Action, KeyContext};
 use crate::t;
 use crate::theme::ThemeRole as R;
@@ -65,12 +65,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let ask_key =
         app.keymap
             .label_for_display(KeyContext::NowPlaying, Action::NowPlayingAskAi, retro);
+    // Empty heart until it's actually in the favorites; filled once saved. The fill is driven by
+    // real library state (not merely a resolved YouTube match), so pressing favorite flips ♡ → ♥.
     let fav_label = if overlay.resolving {
         t!("Saving…", "저장 중…").to_owned()
-    } else if overlay.resolved.is_some() {
+    } else if app.now_playing_is_favorited() {
         format!("{} ({fav_key})", t!("♥ Saved", "♥ 저장됨"))
     } else {
-        format!("{} ({fav_key})", t!("♥ Favorite", "♥ 즐겨찾기"))
+        format!("{} ({fav_key})", t!("♡ Favorite", "♡ 즐겨찾기"))
     };
     let ask_label = format!("{} ({ask_key})", t!("Tell me more", "더 알아보기"));
     let mut segs: Vec<Seg> = Vec::with_capacity(5);
@@ -133,8 +135,11 @@ fn draw_body(
                 Some(artist) => format!("{title} — {artist}"),
                 None => title.clone(),
             };
+            // Scroll a long "title — artist" so the whole thing is readable. `selected_marquee`
+            // runs with the animation masters OFF too, so a clipped title crawls regardless of
+            // the animation toggle; it returns the text unchanged when it already fits.
             vec![Line::from(Span::styled(
-                truncate_to_width(&headline, width),
+                crate::ui::anim::selected_marquee(app, ScrollSurface::NowPlaying, 0, &headline, width),
                 primary,
             ))]
         }

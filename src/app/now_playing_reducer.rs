@@ -109,6 +109,16 @@ impl App {
         )
     }
 
+    /// Whether the card's resolved track is actually in the music favorites right now — the
+    /// truth for the filled-vs-empty heart. Keyed off the live library (not `resolved.is_some()`,
+    /// which only means "we found the YouTube track"). `pub` — the overlay view mirrors it.
+    pub fn now_playing_is_favorited(&self) -> bool {
+        self.now_playing_overlay
+            .as_ref()
+            .and_then(|o| o.resolved.as_ref())
+            .is_some_and(|song| self.library.is_favorite(&song.video_id))
+    }
+
     /// Whether the card's "tell me more" action applies. Gated on DJ Gem being connected,
     /// so the button is hidden entirely when it isn't. `pub` — the overlay view mirrors it.
     pub fn now_playing_can_ask(&self) -> bool {

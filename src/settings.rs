@@ -394,6 +394,9 @@ pub enum SettingsConfirm {
     ClearRomanizedTitleCache,
     LastfmDisconnect,
     SpotifyDisconnect,
+    /// Guard entering edit mode on the masked Gemini API key: activating the row clears the
+    /// buffer for a fresh key, so a stray Enter/click would otherwise blank the saved key.
+    EditApiKey,
 }
 
 impl SettingsConfirm {
@@ -415,6 +418,7 @@ impl SettingsConfirm {
             SettingsConfirm::SpotifyDisconnect => {
                 t!(" Confirm Spotify disconnect ", " Spotify 연결 해제 확인 ")
             }
+            SettingsConfirm::EditApiKey => t!(" Edit API key ", " API 키 수정 확인 "),
         }
     }
 
@@ -448,6 +452,9 @@ impl SettingsConfirm {
             SettingsConfirm::SpotifyDisconnect => {
                 t!("Disconnect Spotify?", "Spotify 연결을 해제할까요?")
             }
+            SettingsConfirm::EditApiKey => {
+                t!("Edit the Gemini API key?", "Gemini API 키를 수정할까요?")
+            }
         }
     }
 
@@ -480,6 +487,10 @@ impl SettingsConfirm {
             SettingsConfirm::SpotifyDisconnect => t!(
                 "Removes the saved token; the Client ID stays configured.",
                 "저장된 토큰이 삭제됩니다. 클라이언트 ID는 유지돼요."
+            ),
+            SettingsConfirm::EditApiKey => t!(
+                "The field clears for a fresh key; leave it empty to keep the current one.",
+                "새 키 입력을 위해 칸이 비워져요. 비워두면 기존 키가 유지돼요."
             ),
         }
     }
