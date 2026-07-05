@@ -685,6 +685,32 @@ mod tests {
     }
 
     #[test]
+    fn resume_session_uses_already_restored_queue_before_history() {
+        let mut app = App::new(50);
+        app.library
+            .record_play(&Song::remote("history", "Old History", "A", "3:00"));
+        app.queue.set(
+            vec![
+                Song::remote("restored0", "Restored Zero", "B", "3:00"),
+                Song::remote("restored1", "Restored One", "C", "3:00"),
+            ],
+            1,
+        );
+
+        let (resp, cmds) = app.apply_remote(RemoteCommand::ResumeSession);
+
+        assert!(resp.ok);
+        assert_eq!(app.queue.current().unwrap().video_id, "restored1");
+        assert!(cmds.iter().any(|cmd| {
+            matches!(
+                cmd,
+                Cmd::Player(crate::player::PlayerCmd::Load(url))
+                    if url.contains("restored1") && !url.contains("history")
+            )
+        }));
+    }
+
+    #[test]
     fn resume_session_without_history_is_rejected() {
         let mut app = App::new(50);
         let (resp, cmds) = app.apply_remote(RemoteCommand::ResumeSession);

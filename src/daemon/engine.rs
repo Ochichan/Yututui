@@ -1116,7 +1116,7 @@ impl DaemonEngine {
                 }
             }
             MediaCommand::SetShuffle(on) => {
-                if self.queue.shuffle != on {
+                if !self.current_is_radio_stream() && self.queue.shuffle != on {
                     self.queue.set_shuffle(on);
                     self.config.shuffle = Some(on);
                     self.save_config("daemon shuffle setting");
@@ -1124,8 +1124,13 @@ impl DaemonEngine {
                 }
             }
             MediaCommand::SetRepeat(mode) => {
+                // Live-radio parity with the TUI: these UI slots are reinterpreted as live-sync
+                // controls, so OS widgets must not mutate shuffle/repeat while a station plays.
                 // Music-mode invariant: an OS widget can't enable repeat while streaming is on.
-                if self.queue.repeat != mode && !(mode.is_on() && self.streaming) {
+                if !self.current_is_radio_stream()
+                    && self.queue.repeat != mode
+                    && !(mode.is_on() && self.streaming)
+                {
                     self.queue.repeat = mode;
                     self.config.repeat = mode;
                     self.save_config("daemon repeat setting");
@@ -1195,6 +1200,12 @@ impl DaemonEngine {
                 .queue
                 .current()
                 .is_some_and(|song| !song.is_radio_station())
+    }
+
+    fn current_is_radio_stream(&self) -> bool {
+        self.queue
+            .current()
+            .is_some_and(|song| song.is_radio_station())
     }
 
     /// Like/dislike from the OS surface: same favorite/dislike bookkeeping the TUI's
@@ -1860,7 +1871,7 @@ impl DaemonEngine {
         let (handle, guard) = player::spawn(
             move |event| (emit)(event),
             data_dir(),
-            self.config.effective_cookies_file(),
+            self.config.existing_cookies_file(),
             self.config.effective_gapless(),
         )
         .await
@@ -2332,6 +2343,14 @@ mod tests {
         Song::remote(id, format!("title-{id}"), "artist".to_owned(), "3:00")
     }
 
+    fn radio_station(id: &str) -> Song {
+        let mut song = Song::remote(id, format!("station-{id}"), "", "");
+        song.playable = Some(crate::api::PlayableRef::RadioStream {
+            url: format!("https://radio.example/{id}.mp3"),
+        });
+        song
+    }
+
     fn engine_with_queue(ids: &[&str]) -> DaemonEngine {
         let mut queue = Queue::default();
         queue.set(ids.iter().map(|id| song(id)).collect(), 0);
@@ -2451,6 +2470,31 @@ mod tests {
             effects.as_slice(),
             [EngineEffect::StreamingFallback { seed_video_id, .. }] if seed_video_id == "seed"
         ));
+    }
+
+    #[tokio::test]
+    async fn media_shuffle_and_repeat_are_ignored_for_live_radio() {
+        let mut engine = engine_with_queue(&[]);
+        engine.queue.set(vec![radio_station("radio1")], 0);
+        engine.loaded_video_id = Some("radio1".to_owned());
+
+        let (shutdown, effects) = engine
+            .handle_media(crate::media::MediaCommand::SetShuffle(true))
+            .await;
+        assert!(!shutdown);
+        assert!(effects.is_empty());
+        assert!(!engine.queue.shuffle);
+        assert_eq!(engine.config.shuffle, None);
+
+        let (shutdown, effects) = engine
+            .handle_media(crate::media::MediaCommand::SetRepeat(
+                crate::queue::Repeat::All,
+            ))
+            .await;
+        assert!(!shutdown);
+        assert!(effects.is_empty());
+        assert_eq!(engine.queue.repeat, crate::queue::Repeat::Off);
+        assert_eq!(engine.config.repeat, crate::queue::Repeat::Off);
     }
 
     #[test]

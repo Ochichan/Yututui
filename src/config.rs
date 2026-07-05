@@ -776,6 +776,15 @@ impl Config {
         self.cookies_file.clone().or_else(default_cookies_file)
     }
 
+    /// A cookies file that can safely be handed to external tools (`mpv`/`yt-dlp`).
+    ///
+    /// The effective path may be a default export location that does not exist yet. Passing a
+    /// missing file makes yt-dlp fail instead of falling back to anonymous playback, so external
+    /// process spawns must use this helper rather than [`Self::effective_cookies_file`].
+    pub fn existing_cookies_file(&self) -> Option<PathBuf> {
+        self.effective_cookies_file().filter(|path| path.exists())
+    }
+
     /// The concrete directory downloads are saved to. Precedence: `YTM_DOWNLOAD_DIR`
     /// env override, then the configured `download_dir`, then `<user music dir>/ytm-tui`.
     /// The music folder resolves per-OS (`~/Music` on macOS, the Music known-folder on
@@ -1783,6 +1792,37 @@ mod tests {
             cfg.effective_cookies_file(),
             Some(PathBuf::from("/custom/cookies.txt"))
         );
+    }
+
+    #[test]
+    fn existing_cookies_file_requires_a_present_file() {
+        let missing = std::env::temp_dir().join(format!(
+            "ytm-tui-missing-cookies-{}-{}.txt",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_file(&missing);
+        let cfg = Config {
+            cookies_file: Some(missing),
+            ..Config::default()
+        };
+        assert_eq!(cfg.existing_cookies_file(), None);
+    }
+
+    #[test]
+    fn existing_cookies_file_keeps_a_present_file() {
+        let path = std::env::temp_dir().join(format!(
+            "ytm-tui-present-cookies-{}-{}.txt",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&path, "# Netscape HTTP Cookie File\n").unwrap();
+        let cfg = Config {
+            cookies_file: Some(path.clone()),
+            ..Config::default()
+        };
+        assert_eq!(cfg.existing_cookies_file(), Some(path.clone()));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

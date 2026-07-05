@@ -256,9 +256,7 @@ async fn run_session<F: Fn(GatewayEvent)>(
 
     // Commands queued while we were offline are stale on this fresh session — discard them,
     // EXCEPT sub/unsub, which fold into `desired` so the (re)subscribe below replays them.
-    while let Ok(env) = cmd_rx.try_recv() {
-        track_subscriptions(&env, desired);
-    }
+    drain_offline_envelopes(cmd_rx, desired);
 
     // Subscribe to `system` (so we notice owner shutdown even with no window open, and to
     // keep the session non-idle) plus every topic a window already declared. New sessions
@@ -428,6 +426,15 @@ fn track_subscriptions(env: &OutEnvelope, desired: &mut Vec<Topic>) {
             }
         }
         _ => {}
+    }
+}
+
+fn drain_offline_envelopes(
+    cmd_rx: &mut mpsc::UnboundedReceiver<OutEnvelope>,
+    desired: &mut Vec<Topic>,
+) {
+    while let Ok(env) = cmd_rx.try_recv() {
+        track_subscriptions(&env, desired);
     }
 }
 
@@ -607,6 +614,35 @@ mod translate_tests {
             &mut desired,
         );
         assert_eq!(desired, vec![Topic::Player, Topic::Settings]);
+    }
+
+    #[test]
+    fn offline_reconnect_drain_drops_commands_but_keeps_subscriptions() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tx.send(OutEnvelope {
+            v: 1,
+            id: None,
+            kind: OutKind::Cmd,
+            name: "next".to_string(),
+            payload: serde_json::Value::Null,
+        })
+        .unwrap();
+        tx.send(sub_env(
+            OutKind::Sub,
+            serde_json::json!(["player", "queue"]),
+        ))
+        .unwrap();
+        tx.send(sub_env(OutKind::Unsub, serde_json::json!(["queue"])))
+            .unwrap();
+
+        let mut desired = Vec::new();
+        drain_offline_envelopes(&mut rx, &mut desired);
+
+        assert_eq!(desired, vec![Topic::Player]);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]

@@ -594,7 +594,7 @@ async fn run(
     // Only hand mpv/yt-dlp a cookies file that actually exists: a configured/default
     // path that has not been exported yet would make yt-dlp error and break anonymous
     // playback.
-    let cookies_file = cfg.effective_cookies_file().filter(|p| p.exists());
+    let cookies_file = cfg.existing_cookies_file();
     let player_runtime = cfg.player_runtime(cookies_file.clone());
     let download_runtime = cfg.download_runtime(cookies_file.clone());
     let ai_runtime = cfg.ai_runtime();

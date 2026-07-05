@@ -188,6 +188,41 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    #[tokio::test]
+    async fn resolve_url_passes_cookie_file_to_ytdlp() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let args_log = dir.join("args.txt");
+        let cookies = dir.join("cookies.txt");
+        fs::write(&cookies, "# Netscape HTTP Cookie File\n").unwrap();
+        let fake = write_executable(
+            &dir,
+            "yt-dlp",
+            &format!(
+                "#!/bin/sh\nfor arg do printf '%s\\n' \"$arg\"; done > '{}'\nprintf '%s\\n' 'https://cdn.example/audio.m4a'\n",
+                args_log.display()
+            ),
+        );
+
+        let resolved = resolve_url_with_program(
+            fake.to_str().unwrap(),
+            "https://music.youtube.com/watch?v=abc123",
+            Some(cookies.as_path()),
+        )
+        .await;
+
+        assert_eq!(resolved.as_deref(), Some("https://cdn.example/audio.m4a"));
+        let args: Vec<String> = fs::read_to_string(&args_log)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let cookie_arg = cookies.to_string_lossy().into_owned();
+        assert!(args.iter().any(|arg| arg == "--cookies"));
+        assert!(args.iter().any(|arg| arg == &cookie_arg));
+        let _ = fs::remove_dir_all(dir);
+    }
+
     fn write_executable(dir: &std::path::Path, name: &str, contents: &str) -> PathBuf {
         let path = dir.join(name);
         fs::write(&path, contents).unwrap();

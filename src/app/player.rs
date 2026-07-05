@@ -138,7 +138,7 @@ impl App {
         cmds: &mut Vec<Cmd>,
     ) -> bool {
         let url = format!("https://www.youtube.com/watch?v={id}");
-        let cookies = self.config.cookies_file.clone();
+        let cookies = self.config.existing_cookies_file();
         self.video.generation = self.video.generation.wrapping_add(1);
         let generation = self.video.generation;
         let ipc_path = crate::player::mpv::video_ipc_path(generation)

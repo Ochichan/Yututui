@@ -299,6 +299,51 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn run_download_passes_cookie_file_to_ytdlp() {
+        let root = temp_dir("download-cookies");
+        let bin_dir = root.join("bin");
+        let download_dir = root.join("music");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let args_log = root.join("args.txt");
+        let cookies = root.join("cookies.txt");
+        fs::write(&cookies, "# Netscape HTTP Cookie File\n").unwrap();
+        let saved = download_dir.join("Track [abc123def45].m4a");
+        let fake = write_executable(
+            &bin_dir,
+            "yt-dlp",
+            &format!(
+                "#!/bin/sh\nfor arg do printf '%s\\n' \"$arg\"; done > '{}'\nprintf '%s\\n' '{}'\n",
+                args_log.display(),
+                saved.display()
+            ),
+        );
+
+        let emit: EventSink = Arc::new(|_| {});
+
+        run_download_with_program(
+            fake.to_str().unwrap(),
+            &Song::remote("abc123def45", "Track", "Artist", "3:12"),
+            &download_dir,
+            Some(cookies.as_path()),
+            &emit,
+        )
+        .await
+        .unwrap();
+
+        let args: Vec<String> = fs::read_to_string(&args_log)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let cookie_arg = cookies.to_string_lossy().into_owned();
+        assert!(args.iter().any(|arg| arg == "--cookies"));
+        assert!(args.iter().any(|arg| arg == &cookie_arg));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
     fn write_executable(dir: &Path, name: &str, contents: &str) -> PathBuf {
         let path = dir.join(name);
         fs::write(&path, contents).unwrap();

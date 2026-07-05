@@ -1240,6 +1240,36 @@ fn recorder_teardown_on_stop_drops_in_progress_and_clears_stream_record() {
 }
 
 #[test]
+fn media_stop_clears_radio_recording_and_video_pause_latch() {
+    let mut app = recording_app(crate::recorder::RecordingMode::Decide);
+    feed_title(&mut app, "A - One");
+    feed_title(&mut app, "B - Two");
+    backdate_current(&mut app, 60);
+    app.playback.paused = false;
+    app.video.paused_audio = true;
+
+    let cmds = app.update(Msg::Media(crate::media::MediaCommand::Stop));
+
+    assert!(app.playback.paused);
+    assert!(app.prefetch.loaded_video_id.is_none());
+    assert!(!app.video.paused_audio);
+    assert!(app.recorder.current.is_none());
+    assert!(!app.recorder.saw_first_title);
+    let clear_pos = cmds
+        .iter()
+        .position(|cmd| emits_stream_record_clear(std::slice::from_ref(cmd)))
+        .expect("stream-record cleared");
+    let stop_pos = cmds
+        .iter()
+        .position(|cmd| matches!(cmd, Cmd::Player(crate::player::PlayerCmd::Stop)))
+        .expect("mpv stop emitted");
+    assert!(
+        clear_pos < stop_pos,
+        "stream-record must clear before mpv stops"
+    );
+}
+
+#[test]
 fn recorder_off_mode_records_nothing() {
     let mut app = recording_app(crate::recorder::RecordingMode::Nothing);
     let cmds = feed_title(&mut app, "A - One");
@@ -1366,7 +1396,10 @@ fn recording_settings_popup_closed_by_navigation() {
             .expect("radio item present in radio mode");
     }
     let _ = app.settings_activate();
-    assert!(app.recording_settings.is_some(), "the button opens the popup");
+    assert!(
+        app.recording_settings.is_some(),
+        "the button opens the popup"
+    );
 
     // Navigating Home must drop the top-level overlay so it can't strand over the Player
     // (regression: it used to keep painting on top, unreachable).
@@ -2470,6 +2503,7 @@ fn settings_enqueue_next_toggle_persists_on_close() {
 
 #[test]
 fn radio_mode_nav_labels_player_as_radio_without_shifting_tabs() {
+    let _guard = crate::i18n::lock_for_test();
     let mut app = App::new(100);
 
     let normal = render_app_buffer(&app, 80, 24);
@@ -5403,10 +5437,11 @@ fn ai_create_and_play_playlist_roundtrip() {
     let mut app = App::new(100);
     let cmds = app.update(Msg::AiCreatePlaylist("Focus".to_owned()));
     assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
-    app.update(Msg::AiAddToPlaylist {
+    let cmds = app.update(Msg::AiAddToPlaylist {
         playlist: "Focus".to_owned(),
         songs: songs(2),
     });
+    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
     assert_eq!(app.playlists.find("Focus").unwrap().songs.len(), 2);
     let cmds = app.update(Msg::AiPlayPlaylist("Focus".to_owned()));
     assert_eq!(current(&app), "id0");
@@ -7644,6 +7679,7 @@ fn assert_centered_in(rect: Rect, container: Rect) {
 
 #[test]
 fn help_button_is_centered_on_footer_screens() {
+    let _guard = crate::i18n::lock_for_test();
     let inner = Rect {
         x: 1,
         y: 1,
@@ -8398,6 +8434,7 @@ fn clearing_halfblocks_art_under_overlay_does_not_request_native_clear() {
 
 #[test]
 fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
+    let _guard = crate::i18n::lock_for_test();
     let player_area = ratatui::layout::Rect::new(0, 0, 80, 20);
     let modal_area = ratatui::layout::Rect::new(0, 0, 80, 24);
 
@@ -9828,6 +9865,35 @@ fn native_album_art_is_hidden_while_zoomed() {
     assert!(app.art_active(), "art returns at scale 1");
 }
 
+#[test]
+fn retro_render_scrubs_cjk_metadata_without_unsupported_cells() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    let cfg = Config {
+        retro_mode: true,
+        ..Config::default()
+    };
+    app.apply_config(&cfg);
+    app.queue.set(
+        vec![Song::remote("cjk", "한글 제목 日本語", "가수 简体", "3:00")],
+        0,
+    );
+    app.load_song(app.queue.current().cloned());
+
+    let buf = render_app_buffer(&app, 80, 24);
+
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let cell = buf.cell((x, y)).expect("cell inside buffer");
+            assert!(
+                crate::ui::retro::retro_supported(cell.symbol()),
+                "unsupported retro cell at ({x},{y}): {:?}",
+                cell.symbol()
+            );
+        }
+    }
+}
+
 // Responsive layout under zoom / narrow grids ---------------------------------------
 
 /// Render the UI into a TestBackend of the given size and return the registered mouse
@@ -9894,6 +9960,47 @@ fn narrow_nav_arrows_navigate_on_click() {
         row: rect.y,
     });
     assert_eq!(app.mode, Mode::Search, "◀ pages to the previous screen");
+}
+
+#[test]
+fn korean_nav_hitbox_still_matches_zoomed_mouse_cells() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_playing(1, 0);
+
+    crate::i18n::set_language(crate::i18n::Language::Korean);
+    let (_, top) = render_at(&app, 100, 24);
+    assert!(
+        top.contains("검 색"),
+        "Korean nav label should render: {top:?}"
+    );
+    let rect = app
+        .bridges
+        .mouse_buttons
+        .borrow()
+        .iter()
+        .find(|b| b.target == MouseTarget::Nav(Mode::Search))
+        .map(|b| b.rect)
+        .expect("Korean Search tab registered");
+    crate::i18n::set_language(crate::i18n::Language::English);
+
+    let virtual_col = rect.x + rect.width / 2;
+    let virtual_row = rect.y;
+    let mut input = crate::event::Translator::default();
+    let msg = input
+        .translate(
+            crossterm::event::Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: virtual_col * 2 + 1,
+                row: virtual_row * 2 + 1,
+                modifiers: KeyModifiers::NONE,
+            }),
+            2,
+        )
+        .expect("mouse press translated");
+
+    app.update(msg);
+
+    assert_eq!(app.mode, Mode::Search);
 }
 
 #[test]

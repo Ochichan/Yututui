@@ -182,10 +182,7 @@ async fn run_actor(mut rx: mpsc::UnboundedReceiver<PersistMsg>, pending: SharedP
         tokio::select! {
             msg = rx.recv() => match msg {
                 Some(PersistMsg::Save(snapshot)) => {
-                    let kind = snapshot.kind();
-                    lock(&pending).insert(kind, snapshot);
-                    due.entry(kind)
-                        .or_insert_with(|| tokio::time::Instant::now() + debounce(kind));
+                    queue_pending_save(&pending, &mut due, snapshot);
                 }
                 Some(PersistMsg::DeleteRomanizedTitles) => {
                     lock(&pending).remove(&StoreKind::RomanizedTitles);
@@ -221,6 +218,17 @@ fn lock(pending: &SharedPending) -> std::sync::MutexGuard<'_, HashMap<StoreKind,
     // A panicking writer can't leave the map half-mutated in a harmful way (it's a
     // plain insert/remove), so recover from poisoning instead of propagating it.
     pending.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn queue_pending_save(
+    pending: &SharedPending,
+    due: &mut HashMap<StoreKind, tokio::time::Instant>,
+    snapshot: Snapshot,
+) {
+    let kind = snapshot.kind();
+    lock(pending).insert(kind, snapshot);
+    due.entry(kind)
+        .or_insert_with(|| tokio::time::Instant::now() + debounce(kind));
 }
 
 /// Write every store whose deadline has passed (`all: false`) or everything pending
@@ -304,6 +312,35 @@ mod tests {
 
         assert!(due.is_empty());
         assert!(lock(&pending).is_empty());
+    }
+
+    #[test]
+    fn queued_saves_are_latest_wins_without_extending_deadline() {
+        let pending: SharedPending = Arc::new(Mutex::new(HashMap::new()));
+        let mut due = HashMap::new();
+        let mut created = crate::playlists::Playlists::default();
+        created.create("Focus").expect("playlist created");
+        let mut added = created.clone();
+        assert_eq!(
+            added.add(
+                "Focus",
+                crate::api::Song::remote("id0", "Track", "Artist", "3:00")
+            ),
+            crate::playlists::AddResult::Added
+        );
+
+        queue_pending_save(&pending, &mut due, Snapshot::Playlists(created));
+        let first_due = due[&StoreKind::Playlists];
+        queue_pending_save(&pending, &mut due, Snapshot::Playlists(added));
+
+        assert_eq!(due[&StoreKind::Playlists], first_due);
+        let guard = lock(&pending);
+        let Snapshot::Playlists(playlists) = guard.get(&StoreKind::Playlists).unwrap() else {
+            panic!("expected playlists snapshot");
+        };
+        let focus = playlists.find("Focus").expect("focus playlist");
+        assert_eq!(focus.songs.len(), 1);
+        assert_eq!(focus.songs[0].video_id, "id0");
     }
 
     #[tokio::test]
