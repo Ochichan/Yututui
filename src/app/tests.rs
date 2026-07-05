@@ -4081,7 +4081,10 @@ fn editing_api_key_requires_confirmation() {
     app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(app.pending_settings_confirm.is_none());
     assert!(!app.settings.as_ref().unwrap().editing_text);
-    assert_eq!(app.settings.as_ref().unwrap().draft.gemini_api_key, "KEEPME");
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.gemini_api_key,
+        "KEEPME"
+    );
 
     // Ask again and confirm (Enter): now edit mode begins with a freshly cleared buffer.
     app.update(Msg::Key(key(KeyCode::Enter))); // request
