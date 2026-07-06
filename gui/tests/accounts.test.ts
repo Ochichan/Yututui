@@ -57,7 +57,7 @@ describe('AccountsStore', () => {
   it('opens the browser on an auth-url push', () => {
     const t = new MockTransport();
     const store = new AccountsStore(new Client(t));
-    const auth: AccountsAuthUrl = { kind: 'accounts_auth_url', service: 'lastfm', url: 'https://x/y' };
+    const auth: AccountsAuthUrl = { kind: 'accounts_auth_url', service: 'spotify', url: 'https://x/y' };
     t.emit({ v: 1, kind: 'event', topic: 'accounts', payload: auth });
     expect(t.last('win', 'openUrl').payload).toMatchObject({ url: 'https://x/y' });
     // Not a snapshot — the model is untouched by an auth-url frame.

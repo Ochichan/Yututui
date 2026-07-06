@@ -11,6 +11,8 @@
 use crate::deps::{self, Need};
 use crate::{config, i18n};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 /// Run the diagnostic, printing a report, and return the process exit code.
 pub fn run() -> i32 {
@@ -255,6 +257,9 @@ fn run_inner(verbose: bool) -> i32 {
             Some(found) => println!("  ✓ {clip_label} ({found})"),
             None => println!("  ✗ {clip_label} (wl-copy/xclip/xsel)"),
         }
+        if verbose {
+            print_linux_browser_verbose();
+        }
         println!();
     }
 
@@ -280,6 +285,120 @@ fn run_inner(verbose: bool) -> i32 {
         );
         1
     }
+}
+
+#[cfg(target_os = "linux")]
+fn print_linux_browser_verbose() {
+    println!("  browser diagnostics:");
+    print_path_probe("xdg-open");
+    print_path_probe("xdg-settings");
+    print_path_probe("xdg-mime");
+    print_path_probe("gio");
+    println!(
+        "    xdg-settings default-web-browser: {}",
+        command_stdout("xdg-settings", &["get", "default-web-browser"])
+    );
+    println!(
+        "    xdg-mime http handler: {}",
+        command_stdout("xdg-mime", &["query", "default", "x-scheme-handler/http"])
+    );
+    println!(
+        "    xdg-mime https handler: {}",
+        command_stdout("xdg-mime", &["query", "default", "x-scheme-handler/https"])
+    );
+    println!(
+        "    gio http handler: {}",
+        command_stdout("gio", &["mime", "x-scheme-handler/http"])
+    );
+    println!(
+        "    gio https handler: {}",
+        command_stdout("gio", &["mime", "x-scheme-handler/https"])
+    );
+    println!("    environment:");
+    for key in [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_CURRENT_DESKTOP",
+        "DESKTOP_SESSION",
+        "XDG_SESSION_TYPE",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_DATA_DIRS",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "BROWSER",
+        "SNAP",
+        "SNAP_NAME",
+        "FLATPAK_ID",
+        "WSL_DISTRO_NAME",
+        "WSL_INTEROP",
+    ] {
+        println!("      {key}: {}", env_value(key));
+    }
+    println!(
+        "    wsl detected: {}",
+        if linux_wsl_detected() { "yes" } else { "no" }
+    );
+    println!(
+        "    ytm-tui DesktopOpen preserves: DISPLAY, WAYLAND_DISPLAY, XAUTHORITY, \
+         XDG_RUNTIME_DIR, XDG_CONFIG_HOME, XDG_CACHE_HOME, XDG_DATA_HOME, \
+         DBUS_SESSION_BUS_ADDRESS, XDG_DATA_DIRS, XDG_CURRENT_DESKTOP, \
+         DESKTOP_SESSION, BROWSER"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn print_path_probe(bin: &str) {
+    match deps::resolve_on_path(bin) {
+        Some(path) => println!("    {bin}: {}", path.display()),
+        None => println!("    {bin}: missing"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn command_stdout(program: &str, args: &[&str]) -> String {
+    if !deps::on_path(program) {
+        return "missing".to_owned();
+    }
+    let mut cmd = crate::util::process::std_command(
+        program,
+        crate::util::process::ProcessProfile::DesktopOpen,
+    );
+    cmd.args(args);
+    match crate::util::process::std_output_limited(cmd, Duration::from_secs(2), 4096) {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            if text.is_empty() {
+                "(empty)".to_owned()
+            } else {
+                text
+            }
+        }
+        Ok(out) => format!("failed ({})", out.status),
+        Err(e) => format!("error: {e}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn env_value(key: &str) -> String {
+    std::env::var(key)
+        .map(|v| {
+            if v.is_empty() {
+                "(empty)".to_owned()
+            } else {
+                v
+            }
+        })
+        .unwrap_or_else(|_| "(unset)".to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wsl_detected() -> bool {
+    std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || std::env::var_os("WSL_INTEROP").is_some()
+        || std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .map(|s| s.to_ascii_lowercase().contains("microsoft"))
+            .unwrap_or(false)
 }
 
 /// The "Managed yt-dlp" section: whether the app-managed copy is enabled/installed,
