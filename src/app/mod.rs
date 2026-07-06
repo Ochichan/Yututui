@@ -55,6 +55,7 @@ mod library;
 mod library_reducer;
 mod media_reducer;
 mod mouse;
+pub use mouse::HitMap;
 mod now_playing;
 mod now_playing_reducer;
 mod player;
@@ -358,10 +359,15 @@ pub struct App {
     /// guard, and the update-check cooldown clock (see [`YtdlpHeal`]).
     heal: YtdlpHeal,
 
-    /// Render→reducer bridges: hit-test rects, the active list viewport height, the clickable
-    /// button map, and the per-list wheel-scroll offsets — all written by render (`&App`) for
-    /// the reducer to read on the next event (see [`RenderBridges`]).
+    /// Render→reducer bridges: the active list viewport height and the per-list wheel-scroll
+    /// offsets — all written by render (`&App`) for the reducer to read on the next event
+    /// (see [`RenderBridges`]).
     pub bridges: RenderBridges,
+
+    /// Last-rendered mouse hit map: the clickable button rects and the seekbar rect views
+    /// publish each frame, kept behind [`HitMap`]'s method API so the reducer and views never
+    /// touch the raw cells (extracted from [`RenderBridges`]).
+    pub hits: HitMap,
 
     /// Last whole second we redrew for, so sub-second `time-pos` spam is coalesced.
     last_shown_sec: i64,
@@ -497,6 +503,7 @@ impl App {
             prefetch: Prefetch::default(),
             heal: YtdlpHeal::default(),
             bridges: RenderBridges::default(),
+            hits: HitMap::default(),
             last_shown_sec: -1,
             last_shown_cache_sec: -1,
             radio_resync_at: None,

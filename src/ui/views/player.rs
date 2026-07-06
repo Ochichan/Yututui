@@ -170,7 +170,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     crate::ui::anim::seekbar_overlay(frame, app, rows[3], ratio);
     crate::ui::anim::seek_flash_overlay(frame, app, rows[3], ratio);
     // Publish the seekbar's screen rect so a mouse click can be hit-tested for seeking.
-    app.bridges.seekbar_rect.set(Some(rows[3]));
+    app.hits.set_seekbar_rect(rows[3]);
 
     // The transient volume-nudge gauge rides the strip's own `vol - 50% +` cells now (see
     // `render_controls`), so the blank row below stays blank.
@@ -689,14 +689,7 @@ fn render_dropdown(
     rows: &[(String, bool, MouseTarget)],
 ) {
     // Anchor under the label, whose hit rect the status line just published.
-    let Some(anchor) = app
-        .bridges
-        .mouse_buttons
-        .borrow()
-        .iter()
-        .find(|b| b.target == anchor_target)
-        .map(|b| b.rect)
-    else {
+    let Some(anchor) = app.hits.rect_of_target(anchor_target) else {
         return;
     };
 

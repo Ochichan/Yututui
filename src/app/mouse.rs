@@ -2,34 +2,97 @@
 
 use super::*;
 
-impl App {
-    pub fn clear_mouse_regions(&self) {
-        self.bridges.seekbar_rect.set(None);
-        self.bridges.mouse_buttons.borrow_mut().clear();
+/// The last-rendered mouse hit map: the clickable button rects views publish each frame plus
+/// the seekbar's screen rect. Kept behind a small method API so the reducer and views never
+/// touch the raw cells. Interior-mutable throughout because the render pass only holds `&App`
+/// yet must record this frame's geometry for the next event to hit-test against (extracted
+/// from [`RenderBridges`], behaviour-preserving).
+#[derive(Default)]
+pub struct HitMap {
+    /// Screen rect of the seekbar, written by the player view each render so a mouse click can
+    /// be hit-tested against it for seeking.
+    seekbar_rect: Cell<Option<Rect>>,
+    /// Clickable button rects written by views each render, in publish order.
+    buttons: RefCell<Vec<MouseButtonRegion>>,
+}
+
+impl HitMap {
+    /// Clear the whole map for a fresh frame: forget the seekbar rect and drop every registered
+    /// button (both are re-published by the render pass that follows).
+    pub fn clear(&self) {
+        self.seekbar_rect.set(None);
+        self.buttons.borrow_mut().clear();
     }
 
-    pub fn register_mouse_button(&self, rect: Rect, target: MouseTarget) {
+    /// Register one clickable region. Zero-size rects are dropped (they can never be hit).
+    pub fn register(&self, rect: Rect, target: MouseTarget) {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        self.bridges
-            .mouse_buttons
+        self.buttons
             .borrow_mut()
             .push(MouseButtonRegion { rect, target });
     }
 
-    pub(in crate::app) fn mouse_target_at(&self, col: u16, row: u16) -> Option<MouseTarget> {
-        self.mouse_region_at(col, row).map(|b| b.target)
-    }
-
-    pub(in crate::app) fn mouse_region_at(&self, col: u16, row: u16) -> Option<MouseButtonRegion> {
-        self.bridges
-            .mouse_buttons
+    /// The topmost region covering `(col, row)`, if any. Scans in reverse publish order so a
+    /// later-drawn button (drawn on top) wins over an earlier one beneath it.
+    pub fn region_at(&self, col: u16, row: u16) -> Option<MouseButtonRegion> {
+        self.buttons
             .borrow()
             .iter()
             .rev()
             .find(|b| rect_contains(b.rect, col, row))
             .copied()
+    }
+
+    /// The target of the topmost region covering `(col, row)`, if any.
+    pub fn target_at(&self, col: u16, row: u16) -> Option<MouseTarget> {
+        self.region_at(col, row).map(|b| b.target)
+    }
+
+    /// Screen rect of the first registered region whose target equals `target`, in publish
+    /// order. Used by the status-line dropdowns to anchor under their `eq:`/`streaming:` label.
+    pub fn rect_of_target(&self, target: MouseTarget) -> Option<Rect> {
+        self.buttons
+            .borrow()
+            .iter()
+            .find(|b| b.target == target)
+            .map(|b| b.rect)
+    }
+
+    /// The seekbar's last-rendered screen rect, if the player view published one.
+    pub fn seekbar_rect(&self) -> Option<Rect> {
+        self.seekbar_rect.get()
+    }
+
+    /// Record the seekbar's screen rect for the next event to hit-test against.
+    pub fn set_seekbar_rect(&self, r: Rect) {
+        self.seekbar_rect.set(Some(r));
+    }
+
+    /// Test-only view of the raw registered regions, so reducer tests can assert on the exact
+    /// published hit map.
+    #[cfg(test)]
+    pub(in crate::app) fn regions(&self) -> std::cell::Ref<'_, Vec<MouseButtonRegion>> {
+        self.buttons.borrow()
+    }
+}
+
+impl App {
+    pub fn clear_mouse_regions(&self) {
+        self.hits.clear();
+    }
+
+    pub fn register_mouse_button(&self, rect: Rect, target: MouseTarget) {
+        self.hits.register(rect, target);
+    }
+
+    pub(in crate::app) fn mouse_target_at(&self, col: u16, row: u16) -> Option<MouseTarget> {
+        self.hits.target_at(col, row)
+    }
+
+    pub(in crate::app) fn mouse_region_at(&self, col: u16, row: u16) -> Option<MouseButtonRegion> {
+        self.hits.region_at(col, row)
     }
 
     /// A left-click at `(col, row)`: buttons fire their mapped action; the player's
@@ -339,7 +402,7 @@ impl App {
         if self.mode != Mode::Player {
             return Vec::new();
         }
-        if let Some(area) = self.bridges.seekbar_rect.get()
+        if let Some(area) = self.hits.seekbar_rect()
             && let Some(dur) = self.playback.duration
             && dur > 0.0
             && area.width > 0
@@ -739,7 +802,7 @@ impl App {
         // Seekbar scrub: a press that landed on the bar seeks continuously as the pointer moves.
         // Keyed off the drag flag + x only (row is ignored — grab and drag anywhere horizontally).
         if self.seekbar_drag.is_some() && self.mode == Mode::Player && !self.queue_popup.open {
-            if let Some(area) = self.bridges.seekbar_rect.get()
+            if let Some(area) = self.hits.seekbar_rect()
                 && let Some(dur) = self.playback.duration
                 && dur > 0.0
                 && area.width > 0

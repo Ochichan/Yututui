@@ -438,14 +438,7 @@ fn render_dropdown(
     title: &str,
     rows: &[(String, bool, MouseTarget)],
 ) {
-    let Some(anchor) = app
-        .bridges
-        .mouse_buttons
-        .borrow()
-        .iter()
-        .find(|b| b.target == anchor_target)
-        .map(|b| b.rect)
-    else {
+    let Some(anchor) = app.hits.rect_of_target(anchor_target) else {
         return;
     };
 

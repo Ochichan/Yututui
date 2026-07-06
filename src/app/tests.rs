@@ -1078,9 +1078,8 @@ fn right_click_on_a_search_row_adds_it_to_the_queue() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let row1 = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .find(|b| b.target == MouseTarget::ListRow(1))
         .map(|b| b.rect)
@@ -2675,7 +2674,7 @@ fn radio_mode_nav_labels_player_as_radio_without_shifting_tabs() {
         normal_text.contains("Player"),
         "normal nav should show Player"
     );
-    let normal_buttons = app.bridges.mouse_buttons.borrow();
+    let normal_buttons = app.hits.regions();
     let normal_player = normal_buttons
         .iter()
         .find(|b| b.target == MouseTarget::Nav(Mode::Player))
@@ -2699,7 +2698,7 @@ fn radio_mode_nav_labels_player_as_radio_without_shifting_tabs() {
         radio_text.contains("Radio"),
         "Radio nav should replace Player"
     );
-    let radio_buttons = app.bridges.mouse_buttons.borrow();
+    let radio_buttons = app.hits.regions();
     let radio_player = radio_buttons
         .iter()
         .find(|b| b.target == MouseTarget::Nav(Mode::Player))
@@ -4775,9 +4774,8 @@ fn ai_transcript_scrolls_history_and_new_chat_snaps_to_latest() {
         "first render should show the newest chat"
     );
     let row = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .find_map(|b| match b.target {
             MouseTarget::AiTranscriptRow(_) => Some(b.rect),
@@ -4824,9 +4822,8 @@ fn dragging_ai_transcript_rows_copies_selection() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let rows: Vec<Rect> = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .filter_map(|b| match b.target {
             MouseTarget::AiTranscriptRow(_) => Some(b.rect),
@@ -4866,9 +4863,8 @@ fn ai_submit_button_matches_enter_submit() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let button = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .find(|b| b.target == MouseTarget::AiSubmit)
         .map(|b| b.rect)
@@ -4897,9 +4893,8 @@ fn ai_suggestion_rows_are_clickable_choices() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let row = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .find_map(|b| match b.target {
             MouseTarget::AiSuggestionRow(2) => Some(b.rect),
@@ -6987,9 +6982,8 @@ fn library_mouse_drag_selects_range_then_delete_removes_it() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let row_rect = |i: usize| {
-        app.bridges
-            .mouse_buttons
-            .borrow()
+        app.hits
+            .regions()
             .iter()
             .find(|b| b.target == MouseTarget::ListRow(i))
             .map(|b| b.rect)
@@ -7330,12 +7324,12 @@ fn skip_without_prefetch_falls_back_to_watch_url() {
 fn click_on_seekbar_seeks_to_fraction() {
     let mut app = app_playing(1, 0);
     app.playback.duration = Some(200.0);
-    app.bridges.seekbar_rect.set(Some(Rect {
+    app.hits.set_seekbar_rect(Rect {
         x: 0,
         y: 5,
         width: 100,
         height: 1,
-    }));
+    });
     // Column 50 of a 100-wide bar → 50% of 200 s → ~100 s.
     let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
     match cmds.as_slice() {
@@ -7348,12 +7342,12 @@ fn click_on_seekbar_seeks_to_fraction() {
 fn click_off_seekbar_is_ignored() {
     let mut app = app_playing(1, 0);
     app.playback.duration = Some(200.0);
-    app.bridges.seekbar_rect.set(Some(Rect {
+    app.hits.set_seekbar_rect(Rect {
         x: 0,
         y: 5,
         width: 100,
         height: 1,
-    }));
+    });
     assert!(app.update(Msg::MouseClick { col: 50, row: 9 }).is_empty()); // wrong row
     assert!(app.update(Msg::MouseClick { col: 200, row: 5 }).is_empty()); // past the bar
 }
@@ -7362,12 +7356,12 @@ fn click_off_seekbar_is_ignored() {
 fn click_does_nothing_outside_player_mode() {
     let mut app = app_playing(1, 0);
     app.playback.duration = Some(200.0);
-    app.bridges.seekbar_rect.set(Some(Rect {
+    app.hits.set_seekbar_rect(Rect {
         x: 0,
         y: 5,
         width: 100,
         height: 1,
-    }));
+    });
     app.mode = Mode::Search;
     assert!(app.update(Msg::MouseClick { col: 50, row: 5 }).is_empty());
 }
@@ -7376,12 +7370,12 @@ fn click_does_nothing_outside_player_mode() {
 fn drag_on_seekbar_scrubs_continuously() {
     let mut app = app_playing(1, 0);
     app.playback.duration = Some(200.0);
-    app.bridges.seekbar_rect.set(Some(Rect {
+    app.hits.set_seekbar_rect(Rect {
         x: 0,
         y: 5,
         width: 100,
         height: 1,
-    }));
+    });
     // Press on the bar arms the scrub and seeks (col 25 → 50 s).
     match app.update(Msg::MouseClick { col: 25, row: 5 }).as_slice() {
         [Cmd::Player(PlayerCmd::SeekAbsolute(t))] => assert!((*t - 50.0).abs() < 1.0),
@@ -7411,12 +7405,12 @@ fn drag_on_seekbar_scrubs_continuously() {
 fn drag_without_a_seekbar_press_does_not_seek() {
     let mut app = app_playing(1, 0);
     app.playback.duration = Some(200.0);
-    app.bridges.seekbar_rect.set(Some(Rect {
+    app.hits.set_seekbar_rect(Rect {
         x: 0,
         y: 5,
         width: 100,
         height: 1,
-    }));
+    });
     // No prior press on the bar → a bare drag must not seek.
     assert!(app.update(Msg::MouseDrag { col: 50, row: 5 }).is_empty());
 }
@@ -7631,7 +7625,7 @@ fn rendered_help_cluster(app: &App, width: u16, height: u16) -> Rect {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, app)).unwrap();
 
-    let buttons = app.bridges.mouse_buttons.borrow();
+    let buttons = app.hits.regions();
     let key = buttons
         .iter()
         .find(|b| b.target == MouseTarget::Global(Action::ToggleHelp))
@@ -7743,9 +7737,8 @@ fn dragging_library_scrollbar_moves_the_viewport() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let bar = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .find(|b| b.target == MouseTarget::Scrollbar(ScrollSurface::Library))
         .map(|b| b.rect)
@@ -7776,9 +7769,8 @@ fn dragging_search_scrollbar_moves_the_viewport() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let bar = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .find(|b| b.target == MouseTarget::Scrollbar(ScrollSurface::Search))
         .map(|b| b.rect)
@@ -7813,9 +7805,8 @@ fn ai_suggestions_scrollbar_renders_inside_borderless_list() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let bar = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .find(|b| b.target == MouseTarget::Scrollbar(ScrollSurface::AiSuggestions))
         .map(|b| b.rect)
@@ -7984,7 +7975,7 @@ fn rendering_player_registers_control_buttons() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
 
-    let buttons = app.bridges.mouse_buttons.borrow();
+    let buttons = app.hits.regions();
     assert!(
         buttons
             .iter()
@@ -8035,7 +8026,7 @@ fn rendering_player_registers_control_buttons() {
             .iter()
             .any(|b| b.target == MouseTarget::Player(Action::CycleRating))
     );
-    assert!(app.bridges.seekbar_rect.get().is_some());
+    assert!(app.hits.seekbar_rect().is_some());
 }
 
 #[test]
@@ -8049,12 +8040,7 @@ fn rendering_settings_registers_clickable_controls() {
         let backend = TestBackend::new(80, 32);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
-        app.bridges
-            .mouse_buttons
-            .borrow()
-            .iter()
-            .map(|b| b.target)
-            .collect()
+        app.hits.regions().iter().map(|b| b.target).collect()
     };
 
     // Graphics: a Toggle (RetroMode, field 0), a Select (ThemePreset, field 1), a Toggle
@@ -8120,9 +8106,8 @@ fn settings_control_hit_rects_land_on_their_glyphs() {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
         let rect = app
-            .bridges
-            .mouse_buttons
-            .borrow()
+            .hits
+            .regions()
             .iter()
             .find(|b| b.target == want)
             .map(|b| b.rect)
@@ -8176,7 +8161,7 @@ fn eq_dropdown_renders_preset_rows_when_open() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
 
-    let buttons = app.bridges.mouse_buttons.borrow();
+    let buttons = app.hits.regions();
     // One selectable row per built-in preset.
     for preset in crate::eq::EqPreset::CYCLE {
         assert!(
@@ -8244,12 +8229,12 @@ fn outside_click_dismisses_eq_dropdown_without_seeking() {
     let mut app = app_playing(1, 0);
     app.dropdowns.eq_open = true;
     app.playback.duration = Some(200.0);
-    app.bridges.seekbar_rect.set(Some(Rect {
+    app.hits.set_seekbar_rect(Rect {
         x: 0,
         y: 5,
         width: 100,
         height: 1,
-    }));
+    });
     // A click on the seekbar with the dropdown open just closes it (no seek emitted).
     let cmds = app.update(Msg::MouseClick { col: 50, row: 5 });
     assert!(!app.dropdowns.eq_open);
@@ -8961,9 +8946,8 @@ fn rendering_player_registers_streaming_menu_when_autoplay_on() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     assert!(
-        app.bridges
-            .mouse_buttons
-            .borrow()
+        app.hits
+            .regions()
             .iter()
             .any(|b| b.target == MouseTarget::StreamingMenu)
     );
@@ -8978,7 +8962,7 @@ fn streaming_dropdown_renders_mode_rows_when_open() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
 
-    let buttons = app.bridges.mouse_buttons.borrow();
+    let buttons = app.hits.regions();
     for mode in crate::streaming::StreamingMode::CYCLE {
         assert!(
             buttons
@@ -9073,18 +9057,16 @@ fn dropdown_popup_rect(
     mut is_row: impl FnMut(MouseTarget) -> bool,
 ) -> ratatui::layout::Rect {
     let rects: Vec<_> = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .filter_map(|b| is_row(b.target).then_some(b.rect))
         .collect();
     assert!(
         !rects.is_empty(),
         "dropdown row rects were not registered; targets: {:?}",
-        app.bridges
-            .mouse_buttons
-            .borrow()
+        app.hits
+            .regions()
             .iter()
             .map(|b| b.target)
             .collect::<Vec<_>>()
@@ -9148,9 +9130,8 @@ fn about_icon_rect(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
 
 /// The center cell of the hit rect registered for `target` in the last render.
 fn button_center(app: &App, target: MouseTarget) -> (u16, u16) {
-    app.bridges
-        .mouse_buttons
-        .borrow()
+    app.hits
+        .regions()
         .iter()
         .find(|b| b.target == target)
         .map(|b| (b.rect.x + b.rect.width / 2, b.rect.y + b.rect.height / 2))
@@ -9182,7 +9163,7 @@ fn every_screen_renders_the_nav_bar() {
         let mut app = app_playing(1, 0);
         app.navigate_to(mode);
         render_app(&app);
-        let buttons = app.bridges.mouse_buttons.borrow();
+        let buttons = app.hits.regions();
         for nav in [
             Mode::Player,
             Mode::Search,
@@ -10074,13 +10055,7 @@ fn render_at(app: &App, w: u16, h: u16) -> (Vec<MouseTarget>, String) {
         .map(|x| buf.cell((x, 0)).map(|c| c.symbol()).unwrap_or(" "))
         .collect::<Vec<_>>()
         .join("");
-    let targets = app
-        .bridges
-        .mouse_buttons
-        .borrow()
-        .iter()
-        .map(|b| b.target)
-        .collect();
+    let targets = app.hits.regions().iter().map(|b| b.target).collect();
     (targets, top)
 }
 
@@ -10115,9 +10090,8 @@ fn narrow_nav_arrows_navigate_on_click() {
 
     // Find the ◀ arrow's registered rect (the Nav(Search) target) and click it.
     let rect = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .find(|b| b.target == MouseTarget::Nav(Mode::Search))
         .map(|b| b.rect)
@@ -10141,9 +10115,8 @@ fn korean_nav_hitbox_still_matches_zoomed_mouse_cells() {
         "Korean nav label should render: {top:?}"
     );
     let rect = app
-        .bridges
-        .mouse_buttons
-        .borrow()
+        .hits
+        .regions()
         .iter()
         .find(|b| b.target == MouseTarget::Nav(Mode::Search))
         .map(|b| b.rect)

@@ -38,15 +38,9 @@ impl Default for AudioEq {
 /// back into the reducer is visible at a glance and never split across domains.
 #[derive(Default)]
 pub struct RenderBridges {
-    /// Screen rect of the seekbar, written by the player view each render so a mouse click can
-    /// be hit-tested against it. `Cell` because render only has `&App`.
-    pub seekbar_rect: Cell<Option<Rect>>,
     /// Viewport height (rows) of the active Library / Search list, written each render so
     /// PageUp/PageDown can move by a screenful. `Cell` because render only has `&App`.
     pub list_viewport_rows: Cell<u16>,
-    /// Clickable button rects written by views each render. `RefCell` because render only has
-    /// `&App`, but the reducer needs the last rendered hit map.
-    pub mouse_buttons: RefCell<Vec<MouseButtonRegion>>,
     /// Decoupled wheel-scroll offset for each browse list (see [`crate::ui::scroll`]). The mouse
     /// wheel moves these directly; the render pass nudges them to keep the keyboard selection
     /// on-screen with a margin. One per list so each keeps its own place.
