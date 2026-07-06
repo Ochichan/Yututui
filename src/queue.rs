@@ -188,6 +188,10 @@ impl Queue {
     pub fn restore_snapshot(&mut self, snapshot: QueueSnapshot) {
         self.bump_rev();
         self.songs = snapshot.songs;
+        // Enforce the same MAX cap every other mutation applies, so a corrupt/tampered session
+        // snapshot can't inject an unbounded queue. Over-cap truncation drops the tail; the
+        // permutation check below then rebuilds a clean play order for the trimmed songs.
+        self.songs.truncate(MAX);
         self.order = snapshot.order;
         self.shuffle = snapshot.shuffle;
         self.repeat = snapshot.repeat;
@@ -636,6 +640,26 @@ mod tests {
         let mut q = Queue::default();
         q.set(songs(MAX + 50), 0);
         assert_eq!(q.len(), MAX);
+    }
+
+    #[test]
+    fn restore_snapshot_enforces_the_cap() {
+        // A corrupt/tampered session snapshot with more than MAX songs must be trimmed on
+        // restore, matching the cap every other mutation applies (set/extend/insert) — so a
+        // hostile session cache can't inject an unbounded queue.
+        let over = MAX + 50;
+        let snapshot = QueueSnapshot {
+            songs: songs(over),
+            order: (0..over).collect(),
+            cursor: over - 1,
+            shuffle: false,
+            repeat: Repeat::Off,
+        };
+        let mut q = Queue::default();
+        q.restore_snapshot(snapshot);
+        assert_eq!(q.len(), MAX, "restore must enforce the MAX cap");
+        // A clean play order was rebuilt for the trimmed songs; the cursor stays in-bounds.
+        assert!(q.current().is_some());
     }
 
     #[test]

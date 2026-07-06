@@ -19,6 +19,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use crate::api::Song;
+use crate::library::Library;
+use crate::queue::Queue;
 use crate::signals::Signals;
 use crate::streaming::musicgate::GateAction;
 
@@ -27,6 +29,46 @@ pub use config::{CuratingMode, StreamingConfig, StreamingMode};
 pub use cooccurrence::Cooc;
 pub use pack::PackedCand;
 pub use score::{GateVerdict, classify_pool};
+
+/// The set of `video_id`s to exclude from an autoplay streaming top-up: everything already
+/// queued, the seed itself, and recently-played history within the mode's block horizon
+/// (old favourites may be allowed back per `allow_old_liked_repeats`). Extracted so the
+/// interactive App reducer and the headless daemon engine share ONE implementation and
+/// cannot drift on which repeats they admit. Radio-station pseudo-entries are never excluded.
+pub fn exclude_ids(
+    streaming: &StreamingConfig,
+    queue: &Queue,
+    library: &Library,
+    seed_video_id: &str,
+) -> Vec<String> {
+    let profile = streaming.mode.profile(streaming);
+    let mut ids: HashSet<String> = queue
+        .ordered_iter()
+        .filter(|song| !song.is_radio_station())
+        .map(|song| song.video_id.clone())
+        .collect();
+    ids.insert(seed_video_id.to_owned());
+    let favorite_ids: HashSet<&str> = library
+        .favorites
+        .iter()
+        .filter(|song| !song.is_radio_station())
+        .map(|s| s.video_id.as_str())
+        .collect();
+    for (idx, song) in library
+        .history
+        .iter()
+        .filter(|song| !song.is_radio_station())
+        .enumerate()
+    {
+        let inside_horizon = idx < profile.history_block_horizon;
+        let protected_old_favorite =
+            profile.allow_old_liked_repeats && favorite_ids.contains(song.video_id.as_str());
+        if inside_horizon || !protected_old_favorite {
+            ids.insert(song.video_id.clone());
+        }
+    }
+    ids.into_iter().collect()
+}
 
 /// The live station context the ranking reads: the seed, what was recently heard (for
 /// "already played" filtering, co-occurrence context, and cooldown), and the user's
@@ -396,6 +438,41 @@ pub fn pool_from_songs(songs: Vec<Song>, source: CandidateSource) -> Vec<Candida
         .enumerate()
         .map(|(rank, song)| Candidate::from_song(song, source, rank))
         .collect()
+}
+
+#[cfg(test)]
+mod exclude_ids_tests {
+    use super::*;
+    use crate::library::Library;
+    use crate::queue::Queue;
+    use std::collections::VecDeque;
+
+    fn song(id: &str) -> Song {
+        Song::remote(id, format!("t-{id}"), "artist", "3:00")
+    }
+
+    #[test]
+    fn exclude_ids_covers_queue_seed_and_recent_history() {
+        let mut queue = Queue::default();
+        queue.set(vec![song("q1"), song("q2")], 0);
+        let library = Library {
+            favorites: vec![song("fav")],
+            history: VecDeque::from(vec![song("h1"), song("h2")]),
+            ..Library::default()
+        };
+        let ids = exclude_ids(&StreamingConfig::default(), &queue, &library, "seed");
+        for expected in ["q1", "q2", "seed", "h1", "h2"] {
+            assert!(
+                ids.iter().any(|i| i == expected),
+                "missing {expected}: {ids:?}"
+            );
+        }
+        // The returned set is deduplicated.
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "ids must be unique");
+    }
 }
 
 #[cfg(test)]

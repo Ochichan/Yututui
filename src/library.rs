@@ -51,7 +51,10 @@ impl Library {
             return Library::default();
         };
         // Schema-drift tolerant: one changed field no longer discards saved tracks/history.
-        let mut lib = safe_fs::load_json_or_default::<Library>(&path);
+        // Size-capped like the sibling Playlists load: a corrupt/oversized library.json is set
+        // aside instead of being read wholesale into memory at startup.
+        const MAX_BYTES: u64 = 50 * 1024 * 1024;
+        let mut lib = safe_fs::load_json_or_default_limited::<Library>(&path, MAX_BYTES);
         lib.trim_to_caps();
         lib
     }

@@ -59,7 +59,7 @@ impl App {
                 (RemoteResponse::ok(self.vol_line()), cmds)
             }
             RemoteCommand::SetVolume { percent } => {
-                let volume = percent.clamp(0, 100);
+                let volume = percent.clamp(0, crate::playback_policy::VOLUME_MAX);
                 self.playback.volume = volume;
                 self.dirty = true;
                 (

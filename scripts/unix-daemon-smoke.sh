@@ -78,11 +78,11 @@ cleanup() {
     echo "unix daemon smoke failed; diagnostics from $work_root:" >&2
     find "$work_root" -maxdepth 5 -type f -print >&2
     local log_path
-    log_path="$(find "$work_root" -path '*/logs/daemon.log' -type f -print -quit 2>/dev/null)"
+    log_path="$(find "$work_root" -path '*/logs/daemon.log*' -type f -print -quit 2>/dev/null)"
     if [[ -n "$log_path" ]]; then
-      echo "--- daemon.log ---" >&2
+      echo "--- $(basename "$log_path") ---" >&2
       tail -200 "$log_path" >&2
-      echo "--- end daemon.log ---" >&2
+      echo "--- end $(basename "$log_path") ---" >&2
     fi
   fi
   "$ytt" daemon stop >/dev/null 2>&1
@@ -272,8 +272,8 @@ wait_until "remote previous" "$smoke_wait_seconds" status_title_is "Unix Smoke O
 "$ytt" daemon stop >/dev/null
 wait_until "daemon stop" "$smoke_wait_seconds" status_stopped
 
-if [[ ! -f "$cache_dir/logs/daemon.log" ]]; then
-  echo "daemon log was not created at $cache_dir/logs/daemon.log" >&2
+if ! find "$cache_dir/logs" -maxdepth 1 -name 'daemon.log*' -type f -print -quit >/dev/null 2>&1; then
+  echo "daemon log was not created under $cache_dir/logs" >&2
   exit 1
 fi
 

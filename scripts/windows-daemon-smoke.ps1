@@ -386,9 +386,11 @@ try {
         return $newMpv.Count -eq 0
     }
 
-    $daemonLog = Join-Path $cacheDir "logs\daemon.log"
-    if (-not (Test-Path -LiteralPath $daemonLog -PathType Leaf)) {
-        throw "daemon log was not created at $daemonLog"
+    $daemonLogDir = Join-Path $cacheDir "logs"
+    $daemonLog = Get-ChildItem -LiteralPath $daemonLogDir -Filter "daemon.log*" -File -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $daemonLog) {
+        throw "daemon log was not created under $daemonLogDir"
     }
 
     Write-Host "Windows daemon/tray smoke passed"

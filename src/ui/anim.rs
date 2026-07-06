@@ -485,7 +485,10 @@ pub fn smooth_seek_ratio(app: &App, base: f64) -> f64 {
         return base;
     }
     let live = pos + at.elapsed().as_secs_f64() * app.playback.speed.max(0.0);
-    (live / dur).clamp(0.0, 1.0)
+    // Defence-in-depth: a non-finite `live` (a stray NaN/inf position slipping past
+    // ingestion) would make `(live/dur).clamp(..)` stay NaN and panic ratatui's
+    // `Gauge::ratio`. Coalesce to 0 so the seekbar renders empty instead of crashing.
+    (crate::util::finite_or(live, 0.0) / dur).clamp(0.0, 1.0)
 }
 
 /// A bright ripple expanding from the seekbar head right after a seek, so the jump target is

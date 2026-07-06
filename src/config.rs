@@ -6,6 +6,7 @@
 //! (the platform music folder) is tried. The header form feeds ytmapi-rs; the file is
 //! also handed to mpv/yt-dlp so they own stream resolution (PO tokens, throttling).
 
+#[cfg(test)]
 use std::fs;
 use std::path::PathBuf;
 
@@ -31,6 +32,11 @@ pub const SPEED_MAX: f64 = 2.0;
 /// treated like an unreadable one and rebuilt rather than read wholesale into memory.
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
+/// Cap on the cookies file (`cookies.txt`) read for the `Cookie:` auth header. Real cookie
+/// jars are a few KB; this only rejects a pathological/hostile path before it's read wholesale
+/// into memory, and the read also refuses to follow a symlink.
+const MAX_COOKIE_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Clamp range for the seek step (seconds) used by the seek-back/-forward keys, exposed as
 /// a slider on the Playback settings tab. Default is 10s.
 pub const SEEK_SECONDS_MIN: f64 = 1.0;
@@ -49,7 +55,11 @@ pub fn clamp_speed(s: f64) -> f64 {
 
 /// Clamp/round a seek step to whole seconds within the supported range.
 pub fn clamp_seek_seconds(s: f64) -> f64 {
-    s.round().clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
+    // Mirror clamp_speed: coalesce a non-finite value before rounding/clamping, since
+    // `NaN.round().clamp(..)` stays NaN and would poison the seek step.
+    crate::util::finite_or(s, SEEK_SECONDS_DEFAULT)
+        .round()
+        .clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
 }
 
 /// Concurrent `yt-dlp`/ffmpeg downloads. Keep the default conservative because each download
@@ -769,7 +779,9 @@ impl Config {
             return Some(c.clone());
         }
         if let Some(file) = self.effective_cookies_file()
-            && let Ok(content) = fs::read_to_string(file)
+            && let Ok(bytes) =
+                crate::util::safe_fs::read_no_symlink_limited(&file, MAX_COOKIE_BYTES)
+            && let Ok(content) = String::from_utf8(bytes)
         {
             let header = parse_netscape_cookies(&content);
             if !header.is_empty() {
@@ -929,7 +941,11 @@ impl Config {
 
     /// The ten band gains to apply: the hand-tuned array if set, else the preset's.
     pub fn effective_eq_bands(&self) -> [f64; eq::BANDS] {
-        self.eq_bands.unwrap_or_else(|| self.eq_preset.gains())
+        // Clamp every band to a finite in-range gain so a corrupt/hand-edited config can't
+        // feed `g=NaN` into the mpv filter or a non-finite gain into the wire settings model
+        // (which would fail JSON serialization). A valid whole-dB gain is unchanged.
+        let bands = self.eq_bands.unwrap_or_else(|| self.eq_preset.gains());
+        std::array::from_fn(|i| eq::clamp_band(bands[i]))
     }
 
     /// Whether loudness normalization is on (default off).
@@ -939,14 +955,14 @@ impl Config {
 
     /// Playback speed, clamped to the supported range (default 1.0×).
     pub fn effective_speed(&self) -> f64 {
-        self.speed.unwrap_or(1.0).clamp(SPEED_MIN, SPEED_MAX)
+        // Route through the shared clamp so a non-finite / off-tenth persisted speed is
+        // normalized identically to every other speed path (finite guard + round + clamp).
+        clamp_speed(self.speed.unwrap_or(1.0))
     }
 
     /// Seek step in seconds, clamped to the supported range (default 10s).
     pub fn effective_seek_seconds(&self) -> f64 {
-        self.seek_seconds
-            .unwrap_or(SEEK_SECONDS_DEFAULT)
-            .clamp(SEEK_SECONDS_MIN, SEEK_SECONDS_MAX)
+        clamp_seek_seconds(self.seek_seconds.unwrap_or(SEEK_SECONDS_DEFAULT))
     }
 
     /// Whether the mouse wheel changes volume over the player volume cluster (default on).
@@ -1145,7 +1161,11 @@ fn old_config_path() -> Option<PathBuf> {
 /// Pull whatever we can reuse out of the old TypeScript app's config. Favorites,
 /// history and playlists are migrated later (M5) when the library view consumes them.
 fn import_old_from(path: &std::path::Path, cfg: &mut Config) {
-    let Ok(text) = fs::read_to_string(path) else {
+    // Legacy import: cap the read and refuse a symlink, like every other persisted-state read.
+    let Ok(bytes) = crate::util::safe_fs::read_no_symlink_limited(path, MAX_CONFIG_BYTES) else {
+        return;
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
         return;
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -1637,6 +1657,24 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(tiny.effective_seek_seconds(), SEEK_SECONDS_MIN);
+
+        // A non-finite / corrupt persisted value never escapes the effective_* accessors:
+        // it normalizes to a finite default instead of poisoning playback speed, the seek
+        // step, or the mpv EQ filter.
+        let corrupt = Config {
+            speed: Some(f64::NAN),
+            seek_seconds: Some(f64::INFINITY),
+            eq_bands: Some([f64::NAN; eq::BANDS]),
+            ..Config::default()
+        };
+        assert_eq!(corrupt.effective_speed(), 1.0, "NaN speed -> default 1.0");
+        assert_eq!(
+            corrupt.effective_seek_seconds(),
+            SEEK_SECONDS_DEFAULT,
+            "inf seek -> default"
+        );
+        assert!(corrupt.effective_eq_bands().iter().all(|g| g.is_finite()));
+        assert_eq!(corrupt.effective_eq_bands(), [0.0; eq::BANDS]);
 
         let wheel_off = Config {
             mouse_wheel_volume: Some(false),

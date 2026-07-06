@@ -19,7 +19,7 @@ use super::{EventSink, PlayerCmd, PlayerEvent};
 
 /// Upper bound on a single mpv IPC line. mpv's JSON events are well under a kilobyte; the
 /// cap only guards against a broken/hostile endpoint growing one line without limit.
-const MPV_IPC_MAX_LINE: usize = 1024 * 1024;
+pub(crate) const MPV_IPC_MAX_LINE: usize = 1024 * 1024;
 
 /// Connect to the mpv IPC endpoint, retrying for ~3s while mpv finishes starting up.
 pub async fn connect_retry(path: &str) -> io::Result<Stream> {

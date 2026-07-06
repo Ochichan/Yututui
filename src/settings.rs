@@ -19,9 +19,8 @@ use crate::streaming::{CuratingMode, StreamingMode};
 use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
 
-/// Per-band gain limits and keyboard step (dB), for the EQ sliders.
-pub const BAND_GAIN_MIN: f64 = -12.0;
-pub const BAND_GAIN_MAX: f64 = 12.0;
+/// Per-band gain keyboard step (dB) for the EQ sliders. The gain limits and the clamp
+/// live in [`crate::eq`] (re-exported below) so band semantics have a single home.
 pub const BAND_GAIN_STEP: f64 = 1.0;
 /// Playback-speed step for the settings slider (←/→).
 pub const SPEED_STEP: f64 = 0.1;
@@ -1236,15 +1235,12 @@ pub(crate) fn blank_to_none(s: &str) -> Option<String> {
     }
 }
 
-/// Clamp a band gain to range and round to a whole dB.
-pub fn clamp_band(g: f64) -> f64 {
-    g.clamp(BAND_GAIN_MIN, BAND_GAIN_MAX).round()
-}
-
-// Speed/seek clamps live in `config` — the single source both the TUI controls and the headless
-// daemon apply. Re-exported so existing `settings::clamp_speed` / `settings::clamp_seek_seconds`
+// Band gain limits + clamp live in `eq`; speed/seek clamps live in `config`. Each is the
+// single source both the TUI controls and the headless daemon apply. Re-exported so
+// existing `settings::clamp_band` / `settings::clamp_speed` / `settings::clamp_seek_seconds`
 // call sites keep resolving.
 pub use crate::config::{clamp_seek_seconds, clamp_speed};
+pub use crate::eq::{BAND_GAIN_MAX, BAND_GAIN_MIN, clamp_band};
 
 #[cfg(test)]
 mod tests {

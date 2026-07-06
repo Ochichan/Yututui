@@ -24,6 +24,21 @@ pub const HEADER: [&str; 7] = [
     "YouTube ID",
 ];
 
+/// Neutralize spreadsheet formula injection. A cell beginning with `= + - @` (or a leading
+/// tab/CR that some parsers fold into the next field) is executed as a formula by
+/// Excel/Sheets/LibreOffice, so a hostile track title like `=HYPERLINK(...)` sourced from
+/// YouTube Music would run when the user opens their export. Prefixing a single quote makes
+/// the cell literal text (spreadsheets strip the quote on display). Only user-controlled text
+/// fields (title/artist/album) need this; the numeric duration and id columns can't start
+/// with a trigger char.
+fn formula_safe(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        std::borrow::Cow::Owned(format!("'{s}"))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 /// Write YTM songs as CSV. Plain `std::fs` — exports are user documents, not private state.
 pub fn write_songs(path: &Path, songs: &[Song]) -> Result<()> {
     let mut writer =
@@ -35,11 +50,14 @@ pub fn write_songs(path: &Path, songs: &[Song]) -> Result<()> {
             .or_else(|| crate::streaming::candidate::parse_duration_secs(&song.duration))
             .map(|s| (u64::from(s) * 1000).to_string())
             .unwrap_or_default();
+        let title = formula_safe(&song.title);
+        let artist = formula_safe(&song.artist);
+        let album = formula_safe(song.album.as_deref().unwrap_or(""));
         writer.write_record([
             "", // Track URI: unknown on the YTM side
-            song.title.as_str(),
-            song.artist.as_str(),
-            song.album.as_deref().unwrap_or(""),
+            title.as_ref(),
+            artist.as_ref(),
+            album.as_ref(),
             duration_ms.as_str(),
             "", // ISRC: unknown on the YTM side
             song.youtube_id().unwrap_or(""),
@@ -106,6 +124,25 @@ pub fn read_tracks(path: &Path) -> Result<Vec<TrackInput>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formula_safe_neutralizes_leading_formula_chars() {
+        // Normal text is untouched.
+        assert_eq!(formula_safe("Normal Title").as_ref(), "Normal Title");
+        assert_eq!(formula_safe("").as_ref(), "");
+        assert_eq!(formula_safe("a=b").as_ref(), "a=b"); // trigger char not first
+        // A leading formula trigger is prefixed with a quote so a spreadsheet reads it as text.
+        for (input, expected) in [
+            ("=HYPERLINK(\"x\")", "'=HYPERLINK(\"x\")"),
+            ("+1", "'+1"),
+            ("-1", "'-1"),
+            ("@SUM(1)", "'@SUM(1)"),
+            ("\tfoo", "'\tfoo"),
+            ("\rfoo", "'\rfoo"),
+        ] {
+            assert_eq!(formula_safe(input).as_ref(), expected, "input {input:?}");
+        }
+    }
 
     fn temp_csv(name: &str) -> std::path::PathBuf {
         let mut bytes = [0u8; 6];

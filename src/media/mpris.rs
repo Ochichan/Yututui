@@ -35,12 +35,15 @@ pub const EAGER: bool = true;
 const BUS_SUFFIX: &str = "ytmtui";
 
 pub struct Backend {
-    tx: mpsc::UnboundedSender<(MediaSnapshot, MediaChanges)>,
+    tx: mpsc::Sender<(MediaSnapshot, MediaChanges)>,
 }
 
 impl Backend {
     pub fn new(sink: CommandSink) -> Result<Self> {
-        let (tx, rx) = mpsc::unbounded_channel();
+        // Bounded with a generous cap; the zbus server task drains it. A permanently stalled
+        // D-Bus consumer drops new snapshots (`try_send` in `apply`) instead of growing the
+        // queue without bound — snapshots are frequent, so the next one re-conveys state.
+        let (tx, rx) = mpsc::channel(256);
         tokio::spawn(run_server(rx, sink));
         Ok(Self { tx })
     }
@@ -48,14 +51,11 @@ impl Backend {
     pub fn apply(&mut self, snapshot: &MediaSnapshot, changes: MediaChanges) {
         // Dropping the Backend closes the channel; the server task then winds down
         // and releases the bus name (no ghost player in desktop widgets).
-        let _ = self.tx.send((snapshot.clone(), changes));
+        let _ = self.tx.try_send((snapshot.clone(), changes));
     }
 }
 
-async fn run_server(
-    mut rx: mpsc::UnboundedReceiver<(MediaSnapshot, MediaChanges)>,
-    sink: CommandSink,
-) {
+async fn run_server(mut rx: mpsc::Receiver<(MediaSnapshot, MediaChanges)>, sink: CommandSink) {
     let state = Arc::new(Mutex::new(MediaSnapshot::idle()));
     // Bus-name collision (a second instance) retries with a PID-qualified suffix,
     // as the MPRIS spec prescribes (spec L-2).

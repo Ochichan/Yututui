@@ -21,7 +21,7 @@ use std::time::Instant;
 pub use actor::{ScrobbleCmd, ScrobbleEvent, spawn};
 pub use monitor::{Observation, ObservedTrack};
 
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 /// Runtime snapshot the actor works from, resolved by
 /// [`crate::config::Config::scrobble_settings`] (embedded credentials + config overrides
@@ -114,7 +114,7 @@ impl Observation {
 /// heartbeat is due while playing — the actor sees ~1 Hz, the reducer path stays free of
 /// channel traffic.
 pub struct ScrobbleHandle {
-    tx: UnboundedSender<ScrobbleCmd>,
+    tx: Sender<ScrobbleCmd>,
     last_fingerprint: Option<Fingerprint>,
     last_sent: Option<Instant>,
 }
@@ -130,7 +130,7 @@ struct Fingerprint {
 }
 
 impl ScrobbleHandle {
-    pub(crate) fn new(tx: UnboundedSender<ScrobbleCmd>) -> Self {
+    pub(crate) fn new(tx: Sender<ScrobbleCmd>) -> Self {
         Self {
             tx,
             last_fingerprint: None,
@@ -154,23 +154,25 @@ impl ScrobbleHandle {
         if self.last_fingerprint.as_ref() != Some(&fingerprint) || (obs.playing && heartbeat_due) {
             self.last_fingerprint = Some(fingerprint);
             self.last_sent = Some(Instant::now());
-            let _ = self.tx.send(ScrobbleCmd::Observe(Box::new(obs)));
+            let _ = self.tx.try_send(ScrobbleCmd::Observe(Box::new(obs)));
         }
     }
 
     pub fn reconfigure(&self, settings: ScrobbleSettings) {
-        let _ = self.tx.send(ScrobbleCmd::Reconfigure(Box::new(settings)));
+        let _ = self
+            .tx
+            .try_send(ScrobbleCmd::Reconfigure(Box::new(settings)));
     }
 
     /// Kick the Last.fm browser authorization flow (events come back via the sink).
     pub fn auth_start(&self) {
-        let _ = self.tx.send(ScrobbleCmd::AuthStart);
+        let _ = self.tx.try_send(ScrobbleCmd::AuthStart);
     }
 
     /// Ask for a final best-effort queue flush; await the receiver (with a timeout) on quit.
     pub fn shutdown_flush(&self) -> tokio::sync::oneshot::Receiver<()> {
         let (done, rx) = tokio::sync::oneshot::channel();
-        let _ = self.tx.send(ScrobbleCmd::Shutdown { done });
+        let _ = self.tx.try_send(ScrobbleCmd::Shutdown { done });
         rx
     }
 }

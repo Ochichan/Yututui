@@ -125,7 +125,11 @@ impl App {
                 vec![self.save_playback_modes_cmd()]
             }
             MediaCommand::SetVolume(v) => {
-                let volume = (v.clamp(0.0, 1.0) * 100.0).round() as i64;
+                // A non-finite MPRIS Volume write is ignored rather than silently muting
+                // (`NaN.clamp(0,1)*100` rounds to 0). Shared 0..1→percent map with the daemon.
+                let Some(volume) = crate::playback_policy::volume_percent_from_unit(v) else {
+                    return Vec::new();
+                };
                 if volume == self.playback.volume {
                     return Vec::new();
                 }
@@ -450,6 +454,34 @@ mod tests {
         ] {
             assert!(app.update(Msg::Media(cmd)).is_empty());
         }
+    }
+
+    #[test]
+    fn set_volume_ignores_non_finite_and_clamps_range() {
+        let mut app = app_with_queue(1);
+        app.playback.volume = 50;
+        // A NaN/inf MPRIS Volume write must be ignored, not silently mute (the bug:
+        // `NaN.clamp(0,1)*100` rounds to 0).
+        assert!(
+            app.update(Msg::Media(MediaCommand::SetVolume(f64::NAN)))
+                .is_empty()
+        );
+        assert_eq!(app.playback.volume, 50, "NaN volume write must not mute");
+        assert!(
+            app.update(Msg::Media(MediaCommand::SetVolume(f64::INFINITY)))
+                .is_empty()
+        );
+        assert_eq!(app.playback.volume, 50);
+        // A valid unit maps to percent and emits the player command.
+        let cmds = app.update(Msg::Media(MediaCommand::SetVolume(0.3)));
+        assert_eq!(app.playback.volume, 30);
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, Cmd::Player(PlayerCmd::SetVolume(30))))
+        );
+        // A finite out-of-range unit clamps into the band rather than overflowing.
+        let _ = app.update(Msg::Media(MediaCommand::SetVolume(9.0)));
+        assert_eq!(app.playback.volume, 100);
     }
 
     #[test]

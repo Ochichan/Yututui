@@ -39,15 +39,15 @@ pub fn flag_supported(flag: &'static str) -> bool {
     if let Some(&supported) = cache.get(flag) {
         return supported;
     }
-    let supported =
-        process::std_command(&crate::tools::mpv_program(), process::ProcessProfile::Media)
-            .args(["--no-config", flag, "--version"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false);
+    // Route through the timeout-bounded runner so a wedged/hung mpv binary can't block this
+    // synchronous startup probe forever; a timeout (or any error) is treated as "unsupported".
+    let mut cmd =
+        process::std_command(&crate::tools::mpv_program(), process::ProcessProfile::Media);
+    cmd.args(["--no-config", flag, "--version"])
+        .stdin(Stdio::null());
+    let supported = process::std_output_limited(cmd, std::time::Duration::from_secs(5), 64 * 1024)
+        .map(|out| out.status.success())
+        .unwrap_or(false);
     cache.insert(flag, supported);
     supported
 }

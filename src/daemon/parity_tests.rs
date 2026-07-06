@@ -187,3 +187,48 @@ async fn status_snapshots_agree_too() {
     assert_eq!(app_snap.repeat, engine_snap.repeat);
     assert_eq!(app_snap.queue.len(), engine_snap.queue.len());
 }
+
+/// Autoplay's exclusion set is now one shared function (`streaming::exclude_ids`); both
+/// owners must project it identically for the same queue + library + streaming config. This
+/// locks each owner's wiring (passing its own config/queue/library) as a contract, on a
+/// player-path helper the B0 command script never reaches.
+#[test]
+fn streaming_exclude_ids_matches_across_owners() {
+    use crate::library::Library;
+    use std::collections::VecDeque;
+
+    let snap = seed_snapshot();
+    let library = Library {
+        // "a" is also in the seeded queue — it must appear once, from either source.
+        favorites: vec![song("fav1"), song("fav2")],
+        history: VecDeque::from(vec![song("h1"), song("a"), song("h2")]),
+        ..Library::default()
+    };
+
+    let mut engine = DaemonEngine::with_state(
+        EngineState {
+            config: Config::default(),
+            station: StationStore::default(),
+            library: library.clone(),
+            signals: Signals::default(),
+        },
+        Arc::new(|_event| {}),
+    );
+    engine.restore_queue_snapshot(snap.clone(), 20260703);
+
+    let mut app = App::new(Config::default().volume);
+    app.queue.restore_snapshot(snap);
+    app.library = library;
+
+    let mut app_ids = app.streaming_exclude_ids("seed-x");
+    let mut eng_ids = engine.streaming_exclude_ids("seed-x");
+    app_ids.sort();
+    eng_ids.sort();
+    assert_eq!(app_ids, eng_ids, "exclude sets diverged across owners");
+    assert!(app_ids.iter().any(|id| id == "seed-x"), "seed excluded");
+    assert!(app_ids.iter().any(|id| id == "a"), "queued track excluded");
+    assert!(
+        app_ids.iter().any(|id| id == "h1"),
+        "recent history excluded"
+    );
+}

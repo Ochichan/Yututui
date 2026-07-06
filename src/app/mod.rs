@@ -68,22 +68,16 @@ mod settings_reducer;
 mod stream_metadata;
 mod streaming_reducer;
 
-/// Queue length at or below which the autoplay/streaming hook tops up the queue.
-const AUTOPLAY_THRESHOLD: usize = 3;
-/// Number of related tracks to request from the non-DJ Gem streaming fallback.
-pub(crate) const STREAMING_FALLBACK_COUNT: usize = 8;
-/// Size of the raw candidate pool fetched for the local streaming engine to rank. Larger than
-/// the final pick count so scoring/diversity/cooldown have real choice.
-pub(crate) const STREAMING_POOL_COUNT: usize = 40;
-/// How many recent history artists feed the streaming cooldown window.
-const STREAMING_RECENT_ARTISTS: usize = 12;
+/// Autoplay/streaming top-up policy and the play-error breaker threshold — single-sourced
+/// with the headless daemon in [`crate::playback_policy`] so no bound can drift between the
+/// two playback owners. Re-exported so this module's submodules keep resolving the names.
+pub(crate) use crate::playback_policy::{
+    AUTOPLAY_COOLDOWN, AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, MAX_CONSECUTIVE_PLAY_ERRORS,
+    STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT, STREAMING_RECENT_ARTISTS,
+};
 /// How many ordered session outcomes (plays/skips/likes/dislikes) to retain for the DJ Gem
 /// reranker's recovery context. Small: the model only needs the recent arc.
 const SESSION_EVENTS_CAP: usize = 20;
-/// Minimum gap between autoplay top-up requests (avoids a request storm).
-const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
-/// Consecutive empty streaming extends before autoplay disables itself (circuit breaker).
-const AUTOPLAY_MAX_FAILURES: u8 = 3;
 /// How long a resolved DJ Gem rerank ordering stays replayable in [`StreamingRuntime::ai_cache`]. Short:
 /// it only needs to catch rapid identical refills (e.g. skipping through a few tracks) before the
 /// candidate pool drifts and a fresh call is warranted anyway.
@@ -106,19 +100,13 @@ const MOUSE_SCROLL_LINES: usize = 3;
 /// viewport height (e.g. in tests that never draw a frame).
 const DEFAULT_PAGE_ROWS: usize = 10;
 
-/// Percentage points changed per volume keypress.
-const VOLUME_STEP: i64 = 5;
-/// Highest volume the UI sets (mpv would allow more, but 100 is a sane v1 ceiling).
-const VOLUME_MAX: i64 = 100;
+/// Volume step / ceiling, single-sourced with the headless daemon in
+/// [`crate::playback_policy`] so the bound can't drift between the two owners.
+pub(crate) use crate::playback_policy::{VOLUME_MAX, VOLUME_STEP};
 /// Cap on cached prefetched stream URLs (bounded memory; we only look a step ahead).
 const RESOLVED_MAX: usize = 999;
 /// Cap on local download-folder rows held in memory.
 const DOWNLOADED_TRACKS_MAX: usize = 999;
-/// How many tracks in a row may fail before we stop auto-skipping and surface the error.
-/// A single unplayable track (expired URL, region/age-gated, throttled) shouldn't halt
-/// the session, but a systemic failure (offline, bad cookie) shouldn't skip-storm the
-/// whole queue either — so we skip a few, then stop and explain.
-const MAX_CONSECUTIVE_PLAY_ERRORS: u8 = 3;
 /// Playback-speed change per `>`/`<` press.
 const SPEED_STEP: f64 = 0.1;
 /// Idle gap (seconds) that ends a listening session, resetting the skip-confidence counter.
@@ -521,13 +509,13 @@ impl App {
         self.audio.seek_seconds = cfg.effective_seek_seconds();
         self.queue.set_shuffle(cfg.effective_shuffle());
         self.queue.repeat = cfg.effective_repeat();
-        self.autoplay_streaming = cfg.effective_autoplay_streaming();
-        // Music-mode invariant: a legacy or hand-edited config can carry both flags on. There is
-        // no interactive action to refuse here, so break the tie by dropping streaming and keeping
-        // the (more deliberate) repeat setting.
-        if self.autoplay_streaming && self.queue.repeat.is_on() {
-            self.autoplay_streaming = false;
-        }
+        // Music-mode invariant (single-sourced with the daemon): streaming and repeat can't
+        // both be on; a legacy/hand-edited config carrying both drops streaming, keeping the
+        // more deliberate repeat. `self.queue.repeat` was just set from the same config above.
+        self.autoplay_streaming = crate::playback_policy::streaming_enabled_with_repeat(
+            cfg.effective_autoplay_streaming(),
+            self.queue.repeat,
+        );
         self.ai.available = cfg.effective_ai_key().is_some();
         self.ai.model = cfg.effective_gemini_model();
         self.keymap = KeyMap::from_config(cfg);
@@ -1066,6 +1054,9 @@ impl App {
                 self.dirty = true;
             }
             Msg::PlayerTimePos(t) => {
+                // Normalize at the mpv trust boundary: a NaN/inf/negative time-pos must not
+                // reach the interpolation clock, the OS media session, or the seekbar gauge.
+                let t = crate::playback_policy::norm_position(t);
                 self.playback.time_pos = Some(t);
                 self.playback.time_pos_at = Some(Instant::now());
                 // Real progress means the current track opened and is playing, so the
@@ -1082,10 +1073,11 @@ impl App {
                 }
             }
             Msg::PlayerDuration(d) => {
-                self.playback.duration = Some(d);
+                self.playback.duration = Some(crate::playback_policy::norm_duration(d));
                 self.dirty = true;
             }
             Msg::PlayerCacheTime(t) => {
+                let t = t.map(crate::playback_policy::norm_position);
                 let had = self.playback.cache_time.is_some();
                 self.playback.cache_time = t;
                 self.playback.cache_time_at = t.map(|_| Instant::now());
@@ -1115,9 +1107,13 @@ impl App {
                 self.dirty = true;
             }
             Msg::PlayerVolume(v) => {
-                self.playback.volume = v.round() as i64;
-                self.dirty = true;
-                tracing::info!(volume = self.playback.volume, "volume");
+                // A non-finite report is ignored (leave the current level) rather than
+                // muting (`NaN.round() as i64` == 0) or storing a garbage level.
+                if let Some(volume) = crate::playback_policy::norm_volume_event(v) {
+                    self.playback.volume = volume;
+                    self.dirty = true;
+                    tracing::info!(volume = self.playback.volume, "volume");
+                }
             }
             Msg::PlayerMetadata(metadata) => {
                 let parsed = self.queue.current().cloned().and_then(|song| {
@@ -1198,6 +1194,11 @@ impl App {
                         .is_none_or(|at| at.elapsed() >= crate::tools::HEAL_COOLDOWN)
                 {
                     let video_id = song.video_id.clone();
+                    // Bound the per-track guard set: after enough distinct healed tracks in one
+                    // long session, reset it (a re-heal is at worst one wasted retry).
+                    if self.heal.attempted.len() >= crate::playback_policy::HEAL_ATTEMPTED_MAX {
+                        self.heal.attempted.clear();
+                    }
                     self.heal.attempted.insert(video_id.clone());
                     self.heal.last_check = Some(Instant::now());
                     self.heal.pending_video_id = Some(video_id.clone());

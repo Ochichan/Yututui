@@ -220,7 +220,7 @@ impl RemoteSessionHub {
     fn unregister(&self, id: u64) {
         self.sessions
             .lock()
-            .expect("session registry poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&id);
     }
 
@@ -229,7 +229,7 @@ impl RemoteSessionHub {
     pub(crate) fn any_subscribed(&self, topic: Topic) -> bool {
         self.sessions
             .lock()
-            .expect("session registry poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .any(|handle| handle.subscribed(topic))
     }
@@ -320,7 +320,7 @@ impl RemoteSessionHub {
     fn active(&self) -> usize {
         self.sessions
             .lock()
-            .expect("session registry poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .len()
     }
 }
@@ -522,7 +522,10 @@ pub(crate) async fn run_session(
                 None
             }
             ClientOp::Unsubscribe { topics } => {
-                let mut subs = handle.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+                let mut subs = handle
+                    .subscriptions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 for topic in topics {
                     subs.remove(&topic);
                 }

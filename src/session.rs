@@ -95,7 +95,11 @@ impl SessionCache {
     }
 
     fn load_from_path(path: &Path) -> Self {
-        let cache = safe_fs::load_json_or_default::<SessionCache>(path);
+        // A corrupt/duplicated/synced multi-GB session.json is set aside (never slurped into
+        // memory at startup), mirroring the size-capped config load; the queue snapshot it
+        // holds is itself capped on restore.
+        const MAX_BYTES: u64 = 32 * 1024 * 1024;
+        let cache = safe_fs::load_json_or_default_limited::<SessionCache>(path, MAX_BYTES);
         if cache.schema_version != SESSION_SCHEMA_VERSION
             || cache.app_version != env!("CARGO_PKG_VERSION")
         {

@@ -25,6 +25,11 @@ use crate::util::{http, sanitize};
 
 /// Per-request transport retries (does not include the first attempt).
 const MAX_RETRIES: u32 = 3;
+/// Upper bound on how long a `Retry-After` (or backoff) sleep may park the single-threaded
+/// AI actor. A server (or hostile proxy) can send an arbitrarily large `Retry-After` (e.g.
+/// 3600 on a daily-quota reset); without this cap that value would wedge the actor — and
+/// every command queued behind it — for as long as the header dictates.
+const RETRY_AFTER_CAP_SECS: u64 = 60;
 /// Cap on error-body text kept in messages/logs.
 const ERR_BODY_CAP: usize = 200;
 const RESPONSE_BODY_MAX: usize = 4 * 1024 * 1024;
@@ -421,7 +426,11 @@ impl GeminiClient {
                             if attempt >= MAX_RETRIES {
                                 return Err(GeminiError::RateLimited);
                             }
-                            let secs = retry_after.unwrap_or_else(|| 1u64 << attempt); // 1/2/4
+                            // Cap the server-controlled wait so a huge Retry-After can't wedge
+                            // the actor; after MAX_RETRIES we return RateLimited regardless.
+                            let secs = retry_after
+                                .unwrap_or_else(|| 1u64 << attempt) // 1/2/4
+                                .min(RETRY_AFTER_CAP_SECS);
                             sleep(Duration::from_secs(secs)).await;
                         }
                         500..=599 => {

@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::util::finite_or;
+
 /// Number of EQ bands.
 pub const BANDS: usize = 10;
 
@@ -18,6 +20,21 @@ pub const BAND_FREQS: [u32; BANDS] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8
 /// the filter chain and as the `af-command` target for a live single-band edit.
 pub fn band_label(i: usize) -> String {
     format!("eq{i}")
+}
+
+/// Per-band gain limits (dB) — the single source the TUI EQ sliders and the headless
+/// daemon's band clamp both apply.
+pub const BAND_GAIN_MIN: f64 = -12.0;
+pub const BAND_GAIN_MAX: f64 = 12.0;
+
+/// Clamp a band gain to the supported dB range and round to a whole dB, coalescing a
+/// non-finite value to flat. A stray NaN/inf (corrupt or hand-edited config) would
+/// otherwise format as `g=NaN` in [`build_af_string`] and make mpv reject the entire `af`
+/// chain (all EQ silently lost); a finite whole-dB gain is returned unchanged.
+pub fn clamp_band(g: f64) -> f64 {
+    finite_or(g, 0.0)
+        .clamp(BAND_GAIN_MIN, BAND_GAIN_MAX)
+        .round()
 }
 
 /// Built-in equalizer presets. Each non-`Custom` variant maps to a fixed set of ten band
@@ -88,6 +105,10 @@ impl EqPreset {
 /// When *any* band is non-zero, *all ten* labeled bands are emitted (even the flat ones)
 /// so every `@eqN` label exists and the settings screen can later `af-command` it.
 pub fn build_af_string(bands: &[f64; BANDS], normalize: bool) -> Option<String> {
+    // Clamp every gain to a finite in-range whole dB before it reaches mpv, so no band
+    // source (persisted config, a live settings draft, a remote write) can emit `g=NaN` /
+    // `g=inf` and make mpv reject the chain. A valid whole-dB gain is unchanged.
+    let bands: [f64; BANDS] = std::array::from_fn(|i| clamp_band(bands[i]));
     let mut filters: Vec<String> = Vec::new();
     if normalize {
         filters.push("dynaudnorm".to_owned());
@@ -154,6 +175,34 @@ mod tests {
         assert_eq!(EqPreset::Jazz.cycled(), EqPreset::Flat);
         // Custom isn't in the cycle; it folds back to Flat's successor.
         assert_eq!(EqPreset::Custom.cycled(), EqPreset::BassBoost);
+    }
+
+    #[test]
+    fn clamp_band_guards_non_finite_and_range() {
+        assert_eq!(clamp_band(5.0), 5.0);
+        // Finite out-of-range clamps to the band limits.
+        assert_eq!(clamp_band(99.0), BAND_GAIN_MAX);
+        assert_eq!(clamp_band(-99.0), BAND_GAIN_MIN);
+        // Non-finite (NaN or ±inf) coalesces to flat/neutral — never a boost.
+        assert_eq!(clamp_band(f64::NAN), 0.0);
+        assert_eq!(clamp_band(f64::INFINITY), 0.0);
+        assert_eq!(clamp_band(f64::NEG_INFINITY), 0.0);
+    }
+
+    #[test]
+    fn build_af_string_never_emits_non_finite_gain() {
+        let mut bands = [0.0; BANDS];
+        bands[0] = f64::NAN; // corrupt/hand-edited persisted gain
+        bands[3] = 200.0; // out of range
+        let af = build_af_string(&bands, false).unwrap();
+        assert!(!af.contains("NaN"), "must never emit g=NaN: {af}");
+        assert!(!af.contains("inf"), "must never emit g=inf: {af}");
+        // band 0's NaN clamps to flat; band 3's 200 clamps to the max.
+        assert!(af.contains("f=31:width_type=o:width=2:g=0"), "{af}");
+        assert!(
+            af.contains(&format!("f=250:width_type=o:width=2:g={BAND_GAIN_MAX}")),
+            "{af}"
+        );
     }
 
     #[test]

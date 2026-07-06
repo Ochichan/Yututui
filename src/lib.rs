@@ -26,6 +26,7 @@ pub mod lyrics;
 pub mod media;
 pub mod notify;
 pub mod persist;
+pub mod playback_policy;
 pub mod player;
 pub mod playlists;
 pub mod queue;

@@ -14,8 +14,17 @@ pub fn init(dir: &Path) -> Option<WorkerGuard> {
 
 /// Initialise the global tracing subscriber, writing `file_name` into `dir`.
 /// Level is controlled by `RUST_LOG` (defaults to `info`). Returns the flush guard.
+///
+/// Rotates daily and keeps the 7 most recent files (`<file_name>.<date>`), so a
+/// long-running install's log can't grow without bound (the previous single `never` file
+/// did). A build error (unwritable dir) yields `None`, same as a failed subscriber init.
 pub fn init_named(dir: &Path, file_name: &str) -> Option<WorkerGuard> {
-    let appender = tracing_appender::rolling::never(dir, file_name);
+    let appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix(file_name)
+        .max_log_files(7)
+        .build(dir)
+        .ok()?;
     let (writer, guard) = tracing_appender::non_blocking(appender);
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));

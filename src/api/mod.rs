@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
@@ -507,7 +507,7 @@ pub struct GuiSearchGroup {
 
 /// Handle for issuing API requests; results return as [`ApiEvent`]s.
 pub struct ApiHandle {
-    tx: UnboundedSender<ApiCmd>,
+    tx: Sender<ApiCmd>,
 }
 
 impl ApiHandle {
@@ -518,7 +518,7 @@ impl ApiHandle {
         source: SearchSource,
         config: SearchConfig,
     ) {
-        let _ = self.tx.send(ApiCmd::Search {
+        let _ = self.tx.try_send(ApiCmd::Search {
             request_id,
             query: query.into(),
             source,
@@ -533,7 +533,7 @@ impl ApiHandle {
         source: SearchSource,
         config: SearchConfig,
     ) {
-        let _ = self.tx.send(ApiCmd::GuiSearch {
+        let _ = self.tx.try_send(ApiCmd::GuiSearch {
             ticket,
             query: query.into(),
             source,
@@ -550,7 +550,7 @@ impl ApiHandle {
         mode: StreamingMode,
         config: SearchConfig,
     ) {
-        let _ = self.tx.send(ApiCmd::Streaming {
+        let _ = self.tx.try_send(ApiCmd::Streaming {
             seed: seed.into(),
             seed_video_id: seed_video_id.into(),
             exclude_ids,
@@ -568,7 +568,7 @@ impl ApiHandle {
         mode: StreamingMode,
         config: StreamingConfig,
     ) {
-        let _ = self.tx.send(ApiCmd::StreamingPreflight {
+        let _ = self.tx.try_send(ApiCmd::StreamingPreflight {
             seed_video_id: seed_video_id.into(),
             picks,
             fallback,
@@ -578,7 +578,7 @@ impl ApiHandle {
     }
 
     pub fn resolve_track(&self, seq: u64, query: impl Into<String>, config: SearchConfig) {
-        let _ = self.tx.send(ApiCmd::ResolveTrack {
+        let _ = self.tx.try_send(ApiCmd::ResolveTrack {
             seq,
             query: query.into(),
             config,
@@ -586,7 +586,7 @@ impl ApiHandle {
     }
 
     pub fn search_playlists(&self, request_id: u64, query: impl Into<String>) {
-        let _ = self.tx.send(ApiCmd::SearchPlaylists {
+        let _ = self.tx.try_send(ApiCmd::SearchPlaylists {
             request_id,
             query: query.into(),
         });
@@ -598,7 +598,7 @@ impl ApiHandle {
         title: impl Into<String>,
         intent: PlaylistIntent,
     ) {
-        let _ = self.tx.send(ApiCmd::PlaylistTracks {
+        let _ = self.tx.try_send(ApiCmd::PlaylistTracks {
             playlist_id: playlist_id.into(),
             title: title.into(),
             intent,
@@ -616,7 +616,10 @@ where
     F: Fn(ApiEvent) + Send + Sync + 'static,
 {
     let had_cookie = cookie.is_some();
-    let (tx, rx) = mpsc::unbounded_channel();
+    // Bounded with a generous cap; the human-rate UI producer never fills it in normal use,
+    // but a stalled network + command burst drops new commands (`try_send`) rather than
+    // growing the inbox without bound.
+    let (tx, rx) = mpsc::channel(512);
     tokio::spawn(async move {
         let (api, mode) = init_api(cookie).await;
         emit(ApiEvent::ModeResolved { mode, had_cookie });
@@ -681,7 +684,7 @@ async fn init_api(cookie: Option<String>) -> (ytmusic::YtMusicApi, ApiMode) {
     (api, mode)
 }
 
-async fn run_actor<F>(api: ytmusic::YtMusicApi, mut rx: UnboundedReceiver<ApiCmd>, emit: F)
+async fn run_actor<F>(api: ytmusic::YtMusicApi, mut rx: Receiver<ApiCmd>, emit: F)
 where
     F: Fn(ApiEvent) + Send + Sync + 'static,
 {

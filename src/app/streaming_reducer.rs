@@ -472,37 +472,15 @@ impl App {
         }
     }
 
-    pub(in crate::app) fn streaming_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
-        let profile = self.config.streaming.mode.profile(&self.config.streaming);
-        let mut ids: HashSet<String> = self
-            .queue
-            .ordered_iter()
-            .filter(|song| !song.is_radio_station())
-            .map(|song| song.video_id.clone())
-            .collect();
-        ids.insert(seed_video_id.to_owned());
-        let favorite_ids: HashSet<&str> = self
-            .library
-            .favorites
-            .iter()
-            .filter(|song| !song.is_radio_station())
-            .map(|s| s.video_id.as_str())
-            .collect();
-        for (idx, song) in self
-            .library
-            .history
-            .iter()
-            .filter(|song| !song.is_radio_station())
-            .enumerate()
-        {
-            let inside_horizon = idx < profile.history_block_horizon;
-            let protected_old_favorite =
-                profile.allow_old_liked_repeats && favorite_ids.contains(song.video_id.as_str());
-            if inside_horizon || !protected_old_favorite {
-                ids.insert(song.video_id.clone());
-            }
-        }
-        ids.into_iter().collect()
+    pub(crate) fn streaming_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
+        // Shared with the headless daemon engine — one implementation, so the two owners
+        // can never drift on which already-heard/queued tracks a top-up excludes.
+        crate::streaming::exclude_ids(
+            &self.config.streaming,
+            &self.queue,
+            &self.library,
+            seed_video_id,
+        )
     }
 
     /// Rank a raw candidate pool (from the anonymous related-tracks search) through the local

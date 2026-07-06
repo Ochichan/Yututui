@@ -16,6 +16,11 @@ use super::{API_BASE, BODY_MAX};
 use crate::util::http::json_limited;
 use crate::util::sanitize::sanitize_error_text;
 
+/// Hard ceiling on paginated fetches. Far above any real Spotify library (20k pages × 50–100
+/// items = 1–2M entries), it exists only to bound a buggy or hostile `next` link that would
+/// otherwise loop forever and grow the result Vec without limit.
+const MAX_PAGES: u32 = 20_000;
+
 /// Minimum interval between calls (gentle, well under any documented limit).
 const PACE: Duration = Duration::from_millis(250);
 /// A single 429 wait is capped here (a bigger Retry-After aborts resumably)…
@@ -130,12 +135,21 @@ impl SpotifyClient {
     pub async fn my_playlists(&mut self) -> Result<Vec<SpotifyPlaylist>, SpotifyError> {
         let mut out = Vec::new();
         let mut url = format!("{API_BASE}/me/playlists?limit=50");
+        let mut pages = 0u32;
         loop {
+            pages += 1;
             let page: Paging<RawPlaylist> =
                 self.request_json(reqwest::Method::GET, url, None).await?;
             out.extend(page.items.into_iter().map(SpotifyPlaylist::from));
             match page.next {
-                Some(next) => url = next,
+                Some(next) if pages < MAX_PAGES => url = next,
+                Some(_) => {
+                    tracing::warn!(
+                        pages,
+                        "Spotify my-playlists pagination hit the page ceiling; result truncated"
+                    );
+                    return Ok(out);
+                }
                 None => return Ok(out),
             }
         }
@@ -171,14 +185,23 @@ impl SpotifyClient {
         let mut url = format!("{API_BASE}/playlists/{id}/items?limit=100&fields={fields}");
         let mut out = Vec::new();
         let mut seen = 0u32;
+        let mut pages = 0u32;
         loop {
+            pages += 1;
             let page: Paging<RawTrackItem> =
                 self.request_json(reqwest::Method::GET, url, None).await?;
             seen += page.items.len() as u32;
             out.extend(page.items.iter().filter_map(simplify));
             on_page(seen.min(page.total.max(seen)), page.total);
             match page.next {
-                Some(next) => url = next,
+                Some(next) if pages < MAX_PAGES => url = next,
+                Some(_) => {
+                    tracing::warn!(
+                        pages,
+                        "Spotify playlist pagination hit the page ceiling; result truncated"
+                    );
+                    return Ok(out);
+                }
                 None => return Ok(out),
             }
         }
@@ -193,14 +216,23 @@ impl SpotifyClient {
         let mut url = format!("{API_BASE}/me/tracks?limit=50");
         let mut out = Vec::new();
         let mut seen = 0u32;
+        let mut pages = 0u32;
         loop {
+            pages += 1;
             let page: Paging<RawTrackItem> =
                 self.request_json(reqwest::Method::GET, url, None).await?;
             seen += page.items.len() as u32;
             out.extend(page.items.iter().filter_map(simplify));
             on_page(seen.min(page.total.max(seen)), page.total);
             match page.next {
-                Some(next) => url = next,
+                Some(next) if pages < MAX_PAGES => url = next,
+                Some(_) => {
+                    tracing::warn!(
+                        pages,
+                        "Spotify liked-tracks pagination hit the page ceiling; result truncated"
+                    );
+                    return Ok(out);
+                }
                 None => return Ok(out),
             }
         }

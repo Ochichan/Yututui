@@ -18,9 +18,9 @@ use interprocess::local_socket::tokio::Listener;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::{GenericFilePath, ListenerOptions};
+use tokio::io::AsyncWriteExt;
 #[cfg(test)]
 use tokio::io::BufReader;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 

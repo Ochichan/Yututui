@@ -113,13 +113,12 @@ fn serve_art(key: &str, art: impl Fn(&str) -> Option<PathBuf>) -> Served {
     let Some(path) = art(key) else {
         return Served::not_found();
     };
-    let Ok(meta) = std::fs::metadata(&path) else {
-        return Served::not_found();
-    };
-    if !meta.is_file() || meta.len() > MAX_ART_BYTES {
-        return Served::not_found();
-    }
-    let Ok(bytes) = std::fs::read(&path) else {
+    // One no-symlink, size-bounded read closes the metadata-then-read TOCTOU (and the
+    // symlink-follow) a check-then-open pair left open: the file can't change identity or
+    // size between the check and the read, an oversized file is rejected before it's slurped
+    // into memory, and a symlinked art path is refused. Non-regular / too-large / symlink all
+    // surface as an error → not_found.
+    let Ok(bytes) = crate::util::safe_fs::read_no_symlink_limited(&path, MAX_ART_BYTES) else {
         return Served::not_found();
     };
     let mime = sniff_image(&bytes);

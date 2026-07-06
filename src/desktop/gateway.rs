@@ -18,7 +18,7 @@ use std::time::Duration;
 use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
@@ -88,7 +88,7 @@ pub enum GatewayEvent {
 /// session down.
 pub struct GatewayHandle {
     shutdown: Option<oneshot::Sender<()>>,
-    commands: mpsc::UnboundedSender<OutEnvelope>,
+    commands: mpsc::Sender<OutEnvelope>,
 }
 
 impl GatewayHandle {
@@ -102,7 +102,7 @@ impl GatewayHandle {
     /// commands are dropped when the session next (re)connects, so a send while offline is a
     /// harmless no-op rather than a stale replay.
     pub fn send(&self, env: OutEnvelope) {
-        let _ = self.commands.send(env);
+        let _ = self.commands.try_send(env);
     }
 }
 
@@ -122,7 +122,9 @@ where
     F: Fn(GatewayEvent) + Send + 'static,
 {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    // Bounded with a generous cap; a webview that floods commands while the session is stalled
+    // drops new envelopes (`try_send`) rather than growing the queue without bound.
+    let (cmd_tx, cmd_rx) = mpsc::channel(512);
     let builder = std::thread::Builder::new().name("ytt-desktop-gateway".to_string());
     if let Err(e) = builder.spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread()
@@ -147,7 +149,7 @@ where
 async fn run<F: Fn(GatewayEvent)>(
     emit: F,
     mut shutdown_rx: oneshot::Receiver<()>,
-    mut cmd_rx: mpsc::UnboundedReceiver<OutEnvelope>,
+    mut cmd_rx: mpsc::Receiver<OutEnvelope>,
 ) {
     let mut backoff = BACKOFF_MIN;
     // The union of topics any window asked for, kept ACROSS sessions. Subscriptions are
@@ -243,7 +245,7 @@ async fn connect_and_hello(instance: InstanceFile) -> Result<(Stream, HelloAck),
 async fn run_session<F: Fn(GatewayEvent)>(
     conn: Stream,
     shutdown_rx: &mut oneshot::Receiver<()>,
-    cmd_rx: &mut mpsc::UnboundedReceiver<OutEnvelope>,
+    cmd_rx: &mut mpsc::Receiver<OutEnvelope>,
     desired: &mut Vec<Topic>,
     emit: &F,
 ) -> String {
@@ -429,10 +431,7 @@ fn track_subscriptions(env: &OutEnvelope, desired: &mut Vec<Topic>) {
     }
 }
 
-fn drain_offline_envelopes(
-    cmd_rx: &mut mpsc::UnboundedReceiver<OutEnvelope>,
-    desired: &mut Vec<Topic>,
-) {
+fn drain_offline_envelopes(cmd_rx: &mut mpsc::Receiver<OutEnvelope>, desired: &mut Vec<Topic>) {
     while let Ok(env) = cmd_rx.try_recv() {
         track_subscriptions(&env, desired);
     }
@@ -469,10 +468,24 @@ async fn write_line<T: serde::Serialize>(conn: &Stream, value: &T) -> io::Result
     w.flush().await
 }
 
-async fn read_line<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> io::Result<Option<String>> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line).await?;
-    Ok((n != 0).then_some(line))
+/// Session-frame cap for the v8 gateway protocol, matching the remote server's
+/// `SESSION_MAX_FRAME_BYTES`. A peer that never sends a newline (or sends a giant frame) is
+/// torn down instead of growing the buffer until the desktop process OOMs.
+const GATEWAY_MAX_FRAME_BYTES: usize = 256 * 1024;
+
+async fn read_line<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Option<String>> {
+    use crate::util::io::{BoundedLine, read_bounded_line};
+    let mut buf: Vec<u8> = Vec::new();
+    match read_bounded_line(reader, &mut buf, GATEWAY_MAX_FRAME_BYTES).await? {
+        BoundedLine::Eof if buf.is_empty() => Ok(None),
+        BoundedLine::Line | BoundedLine::Eof => {
+            Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+        }
+        BoundedLine::TooLarge => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "gateway frame exceeded cap",
+        )),
+    }
 }
 
 // Envelope→frame translation is platform-agnostic, so these run on every target (the socket
@@ -618,8 +631,8 @@ mod translate_tests {
 
     #[test]
     fn offline_reconnect_drain_drops_commands_but_keeps_subscriptions() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        tx.send(OutEnvelope {
+        let (tx, mut rx) = mpsc::channel(8);
+        tx.try_send(OutEnvelope {
             v: 1,
             id: None,
             kind: OutKind::Cmd,
@@ -627,12 +640,12 @@ mod translate_tests {
             payload: serde_json::Value::Null,
         })
         .unwrap();
-        tx.send(sub_env(
+        tx.try_send(sub_env(
             OutKind::Sub,
             serde_json::json!(["player", "queue"]),
         ))
         .unwrap();
-        tx.send(sub_env(OutKind::Unsub, serde_json::json!(["queue"])))
+        tx.try_send(sub_env(OutKind::Unsub, serde_json::json!(["queue"])))
             .unwrap();
 
         let mut desired = Vec::new();
@@ -688,6 +701,7 @@ mod tests {
     use super::*;
     use interprocess::local_socket::ListenerOptions;
     use interprocess::local_socket::tokio::Listener;
+    use tokio::io::AsyncBufReadExt;
 
     fn test_instance(endpoint: String, token: &str) -> InstanceFile {
         InstanceFile {

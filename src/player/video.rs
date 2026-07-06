@@ -6,7 +6,7 @@
 //! `eof-reached` to `true`, leaving a live window we can `loadfile` the next video into.
 //! A user quit (`q` / window close) still arrives as `end-file reason=quit`.
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::time::{Duration, sleep};
 
@@ -94,7 +94,7 @@ async fn run<F>(
     }
 
     let mut reader = BufReader::new(&conn);
-    let mut line = String::new();
+    let mut line: Vec<u8> = Vec::new();
     let mut request_id: u64 = 10;
     // One Eof per ended file: `eof-reached` re-arms the latch when it flips back to
     // false after a load, and the latch also swallows a duplicate `end-file reason=eof`.
@@ -103,10 +103,17 @@ async fn run<F>(
     loop {
         line.clear();
         tokio::select! {
-            read = reader.read_line(&mut line) => match read {
-                Ok(0) | Err(_) => break, // mpv closed the connection
-                Ok(_) => {
-                    if let Some(event) = interpret(&line, &mut eof_latched) {
+            // Bounded read (shared cap with the audio actor): a broken or hostile overlay
+            // endpoint can't grow `line` without limit before a newline arrives.
+            read = crate::util::io::read_bounded_line(&mut reader, &mut line, super::ipc::MPV_IPC_MAX_LINE) => match read {
+                Ok(crate::util::io::BoundedLine::Eof) | Err(_) => break, // mpv closed / transport error
+                Ok(crate::util::io::BoundedLine::TooLarge) => {
+                    tracing::warn!("mpv video overlay IPC line exceeded cap; closing");
+                    break;
+                }
+                Ok(crate::util::io::BoundedLine::Line) => {
+                    let text = String::from_utf8_lossy(&line);
+                    if let Some(event) = interpret(&text, &mut eof_latched) {
                         emit(generation, event);
                     }
                 }

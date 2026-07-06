@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -23,15 +23,14 @@ use crate::station::StationStore;
 use crate::streaming::{self, CandidateSource, Cooc, StationState, StreamingConfig, StreamingMode};
 use crate::util::sanitize;
 
-const VOLUME_STEP: i64 = 5;
-const VOLUME_MAX: i64 = 100;
-const AUTOPLAY_THRESHOLD: usize = 3;
-const STREAMING_POOL_COUNT: usize = 40;
-const STREAMING_FALLBACK_COUNT: usize = 8;
-const STREAMING_RECENT_ARTISTS: usize = 12;
-const AUTOPLAY_COOLDOWN: Duration = Duration::from_secs(60);
-const AUTOPLAY_MAX_FAILURES: u8 = 3;
-const MAX_CONSECUTIVE_PLAY_ERRORS: u8 = 3;
+// Autoplay/streaming policy + volume bounds are single-sourced with the TUI App in
+// `crate::playback_policy`, so a threshold can't drift between the two playback owners.
+use crate::playback_policy::{
+    AUTOPLAY_COOLDOWN, AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, MAX_CONSECUTIVE_PLAY_ERRORS,
+    STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT, STREAMING_RECENT_ARTISTS, VOLUME_MAX,
+    VOLUME_STEP,
+};
+
 const SESSION_EVENTS_CAP: usize = 20;
 
 pub struct EngineOptions {
@@ -244,8 +243,10 @@ impl DaemonEngine {
             },
             // Music-mode invariant: never start with both autoplay and repeat on (drop
             // streaming, keep the deliberate repeat) — matches the App's `apply_config`.
-            streaming: config.effective_autoplay_streaming()
-                && config.effective_repeat() == crate::queue::Repeat::Off,
+            streaming: crate::playback_policy::streaming_enabled_with_repeat(
+                config.effective_autoplay_streaming(),
+                config.effective_repeat(),
+            ),
             config,
             library,
             signals,
@@ -883,6 +884,9 @@ impl DaemonEngine {
     pub async fn handle_player_event(&mut self, event: PlayerEvent) -> Vec<EngineEffect> {
         match event {
             PlayerEvent::TimePos(t) => {
+                // Normalize at the mpv trust boundary (parity with the TUI reducer): a
+                // NaN/inf/negative time-pos must not reach the position clock or media session.
+                let t = crate::playback_policy::norm_position(t);
                 self.playback.time_pos = Some(t);
                 self.playback.time_pos_at = Some(Instant::now());
                 if t > 0.0 {
@@ -891,7 +895,7 @@ impl DaemonEngine {
                 Vec::new()
             }
             PlayerEvent::Duration(d) => {
-                self.playback.duration = Some(d);
+                self.playback.duration = Some(crate::playback_policy::norm_duration(d));
                 Vec::new()
             }
             PlayerEvent::Paused(paused) => {
@@ -904,7 +908,10 @@ impl DaemonEngine {
                 Vec::new()
             }
             PlayerEvent::Volume(volume) => {
-                self.playback.volume = volume.round() as i64;
+                // Ignore a non-finite report rather than muting / storing a garbage level.
+                if let Some(volume) = crate::playback_policy::norm_volume_event(volume) {
+                    self.playback.volume = volume;
+                }
                 Vec::new()
             }
             PlayerEvent::Metadata(_) => Vec::new(),
@@ -1140,8 +1147,10 @@ impl DaemonEngine {
                 }
             }
             MediaCommand::SetVolume(v) => {
-                let volume = (v.clamp(0.0, 1.0) * 100.0).round() as i64;
-                if volume != self.playback.volume {
+                // Shared 0..1→percent map with the TUI; a non-finite write is ignored.
+                if let Some(volume) = crate::playback_policy::volume_percent_from_unit(v)
+                    && volume != self.playback.volume
+                {
                     let _ = self.adjust_volume(volume - self.playback.volume);
                 }
             }
@@ -1768,6 +1777,11 @@ impl DaemonEngine {
                 .is_none_or(|at| at.elapsed() >= crate::tools::HEAL_COOLDOWN)
         {
             let video_id = song.video_id.clone();
+            // Bound the per-track guard set (see the App reducer): a long-lived daemon resets
+            // it after enough distinct healed tracks rather than growing for the process life.
+            if self.heal_attempted.len() >= crate::playback_policy::HEAL_ATTEMPTED_MAX {
+                self.heal_attempted.clear();
+            }
             self.heal_attempted.insert(video_id.clone());
             self.heal_last_check = Some(Instant::now());
             self.heal_pending = Some(video_id.clone());
@@ -1947,37 +1961,15 @@ impl DaemonEngine {
         }]
     }
 
-    fn streaming_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
-        let profile = self.config.streaming.mode.profile(&self.config.streaming);
-        let mut ids: HashSet<String> = self
-            .queue
-            .ordered_iter()
-            .filter(|song| !song.is_radio_station())
-            .map(|song| song.video_id.clone())
-            .collect();
-        ids.insert(seed_video_id.to_owned());
-        let favorite_ids: HashSet<&str> = self
-            .library
-            .favorites
-            .iter()
-            .filter(|song| !song.is_radio_station())
-            .map(|s| s.video_id.as_str())
-            .collect();
-        for (idx, song) in self
-            .library
-            .history
-            .iter()
-            .filter(|song| !song.is_radio_station())
-            .enumerate()
-        {
-            let inside_horizon = idx < profile.history_block_horizon;
-            let protected_old_favorite =
-                profile.allow_old_liked_repeats && favorite_ids.contains(song.video_id.as_str());
-            if inside_horizon || !protected_old_favorite {
-                ids.insert(song.video_id.clone());
-            }
-        }
-        ids.into_iter().collect()
+    pub(crate) fn streaming_exclude_ids(&self, seed_video_id: &str) -> Vec<String> {
+        // Shared with the TUI App reducer — one implementation, so the two owners can never
+        // drift on which already-heard/queued tracks an autoplay top-up excludes.
+        crate::streaming::exclude_ids(
+            &self.config.streaming,
+            &self.queue,
+            &self.library,
+            seed_video_id,
+        )
     }
 
     fn plan_local_streaming(

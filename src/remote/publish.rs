@@ -325,7 +325,7 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
         rev,
         playback: PlaybackSettingsModel {
             speed_tenths: view.speed_tenths,
-            seek_seconds: c.seek_seconds.unwrap_or(10.0).round() as u16,
+            seek_seconds: c.effective_seek_seconds().round() as u16,
             gapless: c.gapless.unwrap_or(true),
             enqueue_next: c.enqueue_next.unwrap_or(false),
             autoplay_on_start: c.autoplay_on_start.unwrap_or(false),
@@ -469,7 +469,10 @@ fn song_duration_ms(song: &Song) -> Option<u64> {
         any = true;
     }
     if any && !song.duration.trim().is_empty() {
-        Some(total * 1000)
+        // Guard the final seconds→ms scale too: a colon-free garbage duration string parses
+        // into a huge `total` that would overflow `* 1000` (debug panic in the owner loop /
+        // wrong value in release). Overflow → treat the duration as unknown.
+        total.checked_mul(1000)
     } else {
         None
     }
@@ -692,6 +695,11 @@ mod tests {
         let mut secs = song("d");
         secs.duration_secs = Some(20);
         assert_eq!(song_duration_ms(&secs), Some(20_000));
+        // A colon-free garbage duration parses into a huge value; the seconds→ms scale must
+        // not overflow (debug panic / wrong value) — it returns None (unknown) instead.
+        let mut huge = song("e");
+        huge.duration = "18446744073709552".to_string(); // parses to u64, but *1000 overflows
+        assert_eq!(song_duration_ms(&huge), None);
     }
 
     #[test]

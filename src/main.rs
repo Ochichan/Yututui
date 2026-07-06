@@ -63,43 +63,64 @@ fn main() -> Result<()> {
             // with its status code. This path never builds the multi-thread runtime and
             // never touches terminal raw mode / the alternate screen.
             "-r" | "--remote" => {
-                let rest: Vec<String> = std::env::args().skip(2).collect();
+                let rest: Vec<String> = std::env::args_os()
+                    .skip(2)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
                 std::process::exit(remote::client::run(&rest));
             }
             // Headless daemon entrypoints must run before any TUI/terminal setup.
             "daemon" => {
-                let rest: Vec<String> = std::env::args().skip(2).collect();
+                let rest: Vec<String> = std::env::args_os()
+                    .skip(2)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
                 std::process::exit(daemon::run_cli(&rest));
             }
             // One-shot account connections (Last.fm approval flow, ListenBrainz token,
             // Spotify PKCE) — usable without a terminal UI, e.g. for daemon-only setups.
             "auth" => {
-                let rest: Vec<String> = std::env::args().skip(2).collect();
+                let rest: Vec<String> = std::env::args_os()
+                    .skip(2)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
                 std::process::exit(auth_cli::run(&rest));
             }
             // Playlist transfer (Spotify ↔ YTM ↔ files) — batch jobs, never the TUI.
             "transfer" => {
-                let rest: Vec<String> = std::env::args().skip(2).collect();
+                let rest: Vec<String> = std::env::args_os()
+                    .skip(2)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
                 std::process::exit(transfer::cli::run(&rest));
             }
             "--new-instance" => new_instance = true,
             // One-shot environment diagnostic; never touches the terminal. Exits with its
             // own status code (non-zero if a required tool or directory is unusable).
             "doctor" => {
-                let rest: Vec<String> = std::env::args().skip(2).collect();
+                let rest: Vec<String> = std::env::args_os()
+                    .skip(2)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
                 std::process::exit(doctor::run_with_args(&rest));
             }
             // Managed yt-dlp maintenance (status / forced update) — same one-shot,
             // no-terminal shape as `doctor`.
             "tools" => {
-                let rest: Vec<String> = std::env::args().skip(2).collect();
+                let rest: Vec<String> = std::env::args_os()
+                    .skip(2)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
                 std::process::exit(tools::cli::run(&rest));
             }
             // Hidden maintenance command (run by install.ps1 / Scoop post_install): registers
             // the AppUserModelId so the Windows media flyout shows "YtmTui" + icon instead of
             // "Unknown app". Kept out of --help; errors out on other platforms.
             "register-media-identity" => {
-                let rest: Vec<String> = std::env::args().skip(2).collect();
+                let rest: Vec<String> = std::env::args_os()
+                    .skip(2)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
                 std::process::exit(media::identity::register_cli(&rest));
             }
             _ => {}
@@ -269,7 +290,9 @@ fn cached_halfblocks_art_picker() -> Option<ratatui_image::picker::Picker> {
         return None;
     }
     let path = art_picker_cache_path()?;
-    let contents = std::fs::read_to_string(path).ok()?;
+    // No-symlink, size-bounded read (the cache is one short line); bypasses raw std::fs.
+    let bytes = ytm_tui::util::safe_fs::read_no_symlink_limited(&path, 64 * 1024).ok()?;
+    let contents = String::from_utf8(bytes).ok()?;
     let mut parts = contents.trim().split('\t');
     let version = parts.next()?;
     let key = parts.next()?;
@@ -296,11 +319,9 @@ fn store_halfblocks_art_picker_cache() {
     let Some(now) = unix_seconds() else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     let contents = format!("v1\t{}\thalfblocks\t{now}\n", terminal_probe_cache_key());
-    let _ = std::fs::write(path, contents);
+    // Atomic, private (0600), no-symlink write; also creates the cache dir (0700) if needed.
+    let _ = ytm_tui::util::safe_fs::write_private_atomic(&path, contents.as_bytes());
 }
 
 fn art_picker_cache_path() -> Option<std::path::PathBuf> {

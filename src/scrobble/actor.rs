@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc::{self, UnboundedReceiver};
+use tokio::sync::mpsc::{self, Receiver};
 use tokio::sync::oneshot;
 
 use super::lastfm::{LastfmClient, SCROBBLE_BATCH_MAX, SessionPoll};
@@ -70,7 +70,10 @@ pub fn spawn(
     settings: ScrobbleSettings,
     emit: impl Fn(ScrobbleEvent) + Send + Sync + 'static,
 ) -> ScrobbleHandle {
-    let (tx, rx) = mpsc::unbounded_channel();
+    // Bounded with a generous cap; ~1 Hz Observe messages never fill it in normal use, but a
+    // long network stall drops new messages (`try_send` at the send sites) rather than letting
+    // the inbox grow without bound.
+    let (tx, rx) = mpsc::channel(512);
     let queue = QueueFile::default_path().map(QueueFile::at);
     tokio::spawn(run_actor(rx, settings, Arc::new(emit), queue));
     ScrobbleHandle::new(tx)
@@ -155,7 +158,7 @@ struct Actor {
 }
 
 async fn run_actor(
-    mut rx: UnboundedReceiver<ScrobbleCmd>,
+    mut rx: Receiver<ScrobbleCmd>,
     settings: ScrobbleSettings,
     emit: EventSink,
     queue: Option<QueueFile>,

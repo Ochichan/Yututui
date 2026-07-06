@@ -11,9 +11,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncReadExt, BufReader};
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{Sender, error::TrySendError};
 
@@ -160,10 +161,23 @@ async fn run_download_with_program(
     let vid = song.video_id.clone();
     let emit_progress = emit.clone();
     let progress = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
+        use crate::util::io::{BoundedLine, read_bounded_line};
+        // A progress line is tiny; cap each so a newline-less stderr blob can't grow a String
+        // without bound. On an over-cap line, keep draining in bounded chunks (never break —
+        // that would leave yt-dlp blocked writing to a full stderr pipe and stall the
+        // download); progress is best-effort, so a dropped fragment just isn't parsed.
+        const STDERR_LINE_MAX: usize = 64 * 1024;
+        let mut reader = BufReader::new(stderr);
+        let mut line: Vec<u8> = Vec::new();
         let mut last_percent: Option<u8> = None;
-        while let Ok(Some(line)) = lines.next_line().await {
-            if let Some(pct) = parse_percent(&line) {
+        loop {
+            line.clear();
+            match read_bounded_line(&mut reader, &mut line, STDERR_LINE_MAX).await {
+                Ok(BoundedLine::Line) => {}
+                Ok(BoundedLine::TooLarge) => continue, // drain the oversized line, then resume
+                Ok(BoundedLine::Eof) | Err(_) => break,
+            }
+            if let Some(pct) = parse_percent(&String::from_utf8_lossy(&line)) {
                 let rounded = pct.round().clamp(0.0, 100.0) as u8;
                 if last_percent == Some(rounded) {
                     continue;
@@ -177,16 +191,31 @@ async fn run_download_with_program(
         }
     });
 
-    // The final path is printed to stdout (small); read it to EOF.
-    let mut out = String::new();
-    BufReader::new(stdout)
-        .take((YTDLP_STDOUT_MAX + 1) as u64)
-        .read_to_string(&mut out)
-        .await?;
-    if out.len() > YTDLP_STDOUT_MAX {
-        bail!("yt-dlp output too large");
-    }
-    let status = child.wait().await?;
+    // The final path is printed to stdout (small); read it to EOF, then reap the child — all
+    // under an overall backstop timeout so a wedged yt-dlp can't hold its concurrency
+    // permit (the `Semaphore`) forever. A real audio download completes well within this; the
+    // cap only catches a genuinely stuck process, which is killed and reported as an error.
+    const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+    let finish = async {
+        let mut out = String::new();
+        BufReader::new(stdout)
+            .take((YTDLP_STDOUT_MAX + 1) as u64)
+            .read_to_string(&mut out)
+            .await?;
+        if out.len() > YTDLP_STDOUT_MAX {
+            bail!("yt-dlp output too large");
+        }
+        let status = child.wait().await?;
+        anyhow::Ok((out, status))
+    };
+    let (out, status) = match tokio::time::timeout(DOWNLOAD_TIMEOUT, finish).await {
+        Ok(result) => result?,
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = progress.await;
+            bail!("yt-dlp download timed out");
+        }
+    };
     let _ = progress.await;
 
     if !status.success() {
@@ -218,7 +247,10 @@ async fn run_download_with_program(
     if let Ok(resolved) = tokio::fs::canonicalize(&path).await
         && !resolved.starts_with(&root)
     {
-        bail!("downloaded path escaped the download directory: {}", path.display());
+        bail!(
+            "downloaded path escaped the download directory: {}",
+            path.display()
+        );
     }
     // Best-effort id check: the filename embeds `[id]`. A mismatch is logged, not fatal —
     // yt-dlp's resolved id can legitimately differ for some refs.

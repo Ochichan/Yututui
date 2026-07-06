@@ -345,15 +345,24 @@ try {
     Save-ProcessList -Name "tray-process-after-quit-tray" -ProcessName "ytt-desktop" | Out-Null
 
     $logDir = Join-Path $env:LOCALAPPDATA "ytm-tui\cache"
-    $appLog = Join-Path $logDir "ytm-tui.log"
-    Assert-FileExists $appLog
-    Copy-Item -LiteralPath $appLog -Destination (Join-Path $EvidenceDir "ytm-tui.log")
-    $daemonLog = Join-Path $logDir "logs\daemon.log"
+    $appLog = Get-ChildItem -LiteralPath $logDir -Filter "ytm-tui.log*" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($null -eq $appLog) {
+        throw "expected app log under $logDir"
+    }
+    Copy-Item -LiteralPath $appLog.FullName -Destination (Join-Path $EvidenceDir "ytm-tui.log")
+    $daemonLogDir = Join-Path $logDir "logs"
+    $daemonLog = Get-ChildItem -LiteralPath $daemonLogDir -Filter "daemon.log*" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
     if (-not $SkipDaemon) {
-        Assert-FileExists $daemonLog
-        Copy-Item -LiteralPath $daemonLog -Destination (Join-Path $EvidenceDir "daemon.log")
-    } elseif (Test-Path -LiteralPath $daemonLog) {
-        Copy-Item -LiteralPath $daemonLog -Destination (Join-Path $EvidenceDir "daemon.log")
+        if ($null -eq $daemonLog) {
+            throw "expected daemon log under $daemonLogDir"
+        }
+        Copy-Item -LiteralPath $daemonLog.FullName -Destination (Join-Path $EvidenceDir "daemon.log")
+    } elseif ($null -ne $daemonLog) {
+        Copy-Item -LiteralPath $daemonLog.FullName -Destination (Join-Path $EvidenceDir "daemon.log")
     }
 
     $results | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $EvidenceDir "results.json") -Encoding UTF8

@@ -107,7 +107,9 @@ impl StationStore {
             return StationStore::default();
         };
         // Schema-drift tolerant: preserves the active station across incompatible changes.
-        safe_fs::load_json_or_default::<StationStore>(&path)
+        // Size-capped like the sibling Playlists load.
+        const MAX_BYTES: u64 = 16 * 1024 * 1024;
+        safe_fs::load_json_or_default_limited::<StationStore>(&path, MAX_BYTES)
     }
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.

@@ -179,7 +179,9 @@ fn redact_keyed_values(input: &str) -> String {
             continue;
         }
         if boundary
-            && let Some(name) = SENSITIVE_PARAMS.iter().find(|p| lower[i..].starts_with(**p))
+            && let Some(name) = SENSITIVE_PARAMS
+                .iter()
+                .find(|p| lower[i..].starts_with(**p))
             && let Some(val_start) = assignment_value_start(bytes, i + name.len())
         {
             out.push_str(&input[i..val_start]);
@@ -252,7 +254,10 @@ mod tests {
         // JSON error body.
         let out = sanitize_error_text(r#"{"client_secret":"s3","error":"bad"}"#);
         assert!(out.contains(r#""client_secret":"<redacted>""#), "{out}");
-        assert!(out.contains(r#""error":"bad""#), "non-secret fields kept: {out}");
+        assert!(
+            out.contains(r#""error":"bad""#),
+            "non-secret fields kept: {out}"
+        );
 
         // Authorization header.
         let out = sanitize_error_text("Authorization: Bearer ya29.abcDEF");

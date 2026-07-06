@@ -633,7 +633,7 @@ fn init_daemon_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> 
     std::fs::create_dir_all(&dir).ok()?;
     let guard = crate::logging::init_named(&dir, "daemon.log");
     if guard.is_some() {
-        tracing::info!(path = %dir.join("daemon.log").display(), "daemon logging initialized");
+        tracing::info!(dir = %dir.display(), prefix = "daemon.log", "daemon logging initialized");
     }
     guard
 }
