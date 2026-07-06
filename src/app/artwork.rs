@@ -111,7 +111,7 @@ impl App {
         if !a.master {
             return false;
         }
-        if a.about_fx && self.about_visible {
+        if a.about_fx && self.overlays.about_visible {
             return true;
         }
         if a.caret && self.text_input_caret_visible() {
@@ -272,7 +272,7 @@ impl App {
     /// overlays that mask doesn't track. A bit turning on means "a popup just opened".
     fn fx_popup_mask(&self) -> u32 {
         u32::from(self.art_overlay_mask() & !(1 << 10))
-            | ((self.spotify_picker.is_some() as u32) << 16)
+            | ((self.overlays.spotify_picker.is_some() as u32) << 16)
             | ((self.dropdowns.search_source_open as u32) << 17)
     }
 
@@ -490,12 +490,12 @@ impl App {
         u8::from(self.dropdowns.eq_open) as u16
             | ((self.dropdowns.streaming_open as u16) << 1)
             | ((self.queue_popup.open as u16) << 2)
-            | ((self.help_visible as u16) << 3)
-            | ((self.about_visible as u16) << 4)
-            | ((self.why_ai_visible as u16) << 5)
-            | ((self.key_conflict.is_some() as u16) << 6)
+            | ((self.overlays.help_visible as u16) << 3)
+            | ((self.overlays.about_visible as u16) << 4)
+            | ((self.overlays.why_ai_visible as u16) << 5)
+            | ((self.overlays.key_conflict.is_some() as u16) << 6)
             | ((self.radio_mode.pending_radio_mode_confirm.is_some() as u16) << 7)
-            | ((self.pending_settings_confirm.is_some() as u16) << 8)
+            | ((self.overlays.pending_settings_confirm.is_some() as u16) << 8)
             // Bit 9 is shared by the two Library confirm modals (file-delete and bulk-download):
             // they are mutually exclusive (each captures all keys while open) and share the same
             // centered footprint, so one bit tracks both without missing a graphics-clear edge.
@@ -503,7 +503,7 @@ impl App {
                 || self.library_ui.confirm_download.is_some()) as u16)
                 << 9)
             | ((!matches!(self.mode, Mode::Player) as u16) << 10)
-            | ((self.mouse_help_visible as u16) << 11)
+            | ((self.overlays.mouse_help_visible as u16) << 11)
             | ((self.library_ui.create_input.is_some() as u16) << 12)
             | ((self.library_ui.confirm_playlist_delete.is_some() as u16) << 13)
             | ((self.playlist_picker.is_some() as u16) << 14)

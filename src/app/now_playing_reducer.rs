@@ -13,7 +13,7 @@ impl App {
     /// heuristic routes obvious ads/station-ids to `StationContent`; a missing or
     /// station-name-echo title to `NoMetadata`; anything else is the playing song.
     pub(in crate::app) fn open_now_playing_overlay(&mut self) -> Vec<Cmd> {
-        if self.now_playing_overlay.is_some() {
+        if self.overlays.now_playing_overlay.is_some() {
             self.close_now_playing_overlay();
             return Vec::new();
         }
@@ -72,18 +72,18 @@ impl App {
                     .filter(|s| !s.is_empty());
                 // Reuse a prior favorite-resolution for this exact title, if cached.
                 let key = now_playing::cache_key(&overlay.station_id, &sanitized);
-                overlay.resolved = self.now_playing_cache.get(&key).cloned();
+                overlay.resolved = self.overlays.now_playing_cache.get(&key).cloned();
                 overlay.state = NowPlayingOverlayState::Playing { artist, title };
             }
         }
-        self.now_playing_overlay = Some(overlay);
+        self.overlays.now_playing_overlay = Some(overlay);
         Vec::new()
     }
 
     pub(in crate::app) fn close_now_playing_overlay(&mut self) {
-        self.now_playing_overlay = None;
+        self.overlays.now_playing_overlay = None;
         // Invalidate a favorite-resolve still in flight so a late reply can't reopen state.
-        self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
+        self.overlays.now_playing_seq = self.overlays.now_playing_seq.wrapping_add(1);
         self.dirty = true;
     }
 
@@ -92,11 +92,11 @@ impl App {
     /// since mpv only surfaces ICY metadata once it first changes. The seq bump
     /// invalidates any favorite-resolve still in flight for the old title.
     pub(in crate::app) fn on_stream_title_changed(&mut self) -> Vec<Cmd> {
-        if self.now_playing_overlay.is_none() {
+        if self.overlays.now_playing_overlay.is_none() {
             return Vec::new();
         }
-        self.now_playing_overlay = None;
-        self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
+        self.overlays.now_playing_overlay = None;
+        self.overlays.now_playing_seq = self.overlays.now_playing_seq.wrapping_add(1);
         self.open_now_playing_overlay()
     }
 
@@ -104,7 +104,7 @@ impl App {
     /// the overlay view mirrors it.
     pub fn now_playing_can_favorite(&self) -> bool {
         matches!(
-            self.now_playing_overlay.as_ref().map(|o| &o.state),
+            self.overlays.now_playing_overlay.as_ref().map(|o| &o.state),
             Some(NowPlayingOverlayState::Playing { .. })
         )
     }
@@ -113,7 +113,8 @@ impl App {
     /// truth for the filled-vs-empty heart. Keyed off the live library (not `resolved.is_some()`,
     /// which only means "we found the YouTube track"). `pub` — the overlay view mirrors it.
     pub fn now_playing_is_favorited(&self) -> bool {
-        self.now_playing_overlay
+        self.overlays
+            .now_playing_overlay
             .as_ref()
             .and_then(|o| o.resolved.as_ref())
             .is_some_and(|song| self.library.is_favorite(&song.video_id))
@@ -124,7 +125,7 @@ impl App {
     pub fn now_playing_can_ask(&self) -> bool {
         self.ai.available
             && matches!(
-                self.now_playing_overlay.as_ref().map(|o| &o.state),
+                self.overlays.now_playing_overlay.as_ref().map(|o| &o.state),
                 Some(NowPlayingOverlayState::Playing { .. })
             )
     }
@@ -137,7 +138,7 @@ impl App {
         if !self.now_playing_can_favorite() {
             return Vec::new();
         }
-        let Some(overlay) = self.now_playing_overlay.as_ref() else {
+        let Some(overlay) = self.overlays.now_playing_overlay.as_ref() else {
             return Vec::new();
         };
         if overlay.resolving {
@@ -153,9 +154,13 @@ impl App {
             Some(artist) => format!("{artist} {title}"),
             None => title.clone(),
         };
-        self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
-        let seq = self.now_playing_seq;
-        let overlay = self.now_playing_overlay.as_mut().expect("checked above");
+        self.overlays.now_playing_seq = self.overlays.now_playing_seq.wrapping_add(1);
+        let seq = self.overlays.now_playing_seq;
+        let overlay = self
+            .overlays
+            .now_playing_overlay
+            .as_mut()
+            .expect("checked above");
         overlay.resolving = true;
         overlay.resolve_seq = seq;
         self.dirty = true;
@@ -173,7 +178,7 @@ impl App {
         seq: u64,
         result: Result<Vec<Song>, String>,
     ) -> Vec<Cmd> {
-        let Some(overlay) = self.now_playing_overlay.as_mut() else {
+        let Some(overlay) = self.overlays.now_playing_overlay.as_mut() else {
             return Vec::new();
         };
         if overlay.resolve_seq != seq || !overlay.resolving {
@@ -194,7 +199,9 @@ impl App {
                 };
                 overlay.resolved = Some(song.clone());
                 let key = now_playing::cache_key(&overlay.station_id, &overlay.raw_title);
-                self.now_playing_cache.put_resolved(key, song.clone());
+                self.overlays
+                    .now_playing_cache
+                    .put_resolved(key, song.clone());
                 self.add_resolved_favorite(song)
             }
             Err(error) => {
@@ -248,11 +255,11 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        let Some(overlay) = self.now_playing_overlay.take() else {
+        let Some(overlay) = self.overlays.now_playing_overlay.take() else {
             return Vec::new();
         };
         // The card is gone; any favorite-resolve still in flight for it is stale.
-        self.now_playing_seq = self.now_playing_seq.wrapping_add(1);
+        self.overlays.now_playing_seq = self.overlays.now_playing_seq.wrapping_add(1);
         let NowPlayingOverlayState::Playing { artist, title } = &overlay.state else {
             return Vec::new();
         };

@@ -32,7 +32,7 @@ fn main() {
     };
     if mode == "help" {
         app.mode = Mode::Player;
-        app.help_visible = true;
+        app.overlays.help_visible = true;
     }
 
     let backend = TestBackend::new(w, h);

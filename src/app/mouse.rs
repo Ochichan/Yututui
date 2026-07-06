@@ -105,7 +105,7 @@ impl App {
         self.interaction.seekbar_drag = None;
         self.interaction.recording_drag = None;
         // A click dismisses the modal conflict warning, same as a keypress.
-        if self.key_conflict.take().is_some() {
+        if self.overlays.key_conflict.take().is_some() {
             self.dirty = true;
             return Vec::new();
         }
@@ -125,7 +125,7 @@ impl App {
         }
         // The "what's playing" identify overlay is modal: only its own buttons act; a
         // click anywhere else closes it (no click-through to the player/seekbar).
-        if self.now_playing_overlay.is_some() {
+        if self.overlays.now_playing_overlay.is_some() {
             match self.mouse_target_at(col, row) {
                 Some(
                     t @ (MouseTarget::NowPlayingFavorite
@@ -142,13 +142,13 @@ impl App {
         }
         // Settings confirmations are modal: only their Confirm/Cancel buttons act; a click
         // anywhere else backs out without changing the draft.
-        if self.pending_settings_confirm.is_some() {
+        if self.overlays.pending_settings_confirm.is_some() {
             match self.mouse_target_at(col, row) {
                 Some(t @ (MouseTarget::ConfirmSettings | MouseTarget::CancelSettings)) => {
                     return self.on_mouse_target(t);
                 }
                 _ => {
-                    self.pending_settings_confirm = None;
+                    self.overlays.pending_settings_confirm = None;
                     self.dirty = true;
                     return Vec::new();
                 }
@@ -258,44 +258,45 @@ impl App {
                 _ => return Vec::new(),
             }
         }
-        if self.help_visible {
-            self.help_visible = false;
+        if self.overlays.help_visible {
+            self.overlays.help_visible = false;
             self.dirty = true;
             return Vec::new();
         }
-        if self.mouse_help_visible {
-            self.mouse_help_visible = false;
+        if self.overlays.mouse_help_visible {
+            self.overlays.mouse_help_visible = false;
             self.dirty = true;
             return Vec::new();
         }
         // The About card is modal: clicking its GitHub link or the update-notice "Releases"
         // link opens the browser (and keeps the card up); a click anywhere else dismisses it.
-        if self.about_visible {
+        if self.overlays.about_visible {
             if let Some(t @ (MouseTarget::AboutLink | MouseTarget::AboutUpdateLink)) =
                 self.mouse_target_at(col, row)
             {
                 return self.on_mouse_target(t);
             }
-            self.about_visible = false;
+            self.overlays.about_visible = false;
             self.dirty = true;
             return Vec::new();
         }
         // The recordings browser is modal wherever it opens (over the player, or on top of the
         // recording-settings popup), so it's checked first: a click outside closes it, and inside
         // only its own rows act — nothing leaks to whatever is beneath.
-        if self.recordings_browser.is_some() {
+        if self.overlays.recordings_browser.is_some() {
             let inside = self
+                .overlays
                 .recordings_browser
                 .as_ref()
                 .and_then(|b| b.rect.get())
                 .is_some_and(|r| rect_contains(r, col, row));
             if !inside {
-                self.recordings_browser = None;
+                self.overlays.recordings_browser = None;
                 self.dirty = true;
                 return Vec::new();
             }
             if let Some(MouseTarget::RecordingBrowseRow(i)) = self.mouse_target_at(col, row) {
-                if let Some(b) = self.recordings_browser.as_mut() {
+                if let Some(b) = self.overlays.recordings_browser.as_mut() {
                     b.selected = i;
                 }
                 self.dirty = true;
@@ -306,21 +307,22 @@ impl App {
         // inside only its own rows act (no leak to the Settings form beneath). A row click focuses
         // the row and activates it (mode cycles, sliders nudge up, folder edits, notify toggles,
         // browse opens the list) — the mouse equivalent of moving there and pressing Enter.
-        if self.recording_settings.is_some() {
+        if self.overlays.recording_settings.is_some() {
             let inside = self
+                .overlays
                 .recording_settings
                 .as_ref()
                 .and_then(|p| p.rect.get())
                 .is_some_and(|r| rect_contains(r, col, row));
             if !inside {
-                self.recording_settings = None;
+                self.overlays.recording_settings = None;
                 self.dirty = true;
                 return Vec::new();
             }
             match self.mouse_region_at(col, row).map(|r| (r.target, r.rect)) {
                 // An arrow / the mode `< >` / (nothing else uses this): focus + signed nudge.
                 Some((MouseTarget::RecordingChange { row: i, delta }, _)) => {
-                    if let Some(p) = self.recording_settings.as_mut() {
+                    if let Some(p) = self.overlays.recording_settings.as_mut() {
                         p.row = i;
                     }
                     self.dirty = true;
@@ -328,7 +330,7 @@ impl App {
                 }
                 // The bar track: focus, arm the drag with the track rect, and seek to the click.
                 Some((MouseTarget::RecordingSlider(i), rect)) => {
-                    if let Some(p) = self.recording_settings.as_mut() {
+                    if let Some(p) = self.overlays.recording_settings.as_mut() {
                         p.row = i;
                     }
                     self.interaction.recording_drag = Some((i, rect));
@@ -338,7 +340,7 @@ impl App {
                 // A bare row click: focus it; folder / notify / browse also activate (Enter),
                 // but mode / sliders only focus (their arrows and track do the changing).
                 Some((MouseTarget::RecordingRow(i), _)) => {
-                    if let Some(p) = self.recording_settings.as_mut() {
+                    if let Some(p) = self.overlays.recording_settings.as_mut() {
                         p.row = i;
                     }
                     self.dirty = true;
@@ -422,8 +424,8 @@ impl App {
     pub(in crate::app) fn on_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
         match target {
             MouseTarget::Global(Action::ToggleHelp) => {
-                self.help_visible = true;
-                self.mouse_help_visible = false;
+                self.overlays.help_visible = true;
+                self.overlays.mouse_help_visible = false;
                 self.bridges.help_scroll.reset();
                 self.dirty = true;
                 Vec::new()
@@ -551,8 +553,8 @@ impl App {
             MouseTarget::LibraryTab(_) => Vec::new(),
             // Footer mouse icon: opens a mouse-only cheat-sheet.
             MouseTarget::MouseHelp => {
-                self.help_visible = false;
-                self.mouse_help_visible = true;
+                self.overlays.help_visible = false;
+                self.overlays.mouse_help_visible = true;
                 self.bridges.help_scroll.reset();
                 self.dirty = true;
                 Vec::new()
@@ -653,13 +655,13 @@ impl App {
                 Vec::new()
             }
             MouseTarget::ConfirmSettings => {
-                let Some(confirm) = self.pending_settings_confirm.take() else {
+                let Some(confirm) = self.overlays.pending_settings_confirm.take() else {
                     return Vec::new();
                 };
                 self.settings_apply_confirm(confirm)
             }
             MouseTarget::CancelSettings => {
-                self.pending_settings_confirm = None;
+                self.overlays.pending_settings_confirm = None;
                 self.dirty = true;
                 Vec::new()
             }
@@ -682,7 +684,7 @@ impl App {
             }
             // Click the `ytm-tui` brand to open the About card.
             MouseTarget::AboutTitle => {
-                self.about_visible = true;
+                self.overlays.about_visible = true;
                 self.dirty = true;
                 Vec::new()
             }
@@ -723,18 +725,18 @@ impl App {
     /// respond to the first press of a double-click.
     pub(in crate::app) fn on_mouse_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
         // Modal overlays treat a double-click like a single click.
-        if self.help_visible
-            || self.mouse_help_visible
-            || self.about_visible
-            || self.key_conflict.is_some()
+        if self.overlays.help_visible
+            || self.overlays.mouse_help_visible
+            || self.overlays.about_visible
+            || self.overlays.key_conflict.is_some()
             || self.radio_mode.pending_radio_mode_confirm.is_some()
-            || self.pending_settings_confirm.is_some()
+            || self.overlays.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
             || self.library_ui.create_input.is_some()
             || self.playlist_picker.is_some()
-            || self.recordings_browser.is_some()
-            || self.recording_settings.is_some()
+            || self.overlays.recordings_browser.is_some()
+            || self.overlays.recording_settings.is_some()
         {
             return self.on_mouse_click(col, row);
         }
@@ -792,7 +794,7 @@ impl App {
         // continuously as the pointer moves (row ignored — grab and drag anywhere horizontally,
         // exactly like the seekbar). `recording_slider_set` dedupes and clamps.
         if let Some((slider_row, rect)) = self.interaction.recording_drag {
-            if self.recording_settings.is_some() {
+            if self.overlays.recording_settings.is_some() {
                 return self.recording_slider_set(slider_row, col, rect);
             }
             // Popup closed mid-drag — stop scrubbing.
@@ -1083,16 +1085,16 @@ impl App {
         }
         let n = MOUSE_SCROLL_LINES;
         // The cheat-sheet overlays scroll like any list (length is clamped at render).
-        if self.help_visible || self.mouse_help_visible {
+        if self.overlays.help_visible || self.overlays.mouse_help_visible {
             self.bridges.help_scroll.wheel(up, n, usize::MAX);
             self.dirty = true;
             return Vec::new();
         }
         // The recording overlays capture the wheel so it moves their own selection/focus instead
         // of leaking to the Settings form underneath. Browser (on top) wins over the popup.
-        if self.recordings_browser.is_some() {
+        if self.overlays.recordings_browser.is_some() {
             let total = usize::from(self.recorder.current.is_some()) + self.recorder.history.len();
-            if let Some(b) = self.recordings_browser.as_mut() {
+            if let Some(b) = self.overlays.recordings_browser.as_mut() {
                 b.selected = if up {
                     b.selected.saturating_sub(n)
                 } else {
@@ -1102,8 +1104,8 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        if self.recording_settings.is_some() {
-            if let Some(p) = self.recording_settings.as_mut() {
+        if self.overlays.recording_settings.is_some() {
+            if let Some(p) = self.overlays.recording_settings.as_mut() {
                 p.row = if up {
                     p.row.saturating_sub(n)
                 } else {
@@ -1235,18 +1237,18 @@ impl App {
     /// that queue entry. Other targets are ignored so a stray context-click can't disturb modal
     /// confirmations or the player.
     pub(in crate::app) fn on_mouse_right_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
-        if self.help_visible
-            || self.mouse_help_visible
-            || self.about_visible
-            || self.key_conflict.is_some()
+        if self.overlays.help_visible
+            || self.overlays.mouse_help_visible
+            || self.overlays.about_visible
+            || self.overlays.key_conflict.is_some()
             || self.radio_mode.pending_radio_mode_confirm.is_some()
-            || self.pending_settings_confirm.is_some()
+            || self.overlays.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
             || self.library_ui.create_input.is_some()
             || self.playlist_picker.is_some()
-            || self.recordings_browser.is_some()
-            || self.recording_settings.is_some()
+            || self.overlays.recordings_browser.is_some()
+            || self.overlays.recording_settings.is_some()
         {
             return Vec::new();
         }

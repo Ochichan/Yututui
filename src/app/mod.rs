@@ -159,56 +159,13 @@ pub struct App {
     /// Dedicated-Radio-mode theme+queue stash and the pending enter/leave confirmation — see
     /// [`RadioMode`]. The `radio_dedicated_mode` flag above stays flat (read pervasively).
     pub radio_mode: RadioMode,
-    /// Whether the `?` help / cheat-sheet overlay is shown.
-    pub help_visible: bool,
-    /// Whether the mouse cheat-sheet overlay is shown. Opened only from the footer mouse icon.
-    pub mouse_help_visible: bool,
-    /// A pending keybinding-conflict warning (Keys tab). When set, a modal popup is shown
-    /// and the next key/click dismisses it; the attempted rebind is left unchanged.
-    pub key_conflict: Option<Conflict>,
-    /// A pending destructive/settings-wide confirmation. Enter/`y` confirms; Esc/`n` or the
-    /// Cancel button backs out before the key can leak through to the settings list.
-    pub pending_settings_confirm: Option<SettingsConfirm>,
-    /// The "Import from Spotify" playlist picker overlay (Settings › Accounts). ↑/↓
-    /// select, Enter imports, Esc closes.
-    pub spotify_picker: Option<SpotifyPicker>,
-    /// The radio-recording settings popup (over the Playback settings tab).
-    pub recording_settings: Option<RecordingSettingsPopup>,
-    /// The recordings browser (Decide-mode save/discard/play), opened from the popup or a key.
-    pub recordings_browser: Option<RecordingsBrowser>,
+    /// All transient modal/overlay state — help/mouse-help/about/why-DJ-Gem toggles, the
+    /// key-conflict + settings confirmations, the Spotify picker, the recording popups, the
+    /// update-check result, and the identify overlay with its cache/epoch. See [`Overlays`].
+    /// `transfer_running` below stays flat (a job guard, not overlay state).
+    pub overlays: Overlays,
     /// A transfer job is running (guards double-starts; progress rides the status line).
     pub transfer_running: bool,
-    /// Whether the About card overlay is showing. Opened by clicking the `ytm-tui` brand in the
-    /// nav bar or via `Action::ToggleAbout` (F1); any key/click (other than the GitHub link)
-    /// dismisses it.
-    pub about_visible: bool,
-    /// The app icon as a render-ready protocol for the About card, decoded from the embedded PNG
-    /// and cached with the popup background it was composited against. Native image-capable
-    /// terminals reuse the detected picker for pixel quality; everything else falls back to
-    /// half-blocks so the card still draws everywhere. `RefCell` because render only has `&App`.
-    pub about_icon: RefCell<
-        Option<(
-            ratatui::style::Color,
-            Option<ProtocolType>,
-            StatefulProtocol,
-        )>,
-    >,
-    /// Result of the background app-update check (`None` until it completes / when disabled).
-    /// When `available`, the About card shows an upgrade notice and the nav brand gets a dot.
-    pub update_status: Option<crate::update::UpdateStatus>,
-    /// Whether the "Why DJ Gem" overlay is showing. Opened by `Action::WhyAi` (`w`) when the last
-    /// autoplay-streaming refill went through the DJ Gem reranker; lists why each track was chosen (slot
-    /// role + reason codes + confidence). Esc / `w` / Back dismiss it, like the About card.
-    pub why_ai_visible: bool,
-    /// The "what's playing" (지듣노) overlay — the radio identify card with favorite /
-    /// ask-DJ Gem actions. `None` = closed. Opened by `Action::IdentifyNowPlaying` (`i`).
-    pub now_playing_overlay: Option<NowPlayingOverlay>,
-    /// Short-TTL cache of identify results keyed on (station, title), so re-opening on
-    /// the same song and the "tell me more" handoff never re-spend an API call.
-    pub(in crate::app) now_playing_cache: now_playing::NowPlayingCache,
-    /// Identify epoch: replies must carry the open overlay's snapshot of this counter or
-    /// they're stale (overlay closed / stream title moved on).
-    now_playing_seq: u64,
 
     // Playback ----------------------------------------------------------------
     /// Live playback transport: position, duration, pause state, volume, and speed
@@ -382,21 +339,8 @@ impl App {
             theme: ThemeConfig::default(),
             radio_dedicated_mode: false,
             radio_mode: RadioMode::default(),
-            help_visible: false,
-            mouse_help_visible: false,
-            key_conflict: None,
-            pending_settings_confirm: None,
-            spotify_picker: None,
-            recording_settings: None,
-            recordings_browser: None,
+            overlays: Overlays::default(),
             transfer_running: false,
-            about_visible: false,
-            about_icon: RefCell::new(None),
-            update_status: None,
-            why_ai_visible: false,
-            now_playing_overlay: None,
-            now_playing_cache: now_playing::NowPlayingCache::default(),
-            now_playing_seq: 0,
             playback: Playback {
                 volume: volume.clamp(0, VOLUME_MAX),
                 speed: 1.0,
@@ -594,7 +538,7 @@ impl App {
         self.search.source = search.normalized_source(self.search.source);
         if self.radio_dedicated_mode {
             self.dropdowns.search_source_open = false;
-            self.why_ai_visible = false;
+            self.overlays.why_ai_visible = false;
         }
     }
 
@@ -1724,7 +1668,7 @@ impl App {
                     };
                     self.dirty = true;
                 }
-                self.update_status = Some(status);
+                self.overlays.update_status = Some(status);
             }
             Msg::Tools(event) => match event {
                 crate::tools::ToolsEvent::Progress { channel, percent } => {
@@ -1780,8 +1724,8 @@ impl App {
     /// Return to the player/home screen from any mode. Settings use the normal close path
     /// so draft values and keybinding changes are not silently discarded.
     fn go_home(&mut self) -> Vec<Cmd> {
-        self.help_visible = false;
-        self.mouse_help_visible = false;
+        self.overlays.help_visible = false;
+        self.overlays.mouse_help_visible = false;
         self.dropdowns.eq_open = false;
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;
@@ -1793,9 +1737,9 @@ impl App {
         // These three render as top-level overlays but route input only inside Settings-mode
         // dispatch, so leaving the screen must drop them explicitly or they'd paint on top of
         // the Player, unreachable. (`spotify_picker` shares the same shape.)
-        self.recording_settings = None;
-        self.recordings_browser = None;
-        self.spotify_picker = None;
+        self.overlays.recording_settings = None;
+        self.overlays.recordings_browser = None;
+        self.overlays.spotify_picker = None;
         self.reset_playlist_ui_state();
         // Leaving the screen drops any pending text selection so it can't reappear highlighted
         // when the input is re-entered later.
@@ -1811,8 +1755,8 @@ impl App {
     }
 
     fn quit_app(&mut self) -> Vec<Cmd> {
-        self.help_visible = false;
-        self.mouse_help_visible = false;
+        self.overlays.help_visible = false;
+        self.overlays.mouse_help_visible = false;
         let cmds = if self.mode == Mode::Settings {
             self.finish_settings_text_edit();
             self.close_settings()
@@ -1871,8 +1815,8 @@ impl App {
     /// reachable from any screen. Leaving Settings commits the draft via the normal close
     /// path so edits aren't lost; transient overlays are cleared.
     fn navigate_to(&mut self, mode: Mode) -> Vec<Cmd> {
-        self.help_visible = false;
-        self.mouse_help_visible = false;
+        self.overlays.help_visible = false;
+        self.overlays.mouse_help_visible = false;
         self.dropdowns.eq_open = false;
         self.dropdowns.streaming_open = false;
         self.dropdowns.search_source_open = false;

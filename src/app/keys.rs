@@ -17,7 +17,7 @@ impl App {
         // A keybinding-conflict warning is modal: the next keypress just dismisses it (the
         // rejected rebind already left the binding untouched), so it never leaks through to
         // the screen underneath.
-        if self.key_conflict.take().is_some() {
+        if self.overlays.key_conflict.take().is_some() {
             self.dirty = true;
             return Vec::new();
         }
@@ -37,7 +37,7 @@ impl App {
 
         // Settings confirmations are modal: Enter or `y` confirms, anything else cancels.
         // Handle it here so the key can't leak through to the settings list.
-        if let Some(confirm) = self.pending_settings_confirm.take() {
+        if let Some(confirm) = self.overlays.pending_settings_confirm.take() {
             self.dirty = true;
             let confirmed = k.code == KeyCode::Enter
                 || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
@@ -105,8 +105,8 @@ impl App {
         // remappable globals so Enter stays local to Search while every other screen keeps
         // using the user's keymap.
         if self.mode == Mode::Search
-            && !self.help_visible
-            && !self.mouse_help_visible
+            && !self.overlays.help_visible
+            && !self.overlays.mouse_help_visible
             && k.code == KeyCode::Enter
         {
             return self.on_key_search(k);
@@ -141,7 +141,7 @@ impl App {
 
         // While the help overlay is up, swallow input; help-toggle / Esc / Back dismiss it,
         // and the navigation keys scroll the sheet (it rarely fits whole on small grids).
-        if self.help_visible {
+        if self.overlays.help_visible {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return self.quit_app();
             }
@@ -155,7 +155,7 @@ impl App {
                     Some(Action::Back)
                 );
             if close {
-                self.help_visible = false;
+                self.overlays.help_visible = false;
                 self.dirty = true;
             }
             return Vec::new();
@@ -163,7 +163,7 @@ impl App {
 
         // The mouse cheat-sheet is opened by a mouse-only footer icon. While up, swallow input;
         // Esc / Back dismiss it, Quit still works, and the navigation keys scroll it.
-        if self.mouse_help_visible {
+        if self.overlays.mouse_help_visible {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return self.quit_app();
             }
@@ -176,7 +176,7 @@ impl App {
                     Some(Action::Back)
                 );
             if close {
-                self.mouse_help_visible = false;
+                self.overlays.mouse_help_visible = false;
                 self.dirty = true;
             }
             return Vec::new();
@@ -184,7 +184,7 @@ impl App {
 
         // The About card behaves like the help overlay: while it's up, swallow input; its own
         // toggle (F1) / Esc / Back dismiss it, and Quit still works.
-        if self.about_visible {
+        if self.overlays.about_visible {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return self.quit_app();
             }
@@ -195,7 +195,7 @@ impl App {
                     Some(Action::Back)
                 );
             if close {
-                self.about_visible = false;
+                self.overlays.about_visible = false;
                 self.dirty = true;
             }
             return Vec::new();
@@ -206,7 +206,7 @@ impl App {
         // and editable in Settings › Keys) work, its toggle (`i`) / Esc / Enter / Back
         // close it, Quit still works, and everything else is swallowed so nothing leaks
         // into the player underneath.
-        if self.now_playing_overlay.is_some() {
+        if self.overlays.now_playing_overlay.is_some() {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return self.quit_app();
             }
@@ -233,7 +233,7 @@ impl App {
         // The recordings browser (Decide-mode save/discard/play) is modal wherever it opens —
         // over the player, or on top of the recording-settings popup. Quit still works; its own
         // keys (↑/↓, s/d/Enter) act on the selected track; its toggle / Esc / Back close it.
-        if self.recordings_browser.is_some() {
+        if self.overlays.recordings_browser.is_some() {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return self.quit_app();
             }
@@ -245,7 +245,7 @@ impl App {
         // shortcut (`?`/`w`) or Home would open/enter another window *behind* it and strand the
         // popup painting on top. Quit still works; the recordings browser (checked above) can
         // still open on top of it; everything else routes to its own handler.
-        if self.recording_settings.is_some() {
+        if self.overlays.recording_settings.is_some() {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return self.quit_app();
             }
@@ -254,7 +254,7 @@ impl App {
 
         // The "Why DJ Gem" overlay behaves like the About card: while it's up, swallow input; its own
         // toggle (`w`) / Esc / Back dismiss it, and Quit still works.
-        if self.why_ai_visible {
+        if self.overlays.why_ai_visible {
             if matches!(self.keymap.global_action(chord), Some(Action::Quit)) {
                 return self.quit_app();
             }
@@ -265,7 +265,7 @@ impl App {
                     Some(Action::Back)
                 );
             if close {
-                self.why_ai_visible = false;
+                self.overlays.why_ai_visible = false;
                 self.dirty = true;
             }
             return Vec::new();
@@ -279,13 +279,13 @@ impl App {
         {
             match action {
                 Action::ToggleHelp => {
-                    self.help_visible = true;
+                    self.overlays.help_visible = true;
                     self.bridges.help_scroll.reset();
                     self.dirty = true;
                     return Vec::new();
                 }
                 Action::ToggleAbout => {
-                    self.about_visible = true;
+                    self.overlays.about_visible = true;
                     self.dirty = true;
                     return Vec::new();
                 }
@@ -293,7 +293,7 @@ impl App {
                     // Only worth an overlay if a prior DJ Gem rerank left something to explain;
                     // otherwise nudge the user with a transient note instead of an empty card.
                     if self.streaming.last_explain.is_some() {
-                        self.why_ai_visible = true;
+                        self.overlays.why_ai_visible = true;
                     } else {
                         self.status.kind = StatusKind::Info;
                         self.status.text = t!(

@@ -732,3 +732,60 @@ impl Default for Animation {
         }
     }
 }
+
+/// The transient modal/overlay layer: which cheat-sheets and cards are open, the pending
+/// confirmations, the popup payloads (Spotify picker, recording settings/browser), the
+/// background update-check result, and the "what's playing" identify overlay with its cache and
+/// epoch. Grouping them keeps the overlay-visibility surface — which render and the modal
+/// dismissal paths both read — in one place. The `transfer_running` job guard stays on [`App`].
+#[derive(Default)]
+pub struct Overlays {
+    /// Whether the `?` help / cheat-sheet overlay is shown.
+    pub help_visible: bool,
+    /// Whether the mouse cheat-sheet overlay is shown. Opened only from the footer mouse icon.
+    pub mouse_help_visible: bool,
+    /// A pending keybinding-conflict warning (Keys tab). When set, a modal popup is shown
+    /// and the next key/click dismisses it; the attempted rebind is left unchanged.
+    pub key_conflict: Option<Conflict>,
+    /// A pending destructive/settings-wide confirmation. Enter/`y` confirms; Esc/`n` or the
+    /// Cancel button backs out before the key can leak through to the settings list.
+    pub pending_settings_confirm: Option<SettingsConfirm>,
+    /// The "Import from Spotify" playlist picker overlay (Settings › Accounts). ↑/↓
+    /// select, Enter imports, Esc closes.
+    pub spotify_picker: Option<SpotifyPicker>,
+    /// The radio-recording settings popup (over the Playback settings tab).
+    pub recording_settings: Option<RecordingSettingsPopup>,
+    /// The recordings browser (Decide-mode save/discard/play), opened from the popup or a key.
+    pub recordings_browser: Option<RecordingsBrowser>,
+    /// Whether the About card overlay is showing. Opened by clicking the `ytm-tui` brand in the
+    /// nav bar or via `Action::ToggleAbout` (F1); any key/click (other than the GitHub link)
+    /// dismisses it.
+    pub about_visible: bool,
+    /// The app icon as a render-ready protocol for the About card, decoded from the embedded PNG
+    /// and cached with the popup background it was composited against. Native image-capable
+    /// terminals reuse the detected picker for pixel quality; everything else falls back to
+    /// half-blocks so the card still draws everywhere. `RefCell` because render only has `&App`.
+    pub about_icon: RefCell<
+        Option<(
+            ratatui::style::Color,
+            Option<ProtocolType>,
+            StatefulProtocol,
+        )>,
+    >,
+    /// Result of the background app-update check (`None` until it completes / when disabled).
+    /// When `available`, the About card shows an upgrade notice and the nav brand gets a dot.
+    pub update_status: Option<crate::update::UpdateStatus>,
+    /// Whether the "Why DJ Gem" overlay is showing. Opened by `Action::WhyAi` (`w`) when the last
+    /// autoplay-streaming refill went through the DJ Gem reranker; lists why each track was chosen (slot
+    /// role + reason codes + confidence). Esc / `w` / Back dismiss it, like the About card.
+    pub why_ai_visible: bool,
+    /// The "what's playing" (지듣노) overlay — the radio identify card with favorite /
+    /// ask-DJ Gem actions. `None` = closed. Opened by `Action::IdentifyNowPlaying` (`i`).
+    pub now_playing_overlay: Option<NowPlayingOverlay>,
+    /// Short-TTL cache of identify results keyed on (station, title), so re-opening on
+    /// the same song and the "tell me more" handoff never re-spend an API call.
+    pub(in crate::app) now_playing_cache: super::now_playing::NowPlayingCache,
+    /// Identify epoch: replies must carry the open overlay's snapshot of this counter or
+    /// they're stale (overlay closed / stream title moved on).
+    pub(in crate::app) now_playing_seq: u64,
+}

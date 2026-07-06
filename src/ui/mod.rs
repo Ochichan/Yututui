@@ -44,24 +44,24 @@ pub fn render(frame: &mut Frame, app: &App) {
         Mode::Ai => views::ai::render(frame, app, area),
     }
     // The `?` cheat-sheet draws on top of whatever screen is active.
-    if app.help_visible {
+    if app.overlays.help_visible {
         views::help::render(frame, app, area);
     }
     // The mouse cheat-sheet is opened only from the footer mouse icon.
-    if app.mouse_help_visible {
+    if app.overlays.mouse_help_visible {
         views::help::render_mouse(frame, app, area);
     }
     // The About card draws on top too (clicking the `ytm-tui` brand or F1).
-    if app.about_visible {
+    if app.overlays.about_visible {
         views::about::render(frame, app, area);
     }
     // The "Why DJ Gem" card explains the last DJ Gem streaming refill (`w`); also drawn on top.
-    if app.why_ai_visible {
+    if app.overlays.why_ai_visible {
         views::why_ai::render(frame, app, area);
     }
     // The "what's playing" identify card (radio): the result + favorite / ask-DJ Gem
     // actions. Below the mode confirmations so those stay on top.
-    if app.now_playing_overlay.is_some() {
+    if app.overlays.now_playing_overlay.is_some() {
         views::now_playing::render(frame, app, area);
     }
     // Radio mode switching is a global UI-mode confirmation.
@@ -69,19 +69,19 @@ pub fn render(frame: &mut Frame, app: &App) {
         views::player::render_radio_mode_confirm(frame, app, area, confirm);
     }
     // A keybinding-conflict warning (Keys tab) is modal — it sits above everything else.
-    if let Some(conflict) = &app.key_conflict {
+    if let Some(conflict) = &app.overlays.key_conflict {
         views::settings::render_conflict(frame, app, area, conflict);
     }
     // Settings confirmations are likewise modal.
-    if let Some(confirm) = app.pending_settings_confirm {
+    if let Some(confirm) = app.overlays.pending_settings_confirm {
         views::settings::render_confirm(frame, app, area, confirm);
     }
     // The Spotify playlist picker (Import from Spotify…) is modal over Settings.
-    if app.spotify_picker.is_some() {
+    if app.overlays.spotify_picker.is_some() {
         views::settings::render_spotify_picker(frame, app, area);
     }
     // The radio-recording settings popup is modal over the Playback tab.
-    if app.recording_settings.is_some() {
+    if app.overlays.recording_settings.is_some() {
         views::settings::render_recording_settings(frame, app, area);
     }
     // The create-playlist popup captures Library input while open.
@@ -107,7 +107,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     // The recordings browser floats over the player or the recording-settings popup — drawn
     // last so it sits on top of whatever opened it.
-    if app.recordings_browser.is_some() {
+    if app.overlays.recordings_browser.is_some() {
         views::settings::render_recordings_browser(frame, app, area);
     }
     retro::scrub_frame(frame, app);

@@ -20,7 +20,7 @@ use crate::ui::text::truncate_to_width;
 
 /// Render the card as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(overlay) = app.now_playing_overlay.as_ref() else {
+    let Some(overlay) = app.overlays.now_playing_overlay.as_ref() else {
         return;
     };
 

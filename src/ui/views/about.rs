@@ -86,7 +86,7 @@ fn draw_icon(frame: &mut Frame, app: &App, band: Rect) -> Rect {
         return rect;
     }
     ensure_icon(app);
-    let mut guard = app.about_icon.borrow_mut();
+    let mut guard = app.overlays.about_icon.borrow_mut();
     let Some((_, _, proto)) = guard.as_mut() else {
         return rect;
     };
@@ -107,7 +107,8 @@ fn ensure_icon(app: &App) {
     let bg = crate::ui::popup_bg(app);
     let target_protocol = about_icon_protocol(app);
     let needs_build =
-        app.about_icon
+        app.overlays
+            .about_icon
             .borrow()
             .as_ref()
             .is_none_or(|(cached_bg, cached_protocol, _)| {
@@ -141,7 +142,7 @@ fn ensure_icon(app: &App) {
                 picker.new_resize_protocol(img)
             }
         };
-        *app.about_icon.borrow_mut() = Some((bg, target_protocol, proto));
+        *app.overlays.about_icon.borrow_mut() = Some((bg, target_protocol, proto));
     }
 }
 
@@ -221,7 +222,10 @@ fn indexed_to_rgb(i: u8) -> (u8, u8, u8) {
 /// Draw the name, description, info rows, the clickable GitHub link, and the close hint.
 /// Whether the About card should show the "update available" notice.
 fn update_available(app: &App) -> bool {
-    app.update_status.as_ref().is_some_and(|s| s.available)
+    app.overlays
+        .update_status
+        .as_ref()
+        .is_some_and(|s| s.available)
 }
 
 fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
@@ -346,7 +350,7 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
 /// The three-row "update available" notice: headline, tailored upgrade command/note, and a
 /// clickable Releases link. Only called when [`update_available`] is true.
 fn draw_update_block(frame: &mut Frame, app: &App, headline: Rect, body: Rect, link: Rect) {
-    let Some(status) = app.update_status.as_ref() else {
+    let Some(status) = app.overlays.update_status.as_ref() else {
         return;
     };
     let ins = crate::update::update_instructions(status.method);

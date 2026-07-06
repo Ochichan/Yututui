@@ -547,6 +547,7 @@ fn settings_global_key_capture_rejects_player_overlap() {
 
     app.update(Msg::Key(key(KeyCode::Char('.')))); // Player next-track owns `.`.
     let conflict = app
+        .overlays
         .key_conflict
         .expect("global overlap should raise a conflict warning");
     assert_eq!(conflict.ctx, KeyContext::Player);
@@ -1165,10 +1166,10 @@ fn korean_ctrl_h_goes_home_from_library() {
 fn ctrl_h_goes_home_from_help_overlay() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.help_visible = true;
+    app.overlays.help_visible = true;
     app.update(Msg::Key(ctrl(KeyCode::Char('h'))));
     assert_eq!(app.mode, Mode::Player);
-    assert!(!app.help_visible);
+    assert!(!app.overlays.help_visible);
     assert!(!app.should_quit);
 }
 
@@ -1422,7 +1423,7 @@ fn radio_recording_popup_opens_edits_and_persists() {
     }
     let _ = app.settings_activate();
     assert!(
-        app.recording_settings.is_some(),
+        app.overlays.recording_settings.is_some(),
         "the button opens the popup"
     );
 
@@ -1439,13 +1440,13 @@ fn radio_recording_popup_opens_edits_and_persists() {
     }
     app.recording_settings_key(key(KeyCode::Enter));
     assert!(
-        app.recordings_browser.is_some(),
+        app.overlays.recordings_browser.is_some(),
         "browse row opens the browser"
     );
 
     // Closing Settings commits the draft to config.
-    app.recordings_browser = None;
-    app.recording_settings = None;
+    app.overlays.recordings_browser = None;
+    app.overlays.recording_settings = None;
     let _ = app.close_settings();
     assert_eq!(
         app.config.recording.mode,
@@ -1469,7 +1470,7 @@ fn recording_slider_drag_maps_column_to_value() {
             .expect("radio item present in radio mode");
     }
     let _ = app.settings_activate();
-    assert!(app.recording_settings.is_some());
+    assert!(app.overlays.recording_settings.is_some());
 
     // An 11-cell track; the mapping uses width-1 divisions so both ends are reachable.
     let track = Rect {
@@ -1555,7 +1556,7 @@ fn recording_settings_popup_closed_by_navigation() {
     }
     let _ = app.settings_activate();
     assert!(
-        app.recording_settings.is_some(),
+        app.overlays.recording_settings.is_some(),
         "the button opens the popup"
     );
 
@@ -1563,7 +1564,7 @@ fn recording_settings_popup_closed_by_navigation() {
     // (regression: it used to keep painting on top, unreachable).
     let _ = app.go_home();
     assert!(
-        app.recording_settings.is_none(),
+        app.overlays.recording_settings.is_none(),
         "go_home clears the recording-settings popup"
     );
     assert_eq!(app.mode, Mode::Player);
@@ -1819,7 +1820,7 @@ fn identify_key_needs_a_radio_stream() {
     app.ai.available = true;
     let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
     assert!(cmds.is_empty());
-    assert!(app.now_playing_overlay.is_none());
+    assert!(app.overlays.now_playing_overlay.is_none());
     assert_eq!(app.status.kind, StatusKind::Info);
 }
 
@@ -1834,14 +1835,14 @@ fn identify_opens_from_icy_metadata_without_dj_gem_or_an_api_call() {
         "populated from ICY metadata — never an API call"
     );
     assert!(matches!(
-        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        app.overlays.now_playing_overlay.as_ref().map(|o| &o.state),
         Some(NowPlayingOverlayState::Playing { artist, title })
             if artist.as_deref() == Some("Artist") && title == "Track"
     ));
     // The `i` key still toggles the card closed.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
     assert!(cmds.is_empty());
-    assert!(app.now_playing_overlay.is_none());
+    assert!(app.overlays.now_playing_overlay.is_none());
 }
 
 #[test]
@@ -1849,7 +1850,11 @@ fn identify_without_metadata_shows_no_metadata() {
     let mut app = radio_playing("groove");
     let cmds = app.update(Msg::Key(key(KeyCode::Char('i'))));
     assert!(cmds.is_empty());
-    let overlay = app.now_playing_overlay.as_ref().expect("overlay opens");
+    let overlay = app
+        .overlays
+        .now_playing_overlay
+        .as_ref()
+        .expect("overlay opens");
     assert_eq!(overlay.state, NowPlayingOverlayState::NoMetadata);
 }
 
@@ -1858,7 +1863,7 @@ fn identify_flags_obvious_station_content() {
     let mut app = radio_with_title("Werbung");
     app.update(Msg::Key(key(KeyCode::Char('i'))));
     assert_eq!(
-        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        app.overlays.now_playing_overlay.as_ref().map(|o| &o.state),
         Some(&NowPlayingOverlayState::StationContent)
     );
     // Station content is neither favoritable nor askable.
@@ -1871,7 +1876,7 @@ fn identify_flags_obvious_station_content() {
 fn open_card_repopulates_live_on_title_change() {
     let mut app = radio_card("Artist - Track");
     assert!(matches!(
-        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        app.overlays.now_playing_overlay.as_ref().map(|o| &o.state),
         Some(NowPlayingOverlayState::Playing { title, .. }) if title == "Track"
     ));
     // The song flips under the open card → it re-populates from the fresh ICY title.
@@ -1879,7 +1884,7 @@ fn open_card_repopulates_live_on_title_change() {
         "icy-title": "Other - Song"
     })));
     assert!(matches!(
-        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        app.overlays.now_playing_overlay.as_ref().map(|o| &o.state),
         Some(NowPlayingOverlayState::Playing { title, .. }) if title == "Song"
     ));
 }
@@ -1890,7 +1895,7 @@ fn early_open_before_first_tick_fills_in_when_metadata_arrives() {
     let mut app = radio_playing("groove");
     app.update(Msg::Key(key(KeyCode::Char('i'))));
     assert_eq!(
-        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        app.overlays.now_playing_overlay.as_ref().map(|o| &o.state),
         Some(&NowPlayingOverlayState::NoMetadata)
     );
     // The first metadata tick lands → the open card fills in on its own.
@@ -1898,7 +1903,7 @@ fn early_open_before_first_tick_fills_in_when_metadata_arrives() {
         "icy-title": "Artist - Track"
     })));
     assert!(matches!(
-        app.now_playing_overlay.as_ref().map(|o| &o.state),
+        app.overlays.now_playing_overlay.as_ref().map(|o| &o.state),
         Some(NowPlayingOverlayState::Playing { title, .. }) if title == "Track"
     ));
 }
@@ -1926,7 +1931,8 @@ fn overlay_favorite_resolves_then_adds_to_music_favorites_once() {
     let (seq, query) = resolve_track_cmd(&cmds).expect("one resolve");
     assert_eq!(query, "Artist Track");
     assert!(
-        app.now_playing_overlay
+        app.overlays
+            .now_playing_overlay
             .as_ref()
             .is_some_and(|o| o.resolving)
     );
@@ -1989,7 +1995,7 @@ fn overlay_favorite_resolve_failures_keep_the_overlay_and_write_nothing() {
         result: Ok(Vec::new()),
     });
     assert!(cmds.is_empty());
-    assert!(app.now_playing_overlay.is_some());
+    assert!(app.overlays.now_playing_overlay.is_some());
     assert_eq!(app.status.kind, StatusKind::Error);
     assert!(app.library.favorites.is_empty());
 
@@ -2005,7 +2011,8 @@ fn overlay_favorite_resolve_failures_keep_the_overlay_and_write_nothing() {
         "stale reply must not write"
     );
     assert!(
-        app.now_playing_overlay
+        app.overlays
+            .now_playing_overlay
             .as_ref()
             .is_some_and(|o| o.resolving)
     );
@@ -2018,7 +2025,10 @@ fn overlay_ask_ai_is_gated_on_dj_gem_and_seeds_a_rich_block() {
     assert!(!app.now_playing_can_ask());
     let cmds = app.update(Msg::Key(key(KeyCode::Char('g'))));
     assert!(ask_ai_prompt(&cmds).is_none());
-    assert!(app.now_playing_overlay.is_some(), "the card stays put");
+    assert!(
+        app.overlays.now_playing_overlay.is_some(),
+        "the card stays put"
+    );
 
     // DJ Gem ON: the ask action hands off with a labeled, enriched block.
     app.ai.available = true;
@@ -2027,7 +2037,7 @@ fn overlay_ask_ai_is_gated_on_dj_gem_and_seeds_a_rich_block() {
     let prompt = ask_ai_prompt(&cmds).expect("one AskAi");
     assert_eq!(app.mode, Mode::Ai);
     assert!(
-        app.now_playing_overlay.is_none(),
+        app.overlays.now_playing_overlay.is_none(),
         "the card closes on handoff"
     );
     assert!(app.ai.thinking);
@@ -2055,7 +2065,7 @@ fn overlay_ask_ai_respects_the_thinking_guard() {
     app.ai.thinking = true;
     let cmds = app.update(Msg::Key(key(KeyCode::Char('g'))));
     assert!(ask_ai_prompt(&cmds).is_none());
-    assert!(app.now_playing_overlay.is_some());
+    assert!(app.overlays.now_playing_overlay.is_some());
     assert_eq!(app.status.kind, StatusKind::Info);
 }
 
@@ -2063,16 +2073,16 @@ fn overlay_ask_ai_respects_the_thinking_guard() {
 fn identify_overlay_swallows_player_keys_and_esc_closes() {
     let mut app = radio_with_title("Artist - Track");
     app.update(Msg::Key(key(KeyCode::Char('i'))));
-    assert!(app.now_playing_overlay.is_some());
+    assert!(app.overlays.now_playing_overlay.is_some());
 
     // `n` (next track) must not leak through to the player underneath.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert!(cmds.is_empty());
     assert_eq!(current(&app), "rad:groove");
-    assert!(app.now_playing_overlay.is_some());
+    assert!(app.overlays.now_playing_overlay.is_some());
 
     app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(app.now_playing_overlay.is_none());
+    assert!(app.overlays.now_playing_overlay.is_none());
 }
 
 #[test]
@@ -3170,21 +3180,21 @@ fn overlays_do_not_park_animations_but_focus_still_does() {
 
     assert!(app.animation_active());
 
-    app.help_visible = true;
+    app.overlays.help_visible = true;
     assert!(
         app.animation_active(),
         "cheat-sheet overlay should not pause the background animation"
     );
-    app.help_visible = false;
+    app.overlays.help_visible = false;
 
-    app.about_visible = true;
+    app.overlays.about_visible = true;
     assert!(
         app.animation_active(),
         "About overlay should not pause the background animation"
     );
-    app.about_visible = false;
+    app.overlays.about_visible = false;
 
-    app.why_ai_visible = true;
+    app.overlays.why_ai_visible = true;
     assert!(
         app.animation_active(),
         "Why-DJ Gem overlay should not pause the background animation"
@@ -3281,8 +3291,8 @@ fn all_animations_on_render_every_view_without_panic() {
     app.fx.until = u64::MAX;
 
     // Overlays stacked on top of whatever screen is active.
-    app.help_visible = true;
-    app.about_visible = true;
+    app.overlays.help_visible = true;
+    app.overlays.about_visible = true;
     app.queue_popup.open = true;
     app.playlist_picker = Some(PlaylistPicker {
         songs: vec![cur.clone()],
@@ -3409,7 +3419,7 @@ fn opening_a_popup_arms_the_fade_in_once() {
     app.config.animations.popup_fade = true;
     app.update(Msg::Resize);
     assert!(app.fx.popup.is_none());
-    app.help_visible = true;
+    app.overlays.help_visible = true;
     app.update(Msg::Resize);
     assert!(app.fx.popup.is_some(), "newly-opened overlay bit → fade-in");
     // Still open on the next turn → no re-arm (the start frame is unchanged).
@@ -3417,7 +3427,7 @@ fn opening_a_popup_arms_the_fade_in_once() {
     app.update(Msg::Resize);
     assert_eq!(app.fx.popup, started);
     // Closing arms nothing.
-    app.help_visible = false;
+    app.overlays.help_visible = false;
     app.fx.popup = None;
     app.update(Msg::Resize);
     assert!(app.fx.popup.is_none());
@@ -3447,9 +3457,9 @@ fn caret_and_ambient_effects_wake_the_clock_off_the_player() {
     assert!(!app.animation_active());
     // The About card's sparkles animate over any screen.
     app.config.animations.about_fx = true;
-    app.about_visible = true;
+    app.overlays.about_visible = true;
     assert!(app.animation_active());
-    app.about_visible = false;
+    app.overlays.about_visible = false;
     assert!(!app.animation_active());
 }
 
@@ -3630,7 +3640,7 @@ fn settings_keys_lists_radio_normal_mode_binding() {
 fn help_overlay_shows_player_radio_normal_mode_binding() {
     let mut app = App::new(100);
     app.config.retro_mode = true;
-    app.help_visible = true;
+    app.overlays.help_visible = true;
 
     let buf = render_app_buffer(&app, 80, 24);
     let text: String = buf
@@ -3690,12 +3700,12 @@ fn retro_frames_contain_only_cp437_safe_cells() {
     };
 
     assert_scrubbed(&app, "player");
-    app.about_visible = true;
+    app.overlays.about_visible = true;
     assert_scrubbed(&app, "about card");
-    app.about_visible = false;
-    app.help_visible = true;
+    app.overlays.about_visible = false;
+    app.overlays.help_visible = true;
     assert_scrubbed(&app, "help overlay");
-    app.help_visible = false;
+    app.overlays.help_visible = false;
     app.mode = Mode::Search;
     assert_scrubbed(&app, "search");
     app.mode = Mode::Library;
@@ -3965,12 +3975,12 @@ fn clear_romanized_title_cache_confirms_and_discards_stale_results() {
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(cmds.is_empty());
     assert_eq!(
-        app.pending_settings_confirm,
+        app.overlays.pending_settings_confirm,
         Some(SettingsConfirm::ClearRomanizedTitleCache)
     );
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('y'))));
-    assert!(app.pending_settings_confirm.is_none());
+    assert!(app.overlays.pending_settings_confirm.is_none());
     assert_eq!(app.status.text, "Romanized title cache cleared");
     assert!(app.romanization.cache.entry_for(&song).is_none());
     assert!(
@@ -4040,6 +4050,7 @@ fn settings_key_capture_conflict_raises_modal_warning() {
     // dropping the rebind, and it names the offending chord, action, and context.
     app.update(Msg::Key(key(KeyCode::Char('q'))));
     let conflict = app
+        .overlays
         .key_conflict
         .expect("a conflict warning should be raised");
     assert_eq!(conflict.existing, Action::Back);
@@ -4061,7 +4072,7 @@ fn settings_key_capture_conflict_raises_modal_warning() {
 
     // The popup is modal: the next key only dismisses it (here `q` does NOT save+quit).
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
-    assert!(app.key_conflict.is_none());
+    assert!(app.overlays.key_conflict.is_none());
     assert!(
         save_config(&cmds).is_none(),
         "dismiss key must be swallowed, not saved"
@@ -4119,7 +4130,7 @@ fn reset_keybindings_button_restores_defaults_and_persists_on_close() {
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(cmds.is_empty());
     assert_eq!(
-        app.pending_settings_confirm,
+        app.overlays.pending_settings_confirm,
         Some(SettingsConfirm::ResetKeybindings)
     );
     let cmds = app.update(Msg::Key(key(KeyCode::Char('y'))));
@@ -4176,13 +4187,13 @@ fn reset_all_button_confirms_then_restores_defaults() {
     // Enter opens the confirmation modal (does not reset yet).
     app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(
-        app.pending_settings_confirm,
+        app.overlays.pending_settings_confirm,
         Some(SettingsConfirm::ResetAll)
     );
     assert!((app.settings.as_ref().unwrap().draft.speed - 1.8).abs() < 1e-9);
     // `y` confirms → every draft value is back to its default.
     app.update(Msg::Key(key(KeyCode::Char('y'))));
-    assert!(app.pending_settings_confirm.is_none());
+    assert!(app.overlays.pending_settings_confirm.is_none());
     let d = &app.settings.as_ref().unwrap().draft;
     assert!((d.speed - 1.0).abs() < 1e-9);
     assert!((d.seek_seconds - 10.0).abs() < 1e-9);
@@ -4196,11 +4207,11 @@ fn reset_all_button_cancel_leaves_settings_untouched() {
     app.settings.as_mut().unwrap().draft.speed = 1.8;
     app.update(Msg::Key(key(KeyCode::Enter))); // open modal
     assert_eq!(
-        app.pending_settings_confirm,
+        app.overlays.pending_settings_confirm,
         Some(SettingsConfirm::ResetAll)
     );
     app.update(Msg::Key(key(KeyCode::Esc))); // anything but Enter/`y` cancels
-    assert!(app.pending_settings_confirm.is_none());
+    assert!(app.overlays.pending_settings_confirm.is_none());
     assert!((app.settings.as_ref().unwrap().draft.speed - 1.8).abs() < 1e-9);
 }
 
@@ -4478,14 +4489,14 @@ fn editing_api_key_requires_confirmation() {
     // Activation asks first — it does NOT drop straight into edit mode.
     app.update(Msg::Key(key(KeyCode::Enter)));
     assert_eq!(
-        app.pending_settings_confirm,
+        app.overlays.pending_settings_confirm,
         Some(crate::settings::SettingsConfirm::EditApiKey)
     );
     assert!(!app.settings.as_ref().unwrap().editing_text);
 
     // Cancelling dismisses the popup and leaves the key untouched (never entered the editor).
     app.update(Msg::Key(key(KeyCode::Esc)));
-    assert!(app.pending_settings_confirm.is_none());
+    assert!(app.overlays.pending_settings_confirm.is_none());
     assert!(!app.settings.as_ref().unwrap().editing_text);
     assert_eq!(
         app.settings.as_ref().unwrap().draft.gemini_api_key,
@@ -4495,7 +4506,7 @@ fn editing_api_key_requires_confirmation() {
     // Ask again and confirm (Enter): now edit mode begins with a freshly cleared buffer.
     app.update(Msg::Key(key(KeyCode::Enter))); // request
     app.update(Msg::Key(key(KeyCode::Enter))); // confirm
-    assert!(app.pending_settings_confirm.is_none());
+    assert!(app.overlays.pending_settings_confirm.is_none());
     assert!(app.settings.as_ref().unwrap().editing_text);
     assert_eq!(app.settings.as_ref().unwrap().draft.gemini_api_key, "");
 }
@@ -5439,16 +5450,16 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
     assert_eq!(explain.picks[1].title, "Second Song");
 
     // `w` opens the overlay; `w` again dismisses it.
-    assert!(!app.why_ai_visible);
+    assert!(!app.overlays.why_ai_visible);
     app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
     assert!(app.radio_dedicated_mode);
     app.update(Msg::Key(key(KeyCode::Char('w'))));
     assert!(
-        app.why_ai_visible,
+        app.overlays.why_ai_visible,
         "w opens the Why-DJ Gem overlay in Radio mode"
     );
     app.update(Msg::Key(key(KeyCode::Char('w'))));
-    assert!(!app.why_ai_visible, "w again dismisses it");
+    assert!(!app.overlays.why_ai_visible, "w again dismisses it");
 }
 
 #[test]
@@ -5460,7 +5471,7 @@ fn why_ai_without_a_rerank_shows_a_note_not_an_overlay() {
 
     app.update(Msg::Key(key(KeyCode::Char('w'))));
     assert!(
-        !app.why_ai_visible,
+        !app.overlays.why_ai_visible,
         "no overlay opens without a prior DJ Gem rerank"
     );
     assert!(
@@ -5490,7 +5501,7 @@ fn why_ai_overlay_renders_the_resolved_picks() {
             },
         ],
     });
-    app.why_ai_visible = true;
+    app.overlays.why_ai_visible = true;
 
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -7549,7 +7560,7 @@ fn click_help_button_opens_cheatsheet() {
         MouseTarget::Global(Action::ToggleHelp),
     );
     assert!(app.update(Msg::MouseClick { col: 4, row: 9 }).is_empty());
-    assert!(app.help_visible);
+    assert!(app.overlays.help_visible);
 }
 
 #[test]
@@ -7565,30 +7576,30 @@ fn click_mouse_help_button_opens_mouse_cheatsheet() {
         MouseTarget::MouseHelp,
     );
     assert!(app.update(Msg::MouseClick { col: 20, row: 9 }).is_empty());
-    assert!(app.mouse_help_visible);
-    assert!(!app.help_visible);
+    assert!(app.overlays.mouse_help_visible);
+    assert!(!app.overlays.help_visible);
 }
 
 #[test]
 fn korean_q_key_closes_help_overlay() {
     let mut app = app_playing(1, 0);
-    app.help_visible = true;
+    app.overlays.help_visible = true;
     assert!(app.update(Msg::Key(key(KeyCode::Char('ㅂ')))).is_empty());
-    assert!(!app.help_visible);
+    assert!(!app.overlays.help_visible);
 }
 
 #[test]
 fn esc_closes_mouse_help_overlay() {
     let mut app = app_playing(1, 0);
-    app.mouse_help_visible = true;
+    app.overlays.mouse_help_visible = true;
     assert!(app.update(Msg::Key(key(KeyCode::Esc))).is_empty());
-    assert!(!app.mouse_help_visible);
+    assert!(!app.overlays.mouse_help_visible);
 }
 
 #[test]
 fn click_closes_help_overlay_before_buttons() {
     let mut app = app_playing(1, 0);
-    app.help_visible = true;
+    app.overlays.help_visible = true;
     app.playback.volume = 40;
     app.register_mouse_button(
         Rect {
@@ -7600,14 +7611,14 @@ fn click_closes_help_overlay_before_buttons() {
         MouseTarget::Player(Action::VolUp),
     );
     assert!(app.update(Msg::MouseClick { col: 3, row: 1 }).is_empty());
-    assert!(!app.help_visible);
+    assert!(!app.overlays.help_visible);
     assert_eq!(app.playback.volume, 40);
 }
 
 #[test]
 fn click_closes_mouse_help_overlay_before_buttons() {
     let mut app = app_playing(1, 0);
-    app.mouse_help_visible = true;
+    app.overlays.mouse_help_visible = true;
     app.playback.volume = 40;
     app.register_mouse_button(
         Rect {
@@ -7619,7 +7630,7 @@ fn click_closes_mouse_help_overlay_before_buttons() {
         MouseTarget::Player(Action::VolUp),
     );
     assert!(app.update(Msg::MouseClick { col: 3, row: 1 }).is_empty());
-    assert!(!app.mouse_help_visible);
+    assert!(!app.overlays.mouse_help_visible);
     assert_eq!(app.playback.volume, 40);
 }
 
@@ -8266,28 +8277,28 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     app.queue_popup.open = false;
     assert_eq!(app.art_overlay_mask(), 0);
 
-    app.help_visible = true;
+    app.overlays.help_visible = true;
     assert_eq!(app.art_overlay_mask(), 1 << 3);
-    app.help_visible = false;
-    app.about_visible = true;
+    app.overlays.help_visible = false;
+    app.overlays.about_visible = true;
     assert_eq!(app.art_overlay_mask(), 1 << 4);
-    app.about_visible = false;
-    app.why_ai_visible = true;
+    app.overlays.about_visible = false;
+    app.overlays.why_ai_visible = true;
     assert_eq!(app.art_overlay_mask(), 1 << 5);
-    app.why_ai_visible = false;
-    app.key_conflict = Some(Conflict {
+    app.overlays.why_ai_visible = false;
+    app.overlays.key_conflict = Some(Conflict {
         ctx: KeyContext::Player,
         existing: Action::TogglePause,
         chord: Chord::new(KeyCode::Char('x'), KeyModifiers::NONE),
     });
     assert_eq!(app.art_overlay_mask(), 1 << 6);
-    app.key_conflict = None;
+    app.overlays.key_conflict = None;
     app.radio_mode.pending_radio_mode_confirm = Some(RadioModeConfirm::Enter);
     assert_eq!(app.art_overlay_mask(), 1 << 7);
     app.radio_mode.pending_radio_mode_confirm = None;
-    app.pending_settings_confirm = Some(SettingsConfirm::ResetAll);
+    app.overlays.pending_settings_confirm = Some(SettingsConfirm::ResetAll);
     assert_eq!(app.art_overlay_mask(), 1 << 8);
-    app.pending_settings_confirm = None;
+    app.overlays.pending_settings_confirm = None;
     app.library_ui.confirm_delete = Some(vec![std::path::PathBuf::from("track.mp3")]);
     assert_eq!(app.art_overlay_mask(), 1 << 9);
     app.library_ui.confirm_delete = None;
@@ -8301,9 +8312,9 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     assert_eq!(app.art_overlay_mask(), 1 << 10);
     app.mode = Mode::Player;
     assert_eq!(app.art_overlay_mask(), 0);
-    app.mouse_help_visible = true;
+    app.overlays.mouse_help_visible = true;
     assert_eq!(app.art_overlay_mask(), 1 << 11);
-    app.mouse_help_visible = false;
+    app.overlays.mouse_help_visible = false;
     assert_eq!(app.art_overlay_mask(), 0);
     app.search_filter.open = true;
     assert_eq!(app.art_overlay_mask(), 1 << 15);
@@ -8363,10 +8374,10 @@ fn named_overlay_transitions_request_one_full_clear_when_native_art_is_active() 
         app.queue_popup.open = open;
     }
     fn set_about(app: &mut App, open: bool) {
-        app.about_visible = open;
+        app.overlays.about_visible = open;
     }
     fn set_why_ai(app: &mut App, open: bool) {
-        app.why_ai_visible = open;
+        app.overlays.why_ai_visible = open;
     }
 
     for (name, set_open) in [
@@ -8407,7 +8418,7 @@ fn named_overlay_transitions_request_one_full_clear_when_native_art_is_active() 
 fn art_overlay_transition_does_not_clear_without_art() {
     let mut app = app_playing(1, 0);
 
-    app.about_visible = true;
+    app.overlays.about_visible = true;
     app.update(Msg::Resize);
     assert!(!app.take_clear_before_draw());
 }
@@ -8417,7 +8428,7 @@ fn art_overlay_transition_does_not_clear_for_halfblocks_art() {
     let mut app = app_playing(1, 0);
     make_test_art_active(&mut app, ratatui_image::picker::ProtocolType::Halfblocks);
 
-    app.about_visible = true;
+    app.overlays.about_visible = true;
     app.update(Msg::Resize);
     assert!(!app.take_clear_before_draw());
 }
@@ -8427,12 +8438,12 @@ fn about_native_icon_transition_requests_clear_without_album_art() {
     let mut app = app_playing(1, 0);
     configure_test_art_picker(&mut app, ratatui_image::picker::ProtocolType::Sixel);
 
-    app.about_visible = true;
+    app.overlays.about_visible = true;
     app.update(Msg::Resize);
     assert!(app.take_clear_before_draw());
     assert!(!app.take_clear_before_draw());
 
-    app.about_visible = false;
+    app.overlays.about_visible = false;
     app.update(Msg::Resize);
     assert!(app.take_clear_before_draw());
 }
@@ -8441,7 +8452,7 @@ fn about_native_icon_transition_requests_clear_without_album_art() {
 fn artwork_arriving_under_overlay_requests_full_clear() {
     let mut app = app_playing(1, 0);
     configure_test_art_picker(&mut app, ratatui_image::picker::ProtocolType::Sixel);
-    app.about_visible = true;
+    app.overlays.about_visible = true;
     app.update(Msg::Resize);
     assert!(app.take_clear_before_draw());
 
@@ -8536,13 +8547,13 @@ fn native_art_clear_under_player_overlays_requests_full_clear() {
         app.dropdowns.streaming_open = open;
     }
     fn set_help(app: &mut App, open: bool) {
-        app.help_visible = open;
+        app.overlays.help_visible = open;
     }
     fn set_mouse_help(app: &mut App, open: bool) {
-        app.mouse_help_visible = open;
+        app.overlays.mouse_help_visible = open;
     }
     fn set_about(app: &mut App, open: bool) {
-        app.about_visible = open;
+        app.overlays.about_visible = open;
     }
 
     for (name, set_open) in [
@@ -8616,17 +8627,17 @@ fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
     assert_opaque_rect(&buf, queue.queue_popup.rect.get().unwrap());
 
     let mut help = app_playing(1, 0);
-    help.help_visible = true;
+    help.overlays.help_visible = true;
     let buf = render_app_buffer(&help, modal_area.width, modal_area.height);
     assert_opaque_rect(&buf, centered_percent(modal_area, 80, 80));
 
     let mut mouse_help = app_playing(1, 0);
-    mouse_help.mouse_help_visible = true;
+    mouse_help.overlays.mouse_help_visible = true;
     let buf = render_app_buffer(&mouse_help, modal_area.width, modal_area.height);
     assert_opaque_rect(&buf, centered_percent(modal_area, 84, 82));
 
     let mut about = app_playing(1, 0);
-    about.about_visible = true;
+    about.overlays.about_visible = true;
     let buf = render_app_buffer(&about, modal_area.width, modal_area.height);
     assert_opaque_rect(&buf, centered_fixed(modal_area, 60, 22));
 
@@ -8648,12 +8659,12 @@ fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
             },
         ],
     });
-    why.why_ai_visible = true;
+    why.overlays.why_ai_visible = true;
     let buf = render_app_buffer(&why, modal_area.width, modal_area.height);
     assert_opaque_rect(&buf, centered_fixed(modal_area, 72, 9));
 
     let mut conflict = app_playing(1, 0);
-    conflict.key_conflict = Some(Conflict {
+    conflict.overlays.key_conflict = Some(Conflict {
         ctx: KeyContext::Player,
         existing: Action::TogglePause,
         chord: Chord::new(KeyCode::Char('x'), KeyModifiers::NONE),
@@ -8662,7 +8673,7 @@ fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
     assert_opaque_rect(&buf, centered_fixed(modal_area, 54, 9));
 
     let mut reset = app_playing(1, 0);
-    reset.pending_settings_confirm = Some(SettingsConfirm::ResetAll);
+    reset.overlays.pending_settings_confirm = Some(SettingsConfirm::ResetAll);
     let buf = render_app_buffer(&reset, modal_area.width, modal_area.height);
     assert_opaque_rect(&buf, centered_fixed(modal_area, 56, 9));
 
@@ -8677,7 +8688,7 @@ fn about_icon_composites_transparent_pixels_against_popup_background() {
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
     let icon = about_icon_rect(area);
     let mut app = app_playing(1, 0);
-    app.about_visible = true;
+    app.overlays.about_visible = true;
     app.theme
         .set_override(crate::theme::ThemeRole::Background, "#123456")
         .unwrap();
@@ -8709,7 +8720,7 @@ fn about_icon_uses_foreground_kitty_when_available() {
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
     let icon = about_icon_rect(area);
     let mut app = app_playing(1, 0);
-    app.about_visible = true;
+    app.overlays.about_visible = true;
 
     let mut picker = Picker::halfblocks();
     picker.set_protocol_type(ProtocolType::Kitty);
@@ -8717,6 +8728,7 @@ fn about_icon_uses_foreground_kitty_when_available() {
 
     let buf = render_app_buffer(&app, area.width, area.height);
     let cached_protocol = app
+        .overlays
         .about_icon
         .borrow()
         .as_ref()
@@ -8738,7 +8750,7 @@ fn about_icon_uses_sixel_when_available() {
     let area = ratatui::layout::Rect::new(0, 0, 80, 24);
     let icon = about_icon_rect(area);
     let mut app = app_playing(1, 0);
-    app.about_visible = true;
+    app.overlays.about_visible = true;
 
     let mut picker = Picker::halfblocks();
     picker.set_protocol_type(ProtocolType::Sixel);
@@ -8746,6 +8758,7 @@ fn about_icon_uses_sixel_when_available() {
 
     let buf = render_app_buffer(&app, area.width, area.height);
     let cached_protocol = app
+        .overlays
         .about_icon
         .borrow()
         .as_ref()
@@ -8815,7 +8828,7 @@ fn player_about_popup_keeps_full_kitty_art_rows_at_the_edges() {
     let popup = centered_fixed(area, 60, 22);
     let image = image::DynamicImage::new_rgba8(160, 90);
     let mut app = app_playing(1, 0);
-    app.about_visible = true;
+    app.overlays.about_visible = true;
     configure_test_art_picker(&mut app, ProtocolType::Kitty);
     let video_id = app.queue.current().unwrap().video_id.clone();
     app.set_artwork(video_id, Some(image.clone()));
@@ -8876,7 +8889,7 @@ fn non_player_frame_clears_stale_art_rect_so_popups_dont_bleed_art() {
     // stray vertical bar.
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.about_visible = true;
+    app.overlays.about_visible = true;
     // A leftover rect from the last time the player view was shown.
     app.art.rect.set(Some(Rect::new(4, 3, 10, 6)));
 
@@ -8903,7 +8916,7 @@ fn search_mode_popup_does_not_replant_stale_album_art_placeholder() {
 
     let mut app = App::new(100);
     app.mode = Mode::Search;
-    app.about_visible = true;
+    app.overlays.about_visible = true;
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut protocol = StatefulProtocol::new(
@@ -9943,7 +9956,7 @@ fn ctrl_wheel_steps_zoom_instead_of_scrolling() {
 fn zoom_keys_work_while_the_help_overlay_is_open() {
     let mut app = app_playing(1, 0);
     app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
-    app.help_visible = true;
+    app.overlays.help_visible = true;
 
     app.update(Msg::Key(ctrl(KeyCode::Char('='))));
     assert_eq!(
@@ -9951,7 +9964,10 @@ fn zoom_keys_work_while_the_help_overlay_is_open() {
         2,
         "the cheat-sheet advertises Ctrl+=; it must work while the sheet is open"
     );
-    assert!(app.help_visible, "zoom must not dismiss the overlay");
+    assert!(
+        app.overlays.help_visible,
+        "zoom must not dismiss the overlay"
+    );
 }
 
 #[test]
@@ -10323,7 +10339,7 @@ fn help_overlay_scrolls_with_wheel_and_keys_and_resets_on_open() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('?'))));
-    assert!(app.help_visible);
+    assert!(app.overlays.help_visible);
 
     // First render records the viewport; the sheet is far longer than 12 rows.
     render_at(&app, 40, 12);
@@ -10342,7 +10358,10 @@ fn help_overlay_scrolls_with_wheel_and_keys_and_resets_on_open() {
     assert_eq!(app.bridges.help_scroll.offset(), after_wheel + 1);
     app.update(Msg::Key(key(KeyCode::Up)));
     assert_eq!(app.bridges.help_scroll.offset(), after_wheel);
-    assert!(app.help_visible, "scroll keys must not dismiss the overlay");
+    assert!(
+        app.overlays.help_visible,
+        "scroll keys must not dismiss the overlay"
+    );
 
     // Close and reopen: the offset starts back at the top.
     app.update(Msg::Key(key(KeyCode::Esc)));

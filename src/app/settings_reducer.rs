@@ -162,7 +162,7 @@ impl App {
             radio_mode: self.radio_dedicated_mode || self.current_is_radio_stream(),
         }));
         self.mode = Mode::Settings;
-        self.pending_settings_confirm = None;
+        self.overlays.pending_settings_confirm = None;
         self.status.text.clear();
         // Start every Settings session at the top; clear any offset left from a prior session.
         self.bridges.reset_settings_scroll();
@@ -173,7 +173,7 @@ impl App {
         // The recording-settings popup fully owns input while open (checked before the base
         // text-edit path so the popup's own output-folder editor works). The recordings browser
         // is intercepted higher up in `on_key`, since it can also open over the player.
-        if self.recording_settings.is_some() {
+        if self.overlays.recording_settings.is_some() {
             return self.recording_settings_key(k);
         }
         // While editing a text field, keys feed the buffer until Enter/Esc commits it.
@@ -181,7 +181,7 @@ impl App {
             return self.settings_edit_text(k);
         }
         // The Spotify playlist picker overlay swallows navigation keys while open.
-        if self.spotify_picker.is_some() {
+        if self.overlays.spotify_picker.is_some() {
             return self.spotify_picker_key(k);
         }
         let on_keys_tab = self
@@ -316,7 +316,7 @@ impl App {
                 // Surface the clash as a modal warning rather than a quiet status line, so
                 // the rebind visibly fails instead of silently keeping the old key.
                 self.status.text.clear();
-                self.key_conflict = Some(conflict);
+                self.overlays.key_conflict = Some(conflict);
             }
         }
         Vec::new()
@@ -340,7 +340,7 @@ impl App {
                 Err(conflict) => {
                     // Same modal treatment as a manual rebind clash.
                     self.status.text.clear();
-                    self.key_conflict = Some(conflict);
+                    self.overlays.key_conflict = Some(conflict);
                 }
             }
             self.dirty = true;
@@ -979,7 +979,7 @@ impl App {
                     )]
                 }
                 Field::RadioRecording => {
-                    self.recording_settings = Some(RecordingSettingsPopup::default());
+                    self.overlays.recording_settings = Some(RecordingSettingsPopup::default());
                     self.dirty = true;
                     Vec::new()
                 }
@@ -995,7 +995,7 @@ impl App {
             .keymap
             .action(KeyContext::Settings, k.into())
             .or_else(|| Self::settings_safety_action(k));
-        let Some(picker) = self.spotify_picker.as_mut() else {
+        let Some(picker) = self.overlays.spotify_picker.as_mut() else {
             return Vec::new();
         };
         self.dirty = true;
@@ -1012,7 +1012,7 @@ impl App {
                 let Some(item) = picker.items.get(picker.selected).cloned() else {
                     return Vec::new();
                 };
-                self.spotify_picker = None;
+                self.overlays.spotify_picker = None;
                 self.transfer_running = true;
                 // The TUI can't browse account playlists, so the picker lands imports in
                 // the app's own Library playlists — playable the moment the job finishes.
@@ -1042,7 +1042,7 @@ impl App {
                 )]
             }
             Some(Action::SettingsCancel | Action::Back) => {
-                self.spotify_picker = None;
+                self.overlays.spotify_picker = None;
                 Vec::new()
             }
             _ => Vec::new(),
@@ -1054,6 +1054,7 @@ impl App {
     pub(in crate::app) fn recording_settings_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
         // The output-folder text field captures every key until Enter/Esc commits it.
         if self
+            .overlays
             .recording_settings
             .as_ref()
             .is_some_and(|p| p.editing_dir)
@@ -1064,19 +1065,19 @@ impl App {
             .keymap
             .action(KeyContext::Settings, k.into())
             .or_else(|| Self::settings_safety_action(k));
-        if self.recording_settings.is_none() {
+        if self.overlays.recording_settings.is_none() {
             return Vec::new();
         }
         self.dirty = true;
         match action {
             Some(Action::MoveUp) => {
-                if let Some(p) = self.recording_settings.as_mut() {
+                if let Some(p) = self.overlays.recording_settings.as_mut() {
                     p.row = p.row.saturating_sub(1);
                 }
                 Vec::new()
             }
             Some(Action::MoveDown) => {
-                if let Some(p) = self.recording_settings.as_mut() {
+                if let Some(p) = self.overlays.recording_settings.as_mut() {
                     p.row = (p.row + 1).min(RECORDING_POPUP_ROWS - 1);
                 }
                 Vec::new()
@@ -1085,7 +1086,7 @@ impl App {
             Some(Action::ChangeIncrease) => self.recording_settings_adjust(1),
             Some(Action::Confirm) => self.recording_settings_confirm(),
             Some(Action::SettingsCancel | Action::Back) => {
-                self.recording_settings = None;
+                self.overlays.recording_settings = None;
                 Vec::new()
             }
             _ => Vec::new(),
@@ -1099,7 +1100,12 @@ impl App {
             RECORDING_MAX_SECONDS_MAX, RECORDING_MAX_SECONDS_MIN, RECORDING_MIN_SECONDS_MAX,
             RECORDING_MIN_SECONDS_MIN, RECORDING_PAST_TRACKS_MAX, RECORDING_PAST_TRACKS_MIN,
         };
-        let row = self.recording_settings.as_ref().map(|p| p.row).unwrap_or(0);
+        let row = self
+            .overlays
+            .recording_settings
+            .as_ref()
+            .map(|p| p.row)
+            .unwrap_or(0);
         let up = dir >= 0;
         let Some(st) = self.settings.as_mut() else {
             return Vec::new();
@@ -1228,10 +1234,15 @@ impl App {
     /// Enter/Confirm on a popup row. `pub(in crate::app)` so the mouse handler can reuse it
     /// (a row click = focus that row, then Confirm).
     pub(in crate::app) fn recording_settings_confirm(&mut self) -> Vec<Cmd> {
-        let row = self.recording_settings.as_ref().map(|p| p.row).unwrap_or(0);
+        let row = self
+            .overlays
+            .recording_settings
+            .as_ref()
+            .map(|p| p.row)
+            .unwrap_or(0);
         match row {
             3 => {
-                if let Some(p) = self.recording_settings.as_mut() {
+                if let Some(p) = self.overlays.recording_settings.as_mut() {
                     p.editing_dir = true;
                 }
                 self.dirty = true;
@@ -1239,7 +1250,7 @@ impl App {
             }
             6 => {
                 // Open the recordings browser (the popup stays behind it).
-                self.recordings_browser = Some(RecordingsBrowser::default());
+                self.overlays.recordings_browser = Some(RecordingsBrowser::default());
                 self.dirty = true;
                 Vec::new()
             }
@@ -1253,7 +1264,7 @@ impl App {
         self.dirty = true;
         match k.code {
             KeyCode::Enter | KeyCode::Esc => {
-                if let Some(p) = self.recording_settings.as_mut() {
+                if let Some(p) = self.overlays.recording_settings.as_mut() {
                     p.editing_dir = false;
                 }
             }
@@ -1286,7 +1297,7 @@ impl App {
                 Some(Action::ToggleRecordings)
             );
         if close {
-            self.recordings_browser = None;
+            self.overlays.recordings_browser = None;
             self.dirty = true;
             return Vec::new();
         }
@@ -1296,6 +1307,7 @@ impl App {
             .or_else(|| Self::settings_safety_action(k));
         let ids = self.recordings_browser_ids();
         let selected = self
+            .overlays
             .recordings_browser
             .as_ref()
             .map(|b| b.selected.min(ids.len().saturating_sub(1)))
@@ -1303,13 +1315,13 @@ impl App {
         self.dirty = true;
         match action {
             Some(Action::MoveUp) => {
-                if let Some(b) = self.recordings_browser.as_mut() {
+                if let Some(b) = self.overlays.recordings_browser.as_mut() {
                     b.selected = selected.saturating_sub(1);
                 }
                 Vec::new()
             }
             Some(Action::MoveDown) => {
-                if let Some(b) = self.recordings_browser.as_mut() {
+                if let Some(b) = self.overlays.recordings_browser.as_mut() {
                     b.selected = (selected + 1).min(ids.len().saturating_sub(1));
                 }
                 Vec::new()
@@ -1407,7 +1419,7 @@ impl App {
                     self.status.kind = StatusKind::Info;
                 } else {
                     self.status.text.clear();
-                    self.spotify_picker =
+                    self.overlays.spotify_picker =
                         Some(crate::app::state::SpotifyPicker { items, selected: 0 });
                 }
             }
@@ -1564,13 +1576,13 @@ impl App {
     }
 
     pub(in crate::app) fn settings_request_confirm(&mut self, confirm: SettingsConfirm) {
-        self.pending_settings_confirm = Some(confirm);
+        self.overlays.pending_settings_confirm = Some(confirm);
         self.status.text.clear();
         self.dirty = true;
     }
 
     pub(in crate::app) fn settings_apply_confirm(&mut self, confirm: SettingsConfirm) -> Vec<Cmd> {
-        self.pending_settings_confirm = None;
+        self.overlays.pending_settings_confirm = None;
         match confirm {
             SettingsConfirm::RetroMode => {
                 self.settings_toggle_retro_mode();
@@ -1963,12 +1975,12 @@ impl App {
     /// Leave the settings screen, copying the draft into live state + config and
     /// persisting it. This keeps `q`/Esc from silently discarding changed settings.
     pub(in crate::app) fn close_settings(&mut self) -> Vec<Cmd> {
-        self.pending_settings_confirm = None;
+        self.overlays.pending_settings_confirm = None;
         // Drop the top-level overlays that live over the Settings screen so leaving it (Esc/q,
         // or any early-return path below) can't strand them painting on top of the Player.
-        self.recording_settings = None;
-        self.recordings_browser = None;
-        self.spotify_picker = None;
+        self.overlays.recording_settings = None;
+        self.overlays.recordings_browser = None;
+        self.overlays.spotify_picker = None;
         let Some(st) = self.settings.take() else {
             self.mode = Mode::Player;
             self.dirty = true;

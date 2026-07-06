@@ -837,7 +837,7 @@ pub fn render_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: Setting
 /// The Spotify playlist picker overlay (Import from Spotify…): ↑/↓ select, Enter
 /// imports into a new YTM playlist (Liked Songs → the like button), Esc closes.
 pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(picker) = app.spotify_picker.as_ref() else {
+    let Some(picker) = app.overlays.spotify_picker.as_ref() else {
         return;
     };
     let h = (picker.items.len() as u16 + 4).clamp(7, 18);
@@ -902,7 +902,7 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
         RECORDING_MAX_SECONDS_MAX, RECORDING_MAX_SECONDS_MIN, RECORDING_MIN_SECONDS_MAX,
         RECORDING_MIN_SECONDS_MIN, RECORDING_PAST_TRACKS_MAX, RECORDING_PAST_TRACKS_MIN,
     };
-    let Some(popup) = app.recording_settings.as_ref() else {
+    let Some(popup) = app.overlays.recording_settings.as_ref() else {
         return;
     };
     let Some(st) = app.settings.as_deref() else {
@@ -1077,7 +1077,7 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
 /// The recordings browser: the in-progress track (if any) plus recent finished tracks, with
 /// per-row save/discard/play. Reads `app.recorder`.
 pub fn render_recordings_browser(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(browser) = app.recordings_browser.as_ref() else {
+    let Some(browser) = app.overlays.recordings_browser.as_ref() else {
         return;
     };
     let mut items: Vec<(String, String)> = Vec::new();

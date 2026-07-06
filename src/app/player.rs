@@ -656,10 +656,10 @@ impl App {
             }
             Action::IdentifyNowPlaying => self.open_now_playing_overlay(),
             Action::ToggleRecordings => {
-                if self.recordings_browser.is_some() {
-                    self.recordings_browser = None;
+                if self.overlays.recordings_browser.is_some() {
+                    self.overlays.recordings_browser = None;
                 } else if self.current_is_radio_stream() || !self.recorder.history.is_empty() {
-                    self.recordings_browser = Some(RecordingsBrowser::default());
+                    self.overlays.recordings_browser = Some(RecordingsBrowser::default());
                 } else {
                     self.status.kind = StatusKind::Info;
                     self.status.text = t!(

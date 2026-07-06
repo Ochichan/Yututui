@@ -180,7 +180,12 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) -> u16 {
     // A small ● after the brand when a newer release is available — an always-visible hint
     // that pairs with the About card's notice. Two cells (` ●`) so it's measured like any
     // other static label; empty (zero width) when up to date, so the layout is unchanged.
-    let update_dot = if app.update_status.as_ref().is_some_and(|s| s.available) {
+    let update_dot = if app
+        .overlays
+        .update_status
+        .as_ref()
+        .is_some_and(|s| s.available)
+    {
         " ●"
     } else {
         ""
