@@ -65,7 +65,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         views::now_playing::render(frame, app, area);
     }
     // Radio mode switching is a global UI-mode confirmation.
-    if let Some(confirm) = app.pending_radio_mode_confirm {
+    if let Some(confirm) = app.radio_mode.pending_radio_mode_confirm {
         views::player::render_radio_mode_confirm(frame, app, area, confirm);
     }
     // A keybinding-conflict warning (Keys tab) is modal — it sits above everything else.

@@ -1991,7 +1991,8 @@ impl App {
         let old_download_dir = self.config.effective_download_dir();
         let normal_theme = if self.radio_dedicated_mode {
             Some(
-                self.normal_mode_theme
+                self.radio_mode
+                    .normal_mode_theme
                     .clone()
                     .unwrap_or_else(|| self.config.effective_theme()),
             )
@@ -2016,12 +2017,12 @@ impl App {
         self.config.keybindings = self.keymap.to_overrides();
         self.theme = st.draft.theme.normalized();
         if self.radio_dedicated_mode {
-            self.radio_mode_theme = Some(self.theme.clone());
+            self.radio_mode.radio_mode_theme = Some(self.theme.clone());
             // Persist the radio theme in its own slot; `config.theme` stays the normal
             // theme (below) so a radio-mode save can't clobber it.
             self.config.radio_theme = Some(self.theme.clone());
             if let Some(normal_theme) = normal_theme {
-                self.normal_mode_theme = Some(normal_theme.clone());
+                self.radio_mode.normal_mode_theme = Some(normal_theme.clone());
                 self.config.theme = normal_theme;
             }
         } else {

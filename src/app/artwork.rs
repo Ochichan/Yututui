@@ -494,7 +494,7 @@ impl App {
             | ((self.about_visible as u16) << 4)
             | ((self.why_ai_visible as u16) << 5)
             | ((self.key_conflict.is_some() as u16) << 6)
-            | ((self.pending_radio_mode_confirm.is_some() as u16) << 7)
+            | ((self.radio_mode.pending_radio_mode_confirm.is_some() as u16) << 7)
             | ((self.pending_settings_confirm.is_some() as u16) << 8)
             // Bit 9 is shared by the two Library confirm modals (file-delete and bulk-download):
             // they are mutually exclusive (each captures all keys while open) and share the same

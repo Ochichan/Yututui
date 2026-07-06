@@ -156,17 +156,9 @@ pub struct App {
     /// Dedicated Radio UI mode: swaps to a cached Radio theme, Radio Browser-only search,
     /// and radio-only Library tabs until normal mode is restored.
     pub radio_dedicated_mode: bool,
-    /// The normal-mode theme to restore after leaving dedicated Radio mode.
-    normal_mode_theme: Option<ThemeConfig>,
-    /// The Radio-mode theme to restore on the next dedicated Radio entry. Defaults to Dario
-    /// until the user edits the theme while Radio mode is active.
-    radio_mode_theme: Option<ThemeConfig>,
-    /// The normal-mode queue to restore when leaving dedicated Radio mode.
-    normal_mode_queue: Option<QueueSnapshot>,
-    /// The Radio-mode queue to restore when entering dedicated Radio mode again.
-    radio_mode_queue: Option<QueueSnapshot>,
-    /// A pending confirmation before entering or leaving dedicated Radio mode.
-    pub pending_radio_mode_confirm: Option<RadioModeConfirm>,
+    /// Dedicated-Radio-mode theme+queue stash and the pending enter/leave confirmation — see
+    /// [`RadioMode`]. The `radio_dedicated_mode` flag above stays flat (read pervasively).
+    pub radio_mode: RadioMode,
     /// Whether the `?` help / cheat-sheet overlay is shown.
     pub help_visible: bool,
     /// Whether the mouse cheat-sheet overlay is shown. Opened only from the footer mouse icon.
@@ -399,11 +391,7 @@ impl App {
             keymap: KeyMap::default(),
             theme: ThemeConfig::default(),
             radio_dedicated_mode: false,
-            normal_mode_theme: None,
-            radio_mode_theme: None,
-            normal_mode_queue: None,
-            radio_mode_queue: None,
-            pending_radio_mode_confirm: None,
+            radio_mode: RadioMode::default(),
             help_visible: false,
             mouse_help_visible: false,
             key_conflict: None,
@@ -518,11 +506,12 @@ impl App {
         // Seed the radio-mode theme stash from its persisted slot. Guarded so a config
         // without one never clobbers a theme picked live earlier in this session.
         if let Some(radio_theme) = cfg.effective_radio_theme() {
-            self.radio_mode_theme = Some(radio_theme);
+            self.radio_mode.radio_mode_theme = Some(radio_theme);
         }
         if self.radio_dedicated_mode {
-            self.normal_mode_theme = Some(normal_theme);
+            self.radio_mode.normal_mode_theme = Some(normal_theme);
             self.theme = self
+                .radio_mode
                 .radio_mode_theme
                 .clone()
                 .unwrap_or_else(ThemeConfig::dario);
@@ -624,7 +613,7 @@ impl App {
     }
 
     pub(in crate::app) fn request_radio_mode_switch(&mut self) -> Vec<Cmd> {
-        self.pending_radio_mode_confirm = Some(if self.radio_dedicated_mode {
+        self.radio_mode.pending_radio_mode_confirm = Some(if self.radio_dedicated_mode {
             RadioModeConfirm::Exit
         } else {
             RadioModeConfirm::Enter
@@ -642,7 +631,7 @@ impl App {
         &mut self,
         confirm: RadioModeConfirm,
     ) -> Vec<Cmd> {
-        self.pending_radio_mode_confirm = None;
+        self.radio_mode.pending_radio_mode_confirm = None;
         match confirm {
             RadioModeConfirm::Enter => self.enter_radio_dedicated_mode(),
             RadioModeConfirm::Exit => self.exit_radio_dedicated_mode(),
@@ -653,10 +642,10 @@ impl App {
         if self.radio_dedicated_mode {
             return Vec::new();
         }
-        self.normal_mode_theme = Some(self.theme.clone());
-        self.normal_mode_queue = Some(self.queue.snapshot());
+        self.radio_mode.normal_mode_theme = Some(self.theme.clone());
+        self.radio_mode.normal_mode_queue = Some(self.queue.snapshot());
         self.activate_radio_dedicated_mode_ui();
-        let restore = self.radio_mode_queue.take();
+        let restore = self.radio_mode.radio_mode_queue.take();
         let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
         self.status.kind = StatusKind::Info;
         self.status.text = t!("Radio mode enabled", "라디오 모드 켜짐").to_owned();
@@ -668,10 +657,11 @@ impl App {
         if !self.radio_dedicated_mode {
             return Vec::new();
         }
-        self.radio_mode_theme = Some(self.theme.clone());
-        self.radio_mode_queue = Some(self.queue.snapshot());
+        self.radio_mode.radio_mode_theme = Some(self.theme.clone());
+        self.radio_mode.radio_mode_queue = Some(self.queue.snapshot());
         self.radio_dedicated_mode = false;
         self.theme = self
+            .radio_mode
             .normal_mode_theme
             .take()
             .unwrap_or_else(|| self.config.effective_theme());
@@ -685,7 +675,7 @@ impl App {
         self.search.results.clear();
         self.search.selected = 0;
         self.dropdowns.search_source_open = false;
-        let restore = self.normal_mode_queue.take();
+        let restore = self.radio_mode.normal_mode_queue.take();
         let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
         self.status.kind = StatusKind::Info;
         self.status.text = t!("Radio mode disabled", "라디오 모드 꺼짐").to_owned();
@@ -696,6 +686,7 @@ impl App {
     fn activate_radio_dedicated_mode_ui(&mut self) {
         self.radio_dedicated_mode = true;
         self.theme = self
+            .radio_mode
             .radio_mode_theme
             .clone()
             .unwrap_or_else(ThemeConfig::dario);
@@ -783,7 +774,7 @@ impl App {
     /// playback. The station itself comes from the persisted radio history.
     pub fn restore_last_radio_from_library(&mut self) {
         if !self.radio_dedicated_mode {
-            self.normal_mode_theme = Some(self.theme.clone());
+            self.radio_mode.normal_mode_theme = Some(self.theme.clone());
         }
         self.activate_radio_dedicated_mode_ui();
         if !self.queue.is_empty() {
@@ -806,10 +797,10 @@ impl App {
         let mut cache = crate::session::SessionCache::from_radio_mode(self.radio_dedicated_mode);
         if self.radio_dedicated_mode {
             cache.radio_queue = Some(self.queue.snapshot());
-            cache.normal_queue = self.normal_mode_queue.clone();
+            cache.normal_queue = self.radio_mode.normal_mode_queue.clone();
         } else {
             cache.normal_queue = Some(self.queue.snapshot());
-            cache.radio_queue = self.radio_mode_queue.clone();
+            cache.radio_queue = self.radio_mode.radio_mode_queue.clone();
         }
         cache
     }
@@ -817,8 +808,8 @@ impl App {
     /// Restore an exact queue snapshot when one exists; fall back to the legacy library-history
     /// restore path for old session files.
     pub fn restore_last_session_from_cache(&mut self, cache: &crate::session::SessionCache) {
-        self.normal_mode_queue = cache.normal_queue.clone();
-        self.radio_mode_queue = cache.radio_queue.clone();
+        self.radio_mode.normal_mode_queue = cache.normal_queue.clone();
+        self.radio_mode.radio_mode_queue = cache.radio_queue.clone();
 
         if cache.was_radio_mode() {
             self.activate_radio_dedicated_mode_ui();

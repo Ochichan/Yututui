@@ -24,7 +24,7 @@ impl App {
 
         // Radio mode switching is modal: Enter or `y` confirms, anything else cancels.
         // It sits outside Settings so the shortcut works from the Player/Search/Library tabs too.
-        if let Some(confirm) = self.pending_radio_mode_confirm.take() {
+        if let Some(confirm) = self.radio_mode.pending_radio_mode_confirm.take() {
             self.dirty = true;
             let confirmed = k.code == KeyCode::Enter
                 || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());

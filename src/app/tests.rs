@@ -2424,14 +2424,14 @@ fn alt_shift_r_confirms_dedicated_radio_mode() {
     let cmds = app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
     assert!(cmds.is_empty());
     assert_eq!(
-        app.pending_radio_mode_confirm,
+        app.radio_mode.pending_radio_mode_confirm,
         Some(RadioModeConfirm::Enter)
     );
     assert!(!app.radio_dedicated_mode);
 
     app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(app.radio_dedicated_mode);
-    assert!(app.pending_radio_mode_confirm.is_none());
+    assert!(app.radio_mode.pending_radio_mode_confirm.is_none());
     assert_eq!(app.theme.preset, "dario");
     assert_eq!(
         app.theme.effective_hex(crate::theme::ThemeRole::Background),
@@ -2450,7 +2450,10 @@ fn alt_shift_r_confirms_dedicated_radio_mode() {
     assert_eq!(app.mode, Mode::Player);
 
     app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
-    assert_eq!(app.pending_radio_mode_confirm, Some(RadioModeConfirm::Exit));
+    assert_eq!(
+        app.radio_mode.pending_radio_mode_confirm,
+        Some(RadioModeConfirm::Exit)
+    );
     app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(!app.radio_dedicated_mode);
     assert_eq!(app.theme.preset, "default");
@@ -2467,18 +2470,18 @@ fn alt_shift_r_radio_mode_switch_only_works_on_player() {
 
     app.mode = Mode::Search;
     app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
-    assert!(app.pending_radio_mode_confirm.is_none());
+    assert!(app.radio_mode.pending_radio_mode_confirm.is_none());
     assert!(!app.radio_dedicated_mode);
 
     app.mode = Mode::Library;
     app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
-    assert!(app.pending_radio_mode_confirm.is_none());
+    assert!(app.radio_mode.pending_radio_mode_confirm.is_none());
     assert!(!app.radio_dedicated_mode);
 
     app.mode = Mode::Player;
     app.update(Msg::Key(alt_shift(KeyCode::Char('r'))));
     assert_eq!(
-        app.pending_radio_mode_confirm,
+        app.radio_mode.pending_radio_mode_confirm,
         Some(RadioModeConfirm::Enter)
     );
 }
@@ -2932,7 +2935,7 @@ fn double_clicking_active_player_tab_confirms_radio_mode() {
 
     assert!(cmds.is_empty());
     assert_eq!(
-        app.pending_radio_mode_confirm,
+        app.radio_mode.pending_radio_mode_confirm,
         Some(RadioModeConfirm::Enter)
     );
 }
@@ -8279,9 +8282,9 @@ fn art_overlay_mask_tracks_each_popup_independently() {
     });
     assert_eq!(app.art_overlay_mask(), 1 << 6);
     app.key_conflict = None;
-    app.pending_radio_mode_confirm = Some(RadioModeConfirm::Enter);
+    app.radio_mode.pending_radio_mode_confirm = Some(RadioModeConfirm::Enter);
     assert_eq!(app.art_overlay_mask(), 1 << 7);
-    app.pending_radio_mode_confirm = None;
+    app.radio_mode.pending_radio_mode_confirm = None;
     app.pending_settings_confirm = Some(SettingsConfirm::ResetAll);
     assert_eq!(app.art_overlay_mask(), 1 << 8);
     app.pending_settings_confirm = None;

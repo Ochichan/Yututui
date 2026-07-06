@@ -111,13 +111,13 @@ impl App {
         }
         // Radio mode confirmations are modal: only their Confirm/Cancel buttons act; a click
         // anywhere else backs out without switching modes.
-        if self.pending_radio_mode_confirm.is_some() {
+        if self.radio_mode.pending_radio_mode_confirm.is_some() {
             match self.mouse_target_at(col, row) {
                 Some(t @ (MouseTarget::ConfirmRadioMode | MouseTarget::CancelRadioMode)) => {
                     return self.on_mouse_target(t);
                 }
                 _ => {
-                    self.pending_radio_mode_confirm = None;
+                    self.radio_mode.pending_radio_mode_confirm = None;
                     self.dirty = true;
                     return Vec::new();
                 }
@@ -664,13 +664,13 @@ impl App {
                 Vec::new()
             }
             MouseTarget::ConfirmRadioMode => {
-                let Some(confirm) = self.pending_radio_mode_confirm.take() else {
+                let Some(confirm) = self.radio_mode.pending_radio_mode_confirm.take() else {
                     return Vec::new();
                 };
                 self.apply_radio_mode_confirm(confirm)
             }
             MouseTarget::CancelRadioMode => {
-                self.pending_radio_mode_confirm = None;
+                self.radio_mode.pending_radio_mode_confirm = None;
                 self.dirty = true;
                 Vec::new()
             }
@@ -727,7 +727,7 @@ impl App {
             || self.mouse_help_visible
             || self.about_visible
             || self.key_conflict.is_some()
-            || self.pending_radio_mode_confirm.is_some()
+            || self.radio_mode.pending_radio_mode_confirm.is_some()
             || self.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
@@ -1239,7 +1239,7 @@ impl App {
             || self.mouse_help_visible
             || self.about_visible
             || self.key_conflict.is_some()
-            || self.pending_radio_mode_confirm.is_some()
+            || self.radio_mode.pending_radio_mode_confirm.is_some()
             || self.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()

@@ -678,3 +678,22 @@ pub struct Interaction {
     /// Held-key auto-repeat accelerator for list navigation (see [`NavRepeat`]). Idle at rest.
     pub(in crate::app) nav_repeat: NavRepeat,
 }
+
+/// Dedicated-Radio-mode stash: the normal- and radio-mode themes and queues that swap in and
+/// out as the user enters/leaves Radio mode, plus the pending enter/leave confirmation. The
+/// active `radio_dedicated_mode` flag itself stays flat on [`App`] — it gates behavior in many
+/// places and reads as a mode, not stashed state.
+#[derive(Default)]
+pub struct RadioMode {
+    /// The normal-mode theme to restore after leaving dedicated Radio mode.
+    pub(in crate::app) normal_mode_theme: Option<ThemeConfig>,
+    /// The Radio-mode theme to restore on the next dedicated Radio entry. Defaults to Dario
+    /// until the user edits the theme while Radio mode is active.
+    pub(in crate::app) radio_mode_theme: Option<ThemeConfig>,
+    /// The normal-mode queue to restore when leaving dedicated Radio mode.
+    pub(in crate::app) normal_mode_queue: Option<QueueSnapshot>,
+    /// The Radio-mode queue to restore when entering dedicated Radio mode again.
+    pub(in crate::app) radio_mode_queue: Option<QueueSnapshot>,
+    /// A pending confirmation before entering or leaving dedicated Radio mode.
+    pub pending_radio_mode_confirm: Option<RadioModeConfirm>,
+}
