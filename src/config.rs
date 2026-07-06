@@ -1844,9 +1844,9 @@ mod tests {
     #[test]
     fn existing_cookies_file_requires_a_present_file() {
         let missing = std::env::temp_dir().join(format!(
-            "ytm-tui-missing-cookies-{}-{}.txt",
+            "ytm-tui-missing-cookies-{}-{:?}.txt",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current().id()
         ));
         let _ = std::fs::remove_file(&missing);
         let cfg = Config {
@@ -1859,9 +1859,9 @@ mod tests {
     #[test]
     fn existing_cookies_file_keeps_a_present_file() {
         let path = std::env::temp_dir().join(format!(
-            "ytm-tui-present-cookies-{}-{}.txt",
+            "ytm-tui-present-cookies-{}-{:?}.txt",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::thread::current().id()
         ));
         std::fs::write(&path, "# Netscape HTTP Cookie File\n").unwrap();
         let cfg = Config {
