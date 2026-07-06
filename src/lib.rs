@@ -48,6 +48,7 @@ pub mod tools;
 pub mod transfer;
 pub mod tui;
 pub mod ui;
+pub mod update;
 pub mod util;
 pub mod zoom;
 

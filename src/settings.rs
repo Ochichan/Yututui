@@ -106,6 +106,7 @@ impl SettingsTab {
                 Field::BigText,
                 Field::AutoplayOnStart,
                 Field::EnqueueNext,
+                Field::UpdateCheck,
                 Field::ResetKeybindings,
                 Field::ResetAll,
             ],
@@ -257,6 +258,8 @@ pub enum Field {
     AutoplayOnStart,
     /// Manual "add to queue" inserts immediately after the current track instead of at the end.
     EnqueueNext,
+    /// Check GitHub on startup for a newer ytm-tui release (the About-card update notice).
+    UpdateCheck,
     /// A button (not a value): restores all keybindings to their built-in defaults.
     ResetKeybindings,
     /// A button (not a value): activates "reset every setting to defaults".
@@ -523,6 +526,7 @@ impl Field {
             | Field::Gapless
             | Field::MediaControls
             | Field::AutoContinueVideos
+            | Field::UpdateCheck
             | Field::AutoplayStreaming
             | Field::Normalize
             | Field::AiEnabled
@@ -642,6 +646,7 @@ impl Field {
             Field::AlbumArt => t!("Album art", "앨범 아트").to_owned(),
             Field::AutoplayOnStart => t!("Autoplay on launch", "앱 시작 시 자동재생").to_owned(),
             Field::EnqueueNext => t!("Enqueue as next", "큐 추가: 다음 곡").to_owned(),
+            Field::UpdateCheck => t!("Check for updates", "업데이트 확인").to_owned(),
             Field::ResetKeybindings => t!("Reset keybindings", "단축키 초기화").to_owned(),
             Field::ResetAll => t!("Reset all settings", "모든 설정 초기화").to_owned(),
             Field::BigText => t!("Large text", "큰 글자 모드").to_owned(),
@@ -747,6 +752,8 @@ pub struct SettingsDraft {
     pub album_art: bool,
     pub autoplay_on_start: bool,
     pub enqueue_next: bool,
+    /// Whether the startup app-update check runs (the About-card update notice).
+    pub update_check_enabled: bool,
     pub speed: f64,
     /// Seek step (seconds) for the seek-back/-forward keys.
     pub seek_seconds: f64,
@@ -883,6 +890,7 @@ impl SettingsDraft {
             Field::AlbumArt => toggle_str(self.album_art),
             Field::AutoplayOnStart => toggle_str(self.autoplay_on_start),
             Field::EnqueueNext => toggle_str(self.enqueue_next),
+            Field::UpdateCheck => toggle_str(self.update_check_enabled),
             Field::Speed => format!("{:.1}x", self.speed),
             Field::SeekInterval => format!("{:.0}s", self.seek_seconds),
             Field::BigText => toggle_str(self.big_text),
@@ -1076,6 +1084,7 @@ impl SettingsDraft {
         });
         cfg.mouse_wheel_volume = Some(self.mouse_wheel_volume);
         cfg.gapless = Some(self.gapless);
+        cfg.update_check_enabled = self.update_check_enabled;
         cfg.media_controls = Some(self.media_controls);
         cfg.auto_continue_videos = Some(self.auto_continue_videos);
         cfg.video_layout = self.video_layout;
@@ -1257,6 +1266,7 @@ mod tests {
             album_art: false,
             autoplay_on_start: false,
             enqueue_next: false,
+            update_check_enabled: true,
             speed: 1.0,
             seek_seconds: 10.0,
             big_text: false,
@@ -1504,6 +1514,7 @@ mod tests {
                 Field::BigText,
                 Field::AutoplayOnStart,
                 Field::EnqueueNext,
+                Field::UpdateCheck,
                 Field::ResetKeybindings,
                 Field::ResetAll,
             ]
@@ -1666,6 +1677,7 @@ mod tests {
             album_art: true,
             autoplay_on_start: true,
             enqueue_next: true,
+            update_check_enabled: false,
             speed: 1.7,
             seek_seconds: 25.0,
             big_text: false,
@@ -1746,6 +1758,7 @@ mod tests {
         assert_eq!(cfg.album_art, Some(true));
         assert_eq!(cfg.autoplay_on_start, Some(true));
         assert_eq!(cfg.enqueue_next, Some(true));
+        assert!(!cfg.update_check_enabled);
         assert_eq!(cfg.speed, Some(1.7));
         assert_eq!(cfg.seek_seconds, Some(25.0));
         assert_eq!(cfg.mouse_wheel_volume, Some(false));

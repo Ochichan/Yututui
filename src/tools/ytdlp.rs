@@ -413,7 +413,7 @@ async fn check_and_update_inner(
     state.last_attempt_unix = Some(now_unix());
 
     let channel = cfg.channel();
-    let tag = match resolve_latest_tag(channel).await {
+    let tag = match crate::util::github::latest_release_tag(channel.repo()).await {
         Ok(tag) => tag,
         Err(e) => {
             save_state(&state);
@@ -622,46 +622,6 @@ impl UpdateLock {
         file.try_lock().ok()?;
         Some(Self { _file: file })
     }
-}
-
-/// The channel's latest release tag, resolved from the `releases/latest` redirect.
-async fn resolve_latest_tag(channel: YtdlpChannel) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("ytm-tui/", env!("CARGO_PKG_VERSION")))
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
-    let url = format!("https://github.com/{}/releases/latest", channel.repo());
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("release check failed: {e}"))?;
-    let Some(location) = resp
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-    else {
-        return Err(format!(
-            "release check failed: expected a redirect from {url}, got HTTP {}",
-            resp.status()
-        ));
-    };
-    parse_tag_from_location(location)
-        .ok_or_else(|| format!("release check failed: unexpected redirect target {location}"))
-}
-
-/// `…/releases/tag/<tag>` → `<tag>`.
-pub(crate) fn parse_tag_from_location(location: &str) -> Option<String> {
-    let (_, tag) = location.split_once("/releases/tag/")?;
-    let tag = tag
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(tag)
-        .trim_end_matches('/');
-    (!tag.is_empty()).then(|| tag.to_owned())
 }
 
 fn download_client() -> Result<reqwest::Client, String> {
@@ -889,31 +849,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tag_parses_from_release_redirect_location() {
-        assert_eq!(
-            parse_tag_from_location(
-                "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/tag/2026.07.03.234421"
-            )
-            .as_deref(),
-            Some("2026.07.03.234421")
-        );
-        // Relative Location, trailing slash, query/fragment noise.
-        assert_eq!(
-            parse_tag_from_location("/yt-dlp/yt-dlp/releases/tag/2026.06.09/").as_deref(),
-            Some("2026.06.09")
-        );
-        assert_eq!(
-            parse_tag_from_location("/yt-dlp/yt-dlp/releases/tag/2026.06.09?foo=1#frag").as_deref(),
-            Some("2026.06.09")
-        );
-        // Not a tag redirect (repo missing → redirected to login, etc.).
-        assert_eq!(parse_tag_from_location("https://github.com/login"), None);
-        assert_eq!(
-            parse_tag_from_location("/yt-dlp/yt-dlp/releases/tag/"),
-            None
-        );
-    }
+    // `parse_tag_from_location` moved to `crate::util::github`; its unit test lives there.
 
     #[test]
     fn sha256sums_line_parses_for_the_exact_asset() {

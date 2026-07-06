@@ -200,6 +200,9 @@ pub struct App {
             StatefulProtocol,
         )>,
     >,
+    /// Result of the background app-update check (`None` until it completes / when disabled).
+    /// When `available`, the About card shows an upgrade notice and the nav brand gets a dot.
+    pub update_status: Option<crate::update::UpdateStatus>,
     /// Whether the "Why DJ Gem" overlay is showing. Opened by `Action::WhyAi` (`w`) when the last
     /// autoplay-streaming refill went through the DJ Gem reranker; lists why each track was chosen (slot
     /// role + reason codes + confidence). Esc / `w` / Back dismiss it, like the About card.
@@ -421,6 +424,7 @@ impl App {
             transfer_running: false,
             about_visible: false,
             about_icon: RefCell::new(None),
+            update_status: None,
             why_ai_visible: false,
             now_playing_overlay: None,
             now_playing_cache: now_playing::NowPlayingCache::default(),
@@ -1734,6 +1738,25 @@ impl App {
                 return self.apply_romanized_titles(request_id, keys, entries);
             }
             Msg::Scrobble(event) => return self.on_scrobble_event(event),
+            Msg::UpdateChecked(status) => {
+                // One-time toast the first time a newer release is seen (the check task
+                // sets `first_seen` and persists the toasted tag so it fires once per
+                // version). The persistent surfaces — About notice + brand dot — read
+                // `update_status` directly on every frame.
+                if status.available && status.first_seen {
+                    self.status.kind = StatusKind::Info;
+                    self.status.text = if crate::i18n::is_korean() {
+                        format!("새 버전 v{} 사용 가능 — About(F1)", status.latest_display())
+                    } else {
+                        format!(
+                            "Update available: v{} — see About (F1)",
+                            status.latest_display()
+                        )
+                    };
+                    self.dirty = true;
+                }
+                self.update_status = Some(status);
+            }
             Msg::Tools(event) => match event {
                 crate::tools::ToolsEvent::Progress { channel, percent } => {
                     self.status.kind = StatusKind::Info;

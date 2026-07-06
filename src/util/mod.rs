@@ -19,6 +19,7 @@ pub mod art;
 pub mod backpressure;
 pub mod browser;
 pub mod format;
+pub mod github;
 pub mod http;
 pub mod io;
 pub mod process;

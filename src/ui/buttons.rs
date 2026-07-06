@@ -177,9 +177,18 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) -> u16 {
     let muted = app.theme.style(R::TextMuted);
     let items: &[Mode] = &NAV_ITEMS;
 
+    // A small ● after the brand when a newer release is available — an always-visible hint
+    // that pairs with the About card's notice. Two cells (` ●`) so it's measured like any
+    // other static label; empty (zero width) when up to date, so the layout is unchanged.
+    let update_dot = if app.update_status.as_ref().is_some_and(|s| s.available) {
+        " ●"
+    } else {
+        ""
+    };
+
     // Measure the full strip; when it can't fit, hand over to the paged variant instead
     // of letting the rightmost tabs clip into unreachability.
-    let full: u16 = [MARGIN, BRAND, SEP, END_PAD]
+    let full: u16 = [MARGIN, BRAND, update_dot, SEP, END_PAD]
         .iter()
         .map(|s| text_width(s))
         .sum::<u16>()
@@ -231,6 +240,13 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) -> u16 {
     );
     spans.push(Span::styled(BRAND, brand));
     x = x.saturating_add(text_width(BRAND));
+    if !update_dot.is_empty() {
+        spans.push(Span::styled(
+            update_dot,
+            app.theme.style(R::AccentAlt).add_modifier(Modifier::BOLD),
+        ));
+        x = x.saturating_add(text_width(update_dot));
+    }
     spans.push(Span::styled(SEP, sep));
     x = x.saturating_add(text_width(SEP));
 

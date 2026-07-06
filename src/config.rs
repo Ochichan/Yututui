@@ -605,6 +605,12 @@ pub struct Config {
     // Radio recording -----------------------------------------------------------------
     /// Shortwave-style recording of the live radio stream. See [`RecordingConfig`].
     pub recording: RecordingConfig,
+
+    // Updates -------------------------------------------------------------------------
+    /// Check GitHub on startup for a newer ytm-tui release and, if behind, show an About-card
+    /// notice + nav-brand dot + one-time toast. Defaults to `true`; set `false` to make the
+    /// app never contact GitHub for its own version. See [`crate::update`].
+    pub update_check_enabled: bool,
 }
 
 /// Radio recording (a Shortwave-style feature). Only takes effect while an internet-radio
@@ -705,6 +711,7 @@ impl Default for Config {
             spotify: SpotifyConfig::default(),
             tools: ToolsConfig::default(),
             recording: RecordingConfig::default(),
+            update_check_enabled: true,
         }
     }
 }
@@ -1410,9 +1417,11 @@ mod tests {
                 past_tracks_count: 25,
                 notify: false,
             },
+            update_check_enabled: false,
         };
         let s = serde_json::to_string(&c).unwrap();
         let back: Config = serde_json::from_str(&s).unwrap();
+        assert!(!back.update_check_enabled);
         assert_eq!(back.recording.mode, crate::recorder::RecordingMode::Decide);
         assert_eq!(back.recording.min_duration_secs, 20);
         assert_eq!(

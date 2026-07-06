@@ -36,7 +36,9 @@ const ABOUT_ICON_KITTY_Z_INDEX: i32 = 0;
 
 /// Render the About card as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let popup = centered_fixed(area, 60, 22);
+    // Grow the card by the update block's three rows only when there's an update to show.
+    let height = if update_available(app) { 25 } else { 22 };
+    let popup = centered_fixed(area, 60, height);
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
@@ -217,17 +219,35 @@ fn indexed_to_rgb(i: u8) -> (u8, u8, u8) {
 }
 
 /// Draw the name, description, info rows, the clickable GitHub link, and the close hint.
+/// Whether the About card should show the "update available" notice.
+fn update_available(app: &App) -> bool {
+    app.update_status.as_ref().is_some_and(|s| s.available)
+}
+
 fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::vertical([
+    let has_update = update_available(app);
+
+    // Layout: the update block's three rows are inserted between the info rows and the
+    // GitHub link only when an update is available, so the card's normal look is untouched.
+    let mut constraints = vec![
         Constraint::Length(1), // name + version
         Constraint::Length(2), // description
         Constraint::Length(1), // spacer
         Constraint::Length(4), // info rows (Command / License / Author / Built)
-        Constraint::Length(1), // GitHub link (clickable)
-        Constraint::Length(1), // spacer
-        Constraint::Min(1),    // close hint
-    ])
-    .split(area);
+    ];
+    if has_update {
+        constraints.push(Constraint::Length(1)); // update headline
+        constraints.push(Constraint::Length(1)); // update command / note
+        constraints.push(Constraint::Length(1)); // Releases link (clickable)
+    }
+    constraints.push(Constraint::Length(1)); // GitHub link (clickable)
+    constraints.push(Constraint::Length(1)); // spacer
+    constraints.push(Constraint::Min(1)); // close hint
+    let rows = Layout::vertical(constraints).split(area);
+
+    // Indices shift by 3 when the update block is present.
+    let github_row = if has_update { 7 } else { 4 };
+    let close_row = github_row + 2;
 
     // Name + version — with a gradient band sweeping the brand while the About animation is on.
     let name = crate::ui::anim::about_brand_line(app, "ytm-tui", env!("CARGO_PKG_VERSION"))
@@ -282,6 +302,13 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
     frame.render_widget(Paragraph::new(lines), rows[3]);
 
+    // Update notice (only when a newer release is available): a headline, the tailored
+    // upgrade command/instruction for the detected install method, and a clickable
+    // "Releases" link. Rendered into the three rows inserted between info and GitHub.
+    if has_update {
+        draw_update_block(frame, app, rows[4], rows[5], rows[6]);
+    }
+
     // GitHub row: the URL is a real click target that opens the repo in the system browser. The
     // leading label is padded to line its value up with the rows above (`  ` + 9-wide key).
     let link_style = app
@@ -296,7 +323,7 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     buttons::render_segments(
         frame,
         app,
-        rows[4],
+        rows[github_row],
         &segs,
         link_style,
         key_style,
@@ -312,7 +339,61 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(hint)
             .alignment(Alignment::Center)
             .style(crate::ui::popup_style(app, R::TextMuted)),
-        rows[6],
+        rows[close_row],
+    );
+}
+
+/// The three-row "update available" notice: headline, tailored upgrade command/note, and a
+/// clickable Releases link. Only called when [`update_available`] is true.
+fn draw_update_block(frame: &mut Frame, app: &App, headline: Rect, body: Rect, link: Rect) {
+    let Some(status) = app.update_status.as_ref() else {
+        return;
+    };
+    let ins = crate::update::update_instructions(status.method);
+
+    // Headline — the one line that must stand out; Accent + bold, centered.
+    let head = if crate::i18n::is_korean() {
+        format!("⬆ 새 버전 v{} 사용 가능", status.latest_display())
+    } else {
+        format!("⬆ New version v{} available", status.latest_display())
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(head))
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD)),
+        headline,
+    );
+
+    // Body — the exact command when the channel has one, else the short instruction.
+    let body_text = match ins.command {
+        Some(cmd) => format!("$ {cmd}"),
+        None => ins.note.to_owned(),
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(body_text))
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::HelpAction)),
+        body,
+    );
+
+    // Releases link — a real click target (opens the latest release page in the browser).
+    let link_style = app
+        .theme
+        .style(R::Accent)
+        .bg(crate::ui::popup_bg(app))
+        .add_modifier(Modifier::UNDERLINED);
+    let segs = [Seg::button(
+        MouseTarget::AboutUpdateLink,
+        t!("Releases ↗", "릴리스 ↗"),
+    )];
+    buttons::render_segments(
+        frame,
+        app,
+        link,
+        &segs,
+        link_style,
+        link_style,
+        Alignment::Center,
     );
 }
 

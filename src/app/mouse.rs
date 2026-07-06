@@ -205,10 +205,12 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        // The About card is modal: clicking its GitHub link opens the browser (and keeps the card
-        // up); a click anywhere else dismisses it.
+        // The About card is modal: clicking its GitHub link or the update-notice "Releases"
+        // link opens the browser (and keeps the card up); a click anywhere else dismisses it.
         if self.about_visible {
-            if let Some(t @ MouseTarget::AboutLink) = self.mouse_target_at(col, row) {
+            if let Some(t @ (MouseTarget::AboutLink | MouseTarget::AboutUpdateLink)) =
+                self.mouse_target_at(col, row)
+            {
                 return self.on_mouse_target(t);
             }
             self.about_visible = false;
@@ -627,6 +629,18 @@ impl App {
                 self.status.text = t!(
                     "Opening GitHub in your browser…",
                     "브라우저에서 GitHub을 여는 중…"
+                )
+                .to_owned();
+                self.dirty = true;
+                Vec::new()
+            }
+            // Click the "Releases" link in the About card's update notice to open the
+            // latest release page (keeps the card open, like the GitHub link).
+            MouseTarget::AboutUpdateLink => {
+                open_in_browser(crate::update::RELEASES_URL);
+                self.status.text = t!(
+                    "Opening Releases in your browser…",
+                    "브라우저에서 Releases를 여는 중…"
                 )
                 .to_owned();
                 self.dirty = true;

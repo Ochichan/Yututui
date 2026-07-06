@@ -70,6 +70,7 @@ impl App {
             album_art: self.config.effective_album_art(),
             autoplay_on_start: self.config.effective_autoplay_on_start(),
             enqueue_next: self.config.effective_enqueue_next(),
+            update_check_enabled: self.config.update_check_enabled,
             speed: self.playback.speed,
             seek_seconds: self.audio.seek_seconds,
             big_text: self.config.effective_text_zoom() > 100,
@@ -414,6 +415,11 @@ impl App {
             Field::AutoContinueVideos => {
                 let s = self.settings_mut();
                 s.draft.auto_continue_videos = !s.draft.auto_continue_videos;
+                Vec::new()
+            }
+            Field::UpdateCheck => {
+                let s = self.settings_mut();
+                s.draft.update_check_enabled = !s.draft.update_check_enabled;
                 Vec::new()
             }
             Field::AutoplayOnStart => {

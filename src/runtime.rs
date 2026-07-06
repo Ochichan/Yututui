@@ -31,6 +31,8 @@ pub enum RuntimeEvent {
     Signal(crate::player::lifetime::SignalEvent),
     /// Managed yt-dlp maintenance progress (download %, installed, failed).
     Tools(crate::tools::ToolsEvent),
+    /// Background app-update check result (newer release available + install method).
+    Update(crate::update::UpdateEvent),
     Transfer(crate::transfer::actor::TransferEvent),
 }
 
@@ -207,6 +209,9 @@ impl From<RuntimeEvent> for Msg {
             RuntimeEvent::Scrobble(event) => Msg::Scrobble(event),
             RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit) => Msg::Quit,
             RuntimeEvent::Tools(event) => Msg::Tools(event),
+            RuntimeEvent::Update(crate::update::UpdateEvent::Checked(status)) => {
+                Msg::UpdateChecked(status)
+            }
             RuntimeEvent::Transfer(event) => Msg::Transfer(event),
         }
     }

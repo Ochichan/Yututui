@@ -265,6 +265,9 @@ pub enum Msg {
     /// success are informational; a failure is an error only when no usable yt-dlp
     /// exists at all (a failed background refresh of a working setup stays log-only).
     Tools(crate::tools::ToolsEvent),
+    /// The background app-update check finished: whether a newer ytm-tui release exists,
+    /// how this build was installed, and whether this is the first sighting (toast gate).
+    UpdateChecked(crate::update::UpdateStatus),
     /// A [`Cmd::YtdlpSelfHeal`] update check finished. `updated` means a new binary was
     /// installed (a retry is worth it); anything else falls through to the skip path.
     YtdlpHealResult {
@@ -542,6 +545,9 @@ pub enum MouseTarget {
     AboutTitle,
     /// The GitHub link inside the About card — opens the repo in the system browser.
     AboutLink,
+    /// The "Releases" link inside the About card's update notice — opens the latest release
+    /// page in the system browser (only present when an update is available).
+    AboutUpdateLink,
     /// A row in the radio-recording settings popup, by row index (`0..7`). Clicking focuses the
     /// row; for the folder (edit) and browse (open list) rows it also activates them — the mouse
     /// equivalent of moving there and pressing Enter. Value rows (mode / sliders / notify) only

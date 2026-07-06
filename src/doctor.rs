@@ -53,6 +53,37 @@ fn run_inner(verbose: bool) -> i32 {
     let mut ok = true;
 
     println!("ytt doctor — ytm-tui {}", env!("CARGO_PKG_VERSION"));
+    // Install method (from the running binary's path) + any cached "newer release" notice.
+    // Offline: reads only persisted state, never the network — run `ytt update` to re-check.
+    let method = crate::update::detect_install_method();
+    match crate::update::cached_newer_tag() {
+        Some(latest) => {
+            let display = latest.trim_start_matches(['v', 'V']);
+            println!(
+                "{} {} · {}",
+                if kr {
+                    "설치 방식:"
+                } else {
+                    "installed via:"
+                },
+                method.label(),
+                if kr {
+                    format!("새 버전 v{display} 사용 가능 (`ytt update`)")
+                } else {
+                    format!("update available: v{display} (`ytt update`)")
+                }
+            );
+        }
+        None => println!(
+            "{} {}",
+            if kr {
+                "설치 방식:"
+            } else {
+                "installed via:"
+            },
+            method.label()
+        ),
+    }
     println!();
 
     // 1) External tools.

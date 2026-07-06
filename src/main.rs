@@ -1,7 +1,7 @@
 use ytm_tui::{
     ai, api, app, artwork, auth_cli, config, daemon, deps, doctor, download, downloads, event,
     i18n, library, logging, lyrics, media, notify, persist, player, playlists, remote, resolver,
-    romanize, runtime, scrobble, session, signals, station, tools, transfer, tui, ui, zoom,
+    romanize, runtime, scrobble, session, signals, station, tools, transfer, tui, ui, update, zoom,
 };
 
 use anyhow::Result;
@@ -112,6 +112,15 @@ fn main() -> Result<()> {
                     .map(|s| s.to_string_lossy().into_owned())
                     .collect();
                 std::process::exit(tools::cli::run(&rest));
+            }
+            // App update check — reports whether a newer ytm-tui release exists and how to
+            // upgrade for this install method. One-shot, no terminal, like `doctor`/`tools`.
+            "update" => {
+                let rest: Vec<String> = std::env::args_os()
+                    .skip(2)
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .collect();
+                std::process::exit(update::cli::run(&rest));
             }
             // Hidden maintenance command (run by install.ps1 / Scoop post_install): registers
             // the AppUserModelId so the Windows media flyout shows "YtmTui" + icon instead of
@@ -741,6 +750,15 @@ async fn run(
     tools::ytdlp::spawn_maintainer(
         cfg.tools.clone(),
         runtime::sink(worker_tx.clone(), RuntimeEvent::Tools),
+    );
+
+    // Background app-update check: resolve the latest GitHub release and, if we're behind,
+    // surface it in the About card (+ nav-brand dot + one-time toast). Never blocks startup;
+    // no-ops entirely when disabled or on a development build.
+    update::spawn_update_check(
+        env!("CARGO_PKG_VERSION"),
+        cfg.update_check_enabled,
+        runtime::sink(worker_tx.clone(), RuntimeEvent::Update),
     );
 
     // The remote-control accept loop is started — and the instance descriptor published — just
