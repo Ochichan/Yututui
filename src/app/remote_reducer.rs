@@ -619,7 +619,7 @@ mod tests {
         assert!(!app.ai.available);
 
         let before = app.queue.len();
-        let cmds = app.update(Msg::StreamingResults {
+        let cmds = app.update(StreamingMsg::Results {
             seed_video_id: "id0".to_owned(),
             candidates: vec![(
                 Song::remote("cand1", "Candidate", "B", "3:00"),

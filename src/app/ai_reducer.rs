@@ -2,6 +2,60 @@
 
 use super::*;
 
+/// A DJ Gem assistant intent — or one of its off-path results — applied by the reducer.
+/// Bucketed under [`Msg::Ai`] to keep the flat `Msg` lean. Constructed in `runtime.rs` from
+/// the leaf `AiEvent`; never imported by a leaf actor (see `scripts/check-architecture.sh`).
+pub enum AiMsg {
+    /// The assistant started/finished a turn (drives the thinking spinner).
+    Thinking(bool),
+    /// Assistant chat text to append to the transcript.
+    Chat(String),
+    /// An DJ Gem error to surface in the transcript (also clears the spinner).
+    Error(String),
+    /// Replace the queue with these tracks and start playing (play_music/play_playlist).
+    PlayTracks(Vec<Song>),
+    /// Append these tracks to the queue (add_to_queue/start_streaming).
+    Enqueue(Vec<Song>),
+    /// Populate the pickable related-tracks list (get_suggestions).
+    Suggestions(Vec<Song>),
+    /// Turn autoplay/streaming on or off (start_streaming/stop_streaming).
+    SetAutoplay(bool),
+    /// Shape the active station from a free-text vibe (start_streaming with explore/avoid hints):
+    /// set the adventurousness and the artists to keep out. `explore` is the model's raw string
+    /// (tight/balanced/wide or a synonym), parsed leniently.
+    SetStationProfile {
+        query: String,
+        explore: Option<String>,
+        avoid_artists: Vec<String>,
+    },
+    /// Create a local playlist with this name (create_playlist).
+    CreatePlaylist(String),
+    /// Add these tracks to a local playlist by id or name (add_to_playlist).
+    AddToPlaylist { playlist: String, songs: Vec<Song> },
+    /// Play a local playlist by id or name (play_playlist).
+    PlayPlaylist(String),
+    /// Result of an off-path feedback summary (see [`Cmd::SummarizeFeedback`]): artists the
+    /// listener kept skipping vs. warmed to, folded into the active station's avoid list. Always
+    /// delivered (empty on failure) so the in-flight guard clears.
+    StationPatch {
+        down_artists: Vec<String>,
+        boost_artists: Vec<String>,
+    },
+    /// Result of a batch title/artist romanization request. Empty `entries` means Gemini failed or
+    /// produced nothing usable; `keys` still clears the reducer's in-flight guard for those tracks.
+    RomanizedTitles {
+        request_id: u64,
+        keys: Vec<String>,
+        entries: Vec<RomanizedResult>,
+    },
+}
+
+impl From<AiMsg> for Msg {
+    fn from(msg: AiMsg) -> Self {
+        Msg::Ai(msg)
+    }
+}
+
 impl App {
     // --- DJ Gem assistant -------------------------------------------------------
 

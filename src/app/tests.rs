@@ -2207,7 +2207,7 @@ fn heal_success_resolves_and_reloads_the_same_track() {
     assert_eq!(resolve_cmd_id(&cmds), Some("id0"));
     assert!(load_url(&cmds).is_none(), "load waits for the resolve");
     // The fresh binary's direct CDN URL arrives → the SAME track reloads from it.
-    let cmds = app.update(Msg::Resolved {
+    let cmds = app.update(StreamingMsg::Resolved {
         video_id: "id0".to_owned(),
         stream_url: "https://cdn.example/id0".to_owned(),
     });
@@ -4758,7 +4758,7 @@ fn ai_submit_with_key_emits_ask_and_sets_thinking() {
 fn ai_play_tracks_on_empty_queue_starts_playback() {
     let mut app = App::new(100);
     assert!(app.queue.is_empty());
-    let cmds = app.update(Msg::AiPlayTracks(songs(3)));
+    let cmds = app.update(AiMsg::PlayTracks(songs(3)));
     assert_eq!(current(&app), "id0");
     assert!(load_url(&cmds).expect("a Load cmd").contains("id0"));
 }
@@ -4767,7 +4767,7 @@ fn ai_play_tracks_on_empty_queue_starts_playback() {
 fn ai_enqueue_reports_count_and_extends() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0); // queue has id0, id1
-    app.update(Msg::AiEnqueue(songs(3)));
+    app.update(AiMsg::Enqueue(songs(3)));
     assert_eq!(app.queue.len(), 5);
     assert!(app.status.text.contains("Queued"));
 }
@@ -4776,7 +4776,7 @@ fn ai_enqueue_reports_count_and_extends() {
 fn ai_error_clears_thinking() {
     let mut app = app_playing(1, 0);
     app.ai.thinking = true;
-    app.update(Msg::AiError("boom".to_owned()));
+    app.update(AiMsg::Error("boom".to_owned()));
     assert!(!app.ai.thinking);
     assert_eq!(app.ai.messages.last().unwrap().role, AiRole::Error);
 }
@@ -4784,9 +4784,9 @@ fn ai_error_clears_thinking() {
 #[test]
 fn ai_empty_chat_is_not_appended() {
     let mut app = app_playing(1, 0);
-    app.update(Msg::AiChat("   ".to_owned()));
+    app.update(AiMsg::Chat("   ".to_owned()));
     assert!(app.ai.messages.is_empty());
-    app.update(Msg::AiChat("here you go".to_owned()));
+    app.update(AiMsg::Chat("here you go".to_owned()));
     assert_eq!(app.ai.messages.len(), 1);
 }
 
@@ -4833,7 +4833,7 @@ fn ai_transcript_scrolls_history_and_new_chat_snaps_to_latest() {
         "wheel up should move to older chat"
     );
 
-    app.update(Msg::AiChat("fresh answer".to_owned()));
+    app.update(AiMsg::Chat("fresh answer".to_owned()));
     terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
     let content_len = app.bridges.ai_transcript_copy_lines.borrow().len();
     assert_eq!(
@@ -4955,7 +4955,7 @@ fn ai_streaming_circuit_breaker_disables_after_repeated_empties() {
     let mut app = app_playing(1, 0);
     app.autoplay_streaming = true;
     for _ in 0..AUTOPLAY_MAX_FAILURES {
-        app.update(Msg::AiEnqueue(Vec::new())); // resolves nothing
+        app.update(AiMsg::Enqueue(Vec::new())); // resolves nothing
     }
     assert!(
         !app.autoplay_streaming,
@@ -5027,7 +5027,7 @@ fn ai_streaming_hands_a_local_shortlist_to_the_reranker() {
     app.autoplay_streaming = true;
 
     // The fetched pool flows through the local engine; a diverse shortlist goes to the DJ Gem.
-    let cmds = app.update(Msg::StreamingResults {
+    let cmds = app.update(StreamingMsg::Results {
         seed_video_id: "id0".to_owned(),
         candidates: vec![
             (
@@ -5083,7 +5083,7 @@ fn smart_gate_skips_the_ai_call_and_enqueues_the_local_pick() {
 
     let before = app.queue.len();
     let src = CandidateSource::YtdlpStreaming;
-    let cmds = app.update(Msg::StreamingResults {
+    let cmds = app.update(StreamingMsg::Results {
         seed_video_id: "id0".to_owned(),
         candidates: vec![
             (Song::remote("cand1", "Track One", "band one", "3:00"), src),
@@ -5134,7 +5134,7 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
 
     // First refill misses the cache → a DJ Gem call goes out, the rerank is stashed, and (on the DJ Gem
     // path) the queue is left untouched, so the next refill recomputes the *same* cache key.
-    let cmds = app.update(Msg::StreamingResults {
+    let cmds = app.update(StreamingMsg::Results {
         seed_video_id: "id0".to_owned(),
         candidates: candidates.clone(),
     });
@@ -5156,7 +5156,7 @@ fn ai_result_cache_replays_an_identical_refill_without_a_second_call() {
     app.streaming.last_extend = None;
 
     // Second identical refill hits the cache → no call; the cached ordering is enqueued directly.
-    let cmds = app.update(Msg::StreamingResults {
+    let cmds = app.update(StreamingMsg::Results {
         seed_video_id: "id0".to_owned(),
         candidates,
     });
@@ -5183,7 +5183,7 @@ fn ai_set_station_profile_applies_mode_and_avoids_artists() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(1, 0); // current id0
 
-    let cmds = app.update(Msg::AiSetStationProfile {
+    let cmds = app.update(AiMsg::SetStationProfile {
         query: "rainy day".to_owned(),
         explore: Some("tight".to_owned()),
         avoid_artists: vec!["Nickelback".to_owned()],
@@ -5237,7 +5237,7 @@ fn station_patch_folds_feedback_into_avoid_list_and_clears_inflight() {
     ));
     app.streaming.feedback_in_flight = true;
 
-    let cmds = app.update(Msg::StationPatch {
+    let cmds = app.update(AiMsg::StationPatch {
         down_artists: vec!["Nickelback".to_owned()],
         boost_artists: vec![],
     });
@@ -5272,7 +5272,7 @@ fn empty_station_patch_clears_inflight_without_persisting() {
 
     // An empty patch (the off-path summary failed or found nothing) still clears the guard, but a
     // no-op change must not trigger a pointless save.
-    let cmds = app.update(Msg::StationPatch {
+    let cmds = app.update(AiMsg::StationPatch {
         down_artists: vec![],
         boost_artists: vec![],
     });
@@ -5358,7 +5358,7 @@ fn streaming_ai_picks_enqueue_validated_ids_and_top_up_from_local() {
     });
 
     // DJ Gem picks one valid cid + one hallucinated cid (dropped); the gap tops up from local.
-    app.update(Msg::StreamingAiPicks {
+    app.update(StreamingMsg::AiPicks {
         seed_video_id: "id0".to_owned(),
         picks: vec![
             AiPick {
@@ -5410,7 +5410,7 @@ fn streaming_ai_picks_for_a_stale_seed_are_ignored() {
     });
 
     // A result for a different (older) seed must not consume the in-flight rerank.
-    app.update(Msg::StreamingAiPicks {
+    app.update(StreamingMsg::AiPicks {
         seed_video_id: "old-seed".to_owned(),
         picks: vec![AiPick {
             cid: "c1".to_owned(),
@@ -5454,7 +5454,7 @@ fn why_ai_overlay_explains_the_last_ai_rerank() {
         cache_key: 0,
     });
 
-    app.update(Msg::StreamingAiPicks {
+    app.update(StreamingMsg::AiPicks {
         seed_video_id: "id0".to_owned(),
         picks: vec![
             AiPick {
@@ -5595,7 +5595,7 @@ fn streaming_results_run_through_local_engine_and_clear_pending() {
     // the repeated id2, and ranks the rest. Distinct artists + normal durations keep the
     // two survivors out of the artist-cooldown / duration hard filters, so both enqueue.
     let src = CandidateSource::YtdlpStreaming;
-    app.update(Msg::StreamingResults {
+    app.update(StreamingMsg::Results {
         seed_video_id: "id0".to_owned(),
         candidates: vec![
             (Song::remote("id0", "current", "a", "3:00"), src), // == seed, dropped
@@ -5625,7 +5625,7 @@ fn streaming_error_uses_circuit_breaker() {
 
     for _ in 0..AUTOPLAY_MAX_FAILURES {
         app.streaming.pending = true;
-        app.update(Msg::StreamingError {
+        app.update(StreamingMsg::Error {
             seed_video_id: "id0".to_owned(),
             error: "yt-dlp failed".to_owned(),
         });
@@ -5639,12 +5639,12 @@ fn streaming_error_uses_circuit_breaker() {
 #[test]
 fn ai_create_and_play_playlist_roundtrip() {
     let mut app = App::new(100);
-    let cmds = app.update(Msg::AiCreatePlaylist("Focus".to_owned()));
+    let cmds = app.update(AiMsg::CreatePlaylist("Focus".to_owned()));
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
     );
-    let cmds = app.update(Msg::AiAddToPlaylist {
+    let cmds = app.update(AiMsg::AddToPlaylist {
         playlist: "Focus".to_owned(),
         songs: songs(2),
     });
@@ -5653,7 +5653,7 @@ fn ai_create_and_play_playlist_roundtrip() {
             .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
     );
     assert_eq!(app.playlists.find("Focus").unwrap().songs.len(), 2);
-    let cmds = app.update(Msg::AiPlayPlaylist("Focus".to_owned()));
+    let cmds = app.update(AiMsg::PlayPlaylist("Focus".to_owned()));
     assert_eq!(current(&app), "id0");
     assert!(load_url(&cmds).is_some());
 }
@@ -7380,7 +7380,7 @@ fn loading_prefetches_the_next_track() {
 #[test]
 fn skip_uses_prefetched_url_when_available() {
     let mut app = app_playing(3, 0); // playing id0, prefetch requested for id1
-    app.update(Msg::Resolved {
+    app.update(StreamingMsg::Resolved {
         video_id: "id1".to_owned(),
         stream_url: "https://cdn.example/stream-id1".to_owned(),
     });

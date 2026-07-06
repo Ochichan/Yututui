@@ -135,72 +135,16 @@ pub enum Msg {
         video_id: String,
         error: String,
     },
-    /// A track's direct stream URL was prefetched (for instant skip).
-    Resolved {
-        video_id: String,
-        stream_url: String,
-    },
-    /// Related tracks returned by the non-DJ Gem streaming fallback, each tagged with the source it
-    /// came from (real YTM watch-playlist vs anonymous yt-dlp search) so the local engine can
-    /// weight provenance and prefer the better source on dedup.
-    StreamingResults {
-        seed_video_id: String,
-        candidates: Vec<(Song, CandidateSource)>,
-    },
-    /// Final streaming picks after the API actor has run any needed metadata preflight. This is the
-    /// last gate before enqueueing; it can drop risky public-YouTube candidates and top up from
-    /// fallback picks.
-    StreamingPreflighted {
-        seed_video_id: String,
-        songs: Vec<Song>,
-    },
-    /// The non-DJ Gem streaming fallback failed to fetch related tracks.
-    StreamingError {
-        seed_video_id: String,
-        error: String,
-    },
-    /// The DJ Gem reranker's chosen picks (best-first), or empty on any failure. Each pick is an
-    /// opaque pack `cid`; the reducer resolves cids→tracks via the stashed `cid_map`, validates
-    /// against the shortlist, and tops up from the local pick.
-    StreamingAiPicks {
-        seed_video_id: String,
-        picks: Vec<AiPick>,
-        /// The model's self-reported confidence in [0,1], if it returned one.
-        conf: Option<f32>,
-    },
+    /// A streaming/autoplay pipeline message — a prefetched/resolved direct URL, related-track
+    /// candidates, the metadata-preflighted picks, a fallback failure, or the DJ Gem reranker's
+    /// chosen picks. See [`StreamingMsg`].
+    Streaming(StreamingMsg),
 
     // DJ Gem assistant: intents emitted by the DJ Gem actor, applied here by `update()`.
-    /// The assistant started/finished a turn (drives the thinking spinner).
-    AiThinking(bool),
-    /// Assistant chat text to append to the transcript.
-    AiChat(String),
-    /// An DJ Gem error to surface in the transcript (also clears the spinner).
-    AiError(String),
-    /// Replace the queue with these tracks and start playing (play_music/play_playlist).
-    AiPlayTracks(Vec<Song>),
-    /// Append these tracks to the queue (add_to_queue/start_streaming).
-    AiEnqueue(Vec<Song>),
-    /// Populate the pickable related-tracks list (get_suggestions).
-    AiSuggestions(Vec<Song>),
-    /// Turn autoplay/streaming on or off (start_streaming/stop_streaming).
-    AiSetAutoplay(bool),
-    /// Shape the active station from a free-text vibe (start_streaming with explore/avoid hints):
-    /// set the adventurousness and the artists to keep out. `explore` is the model's raw string
-    /// (tight/balanced/wide or a synonym), parsed leniently.
-    AiSetStationProfile {
-        query: String,
-        explore: Option<String>,
-        avoid_artists: Vec<String>,
-    },
-    /// Create a local playlist with this name (create_playlist).
-    AiCreatePlaylist(String),
-    /// Add these tracks to a local playlist by id or name (add_to_playlist).
-    AiAddToPlaylist {
-        playlist: String,
-        songs: Vec<Song>,
-    },
-    /// Play a local playlist by id or name (play_playlist).
-    AiPlayPlaylist(String),
+    /// A DJ Gem assistant intent or off-path result — thinking, chat, errors, play/enqueue,
+    /// suggestions, autoplay, station-profile shaping, playlist mutations, the feedback-summary
+    /// station patch, and batch romanized titles. See [`AiMsg`].
+    Ai(AiMsg),
     /// A command from a `ytt -r <cmd>` client, with a oneshot channel to reply on. Applied
     /// through the same reducer path as a keypress (see [`App::apply_remote`]) so it is
     /// independent of the current input mode; the computed response is sent back over the
@@ -216,20 +160,6 @@ pub enum Msg {
     /// The media-session artwork cache resolved a local file for a track. Stored on the
     /// app so the next media snapshot carries it (the OS artwork then refreshes).
     MediaArtworkReady(crate::media::artwork::MediaArtworkReady),
-    /// Result of an off-path feedback summary (see [`Cmd::SummarizeFeedback`]): artists the
-    /// listener kept skipping vs. warmed to, folded into the active station's avoid list. Always
-    /// delivered (empty on failure) so the in-flight guard clears.
-    StationPatch {
-        down_artists: Vec<String>,
-        boost_artists: Vec<String>,
-    },
-    /// Result of a batch title/artist romanization request. Empty `entries` means Gemini failed or
-    /// produced nothing usable; `keys` still clears the reducer's in-flight guard for those tracks.
-    RomanizedTitles {
-        request_id: u64,
-        keys: Vec<String>,
-        entries: Vec<RomanizedResult>,
-    },
     /// Best-match tracks answering [`Cmd::ResolveTrack`] (possibly empty). Dropped
     /// unless `seq` matches the overlay's pending resolve epoch.
     TrackResolved {
@@ -333,7 +263,7 @@ pub enum Cmd {
         body: String,
     },
     /// Off-path: ask the assistant to distill a recent-feedback digest into artists to avoid /
-    /// re-allow for the active station. The result returns as [`Msg::StationPatch`].
+    /// re-allow for the active station. The result returns as [`AiMsg::StationPatch`].
     SummarizeFeedback {
         digest: String,
     },
@@ -372,7 +302,7 @@ pub enum Cmd {
         config: streaming::StreamingConfig,
     },
     /// Hand a local candidate shortlist to the DJ Gem actor to rerank (ids only). The result
-    /// returns as [`Msg::StreamingAiPicks`]; failure degrades to the stashed local pick.
+    /// returns as [`StreamingMsg::AiPicks`]; failure degrades to the stashed local pick.
     AiRerank {
         seed_video_id: String,
         prompt: String,
@@ -652,7 +582,7 @@ impl StreamNowPlaying {
     }
 }
 
-/// A streaming rerank handed to the DJ Gem actor, kept until its `Msg::StreamingAiPicks` returns. The
+/// A streaming rerank handed to the DJ Gem actor, kept until its `StreamingMsg::AiPicks` returns. The
 /// `shortlist` is the exact set the model was shown — every returned id is validated against
 /// it (so a hallucinated id is dropped) — and `local_pick` is the guaranteed fallback ordering
 /// the engine produced, used to top up any slots the DJ Gem left empty.
@@ -679,7 +609,7 @@ pub struct AiPick {
 }
 
 /// The resolved, human-readable explanation of the last DJ Gem streaming rerank, shown by the "Why DJ Gem"
-/// overlay (the `w` key). Built when [`Msg::StreamingAiPicks`] resolves — the model's opaque cids are
+/// overlay (the `w` key). Built when [`StreamingMsg::AiPicks`] resolves — the model's opaque cids are
 /// mapped back to real tracks (title + artist) while [`PendingRerank`] is still in hand — so the
 /// overlay can render it long after the pending rerank has been consumed.
 #[derive(Debug, Clone, Default)]

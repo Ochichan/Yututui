@@ -7,7 +7,7 @@
 use ratatui_image::thread::ResizeResponse;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::app::{App, Cmd, Msg, PersistCmd, PlayerMsg};
+use crate::app::{AiMsg, App, Cmd, Msg, PersistCmd, PlayerMsg, StreamingMsg};
 use crate::config::PlayerRuntimeConfig;
 use crate::player::{PlayerCmd, PlayerHandle};
 
@@ -41,52 +41,52 @@ impl From<RuntimeEvent> for Msg {
         match event {
             RuntimeEvent::App(msg) => msg,
             RuntimeEvent::Ai(event) => match event {
-                crate::ai::AiEvent::Thinking(on) => Msg::AiThinking(on),
-                crate::ai::AiEvent::Chat(text) => Msg::AiChat(text),
-                crate::ai::AiEvent::Error(text) => Msg::AiError(text),
-                crate::ai::AiEvent::PlayTracks(songs) => Msg::AiPlayTracks(songs),
-                crate::ai::AiEvent::Enqueue(songs) => Msg::AiEnqueue(songs),
-                crate::ai::AiEvent::Suggestions(songs) => Msg::AiSuggestions(songs),
-                crate::ai::AiEvent::SetAutoplay(on) => Msg::AiSetAutoplay(on),
+                crate::ai::AiEvent::Thinking(on) => Msg::Ai(AiMsg::Thinking(on)),
+                crate::ai::AiEvent::Chat(text) => Msg::Ai(AiMsg::Chat(text)),
+                crate::ai::AiEvent::Error(text) => Msg::Ai(AiMsg::Error(text)),
+                crate::ai::AiEvent::PlayTracks(songs) => Msg::Ai(AiMsg::PlayTracks(songs)),
+                crate::ai::AiEvent::Enqueue(songs) => Msg::Ai(AiMsg::Enqueue(songs)),
+                crate::ai::AiEvent::Suggestions(songs) => Msg::Ai(AiMsg::Suggestions(songs)),
+                crate::ai::AiEvent::SetAutoplay(on) => Msg::Ai(AiMsg::SetAutoplay(on)),
                 crate::ai::AiEvent::SetStationProfile {
                     query,
                     explore,
                     avoid_artists,
-                } => Msg::AiSetStationProfile {
+                } => Msg::Ai(AiMsg::SetStationProfile {
                     query,
                     explore,
                     avoid_artists,
-                },
-                crate::ai::AiEvent::CreatePlaylist(name) => Msg::AiCreatePlaylist(name),
+                }),
+                crate::ai::AiEvent::CreatePlaylist(name) => Msg::Ai(AiMsg::CreatePlaylist(name)),
                 crate::ai::AiEvent::AddToPlaylist { playlist, songs } => {
-                    Msg::AiAddToPlaylist { playlist, songs }
+                    Msg::Ai(AiMsg::AddToPlaylist { playlist, songs })
                 }
-                crate::ai::AiEvent::PlayPlaylist(key) => Msg::AiPlayPlaylist(key),
+                crate::ai::AiEvent::PlayPlaylist(key) => Msg::Ai(AiMsg::PlayPlaylist(key)),
                 crate::ai::AiEvent::StreamingPicks {
                     seed_video_id,
                     picks,
                     conf,
-                } => Msg::StreamingAiPicks {
+                } => Msg::Streaming(StreamingMsg::AiPicks {
                     seed_video_id,
                     picks,
                     conf,
-                },
+                }),
                 crate::ai::AiEvent::StationPatch {
                     down_artists,
                     boost_artists,
-                } => Msg::StationPatch {
+                } => Msg::Ai(AiMsg::StationPatch {
                     down_artists,
                     boost_artists,
-                },
+                }),
                 crate::ai::AiEvent::RomanizedTitles {
                     request_id,
                     keys,
                     entries,
-                } => Msg::RomanizedTitles {
+                } => Msg::Ai(AiMsg::RomanizedTitles {
                     request_id,
                     keys,
                     entries,
-                },
+                }),
             },
             RuntimeEvent::Api(event) => match event {
                 crate::api::ApiEvent::ModeResolved { mode, had_cookie } => {
@@ -132,24 +132,24 @@ impl From<RuntimeEvent> for Msg {
                 crate::api::ApiEvent::StreamingResults {
                     seed_video_id,
                     candidates,
-                } => Msg::StreamingResults {
+                } => Msg::Streaming(StreamingMsg::Results {
                     seed_video_id,
                     candidates,
-                },
+                }),
                 crate::api::ApiEvent::StreamingPreflighted {
                     seed_video_id,
                     songs,
-                } => Msg::StreamingPreflighted {
+                } => Msg::Streaming(StreamingMsg::Preflighted {
                     seed_video_id,
                     songs,
-                },
+                }),
                 crate::api::ApiEvent::StreamingError {
                     seed_video_id,
                     error,
-                } => Msg::StreamingError {
+                } => Msg::Streaming(StreamingMsg::Error {
                     seed_video_id,
                     error,
-                },
+                }),
                 // Daemon-owner lane only: the standalone TUI rejects `run_search`
                 // (`daemon_required`), so its api actor never produces this.
                 crate::api::ApiEvent::GuiSearchCompleted { .. } => Msg::Noop,
@@ -207,10 +207,10 @@ impl From<RuntimeEvent> for Msg {
             RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Resolved {
                 video_id,
                 stream_url,
-            }) => Msg::Resolved {
+            }) => Msg::Streaming(StreamingMsg::Resolved {
                 video_id: video_id.into_string(),
                 stream_url: stream_url.into_string(),
-            },
+            }),
             RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Failed { video_id }) => {
                 Msg::ResolveFailed {
                     video_id: video_id.into_string(),
@@ -519,11 +519,13 @@ impl RuntimeHandles {
                 if let Some(h) = &self.ai_handle {
                     h.romanize(request_id, items);
                 } else {
-                    let _ = self.worker_tx.send(RuntimeEvent::App(Msg::RomanizedTitles {
-                        request_id,
-                        keys,
-                        entries: Vec::new(),
-                    }));
+                    let _ =
+                        self.worker_tx
+                            .send(RuntimeEvent::App(Msg::Ai(AiMsg::RomanizedTitles {
+                                request_id,
+                                keys,
+                                entries: Vec::new(),
+                            })));
                 }
             }
             Cmd::StreamingFallback {

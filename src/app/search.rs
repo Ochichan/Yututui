@@ -510,7 +510,7 @@ impl App {
         }
         match intent {
             PlaylistIntent::Play => {
-                // Mirror `Msg::AiPlayTracks`: replace the queue and start at the top.
+                // Mirror `AiMsg::PlayTracks`: replace the queue and start at the top.
                 let requested = songs.clone();
                 self.queue.set(songs, 0);
                 let song = self.queue.current().cloned();

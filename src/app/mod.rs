@@ -48,6 +48,7 @@ mod state;
 pub use state::*;
 
 mod ai_reducer;
+pub use ai_reducer::AiMsg;
 mod artwork;
 mod download;
 mod keys;
@@ -69,6 +70,7 @@ mod search;
 mod settings_reducer;
 mod stream_metadata;
 mod streaming_reducer;
+pub use streaming_reducer::StreamingMsg;
 
 /// Autoplay/streaming top-up policy and the play-error breaker threshold — single-sourced
 /// with the headless daemon in [`crate::playback_policy`] so no bound can drift between the
@@ -1093,7 +1095,7 @@ impl App {
                 }
                 let still_current = self.queue.current().is_some_and(|s| s.video_id == video_id);
                 if updated && still_current {
-                    // A fresh binary landed. Resolve a direct URL with it (Msg::Resolved
+                    // A fresh binary landed. Resolve a direct URL with it (StreamingMsg::Resolved
                     // below finishes the retry); Msg::ResolveFailed ends the heal.
                     let watch_url = self.queue.current().and_then(Song::prefetch_target);
                     if let Some(watch_url) = watch_url {
@@ -1282,202 +1284,205 @@ impl App {
                 // Keep the batch flowing even when one track fails.
                 return self.pump_downloads();
             }
-            Msg::Resolved {
-                video_id,
-                stream_url,
-            } => {
-                // Bounded prefetch cache; no redraw (purely a skip-latency optimization).
-                if self.prefetch.resolved.len() >= RESOLVED_MAX {
-                    self.prefetch.resolved.clear();
-                }
-                self.prefetch.resolved.insert(video_id.clone(), stream_url);
-                // A pending self-heal retry: the freshly-updated yt-dlp resolved the
-                // failed track — reload it now through the direct CDN URL just cached
-                // (bypassing the session mpv's stale spawn-time ytdl_hook).
-                if self.heal.pending_video_id.as_deref() == Some(video_id.as_str()) {
-                    self.heal.pending_video_id = None;
-                    if self.queue.current().is_some_and(|s| s.video_id == video_id) {
-                        return self.load_song(self.queue.current().cloned());
+            Msg::Streaming(sm) => match sm {
+                StreamingMsg::Resolved {
+                    video_id,
+                    stream_url,
+                } => {
+                    // Bounded prefetch cache; no redraw (purely a skip-latency optimization).
+                    if self.prefetch.resolved.len() >= RESOLVED_MAX {
+                        self.prefetch.resolved.clear();
+                    }
+                    self.prefetch.resolved.insert(video_id.clone(), stream_url);
+                    // A pending self-heal retry: the freshly-updated yt-dlp resolved the
+                    // failed track — reload it now through the direct CDN URL just cached
+                    // (bypassing the session mpv's stale spawn-time ytdl_hook).
+                    if self.heal.pending_video_id.as_deref() == Some(video_id.as_str()) {
+                        self.heal.pending_video_id = None;
+                        if self.queue.current().is_some_and(|s| s.video_id == video_id) {
+                            return self.load_song(self.queue.current().cloned());
+                        }
                     }
                 }
-            }
-            Msg::StreamingResults {
-                seed_video_id,
-                candidates,
-            } => {
-                self.streaming.pending = false;
-                if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
-                    // With a key + reranker enabled, hand the model a diverse local shortlist to
-                    // reorder (ids only); otherwise rank the pool purely locally. Either way the
-                    // pool went through scoring + MMR + cooldown — never taken verbatim.
-                    if self.ai.available && self.config.streaming.ai.enabled {
-                        return self.start_ai_rerank(&seed_video_id, candidates);
+                StreamingMsg::Results {
+                    seed_video_id,
+                    candidates,
+                } => {
+                    self.streaming.pending = false;
+                    if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
+                        // With a key + reranker enabled, hand the model a diverse local shortlist to
+                        // reorder (ids only); otherwise rank the pool purely locally. Either way the
+                        // pool went through scoring + MMR + cooldown — never taken verbatim.
+                        if self.ai.available && self.config.streaming.ai.enabled {
+                            return self.start_ai_rerank(&seed_video_id, candidates);
+                        }
+                        let picks = self.plan_local_streaming(&seed_video_id, candidates);
+                        return self.extend_sanitized_streaming(&seed_video_id, picks, &[]);
+                    } else {
+                        self.dirty = true;
                     }
-                    let picks = self.plan_local_streaming(&seed_video_id, candidates);
-                    return self.extend_sanitized_streaming(&seed_video_id, picks, &[]);
-                } else {
+                }
+                StreamingMsg::Preflighted {
+                    seed_video_id,
+                    songs,
+                } => {
+                    self.streaming.pending = false;
+                    if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
+                        return self.extend_queue_from_streaming(songs);
+                    }
                     self.dirty = true;
                 }
-            }
-            Msg::StreamingPreflighted {
-                seed_video_id,
-                songs,
-            } => {
-                self.streaming.pending = false;
-                if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
+                StreamingMsg::AiPicks {
+                    seed_video_id,
+                    picks,
+                    conf,
+                } => return self.on_streaming_ai_picks(seed_video_id, picks, conf),
+                StreamingMsg::Error {
+                    seed_video_id,
+                    error,
+                } => {
+                    self.streaming.pending = false;
+                    if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
+                        return self.note_streaming_failure(format!(
+                            "{}: {error}",
+                            t!("Autoplay failed", "자동재생 실패")
+                        ));
+                    } else {
+                        self.dirty = true;
+                    }
+                }
+            },
+            // --- DJ Gem assistant intents ---------------------------------------
+            Msg::Ai(am) => match am {
+                AiMsg::Thinking(on) => {
+                    self.ai.thinking = on;
+                    self.bridges.ai_transcript_scroll.scroll_to_end();
+                    self.dirty = true;
+                }
+                AiMsg::Chat(text) => {
+                    // Skip empty replies (e.g. a silent autoplay top-up that only ran tools).
+                    if !text.trim().is_empty() {
+                        self.push_ai_message(AiRole::Ai, text);
+                        self.dirty = true;
+                    }
+                }
+                AiMsg::Error(text) => {
+                    self.ai.thinking = false;
+                    self.push_ai_message(AiRole::Error, text);
+                    self.dirty = true;
+                }
+                AiMsg::PlayTracks(songs) => {
+                    if !songs.is_empty() {
+                        let requested_songs = songs.clone();
+                        self.queue.set(songs, 0);
+                        self.status.text.clear();
+                        let song = self.queue.current().cloned();
+                        let mut cmds = self.load_song(song);
+                        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+                        return cmds;
+                    }
+                }
+                AiMsg::Enqueue(songs) => {
                     return self.extend_queue_from_streaming(songs);
                 }
-                self.dirty = true;
-            }
-            Msg::StreamingAiPicks {
-                seed_video_id,
-                picks,
-                conf,
-            } => return self.on_streaming_ai_picks(seed_video_id, picks, conf),
-            Msg::StreamingError {
-                seed_video_id,
-                error,
-            } => {
-                self.streaming.pending = false;
-                if self.autoplay_streaming && self.queue.contains_video_id(&seed_video_id) {
-                    return self.note_streaming_failure(format!(
-                        "{}: {error}",
-                        t!("Autoplay failed", "자동재생 실패")
-                    ));
-                } else {
+                AiMsg::Suggestions(songs) => {
+                    self.ai.suggestions = songs;
+                    self.ai.suggestions_selected = 0;
+                    self.bridges.ai_scroll.reset();
                     self.dirty = true;
+                    let suggestions = self.ai.suggestions.clone();
+                    return self.request_romanization_for_songs(&suggestions);
                 }
-            }
-
-            // --- DJ Gem assistant intents ---------------------------------------
-            Msg::AiThinking(on) => {
-                self.ai.thinking = on;
-                self.bridges.ai_transcript_scroll.scroll_to_end();
-                self.dirty = true;
-            }
-            Msg::AiChat(text) => {
-                // Skip empty replies (e.g. a silent autoplay top-up that only ran tools).
-                if !text.trim().is_empty() {
-                    self.push_ai_message(AiRole::Ai, text);
+                AiMsg::SetAutoplay(on) => {
+                    // Music-mode invariant: DJ Gem can't enable autoplay while repeat is on.
+                    let on = on && self.queue.repeat == crate::queue::Repeat::Off;
+                    self.set_autoplay_streaming(on);
                     self.dirty = true;
-                }
-            }
-            Msg::AiError(text) => {
-                self.ai.thinking = false;
-                self.push_ai_message(AiRole::Error, text);
-                self.dirty = true;
-            }
-            Msg::AiPlayTracks(songs) => {
-                if !songs.is_empty() {
-                    let requested_songs = songs.clone();
-                    self.queue.set(songs, 0);
-                    self.status.text.clear();
-                    let song = self.queue.current().cloned();
-                    let mut cmds = self.load_song(song);
-                    cmds.extend(self.request_romanization_for_songs(&requested_songs));
+                    let mut cmds = vec![self.save_playback_modes_cmd()];
+                    if on {
+                        // Same proactive top-up as the manual toggle (see Action::ToggleStreaming).
+                        cmds.extend(self.maybe_autoplay_extend());
+                    }
                     return cmds;
                 }
-            }
-            Msg::AiEnqueue(songs) => {
-                return self.extend_queue_from_streaming(songs);
-            }
-            Msg::AiSuggestions(songs) => {
-                self.ai.suggestions = songs;
-                self.ai.suggestions_selected = 0;
-                self.bridges.ai_scroll.reset();
-                self.dirty = true;
-                let suggestions = self.ai.suggestions.clone();
-                return self.request_romanization_for_songs(&suggestions);
-            }
-            Msg::AiSetAutoplay(on) => {
-                // Music-mode invariant: DJ Gem can't enable autoplay while repeat is on.
-                let on = on && self.queue.repeat == crate::queue::Repeat::Off;
-                self.set_autoplay_streaming(on);
-                self.dirty = true;
-                let mut cmds = vec![self.save_playback_modes_cmd()];
-                if on {
-                    // Same proactive top-up as the manual toggle (see Action::ToggleStreaming).
-                    cmds.extend(self.maybe_autoplay_extend());
-                }
-                return cmds;
-            }
-            Msg::AiSetStationProfile {
-                query,
-                explore,
-                avoid_artists,
-            } => {
-                // Distill the vibe into engine knobs the local streaming can actually act on:
-                // adventurousness (→ mode) and artists to keep out (→ banned_artist_keys, read
-                // live in `build_station_state`). Persist both so the station survives a restart.
-                let profile = crate::station::StationProfile::from_intent(
-                    &query,
-                    explore.as_deref(),
-                    &avoid_artists,
-                );
-                self.config.streaming.mode = profile.explore.to_mode();
-                self.station.active = Some(profile);
-                self.dirty = true;
-                return vec![
-                    Cmd::Persist(PersistCmd::StationProfile),
-                    Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
-                ];
-            }
-            Msg::AiCreatePlaylist(name) => {
-                if self.playlists.create(&name).is_some() {
+                AiMsg::SetStationProfile {
+                    query,
+                    explore,
+                    avoid_artists,
+                } => {
+                    // Distill the vibe into engine knobs the local streaming can actually act on:
+                    // adventurousness (→ mode) and artists to keep out (→ banned_artist_keys, read
+                    // live in `build_station_state`). Persist both so the station survives a restart.
+                    let profile = crate::station::StationProfile::from_intent(
+                        &query,
+                        explore.as_deref(),
+                        &avoid_artists,
+                    );
+                    self.config.streaming.mode = profile.explore.to_mode();
+                    self.station.active = Some(profile);
                     self.dirty = true;
-                    return vec![Cmd::Persist(PersistCmd::Playlists)];
+                    return vec![
+                        Cmd::Persist(PersistCmd::StationProfile),
+                        Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
+                    ];
                 }
-            }
-            Msg::AiAddToPlaylist { playlist, songs } => {
-                let mut any = false;
-                for song in songs {
-                    if matches!(
-                        self.playlists.add(&playlist, song),
-                        crate::playlists::AddResult::Added
-                    ) {
-                        any = true;
+                AiMsg::CreatePlaylist(name) => {
+                    if self.playlists.create(&name).is_some() {
+                        self.dirty = true;
+                        return vec![Cmd::Persist(PersistCmd::Playlists)];
                     }
                 }
-                if any {
-                    self.dirty = true;
-                    return vec![Cmd::Persist(PersistCmd::Playlists)];
+                AiMsg::AddToPlaylist { playlist, songs } => {
+                    let mut any = false;
+                    for song in songs {
+                        if matches!(
+                            self.playlists.add(&playlist, song),
+                            crate::playlists::AddResult::Added
+                        ) {
+                            any = true;
+                        }
+                    }
+                    if any {
+                        self.dirty = true;
+                        return vec![Cmd::Persist(PersistCmd::Playlists)];
+                    }
                 }
-            }
-            Msg::AiPlayPlaylist(key) => {
-                if let Some(songs) = self.playlists.find(&key).map(|p| p.songs.clone())
-                    && !songs.is_empty()
-                {
-                    let requested_songs = songs.clone();
-                    self.queue.set(songs, 0);
-                    self.status.text.clear();
-                    let song = self.queue.current().cloned();
-                    let mut cmds = self.load_song(song);
-                    cmds.extend(self.request_romanization_for_songs(&requested_songs));
-                    return cmds;
+                AiMsg::PlayPlaylist(key) => {
+                    if let Some(songs) = self.playlists.find(&key).map(|p| p.songs.clone())
+                        && !songs.is_empty()
+                    {
+                        let requested_songs = songs.clone();
+                        self.queue.set(songs, 0);
+                        self.status.text.clear();
+                        let song = self.queue.current().cloned();
+                        let mut cmds = self.load_song(song);
+                        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+                        return cmds;
+                    }
                 }
-            }
-            Msg::StationPatch {
-                down_artists,
-                boost_artists,
-            } => {
-                // The off-path feedback summary landed (possibly empty on failure) — always clear
-                // the in-flight guard so the next streak can trigger again. Fold the avoid/boost
-                // into the active station and persist only when the avoid list actually changed.
-                self.streaming.feedback_in_flight = false;
-                if let Some(profile) = self.station.active.as_mut()
-                    && profile.apply_feedback(&down_artists, &boost_artists)
-                {
-                    self.dirty = true;
-                    return vec![Cmd::Persist(PersistCmd::StationProfile)];
+                AiMsg::StationPatch {
+                    down_artists,
+                    boost_artists,
+                } => {
+                    // The off-path feedback summary landed (possibly empty on failure) — always clear
+                    // the in-flight guard so the next streak can trigger again. Fold the avoid/boost
+                    // into the active station and persist only when the avoid list actually changed.
+                    self.streaming.feedback_in_flight = false;
+                    if let Some(profile) = self.station.active.as_mut()
+                        && profile.apply_feedback(&down_artists, &boost_artists)
+                    {
+                        self.dirty = true;
+                        return vec![Cmd::Persist(PersistCmd::StationProfile)];
+                    }
                 }
-            }
-            Msg::RomanizedTitles {
-                request_id,
-                keys,
-                entries,
-            } => {
-                return self.apply_romanized_titles(request_id, keys, entries);
-            }
+                AiMsg::RomanizedTitles {
+                    request_id,
+                    keys,
+                    entries,
+                } => {
+                    return self.apply_romanized_titles(request_id, keys, entries);
+                }
+            },
             Msg::Scrobble(event) => return self.on_scrobble_event(event),
             Msg::UpdateChecked(status) => {
                 // One-time toast the first time a newer release is seen (the check task

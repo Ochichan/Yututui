@@ -468,13 +468,13 @@ pub struct StreamingRuntime {
     /// True while the streaming candidate-pool fetch is in flight (both the DJ Gem and non-DJ Gem paths
     /// fetch the same pool first).
     pub pending: bool,
-    /// An DJ Gem rerank handed off to the assistant actor, awaiting its `Msg::StreamingAiPicks`. Holds
+    /// An DJ Gem rerank handed off to the assistant actor, awaiting its `StreamingMsg::AiPicks`. Holds
     /// the shortlist (to validate the returned ids against) and the local pick (the fallback).
     pub pending_rerank: Option<PendingRerank>,
     /// Consecutive empty streaming extends, for the autoplay circuit breaker.
     pub consecutive_failures: u8,
     /// The last DJ Gem rerank's resolved explanation (picks → role + reasons + confidence), stashed
-    /// when `Msg::StreamingAiPicks` resolves so the "Why DJ Gem" overlay (`w`) can show why these tracks
+    /// when `StreamingMsg::AiPicks` resolves so the "Why DJ Gem" overlay (`w`) can show why these tracks
     /// were chosen. `None` until the first DJ Gem rerank lands.
     pub last_explain: Option<StreamingAiExplain>,
     /// Ordered recent listening outcomes (plays / skips / likes / dislikes), newest at the back,
@@ -488,7 +488,7 @@ pub struct StreamingRuntime {
     /// rebuild the same nested HashMap when listening history has not changed.
     pub cooc_cache: Option<(u64, Cooc)>,
     /// True while an off-path feedback summary is handed off to the assistant actor, awaiting its
-    /// `Msg::StationPatch`. A single-flight guard so a skip streak can't fan out duplicate calls.
+    /// `AiMsg::StationPatch`. A single-flight guard so a skip streak can't fan out duplicate calls.
     pub feedback_in_flight: bool,
     /// When the last feedback summary was dispatched, for the cooldown between summaries (a skip
     /// streak shouldn't trigger one every track). `None` until the first summary fires.

@@ -75,7 +75,7 @@ impl App {
     }
 
     /// Play the playlist under the root cursor as a fresh queue (mirrors
-    /// `Msg::AiPlayPlaylist`).
+    /// `AiMsg::PlayPlaylist`).
     pub(in crate::app) fn play_selected_playlist(&mut self) -> Vec<Cmd> {
         let Some(songs) = self.selected_root_playlist().map(|p| p.songs.clone()) else {
             return Vec::new();

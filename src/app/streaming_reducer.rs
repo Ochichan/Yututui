@@ -2,10 +2,57 @@
 
 use super::*;
 
+/// A streaming/autoplay pipeline message: a prefetched/resolved direct URL, related-track
+/// candidates, the metadata-preflighted picks, a fallback failure, and the DJ Gem reranker's
+/// chosen picks. Bucketed under [`Msg::Streaming`] to keep the flat `Msg` lean. Constructed in
+/// `runtime.rs` from the leaf `ApiEvent`/`ResolverEvent`/`AiEvent`; never imported by a leaf
+/// actor (see `scripts/check-architecture.sh`).
+pub enum StreamingMsg {
+    /// A track's direct stream URL was prefetched (for instant skip).
+    Resolved {
+        video_id: String,
+        stream_url: String,
+    },
+    /// Related tracks returned by the non-DJ Gem streaming fallback, each tagged with the source it
+    /// came from (real YTM watch-playlist vs anonymous yt-dlp search) so the local engine can
+    /// weight provenance and prefer the better source on dedup.
+    Results {
+        seed_video_id: String,
+        candidates: Vec<(Song, CandidateSource)>,
+    },
+    /// Final streaming picks after the API actor has run any needed metadata preflight. This is the
+    /// last gate before enqueueing; it can drop risky public-YouTube candidates and top up from
+    /// fallback picks.
+    Preflighted {
+        seed_video_id: String,
+        songs: Vec<Song>,
+    },
+    /// The non-DJ Gem streaming fallback failed to fetch related tracks.
+    Error {
+        seed_video_id: String,
+        error: String,
+    },
+    /// The DJ Gem reranker's chosen picks (best-first), or empty on any failure. Each pick is an
+    /// opaque pack `cid`; the reducer resolves cids→tracks via the stashed `cid_map`, validates
+    /// against the shortlist, and tops up from the local pick.
+    AiPicks {
+        seed_video_id: String,
+        picks: Vec<AiPick>,
+        /// The model's self-reported confidence in [0,1], if it returned one.
+        conf: Option<f32>,
+    },
+}
+
+impl From<StreamingMsg> for Msg {
+    fn from(msg: StreamingMsg) -> Self {
+        Msg::Streaming(msg)
+    }
+}
+
 impl App {
     /// Handle the DJ Gem reranker's chosen streaming picks: resolve cids, validate
     /// against the shortlist, cache the ordering, and enqueue. Extracted verbatim from
-    /// the `Msg::StreamingAiPicks` dispatch arm.
+    /// the `StreamingMsg::AiPicks` dispatch arm.
     pub(in crate::app) fn on_streaming_ai_picks(
         &mut self,
         seed_video_id: String,
@@ -94,7 +141,7 @@ impl App {
 
     /// If autoplay/streaming is on and the queue is running low, top it up. Both the DJ Gem and non-DJ Gem
     /// paths fetch the *same* local candidate pool first; the DJ Gem reranker (when a key is
-    /// configured) then reorders it in [`Msg::StreamingResults`]. The DJ Gem never invents tracks.
+    /// configured) then reorders it in [`StreamingMsg::Results`]. The DJ Gem never invents tracks.
     pub(in crate::app) fn maybe_autoplay_extend(&mut self) -> Vec<Cmd> {
         self.autoplay_extend(false)
     }
@@ -153,7 +200,7 @@ impl App {
 
     /// Stage 2 of the DJ Gem streaming path: rank the fetched pool locally (the guaranteed `local_pick`
     /// fallback) and hand a diverse shortlist to the assistant to rerank by id. Stashes both in
-    /// `pending_rerank` for [`Msg::StreamingAiPicks`] to validate against, and emits the rerank
+    /// `pending_rerank` for [`StreamingMsg::AiPicks`] to validate against, and emits the rerank
     /// command. If the pool yields no rerankable shortlist, it enqueues the local pick directly.
     pub(in crate::app) fn start_ai_rerank(
         &mut self,
@@ -400,7 +447,7 @@ impl App {
 
     /// Off the hot path: when the listener has clearly been rejecting the active station's
     /// direction (a trailing skip streak), hand the recent session log to the assistant to distill
-    /// into an artist avoid/boost patch ([`Cmd::SummarizeFeedback`] → [`Msg::StationPatch`]).
+    /// into an artist avoid/boost patch ([`Cmd::SummarizeFeedback`] → [`AiMsg::StationPatch`]).
     /// Returns `None` (a no-op) unless every gate passes: there's an active station to refine, the
     /// DJ Gem is configured, no summary is already in flight, the skip streak has reached
     /// [`FEEDBACK_STREAK`], the cooldown has elapsed, and the digest is non-empty. Sets the
