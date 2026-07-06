@@ -1799,6 +1799,45 @@ mod tests {
     }
 
     #[test]
+    fn default_bindings_are_conflict_free() {
+        // The default table is hand-maintained. The rebind API rejects conflicts, but
+        // nothing checks the table itself: a duplicate (context, chord) would silently
+        // shadow one action on lookup, and a duplicate (context, action) would silently
+        // drop the earlier chord when `from_labels` collects into its HashMap.
+        let mut by_chord = HashMap::new();
+        let mut by_action = HashMap::new();
+        for (ctx, action, chord) in default_bindings() {
+            if let Some(prev) = by_chord.insert((ctx, chord), action) {
+                panic!(
+                    "{ctx:?}: `{}` bound to both {prev:?} and {action:?}",
+                    format_chord(chord)
+                );
+            }
+            if let Some(prev) = by_action.insert((ctx, action), chord) {
+                panic!(
+                    "{ctx:?} {action:?}: bound to both `{}` and `{}`",
+                    format_chord(prev),
+                    format_chord(chord)
+                );
+            }
+        }
+        // Global chords are consulted before every per-screen handler, so a non-Global
+        // default reusing one is dead at runtime — mirror the asymmetric conflict
+        // definition of `KeyMap::conflict` (Common shadowing, by contrast, is deliberate).
+        for (ctx, action, chord) in default_bindings() {
+            if ctx == KeyContext::Global {
+                continue;
+            }
+            if let Some(&global) = by_chord.get(&(KeyContext::Global, chord)) {
+                panic!(
+                    "{ctx:?} {action:?}: `{}` is shadowed by Global {global:?}",
+                    format_chord(chord)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn defaults_resolve_to_actions() {
         let km = KeyMap::default();
         assert_eq!(
