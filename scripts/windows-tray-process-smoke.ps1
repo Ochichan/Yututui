@@ -17,7 +17,8 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $BinDir = Join-Path $RepoRoot "target\$Target\$Profile"
 $Tray = Join-Path $BinDir "ytt-desktop.exe"
 $Ytt = Join-Path $BinDir "ytt.exe"
-$LogPath = Join-Path $env:LOCALAPPDATA "ytm-tui\cache\ytm-tui.log"
+$LogDir = Join-Path $env:LOCALAPPDATA "ytm-tui\cache"
+$LogPattern = "ytm-tui.log*"
 $createdTrayPid = $null
 
 function Assert-FileExists {
@@ -67,9 +68,9 @@ try {
         throw "mpv.exe was already running before smoke: $ids"
     }
 
-    $logDir = Split-Path -Parent $LogPath
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-    Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    Get-ChildItem -LiteralPath $LogDir -Filter $LogPattern -File -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
 
     $trayProcess = Start-Process -FilePath $Tray -ArgumentList @("--background") -PassThru
     $createdTrayPid = $trayProcess.Id
@@ -80,10 +81,17 @@ try {
     }
 
     Wait-Until -Label "ytt-desktop log initialization" -TimeoutSeconds 10 -Condition {
-        if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf)) {
+        $latestLog = Get-ChildItem -LiteralPath $LogDir -Filter $LogPattern -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+        if (-not $latestLog) {
             return $false
         }
-        $text = Get-Content -LiteralPath $LogPath -Raw
+        try {
+            $text = Get-Content -LiteralPath $latestLog.FullName -Raw -ErrorAction Stop
+        } catch {
+            return $false
+        }
         return $text.Contains("ytt-desktop logging initialized")
     }
 
