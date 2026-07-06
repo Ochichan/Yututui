@@ -50,6 +50,7 @@ pub use state::*;
 mod ai_reducer;
 pub use ai_reducer::AiMsg;
 mod artwork;
+mod clipboard;
 mod download;
 mod keys;
 mod library;
@@ -70,6 +71,7 @@ mod search;
 mod settings_reducer;
 mod stream_metadata;
 mod streaming_reducer;
+pub(in crate::app) use clipboard::{copy_to_clipboard, spotify_auth_url_status};
 pub use streaming_reducer::StreamingMsg;
 
 /// Autoplay/streaming top-up policy and the play-error breaker threshold — single-sourced
@@ -1766,57 +1768,6 @@ fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
 }
 
 pub(crate) use crate::util::browser::open_in_browser;
-
-/// Copy `text` to the system clipboard, fire-and-forget. Mirrors `open_in_browser`: spawns the
-/// platform clipboard tool with stdio nulled and pipes `text` to its stdin, so no native
-/// clipboard crate is needed. macOS uses `pbcopy`, Windows `clip`; Linux tries `wl-copy`
-/// (Wayland) then `xclip`/`xsel` (X11), each of which self-daemonizes to keep the selection
-/// alive after we return. Any failure (tool absent) is silently ignored.
-fn copy_to_clipboard(text: &str) {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    fn pipe(cmd: &mut Command, text: &str) -> bool {
-        match cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(mut child) => {
-                if let Some(mut stdin) = child.stdin.take() {
-                    let _ = stdin.write_all(text.as_bytes());
-                }
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    if cfg!(target_os = "macos") {
-        pipe(
-            &mut process::std_command("pbcopy", process::ProcessProfile::Clipboard),
-            text,
-        );
-    } else if cfg!(target_os = "windows") {
-        pipe(
-            &mut process::std_command("clip", process::ProcessProfile::Clipboard),
-            text,
-        );
-    } else if !pipe(
-        &mut process::std_command("wl-copy", process::ProcessProfile::Clipboard),
-        text,
-    ) && !pipe(
-        process::std_command("xclip", process::ProcessProfile::Clipboard)
-            .args(["-selection", "clipboard"]),
-        text,
-    ) {
-        pipe(
-            process::std_command("xsel", process::ProcessProfile::Clipboard).arg("-ib"),
-            text,
-        );
-    }
-}
 
 /// Spawn a borderless, always-on-top mpv overlay window for `url`, returning the child so the
 /// caller can track and later close it. Stdio is nulled so mpv can't touch the TUI's terminal.
