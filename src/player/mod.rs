@@ -132,7 +132,7 @@ where
 
     lifetime::set_mpv_pid(mpv_pid);
     if let Some(dir) = &data_dir {
-        lifetime::register(dir, std::process::id(), mpv_pid);
+        lifetime::register(dir, std::process::id(), mpv_pid, &ipc_path);
     }
 
     // Windows: bind mpv to a kill-on-close Job Object as early as possible so it can

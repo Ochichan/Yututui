@@ -71,7 +71,17 @@ fn clean_stream_title(raw: String) -> Option<String> {
     }
 
     let s = collapse_spaces(&s);
-    (!s.is_empty()).then_some(s)
+    if s.is_empty() {
+        return None;
+    }
+    // Bound the untrusted ICY stream title before it flows into display and the AI context: a
+    // crafted stream could otherwise inject a very long "title". 512 bytes dwarfs any real one.
+    const STREAM_TITLE_MAX: usize = 512;
+    if s.len() > STREAM_TITLE_MAX {
+        let end = s.floor_char_boundary(STREAM_TITLE_MAX);
+        return Some(s[..end].trim_end().to_owned());
+    }
+    Some(s)
 }
 
 fn split_now_playing(raw: &str) -> StreamNowPlaying {

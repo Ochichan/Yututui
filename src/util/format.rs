@@ -49,6 +49,9 @@ pub fn radio_seekbar(pos: Option<f64>, behind: Option<f64>, synced: Option<bool>
     let elapsed = time(pos.unwrap_or(0.0));
     match (pos, behind, synced) {
         (_, Some(b), Some(false)) => {
+            // Coalesce a non-finite `behind` (mirrors the app's other ratio paths) so a NaN
+            // can't reach the Gauge ratio and panic ratatui — here it was only safe by accident.
+            let b = crate::util::finite_or(b, 0.0);
             let ratio = (1.0 - b / RADIO_RENDER_WINDOW_SECS).clamp(0.05, 1.0);
             (ratio, format!("{elapsed} · -{}s", b as i64))
         }

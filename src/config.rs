@@ -720,28 +720,56 @@ impl Config {
     /// Load config, importing from the old app on first run. Never fails: a missing or
     /// corrupt file falls back to defaults (+ migration).
     pub fn load() -> Self {
-        if let Some(path) = config_path()
-            && let Ok(bytes) = safe_fs::read_no_symlink_limited(&path, MAX_CONFIG_BYTES)
-            && let Ok(text) = String::from_utf8(bytes)
-        {
-            // Fast path: schema unchanged since this file was written.
-            if let Ok(cfg) = serde_json::from_str::<Config>(&text) {
-                return cfg;
+        let Some(path) = config_path() else {
+            // No config dir on this platform: migrate from the old app but don't persist.
+            let mut cfg = Config::default();
+            if let Some(old) = old_config_path() {
+                import_old_from(&old, &mut cfg);
             }
-            // Schema drifted (a renamed enum, retyped field, …): keep every field that still
-            // fits instead of resetting the whole config to defaults.
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                return safe_fs::recover_lenient::<Config>(value);
+            return cfg;
+        };
+        Self::load_from(&path)
+    }
+
+    /// Load from an explicit path (also the test seam). `config.json` is the only
+    /// secret-bearing store (YTM cookie, Gemini key, Last.fm/ListenBrainz tokens), so a
+    /// present-but-unloadable file is set aside *before* the defaults `save()` below can
+    /// overwrite it — matching `safe_fs::load_json_or_default_limited`'s backup-aside policy.
+    fn load_from(path: &std::path::Path) -> Self {
+        match safe_fs::read_no_symlink_limited(path, MAX_CONFIG_BYTES) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => {
+                    // Fast path: schema unchanged since this file was written.
+                    if let Ok(cfg) = serde_json::from_str::<Config>(&text) {
+                        return cfg;
+                    }
+                    // Schema drifted (a renamed enum, retyped field, …): keep every field
+                    // that still fits instead of resetting the whole config to defaults.
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                        return safe_fs::recover_lenient::<Config>(value);
+                    }
+                    // Present but not JSON at all: preserve it rather than clobbering.
+                    let _ = safe_fs::backup_aside(path);
+                }
+                // Present but not valid UTF-8: preserve rather than clobber.
+                Err(_) => {
+                    let _ = safe_fs::backup_aside(path);
+                }
+            },
+            // Oversize (`read_no_symlink_limited` reports it as `InvalidData`): preserve.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                let _ = safe_fs::backup_too_large(path);
             }
-            // Present but not JSON at all: preserve it as a backup rather than clobbering.
-            let _ = safe_fs::backup_aside(&path);
+            // Missing / permission / symlink: nothing safe to preserve. (First run is a
+            // missing file; a symlink is left intact because `save()` refuses to follow it.)
+            Err(_) => {}
         }
-        // First run (or unreadable/corrupt): migrate from the old app, then persist.
+        // First run (or unreadable/corrupt, now backed up): migrate from the old app, persist.
         let mut cfg = Config::default();
         if let Some(old) = old_config_path() {
             import_old_from(&old, &mut cfg);
         }
-        let _ = cfg.save();
+        let _ = cfg.save_to(path);
         cfg
     }
 
@@ -750,7 +778,11 @@ impl Config {
         let Some(path) = config_path() else {
             return Ok(()); // no config dir on this platform; nothing to do
         };
-        safe_fs::write_private_atomic_json(&path, self)
+        self.save_to(&path)
+    }
+
+    fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
+        safe_fs::write_private_atomic_json(path, self)
     }
 
     pub fn player_runtime(&self, cookies_file: Option<PathBuf>) -> PlayerRuntimeConfig {
@@ -810,7 +842,11 @@ impl Config {
     /// missing file makes yt-dlp fail instead of falling back to anonymous playback, so external
     /// process spawns must use this helper rather than [`Self::effective_cookies_file`].
     pub fn existing_cookies_file(&self) -> Option<PathBuf> {
-        self.effective_cookies_file().filter(|path| path.exists())
+        // Require a real regular file, not merely an existing path: `exists()` also accepted a
+        // directory or a dangling symlink, which mpv/yt-dlp would then choke on opaquely.
+        // `is_file()` follows a symlink to a real file, so a user who symlinks their cookies.txt
+        // (same trust domain — the path is user-configured) still works.
+        self.effective_cookies_file().filter(|path| path.is_file())
     }
 
     /// The concrete directory downloads are saved to. Precedence: `YTM_DOWNLOAD_DIR`
@@ -819,12 +855,16 @@ impl Config {
     /// Windows) via the `directories` crate.
     pub fn effective_download_dir(&self) -> PathBuf {
         if let Ok(env) = std::env::var("YTM_DOWNLOAD_DIR")
-            && !env.is_empty()
+            && let Some(dir) = normalize_user_dir(&env)
         {
-            return PathBuf::from(env);
+            return dir;
         }
-        if let Some(dir) = &self.download_dir {
-            return dir.clone();
+        if let Some(dir) = self
+            .download_dir
+            .as_ref()
+            .and_then(|d| normalize_user_dir(&d.to_string_lossy()))
+        {
+            return dir;
         }
         default_download_dir()
     }
@@ -833,14 +873,19 @@ impl Config {
     /// the configured `recording.track_directory`, then `<music>/ytm-tui/recordings`.
     pub fn effective_recording_dir(&self) -> PathBuf {
         if let Ok(env) = std::env::var("YTM_RECORDING_DIR")
-            && !env.is_empty()
+            && let Some(dir) = normalize_user_dir(&env)
         {
-            return PathBuf::from(env);
+            return dir;
         }
-        self.recording
+        if let Some(dir) = self
+            .recording
             .track_directory
-            .clone()
-            .unwrap_or_else(default_recording_dir)
+            .as_ref()
+            .and_then(|d| normalize_user_dir(&d.to_string_lossy()))
+        {
+            return dir;
+        }
+        default_recording_dir()
     }
 
     /// Minimum kept-track duration in seconds (clamped).
@@ -1140,6 +1185,26 @@ pub fn default_download_dir() -> PathBuf {
     default_ytm_dir().unwrap_or_else(|| PathBuf::from("ytm-tui"))
 }
 
+/// Normalize a user-supplied directory (env override or stored config): trim surrounding
+/// whitespace, treat a whitespace-only value as "unset" (→ fall through to the default), and
+/// expand a leading `~` / `~/` to the home directory. Without this a value like `~/Music` was
+/// stored/used literally (creating a dir named `~`), and `"   "` created a spaces-named dir.
+fn normalize_user_dir(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed == "~" {
+        return directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/")
+        && let Some(base) = directories::BaseDirs::new()
+    {
+        return Some(base.home_dir().join(rest));
+    }
+    Some(PathBuf::from(trimmed))
+}
+
 /// Default directory for saved radio recordings: `<music>/ytm-tui/recordings`.
 pub fn default_recording_dir() -> PathBuf {
     default_ytm_dir()
@@ -1211,13 +1276,21 @@ fn parse_netscape_cookies(content: &str) -> String {
         if fields.len() < 7 {
             continue;
         }
-        if !fields[0].contains("youtube.com") {
+        // Suffix-boundary match, not `contains`: `evil-youtube.com` / `notyoutube.com` must not
+        // slip through. A Netscape domain field may carry a leading dot (`.youtube.com`).
+        let domain = fields[0].trim_start_matches('.');
+        if !(domain == "youtube.com" || domain.ends_with(".youtube.com")) {
             continue;
         }
         let (name, value) = (fields[5].trim(), fields[6].trim());
-        if !name.is_empty() {
-            pairs.push(format!("{name}={value}"));
+        // Drop any pair carrying header-breaking characters. A genuine cookie value never
+        // contains CR/LF/`;`; rejecting them keeps a crafted cookies.txt from injecting extra
+        // header pairs into the `name=value; …` string.
+        if name.is_empty() || name.contains(['\r', '\n', ';']) || value.contains(['\r', '\n', ';'])
+        {
+            continue;
         }
+        pairs.push(format!("{name}={value}"));
     }
     pairs.join("; ")
 }
@@ -1231,6 +1304,56 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.volume, 100);
         assert!(c.cookie.is_none());
+    }
+
+    #[test]
+    fn load_from_preserves_unloadable_config_before_defaulting() {
+        let dir = std::env::temp_dir().join(format!("ytm-cfg-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        const MARKER: &str = "SAPISID=super-secret-do-not-lose";
+
+        // (1) Oversize file → moved to *.too-large.bak (secret preserved), fresh config written.
+        let big = format!(
+            "{{\"cookie\":\"{MARKER}\",\"pad\":\"{}\"}}",
+            "x".repeat(1024 * 1024)
+        );
+        std::fs::write(&path, &big).unwrap();
+        let _ = Config::load_from(&path);
+        let too_large = path.with_extension("too-large.bak");
+        assert!(
+            too_large.exists(),
+            "oversize config must be set aside, not clobbered"
+        );
+        assert!(
+            std::fs::read_to_string(&too_large)
+                .unwrap()
+                .contains(MARKER),
+            "the original secret is still recoverable in the backup",
+        );
+        assert!(path.exists(), "a fresh config is written in place");
+        let _ = std::fs::remove_file(&too_large);
+
+        // (2) Invalid UTF-8 → moved to *.corrupt.bak, original bytes preserved.
+        std::fs::write(&path, [0xff, 0xfe, 0xfd, 0xfc]).unwrap();
+        let _ = Config::load_from(&path);
+        let corrupt = path.with_extension("corrupt.bak");
+        assert!(corrupt.exists(), "invalid-UTF-8 config must be preserved");
+        assert_eq!(
+            std::fs::read(&corrupt).unwrap(),
+            vec![0xff, 0xfe, 0xfd, 0xfc]
+        );
+        let _ = std::fs::remove_file(&corrupt);
+
+        // (3) First run (missing) → defaults written, no backup created.
+        std::fs::remove_file(&path).unwrap();
+        let _ = Config::load_from(&path);
+        assert!(path.exists());
+        assert!(!path.with_extension("too-large.bak").exists());
+        assert!(!path.with_extension("corrupt.bak").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1823,6 +1946,25 @@ mod tests {
     }
 
     #[test]
+    fn netscape_cookies_reject_lookalike_domains_and_header_breakers() {
+        let txt = "# Netscape HTTP Cookie File\n\
+                   evil-youtube.com\tTRUE\t/\tTRUE\t1999999999\tSAPISID\tbad1\n\
+                   notyoutube.com\tTRUE\t/\tTRUE\t1999999999\tSID\tbad2\n\
+                   youtube.com.evil.com\tTRUE\t/\tTRUE\t1999999999\tHSID\tbad3\n\
+                   .youtube.com\tTRUE\t/\tTRUE\t1999999999\tGOOD\tok;INJECTED=x\n\
+                   .youtube.com\tTRUE\t/\tTRUE\t1999999999\tSAPISID\tclean\n";
+        let header = parse_netscape_cookies(txt);
+        // Lookalike domains never contribute a pair.
+        assert!(!header.contains("bad1"));
+        assert!(!header.contains("bad2"));
+        assert!(!header.contains("bad3"));
+        // A value carrying a `;` (header-breaker) is dropped, not spliced in.
+        assert!(!header.contains("INJECTED"));
+        // The genuine youtube.com auth cookie still comes through.
+        assert!(header.contains("SAPISID=clean"));
+    }
+
+    #[test]
     fn default_cookies_file_lives_under_audio_dir() {
         assert_eq!(
             ytm_dir_under_audio_dir(PathBuf::from("/Users/alice/Music")).join("cookies.txt"),
@@ -1879,6 +2021,32 @@ mod tests {
         };
         assert_eq!(cfg.existing_cookies_file(), Some(path.clone()));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn normalize_user_dir_trims_and_expands_tilde() {
+        // Whitespace-only / empty → unset (falls through to the default), not a spaces-named dir.
+        assert_eq!(normalize_user_dir("   "), None);
+        assert_eq!(normalize_user_dir(""), None);
+        // Surrounding whitespace trimmed.
+        assert_eq!(
+            normalize_user_dir("  /tmp/x  "),
+            Some(PathBuf::from("/tmp/x"))
+        );
+        // Leading ~ / ~/ expands to home (was a literal `~` dir before).
+        if let Some(base) = directories::BaseDirs::new() {
+            let home = base.home_dir();
+            assert_eq!(normalize_user_dir("~"), Some(home.to_path_buf()));
+            assert_eq!(
+                normalize_user_dir("~/Music/ytt"),
+                Some(home.join("Music/ytt"))
+            );
+        }
+        // A bare relative or absolute path is kept as-is.
+        assert_eq!(
+            normalize_user_dir("relative/dir"),
+            Some(PathBuf::from("relative/dir"))
+        );
     }
 
     #[test]

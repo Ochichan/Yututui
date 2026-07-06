@@ -50,6 +50,13 @@ pub const PROTOCOL_VERSION: u8 = 8;
 /// what the owner can speak.
 pub const PROTOCOL_VERSION_V7: u8 = 7;
 
+/// Upper bound the one-shot `ytt -r` client reads for a single reply line. A `status` reply
+/// embeds the full queue (hard-capped at 999 items ⇒ ~150 KB worst case), so the historic
+/// 4 KB client bound rejected legitimate large-queue replies as malformed. Sized to the
+/// session-frame ceiling so the client read bound and the server's notion of a valid reply
+/// share one source, while still refusing an unbounded stream from a corrupt/hostile peer.
+pub const MAX_ONESHOT_REPLY_BYTES: usize = 256 * 1024;
+
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(
     feature = "ts-export",

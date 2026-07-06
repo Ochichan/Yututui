@@ -100,11 +100,13 @@ impl From<RuntimeEvent> for Msg {
                     query,
                     source,
                     songs,
+                    timed_out,
                 } => Msg::SearchResults {
                     request_id,
                     query,
                     source,
                     songs,
+                    timed_out,
                 },
                 crate::api::ApiEvent::SearchError {
                     request_id,

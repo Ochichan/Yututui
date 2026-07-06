@@ -256,6 +256,13 @@ pub fn append_private_jsonl(path: &Path, line: &str) -> io::Result<()> {
 /// pathologically large arrays and keep the (empty) default instead of stalling startup.
 const MAX_ELEMENTWISE_ARRAY: usize = 20_000;
 
+/// Total budget of `T` deserialization attempts across a whole [`recover_lenient`] pass. The
+/// per-array [`MAX_ELEMENTWISE_ARRAY`] cap bounds a single array; this bounds the cross-field
+/// `O(fields × elements)` accumulation so a crafted-but-under-size-cap file (many fields, each
+/// a large drifted array) can't burn startup CPU. Genuine schema-drift recovery only touches
+/// the drifted leaves and stays far under this.
+const MAX_RECOVERY_DESERIALIZES: usize = 50_000;
+
 /// Load `T` from `path` with schema-drift recovery.
 ///
 /// - missing / unreadable / not a regular file → `T::default()`
@@ -266,8 +273,17 @@ pub fn load_json_or_default<T>(path: &Path) -> T
 where
     T: DeserializeOwned + Serialize + Default,
 {
-    let Ok(text) = read_to_string_no_symlink(path) else {
-        return T::default();
+    let text = match read_to_string_no_symlink(path) {
+        Ok(text) => text,
+        // A genuinely missing file has nothing to protect. A present-but-unreadable one
+        // (permission error, invalid UTF-8, not a regular file, …) must not be silently
+        // replaced by the next default `save`, so set it aside first.
+        Err(e) => {
+            if e.kind() != io::ErrorKind::NotFound {
+                let _ = backup_with_label(path, "unreadable");
+            }
+            return T::default();
+        }
     };
     // Fast path: byte-for-byte the previous behaviour when nothing drifted.
     if let Ok(value) = serde_json::from_str::<T>(&text) {
@@ -304,7 +320,14 @@ where
             let _ = backup_with_label(path, "too-large");
             return T::default();
         }
-        Err(_) => return T::default(),
+        // Missing → nothing to protect. Present-but-unreadable (permission, not a regular
+        // file, …) → set it aside so the next default save can't clobber intact data.
+        Err(e) => {
+            if e.kind() != io::ErrorKind::NotFound {
+                let _ = backup_with_label(path, "unreadable");
+            }
+            return T::default();
+        }
     };
     let Ok(text) = String::from_utf8(bytes) else {
         return T::default();
@@ -339,9 +362,10 @@ where
     if let (Value::Object(_), Value::Object(incoming)) = (&root, &value) {
         let incoming = incoming.clone();
         let mut path: Vec<String> = Vec::new();
+        let mut budget: usize = MAX_RECOVERY_DESERIALIZES;
         for (key, sub) in &incoming {
             path.push(key.clone());
-            graft::<T>(&mut root, &mut path, sub);
+            graft::<T>(&mut root, &mut path, sub, &mut budget);
             path.pop();
         }
     }
@@ -353,14 +377,18 @@ where
 /// Sibling keys are all still at their (valid) defaults or already-grafted-valid state, so
 /// only the key at `path` can introduce invalidity — which is what makes the single-key /
 /// single-element validity checks below accurate.
-fn graft<T>(root: &mut Value, path: &mut Vec<String>, incoming: &Value)
+fn graft<T>(root: &mut Value, path: &mut Vec<String>, incoming: &Value, budget: &mut usize)
 where
     T: DeserializeOwned,
 {
+    if *budget == 0 {
+        return; // out of recovery budget: leave the (valid) default at this path
+    }
     let current = path_get(root, path).cloned();
 
     // Try the whole subtree wholesale first.
     path_set(root, path, incoming.clone());
+    *budget -= 1;
     if T::deserialize(&*root).is_ok() {
         return;
     }
@@ -371,8 +399,11 @@ where
         (Some(Value::Object(_)), Value::Object(sub)) => {
             path_set(root, path, current.clone().unwrap());
             for (key, child) in sub {
+                if *budget == 0 {
+                    break;
+                }
                 path.push(key.clone());
-                graft::<T>(root, path, child);
+                graft::<T>(root, path, child, budget);
                 path.pop();
             }
         }
@@ -381,10 +412,21 @@ where
         (Some(Value::Array(_)), Value::Array(items)) => {
             let mut kept: Vec<Value> = Vec::new();
             if items.len() <= MAX_ELEMENTWISE_ARRAY {
+                let mut attempted = 0usize;
                 for item in items {
+                    if *budget == 0 {
+                        break;
+                    }
                     path_set(root, path, Value::Array(vec![item.clone()]));
+                    *budget -= 1;
+                    attempted += 1;
                     if T::deserialize(&*root).is_ok() {
                         kept.push(item.clone());
+                    } else if attempted >= 256 && kept.len() * 10 < attempted {
+                        // Overwhelmingly incompatible array (the element *type* drifted, not a
+                        // few records): stop proving each element fails and keep the default.
+                        path_set(root, path, current.clone().unwrap());
+                        return;
                     }
                 }
             }
@@ -449,6 +491,13 @@ fn path_remove(root: &mut Value, path: &[String]) {
 /// overwrites an existing backup (numbered `*.corrupt.N.bak`).
 pub fn backup_aside(path: &Path) -> io::Result<PathBuf> {
     backup_with_label(path, "corrupt")
+}
+
+/// Move an oversized file aside (`*.too-large.bak`). Public counterpart to [`backup_aside`]
+/// for callers (e.g. `Config::load`) that read with their own size cap outside
+/// [`load_json_or_default_limited`].
+pub fn backup_too_large(path: &Path) -> io::Result<PathBuf> {
+    backup_with_label(path, "too-large")
 }
 
 /// Move a file aside under a labeled, numbered backup (`*.<label>.bak`, then
@@ -549,6 +598,31 @@ mod tests {
         // Missing file → default (no panic, no backup).
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(load_json_or_default_limited::<S>(&path, 1024), S::default());
+    }
+
+    #[test]
+    fn present_but_unreadable_file_is_backed_up_not_clobbered() {
+        use serde::{Deserialize, Serialize};
+        #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+        struct S {
+            n: u32,
+        }
+        let dir = temp_root("unreadable");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.json");
+        // Invalid UTF-8 is present-but-unreadable: preserve it, don't silently default+clobber.
+        fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
+        assert_eq!(load_json_or_default::<S>(&path), S::default());
+        assert!(!path.exists(), "the unreadable file is moved aside");
+        assert!(
+            path.with_extension("unreadable.bak").exists(),
+            "present-but-unreadable file must be preserved as a backup",
+        );
+        // A genuinely missing file leaves no backup.
+        let missing = dir.join("missing.json");
+        assert_eq!(load_json_or_default::<S>(&missing), S::default());
+        assert!(!missing.with_extension("unreadable.bak").exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     mod recover {
@@ -659,6 +733,22 @@ mod tests {
                 ],
                 "only the drifted record is dropped",
             );
+        }
+
+        #[test]
+        fn overwhelmingly_incompatible_array_drops_to_default() {
+            // 300 rows whose enum variant this build no longer knows. Element-wise recovery
+            // would try each one; the early-abort keeps the default once the keep-ratio
+            // collapses, bounding startup CPU on a crafted under-size-cap file.
+            let rows: Vec<Value> = (0..300)
+                .map(|i| json!({ "id": format!("r{i}"), "kind": "wild" }))
+                .collect();
+            let recovered = recover_lenient::<Store>(json!({ "log": rows, "volume": 9 }));
+            assert!(
+                recovered.log.is_empty(),
+                "all-drifted array -> default (empty)"
+            );
+            assert_eq!(recovered.volume, 9, "sibling field is still preserved");
         }
 
         #[test]

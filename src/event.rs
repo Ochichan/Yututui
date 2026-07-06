@@ -120,7 +120,16 @@ impl Translator {
             // park animations while the window is hidden/behind another. A spurious startup
             // `FocusGained` (some multiplexers emit one) is harmless — `focused` is already true.
             Event::FocusGained => Some(Msg::Focus(true)),
-            Event::FocusLost => Some(Msg::Focus(false)),
+            Event::FocusLost => {
+                // Losing focus can swallow the key/button *release* that would clear these
+                // latches, leaving a held modifier or an in-progress drag "stuck" — the next
+                // keypress would then be misread as a command chord. Reset on blur (the
+                // universal desktop convention of dropping held-key/drag state on focus loss).
+                self.held_modifiers = KeyModifiers::NONE;
+                self.left_down = false;
+                self.last_left_down = None;
+                Some(Msg::Focus(false))
+            }
             _ => None,
         }
     }

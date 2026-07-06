@@ -20,6 +20,10 @@ use crate::util::safe_fs;
 
 /// Cap on remembered downloads (bounded memory; matches the scan cap).
 const STORE_MAX: usize = 999;
+/// Cap the on-disk read so a bloated/corrupt/synced `downloads.json` can't be slurped whole
+/// at startup; an oversize file is moved to `*.too-large.bak` (never destroyed) and the store
+/// falls back to empty. `STORE_MAX` records of paths/titles stay far below this.
+const STORE_MAX_BYTES: u64 = 50 * 1024 * 1024;
 
 /// The download manifest, persisted to `<data dir>/downloads.json`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -36,7 +40,8 @@ impl DownloadStore {
             return DownloadStore::default();
         };
         // Schema-drift tolerant: one changed field no longer discards download history.
-        let mut store = safe_fs::load_json_or_default::<DownloadStore>(&path);
+        let mut store =
+            safe_fs::load_json_or_default_limited::<DownloadStore>(&path, STORE_MAX_BYTES);
         store.tracks.truncate(STORE_MAX);
         store
     }

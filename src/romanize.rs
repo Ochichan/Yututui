@@ -13,6 +13,13 @@ use crate::api::Song;
 use crate::util::safe_fs;
 
 const CACHE_FILE: &str = "romanized_titles.json";
+/// Cap the on-disk read so a bloated/corrupt/synced cache can't be slurped whole at startup;
+/// an oversize file is moved to `*.too-large.bak` and the cache falls back to empty.
+const CACHE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+/// Cap on cached romanizations (one per distinct non-Latin song). Generous — a very large
+/// library stays well under it — but bounds the cache on an unusually long-lived install; the
+/// cache is cheaply rebuildable, so evicting the oldest-by-key entry past the cap is harmless.
+const CACHE_ENTRIES_MAX: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -83,7 +90,7 @@ impl RomanizeCache {
             return Self::default();
         };
         // Schema-drift tolerant: keeps cached romanizations across incompatible changes.
-        safe_fs::load_json_or_default::<RomanizeCache>(&path)
+        safe_fs::load_json_or_default_limited::<RomanizeCache>(&path, CACHE_MAX_BYTES)
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -148,6 +155,10 @@ impl RomanizeCache {
         let title = clean_display(&romanize_text(&song.title));
         let artist = clean_display(&romanize_text(&song.artist));
         self.rev = self.rev.wrapping_add(1);
+        // Bound the cache; the key is new here (checked above), so evict oldest-by-key first.
+        while self.entries.len() >= CACHE_ENTRIES_MAX {
+            self.entries.pop_first();
+        }
         self.entries.insert(
             key,
             RomanizedEntry {

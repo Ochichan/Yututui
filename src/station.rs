@@ -88,6 +88,13 @@ impl StationProfile {
         }
         let boosted = normalize_keys(boost_artists);
         self.avoid_artist_keys.retain(|k| !boosted.contains(k));
+        // Down-votes only ever add, so across many feedback passes the avoid list could grow
+        // without bound. Keep the most recent (drop the oldest from the front) past the cap.
+        const AVOID_ARTIST_KEYS_MAX: usize = 200;
+        if self.avoid_artist_keys.len() > AVOID_ARTIST_KEYS_MAX {
+            let excess = self.avoid_artist_keys.len() - AVOID_ARTIST_KEYS_MAX;
+            self.avoid_artist_keys.drain(..excess);
+        }
         self.avoid_artist_keys != before
     }
 }

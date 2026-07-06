@@ -73,7 +73,7 @@ mod streaming_reducer;
 /// two playback owners. Re-exported so this module's submodules keep resolving the names.
 pub(crate) use crate::playback_policy::{
     AUTOPLAY_COOLDOWN, AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, MAX_CONSECUTIVE_PLAY_ERRORS,
-    STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT, STREAMING_RECENT_ARTISTS,
+    STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT,
 };
 /// How many ordered session outcomes (plays/skips/likes/dislikes) to retain for the DJ Gem
 /// reranker's recovery context. Small: the model only needs the recent arc.
@@ -1333,6 +1333,7 @@ impl App {
                 request_id,
                 query,
                 songs,
+                timed_out,
                 ..
             } => {
                 // Drop results from a superseded search: a slow older response must never
@@ -1356,7 +1357,13 @@ impl App {
                     };
                     self.search.results.clear();
                 } else {
-                    self.status.text.clear();
+                    // A partial result set (the operation deadline dropped a slow source) gets a
+                    // subtle note so it doesn't read as the complete set; a full result clears it.
+                    self.status.text = if timed_out {
+                        t!("Some sources timed out", "일부 소스 시간 초과").to_string()
+                    } else {
+                        String::new()
+                    };
                     self.search.results = songs;
                     self.search.selected = 0;
                     self.bridges.search_scroll.reset();
@@ -1650,11 +1657,10 @@ impl App {
             Msg::AiSetAutoplay(on) => {
                 // Music-mode invariant: DJ Gem can't enable autoplay while repeat is on.
                 let on = on && self.queue.repeat == crate::queue::Repeat::Off;
-                self.autoplay_streaming = on;
+                self.set_autoplay_streaming(on);
                 self.dirty = true;
                 let mut cmds = vec![self.save_playback_modes_cmd()];
                 if on {
-                    self.streaming.consecutive_failures = 0;
                     // Same proactive top-up as the manual toggle (see Action::ToggleStreaming).
                     cmds.extend(self.maybe_autoplay_extend());
                 }

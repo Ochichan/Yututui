@@ -126,7 +126,7 @@ pub struct YtdlpSelection {
 
 impl YtdlpSelection {
     /// The exact yt-dlp path mpv spawns should receive through
-    /// `--script-opts=ytdl_hook-ytdl_path=<path>`.
+    /// `--script-opts-append=ytdl_hook-ytdl_path=<path>`.
     ///
     /// Even a system selection is pinned. Leaving mpv to do its own PATH lookup can
     /// diverge from the path this process probed when Scoop shims, Python Scripts,
@@ -219,6 +219,12 @@ pub fn ytdlp_command() -> tokio::process::Command {
 /// arguments as the process-wide selection.
 pub(crate) fn ytdlp_command_for(program: &str) -> tokio::process::Command {
     let mut cmd = process::tokio_command(program, process::ProcessProfile::YtDlp);
+    // Every yt-dlp invocation is transient (download / resolve / probe) and must never outlive
+    // the future driving it: if that future is dropped on error or app shutdown, SIGKILL the
+    // child so a stuck yt-dlp can't linger (mpv already does the same at its spawn site). This
+    // reaps yt-dlp itself; a short-lived ffmpeg grandchild started for post-processing is not
+    // in the same kill, but the download timeout path already accepts that same bound.
+    cmd.kill_on_drop(true);
     append_ytdlp_js_runtime_args(&mut cmd);
     cmd
 }

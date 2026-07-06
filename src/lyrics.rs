@@ -121,6 +121,16 @@ impl LyricsHandle {
     }
 }
 
+/// Collapse a burst of queued fetches to the newest one (rapid skips) — see the artwork
+/// actor. Non-blocking: drains only already-buffered commands, never awaits a new one.
+fn take_latest(first: LyricsCmd, rx: &mut UnboundedReceiver<LyricsCmd>) -> LyricsCmd {
+    let mut cmd = first;
+    while let Ok(next) = rx.try_recv() {
+        cmd = next;
+    }
+    cmd
+}
+
 /// Spawn the lyrics actor; results return as [`LyricsEvent`]s.
 pub fn spawn<F>(emit: F) -> LyricsHandle
 where
@@ -142,12 +152,15 @@ where
         .unwrap_or_else(|_| reqwest::Client::new());
     let mut cache: HashMap<String, CacheEntry> = HashMap::new();
 
-    while let Some(LyricsCmd::Fetch {
-        video_id,
-        artist,
-        title,
-    }) = rx.recv().await
-    {
+    while let Some(cmd) = rx.recv().await {
+        // Latest-only: rapid track-skips queue several fetches, but only the current track's
+        // lyrics are shown, so drain to the newest (see the artwork actor) instead of walking
+        // a backlog. The per-`video_id` cache still serves a track revisited later.
+        let LyricsCmd::Fetch {
+            video_id,
+            artist,
+            title,
+        } = take_latest(cmd, &mut rx);
         // A resolved result (even empty) is reused; a transient failure is reused only until
         // its cooldown expires, after which we re-fetch instead of showing "no lyrics" forever.
         let cached = match cache.get(&video_id) {

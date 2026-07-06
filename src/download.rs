@@ -80,7 +80,12 @@ where
         let mut dir = dir;
         while let Some(cmd) = rx.recv().await {
             match cmd {
-                DownloadCmd::SetDir(new_dir) => dir = new_dir,
+                DownloadCmd::SetDir(new_dir) => {
+                    // Once per change (not per download): make the resolved/expanded destination
+                    // visible so an env/config override lands somewhere the user can confirm.
+                    tracing::info!(dir = %new_dir.display(), "download directory set");
+                    dir = new_dir;
+                }
                 DownloadCmd::Start(song) => {
                     let Ok(permit) = sem.clone().acquire_owned().await else {
                         return;

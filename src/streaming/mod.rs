@@ -25,10 +25,67 @@ use crate::signals::Signals;
 use crate::streaming::musicgate::GateAction;
 
 pub use candidate::{Candidate, CandidateSource};
-pub use config::{CuratingMode, StreamingConfig, StreamingMode};
+pub use config::{CuratingMode, ModeProfile, StreamingConfig, StreamingMode};
 pub use cooccurrence::Cooc;
 pub use pack::PackedCand;
 pub use score::{GateVerdict, classify_pool};
+
+/// Build the "recently heard" context the station scorer filters against: recent track ids
+/// (the current queue, then a slice of history) and recent artist keys (the history cooldown
+/// window, then the current + upcoming queue artists). Single-sourced here so the interactive
+/// App reducer and the headless daemon engine can't drift — the same discipline as
+/// [`exclude_ids`] and [`crate::playback_policy`]. Returns `(recent_track_ids, recent_artist_keys)`.
+pub fn station_recent_context(
+    queue: &Queue,
+    library: &Library,
+    profile: &ModeProfile,
+) -> (Vec<String>, Vec<String>) {
+    let mut recent_track_ids: Vec<String> = queue
+        .ordered_iter()
+        .filter(|song| !song.is_radio_station())
+        .map(|song| song.video_id.clone())
+        .collect();
+    recent_track_ids.extend(
+        library
+            .history
+            .iter()
+            .filter(|s| !s.is_radio_station())
+            .take(profile.history_block_horizon)
+            .map(|s| s.video_id.clone()),
+    );
+
+    // Cooldown window wants most-recent *last*. History is newest-first, so reverse it, then
+    // append current/upcoming queue artists so newly appended picks don't repeat them.
+    let mut recent_artist_keys: Vec<String> = library
+        .history
+        .iter()
+        .filter(|s| !s.is_radio_station())
+        .take(crate::playback_policy::STREAMING_RECENT_ARTISTS)
+        .map(|s| crate::signals::normalize_artist(&s.artist))
+        .collect();
+    recent_artist_keys.reverse();
+    if let Some(cur) = queue.current()
+        && !cur.is_radio_station()
+    {
+        push_artist_key(&mut recent_artist_keys, &cur.artist);
+    }
+    for song in queue
+        .ordered_iter()
+        .skip(queue.cursor_pos().saturating_add(1))
+        .filter(|song| !song.is_radio_station())
+        .take(8)
+    {
+        push_artist_key(&mut recent_artist_keys, &song.artist);
+    }
+    (recent_track_ids, recent_artist_keys)
+}
+
+fn push_artist_key(keys: &mut Vec<String>, artist: &str) {
+    let key = crate::signals::normalize_artist(artist);
+    if !key.is_empty() {
+        keys.push(key);
+    }
+}
 
 /// The set of `video_id`s to exclude from an autoplay streaming top-up: everything already
 /// queued, the seed itself, and recently-played history within the mode's block horizon

@@ -248,30 +248,48 @@ pub fn diff(old: &MediaSnapshot, new: &MediaSnapshot) -> MediaChanges {
 /// Shared type for the command sink handed to backends.
 pub type CommandSink = Arc<dyn Fn(MediaCommand) + Send + Sync>;
 
-/// Extract a YouTube video id from a watch/share URL (`music.youtube.com/watch?v=…`,
-/// `www.youtube.com/watch?v=…`, `youtu.be/…`) for MPRIS `OpenUri`.
+/// Extract a YouTube video id from a watch/share URL for MPRIS `OpenUri` and the search-box
+/// paste shortcut. Recognizes `…/watch?v=…`, `youtu.be/…`, `…/shorts/…`, `…/embed/…`,
+/// `…/live/…`, and `youtube-nocookie.com/embed/…`. Host is matched case-insensitively with a
+/// trailing dot stripped. A `watch?v=X&list=Y` link resolves to the *video* X (a pasted watch
+/// link means that track, not the playlist it was opened from).
 pub fn parse_youtube_video_id(uri: &str) -> Option<String> {
     let uri = uri.trim();
-    let rest = uri
-        .strip_prefix("https://")
-        .or_else(|| uri.strip_prefix("http://"))?;
+    // Scheme is case-insensitive (RFC 3986).
+    let rest = strip_prefix_ci(uri, "https://").or_else(|| strip_prefix_ci(uri, "http://"))?;
     let id = if let Some(after_host) = rest.strip_prefix("youtu.be/") {
         after_host
     } else {
         let (host, path) = rest.split_once('/')?;
-        if !matches!(
-            host,
-            "music.youtube.com" | "www.youtube.com" | "youtube.com" | "m.youtube.com"
-        ) {
-            return None;
+        // Normalize the host: strip a trailing dot (`youtube.com.`) and lowercase it.
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        match host.as_str() {
+            "music.youtube.com" | "www.youtube.com" | "youtube.com" | "m.youtube.com" => {
+                if let Some(query) = path.strip_prefix("watch?") {
+                    query
+                        .split('&')
+                        .find_map(|param| param.strip_prefix("v="))?
+                } else {
+                    path.strip_prefix("shorts/")
+                        .or_else(|| path.strip_prefix("embed/"))
+                        .or_else(|| path.strip_prefix("live/"))?
+                }
+            }
+            // Privacy-enhanced player only carries ids via /embed/.
+            "www.youtube-nocookie.com" | "youtube-nocookie.com" => path.strip_prefix("embed/")?,
+            _ => return None,
         }
-        path.strip_prefix("watch?")?
-            .split('&')
-            .find_map(|param| param.strip_prefix("v="))?
     };
-    // YouTube ids are 11 chars today; accept a small range to stay future-proof
-    // while rejecting obviously-truncated fragments.
+    // YouTube ids are 11 chars today; accept a small range to stay future-proof while rejecting
+    // obviously-truncated fragments. `leading_id` also rejects a concatenated second-URL paste.
     leading_id(id, 8, 16)
+}
+
+/// Case-insensitive `strip_prefix`, char-boundary-safe (`prefix` is ASCII here).
+fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = s.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &s[prefix.len()..])
 }
 
 /// Take the leading id-charset run off `raw`, requiring it to end at a real URL

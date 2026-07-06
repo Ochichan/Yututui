@@ -19,8 +19,15 @@ use crate::util::safe_fs;
 /// Cap on per-track signal entries; oldest (non-disliked first, by `last_played_at`)
 /// evicted past this so memory stays flat over long-lived installs.
 const TRACKS_MAX: usize = 5000;
+/// Cap the on-disk read so a bloated/corrupt/synced `signals.json` can't be slurped whole at
+/// startup; an oversize file is moved to `*.too-large.bak` and signals fall back to empty.
+const SIGNALS_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// Cap on the raw play-sequence ring (for co-occurrence); oldest events evicted.
 const PLAY_LOG_MAX: usize = 4000;
+/// Cap on distinct artist-affinity entries. `bump_artist` inserts one per distinct artist and
+/// nothing else caps it, so a very long-lived (or bloated-on-load) install could grow it without
+/// bound; past this the weakest-magnitude affinities are dropped first.
+const ARTIST_WEIGHT_ENTRIES_MAX: usize = 5000;
 /// A play reaching at least this fraction of the track counts as "completed".
 const COMPLETE_FRAC: f32 = 0.90;
 
@@ -87,7 +94,7 @@ impl Signals {
             return Signals::default();
         };
         // Schema-drift tolerant: a renamed field can no longer wipe the whole play history.
-        let mut sig = safe_fs::load_json_or_default::<Signals>(&path);
+        let mut sig = safe_fs::load_json_or_default_limited::<Signals>(&path, SIGNALS_MAX_BYTES);
         sig.enforce_caps();
         sig
     }
@@ -229,9 +236,31 @@ impl Signals {
         *w = (*w + delta).clamp(ARTIST_WEIGHT_MIN, ARTIST_WEIGHT_MAX);
     }
 
-    /// Evict the oldest track entries past [`TRACKS_MAX`], preferring to keep disliked
-    /// tracks (they're a deliberate, lasting signal) by evicting non-disliked first.
+    /// Bound every growable collection so memory stays flat over long-lived (or bloated-on-load)
+    /// installs: `play_log`, `artist_weight`, and per-track signals (evicting non-disliked,
+    /// oldest tracks first — dislikes are a deliberate, lasting signal).
     fn enforce_caps(&mut self) {
+        // play_log is bounded on runtime insert; bound it on load too, since a loaded file could
+        // arrive over the cap (external edit / sync / corruption).
+        while self.play_log.len() > PLAY_LOG_MAX {
+            self.play_log.pop_front();
+        }
+        // artist_weight grows one entry per distinct artist and is otherwise never capped; drop
+        // the weakest-magnitude affinities first (a near-zero weight carries almost no signal).
+        if self.artist_weight.len() > ARTIST_WEIGHT_ENTRIES_MAX {
+            let mut by_strength: Vec<(f32, String)> = self
+                .artist_weight
+                .iter()
+                .map(|(k, w)| (w.abs(), k.clone()))
+                .collect();
+            by_strength.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            let remove = self.artist_weight.len() - ARTIST_WEIGHT_ENTRIES_MAX;
+            for (_, k) in by_strength.into_iter().take(remove) {
+                self.artist_weight.remove(&k);
+            }
+        }
+        // Evict the oldest track entries past TRACKS_MAX, preferring to keep disliked tracks
+        // (they're a deliberate, lasting signal) by evicting non-disliked first.
         if self.tracks.len() <= TRACKS_MAX {
             return;
         }

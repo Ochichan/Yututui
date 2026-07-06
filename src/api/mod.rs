@@ -454,6 +454,9 @@ pub enum ApiEvent {
         query: String,
         source: SearchSource,
         songs: Vec<Song>,
+        /// The multi-source operation deadline dropped one or more sources; the Search screen
+        /// shows a subtle indicator so partial results don't look like the full set.
+        timed_out: bool,
     },
     SearchError {
         request_id: u64,
@@ -700,14 +703,15 @@ where
                 source,
                 config,
             } => {
-                let event = match api.search_songs(&query, source, &config).await {
-                    Ok(songs) => {
-                        tracing::info!(count = songs.len(), query = %query, source = %source.code(), "search results");
+                let event = match api.search_songs_reported(&query, source, &config).await {
+                    Ok((songs, timed_out)) => {
+                        tracing::info!(count = songs.len(), query = %query, source = %source.code(), timed_out, "search results");
                         ApiEvent::SearchResults {
                             request_id,
                             query,
                             source,
                             songs,
+                            timed_out,
                         }
                     }
                     Err(e) => {
@@ -767,6 +771,8 @@ where
                             query,
                             source: SearchSource::Youtube,
                             songs,
+                            // Playlist search is a single provider; no multi-source deadline.
+                            timed_out: false,
                         }
                     }
                     Err(e) => {

@@ -86,7 +86,9 @@ fn save(
     // the file size to settle so we never copy a half-flushed file.
     wait_for_stable(temp);
 
-    let final_path = final_dir.join(format!("{filename}.{ext}"));
+    // Never silently overwrite an existing recording (common in Everything mode, or with
+    // duplicate/"Untitled" titles): probe for a free `<name> (N).<ext>`.
+    let final_path = unique_recording_path(final_dir, filename, ext);
     if let Err(e) = std::fs::copy(temp, &final_path) {
         return RecorderEvent::SaveFailed {
             id,
@@ -103,6 +105,23 @@ fn save(
         );
     }
     RecorderEvent::Saved { id, final_path }
+}
+
+/// Pick a destination that won't overwrite an existing recording: `<name>.<ext>`, then
+/// `<name> (2).<ext>`, `<name> (3).<ext>`, … Bounded so a pathological directory can't loop
+/// forever — in that extreme it falls back to the base name (accepting one overwrite).
+fn unique_recording_path(dir: &Path, filename: &str, ext: &str) -> std::path::PathBuf {
+    let base = dir.join(format!("{filename}.{ext}"));
+    if !base.exists() {
+        return base;
+    }
+    for n in 2..=999 {
+        let candidate = dir.join(format!("{filename} ({n}).{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    base
 }
 
 /// Poll the temp file's length until it stops growing (stable ~200ms), capped at ~2s.

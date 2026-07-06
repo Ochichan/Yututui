@@ -27,11 +27,20 @@ use crate::util::sanitize;
 // `crate::playback_policy`, so a threshold can't drift between the two playback owners.
 use crate::playback_policy::{
     AUTOPLAY_COOLDOWN, AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, MAX_CONSECUTIVE_PLAY_ERRORS,
-    STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT, STREAMING_RECENT_ARTISTS, VOLUME_MAX,
-    VOLUME_STEP,
+    STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT, VOLUME_MAX, VOLUME_STEP,
 };
 
 const SESSION_EVENTS_CAP: usize = 20;
+
+// --- Remote-command semantic caps (frame/queue caps bound bytes; these bound meaning) -----
+/// Cap on a remote search query. A real query is a few words; this only rejects abuse
+/// (a multi-KB blob from a buggy client/script) before it reaches the search fan-out.
+const MAX_QUERY_BYTES: usize = 2048;
+/// Cap on `video_ids` accepted per Play/Enqueue request, matching the queue cap so
+/// resolution work is bounded no matter how large the request is.
+const MAX_TRACKS_PER_REQUEST: usize = 999;
+/// Cap on a `SetGeminiKey` value; a real API key is well under this.
+const MAX_GEMINI_KEY_BYTES: usize = 256;
 
 pub struct EngineOptions {
     pub resume: bool,
@@ -386,6 +395,8 @@ impl DaemonEngine {
                 let query = query.trim().to_string();
                 if query.is_empty() {
                     RemoteResponse::err("empty_query")
+                } else if query.len() > MAX_QUERY_BYTES {
+                    RemoteResponse::err("query_too_long")
                 } else {
                     // Off-loop: the api actor answers with GuiSearchCompleted, which the
                     // host loop indexes here and pushes on the `search` topic.
@@ -415,9 +426,13 @@ impl DaemonEngine {
             }
             RemoteCommand::SetGeminiKey { key } => {
                 let key = key.trim();
-                self.config.gemini_api_key = (!key.is_empty()).then(|| key.to_string());
-                self.save_config("daemon gemini key");
-                RemoteResponse::ok("gemini key updated".to_string())
+                if key.len() > MAX_GEMINI_KEY_BYTES {
+                    RemoteResponse::err("key_too_long")
+                } else {
+                    self.config.gemini_api_key = (!key.is_empty()).then(|| key.to_string());
+                    self.save_config("daemon gemini key");
+                    RemoteResponse::ok("gemini key updated".to_string())
+                }
             }
             RemoteCommand::ResetAllSettings => {
                 // Danger zone (GUI double-confirms). Keep playback rolling; the fresh
@@ -812,12 +827,14 @@ impl DaemonEngine {
         }
     }
 
-    /// Resolve a GUI-addressed `video_id` to a playable [`Song`]: the last search's
-    /// rows first, then the library (favorites/history), then a bare row mpv resolves
-    /// at load time (covers e.g. AI suggestion chips that never went through search).
-    fn resolve_video_id(&self, video_id: &str) -> Song {
+    /// Resolve a GUI-addressed `video_id` to a playable [`Song`]: the last search's rows
+    /// first, then the library (favorites/history), then a bare row mpv resolves at load time
+    /// (covers e.g. AI suggestion chips that never went through search). Returns `None` for an
+    /// id that is neither known nor a plausible YouTube id, so a bogus/oversized id from a
+    /// buggy client or script can't enter the queue as a permanently-unplayable row.
+    fn resolve_video_id(&self, video_id: &str) -> Option<Song> {
         if let Some(song) = self.gui_search_index.get(video_id) {
-            return song.clone();
+            return Some(song.clone());
         }
         if let Some(song) = self
             .library
@@ -826,15 +843,17 @@ impl DaemonEngine {
             .chain(self.library.history.iter())
             .find(|s| s.video_id == video_id)
         {
-            return song.clone();
+            return Some(song.clone());
         }
-        Song::remote(video_id, video_id, "", "")
+        crate::api::is_youtube_video_id(video_id).then(|| Song::remote(video_id, video_id, "", ""))
     }
 
-    async fn play_tracks(&mut self, video_ids: Vec<String>) -> RemoteResponse {
-        let mut songs = video_ids.iter().map(|id| self.resolve_video_id(id));
+    async fn play_tracks(&mut self, mut video_ids: Vec<String>) -> RemoteResponse {
+        // Bound resolution/allocation work to the queue cap regardless of request size.
+        video_ids.truncate(MAX_TRACKS_PER_REQUEST);
+        let mut songs = video_ids.iter().filter_map(|id| self.resolve_video_id(id));
         let Some(first) = songs.next() else {
-            return RemoteResponse::err("empty_selection");
+            return RemoteResponse::err("no_valid_tracks");
         };
         let rest: Vec<Song> = songs.collect();
         if !self.queue.play_now(first) {
@@ -850,14 +869,18 @@ impl DaemonEngine {
             .unwrap_or_else(|e| RemoteResponse::err(e.reason()))
     }
 
-    async fn enqueue_tracks(&mut self, video_ids: Vec<String>) -> RemoteResponse {
+    async fn enqueue_tracks(&mut self, mut video_ids: Vec<String>) -> RemoteResponse {
         if video_ids.is_empty() {
             return RemoteResponse::err("empty_selection");
         }
+        video_ids.truncate(MAX_TRACKS_PER_REQUEST);
         let songs: Vec<Song> = video_ids
             .iter()
-            .map(|id| self.resolve_video_id(id))
+            .filter_map(|id| self.resolve_video_id(id))
             .collect();
+        if songs.is_empty() {
+            return RemoteResponse::err("no_valid_tracks");
+        }
         let old_len = self.queue.len();
         let was_idle = self.loaded_video_id.is_none();
         let added = if self.config.effective_enqueue_next() && !was_idle {
@@ -1523,6 +1546,9 @@ impl DaemonEngine {
     }
 
     async fn search_and_play(&mut self, query: String) -> RemoteResponse {
+        if query.trim().len() > MAX_QUERY_BYTES {
+            return RemoteResponse::err("query_too_long");
+        }
         let song = match self.first_search_result(&query).await {
             Ok(Some(song)) => song,
             Ok(None) => return RemoteResponse::err("no_results"),
@@ -1538,6 +1564,9 @@ impl DaemonEngine {
     }
 
     async fn search_and_enqueue(&mut self, query: String) -> RemoteResponse {
+        if query.trim().len() > MAX_QUERY_BYTES {
+            return RemoteResponse::err("query_too_long");
+        }
         let song = match self.first_search_result(&query).await {
             Ok(Some(song)) => song,
             Ok(None) => return RemoteResponse::err("no_results"),
@@ -1626,10 +1655,7 @@ impl DaemonEngine {
         if self.loaded_video_id.is_none() {
             return RemoteResponse::err("nothing_playing");
         }
-        let mut target = pos.max(0.0);
-        if let Some(duration) = self.playback.duration {
-            target = target.min(duration);
-        }
+        let target = crate::playback_policy::clamp_seek_target(pos, self.playback.duration);
         self.note_seek(target);
         if let Some(player) = &self.player {
             player.handle.send(PlayerCmd::SeekAbsolute(target));
@@ -2124,44 +2150,9 @@ impl DaemonEngine {
 
     fn build_station_state(&self, seed_video_id: &str) -> StationState {
         let profile = self.config.streaming.mode.profile(&self.config.streaming);
-        let mut recent_track_ids: Vec<String> = self
-            .queue
-            .ordered_iter()
-            .filter(|song| !song.is_radio_station())
-            .map(|song| song.video_id.clone())
-            .collect();
-        recent_track_ids.extend(
-            self.library
-                .history
-                .iter()
-                .filter(|s| !s.is_radio_station())
-                .take(profile.history_block_horizon)
-                .map(|s| s.video_id.clone()),
-        );
-
-        let mut recent_artist_keys: Vec<String> = self
-            .library
-            .history
-            .iter()
-            .filter(|s| !s.is_radio_station())
-            .take(STREAMING_RECENT_ARTISTS)
-            .map(|s| signals::normalize_artist(&s.artist))
-            .collect();
-        recent_artist_keys.reverse();
-        if let Some(cur) = self.queue.current()
-            && !cur.is_radio_station()
-        {
-            push_artist_key(&mut recent_artist_keys, &cur.artist);
-        }
-        for song in self
-            .queue
-            .ordered_iter()
-            .skip(self.queue.cursor_pos().saturating_add(1))
-            .filter(|song| !song.is_radio_station())
-            .take(8)
-        {
-            push_artist_key(&mut recent_artist_keys, &song.artist);
-        }
+        // Single-sourced with the App reducer so the two owners can't drift.
+        let (recent_track_ids, recent_artist_keys) =
+            streaming::station_recent_context(&self.queue, &self.library, &profile);
 
         let favorite_artist_keys: HashSet<String> = self
             .library
@@ -2318,13 +2309,6 @@ fn local_neighbor_score(song: &Song, seed_artist_key: &str, sig: &Signals) -> f3
     seed_bonus + sig.artist_weight(&artist_key)
 }
 
-fn push_artist_key(keys: &mut Vec<String>, artist: &str) {
-    let key = signals::normalize_artist(artist);
-    if !key.is_empty() {
-        keys.push(key);
-    }
-}
-
 fn data_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "ytm-tui").map(|dirs| dirs.data_dir().to_path_buf())
 }
@@ -2444,6 +2428,54 @@ mod tests {
             &effects[0],
             EngineEffect::StreamingFallback { seed_video_id, .. } if seed_video_id == "seed"
         ));
+    }
+
+    #[tokio::test]
+    async fn remote_semantic_caps_reject_abuse() {
+        // Over-long search query (via Play) is rejected before the search fan-out.
+        let mut engine = engine_with_queue(&["seed"]);
+        let (resp, _, _) = engine
+            .handle_remote(RemoteCommand::Play {
+                query: "x".repeat(MAX_QUERY_BYTES + 1),
+            })
+            .await;
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("query_too_long"));
+
+        // Over-long Gemini key is rejected and does not overwrite the stored key.
+        let (resp, _, _) = engine
+            .handle_remote(RemoteCommand::SetGeminiKey {
+                key: "k".repeat(MAX_GEMINI_KEY_BYTES + 1),
+            })
+            .await;
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("key_too_long"));
+        assert!(engine.config.gemini_api_key.is_none());
+
+        // A request of only bogus (non-YouTube, unknown) ids resolves to nothing.
+        let (resp, _, _) = engine
+            .handle_remote(RemoteCommand::EnqueueTracks {
+                video_ids: vec!["not-a-valid-id".into(), "also/bad".into()],
+            })
+            .await;
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("no_valid_tracks"));
+    }
+
+    #[tokio::test]
+    async fn remote_seek_to_is_clamped_when_duration_unknown() {
+        let mut engine = engine_with_queue(&["seed"]);
+        engine.loaded_video_id = Some("seed".to_owned());
+        engine.playback.duration = None; // live / not-yet-probed
+        let (resp, _, _) = engine
+            .handle_remote(RemoteCommand::SeekTo { ms: u64::MAX })
+            .await;
+        assert!(resp.ok);
+        // The absurd target is capped at the day ceiling, not passed through to mpv.
+        assert_eq!(
+            engine.playback.time_pos,
+            Some(crate::playback_policy::MAX_SEEK_SECONDS)
+        );
     }
 
     #[tokio::test]

@@ -282,7 +282,17 @@ pub fn sanitize_track_filename(base: &str) -> String {
     }
     let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = collapsed.trim_matches(|c: char| c == '.' || c == ' ');
-    let capped: String = trimmed.chars().take(180).collect();
+    // Cap by UTF-8 *byte* length, not char count: a 180-char CJK/Hangul title is ~540 bytes,
+    // over the 255-byte filename limit on common filesystems, so it would fail to save. 200
+    // bytes leaves headroom for the `.<ext>` suffix and any ` (N)` de-duplication suffix.
+    const FILENAME_MAX_BYTES: usize = 200;
+    let mut capped = String::with_capacity(FILENAME_MAX_BYTES);
+    for ch in trimmed.chars() {
+        if capped.len() + ch.len_utf8() > FILENAME_MAX_BYTES {
+            break;
+        }
+        capped.push(ch);
+    }
     let capped = capped
         .trim_matches(|c: char| c == '.' || c == ' ')
         .to_owned();
@@ -296,6 +306,19 @@ pub fn sanitize_track_filename(base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_track_filename_caps_by_bytes_not_chars() {
+        // 300 Hangul syllables = 900 UTF-8 bytes; the char-count cap would have kept ~540.
+        let long = "가".repeat(300);
+        let out = sanitize_track_filename(&long);
+        assert!(out.len() <= 200, "byte length is capped: got {}", out.len());
+        assert!(!out.is_empty());
+        // The result is still valid UTF-8 (no mid-codepoint truncation) and non-empty.
+        assert!(out.chars().all(|c| c == '가'));
+        // A normal short ASCII title passes through untouched.
+        assert_eq!(sanitize_track_filename("Artist - Title"), "Artist - Title");
+    }
 
     #[test]
     fn mode_cycles_both_ways_and_wraps() {
@@ -352,7 +375,10 @@ mod tests {
     #[test]
     fn filename_caps_length() {
         let long = "x".repeat(500);
-        assert_eq!(track_filename_base(None, &long).chars().count(), 180);
+        let out = track_filename_base(None, &long);
+        // Cap is now by UTF-8 byte length (200); ASCII is 1 byte/char, so 200 chars.
+        assert!(out.len() <= 200, "byte length capped: {}", out.len());
+        assert_eq!(out.chars().count(), 200);
     }
 
     #[test]

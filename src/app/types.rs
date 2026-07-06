@@ -110,6 +110,8 @@ pub enum Msg {
         query: String,
         source: SearchSource,
         songs: Vec<Song>,
+        /// The multi-source operation deadline dropped one or more sources (partial results).
+        timed_out: bool,
     },
     /// Search failed.
     SearchError {

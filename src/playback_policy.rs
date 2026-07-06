@@ -100,9 +100,46 @@ pub fn norm_volume_event(percent: f64) -> Option<i64> {
     Some((percent.round() as i64).clamp(0, VOLUME_MAX))
 }
 
+/// Upper bound on an absolute seek target, in seconds. A day dwarfs any real track or
+/// podcast, so it never bites a legitimate seek; it exists only to keep an absurd remote/GUI
+/// `seek-to` (e.g. `1e18`) out of mpv when the current track's duration is unknown (live
+/// stream, not-yet-probed file) and so can't provide a tighter clamp.
+pub const MAX_SEEK_SECONDS: f64 = 24.0 * 3600.0;
+
+/// Clamp an absolute seek target (seconds). Coalesces NaN/±inf/negatives to `0.0`, caps at
+/// [`MAX_SEEK_SECONDS`], and — when the duration is known (`Some(d)`, `d > 0`) — additionally
+/// clamps within the track. Both playback owners route `seek-to` through this so the bound
+/// can't drift between them.
+#[inline]
+pub fn clamp_seek_target(pos: f64, duration: Option<f64>) -> f64 {
+    let mut t = norm_position(pos).min(MAX_SEEK_SECONDS);
+    if let Some(d) = duration {
+        let d = norm_duration(d);
+        if d > 0.0 {
+            t = t.min(d);
+        }
+    }
+    t
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamp_seek_target_bounds_unknown_duration_and_respects_known() {
+        // Unknown duration: a finite-but-absurd value caps at the day ceiling; a non-finite
+        // (inf/NaN) or negative value coalesces to 0.0 — either way mpv never sees garbage.
+        assert_eq!(clamp_seek_target(1e18, None), MAX_SEEK_SECONDS);
+        assert_eq!(clamp_seek_target(f64::INFINITY, None), 0.0);
+        assert_eq!(clamp_seek_target(-5.0, None), 0.0);
+        assert_eq!(clamp_seek_target(f64::NAN, None), 0.0);
+        assert_eq!(clamp_seek_target(90.0, None), 90.0);
+        // Known duration clamps tighter; a zero/unknown duration does not pin the target to 0.
+        assert_eq!(clamp_seek_target(90.0, Some(180.0)), 90.0);
+        assert_eq!(clamp_seek_target(999.0, Some(180.0)), 180.0);
+        assert_eq!(clamp_seek_target(500.0, Some(0.0)), 500.0);
+    }
 
     #[test]
     fn positions_and_durations_reject_non_finite_and_negative() {

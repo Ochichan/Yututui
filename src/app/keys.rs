@@ -330,21 +330,18 @@ impl App {
                         self.dirty = true;
                         return Vec::new();
                     }
-                    self.autoplay_streaming = !self.autoplay_streaming;
+                    let enabling = !self.autoplay_streaming;
+                    self.set_autoplay_streaming(enabling);
                     self.status.text = format!(
                         "{}: {}",
                         t!("Autoplay", "자동재생"),
-                        if self.autoplay_streaming {
-                            "✓"
-                        } else {
-                            "✗"
-                        }
+                        if enabling { "✓" } else { "✗" }
                     );
                     self.dirty = true;
                     let mut cmds = vec![self.save_playback_modes_cmd()];
                     // Kick off the top-up now (not at end-of-track) so a low/single-song queue
                     // has the next tracks queued before the current one ends — no silent gap.
-                    if self.autoplay_streaming {
+                    if enabling {
                         cmds.extend(self.maybe_autoplay_extend());
                     }
                     return cmds;

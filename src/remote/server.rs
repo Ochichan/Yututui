@@ -29,9 +29,7 @@ use super::proto::{
     HelloRequest, InstanceFile, InstanceMode, PROTOCOL_VERSION, PROTOCOL_VERSION_V7, RemoteCommand,
     RemoteRequest, RemoteResponse, Topic,
 };
-use super::sessions::{
-    RemoteSessionHub, RemoteSessionRef, SESSION_MAX_FRAME_BYTES, SessionTuning, run_session,
-};
+use super::sessions::{RemoteSessionHub, RemoteSessionRef, SessionTuning, run_session};
 
 /// How long the single-instance probe waits for the existing server to answer a connect.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -39,6 +37,15 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 const READ_TIMEOUT: Duration = Duration::from_millis(500);
 /// Normal remote requests are tiny JSON objects. Bound one line to avoid unbounded buffering.
 const MAX_REQUEST_BYTES: usize = 4 * 1024;
+/// Cap on connections still in the pre-handshake window (before a one-shot reply or a session
+/// `hello`). Established sessions release their slot at handoff and are then bounded separately
+/// by the session cap, so this only limits a transient same-user connect burst — set well above
+/// the session cap plus a realistic client fleet.
+const PREHANDSHAKE_MAX: usize = 32;
+/// The first line is always a small one-shot request or a `hello` handshake; bound it far below
+/// the 256 KB session-frame size so a pre-handshake peer can't make the server buffer a large
+/// line before it is even parsed. Subsequent session frames keep the larger cap.
+const PREHANDSHAKE_MAX_LINE: usize = 32 * 1024;
 
 /// Outcome of trying to become the controllable instance.
 pub enum BindOutcome {
@@ -312,6 +319,8 @@ pub(crate) async fn serve(
     // a short run of consecutive failures. Remote control degrades; the player keeps running.
     const MAX_CONSECUTIVE_ERRORS: u32 = 16;
     let mut errors: u32 = 0;
+    // Bounds concurrent connections still in the pre-handshake window (see PREHANDSHAKE_MAX).
+    let gate = Arc::new(tokio::sync::Semaphore::new(PREHANDSHAKE_MAX));
     loop {
         let conn = match listener.accept().await {
             Ok(c) => {
@@ -328,11 +337,19 @@ pub(crate) async fn serve(
                 continue;
             }
         };
+        // Refuse to spawn beyond the pre-handshake cap so a burst of same-user connects can't
+        // pile unbounded tasks (each buffering a first line). The permit is released at the
+        // one-shot reply or the session handoff, so long-lived sessions don't hold a slot.
+        let Ok(permit) = Arc::clone(&gate).try_acquire_owned() else {
+            tracing::debug!("remote: pre-handshake connection cap reached; dropping connection");
+            drop(conn);
+            continue;
+        };
         let emit = emit.clone();
         let token = token.clone();
         let hub = Arc::clone(&hub);
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(conn, &token, emit, hub).await {
+            if let Err(e) = handle_conn(conn, &token, emit, hub, permit).await {
                 tracing::debug!(error = %e, "remote: connection ended with error");
             }
         });
@@ -353,13 +370,14 @@ async fn handle_conn(
     token: &str,
     emit: EventSink,
     hub: Arc<RemoteSessionHub>,
+    permit: tokio::sync::OwnedSemaphorePermit,
 ) -> io::Result<()> {
     let mut line = Vec::new();
     {
         let mut raw = &conn;
         match timeout(
             READ_TIMEOUT,
-            read_bounded_line(&mut raw, &mut line, SESSION_MAX_FRAME_BYTES),
+            read_bounded_line(&mut raw, &mut line, PREHANDSHAKE_MAX_LINE),
         )
         .await
         {
@@ -393,6 +411,9 @@ async fn handle_conn(
         return Ok(());
     }
     if let Ok(hello) = serde_json::from_str::<HelloRequest>(text) {
+        // Handshake done: release the pre-handshake slot before the long-lived session, which
+        // is bounded for the rest of its life by the separate session cap.
+        drop(permit);
         return run_session(conn, hello, token, hub, emit).await;
     }
     write_response(&conn, &RemoteResponse::err("bad_request")).await?;

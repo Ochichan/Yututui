@@ -697,6 +697,10 @@ async fn run(
         let _ = std::fs::create_dir_all(&temp_dir);
     }
     app.recorder.supported = player::mpv::stream_record_supported();
+    // Warm the media-controls probe here too (same one-time subprocess cost as the line above)
+    // so the mid-session mpv respawn path hits the cache instead of blocking a worker on the
+    // first play. Both probes are cached per (process, flag) after this.
+    let _ = player::mpv::media_controls_flag_supported();
     startup.mark("recorder_ready");
 
     // Preflight the external tools. If mpv/yt-dlp are missing, show an install hint up

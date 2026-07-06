@@ -154,8 +154,21 @@ async fn resolve_url_with_program(
         .lines()
         .next()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
+        .filter(|l| is_acceptable_stream_url(l))
         .map(str::to_owned)
+}
+
+/// Guard the URL yt-dlp hands back before it is cached and passed to mpv `loadfile`: allow only
+/// `http`/`https` (schemes are case-insensitive per RFC 3986) and reject any ASCII control
+/// character (NUL/ESC/newline). This keeps `file:`/`data:`/local-path/garbage — e.g. from an
+/// override binary or a broken yt-dlp — out of the player. Same-user trust is already low; this
+/// matches the resolver's existing defense-in-depth (bounded stdout, timeout).
+fn is_acceptable_stream_url(s: &str) -> bool {
+    if s.is_empty() || s.bytes().any(|b| b.is_ascii_control()) {
+        return false;
+    }
+    let lower = s.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
 }
 
 #[cfg(all(test, unix))]
@@ -221,6 +234,34 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "--cookies"));
         assert!(args.iter().any(|arg| arg == &cookie_arg));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resolve_url_rejects_non_http_scheme() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        // A broken/hostile yt-dlp emitting a local path or file: URL must not reach mpv.
+        let fake = write_executable(
+            &dir,
+            "yt-dlp",
+            "#!/bin/sh\nprintf '%s\\n' 'file:///etc/passwd'\n",
+        );
+        let resolved =
+            resolve_url_with_program(fake.to_str().unwrap(), "https://x/watch?v=abc123", None)
+                .await;
+        assert_eq!(resolved, None, "non-http scheme is rejected");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stream_url_guard_allows_http_and_rejects_junk() {
+        assert!(is_acceptable_stream_url("https://cdn.example/a.m4a"));
+        assert!(is_acceptable_stream_url("HTTP://cdn.example/a.m4a"));
+        assert!(!is_acceptable_stream_url("file:///etc/passwd"));
+        assert!(!is_acceptable_stream_url("data:audio/mp3;base64,AAAA"));
+        assert!(!is_acceptable_stream_url("/local/path.m4a"));
+        assert!(!is_acceptable_stream_url("https://a\x1b.example/x"));
+        assert!(!is_acceptable_stream_url(""));
     }
 
     fn write_executable(dir: &std::path::Path, name: &str, contents: &str) -> PathBuf {

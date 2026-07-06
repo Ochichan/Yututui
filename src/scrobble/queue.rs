@@ -88,6 +88,10 @@ impl QueueEntry {
 pub struct LoadedQueue {
     pub entries: Vec<QueueEntry>,
     pub corrupt: usize,
+    /// The file was present but could not be read (oversize, permission, bad bytes). The
+    /// flusher must treat this as "unknown", NOT as an empty queue — compacting an unknown
+    /// queue to nothing would delete a queue we simply failed to read.
+    pub read_failed: bool,
 }
 
 pub struct QueueFile {
@@ -120,7 +124,17 @@ impl QueueFile {
     pub fn load(&self) -> LoadedQueue {
         let bytes = match safe_fs::read_no_symlink_limited(&self.path, QUEUE_READ_MAX) {
             Ok(b) => b,
-            Err(_) => return LoadedQueue::default(),
+            // A missing file is genuinely an empty queue. Any other failure (oversize,
+            // permission, not a regular file) is *unknown*, not empty — flag it so the
+            // flusher leaves the file intact instead of compacting it to nothing.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LoadedQueue::default(),
+            Err(e) => {
+                tracing::warn!(error = %e, "scrobble queue unreadable; leaving it intact");
+                return LoadedQueue {
+                    read_failed: true,
+                    ..LoadedQueue::default()
+                };
+            }
         };
         let text = String::from_utf8_lossy(&bytes);
         let mut out = LoadedQueue::default();
@@ -289,6 +303,37 @@ mod tests {
         let loaded = q.load();
         assert_eq!(loaded.entries, vec![a, b]);
         assert_eq!(loaded.corrupt, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn oversize_queue_is_flagged_read_failed_not_emptied() {
+        let (dir, q) = temp_queue("oversize");
+        std::fs::create_dir_all(q.path().parent().unwrap()).unwrap();
+        // A file just over the read cap must not read as an empty queue.
+        std::fs::write(q.path(), vec![b'x'; (QUEUE_READ_MAX as usize) + 1]).unwrap();
+        let loaded = q.load();
+        assert!(
+            loaded.read_failed,
+            "oversize file is flagged, not read as empty"
+        );
+        assert!(loaded.entries.is_empty());
+        assert!(
+            q.path().exists(),
+            "the queue file is left intact, not deleted"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_queue_is_empty_not_read_failed() {
+        let (dir, q) = temp_queue("missing");
+        let loaded = q.load();
+        assert!(
+            !loaded.read_failed,
+            "a missing file is a genuinely empty queue"
+        );
+        assert!(loaded.entries.is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

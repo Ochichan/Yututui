@@ -18,10 +18,12 @@ use tokio::time::timeout;
 
 use super::args::{self, ParseError, Parsed};
 use super::endpoint;
-use super::proto::{InstanceFile, PROTOCOL_VERSION, RemoteCommand, RemoteRequest, RemoteResponse};
+use super::proto::{
+    InstanceFile, MAX_ONESHOT_REPLY_BYTES, PROTOCOL_VERSION, RemoteCommand, RemoteRequest,
+    RemoteResponse,
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
-const MAX_REPLY_BYTES: usize = 4096;
 
 const EXIT_OK: i32 = 0;
 const EXIT_TRANSPORT: i32 = 1;
@@ -314,7 +316,7 @@ async fn read_bounded_line<R: AsyncRead + Unpin>(
                 Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
             };
         }
-        if buf.len() >= MAX_REPLY_BYTES {
+        if buf.len() >= MAX_ONESHOT_REPLY_BYTES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "remote response too large",

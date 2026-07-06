@@ -60,6 +60,9 @@ impl App {
             }
             RemoteCommand::SetVolume { percent } => {
                 let volume = percent.clamp(0, crate::playback_policy::VOLUME_MAX);
+                // A direct volume write clears the mute latch (contract on `pre_mute_volume`), so
+                // a later `m` mutes to this level instead of restoring a stale pre-mute value.
+                self.playback.pre_mute_volume = None;
                 self.playback.volume = volume;
                 self.dirty = true;
                 (
@@ -71,13 +74,14 @@ impl App {
                 if self.queue.current().is_none() {
                     return (RemoteResponse::err("queue_empty"), Vec::new());
                 }
-                // Clamp a remote seek to the track's bounds: unlike the MPRIS OS surface (which
-                // ignores out-of-range per spec), the remote API clamps, so an over-long `ms`
-                // lands at the end instead of being silently dropped. `ms` is non-negative.
-                let mut secs = ms as f64 / 1000.0;
-                if let Some(dur) = self.playback.duration {
-                    secs = secs.min(dur);
-                }
+                // Clamp a remote seek: unlike the MPRIS OS surface (which ignores out-of-range
+                // per spec), the remote API clamps, so an over-long `ms` lands at the end
+                // instead of being dropped. The shared clamp also caps at MAX_SEEK_SECONDS so
+                // an absurd value can't reach mpv when the duration is unknown (live/unprobed).
+                let secs = crate::playback_policy::clamp_seek_target(
+                    ms as f64 / 1000.0,
+                    self.playback.duration,
+                );
                 // Then through the same guarded path an OS scrubber drag takes, so the epoch
                 // bump and radio guard live in one place.
                 let cmds = self.apply_media(crate::media::MediaCommand::SeekTo(secs));
@@ -116,7 +120,10 @@ impl App {
                 if position >= self.queue.len() {
                     (RemoteResponse::err("queue_index"), Vec::new())
                 } else {
-                    let cmds = self.queue_popup_play(position);
+                    let mut cmds = self.queue_popup_play(position);
+                    // Parity with the daemon owner: a remote queue mutation may leave the queue
+                    // low, so top up streaming (guarded/idempotent) rather than gapping.
+                    cmds.extend(self.maybe_autoplay_extend());
                     (RemoteResponse::status(self.status_snapshot()), cmds)
                 }
             }
@@ -124,7 +131,8 @@ impl App {
                 if position >= self.queue.len() {
                     (RemoteResponse::err("queue_index"), Vec::new())
                 } else {
-                    let cmds = self.remove_queue_range(position, position);
+                    let mut cmds = self.remove_queue_range(position, position);
+                    cmds.extend(self.maybe_autoplay_extend());
                     (RemoteResponse::status(self.status_snapshot()), cmds)
                 }
             }
@@ -164,7 +172,7 @@ impl App {
         if on && self.queue.repeat.is_on() {
             on = false;
         }
-        self.autoplay_streaming = on;
+        self.set_autoplay_streaming(on);
         self.status.text = format!(
             "{}: {}",
             t!("Autoplay", "자동재생"),

@@ -165,8 +165,11 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
             path = %pin.display(),
             "mpv ytdl_hook pinned"
         );
+        // `-append` (not `--script-opts=`) so a pin path containing a comma can't be misread as
+        // an option separator by mpv's script-opts parser. Under `--no-config` this is the only
+        // script-opt, so append is functionally identical in the normal case — just comma-safe.
         cmd.arg(format!(
-            "--script-opts=ytdl_hook-ytdl_path={}",
+            "--script-opts-append=ytdl_hook-ytdl_path={}",
             pin.display()
         ));
     }
@@ -187,8 +190,10 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
     }
 
     // Escape hatch for tests/debugging, e.g. `YTM_MPV_EXTRA="--ao=null --volume=0"`.
+    // Quote-aware so a value with spaces (`--x="/My Music/y"`) survives as one arg; simple
+    // space-separated flags behave exactly as the previous `split_whitespace`.
     if let Ok(extra) = std::env::var("YTM_MPV_EXTRA") {
-        for a in extra.split_whitespace() {
+        for a in split_shell_like(&extra) {
             cmd.arg(a);
         }
     }
@@ -200,4 +205,68 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
 
     cmd.spawn()
         .context("failed to spawn mpv — is it installed and on PATH?")
+}
+
+/// Split a `YTM_MPV_EXTRA`-style string into args, honoring single/double quotes so a value
+/// with spaces (`--ao-null-device="/My Music/x"`) survives as ONE arg. Unquoted runs split on
+/// whitespace exactly like the previous `split_whitespace`, so simple debug values
+/// (`--ao=null --volume=0`) are unaffected. Not a full shell parser — no escapes or expansion.
+fn split_shell_like(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    let mut in_arg = false;
+    let mut quote: Option<char> = None;
+    for ch in s.chars() {
+        match quote {
+            Some(q) => {
+                if ch == q {
+                    quote = None;
+                } else {
+                    cur.push(ch);
+                }
+            }
+            None if ch == '\'' || ch == '"' => {
+                quote = Some(ch);
+                in_arg = true;
+            }
+            None if ch.is_whitespace() => {
+                if in_arg {
+                    args.push(std::mem::take(&mut cur));
+                    in_arg = false;
+                }
+            }
+            None => {
+                cur.push(ch);
+                in_arg = true;
+            }
+        }
+    }
+    if in_arg || quote.is_some() {
+        args.push(cur);
+    }
+    args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_shell_like;
+
+    #[test]
+    fn split_shell_like_matches_whitespace_for_simple_values() {
+        assert_eq!(
+            split_shell_like("--ao=null --volume=0"),
+            ["--ao=null", "--volume=0"]
+        );
+        assert_eq!(split_shell_like("   a   b  "), ["a", "b"]);
+        assert!(split_shell_like("").is_empty());
+    }
+
+    #[test]
+    fn split_shell_like_keeps_quoted_spaces_together() {
+        assert_eq!(
+            split_shell_like(r#"--ao-null-device="/My Music/x" --volume=0"#),
+            ["--ao-null-device=/My Music/x", "--volume=0"]
+        );
+        assert_eq!(split_shell_like("--x='a b c'"), ["--x=a b c"]);
+    }
 }

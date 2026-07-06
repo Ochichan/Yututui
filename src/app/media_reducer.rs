@@ -133,6 +133,9 @@ impl App {
                 if volume == self.playback.volume {
                     return Vec::new();
                 }
+                // An OS-widget volume write is a direct change; clear the mute latch (contract on
+                // `pre_mute_volume`) so a later `m` doesn't restore a stale pre-mute level.
+                self.playback.pre_mute_volume = None;
                 self.playback.volume = volume;
                 self.dirty = true;
                 vec![Cmd::Player(PlayerCmd::SetVolume(volume))]
@@ -730,6 +733,17 @@ mod tests {
             "https://youtube.com/watch?feature=x&v=dQw4w9WgXcQ",
             "http://youtu.be/dQw4w9WgXcQ",
             "https://youtu.be/dQw4w9WgXcQ?si=abc",
+            // New forms recognized by the widened parser.
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://music.youtube.com/embed/dQw4w9WgXcQ?rel=0",
+            "https://www.youtube.com/live/dQw4w9WgXcQ",
+            "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ",
+            // Host case-folding, trailing-dot, and scheme case-folding.
+            "https://WWW.YOUTUBE.COM/watch?v=dQw4w9WgXcQ",
+            "https://youtube.com./watch?v=dQw4w9WgXcQ",
+            "HTTPS://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            // watch + list resolves to the VIDEO (user's choice), not the playlist.
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabcdef",
         ] {
             assert_eq!(
                 parse_youtube_video_id(uri).as_deref(),
@@ -738,6 +752,21 @@ mod tests {
             );
         }
         assert_eq!(parse_youtube_video_id("https://youtu.be/x"), None);
+        // Negatives that must stay None.
+        for uri in [
+            "https://example.com/shorts/dQw4w9WgXcQ", // wrong host
+            "https://www.youtube-nocookie.com/watch?v=dQw4w9WgXcQ", // nocookie only via /embed/
+            "https://www.youtube.com/shorts/-UfI1X-MSighttps://youtu.be/x", // concatenated paste
+        ] {
+            assert_eq!(parse_youtube_video_id(uri), None, "{uri}");
+        }
+        // watch+list stays a video for the id parser AND is not a playlist for the playlist parser.
+        assert_eq!(
+            crate::media::parse_youtube_playlist_id(
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabcdef"
+            ),
+            None
+        );
     }
 
     #[test]

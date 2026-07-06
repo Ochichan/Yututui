@@ -229,15 +229,39 @@ pub fn install_console_ctrl_handler() {
 struct Lifeline {
     app_pid: u32,
     mpv_pid: u32,
+    /// The unique IPC socket/pipe path passed to this mpv (`--input-ipc-server=<path>`). The
+    /// reaper matches it against the candidate's command line so a reused pid belonging to an
+    /// *unrelated* mpv (e.g. one the user launched directly) is never killed. `serde(default)`
+    /// keeps records written by older builds loadable (they fall back to the name check).
+    #[serde(default)]
+    mpv_socket: String,
+    /// Unix seconds when the record was written (i.e. at mpv spawn). A very old record is
+    /// treated as stale and not acted on. `serde(default)` keeps old records loadable.
+    #[serde(default)]
+    written_at: u64,
 }
 
 fn registry_path(dir: &Path) -> std::path::PathBuf {
     dir.join("mpv-lifeline.json")
 }
 
-/// Record `{app_pid, mpv_pid}` so a later run can reap a leaked mpv.
-pub fn register(dir: &Path, app_pid: u32, mpv_pid: u32) {
-    let record = Lifeline { app_pid, mpv_pid };
+fn unix_now() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Record `{app_pid, mpv_pid, mpv_socket, written_at}` so a later run can reap a leaked mpv —
+/// and only that mpv, verified by its unique IPC socket path.
+pub fn register(dir: &Path, app_pid: u32, mpv_pid: u32, mpv_socket: &str) {
+    let record = Lifeline {
+        app_pid,
+        mpv_pid,
+        mpv_socket: mpv_socket.to_owned(),
+        written_at: unix_now(),
+    };
     let _ = safe_fs::write_private_atomic_json(&registry_path(dir), &record);
 }
 
@@ -253,6 +277,15 @@ pub fn reap_orphans(dir: &Path) {
         return;
     };
 
+    // A record older than this is stale: mpv respawns on every track change, so a live mpv's
+    // record is recent, and nothing survives a reboot. Don't act on an ancient descriptor whose
+    // pid has very likely been recycled by now.
+    const LIFELINE_TTL_SECS: u64 = 7 * 24 * 3600;
+    if record.written_at != 0 && unix_now().saturating_sub(record.written_at) > LIFELINE_TTL_SECS {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+
     use sysinfo::{Pid, ProcessesToUpdate, System};
     let mut sys = System::new();
     // Refresh only the two pids we actually look up (the prior app + its mpv), not every
@@ -267,8 +300,10 @@ pub fn reap_orphans(dir: &Path) {
     let app_alive = sys.process(Pid::from_u32(record.app_pid)).is_some();
     if !app_alive
         && let Some(proc_) = sys.process(Pid::from_u32(record.mpv_pid))
-        // Guard against pid reuse: only kill if it still looks like mpv.
+        // Guard against pid reuse: it must still look like mpv AND carry *our* unique IPC
+        // socket path — an unrelated mpv the user launched won't have it (see identity check).
         && proc_.name().to_string_lossy().to_lowercase().contains("mpv")
+        && mpv_identity_matches(proc_, &record)
     {
         proc_.kill();
         tracing::warn!(
@@ -278,4 +313,20 @@ pub fn reap_orphans(dir: &Path) {
     }
 
     let _ = std::fs::remove_file(&path);
+}
+
+/// Confirm a candidate really is *our* mpv before killing it, defeating pid reuse: an unrelated
+/// mpv won't carry our unique `--input-ipc-server=<socket>` path in its command line. Falls back
+/// to permissive (the name check already applied) when we recorded no socket (a pre-upgrade
+/// record) or the OS won't expose this process's command line.
+fn mpv_identity_matches(proc_: &sysinfo::Process, record: &Lifeline) -> bool {
+    if record.mpv_socket.is_empty() {
+        return true;
+    }
+    let cmd = proc_.cmd();
+    if cmd.is_empty() {
+        return true; // command line unavailable on this platform/process; rely on the name check
+    }
+    cmd.iter()
+        .any(|arg| arg.to_string_lossy().contains(record.mpv_socket.as_str()))
 }

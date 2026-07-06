@@ -83,7 +83,14 @@ impl YtMusicApi {
         // A cookies.txt exported without being signed in carries only visitor cookies
         // (PREF/SOCS/YSC/…). ytmapi-rs would fail with an opaque "Error parsing header";
         // say what's actually wrong instead.
-        if !cookie.contains("SAPISID=") {
+        // Exact cookie-name match, not a substring: a bare `contains("SAPISID=")` also accepts
+        // `X-SAPISID=…` and other lookalikes. Split on `;`, then on the first `=`, and require a
+        // pair whose name is exactly the auth cookie (accept the `__Secure-` variant too).
+        let has_session = cookie
+            .split(';')
+            .filter_map(|pair| pair.trim().split_once('='))
+            .any(|(name, _)| matches!(name.trim(), "SAPISID" | "__Secure-3PAPISID"));
+        if !has_session {
             bail!(
                 "the cookie has no login session (no SAPISID) — sign in to music.youtube.com \
                  in your browser, then export cookies.txt again"
@@ -230,19 +237,32 @@ impl YtMusicApi {
         source: SearchSource,
         config: &SearchConfig,
     ) -> Result<Vec<Song>> {
+        Ok(self.search_songs_reported(query, source, config).await?.0)
+    }
+
+    /// Like [`search_songs`] but also reports whether the multi-source operation deadline
+    /// dropped one or more sources, so the Search screen can surface a subtle "some sources
+    /// timed out" indicator. The flag is always `false` for a single-source search (its own
+    /// request timeout already bounds it) and for a direct URL/id lookup.
+    pub async fn search_songs_reported(
+        &self,
+        query: &str,
+        source: SearchSource,
+        config: &SearchConfig,
+    ) -> Result<(Vec<Song>, bool)> {
         // A pasted YouTube watch/share URL is not a text query: resolve that exact video
         // and return it as the only result, whatever source is selected (the URL already
         // names the provider). Metadata comes from yt-dlp; a failed lookup still yields
         // a playable bare entry (mpv resolves the id at load time).
         if let Some(id) = crate::media::parse_youtube_playlist_id(query) {
-            return Ok(vec![lookup_playlist_row(&id).await]);
+            return Ok((vec![lookup_playlist_row(&id).await], false));
         }
         if let Some(id) = crate::media::parse_youtube_video_id(query) {
-            return Ok(vec![lookup_video_song(&id).await]);
+            return Ok((vec![lookup_video_song(&id).await], false));
         }
         match source {
             SearchSource::All => self.search_all_sources(query, config).await,
-            source => self.search_one_source(query, source, config).await,
+            source => Ok((self.search_one_source(query, source, config).await?, false)),
         }
     }
 
@@ -292,11 +312,35 @@ impl YtMusicApi {
         ytdlp_playlist_tracks(raw).await
     }
 
-    async fn search_all_sources(&self, query: &str, config: &SearchConfig) -> Result<Vec<Song>> {
+    /// Search every enabled source, merging de-duplicated results. Each source has its own
+    /// per-request timeout, but the *operation* also has a hard deadline so a slow provider
+    /// can't stretch the whole search to `sources × timeout`: once the budget is spent the
+    /// remaining sources are dropped and whatever was collected is returned (partial), with a
+    /// `true` flag so the caller can surface a subtle "some sources timed out" indicator.
+    async fn search_all_sources(
+        &self,
+        query: &str,
+        config: &SearchConfig,
+    ) -> Result<(Vec<Song>, bool)> {
+        const SEARCH_OP_DEADLINE: Duration = Duration::from_secs(20);
+        let deadline = std::time::Instant::now() + SEARCH_OP_DEADLINE;
         let mut songs = Vec::new();
         let mut seen = HashSet::new();
         let mut errors = Vec::new();
+        let mut timed_out = false;
         for source in config.enabled_sources() {
+            // Check the operation budget *before* starting each source (each source already has
+            // its own per-request network timeout, so total time is bounded by this deadline
+            // plus at most one source's timeout — without paying `sources × timeout`). Checking
+            // between sources also keeps the future Send across the actor's spawn boundary.
+            if std::time::Instant::now() >= deadline {
+                timed_out = true;
+                tracing::warn!(
+                    remaining = config.enabled_sources().len() - errors.len(),
+                    "search hit the operation deadline; returning partial results"
+                );
+                break;
+            }
             match self.search_one_source(query, source, config).await {
                 Ok(results) => {
                     for song in results {
@@ -319,7 +363,7 @@ impl YtMusicApi {
         if songs.is_empty() && !errors.is_empty() {
             bail!("all enabled sources failed ({})", errors.join("; "));
         }
-        Ok(songs)
+        Ok((songs, timed_out))
     }
 
     async fn search_one_source(
@@ -619,6 +663,12 @@ pub(crate) async fn preflight_streaming_picks(
     mode: StreamingMode,
     cfg: &StreamingConfig,
 ) -> Vec<Song> {
+    // Whole-operation budget: each metadata lookup already has its own request timeout, but a
+    // long list of risky candidates could still stack up to `candidates × timeout`. Cap the
+    // preflight overall so it can't stall the autoplay top-up; whatever passed by the deadline
+    // is returned (streaming still works, just with less pre-filtering under a slow network).
+    const PREFLIGHT_DEADLINE: Duration = Duration::from_secs(8);
+    let deadline = std::time::Instant::now() + PREFLIGHT_DEADLINE;
     let target = picks.len();
     let mut out = Vec::with_capacity(target);
     let mut taken = HashSet::new();
@@ -634,6 +684,12 @@ pub(crate) async fn preflight_streaming_picks(
             continue;
         }
         if streaming::needs_metadata_preflight(song, mode, cfg) {
+            // Overall budget: each lookup already carries its own request timeout
+            // (`STREAMING_PREFLIGHT_TIMEOUT` inside `enrich_video_meta`), so a between-candidate
+            // deadline check bounds the whole preflight without paying `candidates × timeout`.
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
             let risk = streaming::musicgate::non_music_risk_score(&song.title, &song.artist);
             match song.youtube_id().map(enrich_video_meta) {
                 Some(fut) => match fut.await {
@@ -1159,16 +1215,25 @@ async fn archive_search(query: &str, limit: usize) -> Result<Vec<Song>> {
         .and_then(serde_json::Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let mut out = Vec::new();
+    // Resolve each result's audio file with bounded, order-preserving concurrency instead of
+    // one-at-a-time: the per-row lookup is a network round-trip, so a serial loop over up to 20
+    // docs multiplied the wall time. Each future captures only owned data (so it stays `Send`),
+    // and running them in fixed-size chunks with `join_all` preserves the relevance order the
+    // search returned while bounding concurrency; the per-source search timeout still caps the
+    // whole thing.
+    const ARCHIVE_LOOKUP_CONCURRENCY: usize = 6;
+    let mut lookups = Vec::new();
     for doc in docs {
         let Some(identifier) = json_string(doc, &["identifier"]) else {
             continue;
         };
         let title = json_string(doc, &["title"]).unwrap_or_else(|| identifier.clone());
         let artist = json_string(doc, &["creator"]).unwrap_or_default();
-        if let Some((file, duration)) = archive_audio_file(&client, &identifier).await {
+        let client = client.clone();
+        lookups.push(async move {
+            let (file, duration) = archive_audio_file(&client, &identifier).await?;
             let url = archive_file_url(&identifier, &file);
-            out.push(Song::from_source(
+            Some(Song::from_source(
                 SearchSource::InternetArchive,
                 format!("{identifier}:{file}"),
                 title,
@@ -1179,7 +1244,18 @@ async fn archive_search(query: &str, limit: usize) -> Result<Vec<Song>> {
                     file,
                     url,
                 },
-            ));
+            ))
+        });
+    }
+    let mut out = Vec::new();
+    let mut iter = lookups.into_iter();
+    loop {
+        let chunk: Vec<_> = iter.by_ref().take(ARCHIVE_LOOKUP_CONCURRENCY).collect();
+        if chunk.is_empty() {
+            break;
+        }
+        for song in futures::future::join_all(chunk).await.into_iter().flatten() {
+            out.push(song);
         }
     }
     Ok(out)

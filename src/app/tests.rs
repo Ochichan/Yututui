@@ -573,6 +573,7 @@ fn stale_search_results_do_not_overwrite_a_newer_search() {
         request_id: second_id,
         query: "abcdef".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs: vec![Song::remote("newid", "New", "Artist", "3:00")],
     });
     assert!(app.search.results.iter().any(|s| s.video_id == "newid"));
@@ -583,6 +584,7 @@ fn stale_search_results_do_not_overwrite_a_newer_search() {
         request_id: first_id,
         query: "a".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs: vec![Song::remote("oldid", "Old", "Artist", "3:00")],
     });
     assert!(
@@ -593,6 +595,40 @@ fn stale_search_results_do_not_overwrite_a_newer_search() {
 }
 
 #[test]
+fn reenabling_streaming_resets_the_failure_breaker() {
+    // After 3 empty top-ups auto-disabled streaming, the failure count is stuck at the cap.
+    let mut app = App::new(100);
+    app.streaming.consecutive_failures = crate::playback_policy::AUTOPLAY_MAX_FAILURES;
+    app.set_autoplay_streaming(true);
+    assert!(app.autoplay_streaming);
+    assert_eq!(
+        app.streaming.consecutive_failures, 0,
+        "re-enabling must clear the stale breaker, else the next single failure re-disables it"
+    );
+    // Disabling leaves the counter untouched (only re-enabling resets it).
+    app.streaming.consecutive_failures = 2;
+    app.set_autoplay_streaming(false);
+    assert!(!app.autoplay_streaming);
+    assert_eq!(app.streaming.consecutive_failures, 2);
+}
+
+#[test]
+fn external_set_volume_clears_the_mute_latch() {
+    let mut app = App::new(100);
+    // Simulate a muted state: volume held at 0, pre-mute level remembered.
+    app.playback.pre_mute_volume = Some(80);
+    app.playback.volume = 0;
+    // An OS-widget volume write is a direct change and must clear the latch, so a later `m`
+    // mutes to this new level instead of restoring the stale 80.
+    app.update(Msg::Media(crate::media::MediaCommand::SetVolume(0.5)));
+    assert_eq!(app.playback.volume, 50);
+    assert_eq!(
+        app.playback.pre_mute_volume, None,
+        "a direct volume write clears the mute latch"
+    );
+}
+
+#[test]
 fn results_then_enter_plays_and_returns_to_player() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
@@ -600,6 +636,7 @@ fn results_then_enter_plays_and_returns_to_player() {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs: vec![Song::remote("abc123", "Song", "Artist", "3:00")],
     });
     assert_eq!(app.search.focus, SearchFocus::Results);
@@ -616,6 +653,7 @@ fn enter_on_search_result_queues_only_the_selected_song() {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs: vec![
             Song::remote("id0", "Zero", "A", "3:00"),
             Song::remote("id1", "One", "B", "3:00"),
@@ -645,6 +683,7 @@ fn enter_on_search_result_plays_now_keeping_the_queue() {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs: vec![Song::remote("new9", "New", "Z", "3:00")],
     });
     app.search.focus = SearchFocus::Results;
@@ -676,6 +715,7 @@ fn backslash_on_search_result_enqueues_without_interrupting() {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs: vec![Song::remote("new9", "New", "Z", "3:00")],
     });
     app.search.focus = SearchFocus::Results;
@@ -1025,6 +1065,7 @@ fn right_click_on_a_search_row_adds_it_to_the_queue() {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs: vec![
             Song::remote("r0", "R0", "A", "3:00"),
             Song::remote("r1", "R1", "B", "3:00"),
@@ -5868,6 +5909,7 @@ fn app_with_search_results() -> App {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs: vec![
             fsong("a", "Lovely", "Billie Eilish"),
             fsong("b", "Bad Guy", "Billie Eilish"),
@@ -5979,6 +6021,7 @@ fn fresh_results_close_the_filter_popup() {
         request_id: app.search.request_id,
         query: "y".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs: vec![fsong("z", "Zeta", "Nobody")],
     });
     assert!(!app.search_filter.open);
@@ -6012,6 +6055,7 @@ fn filter_popup_right_click_enqueues_without_closing() {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs: vec![fsong("r0", "R0", "A"), fsong("r1", "R1", "B")],
     });
     app.update(Msg::Key(key(KeyCode::Char('/'))));
@@ -6048,6 +6092,7 @@ fn filter_popup_wheel_scrolls_its_own_viewport() {
         request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
+        timed_out: false,
         songs,
     });
     app.update(Msg::Key(key(KeyCode::Char('/'))));

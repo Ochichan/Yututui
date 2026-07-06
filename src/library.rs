@@ -185,6 +185,15 @@ impl Library {
     }
 
     fn trim_to_caps(&mut self) {
+        // Bound the raw lists BEFORE normalize: on a bloated/corrupt/synced library.json,
+        // normalize_radio_entries is O(n²) (a `retain`/`insert` per moved radio), which would
+        // burn startup CPU. A generous multiple of the caps leaves every realistic library
+        // untouched while capping the worst case.
+        self.favorites.truncate(FAVORITES_MAX.saturating_mul(4));
+        self.radio_favorites
+            .truncate(RADIO_FAVORITES_MAX.saturating_mul(4));
+        self.history.truncate(HISTORY_MAX.saturating_mul(4));
+        self.radios.truncate(RADIOS_MAX.saturating_mul(4));
         self.normalize_radio_entries();
         self.favorites.truncate(FAVORITES_MAX);
         while self.history.len() > HISTORY_MAX {
@@ -264,17 +273,30 @@ pub fn scan_downloads(dir: &Path) -> Vec<Song> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .filter_map(|e| {
-            let path = e.path();
-            let is_file = e.file_type().ok().is_some_and(|t| t.is_file());
-            (is_file && is_audio_file(&path)).then_some(path)
-        })
-        .collect();
-    paths.sort_by_key(|p| p.file_name().map(|s| s.to_string_lossy().to_lowercase()));
-    paths.truncate(DOWNLOADS_MAX);
-    paths.into_iter().map(Song::local_file).collect()
+    // Bounded top-K by lowercased filename: keep at most DOWNLOADS_MAX entries while streaming
+    // the directory (a max-heap drops the current largest once full), so a folder with far more
+    // files than the cap uses O(cap) memory instead of collecting + sorting the whole listing.
+    // Output is the alphabetically-first DOWNLOADS_MAX — the same set/order as before.
+    use std::collections::BinaryHeap;
+    let mut heap: BinaryHeap<(String, PathBuf)> = BinaryHeap::new();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let is_file = entry.file_type().ok().is_some_and(|t| t.is_file());
+        if !(is_file && is_audio_file(&path)) {
+            continue;
+        }
+        let key = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        heap.push((key, path));
+        if heap.len() > DOWNLOADS_MAX {
+            heap.pop(); // drop the largest key, keeping the smallest DOWNLOADS_MAX
+        }
+    }
+    let mut kept = heap.into_vec();
+    kept.sort_by(|a, b| a.0.cmp(&b.0));
+    kept.into_iter().map(|(_, p)| Song::local_file(p)).collect()
 }
 
 fn is_audio_file(path: &Path) -> bool {

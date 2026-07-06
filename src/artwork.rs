@@ -76,9 +76,13 @@ where
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
-    // Sequential, like the lyrics actor: rapid skips queue up and the UI drops stale
-    // results by `video_id`, so a per-track image never races a later one onto the screen.
-    while let Some(ArtworkCmd::Fetch { video_id, source }) = rx.recv().await {
+    // Sequential + latest-only: rapid track-skips can queue several fetches, but the UI only
+    // ever shows the current track, so any request queued behind a newer one is already stale.
+    // Drain to the newest before working so we pay network+decode once (for the current track)
+    // instead of walking a backlog and fetching art no one will see; the UI still drops any
+    // late result by `video_id` as a backstop.
+    while let Some(cmd) = rx.recv().await {
+        let ArtworkCmd::Fetch { video_id, source } = take_latest(cmd, &mut rx);
         let bytes = match source {
             ArtSource::Remote { video_id: id } => fetch_remote(&client, &id).await,
             ArtSource::Local(path) => fetch_local(path).await,
@@ -90,6 +94,16 @@ where
         tracing::info!(video_id = %video_id, found = image.is_some(), "artwork");
         emit(ArtworkEvent::Result { video_id, image });
     }
+}
+
+/// Collapse a burst of queued fetches to the newest one (see the actor loop). Non-blocking:
+/// it drains only commands already buffered in the channel, never awaits a new one.
+fn take_latest(first: ArtworkCmd, rx: &mut UnboundedReceiver<ArtworkCmd>) -> ArtworkCmd {
+    let mut cmd = first;
+    while let Ok(next) = rx.try_recv() {
+        cmd = next;
+    }
+    cmd
 }
 
 /// Fetch the YouTube thumbnail for `video_id`: try the clean native-aspect `maxresdefault`
@@ -144,6 +158,27 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn take_latest_coalesces_a_burst_to_the_newest() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for i in 0..5 {
+            tx.send(ArtworkCmd::Fetch {
+                video_id: format!("v{i}"),
+                source: ArtSource::Remote {
+                    video_id: format!("v{i}"),
+                },
+            })
+            .unwrap();
+        }
+        let first = rx.recv().await.unwrap();
+        let ArtworkCmd::Fetch { video_id, .. } = take_latest(first, &mut rx);
+        assert_eq!(
+            video_id, "v4",
+            "a burst of skips collapses to the current track"
+        );
+        assert!(rx.try_recv().is_err(), "the backlog is fully drained");
+    }
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
         let img = image::RgbImage::from_pixel(width, height, image::Rgb([12, 34, 56]));

@@ -446,6 +446,17 @@ impl App {
         cmds
     }
 
+    /// Set autoplay-streaming, resetting the failure circuit-breaker whenever it is (re)enabled
+    /// so a stale count left over from a previous auto-disable can't immediately trip it off
+    /// again. The single home all three enable sites (key toggle, remote, DJ-Gem) route through,
+    /// mirroring the daemon's `set_streaming`.
+    pub(in crate::app) fn set_autoplay_streaming(&mut self, on: bool) {
+        self.autoplay_streaming = on;
+        if on {
+            self.streaming.consecutive_failures = 0;
+        }
+    }
+
     pub(in crate::app) fn note_streaming_failure(&mut self, status: String) -> Vec<Cmd> {
         let mut disabled = false;
         if self.autoplay_streaming {
@@ -685,46 +696,9 @@ impl App {
     /// and favorite artists (a seed-affinity boost). Dislikes are read straight from `signals`.
     pub(in crate::app) fn build_station_state(&self, seed_video_id: &str) -> StationState {
         let profile = self.config.streaming.mode.profile(&self.config.streaming);
-        let mut recent_track_ids: Vec<String> = self
-            .queue
-            .ordered_iter()
-            .filter(|song| !song.is_radio_station())
-            .map(|song| song.video_id.clone())
-            .collect();
-        recent_track_ids.extend(
-            self.library
-                .history
-                .iter()
-                .filter(|s| !s.is_radio_station())
-                .take(profile.history_block_horizon)
-                .map(|s| s.video_id.clone()),
-        );
-
-        // Cooldown window wants most-recent *last*. History is newest-first, so reverse it, then
-        // append current/upcoming queue artists so newly appended streaming picks do not repeat them.
-        let mut recent_artist_keys: Vec<String> = self
-            .library
-            .history
-            .iter()
-            .filter(|s| !s.is_radio_station())
-            .take(STREAMING_RECENT_ARTISTS)
-            .map(|s| signals::normalize_artist(&s.artist))
-            .collect();
-        recent_artist_keys.reverse();
-        if let Some(cur) = self.queue.current()
-            && !cur.is_radio_station()
-        {
-            push_artist_key(&mut recent_artist_keys, &cur.artist);
-        }
-        for song in self
-            .queue
-            .ordered_iter()
-            .skip(self.queue.cursor_pos().saturating_add(1))
-            .filter(|song| !song.is_radio_station())
-            .take(8)
-        {
-            push_artist_key(&mut recent_artist_keys, &song.artist);
-        }
+        // Single-sourced with the daemon engine so the two owners can't drift.
+        let (recent_track_ids, recent_artist_keys) =
+            crate::streaming::station_recent_context(&self.queue, &self.library, &profile);
 
         let favorite_artist_keys: HashSet<String> = self
             .library
@@ -805,13 +779,6 @@ impl App {
             .find(|s| s.video_id == seed_video_id)
             .map(|s| signals::normalize_artist(&s.artist))
             .unwrap_or_default()
-    }
-}
-
-fn push_artist_key(keys: &mut Vec<String>, artist: &str) {
-    let key = signals::normalize_artist(artist);
-    if !key.is_empty() {
-        keys.push(key);
     }
 }
 

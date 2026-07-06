@@ -121,6 +121,16 @@ impl App {
         if prompt.is_empty() {
             return Vec::new();
         }
+        // Cap the prompt well above any realistically-typed message so it never fires in normal
+        // use, but a pasted wall of text (or a script-driven prompt) can't bloat the request,
+        // the transcript, or the logs. History trimming already runs on the response side.
+        const PROMPT_MAX: usize = 16 * 1024;
+        let prompt = if prompt.len() > PROMPT_MAX {
+            let end = prompt.floor_char_boundary(PROMPT_MAX);
+            prompt[..end].to_owned()
+        } else {
+            prompt
+        };
         self.ai.input.clear();
         self.ai.select_all = false;
         self.push_ai_message(AiRole::User, prompt.clone());

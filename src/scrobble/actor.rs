@@ -3,6 +3,7 @@
 //! [`super::ScrobbleHandle::observe`]; talks back only for auth results and rare
 //! service-health notices (scrobbling itself is fire-and-forget from the app's view).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -155,6 +156,9 @@ struct Actor {
     auth_task: Option<tokio::task::JoinHandle<()>>,
     next_flush: Option<Instant>,
     last_stall_notice: Option<Instant>,
+    /// In-flight love/unlove sub-tasks keyed by `(artist, title)`. A newer toggle for the same
+    /// track aborts the prior one (last-writer-wins) so rapid liking can't settle the wrong way.
+    love_tasks: HashMap<(String, String), tokio::task::JoinHandle<()>>,
 }
 
 async fn run_actor(
@@ -181,6 +185,7 @@ async fn run_actor(
         auth_task: None,
         next_flush: None,
         last_stall_notice: None,
+        love_tasks: HashMap::new(),
     };
     // Leftovers from the previous run (crash, offline quit) get an early delivery try —
     // but only when something could receive them.
@@ -302,7 +307,7 @@ impl Actor {
 
     /// Love/unlove is ephemeral like now-playing, but worth a couple of retries; runs in
     /// a sub-task so a slow call never delays queue flushes or observations.
-    fn send_love(&self, artist: String, title: String, love: bool) {
+    fn send_love(&mut self, artist: String, title: String, love: bool) {
         let Some(session) = &self.settings.lastfm else {
             return;
         };
@@ -312,7 +317,15 @@ impl Actor {
         let Some(client) = self.lastfm.clone() else {
             return;
         };
-        tokio::spawn(async move {
+        // Last-writer-wins: abort any in-flight love for this same track so a slow older toggle
+        // can't land after a newer one. Prune finished handles first so the map can't grow
+        // without bound across a long session.
+        self.love_tasks.retain(|_, h| !h.is_finished());
+        let key = (artist.clone(), title.clone());
+        if let Some(prev) = self.love_tasks.remove(&key) {
+            prev.abort();
+        }
+        let handle = tokio::spawn(async move {
             for attempt in 0..3u32 {
                 match client.love(&artist, &title, love).await {
                     Ok(()) => return,
@@ -328,6 +341,7 @@ impl Actor {
                 }
             }
         });
+        self.love_tasks.insert(key, handle);
     }
 
     fn reconfigure(&mut self, settings: ScrobbleSettings) {
@@ -408,6 +422,11 @@ impl Actor {
             return;
         };
         let loaded = queue.load();
+        if loaded.read_failed {
+            // Present but unreadable: skip the whole round so we never compact-to-empty and
+            // delete a queue we simply couldn't read. Retried on the next natural flush.
+            return;
+        }
         if loaded.corrupt > 0 {
             tracing::warn!(corrupt = loaded.corrupt, "scrobble queue had corrupt lines");
         }
