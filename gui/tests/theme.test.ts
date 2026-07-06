@@ -36,7 +36,7 @@ function themeModel(over: Partial<ThemeModel> = {}): ThemeModel {
     overrides: {},
     background_none: false,
     retro: false,
-    presets: [{ name: 'Default', swatch: { accent: '#5b8cff' } }],
+    presets: [{ name: 'Default', label: 'Default', swatch: { accent: '#5b8cff' } }],
     ...over,
   };
 }

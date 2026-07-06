@@ -172,7 +172,7 @@ pub struct ThemeSettingsModel {
     pub overrides: std::collections::BTreeMap<String, String>,
     pub background_none: bool,
     pub retro: bool,
-    /// Preset gallery: name + a small swatch of representative roles.
+    /// Preset gallery: stable name, display label, and a small swatch of representative roles.
     pub presets: Vec<ThemePresetModel>,
 }
 
@@ -183,7 +183,10 @@ pub struct ThemeSettingsModel {
 )]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThemePresetModel {
+    /// Stable preset id used by setting-change commands.
     pub name: String,
+    /// Human-readable preset name for UI display.
+    pub label: String,
     pub swatch: std::collections::BTreeMap<String, String>,
 }
 

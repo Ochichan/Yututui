@@ -64,9 +64,9 @@ impl Default for ThemeConfig {
 }
 
 impl ThemeConfig {
-    pub fn dario() -> Self {
+    pub fn radio() -> Self {
         Self {
-            preset: ThemePreset::Dario.id().to_owned(),
+            preset: ThemePreset::Radio.id().to_owned(),
             overrides: BTreeMap::new(),
             palette: OnceLock::new(),
         }
@@ -193,7 +193,7 @@ impl ThemeConfig {
 pub enum ThemePreset {
     Default,
     Retro,
-    Dario,
+    Radio,
     Midnight,
     Light,
     HighContrast,
@@ -219,7 +219,7 @@ impl ThemePreset {
         ThemePreset::TokyoNight,
         ThemePreset::Solarized,
         ThemePreset::RosePine,
-        ThemePreset::Dario,
+        ThemePreset::Radio,
         ThemePreset::Retro,
     ];
 
@@ -227,7 +227,7 @@ impl ThemePreset {
         match self {
             ThemePreset::Default => "default",
             ThemePreset::Retro => "retro",
-            ThemePreset::Dario => "dario",
+            ThemePreset::Radio => "dario",
             ThemePreset::Midnight => "midnight",
             ThemePreset::Light => "light",
             ThemePreset::HighContrast => "high_contrast",
@@ -245,7 +245,7 @@ impl ThemePreset {
         match self {
             ThemePreset::Default => "Default",
             ThemePreset::Retro => "Retro",
-            ThemePreset::Dario => "Dario",
+            ThemePreset::Radio => "Radio",
             ThemePreset::Midnight => "Midnight",
             ThemePreset::Light => "Light",
             ThemePreset::HighContrast => "High Contrast",
@@ -517,7 +517,7 @@ impl ThemeRole {
         match preset {
             ThemePreset::Default => self.default_dark(),
             ThemePreset::Retro => self.retro(),
-            ThemePreset::Dario => self.dario(),
+            ThemePreset::Radio => self.radio(),
             ThemePreset::Midnight => self.midnight(),
             ThemePreset::Light => self.light(),
             ThemePreset::HighContrast => self.high_contrast(),
@@ -605,7 +605,7 @@ impl ThemeRole {
         }
     }
 
-    fn dario(self) -> &'static str {
+    fn radio(self) -> &'static str {
         match self {
             ThemeRole::Background => "none",
             ThemeRole::TextPrimary => "#F2F2F2",

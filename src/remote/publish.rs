@@ -417,6 +417,7 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
                 .into_iter()
                 .map(|preset| ThemePresetModel {
                     name: preset.id().to_string(),
+                    label: preset.label().to_string(),
                     swatch: ThemeRole::ALL
                         .into_iter()
                         .take(6)

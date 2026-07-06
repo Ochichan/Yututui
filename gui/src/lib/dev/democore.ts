@@ -143,7 +143,7 @@ const THEME_SEEDS: Record<string, ThemeSeed> = {
   // prettier-ignore
   Retro: { bg: '#001100', surface: '#003300', text: '#33ff66', textMuted: '#22aa44', textSubtle: '#157a30', textInverse: '#001100', borderPrimary: '#0a5a1a', borderFocused: '#66ff99', accent: '#33ff66', accentAlt: '#99ff33', success: '#66ff66', warning: '#ffff33', error: '#ff5555', selFg: '#001100', selBg: '#33ff66' },
   // prettier-ignore
-  Dario: { bg: '#1a1410', surface: '#3a2e22', text: '#f4e8d8', textMuted: '#b8a488', textSubtle: '#7a6a52', textInverse: '#14100a', borderPrimary: '#4a3c2c', borderFocused: '#ff9d3c', accent: '#ff9d3c', accentAlt: '#ffca6b', success: '#9ccf4e', warning: '#e0b341', error: '#e5556b', selFg: '#14100a', selBg: '#ff9d3c' },
+  Radio: { bg: '#1a1410', surface: '#3a2e22', text: '#f4e8d8', textMuted: '#b8a488', textSubtle: '#7a6a52', textInverse: '#14100a', borderPrimary: '#4a3c2c', borderFocused: '#ff9d3c', accent: '#ff9d3c', accentAlt: '#ffca6b', success: '#9ccf4e', warning: '#e0b341', error: '#e5556b', selFg: '#14100a', selBg: '#ff9d3c' },
   // prettier-ignore
   Midnight: { bg: '#0a0e1a', surface: '#1c2438', text: '#dce3f0', textMuted: '#8b96b0', textSubtle: '#566178', textInverse: '#0a0e1a', borderPrimary: '#2a3450', borderFocused: '#4d7cff', accent: '#4d7cff', accentAlt: '#7a5cff', success: '#4ec98a', warning: '#e0b341', error: '#e5556b', selFg: '#ffffff', selBg: '#22304e' },
   // prettier-ignore
@@ -210,10 +210,15 @@ function presetPalette(name: string): Record<string, string> {
 }
 
 /** The gallery preview — the strip colors + card bg/text, derived from the full palette. */
-function themePreview(name: string): { name: string; swatch: Record<string, string> } {
+function themePreview(name: string): {
+  name: string;
+  label: string;
+  swatch: Record<string, string>;
+} {
   const p = presetPalette(name);
   return {
     name,
+    label: name,
     swatch: {
       accent: p.accent,
       'accent-alt': p['accent-alt'],

@@ -11,6 +11,6 @@ roles: { [key in string]?: string },
  */
 overrides: { [key in string]?: string }, background_none: boolean, retro: boolean, 
 /**
- * Preset gallery: name + a small swatch of representative roles.
+ * Preset gallery: stable name, display label, and a small swatch of representative roles.
  */
 presets: Array<ThemePresetModel>, };

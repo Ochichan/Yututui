@@ -564,7 +564,7 @@ pub struct Config {
     pub theme: ThemeConfig,
     /// Dedicated-radio-mode theme. `theme` always holds the *normal* theme (a radio-mode
     /// settings save deliberately keeps it that way), so the radio theme needs its own
-    /// persisted slot or it dies with the process. `None` → Dario default on radio entry.
+    /// persisted slot or it dies with the process. `None` → Radio default on radio entry.
     pub radio_theme: Option<ThemeConfig>,
     /// Linux basic TTY compatibility mode: English UI, Retro theme, ASCII-safe rendering.
     pub retro_mode: bool,

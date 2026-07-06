@@ -26,7 +26,10 @@ const STORAGE_KEY = 'ytm-tui.gui.local-theme';
 
 /** One preset's gallery preview — a handful of role hexes to paint the swatch card. */
 export interface ThemePresetPreview {
+  /** Stable preset id sent back to the core when switching presets. */
   name: string;
+  /** Human-readable preset name for display. */
+  label: string;
   swatch: Record<string, string>;
 }
 

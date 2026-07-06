@@ -110,7 +110,7 @@
           <i style:background={p.swatch['warning']}></i>
           <i style:background={p.swatch['error']}></i>
         </span>
-        <span class="pname">{p.name}</span>
+        <span class="pname">{p.label}</span>
       </button>
     {/each}
     <p class="gallery-hint">{t('settings.graphics.corePresetsHint')}</p>

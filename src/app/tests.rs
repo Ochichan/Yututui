@@ -2624,7 +2624,7 @@ fn radio_mode_theme_edits_do_not_overwrite_normal_config_theme() {
 #[test]
 fn persisted_radio_theme_survives_restart_into_radio_session() {
     // Quit while in radio mode with a saved radio theme, relaunch: the session restore
-    // must find the persisted radio theme instead of falling back to Dario.
+    // must find the persisted radio theme instead of falling back to Radio.
     let mut cfg = crate::config::Config::default();
     let mut radio_theme = crate::theme::ThemeConfig::default();
     radio_theme.set_preset(crate::theme::ThemePreset::RosePine);
@@ -2642,7 +2642,7 @@ fn persisted_radio_theme_survives_restart_into_radio_session() {
 #[test]
 fn persisted_radio_theme_applies_on_radio_reentry_after_relaunch() {
     // Quit in NORMAL mode (radio theme saved earlier), relaunch, then re-enter radio
-    // mode: the stash seeded from config must win over the Dario fallback, and exiting
+    // mode: the stash seeded from config must win over the Radio fallback, and exiting
     // must return to the normal theme untouched.
     let mut cfg = crate::config::Config::default();
     let mut normal = crate::theme::ThemeConfig::default();

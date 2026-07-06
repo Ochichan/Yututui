@@ -687,7 +687,7 @@ pub struct Interaction {
 pub struct RadioMode {
     /// The normal-mode theme to restore after leaving dedicated Radio mode.
     pub(in crate::app) normal_mode_theme: Option<ThemeConfig>,
-    /// The Radio-mode theme to restore on the next dedicated Radio entry. Defaults to Dario
+    /// The Radio-mode theme to restore on the next dedicated Radio entry. Defaults to Radio
     /// until the user edits the theme while Radio mode is active.
     pub(in crate::app) radio_mode_theme: Option<ThemeConfig>,
     /// The normal-mode queue to restore when leaving dedicated Radio mode.

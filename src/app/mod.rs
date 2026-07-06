@@ -447,7 +447,7 @@ impl App {
                 .radio_mode
                 .radio_mode_theme
                 .clone()
-                .unwrap_or_else(ThemeConfig::dario);
+                .unwrap_or_else(ThemeConfig::radio);
         } else {
             self.theme = normal_theme;
         }
@@ -622,7 +622,7 @@ impl App {
             .radio_mode
             .radio_mode_theme
             .clone()
-            .unwrap_or_else(ThemeConfig::dario);
+            .unwrap_or_else(ThemeConfig::radio);
         self.search.source = SearchSource::RadioBrowser;
         self.search.searching = false;
         self.search.results.clear();
