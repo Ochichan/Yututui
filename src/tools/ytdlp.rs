@@ -803,11 +803,13 @@ pub(crate) fn install_file(tmp: &Path, dest: &Path) -> std::io::Result<()> {
                 std::fs::rename(dest, &old)
             })?;
         }
-        return retry_file_op(|| std::fs::rename(tmp, dest));
+        retry_file_op(|| std::fs::rename(tmp, dest))
     }
 
     #[cfg(not(windows))]
-    std::fs::rename(tmp, dest)
+    {
+        std::fs::rename(tmp, dest)
+    }
 }
 
 #[cfg(windows)]
