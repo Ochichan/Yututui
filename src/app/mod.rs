@@ -668,7 +668,7 @@ impl App {
 
     pub(in crate::app) fn save_playback_modes_cmd(&mut self) -> Cmd {
         self.sync_playback_modes_to_config();
-        Cmd::SaveConfig(Box::new(self.config.clone()))
+        Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone())))
     }
 
     /// Live retro-mode flag. While Settings is open, the draft is what the user is looking at,
@@ -887,7 +887,9 @@ impl App {
         // scaled multicells (or native-image placements) from the old grid survive.
         self.request_native_image_clear();
         self.config.text_zoom = Some(next);
-        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+        vec![Cmd::Persist(PersistCmd::Config(Box::new(
+            self.config.clone(),
+        )))]
     }
 
     /// Toggle the Ctrl+wheel zoom lock (`ToggleZoomWheelLock`). Persisted, so a
@@ -906,7 +908,9 @@ impl App {
         }
         .to_owned();
         self.dirty = true;
-        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+        vec![Cmd::Persist(PersistCmd::Config(Box::new(
+            self.config.clone(),
+        )))]
     }
 
     fn dispatch(&mut self, msg: Msg) -> Vec<Cmd> {
@@ -1259,7 +1263,7 @@ impl App {
                 let mut cmds = self.pump_downloads();
                 if saved {
                     // Persist the manifest so the recovered YouTube id survives a restart.
-                    cmds.push(Cmd::SaveDownloads);
+                    cmds.push(Cmd::Persist(PersistCmd::Downloads));
                 }
                 return cmds;
             }
@@ -1410,14 +1414,14 @@ impl App {
                 self.station.active = Some(profile);
                 self.dirty = true;
                 return vec![
-                    Cmd::SaveStationProfile,
-                    Cmd::SaveConfig(Box::new(self.config.clone())),
+                    Cmd::Persist(PersistCmd::StationProfile),
+                    Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
                 ];
             }
             Msg::AiCreatePlaylist(name) => {
                 if self.playlists.create(&name).is_some() {
                     self.dirty = true;
-                    return vec![Cmd::SavePlaylists];
+                    return vec![Cmd::Persist(PersistCmd::Playlists)];
                 }
             }
             Msg::AiAddToPlaylist { playlist, songs } => {
@@ -1432,7 +1436,7 @@ impl App {
                 }
                 if any {
                     self.dirty = true;
-                    return vec![Cmd::SavePlaylists];
+                    return vec![Cmd::Persist(PersistCmd::Playlists)];
                 }
             }
             Msg::AiPlayPlaylist(key) => {
@@ -1460,7 +1464,7 @@ impl App {
                     && profile.apply_feedback(&down_artists, &boost_artists)
                 {
                     self.dirty = true;
-                    return vec![Cmd::SaveStationProfile];
+                    return vec![Cmd::Persist(PersistCmd::StationProfile)];
                 }
             }
             Msg::RomanizedTitles {

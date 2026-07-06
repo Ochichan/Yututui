@@ -459,7 +459,7 @@ fn tab_opens_search_source_menu_and_cycles_source() {
     assert_eq!(app.search.source, SearchSource::SoundCloud);
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::SaveConfig(cfg)] if cfg.search.source == SearchSource::SoundCloud
+        [Cmd::Persist(PersistCmd::Config(cfg))] if cfg.search.source == SearchSource::SoundCloud
     ));
 
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
@@ -1948,7 +1948,10 @@ fn overlay_favorite_resolves_then_adds_to_music_favorites_once() {
             Song::remote("vid2", "Track (Live)", "Artist", "4:00"),
         ]),
     });
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
     assert!(
         app.library.is_favorite("vid1"),
         "best match lands in favorites"
@@ -2099,7 +2102,10 @@ fn eof_at_end_with_repeat_off_stops() {
     let cmds = app.update(Msg::PlayerEof);
     // Playback stops (no load/advance), though the finished track is still recorded.
     assert!(load_url(&cmds).is_none());
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))
+    );
     assert_eq!(current(&app), "id1");
 }
 
@@ -2594,7 +2600,10 @@ fn radio_mode_theme_edits_do_not_overwrite_normal_config_theme() {
     }
     let cmds = app.close_settings();
 
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Config(_))))
+    );
     assert_eq!(app.theme.preset, "rose_pine");
     assert_eq!(
         app.config.theme.preset, "midnight",
@@ -2669,7 +2678,10 @@ fn settings_enqueue_next_toggle_persists_on_close() {
     let cmds = app.close_settings();
 
     assert!(app.config.effective_enqueue_next());
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Config(_))))
+    );
 }
 
 #[test]
@@ -2927,7 +2939,7 @@ fn toggle_animations_in_radio_mode_flips_radio_master_not_master() {
     // The raw config (music master intact) is what gets persisted, never the resolved copy.
     assert!(matches!(
         &cmds[..],
-        [Cmd::SaveConfig(c)] if c.animations.master && c.animations.radio_master == Some(false)
+        [Cmd::Persist(PersistCmd::Config(c))] if c.animations.master && c.animations.radio_master == Some(false)
     ));
 
     app.radio_dedicated_mode = false;
@@ -3136,7 +3148,7 @@ fn seek_keys_use_the_configured_interval() {
 
 fn save_config(cmds: &[Cmd]) -> Option<&Config> {
     cmds.iter().find_map(|c| match c {
-        Cmd::SaveConfig(c) => Some(c.as_ref()),
+        Cmd::Persist(PersistCmd::Config(c)) => Some(c.as_ref()),
         _ => None,
     })
 }
@@ -3534,7 +3546,8 @@ fn toggling_animations_while_settings_open_survives_close() {
     let cmds = app.toggle_animations();
     assert!(app.config.animations.master);
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))),
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Config(_)))),
         "toggle persists"
     );
     // The draft must mirror the flip; otherwise close commits the stale (off) draft over it.
@@ -3811,7 +3824,10 @@ fn streaming_mode_cycles_on_the_ai_tab_and_persists() {
     // Closing settings commits the draft into config + emits a save.
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
     assert_eq!(app.config.streaming.mode, StreamingMode::Discovery);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Config(_))))
+    );
 }
 
 #[test]
@@ -3837,7 +3853,10 @@ fn curating_mode_cycles_on_the_ai_tab_and_persists_to_ai_enabled() {
     // Close → the AI rerank flag is now off.
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
     assert!(!app.config.streaming.ai.enabled);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Config(_))))
+    );
 }
 
 #[test]
@@ -3867,7 +3886,10 @@ fn dj_gem_reply_language_cycles_on_the_ai_tab_and_persists() {
     // Closing commits the pick into config and emits a save.
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
     assert_eq!(app.config.dj_gem_language, DjGemLanguage::English);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Config(_))))
+    );
 }
 
 #[test]
@@ -3922,7 +3944,10 @@ fn streaming_source_cycles_on_general_tab_and_persists() {
 
     let cmds = app.update(Msg::Key(key(KeyCode::Esc)));
     assert_eq!(app.config.search.streaming_source, SearchSource::SoundCloud);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Config(_))))
+    );
 }
 
 #[test]
@@ -3985,7 +4010,7 @@ fn clear_romanized_title_cache_confirms_and_discards_stale_results() {
     assert!(app.romanization.cache.entry_for(&song).is_none());
     assert!(
         cmds.iter()
-            .any(|cmd| matches!(cmd, Cmd::ClearRomanizedTitles))
+            .any(|cmd| matches!(cmd, Cmd::Persist(PersistCmd::ClearRomanizedTitles)))
     );
 
     let cmds = app.apply_romanized_titles(
@@ -5174,8 +5199,14 @@ fn ai_set_station_profile_applies_mode_and_avoids_artists() {
         "rainy day"
     );
     // Both the station and the (now-mode-changed) config are persisted.
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::StationProfile)))
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Config(_))))
+    );
 
     // The avoided artist flows into the station state every refill reads.
     let st = app.build_station_state("id0");
@@ -5226,7 +5257,10 @@ fn station_patch_folds_feedback_into_avoid_list_and_clears_inflight() {
             .avoid_artist_keys
             .contains(&want)
     );
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::StationProfile)))
+    );
 }
 
 #[test]
@@ -5244,7 +5278,9 @@ fn empty_station_patch_clears_inflight_without_persisting() {
     });
     assert!(!app.streaming.feedback_in_flight);
     assert!(
-        !cmds.iter().any(|c| matches!(c, Cmd::SaveStationProfile)),
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::StationProfile))),
         "no save on a no-op patch"
     );
 }
@@ -5604,12 +5640,18 @@ fn streaming_error_uses_circuit_breaker() {
 fn ai_create_and_play_playlist_roundtrip() {
     let mut app = App::new(100);
     let cmds = app.update(Msg::AiCreatePlaylist("Focus".to_owned()));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
     let cmds = app.update(Msg::AiAddToPlaylist {
         playlist: "Focus".to_owned(),
         songs: songs(2),
     });
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
     assert_eq!(app.playlists.find("Focus").unwrap().songs.len(), 2);
     let cmds = app.update(Msg::AiPlayPlaylist("Focus".to_owned()));
     assert_eq!(current(&app), "id0");
@@ -5624,7 +5666,10 @@ fn f_toggles_favorite_of_current_track() {
     assert!(!app.library.is_favorite("id0"));
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
     assert!(app.library.is_favorite("id0"));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
     app.update(Msg::Key(key(KeyCode::Char('f')))); // toggle off
     assert!(!app.library.is_favorite("id0"));
 }
@@ -5649,7 +5694,10 @@ fn playing_radio_records_radio_tab_only() {
     app.queue.set(vec![station.clone()], 0);
     let cmds = app.load_song(app.queue.current().cloned());
 
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
     assert!(app.library.history.is_empty());
     assert!(app.library.favorites.is_empty());
     assert_eq!(
@@ -5685,7 +5733,10 @@ fn radio_favorite_is_separate_from_song_favorites() {
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
 
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
     assert!(app.library.favorites.is_empty());
     assert!(app.library.history.is_empty());
     assert_eq!(app.library.radio_favorites.len(), 1);
@@ -5717,7 +5768,10 @@ fn favorite_from_search_results() {
     app.mode = Mode::Search;
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
     assert!(app.library.is_favorite("id1"));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
 }
 
 #[test]
@@ -6153,7 +6207,10 @@ fn delete_under_filter_removes_the_matched_track_by_identity() {
     app.update(Msg::Key(key(KeyCode::Enter))); // commit; selection on filtered row 0
 
     let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
     let ids: Vec<&str> = app
         .library
         .favorites
@@ -6546,7 +6603,8 @@ fn download_done_records_manifest_and_saves() {
         path: "/tmp/Title [dQw4w9WgXcQ].m4a".to_owned(),
     });
     assert!(
-        cmds.iter().any(|c| matches!(c, Cmd::SaveDownloads)),
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Downloads))),
         "a completed download persists the manifest"
     );
     assert_eq!(
@@ -6571,7 +6629,11 @@ fn download_done_with_empty_path_does_not_save() {
         video_id: "x".to_owned(),
         path: "   ".to_owned(),
     });
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveDownloads)));
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Downloads)))
+    );
 }
 
 // --- library multi-select delete (drag + Delete), per-tab semantics ------
@@ -6612,7 +6674,10 @@ fn library_delete_range_removes_from_favorites() {
     app.library_ui.selected = 0;
     app.library_ui.anchor = 1;
     let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
     let ids: Vec<&str> = app
         .library
         .favorites
@@ -6636,7 +6701,10 @@ fn library_delete_range_removes_from_history() {
     app.library_ui.selected = 1;
     app.library_ui.anchor = 2; // rows 1..=2 = b, a
     let cmds = app.update(Msg::Key(key(KeyCode::Delete)));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
     let ids: Vec<&str> = app
         .library
         .history
@@ -7886,14 +7954,26 @@ fn rating_key_cycles_neutral_like_dislike() {
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
     assert!(app.library.is_favorite(&id));
     assert!(!app.signals.is_disliked(&id));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))
+    );
     // Second `f` → dislike; flips the flag and drops the favorite.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
     assert!(!app.library.is_favorite(&id));
     assert!(app.signals.is_disliked(&id));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))
+    );
     // Third `f` → back to neutral.
     app.update(Msg::Key(key(KeyCode::Char('f'))));
     assert!(!app.library.is_favorite(&id));
@@ -7910,8 +7990,15 @@ fn rating_radio_toggles_radio_favorite_without_signals() {
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
 
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))
+    );
     assert!(app.library.favorites.is_empty());
     assert!(app.library.is_radio_favorite("rad:station-like"));
     assert!(!app.signals.is_disliked("rad:station-like"));
@@ -7935,8 +8022,15 @@ fn rating_radio_toggles_radio_favorite_without_signals() {
     app.queue.set(vec![radio_station("station-like")], 0);
     app.load_song(app.queue.current().cloned());
     let cmds = app.update(Msg::Key(key(KeyCode::Char('f'))));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveLibrary)));
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Library)))
+    );
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))
+    );
     assert!(!app.library.is_radio_favorite("rad:station-like"));
 
     app.mode = Mode::Library;
@@ -7952,7 +8046,10 @@ fn manual_next_records_signals_then_advances() {
     let id = current(&app).to_owned();
     let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
     // The skipped track is persisted (SaveSignals) and playback advances.
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))
+    );
     assert_ne!(current(&app), id);
 }
 
@@ -7971,7 +8068,11 @@ fn manual_next_from_radio_does_not_record_signals() {
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
 
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))
+    );
     assert_eq!(current(&app), "id0");
 }
 
@@ -7979,7 +8080,10 @@ fn manual_next_from_radio_does_not_record_signals() {
 fn eof_records_signals_for_the_finished_track() {
     let mut app = app_playing(3, 0);
     let cmds = app.update(Msg::PlayerEof);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveSignals)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))
+    );
 }
 
 #[test]
@@ -9025,7 +9129,10 @@ fn selecting_streaming_mode_applies_and_persists() {
     let cmds = app.update(Msg::MouseClick { col: 43, row: 6 });
     assert_eq!(app.config.streaming.mode, StreamingMode::Discovery);
     assert!(!app.dropdowns.streaming_open);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SaveConfig(_))));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Config(_))))
+    );
 }
 
 // --- Mouse: nav bar, clickable lists/tabs, and the queue window --------------
@@ -9574,7 +9681,10 @@ fn delete_on_the_playlist_root_asks_then_deletes_on_confirm() {
     assert_eq!(app.playlists.list().len(), 2);
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('y'))));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
     assert!(app.library_ui.confirm_playlist_delete.is_none());
     assert_eq!(app.playlists.list().len(), 1);
     assert!(app.playlists.find("alpha").is_none());
@@ -9587,7 +9697,10 @@ fn any_other_key_cancels_the_playlist_delete_confirm() {
     app.update(Msg::Key(key(KeyCode::Delete)));
     assert!(app.library_ui.confirm_playlist_delete.is_some());
     let cmds = app.update(Msg::Key(key(KeyCode::Char('x'))));
-    assert!(cmds.iter().all(|c| !matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .all(|c| !matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
     assert!(app.library_ui.confirm_playlist_delete.is_none());
     assert_eq!(app.playlists.list().len(), 2);
 }
@@ -9597,7 +9710,10 @@ fn delete_in_the_drilldown_removes_the_song_from_the_playlist() {
     let mut app = app_with_playlists();
     app.update(Msg::Key(key(KeyCode::Enter))); // open "Alpha"
     let cmds = app.update(Msg::Key(key(KeyCode::Delete))); // remove a1, no confirm
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
     assert_eq!(app.library_ui.open_playlist.as_deref(), Some("alpha"));
     assert_eq!(row_ids(&app), vec!["a2"]);
     assert_eq!(app.playlists.find("alpha").unwrap().songs.len(), 1);
@@ -9616,7 +9732,10 @@ fn n_opens_the_create_popup_and_enter_creates_and_selects() {
     assert_eq!(app.library_ui.create_input.as_deref(), Some("My Mix"));
 
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
     assert!(app.library_ui.create_input.is_none());
     assert!(app.playlists.find("My Mix").is_some());
     // The cursor lands on the new playlist (appended last).
@@ -9640,7 +9759,10 @@ fn blank_create_popup_enter_hints_instead_of_creating() {
     let mut app = app_with_playlists();
     app.update(Msg::Key(key(KeyCode::Char('n'))));
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(cmds.iter().all(|c| !matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .all(|c| !matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
     // The popup stays open for a correction.
     assert!(app.library_ui.create_input.is_some());
     assert_eq!(app.playlists.list().len(), 2);
@@ -9741,7 +9863,10 @@ fn p_on_a_library_row_opens_the_picker_and_enter_adds() {
     assert_eq!(picker.songs.len(), 1);
 
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
     assert!(app.playlist_picker.is_none());
     assert_eq!(app.playlists.find("Mix").unwrap().songs.len(), 1);
     assert!(app.status.text.contains("Added 1 track to Mix"));
@@ -9766,7 +9891,10 @@ fn adding_a_duplicate_reports_already_there_without_saving() {
     app.update(Msg::Key(key(KeyCode::Enter))); // first add
     app.update(Msg::Key(key(KeyCode::Char('p'))));
     let cmds = app.update(Msg::Key(key(KeyCode::Enter))); // same song again
-    assert!(cmds.iter().all(|c| !matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .all(|c| !matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
     assert_eq!(app.playlists.find("Mix").unwrap().songs.len(), 1);
     assert!(app.status.text.contains("Already in playlist"));
 }
@@ -9782,7 +9910,10 @@ fn picker_n_creates_a_playlist_and_adds_in_one_go() {
         app.update(Msg::Key(key(KeyCode::Char(c))));
     }
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
     assert!(app.playlist_picker.is_none());
     assert_eq!(app.playlists.find("Road").unwrap().songs.len(), 1);
 }
@@ -9883,7 +10014,7 @@ fn zoom_keys_step_the_scale_and_persist_it() {
     assert_eq!(app.config.text_zoom, Some(125));
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::SaveConfig(cfg)] if cfg.text_zoom == Some(125)
+        [Cmd::Persist(PersistCmd::Config(cfg))] if cfg.text_zoom == Some(125)
     ));
     assert!(app.status.text.contains("125%"));
 
@@ -9892,7 +10023,7 @@ fn zoom_keys_step_the_scale_and_persist_it() {
     assert_eq!(app.zoom.scale(), 1);
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::SaveConfig(cfg)] if cfg.text_zoom == Some(100)
+        [Cmd::Persist(PersistCmd::Config(cfg))] if cfg.text_zoom == Some(100)
     ));
 }
 
@@ -9940,7 +10071,10 @@ fn ctrl_wheel_steps_zoom_instead_of_scrolling() {
         ctrl: true,
     });
     assert_eq!(app.zoom.scale(), 2);
-    assert!(matches!(cmds.as_slice(), [Cmd::SaveConfig(_)]));
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Persist(PersistCmd::Config(_))]
+    ));
 
     let cmds = app.update(Msg::MouseScroll {
         up: false,
@@ -9949,7 +10083,10 @@ fn ctrl_wheel_steps_zoom_instead_of_scrolling() {
         ctrl: true,
     });
     assert_eq!(app.zoom.scale(), 1);
-    assert!(matches!(cmds.as_slice(), [Cmd::SaveConfig(_)]));
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Persist(PersistCmd::Config(_))]
+    ));
 }
 
 #[test]
@@ -10384,7 +10521,7 @@ fn decdhl_terminals_step_straight_to_double_size() {
     assert!(app.status.text.contains("200%"));
     assert!(matches!(
         cmds.as_slice(),
-        [Cmd::SaveConfig(cfg)] if cfg.text_zoom == Some(200)
+        [Cmd::Persist(PersistCmd::Config(cfg))] if cfg.text_zoom == Some(200)
     ));
 
     // At the top the toast quotes this mode's real maximum, not the OSC 66 ladder's.
@@ -10404,7 +10541,10 @@ fn zoom_wheel_lock_freezes_the_gesture_but_not_the_keys() {
     // Ctrl+L locks, persists, and explains itself.
     let cmds = app.update(Msg::Key(ctrl(KeyCode::Char('l'))));
     assert_eq!(app.config.zoom_wheel_lock, Some(true));
-    assert!(matches!(cmds.as_slice(), [Cmd::SaveConfig(_)]));
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Persist(PersistCmd::Config(_))]
+    ));
     assert!(!app.status.text.is_empty());
 
     // Ctrl+wheel now scrolls instead of zooming.
@@ -10763,7 +10903,10 @@ fn playlist_tracks_import_creates_a_local_playlist() {
         .find(|p| p.name == "Rainy Mix")
         .expect("imported playlist");
     assert_eq!(imported.songs.len(), 3);
-    assert!(cmds.iter().any(|c| matches!(c, Cmd::SavePlaylists)));
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::Persist(PersistCmd::Playlists)))
+    );
 }
 
 #[test]

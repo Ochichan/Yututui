@@ -211,7 +211,7 @@ impl App {
             if like {
                 self.library.toggle_favorite(&song);
                 self.dirty = true;
-                return vec![Cmd::SaveLibrary];
+                return vec![Cmd::Persist(PersistCmd::Library)];
             }
             return Vec::new();
         }
@@ -226,7 +226,10 @@ impl App {
                 self.library.toggle_favorite(&song);
                 self.signals
                     .record_like(&song.video_id, &artist_key, false, now);
-                return vec![Cmd::SaveLibrary, Cmd::SaveSignals];
+                return vec![
+                    Cmd::Persist(PersistCmd::Library),
+                    Cmd::Persist(PersistCmd::Signals),
+                ];
             }
             if disliked {
                 self.signals
@@ -237,26 +240,29 @@ impl App {
                 .record_like(&song.video_id, &artist_key, now_fav, now);
             let comp = self.playback_completion();
             self.record_session_event(&artist_key, Outcome::Like, comp);
-            vec![Cmd::SaveLibrary, Cmd::SaveSignals]
+            vec![
+                Cmd::Persist(PersistCmd::Library),
+                Cmd::Persist(PersistCmd::Signals),
+            ]
         } else {
             if disliked {
                 // Un-dislike → neutral.
                 self.signals
                     .toggle_dislike(&song.video_id, &artist_key, now);
-                return vec![Cmd::SaveSignals];
+                return vec![Cmd::Persist(PersistCmd::Signals)];
             }
             let mut cmds = Vec::new();
             if liked {
                 self.library.toggle_favorite(&song);
                 self.signals
                     .record_like(&song.video_id, &artist_key, false, now);
-                cmds.push(Cmd::SaveLibrary);
+                cmds.push(Cmd::Persist(PersistCmd::Library));
             }
             self.signals
                 .toggle_dislike(&song.video_id, &artist_key, now);
             let comp = self.playback_completion();
             self.record_session_event(&artist_key, Outcome::Dislike, comp);
-            cmds.push(Cmd::SaveSignals);
+            cmds.push(Cmd::Persist(PersistCmd::Signals));
             cmds
         }
     }
@@ -595,10 +601,9 @@ mod tests {
         let mut app = app_with_queue(3);
         let cmds = app.update(Msg::Media(MediaCommand::SetShuffle(true)));
         assert!(app.queue.shuffle);
-        assert!(
-            cmds.iter()
-                .any(|c| matches!(c, Cmd::SaveConfig(cfg) if cfg.shuffle == Some(true)))
-        );
+        assert!(cmds.iter().any(
+            |c| matches!(c, Cmd::Persist(PersistCmd::Config(cfg)) if cfg.shuffle == Some(true))
+        ));
         // Same value again → no-op, no config churn.
         assert!(
             app.update(Msg::Media(MediaCommand::SetShuffle(true)))
@@ -607,10 +612,9 @@ mod tests {
 
         let cmds = app.update(Msg::Media(MediaCommand::SetRepeat(Repeat::One)));
         assert_eq!(app.queue.repeat, Repeat::One);
-        assert!(
-            cmds.iter()
-                .any(|c| matches!(c, Cmd::SaveConfig(cfg) if cfg.repeat == Repeat::One))
-        );
+        assert!(cmds.iter().any(
+            |c| matches!(c, Cmd::Persist(PersistCmd::Config(cfg)) if cfg.repeat == Repeat::One)
+        ));
     }
 
     #[test]

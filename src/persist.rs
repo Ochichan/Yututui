@@ -1,8 +1,8 @@
 //! Debounced background persistence for the on-disk stores.
 //!
-//! `runtime::dispatch` used to run every `Cmd::Save*` inline on the main loop task:
+//! `runtime::dispatch` used to run every `Cmd::Persist` write inline on the main loop task:
 //! pretty-JSON serialize + temp-file write + fsync + rename. An fsync can stall for
-//! tens of milliseconds, and SaveLibrary/SaveSignals fire on every track load and
+//! tens of milliseconds, and the library/signals writes fire on every track load and
 //! like/skip — a visible frame hitch. This actor takes an owned snapshot instead,
 //! coalesces latest-wins per store, debounces briefly, and does the identical atomic
 //! write (each variant delegates to the store's own `save()`) on the blocking pool.

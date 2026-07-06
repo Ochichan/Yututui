@@ -4,7 +4,7 @@
 //! The tab has two levels sharing the Library cursor/scroll state: the *root* lists the
 //! playlists themselves (`open_playlist == None`); opening one drills down into its songs,
 //! which then flow through the ordinary Library row paths (play / enqueue / favorite /
-//! download / remove). Every mutation persists immediately via [`Cmd::SavePlaylists`] —
+//! download / remove). Every mutation persists immediately via [`Cmd::Persist`] —
 //! the transfer engine writes `playlists.json` directly and the app reloads it on job
 //! completion, so unsaved in-memory edits would be silently dropped.
 
@@ -139,7 +139,7 @@ impl App {
             t!("Deleted playlist", "플레이리스트 삭제"),
             removed.name
         );
-        vec![Cmd::SavePlaylists]
+        vec![Cmd::Persist(PersistCmd::Playlists)]
     }
 
     /// Open the create-playlist popup with an empty name buffer.
@@ -211,7 +211,7 @@ impl App {
                         self.library_ui.anchor = pos;
                     }
                 }
-                vec![Cmd::SavePlaylists]
+                vec![Cmd::Persist(PersistCmd::Playlists)]
             }
             // Blank is pre-checked above, so `None` here means the playlist cap.
             None => {
@@ -445,7 +445,7 @@ impl App {
                 format!("Added {added} {noun} to {name}")
             }
         };
-        vec![Cmd::SavePlaylists]
+        vec![Cmd::Persist(PersistCmd::Playlists)]
     }
 }
 

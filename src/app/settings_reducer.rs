@@ -1391,7 +1391,9 @@ impl App {
                     && self.config.spotify.client_id.as_deref() != Some(cid.as_str())
                 {
                     self.config.spotify.client_id = Some(cid);
-                    return vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
+                    return vec![Cmd::Persist(PersistCmd::Config(Box::new(
+                        self.config.clone(),
+                    )))];
                 }
             }
             TransferEvent::AuthError(error) => {
@@ -1535,7 +1537,7 @@ impl App {
                 };
                 self.status.kind = StatusKind::Info;
                 vec![
-                    Cmd::SaveConfig(Box::new(self.config.clone())),
+                    Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
                     Cmd::ScrobbleReconfigure(Box::new(self.config.scrobble_settings())),
                 ]
             }
@@ -1604,7 +1606,7 @@ impl App {
                     t!("Last.fm disconnected", "Last.fm 연결을 해제했어요").to_owned();
                 self.status.kind = StatusKind::Info;
                 vec![
-                    Cmd::SaveConfig(Box::new(self.config.clone())),
+                    Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
                     Cmd::ScrobbleReconfigure(Box::new(self.config.scrobble_settings())),
                 ]
             }
@@ -1689,7 +1691,7 @@ impl App {
         )
         .to_owned();
         self.dirty = true;
-        vec![Cmd::ClearRomanizedTitles]
+        vec![Cmd::Persist(PersistCmd::ClearRomanizedTitles)]
     }
 
     /// Reset every editable setting (and the Keys-tab keymap draft) back to its built-in
@@ -1905,7 +1907,9 @@ impl App {
             // Non-text fields never reach here (only Field::kind()==Text enters edit mode).
             _ => return Vec::new(),
         }
-        cmds.push(Cmd::SaveConfig(Box::new(self.config.clone())));
+        cmds.push(Cmd::Persist(PersistCmd::Config(Box::new(
+            self.config.clone(),
+        ))));
         cmds
     }
 
@@ -2063,7 +2067,7 @@ impl App {
         // rebuilt mpv's chain from the *old* committed bands, so push the now-committed
         // chain to guarantee the current track matches what was just saved.
         let mut cmds = vec![
-            Cmd::SaveConfig(Box::new(self.config.clone())),
+            Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
             Cmd::Player(PlayerCmd::SetAudioFilter(
                 self.current_af().unwrap_or_default(),
             )),

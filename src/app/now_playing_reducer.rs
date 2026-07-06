@@ -231,7 +231,7 @@ impl App {
         } else {
             format!("Saved to music favorites: {} — {}", song.title, song.artist)
         };
-        vec![Cmd::SaveLibrary]
+        vec![Cmd::Persist(PersistCmd::Library)]
     }
 
     /// "Tell me more": close the card and hand off to the DJ Gem view, seeding the normal

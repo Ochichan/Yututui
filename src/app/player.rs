@@ -327,7 +327,9 @@ impl App {
     pub(in crate::app) fn toggle_video_layout(&mut self) -> Vec<Cmd> {
         self.config.video_layout = self.config.video_layout.toggled();
         let layout = self.config.video_layout;
-        let mut cmds = vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
+        let mut cmds = vec![Cmd::Persist(PersistCmd::Config(Box::new(
+            self.config.clone(),
+        )))];
         if self.video_open() {
             // Respawn in the new layout (mpv can't reliably resize a live window). If the
             // current track has no recoverable YouTube origin, close the overlay and resume
@@ -514,7 +516,9 @@ impl App {
         self.dropdowns.search_source_open = false;
         self.status.text = format!("{}: {}", t!("Streaming", "스트리밍"), mode.label());
         self.dirty = true;
-        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+        vec![Cmd::Persist(PersistCmd::Config(Box::new(
+            self.config.clone(),
+        )))]
     }
 
     pub(in crate::app) fn on_key_player(&mut self, k: KeyEvent) -> Vec<Cmd> {
@@ -600,7 +604,7 @@ impl App {
                     if song.is_radio_station() {
                         self.library.toggle_favorite(&song);
                         self.dirty = true;
-                        return vec![Cmd::SaveLibrary];
+                        return vec![Cmd::Persist(PersistCmd::Library)];
                     }
                     let artist_key = signals::normalize_artist(&song.artist);
                     let now = signals::unix_now();
@@ -615,7 +619,10 @@ impl App {
                             let comp = self.playback_completion();
                             self.record_session_event(&artist_key, Outcome::Like, comp);
                             self.dirty = true;
-                            return vec![Cmd::SaveLibrary, Cmd::SaveSignals];
+                            return vec![
+                                Cmd::Persist(PersistCmd::Library),
+                                Cmd::Persist(PersistCmd::Signals),
+                            ];
                         }
                         // like → dislike: drop the favorite (undoing its affinity lift) and set
                         // the dislike flag (which pushes the affinity down).
@@ -628,14 +635,17 @@ impl App {
                             let comp = self.playback_completion();
                             self.record_session_event(&artist_key, Outcome::Dislike, comp);
                             self.dirty = true;
-                            return vec![Cmd::SaveLibrary, Cmd::SaveSignals];
+                            return vec![
+                                Cmd::Persist(PersistCmd::Library),
+                                Cmd::Persist(PersistCmd::Signals),
+                            ];
                         }
                         // dislike → neutral: clear the flag, restoring the affinity it pushed down.
                         (false, true) => {
                             self.signals
                                 .toggle_dislike(&song.video_id, &artist_key, now);
                             self.dirty = true;
-                            return vec![Cmd::SaveSignals];
+                            return vec![Cmd::Persist(PersistCmd::Signals)];
                         }
                     }
                 }
@@ -974,7 +984,7 @@ impl App {
             };
             self.record_session_event(&artist_key, outcome, completion);
         }
-        let mut cmds = vec![Cmd::SaveSignals];
+        let mut cmds = vec![Cmd::Persist(PersistCmd::Signals)];
         // A skip just landed in the session log — if the listener is rejecting the active
         // station's direction, this may kick off an off-path feedback summary (self-gated).
         if let Some(feedback) = self.maybe_summarize_feedback() {
@@ -1124,7 +1134,7 @@ impl App {
                 // append the incoming track onto the previous recording's temp file.
                 let mut cmds = self.recorder_teardown();
                 cmds.push(Cmd::Player(PlayerCmd::Load(url)));
-                cmds.push(Cmd::SaveLibrary);
+                cmds.push(Cmd::Persist(PersistCmd::Library));
                 // Re-apply the EQ/normalization chain: a gapless graph rebuild on track
                 // change can drop the labeled `@eqN` filters, so push it after every load.
                 // While the settings screen is open the *draft* is the source of truth (it's

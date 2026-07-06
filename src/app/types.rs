@@ -316,16 +316,10 @@ pub enum Cmd {
         title: String,
         intent: crate::api::PlaylistIntent,
     },
-    /// Persist the library (song favorites/history and radio stations) to disk.
-    SaveLibrary,
-    /// Persist the downloads manifest (completed downloads' YouTube identity) to disk.
-    SaveDownloads,
-    /// Persist the per-track preference signals (plays/skips/dislikes) to disk.
-    SaveSignals,
-    /// Persist the Latin-script title display cache to disk.
-    SaveRomanizedTitles,
-    /// Delete the persisted Latin-script title display cache from disk.
-    ClearRomanizedTitles,
+    /// Persist a store to disk (or clear one) via the debounced persistence actor. The
+    /// [`PersistCmd`] payload selects which store; for the marker variants the runtime clones
+    /// the live snapshot from `App` at dispatch time (`Config` carries its own owned snapshot).
+    Persist(PersistCmd),
     /// Refresh the local downloads list from this folder.
     ScanDownloads(PathBuf),
     /// Fetch synced lyrics for a track.
@@ -362,12 +356,6 @@ pub enum Cmd {
         title: String,
         body: String,
     },
-    /// Persist the given config to disk (settings screen, on save).
-    SaveConfig(Box<Config>),
-    /// Persist the local playlists to disk (after a DJ Gem playlist mutation).
-    SavePlaylists,
-    /// Persist the active natural-language station profile to disk (after vibe-shaped streaming).
-    SaveStationProfile,
     /// Off-path: ask the assistant to distill a recent-feedback digest into artists to avoid /
     /// re-allow for the active station. The result returns as [`Msg::StationPatch`].
     SummarizeFeedback {
@@ -430,6 +418,28 @@ pub enum Cmd {
     ScrobbleReconfigure(Box<crate::scrobble::ScrobbleSettings>),
     /// A command for the transfer actor (Spotify auth / playlist listing / jobs).
     Transfer(crate::transfer::actor::TransferCmd),
+}
+
+/// Which persisted store a [`Cmd::Persist`] targets. The marker variants carry no data — the
+/// runtime clones the live snapshot from `App` at dispatch time — while `Config` carries its
+/// own owned snapshot (settings save) and `ClearRomanizedTitles` deletes rather than saves.
+pub enum PersistCmd {
+    /// Persist the library (song favorites/history and radio stations) to disk.
+    Library,
+    /// Persist the downloads manifest (completed downloads' YouTube identity) to disk.
+    Downloads,
+    /// Persist the per-track preference signals (plays/skips/dislikes) to disk.
+    Signals,
+    /// Persist the Latin-script title display cache to disk.
+    RomanizedTitles,
+    /// Delete the persisted Latin-script title display cache from disk.
+    ClearRomanizedTitles,
+    /// Persist the given config to disk (settings screen, on save).
+    Config(Box<Config>),
+    /// Persist the local playlists to disk (after a DJ Gem playlist mutation).
+    Playlists,
+    /// Persist the active natural-language station profile to disk (after vibe-shaped streaming).
+    StationProfile,
 }
 
 /// A clickable terminal region's semantic target.

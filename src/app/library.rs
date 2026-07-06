@@ -326,7 +326,7 @@ impl App {
                         self.library_ui.selected = new_len.saturating_sub(1);
                     }
                     self.dirty = true;
-                    return vec![Cmd::SaveLibrary];
+                    return vec![Cmd::Persist(PersistCmd::Library)];
                 }
                 Vec::new()
             }

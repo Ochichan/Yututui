@@ -402,7 +402,7 @@ impl App {
                 }
                 self.clamp_library_selection();
                 self.dirty = true;
-                vec![Cmd::SaveLibrary]
+                vec![Cmd::Persist(PersistCmd::Library)]
             }
             LibraryTab::History => {
                 for song in targets {
@@ -417,7 +417,7 @@ impl App {
                 }
                 self.clamp_library_selection();
                 self.dirty = true;
-                vec![Cmd::SaveLibrary]
+                vec![Cmd::Persist(PersistCmd::Library)]
             }
             LibraryTab::RadioFavorites => {
                 let mut any = false;
@@ -427,7 +427,7 @@ impl App {
                 if any {
                     self.clamp_library_selection();
                     self.dirty = true;
-                    vec![Cmd::SaveLibrary]
+                    vec![Cmd::Persist(PersistCmd::Library)]
                 } else {
                     Vec::new()
                 }
@@ -440,7 +440,7 @@ impl App {
                 if any {
                     self.clamp_library_selection();
                     self.dirty = true;
-                    vec![Cmd::SaveLibrary]
+                    vec![Cmd::Persist(PersistCmd::Library)]
                 } else {
                     Vec::new()
                 }
@@ -470,7 +470,7 @@ impl App {
                 if any {
                     self.clamp_library_selection();
                     self.dirty = true;
-                    vec![Cmd::SavePlaylists]
+                    vec![Cmd::Persist(PersistCmd::Playlists)]
                 } else {
                     Vec::new()
                 }
@@ -511,7 +511,7 @@ impl App {
         self.dirty = true;
         vec![
             Cmd::ScanDownloads(self.config.effective_download_dir()),
-            Cmd::SaveDownloads,
+            Cmd::Persist(PersistCmd::Downloads),
         ]
     }
 

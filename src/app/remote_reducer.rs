@@ -202,7 +202,9 @@ impl App {
                 self.config.streaming.mode = value;
                 self.status.text = format!("Curating style: {}", value.label());
                 self.dirty = true;
-                let mut cmds = vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
+                let mut cmds = vec![Cmd::Persist(PersistCmd::Config(Box::new(
+                    self.config.clone(),
+                )))];
                 if self.autoplay_streaming {
                     cmds.extend(self.force_autoplay_extend());
                 }
@@ -214,7 +216,9 @@ impl App {
                 self.config.search.streaming_source = source;
                 self.status.text = format!("Streaming source: {}", source.label());
                 self.dirty = true;
-                let mut cmds = vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
+                let mut cmds = vec![Cmd::Persist(PersistCmd::Config(Box::new(
+                    self.config.clone(),
+                )))];
                 if self.autoplay_streaming {
                     cmds.extend(self.force_autoplay_extend());
                 }
@@ -229,7 +233,7 @@ impl App {
                 (
                     RemoteResponse::status(self.status_snapshot()),
                     vec![
-                        Cmd::SaveConfig(Box::new(self.config.clone())),
+                        Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
                         Cmd::Player(PlayerCmd::SetProperty {
                             name: "speed".to_owned(),
                             value: serde_json::Value::from(speed),
@@ -245,7 +249,9 @@ impl App {
                 self.dirty = true;
                 (
                     RemoteResponse::status(self.status_snapshot()),
-                    vec![Cmd::SaveConfig(Box::new(self.config.clone()))],
+                    vec![Cmd::Persist(PersistCmd::Config(Box::new(
+                        self.config.clone(),
+                    )))],
                 )
             }
             RemoteSettingChange::Normalize { value } => {
@@ -260,7 +266,7 @@ impl App {
                 (
                     RemoteResponse::status(self.status_snapshot()),
                     vec![
-                        Cmd::SaveConfig(Box::new(self.config.clone())),
+                        Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
                         Cmd::Player(PlayerCmd::SetAudioFilter(
                             self.current_af().unwrap_or_default(),
                         )),
@@ -273,7 +279,9 @@ impl App {
                 self.dirty = true;
                 (
                     RemoteResponse::status(self.status_snapshot()),
-                    vec![Cmd::SaveConfig(Box::new(self.config.clone()))],
+                    vec![Cmd::Persist(PersistCmd::Config(Box::new(
+                        self.config.clone(),
+                    )))],
                 )
             }
             RemoteSettingChange::AiEnabled { value } => {
@@ -286,7 +294,9 @@ impl App {
                 }
                 self.status.text = format!("DJ Gem: {}", if value { "on" } else { "off" });
                 self.dirty = true;
-                let mut cmds = vec![Cmd::SaveConfig(Box::new(self.config.clone()))];
+                let mut cmds = vec![Cmd::Persist(PersistCmd::Config(Box::new(
+                    self.config.clone(),
+                )))];
                 if self.config.effective_ai_enabled() != old_ai_enabled {
                     cmds.push(Cmd::ReloadAi {
                         key: self.config.effective_ai_service_key(),
@@ -632,7 +642,10 @@ mod tests {
         });
         assert!(resp.ok);
         assert_eq!(app.config.streaming.mode, StreamingMode::Discovery);
-        assert!(cmds.iter().any(|cmd| matches!(cmd, Cmd::SaveConfig(_))));
+        assert!(
+            cmds.iter()
+                .any(|cmd| matches!(cmd, Cmd::Persist(PersistCmd::Config(_))))
+        );
 
         app.apply_remote(RemoteCommand::SetSetting {
             change: RemoteSettingChange::StreamingSource {
@@ -896,17 +909,15 @@ mod tests {
         let (shuffle_resp, shuffle_cmds) = app.apply_remote(RemoteCommand::ToggleShuffle);
         assert!(shuffle_resp.ok);
         assert!(app.queue.shuffle);
-        assert!(
-            shuffle_cmds.iter().any(|cmd| {
-                matches!(cmd, Cmd::SaveConfig(config) if config.shuffle == Some(true))
-            })
-        );
+        assert!(shuffle_cmds.iter().any(|cmd| {
+            matches!(cmd, Cmd::Persist(PersistCmd::Config(config)) if config.shuffle == Some(true))
+        }));
 
         let (repeat_resp, repeat_cmds) = app.apply_remote(RemoteCommand::CycleRepeat);
         assert!(repeat_resp.ok);
         assert_eq!(app.queue.repeat, crate::queue::Repeat::All);
         assert!(repeat_cmds.iter().any(|cmd| {
-            matches!(cmd, Cmd::SaveConfig(config) if config.repeat == crate::queue::Repeat::All)
+            matches!(cmd, Cmd::Persist(PersistCmd::Config(config)) if config.repeat == crate::queue::Repeat::All)
         }));
     }
 }

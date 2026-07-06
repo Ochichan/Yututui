@@ -480,7 +480,9 @@ impl App {
             if on { "✓" } else { "✗" }
         );
         self.dirty = true;
-        vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+        vec![Cmd::Persist(PersistCmd::Config(Box::new(
+            self.config.clone(),
+        )))]
     }
 
     /// A bitmask of visible surfaces that can cover album art. Keeping each popup/modal distinct

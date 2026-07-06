@@ -56,7 +56,7 @@ impl App {
 
         if dirty_cache {
             self.dirty = true;
-            cmds.push(Cmd::SaveRomanizedTitles);
+            cmds.push(Cmd::Persist(PersistCmd::RomanizedTitles));
         }
 
         for chunk in items.chunks(ROMANIZE_BATCH) {
@@ -121,7 +121,7 @@ impl App {
 
         if upgraded {
             self.dirty = true;
-            vec![Cmd::SaveRomanizedTitles]
+            vec![Cmd::Persist(PersistCmd::RomanizedTitles)]
         } else {
             Vec::new()
         }

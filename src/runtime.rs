@@ -7,7 +7,7 @@
 use ratatui_image::thread::ResizeResponse;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::app::{App, Cmd, Msg};
+use crate::app::{App, Cmd, Msg, PersistCmd};
 use crate::config::PlayerRuntimeConfig;
 use crate::player::{PlayerCmd, PlayerHandle};
 
@@ -254,7 +254,7 @@ pub struct RuntimeHandles {
     scrobble_handle: crate::scrobble::ScrobbleHandle,
     /// Spawned on the first transfer command — costs nothing until the feature is used.
     transfer_handle: Option<crate::transfer::actor::TransferHandle>,
-    /// Debounced background store writes (the `Cmd::Save*` family).
+    /// Debounced background store writes (the `Cmd::Persist` family).
     persist: crate::persist::PersistHandle,
 }
 
@@ -389,29 +389,32 @@ impl RuntimeHandles {
                 title,
                 intent,
             } => self.api_handle.playlist_tracks(playlist_id, title, intent),
-            // Save*: hand the persistence actor an owned snapshot. Cloning a store is a
-            // couple ms of memcpy at worst; the fsync it replaces on this task was 5-50ms.
-            Cmd::SaveLibrary => {
-                self.persist
-                    .save(crate::persist::Snapshot::Library(app.library.clone()));
-            }
-            Cmd::SaveDownloads => {
-                self.persist.save(crate::persist::Snapshot::Downloads(
+            // Persist: hand the persistence actor an owned snapshot (or clear one). Cloning a
+            // store is a couple ms of memcpy at worst; the fsync it replaces on this task was
+            // 5-50ms. The marker variants clone the live snapshot from `app` here; `Config`
+            // carries its own owned snapshot.
+            Cmd::Persist(p) => match p {
+                PersistCmd::Library => self
+                    .persist
+                    .save(crate::persist::Snapshot::Library(app.library.clone())),
+                PersistCmd::Downloads => self.persist.save(crate::persist::Snapshot::Downloads(
                     app.download_store.clone(),
-                ));
-            }
-            Cmd::SaveSignals => {
-                self.persist
-                    .save(crate::persist::Snapshot::Signals(app.signals.clone()));
-            }
-            Cmd::SaveRomanizedTitles => {
-                self.persist.save(crate::persist::Snapshot::RomanizedTitles(
-                    app.romanization.cache.clone(),
-                ));
-            }
-            Cmd::ClearRomanizedTitles => {
-                self.persist.delete_romanized_titles();
-            }
+                )),
+                PersistCmd::Signals => self
+                    .persist
+                    .save(crate::persist::Snapshot::Signals(app.signals.clone())),
+                PersistCmd::RomanizedTitles => self.persist.save(
+                    crate::persist::Snapshot::RomanizedTitles(app.romanization.cache.clone()),
+                ),
+                PersistCmd::ClearRomanizedTitles => self.persist.delete_romanized_titles(),
+                PersistCmd::Config(cfg) => self.persist.save(crate::persist::Snapshot::Config(cfg)),
+                PersistCmd::Playlists => self
+                    .persist
+                    .save(crate::persist::Snapshot::Playlists(app.playlists.clone())),
+                PersistCmd::StationProfile => self
+                    .persist
+                    .save(crate::persist::Snapshot::Station(app.station.clone())),
+            },
             Cmd::ScanDownloads(dir) => {
                 // Directory scan does per-file IO — keep it off the loop task too.
                 let tx = self.worker_tx.clone();
@@ -481,17 +484,6 @@ impl RuntimeHandles {
                         updated,
                     }));
                 });
-            }
-            Cmd::SaveConfig(cfg) => {
-                self.persist.save(crate::persist::Snapshot::Config(cfg));
-            }
-            Cmd::SavePlaylists => {
-                self.persist
-                    .save(crate::persist::Snapshot::Playlists(app.playlists.clone()));
-            }
-            Cmd::SaveStationProfile => {
-                self.persist
-                    .save(crate::persist::Snapshot::Station(app.station.clone()));
             }
             Cmd::AskAi { prompt, context } => {
                 if let Some(h) = &self.ai_handle {

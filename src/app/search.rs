@@ -190,7 +190,7 @@ impl App {
                         }
                         self.library.toggle_favorite(&song);
                         self.dirty = true;
-                        return vec![Cmd::SaveLibrary];
+                        return vec![Cmd::Persist(PersistCmd::Library)];
                     }
                     Vec::new()
                 }
@@ -559,7 +559,7 @@ impl App {
                 } else {
                     format!("Imported playlist: {title} ({added} tracks)")
                 };
-                vec![Cmd::SavePlaylists]
+                vec![Cmd::Persist(PersistCmd::Playlists)]
             }
         }
     }
@@ -597,7 +597,9 @@ impl App {
             Vec::new()
         } else {
             self.config.search = search;
-            vec![Cmd::SaveConfig(Box::new(self.config.clone()))]
+            vec![Cmd::Persist(PersistCmd::Config(Box::new(
+                self.config.clone(),
+            )))]
         }
     }
 }
