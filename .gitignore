@@ -42,6 +42,7 @@ cookies.txt
 /oneoff-*.sh
 
 # Local docs notes
+/ARCHITECTURE.md
 /docs/daemon-mode-completion-plan.md
 /docs/desktop-tray-companion-plan.md
 /docs/*.md
