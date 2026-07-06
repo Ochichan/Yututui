@@ -376,7 +376,18 @@ impl WindowsTrayApp {
                 }
             }
             bridge::WinOp::StartDaemon => self.start_daemon(false),
-            // copyText/openUrl/openDevtools/persist land at M1; ignore unknowns.
+            bridge::WinOp::OpenUrl(url) => {
+                if !url.trim().is_empty() {
+                    let opened = crate::util::browser::open_in_browser_checked(&url);
+                    if !opened.launched() {
+                        report_error(format_args!(
+                            "could not open URL in browser: {}",
+                            opened.failure_summary()
+                        ));
+                    }
+                }
+            }
+            // copyText/openDevtools/persist land at M1; ignore unknowns.
             _ => {}
         }
     }

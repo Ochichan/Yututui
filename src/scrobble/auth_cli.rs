@@ -107,7 +107,14 @@ async fn connect_lastfm() -> i32 {
     println!();
     println!("  {url}");
     println!();
-    crate::util::browser::open_in_browser(&url);
+    let opened = crate::util::browser::open_in_browser_checked(&url);
+    if !opened.launched() {
+        eprintln!(
+            "ytt auth lastfm: could not open a browser automatically: {}",
+            opened.failure_summary()
+        );
+        eprintln!("ytt auth lastfm: paste the URL above into your browser to continue.");
+    }
     println!("Waiting for approval (up to 5 minutes; Ctrl-C to abort)…");
 
     let deadline = Instant::now() + AUTH_BUDGET;

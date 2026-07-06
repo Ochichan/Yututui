@@ -1354,17 +1354,25 @@ impl App {
         self.dirty = true;
         match event {
             TransferEvent::AuthUrl(url) => {
-                open_in_browser(&url);
+                let opened = crate::util::browser::open_in_browser_checked(&url);
                 // Also copy the URL: xdg-open can fail silently (e.g. a Flatpak
                 // browser the cleared env can't resolve), and this is the only
                 // path that would otherwise leave the user no way to reach the
                 // approval page.
                 copy_to_clipboard(&url);
-                self.status.text = t!(
-                    "Approve ytm-tui in the browser (link copied — paste it if nothing opened)",
-                    "브라우저에서 ytm-tui를 승인해 주세요 (링크를 클립보드에 복사했어요 — 안 열리면 붙여넣기)"
-                )
-                .to_owned();
+                self.status.text = if opened.launched() {
+                    t!(
+                        "Approve ytm-tui in the browser (link copied as fallback)",
+                        "브라우저에서 ytm-tui를 승인해 주세요 (링크는 예비용으로 복사했어요)"
+                    )
+                    .to_owned()
+                } else {
+                    t!(
+                        "Could not open browser; link copied. Paste it manually or run `ytt doctor --verbose`.",
+                        "브라우저를 열 수 없어요. 링크를 복사했으니 직접 붙여넣거나 `ytt doctor --verbose`를 실행해 주세요."
+                    )
+                    .to_owned()
+                };
                 self.status.kind = StatusKind::Info;
             }
             TransferEvent::AuthDone { display_name } => {
@@ -1504,17 +1512,25 @@ impl App {
         self.dirty = true;
         match event {
             ScrobbleEvent::AuthUrl(url) => {
-                open_in_browser(&url);
+                let opened = crate::util::browser::open_in_browser_checked(&url);
                 // Also copy the URL: xdg-open can fail silently (e.g. a Flatpak
                 // browser the cleared env can't resolve), and this is the only
                 // path that would otherwise leave the user no way to reach the
                 // approval page.
                 copy_to_clipboard(&url);
-                self.status.text = t!(
-                    "Approve ytm-tui in the browser (link copied — paste it if nothing opened)",
-                    "브라우저에서 ytm-tui를 승인해 주세요 (링크를 클립보드에 복사했어요 — 안 열리면 붙여넣기)"
-                )
-                .to_owned();
+                self.status.text = if opened.launched() {
+                    t!(
+                        "Approve ytm-tui in the browser (link copied as fallback)",
+                        "브라우저에서 ytm-tui를 승인해 주세요 (링크는 예비용으로 복사했어요)"
+                    )
+                    .to_owned()
+                } else {
+                    t!(
+                        "Could not open browser; link copied. Paste it manually or run `ytt doctor --verbose`.",
+                        "브라우저를 열 수 없어요. 링크를 복사했으니 직접 붙여넣거나 `ytt doctor --verbose`를 실행해 주세요."
+                    )
+                    .to_owned()
+                };
                 self.status.kind = StatusKind::Info;
                 Vec::new()
             }

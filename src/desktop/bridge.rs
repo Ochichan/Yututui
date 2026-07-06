@@ -137,12 +137,19 @@ pub fn dispatch(body: &str) -> BridgeAction {
 
 fn parse_win(env: &OutEnvelope) -> WinOp {
     let text = || env.payload.as_str().unwrap_or_default().to_string();
+    let url = || {
+        env.payload
+            .as_str()
+            .or_else(|| env.payload.get("url").and_then(|v| v.as_str()))
+            .unwrap_or_default()
+            .to_string()
+    };
     match env.name.as_str() {
         "drag" => WinOp::Drag,
         "hide" => WinOp::Hide,
         "openDevtools" => WinOp::OpenDevtools,
         "copyText" => WinOp::CopyText(text()),
-        "openUrl" => WinOp::OpenUrl(text()),
+        "openUrl" => WinOp::OpenUrl(url()),
         "startDaemon" => WinOp::StartDaemon,
         "persist" => WinOp::Persist(env.payload.to_string()),
         other => WinOp::Unknown(other.to_string()),
@@ -195,6 +202,16 @@ mod tests {
         assert_eq!(
             dispatch(r#"{"v":1,"kind":"win","name":"copyText","payload":"hello"}"#),
             BridgeAction::Win(WinOp::CopyText("hello".to_string()))
+        );
+        assert_eq!(
+            dispatch(r#"{"v":1,"kind":"win","name":"openUrl","payload":"https://example.test"}"#),
+            BridgeAction::Win(WinOp::OpenUrl("https://example.test".to_string()))
+        );
+        assert_eq!(
+            dispatch(
+                r#"{"v":1,"kind":"win","name":"openUrl","payload":{"url":"https://example.test"}}"#
+            ),
+            BridgeAction::Win(WinOp::OpenUrl("https://example.test".to_string()))
         );
     }
 
