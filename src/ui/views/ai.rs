@@ -332,7 +332,7 @@ fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {
     let end = offset
         .saturating_add(text_area.height as usize)
         .min(lines.len());
-    let selected = app.ai_transcript_drag.map(|drag| {
+    let selected = app.interaction.ai_transcript_drag.map(|drag| {
         if drag.anchor <= drag.cursor {
             (drag.anchor, drag.cursor)
         } else {

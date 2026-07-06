@@ -651,3 +651,30 @@ pub(crate) struct ScrollbarDrag {
     pub viewport: usize,
     pub grab: u16,
 }
+
+/// Live pointer-interaction sessions: the in-flight drag/scrub selections and the held-key
+/// navigation accelerator. All transient — each is cleared on button release (or a gap, for
+/// nav) — so grouping them keeps the mouse reducer's working set in one place.
+#[derive(Default)]
+pub struct Interaction {
+    /// Active mouse drag-selection session. Cleared on left-button release so a later
+    /// drag starts from its own first row, not whatever was selected before.
+    pub(in crate::app) drag_selection: Option<DragSelection>,
+    /// Active scrollbar drag session. Kept separate from row range selection so dragging a
+    /// scrollbar never extends a Library/Queue multi-select range.
+    pub(in crate::app) drag_scrollbar: Option<ScrollbarDrag>,
+    /// Active DJ Gem transcript drag-copy selection. Stores rendered visual row indexes,
+    /// not message indexes, so wrapping and copy behavior line up exactly. `pub(crate)` (not
+    /// `pub`) to match [`AiTranscriptDrag`]'s visibility — still reachable from the `ui` render.
+    pub(crate) ai_transcript_drag: Option<AiTranscriptDrag>,
+    /// Active seekbar (progress-bar) scrub: the last column we seeked to, so intra-cell drags
+    /// don't re-emit. `None` = not scrubbing. Set on a seekbar press, cleared on the next press
+    /// or on mouse-up (so a dropped terminal `Up` can't strand it).
+    pub(in crate::app) seekbar_drag: Option<u16>,
+    /// Active radio-recording slider drag: the focused slider row (1 min · 2 max · 4 keep) and
+    /// the track rect captured at press, so pointer-x maps to a value even after the pointer
+    /// leaves the track. `None` = not dragging; cleared on the next press like [`Self::seekbar_drag`].
+    pub(in crate::app) recording_drag: Option<(usize, Rect)>,
+    /// Held-key auto-repeat accelerator for list navigation (see [`NavRepeat`]). Idle at rest.
+    pub(in crate::app) nav_repeat: NavRepeat,
+}

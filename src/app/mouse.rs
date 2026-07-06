@@ -102,8 +102,8 @@ impl App {
         // Every fresh press re-establishes drag context, so a prior seekbar scrub / recording
         // slider drag can't survive a dropped terminal `Up` and hijack the next gesture. Re-armed
         // below if this click grabs a track.
-        self.seekbar_drag = None;
-        self.recording_drag = None;
+        self.interaction.seekbar_drag = None;
+        self.interaction.recording_drag = None;
         // A click dismisses the modal conflict warning, same as a keypress.
         if self.key_conflict.take().is_some() {
             self.dirty = true;
@@ -242,7 +242,7 @@ impl App {
                 .is_some_and(|r| rect_contains(r, col, row));
             if !inside {
                 self.search_filter.close();
-                self.drag_scrollbar = None;
+                self.interaction.drag_scrollbar = None;
                 self.dirty = true;
                 return Vec::new();
             }
@@ -331,7 +331,7 @@ impl App {
                     if let Some(p) = self.recording_settings.as_mut() {
                         p.row = i;
                     }
-                    self.recording_drag = Some((i, rect));
+                    self.interaction.recording_drag = Some((i, rect));
                     self.dirty = true;
                     return self.recording_slider_set(i, col, rect);
                 }
@@ -362,8 +362,8 @@ impl App {
                 .is_some_and(|r| rect_contains(r, col, row));
             if !inside {
                 self.queue_popup.open = false;
-                self.drag_selection = None;
-                self.drag_scrollbar = None;
+                self.interaction.drag_selection = None;
+                self.interaction.drag_scrollbar = None;
                 self.dirty = true;
                 return Vec::new();
             }
@@ -412,7 +412,7 @@ impl App {
             let target = (frac * dur).clamp(0.0, dur);
             tracing::info!(secs = target, "click seek");
             // Arm the scrub: subsequent drags of this press seek continuously (see on_mouse_drag).
-            self.seekbar_drag = Some(col);
+            self.interaction.seekbar_drag = Some(col);
             self.dirty = true;
             return vec![Cmd::Player(PlayerCmd::SeekAbsolute(target))];
         }
@@ -521,7 +521,7 @@ impl App {
             }
             MouseTarget::AiSuggestionRow(_) => Vec::new(),
             MouseTarget::AiTranscriptRow(i) if self.mode == Mode::Ai => {
-                self.ai_transcript_drag = Some(AiTranscriptDrag {
+                self.interaction.ai_transcript_drag = Some(AiTranscriptDrag {
                     anchor: i,
                     cursor: i,
                     moved: false,
@@ -543,8 +543,8 @@ impl App {
                 if tab == LibraryTab::Playlists {
                     self.hint_playlist_create();
                 }
-                self.drag_selection = None;
-                self.drag_scrollbar = None;
+                self.interaction.drag_selection = None;
+                self.interaction.drag_scrollbar = None;
                 self.dirty = true;
                 Vec::new()
             }
@@ -589,7 +589,7 @@ impl App {
             MouseTarget::QueueRow(i) if self.queue_popup.open => {
                 self.queue_popup.cursor = i;
                 self.queue_popup.anchor = i;
-                self.drag_selection = Some(DragSelection {
+                self.interaction.drag_selection = Some(DragSelection {
                     surface: DragSurface::Queue,
                     anchor: i,
                 });
@@ -791,17 +791,20 @@ impl App {
         // Radio-recording slider scrub: a press that grabbed a bar track sets the value
         // continuously as the pointer moves (row ignored — grab and drag anywhere horizontally,
         // exactly like the seekbar). `recording_slider_set` dedupes and clamps.
-        if let Some((slider_row, rect)) = self.recording_drag {
+        if let Some((slider_row, rect)) = self.interaction.recording_drag {
             if self.recording_settings.is_some() {
                 return self.recording_slider_set(slider_row, col, rect);
             }
             // Popup closed mid-drag — stop scrubbing.
-            self.recording_drag = None;
+            self.interaction.recording_drag = None;
             return Vec::new();
         }
         // Seekbar scrub: a press that landed on the bar seeks continuously as the pointer moves.
         // Keyed off the drag flag + x only (row is ignored — grab and drag anywhere horizontally).
-        if self.seekbar_drag.is_some() && self.mode == Mode::Player && !self.queue_popup.open {
+        if self.interaction.seekbar_drag.is_some()
+            && self.mode == Mode::Player
+            && !self.queue_popup.open
+        {
             if let Some(area) = self.hits.seekbar_rect()
                 && let Some(dur) = self.playback.duration
                 && dur > 0.0
@@ -810,9 +813,9 @@ impl App {
                 // Clamp to the bar so dragging past either end pins to 0%/100% (and `col - area.x`
                 // can't underflow u16).
                 let c = col.clamp(area.x, area.right().saturating_sub(1));
-                if self.seekbar_drag != Some(c) {
+                if self.interaction.seekbar_drag != Some(c) {
                     // Intra-cell dedupe: only re-seek when the target cell actually changes.
-                    self.seekbar_drag = Some(c);
+                    self.interaction.seekbar_drag = Some(c);
                     let frac = f64::from(c - area.x) / f64::from(area.width);
                     let target = (frac * dur).clamp(0.0, dur);
                     self.dirty = true;
@@ -821,11 +824,11 @@ impl App {
                 return Vec::new();
             }
             // Bar or duration vanished mid-drag (track ended / radio stream) — stop scrubbing.
-            self.seekbar_drag = None;
+            self.interaction.seekbar_drag = None;
             return Vec::new();
         }
         if self.queue_popup.open {
-            if let Some(drag) = self.drag_scrollbar {
+            if let Some(drag) = self.interaction.drag_scrollbar {
                 self.drag_scrollbar_to(drag, row);
                 return Vec::new();
             }
@@ -841,7 +844,7 @@ impl App {
             }
             return Vec::new();
         }
-        if let Some(drag) = self.drag_scrollbar {
+        if let Some(drag) = self.interaction.drag_scrollbar {
             self.drag_scrollbar_to(drag, row);
             return Vec::new();
         }
@@ -855,7 +858,7 @@ impl App {
         if self.mode == Mode::Ai
             && let Some(MouseTarget::AiTranscriptRow(i)) = self.mouse_target_at(col, row)
         {
-            match self.ai_transcript_drag.as_mut() {
+            match self.interaction.ai_transcript_drag.as_mut() {
                 Some(drag) => {
                     let moved = drag.moved || drag.cursor != i || drag.anchor != i;
                     if drag.cursor != i || drag.moved != moved {
@@ -865,7 +868,7 @@ impl App {
                     }
                 }
                 None => {
-                    self.ai_transcript_drag = Some(AiTranscriptDrag {
+                    self.interaction.ai_transcript_drag = Some(AiTranscriptDrag {
                         anchor: i,
                         cursor: i,
                         moved: false,
@@ -896,11 +899,11 @@ impl App {
     }
 
     pub(in crate::app) fn on_mouse_left_up(&mut self) -> Vec<Cmd> {
-        self.drag_selection = None;
-        self.drag_scrollbar = None;
-        self.seekbar_drag = None;
+        self.interaction.drag_selection = None;
+        self.interaction.drag_scrollbar = None;
+        self.interaction.seekbar_drag = None;
 
-        if let Some(drag) = self.ai_transcript_drag.take() {
+        if let Some(drag) = self.interaction.ai_transcript_drag.take() {
             if drag.moved {
                 let (start, end) = if drag.anchor <= drag.cursor {
                     (drag.anchor, drag.cursor)
@@ -959,9 +962,9 @@ impl App {
             viewport,
             grab,
         };
-        self.drag_selection = None;
-        self.ai_transcript_drag = None;
-        self.drag_scrollbar = Some(drag);
+        self.interaction.drag_selection = None;
+        self.interaction.ai_transcript_drag = None;
+        self.interaction.drag_scrollbar = Some(drag);
         self.drag_scrollbar_to(drag, row);
         Vec::new()
     }
@@ -1044,13 +1047,13 @@ impl App {
     }
 
     fn drag_anchor(&mut self, surface: DragSurface, row: usize) -> usize {
-        match self.drag_selection {
+        match self.interaction.drag_selection {
             Some(DragSelection {
                 surface: active,
                 anchor,
             }) if active == surface => anchor,
             _ => {
-                self.drag_selection = Some(DragSelection {
+                self.interaction.drag_selection = Some(DragSelection {
                     surface,
                     anchor: row,
                 });
@@ -1185,7 +1188,7 @@ impl App {
                 self.library_ui.selected = index;
                 // A fresh single click re-anchors the multi-select range here.
                 self.library_ui.anchor = index;
-                self.drag_selection = Some(DragSelection {
+                self.interaction.drag_selection = Some(DragSelection {
                     surface: DragSurface::Library,
                     anchor: index,
                 });

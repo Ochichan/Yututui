@@ -314,25 +314,9 @@ pub struct App {
     /// The "add to playlist" picker popup, when open (from Library rows, Search results,
     /// or the Player's current track).
     pub playlist_picker: Option<PlaylistPicker>,
-    /// Active mouse drag-selection session. Cleared on left-button release so a later
-    /// drag starts from its own first row, not whatever was selected before.
-    drag_selection: Option<DragSelection>,
-    /// Active scrollbar drag session. Kept separate from row range selection so dragging a
-    /// scrollbar never extends a Library/Queue multi-select range.
-    drag_scrollbar: Option<ScrollbarDrag>,
-    /// Active DJ Gem transcript drag-copy selection. Stores rendered visual row indexes,
-    /// not message indexes, so wrapping and copy behavior line up exactly.
-    pub(crate) ai_transcript_drag: Option<AiTranscriptDrag>,
-    /// Active seekbar (progress-bar) scrub: the last column we seeked to, so intra-cell drags
-    /// don't re-emit. `None` = not scrubbing. Set on a seekbar press, cleared on the next press
-    /// or on mouse-up (so a dropped terminal `Up` can't strand it).
-    seekbar_drag: Option<u16>,
-    /// Active radio-recording slider drag: the focused slider row (1 min · 2 max · 4 keep) and
-    /// the track rect captured at press, so pointer-x maps to a value even after the pointer
-    /// leaves the track. `None` = not dragging; cleared on the next press like [`Self::seekbar_drag`].
-    recording_drag: Option<(usize, Rect)>,
-    /// Held-key auto-repeat accelerator for list navigation (see [`NavRepeat`]). Idle at rest.
-    nav_repeat: NavRepeat,
+    /// Live pointer-interaction sessions (drag selections, seekbar/recording scrubs) and the
+    /// held-key nav accelerator — see [`Interaction`]. All transient; cleared on button release.
+    pub interaction: Interaction,
 
     // Lyrics ------------------------------------------------------------------
     /// Lyrics-panel state: visibility, in-flight flag, and the fetched track lyrics.
@@ -490,12 +474,7 @@ impl App {
             all_count_cache: Cell::new(None),
             yid_scan_memo: RefCell::new(None),
             playlist_picker: None,
-            drag_selection: None,
-            drag_scrollbar: None,
-            ai_transcript_drag: None,
-            seekbar_drag: None,
-            recording_drag: None,
-            nav_repeat: NavRepeat::default(),
+            interaction: Interaction::default(),
             lyrics: Lyrics::default(),
             art: ArtState::default(),
             downloads: Downloads::default(),
@@ -1892,17 +1871,19 @@ impl App {
     /// a direction change restarts it. (The OS initial-repeat delay exceeds the gap, so the
     /// ramp naturally begins once the fast auto-repeat stream kicks in.)
     fn nav_repeat_step_at(&mut self, now: Instant, action: Action) -> usize {
-        let held_on = self.nav_repeat.action == Some(action)
+        let held_on = self.interaction.nav_repeat.action == Some(action)
             && self
+                .interaction
                 .nav_repeat
                 .last
                 .is_some_and(|t| now.duration_since(t) <= NAV_REPEAT_GAP);
         if !held_on {
-            self.nav_repeat.started = Some(now);
+            self.interaction.nav_repeat.started = Some(now);
         }
-        self.nav_repeat.action = Some(action);
-        self.nav_repeat.last = Some(now);
+        self.interaction.nav_repeat.action = Some(action);
+        self.interaction.nav_repeat.last = Some(now);
         let held = self
+            .interaction
             .nav_repeat
             .started
             .map_or(Duration::ZERO, |s| now.duration_since(s));
