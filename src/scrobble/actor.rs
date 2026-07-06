@@ -33,6 +33,9 @@ const AUTH_POLL: Duration = Duration::from_secs(5);
 const AUTH_BUDGET: Duration = Duration::from_secs(300);
 /// "Queue is stuck" notices are emitted at most this often.
 const STALL_NOTICE_EVERY: Duration = Duration::from_secs(3600);
+/// Fallback backoff when a `Retry-After` is so large that `Instant + Duration` would overflow.
+/// A well-behaved server never asks for this long; a hostile/misconfigured one can't crash us.
+const MAX_SANE_BACKOFF: Duration = Duration::from_secs(3600);
 
 pub enum ScrobbleCmd {
     Observe(Box<Observation>),
@@ -110,8 +113,14 @@ impl Health {
                 None
             }
             ScrobbleError::RateLimited(after) => {
-                self.backoff_until =
-                    Some(now + after.unwrap_or(FLUSH_RETRY).max(Duration::from_secs(10)));
+                // A hostile/misconfigured `Retry-After` can be enormous; `Instant + Duration`
+                // panics on overflow, so add checked and fall back to a bounded max instead of
+                // crashing the actor. The normal (representable) delay is used unchanged.
+                let delay = after.unwrap_or(FLUSH_RETRY).max(Duration::from_secs(10));
+                self.backoff_until = Some(
+                    now.checked_add(delay)
+                        .unwrap_or_else(|| now + MAX_SANE_BACKOFF),
+                );
                 None
             }
             ScrobbleError::Network(_) => {

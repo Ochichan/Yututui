@@ -206,6 +206,28 @@ fn streaming_extend_prefetches_next_while_playing() {
     );
 }
 
+#[test]
+fn advance_over_all_unplayable_queue_terminates_under_repeat_all() {
+    let mut app = App::new(100);
+    // Nothing but non-video YouTube refs (channel / playlist ids) — every entry is unplayable.
+    app.queue.set(
+        vec![
+            Song::remote("UCfLdIEPs1tYj4ieEdJnyNyw", "A", "A", ""),
+            Song::remote("UCanotherchannelidhere00", "B", "B", ""),
+            Song::remote("PL123456789012345", "C", "C", ""),
+        ],
+        0,
+    );
+    // Repeat-all makes `peek_next()` always `Some` — the old recursion wrapped forever and
+    // overflowed the stack. The bounded loop must return without loading anything playable.
+    app.queue.repeat = crate::queue::Repeat::All;
+    let cmds = app.advance(true);
+    assert!(
+        load_url(&cmds).is_none(),
+        "no playable track exists; advance must terminate and load nothing"
+    );
+}
+
 fn confirm_on_f5_keymap() -> KeyMap {
     let mut keymap = KeyMap::default();
     keymap
@@ -411,6 +433,7 @@ fn enter_in_search_emits_search_cmd() {
                 query,
                 source,
                 config,
+                ..
             },
         ] => {
             assert_eq!(query, "lofi");
@@ -532,10 +555,49 @@ fn settings_global_key_capture_rejects_player_overlap() {
 }
 
 #[test]
+fn stale_search_results_do_not_overwrite_a_newer_search() {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+
+    // Submit "a" (request_id → 1), then "abcdef" (request_id → 2) before "a" returns.
+    app.search.input = "a".to_owned();
+    let _ = app.submit_search_query();
+    let first_id = app.search.request_id;
+    app.search.input = "abcdef".to_owned();
+    let _ = app.submit_search_query();
+    let second_id = app.search.request_id;
+    assert_ne!(first_id, second_id);
+
+    // The newer search's results arrive first and populate the list.
+    app.update(Msg::SearchResults {
+        request_id: second_id,
+        query: "abcdef".to_owned(),
+        source: SearchSource::Youtube,
+        songs: vec![Song::remote("newid", "New", "Artist", "3:00")],
+    });
+    assert!(app.search.results.iter().any(|s| s.video_id == "newid"));
+
+    // The older, slower search's results arrive AFTER — they must be dropped (the bug:
+    // once the newer search cleared `searching`, the old guard let this through).
+    app.update(Msg::SearchResults {
+        request_id: first_id,
+        query: "a".to_owned(),
+        source: SearchSource::Youtube,
+        songs: vec![Song::remote("oldid", "Old", "Artist", "3:00")],
+    });
+    assert!(
+        app.search.results.iter().all(|s| s.video_id != "oldid"),
+        "stale results must not overwrite the newer search"
+    );
+    assert!(app.search.results.iter().any(|s| s.video_id == "newid"));
+}
+
+#[test]
 fn results_then_enter_plays_and_returns_to_player() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
+        request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         songs: vec![Song::remote("abc123", "Song", "Artist", "3:00")],
@@ -551,6 +613,7 @@ fn enter_on_search_result_queues_only_the_selected_song() {
     let mut app = App::new(100);
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
+        request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         songs: vec![
@@ -579,6 +642,7 @@ fn enter_on_search_result_plays_now_keeping_the_queue() {
     // Go to search, pick a fresh result, hit Enter → play it right now.
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
+        request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         songs: vec![Song::remote("new9", "New", "Z", "3:00")],
@@ -609,6 +673,7 @@ fn backslash_on_search_result_enqueues_without_interrupting() {
     // Go to search, pick a fresh result, press `\` → add to queue.
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
+        request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         songs: vec![Song::remote("new9", "New", "Z", "3:00")],
@@ -957,6 +1022,7 @@ fn right_click_on_a_search_row_adds_it_to_the_queue() {
     let playing = app.prefetch.loaded_video_id.clone();
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
+        request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         songs: vec![
@@ -5747,6 +5813,7 @@ fn app_with_search_results() -> App {
     let mut app = App::new(100);
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
+        request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         songs: vec![
@@ -5857,6 +5924,7 @@ fn fresh_results_close_the_filter_popup() {
     assert!(app.search_filter.open);
     // A search that was already in flight lands: the rows the popup indexed are gone.
     app.update(Msg::SearchResults {
+        request_id: app.search.request_id,
         query: "y".to_owned(),
         source: SearchSource::Youtube,
         songs: vec![fsong("z", "Zeta", "Nobody")],
@@ -5889,6 +5957,7 @@ fn filter_popup_right_click_enqueues_without_closing() {
     let mut app = app_playing(2, 0);
     app.mode = Mode::Search;
     app.update(Msg::SearchResults {
+        request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         songs: vec![fsong("r0", "R0", "A"), fsong("r1", "R1", "B")],
@@ -5924,6 +5993,7 @@ fn filter_popup_wheel_scrolls_its_own_viewport() {
         .map(|i| fsong(&format!("id{i}"), &format!("Song {i}"), "A"))
         .collect();
     app.update(Msg::SearchResults {
+        request_id: app.search.request_id,
         query: "x".to_owned(),
         source: SearchSource::Youtube,
         songs,
@@ -10495,7 +10565,7 @@ fn ctrl_p_toggles_playlist_search_kind_and_routes_submit() {
     let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
     assert!(
         cmds.iter()
-            .any(|c| matches!(c, Cmd::SearchPlaylists { query } if query == "study")),
+            .any(|c| matches!(c, Cmd::SearchPlaylists { query, .. } if query == "study")),
         "playlist kind must route to the playlist search command"
     );
     assert!(app.search.searching);

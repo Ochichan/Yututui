@@ -48,6 +48,21 @@ pub fn std_output_limited(
 ) -> Result<LimitedOutput> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     let mut child = cmd.spawn().context("spawn child process")?;
+
+    // Drain stdout on a side thread WHILE polling for exit. Reading only after the child exits
+    // (as before) deadlocks if the child fills the OS pipe buffer and blocks writing — the
+    // classic pipe deadlock. The reader is bounded (`take`), so a chatty child can't grow
+    // memory either.
+    let stdout = child.stdout.take();
+    let limit = stdout_max.saturating_add(1) as u64;
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        if let Some(mut stdout) = stdout {
+            let _ = stdout.by_ref().take(limit).read_to_end(&mut out);
+        }
+        out
+    });
+
     let start = std::time::Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().context("poll child process")? {
@@ -56,20 +71,13 @@ pub fn std_output_limited(
         if start.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = reader.join();
             bail!("child process timed out");
         }
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    let mut out = Vec::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let limit = stdout_max.saturating_add(1) as u64;
-        stdout
-            .by_ref()
-            .take(limit)
-            .read_to_end(&mut out)
-            .context("read child stdout")?;
-    }
+    let out = reader.join().unwrap_or_default();
     if out.len() > stdout_max {
         bail!("child stdout too large: more than {stdout_max} bytes");
     }

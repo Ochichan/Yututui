@@ -174,16 +174,11 @@ async fn fetch_remote(client: &reqwest::Client, video_id: &str) -> Option<Vec<u8
 
 /// Read embedded cover art from a local audio file (off-thread; lofty parses tags).
 async fn fetch_local(path: PathBuf) -> Option<Vec<u8>> {
-    tokio::task::spawn_blocking(move || {
-        use lofty::file::TaggedFileExt;
-        let tagged = lofty::read_from_path(&path).ok()?;
-        let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
-        let pic = tag.pictures().first()?;
-        Some(pic.data().to_vec())
-    })
-    .await
-    .ok()
-    .flatten()
+    // Shared with the TUI art actor; caps the embedded-cover size before copy.
+    tokio::task::spawn_blocking(move || crate::util::art::local_cover_bytes(&path))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Decode, center-crop to a square, downscale to [`MAX_DIM`], and write as JPEG
@@ -191,7 +186,8 @@ async fn fetch_local(path: PathBuf) -> Option<Vec<u8>> {
 async fn store_processed(bytes: Vec<u8>, path: &Path) -> bool {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let img = image::load_from_memory(&bytes).ok()?;
+        // Decode-bomb-guarded decode (shared with the TUI art actor).
+        let img = crate::util::art::decode_untrusted(&bytes)?;
         let side = img.width().min(img.height());
         if side == 0 {
             return None;
@@ -207,9 +203,11 @@ async fn store_processed(bytes: Vec<u8>, path: &Path) -> bool {
         let mut out = Vec::new();
         let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85);
         rgb.write_with_encoder(encoder).ok()?;
-        let tmp = path.with_extension("jpg.tmp");
-        std::fs::write(&tmp, &out).ok()?;
-        std::fs::rename(&tmp, &path).ok()?;
+        // Atomic + private write (pid+random temp, symlink-rejecting rename): two concurrent
+        // `ytt` processes sharing this cache dir can no longer collide on a fixed temp name or
+        // leave an orphaned `.tmp`. Byte-identical `<key>.jpg` output. Keep the `?` so a failed
+        // write still reports false (do NOT swap for `.is_ok()`, which would drop the result).
+        crate::util::safe_fs::write_private_atomic(&path, &out).ok()?;
         Some(())
     })
     .await

@@ -227,7 +227,7 @@ fn reject_reason(
     }
     // Drop abnormally short/long items (interludes, mixes) when the duration is known.
     if let Some(d) = c.duration_secs
-        && (d < cfg.min_duration_secs || d > cfg.max_duration_secs)
+        && cfg.duration_out_of_bounds(d)
     {
         return Some("bad duration");
     }
@@ -328,7 +328,8 @@ fn raw_features(
     let play_count = sig.play_count(id);
     let unfamiliarity = 1.0 / (1.0 + (1.0 + play_count as f32).ln());
     let days_since = match sig.last_played_at(id) {
-        Some(t) => ((now - t).max(0) as f32) / SECS_PER_DAY,
+        // `saturating_sub` so a hostile/corrupt persisted timestamp can't overflow-panic i64.
+        Some(t) => (now.saturating_sub(t).max(0) as f32) / SECS_PER_DAY,
         None => NEVER_PLAYED_DAYS,
     };
     let recency_of_play = recency_factor(days_since, cfg.recency_half_life_days);
@@ -409,7 +410,12 @@ fn normalize(vals: &[f32]) -> Vec<f32> {
     if range <= f32::EPSILON {
         return vec![0.5; vals.len()];
     }
-    vals.iter().map(|&v| (v - lo) / range).collect()
+    // A non-finite feature (min/max ignore NaN, so it survives to here) would produce a NaN
+    // normalized value that `total_cmp` sorts to the very top — coalesce it to the column min
+    // (least favorable) so a corrupt feature can't hijack the ranking.
+    vals.iter()
+        .map(|&v| (crate::util::finite_or_f32(v, lo) - lo) / range)
+        .collect()
 }
 
 #[cfg(test)]

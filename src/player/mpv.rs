@@ -32,7 +32,9 @@ use crate::util::runtime;
 /// stop→play cycle, and the answer can't change mid-run.
 pub fn flag_supported(flag: &'static str) -> bool {
     static CACHE: Mutex<Option<HashMap<&'static str, bool>>> = Mutex::new(None);
-    let mut cache = CACHE.lock().expect("mpv flag probe cache poisoned");
+    // Recover the guard on poison instead of panicking: a probe is a pure, cached bool, so a
+    // prior panic while holding the lock can't leave it in a bad state worth propagating.
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
     if let Some(&supported) = cache.get(flag) {
         return supported;

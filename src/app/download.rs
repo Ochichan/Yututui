@@ -8,6 +8,11 @@ use std::collections::HashSet;
 /// through `Downloads::pending` instead of overflowing the actor's `try_send`.
 const BULK_INFLIGHT_CAP: usize = 96;
 
+/// Hard ceiling on the `Downloads::pending` backlog. The bulk confirm popup and playlist
+/// caps keep normal batches far below this; the bound just stops an unexpectedly huge batch
+/// (or a future caller) from growing the queue without limit. Silent — no new UI text.
+const DOWNLOAD_PENDING_MAX: usize = 999;
+
 impl App {
     /// Mark a single download as starting and emit the effect to run it. Routes through the
     /// same pending/pump path as bulk downloads; a lone song dispatches immediately since the
@@ -86,6 +91,9 @@ impl App {
         let Some(batch) = self.library_ui.confirm_download.take() else {
             return Vec::new();
         };
+        // Bound the pending backlog (defensive; normal batches are far smaller).
+        let free = DOWNLOAD_PENDING_MAX.saturating_sub(self.downloads.pending.len());
+        let batch: Vec<Song> = batch.into_iter().take(free).collect();
         let n = batch.len();
         self.status.kind = StatusKind::Info;
         self.status.text = format!("{}: {n}", t!("Queued for download", "다운로드 대기"));
@@ -104,6 +112,15 @@ impl App {
             let Some(song) = self.downloads.pending.pop_front() else {
                 break;
             };
+            // Don't spawn a second yt-dlp for a track already downloading — a duplicate request
+            // would write the same output file concurrently. A completed/failed entry does NOT
+            // block a deliberate re-download (only `Running` is in-flight).
+            if matches!(
+                self.downloads.active.get(&song.video_id),
+                Some(DownloadState::Running(_))
+            ) {
+                continue;
+            }
             self.downloads
                 .active
                 .insert(song.video_id.clone(), DownloadState::Running(0));

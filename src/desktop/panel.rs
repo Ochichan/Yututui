@@ -568,21 +568,13 @@ pub fn art_data_uri(bytes: &[u8]) -> String {
 /// Read + encode an artwork cache file; `None` when missing, unreadable, or
 /// oversized (best-effort — the panel just keeps its placeholder).
 pub fn load_art_data_uri(path: &std::path::Path) -> Option<String> {
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.len() <= MAX_PANEL_ART_BYTES => {}
-        Ok(meta) => {
-            tracing::debug!(target: "ytt_tray", path = %path.display(), len = meta.len(), "panel art too large");
-            return None;
-        }
-        Err(e) => {
-            tracing::debug!(target: "ytt_tray", path = %path.display(), error = %e, "panel art unreadable");
-            return None;
-        }
-    }
-    match std::fs::read(path) {
+    // One bounded, symlink-rejecting read instead of metadata-then-read: closes the TOCTOU
+    // window (the file can't grow between the size check and the read) and refuses to follow a
+    // symlink out of the cache dir. Oversized/missing/unreadable all fall back to the placeholder.
+    match crate::util::safe_fs::read_no_symlink_limited(path, MAX_PANEL_ART_BYTES) {
         Ok(bytes) => Some(art_data_uri(&bytes)),
         Err(e) => {
-            tracing::debug!(target: "ytt_tray", path = %path.display(), error = %e, "panel art unreadable");
+            tracing::debug!(target: "ytt_tray", path = %path.display(), error = %e, "panel art unreadable or oversized");
             None
         }
     }

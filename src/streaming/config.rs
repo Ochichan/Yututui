@@ -487,6 +487,15 @@ pub struct StreamingConfig {
     pub gate: MusicGateConfig,
 }
 
+impl StreamingConfig {
+    /// A known track duration outside the streaming length window (too short = interlude/skit,
+    /// too long = mix/podcast). Single source of truth for the rule, shared by the scoring
+    /// hard filter and the final sanitize pass so the two can't drift apart.
+    pub fn duration_out_of_bounds(&self, secs: u32) -> bool {
+        secs < self.min_duration_secs || secs > self.max_duration_secs
+    }
+}
+
 impl Default for StreamingConfig {
     fn default() -> Self {
         Self {

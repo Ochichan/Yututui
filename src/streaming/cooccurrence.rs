@@ -22,7 +22,7 @@ impl Cooc {
     /// is split into sessions on inactivity gaps and bounded windows, co-occurrences are
     /// distance-weighted (`1/distance`), then converted to SPPMI edges.
     pub fn build(play_log: &VecDeque<(String, i64)>, cfg: &CoocConfig) -> Self {
-        let gap = cfg.session_gap_min.max(0) * 60;
+        let gap = cfg.session_gap_min.max(0).saturating_mul(60);
         let window = cfg.window.max(1);
 
         // Weighted co-occurrence counts: co[a][b].
@@ -41,7 +41,7 @@ impl Cooc {
             let mut end = start + 1;
             while end < events.len()
                 && end - start < cfg.session_max.max(1)
-                && events[end].1 - events[end - 1].1 <= gap
+                && events[end].1.saturating_sub(events[end - 1].1) <= gap
             {
                 end += 1;
             }

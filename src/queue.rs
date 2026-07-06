@@ -58,6 +58,22 @@ impl Repeat {
     pub fn is_on(self) -> bool {
         self != Repeat::Off
     }
+
+    /// The streaming⇔repeat mutual-exclusion invariant for a **set-to-`self`** action, in one
+    /// place: refuse turning repeat on while a station / autoplay feed is active. `true` = the
+    /// change must be blocked. Setting repeat Off, or any change while not streaming, is always
+    /// allowed. Used by every OS-widget/`set-property` repeat path (App + daemon) so they can't
+    /// drift. NB: the App passes its raw `autoplay_streaming` preference here, matching today.
+    pub fn set_blocked_by_streaming(self, streaming: bool) -> bool {
+        self.is_on() && streaming
+    }
+
+    /// The same invariant for a **cycle** action (Off→All→One→Off). The only step that turns
+    /// repeat on is Off→All, so the cycle is blocked exactly when it starts from `Off` while
+    /// `streaming`. `true` = block the cycle. Used by both cycle paths (App + daemon).
+    pub fn cycle_blocked_by_streaming(self, streaming: bool) -> bool {
+        self == Repeat::Off && streaming
+    }
 }
 
 /// A bounded play queue with shuffle and repeat.
@@ -176,9 +192,19 @@ impl Queue {
         self.shuffle = snapshot.shuffle;
         self.repeat = snapshot.repeat;
 
-        if self.order.len() != self.songs.len() || self.order.iter().any(|&i| i >= self.songs.len())
-        {
-            self.rebuild_order(snapshot.cursor.min(self.songs.len().saturating_sub(1)));
+        // `order` must be a true permutation of `0..songs.len()`. Checking length + upper bound
+        // alone would accept a corrupt snapshot with duplicate indices (e.g. `[0, 0, 2]`), which
+        // silently repeats one track in the play order and drops another; verify each index
+        // appears exactly once and rebuild a clean order otherwise.
+        let n = self.songs.len();
+        let is_permutation = self.order.len() == n && {
+            let mut seen = vec![false; n];
+            self.order
+                .iter()
+                .all(|&i| i < n && !std::mem::replace(&mut seen[i], true))
+        };
+        if !is_permutation {
+            self.rebuild_order(snapshot.cursor.min(n.saturating_sub(1)));
             return;
         }
         self.cursor = if self.order.is_empty() {
@@ -922,5 +948,36 @@ mod tests {
         // And two live queues never share a rev.
         let other = Queue::default();
         assert!(seen.insert(other.rev()), "revs are process-global");
+    }
+
+    #[test]
+    fn restore_snapshot_rebuilds_a_corrupt_non_permutation_order() {
+        // `order` has the right length and in-range indices but is NOT a permutation
+        // (`[0, 0, 2]` — 0 duplicated, 1 missing). Length + upper-bound alone would accept it,
+        // silently repeating one track and dropping another; restore must rebuild a clean order.
+        let mut q = Queue::default();
+        q.restore_snapshot(QueueSnapshot {
+            songs: songs(3),
+            order: vec![0, 0, 2],
+            cursor: 0,
+            shuffle: false,
+            repeat: Repeat::Off,
+        });
+        let mut order = q.order.clone();
+        order.sort_unstable();
+        assert_eq!(order, vec![0, 1, 2], "rebuilt to a valid permutation");
+
+        // A wrong-length order also rebuilds (the pre-existing guard, still intact).
+        let mut q2 = Queue::default();
+        q2.restore_snapshot(QueueSnapshot {
+            songs: songs(3),
+            order: vec![2, 1],
+            cursor: 0,
+            shuffle: false,
+            repeat: Repeat::Off,
+        });
+        let mut order2 = q2.order.clone();
+        order2.sort_unstable();
+        assert_eq!(order2, vec![0, 1, 2]);
     }
 }

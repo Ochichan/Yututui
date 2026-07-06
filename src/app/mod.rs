@@ -478,6 +478,7 @@ impl App {
                 selected: 0,
                 kind: SearchKind::default(),
                 searching: false,
+                request_id: 0,
             },
             library: Library::default(),
             signals: Signals::default(),
@@ -1319,13 +1320,18 @@ impl App {
                 return cmds;
             }
             Msg::SearchResults {
+                request_id,
                 query,
-                source,
                 songs,
+                ..
             } => {
-                if self.search.searching
-                    && (query != self.search.input.trim() || source != self.search.source)
-                {
+                // Drop results from a superseded search: a slow older response must never
+                // overwrite a newer one, even after the newer one already cleared `searching`.
+                // The request id is authoritative — comparing the live `input`/`source` would
+                // wrongly reject the current search's results the moment the user types more
+                // (or changes the source) without submitting, since those change without a
+                // new request.
+                if request_id != self.search.request_id {
                     return Vec::new();
                 }
                 self.search.searching = false;
@@ -1348,8 +1354,12 @@ impl App {
                 }
                 self.dirty = true;
             }
-            Msg::SearchError { source, error } => {
-                if source != self.search.source {
+            Msg::SearchError {
+                request_id, error, ..
+            } => {
+                // Same stale-guard as SearchResults: a failed older search must not clear the
+                // status or `searching` flag of a newer one still in flight.
+                if request_id != self.search.request_id {
                     return Vec::new();
                 }
                 self.search.searching = false;

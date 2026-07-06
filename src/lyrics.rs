@@ -7,6 +7,7 @@
 //! (or replaying) costs no network.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -16,6 +17,19 @@ use crate::util::{http, sanitize};
 /// Session cache cap (bounded memory; cleared wholesale when exceeded).
 const CACHE_MAX: usize = 999;
 const LYRICS_JSON_MAX: usize = 512 * 1024;
+/// Per-request timeout so a hung lrclib connection can't wedge the actor indefinitely.
+const LYRICS_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long a *transient* fetch failure is remembered before we retry. A genuine
+/// "this track has no synced lyrics" is cached for the whole session; only failures
+/// (network/parse) get this short cooldown so re-opening the panel later can recover.
+const NEGATIVE_TTL: Duration = Duration::from_secs(120);
+
+/// A per-track cache entry: a resolved result (kept for the session, even when empty — the
+/// track genuinely has no synced lyrics) versus a transient failure retried after a cooldown.
+enum CacheEntry {
+    Found(Vec<LyricLine>),
+    Failed(Instant),
+}
 
 /// One timed lyric line.
 #[derive(Debug, Clone)]
@@ -60,6 +74,12 @@ fn parse_timestamp(tag: &str) -> Option<f64> {
     let (m, s) = tag.split_once(':')?;
     let mins: f64 = m.trim().parse().ok()?;
     let secs: f64 = s.trim().parse().ok()?;
+    // Reject non-finite ("nan"/"inf" parse as f64) and out-of-range values. A non-finite time
+    // breaks the sorted-vector invariant `current_index`/`partition_point` rely on; the
+    // `secs` range and non-negative `mins` drop obviously malformed tags.
+    if !mins.is_finite() || mins < 0.0 || !(0.0..60.0).contains(&secs) {
+        return None;
+    }
     Some(mins * 60.0 + secs)
 }
 
@@ -117,9 +137,10 @@ where
 {
     let client = reqwest::Client::builder()
         .user_agent("ytm-tui/0.1 (https://github.com/ytm-tui/ytm-tui)")
+        .timeout(LYRICS_TIMEOUT)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
-    let mut cache: HashMap<String, Vec<LyricLine>> = HashMap::new();
+    let mut cache: HashMap<String, CacheEntry> = HashMap::new();
 
     while let Some(LyricsCmd::Fetch {
         video_id,
@@ -127,15 +148,29 @@ where
         title,
     }) = rx.recv().await
     {
-        let lines = if let Some(cached) = cache.get(&video_id) {
-            cached.clone()
+        // A resolved result (even empty) is reused; a transient failure is reused only until
+        // its cooldown expires, after which we re-fetch instead of showing "no lyrics" forever.
+        let cached = match cache.get(&video_id) {
+            Some(CacheEntry::Found(lines)) => Some(lines.clone()),
+            Some(CacheEntry::Failed(at)) if at.elapsed() < NEGATIVE_TTL => Some(Vec::new()),
+            _ => None,
+        };
+        let lines = if let Some(lines) = cached {
+            lines
         } else {
-            let fetched = fetch(&client, &artist, &title).await;
             if cache.len() >= CACHE_MAX {
                 cache.clear();
             }
-            cache.insert(video_id.clone(), fetched.clone());
-            fetched
+            match fetch(&client, &artist, &title).await {
+                Ok(fetched) => {
+                    cache.insert(video_id.clone(), CacheEntry::Found(fetched.clone()));
+                    fetched
+                }
+                Err(()) => {
+                    cache.insert(video_id.clone(), CacheEntry::Failed(Instant::now()));
+                    Vec::new()
+                }
+            }
         };
         tracing::info!(count = lines.len(), video_id = %video_id, "lyrics");
         emit(LyricsEvent::Result { video_id, lines });
@@ -149,32 +184,33 @@ struct LrcItem {
 }
 
 /// Query lrclib and return the first candidate's parsed synced lyrics (empty if none).
-async fn fetch(client: &reqwest::Client, artist: &str, title: &str) -> Vec<LyricLine> {
+/// `Ok(lines)` — a resolved answer (empty means the track genuinely has no synced lyrics).
+/// `Err(())` — a *transient* failure (network/parse) the caller should retry after a cooldown.
+async fn fetch(client: &reqwest::Client, artist: &str, title: &str) -> Result<Vec<LyricLine>, ()> {
     let resp = client
         .get("https://lrclib.net/api/search")
         .query(&[("track_name", title), ("artist_name", artist)])
         .send()
-        .await;
-    let items: Vec<LrcItem> = match resp {
-        Ok(r) => http::json_limited(r, LYRICS_JSON_MAX)
-            .await
-            .unwrap_or_default(),
-        Err(e) => {
+        .await
+        .map_err(|e| {
             tracing::warn!(error = %sanitize::sanitize_error_text(e.to_string()), "lyrics fetch failed");
-            return Vec::new();
-        }
-    };
+        })?;
+    let items: Vec<LrcItem> = http::json_limited(resp, LYRICS_JSON_MAX)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %sanitize::sanitize_error_text(e.to_string()), "lyrics parse failed");
+        })?;
     for item in items {
         if let Some(s) = item.synced
             && !s.trim().is_empty()
         {
             let lines = parse_lrc(&s);
             if !lines.is_empty() {
-                return lines;
+                return Ok(lines);
             }
         }
     }
-    Vec::new()
+    Ok(Vec::new())
 }
 
 #[cfg(test)]
@@ -198,6 +234,19 @@ mod tests {
         let lines = parse_lrc("[00:01.00][00:10.00]repeat");
         assert_eq!(lines.len(), 2);
         assert!(lines.iter().all(|l| l.text == "repeat"));
+    }
+
+    #[test]
+    fn malformed_timestamps_are_dropped_not_treated_as_non_finite() {
+        // "nan"/"inf" parse as f64; a non-finite time would break the sorted-vector invariant.
+        assert_eq!(parse_timestamp("nan:00"), None);
+        assert_eq!(parse_timestamp("00:inf"), None);
+        assert_eq!(parse_timestamp("-1:00"), None); // negative minutes
+        assert_eq!(parse_timestamp("00:75"), None); // seconds out of range
+        // A well-formed tag still parses.
+        assert!((parse_timestamp("01:30.5").unwrap() - 90.5).abs() < 1e-6);
+        // A whole line carrying a bad stamp yields no timed line, without panicking.
+        assert!(parse_lrc("[nan:00]lyric").is_empty());
     }
 
     #[test]

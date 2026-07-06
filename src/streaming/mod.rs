@@ -168,7 +168,7 @@ pub fn sanitize_final_picks(
 
 fn reject_final_song(song: &Song, mode: StreamingMode, cfg: &StreamingConfig) -> bool {
     if let Some(duration) = candidate::parse_duration_secs(&song.duration)
-        && (duration < cfg.min_duration_secs || duration > cfg.max_duration_secs)
+        && cfg.duration_out_of_bounds(duration)
     {
         return true;
     }

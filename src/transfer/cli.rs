@@ -617,6 +617,9 @@ async fn backup(dir: PathBuf, also_csv: bool) -> i32 {
     };
     let mut pace = super::matching::Pacing::ytm_default();
     let mut ok = 0usize;
+    // Two playlist names that sanitize to the same stem would otherwise overwrite each other's
+    // export; track used stems so colliding ones get a `-2`, `-3`, … suffix instead.
+    let mut used_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (id, title, _count) in &playlists {
         pace.tick().await;
         let songs = match ytm.playlist_tracks_full(id).await {
@@ -629,7 +632,7 @@ async fn backup(dir: PathBuf, also_csv: bool) -> i32 {
                 continue;
             }
         };
-        let stem = sanitize_filename(title);
+        let stem = unique_stem(sanitize_filename(title), &mut used_stems);
         let json_path = dir.join(format!("{stem}.json"));
         let file =
             super::json::PlaylistFile::new(title.clone(), format!("ytm:{id}"), songs.clone());
@@ -651,6 +654,22 @@ async fn backup(dir: PathBuf, also_csv: bool) -> i32 {
         dir.display()
     );
     EXIT_OK
+}
+
+/// Disambiguate export filenames: return `base` if unused, else `base-2`, `base-3`, … so two
+/// playlists that sanitize to the same stem don't clobber each other. Records the winner.
+fn unique_stem(base: String, used: &mut std::collections::HashSet<String>) -> String {
+    if used.insert(base.clone()) {
+        return base;
+    }
+    let mut n = 2usize;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 fn sanitize_filename(name: &str) -> String {

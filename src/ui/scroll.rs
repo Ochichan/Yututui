@@ -63,7 +63,8 @@ impl ScrollState {
         let next = if up {
             cur.saturating_sub(delta)
         } else {
-            (cur + delta).min(max)
+            // Saturating like the up-branch — a huge `delta` must clamp, not wrap past `max`.
+            cur.saturating_add(delta).min(max)
         };
         self.follow_tail.set(false);
         self.offset.set(next);

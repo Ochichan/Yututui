@@ -417,16 +417,23 @@ impl App {
             Vec::new()
         } else {
             self.search.searching = true;
+            // A fresh submit gets a new id; results/errors stamped with an older id are dropped.
+            self.search.request_id = self.search.request_id.wrapping_add(1);
+            let request_id = self.search.request_id;
             self.status.text.clear();
             // Playlist kind is YouTube-only (no other provider has a playlist catalog),
             // so it bypasses the source selection entirely.
             if self.search.kind == SearchKind::Playlists && !self.radio_dedicated_mode {
-                return vec![Cmd::SearchPlaylists { query: q }];
+                return vec![Cmd::SearchPlaylists {
+                    request_id,
+                    query: q,
+                }];
             }
             let config = self.search_config_for_mode();
             let source = config.normalized_source(self.search.source);
             self.search.source = source;
             vec![Cmd::Search {
+                request_id,
                 query: q,
                 source,
                 config,

@@ -20,7 +20,7 @@ use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::{GenericFilePath, ListenerOptions};
 #[cfg(test)]
 use tokio::io::BufReader;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
@@ -404,23 +404,19 @@ pub(crate) enum ReadLineOutcome {
     TooLarge,
 }
 
+/// Thin wrapper over the shared [`crate::util::io::read_bounded_line`] that keeps the remote
+/// protocol's semantics: a clean EOF is an error here (a peer vanishing mid-request is fatal),
+/// unlike mpv where EOF is a normal close. One reader implementation, two policies.
 pub(crate) async fn read_bounded_line<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut R,
     line: &mut Vec<u8>,
     max_bytes: usize,
 ) -> io::Result<ReadLineOutcome> {
-    let mut byte = [0u8; 1];
-    loop {
-        let n = reader.read(&mut byte).await?;
-        if n == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "remote EOF"));
-        }
-        line.push(byte[0]);
-        if line.len() > max_bytes {
-            return Ok(ReadLineOutcome::TooLarge);
-        }
-        if byte[0] == b'\n' {
-            return Ok(ReadLineOutcome::Line);
+    match crate::util::io::read_bounded_line(reader, line, max_bytes).await? {
+        crate::util::io::BoundedLine::Line => Ok(ReadLineOutcome::Line),
+        crate::util::io::BoundedLine::TooLarge => Ok(ReadLineOutcome::TooLarge),
+        crate::util::io::BoundedLine::Eof => {
+            Err(io::Error::new(io::ErrorKind::UnexpectedEof, "remote EOF"))
         }
     }
 }

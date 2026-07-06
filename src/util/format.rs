@@ -17,7 +17,9 @@ pub fn time(secs: f64) -> String {
 /// `None`-coalescing lives here (and is unit-tested) rather than at the call site.
 pub fn seekbar_ratio(pos: Option<f64>, dur: Option<f64>) -> f64 {
     match dur {
-        Some(d) if d > 0.0 => (pos.unwrap_or(0.0) / d).clamp(0.0, 1.0),
+        // Coalesce a non-finite position to 0: `NaN.clamp(..)` stays NaN, which panics
+        // ratatui's `Gauge::ratio`. (A non-finite/≤0 duration already yields an empty bar.)
+        Some(d) if d > 0.0 => (super::finite_or(pos.unwrap_or(0.0), 0.0) / d).clamp(0.0, 1.0),
         _ => 0.0,
     }
 }
@@ -86,6 +88,9 @@ mod tests {
         assert_eq!(seekbar_ratio(Some(200.0), Some(120.0)), 1.0);
         // A spurious negative position clamps to empty.
         assert_eq!(seekbar_ratio(Some(-5.0), Some(120.0)), 0.0);
+        // A non-finite position coalesces to empty rather than a NaN ratio (Gauge panics on NaN).
+        assert_eq!(seekbar_ratio(Some(f64::NAN), Some(120.0)), 0.0);
+        assert_eq!(seekbar_ratio(Some(f64::INFINITY), Some(120.0)), 0.0);
     }
 
     #[test]

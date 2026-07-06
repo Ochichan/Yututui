@@ -74,29 +74,31 @@ impl DesktopState {
     }
 
     /// Load persisted state, or defaults when absent/corrupt (never fails a launch).
+    ///
+    /// Routes through `safe_fs` like every other persisted store: schema-drift recovery
+    /// (a field a newer build wrote degrades that field, not the whole file), symlink
+    /// rejection, and a size cap — a tiny geometry file has no business being large.
     pub fn load() -> Self {
         let Some(path) = Self::path() else {
             return Self::default();
         };
-        std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        crate::util::safe_fs::load_json_or_default_limited(&path, MAX_STATE_BYTES)
     }
 
-    /// Persist state (best-effort; creates the config dir if needed).
+    /// Persist state (best-effort). Atomic temp-write + rename with private perms so a crash
+    /// or a concurrent read never sees a half-written file. Output is byte-identical pretty
+    /// JSON. Creates the config dir if needed.
     pub fn save(&self) {
         let Some(path) = Self::path() else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(json) = serde_json::to_vec_pretty(self) {
-            let _ = std::fs::write(&path, json);
-        }
+        let _ = crate::util::safe_fs::write_private_atomic_json(&path, self);
     }
 }
+
+/// `desktop.json` holds only window geometry + a few flags; nothing legitimate approaches
+/// this. Bounds a corrupt/hostile file before it's read into memory.
+const MAX_STATE_BYTES: u64 = 1024 * 1024;
 
 /// Clamp a saved rect onto the available monitors. If the rect's center sits inside a
 /// monitor, keep it there (nudged fully on-screen); otherwise recenter onto the primary

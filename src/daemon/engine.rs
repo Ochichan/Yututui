@@ -342,7 +342,7 @@ impl DaemonEngine {
             RemoteCommand::CycleRepeat => {
                 // Music-mode invariant (mirrors the App reducer for parity): refuse turning
                 // repeat on while autoplay streaming is on. Off→All is the only enabling step.
-                if self.queue.repeat == crate::queue::Repeat::Off && self.streaming {
+                if self.queue.repeat.cycle_blocked_by_streaming(self.streaming) {
                     RemoteResponse::status(self.status())
                 } else {
                     self.queue.cycle_repeat();
@@ -516,7 +516,7 @@ impl DaemonEngine {
             ("playback", "repeat") => {
                 match serde_json::from_value::<crate::queue::Repeat>(value.clone()) {
                     // Music-mode invariant: can't enable repeat while autoplay streaming is on.
-                    Ok(repeat) if repeat.is_on() && self.streaming => ok(self),
+                    Ok(repeat) if repeat.set_blocked_by_streaming(self.streaming) => ok(self),
                     Ok(repeat) => {
                         self.queue.repeat = repeat;
                         self.config.repeat = repeat;
@@ -1097,12 +1097,14 @@ impl DaemonEngine {
                 }
             }
             MediaCommand::SeekBy(seconds) => {
-                if self.media_can_seek() {
+                if self.media_can_seek() && seconds.is_finite() {
                     let _ = self.seek(seconds);
                 }
             }
             MediaCommand::SeekTo(pos) => {
-                if self.media_can_seek() && pos >= 0.0 {
+                // `pos.is_finite()` rejects NaN/±inf (a NaN also fails `>= 0.0`, but inf would
+                // slip past it); mirrors the App reducer's non-finite guard for parity.
+                if self.media_can_seek() && pos.is_finite() && pos >= 0.0 {
                     // Out-of-range SetPosition is ignored per the MPRIS spec.
                     if let Some(d) = self.playback.duration
                         && pos > d + 0.5
@@ -1129,7 +1131,7 @@ impl DaemonEngine {
                 // Music-mode invariant: an OS widget can't enable repeat while streaming is on.
                 if !self.current_is_radio_stream()
                     && self.queue.repeat != mode
-                    && !(mode.is_on() && self.streaming)
+                    && !mode.set_blocked_by_streaming(self.streaming)
                 {
                     self.queue.repeat = mode;
                     self.config.repeat = mode;

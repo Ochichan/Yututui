@@ -198,7 +198,7 @@ impl RemoteSessionHub {
     pub(crate) fn register(
         &self,
     ) -> Option<(u64, Arc<RemoteSessionHandle>, mpsc::Receiver<SessionLine>)> {
-        let mut sessions = self.sessions.lock().expect("session registry poisoned");
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         if sessions.len() >= MAX_SESSIONS {
             return None;
         }
@@ -239,7 +239,7 @@ impl RemoteSessionHub {
     /// owner loop never blocks on a wedged client.
     pub(crate) fn broadcast(&self, topic: Topic, payload: &Arc<Vec<u8>>) {
         let subscribed: Vec<(u64, Arc<RemoteSessionHandle>)> = {
-            let sessions = self.sessions.lock().expect("session registry poisoned");
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             sessions
                 .iter()
                 .filter(|(_, handle)| handle.subscribed(topic))
@@ -292,7 +292,7 @@ impl RemoteSessionHub {
     /// Best-effort: full queues just close without the goodbye.
     pub(crate) fn shutdown_all(&self) {
         let all: Vec<Arc<RemoteSessionHandle>> = {
-            let mut sessions = self.sessions.lock().expect("session registry poisoned");
+            let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let drained = sessions.values().cloned().collect();
             sessions.clear();
             drained
@@ -360,14 +360,14 @@ impl RemoteSessionHandle {
     pub(crate) fn subscribed(&self, topic: Topic) -> bool {
         self.subscriptions
             .lock()
-            .expect("subscriptions poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .contains(&topic)
     }
 
     /// Record subscriptions, returning the topics that were newly added (idempotence:
     /// duplicates produce no second snapshot stream).
     pub(crate) fn subscribe(&self, topics: &[Topic]) -> Vec<Topic> {
-        let mut subs = self.subscriptions.lock().expect("subscriptions poisoned");
+        let mut subs = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
         topics
             .iter()
             .copied()
@@ -522,7 +522,7 @@ pub(crate) async fn run_session(
                 None
             }
             ClientOp::Unsubscribe { topics } => {
-                let mut subs = handle.subscriptions.lock().expect("subscriptions poisoned");
+                let mut subs = handle.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
                 for topic in topics {
                     subs.remove(&topic);
                 }

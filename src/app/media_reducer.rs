@@ -62,7 +62,7 @@ impl App {
                 Vec::new()
             }
             MediaCommand::SeekBy(secs) => {
-                if !self.media_can_seek() {
+                if !self.media_can_seek() || !secs.is_finite() {
                     return Vec::new();
                 }
                 // Optimistic position (like the pause toggle): the snapshot pushed
@@ -81,7 +81,9 @@ impl App {
                 vec![Cmd::Player(PlayerCmd::SeekRelative(secs))]
             }
             MediaCommand::SeekTo(pos) => {
-                if !self.media_can_seek() || pos < 0.0 {
+                // Reject non-finite (a NaN/inf `SetPosition` would poison `time_pos`) and
+                // negatives — matching the daemon's `pos.is_finite() && pos >= 0.0` guard.
+                if !self.media_can_seek() || !pos.is_finite() || pos < 0.0 {
                     return Vec::new();
                 }
                 // Out-of-range SetPosition is ignored per the MPRIS spec (a stale
@@ -114,7 +116,7 @@ impl App {
                 // autoplay streaming is on.
                 if self.current_is_radio_stream()
                     || self.queue.repeat == mode
-                    || (mode.is_on() && self.autoplay_streaming)
+                    || mode.set_blocked_by_streaming(self.autoplay_streaming)
                 {
                     return Vec::new();
                 }
@@ -136,7 +138,9 @@ impl App {
                 if rate == 0.0 {
                     return self.apply_media(MediaCommand::Pause);
                 }
-                let speed = ((rate * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX);
+                // Shared with the daemon (`clamp_speed`): rounds/clamps and normalizes a
+                // non-finite rate to 1.0 so a stray NaN/inf can't poison `playback.speed`.
+                let speed = crate::config::clamp_speed(rate);
                 if (speed - self.playback.speed).abs() < f64::EPSILON {
                     return Vec::new();
                 }
@@ -484,6 +488,28 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(app.playback.time_pos, Some(10.0));
+    }
+
+    #[test]
+    fn non_finite_rate_and_seek_do_not_poison_playback_state() {
+        let mut app = app_with_queue(1);
+        mark_loaded(&mut app);
+        let pos_before = app.playback.time_pos;
+
+        // A NaN Rate normalizes to a finite speed (via clamp_speed) instead of NaN.
+        let _ = app.update(Msg::Media(MediaCommand::SetRate(f64::NAN)));
+        assert!(app.playback.speed.is_finite());
+
+        // Non-finite SetPosition / Seek are ignored; time_pos stays finite (unchanged).
+        assert!(
+            app.update(Msg::Media(MediaCommand::SeekTo(f64::NAN)))
+                .is_empty()
+        );
+        assert!(
+            app.update(Msg::Media(MediaCommand::SeekBy(f64::INFINITY)))
+                .is_empty()
+        );
+        assert_eq!(app.playback.time_pos, pos_before);
     }
 
     #[test]

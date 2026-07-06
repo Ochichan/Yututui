@@ -128,7 +128,15 @@ pub struct TransferProgress {
 /// `"{kind}-{unix}-{4 hex}"` — sortable, collision-safe, and shell-friendly.
 pub fn new_job_id(kind: &str) -> String {
     let mut bytes = [0u8; 2];
-    getrandom::fill(&mut bytes).expect("os rng");
+    if getrandom::fill(&mut bytes).is_err() {
+        // OS RNG unavailable (extremely rare) — fall back to the low bits of a high-res clock
+        // so we still produce a usable id instead of killing the transfer actor with a panic.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        bytes = [(nanos >> 8) as u8, nanos as u8];
+    }
     format!(
         "{kind}-{}-{:02x}{:02x}",
         crate::signals::unix_now(),

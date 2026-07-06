@@ -8,7 +8,8 @@
 
 use std::collections::HashSet;
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use ytmapi_rs::YtMusic;
@@ -25,11 +26,39 @@ use crate::util::{format, http, process, sanitize};
 /// at least this many (or runs out). Capped at 50 — `ytdlp_search` clamps to the same.
 const SEARCH_RESULT_LIMIT: usize = 50;
 const STREAMING_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(8);
-/// Latched when an authenticated innertube search fails to parse (empty/attested-only
-/// responses): every later search this process goes straight to yt-dlp. Restarting the
-/// app retries innertube, so a future un-gating heals on its own.
-static AUTH_SEARCH_DEGRADED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+/// When authenticated (innertube) search parsing fails, we fall back to yt-dlp — but only for
+/// a cooldown, not the rest of the session. A one-shot permanent latch turned a single
+/// transient glitch (a momentary network blip, a partial page) into a session-long quality
+/// downgrade with no recovery short of a restart. After the cooldown the authenticated path is
+/// retried; if it's genuinely gated it just degrades again.
+static AUTH_SEARCH_DEGRADED_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+const AUTH_DEGRADE_COOLDOWN: Duration = Duration::from_secs(600);
+
+/// Whether authenticated search is currently in its degraded cooldown. Clears the latch once
+/// the cooldown has elapsed so the next search retries the authenticated path.
+fn auth_search_degraded() -> bool {
+    let mut guard = AUTH_SEARCH_DEGRADED_UNTIL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match *guard {
+        Some(until) if Instant::now() < until => true,
+        Some(_) => {
+            *guard = None;
+            false
+        }
+        None => false,
+    }
+}
+
+/// Enter the degraded cooldown after an authenticated-search parse failure.
+fn mark_auth_search_degraded() {
+    let until = Instant::now()
+        .checked_add(AUTH_DEGRADE_COOLDOWN)
+        .unwrap_or_else(Instant::now);
+    *AUTH_SEARCH_DEGRADED_UNTIL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(until);
+}
 
 const PROVIDER_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
 const PROVIDER_JSON_MAX: usize = 2 * 1024 * 1024;
@@ -227,7 +256,7 @@ impl YtMusicApi {
             return Ok(vec![lookup_playlist_row(&id).await]);
         }
         if let YtMusicApi::Browser(client) = self
-            && !AUTH_SEARCH_DEGRADED.load(std::sync::atomic::Ordering::Relaxed)
+            && !auth_search_degraded()
         {
             match client.search_community_playlists(query).await {
                 Ok(results) if !results.is_empty() => {
@@ -325,7 +354,7 @@ impl YtMusicApi {
         // Once one authenticated search comes back empty/unparseable this process, they
         // all will (Google gates innertube search behind browser attestation as of
         // mid-2026) — skip the wasted round-trip and go straight to yt-dlp.
-        if AUTH_SEARCH_DEGRADED.load(std::sync::atomic::Ordering::Relaxed) {
+        if auth_search_degraded() {
             return ytdlp_search(query, SEARCH_RESULT_LIMIT).await;
         }
         match self {
@@ -353,7 +382,7 @@ impl YtMusicApi {
                         // fall back to the anonymous yt-dlp path (no album metadata,
                         // but results).
                         Err(e) if songs.is_empty() => {
-                            AUTH_SEARCH_DEGRADED.store(true, std::sync::atomic::Ordering::Relaxed);
+                            mark_auth_search_degraded();
                             tracing::warn!(
                                 error = %sanitize::sanitize_error_text(format!("{e:#}")),
                                 "authenticated search parse failed; using yt-dlp for the rest of this session"

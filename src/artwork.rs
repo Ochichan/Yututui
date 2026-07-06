@@ -71,6 +71,8 @@ where
 {
     let client = reqwest::Client::builder()
         .user_agent("ytm-tui/1 (https://github.com/Ochichan/ytm-tui)")
+        // Bound connect/response time so a hung thumbnail host can't stall the actor.
+        .timeout(std::time::Duration::from_secs(8))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -115,17 +117,15 @@ async fn fetch_local(path: PathBuf) -> Option<Vec<u8>> {
 }
 
 fn local_cover_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
-    use lofty::file::TaggedFileExt;
-    let tagged = lofty::read_from_path(path).ok()?;
-    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
-    let pic = tag.pictures().first()?;
-    Some(pic.data().to_vec())
+    // Shared with the OS-media-session art cache; caps the embedded-cover size before copy.
+    crate::util::art::local_cover_bytes(path)
 }
 
 /// Decode the raw bytes and downscale to [`MAX_DIM`] (off-thread — decode/resize is CPU).
 async fn decode_scaled(bytes: Vec<u8>) -> Option<DynamicImage> {
     tokio::task::spawn_blocking(move || {
-        let img = image::load_from_memory(&bytes).ok()?;
+        // Decode-bomb-guarded decode (shared): a hostile/corrupt image can't spike RAM.
+        let img = crate::util::art::decode_untrusted(&bytes)?;
         Some(if img.width() > MAX_DIM || img.height() > MAX_DIM {
             // `resize` preserves aspect, fitting within the box; Triangle is a good
             // quality/speed balance (the protocol re-scales again at render).

@@ -26,6 +26,11 @@ use crate::theme::ThemeConfig;
 pub const SPEED_MIN: f64 = 0.5;
 pub const SPEED_MAX: f64 = 2.0;
 
+/// Upper bound on `config.json` when loading. The config holds a handful of settings and EQ
+/// bands — nothing legitimate approaches this — so a larger file (corrupt or hostile) is
+/// treated like an unreadable one and rebuilt rather than read wholesale into memory.
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
 /// Clamp range for the seek step (seconds) used by the seek-back/-forward keys, exposed as
 /// a slider on the Playback settings tab. Default is 10s.
 pub const SEEK_SECONDS_MIN: f64 = 1.0;
@@ -36,6 +41,9 @@ pub const SEEK_SECONDS_DEFAULT: f64 = 10.0;
 /// single source of this rule — both the TUI (`settings`, re-exported) and the headless
 /// daemon (`daemon::engine`) apply it, so a bound change here can't drift between them.
 pub fn clamp_speed(s: f64) -> f64 {
+    // A non-finite rate (a stray NaN/inf from an MPRIS `Rate` write) must not poison playback
+    // speed — `NaN.clamp(..)` stays NaN — so normalize it to 1.0 before rounding/clamping.
+    let s = crate::util::finite_or(s, 1.0);
     ((s * 10.0).round() / 10.0).clamp(SPEED_MIN, SPEED_MAX)
 }
 
@@ -696,7 +704,8 @@ impl Config {
     /// corrupt file falls back to defaults (+ migration).
     pub fn load() -> Self {
         if let Some(path) = config_path()
-            && let Ok(text) = safe_fs::read_to_string_no_symlink(&path)
+            && let Ok(bytes) = safe_fs::read_no_symlink_limited(&path, MAX_CONFIG_BYTES)
+            && let Ok(text) = String::from_utf8(bytes)
         {
             // Fast path: schema unchanged since this file was written.
             if let Ok(cfg) = serde_json::from_str::<Config>(&text) {

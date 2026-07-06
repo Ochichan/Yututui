@@ -393,6 +393,7 @@ pub enum PlaylistIntent {
 /// Commands the reducer sends to the API actor.
 pub enum ApiCmd {
     Search {
+        request_id: u64,
         query: String,
         source: SearchSource,
         config: SearchConfig,
@@ -432,7 +433,7 @@ pub enum ApiCmd {
     /// Search public YouTube playlists by name (YouTube-only; other providers have no
     /// playlist catalog here). Results return as ordinary [`ApiEvent::SearchResults`]
     /// rows whose ids carry [`PLAYLIST_ID_PREFIX`].
-    SearchPlaylists { query: String },
+    SearchPlaylists { request_id: u64, query: String },
     /// Fetch a remote playlist's full track list; `title` and `intent` ride along so the
     /// reducer knows what to do with the answer.
     PlaylistTracks {
@@ -449,11 +450,13 @@ pub enum ApiEvent {
         had_cookie: bool,
     },
     SearchResults {
+        request_id: u64,
         query: String,
         source: SearchSource,
         songs: Vec<Song>,
     },
     SearchError {
+        request_id: u64,
         source: SearchSource,
         error: String,
     },
@@ -508,8 +511,15 @@ pub struct ApiHandle {
 }
 
 impl ApiHandle {
-    pub fn search(&self, query: impl Into<String>, source: SearchSource, config: SearchConfig) {
+    pub fn search(
+        &self,
+        request_id: u64,
+        query: impl Into<String>,
+        source: SearchSource,
+        config: SearchConfig,
+    ) {
         let _ = self.tx.send(ApiCmd::Search {
+            request_id,
             query: query.into(),
             source,
             config,
@@ -575,8 +585,9 @@ impl ApiHandle {
         });
     }
 
-    pub fn search_playlists(&self, query: impl Into<String>) {
+    pub fn search_playlists(&self, request_id: u64, query: impl Into<String>) {
         let _ = self.tx.send(ApiCmd::SearchPlaylists {
+            request_id,
             query: query.into(),
         });
     }
@@ -681,6 +692,7 @@ where
     while let Some(cmd) = rx.recv().await {
         match cmd {
             ApiCmd::Search {
+                request_id,
                 query,
                 source,
                 config,
@@ -689,6 +701,7 @@ where
                     Ok(songs) => {
                         tracing::info!(count = songs.len(), query = %query, source = %source.code(), "search results");
                         ApiEvent::SearchResults {
+                            request_id,
                             query,
                             source,
                             songs,
@@ -697,7 +710,11 @@ where
                     Err(e) => {
                         let error = sanitize::sanitize_error_text(format!("{e:#}"));
                         tracing::warn!(source = %source.code(), error = %error, "search failed");
-                        ApiEvent::SearchError { source, error }
+                        ApiEvent::SearchError {
+                            request_id,
+                            source,
+                            error,
+                        }
                     }
                 };
                 emit(event);
@@ -738,11 +755,12 @@ where
                 }
                 emit(ApiEvent::TrackResolved { seq, result });
             }
-            ApiCmd::SearchPlaylists { query } => {
+            ApiCmd::SearchPlaylists { request_id, query } => {
                 let event = match api.search_playlists(&query).await {
                     Ok(songs) => {
                         tracing::info!(count = songs.len(), query = %query, "playlist search results");
                         ApiEvent::SearchResults {
+                            request_id,
                             query,
                             source: SearchSource::Youtube,
                             songs,
@@ -752,6 +770,7 @@ where
                         let error = sanitize::sanitize_error_text(format!("{e:#}"));
                         tracing::warn!(error = %error, "playlist search failed");
                         ApiEvent::SearchError {
+                            request_id,
                             source: SearchSource::Youtube,
                             error,
                         }

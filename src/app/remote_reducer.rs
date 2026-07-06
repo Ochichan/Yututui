@@ -71,9 +71,16 @@ impl App {
                 if self.queue.current().is_none() {
                     return (RemoteResponse::err("queue_empty"), Vec::new());
                 }
-                // Same guarded path an OS scrubber drag takes (`MediaCommand::SeekTo`),
-                // so range checks and the epoch bump live in one place.
-                let cmds = self.apply_media(crate::media::MediaCommand::SeekTo(ms as f64 / 1000.0));
+                // Clamp a remote seek to the track's bounds: unlike the MPRIS OS surface (which
+                // ignores out-of-range per spec), the remote API clamps, so an over-long `ms`
+                // lands at the end instead of being silently dropped. `ms` is non-negative.
+                let mut secs = ms as f64 / 1000.0;
+                if let Some(dur) = self.playback.duration {
+                    secs = secs.min(dur);
+                }
+                // Then through the same guarded path an OS scrubber drag takes, so the epoch
+                // bump and radio guard live in one place.
+                let cmds = self.apply_media(crate::media::MediaCommand::SeekTo(secs));
                 (RemoteResponse::status(self.status_snapshot()), cmds)
             }
             RemoteCommand::SeekBack => {
@@ -777,6 +784,14 @@ mod tests {
         let snapshot = resp.status.expect("status snapshot present");
         assert_eq!(snapshot.duration_ms, Some(180_000));
         assert!(snapshot.elapsed_ms.is_some());
+
+        // A seek past the end clamps to the track duration (remote clamps, unlike MPRIS which
+        // ignores out-of-range) rather than being dropped.
+        let (resp, cmds) = app.apply_remote(RemoteCommand::SeekTo { ms: 999_000 });
+        assert!(resp.ok);
+        assert!(cmds.iter().any(
+            |cmd| matches!(cmd, Cmd::Player(PlayerCmd::SeekAbsolute(pos)) if (*pos - 180.0).abs() < 1e-9)
+        ));
     }
 
     #[test]

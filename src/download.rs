@@ -121,6 +121,12 @@ async fn run_download_with_program(
     cookies: Option<&Path>,
     emit: &EventSink,
 ) -> Result<()> {
+    // Re-check at the actor boundary (not just in the UI reducer): a non-video YouTube ref
+    // (channel/playlist) would otherwise have `playback_target()` fall back to a channel URL,
+    // handing yt-dlp something that isn't a downloadable track.
+    if let Some(reason) = song.unplayable_youtube_ref_reason() {
+        bail!("not a downloadable track: {reason}");
+    }
     std::fs::create_dir_all(dir).with_context(|| format!("create download dir {dir:?}"))?;
 
     let mut cmd = crate::tools::ytdlp_command_for(program);
@@ -186,7 +192,43 @@ async fn run_download_with_program(
     if !status.success() {
         bail!("yt-dlp exited with {status}");
     }
-    let path = out.lines().last().unwrap_or_default().trim().to_owned();
+    // A zero exit + a printed line is NOT proof the file is really there: a yt-dlp
+    // version/option change, a stray stdout line, or an external delete can all leave a bogus
+    // path. Validate before reporting `Done` so a bad result surfaces as a normal download
+    // error (existing toast) instead of a phantom "saved" track pointing at nothing.
+    let path_str = out.lines().last().unwrap_or_default().trim();
+    if path_str.is_empty() {
+        bail!("yt-dlp reported no output filepath");
+    }
+    let path = PathBuf::from(path_str);
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .with_context(|| format!("downloaded file not found: {}", path.display()))?;
+    if !meta.is_file() {
+        bail!("downloaded path is not a regular file: {}", path.display());
+    }
+    if meta.len() == 0 {
+        bail!("downloaded file is empty: {}", path.display());
+    }
+    // Must land inside the requested download directory — a surprising output path or a symlink
+    // must not smuggle in a file from elsewhere.
+    let root = tokio::fs::canonicalize(dir)
+        .await
+        .unwrap_or_else(|_| dir.to_path_buf());
+    if let Ok(resolved) = tokio::fs::canonicalize(&path).await
+        && !resolved.starts_with(&root)
+    {
+        bail!("downloaded path escaped the download directory: {}", path.display());
+    }
+    // Best-effort id check: the filename embeds `[id]`. A mismatch is logged, not fatal —
+    // yt-dlp's resolved id can legitimately differ for some refs.
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        && let Some((_, embedded_id)) = crate::api::Song::parse_embedded_id(stem)
+        && embedded_id != song.video_id
+    {
+        tracing::warn!(embedded_id, requested = %song.video_id, "downloaded file id differs from requested");
+    }
+    let path = path.to_string_lossy().into_owned();
     tracing::info!(path = %path, video_id = %song.video_id, "download done");
     emit(DownloadEvent::Done {
         video_id: song.video_id.clone(),
@@ -249,9 +291,11 @@ mod tests {
         let fake = write_executable(
             &bin_dir,
             "yt-dlp",
+            // Create a real (non-empty) file at the reported path, as yt-dlp would — the actor
+            // now validates the file exists/non-empty/in-dir before reporting `Done`.
             &format!(
-                "#!/bin/sh\nprintf 'download:  12.4%%\\n' >&2\nprintf 'download:  99.6%%\\n' >&2\nprintf '%s\\n' '{}'\n",
-                saved.display()
+                "#!/bin/sh\nprintf 'download:  12.4%%\\n' >&2\nprintf 'download:  99.6%%\\n' >&2\nprintf 'audio' > '{saved}'\nprintf '%s\\n' '{saved}'\n",
+                saved = saved.display()
             ),
         );
 
@@ -300,6 +344,36 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn run_download_rejects_a_phantom_path_that_was_never_written() {
+        let root = temp_dir("download-phantom");
+        let bin_dir = root.join("bin");
+        let download_dir = root.join("music");
+        fs::create_dir_all(&bin_dir).unwrap();
+        // yt-dlp exits 0 and prints a plausible path but never creates the file.
+        let phantom = download_dir.join("Track [abc123def45].m4a");
+        let fake = write_executable(
+            &bin_dir,
+            "yt-dlp",
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", phantom.display()),
+        );
+        let emit: EventSink = Arc::new(|_| {});
+        let result = run_download_with_program(
+            fake.to_str().unwrap(),
+            &Song::remote("abc123def45", "Track", "Artist", "3:12"),
+            &download_dir,
+            None,
+            &emit,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a phantom (never-written) path must be rejected, not reported as saved"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn run_download_passes_cookie_file_to_ytdlp() {
         let root = temp_dir("download-cookies");
         let bin_dir = root.join("bin");
@@ -313,9 +387,9 @@ mod tests {
             &bin_dir,
             "yt-dlp",
             &format!(
-                "#!/bin/sh\nfor arg do printf '%s\\n' \"$arg\"; done > '{}'\nprintf '%s\\n' '{}'\n",
-                args_log.display(),
-                saved.display()
+                "#!/bin/sh\nfor arg do printf '%s\\n' \"$arg\"; done > '{args_log}'\nprintf 'audio' > '{saved}'\nprintf '%s\\n' '{saved}'\n",
+                args_log = args_log.display(),
+                saved = saved.display()
             ),
         );
 

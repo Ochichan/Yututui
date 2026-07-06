@@ -106,12 +106,14 @@ pub enum Msg {
     },
     /// Search returned results (possibly empty) for `query`.
     SearchResults {
+        request_id: u64,
         query: String,
         source: SearchSource,
         songs: Vec<Song>,
     },
     /// Search failed.
     SearchError {
+        request_id: u64,
         source: SearchSource,
         error: String,
     },
@@ -293,12 +295,14 @@ pub enum Cmd {
     /// `loadfile <url> replace` into the live overlay window (auto-continue).
     VideoLoad(String),
     Search {
+        request_id: u64,
         query: String,
         source: SearchSource,
         config: SearchConfig,
     },
     /// Search public YouTube playlists by name (the search box's playlist kind).
     SearchPlaylists {
+        request_id: u64,
         query: String,
     },
     /// Fetch a remote playlist's full track list, then apply `intent` to it.

@@ -382,6 +382,10 @@ pub struct SearchState {
     pub selected: usize,
     /// True between issuing a search request and its results arriving.
     pub searching: bool,
+    /// Monotonic id of the most recently *submitted* search. Stamped on the request and echoed
+    /// back on its results/error so a slow older response can't overwrite a newer search — the
+    /// id is stable while the user keeps typing, unlike the live `input`.
+    pub request_id: u64,
     /// Whether the box searches tracks or public YouTube playlists (session-scoped).
     pub kind: SearchKind,
 }

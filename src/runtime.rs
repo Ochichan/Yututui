@@ -94,17 +94,25 @@ impl From<RuntimeEvent> for Msg {
                     Msg::TrackResolved { seq, result }
                 }
                 crate::api::ApiEvent::SearchResults {
+                    request_id,
                     query,
                     source,
                     songs,
                 } => Msg::SearchResults {
+                    request_id,
                     query,
                     source,
                     songs,
                 },
-                crate::api::ApiEvent::SearchError { source, error } => {
-                    Msg::SearchError { source, error }
-                }
+                crate::api::ApiEvent::SearchError {
+                    request_id,
+                    source,
+                    error,
+                } => Msg::SearchError {
+                    request_id,
+                    source,
+                    error,
+                },
                 crate::api::ApiEvent::PlaylistTracks {
                     title,
                     intent,
@@ -361,11 +369,14 @@ impl RuntimeHandles {
                 }
             }
             Cmd::Search {
+                request_id,
                 query,
                 source,
                 config,
-            } => self.api_handle.search(query, source, config),
-            Cmd::SearchPlaylists { query } => self.api_handle.search_playlists(query),
+            } => self.api_handle.search(request_id, query, source, config),
+            Cmd::SearchPlaylists { request_id, query } => {
+                self.api_handle.search_playlists(request_id, query)
+            }
             Cmd::FetchPlaylistTracks {
                 playlist_id,
                 title,

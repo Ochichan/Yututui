@@ -17,6 +17,9 @@ use crate::util::safe_fs;
 /// Caps (bounded memory).
 const PLAYLISTS_MAX: usize = 999;
 const SONGS_PER_PLAYLIST_MAX: usize = 999;
+/// Upper bound on `playlists.json` when loading. With ≤999 playlists × ≤999 tracks written,
+/// a legitimate file is comfortably under this; a larger one is corrupt/hostile and set aside.
+const MAX_PLAYLISTS_BYTES: u64 = 50 * 1024 * 1024;
 
 /// A named, ordered collection of tracks with a stable slug `id`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,8 +52,11 @@ impl Playlists {
         let Some(path) = playlists_path() else {
             return Playlists::default();
         };
-        // Schema-drift tolerant: one changed field no longer discards saved playlists.
-        safe_fs::load_json_or_default::<Playlists>(&path)
+        // Schema-drift tolerant *and* size-bounded: one changed field no longer discards saved
+        // playlists, and a corrupt/hostile oversized file is set aside rather than read whole
+        // into memory. Playlist entries are user-curated, so (unlike history) they are not
+        // count-truncated — the byte cap alone bounds the blast radius.
+        safe_fs::load_json_or_default_limited::<Playlists>(&path, MAX_PLAYLISTS_BYTES)
     }
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.

@@ -182,10 +182,13 @@ impl ScrobbleMonitor {
         if let Some(l) = self.current.as_mut() {
             if l.was_playing {
                 let dt = obs.at.saturating_duration_since(l.last_at).as_secs_f64();
-                l.accumulated += dt.min(MAX_CREDIT_STEP) * l.last_rate.clamp(0.0, 4.0);
+                // Guard a non-finite rate: a NaN would poison `accumulated` and wedge the
+                // scrobble threshold math for the rest of the listen.
+                let rate = crate::util::finite_or(l.last_rate, 1.0).clamp(0.0, 4.0);
+                l.accumulated += dt.min(MAX_CREDIT_STEP) * rate;
             }
             l.last_at = obs.at;
-            l.last_rate = obs.rate;
+            l.last_rate = crate::util::finite_or(obs.rate, 1.0);
         }
 
         // Phase 2 — transitions, keyed on track identity (our own diff, not media::diff).

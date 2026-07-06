@@ -282,6 +282,45 @@ where
     }
 }
 
+/// Like [`load_json_or_default`] but bounds the read at `max_bytes`. A file larger than the
+/// cap is moved aside to `*.too-large.bak` (so the next `save` can't silently destroy it)
+/// and `T::default()` is returned — an oversized or corrupted-huge state file can neither
+/// stall startup nor spike memory before the schema-drift recovery even runs. The trust
+/// boundary is low (same-user data dir), but sync tools, other same-user processes, and
+/// user mistakes can all leave a giant file behind.
+///
+/// - missing / unreadable / symlink / not a regular file → `T::default()`
+/// - larger than `max_bytes` → moved to `*.too-large.bak`, `T::default()`
+/// - otherwise identical to [`load_json_or_default`] (fast path, then schema-drift recovery)
+pub fn load_json_or_default_limited<T>(path: &Path, max_bytes: u64) -> T
+where
+    T: DeserializeOwned + Serialize + Default,
+{
+    let bytes = match read_no_symlink_limited(path, max_bytes) {
+        Ok(bytes) => bytes,
+        // `read_no_symlink_limited` reports oversize as `InvalidData`; set it aside so a fresh
+        // default cannot clobber it, mirroring the unparseable-JSON path.
+        Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+            let _ = backup_with_label(path, "too-large");
+            return T::default();
+        }
+        Err(_) => return T::default(),
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return T::default();
+    };
+    if let Ok(value) = serde_json::from_str::<T>(&text) {
+        return value;
+    }
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value) => recover_lenient::<T>(value),
+        Err(_) => {
+            let _ = backup_aside(path);
+            T::default()
+        }
+    }
+}
+
 /// Deserialize `T` from an in-memory JSON `value`, preserving every field that still fits
 /// and defaulting only the leaves that no longer deserialize. See the module note above.
 pub fn recover_lenient<T>(value: Value) -> T
@@ -409,19 +448,27 @@ fn path_remove(root: &mut Value, path: &[String]) {
 /// Move an unparseable file aside so a fresh default won't silently destroy it. Never
 /// overwrites an existing backup (numbered `*.corrupt.N.bak`).
 pub fn backup_aside(path: &Path) -> io::Result<PathBuf> {
+    backup_with_label(path, "corrupt")
+}
+
+/// Move a file aside under a labeled, numbered backup (`*.<label>.bak`, then
+/// `*.<label>.N.bak`) without ever overwriting an existing one. Shared by
+/// [`backup_aside`] (unparseable JSON) and the oversized-file path in
+/// [`load_json_or_default_limited`].
+fn backup_with_label(path: &Path, label: &str) -> io::Result<PathBuf> {
     reject_symlink(path)?;
     for n in 0..1000 {
         let bak = if n == 0 {
-            path.with_extension("corrupt.bak")
+            path.with_extension(format!("{label}.bak"))
         } else {
-            path.with_extension(format!("corrupt.{n}.bak"))
+            path.with_extension(format!("{label}.{n}.bak"))
         };
         if !bak.exists() {
             fs::rename(path, &bak)?;
             return Ok(bak);
         }
     }
-    Err(io::Error::other("too many corrupt backups"))
+    Err(io::Error::other("too many backups"))
 }
 
 #[cfg(test)]
@@ -475,6 +522,33 @@ mod tests {
         symlink(&real, &link).unwrap();
         assert!(read_no_symlink(&link).is_err());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn limited_load_reads_within_cap_and_sets_oversized_aside() {
+        use serde::{Deserialize, Serialize};
+        #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+        struct S {
+            n: u32,
+        }
+        let dir = temp_root("limited");
+        let path = dir.join("s.json");
+
+        // Under the cap → loads normally.
+        write_private_atomic(&path, br#"{"n":7}"#).unwrap();
+        assert_eq!(load_json_or_default_limited::<S>(&path, 1024), S { n: 7 });
+
+        // Over the cap → default, and the offending file is moved to `*.too-large.bak`
+        // (never destroyed, so nothing is silently lost).
+        let big = format!(r#"{{"n":7,"pad":"{}"}}"#, "x".repeat(2048));
+        write_private_atomic(&path, big.as_bytes()).unwrap();
+        assert_eq!(load_json_or_default_limited::<S>(&path, 1024), S::default());
+        assert!(!path.exists());
+        assert!(path.with_extension("too-large.bak").exists());
+
+        // Missing file → default (no panic, no backup).
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(load_json_or_default_limited::<S>(&path, 1024), S::default());
     }
 
     mod recover {

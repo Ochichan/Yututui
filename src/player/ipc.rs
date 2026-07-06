@@ -10,12 +10,16 @@ use std::io;
 use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{Duration, sleep};
 
 use super::proto::{self, MpvIncoming};
 use super::{EventSink, PlayerCmd, PlayerEvent};
+
+/// Upper bound on a single mpv IPC line. mpv's JSON events are well under a kilobyte; the
+/// cap only guards against a broken/hostile endpoint growing one line without limit.
+const MPV_IPC_MAX_LINE: usize = 1024 * 1024;
 
 /// Connect to the mpv IPC endpoint, retrying for ~3s while mpv finishes starting up.
 pub async fn connect_retry(path: &str) -> io::Result<Stream> {
@@ -56,7 +60,7 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, e
     }
 
     let mut reader = BufReader::new(&conn);
-    let mut line = String::new();
+    let mut line: Vec<u8> = Vec::new();
     let mut request_id: u64 = 10;
     let mut last_sent_time_sec: Option<i64> = None;
     let mut last_sent_cache_sec: Option<i64> = None;
@@ -64,9 +68,19 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, e
     loop {
         line.clear();
         tokio::select! {
-            read = reader.read_line(&mut line) => match read {
-                Ok(0) | Err(_) => break, // mpv closed the connection
-                Ok(_) => dispatch_incoming(&line, &emit, &mut last_sent_time_sec, &mut last_sent_cache_sec),
+            // Bounded read (shared with the remote protocol): a well-behaved mpv sends tiny
+            // JSON lines, so a line past the cap means a broken/hostile endpoint — tear down
+            // rather than let one line grow memory without limit.
+            read = crate::util::io::read_bounded_line(&mut reader, &mut line, MPV_IPC_MAX_LINE) => match read {
+                Ok(crate::util::io::BoundedLine::Eof) | Err(_) => break, // mpv closed / transport error
+                Ok(crate::util::io::BoundedLine::TooLarge) => {
+                    tracing::warn!(cap = MPV_IPC_MAX_LINE, "mpv IPC line exceeded cap; closing");
+                    break;
+                }
+                Ok(crate::util::io::BoundedLine::Line) => {
+                    let text = String::from_utf8_lossy(&line);
+                    dispatch_incoming(&text, &emit, &mut last_sent_time_sec, &mut last_sent_cache_sec);
+                }
             },
             cmd = cmd_rx.recv() => match cmd {
                 None => break, // all senders dropped: shutting down

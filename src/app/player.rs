@@ -602,7 +602,11 @@ impl App {
             Action::CycleRepeat => {
                 // Music-mode invariant: turning repeat on while autoplay streaming is on is
                 // refused (they can't both be on). Off→All is the only transition that enables it.
-                if self.queue.repeat == crate::queue::Repeat::Off && self.autoplay_streaming {
+                if self
+                    .queue
+                    .repeat
+                    .cycle_blocked_by_streaming(self.autoplay_streaming)
+                {
                     self.status.text = t!(
                         "Can't use repeat while autoplay is on",
                         "자동재생 중에는 반복을 켤 수 없어요"
@@ -962,11 +966,33 @@ impl App {
                     )
                     .to_owned();
                     self.prefetch.loaded_video_id = None;
-                    return if self.queue.peek_next().is_some() {
-                        self.advance(false)
-                    } else {
-                        Vec::new()
-                    };
+                    // Skip forward to the next playable track iteratively, bounded to one pass
+                    // over the queue. The old form recursed (`load_song` → `advance` →
+                    // `load_song`), so a run of unplayable refs — or repeat-all wrapping over an
+                    // all-unplayable queue — drove the stack to overflow. The track we finally
+                    // hand to `load_song` is playable, so that call can't re-enter this branch:
+                    // recursion depth stays at 2. `maybe_autoplay_extend` is idempotent, so the
+                    // emitted commands are unchanged on every path that used to terminate.
+                    let mut skip_budget = self.queue.len();
+                    while skip_budget > 0 && self.queue.peek_next().is_some() {
+                        skip_budget -= 1;
+                        let next = self.queue.next(false).cloned();
+                        if let Some(s) = &next
+                            && let Some(reason) = s.unplayable_youtube_ref_reason()
+                        {
+                            tracing::warn!(
+                                video_id = %s.video_id,
+                                title = %s.title,
+                                artist = %s.artist,
+                                reason = %reason,
+                                "skipping non-playable YouTube entry"
+                            );
+                            self.prefetch.loaded_video_id = None;
+                            continue;
+                        }
+                        return self.load_song(next);
+                    }
+                    return Vec::new();
                 }
                 self.reset_progress();
                 // A new track is a clean slate: drop any stale status (e.g. a prior
