@@ -49,7 +49,10 @@ pub enum PlayerCmd {
 /// Events emitted by the mpv IPC actor.
 pub enum PlayerEvent {
     TimePos(f64),
-    Duration(f64),
+    /// Track duration in seconds. `None` when mpv reports the property as unavailable
+    /// (live stream, teardown) *after* it had a value — the reducers must see the loss
+    /// so a stale length never outlives its file (same contract as [`Self::CacheTime`]).
+    Duration(Option<f64>),
     Paused(bool),
     Volume(f64),
     Metadata(Value),

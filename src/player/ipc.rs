@@ -5,6 +5,7 @@
 //! polls briefly. The actor holds a single connection and reads events while writing
 //! commands concurrently by sharing `&conn` (the documented `interprocess` pattern).
 
+use std::collections::HashMap;
 use std::io;
 
 use interprocess::local_socket::GenericFilePath;
@@ -20,6 +21,34 @@ use super::{EventSink, PlayerCmd, PlayerEvent};
 /// Upper bound on a single mpv IPC line. mpv's JSON events are well under a kilobyte; the
 /// cap only guards against a broken/hostile endpoint growing one line without limit.
 pub(crate) const MPV_IPC_MAX_LINE: usize = 1024 * 1024;
+
+#[derive(Default)]
+struct DispatchState {
+    last_sent_time_sec: Option<i64>,
+    last_sent_cache_sec: Option<i64>,
+    /// Whether a real (numeric) duration was forwarded for the current file — the latch
+    /// that turns the FIRST `duration: null` into a `Duration(None)` loss signal while
+    /// keeping repeated nulls (a stream that never had one) silent.
+    duration_known: bool,
+    pending: HashMap<u64, String>,
+}
+
+/// Clear the per-file dedup/latch state when a file ends for ANY reason, so the next
+/// load's first `time-pos`/cache second and duration are never dedup-suppressed.
+fn reset_file_state(state: &mut DispatchState) {
+    state.last_sent_time_sec = None;
+    state.last_sent_cache_sec = None;
+    state.duration_known = false;
+}
+
+fn remember_pending_command(state: &mut DispatchState, request_id: u64, label: impl Into<String>) {
+    if state.pending.len() >= 128
+        && let Some(oldest) = state.pending.keys().min().copied()
+    {
+        state.pending.remove(&oldest);
+    }
+    state.pending.insert(request_id, label.into());
+}
 
 /// Connect to the mpv IPC endpoint, retrying for ~3s while mpv finishes starting up.
 pub async fn connect_retry(path: &str) -> io::Result<Stream> {
@@ -42,6 +71,8 @@ pub async fn connect_retry(path: &str) -> io::Result<Stream> {
 /// mpv events to the runtime (`emit`) and writing player commands (`cmd_rx`) to mpv.
 /// Returns when mpv closes the connection or all command senders drop.
 pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, emit: EventSink) {
+    let mut state = DispatchState::default();
+
     // Subscribe to the properties the player view needs. IDs are arbitrary but stable.
     for (id, prop) in [
         (1u64, "time-pos"),
@@ -54,6 +85,7 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, e
         (7, "audio-codec-name"),
         (8, "file-format"),
     ] {
+        remember_pending_command(&mut state, id, format!("observe {prop}"));
         if let Err(e) = write_json(&conn, &proto::cmd_observe(id, prop)).await {
             tracing::warn!(error = %e, property = prop, "failed to observe mpv property");
         }
@@ -62,8 +94,6 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, e
     let mut reader = BufReader::new(&conn);
     let mut line: Vec<u8> = Vec::new();
     let mut request_id: u64 = 10;
-    let mut last_sent_time_sec: Option<i64> = None;
-    let mut last_sent_cache_sec: Option<i64> = None;
 
     loop {
         line.clear();
@@ -79,38 +109,56 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, e
                 }
                 Ok(crate::util::io::BoundedLine::Line) => {
                     let text = String::from_utf8_lossy(&line);
-                    dispatch_incoming(&text, &emit, &mut last_sent_time_sec, &mut last_sent_cache_sec);
+                    dispatch_incoming(&text, &emit, &mut state);
                 }
             },
             cmd = cmd_rx.recv() => match cmd {
                 None => break, // all senders dropped: shutting down
                 Some(cmd) => {
                     request_id += 1;
-                    let json = match cmd {
+                    let (json, label) = match cmd {
                         PlayerCmd::Load(url) => {
-                            last_sent_time_sec = None;
-                            last_sent_cache_sec = None;
-                            proto::cmd_loadfile(&url, "replace", request_id)
+                            state.last_sent_time_sec = None;
+                            state.last_sent_cache_sec = None;
+                            state.duration_known = false;
+                            (proto::cmd_loadfile(&url, "replace", request_id), "loadfile".to_owned())
                         },
                         PlayerCmd::Stop => {
-                            last_sent_time_sec = None;
-                            last_sent_cache_sec = None;
-                            proto::cmd_stop(request_id)
+                            state.last_sent_time_sec = None;
+                            state.last_sent_cache_sec = None;
+                            state.duration_known = false;
+                            (proto::cmd_stop(request_id), "stop".to_owned())
                         },
-                        PlayerCmd::CyclePause => proto::cmd_cycle("pause", request_id),
-                        PlayerCmd::SeekRelative(secs) => proto::cmd_seek_relative(secs, request_id),
-                        PlayerCmd::SeekAbsolute(secs) => proto::cmd_seek_absolute(secs, request_id),
-                        PlayerCmd::SetVolume(vol) => proto::cmd_set_volume(vol, request_id),
+                        PlayerCmd::CyclePause => {
+                            (proto::cmd_cycle("pause", request_id), "cycle pause".to_owned())
+                        }
+                        PlayerCmd::SeekRelative(secs) => {
+                            (proto::cmd_seek_relative(secs, request_id), "seek".to_owned())
+                        }
+                        PlayerCmd::SeekAbsolute(secs) => {
+                            (proto::cmd_seek_absolute(secs, request_id), "seek".to_owned())
+                        }
+                        PlayerCmd::SetVolume(vol) => {
+                            (proto::cmd_set_volume(vol, request_id), "set volume".to_owned())
+                        }
                         PlayerCmd::SetAudioFilter(af) => {
-                            proto::cmd_set_property("af", &serde_json::Value::from(af), request_id)
+                            (
+                                proto::cmd_set_property("af", &serde_json::Value::from(af), request_id),
+                                "set af".to_owned(),
+                            )
                         }
                         PlayerCmd::AfCommand { label, param, value } => {
-                            proto::cmd_af_command(&label, &param, &value, request_id)
+                            (
+                                proto::cmd_af_command(&label, &param, &value, request_id),
+                                "af-command".to_owned(),
+                            )
                         }
                         PlayerCmd::SetProperty { name, value } => {
-                            proto::cmd_set_property(&name, &value, request_id)
+                            let label = format!("set_property {name}");
+                            (proto::cmd_set_property(&name, &value, request_id), label)
                         }
                     };
+                    remember_pending_command(&mut state, request_id, label);
                     if let Err(e) = write_json(&conn, &json).await {
                         tracing::warn!(error = %e, "failed to write mpv command");
                     }
@@ -141,12 +189,7 @@ struct TimePosLine<'a> {
 }
 
 /// Translate one mpv line into a player event for the runtime.
-fn dispatch_incoming(
-    line: &str,
-    emit: &EventSink,
-    last_sent_time_sec: &mut Option<i64>,
-    last_sent_cache_sec: &mut Option<i64>,
-) {
+fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
     // Fast path: dedup time-pos before allocating anything. A borrow-mode parse fails on
     // any other event shape (missing fields, null/escaped data) and falls through to the
     // general path below, so behavior is unchanged — e.g. `data:null` still ends up in
@@ -156,8 +199,8 @@ fn dispatch_incoming(
         && tp.name == "time-pos"
     {
         let sec = tp.data as i64;
-        if *last_sent_time_sec != Some(sec) {
-            *last_sent_time_sec = Some(sec);
+        if state.last_sent_time_sec != Some(sec) {
+            state.last_sent_time_sec = Some(sec);
             emit(PlayerEvent::TimePos(tp.data));
         }
         return;
@@ -170,17 +213,26 @@ fn dispatch_incoming(
             "time-pos" => {
                 if let Some(t) = value.as_f64() {
                     let sec = t as i64;
-                    if *last_sent_time_sec != Some(sec) {
-                        *last_sent_time_sec = Some(sec);
+                    if state.last_sent_time_sec != Some(sec) {
+                        state.last_sent_time_sec = Some(sec);
                         emit(PlayerEvent::TimePos(t));
                     }
                 }
             }
-            "duration" => {
-                if let Some(d) = value.as_f64() {
-                    emit(PlayerEvent::Duration(d));
+            "duration" => match value.as_f64() {
+                Some(d) => {
+                    state.duration_known = true;
+                    emit(PlayerEvent::Duration(Some(d)));
                 }
-            }
+                // Null after a real value = the property became unavailable (live edge,
+                // mid-file teardown) — forward the loss ONCE so a reducer that missed the
+                // load-time clear (late event from the old file) can't keep a stale length.
+                None => {
+                    if std::mem::take(&mut state.duration_known) {
+                        emit(PlayerEvent::Duration(None));
+                    }
+                }
+            },
             "pause" => {
                 if let Some(p) = value.as_bool() {
                     emit(PlayerEvent::Paused(p));
@@ -204,15 +256,15 @@ fn dispatch_incoming(
                 // High-rate like time-pos → dedup to whole seconds.
                 Some(t) => {
                     let sec = t as i64;
-                    if *last_sent_cache_sec != Some(sec) {
-                        *last_sent_cache_sec = Some(sec);
+                    if state.last_sent_cache_sec != Some(sec) {
+                        state.last_sent_cache_sec = Some(sec);
                         emit(PlayerEvent::CacheTime(Some(t)));
                     }
                 }
                 // Unlike time-pos, a null here is a signal the reducer needs: the
                 // property became unavailable (stream teardown, cache-less demuxer).
                 None => {
-                    if last_sent_cache_sec.take().is_some() {
+                    if state.last_sent_cache_sec.take().is_some() {
                         emit(PlayerEvent::CacheTime(None));
                     }
                 }
@@ -221,13 +273,11 @@ fn dispatch_incoming(
         },
         MpvIncoming::EndFile { reason, file_error } => match reason.as_str() {
             "eof" => {
-                *last_sent_time_sec = None;
-                *last_sent_cache_sec = None;
+                reset_file_state(state);
                 emit(PlayerEvent::Eof);
             }
             "error" => {
-                *last_sent_time_sec = None;
-                *last_sent_cache_sec = None;
+                reset_file_state(state);
                 // Surface mpv's own reason when it gives one — it's the closest thing to a
                 // "why" (HTTP 403, unsupported format, …); otherwise a generic message.
                 let msg = match file_error {
@@ -236,8 +286,29 @@ fn dispatch_incoming(
                 };
                 emit(PlayerEvent::Error(msg));
             }
-            _ => {}
+            // `stop` (our own Stop/replace), `quit`, `redirect`, and any future reason:
+            // no event (the reducers own those transitions), but the per-file dedup
+            // state must not survive into the next load's first second.
+            reason => {
+                reset_file_state(state);
+                tracing::debug!(reason, "mpv end-file");
+            }
         },
+        MpvIncoming::CommandReply { request_id, error } => {
+            let Some(label) = state.pending.remove(&request_id) else {
+                return;
+            };
+            if error == "success" || error.is_empty() {
+                return;
+            }
+            if label == "loadfile" {
+                emit(PlayerEvent::Error(format!(
+                    "mpv rejected loadfile ({error})"
+                )));
+            } else {
+                tracing::warn!(command = %label, error = %error, "mpv command failed");
+            }
+        }
         // Script messages are a video-overlay concern ([`super::video`]); the audio
         // engine has no keys to press.
         MpvIncoming::ClientMessage { .. } | MpvIncoming::Other => {}
@@ -254,14 +325,12 @@ mod tests {
         let emit: EventSink = std::sync::Arc::new(move |event| {
             let _ = tx.send(event);
         });
-        let mut last_sent_time_sec = None;
-        let mut last_sent_cache_sec = None;
+        let mut state = DispatchState::default();
 
         dispatch_incoming(
             r#"{"event":"property-change","id":5,"name":"metadata","data":{"icy-title":"Artist - Track"}}"#,
             &emit,
-            &mut last_sent_time_sec,
-            &mut last_sent_cache_sec,
+            &mut state,
         );
 
         match rx.try_recv().expect("metadata message") {
@@ -278,18 +347,12 @@ mod tests {
         let emit: EventSink = std::sync::Arc::new(move |event| {
             let _ = tx.send(event);
         });
-        let mut last_sent_time_sec = None;
-        let mut last_sent_cache_sec = None;
+        let mut state = DispatchState::default();
 
         for data in ["1.1", "1.4", "1.9", "2.0"] {
             let line =
                 format!(r#"{{"event":"property-change","id":1,"name":"time-pos","data":{data}}}"#);
-            dispatch_incoming(
-                &line,
-                &emit,
-                &mut last_sent_time_sec,
-                &mut last_sent_cache_sec,
-            );
+            dispatch_incoming(&line, &emit, &mut state);
         }
 
         // 1.1 emits (second 1), 1.4/1.9 dedup away, 2.0 emits (second 2).
@@ -304,18 +367,19 @@ mod tests {
         let emit: EventSink = std::sync::Arc::new(move |event| {
             let _ = tx.send(event);
         });
-        let mut last_sent_time_sec = Some(3);
-        let mut last_sent_cache_sec = None;
+        let mut state = DispatchState {
+            last_sent_time_sec: Some(3),
+            ..DispatchState::default()
+        };
 
         dispatch_incoming(
             r#"{"event":"property-change","id":1,"name":"time-pos","data":null}"#,
             &emit,
-            &mut last_sent_time_sec,
-            &mut last_sent_cache_sec,
+            &mut state,
         );
 
         assert!(rx.try_recv().is_err());
-        assert_eq!(last_sent_time_sec, Some(3));
+        assert_eq!(state.last_sent_time_sec, Some(3));
     }
 
     #[test]
@@ -324,19 +388,13 @@ mod tests {
         let emit: EventSink = std::sync::Arc::new(move |event| {
             let _ = tx.send(event);
         });
-        let mut last_sent_time_sec = None;
-        let mut last_sent_cache_sec = None;
+        let mut state = DispatchState::default();
 
         for data in ["100.2", "100.7", "101.3"] {
             let line = format!(
                 r#"{{"event":"property-change","id":6,"name":"demuxer-cache-time","data":{data}}}"#
             );
-            dispatch_incoming(
-                &line,
-                &emit,
-                &mut last_sent_time_sec,
-                &mut last_sent_cache_sec,
-            );
+            dispatch_incoming(&line, &emit, &mut state);
         }
 
         assert!(matches!(rx.try_recv(), Ok(PlayerEvent::CacheTime(Some(t))) if t == 100.2));
@@ -350,26 +408,145 @@ mod tests {
         let emit: EventSink = std::sync::Arc::new(move |event| {
             let _ = tx.send(event);
         });
-        let mut last_sent_time_sec = None;
-        let mut last_sent_cache_sec = Some(42);
+        let mut state = DispatchState {
+            last_sent_cache_sec: Some(42),
+            ..DispatchState::default()
+        };
 
         let line = r#"{"event":"property-change","id":6,"name":"demuxer-cache-time","data":null}"#;
         // First null after a real value → the loss is reported and the dedup resets…
-        dispatch_incoming(
-            line,
-            &emit,
-            &mut last_sent_time_sec,
-            &mut last_sent_cache_sec,
-        );
+        dispatch_incoming(line, &emit, &mut state);
         assert!(matches!(rx.try_recv(), Ok(PlayerEvent::CacheTime(None))));
-        assert_eq!(last_sent_cache_sec, None);
+        assert_eq!(state.last_sent_cache_sec, None);
         // …and repeated nulls (a stream that never has a cache) stay silent.
-        dispatch_incoming(
-            line,
-            &emit,
-            &mut last_sent_time_sec,
-            &mut last_sent_cache_sec,
-        );
+        dispatch_incoming(line, &emit, &mut state);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn null_duration_reports_loss_once_after_a_real_value() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut state = DispatchState::default();
+
+        let null_line = r#"{"event":"property-change","id":2,"name":"duration","data":null}"#;
+        // A null before any real value (observe echo on an unloaded player) stays silent.
+        dispatch_incoming(null_line, &emit, &mut state);
+        assert!(rx.try_recv().is_err());
+
+        dispatch_incoming(
+            r#"{"event":"property-change","id":2,"name":"duration","data":180.5}"#,
+            &emit,
+            &mut state,
+        );
+        assert!(matches!(rx.try_recv(), Ok(PlayerEvent::Duration(Some(d))) if d == 180.5));
+
+        // First null after a real value → the loss is forwarded once, then silence.
+        dispatch_incoming(null_line, &emit, &mut state);
+        assert!(matches!(rx.try_recv(), Ok(PlayerEvent::Duration(None))));
+        dispatch_incoming(null_line, &emit, &mut state);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn end_file_stop_resets_dedup_state_without_events() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut state = DispatchState {
+            last_sent_time_sec: Some(30),
+            last_sent_cache_sec: Some(42),
+            duration_known: true,
+            ..DispatchState::default()
+        };
+
+        // Externally-caused stop/quit/redirect must clear the per-file dedup state (or the
+        // next load's first second is swallowed) while emitting nothing — our own Stop
+        // command already drives the reducers' stop paths.
+        for reason in ["stop", "quit", "redirect", "some-future-reason"] {
+            let line = format!(r#"{{"event":"end-file","reason":"{reason}"}}"#);
+            state.last_sent_time_sec = Some(30);
+            dispatch_incoming(&line, &emit, &mut state);
+            assert!(rx.try_recv().is_err(), "reason {reason} must emit nothing");
+            assert_eq!(state.last_sent_time_sec, None);
+            assert_eq!(state.last_sent_cache_sec, None);
+            assert!(!state.duration_known);
+        }
+    }
+
+    #[test]
+    fn failed_loadfile_reply_emits_error() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut state = DispatchState::default();
+        state.pending.insert(11, "loadfile".to_owned());
+
+        dispatch_incoming(
+            r#"{"error":"invalid parameter","request_id":11}"#,
+            &emit,
+            &mut state,
+        );
+
+        assert!(
+            matches!(rx.try_recv(), Ok(PlayerEvent::Error(error)) if error.contains("loadfile"))
+        );
+        assert!(!state.pending.contains_key(&11));
+    }
+
+    #[test]
+    fn failed_af_command_reply_emits_nothing() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut state = DispatchState::default();
+        state.pending.insert(12, "af-command".to_owned());
+
+        dispatch_incoming(
+            r#"{"error":"invalid parameter","request_id":12}"#,
+            &emit,
+            &mut state,
+        );
+
+        assert!(rx.try_recv().is_err());
+        assert!(!state.pending.contains_key(&12));
+    }
+
+    #[test]
+    fn success_reply_emits_nothing_and_removes_pending() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut state = DispatchState::default();
+        state.pending.insert(13, "seek".to_owned());
+
+        dispatch_incoming(r#"{"error":"success","request_id":13}"#, &emit, &mut state);
+
+        assert!(rx.try_recv().is_err());
+        assert!(!state.pending.contains_key(&13));
+    }
+
+    #[test]
+    fn unknown_reply_id_is_ignored() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut state = DispatchState::default();
+
+        dispatch_incoming(
+            r#"{"error":"invalid parameter","request_id":99}"#,
+            &emit,
+            &mut state,
+        );
+
+        assert!(rx.try_recv().is_err());
+        assert!(state.pending.is_empty());
     }
 }

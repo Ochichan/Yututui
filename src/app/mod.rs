@@ -998,7 +998,7 @@ impl App {
                     }
                 }
                 PlayerMsg::Duration(d) => {
-                    self.playback.duration = Some(crate::playback_policy::norm_duration(d));
+                    self.playback.duration = d.map(crate::playback_policy::norm_duration);
                     self.dirty = true;
                 }
                 PlayerMsg::CacheTime(t) => {

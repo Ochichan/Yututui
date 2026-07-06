@@ -9,8 +9,9 @@ use super::*;
 pub enum PlayerMsg {
     /// mpv playback position, in seconds.
     TimePos(f64),
-    /// Current track duration, in seconds.
-    Duration(f64),
+    /// Current track duration, in seconds; `None` when mpv reported the property as
+    /// unavailable after it had a value (live edge / teardown) — clears the stored length.
+    Duration(Option<f64>),
     /// mpv pause state changed.
     Paused(bool),
     /// mpv volume changed (0-100, but mpv can report fractional/over-100 values).

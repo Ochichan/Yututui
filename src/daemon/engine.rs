@@ -918,7 +918,9 @@ impl DaemonEngine {
                 Vec::new()
             }
             PlayerEvent::Duration(d) => {
-                self.playback.duration = Some(crate::playback_policy::norm_duration(d));
+                // Mirror of the TUI reducer (app/mod.rs `PlayerMsg::Duration`): `None`
+                // clears the stored length instead of preserving a stale one.
+                self.playback.duration = d.map(crate::playback_policy::norm_duration);
                 Vec::new()
             }
             PlayerEvent::Paused(paused) => {

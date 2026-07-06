@@ -21,7 +21,9 @@ pub enum MpvIncoming {
     /// A `script-message …` fired inside mpv (e.g. by a rebound key in the video
     /// overlay); `args` are the message name and its arguments.
     ClientMessage { args: Vec<String> },
-    /// A command reply or an event we don't act on.
+    /// mpv's reply to one of our commands (`{"error":"success","request_id":N,...}`).
+    CommandReply { request_id: u64, error: String },
+    /// An event we don't act on.
     Other,
 }
 
@@ -59,7 +61,20 @@ pub fn parse_line(line: &str) -> Option<MpvIncoming> {
                 .unwrap_or_default();
             Some(MpvIncoming::ClientMessage { args })
         }
-        _ => Some(MpvIncoming::Other),
+        _ => {
+            if v.get("event").is_none()
+                && let Some(request_id) = v.get("request_id").and_then(Value::as_u64)
+            {
+                let error = v
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                Some(MpvIncoming::CommandReply { request_id, error })
+            } else {
+                Some(MpvIncoming::Other)
+            }
+        }
     }
 }
 
@@ -158,9 +173,27 @@ mod tests {
     }
 
     #[test]
-    fn command_reply_is_other() {
+    fn command_reply_parses() {
         let line = r#"{"error":"success","request_id":11}"#;
-        assert!(matches!(parse_line(line), Some(MpvIncoming::Other)));
+        match parse_line(line) {
+            Some(MpvIncoming::CommandReply { request_id, error }) => {
+                assert_eq!(request_id, 11);
+                assert_eq!(error, "success");
+            }
+            _ => panic!("expected command reply"),
+        }
+    }
+
+    #[test]
+    fn failed_command_reply_parses() {
+        let line = r#"{"error":"invalid parameter","request_id":12}"#;
+        match parse_line(line) {
+            Some(MpvIncoming::CommandReply { request_id, error }) => {
+                assert_eq!(request_id, 12);
+                assert_eq!(error, "invalid parameter");
+            }
+            _ => panic!("expected command reply"),
+        }
     }
 
     #[test]
