@@ -215,6 +215,18 @@ impl App {
                 }
             }
         }
+        // The "Import from Spotify" picker is modal like the add-to-playlist picker: its rows
+        // pick, and a click anywhere else closes it without importing.
+        if self.overlays.spotify_picker.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(t @ MouseTarget::SpotifyPickRow(_)) => return self.on_mouse_target(t),
+                _ => {
+                    self.overlays.spotify_picker = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
+        }
         // The create-playlist popup is modal: only its Create/Cancel buttons act; a click
         // anywhere else cancels it (matching the queue window's click-outside-to-close).
         if self.library_ui.create_input.is_some() {
@@ -633,6 +645,25 @@ impl App {
                 self.picker_choose(i)
             }
             MouseTarget::PlaylistPickRow(_) => Vec::new(),
+            // First click on a Spotify picker row selects it; clicking the already-selected row
+            // (or a double-click, routed here as a click) starts the import.
+            MouseTarget::SpotifyPickRow(i) if self.overlays.spotify_picker.is_some() => {
+                let confirm = self.overlays.spotify_picker.as_mut().is_some_and(|p| {
+                    let valid = i < p.items.len();
+                    let already = valid && p.selected == i;
+                    if valid {
+                        p.selected = i;
+                    }
+                    already
+                });
+                self.dirty = true;
+                if confirm {
+                    self.spotify_picker_confirm()
+                } else {
+                    Vec::new()
+                }
+            }
+            MouseTarget::SpotifyPickRow(_) => Vec::new(),
             MouseTarget::ConfirmPickerCreate => self.picker_create_commit(),
             MouseTarget::CancelPickerCreate => {
                 if let Some(picker) = self.playlist_picker.as_mut() {
@@ -735,6 +766,7 @@ impl App {
             || self.library_ui.confirm_playlist_delete.is_some()
             || self.library_ui.create_input.is_some()
             || self.playlist_picker.is_some()
+            || self.overlays.spotify_picker.is_some()
             || self.overlays.recordings_browser.is_some()
             || self.overlays.recording_settings.is_some()
         {
@@ -1090,6 +1122,17 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
+        // The Spotify import picker captures the wheel to move its own selection, matching the
+        // keyboard ↑/↓ (the render pass keeps the selection in view).
+        if let Some(p) = self.overlays.spotify_picker.as_mut() {
+            p.selected = if up {
+                p.selected.saturating_sub(n)
+            } else {
+                (p.selected + n).min(p.items.len().saturating_sub(1))
+            };
+            self.dirty = true;
+            return Vec::new();
+        }
         // The recording overlays capture the wheel so it moves their own selection/focus instead
         // of leaking to the Settings form underneath. Browser (on top) wins over the popup.
         if self.overlays.recordings_browser.is_some() {
@@ -1197,6 +1240,19 @@ impl App {
                 self.dirty = true;
             }
             Mode::Settings => {
+                // A whole-row click focuses the row; on an actionable Button row it also
+                // activates it (the Enter equivalent) so clicking anywhere on e.g. the Spotify
+                // "connect in browser" / "import" row works, not just the small value glyph.
+                // Text/toggle/slider rows stay focus-only here — their value hit-rects own edit.
+                let is_button = self
+                    .settings
+                    .as_ref()
+                    .and_then(|st| st.fields().get(index).copied())
+                    .is_some_and(|f| matches!(f.kind(), crate::settings::FieldKind::Button));
+                if is_button {
+                    self.settings_focus_row(index);
+                    return self.settings_activate();
+                }
                 if let Some(st) = self.settings.as_mut() {
                     st.row = index;
                     st.editing_text = false;

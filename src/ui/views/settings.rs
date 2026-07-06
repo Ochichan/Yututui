@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, MouseTarget, ScrollSurface};
+use crate::app::{App, MouseTarget, ScrollSurface, StatusKind};
 use crate::config::{
     FPS_DEFAULT, FPS_MAX, FPS_MIN, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN,
 };
@@ -151,10 +151,33 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             k(Action::SettingsCancel),
         )
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))),
-        rows[3],
-    );
+    // The footer row doubles as the status/toast surface. An active status message (Spotify
+    // connect/import feedback, errors, the browser/clipboard-fallback hint) takes the row so it
+    // is visible without leaving Settings; otherwise the keybinding hint shows. Every other view
+    // renders `app.status` — Settings must too, or account actions look like silent no-ops.
+    if !app.status.text.is_empty() {
+        if let Some(line) = crate::ui::anim::status_toast_line(app, rows[3].width) {
+            frame.render_widget(Paragraph::new(line), rows[3]);
+        } else {
+            let role = match app.status.kind {
+                StatusKind::Error => R::Error,
+                StatusKind::Info => R::Success,
+            };
+            frame.render_widget(
+                Paragraph::new(
+                    Line::from(app.status.text.clone())
+                        .style(theme.style(role))
+                        .alignment(Alignment::Center),
+                ),
+                rows[3],
+            );
+        }
+    } else {
+        frame.render_widget(
+            Paragraph::new(Line::from(help_text).style(theme.style(R::TextMuted))),
+            rows[3],
+        );
+    }
 }
 
 /// The Keys tab: a scrollable list of every remappable binding, grouped by context. The
@@ -882,10 +905,23 @@ pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows[0]);
+    // One click target per visible row: click selects, clicking the selected row (or a
+    // double-click) imports. Indices match the `.skip(first).take(visible)` render above.
+    for (vis, i) in (first..picker.items.len()).take(visible).enumerate() {
+        app.register_mouse_button(
+            Rect {
+                x: rows[0].x,
+                y: rows[0].y + vis as u16,
+                width: rows[0].width,
+                height: 1,
+            },
+            MouseTarget::SpotifyPickRow(i),
+        );
+    }
     frame.render_widget(
         Paragraph::new(t!(
-            "↑/↓ select · Enter import · Esc close",
-            "↑/↓ 선택 · Enter 가져오기 · Esc 닫기"
+            "↑/↓ select · Enter import · Esc close · or click",
+            "↑/↓ 선택 · Enter 가져오기 · Esc 닫기 · 클릭 가능"
         ))
         .alignment(Alignment::Center)
         .style(crate::ui::popup_style(app, R::TextMuted)),

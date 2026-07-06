@@ -249,7 +249,16 @@ ytt transfer resume <job-id>                     # continue after a rate-limit/a
 
 Or stay in the TUI: Settings → **Accounts** → *Import from Spotify…* while the music keeps playing.
 
-**One-time setup.** Spotify Development-Mode apps only serve allowlisted accounts, so you bring your own (free) app: create one at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), add the redirect URI `http://127.0.0.1:9271/callback` **exactly** (the loopback IP, not `localhost`; port via `spotify.redirect_port`), add your own account under *User Management*, and paste the Client ID into Settings → Accounts. No client secret — PKCE doesn't use one.
+**One-time setup (~5 min).** Spotify apps in Development Mode only serve accounts you explicitly allowlist, so everyone brings their own free app. There is no client *secret* — PKCE doesn't use one.
+
+1. Sign in at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and click **Create app**.
+2. Give it any **App name** and **App description** (e.g. `ytm-tui`).
+3. Under **Redirect URIs**, add exactly `http://127.0.0.1:9271/callback` and click **Add**. It must be the loopback IP literal `127.0.0.1`, **never `localhost`** (Spotify rejects `localhost`). Using a different port? Set `spotify.redirect_port` in `config.json` and match it here.
+4. Under **Which API/SDKs are you planning to use?**, tick **Web API**.
+5. Accept the terms and **Save**.
+6. Open the app → **Settings** and copy the **Client ID** (you do *not* need the Client secret).
+7. Open **User Management** (in the app's settings) and add your own account — your name plus the email on your Spotify account. Dev-Mode apps serve up to 25 such allowlisted users.
+8. In ytt: **Settings → Accounts → Spotify**, paste the Client ID, and choose **Connect** (or run `ytt auth spotify --client-id <ID>`). Your browser opens Spotify's approval page — approve it and you're done. On headless/SSH where no browser opens, the URL is copied to your clipboard and saved to `spotify_auth_url.txt`, so you can open it on any device.
 
 Matching is metadata-based (NFKC-normalized, CJK-safe). Anything ambiguous lands in the job report instead of being silently guessed — re-run with `--take-best` / `--min-score`, or preview big playlists with `--dry-run` and then `ytt transfer resume <job-id>`.
 
@@ -306,7 +315,11 @@ The app's own yt-dlp calls ignore your yt-dlp config file by default, so options
 | No Control Center / SMTC / MPRIS entry | Settings → Playback → **OS media controls**; it publishes once something has played. |
 | Flyout shows "Unknown app" / two entries | Run `ytt register-media-identity` once (two entries = mpv's own media session; auto-disabled on mpv ≥ 0.39). |
 | DJ Gem won't respond | Add a free Gemini key in Settings → DJ Gem and switch **Enable DJ Gem** on. |
-| Spotify returns 403 | Add your own account under *User Management* in your Spotify app dashboard. |
+| Spotify 403 / "not allowlisted" | Add your own account under *User Management* in your Spotify app dashboard, and check the Client ID for typos. |
+| Browser shows INVALID_CLIENT / redirect mismatch | The redirect URI must match **exactly**: `http://127.0.0.1:9271/callback` — IP not `localhost`, correct port, no trailing slash. |
+| "could not listen on 127.0.0.1:9271" | That port is busy. Set `spotify.redirect_port` in `config.json` and update the dashboard redirect URI to match. |
+| Clicked Connect but no browser opened | On headless/SSH the auth URL is copied to your clipboard and saved to `spotify_auth_url.txt` — paste it into any browser to approve. |
+| Spotify import "needs a YouTube Music cookie" | Importing into a YTM playlist/likes needs sign-in; importing into a local Library playlist works without one. See the cookies section. |
 | Scrobbles not appearing | Check Settings → Accounts; the daemon reads accounts at start — restart it after connecting. |
 | Remapped a key into chaos | Settings → General → **Reset keybindings**. |
 
