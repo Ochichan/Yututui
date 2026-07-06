@@ -10,6 +10,8 @@ use anyhow::{Context, Result, bail};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 
+const STDERR_TAIL_MAX: usize = 8 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessProfile {
     /// mpv/yt-dlp media playback and stream resolution.
@@ -39,6 +41,8 @@ pub fn tokio_command(program: &str, profile: ProcessProfile) -> TokioCommand {
 pub struct LimitedOutput {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
+    /// Last bytes of child stderr, bounded; empty if none.
+    pub stderr_tail: Vec<u8>,
 }
 
 pub fn std_output_limited(
@@ -85,6 +89,7 @@ pub fn std_output_limited(
     Ok(LimitedOutput {
         status,
         stdout: out,
+        stderr_tail: Vec::new(),
     })
 }
 
@@ -93,11 +98,29 @@ pub async fn tokio_output_limited(
     timeout: Duration,
     stdout_max: usize,
 ) -> Result<LimitedOutput> {
-    cmd.stdout(Stdio::piped());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().context("spawn child process")?;
     let mut stdout = child.stdout.take().context("child stdout was not piped")?;
+    let stderr = child.stderr.take().context("child stderr was not piped")?;
     let mut out = Vec::new();
     let limit = stdout_max.saturating_add(1) as u64;
+    let mut stderr_drain = tokio::spawn(async move {
+        let mut stderr = stderr;
+        let mut tail = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = stderr.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            tail.extend_from_slice(&buf[..n]);
+            if tail.len() > STDERR_TAIL_MAX {
+                let excess = tail.len() - STDERR_TAIL_MAX;
+                tail.drain(..excess);
+            }
+        }
+        std::io::Result::Ok(tail)
+    });
 
     let read = tokio::time::timeout(timeout, async {
         let mut limited = (&mut stdout).take(limit);
@@ -108,30 +131,48 @@ pub async fn tokio_output_limited(
         Ok(Ok(_)) => {}
         Ok(Err(e)) => {
             let _ = child.kill().await;
+            stderr_drain.abort();
             return Err(e).context("read child stdout");
         }
         Err(_) => {
             let _ = child.kill().await;
+            stderr_drain.abort();
             bail!("child process timed out");
         }
     }
 
     if out.len() > stdout_max {
         let _ = child.kill().await;
+        stderr_drain.abort();
         bail!("child stdout too large: more than {stdout_max} bytes");
     }
 
     let status = match tokio::time::timeout(timeout, child.wait()).await {
         Ok(Ok(status)) => status,
-        Ok(Err(e)) => return Err(e).context("wait for child process"),
+        Ok(Err(e)) => {
+            stderr_drain.abort();
+            return Err(e).context("wait for child process");
+        }
         Err(_) => {
             let _ = child.kill().await;
+            stderr_drain.abort();
             bail!("child process timed out");
+        }
+    };
+    // Short-bounded, not plain `.await`: a grandchild (JS runtime, ffmpeg) that inherited
+    // the stderr write end can hold the pipe open past the child's own exit, and this
+    // function must never outlive its timeout contract on the success path either.
+    let stderr_tail = match tokio::time::timeout(Duration::from_secs(2), &mut stderr_drain).await {
+        Ok(joined) => joined.ok().and_then(|r| r.ok()).unwrap_or_default(),
+        Err(_) => {
+            stderr_drain.abort();
+            Vec::new()
         }
     };
     Ok(LimitedOutput {
         status,
         stdout: out,
+        stderr_tail,
     })
 }
 
@@ -257,7 +298,12 @@ fn should_inherit(key: &str, profile: ProcessProfile) -> bool {
     if matches!(profile, ProcessProfile::Daemon)
         && matches!(
             upper.as_str(),
-            "RUST_LOG" | "YTM_MPV_EXTRA" | "YTM_NO_MEDIA_SESSION" | "YTM_YTDLP" | "YTM_MPV"
+            "RUST_LOG"
+                | "YTM_MPV_EXTRA"
+                | "YTM_NO_MEDIA_SESSION"
+                | "YTM_YTDLP"
+                | "YTM_MPV"
+                | "YTM_YTDLP_USER_CONFIG"
         )
     {
         return true;
@@ -357,7 +403,15 @@ mod tests {
         // or `YTM_YTDLP`/`YTM_MPV` would silently stop applying in daemon mode.
         assert!(should_inherit("YTM_YTDLP", ProcessProfile::Daemon));
         assert!(should_inherit("YTM_MPV", ProcessProfile::Daemon));
+        assert!(should_inherit(
+            "YTM_YTDLP_USER_CONFIG",
+            ProcessProfile::Daemon
+        ));
         assert!(!should_inherit("YTM_YTDLP", ProcessProfile::YtDlp));
+        assert!(!should_inherit(
+            "YTM_YTDLP_USER_CONFIG",
+            ProcessProfile::YtDlp
+        ));
         assert!(!should_inherit("HTTPS_PROXY", ProcessProfile::Clipboard));
     }
 
@@ -369,10 +423,37 @@ mod tests {
         let out = std_output_limited(ok, Duration::from_secs(5), 128 * 1024).unwrap();
         assert!(out.status.success());
         assert!(!out.stdout.is_empty());
+        assert!(out.stderr_tail.is_empty());
 
         let mut too_large = StdCommand::new(exe);
         too_large.arg("--help");
         assert!(std_output_limited(too_large, Duration::from_secs(5), 1).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tokio_output_limited_captures_stderr_tail() {
+        let mut cmd = TokioCommand::new("sh");
+        cmd.args(["-c", "echo out; echo err1 >&2; echo err2 >&2"]);
+        let out = tokio_output_limited(cmd, Duration::from_secs(5), 128 * 1024)
+            .await
+            .unwrap();
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("out"));
+        assert!(String::from_utf8_lossy(&out.stderr_tail).contains("err2"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tokio_output_limited_bounds_stderr_tail() {
+        let mut cmd = TokioCommand::new("sh");
+        cmd.args(["-c", "yes x | head -c 9000 >&2; printf final >&2"]);
+        let out = tokio_output_limited(cmd, Duration::from_secs(5), 128 * 1024)
+            .await
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stderr_tail.len(), STDERR_TAIL_MAX);
+        assert!(out.stderr_tail.ends_with(b"final"));
     }
 
     #[test]

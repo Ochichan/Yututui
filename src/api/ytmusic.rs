@@ -7,7 +7,6 @@
 //!   no auth, directly playable, and yt-dlp is already a dependency for playback.
 
 use std::collections::HashSet;
-use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -19,7 +18,7 @@ use ytmapi_rs::common::{VideoID, YoutubeID};
 use super::{PlayableRef, Song};
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{self, StreamingConfig, StreamingMode};
-use crate::util::{format, http, process, sanitize};
+use crate::util::{format, http, sanitize};
 
 /// How many results a search returns, for both backends. The anonymous yt-dlp path asks
 /// for exactly this many; the authenticated path pages through continuations until it has
@@ -526,17 +525,9 @@ async fn ytdlp_flat_search(
     cmd.arg(&spec)
         .arg("--flat-playlist")
         .arg("--dump-single-json")
-        .arg("--no-warnings")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
-    let output = process::tokio_output_limited(cmd, YTDLP_SEARCH_TIMEOUT, YTDLP_JSON_MAX)
-        .await
-        .context("failed to run yt-dlp — is it installed and on PATH?")?;
-    if !output.status.success() {
-        bail!("yt-dlp search exited with status {}", output.status);
-    }
-    let json: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("could not parse yt-dlp search output")?;
+        .arg("--no-warnings");
+    let json =
+        crate::tools::run_ytdlp_json(cmd, YTDLP_SEARCH_TIMEOUT, YTDLP_JSON_MAX, "search").await?;
     let entries = json
         .get("entries")
         .and_then(|e| e.as_array())
@@ -756,20 +747,10 @@ async fn ytdlp_playlist_search(query: &str) -> Result<Vec<Song>> {
         .arg("--dump-single-json")
         .arg("--no-warnings")
         .arg("--playlist-end")
-        .arg("20")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
-    let output = process::tokio_output_limited(cmd, YTDLP_SEARCH_TIMEOUT, YTDLP_JSON_MAX)
-        .await
-        .context("failed to run yt-dlp — is it installed and on PATH?")?;
-    if !output.status.success() {
-        bail!(
-            "yt-dlp playlist search exited with status {}",
-            output.status
-        );
-    }
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .context("could not parse yt-dlp playlist search output")?;
+        .arg("20");
+    let json =
+        crate::tools::run_ytdlp_json(cmd, YTDLP_SEARCH_TIMEOUT, YTDLP_JSON_MAX, "playlist search")
+            .await?;
     Ok(parse_ytdlp_playlist_search(&json))
 }
 
@@ -883,22 +864,17 @@ async fn ytdlp_playlist_json(playlist_id: &str, items: Option<&str>) -> Result<s
     cmd.arg(&url)
         .arg("--flat-playlist")
         .arg("--dump-single-json")
-        .arg("--no-warnings")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
+        .arg("--no-warnings");
     if let Some(items) = items {
         cmd.arg("--playlist-items").arg(items);
     }
-    let output = process::tokio_output_limited(cmd, PLAYLIST_FETCH_TIMEOUT, PLAYLIST_JSON_MAX)
-        .await
-        .context("failed to run yt-dlp — is it installed and on PATH?")?;
-    if !output.status.success() {
-        bail!(
-            "yt-dlp playlist extraction exited with status {}",
-            output.status
-        );
-    }
-    serde_json::from_slice(&output.stdout).context("could not parse yt-dlp playlist output")
+    crate::tools::run_ytdlp_json(
+        cmd,
+        PLAYLIST_FETCH_TIMEOUT,
+        PLAYLIST_JSON_MAX,
+        "playlist extraction",
+    )
+    .await
 }
 
 /// Resolve one pasted watch/share URL's video id into a full search row. Failure
@@ -940,20 +916,14 @@ async fn enrich_video_meta(video_id: &str) -> Result<EnrichedVideoMeta> {
     cmd.arg("--dump-single-json")
         .arg("--no-playlist")
         .arg("--no-warnings")
-        .arg(&url)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
-    let output = process::tokio_output_limited(cmd, STREAMING_PREFLIGHT_TIMEOUT, YTDLP_JSON_MAX)
-        .await
-        .context("failed to run yt-dlp metadata lookup")?;
-    if !output.status.success() {
-        bail!(
-            "yt-dlp metadata lookup exited with status {}",
-            output.status
-        );
-    }
-    let json: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("could not parse yt-dlp metadata output")?;
+        .arg(&url);
+    let json = crate::tools::run_ytdlp_json(
+        cmd,
+        STREAMING_PREFLIGHT_TIMEOUT,
+        YTDLP_JSON_MAX,
+        "metadata lookup",
+    )
+    .await?;
     Ok(EnrichedVideoMeta {
         title: json_string(&json, &["title"]).unwrap_or_default(),
         channel: json_string(&json, &["channel", "uploader"]).unwrap_or_default(),

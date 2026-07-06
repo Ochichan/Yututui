@@ -8,6 +8,7 @@
 //! Progress is parsed from yt-dlp's `--progress-template` lines and streamed back as
 //! [`DownloadEvent::Progress`]; the final saved path comes from `--print after_move:filepath`.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -172,9 +173,11 @@ async fn run_download_with_program(
         // that would leave yt-dlp blocked writing to a full stderr pipe and stall the
         // download); progress is best-effort, so a dropped fragment just isn't parsed.
         const STDERR_LINE_MAX: usize = 64 * 1024;
+        const STDERR_DIAGNOSTIC_LINES_MAX: usize = 8;
         let mut reader = BufReader::new(stderr);
         let mut line: Vec<u8> = Vec::new();
         let mut last_percent: Option<u8> = None;
+        let mut diagnostics: VecDeque<String> = VecDeque::new();
         loop {
             line.clear();
             match read_bounded_line(&mut reader, &mut line, STDERR_LINE_MAX).await {
@@ -192,8 +195,17 @@ async fn run_download_with_program(
                     video_id: vid.clone(),
                     percent: f64::from(rounded),
                 });
+            } else {
+                let trimmed = String::from_utf8_lossy(&line).trim().to_owned();
+                if !trimmed.is_empty() {
+                    diagnostics.push_back(trimmed.chars().take(200).collect::<String>());
+                    if diagnostics.len() > STDERR_DIAGNOSTIC_LINES_MAX {
+                        diagnostics.pop_front();
+                    }
+                }
             }
         }
+        diagnostics
     });
 
     // The final path is printed to stdout (small); read it to EOF, then reap the child — all
@@ -221,10 +233,16 @@ async fn run_download_with_program(
             bail!("yt-dlp download timed out");
         }
     };
-    let _ = progress.await;
+    let stderr_lines = progress.await.unwrap_or_default();
 
     if !status.success() {
-        bail!("yt-dlp exited with {status}");
+        // Newline-joined so `ytdlp_failure_detail` picks the LAST line (yt-dlp prints the
+        // decisive `ERROR:` after its warnings) while classification scans all of them.
+        let stderr = stderr_lines.into_iter().collect::<Vec<_>>().join("\n");
+        bail!(
+            "yt-dlp exited with {status}{}",
+            crate::tools::ytdlp_failure_detail(stderr.as_bytes())
+        );
     }
     // A zero exit + a printed line is NOT proof the file is really there: a yt-dlp
     // version/option change, a stray stdout line, or an external delete can all leave a bogus
@@ -406,6 +424,39 @@ mod tests {
             result.is_err(),
             "a phantom (never-written) path must be rejected, not reported as saved"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_download_reports_stderr_line_on_ytdlp_failure() {
+        let root = temp_dir("download-stderr");
+        let bin_dir = root.join("bin");
+        let download_dir = root.join("music");
+        fs::create_dir_all(&bin_dir).unwrap();
+        // A long warning precedes the decisive ERROR line, as a stale yt-dlp does; the
+        // reported detail must keep the LAST line even when earlier lines exceed the
+        // 200-char excerpt cap on their own.
+        let long_warning = format!("WARNING: {}", "w".repeat(250));
+        let fake = write_executable(
+            &bin_dir,
+            "yt-dlp",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' '{long_warning}' >&2\nprintf '%s\\n' 'ERROR: private video needs login' >&2\nexit 1\n"
+            ),
+        );
+        let emit: EventSink = Arc::new(|_| {});
+        let result = run_download_with_program(
+            fake.to_str().unwrap(),
+            &Song::remote("abc123def45", "Track", "Artist", "3:12"),
+            &download_dir,
+            None,
+            &emit,
+        )
+        .await
+        .expect_err("yt-dlp failure should be reported");
+        let error = format!("{result:#}");
+        assert!(error.contains("ERROR: private video needs login"));
         let _ = fs::remove_dir_all(root);
     }
 

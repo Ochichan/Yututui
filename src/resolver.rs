@@ -83,15 +83,17 @@ where
         {
             if !in_flight
                 .lock()
-                .is_ok_and(|mut ids| ids.insert(video_id.as_str().to_owned()))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(video_id.as_str().to_owned())
             {
                 tracing::debug!(video_id = %video_id, "prefetch already in flight");
                 continue;
             }
             let Ok(permit) = sem.clone().acquire_owned().await else {
-                if let Ok(mut ids) = in_flight.lock() {
-                    ids.remove(video_id.as_str());
-                }
+                in_flight
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(video_id.as_str());
                 return;
             };
             let emit = emit.clone();
@@ -114,9 +116,10 @@ where
                         });
                     }
                 }
-                if let Ok(mut ids) = in_flight.lock() {
-                    ids.remove(video_id.as_str());
-                }
+                in_flight
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(video_id.as_str());
             });
         }
     });
@@ -142,11 +145,16 @@ async fn resolve_url_with_program(
     if let Some(c) = cookies {
         cmd.arg("--cookies").arg(c);
     }
-    cmd.stdin(Stdio::null()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null());
     let out = process::tokio_output_limited(cmd, RESOLVE_TIMEOUT, RESOLVE_STDOUT_MAX)
         .await
         .ok()?;
     if !out.status.success() {
+        tracing::warn!(
+            status = %out.status,
+            detail = %crate::tools::ytdlp_failure_detail(&out.stderr_tail).trim_start(),
+            "yt-dlp resolve failed"
+        );
         return None;
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -272,12 +280,17 @@ mod tests {
     }
 
     fn temp_dir() -> PathBuf {
+        // A per-call sequence, not just a timestamp: these tests start simultaneously and
+        // macOS's clock granularity made same-nanos collisions real — two tests sharing a
+        // dir overwrite each other's fake `yt-dlp`.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "ytm-tui-resolver-test-{}-{nanos}",
+            "ytm-tui-resolver-test-{}-{nanos}-{seq}",
             std::process::id()
         ))
     }

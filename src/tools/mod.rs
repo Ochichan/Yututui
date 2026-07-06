@@ -33,6 +33,7 @@ use std::process::Stdio;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
+use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ToolsConfig;
@@ -240,6 +241,103 @@ pub(crate) fn ytdlp_command_for(program: &str) -> tokio::process::Command {
 /// process env (racy under the parallel test runner). Only an exact `1` (trimmed) opts in.
 fn respect_user_ytdlp_config(env_val: Option<&str>) -> bool {
     env_val.map(str::trim) == Some("1")
+}
+
+pub(crate) fn classify_ytdlp_failure(stderr: &str) -> Option<&'static str> {
+    let stderr = stderr.to_ascii_lowercase();
+    for (needle, class) in [
+        (
+            "sign in to confirm",
+            "YouTube bot check — sign-in cookies may be needed",
+        ),
+        (
+            "not a bot",
+            "YouTube bot check — sign-in cookies may be needed",
+        ),
+        ("sign in", "sign-in required"),
+        ("login required", "sign-in required"),
+        ("private video", "sign-in required"),
+        ("members-only", "sign-in required"),
+        ("confirm your age", "sign-in required"),
+        ("not available in your country", "geo-blocked"),
+        ("geo restrict", "geo-blocked"),
+        (
+            "requested format is not available",
+            "no playable format (yt-dlp may be stale)",
+        ),
+        (
+            "no video formats",
+            "no playable format (yt-dlp may be stale)",
+        ),
+        ("js runtime", "JS runtime problem (install deno or node)"),
+        (
+            "javascript runtime",
+            "JS runtime problem (install deno or node)",
+        ),
+        ("nsig", "JS runtime problem (install deno or node)"),
+        // "error 429", not bare "429": video ids / byte counts embed the digits routinely.
+        ("error 429", "rate-limited by YouTube"),
+        ("too many requests", "rate-limited by YouTube"),
+        ("urlopen error", "network error"),
+        ("timed out", "network error"),
+        ("connection re", "network error"),
+        ("temporary failure in name resolution", "network error"),
+        ("ffmpeg", "ffmpeg/post-processing failure"),
+        ("postprocess", "ffmpeg/post-processing failure"),
+    ] {
+        if stderr.contains(needle) {
+            return Some(class);
+        }
+    }
+    None
+}
+
+pub(crate) fn ytdlp_failure_detail(stderr_tail: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr_tail);
+    let class = classify_ytdlp_failure(&stderr);
+    let line = stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(crate::util::sanitize::sanitize_error_text)
+        .map(|line| truncate_chars(&line, 200))
+        .filter(|line| !line.is_empty());
+
+    match (class, line) {
+        (Some(class), Some(line)) => format!(" ({class}; {line})"),
+        (Some(class), None) => format!(" ({class})"),
+        (None, Some(line)) => format!(" ({line})"),
+        (None, None) => String::new(),
+    }
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    s.chars().take(max).collect()
+}
+
+pub(crate) async fn run_ytdlp_json(
+    mut cmd: tokio::process::Command,
+    timeout: Duration,
+    stdout_max: usize,
+    what: &str,
+) -> anyhow::Result<serde_json::Value> {
+    cmd.stdin(Stdio::null());
+    let out = process::tokio_output_limited(cmd, timeout, stdout_max)
+        .await
+        .with_context(|| format!("failed to run yt-dlp {what} — is it installed and on PATH?"))?;
+    if !out.status.success() {
+        bail!(
+            "yt-dlp {what} exited with status {}{}",
+            out.status,
+            ytdlp_failure_detail(&out.stderr_tail)
+        );
+    }
+    serde_json::from_slice(&out.stdout)
+        .with_context(|| format!("could not parse yt-dlp {what} output"))
 }
 
 /// The mpv program to spawn (`YTM_MPV` env > `tools.mpv_path` config > `"mpv"`).
@@ -577,9 +675,9 @@ pub fn looks_like_extraction_failure(player_error: &str) -> bool {
 /// this a one-time cost per binary.
 pub(crate) async fn probe_version(program: &str) -> Option<String> {
     let mut cmd = process::tokio_command(program, process::ProcessProfile::YtDlp);
-    cmd.arg("--version")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
+    cmd.arg("--ignore-config")
+        .arg("--version")
+        .stdin(Stdio::null());
     let out = process::tokio_output_limited(cmd, Duration::from_secs(30), 4096)
         .await
         .ok()?;
@@ -770,6 +868,79 @@ mod tests {
             "mpv could not play this track"
         ));
         assert!(!looks_like_extraction_failure("connection refused"));
+    }
+
+    #[test]
+    fn ytdlp_user_config_opt_in_is_exact_trimmed_one() {
+        assert!(!respect_user_ytdlp_config(None));
+        assert!(respect_user_ytdlp_config(Some("1")));
+        assert!(respect_user_ytdlp_config(Some(" 1 ")));
+        assert!(!respect_user_ytdlp_config(Some("0")));
+        assert!(!respect_user_ytdlp_config(Some("")));
+        assert!(!respect_user_ytdlp_config(Some("true")));
+    }
+
+    #[test]
+    fn ytdlp_failure_classification_matches_expected_classes() {
+        let cases = [
+            (
+                "ERROR: [youtube] abc: Sign in to confirm you're not a bot",
+                "YouTube bot check — sign-in cookies may be needed",
+            ),
+            (
+                "ERROR: login required to watch this video",
+                "sign-in required",
+            ),
+            (
+                "ERROR: This video is not available in your country",
+                "geo-blocked",
+            ),
+            (
+                "ERROR: requested format is not available",
+                "no playable format (yt-dlp may be stale)",
+            ),
+            (
+                "WARNING: nsig extraction failed: JS runtime not found",
+                "JS runtime problem (install deno or node)",
+            ),
+            (
+                "ERROR: HTTP Error 429: Too Many Requests",
+                "rate-limited by YouTube",
+            ),
+            ("ERROR: urlopen error timed out", "network error"),
+            (
+                "ERROR: ffmpeg postprocess failed while converting",
+                "ffmpeg/post-processing failure",
+            ),
+        ];
+        for (stderr, expected) in cases {
+            assert_eq!(classify_ytdlp_failure(stderr), Some(expected), "{stderr}");
+        }
+        assert_eq!(classify_ytdlp_failure("ERROR: something surprising"), None);
+    }
+
+    #[test]
+    fn ytdlp_failure_detail_formats_class_and_last_line() {
+        let detail =
+            ytdlp_failure_detail(b"WARNING: ignored\nERROR: HTTP Error 429: Too Many Requests\n");
+        assert_eq!(
+            detail,
+            " (rate-limited by YouTube; ERROR: HTTP Error 429: Too Many Requests)"
+        );
+
+        assert_eq!(
+            ytdlp_failure_detail(b"ERROR: completely new failure\n"),
+            " (ERROR: completely new failure)"
+        );
+        assert_eq!(
+            ytdlp_failure_detail(b"ERROR: Sign in to confirm you're not a bot\n"),
+            " (YouTube bot check \u{2014} sign-in cookies may be needed; ERROR: Sign in to confirm you're not a bot)"
+        );
+        assert_eq!(ytdlp_failure_detail(b"\n \n"), "");
+
+        let long = format!("ERROR: {}", "x".repeat(250));
+        let detail = ytdlp_failure_detail(long.as_bytes());
+        assert_eq!(detail.len(), " (".len() + 200 + ")".len());
     }
 
     #[test]
