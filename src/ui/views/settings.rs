@@ -4,7 +4,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph};
 use unicode_width::UnicodeWidthStr;
@@ -685,7 +685,12 @@ fn field_row<'a>(
         let normal: String = track.chars().take(mark + 1).collect();
         let hot: String = track.chars().skip(mark + 1).collect();
         let val_style = fade(theme.style(value_role));
-        let hot_style = fade(theme.style(R::Warning));
+        // A literal red — the request is specifically "red", and theme roles like Warning are a
+        // muted gray in the monochrome presets. Keeps the value role's background so the red cells
+        // don't seam against the rest of the track. (On the *focused* row the List highlight
+        // repaints the whole row uniformly, flattening this like every other per-span colour;
+        // the zone reads red on the row at rest, which is the usual viewing state.)
+        let hot_style = fade(theme.style(value_role).fg(Color::Red));
         let num = format!("{fps} fps");
         let num_style = if fps > FPS_DEFAULT {
             hot_style
