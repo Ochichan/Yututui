@@ -4,7 +4,7 @@
 
 use crate::{config, i18n};
 
-use super::{detect_install_method, is_newer, update_instructions};
+use super::{is_newer, resolved_install_method, update_instructions};
 
 pub fn run(args: &[String]) -> i32 {
     if matches!(args.first().map(String::as_str), Some("--help" | "-h")) {
@@ -17,7 +17,7 @@ pub fn run(args: &[String]) -> i32 {
     let kr = i18n::is_korean();
 
     let current = env!("CARGO_PKG_VERSION");
-    let method = detect_install_method();
+    let method = resolved_install_method();
 
     println!(
         "ytm-tui {current} · {} {}",

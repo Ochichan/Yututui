@@ -355,6 +355,12 @@ fn method_override(detected: InstallMethod) -> InstallMethod {
         .unwrap_or(detected)
 }
 
+/// The install method to act on: [`detect_install_method`] plus the debug override. The
+/// About card, `ytt update`, and the background check all resolve through here so they agree.
+pub fn resolved_install_method() -> InstallMethod {
+    method_override(detect_install_method())
+}
+
 /// Resolve the latest release for `REPO` once — the exact source `ytt update` and the
 /// background check share. Honors the debug force override.
 pub async fn resolve_latest() -> Result<String, String> {
@@ -383,7 +389,7 @@ where
     if !enabled {
         return;
     }
-    let method = method_override(detect_install_method());
+    let method = resolved_install_method();
     // Development builds don't nag — unless a debug override is forcing a preview.
     if method == InstallMethod::Development && forced_latest_tag().is_none() {
         return;
