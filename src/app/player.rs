@@ -24,6 +24,108 @@ pub(in crate::app) struct YidMemo {
 }
 
 impl App {
+    /// Handle an mpv playback error: self-heal a stale-yt-dlp extraction failure
+    /// once, otherwise skip the bad track (with a circuit breaker after too many in a
+    /// row). Extracted verbatim from the `Msg::PlayerError` dispatch arm; the
+    /// `position_epoch` bump stays in `App::update`.
+    pub(in crate::app) fn on_player_error(&mut self, e: String) -> Vec<Cmd> {
+        // Log *which* track failed and whether it came from a (possibly stale)
+        // prefetched URL. `e` already carries mpv's own reason (its `file_error`
+        // end-file field — the closest thing to a "why": HTTP 403, unsupported, …).
+        let failed = self
+            .queue
+            .current()
+            .map(|s| format!("{} — {}", s.title, s.artist));
+        tracing::warn!(
+            error = %e,
+            track = failed.as_deref().unwrap_or("?"),
+            prefetched = self.prefetch.last_load_prefetched,
+            "playback error"
+        );
+        let extraction = crate::tools::looks_like_extraction_failure(&e);
+        // Self-heal: an extraction-shaped failure on a yt-dlp-resolved track is
+        // the stale-yt-dlp signature. Update it in the background and retry this
+        // track ONCE — via a resolver-resolved direct URL, because the session
+        // mpv keeps its spawn-time ytdl_path (see player::mpv::spawn docs).
+        // Deliberately does not touch `consecutive_play_errors`: the heal is an
+        // extra chance, not a substitute for the circuit breaker.
+        if extraction
+            && self.heal.pending_video_id.is_none()
+            && let Some(song) = self.queue.current()
+            && song.prefetch_target().is_some()
+            && !self.heal.attempted.contains(&song.video_id)
+            && self
+                .heal
+                .last_check
+                .is_none_or(|at| at.elapsed() >= crate::tools::HEAL_COOLDOWN)
+        {
+            let video_id = song.video_id.clone();
+            // Bound the per-track guard set: after enough distinct healed tracks in one
+            // long session, reset it (a re-heal is at worst one wasted retry).
+            if self.heal.attempted.len() >= crate::playback_policy::HEAL_ATTEMPTED_MAX {
+                self.heal.attempted.clear();
+            }
+            self.heal.attempted.insert(video_id.clone());
+            self.heal.last_check = Some(Instant::now());
+            self.heal.pending_video_id = Some(video_id.clone());
+            // The failed load may itself have been a stale prefetched URL —
+            // drop it so the retry resolves fresh with the updated binary.
+            self.prefetch.resolved.remove(&video_id);
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!(
+                "Stream resolution failed — updating yt-dlp…",
+                "스트림 해석 실패 — yt-dlp 업데이트 중…"
+            )
+            .to_owned();
+            self.dirty = true;
+            return vec![Cmd::YtdlpSelfHeal {
+                video_id,
+                tools: self.config.tools.clone(),
+            }];
+        }
+        self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
+        // A single bad track shouldn't strand the user: skip it and play on. The
+        // cursor moves, so the title refreshes to the next track. Bail out once too
+        // many fail in a row (offline / bad cookie) so we don't skip-storm.
+        if self.consecutive_play_errors <= MAX_CONSECUTIVE_PLAY_ERRORS
+            && self.queue.peek_next().is_some()
+        {
+            // `advance(false)` always moves on (ignores repeat-one), unlike an EOF.
+            let cmds = self.advance(false);
+            self.status.text = if extraction {
+                t!(
+                    "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
+                    "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀"
+                )
+            } else {
+                t!(
+                    "⚠ Track unavailable — skipped to next",
+                    "⚠ 재생할 수 없는 곡 — 다음 곡으로 건너뜀"
+                )
+            }
+            .to_owned();
+            self.dirty = true;
+            return cmds;
+        }
+        self.status.text = if self.consecutive_play_errors > MAX_CONSECUTIVE_PLAY_ERRORS {
+            if extraction {
+                t!(
+                            "Several tracks failed — run `ytt tools reset --playback`, then `ytt doctor --verbose` if it continues.",
+                            "여러 곡 재생 실패 — `ytt tools reset --playback` 실행 후 계속되면 `ytt doctor --verbose`를 확인하세요."
+                        ).to_owned()
+            } else {
+                t!(
+                            "Several tracks failed to play — stopped. Check your connection, or sign in (cookies) for gated tracks.",
+                            "여러 곡 재생에 실패해서 중단했어요. 연결을 확인하거나, 제한된 곡은 로그인(쿠키)하세요."
+                        ).to_owned()
+            }
+        } else {
+            format!("{}: {e}", t!("Playback error", "재생 오류"))
+        };
+        self.dirty = true;
+        Vec::new()
+    }
+
     /// The mpv `af` filter chain for the current EQ + normalization state, or `None` when
     /// nothing is active (the caller then clears `af`).
     pub(in crate::app) fn current_af(&self) -> Option<String> {

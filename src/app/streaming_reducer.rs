@@ -3,6 +3,95 @@
 use super::*;
 
 impl App {
+    /// Handle the DJ Gem reranker's chosen streaming picks: resolve cids, validate
+    /// against the shortlist, cache the ordering, and enqueue. Extracted verbatim from
+    /// the `Msg::StreamingAiPicks` dispatch arm.
+    pub(in crate::app) fn on_streaming_ai_picks(
+        &mut self,
+        seed_video_id: String,
+        picks: Vec<AiPick>,
+        conf: Option<f32>,
+    ) -> Vec<Cmd> {
+        self.ai.thinking = false;
+        self.dirty = true;
+        // Only consume `pending_rerank` when this result is for it (a stale/duplicate
+        // message for some other seed leaves the current rerank untouched). When it does
+        // match but the seed is no longer queued (the user skipped/cleared mid-think),
+        // the chain still drops the stale rerank without enqueuing.
+        let ours = self
+            .streaming
+            .pending_rerank
+            .as_ref()
+            .is_some_and(|p| p.seed_video_id == seed_video_id);
+        if ours
+            && let Some(pending) = self.streaming.pending_rerank.take()
+            && self.autoplay_streaming
+            && self.queue.contains_video_id(&seed_video_id)
+        {
+            if let Some(conf) = conf {
+                tracing::debug!(
+                    conf,
+                    picks = picks.len(),
+                    "streaming DJ Gem rerank confidence"
+                );
+            }
+            // Resolve the model's opaque cids back to real tracks once, keeping its order. A
+            // cid that isn't in the pack (a hallucinated id) is dropped here; `merge_ai_picks`
+            // then re-validates against the shortlist and tops up from the local pick. The
+            // same resolution feeds the "Why DJ Gem" overlay (title + role + reasons), which must
+            // outlive the `pending_rerank` we're about to drop.
+            let resolved: Vec<(String, ExplainPick)> = picks
+                .iter()
+                .filter_map(|p| {
+                    let vid = pending
+                        .cid_map
+                        .iter()
+                        .find(|m| m.cid == p.cid)?
+                        .video_id
+                        .clone();
+                    let song = pending.shortlist.iter().find(|s| s.video_id == vid)?;
+                    let pick = ExplainPick {
+                        title: self.display_title(song).into_owned(),
+                        artist: self.display_artist(song).into_owned(),
+                        role: p.role.clone(),
+                        reasons: p.reasons.clone(),
+                    };
+                    Some((vid, pick))
+                })
+                .collect();
+            let ids: Vec<String> = resolved.iter().map(|(vid, _)| vid.clone()).collect();
+            let roles: Vec<Option<String>> =
+                resolved.iter().map(|(_, pick)| pick.role.clone()).collect();
+            let recipe_ok =
+                streaming::ai_roles_match_recipe(&roles, pending.mode, &self.config.streaming);
+            let effective_conf = if recipe_ok {
+                conf
+            } else {
+                Some(conf.unwrap_or(0.35).min(0.40))
+            };
+            if !resolved.is_empty() {
+                self.streaming.last_explain = Some(StreamingAiExplain {
+                    conf: effective_conf,
+                    picks: resolved.into_iter().map(|(_, p)| p).collect(),
+                });
+            }
+            let picks = streaming::merge_ai_picks_with_confidence(
+                &ids,
+                &pending.shortlist,
+                &pending.local_pick,
+                self.config.streaming.ai.picks,
+                effective_conf,
+            );
+            // Cache the validated ordering so a rapid identical refill replays it without a
+            // second call. Skip empty results (a failed rerank) so the next refill retries.
+            if !ids.is_empty() && recipe_ok && effective_conf.unwrap_or(0.0) >= 0.45 {
+                self.ai_cache_store(pending.cache_key, ids);
+            }
+            return self.extend_sanitized_streaming(&seed_video_id, picks, &pending.local_pick);
+        }
+        Vec::new()
+    }
+
     /// If autoplay/streaming is on and the queue is running low, top it up. Both the DJ Gem and non-DJ Gem
     /// paths fetch the *same* local candidate pool first; the DJ Gem reranker (when a key is
     /// configured) then reorders it in [`Msg::StreamingResults`]. The DJ Gem never invents tracks.
