@@ -958,10 +958,17 @@ impl App {
                             crate::transfer::actor::TransferCmd::CancelJob,
                         )];
                     }
-                    let connected = self
-                        .settings
-                        .as_ref()
-                        .is_some_and(|s| s.draft.spotify_connected);
+                    // Re-derive from the token file, not the draft snapshot: a CLI `ytt auth
+                    // spotify` run while this screen was open never refreshed the draft.
+                    let token = crate::spotify::auth::SpotifyToken::load();
+                    let connected = token.is_some();
+                    let cfg_cid = self.config.spotify.client_id.clone().unwrap_or_default();
+                    let stale =
+                        spotify_row_state(token.as_ref().map(|t| t.client_id.as_str()), &cfg_cid).1;
+                    if let Some(st) = self.settings.as_mut() {
+                        st.draft.spotify_connected = connected;
+                        st.draft.spotify_stale = stale;
+                    }
                     if !connected {
                         self.status.text =
                             t!("Connect Spotify first", "먼저 Spotify를 연결해 주세요").to_owned();
@@ -1008,45 +1015,53 @@ impl App {
                 picker.selected = (picker.selected + 1).min(picker.items.len().saturating_sub(1));
                 Vec::new()
             }
-            Some(Action::Confirm) => {
-                let Some(item) = picker.items.get(picker.selected).cloned() else {
-                    return Vec::new();
-                };
-                self.overlays.spotify_picker = None;
-                self.transfer_running = true;
-                // The TUI can't browse account playlists, so the picker lands imports in
-                // the app's own Library playlists — playable the moment the job finishes.
-                // (`ytt transfer` still targets the YTM account by default.)
-                let dest = match item.source {
-                    crate::transfer::TransferSource::SpotifyLiked => {
-                        crate::transfer::TransferDest::YtmLikes
-                    }
-                    _ => crate::transfer::TransferDest::LocalPlaylist { name: None },
-                };
-                let spec = crate::transfer::JobSpec {
-                    source: item.source,
-                    dest,
-                    dry_run: false,
-                    min_score: 0.80,
-                    take_best: false,
-                    rematch: false,
-                };
-                self.status.text = if crate::i18n::is_korean() {
-                    format!("가져오는 중: {}", item.label)
-                } else {
-                    format!("Importing: {}", item.label)
-                };
-                self.status.kind = StatusKind::Info;
-                vec![Cmd::Transfer(
-                    crate::transfer::actor::TransferCmd::StartJob(Box::new(spec)),
-                )]
-            }
+            Some(Action::Confirm) => self.spotify_picker_confirm(),
             Some(Action::SettingsCancel | Action::Back) => {
                 self.overlays.spotify_picker = None;
                 Vec::new()
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Start importing the picker's selected item — shared by the Enter and mouse-click paths.
+    pub(in crate::app) fn spotify_picker_confirm(&mut self) -> Vec<Cmd> {
+        let Some(item) = self
+            .overlays
+            .spotify_picker
+            .as_ref()
+            .and_then(|p| p.items.get(p.selected).cloned())
+        else {
+            return Vec::new();
+        };
+        self.overlays.spotify_picker = None;
+        self.transfer_running = true;
+        self.dirty = true;
+        // The TUI can't browse account playlists, so the picker lands imports in the app's own
+        // Library playlists — playable the moment the job finishes.
+        let dest = match item.source {
+            crate::transfer::TransferSource::SpotifyLiked => {
+                crate::transfer::TransferDest::YtmLikes
+            }
+            _ => crate::transfer::TransferDest::LocalPlaylist { name: None },
+        };
+        let spec = crate::transfer::JobSpec {
+            source: item.source,
+            dest,
+            dry_run: false,
+            min_score: 0.80,
+            take_best: false,
+            rematch: false,
+        };
+        self.status.text = if crate::i18n::is_korean() {
+            format!("가져오는 중: {}", item.label)
+        } else {
+            format!("Importing: {}", item.label)
+        };
+        self.status.kind = StatusKind::Info;
+        vec![Cmd::Transfer(
+            crate::transfer::actor::TransferCmd::StartJob(Box::new(spec)),
+        )]
     }
 
     /// Keys while the radio-recording settings popup is open. Rows: 0 mode · 1 min · 2 max ·
@@ -1354,28 +1369,21 @@ impl App {
         self.dirty = true;
         match event {
             TransferEvent::AuthUrl(url) => {
+                let saved_url_path = crate::spotify::auth::save_pending_auth_url(&url)
+                    .ok()
+                    .flatten();
                 let opened = crate::util::browser::open_in_browser_checked(&url);
                 // Also copy the URL: xdg-open can fail silently (e.g. a Flatpak
                 // browser the cleared env can't resolve), and this is the only
                 // path that would otherwise leave the user no way to reach the
                 // approval page.
-                copy_to_clipboard(&url);
-                self.status.text = if opened.launched() {
-                    t!(
-                        "Approve ytm-tui in the browser (link copied as fallback)",
-                        "브라우저에서 ytm-tui를 승인해 주세요 (링크는 예비용으로 복사했어요)"
-                    )
-                    .to_owned()
-                } else {
-                    t!(
-                        "Could not open browser; link copied. Paste it manually or run `ytt doctor --verbose`.",
-                        "브라우저를 열 수 없어요. 링크를 복사했으니 직접 붙여넣거나 `ytt doctor --verbose`를 실행해 주세요."
-                    )
-                    .to_owned()
-                };
+                let copied = copy_to_clipboard(&url);
+                self.status.text =
+                    spotify_auth_url_status(opened.launched(), copied, saved_url_path.as_deref());
                 self.status.kind = StatusKind::Info;
             }
             TransferEvent::AuthDone { display_name } => {
+                let _ = crate::spotify::auth::clear_pending_auth_url();
                 let mut used_client_id = None;
                 if let Some(st) = self.settings.as_mut() {
                     st.draft.spotify_connected = true;
@@ -1405,6 +1413,7 @@ impl App {
                 }
             }
             TransferEvent::AuthError(error) => {
+                let _ = crate::spotify::auth::clear_pending_auth_url();
                 self.status.text = format!(
                     "{}: {}",
                     t!("Spotify authorization failed", "Spotify 인증 실패"),

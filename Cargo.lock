@@ -6105,7 +6105,7 @@ dependencies = [
 
 [[package]]
 name = "ytm-tui"
-version = "1.6.2"
+version = "1.6.21"
 dependencies = [
  "anyhow",
  "base64",

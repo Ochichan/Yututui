@@ -437,6 +437,9 @@ pub enum MouseTarget {
     ConfirmPickerCreate,
     /// Back button on the picker's inline new-playlist name entry (returns to the list).
     CancelPickerCreate,
+    /// A row in the "Import from Spotify" picker, by item index. Single-click selects;
+    /// clicking the already-selected row (or double-click) starts the import.
+    SpotifyPickRow(usize),
     /// Confirm button on the "delete downloaded files" modal.
     ConfirmDelete,
     /// Cancel button on the "delete downloaded files" modal.

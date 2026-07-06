@@ -17,7 +17,7 @@
           lib = pkgs.lib;
           ytm-tui = pkgs.rustPlatform.buildRustPackage {
             pname = "ytm-tui";
-            version = "1.6.2"; # keep in sync with Cargo.toml
+            version = "1.6.21"; # keep in sync with Cargo.toml
 
             # Drop build artifacts and flake results from the copied source so the store path
             # stays small and rebuilds aren't invalidated by a local `target/`.
@@ -84,7 +84,7 @@
           };
           ytm-tui-desktop = pkgs.rustPlatform.buildRustPackage {
             pname = "ytm-tui-desktop";
-            version = "1.6.2"; # keep the ytt-desktop binary version in sync with Cargo.toml
+            version = "1.6.21"; # keep the ytt-desktop binary version in sync with Cargo.toml
             src = desktopSrc;
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config ];

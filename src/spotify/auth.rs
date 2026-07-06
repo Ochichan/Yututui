@@ -79,6 +79,29 @@ pub fn token_path() -> Option<PathBuf> {
         .map(|d| d.data_dir().join("spotify_token.json"))
 }
 
+pub fn pending_auth_url_path() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "ytm-tui")
+        .map(|d| d.data_dir().join("spotify_auth_url.txt"))
+}
+
+pub fn save_pending_auth_url(url: &str) -> std::io::Result<Option<PathBuf>> {
+    let Some(path) = pending_auth_url_path() else {
+        return Ok(None);
+    };
+    safe_fs::write_private_atomic(&path, format!("{url}\n").as_bytes())?;
+    Ok(Some(path))
+}
+
+pub fn clear_pending_auth_url() -> std::io::Result<()> {
+    let Some(path) = pending_auth_url_path() else {
+        return Ok(());
+    };
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
 /// RFC 7636 §4.1: 43–128 chars from the unreserved set. 64 gives ~380 bits of entropy.
 fn pkce_verifier() -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";

@@ -234,18 +234,37 @@ async fn build_ctx(spec: &JobSpec, cfg: &Config) -> Result<JobCtx, String> {
         None
     };
     let ytm = if needs_ytm {
-        let cookie = cfg.effective_cookie().ok_or_else(|| {
-            "this needs a YouTube Music cookie — set one in Settings › General".to_owned()
-        })?;
-        Some(
-            crate::api::ytmusic::YtMusicApi::from_cookie(&cookie)
-                .await
-                .map_err(|e| {
-                    crate::util::sanitize::sanitize_error_text(format!(
-                        "YouTube Music auth failed: {e:#}"
-                    ))
-                })?,
-        )
+        match cfg.effective_cookie() {
+            Some(cookie) => Some(
+                crate::api::ytmusic::YtMusicApi::from_cookie(&cookie)
+                    .await
+                    .map_err(|e| {
+                        crate::util::sanitize::sanitize_error_text(format!(
+                            "YouTube Music auth failed: {e:#}"
+                        ))
+                    })?,
+            ),
+            // No cookie is fine when YTM is only needed to *search* for matches (a LocalPlaylist
+            // dest) — anonymous search falls back to yt-dlp, so a Spotify→Library import still
+            // works. Reading a YTM playlist or writing to the account (new/existing playlist,
+            // likes) genuinely needs the cookie, so those still fail with a clear message.
+            None => {
+                let account_op = matches!(spec.source, TransferSource::YtmPlaylist { .. })
+                    || matches!(
+                        spec.dest,
+                        TransferDest::YtmNewPlaylist { .. }
+                            | TransferDest::YtmExistingPlaylist { .. }
+                            | TransferDest::YtmLikes
+                    );
+                if account_op {
+                    return Err(
+                        "this needs a YouTube Music cookie — set one in Settings › General"
+                            .to_owned(),
+                    );
+                }
+                Some(crate::api::ytmusic::YtMusicApi::Anonymous)
+            }
+        }
     } else {
         None
     };

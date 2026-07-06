@@ -277,6 +277,11 @@ try {
         speed = 1.0
         seek_seconds = 5
         repeat = "off"
+        # This smoke uses local WAV fixtures only; avoid managed yt-dlp downloads racing
+        # Windows executable locks during temp profile cleanup.
+        tools = @{
+            ytdlp_managed = $false
+        }
     } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $configDir "config.json") -Encoding UTF8
 
     @{
