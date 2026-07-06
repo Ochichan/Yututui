@@ -49,3 +49,10 @@ cookies.txt
 # Full-GUI design set — kept as local working notes (see docs/gui/README.md)
 /docs/gui/
 *.sha256
+
+# Fable Harness (local agent harness — kept out of the repo per 2026-07-06 decision)
+/CLAUDE.md
+/AGENTS.md
+/.claude/settings.json
+/.claude/hooks/
+/.claude/harness/
