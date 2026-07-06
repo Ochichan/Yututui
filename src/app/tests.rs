@@ -3622,6 +3622,81 @@ fn settings_accounts_tab_renders_service_sections() {
 }
 
 #[test]
+fn settings_whole_row_click_activates_a_button_row() {
+    // B2: a click anywhere on a Button row (not only the value glyph) activates it. With no
+    // Client ID set, activating the Spotify "connect" row surfaces the guidance message — proof
+    // the click reached the handler rather than only focusing the row.
+    let mut app = App::new(100);
+    app.config.retro_mode = true;
+    app.config.spotify.client_id = None; // force the empty-Client-ID connect path
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    app.settings.as_mut().unwrap().tab = SettingsTab::Accounts;
+    let idx = app
+        .settings
+        .as_ref()
+        .unwrap()
+        .fields()
+        .iter()
+        .position(|f| *f == Field::SpotifyConnect)
+        .expect("a SpotifyConnect row");
+    assert!(app.status.text.is_empty());
+    let _ = app.on_list_row_click(idx);
+    assert_eq!(
+        app.settings.as_ref().unwrap().row,
+        idx,
+        "the row is focused"
+    );
+    // A whole-row click on a Button row activates it — the connect handler always sets a status
+    // (empty-ID guidance, or a reconnect notice if a token is present). A focus-only click, the
+    // old behaviour, would leave the status empty.
+    assert!(
+        !app.status.text.is_empty(),
+        "a whole-row click activated the button (status still empty)"
+    );
+}
+
+#[test]
+fn spotify_picker_click_selects_then_confirms() {
+    // C: the first click on a picker row selects it (no job yet); clicking the already-selected
+    // row imports it — closing the picker and dispatching a transfer.
+    use crate::transfer::actor::PickerPlaylist;
+    let mut app = App::new(100);
+    let items = vec![
+        PickerPlaylist {
+            source: crate::transfer::TransferSource::SpotifyLiked,
+            label: "Liked Songs".to_owned(),
+            total: 0,
+        },
+        PickerPlaylist {
+            source: crate::transfer::TransferSource::SpotifyPlaylist {
+                id: "abc".to_owned(),
+            },
+            label: "Roadtrip".to_owned(),
+            total: 12,
+        },
+    ];
+    app.overlays.spotify_picker = Some(crate::app::state::SpotifyPicker { items, selected: 0 });
+
+    let cmds = app.on_mouse_target(MouseTarget::SpotifyPickRow(1));
+    assert!(cmds.is_empty(), "selecting a new row doesn't start a job");
+    assert_eq!(
+        app.overlays.spotify_picker.as_ref().unwrap().selected,
+        1,
+        "the clicked row becomes selected"
+    );
+
+    let cmds = app.on_mouse_target(MouseTarget::SpotifyPickRow(1));
+    assert!(
+        app.overlays.spotify_picker.is_none(),
+        "clicking the selected row closes the picker"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::Transfer(_))),
+        "confirming dispatches a transfer job"
+    );
+}
+
+#[test]
 fn settings_keys_lists_radio_normal_mode_binding() {
     let mut app = App::new(100);
     app.config.retro_mode = true;
