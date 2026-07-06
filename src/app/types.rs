@@ -72,38 +72,14 @@ pub enum Msg {
     /// and at least one effect enabled. Advances `anim_frame` and forces a redraw. When all
     /// animation toggles are off the main loop never arms this, so it costs literally nothing.
     AnimTick,
-    /// mpv playback position, in seconds.
-    PlayerTimePos(f64),
-    /// Current track duration, in seconds.
-    PlayerDuration(f64),
-    /// mpv pause state changed.
-    PlayerPaused(bool),
-    /// mpv volume changed (0-100, but mpv can report fractional/over-100 values).
-    PlayerVolume(f64),
-    /// mpv stream metadata changed. Live radio streams often expose ICY now-playing titles here.
-    PlayerMetadata(serde_json::Value),
-    /// mpv `demuxer-cache-time`: the newest demuxed timestamp (≈ the live edge on a radio
-    /// stream), or `None` when the property became unavailable.
-    PlayerCacheTime(Option<f64>),
-    /// mpv `audio-codec-name` for the active stream (radio recorder container hint).
-    PlayerAudioCodec(Option<String>),
-    /// mpv `file-format` (container) for the active stream (radio recorder container hint).
-    PlayerFileFormat(Option<String>),
+    /// A player/playback runtime message — mpv property changes (position, duration, pause,
+    /// volume, metadata, cache-time, codec, format), EOF, playback errors, and video-overlay
+    /// IPC events. See [`PlayerMsg`].
+    Player(PlayerMsg),
     /// 1 Hz tick while a radio recording is in progress; drives the max-duration force-split.
     RecordingTick,
     /// A radio recorder disk job finished (a track was saved, or saving failed).
     Recorder(crate::recorder::job::RecorderEvent),
-    /// The current track reached its end.
-    PlayerEof,
-    /// mpv reported a playback error.
-    PlayerError(String),
-    /// An event from the video-overlay mpv's IPC client, tagged with the spawn
-    /// generation it was connected for — the reducer drops events from a window it
-    /// already closed (`v`) or respawned (`Shift+V`).
-    VideoOverlay {
-        generation: u64,
-        event: crate::player::video::VideoEvent,
-    },
     /// Search returned results (possibly empty) for `query`.
     SearchResults {
         request_id: u64,

@@ -1,5 +1,5 @@
 //! Radio recorder state machine (a Shortwave-style feature), split out of the monolithic
-//! `app.rs`. Pure in-memory transitions driven by the ICY-title diff in `Msg::PlayerMetadata`
+//! `app.rs`. Pure in-memory transitions driven by the ICY-title diff in `PlayerMsg::Metadata`
 //! and the 1 Hz `Msg::RecordingTick`; the actual disk work is emitted as `Cmd::Recorder` jobs
 //! (run off the loop) and mpv writes the audio itself via the `stream-record` property.
 //!

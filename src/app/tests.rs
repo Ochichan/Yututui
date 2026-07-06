@@ -373,12 +373,12 @@ fn up_down_adjust_volume_in_player_mode() {
 fn time_pos_redraws_only_on_second_change() {
     let mut app = App::new(100);
     app.dirty = false;
-    app.update(Msg::PlayerTimePos(1.1));
+    app.update(PlayerMsg::TimePos(1.1));
     assert!(app.dirty);
     app.dirty = false;
-    app.update(Msg::PlayerTimePos(1.9)); // same whole second
+    app.update(PlayerMsg::TimePos(1.9)); // same whole second
     assert!(!app.dirty);
-    app.update(Msg::PlayerTimePos(2.0)); // new second
+    app.update(PlayerMsg::TimePos(2.0)); // new second
     assert!(app.dirty);
 }
 
@@ -1225,7 +1225,7 @@ fn recording_app(mode: crate::recorder::RecordingMode) -> App {
 }
 
 fn feed_title(app: &mut App, title: &str) -> Vec<Cmd> {
-    app.update(Msg::PlayerMetadata(
+    app.update(PlayerMsg::Metadata(
         serde_json::json!({ "icy-title": title }),
     ))
 }
@@ -1322,7 +1322,7 @@ fn recorder_pauses_through_ad_and_resumes_complete() {
     feed_title(&mut app, "B - Two"); // complete "Two"
     backdate_current(&mut app, 60);
     // Metadata goes junk (ad / station id) -> parsed None -> finalize "Two", open nothing.
-    app.update(Msg::PlayerMetadata(serde_json::json!({ "icy-title": "" })));
+    app.update(PlayerMsg::Metadata(serde_json::json!({ "icy-title": "" })));
     assert!(
         app.recorder.current.is_none(),
         "recording paused during the ad"
@@ -1576,7 +1576,7 @@ fn radio_stream_metadata_updates_dj_gem_context() {
     app.queue.set(vec![radio_station("groove")], 0);
     app.load_song(app.queue.current().cloned());
 
-    app.update(Msg::PlayerMetadata(serde_json::json!({
+    app.update(PlayerMsg::Metadata(serde_json::json!({
         "icy-title": "Artist - Track"
     })));
 
@@ -1599,7 +1599,7 @@ fn radio_stream_metadata_updates_dj_gem_context() {
     );
 
     app.dirty = false;
-    app.update(Msg::PlayerMetadata(serde_json::json!({
+    app.update(PlayerMsg::Metadata(serde_json::json!({
         "icy-title": "Artist - Track"
     })));
     assert!(!app.dirty, "unchanged stream metadata should not redraw");
@@ -1609,7 +1609,7 @@ fn radio_stream_metadata_updates_dj_gem_context() {
 fn stream_metadata_is_ignored_for_regular_tracks() {
     let mut app = app_playing(1, 0);
 
-    app.update(Msg::PlayerMetadata(serde_json::json!({
+    app.update(PlayerMsg::Metadata(serde_json::json!({
         "icy-title": "Artist - Track"
     })));
 
@@ -1624,7 +1624,7 @@ fn loading_a_new_track_clears_stale_stream_metadata() {
     let mut app = App::new(100);
     app.queue.set(vec![radio_station("groove")], 0);
     app.load_song(app.queue.current().cloned());
-    app.update(Msg::PlayerMetadata(serde_json::json!({
+    app.update(PlayerMsg::Metadata(serde_json::json!({
         "icy-title": "Artist - Track"
     })));
     assert!(app.playback.stream_now_playing.is_some());
@@ -1649,19 +1649,19 @@ fn radio_playing(id: &str) -> App {
 fn cache_time_updates_playback_and_coalesces_redraws() {
     let mut app = radio_playing("groove");
     app.dirty = false;
-    app.update(Msg::PlayerCacheTime(Some(100.2)));
+    app.update(PlayerMsg::CacheTime(Some(100.2)));
     assert_eq!(app.playback.cache_time, Some(100.2));
     assert!(app.playback.cache_time_at.is_some());
     assert!(app.dirty);
 
     app.dirty = false;
-    app.update(Msg::PlayerCacheTime(Some(100.7)));
+    app.update(PlayerMsg::CacheTime(Some(100.7)));
     assert!(!app.dirty, "same whole second must not redraw");
-    app.update(Msg::PlayerCacheTime(Some(101.3)));
+    app.update(PlayerMsg::CacheTime(Some(101.3)));
     assert!(app.dirty);
 
     app.dirty = false;
-    app.update(Msg::PlayerCacheTime(None));
+    app.update(PlayerMsg::CacheTime(None));
     assert_eq!(app.playback.cache_time, None);
     assert!(app.playback.cache_time_at.is_none());
     assert!(
@@ -1673,26 +1673,26 @@ fn cache_time_updates_playback_and_coalesces_redraws() {
 #[test]
 fn radio_live_sync_verdict_follows_behind_distance() {
     let mut app = radio_playing("groove");
-    app.update(Msg::PlayerTimePos(100.0));
-    app.update(Msg::PlayerCacheTime(Some(105.0)));
+    app.update(PlayerMsg::TimePos(100.0));
+    app.update(PlayerMsg::CacheTime(Some(105.0)));
     assert_eq!(app.radio_behind_secs().map(|b| b as i64), Some(5));
     assert_eq!(app.radio_live_synced(), Some(true));
 
-    app.update(Msg::PlayerCacheTime(Some(180.0)));
+    app.update(PlayerMsg::CacheTime(Some(180.0)));
     assert_eq!(app.radio_live_synced(), Some(false));
 
     // A regular track never gets a verdict, even with cache reports flowing.
     let mut music = app_playing(1, 0);
-    music.update(Msg::PlayerTimePos(10.0));
-    music.update(Msg::PlayerCacheTime(Some(60.0)));
+    music.update(PlayerMsg::TimePos(10.0));
+    music.update(PlayerMsg::CacheTime(Some(60.0)));
     assert_eq!(music.radio_live_synced(), None);
 }
 
 #[test]
 fn stale_cache_time_degrades_synced_to_unknown_but_keeps_behind() {
     let mut app = radio_playing("groove");
-    app.update(Msg::PlayerTimePos(100.0));
-    app.update(Msg::PlayerCacheTime(Some(103.0)));
+    app.update(PlayerMsg::TimePos(100.0));
+    app.update(PlayerMsg::CacheTime(Some(103.0)));
     // An old at-edge report proves nothing while playing (mpv freezes the property
     // once the forward buffer saturates) → unknown.
     app.playback.cache_time_at = Some(Instant::now() - Duration::from_secs(30));
@@ -1709,8 +1709,8 @@ fn stale_cache_time_degrades_synced_to_unknown_but_keeps_behind() {
 #[test]
 fn radio_repeat_key_resyncs_with_a_seek_to_the_live_edge() {
     let mut app = radio_playing("groove");
-    app.update(Msg::PlayerTimePos(100.0));
-    app.update(Msg::PlayerCacheTime(Some(200.0)));
+    app.update(PlayerMsg::TimePos(100.0));
+    app.update(PlayerMsg::CacheTime(Some(200.0)));
     app.playback.paused = true;
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
@@ -1736,7 +1736,7 @@ fn radio_repeat_key_resyncs_with_a_seek_to_the_live_edge() {
 #[test]
 fn radio_repeat_key_reconnects_when_no_cache_info() {
     let mut app = radio_playing("groove");
-    app.update(Msg::PlayerTimePos(100.0));
+    app.update(PlayerMsg::TimePos(100.0));
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
 
@@ -1751,8 +1751,8 @@ fn radio_repeat_key_reconnects_when_no_cache_info() {
 #[test]
 fn radio_resync_escalates_to_reconnect_when_seek_does_not_take() {
     let mut app = radio_playing("groove");
-    app.update(Msg::PlayerTimePos(100.0));
-    app.update(Msg::PlayerCacheTime(Some(200.0)));
+    app.update(PlayerMsg::TimePos(100.0));
+    app.update(PlayerMsg::CacheTime(Some(200.0)));
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
     assert!(load_url(&cmds).is_none(), "first re-sync seeks");
@@ -1770,8 +1770,8 @@ fn radio_resync_escalates_to_reconnect_when_seek_does_not_take() {
 #[test]
 fn radio_shift_s_reports_sync_state_without_touching_shuffle() {
     let mut app = radio_playing("groove");
-    app.update(Msg::PlayerTimePos(100.0));
-    app.update(Msg::PlayerCacheTime(Some(103.0)));
+    app.update(PlayerMsg::TimePos(100.0));
+    app.update(PlayerMsg::CacheTime(Some(103.0)));
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('S'))));
 
@@ -1784,7 +1784,7 @@ fn radio_shift_s_reports_sync_state_without_touching_shuffle() {
 #[test]
 fn loading_a_new_track_clears_cache_time() {
     let mut app = radio_playing("groove");
-    app.update(Msg::PlayerCacheTime(Some(50.0)));
+    app.update(PlayerMsg::CacheTime(Some(50.0)));
     assert!(app.playback.cache_time.is_some());
 
     app.queue.set(songs(1), 0);
@@ -1800,7 +1800,7 @@ fn loading_a_new_track_clears_cache_time() {
 /// A radio app with an ICY title playing. DJ Gem is OFF unless a test enables it.
 fn radio_with_title(title: &str) -> App {
     let mut app = radio_playing("groove");
-    app.update(Msg::PlayerMetadata(
+    app.update(PlayerMsg::Metadata(
         serde_json::json!({ "icy-title": title }),
     ));
     app
@@ -1880,7 +1880,7 @@ fn open_card_repopulates_live_on_title_change() {
         Some(NowPlayingOverlayState::Playing { title, .. }) if title == "Track"
     ));
     // The song flips under the open card → it re-populates from the fresh ICY title.
-    app.update(Msg::PlayerMetadata(serde_json::json!({
+    app.update(PlayerMsg::Metadata(serde_json::json!({
         "icy-title": "Other - Song"
     })));
     assert!(matches!(
@@ -1899,7 +1899,7 @@ fn early_open_before_first_tick_fills_in_when_metadata_arrives() {
         Some(&NowPlayingOverlayState::NoMetadata)
     );
     // The first metadata tick lands → the open card fills in on its own.
-    app.update(Msg::PlayerMetadata(serde_json::json!({
+    app.update(PlayerMsg::Metadata(serde_json::json!({
         "icy-title": "Artist - Track"
     })));
     assert!(matches!(
@@ -2091,7 +2091,7 @@ fn identify_overlay_swallows_player_keys_and_esc_closes() {
 #[test]
 fn eof_auto_advances_to_next_track() {
     let mut app = app_playing(3, 0);
-    let cmds = app.update(Msg::PlayerEof);
+    let cmds = app.update(PlayerMsg::Eof);
     assert!(load_url(&cmds).expect("load of next track").contains("id1"));
     assert_eq!(current(&app), "id1");
 }
@@ -2099,7 +2099,7 @@ fn eof_auto_advances_to_next_track() {
 #[test]
 fn eof_at_end_with_repeat_off_stops() {
     let mut app = app_playing(2, 1); // already on the last track
-    let cmds = app.update(Msg::PlayerEof);
+    let cmds = app.update(PlayerMsg::Eof);
     // Playback stops (no load/advance), though the finished track is still recorded.
     assert!(load_url(&cmds).is_none());
     assert!(
@@ -2113,7 +2113,7 @@ fn eof_at_end_with_repeat_off_stops() {
 fn eof_with_repeat_one_replays_same_track() {
     let mut app = app_playing(3, 0);
     app.queue.repeat = crate::queue::Repeat::One;
-    let cmds = app.update(Msg::PlayerEof);
+    let cmds = app.update(PlayerMsg::Eof);
     assert!(
         load_url(&cmds)
             .expect("replay of same track")
@@ -2125,7 +2125,7 @@ fn eof_with_repeat_one_replays_same_track() {
 #[test]
 fn player_error_auto_skips_to_next_track() {
     let mut app = app_playing(3, 0);
-    let cmds = app.update(Msg::PlayerError("boom".to_owned()));
+    let cmds = app.update(PlayerMsg::Error("boom".to_owned()));
     // The unplayable track is skipped: cursor + title move to the next track.
     assert!(load_url(&cmds).expect("load of next track").contains("id1"));
     assert_eq!(current(&app), "id1");
@@ -2137,11 +2137,11 @@ fn player_error_stops_after_repeated_failures() {
     let mut app = app_playing(6, 0);
     // First MAX failures auto-skip...
     for _ in 0..MAX_CONSECUTIVE_PLAY_ERRORS {
-        let cmds = app.update(Msg::PlayerError("boom".to_owned()));
+        let cmds = app.update(PlayerMsg::Error("boom".to_owned()));
         assert!(load_url(&cmds).is_some(), "still skipping within budget");
     }
     // ...the next one gives up instead of skip-storming the whole queue.
-    let cmds = app.update(Msg::PlayerError("boom".to_owned()));
+    let cmds = app.update(PlayerMsg::Error("boom".to_owned()));
     assert!(load_url(&cmds).is_none(), "stops skipping after the budget");
     assert!(app.status.text.contains("stopped") || app.status.text.contains("failed"));
 }
@@ -2149,11 +2149,11 @@ fn player_error_stops_after_repeated_failures() {
 #[test]
 fn successful_playback_resets_the_error_streak() {
     let mut app = app_playing(5, 0);
-    app.update(Msg::PlayerError("boom".to_owned())); // skip to id1 (streak = 1)
+    app.update(PlayerMsg::Error("boom".to_owned())); // skip to id1 (streak = 1)
     assert_eq!(current(&app), "id1");
-    app.update(Msg::PlayerTimePos(3.0)); // id1 actually plays → streak cleared
+    app.update(PlayerMsg::TimePos(3.0)); // id1 actually plays → streak cleared
     // A later failure starts a fresh streak, so it skips again rather than giving up.
-    let cmds = app.update(Msg::PlayerError("boom".to_owned()));
+    let cmds = app.update(PlayerMsg::Error("boom".to_owned()));
     assert!(
         load_url(&cmds)
             .expect("skips again after a clean play")
@@ -2183,7 +2183,7 @@ fn resolve_cmd_id(cmds: &[Cmd]) -> Option<&str> {
 #[test]
 fn extraction_error_triggers_ytdlp_self_heal_instead_of_skipping() {
     let mut app = app_playing(3, 0);
-    let cmds = app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    let cmds = app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));
     assert_eq!(
         heal_cmd_id(&cmds),
         Some("id0"),
@@ -2197,7 +2197,7 @@ fn extraction_error_triggers_ytdlp_self_heal_instead_of_skipping() {
 #[test]
 fn heal_success_resolves_and_reloads_the_same_track() {
     let mut app = app_playing(3, 0);
-    app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));
     // A new binary landed → the track re-resolves through the resolver (the session
     // mpv keeps its stale spawn-time ytdl_hook, so a watch-URL reload wouldn't help).
     let cmds = app.update(Msg::YtdlpHealResult {
@@ -2218,7 +2218,7 @@ fn heal_success_resolves_and_reloads_the_same_track() {
 #[test]
 fn heal_without_update_falls_back_to_skip() {
     let mut app = app_playing(3, 0);
-    app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));
     let cmds = app.update(Msg::YtdlpHealResult {
         video_id: "id0".to_owned(),
         updated: false,
@@ -2234,7 +2234,7 @@ fn heal_without_update_falls_back_to_skip() {
 #[test]
 fn heal_resolve_failure_falls_back_to_skip() {
     let mut app = app_playing(3, 0);
-    app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));
     app.update(Msg::YtdlpHealResult {
         video_id: "id0".to_owned(),
         updated: true,
@@ -2250,7 +2250,7 @@ fn heal_resolve_failure_falls_back_to_skip() {
 #[test]
 fn heal_runs_once_per_track_then_plain_skip() {
     let mut app = app_playing(3, 0);
-    app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));
     app.update(Msg::YtdlpHealResult {
         video_id: "id0".to_owned(),
         updated: false,
@@ -2260,7 +2260,7 @@ fn heal_runs_once_per_track_then_plain_skip() {
     // bars other tracks from re-checking) — the plain skip path runs instead.
     app.update(Msg::Key(key(KeyCode::Char(','))));
     assert_eq!(current(&app), "id0");
-    let cmds = app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    let cmds = app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));
     assert!(
         heal_cmd_id(&cmds).is_none(),
         "one heal per track per session"
@@ -2271,7 +2271,7 @@ fn heal_runs_once_per_track_then_plain_skip() {
 #[test]
 fn stale_heal_result_is_ignored_after_user_moved_on() {
     let mut app = app_playing(3, 0);
-    app.update(Msg::PlayerError(EXTRACTION_ERR.to_owned()));
+    app.update(PlayerMsg::Error(EXTRACTION_ERR.to_owned()));
     // The user skips manually while the update check is still running.
     app.update(Msg::Key(key(KeyCode::Char('.'))));
     assert_eq!(current(&app), "id1");
@@ -2286,7 +2286,7 @@ fn stale_heal_result_is_ignored_after_user_moved_on() {
 #[test]
 fn non_extraction_error_never_triggers_a_heal() {
     let mut app = app_playing(3, 0);
-    let cmds = app.update(Msg::PlayerError(
+    let cmds = app.update(PlayerMsg::Error(
         "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
     ));
     assert!(
@@ -8079,7 +8079,7 @@ fn manual_next_from_radio_does_not_record_signals() {
 #[test]
 fn eof_records_signals_for_the_finished_track() {
     let mut app = app_playing(3, 0);
-    let cmds = app.update(Msg::PlayerEof);
+    let cmds = app.update(PlayerMsg::Eof);
     assert!(
         cmds.iter()
             .any(|c| matches!(c, Cmd::Persist(PersistCmd::Signals)))
@@ -10655,7 +10655,7 @@ fn video_event_after_close_is_ignored() {
     app.config.auto_continue_videos = Some(true);
     // The overlay was already closed (`v`): a late Eof from its IPC client is stale.
     let generation = app.video.generation;
-    let cmds = app.update(Msg::VideoOverlay {
+    let cmds = app.update(PlayerMsg::VideoOverlay {
         generation,
         event: VideoEvent::Eof,
     });
@@ -10672,7 +10672,7 @@ fn video_eof_with_toggle_off_closes_and_resumes_audio() {
     app.video.paused_audio = true;
 
     let generation = app.video.generation;
-    let cmds = app.update(Msg::VideoOverlay {
+    let cmds = app.update(PlayerMsg::VideoOverlay {
         generation,
         event: VideoEvent::Eof,
     });
@@ -10699,7 +10699,7 @@ fn video_eof_with_toggle_on_keeps_the_window_and_advances() {
     app.video.paused_audio = true;
 
     let generation = app.video.generation;
-    let cmds = app.update(Msg::VideoOverlay {
+    let cmds = app.update(PlayerMsg::VideoOverlay {
         generation,
         event: VideoEvent::Eof,
     });
@@ -10725,7 +10725,7 @@ fn video_event_from_an_older_generation_is_ignored() {
     app.video.generation = 3;
 
     // A Quit from the window that Shift+V already replaced must not close the new one.
-    let cmds = app.update(Msg::VideoOverlay {
+    let cmds = app.update(PlayerMsg::VideoOverlay {
         generation: 2,
         event: VideoEvent::Quit,
     });
@@ -10744,7 +10744,7 @@ fn video_next_key_skips_and_shows_the_next_video() {
     app.video.paused_audio = true;
 
     let generation = app.video.generation;
-    let cmds = app.update(Msg::VideoOverlay {
+    let cmds = app.update(PlayerMsg::VideoOverlay {
         generation,
         event: VideoEvent::Next,
     });
@@ -10768,7 +10768,7 @@ fn video_prev_key_goes_back_a_video() {
     app.video.paused_audio = true;
 
     let generation = app.video.generation;
-    let cmds = app.update(Msg::VideoOverlay {
+    let cmds = app.update(PlayerMsg::VideoOverlay {
         generation,
         event: VideoEvent::Prev,
     });

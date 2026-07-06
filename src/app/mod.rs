@@ -59,6 +59,7 @@ pub use mouse::HitMap;
 mod now_playing;
 mod now_playing_reducer;
 mod player;
+pub use player::PlayerMsg;
 mod playlists_reducer;
 mod queue;
 mod recorder_reducer;
@@ -788,7 +789,8 @@ impl App {
     /// `status` notification is set or cleared (any of the ~40 `self.status.text = …` sites), so
     /// the main loop can expire it after [`STATUS_TTL`] and bring the song title back —
     /// without each call site having to remember to arm a timer. See [`Self::status_visible`].
-    pub fn update(&mut self, msg: Msg) -> Vec<Cmd> {
+    pub fn update(&mut self, msg: impl Into<Msg>) -> Vec<Cmd> {
+        let msg = msg.into();
         let mut status_before = std::mem::take(&mut self.status_text_prev);
         status_before.clear();
         status_before.push_str(&self.status.text);
@@ -973,102 +975,105 @@ impl App {
                 self.focused = f;
                 self.dirty = true;
             }
-            Msg::PlayerTimePos(t) => {
-                // Normalize at the mpv trust boundary: a NaN/inf/negative time-pos must not
-                // reach the interpolation clock, the OS media session, or the seekbar gauge.
-                let t = crate::playback_policy::norm_position(t);
-                self.playback.time_pos = Some(t);
-                self.playback.time_pos_at = Some(Instant::now());
-                // Real progress means the current track opened and is playing, so the
-                // auto-skip streak is broken — clear it.
-                if t > 0.0 {
-                    self.consecutive_play_errors = 0;
+            Msg::Player(pm) => match pm {
+                PlayerMsg::TimePos(t) => {
+                    // Normalize at the mpv trust boundary: a NaN/inf/negative time-pos must not
+                    // reach the interpolation clock, the OS media session, or the seekbar gauge.
+                    let t = crate::playback_policy::norm_position(t);
+                    self.playback.time_pos = Some(t);
+                    self.playback.time_pos_at = Some(Instant::now());
+                    // Real progress means the current track opened and is playing, so the
+                    // auto-skip streak is broken — clear it.
+                    if t > 0.0 {
+                        self.consecutive_play_errors = 0;
+                    }
+                    // Redraw at most once per second; mpv emits `time-pos` far more often.
+                    let sec = t as i64;
+                    if sec != self.anim.last_shown_sec {
+                        self.anim.last_shown_sec = sec;
+                        self.dirty = true;
+                        tracing::debug!(time_pos = t, "progress");
+                    }
                 }
-                // Redraw at most once per second; mpv emits `time-pos` far more often.
-                let sec = t as i64;
-                if sec != self.anim.last_shown_sec {
-                    self.anim.last_shown_sec = sec;
-                    self.dirty = true;
-                    tracing::debug!(time_pos = t, "progress");
-                }
-            }
-            Msg::PlayerDuration(d) => {
-                self.playback.duration = Some(crate::playback_policy::norm_duration(d));
-                self.dirty = true;
-            }
-            Msg::PlayerCacheTime(t) => {
-                let t = t.map(crate::playback_policy::norm_position);
-                let had = self.playback.cache_time.is_some();
-                self.playback.cache_time = t;
-                self.playback.cache_time_at = t.map(|_| Instant::now());
-                // Redraw at most once per second (mpv reports far more often), plus on
-                // Some↔None transitions so the live-sync glyph never shows stale state.
-                let sec = t.map_or(-1, |v| v as i64);
-                if sec != self.anim.last_shown_cache_sec || had != t.is_some() {
-                    self.anim.last_shown_cache_sec = sec;
+                PlayerMsg::Duration(d) => {
+                    self.playback.duration = Some(crate::playback_policy::norm_duration(d));
                     self.dirty = true;
                 }
-            }
-            Msg::PlayerAudioCodec(codec) => {
-                // Passthrough container hint for the recorder; no redraw needed.
-                self.playback.audio_codec = codec;
-            }
-            Msg::PlayerFileFormat(format) => {
-                self.playback.file_format = format;
-            }
+                PlayerMsg::CacheTime(t) => {
+                    let t = t.map(crate::playback_policy::norm_position);
+                    let had = self.playback.cache_time.is_some();
+                    self.playback.cache_time = t;
+                    self.playback.cache_time_at = t.map(|_| Instant::now());
+                    // Redraw at most once per second (mpv reports far more often), plus on
+                    // Some↔None transitions so the live-sync glyph never shows stale state.
+                    let sec = t.map_or(-1, |v| v as i64);
+                    if sec != self.anim.last_shown_cache_sec || had != t.is_some() {
+                        self.anim.last_shown_cache_sec = sec;
+                        self.dirty = true;
+                    }
+                }
+                PlayerMsg::AudioCodec(codec) => {
+                    // Passthrough container hint for the recorder; no redraw needed.
+                    self.playback.audio_codec = codec;
+                }
+                PlayerMsg::FileFormat(format) => {
+                    self.playback.file_format = format;
+                }
+                PlayerMsg::Paused(p) => {
+                    self.playback.paused = p;
+                    self.dirty = true;
+                }
+                PlayerMsg::Volume(v) => {
+                    // A non-finite report is ignored (leave the current level) rather than
+                    // muting (`NaN.round() as i64` == 0) or storing a garbage level.
+                    if let Some(volume) = crate::playback_policy::norm_volume_event(v) {
+                        self.playback.volume = volume;
+                        self.dirty = true;
+                        tracing::info!(volume = self.playback.volume, "volume");
+                    }
+                }
+                PlayerMsg::Metadata(metadata) => {
+                    let parsed = self.queue.current().cloned().and_then(|song| {
+                        if !song.is_radio_station() {
+                            return None;
+                        }
+                        let station_label = self.display_song_label(&song);
+                        stream_metadata::parse_stream_now_playing(
+                            &metadata,
+                            &[song.title.as_str(), station_label.as_str()],
+                        )
+                    });
+                    if self.playback.stream_now_playing != parsed {
+                        self.playback.stream_now_playing = parsed.clone();
+                        self.dirty = true;
+                        // Rotate the recorder first (finalize the ended track, start the next),
+                        // then let the overlay re-populate from the fresh ICY title (a
+                        // favorite-resolve in flight for the old title is now stale).
+                        let mut cmds = self.recorder_on_title(parsed.as_ref());
+                        cmds.extend(self.on_stream_title_changed());
+                        return cmds;
+                    }
+                }
+                PlayerMsg::Eof => {
+                    tracing::info!("track ended (eof)");
+                    // The just-finished track played to its end → a full-play signal, then advance.
+                    let mut cmds = self.record_outgoing(true);
+                    cmds.extend(self.advance(true));
+                    return cmds;
+                }
+                PlayerMsg::VideoOverlay { generation, event } => {
+                    return self.on_video_overlay_event(generation, event);
+                }
+                PlayerMsg::Error(e) => return self.on_player_error(e),
+            },
             Msg::RecordingTick => {
                 return self.recorder_on_tick();
             }
             Msg::Recorder(event) => {
                 return self.on_recorder_event(event);
             }
-            Msg::PlayerPaused(p) => {
-                self.playback.paused = p;
-                self.dirty = true;
-            }
-            Msg::PlayerVolume(v) => {
-                // A non-finite report is ignored (leave the current level) rather than
-                // muting (`NaN.round() as i64` == 0) or storing a garbage level.
-                if let Some(volume) = crate::playback_policy::norm_volume_event(v) {
-                    self.playback.volume = volume;
-                    self.dirty = true;
-                    tracing::info!(volume = self.playback.volume, "volume");
-                }
-            }
-            Msg::PlayerMetadata(metadata) => {
-                let parsed = self.queue.current().cloned().and_then(|song| {
-                    if !song.is_radio_station() {
-                        return None;
-                    }
-                    let station_label = self.display_song_label(&song);
-                    stream_metadata::parse_stream_now_playing(
-                        &metadata,
-                        &[song.title.as_str(), station_label.as_str()],
-                    )
-                });
-                if self.playback.stream_now_playing != parsed {
-                    self.playback.stream_now_playing = parsed.clone();
-                    self.dirty = true;
-                    // Rotate the recorder first (finalize the ended track, start the next),
-                    // then let the overlay re-populate from the fresh ICY title (a
-                    // favorite-resolve in flight for the old title is now stale).
-                    let mut cmds = self.recorder_on_title(parsed.as_ref());
-                    cmds.extend(self.on_stream_title_changed());
-                    return cmds;
-                }
-            }
             Msg::TrackResolved { seq, result } => {
                 return self.on_track_resolved(seq, result);
-            }
-            Msg::PlayerEof => {
-                tracing::info!("track ended (eof)");
-                // The just-finished track played to its end → a full-play signal, then advance.
-                let mut cmds = self.record_outgoing(true);
-                cmds.extend(self.advance(true));
-                return cmds;
-            }
-            Msg::VideoOverlay { generation, event } => {
-                return self.on_video_overlay_event(generation, event);
             }
             Msg::PlaylistTracks {
                 title,
@@ -1082,7 +1087,6 @@ impl App {
                 self.status.text = format!("{title}: {error}");
                 self.dirty = true;
             }
-            Msg::PlayerError(e) => return self.on_player_error(e),
             Msg::YtdlpHealResult { video_id, updated } => {
                 if self.heal.pending_video_id.as_deref() != Some(video_id.as_str()) {
                     return Vec::new(); // stale: the user already moved on

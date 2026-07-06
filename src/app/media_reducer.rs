@@ -830,7 +830,7 @@ mod tests {
         let mut app = app_with_queue(1);
         mark_loaded(&mut app);
         app.playback.time_pos_at = None;
-        app.update(Msg::PlayerPaused(true));
+        app.update(PlayerMsg::Paused(true));
         assert!(
             app.playback.time_pos_at.is_some(),
             "pause flip rebases the clock"

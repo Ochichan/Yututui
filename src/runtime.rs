@@ -7,7 +7,7 @@
 use ratatui_image::thread::ResizeResponse;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::app::{App, Cmd, Msg, PersistCmd};
+use crate::app::{App, Cmd, Msg, PersistCmd, PlayerMsg};
 use crate::config::PlayerRuntimeConfig;
 use crate::player::{PlayerCmd, PlayerHandle};
 
@@ -173,21 +173,29 @@ impl From<RuntimeEvent> for Msg {
                 Msg::LyricsResult { video_id, lines }
             }
             RuntimeEvent::Player(event) => match event {
-                crate::player::PlayerEvent::TimePos(t) => Msg::PlayerTimePos(t),
-                crate::player::PlayerEvent::Duration(d) => Msg::PlayerDuration(d),
-                crate::player::PlayerEvent::Paused(paused) => Msg::PlayerPaused(paused),
-                crate::player::PlayerEvent::Volume(volume) => Msg::PlayerVolume(volume),
-                crate::player::PlayerEvent::Metadata(metadata) => Msg::PlayerMetadata(metadata),
-                crate::player::PlayerEvent::CacheTime(t) => Msg::PlayerCacheTime(t),
-                crate::player::PlayerEvent::AudioCodec(c) => Msg::PlayerAudioCodec(c),
-                crate::player::PlayerEvent::FileFormat(f) => Msg::PlayerFileFormat(f),
-                crate::player::PlayerEvent::Eof => Msg::PlayerEof,
-                crate::player::PlayerEvent::Error(error) => Msg::PlayerError(error),
+                crate::player::PlayerEvent::TimePos(t) => Msg::Player(PlayerMsg::TimePos(t)),
+                crate::player::PlayerEvent::Duration(d) => Msg::Player(PlayerMsg::Duration(d)),
+                crate::player::PlayerEvent::Paused(paused) => {
+                    Msg::Player(PlayerMsg::Paused(paused))
+                }
+                crate::player::PlayerEvent::Volume(volume) => {
+                    Msg::Player(PlayerMsg::Volume(volume))
+                }
+                crate::player::PlayerEvent::Metadata(metadata) => {
+                    Msg::Player(PlayerMsg::Metadata(metadata))
+                }
+                crate::player::PlayerEvent::CacheTime(t) => Msg::Player(PlayerMsg::CacheTime(t)),
+                crate::player::PlayerEvent::AudioCodec(c) => Msg::Player(PlayerMsg::AudioCodec(c)),
+                crate::player::PlayerEvent::FileFormat(f) => Msg::Player(PlayerMsg::FileFormat(f)),
+                crate::player::PlayerEvent::Eof => Msg::Player(PlayerMsg::Eof),
+                crate::player::PlayerEvent::Error(error) => Msg::Player(PlayerMsg::Error(error)),
             },
             RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(cmd, reply)) => {
                 Msg::Remote(cmd, reply)
             }
-            RuntimeEvent::Video { generation, event } => Msg::VideoOverlay { generation, event },
+            RuntimeEvent::Video { generation, event } => {
+                Msg::Player(PlayerMsg::VideoOverlay { generation, event })
+            }
             RuntimeEvent::Remote(crate::remote::server::RemoteEvent::SessionSubscribe {
                 ..
             }) => {

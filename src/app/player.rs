@@ -2,6 +2,47 @@
 
 use super::*;
 
+/// A player/playback runtime message: mpv property changes, EOF, playback errors, and
+/// video-overlay IPC events. Bucketed under [`Msg::Player`] to keep the flat `Msg` lean.
+/// Constructed in `runtime.rs` from the leaf `PlayerEvent`/`VideoEvent`; never imported by a
+/// leaf actor (see `scripts/check-architecture.sh`).
+pub enum PlayerMsg {
+    /// mpv playback position, in seconds.
+    TimePos(f64),
+    /// Current track duration, in seconds.
+    Duration(f64),
+    /// mpv pause state changed.
+    Paused(bool),
+    /// mpv volume changed (0-100, but mpv can report fractional/over-100 values).
+    Volume(f64),
+    /// mpv stream metadata changed. Live radio streams often expose ICY now-playing titles here.
+    Metadata(serde_json::Value),
+    /// mpv `demuxer-cache-time`: the newest demuxed timestamp (≈ the live edge on a radio
+    /// stream), or `None` when the property became unavailable.
+    CacheTime(Option<f64>),
+    /// mpv `audio-codec-name` for the active stream (radio recorder container hint).
+    AudioCodec(Option<String>),
+    /// mpv `file-format` (container) for the active stream (radio recorder container hint).
+    FileFormat(Option<String>),
+    /// The current track reached its end.
+    Eof,
+    /// mpv reported a playback error.
+    Error(String),
+    /// An event from the video-overlay mpv's IPC client, tagged with the spawn
+    /// generation it was connected for — the reducer drops events from a window it
+    /// already closed (`v`) or respawned (`Shift+V`).
+    VideoOverlay {
+        generation: u64,
+        event: crate::player::video::VideoEvent,
+    },
+}
+
+impl From<PlayerMsg> for Msg {
+    fn from(msg: PlayerMsg) -> Self {
+        Msg::Player(msg)
+    }
+}
+
 /// How far behind the live edge still counts as "in sync" (a healthy at-edge stream keeps
 /// a single-digit-seconds forward buffer; 15 avoids false ✗ on bursty stations while
 /// catching any real pause-behind).
@@ -26,7 +67,7 @@ pub(in crate::app) struct YidMemo {
 impl App {
     /// Handle an mpv playback error: self-heal a stale-yt-dlp extraction failure
     /// once, otherwise skip the bad track (with a circuit breaker after too many in a
-    /// row). Extracted verbatim from the `Msg::PlayerError` dispatch arm; the
+    /// row). Extracted verbatim from the `PlayerMsg::Error` dispatch arm; the
     /// `position_epoch` bump stays in `App::update`.
     pub(in crate::app) fn on_player_error(&mut self, e: String) -> Vec<Cmd> {
         // Log *which* track failed and whether it came from a (possibly stale)
@@ -369,7 +410,7 @@ impl App {
         cmds
     }
 
-    /// An event from the overlay window's IPC client ([`Msg::VideoOverlay`]). Events carry
+    /// An event from the overlay window's IPC client ([`PlayerMsg::VideoOverlay`]). Events carry
     /// the spawn generation they were connected for; anything from a window we already
     /// closed (`v`) or respawned (`Shift+V`) is stale and ignored.
     pub(in crate::app) fn on_video_overlay_event(
@@ -422,7 +463,7 @@ impl App {
     /// advance the queue exactly like an audio EOF, keep the audio engine paused
     /// underneath, and load the next track's video into the same window.
     pub(in crate::app) fn video_continue_next(&mut self) -> Vec<Cmd> {
-        // Identical bookkeeping to the audio EOF path (`Msg::PlayerEof`): full-play
+        // Identical bookkeeping to the audio EOF path (`PlayerMsg::Eof`): full-play
         // signal, repeat/shuffle-aware advance, streaming top-up — so queue semantics
         // never diverge between audio and video continuation.
         let mut cmds = self.record_outgoing(true);
