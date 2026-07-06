@@ -10,7 +10,9 @@ use ratatui::widgets::{Block, Borders, HighlightSpacing, List, ListItem, ListSta
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, MouseTarget, ScrollSurface};
-use crate::config::{FPS_MAX, FPS_MIN, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN};
+use crate::config::{
+    FPS_DEFAULT, FPS_MAX, FPS_MIN, SEEK_SECONDS_MAX, SEEK_SECONDS_MIN, SPEED_MAX, SPEED_MIN,
+};
 use crate::keymap::{self, Action, Conflict, KeyContext};
 use crate::settings::{BAND_GAIN_MAX, BAND_GAIN_MIN};
 use crate::settings::{Field, FieldKind, SettingsConfirm, SettingsState, SettingsTab};
@@ -663,12 +665,45 @@ fn field_row<'a>(
     // column lines up regardless of label length. The value text itself is produced by the
     // shared `field_value_text`, so the click-target math stays in lockstep with the glyphs.
     let label = pad_to_width(&field.label(), other_label_width(st.tab));
-    let value = field_value_text(app, st, field, focused);
     let value_role = if focused {
         R::SettingsValueFocused
     } else {
         R::SettingsValue
     };
+    // The frame-rate slider is the one row whose value isn't a single flat span: the track cells
+    // above the 30-fps mark are always red (a "this is heavy" danger zone) and the number reddens
+    // once fps > 30. The glyphs are byte-identical to `field_value_text`'s `AnimFps` arm, so the
+    // arrow hit-rects from `register_field_controls` stay in lockstep.
+    if field == Field::AnimFps {
+        let fps = st.draft.animations.effective_fps();
+        let track = bar(f64::from(fps), f64::from(FPS_MIN), f64::from(FPS_MAX));
+        // The cell where the 30-fps thumb sits; every cell past it is the red zone.
+        let width = track.chars().count().max(1);
+        let mark = ((f64::from(FPS_DEFAULT - FPS_MIN) / f64::from(FPS_MAX - FPS_MIN))
+            * (width - 1) as f64)
+            .round() as usize;
+        let normal: String = track.chars().take(mark + 1).collect();
+        let hot: String = track.chars().skip(mark + 1).collect();
+        let val_style = fade(theme.style(value_role));
+        let hot_style = fade(theme.style(R::Warning));
+        let num = format!("{fps} fps");
+        let num_style = if fps > FPS_DEFAULT {
+            hot_style
+        } else {
+            val_style
+        };
+        // Reassembles `slider_str(track, num)` = "‹ {track}  {num} ›" span-by-span.
+        return ListItem::new(Line::from(vec![
+            Span::styled(label, fade(theme.style(R::SettingsLabel))),
+            Span::styled("\u{2039} ".to_owned(), val_style),
+            Span::styled(normal, val_style),
+            Span::styled(hot, hot_style),
+            Span::styled("  ".to_owned(), val_style),
+            Span::styled(num, num_style),
+            Span::styled(" \u{203a}".to_owned(), val_style),
+        ]));
+    }
+    let value = field_value_text(app, st, field, focused);
     ListItem::new(Line::from(vec![
         Span::styled(label, fade(theme.style(R::SettingsLabel))),
         Span::styled(value, fade(theme.style(value_role))),
@@ -895,39 +930,36 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
         ),
         (
             t!("Min duration", "최소 길이").to_owned(),
-            format!(
-                "{}  {}s",
-                bar(
+            slider_str(
+                &bar(
                     d.recording_min_seconds as f64,
                     RECORDING_MIN_SECONDS_MIN as f64,
                     RECORDING_MIN_SECONDS_MAX as f64,
                 ),
-                d.recording_min_seconds
+                &format!("{}s", d.recording_min_seconds),
             ),
         ),
         (
             t!("Max duration", "최대 길이").to_owned(),
-            format!(
-                "{}  {} min",
-                bar(
+            slider_str(
+                &bar(
                     d.recording_max_seconds as f64,
                     RECORDING_MAX_SECONDS_MIN as f64,
                     RECORDING_MAX_SECONDS_MAX as f64,
                 ),
-                d.recording_max_seconds / 60
+                &format!("{} min", d.recording_max_seconds / 60),
             ),
         ),
         (t!("Output folder", "저장 폴더").to_owned(), dir_display),
         (
             t!("Keep recent", "최근 보관").to_owned(),
-            format!(
-                "{}  {}",
-                bar(
+            slider_str(
+                &bar(
                     d.recording_past_tracks as f64,
                     RECORDING_PAST_TRACKS_MIN as f64,
                     RECORDING_PAST_TRACKS_MAX as f64,
                 ),
-                d.recording_past_tracks
+                &format!("{}", d.recording_past_tracks),
             ),
         ),
         (
@@ -959,10 +991,14 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows[0]);
-    // Publish the popup rect (a click outside closes it) and one clickable rect per row so the
-    // mouse can focus + activate rows — mirrors the queue window. Each row is exactly one line.
+    // Publish the popup rect (a click outside closes it) and, per row, a whole-row focus/
+    // activate rect plus finer control rects layered on top: the `‹`/`›` (or mode `< >`) arrows
+    // nudge the value both ways, and the 11-cell bar of a numeric row is a drag track. Because
+    // `mouse_region_at` scans in reverse, the later, finer rects win over the whole-row rect —
+    // so a bare row click only focuses (or activates folder/notify/browse), never fires a slider.
     popup.rect.set(Some(popup_rect));
-    for i in 0..entries.len() {
+    let right = rows[0].right();
+    for (i, (label, value)) in entries.iter().enumerate() {
         let y = rows[0].y + i as u16;
         if y >= rows[0].bottom() {
             break;
@@ -976,6 +1012,40 @@ pub fn render_recording_settings(frame: &mut Frame, app: &App, area: Rect) {
             },
             MouseTarget::RecordingRow(i),
         );
+        // Value column origin = display width of the rendered `"{marker}{label:<16}"` prefix, so
+        // the arrow/track rects line up with the glyphs even when a CJK label is wider than its
+        // char count.
+        let marker = if i == popup.row { "\u{25b8} " } else { "  " };
+        let vx = rows[0].x
+            + buttons::text_width(marker)
+            + buttons::text_width(&format!("{label:<label_w$}"));
+        let vw = buttons::text_width(value);
+        let put = |x: u16, w: u16, target: MouseTarget| {
+            if w == 0 || x >= right {
+                return;
+            }
+            app.register_mouse_button(
+                Rect {
+                    x,
+                    y,
+                    width: w.min(right - x),
+                    height: 1,
+                },
+                target,
+            );
+        };
+        // Rows 0 (mode) / 1 (min) / 2 (max) / 4 (keep) carry `‹ ›` arrows; the three numeric
+        // ones also expose their bar as a drag track. Folder / notify / browse activate on the
+        // whole-row rect above, so they get no finer rects here.
+        if matches!(i, 0 | 1 | 2 | 4) {
+            put(vx, 1, MouseTarget::RecordingChange { row: i, delta: -1 });
+            let last = vx.saturating_add(vw.saturating_sub(1));
+            put(last, 1, MouseTarget::RecordingChange { row: i, delta: 1 });
+            if i != 0 {
+                // The 11-cell bar sits just after the leading `‹ ` (2 cells).
+                put(vx + 2, 11, MouseTarget::RecordingSlider(i));
+            }
+        }
     }
 
     let help = if popup.editing_dir {

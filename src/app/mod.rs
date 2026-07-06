@@ -323,6 +323,10 @@ pub struct App {
     /// don't re-emit. `None` = not scrubbing. Set on a seekbar press, cleared on the next press
     /// or on mouse-up (so a dropped terminal `Up` can't strand it).
     seekbar_drag: Option<u16>,
+    /// Active radio-recording slider drag: the focused slider row (1 min · 2 max · 4 keep) and
+    /// the track rect captured at press, so pointer-x maps to a value even after the pointer
+    /// leaves the track. `None` = not dragging; cleared on the next press like [`Self::seekbar_drag`].
+    recording_drag: Option<(usize, Rect)>,
     /// Held-key auto-repeat accelerator for list navigation (see [`NavRepeat`]). Idle at rest.
     nav_repeat: NavRepeat,
 
@@ -480,6 +484,7 @@ impl App {
             drag_scrollbar: None,
             ai_transcript_drag: None,
             seekbar_drag: None,
+            recording_drag: None,
             nav_repeat: NavRepeat::default(),
             lyrics: Lyrics::default(),
             art: ArtState::default(),

@@ -36,9 +36,11 @@ impl App {
     /// seekbar seeks to the matching fraction of the track. Hit rects are published by
     /// views each render.
     pub(in crate::app) fn on_mouse_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
-        // Every fresh press re-establishes drag context, so a prior seekbar scrub can't survive
-        // a dropped terminal `Up` and hijack the next gesture. Re-armed below if this click seeks.
+        // Every fresh press re-establishes drag context, so a prior seekbar scrub / recording
+        // slider drag can't survive a dropped terminal `Up` and hijack the next gesture. Re-armed
+        // below if this click grabs a track.
         self.seekbar_drag = None;
+        self.recording_drag = None;
         // A click dismisses the modal conflict warning, same as a keypress.
         if self.key_conflict.take().is_some() {
             self.dirty = true;
@@ -250,12 +252,37 @@ impl App {
                 self.dirty = true;
                 return Vec::new();
             }
-            if let Some(MouseTarget::RecordingRow(i)) = self.mouse_target_at(col, row) {
-                if let Some(p) = self.recording_settings.as_mut() {
-                    p.row = i;
+            match self.mouse_region_at(col, row).map(|r| (r.target, r.rect)) {
+                // An arrow / the mode `< >` / (nothing else uses this): focus + signed nudge.
+                Some((MouseTarget::RecordingChange { row: i, delta }, _)) => {
+                    if let Some(p) = self.recording_settings.as_mut() {
+                        p.row = i;
+                    }
+                    self.dirty = true;
+                    return self.recording_settings_adjust(delta);
                 }
-                self.dirty = true;
-                return self.recording_settings_confirm();
+                // The bar track: focus, arm the drag with the track rect, and seek to the click.
+                Some((MouseTarget::RecordingSlider(i), rect)) => {
+                    if let Some(p) = self.recording_settings.as_mut() {
+                        p.row = i;
+                    }
+                    self.recording_drag = Some((i, rect));
+                    self.dirty = true;
+                    return self.recording_slider_set(i, col, rect);
+                }
+                // A bare row click: focus it; folder / notify / browse also activate (Enter),
+                // but mode / sliders only focus (their arrows and track do the changing).
+                Some((MouseTarget::RecordingRow(i), _)) => {
+                    if let Some(p) = self.recording_settings.as_mut() {
+                        p.row = i;
+                    }
+                    self.dirty = true;
+                    if matches!(i, 3 | 5 | 6) {
+                        return self.recording_settings_confirm();
+                    }
+                    return Vec::new();
+                }
+                _ => {}
             }
             return Vec::new();
         }
@@ -607,7 +634,10 @@ impl App {
             }
             // The recording popup/browser rows are handled by their own modal guards in
             // `on_mouse_click` (which never fall through to here); listed for exhaustiveness.
-            MouseTarget::RecordingRow(_) | MouseTarget::RecordingBrowseRow(_) => Vec::new(),
+            MouseTarget::RecordingRow(_)
+            | MouseTarget::RecordingChange { .. }
+            | MouseTarget::RecordingSlider(_)
+            | MouseTarget::RecordingBrowseRow(_) => Vec::new(),
         }
     }
 
@@ -681,6 +711,17 @@ impl App {
     /// A left-drag: extend a multi-select range to the row under the pointer (the anchor end
     /// stays fixed). Works in the queue window and, identically, in the Library list.
     pub(in crate::app) fn on_mouse_drag(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        // Radio-recording slider scrub: a press that grabbed a bar track sets the value
+        // continuously as the pointer moves (row ignored — grab and drag anywhere horizontally,
+        // exactly like the seekbar). `recording_slider_set` dedupes and clamps.
+        if let Some((slider_row, rect)) = self.recording_drag {
+            if self.recording_settings.is_some() {
+                return self.recording_slider_set(slider_row, col, rect);
+            }
+            // Popup closed mid-drag — stop scrubbing.
+            self.recording_drag = None;
+            return Vec::new();
+        }
         // Seekbar scrub: a press that landed on the bar seeks continuously as the pointer moves.
         // Keyed off the drag flag + x only (row is ignored — grab and drag anywhere horizontally).
         if self.seekbar_drag.is_some() && self.mode == Mode::Player && !self.queue_popup.open {

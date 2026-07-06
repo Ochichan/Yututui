@@ -190,6 +190,22 @@ impl ZoomHandle {
         }
     }
 
+    /// The per-axis divisor that maps a physical mouse cell onto the virtual grid, as
+    /// `(column_scale, row_scale)`. This mirrors the cursor geometry in
+    /// [`ZoomBackend::get_cursor_position`]: OSC 66 scales both axes by `s`, but DECDHL
+    /// doubles only the **row** (each virtual row is two physical `ESC#3`/`ESC#4` lines)
+    /// while the **column** stays logical — the terminal paints each logical column at
+    /// double width and reports mouse/cursor columns in that same logical space. Dividing
+    /// the column by `s` too (as a single scalar would) lands clicks half a screen left of
+    /// the glyph under the pointer, which is the large-text mouse bug on Windows Terminal.
+    pub fn mouse_scale(&self) -> (u8, u8) {
+        let s = self.scale();
+        match self.mode() {
+            ZoomMode::Decdhl if self.percent() > 100 => (1, s),
+            _ => (s, s),
+        }
+    }
+
     /// Snap to the nearest level the mode can render and store. Returns the applied
     /// percent.
     pub fn set(&self, percent: u16) -> u16 {
@@ -869,6 +885,25 @@ mod tests {
             out.contains("\x1b[7;6H"),
             "row doubles, column stays logical: {out:?}"
         );
+    }
+
+    #[test]
+    fn mouse_scale_is_per_axis_and_matches_the_cursor_geometry() {
+        let zoom = ZoomHandle::default();
+        // No zoom: identity on both axes.
+        assert_eq!(zoom.mouse_scale(), (1, 1));
+        // OSC 66 is symmetric — both axes divide by the cell scale.
+        zoom.set_mode(ZoomMode::Osc66);
+        zoom.set(200);
+        assert_eq!(zoom.mouse_scale(), (2, 2));
+        // DECDHL doubles the row only; the column stays logical (mirrors
+        // `get_cursor_position`, which scales the row and leaves the column alone).
+        zoom.set_mode(ZoomMode::Decdhl);
+        zoom.set(200);
+        assert_eq!(zoom.mouse_scale(), (1, 2));
+        // At 100% DECDHL is inert.
+        zoom.set(100);
+        assert_eq!(zoom.mouse_scale(), (1, 1));
     }
 
     #[test]

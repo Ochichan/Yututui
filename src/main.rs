@@ -913,10 +913,13 @@ async fn run(
                 // The translator maps physical mouse cells onto the zoom backend's
                 // virtual grid, so hit-testing (and double-click identity) stay correct
                 // while the UI is scaled.
-                Some(Ok(ev)) => match input.translate(ev, zoom.scale()) {
-                    Some(m) => m,
-                    None => continue,
-                },
+                Some(Ok(ev)) => {
+                    let (cs, rs) = zoom.mouse_scale();
+                    match input.translate(ev, cs, rs) {
+                        Some(m) => m,
+                        None => continue,
+                    }
+                }
                 Some(Err(_)) => continue,
                 None => break,
             },

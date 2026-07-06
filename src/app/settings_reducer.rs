@@ -1086,8 +1086,9 @@ impl App {
         }
     }
 
-    /// Adjust the focused popup knob by one step (`dir >= 0` = increase).
-    fn recording_settings_adjust(&mut self, dir: i32) -> Vec<Cmd> {
+    /// Adjust the focused popup knob by one step (`dir >= 0` = increase). `pub(in crate::app)`
+    /// so the mouse handler can reuse it for the `‹`/`›` arrow clicks.
+    pub(in crate::app) fn recording_settings_adjust(&mut self, dir: i32) -> Vec<Cmd> {
         use crate::config::{
             RECORDING_MAX_SECONDS_MAX, RECORDING_MAX_SECONDS_MIN, RECORDING_MIN_SECONDS_MAX,
             RECORDING_MIN_SECONDS_MIN, RECORDING_PAST_TRACKS_MAX, RECORDING_PAST_TRACKS_MIN,
@@ -1135,6 +1136,86 @@ impl App {
             _ => {}
         }
         self.dirty = true;
+        Vec::new()
+    }
+
+    /// Map a pointer column over a numeric row's bar track to a value and apply it, snapped to
+    /// the row's step and clamped to its bounds. Reuses the seekbar's fraction math but over
+    /// `width - 1` divisions so both track ends are reachable (the rendered `bar` spreads its
+    /// thumb across `WIDTH - 1` the same way). No-ops when the value is unchanged so a drag that
+    /// stays in one cell's value doesn't spam redraws. `rect` is the track rect captured at
+    /// press, so mapping keeps working after the pointer leaves the track.
+    pub(in crate::app) fn recording_slider_set(
+        &mut self,
+        row: usize,
+        col: u16,
+        rect: Rect,
+    ) -> Vec<Cmd> {
+        use crate::config::{
+            RECORDING_MAX_SECONDS_MAX, RECORDING_MAX_SECONDS_MIN, RECORDING_MIN_SECONDS_MAX,
+            RECORDING_MIN_SECONDS_MIN, RECORDING_PAST_TRACKS_MAX, RECORDING_PAST_TRACKS_MIN,
+        };
+        if rect.width == 0 {
+            return Vec::new();
+        }
+        let clamped = col.clamp(rect.x, rect.right().saturating_sub(1));
+        let denom = f64::from(rect.width.saturating_sub(1).max(1));
+        let frac = f64::from(clamped - rect.x) / denom;
+        // Fraction → value in `[min, max]`, snapped to `step`, then clamped.
+        let snap = |min: i64, max: i64, step: i64| -> i64 {
+            let raw = min as f64 + frac * (max - min) as f64;
+            (((raw / step as f64).round() as i64) * step).clamp(min, max)
+        };
+        let mut changed = false;
+        if let Some(st) = self.settings.as_mut() {
+            let d = &mut st.draft;
+            match row {
+                1 => {
+                    let v = snap(
+                        RECORDING_MIN_SECONDS_MIN as i64,
+                        RECORDING_MIN_SECONDS_MAX as i64,
+                        5,
+                    ) as u32;
+                    if d.recording_min_seconds != v {
+                        d.recording_min_seconds = v;
+                        // Keep max strictly above min (same invariant as the ±step path).
+                        if d.recording_max_seconds <= d.recording_min_seconds {
+                            d.recording_max_seconds =
+                                (d.recording_min_seconds + 60).min(RECORDING_MAX_SECONDS_MAX);
+                        }
+                        changed = true;
+                    }
+                }
+                2 => {
+                    let floor = i64::from(d.recording_min_seconds + 1);
+                    let v = snap(
+                        RECORDING_MAX_SECONDS_MIN as i64,
+                        RECORDING_MAX_SECONDS_MAX as i64,
+                        60,
+                    )
+                    .max(floor) as u32;
+                    if d.recording_max_seconds != v {
+                        d.recording_max_seconds = v;
+                        changed = true;
+                    }
+                }
+                4 => {
+                    let v = snap(
+                        RECORDING_PAST_TRACKS_MIN as i64,
+                        RECORDING_PAST_TRACKS_MAX as i64,
+                        1,
+                    ) as usize;
+                    if d.recording_past_tracks != v {
+                        d.recording_past_tracks = v;
+                        changed = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if changed {
+            self.dirty = true;
+        }
         Vec::new()
     }
 

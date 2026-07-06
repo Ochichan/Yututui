@@ -37,12 +37,15 @@ impl Default for Translator {
 }
 
 impl Translator {
-    /// `zoom_scale` is the text-zoom factor currently applied by the terminal backend:
-    /// mouse events arrive in physical cells, but the app lays out (and hit-tests) on the
-    /// zoom backend's virtual grid, so every mouse coordinate is divided here — before
-    /// double-click detection, which must compare virtual cells too.
-    pub fn translate(&mut self, ev: Event, zoom_scale: u8) -> Option<Msg> {
-        let s = u16::from(zoom_scale.max(1));
+    /// `col_scale`/`row_scale` are the per-axis text-zoom factors currently applied by the
+    /// terminal backend (from [`crate::zoom::ZoomHandle::mouse_scale`]): mouse events arrive
+    /// in physical cells, but the app lays out (and hit-tests) on the zoom backend's virtual
+    /// grid, so every mouse coordinate is divided here — before double-click detection, which
+    /// must compare virtual cells too. The two axes can differ: DECDHL doubles the row while
+    /// keeping the column logical, so a single scalar would land clicks half a screen left.
+    pub fn translate(&mut self, ev: Event, col_scale: u8, row_scale: u8) -> Option<Msg> {
+        let cs = u16::from(col_scale.max(1));
+        let rs = u16::from(row_scale.max(1));
         match ev {
             Event::Key(mut k) => {
                 if let Some(modifier) = modifier_key(k.code) {
@@ -68,27 +71,27 @@ impl Translator {
             // queue entry instead of merely selecting it.
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
                 self.left_down = true;
-                Some(self.classify_left_down(m.column / s, m.row / s))
+                Some(self.classify_left_down(m.column / cs, m.row / rs))
             }
             // A right-button press is interpreted by the active surface: queue rows delete,
             // Search/Library rows enqueue.
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Right) => {
                 Some(Msg::MouseRightClick {
-                    col: m.column / s,
-                    row: m.row / s,
+                    col: m.column / cs,
+                    row: m.row / rs,
                 })
             }
             // Dragging with the left button held extends the queue window's selection.
             Event::Mouse(m) if m.kind == MouseEventKind::Drag(MouseButton::Left) => {
                 Some(Msg::MouseDrag {
-                    col: m.column / s,
-                    row: m.row / s,
+                    col: m.column / cs,
+                    row: m.row / rs,
                 })
             }
             Event::Mouse(m) if m.kind == MouseEventKind::Moved && self.left_down => {
                 Some(Msg::MouseDrag {
-                    col: m.column / s,
-                    row: m.row / s,
+                    col: m.column / cs,
+                    row: m.row / rs,
                 })
             }
             Event::Mouse(m) if m.kind == MouseEventKind::Up(MouseButton::Left) => {
@@ -102,14 +105,14 @@ impl Translator {
             // modifier key events — honour both.
             Event::Mouse(m) if m.kind == MouseEventKind::ScrollUp => Some(Msg::MouseScroll {
                 up: true,
-                col: m.column / s,
-                row: m.row / s,
+                col: m.column / cs,
+                row: m.row / rs,
                 ctrl: (m.modifiers | self.held_modifiers).contains(KeyModifiers::CONTROL),
             }),
             Event::Mouse(m) if m.kind == MouseEventKind::ScrollDown => Some(Msg::MouseScroll {
                 up: false,
-                col: m.column / s,
-                row: m.row / s,
+                col: m.column / cs,
+                row: m.row / rs,
                 ctrl: (m.modifiers | self.held_modifiers).contains(KeyModifiers::CONTROL),
             }),
             Event::Resize(_, _) => Some(Msg::Resize),
@@ -207,6 +210,7 @@ mod tests {
                         KeyModifiers::NONE,
                         KeyEventKind::Release,
                     ),
+                    1,
                     1
                 )
                 .is_none()
@@ -216,6 +220,7 @@ mod tests {
             input
                 .translate(
                     key(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Repeat,),
+                    1,
                     1
                 )
                 .is_none()
@@ -229,6 +234,7 @@ mod tests {
         assert!(matches!(
             input.translate(
                 key(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Repeat),
+                1,
                 1
             ),
             Some(Msg::Key(k)) if k.code == KeyCode::Down
@@ -238,6 +244,7 @@ mod tests {
             input
                 .translate(
                     key(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Release),
+                    1,
                     1
                 )
                 .is_none()
@@ -294,7 +301,7 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(matches!(
-            t.translate(ev, 1),
+            t.translate(ev, 1, 1),
             Some(Msg::MouseDrag { col: 7, row: 3 })
         ));
     }
@@ -310,7 +317,7 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             })
         };
-        assert!(t.translate(moved(7, 3), 1).is_none());
+        assert!(t.translate(moved(7, 3), 1, 1).is_none());
 
         assert!(matches!(
             t.translate(
@@ -320,12 +327,13 @@ mod tests {
                     row: 3,
                     modifiers: KeyModifiers::NONE,
                 }),
+                1,
                 1
             ),
             Some(Msg::MouseClick { .. })
         ));
         assert!(matches!(
-            t.translate(moved(8, 4), 1),
+            t.translate(moved(8, 4), 1, 1),
             Some(Msg::MouseDrag { col: 8, row: 4 })
         ));
         assert!(matches!(
@@ -336,11 +344,12 @@ mod tests {
                     row: 4,
                     modifiers: KeyModifiers::NONE,
                 }),
+                1,
                 1
             ),
             Some(Msg::MouseLeftUp)
         ));
-        assert!(t.translate(moved(9, 5), 1).is_none());
+        assert!(t.translate(moved(9, 5), 1, 1).is_none());
     }
 
     #[test]
@@ -352,7 +361,7 @@ mod tests {
             row: 3,
             modifiers: KeyModifiers::NONE,
         });
-        assert!(matches!(t.translate(ev, 1), Some(Msg::MouseLeftUp)));
+        assert!(matches!(t.translate(ev, 1, 1), Some(Msg::MouseLeftUp)));
     }
 
     #[test]
@@ -367,7 +376,7 @@ mod tests {
             })
         };
         assert!(matches!(
-            t.translate(wheel(MouseEventKind::ScrollUp), 1),
+            t.translate(wheel(MouseEventKind::ScrollUp), 1, 1),
             Some(Msg::MouseScroll {
                 up: true,
                 col: 4,
@@ -376,7 +385,7 @@ mod tests {
             })
         ));
         assert!(matches!(
-            t.translate(wheel(MouseEventKind::ScrollDown), 1),
+            t.translate(wheel(MouseEventKind::ScrollDown), 1, 1),
             Some(Msg::MouseScroll {
                 up: false,
                 col: 4,
@@ -397,7 +406,7 @@ mod tests {
             modifiers: KeyModifiers::CONTROL,
         });
         assert!(matches!(
-            t.translate(ev, 1),
+            t.translate(ev, 1, 1),
             Some(Msg::MouseScroll { ctrl: true, .. })
         ));
 
@@ -410,6 +419,7 @@ mod tests {
                     KeyEventKind::Press,
                 ),
                 1,
+                1,
             )
             .is_none()
         );
@@ -420,7 +430,7 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert!(matches!(
-            t.translate(ev, 1),
+            t.translate(ev, 1, 1),
             Some(Msg::MouseScroll { ctrl: true, .. })
         ));
     }
@@ -438,6 +448,7 @@ mod tests {
                     modifiers: KeyModifiers::NONE,
                 }),
                 2,
+                2,
             ),
             Some(Msg::MouseClick { col: 4, row: 2 })
         ));
@@ -452,8 +463,38 @@ mod tests {
                     modifiers: KeyModifiers::NONE,
                 }),
                 2,
+                2,
             ),
             Some(Msg::MouseDoubleClick { col: 4, row: 2 })
+        ));
+    }
+
+    #[test]
+    fn decdhl_mouse_keeps_the_column_logical_and_halves_the_row() {
+        // Large-text (DECDHL) mode is geometrically asymmetric: each virtual row is two
+        // physical rows (ESC#3/ESC#4) but the column is addressed logically, so
+        // `ZoomHandle::mouse_scale()` is (col=1, row=2). Dividing the column too — as a
+        // single scalar would — lands clicks half a screen left of the glyph under the
+        // pointer, which was the large-text mouse bug on Windows Terminal.
+        let mut t = Translator::default();
+        let down = |column, row| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        // Physical (40, 10) → virtual (40, 5): column unchanged, only the row halved.
+        assert!(matches!(
+            t.translate(down(40, 10), 1, 2),
+            Some(Msg::MouseClick { col: 40, row: 5 })
+        ));
+        // A second press on the other physical half of the same virtual row (row 11 → 5) at
+        // the same column is a double-click — proof that only the row collapses.
+        assert!(matches!(
+            t.translate(down(40, 11), 1, 2),
+            Some(Msg::MouseDoubleClick { col: 40, row: 5 })
         ));
     }
 
@@ -468,6 +509,7 @@ mod tests {
                         KeyModifiers::SHIFT,
                         KeyEventKind::Press,
                     ),
+                    1,
                     1
                 )
                 .is_none()
@@ -475,6 +517,7 @@ mod tests {
 
         let Some(Msg::Key(k)) = input.translate(
             key(KeyCode::Char('ㅣ'), KeyModifiers::NONE, KeyEventKind::Press),
+            1,
             1,
         ) else {
             panic!("expected a key message");
@@ -489,6 +532,7 @@ mod tests {
                         KeyModifiers::SHIFT,
                         KeyEventKind::Release,
                     ),
+                    1,
                     1
                 )
                 .is_none()
@@ -496,6 +540,7 @@ mod tests {
 
         let Some(Msg::Key(k)) = input.translate(
             key(KeyCode::Char('ㅣ'), KeyModifiers::NONE, KeyEventKind::Press),
+            1,
             1,
         ) else {
             panic!("expected a key message");

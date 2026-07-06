@@ -1414,6 +1414,58 @@ fn radio_recording_popup_opens_edits_and_persists() {
 }
 
 #[test]
+fn recording_slider_drag_maps_column_to_value() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    app.radio_dedicated_mode = true;
+    app.open_settings();
+    {
+        let st = app.settings.as_mut().unwrap();
+        st.tab = crate::settings::SettingsTab::Playback;
+        st.row = st
+            .fields()
+            .iter()
+            .position(|f| *f == crate::settings::Field::RadioRecording)
+            .expect("radio item present in radio mode");
+    }
+    let _ = app.settings_activate();
+    assert!(app.recording_settings.is_some());
+
+    // An 11-cell track; the mapping uses width-1 divisions so both ends are reachable.
+    let track = Rect {
+        x: 20,
+        y: 5,
+        width: 11,
+        height: 1,
+    };
+
+    // Keep-recent (row 4, 1..=50 step 1): leftmost cell → min, rightmost cell → max.
+    app.recording_slider_set(4, track.x, track);
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.recording_past_tracks,
+        1
+    );
+    app.recording_slider_set(4, track.x + 10, track);
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.recording_past_tracks,
+        50
+    );
+
+    // Min duration (row 1, 5..=600 step 5): a column past the right end clamps to the max,
+    // and one before the left end clamps to the min — proof the drag works both directions.
+    app.recording_slider_set(1, track.right() + 5, track);
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.recording_min_seconds,
+        600
+    );
+    app.recording_slider_set(1, 0, track);
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.recording_min_seconds,
+        5
+    );
+}
+
+#[test]
 fn recorder_saved_emits_desktop_notify_when_enabled() {
     let _guard = crate::i18n::lock_for_test();
     use crate::recorder::job::RecorderEvent;
@@ -10064,6 +10116,7 @@ fn korean_nav_hitbox_still_matches_zoomed_mouse_cells() {
                 row: virtual_row * 2 + 1,
                 modifiers: KeyModifiers::NONE,
             }),
+            2,
             2,
         )
         .expect("mouse press translated");

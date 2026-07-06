@@ -543,9 +543,22 @@ pub enum MouseTarget {
     /// The GitHub link inside the About card — opens the repo in the system browser.
     AboutLink,
     /// A row in the radio-recording settings popup, by row index (`0..7`). Clicking focuses the
-    /// row and activates it (mode cycles, sliders nudge up, folder edits, notify toggles, browse
-    /// opens the list) — the mouse equivalent of moving to the row and pressing Enter.
+    /// row; for the folder (edit) and browse (open list) rows it also activates them — the mouse
+    /// equivalent of moving there and pressing Enter. Value rows (mode / sliders / notify) only
+    /// focus here; their arrows and track publish [`MouseTarget::RecordingChange`] /
+    /// [`MouseTarget::RecordingSlider`] rects on top so a bare row click never changes a value.
     RecordingRow(usize),
+    /// A `‹`/`›` arrow (or the mode `< >`, or the notify `[x]`) on a radio-recording popup row —
+    /// carries the row index and the nudge direction, so a click is the mouse equivalent of
+    /// ←/→ on that row.
+    RecordingChange {
+        row: usize,
+        delta: i32,
+    },
+    /// The draggable bar track of a numeric radio-recording row (min / max / keep-recent). A
+    /// press maps pointer-x to a value and arms a drag that keeps mapping as the pointer moves,
+    /// exactly like the player seekbar.
+    RecordingSlider(usize),
     /// A row in the radio-recordings browser, by item index. Single-click selects the row.
     RecordingBrowseRow(usize),
 }
