@@ -225,8 +225,21 @@ pub(crate) fn ytdlp_command_for(program: &str) -> tokio::process::Command {
     // reaps yt-dlp itself; a short-lived ffmpeg grandchild started for post-processing is not
     // in the same kill, but the download timeout path already accepts that same bound.
     cmd.kill_on_drop(true);
+    // App-owned invocations are machine-parsed (`-g` first line, `--dump-single-json`,
+    // `--print after_move:filepath`), so the user's ~/.config/yt-dlp/config — default format,
+    // forced prints, plugins — must not leak into them. mpv's ytdl_hook path is unaffected
+    // (playback keeps the user's yt-dlp behavior); `YTM_YTDLP_USER_CONFIG=1` opts back in.
+    if !respect_user_ytdlp_config(std::env::var("YTM_YTDLP_USER_CONFIG").ok().as_deref()) {
+        cmd.arg("--ignore-config");
+    }
     append_ytdlp_js_runtime_args(&mut cmd);
     cmd
+}
+
+/// Pure seam for the `YTM_YTDLP_USER_CONFIG` opt-out so it is testable without toggling
+/// process env (racy under the parallel test runner). Only an exact `1` (trimmed) opts in.
+fn respect_user_ytdlp_config(env_val: Option<&str>) -> bool {
+    env_val.map(str::trim) == Some("1")
 }
 
 /// The mpv program to spawn (`YTM_MPV` env > `tools.mpv_path` config > `"mpv"`).
