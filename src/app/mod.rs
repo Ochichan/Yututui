@@ -345,29 +345,19 @@ pub struct App {
     /// touch the raw cells (extracted from [`RenderBridges`]).
     pub hits: HitMap,
 
-    /// Last whole second we redrew for, so sub-second `time-pos` spam is coalesced.
-    last_shown_sec: i64,
-    /// Same coalescing for `demuxer-cache-time` (`-1` = none shown yet).
-    last_shown_cache_sec: i64,
     /// When the last radio re-sync (seek-to-live or reconnect) was issued. A second
     /// re-sync inside [`crate::app::player::RESYNC_RETRY_WINDOW`] while still behind
     /// means the seek didn't take, so the action escalates to a stream reconnect.
     pub(in crate::app) radio_resync_at: Option<Instant>,
 
-    /// Monotonic animation frame counter, bumped on each [`Msg::AnimTick`] (~30 fps) while
-    /// animations are active. Drives every effect's phase; wraps harmlessly. `0` at rest.
-    anim_frame: u64,
+    /// Animation clock and redraw-coalescing counters (frame counter, fractional draw credit +
+    /// its cadence, and the last-drawn whole second / cache second) — see [`Animation`]. The
+    /// one-shot `fx` feedback and the `focused` gate stay flat.
+    pub anim: Animation,
     /// One-shot animation feedback: start frames for event-driven effects (toast reveal, track
     /// intro, volume flash, …) plus the last-observed values `update` diffs to fire them.
     /// See [`FxState`]; all of it is inert until the matching animation flags are enabled.
     pub fx: FxState,
-    /// Fractional redraw scheduler for animation frames. The phase can advance at the configured
-    /// FPS while heavyweight effects redraw at a lower cadence, preserving motion timing without
-    /// forcing the terminal compositor to repaint every logical tick.
-    anim_draw_credit: u16,
-    /// Last draw cadence used to interpret [`Self::anim_draw_credit`]. Reset when the active effect
-    /// mix moves between cheap element effects, canvas effects, and the DJ Gem mascot.
-    anim_last_draw_fps: u16,
 
     /// Whether the terminal currently holds input focus (DECSET ?1004, fed by [`Msg::Focus`]).
     /// Defaults to `true`, so terminals/multiplexers that never report focus animate exactly as
@@ -418,7 +408,7 @@ impl App {
             status: Status::default(),
             status_text_prev: String::new(),
             video: Video::default(),
-            anim_frame: 0,
+            anim: Animation::default(),
             fx: FxState::new(volume.clamp(0, VOLUME_MAX)),
             audio: AudioEq::default(),
             autoplay_streaming: false,
@@ -471,11 +461,7 @@ impl App {
             heal: YtdlpHeal::default(),
             bridges: RenderBridges::default(),
             hits: HitMap::default(),
-            last_shown_sec: -1,
-            last_shown_cache_sec: -1,
             radio_resync_at: None,
-            anim_draw_credit: 0,
-            anim_last_draw_fps: 0,
             focused: true,
             zoom: crate::zoom::ZoomHandle::default(),
         }
@@ -831,7 +817,7 @@ impl App {
         self.playback.duration = None;
         self.playback.paused = true;
         self.playback.stream_now_playing = None;
-        self.last_shown_sec = -1;
+        self.anim.last_shown_sec = -1;
         self.prefetch.loaded_video_id = None;
         self.status.text.clear();
         self.dirty = true;
@@ -1052,8 +1038,8 @@ impl App {
                 }
                 // Redraw at most once per second; mpv emits `time-pos` far more often.
                 let sec = t as i64;
-                if sec != self.last_shown_sec {
-                    self.last_shown_sec = sec;
+                if sec != self.anim.last_shown_sec {
+                    self.anim.last_shown_sec = sec;
                     self.dirty = true;
                     tracing::debug!(time_pos = t, "progress");
                 }
@@ -1070,8 +1056,8 @@ impl App {
                 // Redraw at most once per second (mpv reports far more often), plus on
                 // Some↔None transitions so the live-sync glyph never shows stale state.
                 let sec = t.map_or(-1, |v| v as i64);
-                if sec != self.last_shown_cache_sec || had != t.is_some() {
-                    self.last_shown_cache_sec = sec;
+                if sec != self.anim.last_shown_cache_sec || had != t.is_some() {
+                    self.anim.last_shown_cache_sec = sec;
                     self.dirty = true;
                 }
             }

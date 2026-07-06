@@ -187,7 +187,7 @@ impl App {
         self.playback.time_pos_at = None;
         self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
         self.playback.stream_now_playing = None;
-        self.last_shown_sec = -1;
+        self.anim.last_shown_sec = -1;
         // Dropping the loaded id makes the next play action reload from the start
         // instead of just unpausing mid-track.
         self.prefetch.loaded_video_id = None;

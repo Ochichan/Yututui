@@ -98,7 +98,7 @@ impl App {
     /// start frames cost nothing. Armed only through [`Self::fx_arm`], which is gated per-flag,
     /// so with every toggle off this is permanently false.
     pub fn fx_active(&self) -> bool {
-        self.anim_frame < self.fx.until
+        self.anim.anim_frame < self.fx.until
     }
 
     /// Whether a *continuous* UI effect currently has something on screen to animate outside
@@ -224,27 +224,27 @@ impl App {
     }
 
     pub fn reset_animation_cadence(&mut self) {
-        self.anim_draw_credit = 0;
-        self.anim_last_draw_fps = 0;
+        self.anim.anim_draw_credit = 0;
+        self.anim.anim_last_draw_fps = 0;
     }
 
     pub(in crate::app) fn advance_animation(&mut self) {
-        self.anim_frame = self.anim_frame.wrapping_add(1);
+        self.anim.anim_frame = self.anim.anim_frame.wrapping_add(1);
 
         let tick_fps = self.animation_tick_fps().max(1);
         let draw_fps = self.animation_draw_fps().clamp(1, tick_fps);
-        if self.anim_last_draw_fps != draw_fps {
-            self.anim_last_draw_fps = draw_fps;
-            self.anim_draw_credit = 0;
+        if self.anim.anim_last_draw_fps != draw_fps {
+            self.anim.anim_last_draw_fps = draw_fps;
+            self.anim.anim_draw_credit = 0;
         }
         if draw_fps >= tick_fps {
             self.dirty = true;
             return;
         }
 
-        self.anim_draw_credit = self.anim_draw_credit.saturating_add(draw_fps);
-        if self.anim_draw_credit >= tick_fps {
-            self.anim_draw_credit -= tick_fps;
+        self.anim.anim_draw_credit = self.anim.anim_draw_credit.saturating_add(draw_fps);
+        if self.anim.anim_draw_credit >= tick_fps {
+            self.anim.anim_draw_credit -= tick_fps;
             self.dirty = true;
         }
     }
@@ -261,7 +261,7 @@ impl App {
     /// Start a one-shot effect window `ms` long: returns the start frame for the effect's slot
     /// and extends [`FxState::until`] so [`Self::fx_active`] keeps the clock awake to the end.
     fn fx_arm(&mut self, ms: u64) -> u64 {
-        let start = self.anim_frame;
+        let start = self.anim.anim_frame;
         self.fx.until = self.fx.until.max(start + self.anim_ms_frames(ms) + 1);
         self.dirty = true;
         start
@@ -442,7 +442,7 @@ impl App {
 
     /// Current animation frame counter — advances ~30×/s while [`Self::animation_active`].
     pub fn anim_frame(&self) -> u64 {
-        self.anim_frame
+        self.anim.anim_frame
     }
 
     /// Flip the animation master switch *for the current mode* and persist it. Music and

@@ -697,3 +697,38 @@ pub struct RadioMode {
     /// A pending confirmation before entering or leaving dedicated Radio mode.
     pub pending_radio_mode_confirm: Option<RadioModeConfirm>,
 }
+
+/// Animation clock and redraw-coalescing counters: the monotonic frame counter that drives every
+/// effect's phase, the fractional draw-credit scheduler and its last cadence, and the last whole
+/// second / cache second rendered (so sub-second mpv position spam is coalesced). The one-shot
+/// [`FxState`] feedback and the `focused` gate live separately on [`App`].
+pub struct Animation {
+    /// Monotonic animation frame counter, bumped on each [`Msg::AnimTick`] (~30 fps) while
+    /// animations are active. Drives every effect's phase; wraps harmlessly. `0` at rest.
+    pub(in crate::app) anim_frame: u64,
+    /// Fractional redraw scheduler for animation frames. The phase can advance at the configured
+    /// FPS while heavyweight effects redraw at a lower cadence, preserving motion timing without
+    /// forcing the terminal compositor to repaint every logical tick.
+    pub(in crate::app) anim_draw_credit: u16,
+    /// Last draw cadence used to interpret [`Self::anim_draw_credit`]. Reset when the active effect
+    /// mix moves between cheap element effects, canvas effects, and the DJ Gem mascot.
+    pub(in crate::app) anim_last_draw_fps: u16,
+    /// Last whole second we redrew for, so sub-second `time-pos` spam is coalesced.
+    pub(in crate::app) last_shown_sec: i64,
+    /// Same coalescing for `demuxer-cache-time` (`-1` = none shown yet).
+    pub(in crate::app) last_shown_cache_sec: i64,
+}
+
+impl Default for Animation {
+    fn default() -> Self {
+        // Matches the historical flat-field init in `App::new`: the frame/credit counters start
+        // at 0, but the last-shown seconds start at -1 ("nothing shown yet"), so this can't derive.
+        Self {
+            anim_frame: 0,
+            anim_draw_credit: 0,
+            anim_last_draw_fps: 0,
+            last_shown_sec: -1,
+            last_shown_cache_sec: -1,
+        }
+    }
+}

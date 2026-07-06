@@ -1076,8 +1076,8 @@ impl App {
                 self.playback.stream_now_playing = None;
                 self.playback.cache_time = None;
                 self.playback.cache_time_at = None;
-                self.last_shown_sec = -1;
-                self.last_shown_cache_sec = -1;
+                self.anim.last_shown_sec = -1;
+                self.anim.last_shown_cache_sec = -1;
                 self.radio_resync_at = None;
                 self.prefetch.loaded_video_id = None;
                 self.clear_artwork();
@@ -1240,8 +1240,8 @@ impl App {
         self.playback.stream_now_playing = None;
         self.playback.cache_time = None;
         self.playback.cache_time_at = None;
-        self.last_shown_sec = -1;
-        self.last_shown_cache_sec = -1;
+        self.anim.last_shown_sec = -1;
+        self.anim.last_shown_cache_sec = -1;
         self.radio_resync_at = None;
     }
 }

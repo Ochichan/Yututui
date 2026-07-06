@@ -2791,7 +2791,7 @@ fn radio_art_animates_when_animation_master_is_on() {
         "radio art should wake the animation clock when the master switch is on"
     );
 
-    app.anim_frame = 0;
+    app.anim.anim_frame = 0;
     let first = render_app_buffer(&app, 80, 24);
     let first_text: String = first
         .content()
@@ -2799,7 +2799,7 @@ fn radio_art_animates_when_animation_master_is_on() {
         .map(|c| c.symbol().to_owned())
         .collect();
 
-    app.anim_frame = 24;
+    app.anim.anim_frame = 24;
     let later = render_app_buffer(&app, 80, 24);
     let later_text: String = later
         .content()
@@ -2859,7 +2859,7 @@ fn radio_mode_keeps_gap_and_animates_canvas_below_separator() {
     app.config.animations.master = true;
     app.config.animations.rain = true;
 
-    app.anim_frame = 0;
+    app.anim.anim_frame = 0;
     let first = render_app_buffer(&app, 100, 36);
     let sep_y = (0..36)
         .find(|&y| buffer_row(&first, y).contains("ılılı"))
@@ -2881,7 +2881,7 @@ fn radio_mode_keeps_gap_and_animates_canvas_below_separator() {
     }
 
     // The music-mode canvas (rain) animates in the blank band below the one-line art.
-    app.anim_frame = 40;
+    app.anim.anim_frame = 40;
     let later = render_app_buffer(&app, 100, 36);
     let below = |buf: &ratatui::buffer::Buffer| -> String {
         (sep_y + 1..34).map(|y| buffer_row(buf, y)).collect()
@@ -3486,7 +3486,7 @@ fn canvas_animation_advances_phase_every_tick_but_caps_redraws() {
     for expected_frame in 1..=30 {
         app.dirty = false;
         app.update(Msg::AnimTick);
-        assert_eq!(app.anim_frame, expected_frame);
+        assert_eq!(app.anim.anim_frame, expected_frame);
         redraws += usize::from(app.dirty);
     }
     assert_eq!(redraws, 20);
@@ -10282,7 +10282,7 @@ fn selected_row_marquee_scrolls_with_animations_off() {
         "every animation toggle is off"
     );
 
-    app.anim_frame = 0;
+    app.anim.anim_frame = 0;
     let first = render_app_buffer(&app, 40, 15);
     assert!(
         app.animation_active(),
@@ -10296,7 +10296,7 @@ fn selected_row_marquee_scrolls_with_animations_off() {
         .find(|&y| buffer_row(&first, y).contains("Tiny"))
         .expect("neighbor row");
 
-    app.anim_frame = 60;
+    app.anim.anim_frame = 60;
     let later = render_app_buffer(&app, 40, 15);
     assert_ne!(
         buffer_row(&first, long_y),
