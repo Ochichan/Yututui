@@ -1,9 +1,10 @@
-10999	src/app/tests.rs
+11245	src/app/tests.rs
 2651	src/daemon/engine.rs
 2643	src/keymap.rs
 2180	src/app/settings_reducer.rs
 2169	src/config.rs
+1963	src/runtime.rs
+1923	src/api/ytmusic.rs
 1907	src/settings.rs
 1886	src/app/mod.rs
 1687	src/ui/views/player.rs
-1627	src/api/ytmusic.rs
