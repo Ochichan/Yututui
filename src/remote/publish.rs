@@ -437,10 +437,10 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
 /// favorite/disliked/display/artwork enrichment lands with its milestone (B1/B2).
 fn track_model(song: &Song) -> TrackModel {
     TrackModel {
-        video_id: song.video_id.clone(),
-        title: song.title.clone(),
-        artist: song.artist.clone(),
-        album: song.album.clone(),
+        video_id: crate::api::sanitize_provider_id(&song.video_id),
+        title: crate::api::sanitize_title(&song.title),
+        artist: crate::api::sanitize_artist(&song.artist),
+        album: song.album.as_deref().map(crate::api::sanitize_album),
         duration_ms: song_duration_ms(song),
         source: song.source,
         is_local: song.local_path.is_some(),
@@ -701,6 +701,43 @@ mod tests {
         let mut huge = song("e");
         huge.duration = "18446744073709552".to_string(); // parses to u64, but *1000 overflows
         assert_eq!(song_duration_ms(&huge), None);
+    }
+
+    #[test]
+    fn track_model_sanitizes_persisted_metadata() {
+        let mut song = Song::remote("id", "title", "artist", "3:45");
+        song.video_id = format!(
+            "{}\n{}",
+            "x".repeat(crate::api::MAX_PROVIDER_ID_CHARS + 20),
+            '\u{202e}'
+        );
+        song.title = format!(
+            "{}{}",
+            "t".repeat(crate::api::MAX_TITLE_CHARS + 20),
+            '\u{202e}'
+        );
+        song.artist = "a\nb".to_owned();
+        song.album = Some(format!(
+            "{}{}",
+            "z".repeat(crate::api::MAX_ALBUM_CHARS + 20),
+            '\u{202e}'
+        ));
+
+        let track = track_model(&song);
+
+        assert_eq!(
+            track.video_id.chars().count(),
+            crate::api::MAX_PROVIDER_ID_CHARS
+        );
+        assert_eq!(track.title.chars().count(), crate::api::MAX_TITLE_CHARS);
+        assert_eq!(track.artist, "ab");
+        assert_eq!(
+            track.album.as_ref().unwrap().chars().count(),
+            crate::api::MAX_ALBUM_CHARS
+        );
+        assert!(!track.video_id.contains('\u{202e}'));
+        assert!(!track.title.contains('\u{202e}'));
+        assert!(!track.album.as_ref().unwrap().contains('\u{202e}'));
     }
 
     #[test]

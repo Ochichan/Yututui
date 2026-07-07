@@ -362,8 +362,8 @@ impl App {
         settings.seek_seconds = self.audio.seek_seconds.round() as u16;
         settings.normalize = self.audio.normalize;
         StatusSnapshot {
-            title: cur.map(|s| self.display_title(s).into_owned()),
-            artist: cur.map(|s| self.display_artist(s).into_owned()),
+            title: cur.map(|s| crate::api::sanitize_title(self.display_title(s).as_ref())),
+            artist: cur.map(|s| crate::api::sanitize_artist(self.display_artist(s).as_ref())),
             paused: self.playback.paused,
             volume: self.playback.volume,
             position: if total == 0 { 0 } else { position },
@@ -376,9 +376,9 @@ impl App {
                 .ordered_iter()
                 .enumerate()
                 .map(|(index, song)| QueueItemSnapshot {
-                    title: self.display_title(song).into_owned(),
-                    artist: self.display_artist(song).into_owned(),
-                    duration: song.duration.clone(),
+                    title: crate::api::sanitize_title(self.display_title(song).as_ref()),
+                    artist: crate::api::sanitize_artist(self.display_artist(song).as_ref()),
+                    duration: crate::api::sanitize_duration(&song.duration),
                     current: index == self.queue.cursor_pos(),
                 })
                 .collect(),
@@ -867,6 +867,34 @@ mod tests {
         assert_eq!(snap.queue[0].artist, "A");
         assert!(snap.queue[0].current);
         assert!(!snap.queue[1].current);
+    }
+
+    #[test]
+    fn status_snapshot_sanitizes_persisted_metadata() {
+        let mut app = App::new(50);
+        let mut song = Song::remote("id0", "Zero", "A", "3:00");
+        song.title = format!(
+            "{}{}",
+            "x".repeat(crate::api::MAX_TITLE_CHARS + 20),
+            '\u{202e}'
+        );
+        song.artist = "A\nB".to_owned();
+        song.duration = "9".repeat(crate::api::MAX_DURATION_CHARS + 20);
+        app.queue.set(vec![song], 0);
+
+        let (resp, _) = app.apply_remote(RemoteCommand::Status);
+        let snap = resp.status.expect("status snapshot present");
+
+        assert_eq!(
+            snap.title.as_ref().unwrap().chars().count(),
+            crate::api::MAX_TITLE_CHARS
+        );
+        assert!(!snap.title.as_ref().unwrap().contains('\u{202e}'));
+        assert_eq!(snap.artist.as_deref(), Some("AB"));
+        assert_eq!(
+            snap.queue[0].duration.chars().count(),
+            crate::api::MAX_DURATION_CHARS
+        );
     }
 
     #[test]

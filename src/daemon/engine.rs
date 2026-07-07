@@ -1015,8 +1015,8 @@ impl DaemonEngine {
         let mut settings = SettingsSnapshot::from_config(&self.config, false);
         settings.autoplay_streaming = self.streaming;
         StatusSnapshot {
-            title: current.map(|song| song.title.clone()),
-            artist: current.map(|song| song.artist.clone()),
+            title: current.map(|song| crate::api::sanitize_title(&song.title)),
+            artist: current.map(|song| crate::api::sanitize_artist(&song.artist)),
             paused: current.is_none() || self.playback.paused,
             volume: self.playback.volume,
             position,
@@ -1029,9 +1029,9 @@ impl DaemonEngine {
                 .ordered_iter()
                 .enumerate()
                 .map(|(index, song)| QueueItemSnapshot {
-                    title: song.title.clone(),
-                    artist: song.artist.clone(),
-                    duration: song.duration.clone(),
+                    title: crate::api::sanitize_title(&song.title),
+                    artist: crate::api::sanitize_artist(&song.artist),
+                    duration: crate::api::sanitize_duration(&song.duration),
                     current: index == self.queue.cursor_pos(),
                 })
                 .collect(),

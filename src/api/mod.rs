@@ -18,6 +18,11 @@ use crate::util::sanitize;
 
 const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const STREAMING_YTDLP_CACHE_MAX: usize = 512;
+pub const MAX_TITLE_CHARS: usize = 300;
+pub const MAX_ARTIST_CHARS: usize = 200;
+pub const MAX_ALBUM_CHARS: usize = 200;
+pub const MAX_DURATION_CHARS: usize = 32;
+pub const MAX_PROVIDER_ID_CHARS: usize = 256;
 const MAX_PLAYABLE_URL_BYTES: usize = 4096;
 
 pub fn is_youtube_video_id(id: &str) -> bool {
@@ -42,6 +47,57 @@ fn is_definitely_non_video_youtube_ref(id: &str) -> bool {
         || id.bytes().any(|b| {
             !(b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b':' || b == b'.')
         })
+}
+
+pub fn sanitize_title(raw: &str) -> String {
+    sanitize_metadata_text(raw, MAX_TITLE_CHARS)
+}
+
+pub fn sanitize_artist(raw: &str) -> String {
+    sanitize_metadata_text(raw, MAX_ARTIST_CHARS)
+}
+
+pub fn sanitize_album(raw: &str) -> String {
+    sanitize_metadata_text(raw, MAX_ALBUM_CHARS)
+}
+
+pub fn sanitize_duration(raw: &str) -> String {
+    sanitize_metadata_text(raw, MAX_DURATION_CHARS)
+}
+
+pub fn sanitize_provider_id(raw: &str) -> String {
+    sanitize_metadata_text(raw, MAX_PROVIDER_ID_CHARS)
+}
+
+pub fn sanitize_metadata_text(raw: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    let mut kept = 0;
+    for ch in raw.trim().chars() {
+        if kept >= max_chars {
+            break;
+        }
+        if is_forbidden_metadata_char(ch) {
+            continue;
+        }
+        out.push(ch);
+        kept += 1;
+    }
+    out.trim().to_owned()
+}
+
+fn is_forbidden_metadata_char(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            '\u{200b}'
+                | '\u{200c}'
+                | '\u{200d}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}'
+        )
 }
 
 /// A search result track, trimmed to what the UI needs. Serializable so the local
@@ -213,11 +269,15 @@ impl Song {
         artist: impl Into<String>,
         duration: impl Into<String>,
     ) -> Self {
+        let video_id = video_id.into();
+        let title = title.into();
+        let artist = artist.into();
+        let duration = duration.into();
         Self {
-            video_id: video_id.into(),
-            title: title.into(),
-            artist: artist.into(),
-            duration: duration.into(),
+            video_id: sanitize_provider_id(&video_id),
+            title: sanitize_title(&title),
+            artist: sanitize_artist(&artist),
+            duration: sanitize_duration(&duration),
             album: None,
             duration_secs: None,
             source: SearchSource::Youtube,
@@ -239,7 +299,9 @@ impl Song {
     ) -> Self {
         let mut song = Self::remote(video_id, title, artist, duration);
         song.duration_secs = crate::streaming::candidate::parse_duration_secs(&song.duration);
-        song.album = album.filter(|a| !a.trim().is_empty());
+        song.album = album
+            .map(|a| sanitize_album(&a))
+            .filter(|a| !a.trim().is_empty());
         song
     }
 
@@ -251,17 +313,20 @@ impl Song {
         duration: impl Into<String>,
         playable: PlayableRef,
     ) -> Self {
-        let source_id = source_id.into();
+        let source_id = sanitize_provider_id(&source_id.into());
+        let title = title.into();
+        let artist = artist.into();
+        let duration = duration.into();
         let video_id = if source == SearchSource::Youtube {
-            source_id
+            source_id.clone()
         } else {
             format!("{}:{source_id}", source.id_prefix())
         };
         Self {
             video_id,
-            title: title.into(),
-            artist: artist.into(),
-            duration: duration.into(),
+            title: sanitize_title(&title),
+            artist: sanitize_artist(&artist),
+            duration: sanitize_duration(&duration),
             album: None,
             duration_secs: None,
             source,
@@ -290,7 +355,7 @@ impl Song {
         };
         Self {
             video_id: Self::local_id(&path),
-            title,
+            title: sanitize_title(&title),
             artist: "Local file".to_owned(),
             duration: String::new(),
             album: None,
@@ -1304,6 +1369,29 @@ mod tests {
                 "{raw} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn song_constructors_sanitize_display_metadata() {
+        let bidi = '\u{202e}';
+        let song = Song::from_search(
+            "id\nbad",
+            format!("{}{}", "t".repeat(MAX_TITLE_CHARS + 20), bidi),
+            "artist\nname",
+            format!("{}{}", "1".repeat(MAX_DURATION_CHARS + 20), bidi),
+            Some(format!("{}{}", "a".repeat(MAX_ALBUM_CHARS + 20), bidi)),
+        );
+
+        assert_eq!(song.video_id, "idbad");
+        assert_eq!(song.title.chars().count(), MAX_TITLE_CHARS);
+        assert_eq!(song.artist, "artistname");
+        assert_eq!(song.duration.chars().count(), MAX_DURATION_CHARS);
+        assert_eq!(
+            song.album.as_ref().unwrap().chars().count(),
+            MAX_ALBUM_CHARS
+        );
+        assert!(!song.title.contains(bidi));
+        assert!(!song.album.as_ref().unwrap().contains(bidi));
     }
 
     #[test]
