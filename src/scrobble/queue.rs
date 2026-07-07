@@ -346,6 +346,39 @@ mod tests {
     }
 
     #[test]
+    fn jsonl_loader_handles_deterministic_corrupt_corpus() {
+        let (dir, q) = temp_queue("corrupt-corpus");
+        let a = entry("a", 100, vec![ServiceKind::Lastfm]);
+        let b = entry("b", 200, vec![ServiceKind::ListenBrainz]);
+        q.append(&a).unwrap();
+
+        let mut state = 0x1319_8a2e_0370_7344u64;
+        for idx in 0..128 {
+            state = state
+                .wrapping_mul(2862933555777941757)
+                .wrapping_add(3037000493);
+            let line = match state % 5 {
+                0 => "{",
+                1 => r#"{"id":42}"#,
+                2 => r#"["not","an","entry"]"#,
+                3 => r#"{"id":"x","pending":["lastfm"]"#,
+                _ => r#"{"id":"x","started_unix":"bad","pending":["lastfm"]}"#,
+            };
+            crate::util::safe_fs::append_private_jsonl(q.path(), line).unwrap();
+            if idx == 63 {
+                q.append(&b).unwrap();
+            }
+        }
+
+        let loaded = q.load();
+
+        assert!(!loaded.read_failed);
+        assert_eq!(loaded.entries, vec![a, b]);
+        assert!(loaded.corrupt >= 128);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn oversize_queue_is_flagged_read_failed_not_emptied() {
         let (dir, q) = temp_queue("oversize");
         std::fs::create_dir_all(q.path().parent().unwrap()).unwrap();

@@ -384,4 +384,72 @@ mod tests {
             "bad_setting_value"
         );
     }
+
+    #[test]
+    fn command_validation_handles_deterministic_fuzz_corpus() {
+        let mut state = 0x243f_6a88_85a3_08d3u64;
+        let fields = [
+            ("player", "volume"),
+            ("streaming", "enabled"),
+            ("storage", "download_dir"),
+            ("eq", "bands"),
+            ("unknown", "field"),
+        ];
+
+        for _ in 0..512 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let query_len = (state as usize) % (REMOTE_MAX_QUERY_BYTES + 64);
+            let query = "q".repeat(query_len);
+            let cmd = RemoteCommand::RunSearch {
+                ticket: state,
+                query,
+                source: SearchSource::Youtube,
+            };
+            let result = cmd.validate();
+            if query_len == 0 {
+                assert_eq!(result.unwrap_err().reason(), "empty_query");
+            } else if query_len > REMOTE_MAX_QUERY_BYTES {
+                assert_eq!(result.unwrap_err().reason(), "query_too_long");
+            } else {
+                assert!(result.is_ok());
+            }
+
+            let count = (state.rotate_left(7) as usize) % (REMOTE_MAX_TRACK_IDS + 8);
+            let ids: Vec<String> = (0..count)
+                .map(|idx| {
+                    if idx % 13 == 0 {
+                        "x".repeat(REMOTE_MAX_TRACK_ID_BYTES + 1)
+                    } else {
+                        format!("id{idx}")
+                    }
+                })
+                .collect();
+            let result = RemoteCommand::PlayTracks { video_ids: ids }.validate();
+            if count > REMOTE_MAX_TRACK_IDS {
+                assert_eq!(result.unwrap_err().reason(), "too_many_tracks");
+            }
+
+            let (group, field) = fields[(state as usize) % fields.len()];
+            let value = match state % 6 {
+                0 => Value::Bool(state & 1 == 0),
+                1 => Value::from((state % 100) as i64),
+                2 => Value::from(
+                    "x".repeat((state as usize) % (REMOTE_MAX_SETTING_STRING_BYTES + 32)),
+                ),
+                3 => Value::Null,
+                4 => serde_json::json!({"nested": state}),
+                _ => serde_json::json!([state, state + 1]),
+            };
+            let _ = RemoteCommand::Apply {
+                change: GuiSettingChange {
+                    group: group.to_string(),
+                    field: field.to_string(),
+                    value,
+                },
+            }
+            .validate();
+        }
+    }
 }
