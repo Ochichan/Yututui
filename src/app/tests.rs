@@ -7430,6 +7430,16 @@ fn download_error_marks_failed() {
     assert!(app.status.text.contains("boom"));
 }
 
+#[test]
+fn download_dir_error_updates_status_without_track_state() {
+    let mut app = app_playing(1, 0);
+    app.update(Msg::DownloadDirError {
+        error: "queue full".to_owned(),
+    });
+    assert!(app.downloads.active.is_empty());
+    assert!(app.status.text.contains("queue full"));
+}
+
 // --- M8: prefetch / instant skip ----------------------------------------
 
 fn resolve_cmd<'a>(cmds: &'a [Cmd], id: &str) -> Option<&'a str> {

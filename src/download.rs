@@ -46,6 +46,38 @@ pub struct DownloadStartError {
     pub video_id: String,
 }
 
+#[derive(Debug)]
+pub enum DownloadSetDirError {
+    Full(PathBuf),
+    Closed(PathBuf),
+}
+
+impl DownloadSetDirError {
+    pub fn dir(&self) -> &Path {
+        match self {
+            DownloadSetDirError::Full(dir) | DownloadSetDirError::Closed(dir) => dir,
+        }
+    }
+}
+
+impl std::fmt::Display for DownloadSetDirError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DownloadSetDirError::Full(_) => {
+                write!(f, "download queue is full; directory was not updated")
+            }
+            DownloadSetDirError::Closed(_) => {
+                write!(
+                    f,
+                    "download worker is not running; directory was not updated"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for DownloadSetDirError {}
+
 impl DownloadHandle {
     pub fn start(&self, song: Song) -> std::result::Result<(), DownloadStartError> {
         match self.tx.try_send(DownloadCmd::Start(Box::new(song))) {
@@ -59,8 +91,18 @@ impl DownloadHandle {
         }
     }
 
-    pub fn set_dir(&self, dir: PathBuf) -> bool {
-        self.tx.try_send(DownloadCmd::SetDir(dir)).is_ok()
+    pub fn set_dir(&self, dir: PathBuf) -> std::result::Result<(), DownloadSetDirError> {
+        match self.tx.try_send(DownloadCmd::SetDir(dir)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(DownloadCmd::SetDir(dir))) => {
+                Err(DownloadSetDirError::Full(dir))
+            }
+            Err(TrySendError::Closed(DownloadCmd::SetDir(dir))) => {
+                Err(DownloadSetDirError::Closed(dir))
+            }
+            Err(TrySendError::Full(DownloadCmd::Start(_)))
+            | Err(TrySendError::Closed(DownloadCmd::Start(_))) => unreachable!(),
+        }
     }
 }
 
@@ -267,12 +309,16 @@ async fn run_download_with_program(
     }
     // Must land inside the requested download directory — a surprising output path or a symlink
     // must not smuggle in a file from elsewhere.
-    let root = tokio::fs::canonicalize(dir)
+    let root = tokio::fs::canonicalize(dir).await.with_context(|| {
+        format!(
+            "download directory could not be resolved: {}",
+            dir.display()
+        )
+    })?;
+    let resolved = tokio::fs::canonicalize(&path)
         .await
-        .unwrap_or_else(|_| dir.to_path_buf());
-    if let Ok(resolved) = tokio::fs::canonicalize(&path).await
-        && !resolved.starts_with(&root)
-    {
+        .with_context(|| format!("downloaded path could not be resolved: {}", path.display()))?;
+    if !resolved.starts_with(&root) {
         bail!(
             "downloaded path escaped the download directory: {}",
             path.display()
@@ -337,6 +383,24 @@ mod tests {
         assert!(!OUTPUT_TEMPLATE.contains('\\'));
     }
 
+    #[test]
+    fn set_dir_reports_full_and_closed_queue() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let handle = DownloadHandle { tx };
+        handle
+            .set_dir(PathBuf::from("/tmp/one"))
+            .expect("first set-dir should fill the small channel");
+        let full = handle
+            .set_dir(PathBuf::from("/tmp/two"))
+            .expect_err("second set-dir should report a full queue");
+        assert!(matches!(full, DownloadSetDirError::Full(_)));
+        drop(rx);
+        let closed = handle
+            .set_dir(PathBuf::from("/tmp/three"))
+            .expect_err("closed queue should be reported");
+        assert!(matches!(closed, DownloadSetDirError::Closed(_)));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn run_download_uses_fake_ytdlp_progress_and_final_path() {
@@ -397,6 +461,39 @@ mod tests {
             _ => panic!("expected done event"),
         }
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_download_rejects_reported_path_outside_download_dir() {
+        let root = temp_dir("download-escape");
+        let bin_dir = root.join("bin");
+        let download_dir = root.join("music");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let outside = root.join("outside.m4a");
+        let fake = write_executable(
+            &bin_dir,
+            "yt-dlp",
+            &format!(
+                "#!/bin/sh\nprintf 'audio' > '{outside}'\nprintf '%s\\n' '{outside}'\n",
+                outside = outside.display()
+            ),
+        );
+        let emit: EventSink = Arc::new(|_| {});
+        let result = run_download_with_program(
+            fake.to_str().unwrap(),
+            &Song::remote("abc123def45", "Track", "Artist", "3:12"),
+            &download_dir,
+            None,
+            &emit,
+        )
+        .await
+        .expect_err("outside path must be rejected");
+        assert!(
+            format!("{result:#}").contains("escaped the download directory"),
+            "unexpected error: {result:#}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -1286,6 +1286,17 @@ impl App {
                 // Keep the batch flowing even when one track fails.
                 return self.pump_downloads();
             }
+            Msg::DownloadDirError { error } => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!(
+                    "{}: {error}",
+                    t!(
+                        "Download directory update failed",
+                        "다운로드 폴더 변경 실패"
+                    )
+                );
+                self.dirty = true;
+            }
             Msg::Streaming(sm) => match sm {
                 StreamingMsg::Resolved {
                     video_id,

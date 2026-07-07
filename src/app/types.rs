@@ -135,6 +135,10 @@ pub enum Msg {
         video_id: String,
         error: String,
     },
+    /// Updating the download actor's destination failed before any track-specific job started.
+    DownloadDirError {
+        error: String,
+    },
     /// A streaming/autoplay pipeline message — a prefetched/resolved direct URL, related-track
     /// candidates, the metadata-preflighted picks, a fallback failure, or the DJ Gem reranker's
     /// chosen picks. See [`StreamingMsg`].

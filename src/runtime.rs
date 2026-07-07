@@ -505,8 +505,13 @@ impl RuntimeHandles {
                 }
             }
             Cmd::SetDownloadDir(dir) => {
-                if !self.download_handle.set_dir(dir) {
-                    tracing::warn!("download queue full; could not update download directory");
+                if let Err(error) = self.download_handle.set_dir(dir) {
+                    tracing::warn!(dir = %error.dir().display(), %error, "could not update download directory");
+                    let _ = self
+                        .worker_tx
+                        .send(RuntimeEvent::App(Msg::DownloadDirError {
+                            error: error.to_string(),
+                        }));
                 }
             }
             Cmd::Resolve {
