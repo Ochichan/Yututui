@@ -410,6 +410,9 @@ fn build_webview(
     let builder = WebViewBuilder::new();
     let webview = builder
         .with_transparent(true)
+        // Fully transparent under-page color so no opaque base backdrop bleeds around the
+        // panel shape (belt-and-suspenders alongside wry's `transparent` feature).
+        .with_background_color((0, 0, 0, 0))
         .with_html(panel::html(update, theme, art_uri))
         .with_ipc_handler(
             move |request| match panel::parse_ipc_message(request.body()) {

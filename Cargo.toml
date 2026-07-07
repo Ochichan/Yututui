@@ -185,6 +185,11 @@ objc2-app-kit = "0.3"
 objc2-core-foundation = "0.3"
 objc2-foundation = "0.3"
 objc2-media-player = "0.3"
+# Enable wry's `transparent` feature on macOS only. It gates the WKWebView
+# `drawsBackground = NO` path; without it `with_transparent(true)` is a silent no-op and
+# the mini-player webview paints an opaque base backdrop (the visible rectangle/halo).
+# Unifies with the base `wry` dep (features are additive); other targets are unaffected.
+wry = { version = "0.55.1", default-features = false, features = ["transparent"], optional = true }
 
 # Linux MPRIS media session (`src/media/mpris.rs`): the maintained zbus-based server-side
 # implementation of org.mpris.MediaPlayer2 (pure Rust; playerctl/GNOME/KDE widgets all
