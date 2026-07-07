@@ -956,8 +956,8 @@ pub fn about_brand_line(app: &App, name: &str, version: &str) -> Option<Line<'st
         return None;
     }
     let f = app.anim_frame();
-    let base = app.theme.color(R::Accent);
-    let bright = app.theme.color(R::AccentAlt);
+    let base = app.theme.color(R::TextPrimary);
+    let bright = app.theme.color(R::TextSubtle);
     let bg = crate::ui::popup_bg(app);
     let span_len = name.chars().count() as f64 + 6.0;
     let head = (f as f64 / 3.0) % span_len;

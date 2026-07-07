@@ -168,7 +168,7 @@ pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) -> u16 {
     const MARGIN: &str = "  ";
     const END_PAD: &str = " ";
 
-    let brand = app.theme.style(R::Accent).add_modifier(Modifier::BOLD);
+    let brand = app.theme.style(R::TextPrimary).add_modifier(Modifier::BOLD);
     let sep = app.theme.style(R::BorderMuted);
     let active = Style::default()
         .fg(app.theme.color(R::SelectionFg))

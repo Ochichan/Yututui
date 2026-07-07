@@ -259,7 +259,7 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(vec![
                 Span::styled(
                     "ytm-tui",
-                    crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
+                    crate::ui::popup_style(app, R::TextPrimary).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("  v{}", env!("CARGO_PKG_VERSION")),
@@ -317,7 +317,7 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     // leading label is padded to line its value up with the rows above (`  ` + 9-wide key).
     let link_style = app
         .theme
-        .style(R::Accent)
+        .style(R::TextPrimary)
         .bg(crate::ui::popup_bg(app))
         .add_modifier(Modifier::UNDERLINED);
     let segs = [
@@ -383,7 +383,7 @@ fn draw_update_block(frame: &mut Frame, app: &App, headline: Rect, body: Rect, l
     // Releases link — a real click target (opens the latest release page in the browser).
     let link_style = app
         .theme
-        .style(R::Accent)
+        .style(R::TextPrimary)
         .bg(crate::ui::popup_bg(app))
         .add_modifier(Modifier::UNDERLINED);
     let segs = [Seg::button(
