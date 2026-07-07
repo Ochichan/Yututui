@@ -779,6 +779,10 @@ fn verify_sha256sums_signature_in(
         .map_err(|e| format!("cannot write checksum signature: {e}"))?;
     std::fs::write(&key_path, YTDLP_PUBLIC_KEY.as_bytes())
         .map_err(|e| format!("cannot write yt-dlp public key: {e}"))?;
+    let home_arg = gpg_path_arg(tools, &home);
+    let sums_arg = gpg_path_arg(tools, &sums_path);
+    let sig_arg = gpg_path_arg(tools, &sig_path);
+    let key_arg = gpg_path_arg(tools, &key_path);
 
     let mut import = crate::util::process::std_command(
         &tools.gpg.to_string_lossy(),
@@ -788,12 +792,12 @@ fn verify_sha256sums_signature_in(
         .arg("--batch")
         .arg("--quiet")
         .arg("--homedir")
-        .arg(&home)
+        .arg(&home_arg)
         .arg("--no-default-keyring")
         .arg("--keyring")
         .arg(keyring)
         .arg("--import")
-        .arg(&key_path)
+        .arg(&key_arg)
         .stdin(Stdio::null())
         .current_dir(&home);
     run_verifier(import, "import yt-dlp signing key")?;
@@ -805,11 +809,11 @@ fn verify_sha256sums_signature_in(
         );
         verify
             .arg("--homedir")
-            .arg(&home)
+            .arg(&home_arg)
             .arg("--keyring")
             .arg(keyring)
-            .arg(&sig_path)
-            .arg(&sums_path)
+            .arg(&sig_arg)
+            .arg(&sums_arg)
             .stdin(Stdio::null())
             .current_dir(&home);
         run_verifier(verify, "verify yt-dlp checksum signature")
@@ -822,17 +826,49 @@ fn verify_sha256sums_signature_in(
             .arg("--batch")
             .arg("--quiet")
             .arg("--homedir")
-            .arg(&home)
+            .arg(&home_arg)
             .arg("--no-default-keyring")
             .arg("--keyring")
             .arg(keyring)
             .arg("--verify")
-            .arg(&sig_path)
-            .arg(&sums_path)
+            .arg(&sig_arg)
+            .arg(&sums_arg)
             .stdin(Stdio::null())
             .current_dir(&home);
         run_verifier(verify, "verify yt-dlp checksum signature")
     }
+}
+
+#[cfg(not(windows))]
+fn gpg_path_arg(_tools: &GpgTools, path: &Path) -> std::ffi::OsString {
+    path.as_os_str().to_os_string()
+}
+
+#[cfg(windows)]
+fn gpg_path_arg(tools: &GpgTools, path: &Path) -> std::ffi::OsString {
+    if !gpg_uses_msys_paths(tools) {
+        return path.as_os_str().to_os_string();
+    }
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let bytes = normalized.as_bytes();
+    if bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'/' && bytes[0].is_ascii_alphabetic() {
+        let drive = (bytes[0] as char).to_ascii_lowercase();
+        return format!("/{drive}/{}", &normalized[3..]).into();
+    }
+    normalized.into()
+}
+
+#[cfg(windows)]
+fn gpg_uses_msys_paths(tools: &GpgTools) -> bool {
+    let exe = tools
+        .gpg
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    exe.contains("/git/usr/bin/")
+        || exe.contains("/msys64/")
+        || exe.contains("/mingw64/")
+        || exe.contains("/mingw32/")
 }
 
 fn run_verifier(mut cmd: std::process::Command, label: &str) -> Result<(), String> {
