@@ -114,10 +114,10 @@ impl QueueFile {
         &self.path
     }
 
-    /// Durably append one entry (0600, O_APPEND, fsync'd dir on first create).
+    /// Durably append one entry (0600, O_APPEND, file + parent dir synced before return).
     pub fn append(&self, entry: &QueueEntry) -> std::io::Result<()> {
         let line = serde_json::to_string(entry)?;
-        safe_fs::append_private_jsonl(&self.path, &line)
+        safe_fs::append_private_jsonl_durable(&self.path, &line)
     }
 
     /// Read and parse the whole queue. A missing file is an empty queue.

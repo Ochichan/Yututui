@@ -104,6 +104,23 @@ fn temp_path_for(path: &Path) -> io::Result<PathBuf> {
 }
 
 #[cfg(unix)]
+fn sync_dir(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn sync_parent_dir(path: &Path) -> io::Result<()> {
+    match path.parent() {
+        Some(parent) => sync_dir(parent),
+        None => Ok(()),
+    }
+}
+
+#[cfg(unix)]
 fn create_private_file(path: &Path) -> io::Result<File> {
     let mut opts = OpenOptions::new();
     opts.write(true)
@@ -150,6 +167,7 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         #[cfg(unix)]
         fs::set_permissions(&tmp, fs::Permissions::from_mode(private_file_mode()))?;
         fs::rename(&tmp, path)?;
+        sync_parent_dir(path)?;
         Ok(())
     })();
     if write_result.is_err() {
@@ -226,12 +244,25 @@ pub fn read_no_symlink_limited(path: &Path, max_bytes: u64) -> io::Result<Vec<u8
 
 /// Append one JSONL line to a private file.
 pub fn append_private_jsonl(path: &Path, line: &str) -> io::Result<()> {
+    append_private_jsonl_inner(path, line, false)
+}
+
+/// Append one JSONL line and force the file and parent directory to storage before returning.
+pub fn append_private_jsonl_durable(path: &Path, line: &str) -> io::Result<()> {
+    append_private_jsonl_inner(path, line, true)
+}
+
+fn append_private_jsonl_inner(path: &Path, line: &str, durable: bool) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         ensure_private_dir(dir)?;
     }
     let mut file = open_private_append(path)?;
     file.write_all(line.as_bytes())?;
     file.write_all(b"\n")?;
+    if durable {
+        file.sync_all()?;
+        sync_parent_dir(path)?;
+    }
     Ok(())
 }
 
@@ -512,9 +543,14 @@ fn backup_with_label(path: &Path, label: &str) -> io::Result<PathBuf> {
         } else {
             path.with_extension(format!("{label}.{n}.bak"))
         };
-        if !bak.exists() {
-            fs::rename(path, &bak)?;
-            return Ok(bak);
+        match fs::hard_link(path, &bak) {
+            Ok(()) => {
+                fs::remove_file(path)?;
+                sync_parent_dir(path)?;
+                return Ok(bak);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
         }
     }
     Err(io::Error::other("too many backups"))
@@ -537,6 +573,15 @@ mod tests {
         let path = dir.join("config.json");
         write_private_atomic(&path, br#"{"ok":true}"#).unwrap();
         assert_eq!(read_no_symlink(&path).unwrap(), br#"{"ok":true}"#);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn durable_append_writes_jsonl_line() {
+        let dir = temp_root("append-durable");
+        let path = dir.join("queue.jsonl");
+        append_private_jsonl_durable(&path, r#"{"ok":true}"#).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"ok\":true}\n");
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -622,6 +667,25 @@ mod tests {
         let missing = dir.join("missing.json");
         assert_eq!(load_json_or_default::<S>(&missing), S::default());
         assert!(!missing.with_extension("unreadable.bak").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn backup_aside_never_overwrites_existing_backup() {
+        let dir = temp_root("backup-numbered");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.json");
+        let first_backup = path.with_extension("corrupt.bak");
+        let numbered_backup = path.with_extension("corrupt.1.bak");
+        fs::write(&path, b"new-bad").unwrap();
+        fs::write(&first_backup, b"old-bad").unwrap();
+
+        let backed_up = backup_aside(&path).unwrap();
+
+        assert_eq!(backed_up, numbered_backup);
+        assert_eq!(fs::read(&first_backup).unwrap(), b"old-bad");
+        assert_eq!(fs::read(&backed_up).unwrap(), b"new-bad");
+        assert!(!path.exists());
         let _ = fs::remove_dir_all(dir);
     }
 
