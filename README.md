@@ -31,6 +31,8 @@ Each command installs `ytt` **and** its helpers (mpv, yt-dlp, ffmpeg) in one go.
 | **Linux** — any other | Download and run the installer below |
 | **From source** | `./install.sh --build` (needs [Rust](https://rustup.rs)) |
 
+> Arch AUR publishing is temporarily pending; use Nix or the installer until `yututui-bin` is available.
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Ochichan/Yututui/main/install.sh | bash
 ```
