@@ -469,7 +469,7 @@ async fn build_response(req: RemoteRequest, token: &str, emit: &EventSink) -> Re
     let reply_timeout = super::reply_timeout_for(&req.command);
     let (reply_tx, reply_rx) = oneshot::channel();
     if !emit(RemoteEvent::Command(req.command, reply_tx)) {
-        return RemoteResponse::err("shutting_down");
+        return RemoteResponse::err("server_busy");
     }
     match timeout(reply_timeout, reply_rx).await {
         Ok(Ok(resp)) => resp,
@@ -515,6 +515,21 @@ mod tests {
 
     fn parse(resp: &str) -> RemoteResponse {
         serde_json::from_str(resp.trim()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn one_shot_reports_server_busy_when_owner_rejects() {
+        let req = RemoteRequest {
+            version: PROTOCOL_VERSION,
+            token: "secret".to_string(),
+            command: RemoteCommand::TogglePause,
+        };
+        let emit: EventSink = Arc::new(|_| false);
+
+        let resp = build_response(req, "secret", &emit).await;
+
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("server_busy"));
     }
 
     #[tokio::test]

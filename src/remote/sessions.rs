@@ -569,7 +569,7 @@ pub(crate) async fn run_session(
                             _ => RemoteResponse::err("timeout"),
                         }
                     } else {
-                        RemoteResponse::err("shutting_down")
+                        RemoteResponse::err("server_busy")
                     };
                     Some(ServerFrame::Reply { id: frame.id, resp })
                 }

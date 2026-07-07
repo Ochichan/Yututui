@@ -5,7 +5,7 @@
 //! reducer messages.
 
 use ratatui_image::thread::ResizeResponse;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{Sender, error::TrySendError};
 
 use crate::app::{AiMsg, App, Cmd, Msg, PersistCmd, PlayerMsg, StreamingMsg};
 use crate::config::PlayerRuntimeConfig;
@@ -240,24 +240,37 @@ impl From<RuntimeEvent> for Msg {
     }
 }
 
-pub fn sink<T, F>(tx: UnboundedSender<RuntimeEvent>, wrap: F) -> impl Fn(T) + Send + Sync + 'static
+pub type RuntimeSender = Sender<RuntimeEvent>;
+
+pub fn emit(tx: &RuntimeSender, event: RuntimeEvent) -> bool {
+    match tx.try_send(event) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            tracing::warn!("runtime owner event queue full; dropping event");
+            false
+        }
+        Err(TrySendError::Closed(_)) => false,
+    }
+}
+
+pub fn sink<T, F>(tx: RuntimeSender, wrap: F) -> impl Fn(T) + Send + Sync + 'static
 where
     T: 'static,
     F: Fn(T) -> RuntimeEvent + Send + Sync + 'static,
 {
     move |event| {
-        let _ = tx.send(wrap(event));
+        emit(&tx, wrap(event));
     }
 }
 
 pub fn remote_sink(
-    tx: UnboundedSender<RuntimeEvent>,
+    tx: RuntimeSender,
 ) -> impl Fn(crate::remote::server::RemoteEvent) -> bool + Send + Sync + 'static {
-    move |event| tx.send(RuntimeEvent::Remote(event)).is_ok()
+    move |event| emit(&tx, RuntimeEvent::Remote(event))
 }
 
 pub struct RuntimeHandles {
-    worker_tx: UnboundedSender<RuntimeEvent>,
+    worker_tx: RuntimeSender,
     player_handle: Option<PlayerHandle>,
     pending_player_cmds: Vec<PlayerCmd>,
     player_failed: bool,
@@ -265,7 +278,7 @@ pub struct RuntimeHandles {
     /// Command sender for the *current* video overlay's IPC client. Replaced wholesale
     /// on every `Cmd::VideoConnect` (each spawn generation gets a fresh client); sends
     /// to a dead client are silent no-ops.
-    video_handle: Option<UnboundedSender<crate::player::video::VideoCmd>>,
+    video_handle: Option<Sender<crate::player::video::VideoCmd>>,
     api_handle: crate::api::ApiHandle,
     lyrics_handle: crate::lyrics::LyricsHandle,
     artwork_handle: crate::artwork::ArtworkHandle,
@@ -282,7 +295,7 @@ pub struct RuntimeHandles {
 impl RuntimeHandles {
     #[allow(clippy::too_many_arguments)] // one-time construction in `run()`
     pub fn new(
-        worker_tx: UnboundedSender<RuntimeEvent>,
+        worker_tx: RuntimeSender,
         api_handle: crate::api::ApiHandle,
         lyrics_handle: crate::lyrics::LyricsHandle,
         artwork_handle: crate::artwork::ArtworkHandle,
@@ -325,7 +338,7 @@ impl RuntimeHandles {
     }
 
     fn emit_api_enqueue_error(&self, msg: Msg) {
-        let _ = self.worker_tx.send(RuntimeEvent::App(msg));
+        emit(&self.worker_tx, RuntimeEvent::App(msg));
     }
 
     pub fn handle_player_ready(
@@ -391,13 +404,17 @@ impl RuntimeHandles {
                     ipc_path,
                     generation,
                     move |generation, event| {
-                        let _ = tx.send(RuntimeEvent::Video { generation, event });
+                        emit(&tx, RuntimeEvent::Video { generation, event });
                     },
                 ));
             }
             Cmd::VideoLoad(url) => {
                 if let Some(v) = &self.video_handle {
-                    let _ = v.send(crate::player::video::VideoCmd::Load(url));
+                    if v.try_send(crate::player::video::VideoCmd::Load(url))
+                        .is_err()
+                    {
+                        tracing::warn!("video overlay command queue full or closed; dropping load");
+                    }
                 }
             }
             Cmd::Search {
@@ -472,7 +489,7 @@ impl RuntimeHandles {
                 let tx = self.worker_tx.clone();
                 tokio::task::spawn_blocking(move || {
                     let songs = crate::library::scan_downloads(&dir);
-                    let _ = tx.send(RuntimeEvent::App(Msg::DownloadsScanned(songs)));
+                    emit(&tx, RuntimeEvent::App(Msg::DownloadsScanned(songs)));
                 });
             }
             Cmd::Recorder(job) => {
@@ -481,7 +498,7 @@ impl RuntimeHandles {
                 let tx = self.worker_tx.clone();
                 tokio::task::spawn_blocking(move || {
                     if let Some(event) = crate::recorder::job::run(job) {
-                        let _ = tx.send(RuntimeEvent::App(Msg::Recorder(event)));
+                        emit(&tx, RuntimeEvent::App(Msg::Recorder(event)));
                     }
                 });
             }
@@ -498,20 +515,24 @@ impl RuntimeHandles {
             Cmd::Download(song) => {
                 if let Err(error) = self.download_handle.start(song) {
                     tracing::warn!(video_id = %error.video_id, "download queue full; dropping request");
-                    let _ = self.worker_tx.send(RuntimeEvent::App(Msg::DownloadError {
-                        video_id: error.video_id,
-                        error: "Download queue is full; try again in a moment.".to_owned(),
-                    }));
+                    emit(
+                        &self.worker_tx,
+                        RuntimeEvent::App(Msg::DownloadError {
+                            video_id: error.video_id,
+                            error: "Download queue is full; try again in a moment.".to_owned(),
+                        }),
+                    );
                 }
             }
             Cmd::SetDownloadDir(dir) => {
                 if let Err(error) = self.download_handle.set_dir(dir) {
                     tracing::warn!(dir = %error.dir().display(), %error, "could not update download directory");
-                    let _ = self
-                        .worker_tx
-                        .send(RuntimeEvent::App(Msg::DownloadDirError {
+                    emit(
+                        &self.worker_tx,
+                        RuntimeEvent::App(Msg::DownloadDirError {
                             error: error.to_string(),
-                        }));
+                        }),
+                    );
                 }
             }
             Cmd::Resolve {
@@ -529,17 +550,17 @@ impl RuntimeHandles {
                     let progress_tx = tx.clone();
                     crate::tools::ytdlp::clear_probe_cache();
                     let outcome = crate::tools::ytdlp::check_and_update(&tools, &move |event| {
-                        let _ = progress_tx.send(RuntimeEvent::Tools(event));
+                        emit(&progress_tx, RuntimeEvent::Tools(event));
                     })
                     .await;
                     let updated = matches!(
                         outcome,
                         crate::tools::ytdlp::UpdateOutcome::Installed { .. }
                     );
-                    let _ = tx.send(RuntimeEvent::App(Msg::YtdlpHealResult {
-                        video_id,
-                        updated,
-                    }));
+                    emit(
+                        &tx,
+                        RuntimeEvent::App(Msg::YtdlpHealResult { video_id, updated }),
+                    );
                 });
             }
             Cmd::AskAi { prompt, context } => {
@@ -574,13 +595,14 @@ impl RuntimeHandles {
                 if let Some(h) = &self.ai_handle {
                     h.romanize(request_id, items);
                 } else {
-                    let _ =
-                        self.worker_tx
-                            .send(RuntimeEvent::App(Msg::Ai(AiMsg::RomanizedTitles {
-                                request_id,
-                                keys,
-                                entries: Vec::new(),
-                            })));
+                    emit(
+                        &self.worker_tx,
+                        RuntimeEvent::App(Msg::Ai(AiMsg::RomanizedTitles {
+                            request_id,
+                            keys,
+                            entries: Vec::new(),
+                        })),
+                    );
                 }
             }
             Cmd::StreamingFallback {

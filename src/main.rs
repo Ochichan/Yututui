@@ -721,10 +721,12 @@ async fn run(
     startup.mark("deps_checked");
 
     // Worker -> UI channel. Actors hold clones; the original stays alive so the
-    // select! branch never resolves to `None`. Intentionally unbounded: single-session
-    // event bus, and the one high-frequency producer (mpv time-pos) is coalesced to
-    // ~1/sec inside the IPC actor before it ever reaches this channel.
-    let (worker_tx, mut worker_rx) = mpsc::unbounded_channel::<RuntimeEvent>();
+    // select! branch never resolves to `None`. Bounded to keep a burst of valid actor
+    // events from becoming unbounded memory growth; high-frequency producers coalesce
+    // before this boundary where possible.
+    let (worker_tx, mut worker_rx) = ytm_tui::util::backpressure::bounded_channel::<RuntimeEvent>(
+        ytm_tui::util::backpressure::OWNER_EVENT_QUEUE,
+    );
 
     // Latest-only in behavior: the drain loop below always skips to the newest request.
     let (art_resize_tx, mut art_resize_rx) = mpsc::unbounded_channel::<ResizeRequest>();
@@ -737,7 +739,7 @@ async fn run(
             }
             match tokio::task::spawn_blocking(move || request.resize_encode()).await {
                 Ok(Ok(response)) => {
-                    let _ = art_resize_msg_tx.send(RuntimeEvent::ArtworkResized(response));
+                    runtime::emit(&art_resize_msg_tx, RuntimeEvent::ArtworkResized(response));
                 }
                 Ok(Err(e)) => tracing::warn!(error = ?e, "artwork resize failed"),
                 Err(e) => tracing::warn!(error = ?e, "artwork resize task failed"),
@@ -853,7 +855,7 @@ async fn run(
     // commands flow through the normal dispatch below (no-op when the setting is off or
     // nothing was restored).
     if cfg.effective_autoplay_on_start() {
-        let _ = worker_tx.send(RuntimeEvent::App(Msg::Autoplay));
+        runtime::emit(&worker_tx, RuntimeEvent::App(Msg::Autoplay));
     }
 
     // OS media session (macOS Now Playing / Windows SMTC / Linux MPRIS): commands from
@@ -865,10 +867,13 @@ async fn run(
     let mut media = media::MediaSession::new(
         cfg.effective_media_controls(),
         move |cmd| {
-            let _ = media_cmd_tx.send(RuntimeEvent::App(Msg::Media(cmd)));
+            runtime::emit(&media_cmd_tx, RuntimeEvent::App(Msg::Media(cmd)));
         },
         move |ready| {
-            let _ = media_art_tx.send(RuntimeEvent::App(Msg::MediaArtworkReady(ready)));
+            runtime::emit(
+                &media_art_tx,
+                RuntimeEvent::App(Msg::MediaArtworkReady(ready)),
+            );
         },
     );
     media.publish(app.media_snapshot());

@@ -7,7 +7,7 @@
 //! A user quit (`q` / window close) still arrives as `end-file reason=quit`.
 
 use tokio::io::BufReader;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::{self, Sender};
 use tokio::time::{Duration, sleep};
 
 use super::ipc::{connect_retry, write_json};
@@ -46,11 +46,12 @@ pub enum VideoCmd {
 /// immediately; the connection (with retry) and the read loop run on a spawned task.
 /// A connect failure is logged and the task ends silently — the overlay then degrades
 /// to the pre-IPC fire-and-forget behavior rather than falsely reporting a close.
-pub fn connect<F>(ipc_path: String, generation: u64, emit: F) -> UnboundedSender<VideoCmd>
+pub fn connect<F>(ipc_path: String, generation: u64, emit: F) -> Sender<VideoCmd>
 where
     F: Fn(u64, VideoEvent) + Send + Sync + 'static,
 {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) =
+        crate::util::backpressure::bounded_channel(crate::util::backpressure::VIDEO_CMD_QUEUE);
     tokio::spawn(async move {
         let conn = match connect_retry(&ipc_path).await {
             Ok(conn) => conn,
@@ -72,7 +73,7 @@ where
 /// `loadfile` commands. Returns when mpv closes the connection or the sender drops.
 async fn run<F>(
     conn: interprocess::local_socket::tokio::Stream,
-    mut cmd_rx: mpsc::UnboundedReceiver<VideoCmd>,
+    mut cmd_rx: mpsc::Receiver<VideoCmd>,
     generation: u64,
     emit: &F,
 ) where

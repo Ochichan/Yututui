@@ -185,17 +185,30 @@ enum DaemonEvent {
     Signal,
 }
 
+fn emit_daemon_event(tx: &mpsc::Sender<DaemonEvent>, event: DaemonEvent) -> bool {
+    match tx.try_send(event) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!("daemon owner event queue full; dropping event");
+            false
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
 async fn serve(_from_tray: bool, resume: bool) -> i32 {
     crate::player::lifetime::install_panic_hook();
     #[cfg(windows)]
     crate::player::lifetime::install_console_ctrl_handler();
     let _log_guard = init_daemon_logging();
 
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<DaemonEvent>();
+    let (event_tx, mut event_rx) = crate::util::backpressure::bounded_channel::<DaemonEvent>(
+        crate::util::backpressure::DAEMON_EVENT_QUEUE,
+    );
     let player_event_tx = event_tx.clone();
     let mut engine =
         match engine::DaemonEngine::start(engine::EngineOptions { resume }, move |event| {
-            let _ = player_event_tx.send(DaemonEvent::Player(event));
+            emit_daemon_event(&player_event_tx, DaemonEvent::Player(event));
         })
         .await
         {
@@ -212,7 +225,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
 
     let api_event_tx = event_tx.clone();
     let api = crate::api::spawn(engine.api_cookie(), move |event| {
-        let _ = api_event_tx.send(DaemonEvent::Api(event));
+        emit_daemon_event(&api_event_tx, DaemonEvent::Api(event));
     });
 
     let server = match server::bind_or_detect(false).await {
@@ -230,14 +243,14 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
 
     let remote_event_tx = event_tx.clone();
     let (_guard, session_hub) =
-        server.start(move |event| remote_event_tx.send(DaemonEvent::Remote(event)).is_ok());
+        server.start(move |event| emit_daemon_event(&remote_event_tx, DaemonEvent::Remote(event)));
     // The v8 publisher runs on this loop (the owner lane), next to the media/scrobble
     // post-event observers below.
     let mut publisher = crate::remote::publish::Publisher::new(session_hub);
 
     let signal_event_tx = event_tx.clone();
     crate::player::lifetime::spawn_signal_handlers(move |_| {
-        let _ = signal_event_tx.send(DaemonEvent::Signal);
+        emit_daemon_event(&signal_event_tx, DaemonEvent::Signal);
     });
 
     // OS media session: the headless daemon publishes Now Playing / SMTC / MPRIS too,
@@ -254,10 +267,10 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     let mut media = crate::media::MediaSession::new(
         media_enabled,
         move |cmd| {
-            let _ = media_cmd_tx.send(DaemonEvent::Media(cmd));
+            emit_daemon_event(&media_cmd_tx, DaemonEvent::Media(cmd));
         },
         move |ready| {
-            let _ = media_art_tx.send(DaemonEvent::MediaArt(ready));
+            emit_daemon_event(&media_art_tx, DaemonEvent::MediaArt(ready));
         },
     );
     // Scrobbler: same snapshot feed as the TUI loop, headless-safe (log-only events).
@@ -265,7 +278,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     // restart, which the CLI prints as a hint.
     let scrobble_event_tx = event_tx.clone();
     let mut scrobble = crate::scrobble::spawn(engine.scrobble_settings(), move |event| {
-        let _ = scrobble_event_tx.send(DaemonEvent::Scrobble(event));
+        emit_daemon_event(&scrobble_event_tx, DaemonEvent::Scrobble(event));
     });
 
     let startup_snapshot = engine.media_snapshot();
@@ -516,7 +529,7 @@ fn daemon_capabilities() -> Vec<String> {
 
 fn dispatch_engine_effects(
     api: &crate::api::ApiHandle,
-    event_tx: &mpsc::UnboundedSender<DaemonEvent>,
+    event_tx: &mpsc::Sender<DaemonEvent>,
     effects: Vec<engine::EngineEffect>,
 ) {
     for effect in effects {
@@ -538,10 +551,13 @@ fn dispatch_engine_effects(
                     config,
                 ) {
                     tracing::warn!(%error, "api command enqueue failed");
-                    let _ = event_tx.send(DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
-                        seed_video_id,
-                        error: error.to_string(),
-                    }));
+                    emit_daemon_event(
+                        event_tx,
+                        DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                            seed_video_id,
+                            error: error.to_string(),
+                        }),
+                    );
                 }
             }
             engine::EngineEffect::StreamingPreflight {
@@ -555,10 +571,13 @@ fn dispatch_engine_effects(
                     api.streaming_preflight(seed_video_id.clone(), picks, fallback, mode, config)
                 {
                     tracing::warn!(%error, "api command enqueue failed");
-                    let _ = event_tx.send(DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
-                        seed_video_id,
-                        error: error.to_string(),
-                    }));
+                    emit_daemon_event(
+                        event_tx,
+                        DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                            seed_video_id,
+                            error: error.to_string(),
+                        }),
+                    );
                 }
             }
             // Off-loop: the update check may download ~40 MiB. The verdict re-enters
@@ -572,7 +591,7 @@ fn dispatch_engine_effects(
                         outcome,
                         crate::tools::ytdlp::UpdateOutcome::Installed { .. }
                     );
-                    let _ = tx.send(DaemonEvent::YtdlpHeal { video_id, updated });
+                    emit_daemon_event(&tx, DaemonEvent::YtdlpHeal { video_id, updated });
                 });
             }
             engine::EngineEffect::GuiSearch {
@@ -583,8 +602,9 @@ fn dispatch_engine_effects(
             } => {
                 if let Err(error) = api.gui_search(ticket, query.clone(), source, config) {
                     tracing::warn!(%error, "api command enqueue failed");
-                    let _ =
-                        event_tx.send(DaemonEvent::Api(crate::api::ApiEvent::GuiSearchCompleted {
+                    emit_daemon_event(
+                        event_tx,
+                        DaemonEvent::Api(crate::api::ApiEvent::GuiSearchCompleted {
                             ticket,
                             query,
                             source,
@@ -593,7 +613,8 @@ fn dispatch_engine_effects(
                                 songs: Vec::new(),
                                 error: Some(error.to_string()),
                             }],
-                        }));
+                        }),
+                    );
                 }
             }
         }

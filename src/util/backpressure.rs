@@ -29,6 +29,31 @@ pub const RESOLVER_QUEUE: QueuePolicy = QueuePolicy::CoalescedByKey {
     capacity: 64,
 };
 
+pub const OWNER_EVENT_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "owner-events",
+    capacity: 4096,
+};
+
+pub const DAEMON_EVENT_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "daemon-events",
+    capacity: 4096,
+};
+
+pub const PLAYER_CMD_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "player-cmd",
+    capacity: 256,
+};
+
+pub const VIDEO_CMD_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "video-cmd",
+    capacity: 32,
+};
+
+pub const ART_RESIZE_QUEUE: QueuePolicy = QueuePolicy::CoalescedByKey {
+    name: "art-resize",
+    capacity: 8,
+};
+
 pub fn bounded_channel<T>(policy: QueuePolicy) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
     let capacity = policy
         .capacity()
@@ -44,6 +69,11 @@ mod tests {
     fn queue_policies_expose_their_configured_capacity() {
         assert_eq!(DOWNLOAD_QUEUE.capacity(), Some(128));
         assert_eq!(RESOLVER_QUEUE.capacity(), Some(64));
+        assert_eq!(OWNER_EVENT_QUEUE.capacity(), Some(4096));
+        assert_eq!(DAEMON_EVENT_QUEUE.capacity(), Some(4096));
+        assert_eq!(PLAYER_CMD_QUEUE.capacity(), Some(256));
+        assert_eq!(VIDEO_CMD_QUEUE.capacity(), Some(32));
+        assert_eq!(ART_RESIZE_QUEUE.capacity(), Some(8));
         assert_eq!(
             QueuePolicy::Bounded {
                 name: "tiny",

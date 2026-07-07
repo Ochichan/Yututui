@@ -12,7 +12,7 @@ use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::tokio::Stream;
 use interprocess::local_socket::tokio::prelude::*;
 use tokio::io::{AsyncWriteExt, BufReader};
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::Receiver;
 use tokio::time::{Duration, sleep};
 
 use super::proto::{self, MpvIncoming};
@@ -70,7 +70,7 @@ pub async fn connect_retry(path: &str) -> io::Result<Stream> {
 /// Drive one mpv connection: subscribe to progress properties, then loop forwarding
 /// mpv events to the runtime (`emit`) and writing player commands (`cmd_rx`) to mpv.
 /// Returns when mpv closes the connection or all command senders drop.
-pub async fn run_actor(conn: Stream, mut cmd_rx: UnboundedReceiver<PlayerCmd>, emit: EventSink) {
+pub async fn run_actor(conn: Stream, mut cmd_rx: Receiver<PlayerCmd>, emit: EventSink) {
     let mut state = DispatchState::default();
 
     // Subscribe to the properties the player view needs. IDs are arbitrary but stable.
@@ -325,9 +325,9 @@ mod tests {
 
     #[test]
     fn metadata_property_change_is_forwarded() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
 
@@ -347,9 +347,9 @@ mod tests {
 
     #[test]
     fn time_pos_dedups_to_whole_seconds() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
 
@@ -367,9 +367,9 @@ mod tests {
 
     #[test]
     fn null_time_pos_emits_nothing() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState {
             last_sent_time_sec: Some(3),
@@ -388,9 +388,9 @@ mod tests {
 
     #[test]
     fn invalid_non_finite_time_pos_emits_nothing() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
 
@@ -406,9 +406,9 @@ mod tests {
 
     #[test]
     fn negative_time_pos_is_normalized_before_emit() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
 
@@ -424,9 +424,9 @@ mod tests {
 
     #[test]
     fn cache_time_forwards_and_dedups_to_whole_seconds() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
 
@@ -444,9 +444,9 @@ mod tests {
 
     #[test]
     fn null_cache_time_reports_loss_once() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState {
             last_sent_cache_sec: Some(42),
@@ -465,9 +465,9 @@ mod tests {
 
     #[test]
     fn null_duration_reports_loss_once_after_a_real_value() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
 
@@ -492,9 +492,9 @@ mod tests {
 
     #[test]
     fn negative_duration_is_normalized_without_latching_known_duration() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
 
@@ -516,9 +516,9 @@ mod tests {
 
     #[test]
     fn negative_cache_time_is_normalized_before_emit() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
 
@@ -534,9 +534,9 @@ mod tests {
 
     #[test]
     fn end_file_stop_resets_dedup_state_without_events() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState {
             last_sent_time_sec: Some(30),
@@ -561,9 +561,9 @@ mod tests {
 
     #[test]
     fn failed_loadfile_reply_emits_error() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
         state.pending.insert(11, "loadfile".to_owned());
@@ -582,9 +582,9 @@ mod tests {
 
     #[test]
     fn failed_af_command_reply_emits_nothing() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
         state.pending.insert(12, "af-command".to_owned());
@@ -601,9 +601,9 @@ mod tests {
 
     #[test]
     fn success_reply_emits_nothing_and_removes_pending() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
         state.pending.insert(13, "seek".to_owned());
@@ -616,9 +616,9 @@ mod tests {
 
     #[test]
     fn unknown_reply_id_is_ignored() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let emit: EventSink = std::sync::Arc::new(move |event| {
-            let _ = tx.send(event);
+            let _ = tx.try_send(event);
         });
         let mut state = DispatchState::default();
 

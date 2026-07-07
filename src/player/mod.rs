@@ -17,7 +17,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::process::Child;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::Sender;
 
 /// Commands the reducer sends to the player actor.
 pub enum PlayerCmd {
@@ -75,12 +75,14 @@ pub(crate) type EventSink = Arc<dyn Fn(PlayerEvent) + Send + Sync>;
 /// A handle for sending [`PlayerCmd`]s to the player actor. Cheap to hold; sends are
 /// non-blocking and silently no-op if the actor has gone away.
 pub struct PlayerHandle {
-    tx: UnboundedSender<PlayerCmd>,
+    tx: Sender<PlayerCmd>,
 }
 
 impl PlayerHandle {
     pub fn send(&self, cmd: PlayerCmd) {
-        let _ = self.tx.send(cmd);
+        if self.tx.try_send(cmd).is_err() {
+            tracing::warn!("player command queue full or closed; dropping command");
+        }
     }
 
     pub fn load(&self, url: impl Into<String>) {
@@ -147,7 +149,8 @@ where
         .await
         .context("could not connect to the mpv IPC endpoint")?;
 
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) =
+        crate::util::backpressure::bounded_channel(crate::util::backpressure::PLAYER_CMD_QUEUE);
     tokio::spawn(ipc::run_actor(conn, rx, Arc::new(emit)));
 
     Ok((
