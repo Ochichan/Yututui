@@ -146,9 +146,14 @@ async fn resolve_url_with_program(
         cmd.arg("--cookies").arg(c);
     }
     cmd.stdin(Stdio::null());
-    let out = process::tokio_output_limited(cmd, RESOLVE_TIMEOUT, RESOLVE_STDOUT_MAX)
-        .await
-        .ok()?;
+    let out = process::tokio_output_limited(
+        cmd,
+        process::ProcessProfile::YtDlp,
+        RESOLVE_TIMEOUT,
+        RESOLVE_STDOUT_MAX,
+    )
+    .await
+    .ok()?;
     if !out.status.success() {
         tracing::warn!(
             status = %out.status,

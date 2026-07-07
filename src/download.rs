@@ -273,7 +273,11 @@ async fn run_download_with_program(
     let (out, status) = match tokio::time::timeout(DOWNLOAD_TIMEOUT, finish).await {
         Ok(result) => result?,
         Err(_) => {
-            let _ = child.kill().await;
+            crate::util::process::kill_and_wait_tokio(
+                &mut child,
+                crate::util::process::ProcessProfile::YtDlp,
+            )
+            .await;
             let _ = progress.await;
             bail!("yt-dlp download timed out");
         }

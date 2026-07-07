@@ -1,6 +1,8 @@
 //! Child process construction with explicit environment inheritance and bounded output capture.
 
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::process::{Command as StdCommand, ExitStatus, Stdio};
@@ -29,12 +31,14 @@ pub enum ProcessProfile {
 pub fn std_command(program: &str, profile: ProcessProfile) -> StdCommand {
     let mut cmd = StdCommand::new(program);
     apply_std_env(&mut cmd, profile);
+    configure_std_child(&mut cmd, profile);
     cmd
 }
 
 pub fn tokio_command(program: &str, profile: ProcessProfile) -> TokioCommand {
     let mut cmd = TokioCommand::new(program);
     apply_tokio_env(&mut cmd, profile);
+    configure_tokio_child(&mut cmd, profile);
     cmd
 }
 
@@ -47,6 +51,7 @@ pub struct LimitedOutput {
 
 pub fn std_output_limited(
     mut cmd: StdCommand,
+    profile: ProcessProfile,
     timeout: Duration,
     stdout_max: usize,
 ) -> Result<LimitedOutput> {
@@ -73,8 +78,7 @@ pub fn std_output_limited(
             break status;
         }
         if start.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_and_wait_std(&mut child, profile);
             let _ = reader.join();
             bail!("child process timed out");
         }
@@ -95,6 +99,7 @@ pub fn std_output_limited(
 
 pub async fn tokio_output_limited(
     mut cmd: TokioCommand,
+    profile: ProcessProfile,
     timeout: Duration,
     stdout_max: usize,
 ) -> Result<LimitedOutput> {
@@ -130,19 +135,19 @@ pub async fn tokio_output_limited(
     match read {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => {
-            let _ = child.kill().await;
+            kill_and_wait_tokio(&mut child, profile).await;
             stderr_drain.abort();
             return Err(e).context("read child stdout");
         }
         Err(_) => {
-            let _ = child.kill().await;
+            kill_and_wait_tokio(&mut child, profile).await;
             stderr_drain.abort();
             bail!("child process timed out");
         }
     }
 
     if out.len() > stdout_max {
-        let _ = child.kill().await;
+        kill_and_wait_tokio(&mut child, profile).await;
         stderr_drain.abort();
         bail!("child stdout too large: more than {stdout_max} bytes");
     }
@@ -154,7 +159,7 @@ pub async fn tokio_output_limited(
             return Err(e).context("wait for child process");
         }
         Err(_) => {
-            let _ = child.kill().await;
+            kill_and_wait_tokio(&mut child, profile).await;
             stderr_drain.abort();
             bail!("child process timed out");
         }
@@ -174,6 +179,78 @@ pub async fn tokio_output_limited(
         stdout: out,
         stderr_tail,
     })
+}
+
+fn should_isolate_process_group(profile: ProcessProfile) -> bool {
+    matches!(profile, ProcessProfile::YtDlp)
+}
+
+#[cfg(unix)]
+fn configure_std_child(cmd: &mut StdCommand, profile: ProcessProfile) {
+    if should_isolate_process_group(profile) {
+        // SAFETY: pre_exec runs in the child after fork and before exec. `setpgid` is an
+        // async-signal-safe syscall and does not touch Rust allocation state.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_std_child(_cmd: &mut StdCommand, _profile: ProcessProfile) {}
+
+#[cfg(unix)]
+fn configure_tokio_child(cmd: &mut TokioCommand, profile: ProcessProfile) {
+    if should_isolate_process_group(profile) {
+        // SAFETY: see `configure_std_child`.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_tokio_child(_cmd: &mut TokioCommand, _profile: ProcessProfile) {}
+
+fn kill_and_wait_std(child: &mut std::process::Child, profile: ProcessProfile) {
+    #[cfg(unix)]
+    if should_isolate_process_group(profile)
+        && let Ok(pid) = libc::pid_t::try_from(child.id())
+    {
+        // Best effort: the direct child may already have exited; the group kill catches
+        // still-running yt-dlp helpers such as ffmpeg that inherited the process group.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+pub async fn kill_and_wait_tokio(child: &mut tokio::process::Child, profile: ProcessProfile) {
+    #[cfg(unix)]
+    if should_isolate_process_group(profile)
+        && let Some(id) = child.id()
+        && let Ok(pid) = libc::pid_t::try_from(id)
+    {
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
 }
 
 pub fn apply_std_env(cmd: &mut StdCommand, profile: ProcessProfile) {
@@ -420,14 +497,23 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         let mut ok = StdCommand::new(&exe);
         ok.arg("--help");
-        let out = std_output_limited(ok, Duration::from_secs(5), 128 * 1024).unwrap();
+        let out = std_output_limited(
+            ok,
+            ProcessProfile::Media,
+            Duration::from_secs(5),
+            128 * 1024,
+        )
+        .unwrap();
         assert!(out.status.success());
         assert!(!out.stdout.is_empty());
         assert!(out.stderr_tail.is_empty());
 
         let mut too_large = StdCommand::new(exe);
         too_large.arg("--help");
-        assert!(std_output_limited(too_large, Duration::from_secs(5), 1).is_err());
+        assert!(
+            std_output_limited(too_large, ProcessProfile::Media, Duration::from_secs(5), 1)
+                .is_err()
+        );
     }
 
     #[cfg(unix)]
@@ -435,9 +521,14 @@ mod tests {
     async fn tokio_output_limited_captures_stderr_tail() {
         let mut cmd = TokioCommand::new("sh");
         cmd.args(["-c", "echo out; echo err1 >&2; echo err2 >&2"]);
-        let out = tokio_output_limited(cmd, Duration::from_secs(5), 128 * 1024)
-            .await
-            .unwrap();
+        let out = tokio_output_limited(
+            cmd,
+            ProcessProfile::YtDlp,
+            Duration::from_secs(5),
+            128 * 1024,
+        )
+        .await
+        .unwrap();
         assert!(out.status.success());
         assert!(String::from_utf8_lossy(&out.stdout).contains("out"));
         assert!(String::from_utf8_lossy(&out.stderr_tail).contains("err2"));
@@ -448,12 +539,55 @@ mod tests {
     async fn tokio_output_limited_bounds_stderr_tail() {
         let mut cmd = TokioCommand::new("sh");
         cmd.args(["-c", "yes x | head -c 9000 >&2; printf final >&2"]);
-        let out = tokio_output_limited(cmd, Duration::from_secs(5), 128 * 1024)
-            .await
-            .unwrap();
+        let out = tokio_output_limited(
+            cmd,
+            ProcessProfile::YtDlp,
+            Duration::from_secs(5),
+            128 * 1024,
+        )
+        .await
+        .unwrap();
         assert!(out.status.success());
         assert_eq!(out.stderr_tail.len(), STDERR_TAIL_MAX);
         assert!(out.stderr_tail.ends_with(b"final"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tokio_output_limited_kills_ytdlp_process_group_on_timeout() {
+        let root = std::env::temp_dir().join(format!(
+            "ytt-process-group-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let pid_file = root.join("grandchild.pid");
+        let script = format!("sleep 30 & echo $! > '{}'; sleep 30", pid_file.display());
+        let mut cmd = tokio_command("sh", ProcessProfile::YtDlp);
+        cmd.args(["-c", &script]);
+
+        let result =
+            tokio_output_limited(cmd, ProcessProfile::YtDlp, Duration::from_millis(250), 128).await;
+        assert!(result.is_err(), "the fake yt-dlp process should time out");
+
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
+            .expect("grandchild pid should be written before timeout")
+            .trim()
+            .parse()
+            .expect("pid file should contain a pid");
+        for _ in 0..20 {
+            let alive = unsafe { libc::kill(pid, 0) == 0 };
+            if !alive {
+                let _ = std::fs::remove_dir_all(&root);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        panic!("grandchild process {pid} survived timeout cleanup");
     }
 
     #[test]

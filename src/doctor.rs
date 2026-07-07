@@ -365,7 +365,12 @@ fn command_stdout(program: &str, args: &[&str]) -> String {
         crate::util::process::ProcessProfile::DesktopOpen,
     );
     cmd.args(args);
-    match crate::util::process::std_output_limited(cmd, Duration::from_secs(2), 4096) {
+    match crate::util::process::std_output_limited(
+        cmd,
+        crate::util::process::ProcessProfile::DesktopOpen,
+        Duration::from_secs(2),
+        4096,
+    ) {
         Ok(out) if out.status.success() => {
             let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
             if text.is_empty() {

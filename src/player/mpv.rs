@@ -45,9 +45,14 @@ pub fn flag_supported(flag: &'static str) -> bool {
         process::std_command(&crate::tools::mpv_program(), process::ProcessProfile::Media);
     cmd.args(["--no-config", flag, "--version"])
         .stdin(Stdio::null());
-    let supported = process::std_output_limited(cmd, std::time::Duration::from_secs(5), 64 * 1024)
-        .map(|out| out.status.success())
-        .unwrap_or(false);
+    let supported = process::std_output_limited(
+        cmd,
+        process::ProcessProfile::Media,
+        std::time::Duration::from_secs(5),
+        64 * 1024,
+    )
+    .map(|out| out.status.success())
+    .unwrap_or(false);
     cache.insert(flag, supported);
     supported
 }

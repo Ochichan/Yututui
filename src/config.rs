@@ -452,14 +452,19 @@ impl ToolsConfig {
         self.ytdlp_path.clone()
     }
 
-    /// The mpv program to spawn: `YTM_MPV` env var, else `mpv_path`, else `"mpv"`.
-    pub fn mpv_program(&self) -> String {
+    /// The unconditional mpv override: `YTM_MPV` env var, else `mpv_path`.
+    pub fn mpv_override(&self) -> Option<PathBuf> {
         if let Ok(env) = std::env::var("YTM_MPV")
             && !env.trim().is_empty()
         {
-            return env.trim().to_owned();
+            return Some(PathBuf::from(env.trim()));
         }
-        match &self.mpv_path {
+        self.mpv_path.clone()
+    }
+
+    /// The mpv program to spawn: `YTM_MPV` env var, else `mpv_path`, else `"mpv"`.
+    pub fn mpv_program(&self) -> String {
+        match self.mpv_override() {
             Some(p) => p.to_string_lossy().into_owned(),
             None => "mpv".to_owned(),
         }

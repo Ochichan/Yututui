@@ -152,8 +152,8 @@ static MPV_PROGRAM: RwLock<Option<String>> = RwLock::new(None);
 /// and `daemon serve`) *before* the player spawns; cheap on steady state because
 /// version probes are cached in the managed-state file keyed by (path, mtime, len).
 pub async fn init(cfg: &ToolsConfig) {
-    let mpv = cfg.mpv_program();
-    *MPV_PROGRAM.write().expect("tools mpv lock poisoned") = (mpv != "mpv").then_some(mpv);
+    *MPV_PROGRAM.write().expect("tools mpv lock poisoned") =
+        cfg.mpv_override().and_then(normalize_mpv_override);
     refresh_selection(cfg).await;
 }
 
@@ -326,9 +326,12 @@ pub(crate) async fn run_ytdlp_json(
     what: &str,
 ) -> anyhow::Result<serde_json::Value> {
     cmd.stdin(Stdio::null());
-    let out = process::tokio_output_limited(cmd, timeout, stdout_max)
-        .await
-        .with_context(|| format!("failed to run yt-dlp {what} — is it installed and on PATH?"))?;
+    let out =
+        process::tokio_output_limited(cmd, process::ProcessProfile::YtDlp, timeout, stdout_max)
+            .await
+            .with_context(|| {
+                format!("failed to run yt-dlp {what} — is it installed and on PATH?")
+            })?;
     if !out.status.success() {
         bail!(
             "yt-dlp {what} exited with status {}{}",
@@ -348,7 +351,9 @@ pub fn mpv_program() -> String {
         return p;
     }
     match std::env::var("YTM_MPV") {
-        Ok(v) if !v.trim().is_empty() => v.trim().to_owned(),
+        Ok(v) if !v.trim().is_empty() => {
+            normalize_mpv_override(PathBuf::from(v.trim())).unwrap_or_else(|| "mpv".to_owned())
+        }
         _ => "mpv".to_owned(),
     }
 }
@@ -516,12 +521,16 @@ fn probe_one_js_runtime(runtime: JsRuntime, path: PathBuf) -> JsRuntimeProbe {
     let path_str = path.to_string_lossy();
     let mut cmd = process::std_command(path_str.as_ref(), process::ProcessProfile::YtDlp);
     cmd.arg("--version");
-    let stdout =
-        process::std_output_limited(cmd, JS_RUNTIME_PROBE_TIMEOUT, JS_RUNTIME_PROBE_STDOUT_MAX)
-            .ok()
-            .filter(|out| out.status.success())
-            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
-            .unwrap_or_default();
+    let stdout = process::std_output_limited(
+        cmd,
+        process::ProcessProfile::YtDlp,
+        JS_RUNTIME_PROBE_TIMEOUT,
+        JS_RUNTIME_PROBE_STDOUT_MAX,
+    )
+    .ok()
+    .filter(|out| out.status.success())
+    .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+    .unwrap_or_default();
 
     let version = parse_js_runtime_version(runtime, &stdout);
     let (supported, reason) = js_runtime_support(runtime, version.as_deref(), &stdout);
@@ -678,9 +687,14 @@ pub(crate) async fn probe_version(program: &str) -> Option<String> {
     cmd.arg("--ignore-config")
         .arg("--version")
         .stdin(Stdio::null());
-    let out = process::tokio_output_limited(cmd, Duration::from_secs(30), 4096)
-        .await
-        .ok()?;
+    let out = process::tokio_output_limited(
+        cmd,
+        process::ProcessProfile::YtDlp,
+        Duration::from_secs(30),
+        4096,
+    )
+    .await
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -695,7 +709,7 @@ async fn select(cfg: &ToolsConfig) -> Result<Option<YtdlpSelection>, String> {
     // 1. Explicit override: wins over all candidates, but must be a real yt-dlp.
     //    A broken override fails loudly instead of silently falling back.
     if let Some(path) = cfg.ytdlp_override() {
-        let path = normalize_override_path(path)?;
+        let path = normalize_program_override("yt-dlp", path)?;
         let version = ytdlp::cached_probe(&path)
             .await
             .ok_or_else(|| format!("yt-dlp override did not run: {}", path.display()))?;
@@ -729,14 +743,26 @@ async fn select(cfg: &ToolsConfig) -> Result<Option<YtdlpSelection>, String> {
     Ok(select_candidates(managed, system).await)
 }
 
-fn normalize_override_path(path: PathBuf) -> Result<PathBuf, String> {
+fn normalize_mpv_override(path: PathBuf) -> Option<String> {
+    match normalize_program_override("mpv", path) {
+        Ok(path) => Some(path.to_string_lossy().into_owned()),
+        Err(e) => {
+            tracing::warn!(error = %e, "mpv override ignored");
+            None
+        }
+    }
+}
+
+fn normalize_program_override(program: &str, path: PathBuf) -> Result<PathBuf, String> {
     let raw = path.to_string_lossy();
     if raw.chars().any(|c| c == '\0' || c == '\n' || c == '\r') {
-        return Err("yt-dlp override contains a line break or NUL byte".to_owned());
+        return Err(format!(
+            "{program} override contains a line break or NUL byte"
+        ));
     }
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("yt-dlp override is empty".to_owned());
+        return Err(format!("{program} override is empty"));
     }
     let unquoted = trimmed
         .strip_prefix('"')
@@ -752,12 +778,12 @@ fn normalize_override_path(path: PathBuf) -> Result<PathBuf, String> {
         candidate
     } else {
         crate::deps::resolve_on_path(unquoted)
-            .ok_or_else(|| format!("yt-dlp override `{unquoted}` was not found on PATH"))?
+            .ok_or_else(|| format!("{program} override `{unquoted}` was not found on PATH"))?
     };
     let resolved_str = resolved.to_string_lossy();
     if !crate::deps::on_path(resolved_str.as_ref()) {
         return Err(format!(
-            "yt-dlp override is not an executable file: {}",
+            "{program} override is not an executable file: {}",
             resolved.display()
         ));
     }
@@ -1179,9 +1205,33 @@ mod tests {
 
         #[test]
         fn override_path_rejects_line_breaks_before_path_lookup() {
-            let err = normalize_override_path(PathBuf::from("C:\n\\Users\\zznn\\yt-dlp.exe"))
-                .expect_err("newline override must be rejected");
+            let err = normalize_program_override(
+                "yt-dlp",
+                PathBuf::from("C:\n\\Users\\zznn\\yt-dlp.exe"),
+            )
+            .expect_err("newline override must be rejected");
             assert!(err.contains("line break"));
+
+            let err = normalize_program_override("mpv", PathBuf::from("/tmp/mpv\n"))
+                .expect_err("newline mpv override must be rejected");
+            assert!(err.contains("mpv override"));
+        }
+
+        #[test]
+        fn override_path_rejects_directories_and_non_executable_files() {
+            let dir = tmp_dir("override-bad");
+            let file = dir.join("plain-file");
+            std::fs::write(&file, "not executable").unwrap();
+
+            let dir_err = normalize_program_override("mpv", dir.clone())
+                .expect_err("directory must not be accepted as an executable override");
+            assert!(dir_err.contains("not an executable"));
+
+            let file_err = normalize_program_override("yt-dlp", file)
+                .expect_err("non-executable file must not be accepted as an override");
+            assert!(file_err.contains("not an executable"));
+
+            let _ = std::fs::remove_dir_all(dir);
         }
 
         #[test]
