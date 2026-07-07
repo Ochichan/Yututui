@@ -1101,6 +1101,45 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  yt-dlp_linux_a
         assert!(YTDLP_PUBLIC_KEY.contains("dWI0ay54eXo+"));
     }
 
+    #[tokio::test]
+    async fn disabled_managed_update_reports_unavailable_without_network() {
+        let cfg = ToolsConfig {
+            ytdlp_managed: Some(false),
+            ..ToolsConfig::default()
+        };
+        let events = std::sync::Mutex::new(Vec::new());
+
+        let outcome = check_and_update(&cfg, &|event| events.lock().unwrap().push(event)).await;
+
+        assert!(matches!(
+            &outcome,
+            UpdateOutcome::Unavailable(reason)
+                if reason.contains("managed yt-dlp is disabled")
+        ));
+        let events = events.into_inner().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ToolsEvent::Failed { error }] if error.contains("managed yt-dlp is disabled")
+        ));
+    }
+
+    #[tokio::test]
+    async fn disabled_maintainer_pass_is_a_quiet_noop() {
+        let cfg = ToolsConfig {
+            ytdlp_managed: Some(false),
+            ..ToolsConfig::default()
+        };
+        let events = std::sync::Mutex::new(Vec::new());
+
+        maintain_once(&cfg, &|event| events.lock().unwrap().push(event)).await;
+
+        let events = events.into_inner().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ToolsEvent::Failed { error }] if error.contains("managed yt-dlp is disabled")
+        ));
+    }
+
     #[test]
     fn signature_verifier_rejects_invalid_signature_when_gpg_is_available() {
         let Ok(tools) = resolve_gpg_tools() else {
@@ -1116,6 +1155,86 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  yt-dlp_linux_a
             err.contains("verify yt-dlp checksum signature"),
             "unexpected error: {err}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_stamp_and_sha_follow_file_rewrites() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ytt-ytdlp-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("yt-dlp");
+        std::fs::write(&path, b"one").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (mtime, len) = file_stamp(&path).expect("stamp");
+        let first_hash = sha256_file(&path).expect("hash");
+        assert_eq!(len, 3);
+        assert!(first_hash.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(state_stamp_matches(
+            &path,
+            &ManagedState {
+                installed_mtime_unix: Some(mtime),
+                installed_len: Some(len),
+                ..ManagedState::default()
+            }
+        ));
+
+        std::fs::write(&path, b"two-two").unwrap();
+        let (_, new_len) = file_stamp(&path).expect("new stamp");
+        assert_eq!(new_len, 7);
+        assert_ne!(sha256_file(&path).expect("new hash"), first_hash);
+        assert!(!state_stamp_matches(
+            &path,
+            &ManagedState {
+                installed_mtime_unix: Some(mtime),
+                installed_len: Some(len),
+                ..ManagedState::default()
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_installation_verifies_fake_binary_metadata() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ytt-ytdlp-inspect-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("yt-dlp");
+        let tag = "2026.07.03.234421";
+        std::fs::write(&dest, format!("#!/bin/sh\necho '{tag}'\n")).unwrap();
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (mtime_unix, len) = file_stamp(&dest).unwrap();
+        let sha256 = sha256_file(&dest).unwrap();
+        let state = ManagedState {
+            channel: Some(YtdlpChannel::Nightly),
+            version: Some(tag.to_owned()),
+            sha256: Some(sha256.clone()),
+            installed_mtime_unix: Some(mtime_unix),
+            installed_len: Some(len),
+            ..ManagedState::default()
+        };
+
+        let actual = managed_installation_matches(&dest, &state, YtdlpChannel::Nightly, tag)
+            .await
+            .expect("fake binary metadata should match");
+        assert_eq!(actual.version, tag);
+        assert_eq!(actual.sha256, sha256);
+
+        let mut stale_hash = state.clone();
+        stale_hash.sha256 = Some("00".repeat(32));
+        let err = managed_installation_matches(&dest, &stale_hash, YtdlpChannel::Nightly, tag)
+            .await
+            .unwrap_err();
+        assert!(err.contains("sha256"));
+
+        let err = managed_installation_matches(&dest, &state, YtdlpChannel::Stable, tag)
+            .await
+            .unwrap_err();
+        assert!(err.contains("channel/version"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
