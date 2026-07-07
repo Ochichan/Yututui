@@ -8,14 +8,15 @@ ledger="docs/invariant-ledger.md"
   exit 1
 }
 
-ids=$(rg -o 'INVARIANT\([A-Z0-9-]+\)' src scripts docs \
-  --glob '!docs/event-policy-reducer-invariants-terminal-beta-plan.md' \
-  --glob '!docs/invariant-ledger.md' \
+ids=$(find src scripts docs -type f \
+  ! -path 'docs/event-policy-reducer-invariants-terminal-beta-plan.md' \
+  ! -path 'docs/invariant-ledger.md' \
+  -exec grep -hoE 'INVARIANT\([A-Z0-9-]+\)' {} + \
   | sed -E 's/.*INVARIANT\(([A-Z0-9-]+)\).*/\1/' \
   | sort -u)
 
 for id in $ids; do
-  if ! rg -q "^\| \`${id}\` \|" "$ledger"; then
+  if ! grep -qE "^\| \`${id}\` \|" "$ledger"; then
     echo "error: invariant tag $id is missing from $ledger" >&2
     exit 1
   fi
