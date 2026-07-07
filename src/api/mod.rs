@@ -5,6 +5,7 @@
 pub mod ytmusic;
 
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,7 @@ use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
 use crate::util::sanitize;
 
 const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const MAX_PLAYABLE_URL_BYTES: usize = 4096;
 
 pub fn is_youtube_video_id(id: &str) -> bool {
     id.len() == 11
@@ -105,6 +107,102 @@ pub enum PlayableRef {
     RadioStream {
         url: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlayableUrlError {
+    Empty,
+    TooLong { max: usize },
+    ControlCharacter,
+    Invalid(String),
+    UnsupportedScheme(String),
+    MissingHost,
+    Credentials,
+    Localhost,
+    BlockedIp(String),
+}
+
+impl std::fmt::Display for PlayableUrlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlayableUrlError::Empty => write!(f, "playable URL is empty"),
+            PlayableUrlError::TooLong { max } => write!(f, "playable URL exceeds {max} bytes"),
+            PlayableUrlError::ControlCharacter => {
+                write!(f, "playable URL contains a control character")
+            }
+            PlayableUrlError::Invalid(error) => write!(f, "invalid playable URL: {error}"),
+            PlayableUrlError::UnsupportedScheme(scheme) => {
+                write!(f, "unsupported playable URL scheme: {scheme}")
+            }
+            PlayableUrlError::MissingHost => write!(f, "playable URL is missing a host"),
+            PlayableUrlError::Credentials => {
+                write!(f, "playable URL must not include credentials")
+            }
+            PlayableUrlError::Localhost => write!(f, "playable URL host is local-only"),
+            PlayableUrlError::BlockedIp(ip) => write!(f, "playable URL host is not public: {ip}"),
+        }
+    }
+}
+
+impl std::error::Error for PlayableUrlError {}
+
+pub fn validate_playable_url(_source: SearchSource, raw: &str) -> Result<String, PlayableUrlError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(PlayableUrlError::Empty);
+    }
+    if trimmed.len() > MAX_PLAYABLE_URL_BYTES {
+        return Err(PlayableUrlError::TooLong {
+            max: MAX_PLAYABLE_URL_BYTES,
+        });
+    }
+    if trimmed.bytes().any(|b| b.is_ascii_control()) {
+        return Err(PlayableUrlError::ControlCharacter);
+    }
+
+    let url = reqwest::Url::parse(trimmed).map_err(|e| PlayableUrlError::Invalid(e.to_string()))?;
+    match url.scheme() {
+        "http" | "https" => {}
+        scheme => return Err(PlayableUrlError::UnsupportedScheme(scheme.to_owned())),
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(PlayableUrlError::Credentials);
+    }
+    let host = url.host_str().ok_or(PlayableUrlError::MissingHost)?;
+    let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
+    let ip_host = normalized_host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(&normalized_host);
+    if normalized_host == "localhost" || normalized_host.ends_with(".localhost") {
+        return Err(PlayableUrlError::Localhost);
+    }
+    if let Ok(ip) = ip_host.parse::<IpAddr>()
+        && is_blocked_playable_ip(ip)
+    {
+        return Err(PlayableUrlError::BlockedIp(ip.to_string()));
+    }
+    Ok(url.to_string())
+}
+
+fn is_blocked_playable_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+        }
+        IpAddr::V6(ip) => {
+            ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_multicast()
+        }
+    }
 }
 
 impl Song {
@@ -300,33 +398,56 @@ impl Song {
 
     /// The string passed to mpv: either a local file path or a YouTube Music watch URL.
     pub fn playback_target(&self) -> String {
+        self.playback_target_checked().unwrap_or_default()
+    }
+
+    pub fn playback_target_checked(&self) -> Result<String, PlayableUrlError> {
         self.local_path
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.watch_url())
+            .map(Ok)
+            .unwrap_or_else(|| self.watch_url_checked())
     }
 
     /// A URL mpv/yt-dlp can resolve and play for catalog tracks.
     pub fn watch_url(&self) -> String {
+        self.watch_url_checked().unwrap_or_default()
+    }
+
+    pub fn watch_url_checked(&self) -> Result<String, PlayableUrlError> {
         match &self.playable {
             Some(PlayableRef::YoutubeVideo { id }) if !is_definitely_non_video_youtube_ref(id) => {
-                format!("https://music.youtube.com/watch?v={id}")
+                validate_playable_url(
+                    SearchSource::Youtube,
+                    &format!("https://music.youtube.com/watch?v={id}"),
+                )
             }
-            Some(PlayableRef::YoutubeVideo { id }) => {
-                format!("https://music.youtube.com/channel/{id}")
+            Some(PlayableRef::YoutubeVideo { id }) => validate_playable_url(
+                SearchSource::Youtube,
+                &format!("https://music.youtube.com/channel/{id}"),
+            ),
+            Some(PlayableRef::DirectUrl { source, url })
+            | Some(PlayableRef::YtdlpUrl { source, url }) => validate_playable_url(*source, url),
+            Some(PlayableRef::JamendoTrackId { url, .. }) => {
+                validate_playable_url(SearchSource::Jamendo, url)
             }
-            Some(
-                PlayableRef::DirectUrl { url, .. }
-                | PlayableRef::YtdlpUrl { url, .. }
-                | PlayableRef::JamendoTrackId { url, .. }
-                | PlayableRef::ArchiveFile { url, .. }
-                | PlayableRef::RadioStream { url },
-            ) => url.clone(),
-            Some(PlayableRef::AudiusTrackId { id, app_name }) => audius_stream_url(id, app_name),
-            None if !is_definitely_non_video_youtube_ref(&self.video_id) => {
-                format!("https://music.youtube.com/watch?v={}", self.video_id)
+            Some(PlayableRef::ArchiveFile { url, .. }) => {
+                validate_playable_url(SearchSource::InternetArchive, url)
             }
-            None => format!("https://music.youtube.com/channel/{}", self.video_id),
+            Some(PlayableRef::RadioStream { url }) => {
+                validate_playable_url(SearchSource::RadioBrowser, url)
+            }
+            Some(PlayableRef::AudiusTrackId { id, app_name }) => {
+                validate_playable_url(SearchSource::Audius, &audius_stream_url(id, app_name))
+            }
+            None if !is_definitely_non_video_youtube_ref(&self.video_id) => validate_playable_url(
+                SearchSource::Youtube,
+                &format!("https://music.youtube.com/watch?v={}", self.video_id),
+            ),
+            None => validate_playable_url(
+                SearchSource::Youtube,
+                &format!("https://music.youtube.com/channel/{}", self.video_id),
+            ),
         }
     }
 
@@ -347,7 +468,8 @@ impl Song {
             | None => self
                 .unplayable_youtube_ref_reason()
                 .is_none()
-                .then(|| self.watch_url()),
+                .then(|| self.watch_url_checked().ok())
+                .flatten(),
         }
     }
 
@@ -1134,6 +1256,37 @@ mod tests {
         assert_eq!(song.youtube_id(), None);
         assert!(song.prefetch_target().is_none());
         assert!(song.unplayable_youtube_ref_reason().is_some());
+    }
+
+    #[test]
+    fn playable_url_validator_accepts_public_http_urls() {
+        let url = validate_playable_url(SearchSource::Jamendo, " HTTPS://Example.com/audio.mp3 ")
+            .expect("public https URL should be accepted");
+        assert_eq!(url, "https://example.com/audio.mp3");
+    }
+
+    #[test]
+    fn playable_url_validator_rejects_unsafe_schemes_and_hosts() {
+        for raw in [
+            "file:///tmp/song.mp3",
+            "smb://example.com/share/song.mp3",
+            "ftp://example.com/song.mp3",
+            "data:text/plain,hello",
+            "javascript:alert(1)",
+            "https://user:pass@example.com/song.mp3",
+            "http://localhost/song.mp3",
+            "http://127.0.0.1/song.mp3",
+            "http://10.0.0.4/song.mp3",
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::1]/song.mp3",
+            "http://[fd00::1]/song.mp3",
+            "https://example.com/bad\npath",
+        ] {
+            assert!(
+                validate_playable_url(SearchSource::RadioBrowser, raw).is_err(),
+                "{raw} should be rejected"
+            );
+        }
     }
 
     #[test]

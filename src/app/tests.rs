@@ -7475,6 +7475,29 @@ fn skip_without_prefetch_falls_back_to_watch_url() {
     assert!(url.contains("music.youtube.com/watch") && url.contains("id1"));
 }
 
+#[test]
+fn load_song_skips_invalid_external_playback_url() {
+    let mut app = App::new(100);
+    let bad = Song::from_source(
+        crate::search_source::SearchSource::RadioBrowser,
+        "bad",
+        "Bad Radio",
+        "",
+        "",
+        crate::api::PlayableRef::RadioStream {
+            url: "file:///etc/passwd".to_owned(),
+        },
+    );
+    app.queue
+        .set(vec![bad, Song::remote("id1", "t-id1", "a", "1:00")], 0);
+
+    let cmds = app.load_song(app.queue.current().cloned());
+    let url = load_url(&cmds).expect("next playable track should load");
+
+    assert!(!url.starts_with("file:"));
+    assert!(url.contains("music.youtube.com/watch") && url.contains("id1"));
+}
+
 // --- M9: mouse controls -------------------------------------------------
 
 #[test]

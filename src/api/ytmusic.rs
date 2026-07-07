@@ -815,6 +815,10 @@ async fn ytdlp_playlist_tracks(playlist_id: &str) -> Result<Vec<Song>> {
 /// One flat playlist entry → a track row; private/deleted placeholders are skipped.
 fn parse_ytdlp_playlist_track(entry: &serde_json::Value) -> Option<Song> {
     let id = entry.get("id").and_then(serde_json::Value::as_str)?;
+    if !super::is_youtube_video_id(id) {
+        tracing::debug!(id = %id, "skipping playlist entry with non-video id");
+        return None;
+    }
     let title = entry.get("title").and_then(serde_json::Value::as_str)?;
     if title.is_empty() || title == "[Private video]" || title == "[Deleted video]" {
         return None;
@@ -1203,6 +1207,13 @@ async fn archive_search(query: &str, limit: usize) -> Result<Vec<Song>> {
         lookups.push(async move {
             let (file, duration) = archive_audio_file(&client, &identifier).await?;
             let url = archive_file_url(&identifier, &file);
+            let url = match super::validate_playable_url(SearchSource::InternetArchive, &url) {
+                Ok(url) => url,
+                Err(error) => {
+                    tracing::debug!(identifier = %identifier, file = %file, %error, "skipping archive result with invalid audio URL");
+                    return None;
+                }
+            };
             Some(Song::from_source(
                 SearchSource::InternetArchive,
                 format!("{identifier}:{file}"),
@@ -1289,11 +1300,18 @@ fn parse_ytdlp_entry(source: SearchSource, e: &serde_json::Value) -> Option<Song
         }
         return Some(Song::remote(id, title, artist, duration));
     }
-    let url = e
+    let raw_url = e
         .get("webpage_url")
         .or_else(|| e.get("url"))
         .and_then(serde_json::Value::as_str)?
         .to_owned();
+    let url = match super::validate_playable_url(source, &raw_url) {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::debug!(source = ?source, id = %id, %error, "skipping search entry with invalid playable URL");
+            return None;
+        }
+    };
     Some(Song::from_source(
         source,
         id,
@@ -1331,7 +1349,14 @@ fn parse_audius_track(e: &serde_json::Value, app_name: &str) -> Option<Song> {
 
 fn parse_jamendo_track(e: &serde_json::Value) -> Option<Song> {
     let id = json_string(e, &["id"])?;
-    let url = json_string(e, &["audio"])?;
+    let raw_url = json_string(e, &["audio"])?;
+    let url = match super::validate_playable_url(SearchSource::Jamendo, &raw_url) {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::debug!(id = %id, %error, "skipping Jamendo track with invalid audio URL");
+            return None;
+        }
+    };
     let title = json_string(e, &["name"]).unwrap_or_else(|| "Unknown".to_owned());
     let artist = json_string(e, &["artist_name"]).unwrap_or_default();
     let duration = e
@@ -1351,7 +1376,14 @@ fn parse_jamendo_track(e: &serde_json::Value) -> Option<Song> {
 
 fn parse_radio_station(e: &serde_json::Value) -> Option<Song> {
     let id = json_string(e, &["stationuuid"])?;
-    let url = json_string(e, &["url_resolved"]).or_else(|| json_string(e, &["url"]))?;
+    let raw_url = json_string(e, &["url_resolved"]).or_else(|| json_string(e, &["url"]))?;
+    let url = match super::validate_playable_url(SearchSource::RadioBrowser, &raw_url) {
+        Ok(url) => url,
+        Err(error) => {
+            tracing::debug!(id = %id, %error, "skipping radio station with invalid stream URL");
+            return None;
+        }
+    };
     let title = json_string(e, &["name"]).unwrap_or_else(|| "Unknown station".to_owned());
     let codec = json_string(e, &["codec"]).unwrap_or_default();
     let bitrate = e
@@ -1486,6 +1518,16 @@ mod tests {
                 .is_none()
             );
         }
+        for id in ["UCfLdIEPs1tYj4ieEdJnyNyw", "PL123456789012345", "too-short"] {
+            assert!(
+                parse_ytdlp_playlist_track(&serde_json::json!({
+                    "id": id,
+                    "title": "A Song",
+                }))
+                .is_none(),
+                "{id} should not be accepted as a playlist track video id"
+            );
+        }
     }
 
     #[test]
@@ -1506,6 +1548,54 @@ mod tests {
         let song = parse_ytdlp_entry(SearchSource::Youtube, &video).expect("video entry");
         assert_eq!(song.youtube_id(), Some("TAfHyXrULiM"));
         assert_eq!(song.duration, "3:18");
+    }
+
+    #[test]
+    fn non_youtube_flat_search_rejects_invalid_playable_urls() {
+        let entry = serde_json::json!({
+            "id": "track1",
+            "title": "Local File Trap",
+            "uploader": "Bad",
+            "webpage_url": "file:///etc/passwd",
+        });
+        assert!(parse_ytdlp_entry(SearchSource::SoundCloud, &entry).is_none());
+
+        let valid = serde_json::json!({
+            "id": "track2",
+            "title": "Public Stream",
+            "uploader": "OK",
+            "webpage_url": "https://soundcloud.com/artist/track",
+        });
+        let song = parse_ytdlp_entry(SearchSource::SoundCloud, &valid).expect("valid URL");
+        assert_eq!(song.watch_url(), "https://soundcloud.com/artist/track");
+    }
+
+    #[test]
+    fn direct_provider_parsers_reject_private_or_non_http_urls() {
+        assert!(
+            parse_jamendo_track(&serde_json::json!({
+                "id": "j1",
+                "name": "Jam",
+                "audio": "http://127.0.0.1/audio.mp3",
+            }))
+            .is_none()
+        );
+        assert!(
+            parse_radio_station(&serde_json::json!({
+                "stationuuid": "r1",
+                "name": "Local",
+                "url_resolved": "smb://server/share",
+            }))
+            .is_none()
+        );
+
+        let radio = parse_radio_station(&serde_json::json!({
+            "stationuuid": "r2",
+            "name": "Public",
+            "url_resolved": "https://radio.example/stream",
+        }))
+        .expect("valid radio URL");
+        assert_eq!(radio.watch_url(), "https://radio.example/stream");
     }
 
     #[test]

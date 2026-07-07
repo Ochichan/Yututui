@@ -1875,6 +1875,21 @@ impl DaemonEngine {
             self.stop_playback();
             return;
         };
+        let target = match song.playback_target_checked() {
+            Ok(target) => target,
+            Err(error) => {
+                tracing::warn!(
+                    video_id = %song.video_id,
+                    title = %song.title,
+                    artist = %song.artist,
+                    %error,
+                    "refusing to load track with invalid playback URL"
+                );
+                self.last_error = Some(format!("invalid playback URL: {error}"));
+                self.stop_playback();
+                return;
+            }
+        };
         self.playback.paused = false;
         self.playback.time_pos = None;
         self.playback.time_pos_at = None;
@@ -1887,7 +1902,7 @@ impl DaemonEngine {
         }
         self.save_session();
         if let Some(player) = &self.player {
-            player.handle.send(PlayerCmd::Load(song.playback_target()));
+            player.handle.send(PlayerCmd::Load(target));
         }
     }
 

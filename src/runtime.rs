@@ -207,10 +207,23 @@ impl From<RuntimeEvent> for Msg {
             RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Resolved {
                 video_id,
                 stream_url,
-            }) => Msg::Streaming(StreamingMsg::Resolved {
-                video_id: video_id.into_string(),
-                stream_url: stream_url.into_string(),
-            }),
+            }) => {
+                let video_id = video_id.into_string();
+                let stream_url = stream_url.into_string();
+                match crate::api::validate_playable_url(
+                    crate::search_source::SearchSource::Youtube,
+                    &stream_url,
+                ) {
+                    Ok(stream_url) => Msg::Streaming(StreamingMsg::Resolved {
+                        video_id,
+                        stream_url,
+                    }),
+                    Err(error) => {
+                        tracing::warn!(%video_id, %error, "dropping invalid resolved stream URL");
+                        Msg::ResolveFailed { video_id }
+                    }
+                }
+            }
             RuntimeEvent::Resolver(crate::resolver::ResolverEvent::Failed { video_id }) => {
                 Msg::ResolveFailed {
                     video_id: video_id.into_string(),

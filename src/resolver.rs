@@ -166,17 +166,13 @@ async fn resolve_url_with_program(
         .map(str::to_owned)
 }
 
-/// Guard the URL yt-dlp hands back before it is cached and passed to mpv `loadfile`: allow only
-/// `http`/`https` (schemes are case-insensitive per RFC 3986) and reject any ASCII control
-/// character (NUL/ESC/newline). This keeps `file:`/`data:`/local-path/garbage — e.g. from an
-/// override binary or a broken yt-dlp — out of the player. Same-user trust is already low; this
-/// matches the resolver's existing defense-in-depth (bounded stdout, timeout).
+/// Guard the URL yt-dlp hands back before it is cached and passed to mpv `loadfile`.
+/// The API validator rejects non-HTTP(S), credentials, control characters, and local/private IPs.
+/// This keeps `file:`/`data:`/local-path/garbage — e.g. from an override binary or a broken
+/// yt-dlp — out of the player. Same-user trust is already low; this matches the resolver's
+/// existing defense-in-depth (bounded stdout, timeout).
 fn is_acceptable_stream_url(s: &str) -> bool {
-    if s.is_empty() || s.bytes().any(|b| b.is_ascii_control()) {
-        return false;
-    }
-    let lower = s.to_ascii_lowercase();
-    lower.starts_with("http://") || lower.starts_with("https://")
+    crate::api::validate_playable_url(crate::search_source::SearchSource::Youtube, s).is_ok()
 }
 
 #[cfg(all(test, unix))]

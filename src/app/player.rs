@@ -1104,50 +1104,56 @@ impl App {
     pub(in crate::app) fn load_song(&mut self, song: Option<Song>) -> Vec<Cmd> {
         self.dirty = true;
         match song {
-            Some(song) => {
-                if let Some(reason) = song.unplayable_youtube_ref_reason() {
-                    tracing::warn!(
-                        video_id = %song.video_id,
-                        title = %song.title,
-                        artist = %song.artist,
-                        reason = %reason,
-                        "skipping non-playable YouTube entry"
-                    );
+            Some(mut song) => {
+                let mut skip_budget = self.queue.len();
+                let playback_target = loop {
+                    if let Some(reason) = song.unplayable_youtube_ref_reason() {
+                        tracing::warn!(
+                            video_id = %song.video_id,
+                            title = %song.title,
+                            artist = %song.artist,
+                            reason = %reason,
+                            "skipping non-playable YouTube entry"
+                        );
+                        self.status.text = t!(
+                            "Skipped a non-playable YouTube entry",
+                            "재생할 수 없는 YouTube 항목을 건너뜀"
+                        )
+                        .to_owned();
+                    } else {
+                        match song.playback_target_checked() {
+                            Ok(target) => break target,
+                            Err(error) => {
+                                tracing::warn!(
+                                    video_id = %song.video_id,
+                                    title = %song.title,
+                                    artist = %song.artist,
+                                    %error,
+                                    "skipping track with invalid playback URL"
+                                );
+                                self.status.text = t!(
+                                    "Skipped a track with an invalid playback URL",
+                                    "잘못된 재생 URL의 트랙을 건너뜀"
+                                )
+                                .to_owned();
+                            }
+                        }
+                    }
                     self.status.kind = StatusKind::Error;
-                    self.status.text = t!(
-                        "Skipped a non-playable YouTube entry",
-                        "재생할 수 없는 YouTube 항목을 건너뜀"
-                    )
-                    .to_owned();
                     self.prefetch.loaded_video_id = None;
                     // Skip forward to the next playable track iteratively, bounded to one pass
-                    // over the queue. The old form recursed (`load_song` → `advance` →
-                    // `load_song`), so a run of unplayable refs — or repeat-all wrapping over an
-                    // all-unplayable queue — drove the stack to overflow. The track we finally
-                    // hand to `load_song` is playable, so that call can't re-enter this branch:
-                    // recursion depth stays at 2. `maybe_autoplay_extend` is idempotent, so the
-                    // emitted commands are unchanged on every path that used to terminate.
-                    let mut skip_budget = self.queue.len();
-                    while skip_budget > 0 && self.queue.peek_next().is_some() {
-                        skip_budget -= 1;
-                        let next = self.queue.next(false).cloned();
-                        if let Some(s) = &next
-                            && let Some(reason) = s.unplayable_youtube_ref_reason()
-                        {
-                            tracing::warn!(
-                                video_id = %s.video_id,
-                                title = %s.title,
-                                artist = %s.artist,
-                                reason = %reason,
-                                "skipping non-playable YouTube entry"
-                            );
-                            self.prefetch.loaded_video_id = None;
-                            continue;
-                        }
-                        return self.load_song(next);
+                    // over the queue. The old form recursed (`load_song` -> `advance` ->
+                    // `load_song`), so a run of unplayable refs -- or repeat-all wrapping over an
+                    // all-unplayable queue -- drove the stack to overflow.
+                    if skip_budget == 0 || self.queue.peek_next().is_none() {
+                        return Vec::new();
                     }
-                    return Vec::new();
-                }
+                    skip_budget -= 1;
+                    let Some(next) = self.queue.next(false).cloned() else {
+                        return Vec::new();
+                    };
+                    song = next;
+                };
                 self.reset_progress();
                 // A new track is a clean slate: drop any stale status (e.g. a prior
                 // "Playback error" / "Track unavailable") so the UI matches what's loading.
@@ -1163,14 +1169,25 @@ impl App {
                 self.clear_artwork();
                 // Use a prefetched direct URL if we have one (instant skip); else hand mpv
                 // the track's own playback target (watch URL or local file path).
-                let prefetched = self.prefetch.resolved.contains_key(&song.video_id);
+                let prefetched_url = self.prefetch.resolved.get(&song.video_id).cloned();
+                let (url, prefetched) = match prefetched_url {
+                    Some(prefetched) => {
+                        match crate::api::validate_playable_url(song.source, &prefetched) {
+                            Ok(url) => (url, true),
+                            Err(error) => {
+                                tracing::warn!(
+                                    video_id = %song.video_id,
+                                    %error,
+                                    "dropping invalid prefetched stream URL"
+                                );
+                                self.prefetch.resolved.remove(&song.video_id);
+                                (playback_target, false)
+                            }
+                        }
+                    }
+                    None => (playback_target, false),
+                };
                 self.prefetch.last_load_prefetched = prefetched;
-                let url = self
-                    .prefetch
-                    .resolved
-                    .get(&song.video_id)
-                    .cloned()
-                    .unwrap_or_else(|| song.playback_target());
                 tracing::info!(url = %url, prefetched, "load track");
                 // Stop any in-progress radio recording BEFORE the new `Load`, so mpv can't
                 // append the incoming track onto the previous recording's temp file.

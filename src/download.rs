@@ -134,10 +134,13 @@ async fn run_download_with_program(
     if let Some(reason) = song.unplayable_youtube_ref_reason() {
         bail!("not a downloadable track: {reason}");
     }
+    let playback_target = song
+        .playback_target_checked()
+        .with_context(|| format!("invalid download target for {}", song.video_id))?;
     std::fs::create_dir_all(dir).with_context(|| format!("create download dir {dir:?}"))?;
 
     let mut cmd = crate::tools::ytdlp_command_for(program);
-    cmd.arg(song.playback_target())
+    cmd.arg(playback_target)
         .args(["-f", "bestaudio", "-x", "--audio-format", "m4a"])
         .args([
             "--embed-metadata",
