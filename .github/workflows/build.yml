@@ -39,6 +39,10 @@ jobs:
         run: cargo fmt --check
       - name: Architecture invariants
         run: scripts/check-architecture.sh
+      - name: File-size ratchet
+        run: scripts/check-file-size.sh
+      - name: Public docs honesty
+        run: scripts/check-doc-honesty.sh
       - name: Vendored ratatui-image patch invariants
         run: scripts/check-ratatui-image-patch.sh
       - name: Install supply-chain tools
@@ -174,6 +178,10 @@ jobs:
           mkdir -p "$YTM_TUI_GUI_DIST"
           cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin ytt-desktop
 
+      - name: Smoke release CLI
+        if: runner.os != 'Windows'
+        run: scripts/release-cli-smoke.sh --target "${{ matrix.target }}" --profile release
+
       # Release-gating daemon lifecycle smoke for the shipped Unix TUI. macOS disables the
       # OS media session inside the script because hosted runners have no login session;
       # Linux keeps MPRIS enabled so that path stays covered.
@@ -196,6 +204,11 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path $env:YTM_TUI_GUI_DIST | Out-Null
           cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin ytt-desktop
+
+      - name: Smoke Windows release CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/release-cli-smoke.ps1 -Target "${{ matrix.target }}" -Profile release
 
       - name: Verify Windows subsystem split
         if: runner.os == 'Windows'
@@ -410,6 +423,9 @@ jobs:
               exit 1
             fi
           done
+          stage="$(mktemp -d)"
+          tar -xzf "${{ matrix.archive }}" -C "$stage"
+          scripts/release-cli-smoke.sh --ytt "$stage/ytt"
 
       # Ship the desktop entry + 1024² icon beside the binary so `ytt` gets a launcher and
       # the MPRIS media widget shows artwork/name (install.sh and the AUR package place them
@@ -423,6 +439,13 @@ jobs:
           cp packaging/linux/ytm-tui.desktop "$staging/"
           cp assets/icons/ytm-tui.png "$staging/"
           tar -czf "${{ matrix.archive }}" -C "$staging" "${{ matrix.bin }}" ytm-tui.desktop ytm-tui.png
+
+      - name: Smoke Linux package CLI
+        if: runner.os == 'Linux'
+        run: |
+          stage="$(mktemp -d)"
+          tar -xzf "${{ matrix.archive }}" -C "$stage"
+          scripts/release-cli-smoke.sh --ytt "$stage/${{ matrix.bin }}"
 
       # The .ico rides at the archive root: `ytt register-media-identity` points the
       # media-flyout IconUri at the copy installed next to the exe (install.ps1 / Scoop).
@@ -466,6 +489,8 @@ jobs:
           if (-not $manifest.post_install) {
             throw "Scoop manifest is missing the media-identity post_install"
           }
+
+          ./scripts/release-cli-smoke.ps1 -YttPath (Join-Path $stage "ytt.exe")
 
       # One SHA-256 sidecar per archive in `sha256sum`/`shasum` format (`<hash>  <file>`). bash
       # runs on all three runners (Git Bash on Windows); sha256sum ships on Linux and

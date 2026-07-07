@@ -2477,7 +2477,7 @@ mod tests {
         apply_gui_ok(&mut engine, "eq", "normalize", json!(true));
         assert_eq!(engine.config.eq_preset, crate::eq::EqPreset::Custom);
         assert_eq!(engine.config.eq_bands.unwrap()[5], 5.0);
-        assert_eq!(engine.current_audio_filter().contains("dynaudnorm"), true);
+        assert!(engine.current_audio_filter().contains("dynaudnorm"));
 
         let effects = apply_gui_ok(&mut engine, "streaming", "autoplay", json!(true));
         assert!(engine.streaming);
@@ -2773,7 +2773,9 @@ mod tests {
         engine.playback.time_pos_at = Some(Instant::now() - Duration::from_millis(5));
         engine.playback.duration = Some(123.0);
         engine.playback.speed = 1.5;
-        engine.playback.position_epoch = 7;
+        for _ in 0..7 {
+            engine.bump_position_epoch(PositionEpochReason::Seek);
+        }
         engine.streaming = true;
         engine.queue.set_shuffle(true);
         engine.queue.repeat = crate::queue::Repeat::All;
