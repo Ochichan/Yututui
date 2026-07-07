@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender, error::TrySendError};
 
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
@@ -443,6 +443,78 @@ pub enum ApiCmd {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiCommandKind {
+    Search,
+    GuiSearch,
+    Streaming,
+    StreamingPreflight,
+    ResolveTrack,
+    SearchPlaylists,
+    PlaylistTracks,
+}
+
+impl ApiCommandKind {
+    fn label(self) -> &'static str {
+        match self {
+            ApiCommandKind::Search => "search",
+            ApiCommandKind::GuiSearch => "GUI search",
+            ApiCommandKind::Streaming => "streaming",
+            ApiCommandKind::StreamingPreflight => "streaming preflight",
+            ApiCommandKind::ResolveTrack => "track resolve",
+            ApiCommandKind::SearchPlaylists => "playlist search",
+            ApiCommandKind::PlaylistTracks => "playlist tracks",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiEnqueueError {
+    Full { kind: ApiCommandKind },
+    Closed { kind: ApiCommandKind },
+}
+
+impl ApiEnqueueError {
+    pub fn kind(self) -> ApiCommandKind {
+        match self {
+            ApiEnqueueError::Full { kind } | ApiEnqueueError::Closed { kind } => kind,
+        }
+    }
+}
+
+impl std::fmt::Display for ApiEnqueueError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            ApiEnqueueError::Full { kind } => {
+                write!(
+                    f,
+                    "API {} queue is full; try again in a moment.",
+                    kind.label()
+                )
+            }
+            ApiEnqueueError::Closed { kind } => {
+                write!(f, "API {} worker is not running.", kind.label())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ApiEnqueueError {}
+
+impl ApiCmd {
+    fn kind(&self) -> ApiCommandKind {
+        match self {
+            ApiCmd::Search { .. } => ApiCommandKind::Search,
+            ApiCmd::GuiSearch { .. } => ApiCommandKind::GuiSearch,
+            ApiCmd::Streaming { .. } => ApiCommandKind::Streaming,
+            ApiCmd::StreamingPreflight { .. } => ApiCommandKind::StreamingPreflight,
+            ApiCmd::ResolveTrack { .. } => ApiCommandKind::ResolveTrack,
+            ApiCmd::SearchPlaylists { .. } => ApiCommandKind::SearchPlaylists,
+            ApiCmd::PlaylistTracks { .. } => ApiCommandKind::PlaylistTracks,
+        }
+    }
+}
+
 /// Events emitted by the API actor.
 pub enum ApiEvent {
     ModeResolved {
@@ -514,19 +586,26 @@ pub struct ApiHandle {
 }
 
 impl ApiHandle {
+    fn enqueue(&self, cmd: ApiCmd) -> Result<(), ApiEnqueueError> {
+        self.tx.try_send(cmd).map_err(|err| match err {
+            TrySendError::Full(cmd) => ApiEnqueueError::Full { kind: cmd.kind() },
+            TrySendError::Closed(cmd) => ApiEnqueueError::Closed { kind: cmd.kind() },
+        })
+    }
+
     pub fn search(
         &self,
         request_id: u64,
         query: impl Into<String>,
         source: SearchSource,
         config: SearchConfig,
-    ) {
-        let _ = self.tx.try_send(ApiCmd::Search {
+    ) -> Result<(), ApiEnqueueError> {
+        self.enqueue(ApiCmd::Search {
             request_id,
             query: query.into(),
             source,
             config,
-        });
+        })
     }
 
     pub fn gui_search(
@@ -535,13 +614,13 @@ impl ApiHandle {
         query: impl Into<String>,
         source: SearchSource,
         config: SearchConfig,
-    ) {
-        let _ = self.tx.try_send(ApiCmd::GuiSearch {
+    ) -> Result<(), ApiEnqueueError> {
+        self.enqueue(ApiCmd::GuiSearch {
             ticket,
             query: query.into(),
             source,
             config,
-        });
+        })
     }
 
     pub fn streaming(
@@ -552,15 +631,15 @@ impl ApiHandle {
         limit: usize,
         mode: StreamingMode,
         config: SearchConfig,
-    ) {
-        let _ = self.tx.try_send(ApiCmd::Streaming {
+    ) -> Result<(), ApiEnqueueError> {
+        self.enqueue(ApiCmd::Streaming {
             seed: seed.into(),
             seed_video_id: seed_video_id.into(),
             exclude_ids,
             limit,
             mode,
             config,
-        });
+        })
     }
 
     pub fn streaming_preflight(
@@ -570,29 +649,38 @@ impl ApiHandle {
         fallback: Vec<Song>,
         mode: StreamingMode,
         config: StreamingConfig,
-    ) {
-        let _ = self.tx.try_send(ApiCmd::StreamingPreflight {
+    ) -> Result<(), ApiEnqueueError> {
+        self.enqueue(ApiCmd::StreamingPreflight {
             seed_video_id: seed_video_id.into(),
             picks,
             fallback,
             mode,
             config,
-        });
+        })
     }
 
-    pub fn resolve_track(&self, seq: u64, query: impl Into<String>, config: SearchConfig) {
-        let _ = self.tx.try_send(ApiCmd::ResolveTrack {
+    pub fn resolve_track(
+        &self,
+        seq: u64,
+        query: impl Into<String>,
+        config: SearchConfig,
+    ) -> Result<(), ApiEnqueueError> {
+        self.enqueue(ApiCmd::ResolveTrack {
             seq,
             query: query.into(),
             config,
-        });
+        })
     }
 
-    pub fn search_playlists(&self, request_id: u64, query: impl Into<String>) {
-        let _ = self.tx.try_send(ApiCmd::SearchPlaylists {
+    pub fn search_playlists(
+        &self,
+        request_id: u64,
+        query: impl Into<String>,
+    ) -> Result<(), ApiEnqueueError> {
+        self.enqueue(ApiCmd::SearchPlaylists {
             request_id,
             query: query.into(),
-        });
+        })
     }
 
     pub fn playlist_tracks(
@@ -600,12 +688,12 @@ impl ApiHandle {
         playlist_id: impl Into<String>,
         title: impl Into<String>,
         intent: PlaylistIntent,
-    ) {
-        let _ = self.tx.try_send(ApiCmd::PlaylistTracks {
+    ) -> Result<(), ApiEnqueueError> {
+        self.enqueue(ApiCmd::PlaylistTracks {
             playlist_id: playlist_id.into(),
             title: title.into(),
             intent,
-        });
+        })
     }
 }
 
@@ -1046,5 +1134,43 @@ mod tests {
         assert_eq!(song.youtube_id(), None);
         assert!(song.prefetch_target().is_none());
         assert!(song.unplayable_youtube_ref_reason().is_some());
+    }
+
+    #[test]
+    fn api_handle_reports_full_queue() {
+        let (tx, _rx) = mpsc::channel(1);
+        let handle = ApiHandle { tx };
+
+        handle
+            .search(1, "first", SearchSource::Youtube, SearchConfig::default())
+            .expect("first command should fill the small channel");
+        let err = handle
+            .search(2, "second", SearchSource::Youtube, SearchConfig::default())
+            .expect_err("second command should report a full channel");
+
+        assert_eq!(
+            err,
+            ApiEnqueueError::Full {
+                kind: ApiCommandKind::Search
+            }
+        );
+    }
+
+    #[test]
+    fn api_handle_reports_closed_queue() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let handle = ApiHandle { tx };
+
+        let err = handle
+            .search(1, "lost", SearchSource::Youtube, SearchConfig::default())
+            .expect_err("closed channel should be reported");
+
+        assert_eq!(
+            err,
+            ApiEnqueueError::Closed {
+                kind: ApiCommandKind::Search
+            }
+        );
     }
 }

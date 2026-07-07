@@ -311,6 +311,10 @@ impl RuntimeHandles {
         let _ = tokio::time::timeout(budget, done).await;
     }
 
+    fn emit_api_enqueue_error(&self, msg: Msg) {
+        let _ = self.worker_tx.send(RuntimeEvent::App(msg));
+    }
+
     pub fn handle_player_ready(
         &mut self,
         result: Result<(PlayerHandle, crate::player::Mpv), String>,
@@ -388,15 +392,42 @@ impl RuntimeHandles {
                 query,
                 source,
                 config,
-            } => self.api_handle.search(request_id, query, source, config),
+            } => {
+                if let Err(error) = self.api_handle.search(request_id, query, source, config) {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    self.emit_api_enqueue_error(Msg::SearchError {
+                        request_id,
+                        source,
+                        error: error.to_string(),
+                    });
+                }
+            }
             Cmd::SearchPlaylists { request_id, query } => {
-                self.api_handle.search_playlists(request_id, query)
+                if let Err(error) = self.api_handle.search_playlists(request_id, query) {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    self.emit_api_enqueue_error(Msg::SearchError {
+                        request_id,
+                        source: crate::search_source::SearchSource::Youtube,
+                        error: error.to_string(),
+                    });
+                }
             }
             Cmd::FetchPlaylistTracks {
                 playlist_id,
                 title,
                 intent,
-            } => self.api_handle.playlist_tracks(playlist_id, title, intent),
+            } => {
+                if let Err(error) =
+                    self.api_handle
+                        .playlist_tracks(playlist_id, title.clone(), intent)
+                {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    self.emit_api_enqueue_error(Msg::PlaylistTracksError {
+                        title,
+                        error: error.to_string(),
+                    });
+                }
+            }
             // Persist: hand the persistence actor an owned snapshot (or clear one). Cloning a
             // store is a couple ms of memcpy at worst; the fsync it replaces on this task was
             // 5-50ms. The marker variants clone the live snapshot from `app` here; `Config`
@@ -499,7 +530,13 @@ impl RuntimeHandles {
                 }
             }
             Cmd::ResolveTrack { seq, query, config } => {
-                self.api_handle.resolve_track(seq, query, config);
+                if let Err(error) = self.api_handle.resolve_track(seq, query, config) {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    self.emit_api_enqueue_error(Msg::TrackResolved {
+                        seq,
+                        result: Err(error.to_string()),
+                    });
+                }
             }
             Cmd::AiRerank {
                 seed_video_id,
@@ -535,14 +572,20 @@ impl RuntimeHandles {
                 mode,
                 config,
             } => {
-                self.api_handle.streaming(
+                if let Err(error) = self.api_handle.streaming(
                     seed,
-                    seed_video_id,
+                    seed_video_id.clone(),
                     exclude_ids,
                     crate::app::STREAMING_POOL_COUNT,
                     mode,
                     config,
-                );
+                ) {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    self.emit_api_enqueue_error(Msg::Streaming(StreamingMsg::Error {
+                        seed_video_id,
+                        error: error.to_string(),
+                    }));
+                }
             }
             Cmd::StreamingPreflight {
                 seed_video_id,
@@ -551,8 +594,19 @@ impl RuntimeHandles {
                 mode,
                 config,
             } => {
-                self.api_handle
-                    .streaming_preflight(seed_video_id, picks, fallback, mode, config);
+                if let Err(error) = self.api_handle.streaming_preflight(
+                    seed_video_id.clone(),
+                    picks,
+                    fallback,
+                    mode,
+                    config,
+                ) {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    self.emit_api_enqueue_error(Msg::Streaming(StreamingMsg::Error {
+                        seed_video_id,
+                        error: error.to_string(),
+                    }));
+                }
             }
             Cmd::SetAiModel(model) => {
                 if let Some(h) = &self.ai_handle {

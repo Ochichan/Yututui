@@ -525,14 +525,39 @@ fn dispatch_engine_effects(
                 limit,
                 mode,
                 config,
-            } => api.streaming(seed, seed_video_id, exclude_ids, limit, mode, config),
+            } => {
+                if let Err(error) = api.streaming(
+                    seed,
+                    seed_video_id.clone(),
+                    exclude_ids,
+                    limit,
+                    mode,
+                    config,
+                ) {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    let _ = event_tx.send(DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                        seed_video_id,
+                        error: error.to_string(),
+                    }));
+                }
+            }
             engine::EngineEffect::StreamingPreflight {
                 seed_video_id,
                 picks,
                 fallback,
                 mode,
                 config,
-            } => api.streaming_preflight(seed_video_id, picks, fallback, mode, config),
+            } => {
+                if let Err(error) =
+                    api.streaming_preflight(seed_video_id.clone(), picks, fallback, mode, config)
+                {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    let _ = event_tx.send(DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                        seed_video_id,
+                        error: error.to_string(),
+                    }));
+                }
+            }
             // Off-loop: the update check may download ~40 MiB. The verdict re-enters
             // the serve loop as a DaemonEvent so the engine can retry or skip.
             engine::EngineEffect::YtdlpSelfHeal { video_id, tools } => {
@@ -552,7 +577,22 @@ fn dispatch_engine_effects(
                 query,
                 source,
                 config,
-            } => api.gui_search(ticket, query, source, config),
+            } => {
+                if let Err(error) = api.gui_search(ticket, query.clone(), source, config) {
+                    tracing::warn!(%error, "api command enqueue failed");
+                    let _ =
+                        event_tx.send(DaemonEvent::Api(crate::api::ApiEvent::GuiSearchCompleted {
+                            ticket,
+                            query,
+                            source,
+                            groups: vec![crate::api::GuiSearchGroup {
+                                source,
+                                songs: Vec::new(),
+                                error: Some(error.to_string()),
+                            }],
+                        }));
+                }
+            }
         }
     }
 }
