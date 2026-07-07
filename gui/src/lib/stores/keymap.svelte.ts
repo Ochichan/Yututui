@@ -13,9 +13,11 @@
 import type { Client } from '../ipc/client';
 import type { SettingsSnapshot } from './settings.svelte';
 
-/** The 11 KeyContexts (src/keymap.rs:439-451), in display order (specific → fallbacks). */
+/** The 13 KeyContexts in src/keymap.rs, in GUI display order (specific → fallbacks). */
 export type KeyContext =
   | 'Player'
+  | 'NowPlaying'
+  | 'MpvOverlay'
   | 'Queue'
   | 'SearchInput'
   | 'SearchResults'
@@ -29,6 +31,8 @@ export type KeyContext =
 
 export const KEY_CONTEXTS: KeyContext[] = [
   'Player',
+  'NowPlaying',
+  'MpvOverlay',
   'Queue',
   'SearchInput',
   'SearchResults',
@@ -44,6 +48,8 @@ export const KEY_CONTEXTS: KeyContext[] = [
 /** Human titles (the GUI stand-in for CONTEXT_META, src/keymap.rs:453). */
 export const CONTEXT_LABELS: Record<KeyContext, string> = {
   Player: 'Now Playing',
+  NowPlaying: "What's playing card",
+  MpvOverlay: 'mpv video overlay',
   Queue: 'Queue',
   SearchInput: 'Search box',
   SearchResults: 'Search results',
@@ -83,7 +89,7 @@ export interface KeymapConflict {
 }
 
 // ── the canonical GUI keymap seed (the demo core emits it; the real core replaces it) ──────
-// Representative actions across all 11 contexts. Runtime effect lives in lib/keyboard/actions
+// Representative actions across all 13 contexts. Runtime effect lives in lib/keyboard/actions
 // for the ones with a GUI handler; the rest still render + rebind (their effect lands later).
 const ACTIONS: ActionInfo[] = [
   { id: 'play_pause', context: 'Player', label: 'Play / pause', default_chord: 'Space' },
@@ -91,11 +97,38 @@ const ACTIONS: ActionInfo[] = [
   { id: 'seek_forward', context: 'Player', label: 'Seek +5 s', default_chord: 'Right' },
   { id: 'volume_up', context: 'Player', label: 'Volume +5', default_chord: 'Up' },
   { id: 'volume_down', context: 'Player', label: 'Volume −5', default_chord: 'Down' },
-  { id: 'next', context: 'Player', label: 'Next track', default_chord: 'n' },
-  { id: 'prev', context: 'Player', label: 'Previous track', default_chord: 'p' },
-  { id: 'toggle_shuffle', context: 'Player', label: 'Shuffle', default_chord: 's' },
+  { id: 'toggle_mute', context: 'Player', label: 'Mute / unmute', default_chord: 'm' },
+  { id: 'next', context: 'Player', label: 'Next track', default_chord: '.' },
+  { id: 'prev', context: 'Player', label: 'Previous track', default_chord: ',' },
+  { id: 'toggle_shuffle', context: 'Player', label: 'Shuffle', default_chord: 'S' },
   { id: 'cycle_repeat', context: 'Player', label: 'Repeat mode', default_chord: 'r' },
-  { id: 'cycle_rating', context: 'Player', label: 'Cycle rating', default_chord: 'l' },
+  { id: 'cycle_rating', context: 'Player', label: 'Cycle rating', default_chord: 'f' },
+  { id: 'identify_now_playing', context: 'Player', label: "What's playing", default_chord: 'i' },
+  { id: 'play_video', context: 'Player', label: 'Video overlay (mpv)', default_chord: 'v' },
+  {
+    id: 'toggle_video_layout',
+    context: 'Player',
+    label: 'Video size / position',
+    default_chord: 'V',
+  },
+  {
+    id: 'now_playing_favorite',
+    context: 'NowPlaying',
+    label: 'Favorite / unfavorite',
+    default_chord: 'f',
+  },
+  { id: 'now_playing_ask_ai', context: 'NowPlaying', label: 'Ask DJ Gem', default_chord: 'g' },
+  {
+    id: 'video_toggle_pause',
+    context: 'MpvOverlay',
+    label: 'Video play / pause',
+    default_chord: 'Space',
+  },
+  { id: 'video_next', context: 'MpvOverlay', label: 'Next video', default_chord: '.' },
+  { id: 'video_prev', context: 'MpvOverlay', label: 'Previous video', default_chord: ',' },
+  { id: 'video_close', context: 'MpvOverlay', label: 'Close video', default_chord: 'q' },
+  { id: 'video_toggle_fullscreen', context: 'MpvOverlay', label: 'Fullscreen', default_chord: 'f' },
+  { id: 'video_toggle_mute', context: 'MpvOverlay', label: 'Mute / unmute', default_chord: 'm' },
   { id: 'clear_upcoming', context: 'Queue', label: 'Clear upcoming', default_chord: 'c' },
   { id: 'play_pause', context: 'Queue', label: 'Play / pause', default_chord: 'Space' },
   { id: 'focus_query', context: 'SearchInput', label: 'Edit query', default_chord: '/' },

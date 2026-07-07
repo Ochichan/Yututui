@@ -76,7 +76,7 @@ This is a planning document only. It does not modify source behavior.
 - [x] Phase 4: convert YuTuTui chords into mpv key names.
 - [x] Phase 5: install remapped keys into the overlay mpv.
 - [x] Phase 6: implement overlay pause and state sync.
-- [ ] Phase 7: documentation and user-facing copy.
+- [x] Phase 7: documentation and user-facing copy.
 
 ### Phase 1: connect update checks to desktop notifications
 

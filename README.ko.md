@@ -113,7 +113,7 @@ everywhere.png · themes.gif · animations.gif · retro.png · transfer.gif
 
 ### 터미널 위에 떠 있는 뮤직비디오
 
-**`v`** 를 누르면 작은 mpv 창에 뮤직비디오가 뜹니다. *영상 자동 이어재생*을 켜면 다음 곡의 영상으로 알아서 이어집니다.
+**`v`** 를 누르면 작은 mpv 창에 뮤직비디오가 뜹니다. *영상 자동 이어재생*을 켜면 다음 곡의 영상으로 알아서 이어집니다. mpv 창에 포커스가 있을 때는 `Space`, `.`, `,`, `q`, `f`, `m`으로 재생/일시정지, 다음, 이전, 닫기, 전체 화면, 음소거를 조작합니다. 이 mpv 오버레이 단축키도 도움말/핫키에 표시되고, 고정 호환 별칭 `<`, `>`, `p`도 계속 동작합니다.
 
 > 🖼️ *움짤 준비 중!*
 <!-- 📸 채우는 법: docs/media/video.gif 를 추가하고, 위의 "준비 중" 줄을 지운 뒤 아래 줄 주석을 해제하세요:
@@ -187,7 +187,7 @@ everywhere.png · themes.gif · animations.gif · retro.png · transfer.gif
 | 키 | 동작 |
 | --- | --- |
 | `Space` | 재생 / 일시정지 |
-| `,` / `.` | 이전 / 다음 |
+| `,` / `.` | 이전 / 다음 (mpv 영상 창에서도) |
 | `←` / `→` · `↑` / `↓` | 탐색 · 볼륨 |
 | `s` | 검색 (`Tab` 으로 카탈로그 선택) |
 | `l` / `c` | 라이브러리 / 큐 |
@@ -321,6 +321,7 @@ ytt tools unpin               # 기본 managed/system 선택 정책으로 복귀
 | 앨범 아트가 안 보임 | 기본은 꺼짐: 설정 → 일반 → **앨범 아트** 켜고 재시작. |
 | 터미널마다 앨범 아트/확대 동작이 다름 | `ytt doctor terminal --json`을 실행하고 [terminal matrix](docs/terminal-compatibility.md)와 비교하세요. |
 | Control Center / SMTC / MPRIS에 안 나옴 | 설정 → 재생 → **OS 미디어 컨트롤** 확인; 뭔가 한 번 재생된 뒤부터 표시됩니다. |
+| 데스크톱 업데이트 알림이 안 보임 | 업데이트 안내는 About/상태줄에도 남습니다; 데스크톱 알림은 터미널, tmux, OS 알림 지원에 따라 best-effort로 동작합니다. |
 | 플라이아웃에 "알 수 없는 앱" / 항목 2개 | `ytt register-media-identity`를 한 번 실행 (항목 2개 = mpv 자체 미디어 세션; mpv ≥ 0.39에서는 자동으로 꺼줍니다). |
 | DJ Gem이 응답 안 함 | 설정 → DJ Gem에 무료 Gemini 키를 넣고 **Enable DJ Gem**을 켜세요. |
 | Spotify 403 / "허용 목록 없음" | Spotify 개발자 대시보드의 *User Management*에 본인 계정을 추가하고, Client ID 오타를 확인하세요. |
