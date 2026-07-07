@@ -221,3 +221,22 @@ fn external_tool_cookies_fall_back_to_strict_source_without_data_dir() {
     );
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn load_from_rotates_secret_recovery_backups() {
+    let dir = std::env::temp_dir().join(format!("ytm-cfg-rotate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.json");
+
+    for idx in 0..(crate::util::safe_fs::SECRET_BACKUP_RETENTION + 2) {
+        std::fs::write(&path, format!("not-json-with-secret-{idx}")).unwrap();
+        let _ = Config::load_from(&path);
+    }
+
+    let backups = crate::util::safe_fs::recovery_backups(&path).unwrap();
+    assert_eq!(backups.len(), crate::util::safe_fs::SECRET_BACKUP_RETENTION);
+    assert!(path.exists(), "fresh default config should remain in place");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

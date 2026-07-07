@@ -67,6 +67,7 @@ fn top_level_help_and_version_exit_before_tui_startup() {
 fn one_shot_subcommands_handle_help_and_parse_errors_without_launching_tui() {
     for args in [
         &["doctor", "--help"][..],
+        &["doctor", "privacy", "--help"][..],
         &["tools", "--help"][..],
         &["tools", "status", "--help"][..],
         &["transfer", "--help"][..],
@@ -106,6 +107,33 @@ fn one_shot_subcommands_handle_help_and_parse_errors_without_launching_tui() {
             stderr(&output)
         );
     }
+}
+
+#[test]
+fn doctor_privacy_reports_secret_files_without_tui_startup() {
+    let root = isolated_root("doctor-privacy");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("isolated root should be creatable");
+
+    let output = isolated_command(&root, &["doctor", "privacy"])
+        .output()
+        .expect("ytt doctor privacy should run");
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("Privacy-sensitive files"), "{out}");
+    assert!(out.contains("config.json"), "{out}");
+    assert!(out.contains("spotify_token.json"), "{out}");
+    assert!(out.contains("recovery backups:"), "{out}");
+
+    let cleanup = isolated_command(&root, &["doctor", "privacy", "--cleanup"])
+        .output()
+        .expect("ytt doctor privacy --cleanup should run");
+    assert!(cleanup.status.success(), "stderr: {}", stderr(&cleanup));
+    assert!(
+        stdout(&cleanup).contains("cleanup: removed"),
+        "{}",
+        stdout(&cleanup)
+    );
 }
 
 #[test]

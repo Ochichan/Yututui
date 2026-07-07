@@ -35,7 +35,7 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 /// jars are a few KB; this only rejects a pathological/hostile path before it's read wholesale
 /// into memory, and the read also refuses to follow a symlink.
 const MAX_COOKIE_BYTES: u64 = 4 * 1024 * 1024;
-const EXTERNAL_COOKIES_COPY: &str = "cookies.external.txt";
+pub(crate) const EXTERNAL_COOKIES_COPY: &str = "cookies.external.txt";
 
 /// Clamp range for the seek step (seconds) used by the seek-back/-forward keys, exposed as
 /// a slider on the Playback settings tab. Default is 10s.
@@ -754,16 +754,16 @@ impl Config {
                         return safe_fs::recover_lenient::<Config>(value);
                     }
                     // Present but not JSON at all: preserve it rather than clobbering.
-                    let _ = safe_fs::backup_aside(path);
+                    let _ = safe_fs::backup_aside_secret(path);
                 }
                 // Present but not valid UTF-8: preserve rather than clobber.
                 Err(_) => {
-                    let _ = safe_fs::backup_aside(path);
+                    let _ = safe_fs::backup_aside_secret(path);
                 }
             },
             // Oversize (`read_no_symlink_limited` reports it as `InvalidData`): preserve.
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                let _ = safe_fs::backup_too_large(path);
+                let _ = safe_fs::backup_too_large_secret(path);
             }
             // Missing / permission / symlink: nothing safe to preserve. (First run is a
             // missing file; a symlink is left intact because `save()` refuses to follow it.)
@@ -1325,7 +1325,7 @@ fn ytm_dir_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
     audio_dir.join("ytm-tui")
 }
 
-fn config_path() -> Option<PathBuf> {
+pub(crate) fn config_path() -> Option<PathBuf> {
     if let Some(dir) = env_dir("YTM_CONFIG_DIR") {
         return Some(dir.join("config.json"));
     }

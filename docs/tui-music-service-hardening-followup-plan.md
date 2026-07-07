@@ -45,7 +45,7 @@ Recommended implementation order:
 - [x] P1-2: Add persist retry/backoff and bounded/latest-wins notification.
 - [x] P1-3: Harden cookies-file handoff to external tools.
 - [x] P2-1: Repair playlists on load.
-- [ ] P2-2: Rotate secret-bearing backups.
+- [x] P2-2: Rotate secret-bearing backups.
 - [ ] P2-3: Coalesce/cancel stale API search work.
 - [ ] P2-4: Document and self-check the remote same-user security model.
 - [ ] P3-1: Warn on unsafe tool/mpv overrides.
@@ -660,6 +660,29 @@ Acceptance criteria:
 - Loaded playlist memory shape obeys the same caps as create/add paths.
 
 ## P2-2: Secret-Bearing Backup Rotation And Privacy Doctor
+
+Status: completed in this hardening run.
+
+Implemented:
+
+- Added secret recovery-backup retention to `safe_fs`, keeping the newest three app-managed
+  secret backups while preserving the newly moved-aside file.
+- Applied the retention policy to `config.json` corrupt and too-large backup paths.
+- Added `ytt doctor privacy` to report secret-bearing files and recovery backup counts without
+  reading secret contents.
+- Added explicit `ytt doctor privacy --cleanup` for retention cleanup of app-managed secret
+  backup groups. Configured source `cookies.txt` is reported but not pruned because it can live
+  outside app-managed directories.
+- Added regression coverage for backup retention, explicit cleanup, config-load rotation, and the
+  isolated privacy doctor CLI path.
+
+Verification:
+
+- `cargo test secret_backup --lib`
+- `cargo test privacy --lib`
+- `cargo test load_from_rotates_secret_recovery_backups --lib`
+- `cargo test doctor_privacy_reports_secret_files_without_tui_startup --test cli_smoke`
+- `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
 
 Current evidence:
 

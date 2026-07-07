@@ -7,6 +7,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -21,6 +22,20 @@ use std::os::windows::fs::MetadataExt;
 const PRIVATE_DIR_MODE: u32 = 0o700;
 #[cfg(unix)]
 const PRIVATE_FILE_MODE: u32 = 0o600;
+
+/// Recovery backups for secret-bearing files are useful, but old credentials should not
+/// accumulate indefinitely.
+pub const SECRET_BACKUP_RETENTION: usize = 3;
+const RECOVERY_BACKUP_LABELS: &[&str] = &["corrupt", "too-large", "unreadable"];
+
+/// Metadata for a recovery backup. Contents are intentionally never read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryBackup {
+    pub path: PathBuf,
+    pub label: String,
+    pub len: u64,
+    pub modified_unix: Option<u64>,
+}
 
 #[cfg(unix)]
 fn private_dir_mode() -> u32 {
@@ -573,6 +588,12 @@ pub fn backup_aside(path: &Path) -> io::Result<PathBuf> {
     backup_with_label(path, "corrupt")
 }
 
+/// Secret-bearing counterpart to [`backup_aside`]. Preserves the newest recovery copy and
+/// prunes older secret backups beyond [`SECRET_BACKUP_RETENTION`].
+pub fn backup_aside_secret(path: &Path) -> io::Result<PathBuf> {
+    backup_with_label_retained(path, "corrupt", SECRET_BACKUP_RETENTION)
+}
+
 /// Move an oversized file aside (`*.too-large.bak`). Public counterpart to [`backup_aside`]
 /// for callers (e.g. `Config::load`) that read with their own size cap outside
 /// [`load_json_or_default_limited`].
@@ -580,18 +601,39 @@ pub fn backup_too_large(path: &Path) -> io::Result<PathBuf> {
     backup_with_label(path, "too-large")
 }
 
+/// Secret-bearing counterpart to [`backup_too_large`].
+pub fn backup_too_large_secret(path: &Path) -> io::Result<PathBuf> {
+    backup_with_label_retained(path, "too-large", SECRET_BACKUP_RETENTION)
+}
+
+/// List app-created recovery backups for `path` without reading their contents.
+pub fn recovery_backups(path: &Path) -> io::Result<Vec<RecoveryBackup>> {
+    recovery_backups_for_labels(path, RECOVERY_BACKUP_LABELS)
+}
+
+/// Enforce the default secret-backup retention for `path`.
+pub fn enforce_secret_backup_retention(path: &Path) -> io::Result<usize> {
+    rotate_recovery_backups(path, SECRET_BACKUP_RETENTION, None)
+}
+
 /// Move a file aside under a labeled, numbered backup (`*.<label>.bak`, then
 /// `*.<label>.N.bak`) without ever overwriting an existing one. Shared by
 /// [`backup_aside`] (unparseable JSON) and the oversized-file path in
 /// [`load_json_or_default_limited`].
 fn backup_with_label(path: &Path, label: &str) -> io::Result<PathBuf> {
+    backup_with_label_inner(path, label)
+}
+
+fn backup_with_label_retained(path: &Path, label: &str, keep: usize) -> io::Result<PathBuf> {
+    let bak = backup_with_label_inner(path, label)?;
+    rotate_recovery_backups(path, keep, Some(&bak))?;
+    Ok(bak)
+}
+
+fn backup_with_label_inner(path: &Path, label: &str) -> io::Result<PathBuf> {
     reject_symlink(path)?;
     for n in 0..1000 {
-        let bak = if n == 0 {
-            path.with_extension(format!("{label}.bak"))
-        } else {
-            path.with_extension(format!("{label}.{n}.bak"))
-        };
+        let bak = backup_path(path, label, n);
         match fs::hard_link(path, &bak) {
             Ok(()) => {
                 fs::remove_file(path)?;
@@ -603,6 +645,81 @@ fn backup_with_label(path: &Path, label: &str) -> io::Result<PathBuf> {
         }
     }
     Err(io::Error::other("too many backups"))
+}
+
+fn rotate_recovery_backups(
+    path: &Path,
+    keep: usize,
+    protected: Option<&Path>,
+) -> io::Result<usize> {
+    let mut backups = recovery_backups(path)?;
+    if backups.len() <= keep {
+        return Ok(0);
+    }
+    backups.sort_by(|a, b| {
+        a.modified_unix
+            .cmp(&b.modified_unix)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+
+    let mut removed = 0usize;
+    while backups.len() > keep {
+        let Some(idx) = backups
+            .iter()
+            .position(|backup| protected != Some(backup.path.as_path()))
+        else {
+            break;
+        };
+        let backup = backups.remove(idx);
+        match fs::remove_file(&backup.path) {
+            Ok(()) => {
+                removed += 1;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                removed += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if removed > 0 {
+        sync_parent_dir(path)?;
+    }
+    Ok(removed)
+}
+
+fn recovery_backups_for_labels(path: &Path, labels: &[&str]) -> io::Result<Vec<RecoveryBackup>> {
+    let mut out = Vec::new();
+    for label in labels {
+        for n in 0..1000 {
+            let backup = backup_path(path, label, n);
+            let meta = match fs::symlink_metadata(&backup) {
+                Ok(meta) if meta.is_file() => meta,
+                Ok(_) => continue,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            let modified_unix = meta
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|age| age.as_secs());
+            out.push(RecoveryBackup {
+                path: backup,
+                label: (*label).to_owned(),
+                len: meta.len(),
+                modified_unix,
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn backup_path(path: &Path, label: &str, n: usize) -> PathBuf {
+    if n == 0 {
+        path.with_extension(format!("{label}.bak"))
+    } else {
+        path.with_extension(format!("{label}.{n}.bak"))
+    }
 }
 
 #[cfg(test)]
@@ -753,6 +870,50 @@ mod tests {
         assert_eq!(fs::read(&first_backup).unwrap(), b"old-bad");
         assert_eq!(fs::read(&backed_up).unwrap(), b"new-bad");
         assert!(!path.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn secret_backup_retention_keeps_newest_and_prunes_old_recovery_files() {
+        let dir = temp_root("secret-backup-retention");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let mut newest = PathBuf::new();
+
+        for idx in 0..(SECRET_BACKUP_RETENTION + 2) {
+            fs::write(&path, format!("secret-{idx}")).unwrap();
+            newest = backup_aside_secret(&path).unwrap();
+        }
+
+        let backups = recovery_backups(&path).unwrap();
+        assert_eq!(backups.len(), SECRET_BACKUP_RETENTION);
+        assert!(backups.iter().any(|backup| backup.path == newest));
+        assert_eq!(
+            fs::read_to_string(&newest).unwrap(),
+            format!("secret-{}", SECRET_BACKUP_RETENTION + 1)
+        );
+        assert!(!path.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn explicit_secret_backup_cleanup_prunes_to_retention() {
+        let dir = temp_root("secret-backup-cleanup");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        for idx in 0..(SECRET_BACKUP_RETENTION + 1) {
+            fs::write(backup_path(&path, "corrupt", idx), b"old").unwrap();
+        }
+        fs::write(&path, b"current").unwrap();
+
+        let removed = enforce_secret_backup_retention(&path).unwrap();
+
+        assert_eq!(removed, 1);
+        assert_eq!(
+            recovery_backups(&path).unwrap().len(),
+            SECRET_BACKUP_RETENTION
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"current");
         let _ = fs::remove_dir_all(dir);
     }
 

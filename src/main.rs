@@ -43,6 +43,7 @@ fn main() -> Result<()> {
                     "       ytt transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
                 );
                 println!("       ytt doctor [-v]      Check your environment and exit");
+                println!("       ytt doctor privacy [--cleanup]");
                 println!("       ytt doctor terminal --json");
                 println!("                             Report terminal capability hints");
                 println!(

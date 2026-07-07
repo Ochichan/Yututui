@@ -15,6 +15,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Run the diagnostic, printing a report, and return the process exit code.
 pub fn run() -> i32 {
@@ -29,16 +30,29 @@ pub fn run_with_args(args: &[String]) -> i32 {
         println!("Usage: ytt doctor terminal --json");
         return 0;
     }
+    if matches!(args, [cmd] if cmd == "privacy") {
+        return run_privacy(false);
+    }
+    if matches!(args, [cmd, flag] if cmd == "privacy" && flag == "--cleanup") {
+        return run_privacy(true);
+    }
+    if matches!(args, [cmd, flag] if cmd == "privacy" && (flag == "--help" || flag == "-h")) {
+        println!("Usage: ytt doctor privacy [--cleanup]");
+        println!("       Report secret-bearing files and recovery backups");
+        return 0;
+    }
     let verbose = match args {
         [] => false,
         [arg] if arg == "--verbose" || arg == "-v" => true,
         [arg] if arg == "--help" || arg == "-h" => {
             println!("Usage: ytt doctor [--verbose]");
+            println!("       ytt doctor privacy [--cleanup]");
             println!("       ytt doctor terminal --json");
             return 0;
         }
         _ => {
             eprintln!("usage: ytt doctor [--verbose]");
+            eprintln!("       ytt doctor privacy [--cleanup]");
             eprintln!("       ytt doctor terminal --json");
             return 2;
         }
@@ -110,6 +124,236 @@ fn run_terminal_json() -> i32 {
             1
         }
     }
+}
+
+struct SecretFile {
+    label: &'static str,
+    note: &'static str,
+    path: PathBuf,
+    cleanup_managed_backups: bool,
+}
+
+fn run_privacy(cleanup: bool) -> i32 {
+    let cfg = config::Config::load();
+    i18n::set_language(cfg.effective_language());
+    let kr = i18n::is_korean();
+    let files = secret_files(&cfg);
+    let mut ok = true;
+    let mut removed_total = 0usize;
+
+    if cleanup {
+        for file in files.iter().filter(|file| file.cleanup_managed_backups) {
+            match crate::util::safe_fs::enforce_secret_backup_retention(&file.path) {
+                Ok(removed) => removed_total += removed,
+                Err(e) => {
+                    ok = false;
+                    eprintln!(
+                        "{} {}: {e}",
+                        if kr {
+                            "개인정보 백업 정리 실패:"
+                        } else {
+                            "privacy backup cleanup failed for"
+                        },
+                        privacy_path(&file.path)
+                    );
+                }
+            }
+        }
+    }
+
+    println!(
+        "{}",
+        if kr {
+            "개인정보 파일"
+        } else {
+            "Privacy-sensitive files"
+        }
+    );
+    if cleanup {
+        println!(
+            "  {}",
+            if kr {
+                format!("정리됨: 오래된 secret recovery backup {removed_total}개 제거")
+            } else {
+                format!("cleanup: removed {removed_total} old secret recovery backups")
+            }
+        );
+    }
+
+    let mut over_retention = false;
+    for file in &files {
+        let exists = file.path.exists();
+        println!(
+            "  {} {} — {}",
+            if exists { "✓" } else { "-" },
+            file.label,
+            privacy_path(&file.path)
+        );
+        println!("    {}", file.note);
+        match crate::util::safe_fs::recovery_backups(&file.path) {
+            Ok(backups) => {
+                if file.cleanup_managed_backups
+                    && backups.len() > crate::util::safe_fs::SECRET_BACKUP_RETENTION
+                {
+                    over_retention = true;
+                }
+                println!("    {}", backup_summary(&backups, kr));
+            }
+            Err(e) => {
+                ok = false;
+                println!(
+                    "    {}: {e}",
+                    if kr {
+                        "백업을 확인할 수 없음"
+                    } else {
+                        "could not inspect backups"
+                    }
+                );
+            }
+        }
+    }
+
+    if over_retention && !cleanup {
+        println!(
+            "{}",
+            if kr {
+                format!(
+                    "`ytt doctor privacy --cleanup`으로 secret recovery backup을 최근 {}개만 남길 수 있어요.",
+                    crate::util::safe_fs::SECRET_BACKUP_RETENTION
+                )
+            } else {
+                format!(
+                    "Run `ytt doctor privacy --cleanup` to keep only the newest {} secret recovery backups.",
+                    crate::util::safe_fs::SECRET_BACKUP_RETENTION
+                )
+            }
+        );
+    }
+
+    if ok { 0 } else { 1 }
+}
+
+fn secret_files(cfg: &config::Config) -> Vec<SecretFile> {
+    let mut files = Vec::new();
+    if let Some(path) = config::config_path() {
+        push_secret_file(
+            &mut files,
+            SecretFile {
+                label: "config.json",
+                note: "May contain YouTube cookies, Gemini keys, and scrobble tokens.",
+                path,
+                cleanup_managed_backups: true,
+            },
+        );
+    }
+    if let Some(path) = cfg.effective_cookies_file() {
+        push_secret_file(
+            &mut files,
+            SecretFile {
+                label: "cookies.txt",
+                note: "Browser-exported cookies used for YouTube Music auth.",
+                path,
+                cleanup_managed_backups: false,
+            },
+        );
+    }
+    if let Some(data) = data_dir() {
+        push_secret_file(
+            &mut files,
+            SecretFile {
+                label: "cookies.external.txt",
+                note: "Private imported cookies copy handed to mpv/yt-dlp.",
+                path: data.join(config::EXTERNAL_COOKIES_COPY),
+                cleanup_managed_backups: true,
+            },
+        );
+    }
+    if let Some(path) = crate::spotify::auth::token_path() {
+        push_secret_file(
+            &mut files,
+            SecretFile {
+                label: "spotify_token.json",
+                note: "Spotify OAuth access and refresh tokens.",
+                path,
+                cleanup_managed_backups: true,
+            },
+        );
+    }
+    files
+}
+
+fn push_secret_file(files: &mut Vec<SecretFile>, file: SecretFile) {
+    if !files.iter().any(|existing| existing.path == file.path) {
+        files.push(file);
+    }
+}
+
+fn backup_summary(backups: &[crate::util::safe_fs::RecoveryBackup], kr: bool) -> String {
+    if backups.is_empty() {
+        return if kr {
+            "recovery backup: 0개".to_owned()
+        } else {
+            "recovery backups: 0".to_owned()
+        };
+    }
+    let newest = backups
+        .iter()
+        .filter_map(|backup| backup.modified_unix)
+        .max()
+        .map(age_label)
+        .unwrap_or_else(|| {
+            if kr {
+                "나이 알 수 없음".to_owned()
+            } else {
+                "unknown age".to_owned()
+            }
+        });
+    let bytes: u64 = backups.iter().map(|backup| backup.len).sum();
+    if kr {
+        format!(
+            "recovery backup: {}개, 총 {} bytes, 최근 {}",
+            backups.len(),
+            bytes,
+            newest
+        )
+    } else {
+        format!(
+            "recovery backups: {}, {} bytes total, newest {}",
+            backups.len(),
+            bytes,
+            newest
+        )
+    }
+}
+
+fn age_label(modified_unix: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
+        .unwrap_or(modified_unix);
+    let secs = now.saturating_sub(modified_unix);
+    if secs < 120 {
+        "just now".to_owned()
+    } else if secs < 7200 {
+        format!("{} min ago", secs / 60)
+    } else if secs < 172_800 {
+        format!("{} h ago", secs / 3600)
+    } else {
+        format!("{} d ago", secs / 86_400)
+    }
+}
+
+fn privacy_path(path: &Path) -> String {
+    if let Some(base) = directories::BaseDirs::new()
+        && let Ok(stripped) = path.strip_prefix(base.home_dir())
+    {
+        if stripped.as_os_str().is_empty() {
+            return "~".to_owned();
+        }
+        return format!("~/{}", stripped.display());
+    }
+    path.display().to_string()
 }
 
 fn terminal_image_protocol(
@@ -925,8 +1169,24 @@ mod tests {
     }
 
     #[test]
+    fn privacy_path_redacts_home_prefix() {
+        let Some(base) = directories::BaseDirs::new() else {
+            return;
+        };
+        let path = base.home_dir().join(".config/ytm-tui/config.json");
+        let display = privacy_path(&path);
+        let home = base.home_dir().to_string_lossy();
+        assert!(display.starts_with("~/"), "{display}");
+        assert!(!display.contains(home.as_ref()));
+    }
+
+    #[test]
     fn run_with_args_handles_help_terminal_json_and_bad_usage_without_full_doctor() {
         assert_eq!(run_with_args(&["--help".to_owned()]), 0);
+        assert_eq!(
+            run_with_args(&["privacy".to_owned(), "--help".to_owned()]),
+            0
+        );
         assert_eq!(
             run_with_args(&["terminal".to_owned(), "--help".to_owned()]),
             0
