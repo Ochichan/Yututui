@@ -374,6 +374,9 @@ fn log_scrobble_event(event: crate::scrobble::ScrobbleEvent) {
         ScrobbleEvent::QueueStalled { pending } => {
             tracing::warn!(pending, "scrobble queue stalled");
         }
+        ScrobbleEvent::QueueDropped { dropped } => {
+            tracing::warn!(dropped, "scrobble queue over cap; dropped oldest entries");
+        }
         // The daemon never starts the interactive flow, so these are unexpected.
         ScrobbleEvent::AuthUrl(_) | ScrobbleEvent::AuthDone { .. } => {
             tracing::info!("unexpected scrobble auth event in daemon");

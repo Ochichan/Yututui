@@ -61,6 +61,10 @@ pub enum ScrobbleEvent {
     QueueStalled {
         pending: usize,
     },
+    /// The offline queue exceeded its retention cap and oldest entries were dropped.
+    QueueDropped {
+        dropped: usize,
+    },
 }
 
 type EventSink = Arc<dyn Fn(ScrobbleEvent) + Send + Sync>;
@@ -433,6 +437,7 @@ impl Actor {
         let (mut entries, capped) = compact(loaded.entries, crate::signals::unix_now());
         if capped > 0 {
             tracing::warn!(dropped = capped, "scrobble queue over cap; dropped oldest");
+            (self.emit)(ScrobbleEvent::QueueDropped { dropped: capped });
         }
 
         if let Some(client) = self.lastfm.clone()

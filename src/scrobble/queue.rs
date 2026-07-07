@@ -14,6 +14,8 @@
 //! flusher that can't take the lock just skips its round.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -31,12 +33,18 @@ const LASTFM_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 3600);
 const LOCK_STALE: Duration = Duration::from_secs(600);
 /// Queue reads cap at this size; the CAP-compaction keeps real files far below it.
 const QUEUE_READ_MAX: u64 = 4 * 1024 * 1024;
+static ENTRY_SEQ: AtomicU64 = AtomicU64::new(1);
+static BOOT_NONCE: OnceLock<String> = OnceLock::new();
 
 /// One queued listen. The field names are a stable on-disk format (JSONL, one per line).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueueEntry {
-    /// `"{ts}-{track key}"` — unique per listen, stable across reloads (dedupe key).
+    /// Unique per listen, stable across reloads (dedupe key). New entries use
+    /// `"{ts}-{boot nonce}-{monotonic seq}"`; old JSONL used `"{ts}-{track key}"`.
     pub id: String,
+    /// Stable track identity. Added after the original id format; old entries derive this from id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub track_key: String,
     /// Listen start, unix seconds (the scrobble timestamp).
     pub ts: i64,
     pub artist: String,
@@ -54,7 +62,8 @@ pub struct QueueEntry {
 impl QueueEntry {
     pub fn from_track(track: &ScrobbleTrack, pending: Vec<ServiceKind>) -> Self {
         Self {
-            id: format!("{}-{}", track.started_unix, track.key),
+            id: next_entry_id(track.started_unix),
+            track_key: track.key.clone(),
             ts: track.started_unix,
             artist: track.artist.clone(),
             title: track.title.clone(),
@@ -67,11 +76,11 @@ impl QueueEntry {
 
     pub fn to_track(&self) -> ScrobbleTrack {
         ScrobbleTrack {
-            key: self
-                .id
-                .split_once('-')
-                .map(|(_, k)| k.to_owned())
-                .unwrap_or_else(|| self.id.clone()),
+            key: if self.track_key.is_empty() {
+                legacy_track_key_from_id(&self.id)
+            } else {
+                self.track_key.clone()
+            },
             artist: self.artist.clone(),
             title: self.title.clone(),
             album: self.album.clone(),
@@ -80,6 +89,35 @@ impl QueueEntry {
             started_unix: self.ts,
         }
     }
+}
+
+fn next_entry_id(started_unix: i64) -> String {
+    let seq = ENTRY_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{started_unix}-{}-{seq}", boot_nonce())
+}
+
+fn boot_nonce() -> &'static str {
+    BOOT_NONCE.get_or_init(|| {
+        let mut bytes = [0u8; 8];
+        if getrandom::fill(&mut bytes).is_err() {
+            let fallback = format!(
+                "{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or_default()
+            );
+            return fallback;
+        }
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    })
+}
+
+fn legacy_track_key_from_id(id: &str) -> String {
+    id.split_once('-')
+        .map(|(_, k)| k.to_owned())
+        .unwrap_or_else(|| id.to_owned())
 }
 
 /// What [`QueueFile::load`] found: parsed entries (id-deduped, keep-first) plus how many
@@ -259,6 +297,7 @@ mod tests {
     fn entry(id_key: &str, ts: i64, pending: Vec<ServiceKind>) -> QueueEntry {
         QueueEntry {
             id: format!("{ts}-{id_key}"),
+            track_key: id_key.to_owned(),
             ts,
             artist: "artist".to_owned(),
             title: "title".to_owned(),
@@ -427,7 +466,45 @@ mod tests {
             started_unix: 1_751_400_000,
         };
         let e = QueueEntry::from_track(&track, vec![ServiceKind::Lastfm]);
-        assert_eq!(e.id, "1751400000-dQw4w9WgXcQ");
+        assert!(e.id.starts_with("1751400000-"));
+        assert_eq!(e.track_key, "dQw4w9WgXcQ");
         assert_eq!(e.to_track(), track);
+    }
+
+    #[test]
+    fn same_second_same_track_entries_get_distinct_ids() {
+        let track = ScrobbleTrack {
+            key: "same".to_owned(),
+            artist: "artist".to_owned(),
+            title: "title".to_owned(),
+            album: None,
+            duration_secs: Some(120),
+            origin_url: None,
+            started_unix: 1_751_400_000,
+        };
+
+        let a = QueueEntry::from_track(&track, vec![ServiceKind::Lastfm]);
+        let b = QueueEntry::from_track(&track, vec![ServiceKind::Lastfm]);
+
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.to_track(), track);
+        assert_eq!(b.to_track(), track);
+    }
+
+    #[test]
+    fn old_entries_without_track_key_still_recover_key_from_id() {
+        let entry = QueueEntry {
+            id: "100-old-key".to_owned(),
+            track_key: String::new(),
+            ts: 100,
+            artist: "artist".to_owned(),
+            title: "title".to_owned(),
+            album: None,
+            duration: None,
+            origin_url: None,
+            pending: vec![ServiceKind::Lastfm],
+        };
+
+        assert_eq!(entry.to_track().key, "old-key");
     }
 }

@@ -7440,6 +7440,16 @@ fn download_dir_error_updates_status_without_track_state() {
     assert!(app.status.text.contains("queue full"));
 }
 
+#[test]
+fn scrobble_queue_dropped_event_updates_status() {
+    let mut app = App::new(100);
+    app.update(Msg::Scrobble(
+        crate::scrobble::ScrobbleEvent::QueueDropped { dropped: 3 },
+    ));
+    assert!(app.status.text.contains("3"));
+    assert_eq!(app.status.kind, StatusKind::Error);
+}
+
 // --- M8: prefetch / instant skip ----------------------------------------
 
 fn resolve_cmd<'a>(cmds: &'a [Cmd], id: &str) -> Option<&'a str> {

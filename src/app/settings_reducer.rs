@@ -1599,6 +1599,15 @@ impl App {
                 self.status.kind = StatusKind::Info;
                 Vec::new()
             }
+            ScrobbleEvent::QueueDropped { dropped } => {
+                self.status.text = if crate::i18n::is_korean() {
+                    format!("오프라인 스크로블 큐가 가득 차 {dropped}건을 삭제했어요")
+                } else {
+                    format!("Offline scrobble queue was full; dropped {dropped} oldest scrobbles")
+                };
+                self.status.kind = StatusKind::Error;
+                Vec::new()
+            }
         }
     }
 
