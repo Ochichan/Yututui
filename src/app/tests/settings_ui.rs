@@ -624,6 +624,42 @@ fn settings_key_capture_conflict_raises_modal_warning() {
     assert!(app.settings.is_some(), "settings stayed open after dismiss");
 }
 
+#[test]
+fn settings_mpv_overlay_key_capture_rejects_unsupported_keys() {
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o')))); // open settings
+    let row = crate::keymap::editable_entries()
+        .iter()
+        .position(|entry| *entry == (KeyContext::MpvOverlay, Action::VideoTogglePause))
+        .expect("mpv overlay pause binding");
+    {
+        let st = app.settings.as_mut().unwrap();
+        st.tab = SettingsTab::Keys;
+        st.row = row;
+    }
+
+    app.settings_begin_capture();
+    assert_eq!(
+        app.settings.as_ref().unwrap().capturing,
+        Some((KeyContext::MpvOverlay, Action::VideoTogglePause))
+    );
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Media(
+        crossterm::event::MediaKeyCode::PlayPause,
+    ))));
+
+    assert!(cmds.is_empty());
+    assert!(app.status.text.contains("mpv"));
+    assert_eq!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .keymap
+            .chord(KeyContext::MpvOverlay, Action::VideoTogglePause),
+        crate::keymap::parse_chord("space")
+    );
+}
+
 /// Move the General-tab cursor onto the Reset-all button.
 
 #[test]

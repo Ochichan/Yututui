@@ -299,6 +299,15 @@ impl App {
         }
         let chord = Chord::from(k);
         let retro = self.retro_mode();
+        if ctx == KeyContext::MpvOverlay && crate::keymap::chord_to_mpv_input(chord).is_none() {
+            self.status.kind = StatusKind::Error;
+            self.status.text = t!(
+                "That key cannot be installed in mpv",
+                "이 키는 mpv에 설정할 수 없어요"
+            )
+            .to_owned();
+            return Vec::new();
+        }
         let Some(st) = self.settings.as_mut() else {
             return Vec::new();
         };

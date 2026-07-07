@@ -106,6 +106,12 @@ pub enum Action {
     CopyLink,
     PlayVideo,
     ToggleVideoLayout,
+    VideoTogglePause,
+    VideoNext,
+    VideoPrev,
+    VideoClose,
+    VideoToggleFullscreen,
+    VideoToggleMute,
     /// The "what's playing" (지듣노) radio identify overlay.
     IdentifyNowPlaying,
     /// Open the radio recordings browser (Decide-mode save/discard/play).
@@ -478,6 +484,37 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "Video size / position",
         "영상 크기 / 위치",
     ),
+    (
+        Action::VideoTogglePause,
+        "video_toggle_pause",
+        "Video play / pause",
+        "영상 재생 / 일시정지",
+    ),
+    (Action::VideoNext, "video_next", "Next video", "다음 영상"),
+    (
+        Action::VideoPrev,
+        "video_prev",
+        "Previous video",
+        "이전 영상",
+    ),
+    (
+        Action::VideoClose,
+        "video_close",
+        "Close video",
+        "영상 닫기",
+    ),
+    (
+        Action::VideoToggleFullscreen,
+        "video_toggle_fullscreen",
+        "Fullscreen",
+        "전체 화면",
+    ),
+    (
+        Action::VideoToggleMute,
+        "video_toggle_mute",
+        "Mute / unmute",
+        "음소거 / 해제",
+    ),
 ];
 
 impl Action {
@@ -585,6 +622,8 @@ pub enum KeyContext {
     AiSuggestions,
     /// The "what's playing" (지듣노) identify card over the player.
     NowPlaying,
+    /// Keybindings installed into the external mpv music-video overlay window.
+    MpvOverlay,
 }
 
 const CONTEXT_META: &[(KeyContext, &str, &str, &str)] = &[
@@ -594,6 +633,12 @@ const CONTEXT_META: &[(KeyContext, &str, &str, &str)] = &[
         "now_playing",
         "What's playing card",
         "지금 듣는 노래 카드",
+    ),
+    (
+        KeyContext::MpvOverlay,
+        "mpv_overlay",
+        "mpv video overlay",
+        "mpv 영상 창",
     ),
     (
         KeyContext::Common,
@@ -1088,6 +1133,14 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         // deliberately mirror the player's favorite / DJ Gem keys.
         (C::NowPlaying, A::NowPlayingFavorite, ch('f')),
         (C::NowPlaying, A::NowPlayingAskAi, ch('g')),
+        // External mpv video window controls. These are installed into mpv on the next
+        // overlay open; compatibility aliases (`<`, `>`, `p`) stay fixed in video.rs.
+        (C::MpvOverlay, A::VideoTogglePause, ch(' ')),
+        (C::MpvOverlay, A::VideoNext, ch('.')),
+        (C::MpvOverlay, A::VideoPrev, ch(',')),
+        (C::MpvOverlay, A::VideoClose, ch('q')),
+        (C::MpvOverlay, A::VideoToggleFullscreen, ch('f')),
+        (C::MpvOverlay, A::VideoToggleMute, ch('m')),
         // Shared navigation (fallback for every list/text screen).
         (C::Common, A::MoveUp, key(KeyCode::Up)),
         (C::Common, A::MoveDown, key(KeyCode::Down)),
@@ -1339,6 +1392,43 @@ pub fn chord_to_config(chord: Chord) -> String {
         other => s.push_str(code_token(other)),
     }
     s
+}
+
+/// Convert a TUI chord into mpv `input.conf` key-name syntax for the video overlay.
+/// Unsupported terminal-only keys return `None` so Settings can reject them up front.
+pub fn chord_to_mpv_input(chord: Chord) -> Option<String> {
+    let (base, inherent_shift) = match chord.code {
+        KeyCode::Char(' ') => ("SPACE".to_owned(), false),
+        KeyCode::Char(c) if c.is_ascii() && !c.is_ascii_control() => (c.to_string(), false),
+        KeyCode::Esc => ("ESC".to_owned(), false),
+        KeyCode::Left => ("LEFT".to_owned(), false),
+        KeyCode::Right => ("RIGHT".to_owned(), false),
+        KeyCode::Up => ("UP".to_owned(), false),
+        KeyCode::Down => ("DOWN".to_owned(), false),
+        KeyCode::Enter => ("ENTER".to_owned(), false),
+        KeyCode::Tab => ("TAB".to_owned(), false),
+        KeyCode::BackTab => ("TAB".to_owned(), true),
+        KeyCode::Backspace => ("BS".to_owned(), false),
+        KeyCode::Delete => ("DEL".to_owned(), false),
+        KeyCode::Home => ("HOME".to_owned(), false),
+        KeyCode::End => ("END".to_owned(), false),
+        KeyCode::PageUp => ("PGUP".to_owned(), false),
+        KeyCode::PageDown => ("PGDWN".to_owned(), false),
+        KeyCode::F(n) if (1..=12).contains(&n) => (format!("F{n}"), false),
+        _ => return None,
+    };
+    let mut out = String::new();
+    if chord.mods.contains(KeyModifiers::CONTROL) {
+        out.push_str("Ctrl+");
+    }
+    if chord.mods.contains(KeyModifiers::ALT) {
+        out.push_str("Alt+");
+    }
+    if inherent_shift || chord.mods.contains(KeyModifiers::SHIFT) {
+        out.push_str("Shift+");
+    }
+    out.push_str(&base);
+    Some(out)
 }
 
 fn code_token(code: KeyCode) -> &'static str {
@@ -1861,6 +1951,22 @@ mod tests {
             Some(Action::PrevTrack)
         );
         assert_eq!(
+            km.action(KeyContext::MpvOverlay, parse_chord("space").unwrap()),
+            Some(Action::VideoTogglePause)
+        );
+        assert_eq!(
+            km.action(KeyContext::MpvOverlay, parse_chord(".").unwrap()),
+            Some(Action::VideoNext)
+        );
+        assert_eq!(
+            km.action(KeyContext::MpvOverlay, parse_chord(",").unwrap()),
+            Some(Action::VideoPrev)
+        );
+        assert_eq!(
+            km.action(KeyContext::MpvOverlay, parse_chord("q").unwrap()),
+            Some(Action::VideoClose)
+        );
+        assert_eq!(
             km.action(KeyContext::Player, parse_chord("m").unwrap()),
             Some(Action::ToggleMute)
         );
@@ -2106,6 +2212,64 @@ mod tests {
             km.global_action(ev(KeyCode::Char('ㄱ'), KeyModifiers::CONTROL)),
             Some(Action::ToggleStreaming)
         );
+    }
+
+    #[test]
+    fn mpv_input_conversion_covers_overlay_defaults_and_named_keys() {
+        let km = KeyMap::default();
+        for (action, expected) in [
+            (Action::VideoTogglePause, "SPACE"),
+            (Action::VideoNext, "."),
+            (Action::VideoPrev, ","),
+            (Action::VideoClose, "q"),
+            (Action::VideoToggleFullscreen, "f"),
+            (Action::VideoToggleMute, "m"),
+        ] {
+            let chord = km.chord(KeyContext::MpvOverlay, action).unwrap();
+            assert_eq!(chord_to_mpv_input(chord).as_deref(), Some(expected));
+        }
+
+        assert_eq!(
+            chord_to_mpv_input(parse_chord("esc").unwrap()).as_deref(),
+            Some("ESC")
+        );
+        assert_eq!(
+            chord_to_mpv_input(parse_chord("ctrl+alt+right").unwrap()).as_deref(),
+            Some("Ctrl+Alt+RIGHT")
+        );
+        assert_eq!(
+            chord_to_mpv_input(parse_chord("shift+tab").unwrap()).as_deref(),
+            Some("Shift+TAB")
+        );
+        assert_eq!(
+            chord_to_mpv_input(parse_chord("f12").unwrap()).as_deref(),
+            Some("F12")
+        );
+    }
+
+    #[test]
+    fn mpv_input_conversion_rejects_terminal_only_keys() {
+        assert!(chord_to_mpv_input(Chord::new(KeyCode::Null, KeyModifiers::empty())).is_none());
+        assert!(
+            chord_to_mpv_input(Chord::new(
+                KeyCode::Media(MediaKeyCode::PlayPause),
+                KeyModifiers::empty(),
+            ))
+            .is_none()
+        );
+        assert!(
+            chord_to_mpv_input(Chord::new(
+                KeyCode::Modifier(ModifierKeyCode::LeftShift),
+                KeyModifiers::empty(),
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn mpv_input_conversion_uses_normalized_korean_chords() {
+        let chord = ev(KeyCode::Char('ㅁ'), KeyModifiers::NONE);
+        assert_eq!(chord_to_mpv_input(chord).as_deref(), Some("a"));
     }
 
     #[test]

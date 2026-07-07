@@ -72,8 +72,8 @@ This is a planning document only. It does not modify source behavior.
 
 - [x] Phase 1: connect update checks to desktop notifications.
 - [x] Phase 2: make update "first seen" bookkeeping less fragile.
-- [ ] Phase 3: add a first-class mpv overlay key context.
-- [ ] Phase 4: convert YuTuTui chords into mpv key names.
+- [x] Phase 3: add a first-class mpv overlay key context.
+- [x] Phase 4: convert YuTuTui chords into mpv key names.
 - [ ] Phase 5: install remapped keys into the overlay mpv.
 - [ ] Phase 6: implement overlay pause and state sync.
 - [ ] Phase 7: documentation and user-facing copy.
