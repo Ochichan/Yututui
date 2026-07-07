@@ -7,7 +7,7 @@
 #[cfg(not(feature = "tokio"))]
 use std::sync::mpsc::Sender;
 #[cfg(feature = "tokio")]
-use tokio::sync::mpsc::UnboundedSender as Sender;
+use tokio::sync::mpsc::{Sender, error::TrySendError};
 
 use image::Rgba;
 use ratatui::{
@@ -142,20 +142,21 @@ impl ResizeEncodeRender for ThreadProtocol {
 
     /// Senda a `ResizeRequest` through the channel if there already isn't a pending `ResizeRequest`
     fn resize_encode(&mut self, resize: &Resize, size: Size) {
-        let _ = self.inner.take().map(|protocol| {
-            self.increment_id();
-            self.pending_id = Some(self.id);
-            let request = ResizeRequest {
-                protocol,
-                resize: resize.clone(),
-                size,
-                id: self.id,
-            };
-            if let Err(err) = self.tx.send(request) {
-                self.inner = Some(err.0.protocol);
-                self.pending_id = None;
-            }
-        });
+        let Some(protocol) = self.inner.take() else {
+            return;
+        };
+        self.increment_id();
+        self.pending_id = Some(self.id);
+        let request = ResizeRequest {
+            protocol,
+            resize: resize.clone(),
+            size,
+            id: self.id,
+        };
+        if let Err(request) = send_resize_request(&self.tx, request) {
+            self.inner = Some(request.protocol);
+            self.pending_id = None;
+        }
     }
 
     /// Render the currently resized and encoded data to the buffer, if there isn't a pending `ResizeRequest`
@@ -165,4 +166,22 @@ impl ResizeEncodeRender for ThreadProtocol {
             .as_mut()
             .map(|protocol| protocol.render(area, buf));
     }
+}
+
+#[cfg(feature = "tokio")]
+fn send_resize_request(
+    tx: &Sender<ResizeRequest>,
+    request: ResizeRequest,
+) -> Result<(), ResizeRequest> {
+    tx.try_send(request).map_err(|err| match err {
+        TrySendError::Full(request) | TrySendError::Closed(request) => request,
+    })
+}
+
+#[cfg(not(feature = "tokio"))]
+fn send_resize_request(
+    tx: &Sender<ResizeRequest>,
+    request: ResizeRequest,
+) -> Result<(), ResizeRequest> {
+    tx.send(request).map_err(|err| err.0)
 }

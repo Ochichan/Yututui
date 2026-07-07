@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 
 use image::DynamicImage;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::watch;
 
 use crate::util::http;
 
@@ -27,6 +27,7 @@ const MAX_DIM: u32 = 768;
 const REMOTE_ART_MAX_BYTES: usize = 5 * 1024 * 1024;
 
 /// Where a track's art comes from.
+#[derive(Clone)]
 pub enum ArtSource {
     /// A catalog track: fetch `i.ytimg.com/vi/<video_id>/…`.
     Remote { video_id: String },
@@ -34,6 +35,7 @@ pub enum ArtSource {
     Local(PathBuf),
 }
 
+#[derive(Clone)]
 pub enum ArtworkCmd {
     Fetch { video_id: String, source: ArtSource },
 }
@@ -46,12 +48,12 @@ pub enum ArtworkEvent {
 }
 
 pub struct ArtworkHandle {
-    tx: UnboundedSender<ArtworkCmd>,
+    tx: watch::Sender<Option<ArtworkCmd>>,
 }
 
 impl ArtworkHandle {
     pub fn fetch(&self, video_id: String, source: ArtSource) {
-        let _ = self.tx.send(ArtworkCmd::Fetch { video_id, source });
+        let _ = self.tx.send(Some(ArtworkCmd::Fetch { video_id, source }));
     }
 }
 
@@ -60,12 +62,12 @@ pub fn spawn<F>(emit: F) -> ArtworkHandle
 where
     F: Fn(ArtworkEvent) + Send + Sync + 'static,
 {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = watch::channel(None);
     tokio::spawn(run_actor(rx, emit));
     ArtworkHandle { tx }
 }
 
-async fn run_actor<F>(mut rx: UnboundedReceiver<ArtworkCmd>, emit: F)
+async fn run_actor<F>(mut rx: watch::Receiver<Option<ArtworkCmd>>, emit: F)
 where
     F: Fn(ArtworkEvent) + Send + Sync + 'static,
 {
@@ -76,13 +78,14 @@ where
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
-    // Sequential + latest-only: rapid track-skips can queue several fetches, but the UI only
-    // ever shows the current track, so any request queued behind a newer one is already stale.
-    // Drain to the newest before working so we pay network+decode once (for the current track)
-    // instead of walking a backlog and fetching art no one will see; the UI still drops any
-    // late result by `video_id` as a backstop.
-    while let Some(cmd) = rx.recv().await {
-        let ArtworkCmd::Fetch { video_id, source } = take_latest(cmd, &mut rx);
+    // Sequential + latest-only: rapid track-skips replace the pending watch value, so the
+    // actor pays network+decode only for the newest unseen request after any in-flight work
+    // completes. The UI still drops late results by `video_id` as a backstop.
+    while rx.changed().await.is_ok() {
+        let Some(cmd) = rx.borrow_and_update().clone() else {
+            continue;
+        };
+        let ArtworkCmd::Fetch { video_id, source } = cmd;
         let bytes = match source {
             ArtSource::Remote { video_id: id } => fetch_remote(&client, &id).await,
             ArtSource::Local(path) => fetch_local(path).await,
@@ -94,16 +97,6 @@ where
         tracing::info!(video_id = %video_id, found = image.is_some(), "artwork");
         emit(ArtworkEvent::Result { video_id, image });
     }
-}
-
-/// Collapse a burst of queued fetches to the newest one (see the actor loop). Non-blocking:
-/// it drains only commands already buffered in the channel, never awaits a new one.
-fn take_latest(first: ArtworkCmd, rx: &mut UnboundedReceiver<ArtworkCmd>) -> ArtworkCmd {
-    let mut cmd = first;
-    while let Ok(next) = rx.try_recv() {
-        cmd = next;
-    }
-    cmd
 }
 
 /// Fetch the YouTube thumbnail for `video_id`: try the clean native-aspect `maxresdefault`
@@ -160,24 +153,28 @@ mod tests {
     use std::time::Duration;
 
     #[tokio::test]
-    async fn take_latest_coalesces_a_burst_to_the_newest() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+    async fn watch_channel_coalesces_a_burst_to_the_newest() {
+        let (tx, mut rx) = watch::channel(None);
         for i in 0..5 {
-            tx.send(ArtworkCmd::Fetch {
+            tx.send(Some(ArtworkCmd::Fetch {
                 video_id: format!("v{i}"),
                 source: ArtSource::Remote {
                     video_id: format!("v{i}"),
                 },
-            })
+            }))
             .unwrap();
         }
-        let first = rx.recv().await.unwrap();
-        let ArtworkCmd::Fetch { video_id, .. } = take_latest(first, &mut rx);
+        rx.changed().await.unwrap();
+        let ArtworkCmd::Fetch { video_id, .. } =
+            rx.borrow_and_update().clone().expect("latest request");
         assert_eq!(
             video_id, "v4",
             "a burst of skips collapses to the current track"
         );
-        assert!(rx.try_recv().is_err(), "the backlog is fully drained");
+        assert!(
+            !rx.has_changed().expect("sender is still open"),
+            "the backlog is fully coalesced"
+        );
     }
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
@@ -210,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn actor_emits_none_for_missing_local_artwork() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let handle = spawn(move |event| {
             tx.send(event).unwrap();
         });

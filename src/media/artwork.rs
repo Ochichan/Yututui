@@ -53,7 +53,7 @@ pub fn remote_thumbnail_url(youtube_id: &str) -> String {
 /// Handle to the artwork cache actor. Requests are deduplicated per track key and
 /// results (cache hits included) come back through the `emit` sink given at spawn.
 pub struct ArtworkCache {
-    tx: mpsc::UnboundedSender<(String, ArtQuery)>,
+    tx: mpsc::Sender<(String, ArtQuery)>,
 }
 
 impl ArtworkCache {
@@ -61,17 +61,21 @@ impl ArtworkCache {
     where
         F: Fn(MediaArtworkReady) + Send + Sync + 'static,
     {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = crate::util::backpressure::bounded_channel(
+            crate::util::backpressure::MEDIA_ARTWORK_QUEUE,
+        );
         tokio::spawn(run_actor(rx, emit));
         Self { tx }
     }
 
     pub fn request(&self, key: String, query: ArtQuery) {
-        let _ = self.tx.send((key, query));
+        if let Err(e) = self.tx.try_send((key, query)) {
+            tracing::warn!(error = %e, "media artwork cache queue full; dropping request");
+        }
     }
 }
 
-async fn run_actor<F>(mut rx: mpsc::UnboundedReceiver<(String, ArtQuery)>, emit: F)
+async fn run_actor<F>(mut rx: mpsc::Receiver<(String, ArtQuery)>, emit: F)
 where
     F: Fn(MediaArtworkReady) + Send + Sync + 'static,
 {

@@ -742,8 +742,11 @@ async fn run(
     let (worker_tx, mut worker_rx) =
         runtime::channel(ytm_tui::util::backpressure::OWNER_EVENT_QUEUE);
 
-    // Latest-only in behavior: the drain loop below always skips to the newest request.
-    let (art_resize_tx, mut art_resize_rx) = mpsc::unbounded_channel::<ResizeRequest>();
+    // Latest-only in behavior: the bounded inbox caps memory and the drain loop below
+    // skips to the newest request whenever multiple resizes are already waiting.
+    let (art_resize_tx, mut art_resize_rx) = ytm_tui::util::backpressure::bounded_channel::<
+        ResizeRequest,
+    >(ytm_tui::util::backpressure::ART_RESIZE_QUEUE);
     app.set_art_resize_tx(art_resize_tx);
     let art_resize_msg_tx = worker_tx.clone();
     tokio::spawn(async move {

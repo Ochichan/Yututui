@@ -12,7 +12,7 @@ use ratatui_image::{
 };
 use tokio::{
     select,
-    sync::mpsc::{UnboundedReceiver, unbounded_channel},
+    sync::mpsc::{Receiver, channel},
 };
 
 use futures::{FutureExt, StreamExt};
@@ -21,12 +21,12 @@ struct App {
     running: bool,
     protocol: ThreadProtocol,
     event_stream: EventStream,
-    rx: UnboundedReceiver<ResizeRequest>,
+    rx: Receiver<ResizeRequest>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (tx, rx) = unbounded_channel();
+    let (tx, rx) = channel(8);
     let protocol = Picker::from_query_stdio()?
         .new_resize_protocol(ImageReader::open("./assets/Ada.png")?.decode()?);
     App {

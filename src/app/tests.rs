@@ -8019,7 +8019,7 @@ fn album_art_on_fetches_remote_then_builds_protocol() {
     let mut app = app_playing(3, 0);
     app.config.album_art = Some(true);
     app.art.picker = Some(Picker::halfblocks());
-    let (resize_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (resize_tx, _) = tokio::sync::mpsc::channel(8);
     app.set_art_resize_tx(resize_tx);
     // Advancing to id1 now fetches its thumbnail from the remote source.
     let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
@@ -9239,7 +9239,7 @@ fn configure_test_art_picker(app: &mut App, protocol: ratatui_image::picker::Pro
     picker.set_protocol_type(protocol);
     app.config.album_art = Some(true);
     app.art.picker = Some(picker);
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
     app.set_art_resize_tx(tx);
 }
 
@@ -9380,7 +9380,7 @@ fn artwork_resize_completion_under_overlay_reinforces_overlay() {
     picker.set_protocol_type(ratatui_image::picker::ProtocolType::Sixel);
     app.config.album_art = Some(true);
     app.art.picker = Some(picker);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     app.set_art_resize_tx(tx);
 
     let video_id = app.queue.current().unwrap().video_id.clone();
@@ -9691,7 +9691,7 @@ fn popup_art_marker_leaves_current_player_anchor_unchanged() {
     use ratatui_image::{FontSize, Resize, ResizeEncodeRender};
 
     let app = app_playing(1, 0);
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
     let mut protocol = StatefulProtocol::new(
         image::DynamicImage::new_rgba8(10, 10),
         FontSize::new(10, 20),
@@ -9773,7 +9773,7 @@ fn player_about_popup_keeps_full_kitty_art_rows_at_the_edges() {
         &Resize::Scale(Some(FilterType::Lanczos3)),
         ratatui::layout::Size::new(art.width, art.height),
     );
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
     *app.art.protocol.borrow_mut() = Some(ThreadProtocol::new(tx, Some(protocol)));
 
     let buf = render_app_buffer(&app, area.width, area.height);
@@ -9830,7 +9830,7 @@ fn search_mode_popup_does_not_replant_stale_album_art_placeholder() {
     app.mode = Mode::Search;
     app.overlays.about_visible = true;
 
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
     let mut protocol = StatefulProtocol::new(
         image::DynamicImage::new_rgba8(20, 20),
         FontSize::new(10, 20),
@@ -11164,7 +11164,7 @@ fn native_album_art_is_hidden_while_zoomed() {
     app.zoom.set_mode(crate::zoom::ZoomMode::Osc66);
     app.config.album_art = Some(true);
     app.art.picker = Some(ratatui_image::picker::Picker::halfblocks());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
     app.set_art_resize_tx(tx);
     let img = image::DynamicImage::new_rgb8(4, 4);
     app.set_artwork("vid0".to_owned(), Some(img));

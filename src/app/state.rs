@@ -434,7 +434,7 @@ pub struct ArtState {
     /// overdrawn in the middle repaint cleanly when the popup closes.
     pub rect: Cell<Option<Rect>>,
     /// Background resize/encode request channel for [`ThreadProtocol`].
-    pub(in crate::app) resize_tx: Option<tokio::sync::mpsc::UnboundedSender<ResizeRequest>>,
+    pub(in crate::app) resize_tx: Option<tokio::sync::mpsc::Sender<ResizeRequest>>,
     /// The decoded source image kept alongside the protocol for stale-result checks and future
     /// resize/protocol rebuilds. Reducer-only (was a private App field) — `pub(in crate::app)`.
     pub(in crate::app) source: Option<DynamicImage>,
