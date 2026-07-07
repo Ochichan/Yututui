@@ -17,6 +17,7 @@ use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
 use crate::util::sanitize;
 
 const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const STREAMING_YTDLP_CACHE_MAX: usize = 512;
 const MAX_PLAYABLE_URL_BYTES: usize = 4096;
 
 pub fn is_youtube_video_id(id: &str) -> bool {
@@ -1209,7 +1210,23 @@ async fn cached_related_tracks(
     let songs =
         ytmusic::related_tracks_from_source(seed, source, config, limit, &empty, mode).await?;
     cache.insert(cache_key, (now, songs.clone()));
+    enforce_streaming_cache_cap(cache);
     Ok(songs)
+}
+
+fn enforce_streaming_cache_cap(
+    cache: &mut HashMap<(String, StreamingMode, SearchSource), (Instant, Vec<Song>)>,
+) {
+    while cache.len() > STREAMING_YTDLP_CACHE_MAX {
+        let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, (stored, _))| *stored)
+            .map(|(key, _)| key.clone())
+        else {
+            return;
+        };
+        cache.remove(&oldest);
+    }
 }
 
 #[cfg(test)]
@@ -1325,5 +1342,35 @@ mod tests {
                 kind: ApiCommandKind::Search
             }
         );
+    }
+
+    #[test]
+    fn streaming_cache_cap_evicts_oldest_entries() {
+        let mut cache = HashMap::new();
+        let now = Instant::now();
+        let oldest_key = (
+            "oldest".to_owned(),
+            StreamingMode::Balanced,
+            SearchSource::Youtube,
+        );
+        cache.insert(
+            oldest_key.clone(),
+            (now - Duration::from_secs(60), Vec::new()),
+        );
+        for i in 0..STREAMING_YTDLP_CACHE_MAX {
+            cache.insert(
+                (
+                    format!("seed-{i}"),
+                    StreamingMode::Balanced,
+                    SearchSource::Youtube,
+                ),
+                (now + Duration::from_secs(i as u64), Vec::new()),
+            );
+        }
+
+        enforce_streaming_cache_cap(&mut cache);
+
+        assert_eq!(cache.len(), STREAMING_YTDLP_CACHE_MAX);
+        assert!(!cache.contains_key(&oldest_key));
     }
 }
