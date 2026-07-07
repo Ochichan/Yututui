@@ -28,8 +28,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
 use super::proto::{
-    ClientFrame, ClientOp, HelloAck, HelloRequest, InstanceMode, PROTOCOL_VERSION, RemoteResponse,
-    ServerFrame, Topic,
+    ClientFrame, ClientOp, HelloAck, HelloRequest, InstanceMode, PROTOCOL_VERSION,
+    REMOTE_MAX_TOPICS, RemoteResponse, ServerFrame, Topic,
 };
 use super::server::{ReadLineOutcome, RemoteEvent, read_bounded_line};
 
@@ -508,49 +508,71 @@ pub(crate) async fn run_session(
             // and only then enqueues the Reply — all into this session's queue, so the
             // snapshot-before-Reply order is structural, not raced.
             ClientOp::Subscribe { topics } => {
-                let session = RemoteSessionRef {
-                    session_id,
-                    handle: Arc::clone(&handle),
-                };
-                if !emit(RemoteEvent::SessionSubscribe {
-                    session,
-                    frame_id: frame.id,
-                    topics,
-                }) {
-                    break CloseReason::ShuttingDown;
+                if topics.len() > REMOTE_MAX_TOPICS {
+                    Some(ServerFrame::Reply {
+                        id: frame.id,
+                        resp: RemoteResponse::err("too_many_topics"),
+                    })
+                } else {
+                    let session = RemoteSessionRef {
+                        session_id,
+                        handle: Arc::clone(&handle),
+                    };
+                    if !emit(RemoteEvent::SessionSubscribe {
+                        session,
+                        frame_id: frame.id,
+                        topics,
+                    }) {
+                        break CloseReason::ShuttingDown;
+                    }
+                    None
                 }
-                None
             }
             ClientOp::Unsubscribe { topics } => {
-                let mut subs = handle
-                    .subscriptions
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                for topic in topics {
-                    subs.remove(&topic);
+                if topics.len() > REMOTE_MAX_TOPICS {
+                    Some(ServerFrame::Reply {
+                        id: frame.id,
+                        resp: RemoteResponse::err("too_many_topics"),
+                    })
+                } else {
+                    let mut subs = handle
+                        .subscriptions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    for topic in topics {
+                        subs.remove(&topic);
+                    }
+                    drop(subs);
+                    Some(ServerFrame::Reply {
+                        id: frame.id,
+                        resp: RemoteResponse::ok("unsubscribed".to_string()),
+                    })
                 }
-                drop(subs);
-                Some(ServerFrame::Reply {
-                    id: frame.id,
-                    resp: RemoteResponse::ok("unsubscribed".to_string()),
-                })
             }
             ClientOp::Command(command) => {
-                let reply_timeout = if super::reply_timeout_for(&command) > tuning.reply_timeout {
-                    tuning.playback_reply_timeout
+                if let Err(err) = command.validate() {
+                    Some(ServerFrame::Reply {
+                        id: frame.id,
+                        resp: RemoteResponse::err(err.reason()),
+                    })
                 } else {
-                    tuning.reply_timeout
-                };
-                let (reply_tx, reply_rx) = oneshot::channel();
-                let resp = if emit(RemoteEvent::Command(command, reply_tx)) {
-                    match timeout(reply_timeout, reply_rx).await {
-                        Ok(Ok(resp)) => resp,
-                        _ => RemoteResponse::err("timeout"),
-                    }
-                } else {
-                    RemoteResponse::err("shutting_down")
-                };
-                Some(ServerFrame::Reply { id: frame.id, resp })
+                    let reply_timeout = if super::reply_timeout_for(&command) > tuning.reply_timeout
+                    {
+                        tuning.playback_reply_timeout
+                    } else {
+                        tuning.reply_timeout
+                    };
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    let resp = if emit(RemoteEvent::Command(command, reply_tx)) {
+                        match timeout(reply_timeout, reply_rx).await {
+                            Ok(Ok(resp)) => resp,
+                            _ => RemoteResponse::err("timeout"),
+                        }
+                    } else {
+                        RemoteResponse::err("shutting_down")
+                    };
+                    Some(ServerFrame::Reply { id: frame.id, resp })
+                }
             }
         };
 

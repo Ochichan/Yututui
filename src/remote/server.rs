@@ -462,6 +462,9 @@ async fn build_response(req: RemoteRequest, token: &str, emit: &EventSink) -> Re
     if req.token != token {
         return RemoteResponse::err("bad_token");
     }
+    if let Err(err) = req.command.validate() {
+        return RemoteResponse::err(err.reason());
+    }
 
     let reply_timeout = super::reply_timeout_for(&req.command);
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -577,6 +580,21 @@ mod tests {
         let resp = parse(&send_line(&path, &serde_json::to_string(&bad).unwrap()).await);
         assert!(!resp.ok);
         assert_eq!(resp.reason.as_deref(), Some("bad_token"));
+
+        // Valid JSON under the one-shot byte cap, but semantically too large: rejected
+        // before the reducer stand-in can answer with "pong".
+        let bad_query = RemoteRequest {
+            version: PROTOCOL_VERSION,
+            token: "secret".to_string(),
+            command: RemoteCommand::RunSearch {
+                ticket: 1,
+                query: "q".repeat(crate::remote::proto::REMOTE_MAX_QUERY_BYTES + 1),
+                source: crate::search_source::SearchSource::Youtube,
+            },
+        };
+        let resp = parse(&send_line(&path, &serde_json::to_string(&bad_query).unwrap()).await);
+        assert!(!resp.ok);
+        assert_eq!(resp.reason.as_deref(), Some("query_too_long"));
 
         // Unparseable line → bad_request (no panic, still one response line).
         let resp = parse(&send_line(&path, "{not json}").await);
@@ -823,6 +841,46 @@ mod session_socket_tests {
         match read_json_line::<_, ServerFrame>(&mut reader).await {
             ServerFrame::Pong { id } => assert_eq!(id, 2),
             other => panic!("expected pong, got {other:?}"),
+        }
+
+        write_json(
+            &mut write_half,
+            &ClientFrame {
+                id: 30,
+                op: ClientOp::Subscribe {
+                    topics: vec![Topic::Player; crate::remote::proto::REMOTE_MAX_TOPICS + 1],
+                },
+            },
+        )
+        .await;
+        match read_json_line::<_, ServerFrame>(&mut reader).await {
+            ServerFrame::Reply { id, resp } => {
+                assert_eq!(id, 30);
+                assert!(!resp.ok);
+                assert_eq!(resp.reason.as_deref(), Some("too_many_topics"));
+            }
+            other => panic!("expected topic-cap reply, got {other:?}"),
+        }
+
+        write_json(
+            &mut write_half,
+            &ClientFrame {
+                id: 31,
+                op: ClientOp::Command(RemoteCommand::RunSearch {
+                    ticket: 1,
+                    query: "q".repeat(crate::remote::proto::REMOTE_MAX_QUERY_BYTES + 1),
+                    source: crate::search_source::SearchSource::Youtube,
+                }),
+            },
+        )
+        .await;
+        match read_json_line::<_, ServerFrame>(&mut reader).await {
+            ServerFrame::Reply { id, resp } => {
+                assert_eq!(id, 31);
+                assert!(!resp.ok);
+                assert_eq!(resp.reason.as_deref(), Some("query_too_long"));
+            }
+            other => panic!("expected command validation reply, got {other:?}"),
         }
 
         write_json(

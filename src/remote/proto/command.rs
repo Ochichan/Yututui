@@ -4,11 +4,39 @@
 //! corpus in [`super::freeze`].
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::search_source::SearchSource;
 use crate::streaming::StreamingMode;
 
 use super::ToggleState;
+
+/// Semantic cap on remote search strings. Frame caps bound bytes on the wire; this caps the
+/// amount of search/provider work a syntactically valid command can request.
+pub const REMOTE_MAX_QUERY_BYTES: usize = 2048;
+/// Track ids in GUI commands are rows from prior search/library snapshots. Match the queue cap.
+pub const REMOTE_MAX_TRACK_IDS: usize = 999;
+/// A single row id should be tiny; this covers YouTube IDs and source-prefixed provider IDs.
+pub const REMOTE_MAX_TRACK_ID_BYTES: usize = 256;
+/// Gemini keys are normally well below this; reject large pasted blobs at the protocol edge.
+pub const REMOTE_MAX_GEMINI_KEY_BYTES: usize = 256;
+/// GUI setting group/field identifiers are short ASCII tokens.
+pub const REMOTE_MAX_SETTING_NAME_BYTES: usize = 64;
+/// Paths and provider app ids may be user-entered, but should never be frame-sized blobs.
+pub const REMOTE_MAX_SETTING_STRING_BYTES: usize = 4096;
+/// Session subscribe/unsubscribe frames should name each topic at most once.
+pub const REMOTE_MAX_TOPICS: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteCommandValidationError {
+    reason: &'static str,
+}
+
+impl RemoteCommandValidationError {
+    pub fn reason(self) -> &'static str {
+        self.reason
+    }
+}
 
 /// A semantic player command. Applied through the same reducer path a keypress uses, so
 /// it works regardless of the TUI's current input mode (Search text entry, Settings, …).
@@ -91,6 +119,21 @@ pub enum RemoteCommand {
     ResetAllSettings,
 }
 
+impl RemoteCommand {
+    pub fn validate(&self) -> Result<(), RemoteCommandValidationError> {
+        match self {
+            RemoteCommand::Play { query }
+            | RemoteCommand::Enqueue { query }
+            | RemoteCommand::RunSearch { query, .. } => validate_query(query),
+            RemoteCommand::PlayTracks { video_ids }
+            | RemoteCommand::EnqueueTracks { video_ids } => validate_track_ids(video_ids),
+            RemoteCommand::Apply { change } => validate_gui_setting_change(change),
+            RemoteCommand::SetGeminiKey { key } => validate_gemini_key(key),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// One GUI settings edit: `group` and `field` name a [`super::SettingsModelV8`] slot;
 /// `value` is the raw JSON the frontend sent (validated by the owner per field).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -98,6 +141,135 @@ pub struct GuiSettingChange {
     pub group: String,
     pub field: String,
     pub value: serde_json::Value,
+}
+
+fn validation_error(reason: &'static str) -> RemoteCommandValidationError {
+    RemoteCommandValidationError { reason }
+}
+
+fn validate_query(query: &str) -> Result<(), RemoteCommandValidationError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err(validation_error("empty_query"));
+    }
+    if query.len() > REMOTE_MAX_QUERY_BYTES {
+        return Err(validation_error("query_too_long"));
+    }
+    if query.chars().any(forbidden_command_char) {
+        return Err(validation_error("bad_request"));
+    }
+    Ok(())
+}
+
+fn validate_track_ids(video_ids: &[String]) -> Result<(), RemoteCommandValidationError> {
+    if video_ids.is_empty() {
+        return Err(validation_error("empty_selection"));
+    }
+    if video_ids.len() > REMOTE_MAX_TRACK_IDS {
+        return Err(validation_error("too_many_tracks"));
+    }
+    for id in video_ids {
+        let id = id.trim();
+        if id.is_empty()
+            || id.len() > REMOTE_MAX_TRACK_ID_BYTES
+            || id.chars().any(forbidden_command_char)
+        {
+            return Err(validation_error("bad_track_id"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_gemini_key(key: &str) -> Result<(), RemoteCommandValidationError> {
+    let key = key.trim();
+    if key.len() > REMOTE_MAX_GEMINI_KEY_BYTES {
+        return Err(validation_error("key_too_long"));
+    }
+    if key.chars().any(forbidden_command_char) {
+        return Err(validation_error("bad_request"));
+    }
+    Ok(())
+}
+
+fn validate_gui_setting_change(
+    change: &GuiSettingChange,
+) -> Result<(), RemoteCommandValidationError> {
+    if !valid_setting_token(&change.group) || !valid_setting_token(&change.field) {
+        return Err(validation_error("bad_setting"));
+    }
+    if !known_setting_group(&change.group) {
+        return Err(validation_error("unknown_setting"));
+    }
+    validate_setting_value(&change.group, &change.field, &change.value)
+}
+
+fn known_setting_group(group: &str) -> bool {
+    matches!(
+        group,
+        "playback" | "eq" | "streaming" | "search" | "ui" | "storage" | "animations" | "theme"
+    )
+}
+
+fn valid_setting_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= REMOTE_MAX_SETTING_NAME_BYTES
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+fn validate_setting_value(
+    group: &str,
+    field: &str,
+    value: &Value,
+) -> Result<(), RemoteCommandValidationError> {
+    match value {
+        Value::Null if nullable_setting(group, field) => Ok(()),
+        Value::Null => Err(validation_error("bad_setting_value")),
+        Value::Bool(_) => Ok(()),
+        Value::Number(n) if n.as_f64().is_some_and(f64::is_finite) => Ok(()),
+        Value::Number(_) => Err(validation_error("bad_setting_value")),
+        Value::String(s) => validate_setting_string(s),
+        Value::Array(values) if group == "eq" && field == "bands" => {
+            if values.len() != 10 {
+                return Err(validation_error("bad_setting_value"));
+            }
+            for value in values {
+                let Value::Number(n) = value else {
+                    return Err(validation_error("bad_setting_value"));
+                };
+                if !n.as_f64().is_some_and(f64::is_finite) {
+                    return Err(validation_error("bad_setting_value"));
+                }
+            }
+            Ok(())
+        }
+        Value::Array(_) | Value::Object(_) => Err(validation_error("bad_setting_value")),
+    }
+}
+
+fn nullable_setting(group: &str, field: &str) -> bool {
+    matches!(
+        (group, field),
+        ("search", "audius_app_name")
+            | ("search", "jamendo_client_id")
+            | ("storage", "download_dir")
+            | ("storage", "cookies_file")
+    )
+}
+
+fn validate_setting_string(raw: &str) -> Result<(), RemoteCommandValidationError> {
+    if raw.len() > REMOTE_MAX_SETTING_STRING_BYTES {
+        return Err(validation_error("bad_setting_value"));
+    }
+    if raw.chars().any(forbidden_command_char) {
+        return Err(validation_error("bad_setting_value"));
+    }
+    Ok(())
+}
+
+fn forbidden_command_char(ch: char) -> bool {
+    ch == '\0' || ch.is_control()
 }
 
 /// A single persisted/live setting mutation from companion surfaces such as the tray panel.
@@ -132,4 +304,84 @@ pub enum RemoteSettingChange {
     RadioMode {
         state: ToggleState,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_validation_caps_queries_keys_and_track_lists() {
+        assert_eq!(
+            RemoteCommand::Play {
+                query: String::new()
+            }
+            .validate()
+            .unwrap_err()
+            .reason(),
+            "empty_query"
+        );
+        assert_eq!(
+            RemoteCommand::RunSearch {
+                ticket: 1,
+                query: "q".repeat(REMOTE_MAX_QUERY_BYTES + 1),
+                source: SearchSource::Youtube,
+            }
+            .validate()
+            .unwrap_err()
+            .reason(),
+            "query_too_long"
+        );
+        assert_eq!(
+            RemoteCommand::SetGeminiKey {
+                key: "k".repeat(REMOTE_MAX_GEMINI_KEY_BYTES + 1)
+            }
+            .validate()
+            .unwrap_err()
+            .reason(),
+            "key_too_long"
+        );
+        assert_eq!(
+            RemoteCommand::PlayTracks {
+                video_ids: vec!["id".to_string(); REMOTE_MAX_TRACK_IDS + 1]
+            }
+            .validate()
+            .unwrap_err()
+            .reason(),
+            "too_many_tracks"
+        );
+    }
+
+    #[test]
+    fn command_validation_rejects_structured_setting_values() {
+        let bad = RemoteCommand::Apply {
+            change: GuiSettingChange {
+                group: "search".to_string(),
+                field: "default_source".to_string(),
+                value: serde_json::json!({"nested": "object"}),
+            },
+        };
+        assert_eq!(bad.validate().unwrap_err().reason(), "bad_setting_value");
+
+        let good_null = RemoteCommand::Apply {
+            change: GuiSettingChange {
+                group: "storage".to_string(),
+                field: "download_dir".to_string(),
+                value: Value::Null,
+            },
+        };
+        assert!(good_null.validate().is_ok());
+
+        let bad_array = RemoteCommand::Apply {
+            change: GuiSettingChange {
+                group: "eq".to_string(),
+                field: "bands".to_string(),
+                value: serde_json::json!([0, 0, 0]),
+            },
+        };
+        assert_eq!(
+            bad_array.validate().unwrap_err().reason(),
+            "bad_setting_value"
+        );
+    }
 }

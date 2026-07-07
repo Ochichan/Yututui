@@ -26,7 +26,11 @@ mod model_player;
 mod model_settings;
 mod session;
 
-pub use command::{GuiSettingChange, RemoteCommand, RemoteSettingChange};
+pub use command::{
+    GuiSettingChange, REMOTE_MAX_GEMINI_KEY_BYTES, REMOTE_MAX_QUERY_BYTES,
+    REMOTE_MAX_SETTING_NAME_BYTES, REMOTE_MAX_SETTING_STRING_BYTES, REMOTE_MAX_TOPICS,
+    REMOTE_MAX_TRACK_ID_BYTES, REMOTE_MAX_TRACK_IDS, RemoteCommand, RemoteSettingChange,
+};
 pub use model::{ArtworkRef, TrackModel};
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use model_settings::{

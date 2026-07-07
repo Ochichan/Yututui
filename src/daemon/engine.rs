@@ -13,7 +13,8 @@ use crate::library::Library;
 use crate::player::{self, PlayerCmd, PlayerEvent, PlayerHandle};
 use crate::queue::{Queue, QueueSnapshot};
 use crate::remote::proto::{
-    ArtworkRef, InstanceMode, QueueItemSnapshot, RemoteCommand, RemoteResponse,
+    ArtworkRef, InstanceMode, QueueItemSnapshot, REMOTE_MAX_GEMINI_KEY_BYTES,
+    REMOTE_MAX_QUERY_BYTES, REMOTE_MAX_TRACK_IDS, RemoteCommand, RemoteResponse,
     RemoteSettingChange, SettingsSnapshot, StatusSnapshot, ToggleState,
 };
 use crate::search_source::SearchConfig;
@@ -31,16 +32,6 @@ use crate::playback_policy::{
 };
 
 const SESSION_EVENTS_CAP: usize = 20;
-
-// --- Remote-command semantic caps (frame/queue caps bound bytes; these bound meaning) -----
-/// Cap on a remote search query. A real query is a few words; this only rejects abuse
-/// (a multi-KB blob from a buggy client/script) before it reaches the search fan-out.
-const MAX_QUERY_BYTES: usize = 2048;
-/// Cap on `video_ids` accepted per Play/Enqueue request, matching the queue cap so
-/// resolution work is bounded no matter how large the request is.
-const MAX_TRACKS_PER_REQUEST: usize = 999;
-/// Cap on a `SetGeminiKey` value; a real API key is well under this.
-const MAX_GEMINI_KEY_BYTES: usize = 256;
 
 pub struct EngineOptions {
     pub resume: bool,
@@ -395,7 +386,7 @@ impl DaemonEngine {
                 let query = query.trim().to_string();
                 if query.is_empty() {
                     RemoteResponse::err("empty_query")
-                } else if query.len() > MAX_QUERY_BYTES {
+                } else if query.len() > REMOTE_MAX_QUERY_BYTES {
                     RemoteResponse::err("query_too_long")
                 } else {
                     // Off-loop: the api actor answers with GuiSearchCompleted, which the
@@ -426,7 +417,7 @@ impl DaemonEngine {
             }
             RemoteCommand::SetGeminiKey { key } => {
                 let key = key.trim();
-                if key.len() > MAX_GEMINI_KEY_BYTES {
+                if key.len() > REMOTE_MAX_GEMINI_KEY_BYTES {
                     RemoteResponse::err("key_too_long")
                 } else {
                     self.config.gemini_api_key = (!key.is_empty()).then(|| key.to_string());
@@ -463,6 +454,11 @@ impl DaemonEngine {
         let as_bool = || value.as_bool();
         let as_u16 = || value.as_u64().and_then(|v| u16::try_from(v).ok());
         let as_str = || value.as_str().map(str::to_string);
+        let as_optional_str = || match &value {
+            Value::Null => Some(None),
+            Value::String(s) => Some((!s.trim().is_empty()).then(|| s.trim().to_string())),
+            _ => None,
+        };
         let bad = || (RemoteResponse::err("bad_value"), Vec::new());
         let ok = |this: &Self| (RemoteResponse::status(this.status()), Vec::new());
 
@@ -628,19 +624,17 @@ impl DaemonEngine {
                 }
                 None => bad(),
             },
-            ("search", "audius_app_name") => match as_str() {
-                Some(s) => {
-                    self.config.search.audius_app_name =
-                        (!s.trim().is_empty()).then(|| s.trim().to_string());
+            ("search", "audius_app_name") => match as_optional_str() {
+                Some(value) => {
+                    self.config.search.audius_app_name = value;
                     self.save_config("daemon audius app name");
                     ok(self)
                 }
                 None => bad(),
             },
-            ("search", "jamendo_client_id") => match as_str() {
-                Some(s) => {
-                    self.config.search.jamendo_client_id =
-                        (!s.trim().is_empty()).then(|| s.trim().to_string());
+            ("search", "jamendo_client_id") => match as_optional_str() {
+                Some(value) => {
+                    self.config.search.jamendo_client_id = value;
                     self.save_config("daemon jamendo client id");
                     ok(self)
                 }
@@ -683,19 +677,17 @@ impl DaemonEngine {
                 }
                 None => bad(),
             },
-            ("storage", "download_dir") => match as_str() {
-                Some(s) => {
-                    self.config.download_dir =
-                        (!s.trim().is_empty()).then(|| std::path::PathBuf::from(s.trim()));
+            ("storage", "download_dir") => match as_optional_str() {
+                Some(value) => {
+                    self.config.download_dir = value.map(std::path::PathBuf::from);
                     self.save_config("daemon download dir");
                     ok(self)
                 }
                 None => bad(),
             },
-            ("storage", "cookies_file") => match as_str() {
-                Some(s) => {
-                    self.config.cookies_file =
-                        (!s.trim().is_empty()).then(|| std::path::PathBuf::from(s.trim()));
+            ("storage", "cookies_file") => match as_optional_str() {
+                Some(value) => {
+                    self.config.cookies_file = value.map(std::path::PathBuf::from);
                     self.save_config("daemon cookies file");
                     ok(self)
                 }
@@ -850,7 +842,7 @@ impl DaemonEngine {
 
     async fn play_tracks(&mut self, mut video_ids: Vec<String>) -> RemoteResponse {
         // Bound resolution/allocation work to the queue cap regardless of request size.
-        video_ids.truncate(MAX_TRACKS_PER_REQUEST);
+        video_ids.truncate(REMOTE_MAX_TRACK_IDS);
         let mut songs = video_ids.iter().filter_map(|id| self.resolve_video_id(id));
         let Some(first) = songs.next() else {
             return RemoteResponse::err("no_valid_tracks");
@@ -873,7 +865,7 @@ impl DaemonEngine {
         if video_ids.is_empty() {
             return RemoteResponse::err("empty_selection");
         }
-        video_ids.truncate(MAX_TRACKS_PER_REQUEST);
+        video_ids.truncate(REMOTE_MAX_TRACK_IDS);
         let songs: Vec<Song> = video_ids
             .iter()
             .filter_map(|id| self.resolve_video_id(id))
@@ -1548,7 +1540,7 @@ impl DaemonEngine {
     }
 
     async fn search_and_play(&mut self, query: String) -> RemoteResponse {
-        if query.trim().len() > MAX_QUERY_BYTES {
+        if query.trim().len() > REMOTE_MAX_QUERY_BYTES {
             return RemoteResponse::err("query_too_long");
         }
         let song = match self.first_search_result(&query).await {
@@ -1566,7 +1558,7 @@ impl DaemonEngine {
     }
 
     async fn search_and_enqueue(&mut self, query: String) -> RemoteResponse {
-        if query.trim().len() > MAX_QUERY_BYTES {
+        if query.trim().len() > REMOTE_MAX_QUERY_BYTES {
             return RemoteResponse::err("query_too_long");
         }
         let song = match self.first_search_result(&query).await {
@@ -2453,7 +2445,7 @@ mod tests {
         let mut engine = engine_with_queue(&["seed"]);
         let (resp, _, _) = engine
             .handle_remote(RemoteCommand::Play {
-                query: "x".repeat(MAX_QUERY_BYTES + 1),
+                query: "x".repeat(REMOTE_MAX_QUERY_BYTES + 1),
             })
             .await;
         assert!(!resp.ok);
@@ -2462,7 +2454,7 @@ mod tests {
         // Over-long Gemini key is rejected and does not overwrite the stored key.
         let (resp, _, _) = engine
             .handle_remote(RemoteCommand::SetGeminiKey {
-                key: "k".repeat(MAX_GEMINI_KEY_BYTES + 1),
+                key: "k".repeat(REMOTE_MAX_GEMINI_KEY_BYTES + 1),
             })
             .await;
         assert!(!resp.ok);
