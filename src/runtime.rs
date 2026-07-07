@@ -25,6 +25,7 @@ pub enum RuntimeEvent {
     Download(crate::download::DownloadEvent),
     Lyrics(crate::lyrics::LyricsEvent),
     Player(crate::player::PlayerEvent),
+    Persist(crate::persist::PersistEvent),
     Remote(crate::remote::server::RemoteEvent),
     /// From the video-overlay mpv's IPC client, tagged with its spawn generation.
     Video {
@@ -152,6 +153,9 @@ impl RuntimeEvent {
                     }
                 }
             },
+            RuntimeEvent::Persist(_) => EventPolicy::MustDeliver {
+                lane: Lane::WorkResult,
+            },
             RuntimeEvent::Remote(
                 crate::remote::server::RemoteEvent::Command(_, _)
                 | crate::remote::server::RemoteEvent::SessionSubscribe { .. },
@@ -219,6 +223,7 @@ impl RuntimeEvent {
             RuntimeEvent::Download(_) => "download",
             RuntimeEvent::Lyrics(_) => "lyrics",
             RuntimeEvent::Player(_) => "player",
+            RuntimeEvent::Persist(_) => "persist",
             RuntimeEvent::Remote(_) => "remote",
             RuntimeEvent::Video { .. } => "video",
             RuntimeEvent::Resolver(_) => "resolver",
@@ -343,6 +348,7 @@ fn app_msg_policy(msg: &Msg) -> EventPolicy {
         | Msg::DownloadDone { .. }
         | Msg::DownloadError { .. }
         | Msg::DownloadDirError { .. }
+        | Msg::PersistFailed { .. }
         | Msg::Ai(_)
         | Msg::Scrobble(_)
         | Msg::Tools(
@@ -560,6 +566,9 @@ impl From<RuntimeEvent> for Msg {
                 crate::player::PlayerEvent::Eof => Msg::Player(PlayerMsg::Eof),
                 crate::player::PlayerEvent::Error(error) => Msg::Player(PlayerMsg::Error(error)),
             },
+            RuntimeEvent::Persist(crate::persist::PersistEvent::WriteFailed { store, error }) => {
+                Msg::PersistFailed { store, error }
+            }
             RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(cmd, reply)) => {
                 Msg::Remote(cmd, reply)
             }

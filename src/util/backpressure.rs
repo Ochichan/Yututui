@@ -59,6 +59,11 @@ pub const MEDIA_ARTWORK_QUEUE: QueuePolicy = QueuePolicy::CoalescedByKey {
     capacity: 128,
 };
 
+pub const PERSIST_CONTROL_QUEUE: QueuePolicy = QueuePolicy::Bounded {
+    name: "persist-control",
+    capacity: 32,
+};
+
 pub fn bounded_channel<T>(policy: QueuePolicy) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
     let capacity = policy
         .capacity()
@@ -80,6 +85,7 @@ mod tests {
         assert_eq!(VIDEO_CMD_QUEUE.capacity(), Some(32));
         assert_eq!(ART_RESIZE_QUEUE.capacity(), Some(8));
         assert_eq!(MEDIA_ARTWORK_QUEUE.capacity(), Some(128));
+        assert_eq!(PERSIST_CONTROL_QUEUE.capacity(), Some(32));
         assert_eq!(
             QueuePolicy::Bounded {
                 name: "tiny",

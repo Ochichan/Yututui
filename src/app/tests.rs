@@ -403,39 +403,6 @@ fn korean_letters_still_type_in_search_input() {
 }
 
 #[test]
-fn search_input_rejects_over_cap_and_forbidden_chars() {
-    let mut app = App::new(100);
-    app.update(Msg::Key(key(KeyCode::Char('s'))));
-    app.search.input = "a".repeat(crate::util::query::MAX_SEARCH_QUERY_BYTES);
-
-    app.update(Msg::Key(key(KeyCode::Char('b'))));
-    assert_eq!(
-        app.search.input.len(),
-        crate::util::query::MAX_SEARCH_QUERY_BYTES
-    );
-    assert_eq!(app.status.kind, StatusKind::Error);
-    assert!(app.status.text.contains("too long"));
-
-    app.search.input.clear();
-    app.update(Msg::Key(key(KeyCode::Char('\u{202e}'))));
-    assert!(app.search.input.is_empty());
-    assert!(app.status.text.contains("Unsupported character"));
-}
-
-#[test]
-fn search_submit_revalidates_existing_query_buffer() {
-    let mut app = App::new(100);
-    app.mode = Mode::Search;
-    app.search.input = format!("abc{}", '\u{202e}');
-
-    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
-
-    assert!(cmds.is_empty());
-    assert_eq!(app.status.kind, StatusKind::Error);
-    assert!(app.status.text.contains("Unsupported character"));
-}
-
-#[test]
 fn korean_shortcut_key_redraws_even_when_unhandled() {
     let mut app = App::new(100);
     app.dirty = false;
@@ -4443,6 +4410,7 @@ fn spotify_picker_click_selects_then_confirms() {
 
 #[test]
 fn settings_keys_lists_radio_normal_mode_binding() {
+    let _guard = crate::i18n::lock_for_test();
     crate::i18n::set_language(crate::i18n::Language::English);
     let mut app = App::new(100);
     app.config.retro_mode = true;
@@ -4472,6 +4440,7 @@ fn settings_keys_lists_radio_normal_mode_binding() {
 
 #[test]
 fn help_overlay_shows_player_radio_normal_mode_binding() {
+    let _guard = crate::i18n::lock_for_test();
     crate::i18n::set_language(crate::i18n::Language::English);
     let mut app = App::new(100);
     app.config.retro_mode = true;
@@ -6738,22 +6707,6 @@ fn slash_opens_filter_and_typing_narrows_the_list() {
 }
 
 #[test]
-fn library_filter_rejects_over_cap_input() {
-    let mut app = app_with_favorites(vec![fsong("a", "Lovely", "Billie Eilish")]);
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
-    app.library_ui.filter_query = "a".repeat(crate::util::query::MAX_FILTER_QUERY_BYTES);
-
-    app.update(Msg::Key(key(KeyCode::Char('b'))));
-
-    assert_eq!(
-        app.library_ui.filter_query.len(),
-        crate::util::query::MAX_FILTER_QUERY_BYTES
-    );
-    assert_eq!(app.status.kind, StatusKind::Error);
-    assert!(app.status.text.contains("too long"));
-}
-
-#[test]
 fn filter_matches_title_or_artist_case_insensitively() {
     let mut app = app_with_favorites(vec![
         fsong("a", "Lovely", "Billie Eilish"),
@@ -6869,22 +6822,6 @@ fn slash_opens_the_filter_popup_and_typing_narrows_it() {
         app.update(Msg::Key(key(KeyCode::Backspace)));
     }
     assert_eq!(filter_row_ids(&app), vec!["a", "b"]);
-}
-
-#[test]
-fn search_filter_rejects_over_cap_input() {
-    let mut app = app_with_search_results();
-    app.update(Msg::Key(key(KeyCode::Char('/'))));
-    app.search_filter.query = "a".repeat(crate::util::query::MAX_FILTER_QUERY_BYTES);
-
-    app.update(Msg::Key(key(KeyCode::Char('b'))));
-
-    assert_eq!(
-        app.search_filter.query.len(),
-        crate::util::query::MAX_FILTER_QUERY_BYTES
-    );
-    assert_eq!(app.status.kind, StatusKind::Error);
-    assert!(app.status.text.contains("too long"));
 }
 
 #[test]

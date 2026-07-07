@@ -1,11 +1,121 @@
 use super::*;
+use crossterm::event::{KeyEventKind, KeyEventState};
 use std::path::PathBuf;
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers: KeyModifiers::NONE,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    }
+}
 
 fn load_url(cmds: &[Cmd]) -> Option<&str> {
     cmds.iter().find_map(|c| match c {
         Cmd::Player(PlayerCmd::Load(url)) => Some(url.as_str()),
         _ => None,
     })
+}
+
+fn hardening_song(id: &str, title: &str, artist: &str) -> Song {
+    Song::remote(id, title, artist, "0:10")
+}
+
+fn app_with_hardening_favorite() -> App {
+    let mut app = App::new(100);
+    app.library.favorites = vec![hardening_song("a", "Lovely", "Billie Eilish")];
+    app.update(Msg::Key(key(KeyCode::Char('l'))));
+    app.update(Msg::Key(key(KeyCode::Tab)));
+    assert_eq!(app.library_ui.tab, LibraryTab::Favorites);
+    app
+}
+
+fn app_with_hardening_search_results() -> App {
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.update(Msg::SearchResults {
+        request_id: app.search.request_id,
+        query: "x".to_owned(),
+        source: SearchSource::Youtube,
+        timed_out: false,
+        songs: vec![
+            hardening_song("a", "Lovely", "Billie Eilish"),
+            hardening_song("b", "Bad Guy", "Billie Eilish"),
+            hardening_song("c", "Anti-Hero", "Taylor Swift"),
+        ],
+    });
+    assert_eq!(app.search.focus, SearchFocus::Results);
+    app
+}
+
+#[test]
+fn search_input_rejects_over_cap_and_forbidden_chars() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    app.update(Msg::Key(key(KeyCode::Char('s'))));
+    app.search.input = "a".repeat(crate::util::query::MAX_SEARCH_QUERY_BYTES);
+
+    app.update(Msg::Key(key(KeyCode::Char('b'))));
+    assert_eq!(
+        app.search.input.len(),
+        crate::util::query::MAX_SEARCH_QUERY_BYTES
+    );
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.contains("too long"));
+
+    app.search.input.clear();
+    app.update(Msg::Key(key(KeyCode::Char('\u{202e}'))));
+    assert!(app.search.input.is_empty());
+    assert!(app.status.text.contains("Unsupported character"));
+}
+
+#[test]
+fn search_submit_revalidates_existing_query_buffer() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = App::new(100);
+    app.mode = Mode::Search;
+    app.search.input = format!("abc{}", '\u{202e}');
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Enter)));
+
+    assert!(cmds.is_empty());
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.contains("Unsupported character"));
+}
+
+#[test]
+fn library_filter_rejects_over_cap_input() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_with_hardening_favorite();
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.library_ui.filter_query = "a".repeat(crate::util::query::MAX_FILTER_QUERY_BYTES);
+
+    app.update(Msg::Key(key(KeyCode::Char('b'))));
+
+    assert_eq!(
+        app.library_ui.filter_query.len(),
+        crate::util::query::MAX_FILTER_QUERY_BYTES
+    );
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.contains("too long"));
+}
+
+#[test]
+fn search_filter_rejects_over_cap_input() {
+    let _guard = crate::i18n::lock_for_test();
+    let mut app = app_with_hardening_search_results();
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.search_filter.query = "a".repeat(crate::util::query::MAX_FILTER_QUERY_BYTES);
+
+    app.update(Msg::Key(key(KeyCode::Char('b'))));
+
+    assert_eq!(
+        app.search_filter.query.len(),
+        crate::util::query::MAX_FILTER_QUERY_BYTES
+    );
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.contains("too long"));
 }
 
 #[test]

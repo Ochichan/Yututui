@@ -1341,6 +1341,15 @@ impl App {
                 );
                 self.dirty = true;
             }
+            Msg::PersistFailed { store, error } => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = if crate::i18n::is_korean() {
+                    format!("저장 실패 ({}): {error}", store.label())
+                } else {
+                    format!("Save failed ({}): {error}", store.label())
+                };
+                self.dirty = true;
+            }
             Msg::Streaming(sm) => match sm {
                 StreamingMsg::Resolved {
                     video_id,

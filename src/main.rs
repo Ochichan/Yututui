@@ -741,6 +741,7 @@ async fn run(
     // before this boundary where possible.
     let (worker_tx, mut worker_rx) =
         runtime::channel(ytm_tui::util::backpressure::OWNER_EVENT_QUEUE);
+    persist.set_event_sink(runtime::sink(worker_tx.clone(), RuntimeEvent::Persist));
 
     // Latest-only in behavior: the bounded inbox caps memory and the drain loop below
     // skips to the newest request whenever multiple resizes are already waiting.
@@ -1101,13 +1102,21 @@ async fn run(
     persist.save(persist::Snapshot::Signals(app.signals.clone()));
     persist.save(persist::Snapshot::Downloads(app.download_store.clone()));
     if !persist.flush(Duration::from_secs(5)).await {
-        // Timed out (disk hung?). Direct fallback is safe: the actor holds the same
-        // quit-time snapshots, so a late actor write can't clobber anything newer.
-        tracing::warn!("persist flush timed out at quit; writing directly");
-        let _ = app.session_cache_snapshot().save();
-        let _ = app.library.save();
-        let _ = app.signals.save();
-        let _ = app.download_store.save();
+        // Timed out or still dirty after a write failure. Direct fallback is safe: the actor
+        // holds the same quit-time snapshots, so a late actor write can't clobber anything newer.
+        tracing::warn!("persist flush failed or timed out at quit; writing directly");
+        if let Err(e) = app.session_cache_snapshot().save() {
+            tracing::warn!(error = %e, "failed to save session cache at quit");
+        }
+        if let Err(e) = app.library.save() {
+            tracing::warn!(error = %e, "failed to save library at quit");
+        }
+        if let Err(e) = app.signals.save() {
+            tracing::warn!(error = %e, "failed to save signals at quit");
+        }
+        if let Err(e) = app.download_store.save() {
+            tracing::warn!(error = %e, "failed to save downloads manifest at quit");
+        }
     }
     // Give queued scrobbles one bounded delivery attempt (they're already durable on
     // disk either way — leftovers flush on the next launch).

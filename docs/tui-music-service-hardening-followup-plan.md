@@ -42,7 +42,7 @@ Recommended implementation order:
 - [x] P0-1: DNS and redirect-aware playable URL destination guard.
 - [x] P0-2: Replace artwork and resize unbounded queues.
 - [x] P1-1: Cap TUI search, filter, and paste input; redact query logs.
-- [ ] P1-2: Add persist retry/backoff and bounded/latest-wins notification.
+- [x] P1-2: Add persist retry/backoff and bounded/latest-wins notification.
 - [ ] P1-3: Harden cookies-file handoff to external tools.
 - [ ] P2-1: Repair playlists on load.
 - [ ] P2-2: Rotate secret-bearing backups.
@@ -428,6 +428,34 @@ Acceptance criteria:
 
 - A transient write failure does not silently drop the dirty snapshot.
 - Persist notification is bounded or `Notify`-based, not unbounded payload buffering.
+
+Status: completed in this hardening run.
+
+Implementation summary:
+
+- `src/persist.rs` now keeps dirty snapshots only in `SharedPending`; `save(snapshot)` replaces the
+  per-store pending entry and wakes the actor through `tokio::sync::Notify`, so snapshot payloads no
+  longer accumulate in an unbounded channel.
+- `src/util/backpressure.rs` defines a bounded `PERSIST_CONTROL_QUEUE` for flush/delete control
+  messages. Dirty notifications cannot saturate this control path.
+- Failed writes reinsert the snapshot unless a newer pending snapshot already exists for that
+  store. Retry state tracks retry count, retry deadline, last error, and last failed-at timestamp,
+  with 500 ms exponential backoff capped at 30 seconds and reset on success.
+- `PersistHandle::flush(budget)` shares one deadline across command send and ack wait, attempts all
+  pending writes, and returns `false` if any store remains dirty after a failed write.
+- First failures for user-visible stores emit `PersistEvent::WriteFailed { store, error }`; the
+  standalone runtime maps that to `Msg::PersistFailed` and shows a status-line save failure. Clean
+  quit fallback logs direct-write failures per store. The stable remote status wire schema was not
+  expanded in this item.
+- `DeleteRomanizedTitles` removes older pending cache snapshots before queuing the actor-side
+  delete, preserving the no-resurrection ordering intent.
+
+Verification:
+
+- `cargo test persist --lib`
+- `cargo fmt --all --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `~/.fable-harness/bin/run-gates .`
 
 ## P1-3: Cookies-File Handoff Hardening
 

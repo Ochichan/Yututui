@@ -801,6 +801,9 @@ mod tests {
 
     #[test]
     fn terminal_doctor_detects_common_protocol_hints_without_probing() {
+        let _guard = env_lock();
+        let _restore = EnvRestore::capture(&["YTM_TUI_TEXT_SIZING"]);
+        unsafe { std::env::remove_var("YTM_TUI_TEXT_SIZING") };
         assert_eq!(
             terminal_image_protocol(Some("xterm-kitty"), None, false),
             "kitty"

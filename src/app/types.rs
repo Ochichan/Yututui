@@ -139,6 +139,11 @@ pub enum Msg {
     DownloadDirError {
         error: String,
     },
+    /// A background persistence write failed and remains queued for retry.
+    PersistFailed {
+        store: crate::persist::StoreKind,
+        error: String,
+    },
     /// A streaming/autoplay pipeline message — a prefetched/resolved direct URL, related-track
     /// candidates, the metadata-preflighted picks, a fallback failure, or the DJ Gem reranker's
     /// chosen picks. See [`StreamingMsg`].
