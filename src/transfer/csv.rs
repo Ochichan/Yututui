@@ -80,7 +80,7 @@ pub fn read_tracks(path: &Path) -> Result<Vec<TrackInput>> {
     let (Some(title_col), Some(artist_col)) = (col("Track Name"), col("Artist Name(s)")) else {
         bail!(
             "unrecognized CSV header — expected at least \"Track Name\" and \"Artist Name(s)\" \
-             columns (Exportify format, or a ytm-tui export)"
+             columns (Exportify format, or a yututui export)"
         );
     };
     let album_col = col("Album Name");
@@ -149,7 +149,7 @@ mod tests {
         getrandom::fill(&mut bytes).unwrap();
         let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         std::env::temp_dir().join(format!(
-            "ytm-tui-csv-{name}-{}-{suffix}.csv",
+            "yututui-csv-{name}-{}-{suffix}.csv",
             std::process::id()
         ))
     }

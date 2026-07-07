@@ -22,7 +22,7 @@ import type { Client } from '../ipc/client';
 import type { SettingsSnapshot } from './settings.svelte';
 import { DEFAULT_LOCAL_THEME, localTheme, type LocalTheme } from '../theme/local';
 
-const STORAGE_KEY = 'ytm-tui.gui.local-theme';
+const STORAGE_KEY = 'yututui.gui.local-theme';
 
 /** One preset's gallery preview — a handful of role hexes to paint the swatch card. */
 export interface ThemePresetPreview {

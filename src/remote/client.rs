@@ -193,7 +193,7 @@ mod tests {
 
     fn test_endpoint(name: &str) -> String {
         std::env::temp_dir()
-            .join(format!("ytm-tui-client-{name}-{}.sock", std::process::id()))
+            .join(format!("yututui-client-{name}-{}.sock", std::process::id()))
             .to_string_lossy()
             .into_owned()
     }

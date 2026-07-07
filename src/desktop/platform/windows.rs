@@ -1,4 +1,4 @@
-//! Windows notification-area backend for `ytt-desktop`.
+//! Windows notification-area backend for `yututray`.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -24,10 +24,10 @@ use crate::desktop::window_state::DesktopState;
 use crate::desktop::{bridge, gateway};
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
 
-const APP_ID: &str = "io.github.ochi.ytm-tui.tray";
-const POLL_THREAD_NAME: &str = "ytt-desktop-status";
-const COMMAND_THREAD_NAME: &str = "ytt-desktop-command";
-const ICO_BYTES: &[u8] = include_bytes!("../../../assets/icons/ytm-tui.ico");
+const APP_ID: &str = "io.github.ochi.yututui.tray";
+const POLL_THREAD_NAME: &str = "yututray-status";
+const COMMAND_THREAD_NAME: &str = "yututray-command";
+const ICO_BYTES: &[u8] = include_bytes!("../../../assets/icons/yututui.ico");
 
 // Status carries the poll snapshot inline; events are dispatched one at a time
 // (never queued in bulk), so boxing would buy nothing.
@@ -861,7 +861,7 @@ fn make_menu_item(item: &ModelItem, disabled_index: usize) -> MenuItem {
         MenuItem::with_id(action_menu_id(action), &item.label, item.enabled, None)
     } else {
         MenuItem::with_id(
-            MenuId::new(format!("ytt-desktop:disabled:{disabled_index}")),
+            MenuId::new(format!("yututray:disabled:{disabled_index}")),
             &item.label,
             item.enabled,
             None,
@@ -880,7 +880,7 @@ fn make_startup_menu_item(item: &ModelItem) -> CheckMenuItem {
     )
 }
 
-const DAEMON_PRIMARY_ID: &str = "ytt-desktop:daemon_primary";
+const DAEMON_PRIMARY_ID: &str = "yututray:daemon_primary";
 
 fn is_daemon_primary(action: Option<MenuAction>) -> bool {
     matches!(
@@ -903,11 +903,11 @@ fn user_event_from_menu_id(id: &MenuId) -> Option<UserEvent> {
 }
 
 fn action_menu_id(action: MenuAction) -> MenuId {
-    MenuId::new(format!("ytt-desktop:{}", action_slug(action)))
+    MenuId::new(format!("yututray:{}", action_slug(action)))
 }
 
 fn action_from_menu_id(id: &MenuId) -> Option<MenuAction> {
-    let slug = id.as_ref().strip_prefix("ytt-desktop:")?;
+    let slug = id.as_ref().strip_prefix("yututray:")?;
     match slug {
         "play_pause" => Some(MenuAction::PlayPause),
         "next" => Some(MenuAction::Next),
@@ -974,13 +974,13 @@ fn startup_menu_state() -> (bool, bool) {
 
 fn tooltip_for_state(state: &TrayState) -> String {
     let text = match state {
-        TrayState::Disconnected => "ytm-tui is not running".to_string(),
+        TrayState::Disconnected => "YuTuTui! is not running".to_string(),
         TrayState::Connected(status) => {
             if status.owner_mode == InstanceMode::Daemon
                 && status.total == 0
                 && status.title.as_deref().unwrap_or_default().is_empty()
             {
-                return "ytm-tui daemon idle".to_string();
+                return "YuTuTui! daemon idle".to_string();
             }
             let prefix = if status.paused { "Paused" } else { "Playing" };
             match (status.artist.as_deref(), status.title.as_deref()) {
@@ -988,7 +988,7 @@ fn tooltip_for_state(state: &TrayState) -> String {
                     format!("{prefix}: {artist} - {title}")
                 }
                 (_, Some(title)) if !title.is_empty() => format!("{prefix}: {title}"),
-                _ => "ytm-tui: nothing playing".to_string(),
+                _ => "YuTuTui!: nothing playing".to_string(),
             }
         }
     };
@@ -1081,7 +1081,7 @@ fn set_app_user_model_id() {
 }
 
 fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    let dirs = directories::ProjectDirs::from("", "", "ytm-tui")?;
+    let dirs = directories::ProjectDirs::from("", "", "yututui")?;
     let dir = dirs.cache_dir();
     if let Err(e) = std::fs::create_dir_all(dir) {
         report_error(format_args!(
@@ -1095,8 +1095,8 @@ fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     if guard.is_some() {
         tracing::info!(
             target: "ytt_tray",
-            path = %dir.join("ytm-tui.log").display(),
-            "ytt-desktop logging initialized"
+            path = %dir.join("yututui.log").display(),
+            "yututray logging initialized"
         );
     }
     guard
@@ -1105,11 +1105,11 @@ fn init_file_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
 fn install_tray_panic_hook() {
     // panic = "abort" kills the process before tracing-appender's worker thread can
     // flush, so mirror every panic synchronously into a plain file next to the log.
-    let panic_log = directories::ProjectDirs::from("", "", "ytm-tui")
-        .map(|dirs| dirs.cache_dir().join("ytt-desktop-panic.log"));
+    let panic_log = directories::ProjectDirs::from("", "", "yututui")
+        .map(|dirs| dirs.cache_dir().join("yututray-panic.log"));
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
-        tracing::error!(target: "ytt_tray", panic = %info, "ytt-desktop panic");
+        tracing::error!(target: "ytt_tray", panic = %info, "yututray panic");
         if let Some(path) = &panic_log
             && let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
@@ -1121,7 +1121,7 @@ fn install_tray_panic_hook() {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_secs())
                 .unwrap_or_default();
-            let _ = writeln!(file, "[unix {unix_secs}] ytt-desktop panic: {info}");
+            let _ = writeln!(file, "[unix {unix_secs}] yututray panic: {info}");
         }
         previous(info);
     }));
@@ -1129,16 +1129,16 @@ fn install_tray_panic_hook() {
 
 fn report_error(message: impl std::fmt::Display) {
     let message = message.to_string();
-    tracing::error!(target: "ytt_tray", "ytt-desktop: {message}");
+    tracing::error!(target: "ytt_tray", "yututray: {message}");
     #[cfg(debug_assertions)]
-    eprintln!("ytt-desktop: {message}");
+    eprintln!("yututray: {message}");
 }
 
 fn app_icon() -> Result<Icon, Box<dyn Error>> {
     let entry = find_ico_entry(ICO_BYTES, 32)
         .or_else(|| find_ico_entry(ICO_BYTES, 48))
         .or_else(|| find_ico_entry(ICO_BYTES, 256))
-        .ok_or("ytm-tui.ico has no usable tray icon image")?;
+        .ok_or("yututui.ico has no usable tray icon image")?;
     let image = image::load_from_memory(&ICO_BYTES[entry.offset..entry.end()])?.to_rgba8();
     let (width, height) = image.dimensions();
     Ok(Icon::from_rgba(image.into_raw(), width, height)?)
@@ -1303,10 +1303,10 @@ mod tests {
             duration_ms: None,
             artwork: None,
         });
-        assert_eq!(tooltip_for_state(&idle_daemon), "ytm-tui daemon idle");
+        assert_eq!(tooltip_for_state(&idle_daemon), "YuTuTui! daemon idle");
         assert_eq!(
             tooltip_for_state(&TrayState::Disconnected),
-            "ytm-tui is not running"
+            "YuTuTui! is not running"
         );
 
         let long = tooltip_for_state(&TrayState::Connected(StatusSnapshot {
@@ -1373,7 +1373,7 @@ mod tests {
         for expected in [16, 20, 24, 32, 40, 48, 64, 128, 256] {
             assert!(
                 sizes.contains(&expected),
-                "missing {expected}x{expected} icon in ytm-tui.ico; found {sizes:?}"
+                "missing {expected}x{expected} icon in yututui.ico; found {sizes:?}"
             );
         }
     }

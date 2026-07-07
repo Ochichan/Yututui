@@ -1,4 +1,4 @@
-//! `ytt update` — report whether a newer ytm-tui release exists and how to upgrade for
+//! `ytt update` — report whether a newer YuTuTui! release exists and how to upgrade for
 //! this machine's install method. One-shot, no terminal UI, like `ytt doctor`/`ytt tools`.
 //! It never downloads or replaces the binary; it only prints guidance.
 
@@ -20,7 +20,7 @@ pub fn run(args: &[String]) -> i32 {
     let method = resolved_install_method();
 
     println!(
-        "ytm-tui {current} · {} {}",
+        "YuTuTui! {current} · {} {}",
         if kr {
             "설치 방식:"
         } else {
@@ -83,7 +83,7 @@ pub fn run(args: &[String]) -> i32 {
 fn help() {
     println!("Usage: ytt update");
     println!();
-    println!("Check whether a newer ytm-tui release is available and print how to upgrade");
+    println!("Check whether a newer YuTuTui! release is available and print how to upgrade");
     println!("for your install method. Does not download or replace the binary.");
 }
 

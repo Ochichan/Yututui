@@ -282,7 +282,7 @@ impl App {
         cmds: &mut Vec<Cmd>,
     ) -> bool {
         let url = format!("https://www.youtube.com/watch?v={id}");
-        let data_dir = directories::ProjectDirs::from("", "", "ytm-tui")
+        let data_dir = directories::ProjectDirs::from("", "", "yututui")
             .map(|dirs| dirs.data_dir().to_path_buf());
         let (cookies, cookies_warning) = self
             .config

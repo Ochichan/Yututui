@@ -109,13 +109,13 @@ mkdir -p "$HOME" "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CA
 chmod 700 "$XDG_RUNTIME_DIR"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  data_dir="$HOME/Library/Application Support/ytm-tui"
-  config_dir="$HOME/Library/Application Support/ytm-tui"
-  cache_dir="$HOME/Library/Caches/ytm-tui"
+  data_dir="$HOME/Library/Application Support/yututui"
+  config_dir="$HOME/Library/Application Support/yututui"
+  cache_dir="$HOME/Library/Caches/yututui"
 else
-  data_dir="$XDG_DATA_HOME/ytm-tui"
-  config_dir="$XDG_CONFIG_HOME/ytm-tui"
-  cache_dir="$XDG_CACHE_HOME/ytm-tui"
+  data_dir="$XDG_DATA_HOME/yututui"
+  config_dir="$XDG_CONFIG_HOME/yututui"
+  cache_dir="$XDG_CACHE_HOME/yututui"
 fi
 mkdir -p "$data_dir" "$config_dir" "$cache_dir"
 
@@ -152,14 +152,14 @@ songs = [
     {
         "video_id": "local:unix-smoke-one",
         "title": "Unix Smoke One",
-        "artist": "ytm-tui",
+        "artist": "yututui",
         "duration": "0:20",
         "local_path": wav_one,
     },
     {
         "video_id": "local:unix-smoke-two",
         "title": "Unix Smoke Two",
-        "artist": "ytm-tui",
+        "artist": "yututui",
         "duration": "0:20",
         "local_path": wav_two,
     },

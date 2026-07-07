@@ -1,8 +1,8 @@
 {
-  description = "ytm-tui (ytt) — a fast terminal UI for YouTube Music";
+  description = "YuTuTui! (ytt) — a fast terminal UI for YouTube Music";
 
   # Single input keeps the freeze simple: flake.lock pins exactly one nixpkgs revision, so
-  # `nix run github:Ochichan/ytm-tui` reproduces the same build for everyone, forever.
+  # `nix run github:Ochichan/Yututui` reproduces the same build for everyone, forever.
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs = { self, nixpkgs }:
@@ -15,9 +15,9 @@
       packages = forAllSystems (system: pkgs:
         let
           lib = pkgs.lib;
-          ytm-tui = pkgs.rustPlatform.buildRustPackage {
-            pname = "ytm-tui";
-            version = "1.6.21"; # keep in sync with Cargo.toml
+          yututui = pkgs.rustPlatform.buildRustPackage {
+            pname = "yututui";
+            version = "1.6.22"; # keep in sync with Cargo.toml
 
             # Drop build artifacts and flake results from the copied source so the store path
             # stays small and rebuilds aren't invalidated by a local `target/`.
@@ -52,7 +52,7 @@
 
             meta = {
               description = "A fast terminal UI for YouTube Music (search, radio, lyrics, album art, downloads)";
-              homepage = "https://github.com/Ochichan/ytm-tui";
+              homepage = "https://github.com/Ochichan/Yututui";
               license = lib.licenses.mit;
               mainProgram = "ytt";
               platforms = systems;
@@ -68,10 +68,10 @@
               in base != "target" && base != "result" && lib.cleanSourceFilter path type;
           };
           # Offline, lockfile-driven build of gui/dist. REGENERATE npmDepsHash on any
-          # gui/package-lock.json change: `nix build .#ytm-tui-desktop` fails and prints the
+          # gui/package-lock.json change: `nix build .#yututui-desktop` fails and prints the
           # correct hash to paste here (docs/gui/04 §9 risk 2).
           guiDist = pkgs.buildNpmPackage {
-            pname = "ytm-tui-gui";
+            pname = "yututui-gui";
             version = "1.6.1"; # private GUI package version; not part of the release surface
             src = ./gui;
             npmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
@@ -82,9 +82,9 @@
               runHook postInstall
             '';
           };
-          ytm-tui-desktop = pkgs.rustPlatform.buildRustPackage {
-            pname = "ytm-tui-desktop";
-            version = "1.6.21"; # keep the ytt-desktop binary version in sync with Cargo.toml
+          yututui-desktop = pkgs.rustPlatform.buildRustPackage {
+            pname = "yututui-desktop";
+            version = "1.6.22"; # keep the yututray binary version in sync with Cargo.toml
             src = desktopSrc;
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config ];
@@ -92,38 +92,38 @@
             # Embed the prebuilt dist and require it (no stub page in a shipped binary).
             YTM_TUI_GUI_DIST = guiDist;
             YTM_TUI_REQUIRE_DIST = "1";
-            cargoBuildFlags = [ "--features" "desktop" "--bin" "ytt-desktop" ];
+            cargoBuildFlags = [ "--features" "desktop" "--bin" "yututray" ];
             # Unit tests run via `cargo test` in CI/local; the feature build is the gate here.
             doCheck = false;
             postFixup = ''
-              wrapProgram $out/bin/ytt-desktop \
+              wrapProgram $out/bin/yututray \
                 --prefix PATH : ${lib.makeBinPath [ pkgs.mpv pkgs.ffmpeg ]} \
                 --suffix PATH : ${lib.makeBinPath [ pkgs.yt-dlp ]}
             '';
             meta = {
-              description = "The full graphical desktop app for ytm-tui (macOS + Windows; this output is macOS).";
-              homepage = "https://github.com/Ochichan/ytm-tui";
+              description = "The full graphical desktop app for yututui (macOS + Windows; this output is macOS).";
+              homepage = "https://github.com/Ochichan/Yututui";
               license = lib.licenses.mit;
-              mainProgram = "ytt-desktop";
+              mainProgram = "yututray";
               platforms = lib.platforms.darwin;
             };
           };
         in
         {
-          default = ytm-tui;
-          ytm-tui = ytm-tui;
-          # Opt-in: `nix build .#ytm-tui-desktop` (darwin only — see the note above).
+          default = yututui;
+          yututui = yututui;
+          # Opt-in: `nix build .#yututui-desktop` (darwin only — see the note above).
         } // lib.optionalAttrs pkgs.stdenv.isDarwin {
-          ytm-tui-desktop = ytm-tui-desktop;
+          yututui-desktop = yututui-desktop;
         });
 
-      # `nix run github:Ochichan/ytm-tui` → launches ytt with mpv/ffmpeg/yt-dlp wrapped in.
+      # `nix run github:Ochichan/Yututui` → launches ytt with mpv/ffmpeg/yt-dlp wrapped in.
       apps = forAllSystems (system: _pkgs: {
         default = {
           type = "app";
           program = "${self.packages.${system}.default}/bin/ytt";
         };
-        ytm-tui = self.apps.${system}.default;
+        yututui = self.apps.${system}.default;
       });
 
       # `nix develop` → a shell for hacking on ytt: Rust toolchain + the runtime tools on PATH.

@@ -192,7 +192,7 @@ mod tests {
         getrandom::fill(&mut bytes).unwrap();
         let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         std::env::temp_dir().join(format!(
-            "ytm-tui-recorder-job-{name}-{}-{suffix}",
+            "yututui-recorder-job-{name}-{}-{suffix}",
             std::process::id()
         ))
     }

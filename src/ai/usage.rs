@@ -1,6 +1,6 @@
 //! Append-only token/cost accounting for Gemini calls.
 //!
-//! One JSON line per model call in `<data_dir>/ytm-tui/ai_usage.jsonl`, so spend and latency
+//! One JSON line per model call in `<data_dir>/yututui/ai_usage.jsonl`, so spend and latency
 //! are observable (and tunable) without a database — mirroring the app's other JSON stores.
 //! Best-effort: any I/O or serialize failure is logged at `warn` and swallowed. Usage logging
 //! must never disrupt playback.
@@ -83,7 +83,7 @@ impl AiUsageRecord {
 }
 
 fn log_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().join("ai_usage.jsonl"))
+    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("ai_usage.jsonl"))
 }
 
 /// Append one record as a JSON line. Best-effort; never panics.

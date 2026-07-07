@@ -7436,7 +7436,7 @@ fn temp_audio_file(tag: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "ytm-tui-app-test-{}-{tag}-{nanos}.m4a",
+        "yututui-app-test-{}-{tag}-{nanos}.m4a",
         std::process::id()
     ));
     std::fs::write(&path, b"").unwrap();
@@ -7779,7 +7779,7 @@ fn downloads_delete_confirms_then_removes_file() {
 #[test]
 fn downloads_delete_refuses_file_outside_download_dir() {
     let file = temp_audio_file("outside");
-    let root = std::env::temp_dir().join(format!("ytm-tui-app-test-root-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("yututui-app-test-root-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let mut app = App::new(100);
     app.config.download_dir = Some(root.clone());
@@ -7800,7 +7800,7 @@ fn downloads_delete_refuses_symlink() {
     use std::os::unix::fs::symlink;
 
     let root = std::env::temp_dir().join(format!(
-        "ytm-tui-app-test-symlink-root-{}",
+        "yututui-app-test-symlink-root-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&root).unwrap();

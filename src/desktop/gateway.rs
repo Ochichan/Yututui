@@ -125,7 +125,7 @@ where
     // Bounded with a generous cap; a webview that floods commands while the session is stalled
     // drops new envelopes (`try_send`) rather than growing the queue without bound.
     let (cmd_tx, cmd_rx) = mpsc::channel(512);
-    let builder = std::thread::Builder::new().name("ytt-desktop-gateway".to_string());
+    let builder = std::thread::Builder::new().name("yututray-gateway".to_string());
     if let Err(e) = builder.spawn(move || {
         let Ok(rt) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -218,7 +218,7 @@ async fn connect_and_hello(instance: InstanceFile) -> Result<(Stream, HelloAck),
         version: PROTOCOL_VERSION,
         token: instance.token,
         hello: HelloBody {
-            client: "ytt-desktop".to_string(),
+            client: "yututray".to_string(),
             min_version: PROTOCOL_VERSION,
         },
     };

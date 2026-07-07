@@ -85,7 +85,7 @@ fn run_terminal_json() -> i32 {
     let stdin_is_tty = std::io::stdin().is_terminal();
     let mut warnings = Vec::new();
     if !stdout_is_tty {
-        warnings.push("stdout is not a TTY; ytm-tui will skip native image probing".to_string());
+        warnings.push("stdout is not a TTY; YuTuTui! will skip native image probing".to_string());
     }
     if !stdin_is_tty {
         warnings.push("stdin is not a TTY; interactive terminal probes may not answer".to_string());
@@ -444,7 +444,7 @@ fn run_inner(verbose: bool) -> i32 {
     // (a Core tool missing, or a required directory not writable).
     let mut ok = true;
 
-    println!("ytt doctor — ytm-tui {}", env!("CARGO_PKG_VERSION"));
+    println!("ytt doctor — YuTuTui! {}", env!("CARGO_PKG_VERSION"));
     // Install method (from the running binary's path) + any cached "newer release" notice.
     // Offline: reads only persisted state, never the network — run `ytt update` to re-check.
     let method = crate::update::detect_install_method();
@@ -730,7 +730,7 @@ fn print_linux_browser_verbose() {
         if linux_wsl_detected() { "yes" } else { "no" }
     );
     println!(
-        "    ytm-tui DesktopOpen preserves: DISPLAY, WAYLAND_DISPLAY, XAUTHORITY, \
+        "    yututui DesktopOpen preserves: DISPLAY, WAYLAND_DISPLAY, XAUTHORITY, \
          XDG_RUNTIME_DIR, XDG_CONFIG_HOME, XDG_CACHE_HOME, XDG_DATA_HOME, \
          DBUS_SESSION_BUS_ADDRESS, XDG_DATA_DIRS, XDG_CURRENT_DESKTOP, \
          DESKTOP_SESSION, BROWSER"
@@ -970,9 +970,9 @@ fn tool_role(bin: &str, kr: bool) -> &'static str {
     }
 }
 
-/// The per-user data directory, mirroring `config.rs`'s `ProjectDirs::from("", "", "ytm-tui")`.
+/// The per-user data directory, mirroring `config.rs`'s `ProjectDirs::from("", "", "yututui")`.
 fn data_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().to_path_buf())
+    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().to_path_buf())
 }
 
 /// Print one directory line and return whether it's usable.
@@ -1173,7 +1173,7 @@ mod tests {
         let Some(base) = directories::BaseDirs::new() else {
             return;
         };
-        let path = base.home_dir().join(".config/ytm-tui/config.json");
+        let path = base.home_dir().join(".config/yututui/config.json");
         let display = privacy_path(&path);
         let home = base.home_dir().to_string_lossy();
         assert!(display.starts_with("~/"), "{display}");

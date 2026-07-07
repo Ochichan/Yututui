@@ -31,7 +31,7 @@ pub enum TransferSource {
     YtmPlaylist {
         id: String,
     },
-    /// A local (on-disk) ytm-tui playlist, by its store key.
+    /// A local (on-disk) yututui playlist, by its store key.
     LocalPlaylist {
         key: String,
     },

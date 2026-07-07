@@ -6,7 +6,6 @@
   <style>
     /* Catppuccin Macchiato — official palette (github.com/catppuccin/catppuccin) */
     :root {
-      color-scheme: dark;
       --rosewater: #f4dbd6;
       --flamingo: #f0c6c6;
       --pink: #f5bde6;
@@ -805,6 +804,11 @@
     }
 
     select {
+      /* Scope the dark UA scheme to the native dropdown only. The root is left
+         scheme-neutral so the transparent window composites cleanly (WKWebView /
+         WebView2 paint an opaque under-page backdrop when :root opts into
+         color-scheme: dark) — keep this here, not on :root. */
+      color-scheme: dark;
       height: 32px;
       max-width: 190px;
       padding: 0 10px;
@@ -1589,7 +1593,7 @@
 <body>
   <div class="cushion">
     <header id="dragRegion">
-      <div class="brand"><span class="cat">=^..^=</span> YtmTui</div>
+      <div class="brand"><span class="cat">=^..^=</span> YuTuTui!</div>
       <div class="chip" id="stateLabel" data-state="disconnected">Disconnected</div>
       <button class="icon-btn" data-action="refresh" id="refreshTop" title="Refresh">&#8635;</button>
       <button class="icon-btn" data-action="hide" id="hide" title="Hide">&#10005;</button>
@@ -1610,8 +1614,8 @@
     <main>
       <section class="tab-panel active" data-panel="now">
         <div class="now-card">
-          <div class="title" id="title">ytm-tui is not running</div>
-          <div class="artist" id="artist">YtmTui</div>
+          <div class="title" id="title">YuTuTui! is not running</div>
+          <div class="artist" id="artist">YuTuTui!</div>
           <div class="meta">
             <span id="ownerLabel">Offline</span>
             <span>&#183;</span>
@@ -1749,7 +1753,7 @@
       <div class="mn-body">
         <div class="mn-text">
           <div class="mn-title" id="mnTitle">Nothing playing</div>
-          <div class="mn-artist" id="mnArtist">YtmTui</div>
+          <div class="mn-artist" id="mnArtist">YuTuTui!</div>
         </div>
         <div class="mn-controls">
           <button data-action="previous" id="mnPrev" title="Previous" aria-label="Previous">&#9664;&#9664;</button>

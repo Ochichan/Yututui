@@ -269,7 +269,7 @@ impl Library {
 }
 
 fn library_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().join("library.json"))
+    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("library.json"))
 }
 
 /// Scan the configured download directory for directly playable local audio files.
@@ -566,7 +566,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "ytm-tui-library-test-{}-{nanos}",
+            "yututui-library-test-{}-{nanos}",
             std::process::id()
         ))
     }

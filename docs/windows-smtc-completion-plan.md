@@ -171,12 +171,12 @@ The integration already exists end to end and shipped in v1.5.9
 - Windows QA conventions: `scripts/windows-tray-manual-qa.ps1` (+ its
   `verify-` companion) — parameterized paths, evidence directory, structured
   steps. The SMTC QA script (§5.2) follows the same shape.
-- Packaging: scoop manifest (`packaging/scoop/ytm-tui.json.tmpl`) `depends`
+- Packaging: scoop manifest (`packaging/scoop/yututui.json.tmpl`) `depends`
   on `extras/mpv` (so every scoop user has a current mpv — this is what makes
   the duplicate-session gap real), creates a Start-Menu shortcut only for
-  `ytt-desktop.exe`, and scoop shortcuts carry no AUMID property. install.ps1
+  `yututray.exe`, and scoop shortcuts carry no AUMID property. install.ps1
   creates no shortcuts. `build.rs` embeds only an icon resource (no
-  VERSIONINFO). `ytt-desktop` sets AUMID `io.github.ochi.ytm-tui.tray` for
+  VERSIONINFO). `yututray` sets AUMID `io.github.ochi.yututui.tray` for
   itself (`src/desktop/platform/windows.rs`), but the SMTC session lives in
   the `ytt.exe` process (TUI or daemon child), which sets no AUMID today.
 - CI builds Windows natively on `windows-latest` (clippy `--all-targets` +
@@ -203,7 +203,7 @@ otherwise also compete with our `MPNowPlayingInfoCenter` session).
 
 ### 1.1 One-sentence target
 
-When `ytt` plays on Windows, exactly one media session — named "YtmTui" with
+When `ytt` plays on Windows, exactly one media session — named "YuTuTui!" with
 our icon — appears in every stock Windows media surface with correct
 metadata, artwork, transport buttons, and timeline, controllable from media
 keys, Bluetooth, the flyouts, and the lock screen; and this is proven by a
@@ -213,7 +213,7 @@ repeatable QA script on real Win10 + Win11 before release.
 
 | Surface | Expectation |
 | --- | --- |
-| Win11 Quick Settings media card | Art, title, artist, prev/play-pause/next work. App name/icon = YtmTui after identity registration (§4). No seek/shuffle UI expected (stock limitation). |
+| Win11 Quick Settings media card | Art, title, artist, prev/play-pause/next work. App name/icon = YuTuTui! after identity registration (§4). No seek/shuffle UI expected (stock limitation). |
 | Win10 volume flyout banner | Art, title, artist, prev/play-pause/next. No seek bar (stock limitation). |
 | Win11 24H2 lock screen | Media card with progress bar + time labels advancing (5 s timeline pushes), controls work. |
 | Keyboard media keys / BT AVRCP | Route to ButtonPressed once a session exists (after first play — `EAGER=false`). Next/prev honored per queue caps. |
@@ -365,31 +365,31 @@ daemon modes — has no AUMID, no VERSIONINFO, and no Start-Menu shortcut.
 Design (three explicit parts + a fallback decision step):
 
 1. **Process AUMID.** Call
-   `SetCurrentProcessExplicitAppUserModelID("io.github.ochi.ytm-tui")` early
+   `SetCurrentProcessExplicitAppUserModelID("io.github.ochi.yututui")` early
    in `ytt`'s Windows startup (before any UI/session exists, per the API
    contract). New constant — deliberately NOT reusing the tray's
-   `io.github.ochi.ytm-tui.tray`: in tray mode the SMTC session lives in the
+   `io.github.ochi.yututui.tray`: in tray mode the SMTC session lives in the
    ytt.exe daemon child, not the tray process, so reuse buys nothing and
    risks taskbar-grouping confusion. The daemon single-instance guard means
    at most one ytt SMTC session exists, so TUI/daemon/desktop coexistence
    has no AUMID conflict.
 2. **VERSIONINFO resource.** Extend `build.rs`'s generated `.rc` with a
    VERSIONINFO block: FILEVERSION/PRODUCTVERSION generated from
-   `CARGO_PKG_VERSION` (never hardcoded), FileDescription "YtmTui",
-   ProductName "ytm-tui". One crate-wide `.res` is linked into BOTH binaries,
+   `CARGO_PKG_VERSION` (never hardcoded), FileDescription "YuTuTui!",
+   ProductName "yututui". One crate-wide `.res` is linked into BOTH binaries,
    so the strings stay binary-neutral. This fixes Task-Manager naming and
    any identity fallback that reads the exe's version strings.
 3. **Opt-in identity registration (mpv `--register` precedent).** A hidden
    idempotent `ytt` maintenance command (doctor family) writes
-   `HKCU\Software\Classes\AppUserModelId\io.github.ochi.ytm-tui` with
-   `DisplayName` = "YtmTui" and `IconUri` → the installed `ytm-tui.ico`.
+   `HKCU\Software\Classes\AppUserModelId\io.github.ochi.yututui` with
+   `DisplayName` = "YuTuTui!" and `IconUri` → the installed `yututui.ico`.
    Invoked from `install.ps1` and a new scoop `post_install`. Explicitly NOT
    auto-run at ytt startup: daemon/SSH/CI invocations must not silently write
    registry keys, and the smoke scripts' profile isolation must stay intact.
    Uninstall leaving the HKCU key behind is accepted and documented (it is
    inert).
 4. **Ship the .ico.** `IconUri` needs a real file on disk; today the icon
-   exists only as an embedded resource. Add `assets/icons/ytm-tui.ico` to the
+   exists only as an embedded resource. Add `assets/icons/yututui.ico` to the
    Windows release zip (build.yml packaging step) so scoop installs carry it.
 
 Residual uncertainty, resolved empirically in Phase 3: no Microsoft doc
@@ -411,9 +411,9 @@ the QA script) — and adopt whichever works before release.
 
 **Phase-3 decision (on-hardware, Win11 26200, 2026-07-04):** registry-only is
 **insufficient** — the flyout stayed "Unknown app" even after a sign-out/in. A
-Start-Menu shortcut carrying `System.AppUserModel.ID` = `io.github.ochi.ytm-tui`
+Start-Menu shortcut carrying `System.AppUserModel.ID` = `io.github.ochi.yututui`
 (PKEY_AppUserModel_ID {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3},5), created via
-IShellLinkW + IPropertyStore, flipped the flyout to "YtmTui" + icon
+IShellLinkW + IPropertyStore, flipped the flyout to "YuTuTui!" + icon
 **immediately, no logout**. **DONE (windows-gui branch, 2026-07-04):**
 `register-media-identity` (`src/media/identity.rs::write_start_menu_shortcut`)
 now writes the stamped shortcut alongside the HKCU key (kept for toast
@@ -440,7 +440,7 @@ commands INTO our session the same way Phone Link does.
   `SourceAppUserModelId`, title/artist/album, playback status, timeline
   (start/end/position/last-updated), playback rate, thumbnail presence;
   `pause|play|next|prev|seek <secs>` sends the corresponding
-  `Try*Async` at the ytm-tui session (matched by AUMID, else exe name).
+  `Try*Async` at the yututui session (matched by AUMID, else exe name).
 - Used by the QA script for round-trip assertions:
   probe sends pause → `ytt -r status --json` must report paused → probe
   `list` must show Paused status; probe seek → status position matches.
@@ -459,7 +459,7 @@ Machine-verified per gap (fails loudly, evidence saved):
 | Gap | Assertion |
 | --- | --- |
 | G3 | While ytt plays, GSMTC session count attributable to us/mpv == 1; plus a standalone capability-probe step (`mpv --no-config --media-controls=no --version` exit code). |
-| G2 | Our session's `SourceAppUserModelId` == `io.github.ochi.ytm-tui`. |
+| G2 | Our session's `SourceAppUserModelId` == `io.github.ochi.yututui`. |
 | G1/G4 | Probe JSON shows the expected album string and playback rate ≠ null (and == mpv speed after a speed change). |
 | G6 | After `ytt` quits, the session is gone from the probe list. |
 | Round-trip | probe pause/next/seek ↔ `ytt -r status --json` agreement. |
@@ -484,7 +484,7 @@ Manual visual checklist (each with an evidence screenshot):
     listed, key routing follows the active one.
 12. Scenarios ×3: `ytt` standalone TUI; `ytt` daemon headless (spawned
     detached from a shortcut/Run, still an interactive session); daemon +
-    `ytt-desktop` tray.
+    `yututray` tray.
 13. Both terminals where relevant: Windows Terminal AND classic conhost.
 14. Diagnostic (non-blocking): run `scripts/windows-daemon-smoke.ps1` on the
     box — it hangs in CI even with `YTM_NO_MEDIA_SESSION=1` (cause OPEN,
@@ -508,7 +508,7 @@ past EOL — not a release blocker):
 Procedure per box:
 
 1. Build or copy `target\x86_64-pc-windows-msvc\release\{ytt.exe,
-   ytt-desktop.exe}` + `examples\smtc-probe.exe`, or unpack the CI zip.
+   yututray.exe}` + `examples\smtc-probe.exe`, or unpack the CI zip.
 2. `scoop install extras/mpv main/yt-dlp` (or verify versions; record
    `mpv --version`).
 3. Run `scripts/windows-smtc-manual-qa.ps1` → follow prompts → collect the
@@ -523,13 +523,13 @@ PASS or consciously waived with a note; evidence directories archived.
 ## 7. Release (Phase 4)
 
 - Version pins — SIX places: `Cargo.toml` `version`, `Cargo.lock`
-  (`cargo update -p ytm-tui --precise <ver>`), `flake.nix` ×3 pins,
+  (`cargo update -p yututui --precise <ver>`), `flake.nix` ×3 pins,
   `gui/package.json` (+ its lock) per the flake "keep in sync" comment.
 - Full local gates (fmt, clippy native + `--features desktop` +
   cross-target, tests incl. daemon parity, `cargo deny`/`audit`,
   `check-architecture.sh`, `check-ratatui-image-patch.sh`), then push to
   `main` first (CI full matrix runs without releasing), then tag `v*`.
-- CI packaging must now include `ytm-tui.ico` in the Windows zip (§4.4) —
+- CI packaging must now include `yututui.ico` in the Windows zip (§4.4) —
   verify in the artifact before publishing.
 - The daemon smokes stay `continue-on-error` (pre-existing; §0.2). The
   registration command is opt-in, so CI stays hermetic;

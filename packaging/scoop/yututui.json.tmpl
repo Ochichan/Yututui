@@ -1,26 +1,26 @@
 {
     "version": "__VERSION__",
     "description": "Fast, low-RAM YouTube Music player for your terminal",
-    "homepage": "https://github.com/Ochichan/ytm-tui",
+    "homepage": "https://github.com/Ochichan/Yututui",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/Ochichan/ytm-tui/releases/download/v__VERSION__/ytm-tui-windows-x64.zip",
+            "url": "https://github.com/Ochichan/Yututui/releases/download/v__VERSION__/yututui-windows-x64.zip",
             "hash": "__SHA_WINDOWS_X64__"
         }
     },
     "bin": [
         "ytt.exe",
-        "ytt-desktop.exe"
+        "yututray.exe"
     ],
     "shortcuts": [
         [
-            "ytt-desktop.exe",
-            "YtmTui Tray"
+            "yututray.exe",
+            "YuTuTray!"
         ]
     ],
     "post_install": [
-        "& \"$dir\\ytt.exe\" register-media-identity --icon \"$dir\\ytm-tui.ico\""
+        "& \"$dir\\ytt.exe\" register-media-identity --icon \"$dir\\yututui.ico\""
     ],
     "depends": [
         "extras/mpv",
@@ -31,11 +31,11 @@
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/Ochichan/ytm-tui/releases/download/v$version/ytm-tui-windows-x64.zip"
+                "url": "https://github.com/Ochichan/Yututui/releases/download/v$version/yututui-windows-x64.zip"
             }
         },
         "hash": {
-            "url": "https://github.com/Ochichan/ytm-tui/releases/download/v$version/checksums.txt"
+            "url": "https://github.com/Ochichan/Yututui/releases/download/v$version/checksums.txt"
         }
     }
 }

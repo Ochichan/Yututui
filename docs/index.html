@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>ytm-tui — YouTube Music in your terminal</title>
+<title>YuTuTui! — YouTube Music in your terminal</title>
 <meta name="description" content="Public beta: a fast, keyboard-driven YouTube Music client for your terminal. DJ Gem streaming, live internet radio, terminal-capability-aware album art, synced lyrics, scrobbling, Spotify import, and remote control. No browser, no ads. Rust + ratatui, MIT." />
 
 <!-- Open Graph / social -->
 <meta property="og:type" content="website" />
-<meta property="og:title" content="ytm-tui — YouTube Music in your terminal" />
+<meta property="og:title" content="YuTuTui! — YouTube Music in your terminal" />
 <meta property="og:description" content="Public beta: fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, live radio, album art with terminal fallbacks, scrobbling, Spotify import, remote control." />
-<meta property="og:url" content="https://ochichan.github.io/ytm-tui/" />
-<meta property="og:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
+<meta property="og:url" content="https://ochichan.github.io/Yututui/" />
+<meta property="og:image" content="https://ochichan.github.io/Yututui/yututui.png" />
 <meta name="twitter:card" content="summary" />
-<meta name="twitter:title" content="ytm-tui — YouTube Music in your terminal" />
+<meta name="twitter:title" content="YuTuTui! — YouTube Music in your terminal" />
 <meta name="twitter:description" content="Public beta: fast, keyboard-driven YouTube Music in your terminal, with terminal-aware album art fallbacks." />
-<meta name="twitter:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
+<meta name="twitter:image" content="https://ochichan.github.io/Yututui/yututui.png" />
 
-<link rel="icon" type="image/png" href="ytm-tui.png" />
-<link rel="apple-touch-icon" href="ytm-tui.png" />
+<link rel="icon" type="image/png" href="yututui.png" />
+<link rel="apple-touch-icon" href="yututui.png" />
 
 <meta name="theme-color" content="#faf4ed" media="(prefers-color-scheme: light)" />
 <meta name="theme-color" content="#191724" media="(prefers-color-scheme: dark)" />
@@ -27,13 +27,13 @@
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "name": "ytm-tui",
+  "name": "YuTuTui!",
   "applicationCategory": "MultimediaApplication",
   "operatingSystem": "macOS, Windows, Linux",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
   "license": "https://opensource.org/licenses/MIT",
-  "url": "https://ochichan.github.io/ytm-tui/",
-  "downloadUrl": "https://github.com/Ochichan/ytm-tui/releases",
+  "url": "https://ochichan.github.io/Yututui/",
+  "downloadUrl": "https://github.com/Ochichan/Yututui/releases",
   "description": "Public beta: a fast, keyboard-driven YouTube Music client for the terminal: DJ Gem streaming, live internet radio, terminal-aware album art, synced lyrics, Last.fm/ListenBrainz scrobbling, Spotify playlist import/export, headless daemon and remote control."
 }
 </script>
@@ -65,7 +65,7 @@
 
 <style>
 /* ============================================================
-   ytm-tui — promo page
+   YuTuTui! — promo page
    Theme: Rosé Pine (Dawn = light, Main = dark) — one of the app's own 13 themes.
    Type:  JetBrains Mono everywhere (terminal voice) + Bricolage Grotesque (headlines).
    ============================================================ */
@@ -186,7 +186,7 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .skip:focus { left: 1rem; top: 1rem; }
 
 /* ============================================================
-   Top bar — styled like ytm-tui's own nav
+   Top bar — styled like YuTuTui!'s own nav
    ============================================================ */
 .topbar {
   position: sticky; top: 0; z-index: 40;
@@ -282,7 +282,7 @@ code, kbd, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 .trust .pipe { color: var(--line); }
 
 /* ============================================================
-   Terminal demo (the signature element) — faithful ytm-tui Player
+   Terminal demo (the signature element) — faithful YuTuTui! Player
    Single centered column: title -> seek -> controls -> status -> art -> hint.
    Queue is a popup (press c), exactly like the real app.
    ============================================================ */
@@ -756,7 +756,7 @@ kbd {
   <div class="topbar__inner">
     <div class="brand">
       <span class="spark" aria-hidden="true">✨</span>
-      <span class="name">ytm-tui</span>
+      <span class="name">YuTuTui!</span>
     </div>
     <nav class="topbar__nav" aria-label="Sections">
       <a href="#features" data-i18n="nav.features">Features</a>
@@ -775,7 +775,7 @@ kbd {
         <button type="button" id="lang-ja" data-lang-btn="ja" aria-pressed="false">日</button>
       </div>
       <button type="button" class="icon-btn" id="theme-toggle" aria-label="Toggle light / dark"><span id="theme-icon">☾</span></button>
-      <a class="gh-link" href="https://github.com/Ochichan/ytm-tui" aria-label="GitHub repository" target="_blank" rel="noopener">
+      <a class="gh-link" href="https://github.com/Ochichan/Yututui" aria-label="GitHub repository" target="_blank" rel="noopener">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
     </div>
@@ -786,7 +786,7 @@ kbd {
 
 <!-- ===================== HERO ===================== -->
 <section class="hero section wrap" aria-labelledby="hero-h1">
-  <p class="eyebrow"><span class="dot">●</span> <span data-i18n="hero.eyebrow">~/ytm-tui — Rust · ratatui · MIT</span></p>
+  <p class="eyebrow"><span class="dot">●</span> <span data-i18n="hero.eyebrow">~/yututui — Rust · ratatui · MIT</span></p>
   <div class="hero__copy">
     <h1 class="display" id="hero-h1">
       <span data-i18n="hero.h1a">Now playing —</span><br>
@@ -799,12 +799,12 @@ kbd {
     and one-command Spotify import. No browser. No ads.
   </p>
   <div class="hero__cta">
-    <a class="btn btn--primary" href="#install"><span aria-hidden="true">▸</span> <span data-i18n="hero.cta1">Install ytm-tui</span></a>
-    <a class="btn btn--ghost" href="https://github.com/Ochichan/ytm-tui" target="_blank" rel="noopener"><span aria-hidden="true">★</span> <span data-i18n="hero.cta2">Star it on GitHub</span></a>
+    <a class="btn btn--primary" href="#install"><span aria-hidden="true">▸</span> <span data-i18n="hero.cta1">Install YuTuTui!</span></a>
+    <a class="btn btn--ghost" href="https://github.com/Ochichan/Yututui" target="_blank" rel="noopener"><span aria-hidden="true">★</span> <span data-i18n="hero.cta2">Star it on GitHub</span></a>
   </div>
   <div class="oneliner">
-    <code><span class="prompt">$</span> <span id="brewcmd">brew install Ochichan/tap/ytm-tui</span></code>
-    <button class="copy-btn" type="button" data-copy="brew install Ochichan/tap/ytm-tui" data-i18n="copy">copy</button>
+    <code><span class="prompt">$</span> <span id="brewcmd">brew install Ochichan/tap/yututui</span></code>
+    <button class="copy-btn" type="button" data-copy="brew install Ochichan/tap/yututui" data-i18n="copy">copy</button>
   </div>
 
   <div class="trust" aria-label="At a glance">
@@ -815,12 +815,12 @@ kbd {
     <span data-i18n="trust.mit">⚖ MIT</span>
   </div>
 
-  <!-- ===== the living terminal (signature) — a faithful ytm-tui Player ===== -->
-  <div class="term" id="demo" aria-label="A live preview of the ytm-tui Player screen">
+  <!-- ===== the living terminal (signature) — a faithful YuTuTui! Player ===== -->
+  <div class="term" id="demo" aria-label="A live preview of the YuTuTui! Player screen">
     <div class="term__bar">
-      <span class="tname">ytm-tui</span>
+      <span class="tname">YuTuTui!</span>
       <span class="vbar" aria-hidden="true">│</span>
-      <span class="term__tabs" role="tablist" aria-label="ytm-tui screens">
+      <span class="term__tabs" role="tablist" aria-label="YuTuTui! screens">
         <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="screen-player" data-screen="player" id="tab-player" data-i18n="tab.player">Player</button>
         <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-search" data-screen="search" id="tab-search" tabindex="-1" data-i18n="tab.search">Search</button>
         <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="screen-library" data-screen="library" id="tab-library" tabindex="-1" data-i18n="tab.library">Library</button>
@@ -1078,7 +1078,7 @@ kbd {
     <div class="section-head reveal" style="margin-bottom:0">
       <p class="eyebrow"><span class="dot">●</span> <span data-i18n="why.eyebrow">Streaming with its reasons</span></p>
       <h2 class="display" id="why-h2" data-i18n="why.h2">It doesn't just autoplay. It can tell you why.</h2>
-      <p data-i18n-html="why.sub">ytm-tui's streaming plans a <em>set</em> — a core, a bridge, a discovery — and keeps the music flowing as the queue runs dry. Press <code>w</code> and it shows its work, in plain language.</p>
+      <p data-i18n-html="why.sub">YuTuTui!'s streaming plans a <em>set</em> — a core, a bridge, a discovery — and keeps the music flowing as the queue runs dry. Press <code>w</code> and it shows its work, in plain language.</p>
       <ul class="facts">
         <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="why.f1">Three moods: Focused, Balanced, Discovery.</span></li>
         <li><span class="ic" aria-hidden="true">✓</span><span data-i18n="why.f2">DJ Gem remembers the conversation now — follow-up questions just work.</span></li>
@@ -1168,7 +1168,7 @@ kbd {
 <pre><span class="d">debian login: ochi
 Password:
 $ ytt</span>
-╔══════════════[ ytm-tui · Player ]══════════════╗
+╔══════════════[ YuTuTui! · Player ]══════════════╗
 ║                                                ║
 ║<span class="b">  ♪ Christmas Song - back number                </span>║
 ║  [██████████████░░░░░░░░░░░]  3:12 / 5:42      ║
@@ -1283,11 +1283,11 @@ $ ytt</span>
   <div class="os-grid reveal">
     <div class="os-card mac">
       <h3><span aria-hidden="true"></span> Control Center <span class="os">macOS</span></h3>
-      <p data-i18n-html="os.mac">The real Now Playing card: artwork, a working scrubber, even a Like button — and the same mini player rides your menu bar via <code>ytt-tray</code>, shipped with the macOS build.</p>
+      <p data-i18n-html="os.mac">The real Now Playing card: artwork, a working scrubber, even a Like button — and the same mini player rides your menu bar via <code>yututray</code>, shipped with the macOS build.</p>
     </div>
     <div class="os-card win">
       <h3><span aria-hidden="true">▦</span> SMTC + <span data-i18n="os.win.tray">tray mini player</span> <span class="os">Windows</span></h3>
-      <p data-i18n-html="os.win">Media overlay with artwork and seek, plus a tray companion: left-click for the mini player, right-click for the full menu. <code>ytt-tray --install-startup</code> if you want it at login.</p>
+      <p data-i18n-html="os.win">Media overlay with artwork and seek, plus a tray companion: left-click for the mini player, right-click for the full menu. <code>yututray --install-startup</code> if you want it at login.</p>
     </div>
     <div class="os-card lin">
       <h3><span aria-hidden="true">◆</span> MPRIS <span class="os">Linux</span></h3>
@@ -1328,30 +1328,30 @@ $ ytt</span>
 
       <!-- macOS -->
       <div class="cmd-panel active" data-panel="mac">
-        <button class="copy-btn copy-line" type="button" data-copy="brew install Ochichan/tap/ytm-tui" data-i18n="copy">copy</button>
-        <div class="cmd-line"><span class="prompt">$</span> <code>brew install Ochichan/tap/ytm-tui</code></div>
-        <p class="cmd-note" data-i18n="inst.mac.note">Homebrew pulls in mpv, yt-dlp and ffmpeg automatically — and installs ytt-tray, the menu-bar companion, alongside. Don't have Homebrew? Grab it at brew.sh first.</p>
+        <button class="copy-btn copy-line" type="button" data-copy="brew install Ochichan/tap/yututui" data-i18n="copy">copy</button>
+        <div class="cmd-line"><span class="prompt">$</span> <code>brew install Ochichan/tap/yututui</code></div>
+        <p class="cmd-note" data-i18n="inst.mac.note">Homebrew pulls in mpv, yt-dlp and ffmpeg automatically — and installs yututray, the menu-bar companion, alongside. Don't have Homebrew? Grab it at brew.sh first.</p>
       </div>
 
       <!-- Windows -->
       <div class="cmd-panel" data-panel="win">
         <button class="copy-btn copy-line" type="button" data-copy="scoop bucket add extras
-scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket
-scoop install ytm-tui" data-i18n="copy">copy</button>
+scoop bucket add yututui https://github.com/Ochichan/scoop-bucket
+scoop install yututui" data-i18n="copy">copy</button>
         <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop bucket add extras</code></div>
-        <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket</code></div>
-        <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop install ytm-tui</code></div>
-        <p class="cmd-note" data-i18n="inst.win.note">Uses Scoop (scoop.sh). Installs ytt plus mpv, yt-dlp, ffmpeg — and the YtmTui Tray mini player, which stays out of your way until you want it.</p>
+        <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop bucket add yututui https://github.com/Ochichan/scoop-bucket</code></div>
+        <div class="cmd-line"><span class="prompt">&gt;</span> <code>scoop install yututui</code></div>
+        <p class="cmd-note" data-i18n="inst.win.note">Uses Scoop (scoop.sh). Installs ytt plus mpv, yt-dlp, ffmpeg — and the YuTuTray! mini player, which stays out of your way until you want it.</p>
       </div>
 
       <!-- Linux -->
       <div class="cmd-panel" data-panel="lin">
         <div class="cmd-line"><span class="hash"># Nix — the most reproducible option (helpers included)</span></div>
-        <div class="cmd-line"><span class="prompt">$</span> <code>nix run github:Ochichan/ytm-tui</code> <button class="copy-btn" type="button" data-copy="nix run github:Ochichan/ytm-tui" data-i18n="copy">copy</button></div>
+        <div class="cmd-line"><span class="prompt">$</span> <code>nix run github:Ochichan/Yututui</code> <button class="copy-btn" type="button" data-copy="nix run github:Ochichan/Yututui" data-i18n="copy">copy</button></div>
         <div class="cmd-line" style="margin-top:.6rem"><span class="hash"># Arch (AUR)</span></div>
-        <div class="cmd-line"><span class="prompt">$</span> <code>yay -S ytm-tui-bin</code> <button class="copy-btn" type="button" data-copy="yay -S ytm-tui-bin" data-i18n="copy">copy</button></div>
+        <div class="cmd-line"><span class="prompt">$</span> <code>yay -S yututui-bin</code> <button class="copy-btn" type="button" data-copy="yay -S yututui-bin" data-i18n="copy">copy</button></div>
         <div class="cmd-line" style="margin-top:.6rem"><span class="hash"># Any other distro — prebuilt binary</span></div>
-        <div class="cmd-line"><span class="prompt">$</span> <code>curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash</code></div>
+        <div class="cmd-line"><span class="prompt">$</span> <code>curl -fsSL https://raw.githubusercontent.com/Ochichan/Yututui/main/install.sh | bash</code></div>
         <p class="cmd-note" data-i18n="inst.lin.note">The curl one-liner verifies the checksum and adds ytt to your PATH. It installs only ytt — run ytt doctor afterwards to check the helpers.</p>
       </div>
 
@@ -1382,19 +1382,19 @@ scoop install ytm-tui" data-i18n="copy">copy</button>
   <div class="wrap foot__cta reveal">
     <h2 class="display" data-i18n="foot.h2">Built by one person who probably should have been asleep.</h2>
     <p data-i18n="foot.p">It works on their machine. Now, hopefully, on yours too. If it earns a spot in your terminal, a star means a lot.</p>
-    <a class="btn btn--primary" href="https://github.com/Ochichan/ytm-tui" target="_blank" rel="noopener"><span aria-hidden="true">★</span> <span data-i18n="foot.cta">Star it on GitHub</span></a>
+    <a class="btn btn--primary" href="https://github.com/Ochichan/Yututui" target="_blank" rel="noopener"><span aria-hidden="true">★</span> <span data-i18n="foot.cta">Star it on GitHub</span></a>
   </div>
 
   <div class="wrap foot__grid">
     <div class="foot__mascot">
-      <img src="ytm-tui.png" alt="ytm-tui mascot — a fox-girl in headphones" width="52" height="52" loading="lazy" />
+      <img src="yututui.png" alt="YuTuTui! mascot — a fox-girl in headphones" width="52" height="52" loading="lazy" />
       <p class="thanks" data-i18n-html="foot.thanks">QA hero: <a href="https://github.com/ZZNN75" target="_blank" rel="noopener">@ZZNN75</a> broke everything on purpose first, so you won't have to. 🫡</p>
     </div>
     <div class="foot__links">
-      <a href="https://github.com/Ochichan/ytm-tui/blob/main/README.md" target="_blank" rel="noopener">README · EN</a>
-      <a href="https://github.com/Ochichan/ytm-tui/blob/main/README.ko.md" target="_blank" rel="noopener">한국어</a>
-      <a href="https://github.com/Ochichan/ytm-tui/blob/main/README.ja.md" target="_blank" rel="noopener">日本語</a>
-      <a href="https://github.com/Ochichan/ytm-tui/releases" target="_blank" rel="noopener" data-i18n="foot.releases">Releases</a>
+      <a href="https://github.com/Ochichan/Yututui/blob/main/README.md" target="_blank" rel="noopener">README · EN</a>
+      <a href="https://github.com/Ochichan/Yututui/blob/main/README.ko.md" target="_blank" rel="noopener">한국어</a>
+      <a href="https://github.com/Ochichan/Yututui/blob/main/README.ja.md" target="_blank" rel="noopener">日本語</a>
+      <a href="https://github.com/Ochichan/Yututui/releases" target="_blank" rel="noopener" data-i18n="foot.releases">Releases</a>
     </div>
     <div class="foot__meta">
       <div class="lic">MIT © Ochichan</div>
@@ -1418,11 +1418,11 @@ var KO = {
   "nav.features": "기능", "nav.streaming": "DJ Gem", "nav.radio": "라디오", "nav.spotify": "Spotify", "nav.scrobble": "스크로블",
   "nav.everywhere": "어디서든", "nav.install": "설치",
 
-  "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
+  "hero.eyebrow": "~/yututui — Rust · ratatui · MIT",
   "hero.h1a": "지금 재생 중 —",
   "hero.h1b": "터미널 안에서.",
   "hero.sub": "Public beta: 매일 쓰기엔 충분히 안정적이지만, 아직 빠르게 움직이는 중입니다. DJ Gem 스트리밍, 라이브 라디오, 터미널 기능에 맞춘 앨범 아트 fallback, 싱크 가사, 스크로블, 명령 한 줄 Spotify 이사까지. 브라우저도, 광고도 없이.",
-  "hero.cta1": "ytm-tui 설치하기",
+  "hero.cta1": "YuTuTui! 설치하기",
   "hero.cta2": "GitHub에서 별 주기",
   "copy": "복사",
   "trust.ram": "🪶 작은 바이너리 하나", "trust.ads": "🚫 광고 없음", "trust.themes": "🎨 테마 13종, 마지막 hex까지 내 마음대로",
@@ -1477,7 +1477,7 @@ var KO = {
 
   "why.eyebrow": "이유까지 말하는 스트리밍",
   "why.h2": "그냥 자동 재생이 아니에요. 왜 골랐는지도 말해주죠.",
-  "why.sub": "ytm-tui의 스트리밍은 <em>한 세트</em>를 설계합니다 — 중심 곡, 연결 곡, 발견 곡 — 그리고 대기열이 비어갈 때마다 음악을 채워줘요. <code>w</code> 를 누르면 그 과정을 쉬운 말로 보여줍니다.",
+  "why.sub": "YuTuTui!의 스트리밍은 <em>한 세트</em>를 설계합니다 — 중심 곡, 연결 곡, 발견 곡 — 그리고 대기열이 비어갈 때마다 음악을 채워줘요. <code>w</code> 를 누르면 그 과정을 쉬운 말로 보여줍니다.",
   "why.f1": "무드는 셋: Focused, Balanced, Discovery.",
   "why.f2": "이제 DJ Gem이 대화를 기억해요 — 이어지는 질문도 그냥 통합니다.",
   "why.f3": "말로 시켜보세요 — “비 오는 날 플레이리스트 만들어줘” — 라이브러리에 바로 만들어 줍니다.",
@@ -1535,9 +1535,9 @@ var KO = {
   "rem.wire": "# 미디어 키에 연결 (i3 / sway)",
   "rem.single": "<code>ytt</code> 를 두 번 실행해도 두 번째 플레이어는 생기지 않아요 — 조종간만 넘겨줄 뿐. 데몬은 큐·커서·셔플/반복·스트리밍 상태를 복원하고, 그동안 스크로블도 계속합니다.",
 
-  "os.mac": "진짜 Now Playing 카드: 앨범 아트, 실제로 움직이는 시크바, 좋아요 버튼까지 — 같은 미니 플레이어가 메뉴 바에도, macOS 빌드에 동봉된 <code>ytt-tray</code> 로.",
+  "os.mac": "진짜 Now Playing 카드: 앨범 아트, 실제로 움직이는 시크바, 좋아요 버튼까지 — 같은 미니 플레이어가 메뉴 바에도, macOS 빌드에 동봉된 <code>yututray</code> 로.",
   "os.win.tray": "트레이 미니 플레이어",
-  "os.win": "앨범 아트·시크 지원 미디어 오버레이에, 트레이 동반자까지: 왼쪽 클릭은 미니 플레이어, 오른쪽 클릭은 전체 메뉴. 로그인 시 자동 실행은 <code>ytt-tray --install-startup</code>.",
+  "os.win": "앨범 아트·시크 지원 미디어 오버레이에, 트레이 동반자까지: 왼쪽 클릭은 미니 플레이어, 오른쪽 클릭은 전체 메뉴. 로그인 시 자동 실행은 <code>yututray --install-startup</code>.",
   "os.lin": "당당한 <code>org.mpris.MediaPlayer2</code> 시민: playerctl, GNOME·KDE 위젯, waybar — 전부 평범한 음악 플레이어로 인식해요. 실제로 그러니까요.",
 
   "rely.1h": "고아 mpv는 없습니다. 절대로.",
@@ -1552,8 +1552,8 @@ var KO = {
   "inst.eyebrow": "음악까지 2분",
   "inst.h2": "플랫폼을 고르고, 한 줄 붙여넣기.",
   "inst.sub": "각 명령은 ytt와 보조 프로그램(mpv, yt-dlp, ffmpeg)까지 알아서 설치해 줍니다. 그다음 세 글자만 치면 음악이 나와요.",
-  "inst.mac.note": "Homebrew가 mpv, yt-dlp, ffmpeg를 자동으로 함께 설치하고 — 메뉴 바 동반 앱 ytt-tray까지 같이 들어갑니다. Homebrew가 없다면 brew.sh에서 먼저 설치하세요.",
-  "inst.win.note": "Scoop(scoop.sh)을 사용합니다. ytt와 mpv, yt-dlp, ffmpeg — 그리고 필요할 때까지 조용히 있는 YtmTui Tray 미니 플레이어까지 한 번에 설치해요.",
+  "inst.mac.note": "Homebrew가 mpv, yt-dlp, ffmpeg를 자동으로 함께 설치하고 — 메뉴 바 동반 앱 yututray까지 같이 들어갑니다. Homebrew가 없다면 brew.sh에서 먼저 설치하세요.",
+  "inst.win.note": "Scoop(scoop.sh)을 사용합니다. ytt와 mpv, yt-dlp, ffmpeg — 그리고 필요할 때까지 조용히 있는 YuTuTray! 미니 플레이어까지 한 번에 설치해요.",
   "inst.lin.note": "curl 한 줄이 체크섬을 검증하고 ytt를 PATH에 추가합니다. ytt만 설치하므로, 이후 ytt doctor로 보조 프로그램을 점검하세요.",
   "inst.src.note": "먼저 저장소를 클론하세요. 빌드에 몇 분 걸립니다 — 커피 한 잔 하기 딱 좋죠.",
   "inst.then": "그다음 실행:",
@@ -1574,11 +1574,11 @@ var JA = {
   "nav.features": "機能", "nav.streaming": "DJ Gem", "nav.radio": "ラジオ", "nav.spotify": "Spotify", "nav.scrobble": "スクロブル",
   "nav.everywhere": "どこからでも", "nav.install": "インストール",
 
-  "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
+  "hero.eyebrow": "~/yututui — Rust · ratatui · MIT",
   "hero.h1a": "再生中 —",
   "hero.h1b": "ターミナルの中で。",
   "hero.sub": "Public beta: 毎日使えるくらいには安定していますが、まだ速く動いている最中です。DJ Gem ストリーミング、ライブラジオ、ターミナル機能に合わせたアルバムアート fallback、同期歌詞、スクロブル、コマンド一行の Spotify 引っ越しまで。ブラウザも広告もなし。",
-  "hero.cta1": "ytm-tui をインストール",
+  "hero.cta1": "YuTuTui! をインストール",
   "hero.cta2": "GitHub でスターを付ける",
   "copy": "コピー",
   "trust.ram": "🪶 小さなバイナリ一つ", "trust.ads": "🚫 広告ゼロ", "trust.themes": "🎨 テーマ13種、最後の hex まで自分色",
@@ -1633,7 +1633,7 @@ var JA = {
 
   "why.eyebrow": "理由まで語るストリーミング",
   "why.h2": "ただ自動再生するだけじゃない。なぜ選んだかも教えてくれる。",
-  "why.sub": "ytm-tui のストリーミングは<em>ワンセット</em>を設計します — 軸、つなぎ、発見 — そしてキューが空きそうになるたびに音楽を満たし続けます。<code>w</code> を押せば、その過程をやさしい言葉で。",
+  "why.sub": "YuTuTui! のストリーミングは<em>ワンセット</em>を設計します — 軸、つなぎ、発見 — そしてキューが空きそうになるたびに音楽を満たし続けます。<code>w</code> を押せば、その過程をやさしい言葉で。",
   "why.f1": "ムードは三つ: Focused、Balanced、Discovery。",
   "why.f2": "DJ Gem は会話を覚えています — 続きの質問もそのまま通じます。",
   "why.f3": "言葉で頼めます — 「雨の日のプレイリストを作って」 — ライブラリにそのまま作ってくれます。",
@@ -1691,9 +1691,9 @@ var JA = {
   "rem.wire": "# メディアキーに割り当て (i3 / sway)",
   "rem.single": "<code>ytt</code> を二度起動しても二つ目のプレイヤーは生まれません — 操作を渡すだけ。デーモンはキュー・カーソル・シャッフル/リピート・ストリーミング状態を復元し、その間もスクロブルを続けます。",
 
-  "os.mac": "本物の Now Playing カード: アートワーク、ちゃんと動くシークバー、Like ボタンまで — 同じミニプレイヤーはメニューバーにも、macOS ビルド同梱の <code>ytt-tray</code> で。",
+  "os.mac": "本物の Now Playing カード: アートワーク、ちゃんと動くシークバー、Like ボタンまで — 同じミニプレイヤーはメニューバーにも、macOS ビルド同梱の <code>yututray</code> で。",
   "os.win.tray": "トレイ・ミニプレイヤー",
-  "os.win": "アートワークとシーク付きのメディアオーバーレイに、トレイの相棒も: 左クリックでミニプレイヤー、右クリックでフルメニュー。ログイン時起動は <code>ytt-tray --install-startup</code>。",
+  "os.win": "アートワークとシーク付きのメディアオーバーレイに、トレイの相棒も: 左クリックでミニプレイヤー、右クリックでフルメニュー。ログイン時起動は <code>yututray --install-startup</code>。",
   "os.lin": "堂々たる <code>org.mpris.MediaPlayer2</code> の市民: playerctl、GNOME・KDE のウィジェット、waybar — どれも普通の音楽プレイヤーとして認識します。実際そうですから。",
 
   "rely.1h": "孤児 mpv は残しません。絶対に。",
@@ -1708,8 +1708,8 @@ var JA = {
   "inst.eyebrow": "音楽まで2分",
   "inst.h2": "プラットフォームを選んで、一行貼り付け。",
   "inst.sub": "各コマンドが ytt と補助ツール（mpv、yt-dlp、ffmpeg）まで自動で入れてくれます。あとは3文字打つだけで音楽が流れます。",
-  "inst.mac.note": "Homebrew が mpv、yt-dlp、ffmpeg を自動で一緒に入れ — メニューバーの相棒 ytt-tray も同梱します。Homebrew がない場合は brew.sh で先に入れてください。",
-  "inst.win.note": "Scoop（scoop.sh）を使います。ytt と mpv、yt-dlp、ffmpeg — そして必要になるまで静かにしている YtmTui Tray ミニプレイヤーまで一度に入ります。",
+  "inst.mac.note": "Homebrew が mpv、yt-dlp、ffmpeg を自動で一緒に入れ — メニューバーの相棒 yututray も同梱します。Homebrew がない場合は brew.sh で先に入れてください。",
+  "inst.win.note": "Scoop（scoop.sh）を使います。ytt と mpv、yt-dlp、ffmpeg — そして必要になるまで静かにしている YuTuTray! ミニプレイヤーまで一度に入ります。",
   "inst.lin.note": "curl 一行がチェックサムを検証して ytt を PATH に追加します。ytt だけを入れるので、あとで ytt doctor で補助ツールを確認してください。",
   "inst.src.note": "先にリポジトリをクローンしてください。ビルドには数分かかります — コーヒーを淹れる口実にどうぞ。",
   "inst.then": "あとは実行:",
@@ -1792,7 +1792,7 @@ document.querySelectorAll(".copy-btn").forEach(function (btn) {
 });
 
 /* ---- Install tabs ---- */
-var HOSTS = { mac: "ytt@macos ~ ", win: "PS C:\\Users\\ytt> ", lin: "ytt@linux ~ ", src: "ytt@src ~/ytm-tui " };
+var HOSTS = { mac: "ytt@macos ~ ", win: "PS C:\\Users\\ytt> ", lin: "ytt@linux ~ ", src: "ytt@src ~/yututui " };
 document.querySelectorAll(".tab-btn").forEach(function (tab) {
   tab.addEventListener("click", function () {
     var name = tab.getAttribute("data-tab");
@@ -1851,7 +1851,7 @@ document.querySelectorAll(".tab-btn").forEach(function (tab) {
 })();
 
 /* ============================================================
-   The living terminal — a faithful ytm-tui Player session
+   The living terminal — a faithful YuTuTui! Player session
    boot → play (+lyric) → ^R streaming on → c opens Queue popup
    → advance → scrobble toast → loop
    ============================================================ */
@@ -1909,7 +1909,7 @@ var demo = (function () {
     current = i; var tr = TRACKS[i];
     els.title.innerHTML = (tr.fav ? '<span class="heart" aria-hidden="true">♥</span> ' : "") +
       '<span class="t">' + tr.t + " — " + tr.a + "</span>";
-    els.art.innerHTML = '<img src="ytm-tui.png" alt="" />';
+    els.art.innerHTML = '<img src="yututui.png" alt="" />';
     els.total.textContent = tr.d;
     els.pos.textContent = (i + 1) + "/" + QTOTAL;
     playStart = performance.now();

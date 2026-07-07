@@ -285,11 +285,11 @@ impl mpris_server::RootInterface for Player {
     }
 
     async fn identity(&self) -> fdo::Result<String> {
-        Ok("YTM TUI".to_owned())
+        Ok("YuTuTui!".to_owned())
     }
 
     async fn desktop_entry(&self) -> fdo::Result<String> {
-        Ok("ytm-tui".to_owned())
+        Ok("yututui".to_owned())
     }
 
     async fn supported_uri_schemes(&self) -> fdo::Result<Vec<String>> {

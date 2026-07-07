@@ -63,7 +63,7 @@ impl MiniPlayerPanel {
         let (width, height) = theme.window_size(false);
         let size = LogicalSize::new(width, height);
         let builder = WindowBuilder::new()
-            .with_title("YPlayer Mini Player")
+            .with_title("YuTuTray! Mini Player")
             .with_inner_size(size)
             .with_min_inner_size(size)
             .with_max_inner_size(size)
@@ -86,6 +86,14 @@ impl MiniPlayerPanel {
             builder.with_no_redirection_bitmap(true)
         };
         let window = builder.build(target)?;
+        // macOS-only: the page draws its own drop shadow, so suppress the system
+        // window shadow. Otherwise macOS casts it around the fixed rectangular window
+        // bounds (not the transparent panel shape), reappearing as a boxy frame.
+        #[cfg(target_os = "macos")]
+        {
+            use tao::platform::macos::WindowExtMacOS;
+            window.set_has_shadow(false);
+        }
         let window_id = window.id();
         let on_command: Rc<dyn Fn(PanelCommand)> = Rc::new(on_command);
         let desired = desired_art(initial);

@@ -69,7 +69,7 @@ pub struct MonitorRect {
 impl DesktopState {
     /// `desktop.json` beside the persistent config (`config.json`).
     pub fn path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "ytm-tui")
+        directories::ProjectDirs::from("", "", "yututui")
             .map(|d| d.config_dir().join("desktop.json"))
     }
 

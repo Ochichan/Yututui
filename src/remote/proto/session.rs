@@ -32,7 +32,7 @@ pub struct HelloRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloBody {
-    /// Client name for logging only (`"ytt-desktop"`, `"ytt-tray"`, `"test"`) — never trusted.
+    /// Client name for logging only (`"yututray"`, `"yututray"`, `"test"`) — never trusted.
     pub client: String,
     /// Lowest protocol version the client can speak on this connection (8).
     pub min_version: u8,

@@ -103,7 +103,7 @@ impl SpotifyClient {
     pub fn with_token(token: SpotifyToken) -> Self {
         Self {
             http: reqwest::Client::builder()
-                .user_agent(format!("ytm-tui/{}", env!("CARGO_PKG_VERSION")))
+                .user_agent(format!("yututui/{}", env!("CARGO_PKG_VERSION")))
                 .timeout(Duration::from_secs(20))
                 .build()
                 .unwrap_or_default(),

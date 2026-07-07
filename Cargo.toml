@@ -1,26 +1,26 @@
 [package]
-name = "ytm-tui"
-version = "1.6.21"
+name = "yututui"
+version = "1.6.22"
 edition = "2024"
 description = "A fast terminal UI for YouTube Music — search, radio, synced lyrics, album art, and downloads, driven by mpv and yt-dlp."
 license = "MIT"
-repository = "https://github.com/Ochichan/ytm-tui"
-homepage = "https://github.com/Ochichan/ytm-tui"
+repository = "https://github.com/Ochichan/Yututui"
+homepage = "https://github.com/Ochichan/Yututui"
 authors = ["Ochichan <ohstar94@gmail.com>"]
 keywords = ["youtube-music", "tui", "music", "mpv", "yt-dlp"]
 categories = ["command-line-utilities", "multimedia::audio"]
 readme = "README.md"
 
 # The shipped command is `ytt` — short to type and what the README/installers expose.
-# The crate keeps the longer `ytm-tui` name (and the config/data dir string stays
-# "ytm-tui"), so this only renames the produced binary, nothing user-facing.
+# The crate keeps the longer `yututui` name (and the config/data dir string stays
+# "yututui"), so this only renames the produced binary, nothing user-facing.
 [[bin]]
 name = "ytt"
 path = "src/main.rs"
 
 [[bin]]
-name = "ytt-desktop"
-path = "src/bin/ytt-desktop.rs"
+name = "yututray"
+path = "src/bin/yututray.rs"
 required-features = ["desktop"]
 
 [features]
@@ -33,7 +33,7 @@ desktop = ["dep:tao", "dep:tray-icon", "dep:wry"]
 desktop-tray = ["desktop"]
 # Build/test-time only: derive ts-rs bindings for the v8 protocol read models and export
 # them to gui/src/generated/protocol/. Never enabled in a release binary — `desktop` does
-# NOT pull it, so it has zero runtime/size impact on the shipped `ytt`/`ytt-desktop`.
+# NOT pull it, so it has zero runtime/size impact on the shipped `ytt`/`yututray`.
 ts-export = ["dep:ts-rs"]
 
 [dependencies]
@@ -195,7 +195,7 @@ mpris-server = { version = "0.10", features = ["tokio"] }
 # Local fork of ratatui-image 11.0.6 with the Kitty explicit-coordinate + Sixel/iTerm2 anchor
 # redraw-tag patches (see the dep note above). A vendored path patch — not a git/crates.io fork —
 # so the source travels with the repo and `cargo install --path .` / the CI build need nothing
-# extra. Re-apply the patches on any bump (grep the fork for `ytm-tui patch`).
+# extra. Re-apply the patches on any bump (grep the fork for `yututui patch`).
 [patch.crates-io]
 ratatui-image = { path = "crates/ratatui-image" }
 

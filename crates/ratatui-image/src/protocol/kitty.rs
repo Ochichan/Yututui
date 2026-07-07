@@ -47,7 +47,7 @@ impl KittyProtoState {
         }
     }
 
-    // ytm-tui patch: ALWAYS return the transmit sequence (upstream returned it only on the first
+    // yututui patch: ALWAYS return the transmit sequence (upstream returned it only on the first
     // render, gated by `transmitted`). The transmit blob is prepended to image-row 0's first cell;
     // dropping it on the 2nd render made that cell's string *change*, so ratatui re-flushed it and
     // re-planted the row's unicode placeholders across the full width — resurfacing the image
@@ -177,7 +177,7 @@ fn render(
     mut seq: Option<&str>,
     skip_line_count: usize,
 ) {
-    // ytm-tui patch: clamp the width to the diacritic table too (upstream only clamps height).
+    // yututui patch: clamp the width to the diacritic table too (upstream only clamps height).
     // Every cell below now carries an *explicit* column diacritic, and the table caps at
     // `DIACRITICS.len()`; beyond that a column can't be addressed, so don't emit it.
     let full_width = area.width.min(size.width).min(DIACRITICS.len() as u16);
@@ -185,7 +185,7 @@ fn render(
 
     let estimated_placeholder_row_size = id_color.len() +
         30 +  // diacritics
-        (width_usize * 16) +  // ytm-tui patch: explicit per-cell diacritics (~4 chars/cell)
+        (width_usize * 16) +  // yututui patch: explicit per-cell diacritics (~4 chars/cell)
         30; // restore cursor dance
     let estimated_transmit_row_size =
         estimated_placeholder_row_size + if let Some(seq) = seq { seq.len() } else { 0 };
@@ -224,7 +224,7 @@ fn render(
         // persists across the placeholders that follow).
         write!(symbol, "\x1b[s{id_color}").unwrap();
 
-        // ytm-tui patch: give EVERY placeholder cell its own explicit (row, col) diacritics
+        // yututui patch: give EVERY placeholder cell its own explicit (row, col) diacritics
         // instead of only the first, with the rest inheriting their column from the left
         // neighbour. Inheriting placeholders break whenever another widget draws over the middle
         // of an image row (e.g. the `eq:`/`radio:` status-line dropdowns): the placeholders to the

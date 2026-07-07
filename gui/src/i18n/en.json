@@ -18,7 +18,7 @@
   "ai.starter.moreLikeLast": "more like the last track",
   "ai.suggestedTracks": "Suggested tracks",
   "ai.thinkingLabel": "DJ Gem is thinking",
-  "app.about": "About ytm-tui",
+  "app.about": "About YuTuTui!",
   "app.core": "core {core} · v{proto}",
   "app.demoCore": "● demo core",
   "app.demoCoreHint": "Running against the in-page demo core — no Rust shell",

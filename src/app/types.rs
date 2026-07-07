@@ -182,7 +182,7 @@ pub enum Msg {
     /// success are informational; a failure is an error only when no usable yt-dlp
     /// exists at all (a failed background refresh of a working setup stays log-only).
     Tools(crate::tools::ToolsEvent),
-    /// The background app-update check finished: whether a newer ytm-tui release exists,
+    /// The background app-update check finished: whether a newer YuTuTui! release exists,
     /// how this build was installed, and whether this is the first sighting (toast gate).
     UpdateChecked(crate::update::UpdateStatus),
     /// A [`Cmd::YtdlpSelfHeal`] update check finished. `updated` means a new binary was
@@ -471,7 +471,7 @@ pub enum MouseTarget {
     NowPlayingAskAi,
     /// Close button on the "what's playing" overlay.
     CloseNowPlaying,
-    /// The `ytm-tui` brand label at the top-left of the nav bar — opens the About card.
+    /// The `YuTuTui!` brand label at the top-left of the nav bar — opens the About card.
     AboutTitle,
     /// The GitHub link inside the About card — opens the repo in the system browser.
     AboutLink,

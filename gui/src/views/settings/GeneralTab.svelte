@@ -151,7 +151,7 @@
   <SettingRow label={t('settings.general.downloadDir')}>
     <input
       class="ti path"
-      placeholder="~/Music/ytm-tui"
+      placeholder="~/Music/yututui"
       value={storage?.download_dir ?? ''}
       onchange={(e) => settings.apply('storage', 'download_dir', e.currentTarget.value || null)}
     />

@@ -20,7 +20,7 @@ const BODY_MAX: usize = 512 * 1024;
 /// the instance reports the account name.
 pub async fn validate_token(api_url: &str, token: &str) -> Result<Option<String>, ScrobbleError> {
     let http = reqwest::Client::builder()
-        .user_agent(format!("ytm-tui/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("yututui/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_default();
@@ -93,8 +93,8 @@ impl ListenBrainzClient {
 
     fn track_metadata(track: &ScrobbleTrack) -> serde_json::Value {
         let mut additional = json!({
-            "media_player": "ytm-tui",
-            "submission_client": "ytm-tui",
+            "media_player": "YuTuTui!",
+            "submission_client": "YuTuTui!",
             "submission_client_version": env!("CARGO_PKG_VERSION"),
         });
         if let Some(d) = track.duration_secs {
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(meta["artist_name"], "IU");
         assert_eq!(meta["release_name"], "Love poem");
         assert_eq!(meta["additional_info"]["duration_ms"], 217_000);
-        assert_eq!(meta["additional_info"]["media_player"], "ytm-tui");
+        assert_eq!(meta["additional_info"]["media_player"], "YuTuTui!");
     }
 
     #[test]

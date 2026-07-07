@@ -16,11 +16,11 @@ if (-not $isWindowsPlatform) {
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $BinDir = Join-Path $RepoRoot "target\$Target\$Profile"
 $Ytt = Join-Path $BinDir "ytt.exe"
-$Tray = Join-Path $BinDir "ytt-desktop.exe"
-$WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ytm-tui-windows-smoke-" + [Guid]::NewGuid().ToString("N"))
-$BackupRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ytm-tui-windows-smoke-backup-" + [Guid]::NewGuid().ToString("N"))
+$Tray = Join-Path $BinDir "yututray.exe"
+$WorkRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("yututui-windows-smoke-" + [Guid]::NewGuid().ToString("N"))
+$BackupRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("yututui-windows-smoke-backup-" + [Guid]::NewGuid().ToString("N"))
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$RunName = "YtmTui Tray"
+$RunName = "YuTuTray!"
 
 function Assert-FileExists {
     param([string]$Path)
@@ -193,9 +193,9 @@ function Clear-RuntimeDescriptor {
     if ($tag.Length -eq 0) {
         $tag = "default"
     }
-    $runtimeDir = Join-Path ([System.IO.Path]::GetTempPath()) "ytm-tui-$tag"
-    Remove-Item -LiteralPath (Join-Path $runtimeDir "ytm-tui-remote-$tag.json") -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath (Join-Path ([System.IO.Path]::GetTempPath()) "ytm-tui-remote-$tag.json") -Force -ErrorAction SilentlyContinue
+    $runtimeDir = Join-Path ([System.IO.Path]::GetTempPath()) "yututui-$tag"
+    Remove-Item -LiteralPath (Join-Path $runtimeDir "yututui-remote-$tag.json") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path ([System.IO.Path]::GetTempPath()) "yututui-remote-$tag.json") -Force -ErrorAction SilentlyContinue
 }
 
 Assert-FileExists $Ytt
@@ -214,8 +214,8 @@ $env:YTM_NO_MEDIA_SESSION = "1"
 
 New-Item -ItemType Directory -Force -Path $WorkRoot | Out-Null
 
-$roamingRoot = Join-Path $env:APPDATA "ytm-tui"
-$localRoot = Join-Path $env:LOCALAPPDATA "ytm-tui"
+$roamingRoot = Join-Path $env:APPDATA "yututui"
+$localRoot = Join-Path $env:LOCALAPPDATA "yututui"
 $dataDir = Join-Path $roamingRoot "data"
 $configDir = Join-Path $roamingRoot "config"
 $cacheDir = Join-Path $localRoot "cache"
@@ -294,14 +294,14 @@ try {
             @{
                 video_id = "local:windows-smoke-one"
                 title = "Windows Smoke One"
-                artist = "ytm-tui"
+                artist = "yututui"
                 duration = "0:20"
                 local_path = $wavOne
             },
             @{
                 video_id = "local:windows-smoke-two"
                 title = "Windows Smoke Two"
-                artist = "ytm-tui"
+                artist = "yututui"
                 duration = "0:20"
                 local_path = $wavTwo
             }

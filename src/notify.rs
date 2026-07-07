@@ -106,7 +106,7 @@ fn emit_native(title: String, body: String) {
     std::thread::spawn(move || {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut n = notify_rust::Notification::new();
-            n.appname("ytm-tui").summary(&title).body(&body);
+            n.appname("YuTuTui!").summary(&title).body(&body);
             #[cfg(target_os = "windows")]
             {
                 // Attribute the toast to us (matches the SMTC registration) instead of PowerShell.

@@ -1,9 +1,9 @@
 {
-  "name": "ytm-tui-gui",
+  "name": "yututui-gui",
   "private": true,
   "version": "1.6.1",
   "type": "module",
-  "description": "Svelte 5 frontend for the ytm-tui desktop app (embedded into ytt-desktop).",
+  "description": "Svelte 5 frontend for the yututui desktop app (embedded into yututray).",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

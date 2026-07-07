@@ -1,7 +1,7 @@
 //! The managed yt-dlp binary: on-disk layout, persisted state, and the
 //! downloader/updater that keeps it fresh.
 //!
-//! Layout under the app data dir (`~/.local/share/ytm-tui` on Linux):
+//! Layout under the app data dir (`~/.local/share/yututui` on Linux):
 //! ```text
 //! tools/
 //!   yt-dlp[.exe]     the managed standalone binary (official release asset)
@@ -94,7 +94,7 @@ pub fn tools_dir() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(env.trim()));
     }
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().join("tools"))
+    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("tools"))
 }
 
 /// Where the managed binary is installed.
@@ -663,7 +663,7 @@ impl UpdateLock {
 
 fn download_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent(concat!("ytm-tui/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("yututui/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15))
         // Whole-transfer ceiling, generous enough for a ~40 MiB asset on a slow link.
         .timeout(Duration::from_secs(10 * 60))
@@ -732,7 +732,7 @@ fn signature_work_dir() -> Result<PathBuf, String> {
     let base = signature_temp_base();
     for attempt in 0..16u8 {
         let dir = base.join(format!(
-            "ytm-tui-ytdlp-gpg-{}-{}-{attempt}",
+            "yututui-ytdlp-gpg-{}-{}-{attempt}",
             std::process::id(),
             now_unix()
         ));

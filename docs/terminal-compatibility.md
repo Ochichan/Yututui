@@ -1,30 +1,30 @@
 # Terminal Compatibility
 
 Status: initial public-beta matrix, updated 2026-07-07. Entries marked
-`Expected` still need a dated ytm-tui smoke run before they are marketed as
+`Expected` still need a dated yututui smoke run before they are marketed as
 fully verified.
 
-ytm-tui probes terminal capabilities and falls back where possible. Terminal
+YuTuTui! probes terminal capabilities and falls back where possible. Terminal
 graphics, text zoom, mouse reporting, CJK/IME behavior, and video overlay
 support are owned jointly by the terminal emulator, OS session, font, shell, and
-ytm-tui configuration.
+yututui configuration.
 
 ## Status Symbols
 
-- `Yes`: supported and verified in ytm-tui.
-- `Expected`: the terminal documents the required capability, but ytm-tui still
+- `Yes`: supported and verified in yututui.
+- `Expected`: the terminal documents the required capability, but yututui still
   needs a recorded smoke run.
-- `Fallback`: ytm-tui has a degraded path such as halfblocks or retro ASCII.
+- `Fallback`: yututui has a degraded path such as halfblocks or retro ASCII.
 - `No`: unsupported by the terminal or not meaningful in that environment.
 - `Unknown`: not verified; README and release copy must not claim support.
 - `Versioned`: support depends on the documented terminal version.
 
 ## Matrix
 
-| Terminal | Album Art | Mouse | CJK / IME | Retro | Video Overlay | Text Zoom | ytm-tui Notes |
+| Terminal | Album Art | Mouse | CJK / IME | Retro | Video Overlay | Text Zoom | yututui Notes |
 |---|---|---|---|---|---|---|---|
-| Kitty | Expected via Kitty graphics | Expected | Expected; ytm-tui avoids all-keys enhancement to preserve IME | Yes | Expected on GUI OS with mpv | Versioned: OSC 66 on kitty >= 0.40 | Best target for full protocol path. |
-| WezTerm | Expected via iTerm2, Kitty, or Sixel | Expected | Expected | Yes | Expected on GUI OS with mpv | Unknown until a ytm-tui probe run records OSC 66 or DECDHL behavior | WezTerm documents iTerm2, Kitty, and Sixel image protocols. |
+| Kitty | Expected via Kitty graphics | Expected | Expected; yututui avoids all-keys enhancement to preserve IME | Yes | Expected on GUI OS with mpv | Versioned: OSC 66 on kitty >= 0.40 | Best target for full protocol path. |
+| WezTerm | Expected via iTerm2, Kitty, or Sixel | Expected | Expected | Yes | Expected on GUI OS with mpv | Unknown until a yututui probe run records OSC 66 or DECDHL behavior | WezTerm documents iTerm2, Kitty, and Sixel image protocols. |
 | Windows Terminal | Versioned: Sixel in v1.22+ | Expected | Versioned: v1.22 added grapheme cluster work and improved IME paths | Yes | Expected in a desktop session with mpv | Expected through the `WT_SESSION` DECDHL path; needs smoke evidence | Use Microsoft release notes, not stale Sixel trackers. |
 | cmd.exe inside Windows Terminal | Same as Windows Terminal | Same as Windows Terminal | Same as Windows Terminal | Yes | Same as Windows Terminal | Same as Windows Terminal | Shell is `cmd`; terminal capability is Windows Terminal. |
 | Legacy conhost / bare cmd.exe | Unknown / Versioned | Expected partial | Version-dependent | Yes | Expected only in a desktop session with mpv | Unknown | Do not promise without a Windows build and terminal version. |
@@ -33,16 +33,16 @@ ytm-tui configuration.
 | Bare Linux TTY | Fallback: retro ASCII or halfblocks | No for crossterm mouse capture | Limited by console font/input method | Yes | No | No | Recommend retro mode. |
 | Alacritty | Fallback: halfblocks; no native Sixel baseline | Expected | Expected | Yes | Expected on GUI OS with mpv | Unknown / likely No | Alacritty is a daily-driver beta model, but graphics support is deliberately conservative here. |
 
-## ytm-tui Detection Path
+## YuTuTui! Detection Path
 
 - Album art uses `ratatui-image`, which can query Kitty, Sixel, iTerm2, and
-  halfblock fallback protocols. If stdout is not a TTY, ytm-tui skips image
+  halfblock fallback protocols. If stdout is not a TTY, yututui skips image
   probing and uses halfblocks.
 - Text zoom uses OSC 66 when the probe succeeds, `WT_SESSION` / DECDHL where
   applicable, and otherwise stays at 100%.
 - Keyboard enhancement intentionally omits `REPORT_ALL_KEYS_AS_ESCAPE_CODES` so
   Hangul/CJK text input can compose normally in search and DJ Gem fields.
-- Mouse support is a ytm-tui setting plus terminal support for mouse reporting.
+- Mouse support is a yututui setting plus terminal support for mouse reporting.
 - Video overlay is an mpv GUI window. It is not meaningful on a bare Linux TTY
   or a headless SSH session.
 

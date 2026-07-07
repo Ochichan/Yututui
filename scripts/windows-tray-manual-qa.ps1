@@ -22,7 +22,7 @@ if (-not $YttPath) {
     $YttPath = Join-Path $RepoRoot "target\$Target\$Profile\ytt.exe"
 }
 if (-not $TrayPath) {
-    $TrayPath = Join-Path $RepoRoot "target\$Target\$Profile\ytt-desktop.exe"
+    $TrayPath = Join-Path $RepoRoot "target\$Target\$Profile\yututray.exe"
 }
 if (-not $EvidenceDir) {
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -30,10 +30,10 @@ if (-not $EvidenceDir) {
 }
 
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-# Must match RUN_VALUE_NAME in src/desktop/startup.rs ("YtmTui Tray"); the binary
+# Must match RUN_VALUE_NAME in src/desktop/startup.rs ("YuTuTray!"); the binary
 # writes/reads/deletes the Run entry under this exact name, so a mismatch makes the
 # post-install Get-ItemProperty throw and aborts the whole QA before any visual check.
-$RunName = "YtmTui Tray"
+$RunName = "YuTuTray!"
 $createdTrayPid = $null
 $hadRunValue = $false
 $oldRunValue = $null
@@ -62,7 +62,7 @@ function Invoke-Capture {
         [string]$File,
         [string[]]$Arguments
     )
-    # ytt-desktop.exe is a GUI-subsystem binary. PowerShell's `$out = & gui.exe` neither
+    # yututray.exe is a GUI-subsystem binary. PowerShell's `$out = & gui.exe` neither
     # WAITS for it nor CAPTURES its AttachConsole output: the variable comes back empty and
     # the next statement runs while the child is still alive. That silently broke evidence
     # capture and — worse — raced consecutive registry writers (the --uninstall-startup /
@@ -131,7 +131,7 @@ function Assert-NoProcessList {
 function Assert-TrayProcessRunning {
     param([string]$Label)
     if ($null -eq $createdTrayPid) {
-        throw "ytt-desktop.exe was not launched before $Label"
+        throw "yututray.exe was not launched before $Label"
     }
     Get-Process -Id $createdTrayPid -ErrorAction Stop | Out-Null
 }
@@ -143,7 +143,7 @@ function Assert-TrayProcessStopped {
     }
     $running = Get-Process -Id $createdTrayPid -ErrorAction SilentlyContinue
     if ($null -ne $running) {
-        throw "ytt-desktop.exe process id $createdTrayPid was still running after $Label"
+        throw "yututray.exe process id $createdTrayPid was still running after $Label"
     }
 }
 
@@ -214,7 +214,7 @@ function Capture-Screen {
 
 function Record-ProcessSample {
     param([string]$Name)
-    return Save-ProcessList -Name $Name -ProcessName "ytt-desktop"
+    return Save-ProcessList -Name $Name -ProcessName "yututray"
 }
 
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
@@ -224,8 +224,8 @@ try {
     Assert-FileExists $YttPath
     Assert-FileExists $TrayPath
 
-    $preexistingTray = @(Save-ProcessList -Name "tray-process-before" -ProcessName "ytt-desktop")
-    Assert-NoProcessList -Label "ytt-desktop.exe" -Processes $preexistingTray
+    $preexistingTray = @(Save-ProcessList -Name "tray-process-before" -ProcessName "yututray")
+    Assert-NoProcessList -Label "yututray.exe" -Processes $preexistingTray
     $preexistingYtt = @(Save-ProcessList -Name "ytt-process-before" -ProcessName "ytt")
     Assert-NoProcessList -Label "ytt.exe" -Processes $preexistingYtt
     $preexistingMpv = @(Save-ProcessList -Name "mpv-process-before" -ProcessName "mpv")
@@ -244,11 +244,11 @@ try {
         throw "ytt.exe should use the Windows console subsystem"
     }
     if ($results["ytt_tray_subsystem"] -ne 2) {
-        throw "ytt-desktop.exe should use the Windows GUI subsystem"
+        throw "yututray.exe should use the Windows GUI subsystem"
     }
 
     Assert-CaptureSuccess (Invoke-Capture -Name "ytt-version" -File $YttPath -Arguments @("--version"))
-    Assert-CaptureSuccess (Invoke-Capture -Name "ytt-desktop-version" -File $TrayPath -Arguments @("--version"))
+    Assert-CaptureSuccess (Invoke-Capture -Name "yututray-version" -File $TrayPath -Arguments @("--version"))
     Assert-CaptureSuccess (Invoke-Capture -Name "startup-status-before" -File $TrayPath -Arguments @("--startup-status"))
     Assert-CaptureSuccess (Invoke-Capture -Name "open-tui-plan" -File $TrayPath -Arguments @("--print-open-tui-plan"))
 
@@ -269,23 +269,23 @@ try {
     $results["startup_roundtrip"] = $startupAfter.Output.Trim() -eq "disabled"
 
     Write-Host ""
-    Write-Host "Launching ytt-desktop. Move the icon out of overflow if needed, then perform the visual checks."
+    Write-Host "Launching yututray. Move the icon out of overflow if needed, then perform the visual checks."
     $trayProcess = Start-Process -FilePath $TrayPath -ArgumentList @("--background") -PassThru
     $createdTrayPid = $trayProcess.Id
     Start-Sleep -Seconds 3
     Assert-TrayProcessRunning -Label "tray launch"
     Record-ProcessSample -Name "tray-process-start" | Out-Null
 
-    Ask-Check -Key "no_console_window" -Prompt "No console window remains open for ytt-desktop.exe"
+    Ask-Check -Key "no_console_window" -Prompt "No console window remains open for yututray.exe"
     Ask-Check -Key "notification_icon_visible" -Prompt "Notification-area icon is visible or present in overflow"
-    Ask-Check -Key "left_click_menu_opens" -Prompt "Left click opens the tray context menu and ytt-desktop.exe stays running"
+    Ask-Check -Key "left_click_menu_opens" -Prompt "Left click opens the tray context menu and yututray.exe stays running"
     Assert-TrayProcessRunning -Label "left click tray menu"
-    Ask-Check -Key "right_click_menu_opens" -Prompt "Right click opens the tray context menu and ytt-desktop.exe stays running"
+    Ask-Check -Key "right_click_menu_opens" -Prompt "Right click opens the tray context menu and yututray.exe stays running"
     Assert-TrayProcessRunning -Label "right click tray menu"
     Read-Host "Use the tray menu to choose Show Mini Player, then press Enter"
     Assert-TrayProcessRunning -Label "Show Mini Player"
     Capture-Screen -Name "mini-player-disconnected" | Out-Null
-    Ask-Check -Key "mini_player_opens" -Prompt "Show Mini Player opens a compact YtmTui Mini Player window"
+    Ask-Check -Key "mini_player_opens" -Prompt "Show Mini Player opens a compact YuTuTray! Mini Player window"
     Ask-Check -Key "mini_player_disconnected_state" -Prompt "Mini Player shows disconnected or idle state with playback buttons disabled before a track is loaded"
     Ask-Check -Key "open_tui_launches_terminal" -Prompt "Open TUI launches Windows Terminal, PowerShell, or cmd"
     Ask-Check -Key "ytt_taskbar_clicks_do_not_crash" -Prompt "With the launched ytt.exe window open, left and right clicking its taskbar button does not close or crash ytt.exe"
@@ -337,21 +337,21 @@ try {
         Ask-Check -Key "stop_daemon_reaped_mpv" -Prompt "Stop Music Daemon removed the daemon descriptor and reaped mpv"
     }
 
-    Ask-Check -Key "quit_player_keeps_tray" -Prompt "Quit Player was tested while a player was running and left ytt-desktop.exe alive"
+    Ask-Check -Key "quit_player_keeps_tray" -Prompt "Quit Player was tested while a player was running and left yututray.exe alive"
     Assert-TrayProcessRunning -Label "Quit Player"
     Record-ProcessSample -Name "tray-process-after-quit-player" | Out-Null
-    Ask-Check -Key "quit_tray_exits_only_tray" -Prompt "Quit Tray exits ytt-desktop.exe without killing unrelated processes"
+    Ask-Check -Key "quit_tray_exits_only_tray" -Prompt "Quit Tray exits yututray.exe without killing unrelated processes"
     Wait-TrayProcessStopped -Label "Quit Tray"
-    Save-ProcessList -Name "tray-process-after-quit-tray" -ProcessName "ytt-desktop" | Out-Null
+    Save-ProcessList -Name "tray-process-after-quit-tray" -ProcessName "yututray" | Out-Null
 
-    $logDir = Join-Path $env:LOCALAPPDATA "ytm-tui\cache"
-    $appLog = Get-ChildItem -LiteralPath $logDir -Filter "ytm-tui.log*" -File -ErrorAction SilentlyContinue |
+    $logDir = Join-Path $env:LOCALAPPDATA "yututui\cache"
+    $appLog = Get-ChildItem -LiteralPath $logDir -Filter "yututui.log*" -File -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     if ($null -eq $appLog) {
         throw "expected app log under $logDir"
     }
-    Copy-Item -LiteralPath $appLog.FullName -Destination (Join-Path $EvidenceDir "ytm-tui.log")
+    Copy-Item -LiteralPath $appLog.FullName -Destination (Join-Path $EvidenceDir "yututui.log")
     $daemonLogDir = Join-Path $logDir "logs"
     $daemonLog = Get-ChildItem -LiteralPath $daemonLogDir -Filter "daemon.log*" -File -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending |

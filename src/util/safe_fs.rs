@@ -730,7 +730,7 @@ mod tests {
         let mut bytes = [0u8; 8];
         getrandom::fill(&mut bytes).unwrap();
         let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        std::env::temp_dir().join(format!("ytm-tui-{name}-{}-{suffix}", std::process::id()))
+        std::env::temp_dir().join(format!("yututui-{name}-{}-{suffix}", std::process::id()))
     }
 
     #[test]

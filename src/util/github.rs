@@ -13,7 +13,7 @@ use std::time::Duration;
 /// redirect's `Location` header (`…/releases/tag/<tag>` → `<tag>`).
 pub async fn latest_release_tag(repo: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .user_agent(concat!("ytm-tui/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("yututui/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(30))
@@ -74,7 +74,7 @@ mod tests {
         );
         // App release tags carry a leading `v`; the parser keeps them verbatim.
         assert_eq!(
-            parse_tag_from_location("/Ochichan/ytm-tui/releases/tag/v1.7.0").as_deref(),
+            parse_tag_from_location("/Ochichan/Yututui/releases/tag/v1.7.0").as_deref(),
             Some("v1.7.0")
         );
         // Not a tag redirect (repo missing → redirected to login, etc.).

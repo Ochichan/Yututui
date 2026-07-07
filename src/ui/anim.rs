@@ -948,7 +948,7 @@ pub fn about_sparkles(frame: &mut Frame, app: &App, zone: Rect, keep_clear: Rect
     }
 }
 
-/// The About card's `ytm-tui  vX.Y.Z` name line with a gradient band sweeping across the
+/// The About card's `yututui  vX.Y.Z` name line with a gradient band sweeping across the
 /// brand. `None` when the flag is off (the caller renders its plain two-span line).
 pub fn about_brand_line(app: &App, name: &str, version: &str) -> Option<Line<'static>> {
     let a = app.animations();
@@ -1308,7 +1308,7 @@ fn donut(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
 /// DVD-style bouncing logo: an ASCII tag ricochets around the zone on a triangle-wave path, its
 /// colour cycling each time it crosses a wall.
 fn bounce(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
-    const LABEL: &str = "<ytm-tui>";
+    const LABEL: &str = "<yututui>";
     let tw = LABEL.chars().count() as i64;
     let w = i64::from(zone.width);
     let h = i64::from(zone.height);
@@ -1416,7 +1416,7 @@ mod tests {
         assert!(activity_dots(&app).is_none());
         assert!(download_spinner(&app).is_none());
         assert!(queue_marker(&app).is_none());
-        assert!(about_brand_line(&app, "ytm-tui", "0.0.0").is_none());
+        assert!(about_brand_line(&app, "yututui", "0.0.0").is_none());
         assert_eq!(selection_style(&app, base), base);
         assert_eq!(stagger_style(&app, Mode::Library, 3, base), base);
         assert_eq!(active_tab_style(&app, TabPop::Nav, base), base);
@@ -1548,7 +1548,7 @@ mod tests {
         assert_eq!(activity_dots(&app).unwrap().len(), 3);
         assert!(download_spinner(&app).is_some_and(|s| !s.is_empty()));
         assert!(queue_marker(&app).is_some_and(|s| s.chars().count() == 2));
-        assert!(line_text(&about_brand_line(&app, "ytm-tui", "1.2.3").unwrap()).contains("1.2.3"));
+        assert!(line_text(&about_brand_line(&app, "yututui", "1.2.3").unwrap()).contains("1.2.3"));
 
         let base = Style::default()
             .fg(Color::Rgb(200, 200, 200))

@@ -272,7 +272,7 @@ fn read_file_inputs(path: &std::path::Path) -> anyhow::Result<(String, Vec<Track
                 .to_owned();
             Ok((name, super::csv::read_tracks(path)?))
         }
-        _ => bail!("unsupported file type `{ext}` — use .json (ytm-tui) or .csv (Exportify)"),
+        _ => bail!("unsupported file type `{ext}` — use .json (yututui) or .csv (Exportify)"),
     }
 }
 
@@ -614,7 +614,7 @@ async fn ensure_ytm_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<String
             match existing.iter().find(|(_, title, _)| title == name) {
                 Some((id, _, _)) => id.clone(),
                 None => {
-                    let description = format!("Imported by ytm-tui (job {})", cp.job_id);
+                    let description = format!("Imported by YuTuTui! (job {})", cp.job_id);
                     let id = ytm
                         .create_account_playlist(name, &description)
                         .await
@@ -637,7 +637,7 @@ async fn ensure_ytm_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<String
             if existing.iter().any(|(_, title, _)| *title == name) {
                 name = format!("{base} (Spotify import {})", crate::signals::unix_now());
             }
-            let description = format!("Imported by ytm-tui (job {})", cp.job_id);
+            let description = format!("Imported by YuTuTui! (job {})", cp.job_id);
             let id = ytm
                 .create_account_playlist(&name, &description)
                 .await
@@ -659,7 +659,10 @@ async fn ensure_spotify_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<St
         .dest_name
         .clone()
         .unwrap_or_else(|| "Imported playlist".to_owned());
-    let description = format!("Imported from YouTube Music by ytm-tui (job {})", cp.job_id);
+    let description = format!(
+        "Imported from YouTube Music by YuTuTui! (job {})",
+        cp.job_id
+    );
     let spotify = ctx.spotify()?;
     // Prefer an existing playlist with the exact name: Development Mode apps created
     // after the March 2026 policy can't create playlists at all, but appending to the
@@ -974,7 +977,7 @@ mod tests {
         getrandom::fill(&mut bytes).expect("random temp suffix");
         let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         std::env::temp_dir().join(format!(
-            "ytm-tui-engine-{name}-{}-{suffix}.{ext}",
+            "yututui-engine-{name}-{}-{suffix}.{ext}",
             std::process::id()
         ))
     }

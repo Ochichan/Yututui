@@ -789,12 +789,12 @@ async fn connect(client_id_flag: Option<String>) -> i32 {
     };
     let port = cfg.effective_spotify_port();
     let http = reqwest::Client::builder()
-        .user_agent(format!("ytm-tui/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("yututui/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()
         .unwrap_or_default();
     let flow = auth::run_pkce_flow(&http, &client_id, port, &mut |url| {
-        println!("Approve ytm-tui in your browser:");
+        println!("Approve YuTuTui! in your browser:");
         println!();
         println!("  {url}");
         println!();

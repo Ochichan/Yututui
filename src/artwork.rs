@@ -72,7 +72,7 @@ where
     F: Fn(ArtworkEvent) + Send + Sync + 'static,
 {
     let client = reqwest::Client::builder()
-        .user_agent("ytm-tui/1 (https://github.com/Ochichan/ytm-tui)")
+        .user_agent("yututui/1 (https://github.com/Ochichan/Yututui)")
         // Bound connect/response time so a hung thumbnail host can't stall the actor.
         .timeout(std::time::Duration::from_secs(8))
         .build()
@@ -216,7 +216,7 @@ mod tests {
             "missing-local".to_owned(),
             ArtSource::Local(
                 std::env::temp_dir()
-                    .join(format!("ytm-tui-missing-artwork-{}", std::process::id())),
+                    .join(format!("yututui-missing-artwork-{}", std::process::id())),
             ),
         );
         drop(handle);

@@ -144,9 +144,9 @@ const NAV_ITEMS: [Mode; 5] = [
     Mode::Ai,
 ];
 
-/// The screen nav bar shown at the top of every view: `ytm-tui │ Player · Search ·
+/// The screen nav bar shown at the top of every view: `YuTuTui! │ Player · Search ·
 /// Library · Settings · DJ Gem` (or `Radio` for the player tab in dedicated Radio mode).
-/// The `ytm-tui` brand sits at the top-left, set off by a muted
+/// The `YuTuTui!` brand sits at the top-left, set off by a muted
 /// `│`; the tabs follow. The active screen is highlighted (selection colors), the rest are
 /// muted, and each tab is a click target that switches screens. Left-aligned, no box chrome
 /// — it reads like a tab strip, consistent with the in-line "text is the button" controls.
@@ -160,7 +160,7 @@ const NAV_ITEMS: [Mode; 5] = [
 /// model label rides the same border line) can tell how much space remains to its right.
 pub fn render_nav(frame: &mut Frame, app: &App, area: Rect) -> u16 {
     const GAP: &str = "  ";
-    const BRAND: &str = "ytm-tui";
+    const BRAND: &str = "YuTuTui!";
     const SEP: &str = " │ ";
     // Blank gutters framing the strip: `MARGIN` left of the brand (also nudges the whole bar
     // right, off the corner); `END_PAD` after the last tab. END_PAD plus that tab's own

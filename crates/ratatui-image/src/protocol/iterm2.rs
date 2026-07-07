@@ -17,7 +17,7 @@ pub struct Iterm2 {
     pub data: String,
     pub size: Size,
     pub is_tmux: bool,
-    /// ytm-tui patch: per-encode anchor-cell tag so a freshly built protocol re-emits once. See
+    /// yututui patch: per-encode anchor-cell tag so a freshly built protocol re-emits once. See
     /// [`crate::protocol::next_redraw_tag`].
     pub redraw_tag: u32,
 }
@@ -64,7 +64,7 @@ impl ProtocolTrait for Iterm2 {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         render(self.size, &self.data, area, buf, false);
 
-        // ytm-tui patch: stamp the anchor cell's (invisible) foreground with this protocol's
+        // yututui patch: stamp the anchor cell's (invisible) foreground with this protocol's
         // redraw tag so a freshly built protocol differs from the displayed frame and ratatui's
         // diff re-flushes the whole image exactly once — wiping any popup residue. See
         // `crate::protocol::next_redraw_tag`.
@@ -132,7 +132,7 @@ impl StatefulProtocolTrait for Iterm2 {
         *self = Iterm2 {
             data,
             size,
-            // ytm-tui patch: a re-encode (resize, or a rebuilt protocol) gets a fresh tag so the
+            // yututui patch: a re-encode (resize, or a rebuilt protocol) gets a fresh tag so the
             // next render re-flushes the anchor cell exactly once.
             redraw_tag: super::next_redraw_tag(),
             ..*self

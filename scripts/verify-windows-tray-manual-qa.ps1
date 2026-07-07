@@ -50,7 +50,7 @@ Assert-File "tray-process-before.txt" | Out-Null
 Assert-File "ytt-process-before.txt" | Out-Null
 Assert-File "mpv-process-before.txt" | Out-Null
 Assert-File "ytt-version.txt" | Out-Null
-Assert-File "ytt-desktop-version.txt" | Out-Null
+Assert-File "yututray-version.txt" | Out-Null
 Assert-File "startup-status-before.txt" | Out-Null
 Assert-File "startup-uninstall-before.txt" | Out-Null
 Assert-File "startup-install.txt" | Out-Null
@@ -79,13 +79,13 @@ Assert-File "mpv-after-resume-daemon.txt" | Out-Null
 Assert-File "mpv-after-stop-daemon.txt" | Out-Null
 Assert-File "tray-process-after-quit-player.txt" | Out-Null
 Assert-File "tray-process-after-quit-tray.txt" | Out-Null
-Assert-File "ytm-tui.log" | Out-Null
+Assert-File "yututui.log" | Out-Null
 Assert-File "daemon.log" | Out-Null
 
 $results = Get-Content -LiteralPath $resultsPath -Raw | ConvertFrom-Json
 
 Assert-True ($results.ytt_subsystem -eq 3) "ytt.exe was not recorded as a console subsystem binary"
-Assert-True ($results.ytt_tray_subsystem -eq 2) "ytt-desktop.exe was not recorded as a GUI subsystem binary"
+Assert-True ($results.ytt_tray_subsystem -eq 2) "yututray.exe was not recorded as a GUI subsystem binary"
 Assert-ResultTrue -Results $results -Name "startup_roundtrip"
 Assert-ResultTrue -Results $results -Name "no_console_window"
 Assert-ResultTrue -Results $results -Name "notification_icon_visible"
@@ -118,7 +118,7 @@ $openPlan = Get-Content -LiteralPath (Join-Path $EvidenceDir "open-tui-plan.txt"
 Assert-True ($openPlan.Contains("ytt.exe")) "open TUI plan did not include ytt.exe"
 
 $trayBefore = Read-TextEvidence "tray-process-before.txt"
-Assert-True (-not $trayBefore.Contains("Id")) "ytt-desktop.exe was already running before manual QA"
+Assert-True (-not $trayBefore.Contains("Id")) "yututray.exe was already running before manual QA"
 
 $yttBefore = Read-TextEvidence "ytt-process-before.txt"
 Assert-True (-not $yttBefore.Contains("Id")) "ytt.exe was already running before manual QA"
@@ -133,7 +133,7 @@ $startupAfter = Get-Content -LiteralPath (Join-Path $EvidenceDir "startup-status
 Assert-True ($startupAfter.Trim() -eq "disabled") "startup was not disabled after uninstall"
 
 $startupRegistry = Get-Content -LiteralPath (Join-Path $EvidenceDir "startup-registry-installed.txt") -Raw
-Assert-True ($startupRegistry.Contains("ytt-desktop.exe")) "startup registry value did not include ytt-desktop.exe"
+Assert-True ($startupRegistry.Contains("yututray.exe")) "startup registry value did not include yututray.exe"
 Assert-True ($startupRegistry.Contains("--background")) "startup registry value did not include --background"
 
 $startProcess = Read-TextEvidence "tray-process-start.txt"
@@ -186,9 +186,9 @@ $mpvAfterStop = Get-Content -LiteralPath (Join-Path $EvidenceDir "mpv-after-stop
 Assert-True (-not $mpvAfterStop.Contains("Id")) "mpv was unexpectedly recorded after daemon stop"
 
 $trayAfterQuitPlayer = Read-TextEvidence "tray-process-after-quit-player.txt"
-Assert-True ($trayAfterQuitPlayer.Contains("Id")) "ytt-desktop.exe was not alive after Quit Player"
+Assert-True ($trayAfterQuitPlayer.Contains("Id")) "yututray.exe was not alive after Quit Player"
 
 $trayAfterQuitTray = Read-TextEvidence "tray-process-after-quit-tray.txt"
-Assert-True (-not $trayAfterQuitTray.Contains("Id")) "ytt-desktop.exe was still running after Quit Tray"
+Assert-True (-not $trayAfterQuitTray.Contains("Id")) "yututray.exe was still running after Quit Tray"
 
 Write-Host "Windows tray manual QA evidence verified: $EvidenceDir"

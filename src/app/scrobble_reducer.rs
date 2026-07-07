@@ -20,8 +20,8 @@ impl App {
                 copy_to_clipboard(&url);
                 self.status.text = if opened.launched() {
                     t!(
-                        "Approve ytm-tui in the browser (link copied as fallback)",
-                        "브라우저에서 ytm-tui를 승인해 주세요 (링크는 예비용으로 복사했어요)"
+                        "Approve YuTuTui! in the browser (link copied as fallback)",
+                        "브라우저에서 YuTuTui!를 승인해 주세요 (링크는 예비용으로 복사했어요)"
                     )
                     .to_owned()
                 } else {

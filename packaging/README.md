@@ -7,9 +7,9 @@ results out, so the tap / bucket / AUR package stay in sync with each release au
 
 | File | Renders to | One command it powers |
 | --- | --- | --- |
-| `homebrew/ytm-tui.rb.tmpl` | `Ochichan/homebrew-tap` → `Formula/ytm-tui.rb` | `brew install Ochichan/tap/ytm-tui` |
-| `scoop/ytm-tui.json.tmpl` | `Ochichan/scoop-bucket` → `bucket/ytm-tui.json` | `scoop install ytm-tui` |
-| `aur/PKGBUILD.tmpl` | AUR → `ytm-tui-bin` | `yay -S ytm-tui-bin` |
+| `homebrew/yututui.rb.tmpl` | `Ochichan/homebrew-tap` → `Formula/yututui.rb` | `brew install Ochichan/tap/yututui` |
+| `scoop/yututui.json.tmpl` | `Ochichan/scoop-bucket` → `bucket/yututui.json` | `scoop install yututui` |
+| `aur/PKGBUILD.tmpl` | AUR → `yututui-bin` | `yay -S yututui-bin` |
 
 Each renders from the release's `checksums.txt` (the SHA-256 of every archive), so the
 published formula/manifest always points at the exact bytes of that release.
@@ -25,14 +25,14 @@ scripts, and a combined `checksums.txt`), three jobs run:
   `depends_on` mpv, yt-dlp, **and ffmpeg**.
 - **`publish-scoop`** — fills the version + the Windows SHA into the manifest and pushes it
   to the bucket. `suggest` became **`depends`** (`extras/mpv`, `main/yt-dlp`, `main/ffmpeg`),
-  the Windows archive exposes both `ytt.exe` and `ytt-desktop.exe`, and the manifest creates a
-  `YtmTui Tray` shortcut for the notification-area helper. CI expands the packaged zip and re-checks
+  the Windows archive exposes both `ytt.exe` and `yututray.exe`, and the manifest creates a
+  `YuTuTray!` shortcut for the notification-area helper. CI expands the packaged zip and re-checks
   both executables plus the Scoop `bin`/`shortcuts` shape. Tray login startup remains opt-in via
-  `ytt-desktop --install-startup`. `autoupdate.hash` reads
+  `yututray --install-startup`. `autoupdate.hash` reads
   `checksums.txt` so the ScoopInstaller bot can bump it too.
 - **`publish-aur`** — substitutes the version into the PKGBUILD and hands it to the
   deploy-aur action, which runs `updpkgsums` (fills the real checksums), regenerates
-  `.SRCINFO`, and pushes to `ytm-tui-bin`.
+  `.SRCINFO`, and pushes to `yututui-bin`.
 
 Each job **no-ops cleanly if its secret is missing**, so tagging works before you finish the
 one-time setup below — the channels simply don't publish until their secret is present.
@@ -52,7 +52,7 @@ one-time setup below — the channels simply don't publish until their secret is
 
 - `homebrew-tap` and `scoop-bucket` already exist — the first tagged run overwrites their
   formula/manifest with the prebuilt versions. No manual edit needed.
-- AUR `ytm-tui-bin` does **not** exist yet. The AUR creates the package repo automatically on
+- AUR `yututui-bin` does **not** exist yet. The AUR creates the package repo automatically on
   the **first authenticated push**, so once `AUR_SSH_PRIVATE_KEY` is set, the first `v*` tag
   creates and populates it. (You must have an AUR account; the SSH key ties the push to it.)
 
@@ -64,8 +64,8 @@ Windows command adds it first:
 
 ```powershell
 scoop bucket add extras
-scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket
-scoop install ytm-tui
+scoop bucket add yututui https://github.com/Ochichan/scoop-bucket
+scoop install yututui
 ```
 
 ## Testing before the real tag

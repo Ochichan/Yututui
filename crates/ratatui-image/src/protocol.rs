@@ -32,7 +32,7 @@ pub mod sixel;
 
 const UNIT_WIDTH: CellDiffOption = CellDiffOption::ForcedWidth(NonZeroU16::new(1).unwrap());
 
-/// ytm-tui patch: a process-wide monotonic counter, bumped once per Sixel/iTerm2 (re-)encode.
+/// yututui patch: a process-wide monotonic counter, bumped once per Sixel/iTerm2 (re-)encode.
 ///
 /// The Sixel and iTerm2 protocols deliver the whole image as a single escape parked in the render
 /// area's top-left ("anchor") cell, with every other covered cell marked [`CellDiffOption::Skip`].

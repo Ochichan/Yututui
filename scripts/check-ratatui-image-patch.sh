@@ -14,7 +14,7 @@ grep -Fq 'ratatui-image = { path = "crates/ratatui-image" }' Cargo.toml \
 grep -Fq 'version = "11.0.6"' crates/ratatui-image/Cargo.toml \
   || fail "vendored ratatui-image base version changed; update crates/ratatui-image/PATCHES.md"
 
-grep -Rqs 'ytm-tui patch' crates/ratatui-image/src \
+grep -Rqs 'yututui patch' crates/ratatui-image/src \
   || fail "vendored ratatui-image patch markers are missing"
 
 grep -Rqs 'next_redraw_tag' crates/ratatui-image/src/protocol* \

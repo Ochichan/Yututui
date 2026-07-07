@@ -143,7 +143,7 @@ impl QueueFile {
 
     /// The production location, following the other data-dir stores.
     pub fn default_path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "ytm-tui")
+        directories::ProjectDirs::from("", "", "yututui")
             .map(|d| d.data_dir().join("scrobble-queue.jsonl"))
     }
 
@@ -287,7 +287,7 @@ mod tests {
         getrandom::fill(&mut bytes).unwrap();
         let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let dir = std::env::temp_dir().join(format!(
-            "ytm-tui-squeue-{name}-{}-{suffix}",
+            "yututui-squeue-{name}-{}-{suffix}",
             std::process::id()
         ));
         let file = QueueFile::at(dir.join("scrobble-queue.jsonl"));

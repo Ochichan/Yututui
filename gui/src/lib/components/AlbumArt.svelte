@@ -22,7 +22,7 @@
   const url = $derived(
     track?.artwork?.path != null ? `/art/${encodeURIComponent(track.artwork.key)}` : null,
   );
-  const hue = $derived(hueOf(track ? `${track.title}·${track.artist}` : 'ytm-tui'));
+  const hue = $derived(hueOf(track ? `${track.title}·${track.artist}` : 'yututui'));
   const glyph = $derived(track ? [...(track.display_title ?? track.title)][0].toUpperCase() : '♪');
 </script>
 

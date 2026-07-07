@@ -11,7 +11,7 @@
 //!   cargo run --example smtc-probe -- pause|play|next|prev
 //!   cargo run --example smtc-probe -- seek <seconds>
 //!
-//! Control commands target the ytm-tui session (matched by AppUserModelID,
+//! Control commands target the YuTuTui! session (matched by AppUserModelID,
 //! falling back to any source id containing "ytt" for pre-identity builds) and
 //! print `{"accepted": …}` — exit 0 only when the session accepted the call.
 
@@ -35,7 +35,7 @@ mod win {
         GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
     };
     use windows::Media::MediaPlaybackAutoRepeatMode as RepeatMode;
-    use ytm_tui::media::identity::APP_USER_MODEL_ID;
+    use yututui::media::identity::APP_USER_MODEL_ID;
 
     pub fn run() -> i32 {
         let args: Vec<String> = std::env::args().skip(1).collect();
@@ -139,7 +139,7 @@ mod win {
 
         json!({
             "source_app_user_model_id": source,
-            "is_ytm_tui": is_ours(&source),
+            "is_yututui": is_ours(&source),
             "title": title,
             "artist": artist,
             "album": album,
@@ -152,7 +152,7 @@ mod win {
         })
     }
 
-    /// Send one transport call at the ytm-tui session, like an OS surface would.
+    /// Send one transport call at the YuTuTui! session, like an OS surface would.
     fn control(
         manager: &Manager,
         name: &str,
@@ -175,7 +175,7 @@ mod win {
             );
             return Ok(if accepted { 0 } else { 1 });
         }
-        eprintln!("no ytm-tui media session found (is ytt playing?)");
+        eprintln!("no YuTuTui! media session found (is ytt playing?)");
         Ok(3)
     }
 

@@ -151,7 +151,7 @@ impl MenuModel {
                 MenuEntry::Separator => None,
             })
             .nth(1)
-            .unwrap_or("ytm-tui");
+            .unwrap_or("yututui");
         format!("{:?}: {track}", self.state)
     }
 
@@ -177,7 +177,7 @@ pub fn build_menu(state: &TrayState) -> MenuModel {
     };
 
     let entries = vec![
-        item("YPlayer", false, None),
+        item("YuTuTray!", false, None),
         item(track_label(state), false, None),
         item(state_label(state), false, None),
         MenuEntry::Separator,
@@ -227,7 +227,7 @@ fn is_idle(status: &StatusSnapshot) -> bool {
 
 fn track_label(state: &TrayState) -> String {
     let Some(status) = state.status() else {
-        return "ytm-tui is not running".to_string();
+        return "YuTuTui! is not running".to_string();
     };
     match (status.artist.as_deref(), status.title.as_deref()) {
         (Some(artist), Some(title)) if !artist.is_empty() && !title.is_empty() => {

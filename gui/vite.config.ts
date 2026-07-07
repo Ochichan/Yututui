@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
-// The dist embeds into ytt-desktop and loads offline from `ytm://app/...`, so:
+// The dist embeds into yututray and loads offline from `ytm://app/...`, so:
 //  - absolute asset paths (we own the origin) — do NOT set base: './'
 //  - one JS + one CSS chunk keeps the build.rs asset table trivial
 //  - target the two shipped WebViews (WKWebView on macOS 13+, evergreen WebView2)

@@ -75,12 +75,12 @@ impl SpotifyToken {
 }
 
 pub fn token_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui")
+    directories::ProjectDirs::from("", "", "yututui")
         .map(|d| d.data_dir().join("spotify_token.json"))
 }
 
 pub fn pending_auth_url_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui")
+    directories::ProjectDirs::from("", "", "yututui")
         .map(|d| d.data_dir().join("spotify_auth_url.txt"))
 }
 
@@ -203,7 +203,7 @@ pub async fn run_pkce_flow(
         .await
         .with_context(|| {
             format!(
-                "could not listen on 127.0.0.1:{port} — is another ytm-tui auth flow (or app) using it? \
+                "could not listen on 127.0.0.1:{port} — is another YuTuTui! auth flow (or app) using it? \
                  Set spotify.redirect_port in config.json and update your Spotify app's redirect URI to match"
             )
         })?;
@@ -323,7 +323,7 @@ async fn wait_for_callback(
         let _ = respond(
             &mut stream,
             200,
-            "Spotify connected — you can close this tab and return to ytm-tui.",
+            "Spotify connected — you can close this tab and return to YuTuTui!.",
         )
         .await;
         return Ok(code);
@@ -341,9 +341,9 @@ async fn respond(
         _ => "Not Found",
     };
     let body = format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>ytm-tui</title>\
+        "<!doctype html><meta charset=\"utf-8\"><title>YuTuTui!</title>\
          <body style=\"font-family:system-ui;margin:4rem auto;max-width:36rem;text-align:center\">\
-         <h2>ytm-tui</h2><p>{message}</p></body>"
+         <h2>YuTuTui!</h2><p>{message}</p></body>"
     );
     let response = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

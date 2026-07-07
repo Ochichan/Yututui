@@ -310,7 +310,7 @@ pub fn unix_now() -> i64 {
 }
 
 fn signals_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().join("signals.json"))
+    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("signals.json"))
 }
 
 #[cfg(test)]

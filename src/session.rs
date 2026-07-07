@@ -122,7 +122,7 @@ fn session_cache_path() -> Option<PathBuf> {
     if let Some(dir) = env_cache_dir() {
         return Some(dir.join(SESSION_CACHE_FILE));
     }
-    directories::ProjectDirs::from("", "", "ytm-tui")
+    directories::ProjectDirs::from("", "", "yututui")
         .map(|d| d.cache_dir().join(SESSION_CACHE_FILE))
 }
 
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn missing_or_invalid_cache_defaults_to_normal_mode() {
         let path =
-            std::env::temp_dir().join(format!("ytm-tui-session-missing-{}", std::process::id()));
+            std::env::temp_dir().join(format!("yututui-session-missing-{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn stale_schema_or_app_version_discards_transient_cache() {
         let path =
-            std::env::temp_dir().join(format!("ytm-tui-session-stale-{}", std::process::id()));
+            std::env::temp_dir().join(format!("yututui-session-stale-{}", std::process::id()));
         std::fs::write(
             &path,
             r#"{"schema_version":1,"app_version":"0.0.0","last_mode":"radio"}"#,

@@ -535,7 +535,7 @@ mod tests {
     #[tokio::test]
     async fn server_round_trips_request_through_the_reducer() {
         let path = std::env::temp_dir()
-            .join(format!("ytm-tui-remote-test-{}.sock", std::process::id()))
+            .join(format!("yututui-remote-test-{}.sock", std::process::id()))
             .to_string_lossy()
             .into_owned();
         let _ = std::fs::remove_file(&path);
@@ -623,7 +623,7 @@ mod tests {
     async fn oversized_request_is_rejected_before_reducer() {
         let path = std::env::temp_dir()
             .join(format!(
-                "ytm-tui-remote-oversized-test-{}.sock",
+                "yututui-remote-oversized-test-{}.sock",
                 std::process::id()
             ))
             .to_string_lossy()
@@ -683,7 +683,7 @@ mod session_socket_tests {
         #[cfg(windows)]
         {
             format!(
-                r"\\.\pipe\ytm-tui-session-test-{}-{tag}",
+                r"\\.\pipe\yututui-session-test-{}-{tag}",
                 std::process::id()
             )
         }
@@ -691,7 +691,7 @@ mod session_socket_tests {
         {
             let ep = std::env::temp_dir()
                 .join(format!(
-                    "ytm-tui-session-test-{}-{tag}.sock",
+                    "yututui-session-test-{}-{tag}.sock",
                     std::process::id()
                 ))
                 .to_string_lossy()

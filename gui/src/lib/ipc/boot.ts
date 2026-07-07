@@ -17,7 +17,7 @@ export interface DevFlags {
 
 export interface BootPayload {
   platform: string; // 'macos' | 'windows' | 'linux'
-  version: string; // ytt-desktop build version
+  version: string; // yututray build version
   coreVersion: string | null;
   protocolVersion: number;
   ownerMode: InstanceMode | null;

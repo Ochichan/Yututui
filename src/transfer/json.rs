@@ -1,4 +1,4 @@
-//! The lossless JSON playlist envelope (`ytm-tui/playlist` v1): full `Song` fidelity,
+//! The lossless JSON playlist envelope (`yututui/playlist` v1): full `Song` fidelity,
 //! so a backup restores without any re-matching. Versioned so future shape changes stay
 //! detectable instead of silently misparsing.
 
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::matching::TrackInput;
 use crate::api::Song;
 
-pub const FORMAT: &str = "ytm-tui/playlist";
+pub const FORMAT: &str = "yututui/playlist";
 pub const VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,7 +53,7 @@ pub fn read_playlist(path: &Path) -> Result<PlaylistFile> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let file: PlaylistFile = serde_json::from_str(&text)
-        .with_context(|| format!("{} is not a ytm-tui playlist file", path.display()))?;
+        .with_context(|| format!("{} is not a YuTuTui! playlist file", path.display()))?;
     if file.format != FORMAT {
         bail!(
             "{} has format `{}` (expected `{FORMAT}`)",
@@ -80,7 +80,7 @@ mod tests {
         getrandom::fill(&mut bytes).unwrap();
         let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         std::env::temp_dir().join(format!(
-            "ytm-tui-json-{name}-{}-{suffix}.json",
+            "yututui-json-{name}-{}-{suffix}.json",
             std::process::id()
         ))
     }

@@ -779,7 +779,7 @@ impl App {
 
     /// Emit a one-line `tracing` summary (plus per-drop `debug` lines) explaining what the
     /// MusicGate did to the freshly-fetched streaming pool — the low-friction "why did streaming
-    /// pick these?" view. Lands in `ytm-tui.log` at the default `info` level; per-candidate
+    /// pick these?" view. Lands in `yututui.log` at the default `info` level; per-candidate
     /// detail needs `RUST_LOG=debug`. Purely observational — it never changes what is enqueued.
     pub(in crate::app) fn log_streaming_gate(
         &self,

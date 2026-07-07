@@ -9,7 +9,7 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 
 pub fn init(dir: &Path) -> Option<WorkerGuard> {
-    init_named(dir, "ytm-tui.log")
+    init_named(dir, "yututui.log")
 }
 
 /// Initialise the global tracing subscriber, writing `file_name` into `dir`.

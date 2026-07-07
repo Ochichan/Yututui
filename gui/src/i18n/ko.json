@@ -18,7 +18,7 @@
   "ai.starter.moreLikeLast": "방금 그 곡과 비슷한 걸로",
   "ai.suggestedTracks": "추천 곡",
   "ai.thinkingLabel": "DJ Gem이 생각 중",
-  "app.about": "ytm-tui 정보",
+  "app.about": "YuTuTui! 정보",
   "app.core": "코어 {core} · v{proto}",
   "app.demoCore": "● 데모 코어",
   "app.demoCoreHint": "페이지 내 데모 코어로 실행 중 — Rust 셸 없음",

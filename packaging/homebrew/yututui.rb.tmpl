@@ -1,18 +1,18 @@
 # Source of truth for the Homebrew formula in Ochichan/homebrew-tap.
 # The `build` workflow renders this on every v* tag (filling the version and the four
 # SHA-256 placeholders from the release checksums.txt) and pushes the result to
-# Formula/ytm-tui.rb in the tap. Do not edit the tap copy by hand — edit this template.
+# Formula/yututui.rb in the tap. Do not edit the tap copy by hand — edit this template.
 #
 # A prebuilt-binary formula: it installs the binaries straight from the GitHub release
 # (no Rust toolchain, no compile) and pulls in the three runtime tools as dependencies, so
-# `brew install Ochichan/tap/ytm-tui` is genuinely one command. macOS also gets `ytt-desktop`,
-# the menu-bar companion (`ytt-desktop --background`, or `ytt-desktop --install-startup`
+# `brew install Ochichan/tap/yututui` is genuinely one command. macOS also gets `yututray`,
+# the menu-bar companion (`yututray --background`, or `yututray --install-startup`
 # for login). The
-# tarball's YtmTui.app / YPlayer.app bundles are Finder conveniences; the formula
+# tarball's YuTuTui!.app / YuTuTray!.app bundles are Finder conveniences; the formula
 # installs only the CLIs and ignores the .apps.
-class YtmTui < Formula
+class Yututui < Formula
   desc "Fast, low-RAM YouTube Music player for your terminal"
-  homepage "https://github.com/Ochichan/ytm-tui"
+  homepage "https://github.com/Ochichan/Yututui"
   version "__VERSION__"
   license "MIT"
 
@@ -22,22 +22,22 @@ class YtmTui < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/Ochichan/ytm-tui/releases/download/v__VERSION__/ytm-tui-macos-arm64.tar.gz"
+      url "https://github.com/Ochichan/Yututui/releases/download/v__VERSION__/yututui-macos-arm64.tar.gz"
       sha256 "__SHA_MACOS_ARM64__"
     end
     on_intel do
-      url "https://github.com/Ochichan/ytm-tui/releases/download/v__VERSION__/ytm-tui-macos-x64.tar.gz"
+      url "https://github.com/Ochichan/Yututui/releases/download/v__VERSION__/yututui-macos-x64.tar.gz"
       sha256 "__SHA_MACOS_X64__"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/Ochichan/ytm-tui/releases/download/v__VERSION__/ytm-tui-linux-arm64.tar.gz"
+      url "https://github.com/Ochichan/Yututui/releases/download/v__VERSION__/yututui-linux-arm64.tar.gz"
       sha256 "__SHA_LINUX_ARM64__"
     end
     on_intel do
-      url "https://github.com/Ochichan/ytm-tui/releases/download/v__VERSION__/ytm-tui-linux-x64.tar.gz"
+      url "https://github.com/Ochichan/Yututui/releases/download/v__VERSION__/yututui-linux-x64.tar.gz"
       sha256 "__SHA_LINUX_X64__"
     end
   end
@@ -46,21 +46,21 @@ class YtmTui < Formula
     bin.install "ytt"
     # The menu-bar companion ships in the macOS tarballs only; Linux is covered by
     # the MPRIS session built into `ytt` itself.
-    bin.install "ytt-desktop" if OS.mac?
+    bin.install "yututray" if OS.mac?
   end
 
   def caveats
     on_macos do
       <<~EOS
-        The menu-bar companion is installed as `ytt-desktop`.
-        Start it now with `ytt-desktop --background`, or keep it at login with:
-          ytt-desktop --install-startup
+        The menu-bar companion is installed as `yututray`.
+        Start it now with `yututray --background`, or keep it at login with:
+          yututray --install-startup
       EOS
     end
   end
 
   test do
     assert_path_exists bin/"ytt"
-    assert_path_exists bin/"ytt-desktop" if OS.mac?
+    assert_path_exists bin/"yututray" if OS.mac?
   end
 end

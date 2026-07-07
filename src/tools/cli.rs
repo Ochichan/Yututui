@@ -508,7 +508,7 @@ fn diagnose() -> i32 {
     let mut report = String::new();
     push_report_line(
         &mut report,
-        format!("ytm-tui {}", env!("CARGO_PKG_VERSION")),
+        format!("YuTuTui! {}", env!("CARGO_PKG_VERSION")),
     );
     push_report_line(&mut report, format!("target_os: {}", std::env::consts::OS));
     push_report_line(
@@ -693,7 +693,7 @@ fn tools_cache_dir() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(env.trim()));
     }
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.cache_dir().to_path_buf())
+    directories::ProjectDirs::from("", "", "yututui").map(|d| d.cache_dir().to_path_buf())
 }
 
 fn parse_use_target(raw: &str) -> Result<UseTarget, &'static str> {
@@ -980,7 +980,7 @@ mod tests {
     }
 
     fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("ytm-tui-tools-cli-{name}-{}", std::process::id()))
+        std::env::temp_dir().join(format!("yututui-tools-cli-{name}-{}", std::process::id()))
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! The About card: a small, centered overlay showing the app icon, a one-line description,
-//! the MIT license, and a clickable link to the GitHub repo. Opened by clicking the `ytm-tui`
+//! the MIT license, and a clickable link to the GitHub repo. Opened by clicking the `YuTuTui!`
 //! brand in the nav bar or pressing F1 ([`crate::keymap::Action::ToggleAbout`]); dismissed by
 //! Esc / F1 / any click that isn't the link. Laid out like the `?` cheat-sheet and styled with
 //! the same theme roles so it matches whatever preset/overrides are active.
@@ -21,13 +21,13 @@ use crate::theme::ThemeRole as R;
 use crate::ui::buttons::{self, Seg};
 
 /// The project's public home. Shown as a link in the card and opened in the browser on click.
-pub const GITHUB_URL: &str = "https://github.com/Ochichan/ytm-tui";
+pub const GITHUB_URL: &str = "https://github.com/Ochichan/Yututui";
 /// The link text rendered in the card (the `https://` prefix is dropped to keep it compact).
-const GITHUB_LABEL: &str = "github.com/Ochichan/ytm-tui";
+const GITHUB_LABEL: &str = "github.com/Ochichan/Yututui";
 
 /// The app icon, embedded at compile time so the card renders it no matter where (or how) the
 /// binary is launched — there's no assets dir to find at runtime.
-const ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/ytm-tui-about.png");
+const ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/yututui-about.png");
 
 /// How many rows the icon band gets at the top of the card.
 const ICON_ROWS: u16 = 9;
@@ -254,11 +254,11 @@ fn draw_text(frame: &mut Frame, app: &App, area: Rect) {
     let close_row = github_row + 2;
 
     // Name + version — with a gradient band sweeping the brand while the About animation is on.
-    let name = crate::ui::anim::about_brand_line(app, "ytm-tui", env!("CARGO_PKG_VERSION"))
+    let name = crate::ui::anim::about_brand_line(app, "YuTuTui!", env!("CARGO_PKG_VERSION"))
         .unwrap_or_else(|| {
             Line::from(vec![
                 Span::styled(
-                    "ytm-tui",
+                    "YuTuTui!",
                     crate::ui::popup_style(app, R::TextPrimary).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(

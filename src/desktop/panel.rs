@@ -602,7 +602,7 @@ fn action_enabled(model: &menu_model::MenuModel, action: MenuAction) -> bool {
 fn title_for_state(state: &TrayState) -> String {
     match state.status().and_then(|status| status.title.as_deref()) {
         Some(title) if !title.is_empty() => title.to_string(),
-        _ if matches!(state, TrayState::Disconnected) => "ytm-tui is not running".to_string(),
+        _ if matches!(state, TrayState::Disconnected) => "YuTuTui! is not running".to_string(),
         _ => "Nothing playing".to_string(),
     }
 }
@@ -610,7 +610,7 @@ fn title_for_state(state: &TrayState) -> String {
 fn artist_for_state(state: &TrayState) -> String {
     match state.status().and_then(|status| status.artist.as_deref()) {
         Some(artist) if !artist.is_empty() => artist.to_string(),
-        _ => "YPlayer".to_string(),
+        _ => "YuTuTray!".to_string(),
     }
 }
 
@@ -739,7 +739,7 @@ mod tests {
         let update = PollUpdate::disconnected(ControlError::NotRunning);
         let payload = payload_for_update(&update);
         assert!(!payload.connected);
-        assert_eq!(payload.title, "ytm-tui is not running");
+        assert_eq!(payload.title, "YuTuTui! is not running");
         assert_eq!(payload.owner_label, "Offline");
         assert_eq!(payload.queue_label, "Queue unavailable");
         assert!(!payload.can_playback);
@@ -750,7 +750,7 @@ mod tests {
         assert!(payload.can_start_daemon);
         assert!(payload.can_resume_daemon);
         assert!(!payload.can_stop_daemon);
-        assert_eq!(payload.error, Some("ytm-tui is not running".to_string()));
+        assert_eq!(payload.error, Some("YuTuTui! is not running".to_string()));
     }
 
     #[test]

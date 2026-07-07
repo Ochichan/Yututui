@@ -20,15 +20,15 @@ if [[ ! -x "$release_dir/$bin_name" ]]; then
 fi
 
 rm -rf "$stage_dir"
-mkdir -p "$stage_dir/YtmTui.app/Contents/MacOS" \
-  "$stage_dir/YtmTui.app/Contents/Resources" \
+mkdir -p "$stage_dir/YuTuTui!.app/Contents/MacOS" \
+  "$stage_dir/YuTuTui!.app/Contents/Resources" \
   "$out_dir"
 
 cp "$release_dir/$bin_name" "$stage_dir/$bin_name"
-cp "$release_dir/$bin_name" "$stage_dir/YtmTui.app/Contents/MacOS/ytt"
-cp assets/icons/ytm-tui.icns "$stage_dir/YtmTui.app/Contents/Resources/ytm-tui.icns"
+cp "$release_dir/$bin_name" "$stage_dir/YuTuTui!.app/Contents/MacOS/ytt"
+cp assets/icons/yututui.icns "$stage_dir/YuTuTui!.app/Contents/Resources/yututui.icns"
 
-cat > "$stage_dir/YtmTui.app/Contents/Info.plist" <<PLIST
+cat > "$stage_dir/YuTuTui!.app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -36,17 +36,17 @@ cat > "$stage_dir/YtmTui.app/Contents/Info.plist" <<PLIST
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>YtmTui</string>
+  <string>YuTuTui!</string>
   <key>CFBundleExecutable</key>
   <string>ytt</string>
   <key>CFBundleIconFile</key>
-  <string>ytm-tui</string>
+  <string>yututui</string>
   <key>CFBundleIdentifier</key>
-  <string>io.github.ochi.ytm-tui</string>
+  <string>io.github.ochi.yututui</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>YtmTui</string>
+  <string>YuTuTui!</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -61,22 +61,22 @@ cat > "$stage_dir/YtmTui.app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-printf 'APPL????' > "$stage_dir/YtmTui.app/Contents/PkgInfo"
-chmod +x "$stage_dir/YtmTui.app/Contents/MacOS/ytt"
+printf 'APPL????' > "$stage_dir/YuTuTui!.app/Contents/PkgInfo"
+chmod +x "$stage_dir/YuTuTui!.app/Contents/MacOS/ytt"
 
-archive_items=("$bin_name" "YtmTui.app")
+archive_items=("$bin_name" "YuTuTui!.app")
 
-if [[ -x "$release_dir/ytt-desktop" ]]; then
-  mkdir -p "$stage_dir/YPlayer.app/Contents/MacOS" \
-    "$stage_dir/YPlayer.app/Contents/Resources"
-  cp "$release_dir/ytt-desktop" "$stage_dir/ytt-desktop"
-  cp "$release_dir/ytt-desktop" "$stage_dir/YPlayer.app/Contents/MacOS/ytt-desktop"
-  # Keep `ytt` beside `ytt-desktop` inside the helper bundle so the tray's "Open TUI"
+if [[ -x "$release_dir/yututray" ]]; then
+  mkdir -p "$stage_dir/YuTuTray!.app/Contents/MacOS" \
+    "$stage_dir/YuTuTray!.app/Contents/Resources"
+  cp "$release_dir/yututray" "$stage_dir/yututray"
+  cp "$release_dir/yututray" "$stage_dir/YuTuTray!.app/Contents/MacOS/yututray"
+  # Keep `ytt` beside `yututray` inside the helper bundle so the tray's "Open TUI"
   # action can launch an absolute bundled path even when the archive root is moved.
-  cp "$release_dir/$bin_name" "$stage_dir/YPlayer.app/Contents/MacOS/ytt"
-  cp assets/icons/ytm-tui.icns "$stage_dir/YPlayer.app/Contents/Resources/ytm-tui.icns"
+  cp "$release_dir/$bin_name" "$stage_dir/YuTuTray!.app/Contents/MacOS/ytt"
+  cp assets/icons/yututui.icns "$stage_dir/YuTuTray!.app/Contents/Resources/yututui.icns"
 
-  cat > "$stage_dir/YPlayer.app/Contents/Info.plist" <<PLIST
+  cat > "$stage_dir/YuTuTray!.app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -84,17 +84,17 @@ if [[ -x "$release_dir/ytt-desktop" ]]; then
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>YPlayer</string>
+  <string>YuTuTray!</string>
   <key>CFBundleExecutable</key>
-  <string>ytt-desktop</string>
+  <string>yututray</string>
   <key>CFBundleIconFile</key>
-  <string>ytm-tui</string>
+  <string>yututui</string>
   <key>CFBundleIdentifier</key>
-  <string>io.github.ochi.ytm-tui.tray</string>
+  <string>io.github.ochi.yututui.tray</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>YPlayer</string>
+  <string>YuTuTray!</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -111,11 +111,11 @@ if [[ -x "$release_dir/ytt-desktop" ]]; then
 </plist>
 PLIST
 
-  printf 'APPL????' > "$stage_dir/YPlayer.app/Contents/PkgInfo"
-  chmod +x "$stage_dir/ytt-desktop" \
-    "$stage_dir/YPlayer.app/Contents/MacOS/ytt-desktop" \
-    "$stage_dir/YPlayer.app/Contents/MacOS/ytt"
-  archive_items+=("ytt-desktop" "YPlayer.app")
+  printf 'APPL????' > "$stage_dir/YuTuTray!.app/Contents/PkgInfo"
+  chmod +x "$stage_dir/yututray" \
+    "$stage_dir/YuTuTray!.app/Contents/MacOS/yututray" \
+    "$stage_dir/YuTuTray!.app/Contents/MacOS/ytt"
+  archive_items+=("yututray" "YuTuTray!.app")
 fi
 
 tar -czf "$out_dir/$archive" -C "$stage_dir" "${archive_items[@]}"

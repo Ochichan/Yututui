@@ -1,15 +1,15 @@
-# ytm-tui
+# YuTuTui!
 
 **English** · [한국어](README.ko.md) · [日本語](README.ja.md)
 
-[![Release](https://img.shields.io/github/v/release/Ochichan/ytm-tui)](https://github.com/Ochichan/ytm-tui/releases)
+[![Release](https://img.shields.io/github/v/release/Ochichan/Yututui)](https://github.com/Ochichan/Yututui/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8aadf4.svg)](LICENSE)
 
 YouTube Music in your terminal — fast, keyboard-driven, no browser tab eating your RAM, no ads. All behind a three-letter command: `ytt`. Rust + ratatui. MIT.
 
 Public beta: stable enough for daily use, still moving fast.
 
-### [▶ Live demo & the full feature tour → ochichan.github.io/ytm-tui](https://ochichan.github.io/ytm-tui/)
+### [▶ Live demo & the full feature tour → ochichan.github.io/Yututui](https://ochichan.github.io/Yututui/)
 
 > 🖼️ *Demo GIF coming soon.*
 <!-- 📸 TO FILL: add docs/media/hero.gif, delete the "coming soon" line above, then uncomment:
@@ -24,40 +24,40 @@ Each command installs `ytt` **and** its helpers (mpv, yt-dlp, ffmpeg) in one go.
 
 | OS | One command |
 | --- | --- |
-| **macOS** | `brew install Ochichan/tap/ytm-tui` |
-| **Windows** | `scoop bucket add extras; scoop bucket add ytm-tui https://github.com/Ochichan/scoop-bucket; scoop install ytm-tui` |
-| **Linux** — any, with [Nix](https://nixos.org/download) | `nix run github:Ochichan/ytm-tui` |
-| **Linux** — Arch | `yay -S ytm-tui-bin` |
+| **macOS** | `brew install Ochichan/tap/yututui` |
+| **Windows** | `scoop bucket add extras; scoop bucket add yututui https://github.com/Ochichan/scoop-bucket; scoop install yututui` |
+| **Linux** — any, with [Nix](https://nixos.org/download) | `nix run github:Ochichan/Yututui` |
+| **Linux** — Arch | `yay -S yututui-bin` |
 | **Linux** — any other | Download and run the installer below |
 | **From source** | `./install.sh --build` (needs [Rust](https://rustup.rs)) |
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Ochichan/Yututui/main/install.sh | bash
 ```
 
 Windows direct installer:
 
 ```powershell
-irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Ochichan/Yututui/main/install.ps1 | iex
 ```
 
-**Tray companion:** macOS and Windows releases include `ytt-desktop`, the menu-bar / notification-area mini player.
+**Tray companion:** macOS and Windows releases include `yututray`, the menu-bar / notification-area mini player.
 
 | Channel | What gets installed | How to start the tray |
 | --- | --- | --- |
-| macOS Homebrew | `ytt`, `ytt-desktop`, runtime tools | `ytt-desktop --background` |
-| Windows Scoop | `ytt.exe`, `ytt-desktop.exe`, runtime tools, Start Menu shortcut | `ytt-desktop --background` or **YtmTui Tray** |
-| Direct installers / source build scripts | `ytt`; macOS/Windows also get `ytt-desktop` | `ytt-desktop --background` |
+| macOS Homebrew | `ytt`, `yututray`, runtime tools | `yututray --background` |
+| Windows Scoop | `ytt.exe`, `yututray.exe`, runtime tools, Start Menu shortcut | `yututray --background` or **YuTuTray!** |
+| Direct installers / source build scripts | `ytt`; macOS/Windows also get `yututray` | `yututray --background` |
 | Linux | `ytt` with MPRIS media integration | no separate tray app |
 
-Start-at-login is opt-in: `ytt-desktop --install-startup`.
+Start-at-login is opt-in: `yututray --install-startup`.
 
 > After a direct installer or source build, run `ytt doctor` to see what's missing.
 > **yt-dlp keeps itself fresh.** YouTube changes weekly, so `ytt` maintains its own current yt-dlp (SHA-256-verified from github.com) and uses whichever of {managed, system} is newer. Check with `ytt tools status --why`, update with `ytt tools update`, or pin a known-good binary with `ytt tools use system|managed|<path>`.
 
 ## Terminal support
 
-- Terminal support varies by emulator; ytm-tui probes capabilities and falls back where possible.
+- Terminal support varies by emulator; YuTuTui! probes capabilities and falls back where possible.
 - Album art uses Kitty/Sixel/iTerm2 protocols when the terminal supports them, otherwise halfblocks or retro ASCII.
 - Text zoom, CJK/IME behavior, mouse reporting, and video overlay depend on terminal and OS support.
 - Check your environment with `ytt doctor terminal --json`; see the full [terminal compatibility matrix](docs/terminal-compatibility.md).
@@ -76,7 +76,7 @@ That's it. Music. (Something off? **`ytt doctor`** tells you exactly what to fix
 
 ## Tour
 
-Screenshots and GIFs are landing here shortly — meanwhile the **[feature tour](https://ochichan.github.io/ytm-tui/)** has everything live, in detail.
+Screenshots and GIFs are landing here shortly — meanwhile the **[feature tour](https://ochichan.github.io/Yututui/)** has everything live, in detail.
 
 <!-- 📸 FOR THE PERSON ADDING MEDIA: drop files into docs/media/ with these exact names:
 hero.gif · player.png · djgem.gif · assistant.gif · video.gif · sources.png · radio.png ·
@@ -178,7 +178,7 @@ One toggle makes everything CP437-safe for a bare Linux console or a crusty SSH 
 - **10-band EQ** with presets, plus loudness normalization.
 - Every key rebindable, the whole UI mouse-aware, interface in English & 한국어.
 
-**The long version of everything → [feature tour](https://ochichan.github.io/ytm-tui/).**
+**The long version of everything → [feature tour](https://ochichan.github.io/Yututui/).**
 
 ## Essential keys
 
@@ -261,7 +261,7 @@ Or stay in the TUI: Settings → **Accounts** → *Import from Spotify…* while
 **One-time setup (~5 min).** Spotify apps in Development Mode only serve accounts you explicitly allowlist, so everyone brings their own free app. There is no client *secret* — PKCE doesn't use one.
 
 1. Sign in at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and click **Create app**.
-2. Give it any **App name** and **App description** (e.g. `ytm-tui`).
+2. Give it any **App name** and **App description** (e.g. `yututui`).
 3. Under **Redirect URIs**, add exactly `http://127.0.0.1:9271/callback` and click **Add**. It must be the loopback IP literal `127.0.0.1`, **never `localhost`** (Spotify rejects `localhost`). Using a different port? Set `spotify.redirect_port` in `config.json` and match it here.
 4. Under **Which API/SDKs are you planning to use?**, tick **Web API**.
 5. Accept the terms and **Save**.
@@ -276,12 +276,12 @@ Matching is metadata-based (NFKC-normalized, CJK-safe). Anything ambiguous lands
 <details>
 <summary><b>Sign-in cookies & file locations</b></summary>
 
-**Cookies (optional).** Public songs play anonymously — only members-only/region-locked tracks and account playlists need this. Export your YouTube Music cookies in **Netscape format** to `~/Music/ytm-tui/cookies.txt` (Windows: `%USERPROFILE%\Music\ytm-tui\cookies.txt`) and restart. **Treat that file like a password**, and export the *incognito way*: sign in inside a private window, export `cookies.txt` from that tab, then close the window — a session whose browser is gone never gets rotated or signed out. A good export has `SAPISID`/`SID` lines in it.
+**Cookies (optional).** Public songs play anonymously — only members-only/region-locked tracks and account playlists need this. Export your YouTube Music cookies in **Netscape format** to `~/Music/yututui/cookies.txt` (Windows: `%USERPROFILE%\Music\yututui\cookies.txt`) and restart. **Treat that file like a password**, and export the *incognito way*: sign in inside a private window, export `cookies.txt` from that tab, then close the window — a session whose browser is gone never gets rotated or signed out. A good export has `SAPISID`/`SID` lines in it.
 
 **Config & data.**
 
-- Config: `~/Library/Application Support/ytm-tui/config.json` (macOS) · `~/.config/ytm-tui/config.json` (Linux) · `%APPDATA%\ytm-tui\config.json` (Windows) — with `playlists.json`, `scrobble-queue.jsonl` and `transfers/` alongside.
-- Downloads: `~/Music/ytm-tui` — change via the **Download dir** setting or `YTM_DOWNLOAD_DIR`.
+- Config: `~/Library/Application Support/yututui/config.json` (macOS) · `~/.config/yututui/config.json` (Linux) · `%APPDATA%\yututui\config.json` (Windows) — with `playlists.json`, `scrobble-queue.jsonl` and `transfers/` alongside.
+- Downloads: `~/Music/yututui` — change via the **Download dir** setting or `YTM_DOWNLOAD_DIR`.
 - `GEMINI_API_KEY` and `YTM_DOWNLOAD_DIR` override saved settings at launch.
 
 </details>
@@ -333,7 +333,7 @@ The app's own yt-dlp calls ignore your yt-dlp config file by default, so options
 | Scrobbles not appearing | Check Settings → Accounts; the daemon reads accounts at start — restart it after connecting. |
 | Remapped a key into chaos | Settings → General → **Reset keybindings**. |
 
-Still stuck? [Open an issue](https://github.com/Ochichan/ytm-tui/issues) and mention your OS.
+Still stuck? [Open an issue](https://github.com/Ochichan/Yututui/issues) and mention your OS.
 
 </details>
 

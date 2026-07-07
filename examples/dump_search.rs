@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "IU Celebrity".to_owned());
     let home = std::env::var("HOME")?;
-    let cookies = std::fs::read_to_string(format!("{home}/Music/ytm-tui/cookies.txt"))?;
+    let cookies = std::fs::read_to_string(format!("{home}/Music/yututui/cookies.txt"))?;
     let yt = YtMusic::from_cookie(netscape_to_header(&cookies)).await?;
     let q: SearchQuery<FilteredSearch<SongsFilter>> = query.as_str().into();
     let raw = yt

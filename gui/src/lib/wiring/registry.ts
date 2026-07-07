@@ -71,7 +71,7 @@ export function agentBrief(id: FeatureId): string {
     ? `Capability gate: the UI auto-opens when the core advertises "${w.capability}" — advertise it from the session HelloAck when the server side lands.`
     : 'Capability gate: none — this seam is frontend-internal.';
   const notes = w.notes ? `Notes: ${w.notes}\n` : '';
-  return `You are wiring a stubbed feature of the ytm-tui desktop GUI (gui/ — Svelte 5 runes + TypeScript, embedded into ytt-desktop).
+  return `You are wiring a stubbed feature of the yututui desktop GUI (gui/ — Svelte 5 runes + TypeScript, embedded into yututray).
 
 Feature: ${w.title} [lands in ${w.milestone}]
 Spec (read first): ${w.brief}; store contract in docs/gui/05-frontend.md §5.

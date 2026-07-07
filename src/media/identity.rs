@@ -19,16 +19,16 @@
 //!   keys as a side effect.
 
 /// The `ytt` process AUMID. Deliberately distinct from the tray shell's
-/// `io.github.ochi.ytm-tui.tray`: the tray never owns the media session, and
+/// `io.github.ochi.yututui.tray`: the tray never owns the media session, and
 /// sharing an id would only entangle taskbar grouping between the two exes.
-pub const APP_USER_MODEL_ID: &str = "io.github.ochi.ytm-tui";
+pub const APP_USER_MODEL_ID: &str = "io.github.ochi.yututui";
 
 #[cfg(windows)]
-const DISPLAY_NAME: &str = "YtmTui";
+const DISPLAY_NAME: &str = "YuTuTui!";
 /// Icon file shipped at the archive root next to the exes (see build.yml
 /// packaging); the register command defaults to the copy beside the exe.
 #[cfg(windows)]
-const ICON_FILE: &str = "ytm-tui.ico";
+const ICON_FILE: &str = "yututui.ico";
 
 /// Tag this process with the app's AUMID for shell surfaces (media flyout,
 /// taskbar grouping). Must run before any window or media session exists.
@@ -82,7 +82,7 @@ pub fn register_cli(args: &[String]) -> i32 {
             return 2;
         }
         // The registry wants an absolute path; `ytt register-media-identity
-        // --icon ytm-tui.ico` from the archive dir should still stick after cd.
+        // --icon yututui.ico` from the archive dir should still stick after cd.
         Some(path) => match std::path::absolute(&path) {
             Ok(absolute) => Some(absolute),
             Err(_) => Some(path),
@@ -189,7 +189,7 @@ fn write_registration(icon: Option<&std::path::Path>) -> Result<(), String> {
     result
 }
 
-/// Write `%APPDATA%\Microsoft\Windows\Start Menu\Programs\YtmTui.lnk` targeting this
+/// Write `%APPDATA%\Microsoft\Windows\Start Menu\Programs\YuTuTui!.lnk` targeting this
 /// exe, with `System.AppUserModel.ID` stamped to [`APP_USER_MODEL_ID`]. The Windows
 /// AppResolver maps a media session's explicit AUMID to a display name/icon **only**
 /// through a Start-Menu shortcut carrying that property (the Chrome/Spotify route) —

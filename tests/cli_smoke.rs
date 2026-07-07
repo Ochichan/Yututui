@@ -273,7 +273,7 @@ fn tools_status_diagnose_unpin_and_reset_use_only_isolated_state() {
         report_path.display()
     );
     let report = std::fs::read_to_string(&report_path).expect("diagnostic report should exist");
-    assert!(report.contains("ytm-tui "), "{report}");
+    assert!(report.contains("YuTuTui! "), "{report}");
     assert!(report.contains("target_os:"), "{report}");
     assert!(report.contains("YTM_YTDLP: <unset>"), "{report}");
     assert!(report.contains("JS runtimes:"), "{report}");

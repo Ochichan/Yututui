@@ -1287,7 +1287,7 @@ async fn radio_browser_search(query: &str, limit: usize) -> Result<Vec<Song>> {
 fn provider_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(PROVIDER_SEARCH_TIMEOUT)
-        .user_agent(format!("ytm-tui/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("yututui/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .context("build provider HTTP client")
 }
@@ -2036,7 +2036,7 @@ fi
             "duration": 121.0
         });
 
-        let song = parse_audius_track(&entry, "ytm-tui-test").expect("audius track");
+        let song = parse_audius_track(&entry, "yututui-test").expect("audius track");
         assert_eq!(song.video_id, "au:AUD123");
         assert_eq!(song.artist, "producer");
         assert_eq!(song.duration, "2:01");
@@ -2044,7 +2044,7 @@ fi
             song.playable,
             Some(PlayableRef::AudiusTrackId {
                 id: "AUD123".to_owned(),
-                app_name: "ytm-tui-test".to_owned(),
+                app_name: "yututui-test".to_owned(),
             })
         );
     }

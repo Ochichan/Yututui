@@ -172,7 +172,7 @@ async fn run_actor(
     queue: Option<QueueFile>,
 ) {
     let http = reqwest::Client::builder()
-        .user_agent(format!("ytm-tui/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("yututui/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(15))
         .build()
         .unwrap_or_default();
@@ -598,7 +598,7 @@ mod tests {
         getrandom::fill(&mut bytes).unwrap();
         let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let dir = std::env::temp_dir().join(format!(
-            "ytm-tui-sactor-{name}-{}-{suffix}",
+            "yututui-sactor-{name}-{}-{suffix}",
             std::process::id()
         ));
         let queue = QueueFile::at(dir.join("scrobble-queue.jsonl"));

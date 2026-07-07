@@ -23,7 +23,7 @@ Six things were never confirmed on hardware:
 | --- | --- | --- |
 | 1 | Session appears with correct metadata + artwork; album (G1) and playback rate (G4) included | probe JSON (automated) |
 | 2 | Exactly ONE session — mpv's own SMTC is suppressed (G3) | probe JSON (automated) |
-| 3 | Flyout shows **YtmTui** + icon, not "Unknown app" (G2) | your eyes + decision step §5 |
+| 3 | Flyout shows **YuTuTui!** + icon, not "Unknown app" (G2) | your eyes + decision step §5 |
 | 4 | OS-side controls round-trip: pause/next/seek from GSMTC → ytt actually obeys | probe commands (automated) |
 | 5 | Teardown is clean: quit / settings-toggle / daemon-stop remove the entry (G6) | probe JSON (automated) + eyes |
 | 6 | Surfaces behave: media keys, Bluetooth, lock screen, live radio, coexistence with a browser | your eyes |
@@ -84,7 +84,7 @@ The script will, in order — **automated, no input needed**:
    `--version`, that order is what makes the probe valid).
 3. Register the media identity (`ytt register-media-identity`) and snapshot
    the HKCU key it wrote.
-4. Assert no ytm-tui session exists yet (lazy activation — `EAGER=false`).
+4. Assert no yututui session exists yet (lazy activation — `EAGER=false`).
 
 Then it launches `ytt` in its own console window and **prompts you** to:
 
@@ -94,7 +94,7 @@ Then it launches `ytt` in its own console window and **prompts you** to:
    false-flag it.
 
 From there the automated block asserts: session playing, AUMID equals
-`io.github.ochi.ytm-tui`, exactly one session / zero mpv sessions,
+`io.github.ochi.yututui`, exactly one session / zero mpv sessions,
 title+artist+artwork present, rate seeded, timeline sane
 (`max_seek == end > 0`), then round-trips **pause → play → seek(30s) →
 next** through the OS API and checks ytt obeyed each one.
@@ -122,7 +122,7 @@ stock-UI limitations — do NOT file these as bugs:
 
 ### 4.2 Identity (the G2 check)
 
-The card should say **YtmTui** with our icon. "Unknown app", a blank icon,
+The card should say **YuTuTui!** with our icon. "Unknown app", a blank icon,
 or a stale icon from another player = FAIL → answer `n` and continue; §5
 tells you what to do after the run.
 
@@ -176,17 +176,17 @@ Order matters; capture evidence between each attempt
 (`smtc-probe.exe > probe-identity.txt` + a screenshot):
 
 1. Confirm the registry key the script wrote:
-   `Get-ItemProperty "HKCU:\Software\Classes\AppUserModelId\io.github.ochi.ytm-tui"`
-   — DisplayName `YtmTui`, IconUri pointing at a real `.ico`.
+   `Get-ItemProperty "HKCU:\Software\Classes\AppUserModelId\io.github.ochi.yututui"`
+   — DisplayName `YuTuTui!`, IconUri pointing at a real `.ico`.
 2. Sign out and back in (shell caches identity resolutions), retest.
 3. Plain Start-Menu shortcut experiment:
 
 ```powershell
-$lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\YtmTui.lnk"
+$lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\YuTuTui!.lnk"
 $ws = New-Object -ComObject WScript.Shell
 $sc = $ws.CreateShortcut($lnk)
 $sc.TargetPath = "<repo>\target\x86_64-pc-windows-msvc\release\ytt.exe"
-$sc.IconLocation = "<repo>\assets\icons\ytm-tui.ico"
+$sc.IconLocation = "<repo>\assets\icons\yututui.ico"
 $sc.Save()
 ```
 
@@ -215,7 +215,7 @@ It hangs in CI (~31 min) even with `YTM_NO_MEDIA_SESSION=1`; cause is OPEN
 (plan doc §0.2). On a real desktop it may well pass — either outcome is
 signal. Note where it stops if it stalls (last console line). This is a
 diagnostic, **not** a gate for this release. Never run it mid-QA: it moves
-your ytm-tui profile directories around.
+your yututui profile directories around.
 
 ## 7. Evidence, reporting, sign-off
 
@@ -234,7 +234,7 @@ Sign-off = on Win11: all automated asserts pass + every checklist item `y`
 (or consciously waived with a note) + G2 decision recorded. Then release
 per plan doc §7 — reminder: **version must bump to ≥ 1.6.0** (six pin
 locations; install.ps1 gates the identity registration on 1.6.0) and the
-zip must contain `ytm-tui.ico` (CI verifies).
+zip must contain `yututui.ico` (CI verifies).
 
 ## 8. Fast re-test after a fix
 

@@ -76,14 +76,14 @@ pub(in crate::app) fn spotify_auth_url_status(
 ) -> String {
     if opened && copied {
         t!(
-            "Approve ytm-tui in the browser (link copied as fallback)",
-            "브라우저에서 ytm-tui를 승인해 주세요 (링크는 예비용으로 복사했어요)"
+            "Approve YuTuTui! in the browser (link copied as fallback)",
+            "브라우저에서 YuTuTui!를 승인해 주세요 (링크는 예비용으로 복사했어요)"
         )
         .to_owned()
     } else if opened {
         t!(
-            "Approve ytm-tui in the browser",
-            "브라우저에서 ytm-tui를 승인해 주세요"
+            "Approve YuTuTui! in the browser",
+            "브라우저에서 YuTuTui!를 승인해 주세요"
         )
         .to_owned()
     } else if copied {

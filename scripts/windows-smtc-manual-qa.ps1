@@ -42,7 +42,7 @@ if (-not $EvidenceDir) {
     $EvidenceDir = Join-Path $RepoRoot "target\windows-smtc-manual-qa-$stamp"
 }
 
-$ExpectedAumid = "io.github.ochi.ytm-tui"
+$ExpectedAumid = "io.github.ochi.yututui"
 $IdentityKeyPath = "HKCU:\Software\Classes\AppUserModelId\$ExpectedAumid"
 $results = [ordered]@{}
 $createdYttPid = $null
@@ -90,7 +90,7 @@ function Get-ProbeSnapshot {
 
 function Get-OurSession {
     param([object]$Snapshot)
-    return @($Snapshot.sessions | Where-Object { $_.is_ytm_tui }) | Select-Object -First 1
+    return @($Snapshot.sessions | Where-Object { $_.is_yututui }) | Select-Object -First 1
 }
 
 # Poll the probe until $Check (given the snapshot) returns truthy, or time out.
@@ -171,14 +171,14 @@ try {
     # --- G2a: identity registration (idempotent; HKCU only) ------------------------------
     $identityKeyExistedBefore = Test-Path -LiteralPath $IdentityKeyPath
     $results["identity_key_existed_before"] = $identityKeyExistedBefore
-    $icon = Join-Path $RepoRoot "assets\icons\ytm-tui.ico"
+    $icon = Join-Path $RepoRoot "assets\icons\yututui.ico"
     Assert-CaptureSuccess (Invoke-Capture -Name "register-media-identity" -File $YttPath -Arguments @("register-media-identity", "--icon", $icon))
     Save-Text -Name "identity-registry.txt" -Text ((Get-ItemProperty -Path $IdentityKeyPath | Out-String)) | Out-Null
 
     # --- baseline: no session before anything plays (EAGER=false) ------------------------
     $baseline = Get-ProbeSnapshot -Name "baseline"
     if ($null -ne (Get-OurSession $baseline)) {
-        throw "a ytm-tui GSMTC session exists before ytt was launched — stale session from a previous run?"
+        throw "a yututui GSMTC session exists before ytt was launched — stale session from a previous run?"
     }
 
     # --- launch + first play --------------------------------------------------------------
@@ -202,7 +202,7 @@ try {
     # --- G2: identity; G3: exactly one session, no mpv session ---------------------------
     $results["identity_aumid"] = $session.source_app_user_model_id
     $results["identity_aumid_ok"] = ($session.source_app_user_model_id -eq $ExpectedAumid)
-    $ourCount = @($playing.sessions | Where-Object { $_.is_ytm_tui }).Count
+    $ourCount = @($playing.sessions | Where-Object { $_.is_yututui }).Count
     $mpvCount = @($playing.sessions | Where-Object { $_.source_app_user_model_id -match "mpv" }).Count
     $results["single_ytm_session"] = ($ourCount -eq 1)
     $results["no_mpv_session"] = ($mpvCount -eq 0)
@@ -266,7 +266,7 @@ try {
     Read-Host "Make the media surface visible, then press Enter to capture a screenshot"
     Capture-Screen -Name "flyout" | Out-Null
     Ask-Check -Key "flyout_shows_metadata_art" -Prompt "The media surface shows the correct title, artist, and album art"
-    Ask-Check -Key "flyout_identity_ok" -Prompt "It shows 'YtmTui' + our icon (NOT 'Unknown app' / a stale icon) — the G2 decision: if NO, note it; the .lnk fallback gets adopted per the plan doc §4"
+    Ask-Check -Key "flyout_identity_ok" -Prompt "It shows 'YuTuTui!' + our icon (NOT 'Unknown app' / a stale icon) — the G2 decision: if NO, note it; the .lnk fallback gets adopted per the plan doc §4"
     Ask-Check -Key "flyout_buttons_work" -Prompt "Previous / play-pause / next buttons on the surface control ytt"
     Ask-Check -Key "media_keys_work" -Prompt "Keyboard media keys (and a Bluetooth headset if available) control ytt while another app has focus"
     Read-Host "Lock the machine (Win+L), check the lock-screen media card (art/controls; 24H2: progress bar), unlock, then press Enter"

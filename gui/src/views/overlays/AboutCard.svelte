@@ -23,7 +23,7 @@
   }
 
   function openRepo() {
-    const url = 'https://github.com/Ochichan/ytm-tui';
+    const url = 'https://github.com/Ochichan/Yututui';
     if (demo) window.open(url, '_blank');
     else client.win('openUrl', { url });
   }
@@ -32,7 +32,7 @@
 <Modal onclose={() => (ui.aboutOpen = false)} width="420px">
   <div class="about">
     <p class="kaomoji mono" aria-hidden="true">=^..^=</p>
-    <h2>ytm-tui</h2>
+    <h2>YuTuTui!</h2>
     <p class="tag">{t('about.tagline')}</p>
     <dl class="mono">
       <dt>{t('about.desktop')}</dt>

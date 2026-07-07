@@ -18,7 +18,7 @@ use tokio::io::AsyncWriteExt;
 use crate::util::runtime;
 
 #[cfg(windows)]
-const MUTEX_NAME: &str = r"Local\io.github.ochi.ytm-tui.desktop";
+const MUTEX_NAME: &str = r"Local\io.github.ochi.yututui.desktop";
 
 /// The result of trying to become the single GUI instance.
 pub enum Acquire {
@@ -98,7 +98,7 @@ pub fn acquire() -> io::Result<Acquire> {
 #[cfg(unix)]
 fn lock_path() -> io::Result<PathBuf> {
     Ok(runtime::app_runtime_dir()?.join(format!(
-        "ytm-tui-desktop-{}.lock",
+        "yututui-desktop-{}.lock",
         runtime::filesystem_user_tag()
     )))
 }
@@ -108,12 +108,12 @@ fn activate_endpoint() -> io::Result<String> {
     let tag = runtime::filesystem_user_tag();
     #[cfg(windows)]
     {
-        Ok(format!(r"\\.\pipe\ytm-tui-desktop-activate-{tag}"))
+        Ok(format!(r"\\.\pipe\yututui-desktop-activate-{tag}"))
     }
     #[cfg(unix)]
     {
         Ok(runtime::app_runtime_dir()?
-            .join(format!("ytm-tui-desktop-activate-{tag}.sock"))
+            .join(format!("yututui-desktop-activate-{tag}.sock"))
             .to_string_lossy()
             .into_owned())
     }
@@ -124,7 +124,7 @@ fn activate_endpoint() -> io::Result<String> {
 pub fn spawn_activate_listener(on_activate: impl Fn() + Send + 'static) -> io::Result<()> {
     let endpoint = activate_endpoint()?;
     std::thread::Builder::new()
-        .name("ytt-desktop-activate".to_string())
+        .name("yututray-activate".to_string())
         .spawn(move || {
             let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

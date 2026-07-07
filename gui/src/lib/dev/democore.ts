@@ -1,4 +1,4 @@
-// The demo core — a stateful in-page stand-in for a real ytm-tui core, used whenever the
+// The demo core — a stateful in-page stand-in for a real yututui core, used whenever the
 // app runs outside the Rust shell (`npm run dev`, plain browser, Playwright). It speaks
 // the same envelopes as bridge.rs and actually *behaves*: transport commands mutate real
 // state, snapshots push back, tracks end and auto-advance. This is the fixture vehicle
@@ -70,7 +70,7 @@ const CATALOG: TrackModel[] = [
   track('demo-006', 'Tailwind', 'Nimbus Nine', 'Cirrus', 216_000),
   track('demo-007', '수요일의 츄르', '골골송협동조합', '간식의 계보', 174_000, { favorite: true }),
   track('demo-008', 'Nine Lives, One Take', 'Alley Cat Analog', 'Rooftop Sessions', 241_000),
-  track('demo-009', 'ON AIR · 밤샘 코딩 라디오', 'ytm-tui.fm', null, null, {
+  track('demo-009', 'ON AIR · 밤샘 코딩 라디오', 'yututui.fm', null, null, {
     source: 'radio_browser',
     watch_url: null,
   }),
@@ -272,11 +272,11 @@ function defaultSettings(): SettingsModelV8 {
       jamendo_enabled: false,
       internet_archive_enabled: true,
       radio_browser_enabled: true,
-      audius_app_name: 'ytm-tui',
+      audius_app_name: 'yututui',
       jamendo_client_id: null,
     },
     ui: { language: 'en', mouse: true, album_art: true, romanized_titles: false },
-    storage: { download_dir: '~/Music/ytm-tui', cookies_file: null, download_concurrency: 3 },
+    storage: { download_dir: '~/Music/yututui', cookies_file: null, download_concurrency: 3 },
     // Core defaults: every effect off, pause-unfocused on, 30 fps (the generic setter mutates
     // this block on `apply { group: 'animations' }`, like every other group).
     animations: defaultAnimations(),
@@ -310,7 +310,7 @@ export class DemoCoreTransport implements Transport {
   #searchIndex = new Map<string, TrackModel>();
   // Fake radio stations for the radio_likes / radio_history library scopes.
   #stations: TrackModel[] = [
-    track('radio-1', 'ON AIR · 밤샘 코딩 라디오', 'ytm-tui.fm', null, null, {
+    track('radio-1', 'ON AIR · 밤샘 코딩 라디오', 'yututui.fm', null, null, {
       source: 'radio_browser',
       watch_url: null,
     }),

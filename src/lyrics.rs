@@ -146,7 +146,7 @@ where
     F: Fn(LyricsEvent) + Send + Sync + 'static,
 {
     let client = reqwest::Client::builder()
-        .user_agent("ytm-tui/0.1 (https://github.com/ytm-tui/ytm-tui)")
+        .user_agent("yututui/0.1 (https://github.com/Ochichan/Yututui)")
         .timeout(LYRICS_TIMEOUT)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());

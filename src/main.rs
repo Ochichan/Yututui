@@ -1,4 +1,4 @@
-use ytm_tui::{
+use yututui::{
     ai, api, app, artwork, auth_cli, config, daemon, deps, doctor, download, downloads, event,
     i18n, library, logging, lyrics, media, notify, persist, player, playlists, remote, resolver,
     romanize, runtime, scrobble, session, signals, station, tools, transfer, tui, ui, update, zoom,
@@ -117,7 +117,7 @@ fn main() -> Result<()> {
                     .collect();
                 std::process::exit(tools::cli::run(&rest));
             }
-            // App update check — reports whether a newer ytm-tui release exists and how to
+            // App update check — reports whether a newer YuTuTui! release exists and how to
             // upgrade for this install method. One-shot, no terminal, like `doctor`/`tools`.
             "update" => {
                 let rest: Vec<String> = std::env::args_os()
@@ -127,7 +127,7 @@ fn main() -> Result<()> {
                 std::process::exit(update::cli::run(&rest));
             }
             // Hidden maintenance command (run by install.ps1 / Scoop post_install): registers
-            // the AppUserModelId so the Windows media flyout shows "YtmTui" + icon instead of
+            // the AppUserModelId so the Windows media flyout shows "YuTuTui!" + icon instead of
             // "Unknown app". Kept out of --help; errors out on other platforms.
             "register-media-identity" => {
                 let rest: Vec<String> = std::env::args_os()
@@ -304,7 +304,7 @@ fn cached_halfblocks_art_picker() -> Option<ratatui_image::picker::Picker> {
     }
     let path = art_picker_cache_path()?;
     // No-symlink, size-bounded read (the cache is one short line); bypasses raw std::fs.
-    let bytes = ytm_tui::util::safe_fs::read_no_symlink_limited(&path, 64 * 1024).ok()?;
+    let bytes = yututui::util::safe_fs::read_no_symlink_limited(&path, 64 * 1024).ok()?;
     let contents = String::from_utf8(bytes).ok()?;
     let mut parts = contents.trim().split('\t');
     let version = parts.next()?;
@@ -334,11 +334,11 @@ fn store_halfblocks_art_picker_cache() {
     };
     let contents = format!("v1\t{}\thalfblocks\t{now}\n", terminal_probe_cache_key());
     // Atomic, private (0600), no-symlink write; also creates the cache dir (0700) if needed.
-    let _ = ytm_tui::util::safe_fs::write_private_atomic(&path, contents.as_bytes());
+    let _ = yututui::util::safe_fs::write_private_atomic(&path, contents.as_bytes());
 }
 
 fn art_picker_cache_path() -> Option<std::path::PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui")
+    directories::ProjectDirs::from("", "", "yututui")
         .map(|dirs| dirs.cache_dir().join("art-picker.cache"))
 }
 
@@ -591,7 +591,7 @@ async fn run(
     zoom: zoom::ZoomHandle,
 ) -> Result<()> {
     // Resolve cross-platform dirs; logging + PID registry degrade gracefully if absent.
-    let dirs = directories::ProjectDirs::from("", "", "ytm-tui");
+    let dirs = directories::ProjectDirs::from("", "", "yututui");
     let _log_guard = dirs.as_ref().and_then(|d| {
         let dir = d.cache_dir();
         std::fs::create_dir_all(dir).ok()?;
@@ -674,8 +674,8 @@ async fn run(
     if scan_truncated {
         app.status.text = format!(
             "{} {scan_limit} {}",
-            ytm_tui::t!("Showing first", "처음"),
-            ytm_tui::t!(
+            yututui::t!("Showing first", "처음"),
+            yututui::t!(
                 "download files; more are hidden",
                 "개 다운로드 파일만 표시됨; 일부는 숨김"
             )
@@ -693,14 +693,14 @@ async fn run(
             app.status.kind = app::StatusKind::Info;
             app.status.text = format!(
                 "{} ({} {}, {} {})",
-                ytm_tui::t!(
+                yututui::t!(
                     "Saved playlists repaired",
                     "저장된 플레이리스트를 정리했어요"
                 ),
                 playlist_repair.playlists_removed,
-                ytm_tui::t!("lists removed", "개 목록 제거"),
+                yututui::t!("lists removed", "개 목록 제거"),
                 playlist_repair.songs_removed,
-                ytm_tui::t!("tracks removed", "곡 제거")
+                yututui::t!("tracks removed", "곡 제거")
             );
         }
     }
@@ -766,14 +766,14 @@ async fn run(
     // events from becoming unbounded memory growth; high-frequency producers coalesce
     // before this boundary where possible.
     let (worker_tx, mut worker_rx) =
-        runtime::channel(ytm_tui::util::backpressure::OWNER_EVENT_QUEUE);
+        runtime::channel(yututui::util::backpressure::OWNER_EVENT_QUEUE);
     persist.set_event_sink(runtime::sink(worker_tx.clone(), RuntimeEvent::Persist));
 
     // Latest-only in behavior: the bounded inbox caps memory and the drain loop below
     // skips to the newest request whenever multiple resizes are already waiting.
-    let (art_resize_tx, mut art_resize_rx) = ytm_tui::util::backpressure::bounded_channel::<
+    let (art_resize_tx, mut art_resize_rx) = yututui::util::backpressure::bounded_channel::<
         ResizeRequest,
-    >(ytm_tui::util::backpressure::ART_RESIZE_QUEUE);
+    >(yututui::util::backpressure::ART_RESIZE_QUEUE);
     app.set_art_resize_tx(art_resize_tx);
     let art_resize_msg_tx = worker_tx.clone();
     tokio::spawn(async move {
@@ -1156,7 +1156,7 @@ mod tests {
     use std::sync::{Mutex, MutexGuard};
     use std::time::{Duration, Instant};
 
-    use ytm_tui::app::App;
+    use yututui::app::App;
 
     use ratatui_image::picker::ProtocolType;
 

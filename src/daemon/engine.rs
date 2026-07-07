@@ -2340,7 +2340,7 @@ fn local_neighbor_score(song: &Song, seed_artist_key: &str, sig: &Signals) -> f3
 }
 
 fn data_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|dirs| dirs.data_dir().to_path_buf())
+    directories::ProjectDirs::from("", "", "yututui").map(|dirs| dirs.data_dir().to_path_buf())
 }
 
 #[cfg(test)]

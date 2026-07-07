@@ -88,7 +88,7 @@ where
         return;
     }
     let client = reqwest::Client::builder()
-        .user_agent("ytm-tui/1 (https://github.com/Ochichan/ytm-tui)")
+        .user_agent("yututui/1 (https://github.com/Ochichan/Yututui)")
         .timeout(FETCH_TIMEOUT)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
@@ -128,7 +128,7 @@ where
 }
 
 fn cache_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|dirs| dirs.cache_dir().join("media-art"))
+    directories::ProjectDirs::from("", "", "yututui").map(|dirs| dirs.cache_dir().join("media-art"))
 }
 
 /// Resolve a track key to its cached artwork file, if one exists. The cache layout is
@@ -263,7 +263,7 @@ mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "ytm-tui-media-artwork-{name}-{}",
+            "yututui-media-artwork-{name}-{}",
             std::process::id()
         ))
     }

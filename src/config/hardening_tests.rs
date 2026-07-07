@@ -34,7 +34,7 @@ fn netscape_cookies_reject_lookalike_domains_and_header_breakers() {
 fn default_cookies_file_lives_under_audio_dir() {
     assert_eq!(
         ytm_dir_under_audio_dir(PathBuf::from("/Users/alice/Music")).join("cookies.txt"),
-        PathBuf::from("/Users/alice/Music/ytm-tui/cookies.txt")
+        PathBuf::from("/Users/alice/Music/yututui/cookies.txt")
     );
 }
 
@@ -42,7 +42,7 @@ fn default_cookies_file_lives_under_audio_dir() {
 fn default_download_dir_lives_under_audio_dir() {
     assert_eq!(
         ytm_dir_under_audio_dir(PathBuf::from("/Users/alice/Music")),
-        PathBuf::from("/Users/alice/Music/ytm-tui")
+        PathBuf::from("/Users/alice/Music/yututui")
     );
 }
 
@@ -61,7 +61,7 @@ fn configured_cookies_file_overrides_default() {
 #[test]
 fn existing_cookies_file_requires_a_present_file() {
     let missing = std::env::temp_dir().join(format!(
-        "ytm-tui-missing-cookies-{}-{:?}.txt",
+        "yututui-missing-cookies-{}-{:?}.txt",
         std::process::id(),
         std::thread::current().id()
     ));
@@ -83,7 +83,7 @@ fn existing_cookies_file_requires_a_present_file() {
 #[test]
 fn existing_cookies_file_keeps_a_present_file() {
     let path = std::env::temp_dir().join(format!(
-        "ytm-tui-present-cookies-{}-{:?}.txt",
+        "yututui-present-cookies-{}-{:?}.txt",
         std::process::id(),
         std::thread::current().id()
     ));
@@ -104,7 +104,7 @@ fn existing_cookies_file_keeps_a_present_file() {
 #[test]
 fn existing_cookies_file_rejects_symlink() {
     let root = std::env::temp_dir().join(format!(
-        "ytm-tui-symlink-cookies-{}-{:?}",
+        "yututui-symlink-cookies-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
@@ -134,7 +134,7 @@ fn existing_cookies_file_rejects_symlink() {
 #[test]
 fn existing_cookies_file_rejects_oversized_file() {
     let path = std::env::temp_dir().join(format!(
-        "ytm-tui-oversized-cookies-{}-{:?}.txt",
+        "yututui-oversized-cookies-{}-{:?}.txt",
         std::process::id(),
         std::thread::current().id()
     ));
@@ -160,7 +160,7 @@ fn existing_cookies_file_rejects_oversized_file() {
 #[test]
 fn external_tool_cookies_are_imported_to_private_data_dir() {
     let root = std::env::temp_dir().join(format!(
-        "ytm-tui-import-cookies-{}-{:?}",
+        "yututui-import-cookies-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
@@ -205,7 +205,7 @@ fn external_tool_cookies_are_imported_to_private_data_dir() {
 #[test]
 fn external_tool_cookies_fall_back_to_strict_source_without_data_dir() {
     let path = std::env::temp_dir().join(format!(
-        "ytm-tui-source-cookies-{}-{:?}.txt",
+        "yututui-source-cookies-{}-{:?}.txt",
         std::process::id(),
         std::thread::current().id()
     ));

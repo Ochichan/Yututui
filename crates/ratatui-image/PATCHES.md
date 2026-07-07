@@ -1,4 +1,4 @@
-# ytm-tui ratatui-image Patch Notes
+# yututui ratatui-image Patch Notes
 
 This directory vendors `ratatui-image` 11.0.6 through the root `[patch.crates-io]` entry.
 The fork is intentionally narrow and should stay easy to rebase onto a future upstream release.
@@ -19,7 +19,7 @@ The fork is intentionally narrow and should stay easy to rebase onto a future up
 - Sixel and iTerm2 encodes stamp the anchor cell with a monotonic redraw tag so freshly rebuilt
   protocols are not skipped by ratatui's diffing.
 
-All local code changes should include a nearby `ytm-tui patch` comment. CI runs
+All local code changes should include a nearby `yututui patch` comment. CI runs
 `scripts/check-ratatui-image-patch.sh` to catch accidental removal of the path patch, base-version
 drift, or missing patch markers.
 
@@ -27,7 +27,7 @@ drift, or missing patch markers.
 
 1. Replace this directory with the desired upstream `ratatui-image` release.
 2. Reapply the four local patch groups above.
-3. Keep `ytm-tui patch` comments next to each local behavior change.
+3. Keep `yututui patch` comments next to each local behavior change.
 4. Update the upstream base version in this file and in `scripts/check-ratatui-image-patch.sh`.
 5. Run:
 

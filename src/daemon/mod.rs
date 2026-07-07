@@ -92,7 +92,7 @@ impl std::fmt::Display for DaemonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DaemonError::StandaloneOwner => {
-                write!(f, "ytm-tui is already running in standalone TUI mode")
+                write!(f, "YuTuTui! is already running in standalone TUI mode")
             }
             DaemonError::InspectOwner(message) => {
                 write!(f, "could not inspect current owner: {message}")
@@ -148,18 +148,18 @@ async fn run_command(command: DaemonCommand) -> i32 {
 async fn start_cli(resume: bool) -> i32 {
     match start_daemon(StartOptions::cli(resume)).await {
         Ok(StartOutcome::AlreadyRunning) => {
-            println!("ytm-tui daemon is already running.");
+            println!("YuTuTui! daemon is already running.");
             EXIT_OK
         }
         Ok(StartOutcome::Resumed) => {
-            println!("ytm-tui daemon resumed the last session.");
+            println!("YuTuTui! daemon resumed the last session.");
             EXIT_OK
         }
         Ok(StartOutcome::Started) => {
             if resume {
-                println!("ytm-tui daemon started and resumed the last session.");
+                println!("YuTuTui! daemon started and resumed the last session.");
             } else {
-                println!("ytm-tui daemon started.");
+                println!("YuTuTui! daemon started.");
             }
             EXIT_OK
         }
@@ -503,7 +503,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
 
     let server = match server::bind_or_detect(false).await {
         BindOutcome::AlreadyRunning => {
-            eprintln!("ytt daemon: ytm-tui is already running.");
+            eprintln!("ytt daemon: YuTuTui! is already running.");
             return EXIT_USAGE;
         }
         BindOutcome::Unavailable => {
@@ -717,7 +717,7 @@ async fn status(json: bool) -> i32 {
 async fn stop_cli() -> i32 {
     match stop_daemon().await {
         Ok(()) => {
-            println!("ytm-tui daemon stopped.");
+            println!("YuTuTui! daemon stopped.");
             EXIT_OK
         }
         Err(e) => {
@@ -976,7 +976,7 @@ fn spawn_daemon_process(options: &StartOptions) -> Result<(), DaemonError> {
 }
 
 fn init_daemon_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
-    let dirs = directories::ProjectDirs::from("", "", "ytm-tui")?;
+    let dirs = directories::ProjectDirs::from("", "", "yututui")?;
     let dir = dirs.cache_dir().join("logs");
     std::fs::create_dir_all(&dir).ok()?;
     let guard = crate::logging::init_named(&dir, "daemon.log");
@@ -991,7 +991,9 @@ async fn wait_until_ready() -> Result<(), String> {
     loop {
         let last_error = match current_status().await {
             Ok(status) if status.owner_mode == InstanceMode::Daemon => return Ok(()),
-            Ok(_) => return Err("another ytm-tui owner appeared while starting daemon".to_string()),
+            Ok(_) => {
+                return Err("another YuTuTui! owner appeared while starting daemon".to_string());
+            }
             Err(e) => e.human_message(),
         };
 

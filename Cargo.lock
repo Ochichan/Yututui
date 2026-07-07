@@ -6104,8 +6104,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "ytm-tui"
-version = "1.6.21"
+name = "ytmapi-rs"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be6bec7065618bd9f3e8913456134fee6e3162363d6b69a819348808f3f2004a"
+dependencies = [
+ "chrono",
+ "const_format",
+ "futures",
+ "itertools",
+ "json-crawler",
+ "rand 0.10.1",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tokio",
+]
+
+[[package]]
+name = "yututui"
+version = "1.6.22"
 dependencies = [
  "anyhow",
  "base64",
@@ -6150,25 +6169,6 @@ dependencies = [
  "windows-sys 0.61.2",
  "wry",
  "ytmapi-rs",
-]
-
-[[package]]
-name = "ytmapi-rs"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be6bec7065618bd9f3e8913456134fee6e3162363d6b69a819348808f3f2004a"
-dependencies = [
- "chrono",
- "const_format",
- "futures",
- "itertools",
- "json-crawler",
- "rand 0.10.1",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha1",
- "tokio",
 ]
 
 [[package]]

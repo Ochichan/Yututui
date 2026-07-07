@@ -30,7 +30,7 @@ pub fn socket_endpoint() -> io::Result<String> {
     #[cfg(unix)]
     {
         Ok(runtime::app_runtime_dir()?
-            .join(format!("ytm-tui-remote-{}.sock", user_tag()))
+            .join(format!("yututui-remote-{}.sock", user_tag()))
             .to_string_lossy()
             .into_owned())
     }
@@ -46,7 +46,7 @@ pub fn alt_socket_endpoint(pid: u32) -> io::Result<String> {
     #[cfg(unix)]
     {
         Ok(runtime::app_runtime_dir()?
-            .join(format!("ytm-tui-remote-{}-{}.sock", user_tag(), pid))
+            .join(format!("yututui-remote-{}-{}.sock", user_tag(), pid))
             .to_string_lossy()
             .into_owned())
     }
@@ -54,7 +54,7 @@ pub fn alt_socket_endpoint(pid: u32) -> io::Result<String> {
 
 /// Path to the instance descriptor (endpoint + token), beside the socket.
 pub fn instance_path() -> io::Result<PathBuf> {
-    Ok(runtime::app_runtime_dir()?.join(format!("ytm-tui-remote-{}.json", user_tag())))
+    Ok(runtime::app_runtime_dir()?.join(format!("yututui-remote-{}.json", user_tag())))
 }
 
 fn legacy_socket_endpoint() -> String {
@@ -65,7 +65,7 @@ fn legacy_socket_endpoint() -> String {
     #[cfg(unix)]
     {
         runtime::legacy_runtime_base()
-            .join(format!("ytm-tui-remote-{}.sock", user_tag()))
+            .join(format!("yututui-remote-{}.sock", user_tag()))
             .to_string_lossy()
             .into_owned()
     }
@@ -73,16 +73,16 @@ fn legacy_socket_endpoint() -> String {
 
 #[cfg(any(windows, test))]
 fn windows_socket_endpoint(user_tag: &str) -> String {
-    format!(r"\\.\pipe\ytm-tui-remote-{user_tag}")
+    format!(r"\\.\pipe\yututui-remote-{user_tag}")
 }
 
 #[cfg(any(windows, test))]
 fn windows_alt_socket_endpoint(user_tag: &str, pid: u32) -> String {
-    format!(r"\\.\pipe\ytm-tui-remote-{user_tag}-{pid}")
+    format!(r"\\.\pipe\yututui-remote-{user_tag}-{pid}")
 }
 
 fn legacy_instance_path() -> PathBuf {
-    runtime::legacy_runtime_base().join(format!("ytm-tui-remote-{}.json", user_tag()))
+    runtime::legacy_runtime_base().join(format!("yututui-remote-{}.json", user_tag()))
 }
 
 /// Publish the instance descriptor so `ytt -r` clients can find + authenticate to us.
@@ -170,8 +170,8 @@ mod tests {
         let primary = windows_socket_endpoint("User123");
         let alt = windows_alt_socket_endpoint("User123", 42);
 
-        assert_eq!(primary, r"\\.\pipe\ytm-tui-remote-User123");
-        assert_eq!(alt, r"\\.\pipe\ytm-tui-remote-User123-42");
+        assert_eq!(primary, r"\\.\pipe\yututui-remote-User123");
+        assert_eq!(alt, r"\\.\pipe\yututui-remote-User123-42");
         assert_ne!(primary, alt);
     }
 

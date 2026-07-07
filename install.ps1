@@ -1,19 +1,19 @@
-# ytm-tui installer (Windows) — makes `ytt` runnable from any terminal, no manual setup.
-# Release/source installs also place the `ytt-desktop` tray companion beside it.
+# YuTuTui! installer (Windows) — makes `ytt` runnable from any terminal, no manual setup.
+# Release/source installs also place the `yututray` tray companion beside it.
 #
-#   irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Ochichan/Yututui/main/install.ps1 | iex
 #                                                            # download a prebuilt — no clone needed
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1   # from a clone: dist\ or a release zip
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 --build   # force a source build (needs Rust)
 #
 # Pin a version with  $env:YTT_VERSION = 'v1.5.8'  (default: the latest release).
 # Adds the install dir to your user PATH and checks for the mpv / yt-dlp / ffmpeg runtime tools.
-# (On Windows the one-command path is Scoop:  scoop install ytm-tui.)
+# (On Windows the one-command path is Scoop:  scoop install yututui.)
 
 $ErrorActionPreference = 'Stop'
 $Bin = 'ytt'
-$DesktopBin = 'ytt-desktop'
-$RepoSlug = 'Ochichan/ytm-tui'
+$DesktopBin = 'yututray'
+$RepoSlug = 'Ochichan/Yututui'
 
 # $PSScriptRoot is reliably set for script-file execution; fall back to the CWD when the script
 # is run via -Command / Invoke-Expression (where $MyInvocation.MyCommand.Path is $null).
@@ -41,10 +41,10 @@ function Install-File($srcExe) {
     $dest = Join-Path $script:InstallDir "$Bin.exe"
     Copy-Item $srcExe $dest -Force
     # The media-flyout icon rides along when the source ships it (release zips carry
-    # ytm-tui.ico at the root; older archives simply don't have it).
-    $srcIcon = Join-Path (Split-Path $srcExe -Parent) 'ytm-tui.ico'
+    # yututui.ico at the root; older archives simply don't have it).
+    $srcIcon = Join-Path (Split-Path $srcExe -Parent) 'yututui.ico'
     if (Test-Path $srcIcon) {
-        Copy-Item $srcIcon (Join-Path $script:InstallDir 'ytm-tui.ico') -Force
+        Copy-Item $srcIcon (Join-Path $script:InstallDir 'yututui.ico') -Force
     }
     Ok "Installed -> $dest"
 
@@ -60,7 +60,7 @@ function Install-File($srcExe) {
 # Download the prebuilt zip from GitHub Releases, verify its SHA-256 against checksums.txt,
 # extract ytt.exe, and install it. Only an x64 build ships (it also runs on ARM64 via emulation).
 function Install-Download {
-    $archive = 'ytm-tui-windows-x64.zip'
+    $archive = 'yututui-windows-x64.zip'
     $ver  = if ($env:YTT_VERSION) { $env:YTT_VERSION } else { 'latest' }
     $base = "https://github.com/$RepoSlug/releases"
     if ($ver -eq 'latest') {
@@ -100,7 +100,7 @@ function Install-Download {
 # Build from a checkout with cargo; sets $script:InstallDir.
 function Install-ViaCargo {
     if (-not (Test-Path (Join-Path $ScriptDir 'Cargo.toml'))) {
-        Die "Not a ytm-tui checkout, so there's nothing to build.`n  Use Scoop ( scoop install ytm-tui ), or clone the repo and re-run."
+        Die "Not a YuTuTui! checkout, so there's nothing to build.`n  Use Scoop ( scoop install yututui ), or clone the repo and re-run."
     }
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         Die "Rust (cargo) is not installed or not on PATH - required for --build.`n  Install Rust: https://rustup.rs  then re-run."
@@ -168,7 +168,7 @@ else {
 }
 
 # --- register the Windows media identity ------------------------------------------------
-# Names the OS media flyout entry ("YtmTui" + icon instead of "Unknown app"). Idempotent;
+# Names the OS media flyout entry ("YuTuTui!" + icon instead of "Unknown app"). Idempotent;
 # writes only HKCU\Software\Classes\AppUserModelId. Version-gated because on older builds
 # an unknown subcommand falls through to launching the TUI, which must never happen inside
 # this script (e.g. YTT_VERSION pinned to a pre-1.6 release).
@@ -181,8 +181,8 @@ if ("$verLine" -match '(\d+)\.(\d+)\.(\d+)') {
 }
 if ($supportsIdentity) {
     $iconArgs = @()
-    $localIcon = Join-Path $InstallDir 'ytm-tui.ico'
-    $repoIcon = Join-Path $ScriptDir 'assets\icons\ytm-tui.ico'
+    $localIcon = Join-Path $InstallDir 'yututui.ico'
+    $repoIcon = Join-Path $ScriptDir 'assets\icons\yututui.ico'
     # Prefer the icon installed next to the exe; a source checkout (--build path) falls
     # back to the repo asset so cargo-built installs get an icon too.
     if (-not (Test-Path $localIcon) -and (Test-Path $repoIcon)) {
@@ -191,7 +191,7 @@ if ($supportsIdentity) {
     if (Test-Path $localIcon) { $iconArgs = @('--icon', $localIcon) }
     & $yttExe register-media-identity @iconArgs *> $null
     if ($LASTEXITCODE -eq 0) {
-        Ok "Media identity registered (Windows media flyout shows 'YtmTui')"
+        Ok "Media identity registered (Windows media flyout shows 'YuTuTui!')"
     }
     else {
         Warn "Media identity not registered (cosmetic only; flyout may show 'Unknown app')"

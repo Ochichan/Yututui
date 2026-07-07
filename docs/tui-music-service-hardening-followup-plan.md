@@ -1,11 +1,11 @@
-# ytm-tui TUI Music Hardening Follow-up Plan
+# YuTuTui! TUI Music Hardening Follow-up Plan
 
 Date: 2026-07-07
 
 Scope: follow-up plan after reviewing the supplied security/stability assessments against the
 local checkout. This plan targets improvements that are reasonable for a personal/local TUI music
 client with a background daemon and local remote-control companion. It does not try to turn
-`ytm-tui` into an Internet-exposed multi-tenant service.
+`yututui` into an Internet-exposed multi-tenant service.
 
 This is an ignored local planning document. For this hardening run, it is tracked by explicit user
 request so each completed implementation item can be checked and committed.
@@ -53,7 +53,7 @@ Recommended implementation order:
 
 ## Ground Rules
 
-- Do not launch `ytt`, `ytt-desktop`, or `cargo run`; the app can play real audio and write real
+- Do not launch `ytt`, `yututray`, or `cargo run`; the app can play real audio and write real
   user config. Runtime verification must use the project-owned isolated verify workflow.
 - Before editing playback, overlay, animation, packaging, or release-sensitive paths, re-read
   `.claude/harness/risk-map.md`.

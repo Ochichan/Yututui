@@ -19,8 +19,8 @@ pub enum ControlError {
 impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ControlError::NotRunning => write!(f, "ytm-tui is not running"),
-            ControlError::StaleInstance => write!(f, "the saved ytm-tui instance is stale"),
+            ControlError::NotRunning => write!(f, "YuTuTui! is not running"),
+            ControlError::StaleInstance => write!(f, "the saved YuTuTui! instance is stale"),
             ControlError::Rejected(reason) => write!(f, "command rejected: {reason}"),
             ControlError::MissingStatus => write!(f, "ytt returned success without a status body"),
             ControlError::Transport(msg) => write!(f, "{msg}"),
@@ -44,7 +44,7 @@ impl From<DaemonError> for ControlError {
     fn from(value: DaemonError) -> Self {
         match value {
             DaemonError::StandaloneOwner => ControlError::Rejected(
-                "ytm-tui is already running in standalone TUI mode".to_string(),
+                "YuTuTui! is already running in standalone TUI mode".to_string(),
             ),
             DaemonError::NotRunning(message) => ControlError::Transport(message),
             DaemonError::ResumeRejected(reason) => ControlError::Rejected(reason),
@@ -119,7 +119,9 @@ mod tests {
     fn daemon_errors_map_to_user_facing_control_errors() {
         assert_eq!(
             ControlError::from(DaemonError::StandaloneOwner),
-            ControlError::Rejected("ytm-tui is already running in standalone TUI mode".to_string())
+            ControlError::Rejected(
+                "YuTuTui! is already running in standalone TUI mode".to_string()
+            )
         );
         assert_eq!(
             ControlError::from(DaemonError::StopRejected("busy".to_string())),

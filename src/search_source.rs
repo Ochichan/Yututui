@@ -258,7 +258,7 @@ impl SearchConfig {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .unwrap_or("ytm-tui")
+            .unwrap_or("yututui")
             .to_owned()
     }
 

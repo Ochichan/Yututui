@@ -1,7 +1,7 @@
 name: build
 
 # Builds, lints, tests, and packages the current release surface on native runners (no
-# cross-compilation): `ytt` for every platform, plus the `ytt-desktop` tray companion on
+# cross-compilation): `ytt` for every platform, plus the `yututray` tray companion on
 # macOS and Windows only. Linux ships the TUI binary only; its desktop integration lives in
 # `ytt` via MPRIS. The full GUI app is intentionally not a release artifact yet. native-tls
 # means each OS uses its system TLS — Security.framework / SChannel / OpenSSL — so Windows
@@ -70,7 +70,7 @@ jobs:
         run: scripts/check-gui-types.sh
       - name: Feature graph invariants
         # `default` stays empty; `desktop` must not pull the build/test-only ts-export tooling
-        # into a shipped binary (keeps ytt/ytt-desktop free of ts-rs).
+        # into a shipped binary (keeps ytt/yututray free of ts-rs).
         run: |
           grep -qE '^default = \[\]' Cargo.toml
           if grep -E '^desktop = \[' Cargo.toml | grep -q 'ts-export'; then
@@ -102,27 +102,27 @@ jobs:
             name: macOS (arm64)
             target: aarch64-apple-darwin
             bin: ytt
-            archive: ytm-tui-macos-arm64.tar.gz
+            archive: yututui-macos-arm64.tar.gz
           - os: macos-15-intel
             name: macOS (x64)
             target: x86_64-apple-darwin
             bin: ytt
-            archive: ytm-tui-macos-x64.tar.gz
+            archive: yututui-macos-x64.tar.gz
           - os: windows-latest
             name: Windows (x64)
             target: x86_64-pc-windows-msvc
             bin: ytt.exe
-            archive: ytm-tui-windows-x64.zip
+            archive: yututui-windows-x64.zip
           - os: ubuntu-22.04
             name: Linux (x64)
             target: x86_64-unknown-linux-gnu
             bin: ytt
-            archive: ytm-tui-linux-x64.tar.gz
+            archive: yututui-linux-x64.tar.gz
           - os: ubuntu-22.04-arm
             name: Linux (arm64)
             target: aarch64-unknown-linux-gnu
             bin: ytt
-            archive: ytm-tui-linux-arm64.tar.gz
+            archive: yututui-linux-arm64.tar.gz
     steps:
       - uses: actions/checkout@v4
 
@@ -156,7 +156,7 @@ jobs:
       - name: Clippy tray helper
         if: runner.os != 'Linux'
         run: |
-          cargo clippy --features desktop --target ${{ matrix.target }} --bin ytt-desktop -- -D warnings
+          cargo clippy --features desktop --target ${{ matrix.target }} --bin yututray -- -D warnings
 
       - name: Test
         run: cargo test --target ${{ matrix.target }}
@@ -176,7 +176,7 @@ jobs:
           YTM_TUI_GUI_DIST: ${{ runner.temp }}/empty-gui-dist
         run: |
           mkdir -p "$YTM_TUI_GUI_DIST"
-          cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin ytt-desktop
+          cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin yututray
 
       - name: Smoke release CLI
         if: runner.os != 'Windows'
@@ -193,9 +193,9 @@ jobs:
       - name: Smoke macOS tray CLI
         if: runner.os == 'macOS'
         run: |
-          out="$(target/${{ matrix.target }}/release/ytt-desktop --version)"
+          out="$(target/${{ matrix.target }}/release/yututray --version)"
           echo "$out"
-          case "$out" in ytt-desktop\ *) ;; *) echo "unexpected --version output" >&2; exit 1 ;; esac
+          case "$out" in yututray\ *) ;; *) echo "unexpected --version output" >&2; exit 1 ;; esac
 
       - name: Release build (Windows + tray)
         if: runner.os == 'Windows'
@@ -203,7 +203,7 @@ jobs:
           YTM_TUI_GUI_DIST: ${{ runner.temp }}/empty-gui-dist
         run: |
           New-Item -ItemType Directory -Force -Path $env:YTM_TUI_GUI_DIST | Out-Null
-          cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin ytt-desktop
+          cargo build --release --features desktop --target ${{ matrix.target }} --bin ytt --bin yututray
 
       - name: Smoke Windows release CLI
         if: runner.os == 'Windows'
@@ -222,13 +222,13 @@ jobs:
           }
 
           $ytt = Get-PeSubsystem "target/${{ matrix.target }}/release/ytt.exe"
-          $tray = Get-PeSubsystem "target/${{ matrix.target }}/release/ytt-desktop.exe"
+          $tray = Get-PeSubsystem "target/${{ matrix.target }}/release/yututray.exe"
 
           if ($ytt -ne 3) {
             throw "ytt.exe should use the Windows console subsystem, found $ytt"
           }
           if ($tray -ne 2) {
-            throw "ytt-desktop.exe should use the Windows GUI subsystem, found $tray"
+            throw "yututray.exe should use the Windows GUI subsystem, found $tray"
           }
 
       - name: Validate Windows PowerShell scripts
@@ -310,7 +310,7 @@ jobs:
             "ytt-process-before.txt",
             "mpv-process-before.txt",
             "ytt-version.txt",
-            "ytt-desktop-version.txt",
+            "yututray-version.txt",
             "startup-status-before.txt",
             "startup-uninstall-before.txt",
             "startup-install.txt",
@@ -328,21 +328,21 @@ jobs:
             "mpv-after-idle-daemon.txt",
             "mpv-after-stop-daemon.txt",
             "tray-process-after-quit-tray.txt",
-            "ytm-tui.log",
+            "yututui.log",
             "daemon.log"
           )
           foreach ($name in $emptyFiles) {
             Write-Evidence -Name $name
           }
 
-          Write-Evidence -Name "startup-registry-installed.txt" -Text '"C:\fake\ytt-desktop.exe" --background'
-          Write-Evidence -Name "startup-status-installed.txt" -Text 'enabled: "C:\fake\ytt-desktop.exe" --background'
+          Write-Evidence -Name "startup-registry-installed.txt" -Text '"C:\fake\yututray.exe" --background'
+          Write-Evidence -Name "startup-status-installed.txt" -Text 'enabled: "C:\fake\yututray.exe" --background'
           Write-Evidence -Name "startup-status-after-uninstall.txt" -Text "disabled"
           Write-Evidence -Name "open-tui-plan.txt" -Text "wt.exe C:\fake\ytt.exe"
 
           $trayProcess = @"
           Id : 1234
-          ProcessName : ytt-desktop
+          ProcessName : yututray
           WorkingSet64 : 1048576
           PrivateMemorySize64 : 2097152
           "@
@@ -367,7 +367,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($name in @("ytt.exe", "ytt-desktop.exe")) {
+          foreach ($name in @("ytt.exe", "yututray.exe")) {
             $path = "target/${{ matrix.target }}/release/$name"
             $size = (Get-Item -LiteralPath $path).Length
             "{0}: {1:N0} bytes" -f $name, $size
@@ -405,8 +405,8 @@ jobs:
         timeout-minutes: 8
         run: ./scripts/windows-daemon-smoke.ps1 -Target "${{ matrix.target }}" -Profile release -AllowProfileMove
 
-      # macOS ships the bare binaries (ytt + the ytt-desktop menu-bar helper) alongside their
-      # YtmTui.app / YPlayer.app bundles (icon + Info.plist); Linux ships the bare binary
+      # macOS ships the bare binaries (ytt + the yututray menu-bar helper) alongside their
+      # YuTuTui!.app / YuTuTray!.app bundles (icon + Info.plist); Linux ships the bare binary
       # (MPRIS lives in ytt itself); Windows ships ytt.exe plus the notification-area helper.
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -417,7 +417,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           listing="$(tar -tzf "${{ matrix.archive }}")"
-          for entry in ytt ytt-desktop YtmTui.app/Contents/MacOS/ytt YPlayer.app/Contents/MacOS/ytt-desktop YPlayer.app/Contents/MacOS/ytt; do
+          for entry in ytt yututray YuTuTui!.app/Contents/MacOS/ytt YuTuTray!.app/Contents/MacOS/yututray YuTuTray!.app/Contents/MacOS/ytt; do
             if ! grep -qx "$entry" <<<"$listing"; then
               echo "macOS archive is missing $entry" >&2
               exit 1
@@ -436,9 +436,9 @@ jobs:
         run: |
           staging="$(mktemp -d)"
           cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$staging/"
-          cp packaging/linux/ytm-tui.desktop "$staging/"
-          cp assets/icons/ytm-tui.png "$staging/"
-          tar -czf "${{ matrix.archive }}" -C "$staging" "${{ matrix.bin }}" ytm-tui.desktop ytm-tui.png
+          cp packaging/linux/yututui.desktop "$staging/"
+          cp assets/icons/yututui.png "$staging/"
+          tar -czf "${{ matrix.archive }}" -C "$staging" "${{ matrix.bin }}" yututui.desktop yututui.png
 
       - name: Smoke Linux package CLI
         if: runner.os == 'Linux'
@@ -455,36 +455,36 @@ jobs:
         run: |
           Compress-Archive -Path `
             "target/${{ matrix.target }}/release/ytt.exe", `
-            "target/${{ matrix.target }}/release/ytt-desktop.exe", `
-            "assets/icons/ytm-tui.ico" `
+            "target/${{ matrix.target }}/release/yututray.exe", `
+            "assets/icons/yututui.ico" `
             -DestinationPath "${{ matrix.archive }}"
 
       - name: Verify Windows package contents
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $stage = Join-Path $env:RUNNER_TEMP "ytm-tui-windows-package"
+          $stage = Join-Path $env:RUNNER_TEMP "yututui-windows-package"
           Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
           Expand-Archive -Path "${{ matrix.archive }}" -DestinationPath $stage
 
-          foreach ($name in @("ytt.exe", "ytt-desktop.exe", "ytm-tui.ico")) {
+          foreach ($name in @("ytt.exe", "yututray.exe", "yututui.ico")) {
             $path = Join-Path $stage $name
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Windows archive is missing $name"
             }
           }
 
-          $manifest = Get-Content packaging/scoop/ytm-tui.json.tmpl -Raw | ConvertFrom-Json
-          foreach ($name in @("ytt.exe", "ytt-desktop.exe")) {
+          $manifest = Get-Content packaging/scoop/yututui.json.tmpl -Raw | ConvertFrom-Json
+          foreach ($name in @("ytt.exe", "yututray.exe")) {
             if ($manifest.bin -notcontains $name) {
               throw "Scoop manifest does not expose $name in bin"
             }
           }
           $shortcut = @($manifest.shortcuts) | Where-Object {
-            $_[0] -eq "ytt-desktop.exe" -and $_[1] -eq "YtmTui Tray"
+            $_[0] -eq "yututray.exe" -and $_[1] -eq "YuTuTray!"
           }
           if (-not $shortcut) {
-            throw "Scoop manifest is missing the YtmTui Tray shortcut"
+            throw "Scoop manifest is missing the YuTuTray! shortcut"
           }
           if (-not $manifest.post_install) {
             throw "Scoop manifest is missing the media-identity post_install"
@@ -541,13 +541,13 @@ jobs:
           expected="$RUNNER_TEMP/expected-artifacts.txt"
           actual="$RUNNER_TEMP/actual-artifacts.txt"
           printf '%s\n' \
-            ytm-tui-linux-arm64.tar.gz \
-            ytm-tui-linux-x64.tar.gz \
-            ytm-tui-macos-arm64.tar.gz \
-            ytm-tui-macos-x64.tar.gz \
-            ytm-tui-windows-x64.zip \
+            yututui-linux-arm64.tar.gz \
+            yututui-linux-x64.tar.gz \
+            yututui-macos-arm64.tar.gz \
+            yututui-macos-x64.tar.gz \
+            yututui-windows-x64.zip \
             > "$expected"
-          find . -maxdepth 1 \( -name 'ytm-tui-*.tar.gz' -o -name 'ytm-tui-*.zip' \) \
+          find . -maxdepth 1 \( -name 'yututui-*.tar.gz' -o -name 'yututui-*.zip' \) \
             -exec basename {} \; | sort > "$actual"
           sort -o "$expected" "$expected"
           if ! diff -u "$expected" "$actual"; then
@@ -555,24 +555,24 @@ jobs:
             exit 1
           fi
 
-          for archive in ytm-tui-linux-*.tar.gz; do
+          for archive in yututui-linux-*.tar.gz; do
             listing="$(tar -tzf "$archive")"
             grep -qx 'ytt' <<<"$listing" || { echo "::error::$archive is missing ytt"; exit 1; }
-            if grep -Eq 'ytt-desktop|YPlayer\.app|YtmTui\.app' <<<"$listing"; then
+            if grep -Eq 'yututray|YuTuTray!\.app|YuTuTui!\.app' <<<"$listing"; then
               echo "::error::$archive must ship Linux TUI only"
               exit 1
             fi
           done
 
-          for archive in ytm-tui-macos-*.tar.gz; do
+          for archive in yututui-macos-*.tar.gz; do
             listing="$(tar -tzf "$archive")"
-            for entry in ytt ytt-desktop YtmTui.app/Contents/MacOS/ytt YPlayer.app/Contents/MacOS/ytt-desktop YPlayer.app/Contents/MacOS/ytt; do
+            for entry in ytt yututray YuTuTui!.app/Contents/MacOS/ytt YuTuTray!.app/Contents/MacOS/yututray YuTuTray!.app/Contents/MacOS/ytt; do
               grep -qx "$entry" <<<"$listing" || { echo "::error::$archive is missing $entry"; exit 1; }
             done
           done
 
-          unzip -Z1 ytm-tui-windows-x64.zip | sort > "$RUNNER_TEMP/windows-zip.txt"
-          for entry in ytt.exe ytt-desktop.exe ytm-tui.ico; do
+          unzip -Z1 yututui-windows-x64.zip | sort > "$RUNNER_TEMP/windows-zip.txt"
+          for entry in ytt.exe yututray.exe yututui.ico; do
             grep -qx "$entry" "$RUNNER_TEMP/windows-zip.txt" || { echo "::error::Windows archive is missing $entry"; exit 1; }
           done
       - name: Assemble checksums.txt
@@ -585,15 +585,15 @@ jobs:
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
-            ytm-tui-*.tar.gz
-            ytm-tui-*.zip
+            yututui-*.tar.gz
+            yututui-*.zip
             checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
-            ytm-tui-*.tar.gz
-            ytm-tui-*.zip
+            yututui-*.tar.gz
+            yututui-*.zip
             install.sh
             install.ps1
             checksums.txt
@@ -623,29 +623,29 @@ jobs:
         run: |
           ver="${GITHUB_REF_NAME#v}"
           get() { awk -v f="$1" '$2 == f || $2 == "*"f {print $1}' checksums.txt; }
-          marm="$(get ytm-tui-macos-arm64.tar.gz)"; mx64="$(get ytm-tui-macos-x64.tar.gz)"
-          lx64="$(get ytm-tui-linux-x64.tar.gz)";    larm="$(get ytm-tui-linux-arm64.tar.gz)"
+          marm="$(get yututui-macos-arm64.tar.gz)"; mx64="$(get yututui-macos-x64.tar.gz)"
+          lx64="$(get yututui-linux-x64.tar.gz)";    larm="$(get yututui-linux-arm64.tar.gz)"
           for h in "$marm" "$mx64" "$lx64" "$larm"; do
             [ -n "$h" ] || { echo "::error::missing checksum in checksums.txt"; cat checksums.txt; exit 1; }
           done
           sed -e "s/__VERSION__/$ver/g" \
               -e "s/__SHA_MACOS_ARM64__/$marm/" -e "s/__SHA_MACOS_X64__/$mx64/" \
               -e "s/__SHA_LINUX_X64__/$lx64/"   -e "s/__SHA_LINUX_ARM64__/$larm/" \
-              packaging/homebrew/ytm-tui.rb.tmpl > ytm-tui.rb
-          echo "--- rendered Formula/ytm-tui.rb ---"; cat ytm-tui.rb
+              packaging/homebrew/yututui.rb.tmpl > yututui.rb
+          echo "--- rendered Formula/yututui.rb ---"; cat yututui.rb
       - name: Push to homebrew-tap
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
           if [ -z "$TAP_TOKEN" ]; then echo "TAP_TOKEN unset — skipping Homebrew publish"; exit 0; fi
           git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/Ochichan/homebrew-tap.git" tap
-          mkdir -p tap/Formula && cp ytm-tui.rb tap/Formula/ytm-tui.rb
+          mkdir -p tap/Formula && cp yututui.rb tap/Formula/yututui.rb
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/ytm-tui.rb
+          git add Formula/yututui.rb
           if git diff --cached --quiet; then echo "formula already up to date"; exit 0; fi
-          git commit -m "ytm-tui ${GITHUB_REF_NAME}"
+          git commit -m "yututui ${GITHUB_REF_NAME}"
           git push
 
   publish-scoop:
@@ -660,24 +660,24 @@ jobs:
       - name: Render manifest
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          sha="$(awk -v f="ytm-tui-windows-x64.zip" '$2 == f || $2 == "*"f {print $1}' checksums.txt)"
+          sha="$(awk -v f="yututui-windows-x64.zip" '$2 == f || $2 == "*"f {print $1}' checksums.txt)"
           [ -n "$sha" ] || { echo "::error::missing Windows checksum"; cat checksums.txt; exit 1; }
           sed -e "s/__VERSION__/$ver/g" -e "s/__SHA_WINDOWS_X64__/$sha/" \
-              packaging/scoop/ytm-tui.json.tmpl > ytm-tui.json
-          echo "--- rendered bucket/ytm-tui.json ---"; cat ytm-tui.json
+              packaging/scoop/yututui.json.tmpl > yututui.json
+          echo "--- rendered bucket/yututui.json ---"; cat yututui.json
       - name: Push to scoop-bucket
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
           if [ -z "$TAP_TOKEN" ]; then echo "TAP_TOKEN unset — skipping Scoop publish"; exit 0; fi
           git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/Ochichan/scoop-bucket.git" bucket
-          mkdir -p bucket/bucket && cp ytm-tui.json bucket/bucket/ytm-tui.json
+          mkdir -p bucket/bucket && cp yututui.json bucket/bucket/yututui.json
           cd bucket
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bucket/ytm-tui.json
+          git add bucket/yututui.json
           if git diff --cached --quiet; then echo "manifest already up to date"; exit 0; fi
-          git commit -m "ytm-tui ${GITHUB_REF_NAME}"
+          git commit -m "yututui ${GITHUB_REF_NAME}"
           git push
 
   publish-aur:
@@ -693,12 +693,12 @@ jobs:
           sed "s/__VERSION__/${GITHUB_REF_NAME#v}/g" packaging/aur/PKGBUILD.tmpl > PKGBUILD
           echo "--- rendered PKGBUILD ---"; cat PKGBUILD
       # The action runs in an Arch container: updpkgsums fills the real checksums, then it
-      # regenerates .SRCINFO and pushes to ssh://aur@aur.archlinux.org/ytm-tui-bin.git.
+      # regenerates .SRCINFO and pushes to ssh://aur@aur.archlinux.org/yututui-bin.git.
       - name: Publish to AUR
         if: env.AUR_SSH_PRIVATE_KEY != ''
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
-          pkgname: ytm-tui-bin
+          pkgname: yututui-bin
           pkgbuild: ./PKGBUILD
           commit_username: Ochichan
           commit_email: ohstar94@gmail.com

@@ -6,11 +6,11 @@ use std::path::Path;
 use std::path::PathBuf;
 
 #[cfg(windows)]
-const RUN_VALUE_NAME: &str = "YtmTui Tray";
+const RUN_VALUE_NAME: &str = "YuTuTray!";
 #[cfg(target_os = "macos")]
-const LAUNCH_AGENT_LABEL: &str = "io.github.ochi.ytm-tui.tray";
+const LAUNCH_AGENT_LABEL: &str = "io.github.ochi.yututui.tray";
 #[cfg(target_os = "macos")]
-const LAUNCH_AGENT_FILE: &str = "io.github.ochi.ytm-tui.tray.plist";
+const LAUNCH_AGENT_FILE: &str = "io.github.ochi.yututui.tray.plist";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupStatus {
@@ -46,16 +46,15 @@ impl fmt::Display for StartupError {
 impl std::error::Error for StartupError {}
 
 pub fn install() -> Result<String, StartupError> {
-    let exe = std::env::current_exe().map_err(|e| {
-        StartupError::CurrentExe(format!("could not resolve ytt-desktop path: {e}"))
-    })?;
+    let exe = std::env::current_exe()
+        .map_err(|e| StartupError::CurrentExe(format!("could not resolve yututray path: {e}")))?;
     install_for_exe(&exe)
 }
 
 /// Re-register the login-startup entry when it points at a stale exe path — a rename
-/// (`ytt-desktop` → `ytt-desktop`) or a moved install (docs/gui/03 §1.3). No-op unless startup
+/// (`yututray` → `yututray`) or a moved install (docs/gui/03 §1.3). No-op unless startup
 /// is currently enabled. The registry value-name / LaunchAgent label are stable (the
-/// `io.github.ochi.ytm-tui.tray` family), so re-installing overwrites rather than duplicates.
+/// `io.github.ochi.yututui.tray` family), so re-installing overwrites rather than duplicates.
 /// Best-effort: called on every desktop start so upgrades heal themselves silently.
 pub fn self_heal() {
     let Ok(exe) = std::env::current_exe() else {
@@ -371,9 +370,9 @@ fn macos_startup_paths() -> Result<MacStartupPaths, StartupError> {
     let base = directories::BaseDirs::new()
         .ok_or_else(|| StartupError::LaunchAgent("could not resolve home directory".to_string()))?;
     let launch_agents_dir = base.home_dir().join("Library/LaunchAgents");
-    let log_dir = directories::ProjectDirs::from("", "", "ytm-tui")
+    let log_dir = directories::ProjectDirs::from("", "", "yututui")
         .map(|dirs| dirs.cache_dir().join("logs"))
-        .unwrap_or_else(|| base.home_dir().join("Library/Caches/ytm-tui/logs"));
+        .unwrap_or_else(|| base.home_dir().join("Library/Caches/yututui/logs"));
     Ok(MacStartupPaths {
         plist: launch_agents_dir.join(LAUNCH_AGENT_FILE),
         launch_agents_dir,
@@ -479,10 +478,10 @@ mod tests {
 
     #[test]
     fn startup_command_quotes_exe_and_uses_background_flag() {
-        let command = startup_command_for(Path::new(r"C:\Program Files\YtmTui\ytt-desktop.exe"));
+        let command = startup_command_for(Path::new(r"C:\Program Files\YuTuTui!\yututray.exe"));
         assert_eq!(
             command,
-            r#""C:\Program Files\YtmTui\ytt-desktop.exe" --background"#
+            r#""C:\Program Files\YuTuTui!\yututray.exe" --background"#
         );
     }
 
@@ -490,15 +489,15 @@ mod tests {
     #[test]
     fn launch_agent_plist_round_trips_program_arguments() {
         let plist = launch_agent_plist(
-            Path::new("/Applications/YtmTuiTray.app/Contents/MacOS/ytt-desktop"),
-            Path::new("/Users/me/Library/Caches/ytm-tui/logs/out.log"),
-            Path::new("/Users/me/Library/Caches/ytm-tui/logs/err.log"),
+            Path::new("/Applications/YuTuTray!.app/Contents/MacOS/yututray"),
+            Path::new("/Users/me/Library/Caches/yututui/logs/out.log"),
+            Path::new("/Users/me/Library/Caches/yututui/logs/err.log"),
         );
         let args = launch_agent_program_arguments(&plist).unwrap();
         assert_eq!(
             args,
             vec![
-                "/Applications/YtmTuiTray.app/Contents/MacOS/ytt-desktop".to_string(),
+                "/Applications/YuTuTray!.app/Contents/MacOS/yututray".to_string(),
                 "--background".to_string()
             ]
         );

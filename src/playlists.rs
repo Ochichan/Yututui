@@ -1,7 +1,7 @@
 //! Local, on-disk playlists — the backend behind the DJ Gem assistant's playlist tools
 //! (`get_user_playlists`, `create_playlist`, `add_to_playlist`, `play_playlist`).
 //!
-//! ytm-tui has no account-sourced playlists, so these are *ours*: created and edited
+//! yututui has no account-sourced playlists, so these are *ours*: created and edited
 //! locally, persisted to `<data dir>/playlists.json`. Persistence mirrors [`crate::config`]
 //! and [`crate::library`]: pretty JSON written atomically (temp file + rename), with both
 //! the playlist count and per-playlist track count bounded at write time (priority #1:
@@ -324,7 +324,7 @@ fn sanitize_loaded_song(song: &mut Song) -> bool {
 }
 
 fn playlists_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().join("playlists.json"))
+    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("playlists.json"))
 }
 
 #[cfg(test)]

@@ -132,7 +132,7 @@ async fn run_actor(mut rx: UnboundedReceiver<TransferCmd>, emit: EventSink) {
 
 async fn run_auth(client_id: String, port: u16, emit: EventSink) {
     let http = reqwest::Client::builder()
-        .user_agent(format!("ytm-tui/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("yututui/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .build()
         .unwrap_or_default();
@@ -298,7 +298,7 @@ mod tests {
         Config {
             cookie: None,
             cookies_file: Some(
-                std::env::temp_dir().join(format!("ytm-tui-missing-cookie-{}", std::process::id())),
+                std::env::temp_dir().join(format!("yututui-missing-cookie-{}", std::process::id())),
             ),
             ..Config::default()
         }

@@ -65,7 +65,7 @@ fn runtime_base() -> PathBuf {
 
 /// Private app runtime directory. Unix callers get a `0700` directory.
 pub fn app_runtime_dir() -> io::Result<PathBuf> {
-    let dir = runtime_base().join(format!("ytm-tui-{}", uid_tag()));
+    let dir = runtime_base().join(format!("yututui-{}", uid_tag()));
     safe_fs::ensure_private_dir(&dir)?;
     Ok(dir)
 }
@@ -106,7 +106,7 @@ mod tests {
         assert!(
             dir.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("ytm-tui-"))
+                .is_some_and(|n| n.starts_with("yututui-"))
         );
     }
 }

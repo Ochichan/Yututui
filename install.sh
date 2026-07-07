@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# ytm-tui installer (macOS / Linux) — makes `ytt` runnable from anywhere, no manual setup.
-# macOS release/source installs also place the `ytt-desktop` menu-bar companion beside it.
+# YuTuTui! installer (macOS / Linux) — makes `ytt` runnable from anywhere, no manual setup.
+# macOS release/source installs also place the `yututray` menu-bar companion beside it.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Ochichan/Yututui/main/install.sh | bash
 #                                 # download a prebuilt binary for this OS/arch — no clone needed
 #   ./install.sh                  # from a clone: use ./dist or a release binary, else cargo build
 #   ./install.sh --build          # always build from source (needs Rust + a clone)
@@ -17,8 +17,8 @@
 set -euo pipefail
 
 BIN=ytt
-DESKTOP_BIN=ytt-desktop
-REPO_SLUG="Ochichan/ytm-tui"
+DESKTOP_BIN=yututray
+REPO_SLUG="Ochichan/Yututui"
 DOWNLOAD_TMP=""
 cleanup_download_tmp() {
   if [ -n "${DOWNLOAD_TMP:-}" ]; then
@@ -51,7 +51,7 @@ OS="$(uname -s)"
 ARCH="$(uname -m)"
 
 # Map (OS, ARCH) -> the prebuilt artifact we look for in dist/, if any. The name matches
-# the binary inside the CI release archive (ytm-tui-macos-arm64.tar.gz contains `ytt`), so
+# the binary inside the CI release archive (yututui-macos-arm64.tar.gz contains `ytt`), so
 # extracting that archive into dist/ enables the fast path. dist/ is gitignored, so a fresh
 # `git clone` won't have it and will fall through to the cargo build below.
 prebuilt_for_platform() {
@@ -82,9 +82,9 @@ install_macos_desktop_companion() {
 
   if [ -f "$src_dir/$DESKTOP_BIN" ]; then
     companion="$DESKTOP_BIN"
-  elif [ -f "$src_dir/ytt-tray" ]; then
+  elif [ -f "$src_dir/yututray" ]; then
     # Backward-compatible with older pinned release archives.
-    companion="ytt-tray"
+    companion="yututray"
   else
     return 0
   fi
@@ -101,7 +101,7 @@ install_macos_desktop_companion() {
 }
 
 # Install the Linux launcher entry + icon into the XDG user dirs so `ytt` appears in app
-# menus and MPRIS media widgets (KDE/GNOME) resolve its icon by the "ytm-tui" theme name.
+# menus and MPRIS media widgets (KDE/GNOME) resolve its icon by the "yututui" theme name.
 # User-level, matching the ~/.local/bin binary install; the cache refreshes are best-effort.
 install_linux_desktop() {
   local desktop_src="$1" icon_src="$2"
@@ -115,22 +115,22 @@ install_linux_desktop() {
   local icon_dir="$data_dir/icons/hicolor/512x512/apps"
   local pixmaps_dir="$data_dir/pixmaps"
   mkdir -p "$apps_dir" "$icon_dir" "$pixmaps_dir"
-  install -m 0644 "$desktop_src" "$apps_dir/ytm-tui.desktop"
-  install -m 0644 "$icon_src" "$icon_dir/ytm-tui.png"
-  install -m 0644 "$icon_src" "$pixmaps_dir/ytm-tui.png"
+  install -m 0644 "$desktop_src" "$apps_dir/yututui.desktop"
+  install -m 0644 "$icon_src" "$icon_dir/yututui.png"
+  install -m 0644 "$icon_src" "$pixmaps_dir/yututui.png"
   # Sweep away an icon left in the old non-standard 1024x1024 dir by earlier installers so
   # the stale copy doesn't linger (it was never resolvable anyway).
-  rm -f "$data_dir/icons/hicolor/1024x1024/apps/ytm-tui.png" 2>/dev/null || true
+  rm -f "$data_dir/icons/hicolor/1024x1024/apps/yututui.png" 2>/dev/null || true
   update-desktop-database "$apps_dir" >/dev/null 2>&1 || true
   gtk-update-icon-cache -q -t "$data_dir/icons/hicolor" >/dev/null 2>&1 || true
-  ok "Installed launcher + icon -> $apps_dir/ytm-tui.desktop"
+  ok "Installed launcher + icon -> $apps_dir/yututui.desktop"
 }
 
 install_via_cargo() {
   if [ ! -f Cargo.toml ]; then
-    die "No prebuilt for $OS/$ARCH on the Releases page, and this isn't a ytm-tui checkout.
+    die "No prebuilt for $OS/$ARCH on the Releases page, and this isn't a YuTuTui! checkout.
   Clone it and re-run, or build with cargo:
-    git clone https://github.com/$REPO_SLUG && cd ytm-tui && ./install.sh"
+    git clone https://github.com/$REPO_SLUG && cd Yututui && ./install.sh"
   fi
   command -v cargo >/dev/null 2>&1 || die \
 "No prebuilt binary for $OS/$ARCH and Rust isn't installed.
@@ -176,10 +176,10 @@ install_via_cargo() {
 # Empty when we don't ship a prebuilt for this platform.
 release_archive_for_platform() {
   case "$OS/$ARCH" in
-    Darwin/arm64)              echo "ytm-tui-macos-arm64.tar.gz" ;;
-    Darwin/x86_64)             echo "ytm-tui-macos-x64.tar.gz" ;;
-    Linux/x86_64)              echo "ytm-tui-linux-x64.tar.gz" ;;
-    Linux/aarch64|Linux/arm64) echo "ytm-tui-linux-arm64.tar.gz" ;;
+    Darwin/arm64)              echo "yututui-macos-arm64.tar.gz" ;;
+    Darwin/x86_64)             echo "yututui-macos-x64.tar.gz" ;;
+    Linux/x86_64)              echo "yututui-linux-x64.tar.gz" ;;
+    Linux/aarch64|Linux/arm64) echo "yututui-linux-arm64.tar.gz" ;;
     *)                         echo "" ;;
   esac
 }
@@ -224,14 +224,14 @@ download_release() {
   tar -xzf "$tmp/$archive" -C "$tmp" "$BIN" || die "archive did not contain $BIN"
   if [ "$OS" = Darwin ]; then
     tar -xzf "$tmp/$archive" -C "$tmp" "$DESKTOP_BIN" 2>/dev/null \
-      || tar -xzf "$tmp/$archive" -C "$tmp" ytt-tray 2>/dev/null \
+      || tar -xzf "$tmp/$archive" -C "$tmp" yututray 2>/dev/null \
       || true
   fi
   install_prebuilt "$tmp/$BIN"
   # Linux archives also carry a .desktop entry + icon (releases after v1.5.9); place them in
   # the XDG user dirs. Older archives just skip this quietly.
-  if [ "$OS" = Linux ] && tar -xzf "$tmp/$archive" -C "$tmp" ytm-tui.desktop ytm-tui.png 2>/dev/null; then
-    install_linux_desktop "$tmp/ytm-tui.desktop" "$tmp/ytm-tui.png"
+  if [ "$OS" = Linux ] && tar -xzf "$tmp/$archive" -C "$tmp" yututui.desktop yututui.png 2>/dev/null; then
+    install_linux_desktop "$tmp/yututui.desktop" "$tmp/yututui.png"
   fi
   rm -rf "$tmp"
   DOWNLOAD_TMP=""
@@ -274,18 +274,18 @@ else
     bash) [ "$OS" = Darwin ] && rc="$HOME/.bash_profile" || rc="$HOME/.bashrc" ;;
     *)    rc="$HOME/.profile" ;;
   esac
-  # Replace any previous ytm-tui block first, so re-runs (even with a different INSTALL_DIR,
+  # Replace any previous yututui block first, so re-runs (even with a different INSTALL_DIR,
   # e.g. switching between the prebuilt and cargo paths) never accumulate stale entries.
-  if [ -f "$rc" ] && grep -qsF '# >>> ytm-tui >>>' "$rc"; then
+  if [ -f "$rc" ] && grep -qsF '# >>> yututui >>>' "$rc"; then
     tmp="$(mktemp)"
-    awk '/# >>> ytm-tui >>>/{skip=1} skip && /# <<< ytm-tui <<</{skip=0; next} !skip' "$rc" > "$tmp" \
+    awk '/# >>> yututui >>>/{skip=1} skip && /# <<< yututui <<</{skip=0; next} !skip' "$rc" > "$tmp" \
       && cat "$tmp" > "$rc" && rm -f "$tmp"
   fi
   {
-    printf '\n# >>> ytm-tui >>>\n'
-    printf '# added by ytm-tui install.sh — remove this block to undo\n'
+    printf '\n# >>> yututui >>>\n'
+    printf '# added by YuTuTui! install.sh — remove this block to undo\n'
     printf '%s\n' "$line"
-    printf '# <<< ytm-tui <<<\n'
+    printf '# <<< yututui <<<\n'
   } >> "$rc"
   ok "Added $INSTALL_DIR to PATH in $rc"
   info "Activate it now (or just open a new terminal):"

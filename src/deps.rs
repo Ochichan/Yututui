@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn nonexistent_binary_is_not_on_path() {
-        assert!(!on_path("ytm-tui-definitely-not-a-real-binary-xyzzy"));
+        assert!(!on_path("yututui-definitely-not-a-real-binary-xyzzy"));
     }
 
     #[test]

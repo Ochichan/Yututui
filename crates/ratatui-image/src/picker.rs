@@ -280,7 +280,7 @@ impl Picker {
 
     /// Returns a new *stateful* protocol, overriding Kitty's z-index when Kitty is selected.
     ///
-    /// ytm-tui uses album art as a background layer with a very low Kitty z-index, but small
+    /// yututui uses album art as a background layer with a very low Kitty z-index, but small
     /// foreground graphics inside opaque popups need the normal text layer instead.
     pub fn new_resize_protocol_with_kitty_z_index(
         &self,

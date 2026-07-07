@@ -23,7 +23,7 @@
   const artUrl = $derived(
     track?.artwork?.path != null ? `ytm://app/art/${encodeURIComponent(track.artwork.key)}` : null,
   );
-  const hue = $derived(hueOf(track ? `${track.title}·${track.artist}` : 'ytm-tui'));
+  const hue = $derived(hueOf(track ? `${track.title}·${track.artist}` : 'yututui'));
 
   const rating = $derived(
     track == null ? 'none' : track.favorite ? 'up' : track.disliked ? 'down' : 'none',

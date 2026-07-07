@@ -3,7 +3,7 @@
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ytm_tui::app::{App, Mode};
+use yututui::app::{App, Mode};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -14,7 +14,7 @@ fn main() {
     let mut app = App::new(100);
     let songs: Vec<_> = (0..5)
         .map(|i| {
-            ytm_tui::api::Song::remote(
+            yututui::api::Song::remote(
                 format!("id{i}"),
                 format!("A Fairly Long Song Title {i}"),
                 "Some Artist",
@@ -37,7 +37,7 @@ fn main() {
 
     let backend = TestBackend::new(w, h);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| ytm_tui::ui::render(f, &app)).unwrap();
+    terminal.draw(|f| yututui::ui::render(f, &app)).unwrap();
     let buf = terminal.backend().buffer().clone();
     for y in 0..h {
         let mut line = String::new();

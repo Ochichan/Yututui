@@ -3,7 +3,7 @@
 //! method.
 //!
 //! Flow (see [`spawn_update_check`]): a background task resolves the latest stable release
-//! tag for `Ochichan/ytm-tui` via [`crate::util::github::latest_release_tag`] (the
+//! tag for `Ochichan/Yututui` via [`crate::util::github::latest_release_tag`] (the
 //! `releases/latest` redirect — no API rate limit), compares it to
 //! `env!("CARGO_PKG_VERSION")`, and emits an [`UpdateEvent::Checked`] the reducer turns
 //! into an About-window notice + brand dot + one-time toast. State (last check, last seen
@@ -26,10 +26,10 @@ use crate::t;
 use crate::util::safe_fs;
 
 /// Canonical releases page — the click target and CLI hint for every install method.
-pub const RELEASES_URL: &str = "https://github.com/Ochichan/ytm-tui/releases/latest";
+pub const RELEASES_URL: &str = "https://github.com/Ochichan/Yututui/releases/latest";
 
 /// The repo whose releases we track.
-pub const REPO: &str = "Ochichan/ytm-tui";
+pub const REPO: &str = "Ochichan/Yututui";
 
 /// How stale a successful check may get before we look again. Stable releases land weeks
 /// apart, so a day is plenty and keeps launches quiet.
@@ -188,23 +188,23 @@ fn detect_from(exe: Option<&Path>, os: Os) -> InstallMethod {
 pub fn update_instructions(method: InstallMethod) -> UpdateInstructions {
     let (command, note) = match method {
         InstallMethod::Homebrew => (
-            Some("brew update && brew upgrade ytm-tui"),
+            Some("brew update && brew upgrade yututui"),
             t!("Update with Homebrew.", "Homebrew로 업데이트하세요."),
         ),
         InstallMethod::Scoop => (
-            Some("scoop update ytm-tui"),
+            Some("scoop update yututui"),
             t!("Update with Scoop.", "Scoop으로 업데이트하세요."),
         ),
         InstallMethod::Aur => (
-            Some("yay -Syu ytm-tui-bin"),
+            Some("yay -Syu yututui-bin"),
             t!("Update with your AUR helper.", "AUR 헬퍼로 업데이트하세요."),
         ),
         InstallMethod::Nix => (
-            Some("nix profile upgrade ytm-tui"),
+            Some("nix profile upgrade yututui"),
             t!("Update with Nix.", "Nix로 업데이트하세요."),
         ),
         InstallMethod::Cargo => (
-            Some("cargo install ytm-tui --force"),
+            Some("cargo install yututui --force"),
             t!("Reinstall with cargo.", "cargo로 재설치하세요."),
         ),
         InstallMethod::InstallerUnix => (
@@ -215,7 +215,7 @@ pub fn update_instructions(method: InstallMethod) -> UpdateInstructions {
             ),
         ),
         InstallMethod::InstallerWindows => (
-            Some("scoop update ytm-tui"),
+            Some("scoop update yututui"),
             t!(
                 "Re-run install.ps1, or update with Scoop.",
                 "install.ps1을 다시 실행하거나 Scoop으로 업데이트하세요."
@@ -229,7 +229,7 @@ pub fn update_instructions(method: InstallMethod) -> UpdateInstructions {
             ),
         ),
         InstallMethod::Winget => (
-            Some("winget upgrade ytm-tui"),
+            Some("winget upgrade yututui"),
             t!("Update with winget.", "winget으로 업데이트하세요."),
         ),
         InstallMethod::Development => (None, t!("Development build.", "개발 빌드입니다.")),
@@ -287,7 +287,7 @@ struct UpdateState {
 }
 
 fn state_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().join("update.json"))
+    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("update.json"))
 }
 
 fn load_state() -> UpdateState {
@@ -486,16 +486,16 @@ mod tests {
         let cases = [
             ("/home/u/proj/target/debug/ytt", Os::Linux, Development),
             ("/home/u/proj/target/release/ytt", Os::Linux, Development),
-            ("/nix/store/abc-ytm-tui-1.6.1/bin/ytt", Os::Linux, Nix),
+            ("/nix/store/abc-yututui-1.6.1/bin/ytt", Os::Linux, Nix),
             (
-                "/opt/homebrew/Cellar/ytm-tui/1.6.1/bin/ytt",
+                "/opt/homebrew/Cellar/yututui/1.6.1/bin/ytt",
                 Os::Macos,
                 Homebrew,
             ),
             ("/usr/local/bin/ytt", Os::Macos, Homebrew),
             ("/home/linuxbrew/.linuxbrew/bin/ytt", Os::Linux, Homebrew),
             (
-                "C:/Users/u/scoop/apps/ytm-tui/current/ytt.exe",
+                "C:/Users/u/scoop/apps/yututui/current/ytt.exe",
                 Os::Windows,
                 Scoop,
             ),
@@ -506,7 +506,7 @@ mod tests {
                 Winget,
             ),
             (
-                "/Applications/YtmTui.app/Contents/MacOS/ytt",
+                "/Applications/YuTuTui!.app/Contents/MacOS/ytt",
                 Os::Macos,
                 MacAppBundle,
             ),
@@ -553,7 +553,7 @@ mod tests {
         // Package-manager methods carry a runnable command; download-only ones don't.
         assert_eq!(
             update_instructions(Homebrew).command,
-            Some("brew update && brew upgrade ytm-tui")
+            Some("brew update && brew upgrade yututui")
         );
         assert_eq!(update_instructions(MacAppBundle).command, None);
         assert_eq!(update_instructions(InstallerUnix).command, None);

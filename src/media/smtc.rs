@@ -181,7 +181,7 @@ fn init_session(sink: &CommandSink) -> Result<Session> {
         // An invisible **top-level** window (never shown). Message-only windows
         // (HWND_MESSAGE) are avoided: GetForWindow against them misbehaves.
         let instance = GetModuleHandleW(None).context("GetModuleHandleW failed")?;
-        let class_name = w!("ytm_tui_smtc_window");
+        let class_name = w!("yututui_smtc_window");
         let class = WNDCLASSW {
             lpfnWndProc: Some(default_wndproc),
             hInstance: instance.into(),
@@ -194,7 +194,7 @@ fn init_session(sink: &CommandSink) -> Result<Session> {
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class_name,
-            w!("ytm-tui media session"),
+            w!("yututui media session"),
             WS_OVERLAPPED,
             0,
             0,

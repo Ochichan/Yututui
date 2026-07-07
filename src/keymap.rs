@@ -403,8 +403,8 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
     (
         Action::ToggleAbout,
         "toggle_about",
-        "About ytm-tui",
-        "ytm-tui 정보",
+        "About YuTuTui!",
+        "YuTuTui! 정보",
     ),
     (
         Action::ToggleAnimations,

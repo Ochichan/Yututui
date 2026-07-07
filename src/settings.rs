@@ -258,7 +258,7 @@ pub enum Field {
     AutoplayOnStart,
     /// Manual "add to queue" inserts immediately after the current track instead of at the end.
     EnqueueNext,
-    /// Check GitHub on startup for a newer ytm-tui release (the About-card update notice).
+    /// Check GitHub on startup for a newer YuTuTui! release (the About-card update notice).
     UpdateCheck,
     /// A button (not a value): restores all keybindings to their built-in defaults.
     ResetKeybindings,
@@ -857,7 +857,7 @@ impl SettingsDraft {
                 .search
                 .audius_app_name
                 .clone()
-                .unwrap_or_else(|| t!("(default: ytm-tui)", "(기본값: ytm-tui)").to_owned()),
+                .unwrap_or_else(|| t!("(default: yututui)", "(기본값: yututui)").to_owned()),
             Field::SearchJamendo => toggle_str(self.search.jamendo),
             Field::JamendoClientId => self
                 .search

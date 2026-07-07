@@ -81,13 +81,13 @@ pub fn ipc_path() -> Result<String> {
     let pid = std::process::id();
     #[cfg(windows)]
     {
-        Ok(format!(r"\\.\pipe\ytm-tui-mpv-{pid}"))
+        Ok(format!(r"\\.\pipe\yututui-mpv-{pid}"))
     }
     #[cfg(unix)]
     {
         Ok(runtime::app_runtime_dir()
             .context("prepare mpv IPC runtime dir")?
-            .join(format!("ytm-tui-mpv-{pid}.sock"))
+            .join(format!("yututui-mpv-{pid}.sock"))
             .to_string_lossy()
             .into_owned())
     }
@@ -100,13 +100,13 @@ pub fn video_ipc_path(generation: u64) -> Result<String> {
     let pid = std::process::id();
     #[cfg(windows)]
     {
-        Ok(format!(r"\\.\pipe\ytm-tui-mpv-video-{pid}-{generation}"))
+        Ok(format!(r"\\.\pipe\yututui-mpv-video-{pid}-{generation}"))
     }
     #[cfg(unix)]
     {
         Ok(runtime::app_runtime_dir()
             .context("prepare mpv IPC runtime dir")?
-            .join(format!("ytm-tui-mpv-video-{pid}-{generation}.sock"))
+            .join(format!("yututui-mpv-video-{pid}-{generation}.sock"))
             .to_string_lossy()
             .into_owned())
     }

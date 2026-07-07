@@ -67,7 +67,7 @@ pub fn run_listenbrainz(token: Option<&str>) -> i32 {
                     None => println!("Token accepted. Listens will be submitted."),
                 }
                 println!(
-                    "If the ytm-tui daemon is running, restart it (`ytt daemon stop`, then `ytt daemon start`) to pick this up."
+                    "If the YuTuTui! daemon is running, restart it (`ytt daemon stop`, then `ytt daemon start`) to pick this up."
                 );
                 EXIT_OK
             }
@@ -89,7 +89,7 @@ async fn connect_lastfm() -> i32 {
         return EXIT_FAILED;
     };
     let http = reqwest::Client::builder()
-        .user_agent(format!("ytm-tui/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("yututui/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(15))
         .build()
         .unwrap_or_default();
@@ -103,7 +103,7 @@ async fn connect_lastfm() -> i32 {
         }
     };
     let url = client.auth_url(&token);
-    println!("Approve ytm-tui in your browser:");
+    println!("Approve YuTuTui! in your browser:");
     println!();
     println!("  {url}");
     println!();
@@ -135,7 +135,7 @@ async fn connect_lastfm() -> i32 {
                 }
                 println!("Connected as {username}. Scrobbling is on.");
                 println!(
-                    "If the ytm-tui daemon is running, restart it (`ytt daemon stop`, then `ytt daemon start`) to pick this up."
+                    "If the YuTuTui! daemon is running, restart it (`ytt daemon stop`, then `ytt daemon start`) to pick this up."
                 );
                 return EXIT_OK;
             }

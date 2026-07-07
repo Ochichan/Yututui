@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=assets/icons/ytm-tui.ico");
+    println!("cargo:rerun-if-changed=assets/icons/yututui.ico");
     // Embedded by the About card via `include_bytes!`; rebuild if the icon changes.
-    println!("cargo:rerun-if-changed=assets/icons/ytm-tui.png");
+    println!("cargo:rerun-if-changed=assets/icons/yututui-about.png");
 
-    // The GUI frontend dist embeds only into `ytt-desktop` (feature = "desktop"); the lean
+    // The GUI frontend dist embeds only into `yututray` (feature = "desktop"); the lean
     // `ytt` TUI never sees it. Emitting the table here keeps it out of every other build.
     if std::env::var_os("CARGO_FEATURE_DESKTOP").is_some() {
         emit_gui_assets();
@@ -22,7 +22,7 @@ fn main() {
     let icon = manifest_dir
         .join("assets")
         .join("icons")
-        .join("ytm-tui.ico")
+        .join("yututui.ico")
         .display()
         .to_string()
         .replace('\\', "/");
@@ -44,7 +44,7 @@ fn main() {
         nums.next().unwrap_or(0),
         nums.next().unwrap_or(0),
     );
-    let rc = out_dir.join("ytm-tui.rc");
+    let rc = out_dir.join("yututui.rc");
     let rc_source = format!(
         r#"1 ICON "{icon}"
 
@@ -56,8 +56,8 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "FileDescription", "YtmTui"
-      VALUE "ProductName", "ytm-tui"
+      VALUE "FileDescription", "YuTuTui!"
+      VALUE "ProductName", "yututui"
       VALUE "FileVersion", "{version}"
       VALUE "ProductVersion", "{version}"
       VALUE "CompanyName", "Ochichan"
@@ -77,16 +77,16 @@ END
         .manifest_required()
         .expect("failed to embed Windows icon resource");
 
-    // PerMonitorV2 DPI manifest, scoped to the `ytt-desktop` bin only (docs/gui/03 §7):
+    // PerMonitorV2 DPI manifest, scoped to the `yututray` bin only (docs/gui/03 §7):
     // WebView2 renders crisply on mixed-DPI setups. Passed as a per-bin LINKER input —
     // MSVC merges every /MANIFESTINPUT with rustc's default manifest — because a
     // crate-wide `1 24` resource would leak into `ytt.exe` and risk duplicate-manifest
     // link errors.
-    let manifest = out_dir.join("ytt-desktop.manifest");
-    std::fs::write(&manifest, DPI_MANIFEST).expect("failed to write ytt-desktop manifest");
-    println!("cargo:rustc-link-arg-bin=ytt-desktop=/MANIFEST:EMBED");
+    let manifest = out_dir.join("yututray.manifest");
+    std::fs::write(&manifest, DPI_MANIFEST).expect("failed to write yututray manifest");
+    println!("cargo:rustc-link-arg-bin=yututray=/MANIFEST:EMBED");
     println!(
-        "cargo:rustc-link-arg-bin=ytt-desktop=/MANIFESTINPUT:{}",
+        "cargo:rustc-link-arg-bin=yututray=/MANIFESTINPUT:{}",
         manifest.display()
     );
 }
@@ -210,7 +210,7 @@ fn content_type_for(path: &str) -> &'static str {
 }
 
 const STUB_INDEX_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\">\
-<title>YtmTui — dist missing</title>\
+<title>YuTuTui! — dist missing</title>\
 <style>body{font-family:system-ui,sans-serif;background:#1e1e2e;color:#cdd6f4;\
 display:grid;place-items:center;height:100vh;margin:0}code{background:#313244;\
 padding:2px 6px;border-radius:6px}</style></head><body><div>\
