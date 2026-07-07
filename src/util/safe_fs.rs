@@ -2,7 +2,7 @@
 //!
 //! Unix gets the security properties the callers care about: private directories are `0700`,
 //! private files are `0600`, and reads/appends use `O_NOFOLLOW` so a symlink is rejected instead
-//! of followed. Windows keeps the existing per-user-profile behaviour behind the same API.
+//! of followed. Windows rejects reparse-point final paths for the same private state APIs.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -14,6 +14,8 @@ use serde_json::{Map, Value};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 
 #[cfg(unix)]
 const PRIVATE_DIR_MODE: u32 = 0o700;
@@ -46,7 +48,26 @@ fn reject_symlink(path: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+#[cfg(windows)]
+fn is_windows_reparse_point(meta: &fs::Metadata) -> bool {
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(windows)]
+fn reject_symlink(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if is_windows_reparse_point(&meta) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing reparse-point path {}", path.display()),
+        )),
+        Ok(_) | Err(_) => Ok(()),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn reject_symlink(_path: &Path) -> io::Result<()> {
     Ok(())
 }
@@ -75,6 +96,16 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
         let mode = meta.permissions().mode() & 0o777;
         if mode != private_dir_mode() {
             fs::set_permissions(path, fs::Permissions::from_mode(private_dir_mode()))?;
+        }
+    }
+    #[cfg(windows)]
+    {
+        let meta = fs::symlink_metadata(path)?;
+        if is_windows_reparse_point(&meta) || !meta.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("refusing non-directory private path {}", path.display()),
+            ));
         }
     }
     Ok(())
@@ -130,7 +161,13 @@ fn create_private_file(path: &Path) -> io::Result<File> {
     opts.open(path)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn create_private_file(path: &Path) -> io::Result<File> {
+    reject_symlink(path)?;
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn create_private_file(path: &Path) -> io::Result<File> {
     OpenOptions::new().write(true).create_new(true).open(path)
 }
@@ -147,7 +184,13 @@ fn open_private_append(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn open_private_append(path: &Path) -> io::Result<File> {
+    reject_symlink(path)?;
+    OpenOptions::new().create(true).append(true).open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn open_private_append(path: &Path) -> io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
 }
@@ -189,7 +232,13 @@ fn open_no_symlink(path: &Path) -> io::Result<File> {
     opts.open(path)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn open_no_symlink(path: &Path) -> io::Result<File> {
+    reject_symlink(path)?;
+    OpenOptions::new().read(true).open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn open_no_symlink(path: &Path) -> io::Result<File> {
     OpenOptions::new().read(true).open(path)
 }
@@ -614,6 +663,24 @@ mod tests {
         let link = dir.join("link");
         fs::write(&real, b"secret").unwrap();
         symlink(&real, &link).unwrap();
+        assert!(read_no_symlink(&link).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reparse_point_reads_are_rejected() {
+        use std::os::windows::fs::symlink_file;
+
+        let dir = temp_root("reparse");
+        fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real");
+        let link = dir.join("link");
+        fs::write(&real, b"secret").unwrap();
+        if symlink_file(&real, &link).is_err() {
+            let _ = fs::remove_dir_all(dir);
+            return;
+        }
         assert!(read_no_symlink(&link).is_err());
         let _ = fs::remove_dir_all(dir);
     }
