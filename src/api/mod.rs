@@ -2,13 +2,13 @@
 //! yt-dlp (`ytsearch`) when anonymous — see [`ytmusic`]. A `MusicApi` trait + raw-Innertube
 //! fallback arrive when home/charts need endpoints ytmapi-rs lacks.
 
+mod url_guard;
 pub mod ytmusic;
 
 #[cfg(test)]
 mod hardening_tests;
 
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -18,6 +18,8 @@ use tokio::sync::mpsc::{self, Receiver, Sender, error::TrySendError};
 use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{CandidateSource, StreamingConfig, StreamingMode};
 use crate::util::sanitize;
+
+pub use url_guard::{validate_playable_url_destination, validate_playback_target_for_handoff};
 
 const STREAMING_YTDLP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const STREAMING_YTDLP_CACHE_MAX: usize = 512;
@@ -181,6 +183,12 @@ pub enum PlayableUrlError {
     Credentials,
     Localhost,
     BlockedIp(String),
+    DnsResolution { host: String },
+    DestinationBlockedIp { host: String, ip: String },
+    RedirectLimit { max: usize },
+    RedirectMissingLocation,
+    RedirectInvalid(String),
+    ProbeFailed(String),
 }
 
 impl std::fmt::Display for PlayableUrlError {
@@ -201,6 +209,27 @@ impl std::fmt::Display for PlayableUrlError {
             }
             PlayableUrlError::Localhost => write!(f, "playable URL host is local-only"),
             PlayableUrlError::BlockedIp(ip) => write!(f, "playable URL host is not public: {ip}"),
+            PlayableUrlError::DnsResolution { host } => {
+                write!(f, "playable URL host did not resolve: {host}")
+            }
+            PlayableUrlError::DestinationBlockedIp { host, ip } => {
+                write!(
+                    f,
+                    "playable URL host resolved to a non-public address: {host} -> {ip}"
+                )
+            }
+            PlayableUrlError::RedirectLimit { max } => {
+                write!(f, "playable URL exceeded {max} redirects")
+            }
+            PlayableUrlError::RedirectMissingLocation => {
+                write!(f, "playable URL redirect is missing a Location header")
+            }
+            PlayableUrlError::RedirectInvalid(error) => {
+                write!(f, "invalid playable URL redirect target: {error}")
+            }
+            PlayableUrlError::ProbeFailed(error) => {
+                write!(f, "playable URL destination probe failed: {error}")
+            }
         }
     }
 }
@@ -238,32 +267,12 @@ pub fn validate_playable_url(_source: SearchSource, raw: &str) -> Result<String,
     if normalized_host == "localhost" || normalized_host.ends_with(".localhost") {
         return Err(PlayableUrlError::Localhost);
     }
-    if let Ok(ip) = ip_host.parse::<IpAddr>()
-        && is_blocked_playable_ip(ip)
+    if let Ok(ip) = ip_host.parse::<std::net::IpAddr>()
+        && url_guard::is_blocked_playable_ip(ip)
     {
         return Err(PlayableUrlError::BlockedIp(ip.to_string()));
     }
     Ok(url.to_string())
-}
-
-fn is_blocked_playable_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_unspecified()
-                || ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.is_multicast()
-                || ip.is_broadcast()
-        }
-        IpAddr::V6(ip) => {
-            ip.is_unspecified()
-                || ip.is_loopback()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-                || ip.is_multicast()
-        }
-    }
 }
 
 impl Song {
@@ -1445,6 +1454,35 @@ mod tests {
             (
                 PlayableUrlError::BlockedIp("127.0.0.1".to_owned()),
                 "playable URL host is not public: 127.0.0.1",
+            ),
+            (
+                PlayableUrlError::DnsResolution {
+                    host: "stream.example".to_owned(),
+                },
+                "playable URL host did not resolve: stream.example",
+            ),
+            (
+                PlayableUrlError::DestinationBlockedIp {
+                    host: "stream.example".to_owned(),
+                    ip: "10.0.0.1".to_owned(),
+                },
+                "playable URL host resolved to a non-public address: stream.example -> 10.0.0.1",
+            ),
+            (
+                PlayableUrlError::RedirectLimit { max: 5 },
+                "playable URL exceeded 5 redirects",
+            ),
+            (
+                PlayableUrlError::RedirectMissingLocation,
+                "playable URL redirect is missing a Location header",
+            ),
+            (
+                PlayableUrlError::RedirectInvalid("bad URL".to_owned()),
+                "invalid playable URL redirect target: bad URL",
+            ),
+            (
+                PlayableUrlError::ProbeFailed("timeout".to_owned()),
+                "playable URL destination probe failed: timeout",
             ),
         ];
 

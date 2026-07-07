@@ -179,6 +179,10 @@ async fn run_download_with_program(
     let playback_target = song
         .playback_target_checked()
         .with_context(|| format!("invalid download target for {}", song.video_id))?;
+    let playback_target =
+        crate::api::validate_playable_url_destination(song.source, &playback_target)
+            .await
+            .with_context(|| format!("unsafe download target for {}", song.video_id))?;
     std::fs::create_dir_all(dir).with_context(|| format!("create download dir {dir:?}"))?;
 
     let mut cmd = crate::tools::ytdlp_command_for(program);

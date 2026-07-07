@@ -139,6 +139,15 @@ async fn resolve_url_with_program(
     watch_url: &str,
     cookies: Option<&std::path::Path>,
 ) -> Option<String> {
+    let watch_url = crate::api::validate_playable_url_destination(
+        crate::search_source::SearchSource::Youtube,
+        watch_url,
+    )
+    .await
+    .map_err(|error| {
+        tracing::warn!(%error, "refusing to resolve unsafe watch URL");
+    })
+    .ok()?;
     let mut cmd = crate::tools::ytdlp_command_for(program);
     cmd.args(["-f", "bestaudio", "-g", "--no-playlist"])
         .arg(watch_url);

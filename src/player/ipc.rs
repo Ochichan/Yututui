@@ -118,6 +118,14 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: Receiver<PlayerCmd>, emit: Even
                     request_id += 1;
                     let (json, label) = match cmd {
                         PlayerCmd::Load(url) => {
+                            let url = match crate::api::validate_playback_target_for_handoff(&url).await {
+                                Ok(url) => url,
+                                Err(error) => {
+                                    tracing::warn!(%error, "blocked unsafe playback URL");
+                                    emit(PlayerEvent::Error(format!("blocked playback URL: {error}")));
+                                    continue;
+                                }
+                            };
                             state.last_sent_time_sec = None;
                             state.last_sent_cache_sec = None;
                             state.duration_known = false;

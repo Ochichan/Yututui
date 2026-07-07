@@ -39,7 +39,7 @@ Recommended implementation order:
 
 ## Execution Checklist
 
-- [ ] P0-1: DNS and redirect-aware playable URL destination guard.
+- [x] P0-1: DNS and redirect-aware playable URL destination guard.
 - [x] P0-2: Replace artwork and resize unbounded queues.
 - [ ] P1-1: Cap TUI search, filter, and paste input; redact query logs.
 - [ ] P1-2: Add persist retry/backoff and bounded/latest-wins notification.
@@ -118,7 +118,23 @@ Recommended implementation order:
 
 ## P0-1: DNS And Redirect-Aware Playable URL Destination Guard
 
-Current evidence:
+Status: completed in this hardening run.
+
+Implemented:
+
+- Added `src/api/url_guard.rs` with DNS resolution checks, extra special-purpose IPv4/IPv6
+  blocking, IPv4-mapped IPv6 handling, and manual redirect probing with automatic redirects
+  disabled.
+- Added `validate_playable_url_destination` for arbitrary provider/direct/radio URLs and
+  `validate_playback_target_for_handoff` for mpv handoff.
+- Kept app-generated YouTube/googlevideo URLs on the existing typed/string policy to avoid adding
+  network probes to normal YouTube playback.
+- Enforced the guard before mpv `loadfile`, before download yt-dlp execution, and before resolver
+  yt-dlp execution.
+- Added unit coverage for special ranges, mixed DNS answers, redirect-target validation, trusted
+  YouTube handoff, and new error display strings.
+
+Original evidence:
 
 - `src/api/mod.rs:210-247` validates raw playable URL strings.
 - `src/api/mod.rs:249-267` blocks IP literals that are unspecified, loopback, private,
