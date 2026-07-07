@@ -581,6 +581,23 @@ mod tests {
     }
 
     #[test]
+    fn romanization_handles_assimilation_small_tsu_yoon_and_fullwidth_ascii() {
+        assert_eq!(romanize_text("막아"), "maga");
+        assert_eq!(romanize_text("먹다"), "meokda");
+        assert_eq!(romanize_text("きゃりー"), "kyarii");
+        assert_eq!(romanize_text("がっこう"), "gakkou");
+        assert_eq!(romanize_text("Ｈｅｌｌｏ！"), "Hello!");
+    }
+
+    #[test]
+    fn latinization_detection_is_limited_to_target_scripts() {
+        assert!(needs_latinization("좋은 날", "아이유"));
+        assert!(needs_latinization("夜に駆ける", "YOASOBI"));
+        assert!(!needs_latinization("Cafe del Mar", "Energy 52"));
+        assert!(!needs_latinization("Беги", "Кино"));
+    }
+
+    #[test]
     fn cache_uses_overlay_only_when_it_differs() {
         let song = Song::remote("vid", "아이유", "좋은 날", "3:00");
         let mut cache = RomanizeCache::default();
@@ -604,5 +621,68 @@ mod tests {
         }]));
         assert_eq!(cache.display_title(&song), "IU");
         assert_eq!(cache.display_artist(&song), "Joeun Nal");
+    }
+
+    #[test]
+    fn cache_skips_ascii_entries_and_tracks_revision_changes() {
+        let ascii = Song::remote("vid", "Plain Title", "Plain Artist", "3:00");
+        let mut cache = RomanizeCache::default();
+        assert_eq!(cache.rev(), 0);
+        assert!(!cache.ensure_local(&ascii));
+        assert_eq!(cache.display_title(&ascii), "Plain Title");
+        assert_eq!(cache.display_artist(&ascii), "Plain Artist");
+        assert_eq!(cache.rev(), 0);
+
+        let cjk = Song::remote("vid2", "밤편지", "아이유", "4:13");
+        assert!(cache.ensure_local(&cjk));
+        let after_insert = cache.rev();
+        assert!(after_insert > 0);
+        cache.clear();
+        assert!(cache.rev() > after_insert);
+        assert_eq!(cache.display_title(&cjk), "밤편지");
+    }
+
+    #[test]
+    fn gemini_candidate_respects_checked_and_quality_state() {
+        let song = Song::remote("vid", "밤편지", "아이유", "4:13");
+        let mut cache = RomanizeCache::default();
+
+        let candidate = cache.gemini_candidate(&song).expect("needs Gemini");
+        assert_eq!(candidate.title, "밤편지");
+        assert_eq!(candidate.artist, "아이유");
+
+        cache.ensure_local(&song);
+        assert!(cache.gemini_candidate(&song).is_some());
+        let key = key_for_song(&song);
+        assert!(cache.apply_gemini_results(&[RomanizedResult {
+            key: key.clone(),
+            title: "Bam Pyeonji".to_owned(),
+            artist: "IU".to_owned(),
+            confidence: Some(0.88),
+        }]));
+        assert!(cache.gemini_candidate(&song).is_none());
+
+        let unchanged = cache.apply_gemini_results(&[RomanizedResult {
+            key,
+            title: "Bam Pyeonji".to_owned(),
+            artist: "IU".to_owned(),
+            confidence: Some(0.88),
+        }]);
+        assert!(!unchanged, "same Gemini result must not bump the cache");
+    }
+
+    #[test]
+    fn empty_gemini_result_is_ignored_without_marking_checked() {
+        let song = Song::remote("vid", "아이유", "좋은 날", "3:00");
+        let mut cache = RomanizeCache::default();
+        let key = key_for_song(&song);
+
+        assert!(!cache.apply_gemini_results(&[RomanizedResult {
+            key,
+            title: "   ".to_owned(),
+            artist: "\n\t".to_owned(),
+            confidence: Some(0.1),
+        }]));
+        assert!(cache.gemini_candidate(&song).is_some());
     }
 }

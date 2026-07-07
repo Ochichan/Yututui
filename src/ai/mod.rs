@@ -1151,6 +1151,135 @@ mod tests {
         }
     }
 
+    fn romanize_item(key: &str, title: &str, artist: &str) -> RomanizeItem {
+        RomanizeItem {
+            key: key.to_owned(),
+            title: title.to_owned(),
+            artist: artist.to_owned(),
+        }
+    }
+
+    fn test_actor() -> AiActor {
+        AiActor {
+            client: GeminiClient::new("test-key").unwrap(),
+            model: GeminiModel::FlashLite,
+            emit: Arc::new(|_| {}),
+            call_times: VecDeque::new(),
+            history: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn ai_handle_sends_each_command_without_mutating_payloads() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = AiHandle { tx };
+
+        handle.ask("play something".to_owned(), Box::new(ctx()));
+        match rx.try_recv().unwrap() {
+            AiCmd::Ask { prompt, context } => {
+                assert_eq!(prompt, "play something");
+                assert_eq!(context.queue_len, 3);
+                assert_eq!(context.favorites, vec!["Fave — Artist"]);
+            }
+            _ => panic!("expected Ask command"),
+        }
+
+        handle.rerank("seed-video".to_owned(), "CANDS...".to_owned());
+        match rx.try_recv().unwrap() {
+            AiCmd::Rerank {
+                seed_video_id,
+                prompt,
+            } => {
+                assert_eq!(seed_video_id, "seed-video");
+                assert_eq!(prompt, "CANDS...");
+            }
+            _ => panic!("expected Rerank command"),
+        }
+
+        handle.summarize_feedback("SESSION|played|artist".to_owned());
+        match rx.try_recv().unwrap() {
+            AiCmd::SummarizeFeedback { digest } => {
+                assert_eq!(digest, "SESSION|played|artist");
+            }
+            _ => panic!("expected SummarizeFeedback command"),
+        }
+
+        let expected_items = vec![romanize_item("k0", "좋은 날", "아이유")];
+        handle.romanize(42, expected_items.clone());
+        match rx.try_recv().unwrap() {
+            AiCmd::Romanize { request_id, items } => {
+                assert_eq!(request_id, 42);
+                assert_eq!(items, expected_items);
+            }
+            _ => panic!("expected Romanize command"),
+        }
+
+        handle.set_model(GeminiModel::Latest);
+        match rx.try_recv().unwrap() {
+            AiCmd::SetModel(model) => assert_eq!(model, GeminiModel::Latest),
+            _ => panic!("expected SetModel command"),
+        }
+    }
+
+    #[test]
+    fn spawn_rejects_keys_that_cannot_be_sent_as_headers() {
+        assert!(
+            spawn("bad\r\nkey", GeminiModel::FlashLite, |_| {}).is_none(),
+            "invalid header bytes must fail before an actor is spawned"
+        );
+    }
+
+    #[test]
+    fn thinking_guard_clears_the_spinner_on_drop() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = Arc::clone(&seen);
+        let emit: EventSink = Arc::new(move |event| {
+            if let AiEvent::Thinking(value) = event {
+                captured.lock().unwrap().push(value);
+            }
+        });
+
+        {
+            let _guard = ThinkingGuard(emit);
+        }
+
+        assert_eq!(*seen.lock().unwrap(), vec![false]);
+    }
+
+    #[tokio::test]
+    async fn throttle_prunes_expired_calls_and_records_the_current_one() {
+        let mut actor = test_actor();
+        actor
+            .call_times
+            .push_back(Instant::now() - RATE_WINDOW - Duration::from_secs(1));
+        actor
+            .call_times
+            .push_back(Instant::now() - Duration::from_millis(5));
+
+        actor.throttle().await;
+
+        assert_eq!(actor.call_times.len(), 2);
+        assert!(
+            actor
+                .call_times
+                .iter()
+                .all(|time| time.elapsed() < RATE_WINDOW),
+            "expired calls are not allowed to count against the rolling limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn actor_run_applies_set_model_and_exits_when_channel_closes() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut actor = test_actor();
+        actor.model = GeminiModel::Flash;
+
+        tx.send(AiCmd::SetModel(GeminiModel::Latest)).unwrap();
+        drop(tx);
+
+        actor.run(rx).await;
+    }
+
     #[test]
     fn context_summary_includes_key_state() {
         let s = context_summary(&ctx());
@@ -1285,6 +1414,86 @@ mod tests {
         let props = &gc["responseSchema"]["properties"];
         assert!(props.get("down_artists").is_some());
         assert!(props.get("boost_artists").is_some());
+    }
+
+    #[test]
+    fn romanize_request_is_json_only_with_index_ids_and_thinking_off() {
+        let items = vec![
+            romanize_item("song-a", "좋은 날", "아이유"),
+            romanize_item("song-b", "アイドル", "YOASOBI"),
+        ];
+        let req = build_romanize_request(&items);
+
+        assert!(req.tools.is_none(), "romanizer must not expose tools");
+        let v = serde_json::to_value(&req).unwrap();
+        let prompt: serde_json::Value =
+            serde_json::from_str(v["contents"][0]["parts"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(prompt["items"][0]["id"], "0");
+        assert_eq!(prompt["items"][0]["title"], "좋은 날");
+        assert_eq!(prompt["items"][1]["id"], "1");
+        assert_eq!(prompt["items"][1]["artist"], "YOASOBI");
+
+        let gc = &v["generationConfig"];
+        assert_eq!(gc["responseMimeType"], "application/json");
+        assert_eq!(gc["thinkingConfig"]["thinkingBudget"], 0);
+        assert_eq!(gc["maxOutputTokens"], ROMANIZE_MAX_TOKENS);
+        let schema_item = &gc["responseSchema"]["properties"]["items"]["items"];
+        assert!(
+            schema_item["required"]
+                .as_array()
+                .unwrap()
+                .contains(&"id".into())
+        );
+        assert!(
+            v["systemInstruction"]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("MusicLatinizer")
+        );
+    }
+
+    #[test]
+    fn parse_romanized_titles_maps_ids_trims_and_clamps_confidence() {
+        let items = vec![
+            romanize_item("song-a", "좋은 날", "아이유"),
+            romanize_item("song-b", "Plain", "Artist"),
+            romanize_item("song-c", "밤편지", "아이유"),
+        ];
+        let parsed = parse_romanized_titles(
+            "```json\n{\"items\":[\
+             {\"id\":\"0\",\"title_latin\":\" Joheun Nal \",\"artist_latin\":\" IU \",\"confidence\":1.7},\
+             {\"id\":\"1\",\"title_latin\":\"\",\"artist_latin\":\"\"},\
+             {\"id\":\"2\",\"title_latin\":\"Bam Pyeonji\",\"artist_latin\":\"\",\"confidence\":-0.4}\
+             ]}\n```",
+            &items,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.len(), 2, "empty title+artist entries are ignored");
+        assert_eq!(parsed[0].key, "song-a");
+        assert_eq!(parsed[0].title, "Joheun Nal");
+        assert_eq!(parsed[0].artist, "IU");
+        assert_eq!(parsed[0].confidence, Some(1.0));
+        assert_eq!(parsed[1].key, "song-c");
+        assert_eq!(parsed[1].title, "Bam Pyeonji");
+        assert_eq!(parsed[1].artist, "");
+        assert_eq!(parsed[1].confidence, Some(0.0));
+    }
+
+    #[test]
+    fn parse_romanized_titles_rejects_unusable_payloads() {
+        let items = vec![romanize_item("song-a", "좋은 날", "아이유")];
+
+        assert!(parse_romanized_titles("not json", &items).is_none());
+        assert!(parse_romanized_titles(r#"{"items":{}}"#, &items).is_none());
+        assert!(
+            parse_romanized_titles(
+                r#"{"items":[{"id":"9","title_latin":"X","artist_latin":"Y"}]}"#,
+                &items
+            )
+            .is_none(),
+            "unknown ids would not map back to the original title key"
+        );
     }
 
     fn turn(role: HistoryRole, text: &str) -> HistoryTurn {
