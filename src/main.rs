@@ -11,6 +11,7 @@ use futures::StreamExt;
 use player::PlayerHandle;
 use ratatui_image::thread::ResizeRequest;
 use runtime::RuntimeEvent;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -42,6 +43,8 @@ fn main() -> Result<()> {
                     "       ytt transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
                 );
                 println!("       ytt doctor [-v]      Check your environment and exit");
+                println!("       ytt doctor terminal --json");
+                println!("                             Report terminal capability hints");
                 println!(
                     "       ytt tools <cmd>      Manage the app-managed yt-dlp (status, update)"
                 );
@@ -736,9 +739,8 @@ async fn run(
     // select! branch never resolves to `None`. Bounded to keep a burst of valid actor
     // events from becoming unbounded memory growth; high-frequency producers coalesce
     // before this boundary where possible.
-    let (worker_tx, mut worker_rx) = ytm_tui::util::backpressure::bounded_channel::<RuntimeEvent>(
-        ytm_tui::util::backpressure::OWNER_EVENT_QUEUE,
-    );
+    let (worker_tx, mut worker_rx) =
+        runtime::channel(ytm_tui::util::backpressure::OWNER_EVENT_QUEUE);
 
     // Latest-only in behavior: the drain loop below always skips to the newest request.
     let (art_resize_tx, mut art_resize_rx) = mpsc::unbounded_channel::<ResizeRequest>();
@@ -933,6 +935,8 @@ async fn run(
         None => (None, None),
     };
 
+    let mut pending_worker_msgs: VecDeque<Msg> = VecDeque::new();
+
     while !app.should_quit {
         if app.dirty {
             if draw_app_frame(terminal, &mut app, &mut perf)? {
@@ -947,59 +951,74 @@ async fn run(
         // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
         // a low-rate redraw scrubs IME preedit text that some terminals paint without
         // sending an input event to the app.
-        let msg = tokio::select! {
-            maybe = events.next() => match maybe {
-                // The translator maps physical mouse cells onto the zoom backend's
-                // virtual grid, so hit-testing (and double-click identity) stay correct
-                // while the UI is scaled.
-                Some(Ok(ev)) => {
-                    let (cs, rs) = zoom.mouse_scale();
-                    match input.translate(ev, cs, rs) {
-                        Some(m) => m,
-                        None => continue,
+        let msg = if let Some(msg) = pending_worker_msgs.pop_front() {
+            msg
+        } else {
+            tokio::select! {
+                maybe = events.next() => match maybe {
+                    // The translator maps physical mouse cells onto the zoom backend's
+                    // virtual grid, so hit-testing (and double-click identity) stay correct
+                    // while the UI is scaled.
+                    Some(Ok(ev)) => {
+                        let (cs, rs) = zoom.mouse_scale();
+                        match input.translate(ev, cs, rs) {
+                            Some(m) => m,
+                            None => continue,
+                        }
                     }
-                }
-                Some(Err(_)) => continue,
-                None => break,
-            },
-            Some(event) = worker_rx.recv() => {
-                // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here,
-                // between reducer turns, and never become a Msg — the Publisher emits
-                // the initial snapshots + reply from current state.
-                if let RuntimeEvent::Remote(remote::server::RemoteEvent::SessionSubscribe {
-                    session, frame_id, topics,
-                }) = event {
-                    if let Some(publisher) = publisher.as_mut() {
-                        publisher.handle_subscribe(&app.core_view(), &session, frame_id, &topics);
+                    Some(Err(_)) => continue,
+                    None => break,
+                },
+                Some(event) = worker_rx.recv() => {
+                    if event.is_telemetry_wake() {
+                        for event in worker_tx.drain_coalesced() {
+                            pending_worker_msgs.push_back(event.into());
+                        }
+                        if let Some(msg) = pending_worker_msgs.pop_front() {
+                            msg
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here,
+                        // between reducer turns, and never become a Msg — the Publisher emits
+                        // the initial snapshots + reply from current state.
+                        if let RuntimeEvent::Remote(remote::server::RemoteEvent::SessionSubscribe {
+                            session, frame_id, topics,
+                        }) = event {
+                            if let Some(publisher) = publisher.as_mut() {
+                                publisher.handle_subscribe(&app.core_view(), &session, frame_id, &topics);
+                            }
+                            continue;
+                        }
+                        event.into()
+                    }
+                },
+                Some(result) = player_ready_rx.recv() => {
+                    handles.handle_player_ready(result, &player_runtime, &mut app);
+                    if app.dirty {
+                        if draw_app_frame(terminal, &mut app, &mut perf)? {
+                            finish_draw_cycle(&mut app);
+                        }
+                        perf.maybe_log(&app);
                     }
                     continue;
-                }
-                event.into()
-            },
-            Some(result) = player_ready_rx.recv() => {
-                handles.handle_player_ready(result, &player_runtime, &mut app);
-                if app.dirty {
+                },
+                _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
                     if draw_app_frame(terminal, &mut app, &mut perf)? {
                         finish_draw_cycle(&mut app);
                     }
                     perf.maybe_log(&app);
-                }
-                continue;
-            },
-            _ = ime_scrub.tick(), if app.should_scrub_ime_preedit() => {
-                if draw_app_frame(terminal, &mut app, &mut perf)? {
-                    finish_draw_cycle(&mut app);
-                }
-                perf.maybe_log(&app);
-                continue;
-            },
-            _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
-            _ = anim_tick.tick(), if app.animation_active() => Msg::AnimTick,
-            _ = recording_tick.tick(), if app.recorder_active() => Msg::RecordingTick,
-            _ = media_pump.tick(), if media.wants_pump() => {
-                media.pump();
-                continue;
-            },
+                    continue;
+                },
+                _ = status_tick.tick(), if app.status_visible() => Msg::StatusTick,
+                _ = anim_tick.tick(), if app.animation_active() => Msg::AnimTick,
+                _ = recording_tick.tick(), if app.recorder_active() => Msg::RecordingTick,
+                _ = media_pump.tick(), if media.wants_pump() => {
+                    media.pump();
+                    continue;
+                },
+            }
         };
 
         let resized_artwork = matches!(&msg, Msg::ArtworkResized(_));

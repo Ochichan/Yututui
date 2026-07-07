@@ -185,7 +185,7 @@ impl App {
         self.playback.paused = true;
         self.playback.time_pos = None;
         self.playback.time_pos_at = None;
-        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
+        self.bump_position_epoch(PositionEpochReason::Stop);
         self.playback.stream_now_playing = None;
         self.anim.last_shown_sec = -1;
         // Dropping the loaded id makes the next play action reload from the start

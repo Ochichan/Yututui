@@ -7,6 +7,8 @@
 
 YouTube Music in your terminal — fast, keyboard-driven, no browser tab eating your RAM, no ads. All behind a three-letter command: `ytt`. Rust + ratatui. MIT.
 
+Public beta: stable enough for daily use, still moving fast.
+
 ### [▶ Live demo & the full feature tour → ochichan.github.io/ytm-tui](https://ochichan.github.io/ytm-tui/)
 
 > 🖼️ *Demo GIF coming soon.*
@@ -52,6 +54,13 @@ Start-at-login is opt-in: `ytt-desktop --install-startup`.
 
 > After a direct installer or source build, run `ytt doctor` to see what's missing.
 > **yt-dlp keeps itself fresh.** YouTube changes weekly, so `ytt` maintains its own current yt-dlp (SHA-256-verified from github.com) and uses whichever of {managed, system} is newer. Check with `ytt tools status --why`, update with `ytt tools update`, or pin a known-good binary with `ytt tools use system|managed|<path>`.
+
+## Terminal support
+
+- Terminal support varies by emulator; ytm-tui probes capabilities and falls back where possible.
+- Album art uses Kitty/Sixel/iTerm2 protocols when the terminal supports them, otherwise halfblocks or retro ASCII.
+- Text zoom, CJK/IME behavior, mouse reporting, and video overlay depend on terminal and OS support.
+- Check your environment with `ytt doctor terminal --json`; see the full [terminal compatibility matrix](docs/terminal-compatibility.md).
 
 ## Quick start
 
@@ -312,6 +321,7 @@ The app's own yt-dlp calls ignore your yt-dlp config file by default, so options
 | Worked yesterday, not today | YouTube changed something — `ytt tools update`, then `ytt tools status --why`; if a managed update is bad, `ytt tools use system`. |
 | A specific song won't play | It may need sign-in — see the cookies section above. |
 | No album art | Off by default: Settings → General → **Album art**, then restart. |
+| Album art or zoom behaves differently by terminal | Run `ytt doctor terminal --json` and compare with the [terminal matrix](docs/terminal-compatibility.md). |
 | No Control Center / SMTC / MPRIS entry | Settings → Playback → **OS media controls**; it publishes once something has played. |
 | Flyout shows "Unknown app" / two entries | Run `ytt register-media-identity` once (two entries = mpv's own media session; auto-disabled on mpv ≥ 0.39). |
 | DJ Gem won't respond | Add a free Gemini key in Settings → DJ Gem and switch **Enable DJ Gem** on. |

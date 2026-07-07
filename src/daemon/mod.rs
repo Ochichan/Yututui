@@ -3,8 +3,10 @@
 //! The daemon owns the primary remote descriptor and a headless mpv playback engine, so tray and
 //! `ytt -r` clients can control playback without a terminal UI.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -12,6 +14,9 @@ use tokio::sync::mpsc;
 use crate::remote::client::{self, ClientError};
 use crate::remote::proto::{InstanceMode, RemoteCommand, StatusSnapshot};
 use crate::remote::server::{self, BindOutcome, RemoteEvent};
+use crate::util::event_policy::{
+    EventKey as Key, EventLane as Lane, EventPolicy, LatestEventBuffer,
+};
 use crate::util::process::{self, ProcessProfile};
 
 mod engine;
@@ -183,16 +188,283 @@ enum DaemonEvent {
         updated: bool,
     },
     Signal,
+    TelemetryWake,
 }
 
-fn emit_daemon_event(tx: &mpsc::Sender<DaemonEvent>, event: DaemonEvent) -> bool {
+impl DaemonEvent {
+    fn policy(&self) -> EventPolicy {
+        match self {
+            DaemonEvent::Remote(
+                RemoteEvent::Command(_, _) | RemoteEvent::SessionSubscribe { .. },
+            ) => EventPolicy::MustReplyOrBusy {
+                lane: Lane::RemoteCommand,
+            },
+            DaemonEvent::Player(event) => match event {
+                crate::player::PlayerEvent::TimePos(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerTimePos,
+                },
+                crate::player::PlayerEvent::Duration(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerDuration,
+                },
+                crate::player::PlayerEvent::Paused(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerPaused,
+                },
+                crate::player::PlayerEvent::Volume(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerVolume,
+                },
+                crate::player::PlayerEvent::Metadata(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::WorkResult,
+                    key: Key::PlayerMetadata,
+                },
+                crate::player::PlayerEvent::CacheTime(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerCacheTime,
+                },
+                crate::player::PlayerEvent::AudioCodec(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerAudioCodec,
+                },
+                crate::player::PlayerEvent::FileFormat(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerFileFormat,
+                },
+                crate::player::PlayerEvent::Eof | crate::player::PlayerEvent::Error(_) => {
+                    EventPolicy::MustDeliver {
+                        lane: Lane::Control,
+                    }
+                }
+            },
+            DaemonEvent::Api(event) => match event {
+                crate::api::ApiEvent::ModeResolved { .. }
+                | crate::api::ApiEvent::TrackResolved { .. }
+                | crate::api::ApiEvent::PlaylistTracks { .. }
+                | crate::api::ApiEvent::PlaylistTracksError { .. } => EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                },
+                crate::api::ApiEvent::SearchResults { .. }
+                | crate::api::ApiEvent::SearchError { .. } => EventPolicy::DropIfStale {
+                    stale_key: Key::SearchRequest,
+                },
+                crate::api::ApiEvent::StreamingResults { .. }
+                | crate::api::ApiEvent::StreamingPreflighted { .. }
+                | crate::api::ApiEvent::StreamingError { .. } => EventPolicy::DropIfStale {
+                    stale_key: Key::StreamingSeed,
+                },
+                crate::api::ApiEvent::GuiSearchCompleted { .. } => EventPolicy::DropIfStale {
+                    stale_key: Key::GuiSearchTicket,
+                },
+            },
+            DaemonEvent::Media(_) => EventPolicy::MustDeliver {
+                lane: Lane::Control,
+            },
+            DaemonEvent::MediaArt(_) => EventPolicy::CoalesceLatest {
+                lane: Lane::Telemetry,
+                key: Key::MediaArtVideo,
+            },
+            DaemonEvent::Scrobble(_) => EventPolicy::BestEffort {
+                reason: "daemon scrobble notices are log-only",
+            },
+            DaemonEvent::YtdlpHeal { .. } => EventPolicy::DropIfStale {
+                stale_key: Key::YtdlpHealVideo,
+            },
+            DaemonEvent::Signal => EventPolicy::MustDeliver {
+                lane: Lane::Control,
+            },
+            DaemonEvent::TelemetryWake => EventPolicy::MustDeliver {
+                lane: Lane::Control,
+            },
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            DaemonEvent::Remote(_) => "remote",
+            DaemonEvent::Player(_) => "player",
+            DaemonEvent::Api(_) => "api",
+            DaemonEvent::Media(_) => "media",
+            DaemonEvent::MediaArt(_) => "media_art",
+            DaemonEvent::Scrobble(_) => "scrobble",
+            DaemonEvent::YtdlpHeal { .. } => "ytdlp_heal",
+            DaemonEvent::Signal => "signal",
+            DaemonEvent::TelemetryWake => "telemetry_wake",
+        }
+    }
+
+    fn is_telemetry_wake(&self) -> bool {
+        matches!(self, DaemonEvent::TelemetryWake)
+    }
+
+    fn telemetry_slot(&self) -> Option<DaemonTelemetrySlot> {
+        match self {
+            DaemonEvent::MediaArt(ready) => Some(DaemonTelemetrySlot::MediaArt(ready.key.clone())),
+            _ => match self.policy() {
+                EventPolicy::CoalesceLatest { key, .. } => Some(DaemonTelemetrySlot::Static(key)),
+                _ => None,
+            },
+        }
+    }
+}
+
+const DAEMON_TELEMETRY_SLOTS: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum DaemonTelemetrySlot {
+    Static(Key),
+    MediaArt(String),
+}
+
+#[derive(Clone)]
+struct DaemonEventSender {
+    tx: mpsc::Sender<DaemonEvent>,
+    telemetry: Arc<Mutex<LatestEventBuffer<DaemonTelemetrySlot, DaemonEvent>>>,
+}
+
+impl DaemonEventSender {
+    fn new(tx: mpsc::Sender<DaemonEvent>) -> Self {
+        Self {
+            tx,
+            telemetry: Arc::new(Mutex::new(LatestEventBuffer::new(DAEMON_TELEMETRY_SLOTS))),
+        }
+    }
+
+    fn drain_coalesced(&self) -> Vec<DaemonEvent> {
+        self.telemetry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+    }
+}
+
+fn emit_daemon_event(tx: &DaemonEventSender, event: DaemonEvent) -> bool {
+    let policy = event.policy();
+    let event_kind = event.kind();
+    if matches!(policy, EventPolicy::CoalesceLatest { .. }) {
+        return emit_daemon_coalesced(tx, event, event_kind, policy);
+    }
+    emit_daemon_direct(&tx.tx, event, event_kind, policy)
+}
+
+fn emit_daemon_direct(
+    tx: &mpsc::Sender<DaemonEvent>,
+    event: DaemonEvent,
+    event_kind: &'static str,
+    policy: EventPolicy,
+) -> bool {
     match tx.try_send(event) {
         Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(event))
+            if matches!(policy, EventPolicy::MustDeliver { .. }) =>
+        {
+            tracing::warn!(
+                event_policy = policy.name(),
+                event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
+                event_kind,
+                coalesce_key = policy.key().map(Key::name).unwrap_or("none"),
+                drop_reason = "must_deliver_delayed",
+                "daemon owner event queue full; deferring must-deliver event"
+            );
+            defer_daemon_must_deliver(tx.clone(), event, event_kind, policy);
+            true
+        }
         Err(mpsc::error::TrySendError::Full(_)) => {
-            tracing::warn!("daemon owner event queue full; dropping event");
+            tracing::warn!(
+                event_policy = policy.name(),
+                event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
+                event_kind,
+                coalesce_key = policy.key().map(Key::name).unwrap_or("none"),
+                drop_reason = daemon_full_queue_reason(policy),
+                "daemon owner event queue full; dropping event"
+            );
             false
         }
         Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
+fn emit_daemon_coalesced(
+    tx: &DaemonEventSender,
+    event: DaemonEvent,
+    event_kind: &'static str,
+    policy: EventPolicy,
+) -> bool {
+    let Some(slot) = event.telemetry_slot() else {
+        return emit_daemon_direct(&tx.tx, event, event_kind, policy);
+    };
+    let insert = tx
+        .telemetry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(slot, event);
+    if insert.replaced_existing || insert.evicted_oldest {
+        tracing::trace!(
+            event_policy = policy.name(),
+            event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
+            event_kind,
+            coalesce_key = policy.key().map(Key::name).unwrap_or("none"),
+            drop_reason = if insert.evicted_oldest {
+                "coalesced_evicted_oldest"
+            } else {
+                "coalesced"
+            },
+            "daemon telemetry event coalesced"
+        );
+    }
+    if insert.should_wake {
+        emit_daemon_direct(
+            &tx.tx,
+            DaemonEvent::TelemetryWake,
+            DaemonEvent::TelemetryWake.kind(),
+            DaemonEvent::TelemetryWake.policy(),
+        )
+    } else {
+        true
+    }
+}
+
+fn daemon_full_queue_reason(policy: EventPolicy) -> &'static str {
+    match policy {
+        EventPolicy::MustReplyOrBusy { .. } => "busy",
+        EventPolicy::BestEffort { .. } => "dropped_best_effort",
+        EventPolicy::DropIfStale { .. } => "stale_or_full",
+        EventPolicy::CoalesceLatest { .. } => "coalesced_wake_full",
+        EventPolicy::MustDeliver { .. } => "must_deliver_failed",
+    }
+}
+
+fn defer_daemon_must_deliver(
+    tx: mpsc::Sender<DaemonEvent>,
+    event: DaemonEvent,
+    event_kind: &'static str,
+    policy: EventPolicy,
+) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            if tx.send(event).await.is_err() {
+                tracing::error!(
+                    event_policy = policy.name(),
+                    event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
+                    event_kind,
+                    drop_reason = "must_deliver_failed",
+                    "daemon owner event queue closed before must-deliver event was accepted"
+                );
+            }
+        });
+    } else {
+        std::thread::spawn(move || {
+            if tx.blocking_send(event).is_err() {
+                tracing::error!(
+                    event_policy = policy.name(),
+                    event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
+                    event_kind,
+                    drop_reason = "must_deliver_failed",
+                    "daemon owner event queue closed before must-deliver event was accepted"
+                );
+            }
+        });
     }
 }
 
@@ -202,9 +474,10 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
     crate::player::lifetime::install_console_ctrl_handler();
     let _log_guard = init_daemon_logging();
 
-    let (event_tx, mut event_rx) = crate::util::backpressure::bounded_channel::<DaemonEvent>(
+    let (raw_event_tx, mut event_rx) = crate::util::backpressure::bounded_channel::<DaemonEvent>(
         crate::util::backpressure::DAEMON_EVENT_QUEUE,
     );
+    let event_tx = DaemonEventSender::new(raw_event_tx);
     let player_event_tx = event_tx.clone();
     let mut engine =
         match engine::DaemonEngine::start(engine::EngineOptions { resume }, move |event| {
@@ -291,17 +564,27 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
 
     dispatch_engine_effects(&api, &event_tx, engine.initial_effects());
 
+    let mut pending_events: VecDeque<DaemonEvent> = VecDeque::new();
+
     loop {
-        let event = tokio::select! {
-            maybe = event_rx.recv() => match maybe {
-                Some(event) => event,
-                None => break,
-            },
-            _ = media_pump.tick(), if media.wants_pump() => {
-                media.pump();
-                continue;
-            },
+        let event = if let Some(event) = pending_events.pop_front() {
+            event
+        } else {
+            tokio::select! {
+                maybe = event_rx.recv() => match maybe {
+                    Some(event) => event,
+                    None => break,
+                },
+                _ = media_pump.tick(), if media.wants_pump() => {
+                    media.pump();
+                    continue;
+                },
+            }
         };
+        if event.is_telemetry_wake() {
+            pending_events.extend(event_tx.drain_coalesced());
+            continue;
+        }
         match event {
             DaemonEvent::Remote(RemoteEvent::Command(command, reply)) => {
                 let (response, shutdown, effects) = engine.handle_remote(command).await;
@@ -357,6 +640,7 @@ async fn serve(_from_tray: bool, resume: bool) -> i32 {
             }
             DaemonEvent::Scrobble(event) => log_scrobble_event(event),
             DaemonEvent::Signal => break,
+            DaemonEvent::TelemetryWake => unreachable!("telemetry wake is handled before dispatch"),
         }
         // Mirror the post-event state to the OS session (diff-based inside); the
         // scrobbler taps the same snapshot first (it ignores media-controls enablement).
@@ -529,7 +813,7 @@ fn daemon_capabilities() -> Vec<String> {
 
 fn dispatch_engine_effects(
     api: &crate::api::ApiHandle,
-    event_tx: &mpsc::Sender<DaemonEvent>,
+    event_tx: &DaemonEventSender,
     effects: Vec<engine::EngineEffect>,
 ) {
     for effect in effects {
@@ -834,5 +1118,160 @@ mod tests {
     fn daemon_capabilities_advertise_headless_playback() {
         assert!(daemon_capabilities().contains(&"headless-playback".to_string()));
         assert!(daemon_capabilities().contains(&"queue-control".to_string()));
+    }
+
+    #[test]
+    fn daemon_event_policy_covers_representative_events() {
+        use crate::util::event_policy::{EventKey, EventLane, EventPolicy};
+
+        assert_eq!(
+            DaemonEvent::Signal.policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::Control
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::Error("x".to_owned())).policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::Control
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::Volume(42.0)).policy(),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::PlayerVolume
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::GuiSearchCompleted {
+                ticket: 7,
+                query: "q".to_owned(),
+                source: crate::search_source::SearchSource::Youtube,
+                groups: Vec::new(),
+            })
+            .policy(),
+            EventPolicy::DropIfStale {
+                stale_key: EventKey::GuiSearchTicket
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Media(crate::media::MediaCommand::Next).policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::Control
+            }
+        );
+        assert!(matches!(
+            DaemonEvent::Scrobble(crate::scrobble::ScrobbleEvent::QueueDropped { dropped: 1 })
+                .policy(),
+            EventPolicy::BestEffort { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn must_deliver_daemon_event_waits_when_owner_lane_is_full() {
+        let (raw_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let tx = DaemonEventSender::new(raw_tx.clone());
+        assert!(
+            raw_tx
+                .try_send(DaemonEvent::Player(crate::player::PlayerEvent::TimePos(
+                    1.0
+                )))
+                .is_ok()
+        );
+
+        assert!(emit_daemon_event(&tx, DaemonEvent::Signal));
+        assert!(matches!(
+            rx.recv().await,
+            Some(DaemonEvent::Player(crate::player::PlayerEvent::TimePos(_)))
+        ));
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await,
+            Ok(Some(DaemonEvent::Signal))
+        ));
+    }
+
+    #[test]
+    fn remote_daemon_event_reports_full_to_callers() {
+        let (raw_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let tx = DaemonEventSender::new(raw_tx.clone());
+        assert!(
+            raw_tx
+                .try_send(DaemonEvent::Player(crate::player::PlayerEvent::TimePos(
+                    1.0
+                )))
+                .is_ok()
+        );
+        let (reply, _reply_rx) = tokio::sync::oneshot::channel();
+
+        assert!(!emit_daemon_event(
+            &tx,
+            DaemonEvent::Remote(RemoteEvent::Command(RemoteCommand::TogglePause, reply))
+        ));
+    }
+
+    #[test]
+    fn daemon_telemetry_coalesces_time_pos_to_one_wake() {
+        let (raw_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let tx = DaemonEventSender::new(raw_tx);
+
+        for tick in 0..10_000 {
+            assert!(emit_daemon_event(
+                &tx,
+                DaemonEvent::Player(crate::player::PlayerEvent::TimePos(tick as f64))
+            ));
+        }
+
+        assert!(matches!(rx.try_recv(), Ok(DaemonEvent::TelemetryWake)));
+        assert!(rx.try_recv().is_err());
+        let drained = tx.drain_coalesced();
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(
+            &drained[0],
+            DaemonEvent::Player(crate::player::PlayerEvent::TimePos(t)) if (*t - 9999.0).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn daemon_media_art_coalesces_by_track_key() {
+        let (raw_tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let tx = DaemonEventSender::new(raw_tx);
+
+        assert!(emit_daemon_event(
+            &tx,
+            DaemonEvent::MediaArt(crate::media::artwork::MediaArtworkReady {
+                key: "a".to_owned(),
+                path: std::path::PathBuf::from("old.jpg"),
+            })
+        ));
+        assert!(emit_daemon_event(
+            &tx,
+            DaemonEvent::MediaArt(crate::media::artwork::MediaArtworkReady {
+                key: "a".to_owned(),
+                path: std::path::PathBuf::from("new.jpg"),
+            })
+        ));
+        assert!(emit_daemon_event(
+            &tx,
+            DaemonEvent::MediaArt(crate::media::artwork::MediaArtworkReady {
+                key: "b".to_owned(),
+                path: std::path::PathBuf::from("other.jpg"),
+            })
+        ));
+
+        assert!(matches!(rx.try_recv(), Ok(DaemonEvent::TelemetryWake)));
+        assert!(rx.try_recv().is_err());
+        let drained = tx.drain_coalesced();
+        assert_eq!(drained.len(), 2);
+        assert!(drained.iter().any(|event| matches!(
+            event,
+            DaemonEvent::MediaArt(ready)
+                if ready.key == "a" && ready.path == std::path::Path::new("new.jpg")
+        )));
+        assert!(drained.iter().any(|event| matches!(
+            event,
+            DaemonEvent::MediaArt(ready)
+                if ready.key == "b" && ready.path == std::path::Path::new("other.jpg")
+        )));
     }
 }

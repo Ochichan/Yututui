@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+fail() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  mkdir -p "$tmp/src/app"
+  cat > "$tmp/src/app/bad.rs" <<'BAD'
+fn bad(app: &mut App) {
+    app.playback.position_epoch = app.playback.position_epoch.wrapping_add(1);
+}
+BAD
+  if rg -n 'position_epoch\s*=|position_epoch\.wrapping_add\(1\)' "$tmp/src/app/bad.rs" >/dev/null; then
+    echo "app boundary self-test ok"
+    exit 0
+  fi
+  fail "self-test failed to detect planted position_epoch write"
+fi
+
+# INVARIANT(PLAY-EPOCH-001): position discontinuities must go through named helpers.
+position_hits=$(rg -n 'position_epoch\s*=|position_epoch\.wrapping_add\(1\)' src/app src/daemon src/media \
+  | rg -v 'src/app/mod.rs:[0-9]+:.*fn bump_position_epoch' \
+  | rg -v 'src/app/mod.rs:[0-9]+:.*self\.playback\.position_epoch = self\.playback\.position_epoch\.wrapping_add\(1\)' \
+  | rg -v 'src/daemon/engine.rs:[0-9]+:.*fn bump_position_epoch' \
+  | rg -v 'src/daemon/engine.rs:[0-9]+:.*self\.playback\.position_epoch = self\.playback\.position_epoch\.wrapping_add\(1\)' \
+  | rg -v 'src/daemon/parity_tests.rs:[0-9]+:.*position_epoch = 0' \
+  | rg -v 'src/media/mod.rs:[0-9]+:.*position_epoch \+=' \
+  || true)
+if [ -n "$position_hits" ]; then
+  printf '%s\n' "$position_hits" >&2
+  fail "direct position_epoch writes are only allowed in App/daemon helper definitions and explicit test fixtures"
+fi
+
+# INVARIANT(ART-MASK-001): overlay mask bit definitions stay centralized.
+mask_hits=$(rg -n '1u16\s*<<|1\s*<<\s*(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15)' src/app \
+  | rg 'overlay|popup|art_mask|art_overlay_mask' \
+  | rg -v 'src/app/artwork.rs' \
+  | rg -v 'src/app/tests.rs' \
+  || true)
+if [ -n "$mask_hits" ]; then
+  printf '%s\n' "$mask_hits" >&2
+  fail "art overlay mask bit constants must stay centralized in src/app/artwork.rs"
+fi
+
+echo "app boundaries ok"

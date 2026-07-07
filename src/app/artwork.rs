@@ -4,6 +4,49 @@ use super::*;
 
 const ART_REFRESH_OVERLAY_CLEAR_FRAMES: u8 = 3;
 
+pub(in crate::app) const ART_OVERLAY_EQ_BIT: u16 = 1 << 0;
+pub(in crate::app) const ART_OVERLAY_STREAMING_BIT: u16 = 1 << 1;
+pub(in crate::app) const ART_OVERLAY_QUEUE_BIT: u16 = 1 << 2;
+pub(in crate::app) const ART_OVERLAY_HELP_BIT: u16 = 1 << 3;
+pub(in crate::app) const ART_OVERLAY_ABOUT_BIT: u16 = 1 << 4;
+pub(in crate::app) const ART_OVERLAY_WHY_AI_BIT: u16 = 1 << 5;
+pub(in crate::app) const ART_OVERLAY_KEY_CONFLICT_BIT: u16 = 1 << 6;
+pub(in crate::app) const ART_OVERLAY_RADIO_CONFIRM_BIT: u16 = 1 << 7;
+pub(in crate::app) const ART_OVERLAY_SETTINGS_CONFIRM_BIT: u16 = 1 << 8;
+pub(in crate::app) const ART_OVERLAY_LIBRARY_CONFIRM_BIT: u16 = 1 << 9;
+pub(in crate::app) const ART_OVERLAY_NOT_PLAYER_BIT: u16 = 1 << 10;
+pub(in crate::app) const ART_OVERLAY_MOUSE_HELP_BIT: u16 = 1 << 11;
+pub(in crate::app) const ART_OVERLAY_CREATE_PLAYLIST_BIT: u16 = 1 << 12;
+pub(in crate::app) const ART_OVERLAY_DELETE_PLAYLIST_BIT: u16 = 1 << 13;
+pub(in crate::app) const ART_OVERLAY_PLAYLIST_PICKER_BIT: u16 = 1 << 14;
+pub(in crate::app) const ART_OVERLAY_SEARCH_FILTER_BIT: u16 = 1 << 15;
+
+// INVARIANT(ART-MASK-001): this u16 mask is fully allocated; check the risk map before
+// replacing, sharing, or widening any bit.
+#[cfg(test)]
+pub(in crate::app) const ART_OVERLAY_BITS: &[(&str, u16)] = &[
+    ("eq", ART_OVERLAY_EQ_BIT),
+    ("streaming", ART_OVERLAY_STREAMING_BIT),
+    ("queue", ART_OVERLAY_QUEUE_BIT),
+    ("help", ART_OVERLAY_HELP_BIT),
+    ("about", ART_OVERLAY_ABOUT_BIT),
+    ("why_ai", ART_OVERLAY_WHY_AI_BIT),
+    ("key_conflict", ART_OVERLAY_KEY_CONFLICT_BIT),
+    ("radio_confirm", ART_OVERLAY_RADIO_CONFIRM_BIT),
+    ("settings_confirm", ART_OVERLAY_SETTINGS_CONFIRM_BIT),
+    ("library_confirm", ART_OVERLAY_LIBRARY_CONFIRM_BIT),
+    ("not_player", ART_OVERLAY_NOT_PLAYER_BIT),
+    ("mouse_help", ART_OVERLAY_MOUSE_HELP_BIT),
+    ("create_playlist", ART_OVERLAY_CREATE_PLAYLIST_BIT),
+    ("delete_playlist", ART_OVERLAY_DELETE_PLAYLIST_BIT),
+    ("playlist_picker", ART_OVERLAY_PLAYLIST_PICKER_BIT),
+    ("search_filter", ART_OVERLAY_SEARCH_FILTER_BIT),
+];
+
+const fn flag(on: bool, bit: u16) -> u16 {
+    if on { bit } else { 0 }
+}
+
 impl App {
     pub fn set_art_resize_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<ResizeRequest>) {
         self.art.resize_tx = Some(tx);
@@ -52,8 +95,7 @@ impl App {
     }
 
     fn native_about_icon_touched(&self, previous: u16, next: u16) -> bool {
-        const ABOUT_BIT: u16 = 1 << 4;
-        ((previous | next) & ABOUT_BIT) != 0 && self.native_image_protocol_selected()
+        ((previous | next) & ART_OVERLAY_ABOUT_BIT) != 0 && self.native_image_protocol_selected()
     }
 
     /// Whether the per-frame animation clock should run right now. True when we're on the
@@ -271,7 +313,7 @@ impl App {
     /// (minus its bit 10, which is "not on the player screen", not a popup) plus the two
     /// overlays that mask doesn't track. A bit turning on means "a popup just opened".
     fn fx_popup_mask(&self) -> u32 {
-        u32::from(self.art_overlay_mask() & !(1 << 10))
+        u32::from(self.art_overlay_mask() & !ART_OVERLAY_NOT_PLAYER_BIT)
             | ((self.overlays.spotify_picker.is_some() as u32) << 16)
             | ((self.dropdowns.search_source_open as u32) << 17)
     }
@@ -489,27 +531,47 @@ impl App {
     /// lets the render loop notice every transition that can desynchronize native terminal
     /// graphics from ratatui's diff buffer.
     pub fn art_overlay_mask(&self) -> u16 {
-        u8::from(self.dropdowns.eq_open) as u16
-            | ((self.dropdowns.streaming_open as u16) << 1)
-            | ((self.queue_popup.open as u16) << 2)
-            | ((self.overlays.help_visible as u16) << 3)
-            | ((self.overlays.about_visible as u16) << 4)
-            | ((self.overlays.why_ai_visible as u16) << 5)
-            | ((self.overlays.key_conflict.is_some() as u16) << 6)
-            | ((self.radio_mode.pending_radio_mode_confirm.is_some() as u16) << 7)
-            | ((self.overlays.pending_settings_confirm.is_some() as u16) << 8)
+        flag(self.dropdowns.eq_open, ART_OVERLAY_EQ_BIT)
+            | flag(self.dropdowns.streaming_open, ART_OVERLAY_STREAMING_BIT)
+            | flag(self.queue_popup.open, ART_OVERLAY_QUEUE_BIT)
+            | flag(self.overlays.help_visible, ART_OVERLAY_HELP_BIT)
+            | flag(self.overlays.about_visible, ART_OVERLAY_ABOUT_BIT)
+            | flag(self.overlays.why_ai_visible, ART_OVERLAY_WHY_AI_BIT)
+            | flag(
+                self.overlays.key_conflict.is_some(),
+                ART_OVERLAY_KEY_CONFLICT_BIT,
+            )
+            | flag(
+                self.radio_mode.pending_radio_mode_confirm.is_some(),
+                ART_OVERLAY_RADIO_CONFIRM_BIT,
+            )
+            | flag(
+                self.overlays.pending_settings_confirm.is_some(),
+                ART_OVERLAY_SETTINGS_CONFIRM_BIT,
+            )
             // Bit 9 is shared by the two Library confirm modals (file-delete and bulk-download):
             // they are mutually exclusive (each captures all keys while open) and share the same
             // centered footprint, so one bit tracks both without missing a graphics-clear edge.
-            | (((self.library_ui.confirm_delete.is_some()
-                || self.library_ui.confirm_download.is_some()) as u16)
-                << 9)
-            | ((!matches!(self.mode, Mode::Player) as u16) << 10)
-            | ((self.overlays.mouse_help_visible as u16) << 11)
-            | ((self.library_ui.create_input.is_some() as u16) << 12)
-            | ((self.library_ui.confirm_playlist_delete.is_some() as u16) << 13)
-            | ((self.playlist_picker.is_some() as u16) << 14)
-            | ((self.search_filter.open as u16) << 15)
+            | flag(
+                self.library_ui.confirm_delete.is_some()
+                    || self.library_ui.confirm_download.is_some(),
+                ART_OVERLAY_LIBRARY_CONFIRM_BIT,
+            )
+            | flag(!matches!(self.mode, Mode::Player), ART_OVERLAY_NOT_PLAYER_BIT)
+            | flag(self.overlays.mouse_help_visible, ART_OVERLAY_MOUSE_HELP_BIT)
+            | flag(
+                self.library_ui.create_input.is_some(),
+                ART_OVERLAY_CREATE_PLAYLIST_BIT,
+            )
+            | flag(
+                self.library_ui.confirm_playlist_delete.is_some(),
+                ART_OVERLAY_DELETE_PLAYLIST_BIT,
+            )
+            | flag(
+                self.playlist_picker.is_some(),
+                ART_OVERLAY_PLAYLIST_PICKER_BIT,
+            )
+            | flag(self.search_filter.open, ART_OVERLAY_SEARCH_FILTER_BIT)
     }
 
     /// Track overlay/screen transitions that can cover native terminal graphics. Ratatui's normal

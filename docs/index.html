@@ -4,17 +4,17 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>ytm-tui — YouTube Music in your terminal</title>
-<meta name="description" content="A fast, keyboard-driven YouTube Music client for your terminal. DJ Gem streaming, live internet radio, real album art, synced lyrics, Last.fm & ListenBrainz scrobbling, Spotify import, and remote control from anywhere. No browser, no ads. Rust + ratatui, MIT." />
+<meta name="description" content="Public beta: a fast, keyboard-driven YouTube Music client for your terminal. DJ Gem streaming, live internet radio, terminal-capability-aware album art, synced lyrics, scrobbling, Spotify import, and remote control. No browser, no ads. Rust + ratatui, MIT." />
 
 <!-- Open Graph / social -->
 <meta property="og:type" content="website" />
 <meta property="og:title" content="ytm-tui — YouTube Music in your terminal" />
-<meta property="og:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, live radio, real album art, scrobbling, Spotify import, remote control. No browser, no ads." />
+<meta property="og:description" content="Public beta: fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, live radio, album art with terminal fallbacks, scrobbling, Spotify import, remote control." />
 <meta property="og:url" content="https://ochichan.github.io/ytm-tui/" />
 <meta property="og:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
 <meta name="twitter:card" content="summary" />
 <meta name="twitter:title" content="ytm-tui — YouTube Music in your terminal" />
-<meta name="twitter:description" content="Fast, keyboard-driven YouTube Music in your terminal. DJ Gem streaming, scrobbling, Spotify import, real album art." />
+<meta name="twitter:description" content="Public beta: fast, keyboard-driven YouTube Music in your terminal, with terminal-aware album art fallbacks." />
 <meta name="twitter:image" content="https://ochichan.github.io/ytm-tui/ytm-tui.png" />
 
 <link rel="icon" type="image/png" href="ytm-tui.png" />
@@ -34,7 +34,7 @@
   "license": "https://opensource.org/licenses/MIT",
   "url": "https://ochichan.github.io/ytm-tui/",
   "downloadUrl": "https://github.com/Ochichan/ytm-tui/releases",
-  "description": "A fast, keyboard-driven YouTube Music client for the terminal: DJ Gem streaming, live internet radio, album art, synced lyrics, Last.fm/ListenBrainz scrobbling, Spotify playlist import/export, headless daemon and remote control."
+  "description": "Public beta: a fast, keyboard-driven YouTube Music client for the terminal: DJ Gem streaming, live internet radio, terminal-aware album art, synced lyrics, Last.fm/ListenBrainz scrobbling, Spotify playlist import/export, headless daemon and remote control."
 }
 </script>
 
@@ -794,9 +794,9 @@ kbd {
     </h1>
   </div>
   <p class="hero__sub" data-i18n="hero.sub">
-    A fast, keyboard-driven YouTube Music client that lives in your terminal — endless DJ Gem streaming,
-    live internet radio, album art and synced lyrics in the TUI, scrobbling, and one-command Spotify import.
-    No browser. No ads.
+    Public beta: stable enough for daily use, still moving fast. A keyboard-driven YouTube Music client
+    with DJ Gem streaming, live radio, terminal-aware album art fallbacks, synced lyrics, scrobbling,
+    and one-command Spotify import. No browser. No ads.
   </p>
   <div class="hero__cta">
     <a class="btn btn--primary" href="#install"><span aria-hidden="true">▸</span> <span data-i18n="hero.cta1">Install ytm-tui</span></a>
@@ -1019,7 +1019,7 @@ kbd {
     <article class="feature gol">
       <div class="feature__top"><kbd>album art</kbd> <kbd>v</kbd></div>
       <h3 class="display" data-i18n="f.art.h">Album art, lyrics — and the video</h3>
-      <p data-i18n-html="f.art.p">Real cover art drawn right in the Player, time-synced lyrics scrolling underneath — and <code>v</code> floats the music video over your terminal in a little mpv window, auto-continuing to the next track's if you let it.</p>
+      <p data-i18n-html="f.art.p">Cover art uses Kitty, Sixel or iTerm2 when your terminal supports it, with halfblock or retro fallback; time-synced lyrics scroll underneath — and <code>v</code> floats the music video in a little mpv window where your OS session supports it.</p>
     </article>
 
     <article class="feature pin">
@@ -1421,7 +1421,7 @@ var KO = {
   "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
   "hero.h1a": "지금 재생 중 —",
   "hero.h1b": "터미널 안에서.",
-  "hero.sub": "빠르고 키보드로 다루는, 터미널 속 유튜브 뮤직 클라이언트 — 끝없는 DJ Gem 스트리밍, 라이브 인터넷 라디오, TUI 안의 앨범 아트와 싱크 가사, 스크로블, 명령 한 줄 Spotify 이사까지. 브라우저도, 광고도 없이.",
+  "hero.sub": "Public beta: 매일 쓰기엔 충분히 안정적이지만, 아직 빠르게 움직이는 중입니다. DJ Gem 스트리밍, 라이브 라디오, 터미널 기능에 맞춘 앨범 아트 fallback, 싱크 가사, 스크로블, 명령 한 줄 Spotify 이사까지. 브라우저도, 광고도 없이.",
   "hero.cta1": "ytm-tui 설치하기",
   "hero.cta2": "GitHub에서 별 주기",
   "copy": "복사",
@@ -1457,7 +1457,7 @@ var KO = {
   "f.streaming.h": "분위기를 읽는 DJ Gem 스트리밍",
   "f.streaming.p": "<code>Ctrl+R</code> 하나면 Gemini 기반 <em>큐 디렉터</em>가 분위기에 맞는 곡을 이어줍니다 — Focused, Balanced, Discovery 중에서. <code>w</code> 를 누르면 고른 이유를 쉬운 말로.",
   "f.art.h": "앨범 아트, 가사 — 그리고 뮤직비디오",
-  "f.art.p": "진짜 커버 이미지가 플레이어에 그려지고, 그 아래로 싱크 가사가 흐릅니다 — <code>v</code> 를 누르면 뮤직비디오가 터미널 위 작은 mpv 창으로, 원하면 다음 곡 영상까지 자동으로 이어져요.",
+  "f.art.p": "터미널이 지원하면 Kitty, Sixel, iTerm2로 커버 이미지를 그리고, 아니면 halfblock 또는 retro fallback으로 내려갑니다. 그 아래로 싱크 가사가 흐르고, OS 세션이 지원하면 <code>v</code> 로 작은 mpv 영상 창도 띄웁니다.",
   "f.sources.h": "카탈로그 여섯, 검색창 하나",
   "f.sources.p": "본진은 YouTube Music이지만, 같은 검색창이 SoundCloud, Audius, Jamendo, Internet Archive, Radio Browser까지 뒤집니다. <code>Tab</code> 으로 전환하거나 전부 한꺼번에 — 결과마다 <code>[SRC]</code> 태그.",
   "f.radio.h": "지금 나오는 곡까지 아는 라이브 라디오",
@@ -1577,7 +1577,7 @@ var JA = {
   "hero.eyebrow": "~/ytm-tui — Rust · ratatui · MIT",
   "hero.h1a": "再生中 —",
   "hero.h1b": "ターミナルの中で。",
-  "hero.sub": "速くて、キーボードで操る、ターミナルの中の YouTube Music クライアント — 果てしない DJ Gem ストリーミング、ライブのインターネットラジオ、TUI に描かれるアルバムアートと同期歌詞、スクロブル、コマンド一行の Spotify 引っ越しまで。ブラウザも広告もなし。",
+  "hero.sub": "Public beta: 毎日使えるくらいには安定していますが、まだ速く動いている最中です。DJ Gem ストリーミング、ライブラジオ、ターミナル機能に合わせたアルバムアート fallback、同期歌詞、スクロブル、コマンド一行の Spotify 引っ越しまで。ブラウザも広告もなし。",
   "hero.cta1": "ytm-tui をインストール",
   "hero.cta2": "GitHub でスターを付ける",
   "copy": "コピー",
@@ -1613,7 +1613,7 @@ var JA = {
   "f.streaming.h": "空気を読む DJ Gem ストリーミング",
   "f.streaming.p": "<code>Ctrl+R</code> 一つで、Gemini 搭載の<em>キュー・ディレクター</em>が雰囲気に合う曲を並べます — Focused、Balanced、Discovery の中から。<code>w</code> でその理由をやさしい言葉で。",
   "f.art.h": "アルバムアート、歌詞 — そして MV",
-  "f.art.p": "本物のカバー画像がプレイヤーに描かれ、その下を同期歌詞が流れます — <code>v</code> で MV がターミナル上の小さな mpv ウィンドウに。望めば次の曲の映像へ自動で続きます。",
+  "f.art.p": "ターミナルが対応していれば Kitty、Sixel、iTerm2 でカバー画像を描き、そうでなければ halfblock または retro fallback に戻ります。その下を同期歌詞が流れ、OS セッションが対応していれば <code>v</code> で小さな mpv 動画ウィンドウも開けます。",
   "f.sources.h": "カタログは六つ、検索窓は一つ",
   "f.sources.p": "ホームは YouTube Music。でも同じ検索窓で SoundCloud、Audius、Jamendo、Internet Archive、Radio Browser も探せます。<code>Tab</code> で切り替え、まとめて全部でも — 結果には <code>[SRC]</code> タグ付き。",
   "f.radio.h": "いま流れている曲まで分かるライブラジオ",

@@ -4,12 +4,17 @@
 //! This module is the single orchestration boundary that maps those events back into
 //! reducer messages.
 
+use std::sync::{Arc, Mutex};
+
 use ratatui_image::thread::ResizeResponse;
-use tokio::sync::mpsc::{Sender, error::TrySendError};
+use tokio::sync::mpsc::{Receiver, Sender, error::TrySendError};
 
 use crate::app::{AiMsg, App, Cmd, Msg, PersistCmd, PlayerMsg, StreamingMsg};
 use crate::config::PlayerRuntimeConfig;
 use crate::player::{PlayerCmd, PlayerHandle};
+use crate::util::event_policy::{
+    EventKey as Key, EventLane as Lane, EventPolicy, LatestEventBuffer,
+};
 
 pub enum RuntimeEvent {
     App(Msg),
@@ -34,6 +39,371 @@ pub enum RuntimeEvent {
     /// Background app-update check result (newer release available + install method).
     Update(crate::update::UpdateEvent),
     Transfer(crate::transfer::actor::TransferEvent),
+    TelemetryWake,
+}
+
+impl RuntimeEvent {
+    pub fn policy(&self) -> EventPolicy {
+        match self {
+            RuntimeEvent::App(msg) => app_msg_policy(msg),
+            RuntimeEvent::Ai(event) => match event {
+                crate::ai::AiEvent::Thinking(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::AiThinking,
+                },
+                crate::ai::AiEvent::StreamingPicks { .. } => EventPolicy::DropIfStale {
+                    stale_key: Key::StreamingSeed,
+                },
+                crate::ai::AiEvent::Chat(_)
+                | crate::ai::AiEvent::Error(_)
+                | crate::ai::AiEvent::PlayTracks(_)
+                | crate::ai::AiEvent::Enqueue(_)
+                | crate::ai::AiEvent::Suggestions(_)
+                | crate::ai::AiEvent::SetAutoplay(_)
+                | crate::ai::AiEvent::SetStationProfile { .. }
+                | crate::ai::AiEvent::CreatePlaylist(_)
+                | crate::ai::AiEvent::AddToPlaylist { .. }
+                | crate::ai::AiEvent::PlayPlaylist(_)
+                | crate::ai::AiEvent::StationPatch { .. }
+                | crate::ai::AiEvent::RomanizedTitles { .. } => EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                },
+            },
+            RuntimeEvent::Api(event) => match event {
+                crate::api::ApiEvent::ModeResolved { .. }
+                | crate::api::ApiEvent::TrackResolved { .. } => EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                },
+                crate::api::ApiEvent::SearchResults { .. }
+                | crate::api::ApiEvent::SearchError { .. } => EventPolicy::DropIfStale {
+                    stale_key: Key::SearchRequest,
+                },
+                crate::api::ApiEvent::PlaylistTracks { .. }
+                | crate::api::ApiEvent::PlaylistTracksError { .. } => {
+                    EventPolicy::MustReplyOrBusy {
+                        lane: Lane::WorkResult,
+                    }
+                }
+                crate::api::ApiEvent::StreamingResults { .. }
+                | crate::api::ApiEvent::StreamingPreflighted { .. }
+                | crate::api::ApiEvent::StreamingError { .. } => EventPolicy::DropIfStale {
+                    stale_key: Key::StreamingSeed,
+                },
+                crate::api::ApiEvent::GuiSearchCompleted { .. } => EventPolicy::DropIfStale {
+                    stale_key: Key::GuiSearchTicket,
+                },
+            },
+            RuntimeEvent::Artwork(_) => EventPolicy::DropIfStale {
+                stale_key: Key::ArtworkVideo,
+            },
+            RuntimeEvent::ArtworkResized(_) => EventPolicy::CoalesceLatest {
+                lane: Lane::Telemetry,
+                key: Key::ArtResize,
+            },
+            RuntimeEvent::Download(event) => match event {
+                crate::download::DownloadEvent::Progress { .. } => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::DownloadProgress,
+                },
+                crate::download::DownloadEvent::Done { .. }
+                | crate::download::DownloadEvent::Error { .. } => EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                },
+            },
+            RuntimeEvent::Lyrics(_) => EventPolicy::DropIfStale {
+                stale_key: Key::LyricsVideo,
+            },
+            RuntimeEvent::Player(event) => match event {
+                crate::player::PlayerEvent::TimePos(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerTimePos,
+                },
+                crate::player::PlayerEvent::Duration(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerDuration,
+                },
+                crate::player::PlayerEvent::Paused(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerPaused,
+                },
+                crate::player::PlayerEvent::Volume(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerVolume,
+                },
+                crate::player::PlayerEvent::Metadata(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::WorkResult,
+                    key: Key::PlayerMetadata,
+                },
+                crate::player::PlayerEvent::CacheTime(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerCacheTime,
+                },
+                crate::player::PlayerEvent::AudioCodec(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerAudioCodec,
+                },
+                crate::player::PlayerEvent::FileFormat(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::PlayerFileFormat,
+                },
+                crate::player::PlayerEvent::Eof | crate::player::PlayerEvent::Error(_) => {
+                    EventPolicy::MustDeliver {
+                        lane: Lane::Control,
+                    }
+                }
+            },
+            RuntimeEvent::Remote(
+                crate::remote::server::RemoteEvent::Command(_, _)
+                | crate::remote::server::RemoteEvent::SessionSubscribe { .. },
+            ) => EventPolicy::MustReplyOrBusy {
+                lane: Lane::RemoteCommand,
+            },
+            RuntimeEvent::Video { .. } => EventPolicy::DropIfStale {
+                stale_key: Key::VideoOverlayGeneration,
+            },
+            RuntimeEvent::Resolver(_) => EventPolicy::DropIfStale {
+                stale_key: Key::ResolverVideo,
+            },
+            RuntimeEvent::Scrobble(_) => EventPolicy::BestEffort {
+                reason: "scrobble UI notices are secondary to the durable scrobble queue",
+            },
+            RuntimeEvent::Signal(_) => EventPolicy::MustDeliver {
+                lane: Lane::Control,
+            },
+            RuntimeEvent::Tools(event) => match event {
+                crate::tools::ToolsEvent::Progress { .. } => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::ToolProgress,
+                },
+                crate::tools::ToolsEvent::Installed { .. }
+                | crate::tools::ToolsEvent::Failed { .. } => EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                },
+            },
+            RuntimeEvent::Update(_) => EventPolicy::CoalesceLatest {
+                lane: Lane::WorkResult,
+                key: Key::UpdateCheck,
+            },
+            RuntimeEvent::Transfer(event) => match event {
+                crate::transfer::actor::TransferEvent::Progress(_) => EventPolicy::CoalesceLatest {
+                    lane: Lane::Telemetry,
+                    key: Key::TransferJob,
+                },
+                crate::transfer::actor::TransferEvent::AuthUrl(_)
+                | crate::transfer::actor::TransferEvent::AuthDone { .. }
+                | crate::transfer::actor::TransferEvent::AuthError(_)
+                | crate::transfer::actor::TransferEvent::Disconnected => EventPolicy::MustDeliver {
+                    lane: Lane::WorkResult,
+                },
+                crate::transfer::actor::TransferEvent::SpotifyPlaylists(_)
+                | crate::transfer::actor::TransferEvent::JobDone(_)
+                | crate::transfer::actor::TransferEvent::JobFailed { .. } => {
+                    EventPolicy::MustDeliver {
+                        lane: Lane::WorkResult,
+                    }
+                }
+            },
+            RuntimeEvent::TelemetryWake => EventPolicy::MustDeliver {
+                lane: Lane::Control,
+            },
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            RuntimeEvent::App(_) => "app",
+            RuntimeEvent::Ai(_) => "ai",
+            RuntimeEvent::Api(_) => "api",
+            RuntimeEvent::Artwork(_) => "artwork",
+            RuntimeEvent::ArtworkResized(_) => "artwork_resized",
+            RuntimeEvent::Download(_) => "download",
+            RuntimeEvent::Lyrics(_) => "lyrics",
+            RuntimeEvent::Player(_) => "player",
+            RuntimeEvent::Remote(_) => "remote",
+            RuntimeEvent::Video { .. } => "video",
+            RuntimeEvent::Resolver(_) => "resolver",
+            RuntimeEvent::Scrobble(_) => "scrobble",
+            RuntimeEvent::Signal(_) => "signal",
+            RuntimeEvent::Tools(_) => "tools",
+            RuntimeEvent::Update(_) => "update",
+            RuntimeEvent::Transfer(_) => "transfer",
+            RuntimeEvent::TelemetryWake => "telemetry_wake",
+        }
+    }
+
+    pub fn is_telemetry_wake(&self) -> bool {
+        matches!(self, RuntimeEvent::TelemetryWake)
+    }
+
+    fn telemetry_slot(&self) -> Option<RuntimeTelemetrySlot> {
+        match self {
+            RuntimeEvent::App(Msg::DownloadProgress { video_id, .. }) => {
+                Some(RuntimeTelemetrySlot::DownloadProgress(video_id.clone()))
+            }
+            RuntimeEvent::App(Msg::MediaArtworkReady(ready)) => {
+                Some(RuntimeTelemetrySlot::MediaArt(ready.key.clone()))
+            }
+            RuntimeEvent::App(Msg::Transfer(crate::transfer::actor::TransferEvent::Progress(
+                progress,
+            ))) => Some(RuntimeTelemetrySlot::TransferProgress(
+                progress.job_id.clone(),
+            )),
+            RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
+                video_id, ..
+            }) => Some(RuntimeTelemetrySlot::DownloadProgress(video_id.clone())),
+            RuntimeEvent::Transfer(crate::transfer::actor::TransferEvent::Progress(progress)) => {
+                Some(RuntimeTelemetrySlot::TransferProgress(
+                    progress.job_id.clone(),
+                ))
+            }
+            _ => match self.policy() {
+                EventPolicy::CoalesceLatest { key, .. } => Some(RuntimeTelemetrySlot::Static(key)),
+                _ => None,
+            },
+        }
+    }
+}
+
+fn app_msg_policy(msg: &Msg) -> EventPolicy {
+    match msg {
+        Msg::Quit => EventPolicy::MustDeliver {
+            lane: Lane::Control,
+        },
+        Msg::Media(_) => EventPolicy::MustDeliver {
+            lane: Lane::Control,
+        },
+        Msg::Remote(_, _) => EventPolicy::MustReplyOrBusy {
+            lane: Lane::RemoteCommand,
+        },
+        Msg::Player(player) => app_player_msg_policy(player),
+        Msg::ArtworkResized(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::ArtResize,
+        },
+        Msg::DownloadProgress { .. } => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::DownloadProgress,
+        },
+        Msg::MediaArtworkReady(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::MediaArtVideo,
+        },
+        Msg::Tools(crate::tools::ToolsEvent::Progress { .. }) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::ToolProgress,
+        },
+        Msg::UpdateChecked(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::WorkResult,
+            key: Key::UpdateCheck,
+        },
+        Msg::Transfer(crate::transfer::actor::TransferEvent::Progress(_)) => {
+            EventPolicy::CoalesceLatest {
+                lane: Lane::Telemetry,
+                key: Key::TransferJob,
+            }
+        }
+        Msg::SearchResults { .. } | Msg::SearchError { .. } => EventPolicy::DropIfStale {
+            stale_key: Key::SearchRequest,
+        },
+        Msg::ArtworkResult { .. } => EventPolicy::DropIfStale {
+            stale_key: Key::ArtworkVideo,
+        },
+        Msg::LyricsResult { .. } => EventPolicy::DropIfStale {
+            stale_key: Key::LyricsVideo,
+        },
+        Msg::Streaming(_) => EventPolicy::DropIfStale {
+            stale_key: Key::StreamingSeed,
+        },
+        Msg::TrackResolved { .. } => EventPolicy::DropIfStale {
+            stale_key: Key::ResolverVideo,
+        },
+        Msg::ResolveFailed { .. } => EventPolicy::DropIfStale {
+            stale_key: Key::ResolverVideo,
+        },
+        Msg::Noop | Msg::StatusTick | Msg::AnimTick | Msg::RecordingTick => {
+            EventPolicy::BestEffort {
+                reason: "loop-owned ticks and inert messages are redraw/status hints",
+            }
+        }
+        Msg::Key(_)
+        | Msg::MouseClick { .. }
+        | Msg::MouseDoubleClick { .. }
+        | Msg::MouseRightClick { .. }
+        | Msg::MouseDrag { .. }
+        | Msg::MouseLeftUp
+        | Msg::MouseScroll { .. }
+        | Msg::Resize
+        | Msg::Focus(_)
+        | Msg::Autoplay
+        | Msg::ApiModeResolved { .. }
+        | Msg::Recorder(_)
+        | Msg::PlaylistTracks { .. }
+        | Msg::PlaylistTracksError { .. }
+        | Msg::DownloadsScanned(_)
+        | Msg::DownloadDone { .. }
+        | Msg::DownloadError { .. }
+        | Msg::DownloadDirError { .. }
+        | Msg::Ai(_)
+        | Msg::Scrobble(_)
+        | Msg::Tools(
+            crate::tools::ToolsEvent::Installed { .. } | crate::tools::ToolsEvent::Failed { .. },
+        )
+        | Msg::YtdlpHealResult { .. }
+        | Msg::Transfer(
+            crate::transfer::actor::TransferEvent::AuthUrl(_)
+            | crate::transfer::actor::TransferEvent::AuthDone { .. }
+            | crate::transfer::actor::TransferEvent::AuthError(_)
+            | crate::transfer::actor::TransferEvent::Disconnected
+            | crate::transfer::actor::TransferEvent::SpotifyPlaylists(_)
+            | crate::transfer::actor::TransferEvent::JobDone(_)
+            | crate::transfer::actor::TransferEvent::JobFailed { .. },
+        ) => EventPolicy::MustDeliver {
+            lane: Lane::WorkResult,
+        },
+    }
+}
+
+fn app_player_msg_policy(msg: &PlayerMsg) -> EventPolicy {
+    match msg {
+        PlayerMsg::TimePos(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerTimePos,
+        },
+        PlayerMsg::Duration(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerDuration,
+        },
+        PlayerMsg::Paused(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerPaused,
+        },
+        PlayerMsg::Volume(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerVolume,
+        },
+        PlayerMsg::Metadata(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::WorkResult,
+            key: Key::PlayerMetadata,
+        },
+        PlayerMsg::CacheTime(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerCacheTime,
+        },
+        PlayerMsg::AudioCodec(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerAudioCodec,
+        },
+        PlayerMsg::FileFormat(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::PlayerFileFormat,
+        },
+        PlayerMsg::Eof | PlayerMsg::Error(_) => EventPolicy::MustDeliver {
+            lane: Lane::Control,
+        },
+        PlayerMsg::VideoOverlay { .. } => EventPolicy::DropIfStale {
+            stale_key: Key::VideoOverlayGeneration,
+        },
+    }
 }
 
 impl From<RuntimeEvent> for Msg {
@@ -236,20 +606,178 @@ impl From<RuntimeEvent> for Msg {
                 Msg::UpdateChecked(status)
             }
             RuntimeEvent::Transfer(event) => Msg::Transfer(event),
+            RuntimeEvent::TelemetryWake => {
+                unreachable!(
+                    "TelemetryWake must be drained by the owner loop before Msg conversion"
+                )
+            }
         }
     }
 }
 
-pub type RuntimeSender = Sender<RuntimeEvent>;
+const RUNTIME_TELEMETRY_SLOTS: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum RuntimeTelemetrySlot {
+    Static(Key),
+    DownloadProgress(String),
+    MediaArt(String),
+    TransferProgress(String),
+}
+
+#[derive(Clone)]
+pub struct RuntimeSender {
+    tx: Sender<RuntimeEvent>,
+    telemetry: Arc<Mutex<LatestEventBuffer<RuntimeTelemetrySlot, RuntimeEvent>>>,
+}
+
+impl RuntimeSender {
+    pub fn new(tx: Sender<RuntimeEvent>) -> Self {
+        Self {
+            tx,
+            telemetry: Arc::new(Mutex::new(LatestEventBuffer::new(RUNTIME_TELEMETRY_SLOTS))),
+        }
+    }
+
+    pub fn drain_coalesced(&self) -> Vec<RuntimeEvent> {
+        self.telemetry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+    }
+}
+
+pub fn channel(
+    policy: crate::util::backpressure::QueuePolicy,
+) -> (RuntimeSender, Receiver<RuntimeEvent>) {
+    let (tx, rx) = crate::util::backpressure::bounded_channel(policy);
+    (RuntimeSender::new(tx), rx)
+}
 
 pub fn emit(tx: &RuntimeSender, event: RuntimeEvent) -> bool {
+    let policy = event.policy();
+    let event_kind = event.kind();
+    if matches!(policy, EventPolicy::CoalesceLatest { .. }) {
+        return emit_coalesced(tx, event, event_kind, policy);
+    }
+    emit_direct(&tx.tx, event, event_kind, policy)
+}
+
+fn emit_direct(
+    tx: &Sender<RuntimeEvent>,
+    event: RuntimeEvent,
+    event_kind: &'static str,
+    policy: EventPolicy,
+) -> bool {
     match tx.try_send(event) {
         Ok(()) => true,
+        Err(TrySendError::Full(event)) if matches!(policy, EventPolicy::MustDeliver { .. }) => {
+            tracing::warn!(
+                event_policy = policy.name(),
+                event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
+                event_kind,
+                coalesce_key = policy.key().map(Key::name).unwrap_or("none"),
+                drop_reason = "must_deliver_delayed",
+                "runtime owner event queue full; deferring must-deliver event"
+            );
+            defer_must_deliver(tx.clone(), event, event_kind, policy);
+            true
+        }
         Err(TrySendError::Full(_)) => {
-            tracing::warn!("runtime owner event queue full; dropping event");
+            tracing::warn!(
+                event_policy = policy.name(),
+                event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
+                event_kind,
+                coalesce_key = policy.key().map(Key::name).unwrap_or("none"),
+                drop_reason = full_queue_reason(policy),
+                "runtime owner event queue full; dropping event"
+            );
             false
         }
         Err(TrySendError::Closed(_)) => false,
+    }
+}
+
+fn emit_coalesced(
+    tx: &RuntimeSender,
+    event: RuntimeEvent,
+    event_kind: &'static str,
+    policy: EventPolicy,
+) -> bool {
+    let Some(slot) = event.telemetry_slot() else {
+        return emit_direct(&tx.tx, event, event_kind, policy);
+    };
+    let insert = tx
+        .telemetry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(slot, event);
+    if insert.replaced_existing || insert.evicted_oldest {
+        tracing::trace!(
+            event_policy = policy.name(),
+            event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
+            event_kind,
+            coalesce_key = policy.key().map(Key::name).unwrap_or("none"),
+            drop_reason = if insert.evicted_oldest {
+                "coalesced_evicted_oldest"
+            } else {
+                "coalesced"
+            },
+            "runtime telemetry event coalesced"
+        );
+    }
+    if insert.should_wake {
+        emit_direct(
+            &tx.tx,
+            RuntimeEvent::TelemetryWake,
+            RuntimeEvent::TelemetryWake.kind(),
+            RuntimeEvent::TelemetryWake.policy(),
+        )
+    } else {
+        true
+    }
+}
+
+fn full_queue_reason(policy: EventPolicy) -> &'static str {
+    match policy {
+        EventPolicy::MustReplyOrBusy { .. } => "busy",
+        EventPolicy::BestEffort { .. } => "dropped_best_effort",
+        EventPolicy::DropIfStale { .. } => "stale_or_full",
+        EventPolicy::CoalesceLatest { .. } => "coalesced_wake_full",
+        EventPolicy::MustDeliver { .. } => "must_deliver_failed",
+    }
+}
+
+fn defer_must_deliver(
+    tx: Sender<RuntimeEvent>,
+    event: RuntimeEvent,
+    event_kind: &'static str,
+    policy: EventPolicy,
+) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            if tx.send(event).await.is_err() {
+                tracing::error!(
+                    event_policy = policy.name(),
+                    event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
+                    event_kind,
+                    drop_reason = "must_deliver_failed",
+                    "runtime owner event queue closed before must-deliver event was accepted"
+                );
+            }
+        });
+    } else {
+        std::thread::spawn(move || {
+            if tx.blocking_send(event).is_err() {
+                tracing::error!(
+                    event_policy = policy.name(),
+                    event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
+                    event_kind,
+                    drop_reason = "must_deliver_failed",
+                    "runtime owner event queue closed before must-deliver event was accepted"
+                );
+            }
+        });
     }
 }
 
@@ -374,11 +902,10 @@ impl RuntimeHandles {
                 self.player_failed = true;
                 self.pending_player_cmds.clear();
                 if app.status.text.is_empty() {
-                    app.status.text = format!(
+                    app.set_status_error(format!(
                         "{}: {e}",
                         crate::t!("mpv unavailable", "mpv를 사용할 수 없음")
-                    );
-                    app.dirty = true;
+                    ));
                 }
             }
         }
@@ -677,5 +1204,216 @@ impl RuntimeHandles {
             // own); never reaches here. Listed for exhaustiveness.
             Cmd::DesktopNotify { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::proto::RemoteCommand;
+    use crate::util::event_policy::{EventKey, EventLane, EventPolicy};
+
+    #[test]
+    fn runtime_event_policy_covers_representative_events() {
+        assert_eq!(
+            RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit).policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::Control
+            }
+        );
+        assert_eq!(
+            RuntimeEvent::Player(crate::player::PlayerEvent::Eof).policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::Control
+            }
+        );
+        assert_eq!(
+            RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(12.0)).policy(),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::PlayerTimePos
+            }
+        );
+
+        let (reply, _rx) = tokio::sync::oneshot::channel();
+        assert_eq!(
+            RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(
+                RemoteCommand::TogglePause,
+                reply,
+            ))
+            .policy(),
+            EventPolicy::MustReplyOrBusy {
+                lane: EventLane::RemoteCommand
+            }
+        );
+
+        assert_eq!(
+            RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
+                video_id: "v".to_owned(),
+                percent: 50.0,
+            })
+            .policy(),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::DownloadProgress
+            }
+        );
+        assert_eq!(
+            RuntimeEvent::Download(crate::download::DownloadEvent::Done {
+                video_id: "v".to_owned(),
+                path: "song.m4a".to_owned(),
+            })
+            .policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::WorkResult
+            }
+        );
+        assert_eq!(
+            RuntimeEvent::Api(crate::api::ApiEvent::StreamingError {
+                seed_video_id: "seed".to_owned(),
+                error: "nope".to_owned(),
+            })
+            .policy(),
+            EventPolicy::DropIfStale {
+                stale_key: EventKey::StreamingSeed
+            }
+        );
+        assert!(matches!(
+            RuntimeEvent::Scrobble(crate::scrobble::ScrobbleEvent::QueueStalled { pending: 1 })
+                .policy(),
+            EventPolicy::BestEffort { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn must_deliver_runtime_event_waits_when_owner_lane_is_full() {
+        let (raw_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let tx = RuntimeSender::new(raw_tx.clone());
+        assert!(
+            raw_tx
+                .try_send(RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(
+                    1.0
+                )))
+                .is_ok()
+        );
+
+        assert!(emit(
+            &tx,
+            RuntimeEvent::Signal(crate::player::lifetime::SignalEvent::Quit)
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(_)))
+        ));
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await,
+            Ok(Some(RuntimeEvent::Signal(
+                crate::player::lifetime::SignalEvent::Quit
+            )))
+        ));
+    }
+
+    #[test]
+    fn remote_runtime_event_reports_full_to_callers() {
+        let (raw_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let tx = RuntimeSender::new(raw_tx.clone());
+        assert!(
+            raw_tx
+                .try_send(RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(
+                    1.0
+                )))
+                .is_ok()
+        );
+        let (reply, _reply_rx) = tokio::sync::oneshot::channel();
+
+        assert!(!emit(
+            &tx,
+            RuntimeEvent::Remote(crate::remote::server::RemoteEvent::Command(
+                RemoteCommand::TogglePause,
+                reply,
+            ))
+        ));
+    }
+
+    #[test]
+    fn runtime_telemetry_coalesces_time_pos_to_one_wake() {
+        let (raw_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let tx = RuntimeSender::new(raw_tx);
+
+        for tick in 0..10_000 {
+            assert!(emit(
+                &tx,
+                RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(tick as f64))
+            ));
+        }
+
+        assert!(matches!(rx.try_recv(), Ok(RuntimeEvent::TelemetryWake)));
+        assert!(rx.try_recv().is_err());
+        let drained = tx.drain_coalesced();
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(
+            &drained[0],
+            RuntimeEvent::Player(crate::player::PlayerEvent::TimePos(t)) if (*t - 9999.0).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn runtime_download_progress_coalesces_without_displacing_final_event() {
+        let (raw_tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let tx = RuntimeSender::new(raw_tx);
+
+        assert!(emit(
+            &tx,
+            RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
+                video_id: "a".to_owned(),
+                percent: 10.0,
+            })
+        ));
+        assert!(emit(
+            &tx,
+            RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
+                video_id: "a".to_owned(),
+                percent: 70.0,
+            })
+        ));
+        assert!(emit(
+            &tx,
+            RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
+                video_id: "b".to_owned(),
+                percent: 40.0,
+            })
+        ));
+        assert!(emit(
+            &tx,
+            RuntimeEvent::Download(crate::download::DownloadEvent::Done {
+                video_id: "a".to_owned(),
+                path: "a.m4a".to_owned(),
+            })
+        ));
+
+        assert!(matches!(rx.try_recv(), Ok(RuntimeEvent::TelemetryWake)));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(RuntimeEvent::Download(crate::download::DownloadEvent::Done {
+                video_id,
+                ..
+            })) if video_id == "a"
+        ));
+        let drained = tx.drain_coalesced();
+        assert_eq!(drained.len(), 2);
+        assert!(drained.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
+                video_id,
+                percent,
+            }) if video_id == "a" && (*percent - 70.0).abs() < f64::EPSILON
+        )));
+        assert!(drained.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::Download(crate::download::DownloadEvent::Progress {
+                video_id,
+                percent,
+            }) if video_id == "b" && (*percent - 40.0).abs() < f64::EPSILON
+        )));
     }
 }

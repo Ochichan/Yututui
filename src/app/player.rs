@@ -1241,7 +1241,7 @@ impl App {
             None => {
                 self.playback.time_pos = None;
                 self.playback.time_pos_at = None;
-                self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
+                self.bump_position_epoch(PositionEpochReason::PlaybackCleared);
                 self.playback.duration = None;
                 self.playback.paused = true;
                 self.playback.stream_now_playing = None;
@@ -1405,7 +1405,7 @@ impl App {
         // A track (re)start is a position discontinuity — the media session must
         // re-announce position 0 (repeat-one restarts included, where the track key
         // alone wouldn't change).
-        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
+        self.bump_position_epoch(PositionEpochReason::TrackRestart);
         self.playback.duration = None;
         self.playback.paused = false;
         self.playback.stream_now_playing = None;

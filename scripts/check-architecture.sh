@@ -75,4 +75,7 @@ if [ "$fail" -ne 0 ]; then
   exit "$fail"
 fi
 
+bash scripts/check-app-boundaries.sh
+bash scripts/check-invariant-ledger.sh
+
 echo "architecture invariants ok"

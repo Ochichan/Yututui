@@ -10,6 +10,8 @@
 
 use crate::deps::{self, Need};
 use crate::{config, i18n};
+use serde::Serialize;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::time::Duration;
@@ -20,19 +22,163 @@ pub fn run() -> i32 {
 }
 
 pub fn run_with_args(args: &[String]) -> i32 {
+    if matches!(args, [cmd, flag] if cmd == "terminal" && flag == "--json") {
+        return run_terminal_json();
+    }
+    if matches!(args, [cmd, flag] if cmd == "terminal" && (flag == "--help" || flag == "-h")) {
+        println!("Usage: ytt doctor terminal --json");
+        return 0;
+    }
     let verbose = match args {
         [] => false,
         [arg] if arg == "--verbose" || arg == "-v" => true,
         [arg] if arg == "--help" || arg == "-h" => {
             println!("Usage: ytt doctor [--verbose]");
+            println!("       ytt doctor terminal --json");
             return 0;
         }
         _ => {
             eprintln!("usage: ytt doctor [--verbose]");
+            eprintln!("       ytt doctor terminal --json");
             return 2;
         }
     };
     run_inner(verbose)
+}
+
+#[derive(Serialize)]
+struct TerminalDoctor {
+    term: Option<String>,
+    term_program: Option<String>,
+    wt_session: bool,
+    image_protocol: &'static str,
+    image_protocol_source: &'static str,
+    zoom_mode: &'static str,
+    zoom_mode_source: &'static str,
+    keyboard_enhancement_supported: Option<bool>,
+    mouse_capture_configured: bool,
+    stdout_is_tty: bool,
+    stdin_is_tty: bool,
+    warnings: Vec<String>,
+}
+
+fn run_terminal_json() -> i32 {
+    // No config load, cookie read, playback init, mpv spawn, terminal raw mode, or writes.
+    let term = std::env::var("TERM").ok();
+    let term_program = std::env::var("TERM_PROGRAM").ok();
+    let wt_session = std::env::var_os("WT_SESSION").is_some();
+    let stdout_is_tty = std::io::stdout().is_terminal();
+    let stdin_is_tty = std::io::stdin().is_terminal();
+    let mut warnings = Vec::new();
+    if !stdout_is_tty {
+        warnings.push("stdout is not a TTY; ytm-tui will skip native image probing".to_string());
+    }
+    if !stdin_is_tty {
+        warnings.push("stdin is not a TTY; interactive terminal probes may not answer".to_string());
+    }
+
+    let report = TerminalDoctor {
+        image_protocol: terminal_image_protocol(
+            term.as_deref(),
+            term_program.as_deref(),
+            wt_session,
+        ),
+        image_protocol_source: "environment",
+        zoom_mode: terminal_zoom_mode(term.as_deref(), term_program.as_deref(), wt_session),
+        zoom_mode_source: "environment",
+        keyboard_enhancement_supported: terminal_keyboard_hint(
+            term.as_deref(),
+            term_program.as_deref(),
+            wt_session,
+        ),
+        mouse_capture_configured: true,
+        term,
+        term_program,
+        wt_session,
+        stdout_is_tty,
+        stdin_is_tty,
+        warnings,
+    };
+
+    match serde_json::to_string_pretty(&report) {
+        Ok(json) => {
+            println!("{json}");
+            0
+        }
+        Err(e) => {
+            eprintln!("ytt doctor: could not encode terminal report: {e}");
+            1
+        }
+    }
+}
+
+fn terminal_image_protocol(
+    term: Option<&str>,
+    term_program: Option<&str>,
+    wt_session: bool,
+) -> &'static str {
+    let term = term.unwrap_or_default().to_ascii_lowercase();
+    let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
+    if term.contains("kitty") {
+        "kitty"
+    } else if term_program.contains("wezterm") {
+        "iterm2_or_kitty_or_sixel"
+    } else if wt_session {
+        "sixel_versioned"
+    } else if term.contains("foot") {
+        "sixel"
+    } else if term_program.contains("ghostty") || term.contains("ghostty") {
+        "kitty"
+    } else if term.contains("linux") {
+        "halfblocks_or_retro"
+    } else {
+        "unknown"
+    }
+}
+
+fn terminal_zoom_mode(
+    term: Option<&str>,
+    term_program: Option<&str>,
+    wt_session: bool,
+) -> &'static str {
+    if let Ok(value) = std::env::var("YTM_TUI_TEXT_SIZING") {
+        return match value.as_str() {
+            "0" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF" => "none_forced",
+            "dhl" | "DHL" | "decdhl" => "decdhl_forced",
+            _ => "probe_requested",
+        };
+    }
+    let term = term.unwrap_or_default().to_ascii_lowercase();
+    let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
+    if term.contains("kitty") {
+        "osc66_versioned"
+    } else if wt_session {
+        "decdhl_expected"
+    } else if term_program.contains("wezterm") || term_program.contains("ghostty") {
+        "unknown_probe_required"
+    } else {
+        "unknown"
+    }
+}
+
+fn terminal_keyboard_hint(
+    term: Option<&str>,
+    term_program: Option<&str>,
+    wt_session: bool,
+) -> Option<bool> {
+    let term = term.unwrap_or_default().to_ascii_lowercase();
+    let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
+    if term.contains("kitty")
+        || term.contains("foot")
+        || term.contains("alacritty")
+        || term_program.contains("wezterm")
+        || term_program.contains("ghostty")
+        || wt_session
+    {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 fn run_inner(verbose: bool) -> i32 {
@@ -621,6 +767,39 @@ fn dir_is_writable(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_doctor_detects_common_protocol_hints_without_probing() {
+        assert_eq!(
+            terminal_image_protocol(Some("xterm-kitty"), None, false),
+            "kitty"
+        );
+        assert_eq!(
+            terminal_image_protocol(Some("xterm-256color"), Some("WezTerm"), false),
+            "iterm2_or_kitty_or_sixel"
+        );
+        assert_eq!(
+            terminal_image_protocol(Some("xterm-256color"), None, true),
+            "sixel_versioned"
+        );
+        assert_eq!(
+            terminal_zoom_mode(Some("xterm-kitty"), None, false),
+            "osc66_versioned"
+        );
+        assert_eq!(
+            terminal_zoom_mode(Some("xterm-256color"), None, true),
+            "decdhl_expected"
+        );
+    }
+
+    #[test]
+    fn terminal_doctor_marks_unknown_keyboard_support_as_unknown() {
+        assert_eq!(terminal_keyboard_hint(Some("dumb"), None, false), None);
+        assert_eq!(
+            terminal_keyboard_hint(Some("xterm-kitty"), None, false),
+            Some(true)
+        );
+    }
 
     #[test]
     fn every_known_tool_has_a_localized_role() {

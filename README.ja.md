@@ -7,6 +7,8 @@
 
 ターミナルの中で楽しむ YouTube Music — 速くて、キーボードで操れて、RAM をじわじわ食うブラウザのタブも広告もありません。すべて3文字のコマンド一つで: `ytt`。Rust + ratatui。MIT。
 
+Public beta: 毎日使えるくらいには安定していますが、まだ速く動いている最中です。
+
 ### [▶ ライブデモ・機能ツアー → ochichan.github.io/ytm-tui](https://ochichan.github.io/ytm-tui/)
 
 > 🖼️ *デモ GIF は近日追加予定。*
@@ -52,6 +54,13 @@ irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
 
 > 直接インストーラやソースビルドの後は、`ytt doctor` で何が足りないか確認してください。
 > **yt-dlp は自動で最新に保たれます。** YouTube は毎週変わるため、`ytt` は自前の yt-dlp を保持し（github.com から SHA-256 検証付き）、{管理版, システム版} の新しい方を使います。確認は `ytt tools status --why`、更新は `ytt tools update`、既知の正常なバイナリへの固定は `ytt tools use system|managed|<path>`。
+
+## ターミナル対応
+
+- ターミナル対応はエミュレータごとに違います。ytm-tui は機能を検出し、可能な範囲で fallback します。
+- アルバムアートはターミナルが対応していれば Kitty/Sixel/iTerm2 を使い、そうでなければ halfblock または retro ASCII に戻ります。
+- テキスト拡大、CJK/IME、マウスレポート、動画オーバーレイはターミナルと OS の対応に依存します。
+- 環境確認は `ytt doctor terminal --json`、詳細は [terminal compatibility matrix](docs/terminal-compatibility.md) を参照してください。
 
 ## クイックスタート
 
@@ -310,6 +319,7 @@ ytt tools unpin               # 通常の managed/system 選択に戻す
 | 昨日は動いたのに今日は動かない | YouTube が何か変えました — `ytt tools update` の後、`ytt tools status --why`; 管理版更新が原因なら `ytt tools use system`。 |
 | 特定の曲だけ再生できない | サインインが必要かも — 上の Cookie の項を参照。 |
 | アルバムアートが出ない | 初期設定はオフ: 設定 → 一般 → **アルバムアート**をオンにして再起動。 |
+| ターミナルによってアルバムアート/拡大の挙動が違う | `ytt doctor terminal --json` を実行し、[terminal matrix](docs/terminal-compatibility.md) と照合してください。 |
 | コントロールセンター / SMTC / MPRIS に出ない | 設定 → 再生 → **OS メディアコントロール**を確認。何かが一度再生されてから表示されます。 |
 | フライアウトに「不明なアプリ」/ 項目が 2 つ | `ytt register-media-identity` を一度実行（項目 2 つ = mpv 自身のメディアセッション。mpv ≥ 0.39 では自動で無効化されます）。 |
 | DJ Gem が反応しない | 設定 → DJ Gem に無料の Gemini キーを入れ、**Enable DJ Gem** をオンに。 |

@@ -8436,67 +8436,86 @@ fn outside_click_dismisses_eq_dropdown_without_seeking() {
 
 #[test]
 fn art_overlay_mask_tracks_each_popup_independently() {
+    use super::artwork::*;
+
     // The render loop clears native terminal graphics on any change to this mask, so every
     // art-covering surface needs its own bit — switching one straight to another, or stacking a
     // second over a first, must register as an edge.
     let mut app = app_playing(1, 0);
     assert_eq!(app.art_overlay_mask(), 0);
     app.dropdowns.eq_open = true;
-    assert_eq!(app.art_overlay_mask(), 1 << 0);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_EQ_BIT);
     // Switch eq -> streaming: the mask still changes even though some popup
     // stays open across the switch.
     app.dropdowns.eq_open = false;
     app.dropdowns.streaming_open = true;
-    assert_eq!(app.art_overlay_mask(), 1 << 1);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_STREAMING_BIT);
     // The queue window is a distinct bit, and can stack with a dropdown.
     app.queue_popup.open = true;
-    assert_eq!(app.art_overlay_mask(), (1 << 1) | (1 << 2));
+    assert_eq!(
+        app.art_overlay_mask(),
+        ART_OVERLAY_STREAMING_BIT | ART_OVERLAY_QUEUE_BIT
+    );
     app.dropdowns.streaming_open = false;
-    assert_eq!(app.art_overlay_mask(), 1 << 2);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_QUEUE_BIT);
     app.queue_popup.open = false;
     assert_eq!(app.art_overlay_mask(), 0);
 
     app.overlays.help_visible = true;
-    assert_eq!(app.art_overlay_mask(), 1 << 3);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_HELP_BIT);
     app.overlays.help_visible = false;
     app.overlays.about_visible = true;
-    assert_eq!(app.art_overlay_mask(), 1 << 4);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_ABOUT_BIT);
     app.overlays.about_visible = false;
     app.overlays.why_ai_visible = true;
-    assert_eq!(app.art_overlay_mask(), 1 << 5);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_WHY_AI_BIT);
     app.overlays.why_ai_visible = false;
     app.overlays.key_conflict = Some(Conflict {
         ctx: KeyContext::Player,
         existing: Action::TogglePause,
         chord: Chord::new(KeyCode::Char('x'), KeyModifiers::NONE),
     });
-    assert_eq!(app.art_overlay_mask(), 1 << 6);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_KEY_CONFLICT_BIT);
     app.overlays.key_conflict = None;
     app.radio_mode.pending_radio_mode_confirm = Some(RadioModeConfirm::Enter);
-    assert_eq!(app.art_overlay_mask(), 1 << 7);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_RADIO_CONFIRM_BIT);
     app.radio_mode.pending_radio_mode_confirm = None;
     app.overlays.pending_settings_confirm = Some(SettingsConfirm::ResetAll);
-    assert_eq!(app.art_overlay_mask(), 1 << 8);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_SETTINGS_CONFIRM_BIT);
     app.overlays.pending_settings_confirm = None;
     app.library_ui.confirm_delete = Some(vec![std::path::PathBuf::from("track.mp3")]);
-    assert_eq!(app.art_overlay_mask(), 1 << 9);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_LIBRARY_CONFIRM_BIT);
     app.library_ui.confirm_delete = None;
     // The bulk-download confirm deliberately shares bit 9 with the file-delete confirm: the two
     // Library confirm modals are mutually exclusive (each captures all keys while open) and share
     // the same footprint, so one bit tracks both without a missed graphics-clear edge.
     app.library_ui.confirm_download = Some(vec![fsong("z", "Z", "A")]);
-    assert_eq!(app.art_overlay_mask(), 1 << 9);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_LIBRARY_CONFIRM_BIT);
     app.library_ui.confirm_download = None;
     app.mode = Mode::Search;
-    assert_eq!(app.art_overlay_mask(), 1 << 10);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_NOT_PLAYER_BIT);
     app.mode = Mode::Player;
     assert_eq!(app.art_overlay_mask(), 0);
     app.overlays.mouse_help_visible = true;
-    assert_eq!(app.art_overlay_mask(), 1 << 11);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_MOUSE_HELP_BIT);
     app.overlays.mouse_help_visible = false;
     assert_eq!(app.art_overlay_mask(), 0);
+    app.library_ui.create_input = Some("New list".to_owned());
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_CREATE_PLAYLIST_BIT);
+    app.library_ui.create_input = None;
+    app.library_ui.confirm_playlist_delete = Some("mix".to_owned());
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_DELETE_PLAYLIST_BIT);
+    app.library_ui.confirm_playlist_delete = None;
+    app.playlist_picker = Some(PlaylistPicker {
+        songs: vec![fsong("pick", "Pick", "Artist")],
+        cursor: 0,
+        naming: None,
+    });
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_PLAYLIST_PICKER_BIT);
+    app.playlist_picker = None;
+    assert_eq!(app.art_overlay_mask(), 0);
     app.search_filter.open = true;
-    assert_eq!(app.art_overlay_mask(), 1 << 15);
+    assert_eq!(app.art_overlay_mask(), ART_OVERLAY_SEARCH_FILTER_BIT);
     app.search_filter.open = false;
     assert_eq!(app.art_overlay_mask(), 0);
 }

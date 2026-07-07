@@ -82,6 +82,15 @@ pub(crate) use crate::playback_policy::{
     AUTOPLAY_COOLDOWN, AUTOPLAY_MAX_FAILURES, AUTOPLAY_THRESHOLD, MAX_CONSECUTIVE_PLAY_ERRORS,
     STREAMING_FALLBACK_COUNT, STREAMING_POOL_COUNT,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum PositionEpochReason {
+    RestoreSession,
+    Seek,
+    TrackRestart,
+    PlaybackCleared,
+    Stop,
+}
 /// How many ordered session outcomes (plays/skips/likes/dislikes) to retain for the DJ Gem
 /// reranker's recovery context. Small: the model only needs the recent arc.
 const SESSION_EVENTS_CAP: usize = 20;
@@ -763,13 +772,13 @@ impl App {
     fn seed_restored_playback_state(&mut self) {
         self.playback.time_pos = None;
         self.playback.time_pos_at = None;
-        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
+        self.bump_position_epoch(PositionEpochReason::RestoreSession);
         self.playback.duration = None;
         self.playback.paused = true;
         self.playback.stream_now_playing = None;
         self.anim.last_shown_sec = -1;
         self.prefetch.loaded_video_id = None;
-        self.status.text.clear();
+        self.clear_status();
         self.dirty = true;
     }
 
@@ -829,7 +838,7 @@ impl App {
             )
         });
         if seeked {
-            self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
+            self.bump_position_epoch(PositionEpochReason::Seek);
         }
         if self.playback.paused != paused_before {
             self.playback.time_pos_at = Some(Instant::now());
@@ -849,25 +858,46 @@ impl App {
         self.status.set_at.is_some()
     }
 
+    pub(crate) fn set_status_info(&mut self, text: impl Into<String>) {
+        self.status.kind = StatusKind::Info;
+        self.status.text = text.into();
+        self.dirty = true;
+    }
+
+    pub(crate) fn set_status_error(&mut self, text: impl Into<String>) {
+        self.status.kind = StatusKind::Error;
+        self.status.text = text.into();
+        self.dirty = true;
+    }
+
+    pub(crate) fn clear_status(&mut self) {
+        self.status.kind = StatusKind::Error;
+        self.status.text.clear();
+        self.dirty = true;
+    }
+
+    // INVARIANT(PLAY-EPOCH-001): every position discontinuity bumps through this helper.
+    pub(in crate::app) fn bump_position_epoch(&mut self, _reason: PositionEpochReason) {
+        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
+    }
+
     /// Step the text zoom one notch up or down (Ctrl+wheel / Ctrl+-/=). On terminals
     /// without the text sizing protocol this explains itself in a toast instead of
     /// silently doing nothing — the keys are advertised in the cheat-sheet, so a dead
     /// key would read as a bug.
     pub(in crate::app) fn zoom_step(&mut self, zoom_in: bool) -> Vec<Cmd> {
-        self.status.kind = StatusKind::Info;
         if !self.zoom.supported() {
-            self.status.text = t!(
+            self.set_status_info(t!(
                 "This terminal can't scale text (kitty 0.40+, Windows Terminal, …)",
                 "이 터미널은 글자 확대를 지원하지 않아요 (kitty 0.40+, Windows Terminal 등 가능)"
             )
-            .to_owned();
-            self.dirty = true;
+            .to_owned());
             return Vec::new();
         }
         let current = self.zoom.percent();
         let next = self.zoom.step(zoom_in);
         if next == current {
-            self.status.text = if zoom_in {
+            let status = if zoom_in {
                 let max = self.zoom.max_percent();
                 if crate::i18n::is_korean() {
                     format!("이미 최대 글자 크기예요 ({max}%)")
@@ -881,15 +911,16 @@ impl App {
                 )
                 .to_owned()
             };
-            self.dirty = true;
+            self.set_status_info(status);
             return Vec::new();
         }
         self.zoom.set(next);
-        self.status.text = if crate::i18n::is_korean() {
+        let status = if crate::i18n::is_korean() {
             format!("글자 크기 {next}%")
         } else {
             format!("Text size {next}%")
         };
+        self.set_status_info(status);
         // The virtual grid just changed size: force the full VT-clear redraw path so no
         // scaled multicells (or native-image placements) from the old grid survive.
         self.request_native_image_clear();

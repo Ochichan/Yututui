@@ -7,6 +7,8 @@
 
 터미널 안에서 즐기는 YouTube Music — 빠르고, 키보드로 다루고, 램을 야금야금 먹는 브라우저 탭도 광고도 없습니다. 전부 세 글자 명령 하나로: `ytt`. Rust + ratatui. MIT.
 
+Public beta: 매일 쓰기엔 충분히 안정적이지만, 아직 빠르게 움직이는 중입니다.
+
 ### [▶ 라이브 데모 · 기능 전체 둘러보기 → ochichan.github.io/ytm-tui](https://ochichan.github.io/ytm-tui/)
 
 > 🖼️ *데모 움짤 준비 중!*
@@ -52,6 +54,13 @@ irm https://raw.githubusercontent.com/Ochichan/ytm-tui/main/install.ps1 | iex
 
 > 직접 설치나 소스 빌드 후에는 `ytt doctor`로 뭐가 빠졌는지 확인하세요.
 > **yt-dlp는 스스로 최신을 유지합니다.** YouTube는 매주 바뀌기 때문에 `ytt`는 자체 yt-dlp를 직접 관리하며(github.com에서 SHA-256 검증), {관리형, 시스템} 중 더 최신 쪽을 사용합니다. 확인은 `ytt tools status --why`, 업데이트는 `ytt tools update`, 알려진 정상 바이너리 고정은 `ytt tools use system|managed|<path>`.
+
+## 터미널 지원
+
+- 터미널 지원은 에뮬레이터마다 다릅니다. ytm-tui는 가능한 기능을 감지하고, 안 되면 fallback으로 내려갑니다.
+- 앨범 아트는 터미널이 지원할 때 Kitty/Sixel/iTerm2 프로토콜을 쓰고, 아니면 halfblock 또는 retro ASCII로 표시합니다.
+- 텍스트 확대, CJK/IME, 마우스 보고, 영상 오버레이는 터미널과 OS 지원에 좌우됩니다.
+- 환경 확인은 `ytt doctor terminal --json`, 자세한 표는 [terminal compatibility matrix](docs/terminal-compatibility.md)를 보세요.
 
 ## 빠른 시작
 
@@ -310,6 +319,7 @@ ytt tools unpin               # 기본 managed/system 선택 정책으로 복귀
 | 어제는 됐는데 오늘은 안 됨 | YouTube가 뭔가 바꿨어요 — `ytt tools update` 후 `ytt tools status --why`; 관리형 업데이트가 문제면 `ytt tools use system`. |
 | 특정 곡만 재생 안 됨 | 로그인이 필요할 수 있어요 — 위의 쿠키 항목 참고. |
 | 앨범 아트가 안 보임 | 기본은 꺼짐: 설정 → 일반 → **앨범 아트** 켜고 재시작. |
+| 터미널마다 앨범 아트/확대 동작이 다름 | `ytt doctor terminal --json`을 실행하고 [terminal matrix](docs/terminal-compatibility.md)와 비교하세요. |
 | Control Center / SMTC / MPRIS에 안 나옴 | 설정 → 재생 → **OS 미디어 컨트롤** 확인; 뭔가 한 번 재생된 뒤부터 표시됩니다. |
 | 플라이아웃에 "알 수 없는 앱" / 항목 2개 | `ytt register-media-identity`를 한 번 실행 (항목 2개 = mpv 자체 미디어 세션; mpv ≥ 0.39에서는 자동으로 꺼줍니다). |
 | DJ Gem이 응답 안 함 | 설정 → DJ Gem에 무료 Gemini 키를 넣고 **Enable DJ Gem**을 켜세요. |

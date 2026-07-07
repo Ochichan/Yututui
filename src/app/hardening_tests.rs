@@ -42,6 +42,49 @@ fn scrobble_queue_dropped_event_updates_status() {
 }
 
 #[test]
+fn status_facades_set_kind_text_and_clear() {
+    let mut app = App::new(100);
+
+    app.set_status_info("ready");
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert_eq!(app.status.text, "ready");
+    assert!(app.dirty);
+
+    app.dirty = false;
+    app.set_status_error("failed");
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert_eq!(app.status.text, "failed");
+    assert!(app.dirty);
+
+    app.clear_status();
+    assert_eq!(app.status.kind, StatusKind::Error);
+    assert!(app.status.text.is_empty());
+}
+
+#[test]
+fn art_overlay_mask_bits_are_unique_and_fit_u16() {
+    use super::artwork::ART_OVERLAY_BITS;
+
+    let mut seen = 0u16;
+    for (name, bit) in ART_OVERLAY_BITS {
+        assert_ne!(*bit, 0, "{name} bit must be non-zero");
+        assert!(
+            bit.is_power_of_two(),
+            "{name} bit must contain exactly one flag"
+        );
+        assert_eq!(seen & *bit, 0, "{name} bit overlaps another overlay");
+        seen |= *bit;
+    }
+    assert_eq!(
+        ART_OVERLAY_BITS.len(),
+        16,
+        "u16 overlay mask is fully allocated"
+    );
+    assert!(seen & (1 << 15) != 0, "highest allocated bit is tracked");
+    assert_eq!(seen.count_ones(), ART_OVERLAY_BITS.len() as u32);
+}
+
+#[test]
 fn load_song_skips_invalid_external_playback_url() {
     let mut app = App::new(100);
     let bad = Song::from_source(

@@ -158,6 +158,13 @@ struct DaemonPlayback {
     speed: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PositionEpochReason {
+    Seek,
+    TrackRestart,
+    IdleReset,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DaemonOutcome {
     FullPlay,
@@ -1661,7 +1668,7 @@ impl DaemonEngine {
     fn note_seek(&mut self, pos: f64) {
         self.playback.time_pos = Some(pos);
         self.playback.time_pos_at = Some(Instant::now());
-        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
+        self.bump_position_epoch(PositionEpochReason::Seek);
     }
 
     fn set_streaming(&mut self, state: ToggleState) -> (RemoteResponse, Vec<EngineEffect>) {
@@ -1885,7 +1892,7 @@ impl DaemonEngine {
         self.playback.paused = false;
         self.playback.time_pos = None;
         self.playback.time_pos_at = None;
-        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
+        self.bump_position_epoch(PositionEpochReason::TrackRestart);
         self.playback.duration = None;
         self.loaded_video_id = Some(song.video_id.clone());
         self.library.record_play(&song);
@@ -1910,8 +1917,13 @@ impl DaemonEngine {
         self.playback.paused = true;
         self.playback.time_pos = None;
         self.playback.time_pos_at = None;
-        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
+        self.bump_position_epoch(PositionEpochReason::IdleReset);
         self.playback.duration = None;
+    }
+
+    // INVARIANT(PLAY-EPOCH-001): every daemon position discontinuity bumps through this helper.
+    fn bump_position_epoch(&mut self, _reason: PositionEpochReason) {
+        self.playback.position_epoch = self.playback.position_epoch.wrapping_add(1);
     }
 
     async fn ensure_player(&mut self) -> Result<(), EngineError> {
