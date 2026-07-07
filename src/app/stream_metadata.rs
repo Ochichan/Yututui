@@ -58,6 +58,10 @@ fn value_to_string(value: &Value) -> Option<String> {
 }
 
 fn clean_stream_title(raw: String) -> Option<String> {
+    // Bound untrusted ICY titles before display/AI context. This aligns with
+    // `usable_now_playing`, which rejects anything longer than 300 bytes.
+    const STREAM_TITLE_MAX: usize = crate::api::MAX_TITLE_CHARS;
+
     let mut s = raw.replace('\0', " ");
     s = collapse_spaces(&s);
     s = strip_wrapping_quotes(s.trim()).to_owned();
@@ -70,13 +74,10 @@ fn clean_stream_title(raw: String) -> Option<String> {
         s = strip_wrapping_quotes(s.trim()).to_owned();
     }
 
-    let s = collapse_spaces(&s);
+    let s = crate::api::sanitize_metadata_text(&collapse_spaces(&s), STREAM_TITLE_MAX);
     if s.is_empty() {
         return None;
     }
-    // Bound the untrusted ICY stream title before it flows into display and the AI context: a
-    // crafted stream could otherwise inject a very long "title". 512 bytes dwarfs any real one.
-    const STREAM_TITLE_MAX: usize = 512;
     if s.len() > STREAM_TITLE_MAX {
         let end = s.floor_char_boundary(STREAM_TITLE_MAX);
         return Some(s[..end].trim_end().to_owned());
@@ -215,5 +216,19 @@ mod tests {
 
         let meta = json!({ "icy-title": "unknown" });
         assert!(parse_stream_now_playing(&meta, &[]).is_none());
+    }
+
+    #[test]
+    fn sanitizes_long_control_and_bidi_metadata() {
+        let meta = json!({
+            "icy-title": format!("Artist\nName - {}{}", "x".repeat(700), '\u{202e}')
+        });
+        let parsed = parse_stream_now_playing(&meta, &[]).expect("metadata parsed");
+
+        assert_eq!(parsed.artist.as_deref(), Some("Artist Name"));
+        let title = parsed.title.as_deref().expect("title");
+        assert!(title.chars().count() <= crate::api::MAX_TITLE_CHARS);
+        assert!(!title.contains('\u{202e}'));
+        assert!(!parsed.raw.contains('\n'));
     }
 }

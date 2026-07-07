@@ -198,10 +198,11 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
         && tp.event == "property-change"
         && tp.name == "time-pos"
     {
-        let sec = tp.data as i64;
+        let t = crate::playback_policy::norm_position(tp.data);
+        let sec = t as i64;
         if state.last_sent_time_sec != Some(sec) {
             state.last_sent_time_sec = Some(sec);
-            emit(PlayerEvent::TimePos(tp.data));
+            emit(PlayerEvent::TimePos(t));
         }
         return;
     }
@@ -212,6 +213,7 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
         MpvIncoming::PropertyChange { name, value } => match name.as_str() {
             "time-pos" => {
                 if let Some(t) = value.as_f64() {
+                    let t = crate::playback_policy::norm_position(t);
                     let sec = t as i64;
                     if state.last_sent_time_sec != Some(sec) {
                         state.last_sent_time_sec = Some(sec);
@@ -221,7 +223,8 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
             }
             "duration" => match value.as_f64() {
                 Some(d) => {
-                    state.duration_known = true;
+                    let d = crate::playback_policy::norm_duration(d);
+                    state.duration_known = d > 0.0;
                     emit(PlayerEvent::Duration(Some(d)));
                 }
                 // Null after a real value = the property became unavailable (live edge,
@@ -255,6 +258,7 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
             "demuxer-cache-time" => match value.as_f64() {
                 // High-rate like time-pos → dedup to whole seconds.
                 Some(t) => {
+                    let t = crate::playback_policy::norm_position(t);
                     let sec = t as i64;
                     if state.last_sent_cache_sec != Some(sec) {
                         state.last_sent_cache_sec = Some(sec);
@@ -383,6 +387,42 @@ mod tests {
     }
 
     #[test]
+    fn invalid_non_finite_time_pos_emits_nothing() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut state = DispatchState::default();
+
+        for raw in ["NaN", "Infinity", "-Infinity"] {
+            let line =
+                format!(r#"{{"event":"property-change","id":1,"name":"time-pos","data":{raw}}}"#);
+            dispatch_incoming(&line, &emit, &mut state);
+        }
+
+        assert!(rx.try_recv().is_err());
+        assert_eq!(state.last_sent_time_sec, None);
+    }
+
+    #[test]
+    fn negative_time_pos_is_normalized_before_emit() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut state = DispatchState::default();
+
+        dispatch_incoming(
+            r#"{"event":"property-change","id":1,"name":"time-pos","data":-4.25}"#,
+            &emit,
+            &mut state,
+        );
+
+        assert!(matches!(rx.try_recv(), Ok(PlayerEvent::TimePos(t)) if t == 0.0));
+        assert_eq!(state.last_sent_time_sec, Some(0));
+    }
+
+    #[test]
     fn cache_time_forwards_and_dedups_to_whole_seconds() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let emit: EventSink = std::sync::Arc::new(move |event| {
@@ -448,6 +488,48 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(PlayerEvent::Duration(None))));
         dispatch_incoming(null_line, &emit, &mut state);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn negative_duration_is_normalized_without_latching_known_duration() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut state = DispatchState::default();
+
+        dispatch_incoming(
+            r#"{"event":"property-change","id":2,"name":"duration","data":-10}"#,
+            &emit,
+            &mut state,
+        );
+        assert!(matches!(rx.try_recv(), Ok(PlayerEvent::Duration(Some(d))) if d == 0.0));
+        assert!(!state.duration_known);
+
+        dispatch_incoming(
+            r#"{"event":"property-change","id":2,"name":"duration","data":null}"#,
+            &emit,
+            &mut state,
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn negative_cache_time_is_normalized_before_emit() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emit: EventSink = std::sync::Arc::new(move |event| {
+            let _ = tx.send(event);
+        });
+        let mut state = DispatchState::default();
+
+        dispatch_incoming(
+            r#"{"event":"property-change","id":6,"name":"demuxer-cache-time","data":-1}"#,
+            &emit,
+            &mut state,
+        );
+
+        assert!(matches!(rx.try_recv(), Ok(PlayerEvent::CacheTime(Some(t))) if t == 0.0));
+        assert_eq!(state.last_sent_cache_sec, Some(0));
     }
 
     #[test]
