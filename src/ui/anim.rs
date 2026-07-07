@@ -1349,7 +1349,37 @@ fn bounce(frame: &mut Frame, app: &App, zone: Rect, f: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::App;
+    use crate::app::{App, Msg};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::time::{Duration, Instant};
+
+    fn advance_frames(app: &mut App, frames: u64) {
+        for _ in 0..frames {
+            app.update(Msg::AnimTick);
+        }
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn render_with(
+        app: &App,
+        width: u16,
+        height: u16,
+        draw: impl FnOnce(&mut Frame, &App, Rect),
+    ) -> Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, width, height);
+        terminal.draw(|f| draw(f, app, area)).unwrap();
+        terminal.backend().buffer().clone()
+    }
 
     /// The core promise: with every animation toggle off (the default), the element-level helpers
     /// produce *nothing* — `None` builders and identity styles — so the player renders exactly as a
@@ -1418,5 +1448,215 @@ mod tests {
         app.fx.toast = Some(0);
         assert!(title_intro_line(&app, "T", "A", false, 40).is_some());
         assert!(status_toast_line(&app, 40).is_some());
+    }
+
+    #[test]
+    fn enabled_element_helpers_return_visible_values() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut app = App::new(100);
+        app.config.animations.master = true;
+        app.config.animations.title = true;
+        app.config.animations.heart = true;
+        app.config.animations.spinner = true;
+        app.config.animations.eq_bars = true;
+        app.config.animations.border = true;
+        app.config.animations.controls = true;
+        advance_frames(&mut app, 18);
+
+        let line = title_line(&app, "A Very Long Animated Title", "Artist", true, 14)
+            .expect("title animation");
+        let text = line_text(&line);
+        assert!(text.contains('♥') || text.contains("Title") || text.contains("Artist"));
+
+        assert!(spinner_prefix(&app).is_some_and(|s| !s.is_empty()));
+        assert_eq!(eq_bars(&app).expect("eq bars").chars().count(), 5);
+
+        let base = Style::default().fg(Color::Rgb(1, 2, 3));
+        assert_ne!(border_style(&app, base).fg, base.fg);
+        assert_ne!(controls_style(&app, base).fg, base.fg);
+
+        app.config.retro_mode = true;
+        assert!(matches!(
+            spinner_prefix(&app).as_deref(),
+            Some("|" | "/" | "-" | "\\")
+        ));
+        assert!(
+            eq_bars(&app)
+                .expect("retro bars")
+                .chars()
+                .all(|ch| ['.', ':', '░', '▒', '▓', '█'].contains(&ch))
+        );
+    }
+
+    #[test]
+    fn selected_marquee_tracks_overflow_and_cursor_identity() {
+        let mut app = App::new(100);
+        let text = "A title that is much too wide for the visible row";
+
+        assert_eq!(
+            selected_marquee(&app, ScrollSurface::Library, 0, "short", 20),
+            "short"
+        );
+
+        let first = selected_marquee(&app, ScrollSurface::Library, 0, text, 12);
+        assert!(app.bridges.marquee_ran.get());
+        assert_eq!(
+            app.bridges.marquee_key.get(),
+            Some((ScrollSurface::Library, 0))
+        );
+
+        advance_frames(&mut app, 60);
+        let later = selected_marquee(&app, ScrollSurface::Library, 0, text, 12);
+        assert_ne!(first, later);
+
+        let reset = selected_marquee(&app, ScrollSurface::Search, 2, text, 12);
+        assert_eq!(
+            app.bridges.marquee_key.get(),
+            Some((ScrollSurface::Search, 2))
+        );
+        assert!(reset.starts_with("A title"));
+    }
+
+    #[test]
+    fn one_shot_and_ui_helpers_produce_expected_output_when_armed() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut app = App::new(100);
+        app.config.animations.master = true;
+        app.config.animations.track_intro = true;
+        app.config.animations.toast = true;
+        app.config.animations.selection = true;
+        app.config.animations.stagger = true;
+        app.config.animations.caret = true;
+        app.config.animations.tabs = true;
+        app.config.animations.activity = true;
+        app.config.animations.lyrics = true;
+        app.config.animations.about_fx = true;
+        app.config.animations.eq_bars = true;
+        app.fx.track_intro = Some(0);
+        app.fx.toast = Some(0);
+        app.fx.list = Some((0, Mode::Library));
+        app.fx.switch = Some((0, Mode::Search));
+        app.fx.tabbar = Some(0);
+        app.fx.lyric = Some(0);
+        app.status.text = "Saved track".to_owned();
+        advance_frames(&mut app, 3);
+
+        assert!(
+            line_text(&title_intro_line(&app, "Title", "Artist", true, 40).unwrap()).contains('♥')
+        );
+        assert!(line_text(&status_toast_line(&app, 40).unwrap()).contains("Sav"));
+        assert_eq!(activity_dots(&app).unwrap().len(), 3);
+        assert!(download_spinner(&app).is_some_and(|s| !s.is_empty()));
+        assert!(queue_marker(&app).is_some_and(|s| s.chars().count() == 2));
+        assert!(line_text(&about_brand_line(&app, "ytm-tui", "1.2.3").unwrap()).contains("1.2.3"));
+
+        let base = Style::default()
+            .fg(Color::Rgb(200, 200, 200))
+            .bg(Color::Rgb(10, 10, 10));
+        assert_ne!(selection_style(&app, base).bg, base.bg);
+        assert_ne!(stagger_style(&app, Mode::Library, 0, base).fg, base.fg);
+        assert_ne!(active_tab_style(&app, TabPop::Nav, base).bg, base.bg);
+        assert_ne!(active_tab_style(&app, TabPop::Inner, base).bg, base.bg);
+        assert_ne!(lyrics_current_style(&app, base).fg, base.fg);
+        assert_eq!(lyrics_dim_style(&app, base, 1).fg, base.fg);
+        let _ = lyrics_dim_style(&app, base, 8);
+        assert_eq!(
+            caret_span(&app, base, Color::Rgb(0, 0, 0)).content,
+            "\u{2588}"
+        );
+
+        let period = app.anim_ms_frames(1100);
+        let current = app.anim_frame();
+        advance_frames(&mut app, period.saturating_sub(current));
+        assert_eq!(caret_char(&app), '▏');
+        let target = period + period * 4 / 5;
+        let current = app.anim_frame();
+        advance_frames(&mut app, target.saturating_sub(current));
+        assert_eq!(caret_char(&app), ' ');
+    }
+
+    #[test]
+    fn paint_overlays_and_canvas_modify_the_buffer_when_enabled() {
+        let _guard = crate::i18n::lock_for_test();
+        let mut app = App::new(100);
+        app.config.animations.master = true;
+        app.config.animations.seekbar = true;
+        app.config.animations.seek_flash = true;
+        app.config.animations.volume_flash = true;
+        app.config.animations.like_burst = true;
+        app.config.animations.popup_fade = true;
+        app.config.animations.about_fx = true;
+        app.config.animations.rain = true;
+        app.config.animations.starfield = true;
+        app.config.animations.visualizer = true;
+        app.config.animations.donut = true;
+        app.config.animations.bounce = true;
+        app.fx.seek = Some(0);
+        app.fx.volume = Some(0);
+        app.fx.like = Some(0);
+        app.fx.popup = Some(0);
+        app.playback.volume = 60;
+        advance_frames(&mut app, 5);
+
+        let volume = render_with(&app, 12, 1, |f, app, area| {
+            volume_flash_overlay(f, app, area);
+        });
+        let row = (0..volume.area.width)
+            .map(|x| volume[(x, 0)].symbol())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            row.contains('█') && row.contains('░'),
+            "volume row: {row:?}"
+        );
+
+        let burst = render_with(&app, 40, 3, |f, app, area| {
+            like_burst_overlay(f, app, area, 0);
+        });
+        assert!(
+            (0..burst.area.height)
+                .flat_map(|y| (0..burst.area.width).map(move |x| (x, y)))
+                .any(|(x, y)| burst[(x, y)].symbol() != " "),
+            "like burst should paint at least one spark"
+        );
+
+        let canvas = render_with(&app, 48, 16, |f, app, area| {
+            render_canvas(f, app, area);
+        });
+        assert!(
+            (0..canvas.area.height)
+                .flat_map(|y| (0..canvas.area.width).map(move |x| (x, y)))
+                .any(|(x, y)| canvas[(x, y)].symbol() != " "),
+            "enabled canvas effects should paint nonblank cells"
+        );
+
+        let sparkles = render_with(&app, 32, 6, |f, app, area| {
+            about_sparkles(f, app, area, Rect::new(12, 2, 8, 2));
+        });
+        assert!(
+            (0..sparkles.area.height)
+                .flat_map(|y| (0..sparkles.area.width).map(move |x| (x, y)))
+                .any(|(x, y)| sparkles[(x, y)].symbol() != " "),
+            "about sparkles should paint around the keep-clear rect"
+        );
+    }
+
+    #[test]
+    fn smooth_seek_ratio_guards_paused_missing_and_nonfinite_state() {
+        let mut app = App::new(100);
+        app.config.animations.master = true;
+        app.config.animations.seekbar = true;
+
+        assert_eq!(smooth_seek_ratio(&app, 0.25), 0.25);
+
+        app.playback.paused = true;
+        app.playback.time_pos = Some(10.0);
+        app.playback.time_pos_at = Some(Instant::now() - Duration::from_secs(2));
+        app.playback.duration = Some(100.0);
+        assert_eq!(smooth_seek_ratio(&app, 0.25), 0.25);
+
+        app.playback.paused = false;
+        app.playback.time_pos = Some(f64::NAN);
+        assert_eq!(smooth_seek_ratio(&app, 0.25), 0.25);
     }
 }
