@@ -1115,6 +1115,68 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_unknown_flags_and_reports_usage_requests() {
+        assert_eq!(parse(&owned(&[])), Err(ParseOutcome::Usage));
+        assert_eq!(parse(&owned(&["--help"])), Err(ParseOutcome::Usage));
+        assert_eq!(
+            parse(&owned(&["start", "--help"])),
+            Err(ParseOutcome::Usage)
+        );
+        assert_eq!(
+            parse(&owned(&["serve", "--help"])),
+            Err(ParseOutcome::Usage)
+        );
+        assert_eq!(
+            parse(&owned(&["status", "--help"])),
+            Err(ParseOutcome::Usage)
+        );
+        assert!(matches!(
+            parse(&owned(&["start", "--bad"])),
+            Err(ParseOutcome::Invalid(message)) if message == "start: unknown flag `--bad`"
+        ));
+        assert!(matches!(
+            parse(&owned(&["serve", "--bad"])),
+            Err(ParseOutcome::Invalid(message)) if message == "serve: unknown flag `--bad`"
+        ));
+        assert!(matches!(
+            parse(&owned(&["status", "--bad"])),
+            Err(ParseOutcome::Invalid(message)) if message == "status: unknown flag `--bad`"
+        ));
+        assert!(matches!(
+            parse(&owned(&["stop", "--bad"])),
+            Err(ParseOutcome::Invalid(message)) if message == "stop: unexpected arguments"
+        ));
+        assert!(matches!(
+            parse(&owned(&["bogus"])),
+            Err(ParseOutcome::Invalid(message)) if message.contains("unknown command `bogus`")
+        ));
+    }
+
+    #[test]
+    fn daemon_error_exit_codes_match_user_actionability() {
+        assert_eq!(
+            daemon_error_exit_code(&DaemonError::StandaloneOwner),
+            EXIT_USAGE
+        );
+        assert_eq!(
+            daemon_error_exit_code(&DaemonError::ResumeRejected("session_empty".to_owned())),
+            EXIT_USAGE
+        );
+        assert_eq!(
+            daemon_error_exit_code(&DaemonError::StopRejected("busy".to_owned())),
+            EXIT_USAGE
+        );
+        assert_eq!(
+            daemon_error_exit_code(&DaemonError::Transport("socket closed".to_owned())),
+            EXIT_TRANSPORT
+        );
+        assert_eq!(
+            daemon_error_exit_code(&DaemonError::Spawn("denied".to_owned())),
+            EXIT_TRANSPORT
+        );
+    }
+
+    #[test]
     fn daemon_capabilities_advertise_headless_playback() {
         assert!(daemon_capabilities().contains(&"headless-playback".to_string()));
         assert!(daemon_capabilities().contains(&"queue-control".to_string()));
@@ -1144,6 +1206,158 @@ mod tests {
             }
         );
         assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::Duration(Some(180.0))).policy(),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::PlayerDuration
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::Paused(true)).policy(),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::PlayerPaused
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::Metadata(serde_json::json!({
+                "title": "Track"
+            })))
+            .policy(),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::WorkResult,
+                key: EventKey::PlayerMetadata
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::CacheTime(None)).policy(),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::PlayerCacheTime
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::AudioCodec(Some(
+                "aac".to_owned()
+            )))
+            .policy(),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::PlayerAudioCodec
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::FileFormat(Some(
+                "mp4".to_owned()
+            )))
+            .policy(),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::PlayerFileFormat
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::Eof).policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::Control
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::ModeResolved {
+                mode: crate::api::ApiMode::Anonymous,
+                had_cookie: false,
+            })
+            .policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::WorkResult
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::SearchResults {
+                request_id: 1,
+                query: "q".to_owned(),
+                source: crate::search_source::SearchSource::Youtube,
+                songs: Vec::new(),
+                timed_out: false,
+            })
+            .policy(),
+            EventPolicy::DropIfStale {
+                stale_key: EventKey::SearchRequest
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::SearchError {
+                request_id: 1,
+                source: crate::search_source::SearchSource::Youtube,
+                error: "bad".to_owned(),
+            })
+            .policy(),
+            EventPolicy::DropIfStale {
+                stale_key: EventKey::SearchRequest
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::StreamingResults {
+                seed_video_id: "seed".to_owned(),
+                candidates: Vec::new(),
+            })
+            .policy(),
+            EventPolicy::DropIfStale {
+                stale_key: EventKey::StreamingSeed
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::StreamingPreflighted {
+                seed_video_id: "seed".to_owned(),
+                songs: Vec::new(),
+            })
+            .policy(),
+            EventPolicy::DropIfStale {
+                stale_key: EventKey::StreamingSeed
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                seed_video_id: "seed".to_owned(),
+                error: "bad".to_owned(),
+            })
+            .policy(),
+            EventPolicy::DropIfStale {
+                stale_key: EventKey::StreamingSeed
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::TrackResolved {
+                seq: 7,
+                result: Ok(Vec::new()),
+            })
+            .policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::WorkResult
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::PlaylistTracks {
+                title: "Mix".to_owned(),
+                intent: crate::api::PlaylistIntent::Import,
+                songs: Vec::new(),
+            })
+            .policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::WorkResult
+            }
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::PlaylistTracksError {
+                title: "Mix".to_owned(),
+                error: "bad".to_owned(),
+            })
+            .policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::WorkResult
+            }
+        );
+        assert_eq!(
             DaemonEvent::Api(crate::api::ApiEvent::GuiSearchCompleted {
                 ticket: 7,
                 query: "q".to_owned(),
@@ -1166,6 +1380,180 @@ mod tests {
                 .policy(),
             EventPolicy::BestEffort { .. }
         ));
+        assert_eq!(
+            DaemonEvent::MediaArt(crate::media::artwork::MediaArtworkReady {
+                key: "track".to_owned(),
+                path: "art.jpg".into(),
+            })
+            .policy(),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::MediaArtVideo
+            }
+        );
+        assert_eq!(
+            DaemonEvent::YtdlpHeal {
+                video_id: "v".to_owned(),
+                updated: true,
+            }
+            .policy(),
+            EventPolicy::DropIfStale {
+                stale_key: EventKey::YtdlpHealVideo
+            }
+        );
+        assert_eq!(
+            DaemonEvent::TelemetryWake.policy(),
+            EventPolicy::MustDeliver {
+                lane: EventLane::Control
+            }
+        );
+    }
+
+    #[test]
+    fn daemon_event_kind_and_telemetry_slots_are_stable() {
+        use crate::util::event_policy::EventKey;
+
+        let (reply, _reply_rx) = tokio::sync::oneshot::channel();
+        assert_eq!(
+            DaemonEvent::Remote(RemoteEvent::Command(RemoteCommand::Status, reply)).kind(),
+            "remote"
+        );
+        assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::TimePos(1.0)).kind(),
+            "player"
+        );
+        assert_eq!(
+            DaemonEvent::Api(crate::api::ApiEvent::SearchError {
+                request_id: 1,
+                source: crate::search_source::SearchSource::Youtube,
+                error: "bad".to_owned(),
+            })
+            .kind(),
+            "api"
+        );
+        assert_eq!(
+            DaemonEvent::Media(crate::media::MediaCommand::Pause).kind(),
+            "media"
+        );
+        assert_eq!(
+            DaemonEvent::Scrobble(crate::scrobble::ScrobbleEvent::QueueStalled { pending: 3 })
+                .kind(),
+            "scrobble"
+        );
+        assert_eq!(
+            DaemonEvent::YtdlpHeal {
+                video_id: "v".to_owned(),
+                updated: false,
+            }
+            .kind(),
+            "ytdlp_heal"
+        );
+        assert_eq!(DaemonEvent::Signal.kind(), "signal");
+        assert_eq!(DaemonEvent::TelemetryWake.kind(), "telemetry_wake");
+        assert!(DaemonEvent::TelemetryWake.is_telemetry_wake());
+        assert!(!DaemonEvent::Signal.is_telemetry_wake());
+
+        assert_eq!(
+            DaemonEvent::Player(crate::player::PlayerEvent::TimePos(1.0)).telemetry_slot(),
+            Some(DaemonTelemetrySlot::Static(EventKey::PlayerTimePos))
+        );
+        assert_eq!(
+            DaemonEvent::MediaArt(crate::media::artwork::MediaArtworkReady {
+                key: "track-a".to_owned(),
+                path: "art.jpg".into(),
+            })
+            .telemetry_slot(),
+            Some(DaemonTelemetrySlot::MediaArt("track-a".to_owned()))
+        );
+        assert_eq!(DaemonEvent::Signal.telemetry_slot(), None);
+    }
+
+    #[test]
+    fn daemon_full_queue_reason_matches_policy_semantics() {
+        use crate::util::event_policy::{EventKey, EventLane, EventPolicy};
+
+        assert_eq!(
+            daemon_full_queue_reason(EventPolicy::MustReplyOrBusy {
+                lane: EventLane::RemoteCommand
+            }),
+            "busy"
+        );
+        assert_eq!(
+            daemon_full_queue_reason(EventPolicy::BestEffort { reason: "test" }),
+            "dropped_best_effort"
+        );
+        assert_eq!(
+            daemon_full_queue_reason(EventPolicy::DropIfStale {
+                stale_key: EventKey::SearchRequest
+            }),
+            "stale_or_full"
+        );
+        assert_eq!(
+            daemon_full_queue_reason(EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::PlayerTimePos
+            }),
+            "coalesced_wake_full"
+        );
+        assert_eq!(
+            daemon_full_queue_reason(EventPolicy::MustDeliver {
+                lane: EventLane::Control
+            }),
+            "must_deliver_failed"
+        );
+    }
+
+    #[test]
+    fn daemon_best_effort_and_stale_events_drop_when_owner_lane_is_full() {
+        let (raw_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let tx = DaemonEventSender::new(raw_tx.clone());
+        assert!(
+            raw_tx
+                .try_send(DaemonEvent::Player(crate::player::PlayerEvent::TimePos(
+                    1.0
+                )))
+                .is_ok()
+        );
+
+        assert!(!emit_daemon_event(
+            &tx,
+            DaemonEvent::Scrobble(crate::scrobble::ScrobbleEvent::QueueStalled { pending: 10 })
+        ));
+        assert!(!emit_daemon_event(
+            &tx,
+            DaemonEvent::Api(crate::api::ApiEvent::StreamingError {
+                seed_video_id: "seed".to_owned(),
+                error: "stale".to_owned(),
+            })
+        ));
+    }
+
+    #[test]
+    fn daemon_emit_returns_false_after_receiver_closes() {
+        let (raw_tx, rx) = tokio::sync::mpsc::channel(1);
+        let tx = DaemonEventSender::new(raw_tx);
+        drop(rx);
+
+        assert!(!emit_daemon_event(
+            &tx,
+            DaemonEvent::Media(crate::media::MediaCommand::Stop)
+        ));
+    }
+
+    #[test]
+    fn log_scrobble_event_accepts_all_notice_shapes() {
+        use crate::scrobble::ScrobbleEvent;
+        use crate::scrobble::service::ServiceKind;
+
+        log_scrobble_event(ScrobbleEvent::SessionInvalid(ServiceKind::Lastfm));
+        log_scrobble_event(ScrobbleEvent::QueueStalled { pending: 4 });
+        log_scrobble_event(ScrobbleEvent::QueueDropped { dropped: 2 });
+        log_scrobble_event(ScrobbleEvent::AuthUrl("http://localhost/auth".to_owned()));
+        log_scrobble_event(ScrobbleEvent::AuthDone {
+            username: "user".to_owned(),
+            session_key: "secret".to_owned(),
+        });
+        log_scrobble_event(ScrobbleEvent::AuthFailed("bad\nsecret".to_owned()));
     }
 
     #[tokio::test]
