@@ -275,3 +275,111 @@ async fn build_ctx(spec: &JobSpec, cfg: &Config) -> Result<JobCtx, String> {
         market: cfg.spotify.market.clone(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transfer::FileFormat;
+
+    fn file_spec(dest: TransferDest) -> JobSpec {
+        JobSpec {
+            source: TransferSource::File {
+                path: "input.csv".into(),
+            },
+            dest,
+            dry_run: false,
+            min_score: 0.80,
+            take_best: false,
+            rematch: false,
+        }
+    }
+
+    fn config_without_cookie() -> Config {
+        Config {
+            cookie: None,
+            cookies_file: Some(
+                std::env::temp_dir().join(format!("ytm-tui-missing-cookie-{}", std::process::id())),
+            ),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn transfer_handle_forwards_commands_to_actor_channel() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle = TransferHandle { tx };
+
+        handle.send(TransferCmd::AuthStart {
+            client_id: "cid".to_owned(),
+            port: 9271,
+        });
+        match rx.try_recv().unwrap() {
+            TransferCmd::AuthStart { client_id, port } => {
+                assert_eq!(client_id, "cid");
+                assert_eq!(port, 9271);
+            }
+            _ => panic!("expected auth start"),
+        }
+
+        handle.send(TransferCmd::StartJob(Box::new(file_spec(
+            TransferDest::File {
+                path: "out.json".into(),
+                format: FileFormat::Json,
+            },
+        ))));
+        match rx.try_recv().unwrap() {
+            TransferCmd::StartJob(spec) => {
+                assert!(matches!(spec.source, TransferSource::File { .. }));
+                assert!(matches!(spec.dest, TransferDest::File { .. }));
+            }
+            _ => panic!("expected start job"),
+        }
+
+        handle.send(TransferCmd::CancelJob);
+        assert!(matches!(rx.try_recv().unwrap(), TransferCmd::CancelJob));
+    }
+
+    #[tokio::test]
+    async fn build_ctx_avoids_clients_for_plain_file_export() {
+        let spec = file_spec(TransferDest::File {
+            path: "out.csv".into(),
+            format: FileFormat::Csv,
+        });
+        let cfg = config_without_cookie();
+
+        let ctx = build_ctx(&spec, &cfg).await.unwrap();
+
+        assert!(ctx.ytm.is_none());
+        assert!(ctx.spotify.is_none());
+        assert_eq!(ctx.search_config, cfg.effective_search());
+    }
+
+    #[tokio::test]
+    async fn build_ctx_uses_anonymous_ytm_for_local_playlist_matching_without_cookie() {
+        let spec = file_spec(TransferDest::LocalPlaylist {
+            name: Some("Imported".to_owned()),
+        });
+        let cfg = config_without_cookie();
+
+        let ctx = build_ctx(&spec, &cfg).await.unwrap();
+
+        assert!(matches!(
+            ctx.ytm,
+            Some(crate::api::ytmusic::YtMusicApi::Anonymous)
+        ));
+        assert!(ctx.spotify.is_none());
+    }
+
+    #[tokio::test]
+    async fn build_ctx_requires_cookie_for_account_writes() {
+        let spec = file_spec(TransferDest::YtmLikes);
+        let cfg = config_without_cookie();
+
+        let err = match build_ctx(&spec, &cfg).await {
+            Ok(_) => panic!("account write without a cookie should fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("YouTube Music cookie"));
+    }
+}

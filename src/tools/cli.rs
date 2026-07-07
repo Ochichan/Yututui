@@ -946,7 +946,37 @@ fn update() -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
     use super::*;
+
+    struct EnvRestore(Vec<(String, Option<OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| ((*name).to_owned(), std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    None => unsafe { std::env::remove_var(name) },
+                }
+            }
+        }
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("ytm-tui-tools-cli-{name}-{}", std::process::id()))
+    }
 
     #[test]
     fn parse_use_target_accepts_system_managed_and_paths() {
@@ -964,6 +994,32 @@ mod tests {
         }
 
         assert!(parse_use_target("nightly").is_err());
+    }
+
+    #[test]
+    fn run_dispatch_handles_help_and_usage_errors_before_stateful_paths() {
+        assert_eq!(run(&["--help".to_owned()]), 0);
+        assert_eq!(run(&["help".to_owned()]), 0);
+        assert_eq!(run(&["status".to_owned(), "--help".to_owned()]), 0);
+
+        assert_eq!(run(&["unknown".to_owned()]), 2);
+        assert_eq!(run(&["status".to_owned(), "--bogus".to_owned()]), 2);
+        assert_eq!(run(&["use".to_owned()]), 2);
+        assert_eq!(run(&["reset".to_owned()]), 2);
+        assert_eq!(run(&["reset".to_owned(), "--not-playback".to_owned()]), 2);
+    }
+
+    #[test]
+    fn parse_use_target_rejects_empty_and_keeps_path_shape() {
+        assert_eq!(parse_use_target("   "), Err("target is empty"));
+        assert_eq!(
+            parse_use_target("yt-dlp"),
+            Err("target must be `system`, `managed`, or an explicit path")
+        );
+        assert!(looks_like_path("/usr/local/bin/yt-dlp"));
+        assert!(looks_like_path("../bin/yt-dlp"));
+        assert!(looks_like_path(r"tools\yt-dlp.exe"));
+        assert!(!looks_like_path("yt-dlp"));
     }
 
     #[test]
@@ -1022,5 +1078,122 @@ mod tests {
 
         assert_eq!(cfg.tools.ytdlp_path, Some(PathBuf::from("/custom/yt-dlp")));
         assert_eq!(cfg.tools.ytdlp_managed, Some(false));
+    }
+
+    #[test]
+    fn active_env_override_trims_and_ignores_empty_values() {
+        let _restore = EnvRestore::capture(&["YTM_YTDLP"]);
+
+        unsafe { std::env::remove_var("YTM_YTDLP") };
+        assert_eq!(active_env_ytdlp_override(), None);
+
+        unsafe { std::env::set_var("YTM_YTDLP", "   ") };
+        assert_eq!(active_env_ytdlp_override(), None);
+
+        unsafe { std::env::set_var("YTM_YTDLP", "  /opt/bin/yt-dlp  ") };
+        assert_eq!(
+            active_env_ytdlp_override().as_deref(),
+            Some("/opt/bin/yt-dlp")
+        );
+    }
+
+    #[test]
+    fn report_line_appends_exactly_one_newline() {
+        let mut report = String::new();
+        push_report_line(&mut report, "one");
+        push_report_line(&mut report, String::from("two"));
+        assert_eq!(report, "one\ntwo\n");
+    }
+
+    #[test]
+    fn same_path_falls_back_to_literal_and_uses_canonical_files() {
+        let path = temp_path("same-path-file");
+        std::fs::write(&path, b"tool").unwrap();
+        let same = path
+            .parent()
+            .unwrap()
+            .join(".")
+            .join(path.file_name().unwrap());
+
+        assert!(same_path(&path, &same));
+        assert!(same_path(
+            Path::new("/definitely/not/present"),
+            Path::new("/definitely/not/present")
+        ));
+        assert!(!same_path(
+            Path::new("/definitely/not/present-a"),
+            Path::new("/definitely/not/present-b")
+        ));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn selection_label_uses_source_label_for_plain_sources() {
+        let cfg = config::Config::default();
+        for (source, label) in [
+            (tools::YtdlpSource::Override, "override"),
+            (tools::YtdlpSource::Managed, "managed"),
+            (tools::YtdlpSource::System, "system"),
+        ] {
+            let sel = tools::YtdlpSelection {
+                path: PathBuf::from(format!("/tmp/{label}-yt-dlp")),
+                version: Some("2026.06.09".to_owned()),
+                source,
+            };
+            assert_eq!(selection_label(&cfg, &sel), label);
+        }
+    }
+
+    #[test]
+    fn diagnostic_path_is_cache_scoped_and_timestamped() {
+        let path = diagnostic_path().expect("project cache dir");
+        assert_eq!(
+            path.parent()
+                .and_then(|dir| dir.file_name())
+                .and_then(|name| name.to_str()),
+            Some("diagnostics")
+        );
+        assert!(path.to_string_lossy().contains("tools-"));
+        assert_eq!(path.extension().and_then(|ext| ext.to_str()), Some("txt"));
+    }
+
+    #[test]
+    fn resolve_pin_target_reports_missing_system_when_path_is_empty() {
+        let _restore = EnvRestore::capture(&["PATH"]);
+        unsafe { std::env::set_var("PATH", "") };
+
+        let err = resolve_pin_target(&UseTarget::System, false).unwrap_err();
+        assert!(err.contains("system yt-dlp was not found"));
+
+        let err = resolve_pin_target(&UseTarget::System, true).unwrap_err();
+        assert!(err.contains("system yt-dlp"));
+    }
+
+    #[test]
+    fn resolve_pin_target_rejects_missing_explicit_path() {
+        let missing = temp_path("missing-path");
+        let _ = std::fs::remove_file(&missing);
+
+        let err = resolve_pin_target(&UseTarget::Path(missing.clone()), false).unwrap_err();
+        assert!(err.contains("could not open yt-dlp path"));
+        assert!(err.contains(&missing.display().to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_pin_target_rejects_non_executable_explicit_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_path("non-executable");
+        std::fs::write(&path, b"not executable").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let err = resolve_pin_target(&UseTarget::Path(path.clone()), false).unwrap_err();
+        assert!(err.contains("yt-dlp path is not executable"));
+
+        let _ = std::fs::remove_file(path);
     }
 }

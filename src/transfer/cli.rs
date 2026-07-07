@@ -906,3 +906,281 @@ async fn list_ytm() -> i32 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw_playlist_id() -> &'static str {
+        "37i9dQZF1DXcBWIGoYBM5M"
+    }
+
+    fn parse_common_err(args: &mut Vec<&str>) -> String {
+        match parse_common(args) {
+            Ok(_) => panic!("parse_common should have failed"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn spotify_playlist_id_accepts_uri_url_and_raw_id() {
+        assert_eq!(
+            parse_spotify_playlist_id("spotify:playlist:abcDEF123"),
+            Some("abcDEF123".to_owned())
+        );
+        assert_eq!(
+            parse_spotify_playlist_id(
+                "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=abc"
+            ),
+            Some(raw_playlist_id().to_owned())
+        );
+        assert_eq!(
+            parse_spotify_playlist_id(raw_playlist_id()),
+            Some(raw_playlist_id().to_owned())
+        );
+        assert_eq!(parse_spotify_playlist_id("not a playlist"), None);
+    }
+
+    #[test]
+    fn common_flags_are_removed_and_validated() {
+        let mut args = vec![
+            "--dry-run",
+            "liked",
+            "--yes",
+            "--min-score",
+            "0.65",
+            "--take-best",
+            "--rematch",
+            "--to",
+            "likes",
+        ];
+        let flags = parse_common(&mut args).expect("valid flags");
+
+        assert!(flags.dry_run);
+        assert!(flags.yes);
+        assert_eq!(flags.min_score, 0.65);
+        assert!(flags.take_best);
+        assert!(flags.rematch);
+        assert_eq!(args, vec!["liked", "--to", "likes"]);
+
+        let mut missing = vec!["--min-score"];
+        assert!(parse_common_err(&mut missing).contains("needs a value"));
+
+        let mut bad = vec!["--min-score", "nope"];
+        assert!(parse_common_err(&mut bad).contains("bad --min-score"));
+
+        let mut out_of_range = vec!["--min-score", "1.2"];
+        assert!(parse_common_err(&mut out_of_range).contains("must be 0..1"));
+    }
+
+    #[test]
+    fn import_liked_defaults_to_ytm_likes_and_keeps_flags() {
+        let (spec, yes) = parse_import(&[
+            "liked",
+            "--dry-run",
+            "--yes",
+            "--min-score",
+            "0.72",
+            "--take-best",
+            "--rematch",
+        ])
+        .expect("liked import");
+
+        assert!(yes);
+        assert!(matches!(spec.source, TransferSource::SpotifyLiked));
+        assert!(matches!(spec.dest, TransferDest::YtmLikes));
+        assert!(spec.dry_run);
+        assert_eq!(spec.min_score, 0.72);
+        assert!(spec.take_best);
+        assert!(spec.rematch);
+    }
+
+    #[test]
+    fn import_spotify_playlist_can_target_named_local_playlist() {
+        let (spec, yes) = parse_import(&["spotify:playlist:abc123", "--to", "local:Road Trip"])
+            .expect("playlist import");
+
+        assert!(!yes);
+        match spec.source {
+            TransferSource::SpotifyPlaylist { id } => assert_eq!(id, "abc123"),
+            other => panic!("wrong source: {other:?}"),
+        }
+        match spec.dest {
+            TransferDest::LocalPlaylist { name } => {
+                assert_eq!(name, Some("Road Trip".to_owned()));
+            }
+            other => panic!("wrong destination: {other:?}"),
+        }
+        assert!(!spec.dry_run);
+        assert_eq!(spec.min_score, 0.80);
+    }
+
+    #[test]
+    fn import_existing_file_wins_over_source_keywords() {
+        let path =
+            std::env::temp_dir().join(format!("ytt-transfer-cli-{}-liked", std::process::id()));
+        std::fs::write(&path, "title,artist\nSong,Artist\n").expect("create temp import file");
+
+        let source = path.to_string_lossy().to_string();
+        let (spec, _yes) = parse_import(&[&source]).expect("file import");
+        let _ = std::fs::remove_file(&path);
+
+        match spec.source {
+            TransferSource::File { path: parsed } => assert_eq!(parsed, path),
+            other => panic!("wrong source: {other:?}"),
+        }
+        assert!(matches!(
+            spec.dest,
+            TransferDest::YtmNewPlaylist { name: None }
+        ));
+    }
+
+    #[test]
+    fn import_rejects_bad_source_destination_and_extra_args() {
+        assert!(
+            parse_import(&["not-a-source"])
+                .unwrap_err()
+                .contains("not an existing file")
+        );
+        assert!(
+            parse_import(&["liked", "--to", "spotify"])
+                .unwrap_err()
+                .contains("--to expects")
+        );
+        assert!(
+            parse_import(&["liked", "extra"])
+                .unwrap_err()
+                .contains("unexpected argument")
+        );
+    }
+
+    #[test]
+    fn ytm_export_sources_are_explicitly_namespaced() {
+        match parse_ytm_source("ytm:PL123").expect("ytm source") {
+            TransferSource::YtmPlaylist { id } => assert_eq!(id, "PL123"),
+            other => panic!("wrong source: {other:?}"),
+        }
+        match parse_ytm_source("local:Favorites").expect("local source") {
+            TransferSource::LocalPlaylist { key } => assert_eq!(key, "Favorites"),
+            other => panic!("wrong source: {other:?}"),
+        }
+        assert!(parse_ytm_source("PL123").unwrap_err().contains("expected"));
+    }
+
+    #[test]
+    fn export_to_spotify_and_files_preserves_names_and_formats() {
+        let (spec, yes) = parse_export(&[
+            "ytm:PL123",
+            "--to",
+            "spotify",
+            "--name",
+            "Mirror",
+            "--dry-run",
+        ])
+        .expect("spotify export");
+        assert!(!yes);
+        assert!(spec.dry_run);
+        match spec.dest {
+            TransferDest::SpotifyNewPlaylist { name } => {
+                assert_eq!(name, Some("Mirror".to_owned()));
+            }
+            other => panic!("wrong destination: {other:?}"),
+        }
+
+        let (spec, yes) =
+            parse_export(&["local:Favorites", "--to", "backup.csv", "--yes"]).expect("file export");
+        assert!(yes);
+        match spec.source {
+            TransferSource::LocalPlaylist { key } => assert_eq!(key, "Favorites"),
+            other => panic!("wrong source: {other:?}"),
+        }
+        match spec.dest {
+            TransferDest::File { path, format } => {
+                assert_eq!(path, PathBuf::from("backup.csv"));
+                assert_eq!(format, FileFormat::Csv);
+            }
+            other => panic!("wrong destination: {other:?}"),
+        }
+
+        let (spec, _yes) =
+            parse_export(&["ytm:PL123", "--to", "backup.JSON"]).expect("json export");
+        assert!(matches!(
+            spec.dest,
+            TransferDest::File {
+                format: FileFormat::Json,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn export_rejects_missing_destination_and_bad_file_extension() {
+        assert!(
+            parse_export(&["ytm:PL123"])
+                .unwrap_err()
+                .contains("missing --to")
+        );
+        assert!(
+            parse_export(&["ytm:PL123", "--to", "backup.txt"])
+                .unwrap_err()
+                .contains("must end in .json or .csv")
+        );
+        assert!(
+            parse_export(&["ytm:PL123", "--name"])
+                .unwrap_err()
+                .contains("--name needs a value")
+        );
+    }
+
+    #[test]
+    fn backup_parse_requires_dir_and_accepts_csv_flag() {
+        let (dir, csv) = parse_backup(&["--csv", "--dir", "out"]).expect("backup args");
+        assert_eq!(dir, PathBuf::from("out"));
+        assert!(csv);
+        assert!(
+            parse_backup(&["--csv"])
+                .unwrap_err()
+                .contains("missing --dir")
+        );
+        assert!(
+            parse_backup(&["--dir"])
+                .unwrap_err()
+                .contains("--dir needs a path")
+        );
+        assert!(
+            parse_backup(&["--dir", "out", "--bad"])
+                .unwrap_err()
+                .contains("unexpected argument")
+        );
+    }
+
+    #[test]
+    fn sanitized_backup_stems_are_nonempty_limited_and_unique() {
+        assert_eq!(sanitize_filename("  "), "playlist");
+        assert_eq!(
+            sanitize_filename(r#"a/b\c:d*e?f"g<h>i|j"#),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
+        assert_eq!(sanitize_filename(&"x".repeat(140)).len(), 120);
+
+        let mut used = std::collections::HashSet::new();
+        assert_eq!(unique_stem("mix".to_owned(), &mut used), "mix");
+        assert_eq!(unique_stem("mix".to_owned(), &mut used), "mix-2");
+        assert_eq!(unique_stem("mix".to_owned(), &mut used), "mix-3");
+    }
+
+    #[test]
+    fn run_reports_usage_without_starting_runtime_for_parse_failures() {
+        assert_eq!(run(&[]), EXIT_USAGE);
+        assert_eq!(run(&["--help".to_owned()]), EXIT_OK);
+        assert_eq!(run(&["unknown".to_owned()]), EXIT_USAGE);
+        assert_eq!(
+            run(&["list".to_owned(), "unknown-side".to_owned()]),
+            EXIT_USAGE
+        );
+        assert_eq!(
+            run(&["import".to_owned(), "not-a-source".to_owned()]),
+            EXIT_USAGE
+        );
+    }
+}
