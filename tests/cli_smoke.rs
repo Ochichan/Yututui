@@ -28,6 +28,8 @@ fn isolated_command(root: &Path, args: &[&str]) -> Command {
         .env("HOME", root)
         .env("APPDATA", root.join("config"))
         .env("LOCALAPPDATA", root.join("local"))
+        .env("YTM_CONFIG_DIR", root.join("config"))
+        .env("YTM_CACHE_DIR", root.join("cache"))
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_CACHE_HOME", root.join("cache"))

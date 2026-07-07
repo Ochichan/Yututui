@@ -684,11 +684,16 @@ fn inspect_ytdlp_path(path: &Path) -> Option<tools::ytdlp::BinaryInspection> {
 
 fn diagnostic_path() -> Option<PathBuf> {
     let ts = tools::ytdlp::now_unix();
-    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| {
-        d.cache_dir()
-            .join("diagnostics")
-            .join(format!("tools-{ts}.txt"))
-    })
+    tools_cache_dir().map(|d| d.join("diagnostics").join(format!("tools-{ts}.txt")))
+}
+
+fn tools_cache_dir() -> Option<PathBuf> {
+    if let Ok(env) = std::env::var("YTM_CACHE_DIR")
+        && !env.trim().is_empty()
+    {
+        return Some(PathBuf::from(env.trim()));
+    }
+    directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.cache_dir().to_path_buf())
 }
 
 fn parse_use_target(raw: &str) -> Result<UseTarget, &'static str> {

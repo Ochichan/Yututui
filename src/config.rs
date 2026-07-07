@@ -1228,11 +1228,23 @@ fn ytm_dir_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
 }
 
 fn config_path() -> Option<PathBuf> {
+    if let Some(dir) = env_dir("YTM_CONFIG_DIR") {
+        return Some(dir.join("config.json"));
+    }
     directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.config_dir().join("config.json"))
 }
 
 fn old_config_path() -> Option<PathBuf> {
+    if env_dir("YTM_CONFIG_DIR").is_some() {
+        return None;
+    }
     directories::BaseDirs::new().map(|d| d.home_dir().join(".youtube-music-cli/config.json"))
+}
+
+fn env_dir(name: &str) -> Option<PathBuf> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| normalize_user_dir(&raw))
 }
 
 /// Pull whatever we can reuse out of the old TypeScript app's config. Favorites,
