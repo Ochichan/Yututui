@@ -7,11 +7,14 @@
 //! the playlist count and per-playlist track count bounded at write time (priority #1:
 //! flat memory).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::Song;
+use crate::api::{
+    Song, sanitize_album, sanitize_artist, sanitize_duration, sanitize_provider_id, sanitize_title,
+};
 use crate::util::safe_fs;
 
 /// Caps (bounded memory).
@@ -39,6 +42,30 @@ pub enum AddResult {
     Full,
 }
 
+/// Summary of repairs applied to a loaded playlists file.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PlaylistRepairReport {
+    pub playlists_removed: usize,
+    pub songs_removed: usize,
+    pub names_repaired: usize,
+    pub ids_repaired: usize,
+    pub songs_sanitized: usize,
+}
+
+impl PlaylistRepairReport {
+    pub fn changed(&self) -> bool {
+        self.playlists_removed > 0
+            || self.songs_removed > 0
+            || self.names_repaired > 0
+            || self.ids_repaired > 0
+            || self.songs_sanitized > 0
+    }
+
+    pub fn truncated(&self) -> bool {
+        self.playlists_removed > 0 || self.songs_removed > 0
+    }
+}
+
 /// All local playlists, persisted to `<data dir>/playlists.json`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -49,14 +76,21 @@ pub struct Playlists {
 impl Playlists {
     /// Load from disk, falling back to empty if absent or unreadable.
     pub fn load() -> Self {
+        Self::load_with_repair_report().0
+    }
+
+    /// Load from disk and report any shape repair applied to the in-memory result.
+    pub fn load_with_repair_report() -> (Self, PlaylistRepairReport) {
         let Some(path) = playlists_path() else {
-            return Playlists::default();
+            return (Playlists::default(), PlaylistRepairReport::default());
         };
         // Schema-drift tolerant *and* size-bounded: one changed field no longer discards saved
         // playlists, and a corrupt/hostile oversized file is set aside rather than read whole
-        // into memory. Playlist entries are user-curated, so (unlike history) they are not
-        // count-truncated — the byte cap alone bounds the blast radius.
-        safe_fs::load_json_or_default_limited::<Playlists>(&path, MAX_PLAYLISTS_BYTES)
+        // into memory. Loaded entries are then count-repaired to the same caps as mutations.
+        let mut playlists =
+            safe_fs::load_json_or_default_limited::<Playlists>(&path, MAX_PLAYLISTS_BYTES);
+        let report = playlists.repair_loaded();
+        (playlists, report)
     }
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.
@@ -69,6 +103,49 @@ impl Playlists {
 
     pub fn list(&self) -> &[Playlist] {
         &self.playlists
+    }
+
+    /// Repair a deserialized playlists file so it obeys the same bounded shape as create/add.
+    pub fn repair_loaded(&mut self) -> PlaylistRepairReport {
+        let mut report = PlaylistRepairReport::default();
+        if self.playlists.len() > PLAYLISTS_MAX {
+            report.playlists_removed = self.playlists.len() - PLAYLISTS_MAX;
+            self.playlists.truncate(PLAYLISTS_MAX);
+        }
+
+        let mut used_ids = HashSet::with_capacity(self.playlists.len());
+        for playlist in &mut self.playlists {
+            let trimmed_name = playlist.name.trim();
+            if trimmed_name.is_empty() {
+                playlist.name = "Playlist".to_owned();
+                report.names_repaired += 1;
+            } else if trimmed_name != playlist.name {
+                playlist.name = trimmed_name.to_owned();
+                report.names_repaired += 1;
+            }
+
+            let trimmed_id = playlist.id.trim().to_owned();
+            if is_sane_playlist_id(&trimmed_id) && used_ids.insert(trimmed_id.clone()) {
+                if trimmed_id != playlist.id {
+                    playlist.id = trimmed_id;
+                    report.ids_repaired += 1;
+                }
+            } else {
+                playlist.id = unique_repaired_id(&playlist.name, &mut used_ids);
+                report.ids_repaired += 1;
+            }
+
+            if playlist.songs.len() > SONGS_PER_PLAYLIST_MAX {
+                report.songs_removed += playlist.songs.len() - SONGS_PER_PLAYLIST_MAX;
+                playlist.songs.truncate(SONGS_PER_PLAYLIST_MAX);
+            }
+            for song in &mut playlist.songs {
+                if sanitize_loaded_song(song) {
+                    report.songs_sanitized += 1;
+                }
+            }
+        }
+        report
     }
 
     /// Resolve a playlist by `id` first, then by case-insensitive name — the DJ Gem may
@@ -190,6 +267,62 @@ fn slug(name: &str) -> String {
     out.trim_matches('-').to_owned()
 }
 
+fn is_sane_playlist_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('-')
+        && !id.ends_with('-')
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+fn unique_repaired_id(name: &str, used: &mut HashSet<String>) -> String {
+    let base = slug(name);
+    let base = if base.is_empty() {
+        "playlist".to_owned()
+    } else {
+        base
+    };
+    let mut candidate = base.clone();
+    let mut suffix = 2usize;
+    while used.contains(&candidate) {
+        candidate = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    used.insert(candidate.clone());
+    candidate
+}
+
+fn sanitize_loaded_song(song: &mut Song) -> bool {
+    let video_id = sanitize_provider_id(&song.video_id);
+    let title = sanitize_title(&song.title);
+    let artist = sanitize_artist(&song.artist);
+    let duration = sanitize_duration(&song.duration);
+    let album = song
+        .album
+        .as_deref()
+        .map(sanitize_album)
+        .filter(|album| !album.is_empty());
+    let yt_video_id = song
+        .yt_video_id
+        .as_deref()
+        .map(sanitize_provider_id)
+        .filter(|id| !id.is_empty());
+    let changed = video_id != song.video_id
+        || title != song.title
+        || artist != song.artist
+        || duration != song.duration
+        || album != song.album
+        || yt_video_id != song.yt_video_id;
+    if changed {
+        song.video_id = video_id;
+        song.title = title;
+        song.artist = artist;
+        song.duration = duration;
+        song.album = album;
+        song.yt_video_id = yt_video_id;
+    }
+    changed
+}
+
 fn playlists_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "ytm-tui").map(|d| d.data_dir().join("playlists.json"))
 }
@@ -300,5 +433,108 @@ mod tests {
     fn missing_fields_default() {
         let back: Playlists = serde_json::from_str("{}").unwrap();
         assert!(back.list().is_empty());
+    }
+
+    #[test]
+    fn repair_loaded_truncates_playlist_and_song_caps() {
+        let mut playlists = Playlists {
+            playlists: (0..PLAYLISTS_MAX + 2)
+                .map(|i| Playlist {
+                    id: format!("p{i}"),
+                    name: format!("P {i}"),
+                    songs: if i == 0 {
+                        (0..SONGS_PER_PLAYLIST_MAX + 3)
+                            .map(|n| song(&format!("s{n}")))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                })
+                .collect(),
+        };
+
+        let report = playlists.repair_loaded();
+
+        assert_eq!(playlists.list().len(), PLAYLISTS_MAX);
+        assert_eq!(playlists.list()[0].songs.len(), SONGS_PER_PLAYLIST_MAX);
+        assert_eq!(report.playlists_removed, 2);
+        assert_eq!(report.songs_removed, 3);
+        assert!(report.changed());
+        assert!(report.truncated());
+    }
+
+    #[test]
+    fn repair_loaded_repairs_blank_names_and_duplicate_or_bad_ids() {
+        let mut playlists = Playlists {
+            playlists: vec![
+                Playlist {
+                    id: "mix".to_owned(),
+                    name: "  Mix  ".to_owned(),
+                    songs: Vec::new(),
+                },
+                Playlist {
+                    id: "mix".to_owned(),
+                    name: "Second Mix".to_owned(),
+                    songs: Vec::new(),
+                },
+                Playlist {
+                    id: "../bad".to_owned(),
+                    name: "   ".to_owned(),
+                    songs: Vec::new(),
+                },
+            ],
+        };
+
+        let report = playlists.repair_loaded();
+
+        assert_eq!(playlists.list()[0].name, "Mix");
+        assert_eq!(playlists.list()[0].id, "mix");
+        assert_eq!(playlists.list()[1].id, "second-mix");
+        assert_eq!(playlists.list()[2].name, "Playlist");
+        assert_eq!(playlists.list()[2].id, "playlist");
+        assert_eq!(report.names_repaired, 2);
+        assert_eq!(report.ids_repaired, 2);
+    }
+
+    #[test]
+    fn repair_loaded_sanitizes_deserialized_song_metadata() {
+        let mut dirty = song("dirty");
+        dirty.video_id = " dirty\u{202e}id ".to_owned();
+        dirty.title = "  title\u{7}  ".to_owned();
+        dirty.artist = " artist\u{200f} ".to_owned();
+        dirty.duration = "  3:00\u{0}  ".to_owned();
+        dirty.album = Some(" album\u{202d} ".to_owned());
+        dirty.yt_video_id = Some(" yt\u{202e}id ".to_owned());
+        let mut playlists = Playlists {
+            playlists: vec![Playlist {
+                id: "mix".to_owned(),
+                name: "Mix".to_owned(),
+                songs: vec![dirty],
+            }],
+        };
+
+        let report = playlists.repair_loaded();
+        let repaired = &playlists.list()[0].songs[0];
+
+        assert_eq!(repaired.video_id, "dirtyid");
+        assert_eq!(repaired.title, "title");
+        assert_eq!(repaired.artist, "artist");
+        assert_eq!(repaired.duration, "3:00");
+        assert_eq!(repaired.album.as_deref(), Some("album"));
+        assert_eq!(repaired.yt_video_id.as_deref(), Some("ytid"));
+        assert_eq!(report.songs_sanitized, 1);
+    }
+
+    #[test]
+    fn repair_loaded_leaves_normal_playlist_unchanged() {
+        let mut playlists = Playlists::default();
+        let id = playlists.create("Faves").unwrap();
+        playlists.add(&id, song("x"));
+        let before = serde_json::to_string(&playlists).unwrap();
+
+        let report = playlists.repair_loaded();
+
+        assert_eq!(report, PlaylistRepairReport::default());
+        assert_eq!(serde_json::to_string(&playlists).unwrap(), before);
     }
 }

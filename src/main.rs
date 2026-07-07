@@ -680,8 +680,29 @@ async fn run(
             )
         );
     }
-    // Load local playlists (the DJ Gem playlist tools read/write these).
-    app.playlists = playlists::Playlists::load();
+    // Load local playlists (the DJ Gem playlist tools read/write these). Hand-edited or old
+    // files are count-repaired on load; persist the repaired snapshot so startup does not keep
+    // redoing the same repair every run.
+    let (loaded_playlists, playlist_repair) = playlists::Playlists::load_with_repair_report();
+    app.playlists = loaded_playlists;
+    if playlist_repair.changed() {
+        tracing::warn!(?playlist_repair, "playlists file was repaired on load");
+        persist.save(persist::Snapshot::Playlists(app.playlists.clone()));
+        if playlist_repair.truncated() && app.status.text.is_empty() {
+            app.status.kind = app::StatusKind::Info;
+            app.status.text = format!(
+                "{} ({} {}, {} {})",
+                ytm_tui::t!(
+                    "Saved playlists repaired",
+                    "저장된 플레이리스트를 정리했어요"
+                ),
+                playlist_repair.playlists_removed,
+                ytm_tui::t!("lists removed", "개 목록 제거"),
+                playlist_repair.songs_removed,
+                ytm_tui::t!("tracks removed", "곡 제거")
+            );
+        }
+    }
     // Load the active natural-language station profile (explore level + avoided artists), if any.
     app.station = station::StationStore::load();
     app.apply_station_profile();

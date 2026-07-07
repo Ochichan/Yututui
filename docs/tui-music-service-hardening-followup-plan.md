@@ -44,7 +44,7 @@ Recommended implementation order:
 - [x] P1-1: Cap TUI search, filter, and paste input; redact query logs.
 - [x] P1-2: Add persist retry/backoff and bounded/latest-wins notification.
 - [x] P1-3: Harden cookies-file handoff to external tools.
-- [ ] P2-1: Repair playlists on load.
+- [x] P2-1: Repair playlists on load.
 - [ ] P2-2: Rotate secret-bearing backups.
 - [ ] P2-3: Coalesce/cancel stale API search work.
 - [ ] P2-4: Document and self-check the remote same-user security model.
@@ -601,6 +601,24 @@ Acceptance criteria:
 - No user-visible command silently disappears without a stale/cancelled state transition.
 
 ## P2-1: Playlist Load Repair
+
+Status: completed in this hardening run.
+
+Implemented:
+
+- Added load-time playlist repair with a `PlaylistRepairReport`.
+- Enforced playlist count, per-playlist song count, trimmed/non-empty names, sane unique ids, and
+  metadata re-sanitization for deserialized songs.
+- Startup now persists a repaired snapshot and surfaces a one-line status only when truncation
+  removed playlists or tracks.
+- Added regression coverage for cap truncation, deterministic id repair, blank-name repair,
+  deserialized song sanitization, and unchanged normal playlists.
+
+Verification:
+
+- `cargo test playlists --lib`
+- `cargo test repair_loaded --lib`
+- `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
 
 Current evidence:
 
