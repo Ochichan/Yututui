@@ -18,14 +18,14 @@
 //! Update path (see [`check_and_update`]): resolve the channel's latest tag from the
 //! `releases/latest` **302 redirect** (the plain web endpoint — no GitHub API rate
 //! limits), then fetch the asset and its `SHA2-256SUMS` line from **tag-pinned**
-//! `releases/download/<tag>/…` URLs, so a nightly published mid-download can't pair
-//! a new binary with old sums. The body streams to disk with an incremental SHA-256
-//! (never ~40 MB buffered in RAM), is verified, then atomically renamed into place.
-//! HTTPS to github.com plus the same-release checksum gives *integrity*, not
-//! provenance — the opt-out for users who refuse networked executable downloads is
-//! `tools.ytdlp_managed = false`.
+//! `releases/download/<tag>/…` URLs, verify the sums file with yt-dlp's pinned GPG
+//! signing key, and only then download the binary. The body streams to disk with an
+//! incremental SHA-256 (never ~40 MB buffered in RAM), is verified, then atomically
+//! renamed into place. The opt-out for users who refuse networked executable downloads
+//! is `tools.ytdlp_managed = false`.
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
@@ -338,6 +338,43 @@ pub fn asset_name() -> Option<&'static str> {
 const DOWNLOAD_MAX_BYTES: u64 = 100 * 1024 * 1024;
 /// Cap on the SHA2-256SUMS manifest (currently ~1.5 KiB).
 const SUMS_MAX_BYTES: usize = 64 * 1024;
+/// Cap on the detached GPG signature for `SHA2-256SUMS`.
+const SUMS_SIG_MAX_BYTES: usize = 64 * 1024;
+const GPG_VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Pinned from https://github.com/yt-dlp/yt-dlp/blob/master/public.key.
+/// The current signing identity is:
+/// Simon Sawicki (yt-dlp signing key) <contact@grub4k.xyz>
+const YTDLP_PUBLIC_KEY: &str = r#"-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mQINBGP78C4BEAD0rF9zjGPAt0thlt5C1ebzccAVX7Nb1v+eqQjk+WEZdTETVCg3
+WAM5ngArlHdm/fZqzUgO+pAYrB60GKeg7ffUDf+S0XFKEZdeRLYeAaqqKhSibVal
+DjvOBOztu3W607HLETQAqA7wTPuIt2WqmpL60NIcyr27LxqmgdN3mNvZ2iLO+bP0
+nKR/C+PgE9H4ytywDa12zMx6PmZCnVOOOu6XZEFmdUxxdQ9fFDqd9LcBKY2LDOcS
+Yo1saY0YWiZWHtzVoZu1kOzjnS5Fjq/yBHJLImDH7pNxHm7s/PnaurpmQFtDFruk
+t+2lhDnpKUmGr/I/3IHqH/X+9nPoS4uiqQ5HpblB8BK+4WfpaiEg75LnvuOPfZIP
+KYyXa/0A7QojMwgOrD88ozT+VCkKkkJ+ijXZ7gHNjmcBaUdKK7fDIEOYI63Lyc6Q
+WkGQTigFffSUXWHDCO9aXNhP3ejqFWgGMtCUsrbkcJkWuWY7q5ARy/05HbSM3K4D
+U9eqtnxmiV1WQ8nXuI9JgJQRvh5PTkny5LtxqzcmqvWO9TjHBbrs14BPEO9fcXxK
+L/CFBbzXDSvvAgArdqqlMoncQ/yicTlfL6qzJ8EKFiqW14QMTdAn6SuuZTodXCTi
+InwoT7WjjuFPKKdvfH1GP4bnqdzTnzLxCSDIEtfyfPsIX+9GI7Jkk/zZjQARAQAB
+tDdTaW1vbiBTYXdpY2tpICh5dC1kbHAgc2lnbmluZyBrZXkpIDxjb250YWN0QGdy
+dWI0ay54eXo+iQJOBBMBCgA4FiEErAy75oSNaoc0ZK9OV89lkztadYEFAmP78C4C
+GwMFCwkIBwIGFQoJCAsCBBYCAwECHgECF4AACgkQV89lkztadYEVqQ//cW7TxhXg
+7Xbh2EZQzXml0egn6j8QaV9KzGragMiShrlvTO2zXfLXqyizrFP4AspgjSn/4NrI
+8mluom+Yi+qr7DXT4BjQqIM9y3AjwZPdywe912Lxcw52NNoPZCm24I9T7ySc8lmR
+FQvZC0w4H/VTNj/2lgJ1dwMflpwvNRiWa5YzcFGlCUeDIPskLx9++AJE+xwU3LYm
+jQQsPBqpHHiTBEJzMLl+rfd9Fg4N+QNzpFkTDW3EPerLuvJniSBBwZthqxeAtw4M
+UiAXh6JvCc2hJkKCoygRfM281MeolvmsGNyQm+axlB0vyldiPP6BnaRgZlx+l6MU
+cPqgHblb7RW5j9lfr6OYL7SceBIHNv0CFrt1OnkGo/tVMwcs8LH3Ae4a7UJlIceL
+V54aRxSsZU7w4iX+PB79BWkEsQzwKrUuJVOeL4UDwWajp75OFaUqbS/slDDVXvK5
+OIeuth3mA/adjdvgjPxhRQjA3l69rRWIJDrqBSHldmRsnX6cvXTDy8wSXZgy51lP
+m4IVLHnCy9m4SaGGoAsfTZS0cC9FgjUIyTyrq9M67wOMpUxnuB0aRZgJE1DsI23E
+qdvcSNVlO+39xM/KPWUEh6b83wMn88QeW+DCVGWACQq5N3YdPnAJa50617fGbY6I
+gXIoRHXkDqe23PZ/jURYCv0sjVtjPoVC+bg=
+=bJkn
+-----END PGP PUBLIC KEY BLOCK-----
+"#;
 
 /// What a [`check_and_update`] run concluded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -640,19 +677,200 @@ async fn fetch_expected_sha(
     base: &str,
     asset: &str,
 ) -> Result<String, String> {
-    let url = format!("{base}/SHA2-256SUMS");
+    let sums_url = format!("{base}/SHA2-256SUMS");
+    let sig_url = format!("{base}/SHA2-256SUMS.sig");
+    let sums = fetch_release_file(client, &sums_url, SUMS_MAX_BYTES, "checksum manifest").await?;
+    let sig =
+        fetch_release_file(client, &sig_url, SUMS_SIG_MAX_BYTES, "checksum signature").await?;
+    verify_sha256sums_signature(&sums, &sig)?;
+    parse_sha256sums(&String::from_utf8_lossy(&sums), asset)
+        .ok_or_else(|| format!("SHA2-256SUMS has no entry for {asset}"))
+}
+
+async fn fetch_release_file(
+    client: &reqwest::Client,
+    url: &str,
+    max_bytes: usize,
+    label: &str,
+) -> Result<Vec<u8>, String> {
     let resp = client
-        .get(&url)
+        .get(url)
         .timeout(Duration::from_secs(60))
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| format!("checksum manifest fetch failed: {e}"))?;
-    let bytes = crate::util::http::read_response_limited(resp, SUMS_MAX_BYTES)
+        .map_err(|e| format!("{label} fetch failed: {e}"))?;
+    crate::util::http::read_response_limited(resp, max_bytes)
         .await
-        .map_err(|e| format!("checksum manifest fetch failed: {e}"))?;
-    parse_sha256sums(&String::from_utf8_lossy(&bytes), asset)
-        .ok_or_else(|| format!("SHA2-256SUMS has no entry for {asset}"))
+        .map_err(|e| format!("{label} fetch failed: {e}"))
+}
+
+struct GpgTools {
+    gpg: PathBuf,
+    gpgv: Option<PathBuf>,
+}
+
+fn resolve_gpg_tools() -> Result<GpgTools, String> {
+    let Some(gpg) = crate::deps::resolve_on_path("gpg") else {
+        return Err("GnuPG `gpg` is required to verify yt-dlp release signatures".to_owned());
+    };
+    Ok(GpgTools {
+        gpg,
+        gpgv: crate::deps::resolve_on_path("gpgv"),
+    })
+}
+
+fn verify_sha256sums_signature(sums: &[u8], signature: &[u8]) -> Result<(), String> {
+    let tools = resolve_gpg_tools()?;
+    let work = signature_work_dir()?;
+    let result = verify_sha256sums_signature_in(&tools, sums, signature, &work);
+    let _ = std::fs::remove_dir_all(&work);
+    result
+}
+
+fn signature_work_dir() -> Result<PathBuf, String> {
+    let base = signature_temp_base();
+    for attempt in 0..16u8 {
+        let dir = base.join(format!(
+            "ytm-tui-ytdlp-gpg-{}-{}-{attempt}",
+            std::process::id(),
+            now_unix()
+        ));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {
+                safe_fs::ensure_private_dir(&dir)
+                    .map_err(|e| format!("cannot prepare signature verifier dir: {e}"))?;
+                return Ok(dir);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("cannot prepare signature verifier dir: {e}")),
+        }
+    }
+    Err("cannot allocate signature verifier temp dir".to_owned())
+}
+
+fn signature_temp_base() -> PathBuf {
+    #[cfg(unix)]
+    {
+        let tmp = PathBuf::from("/tmp");
+        if tmp.is_dir() {
+            return tmp;
+        }
+    }
+    std::env::temp_dir()
+}
+
+fn verify_sha256sums_signature_in(
+    tools: &GpgTools,
+    sums: &[u8],
+    signature: &[u8],
+    dir: &Path,
+) -> Result<(), String> {
+    let home = dir.join("gnupg-home");
+    let sums_path = dir.join("SHA2-256SUMS");
+    let sig_path = dir.join("SHA2-256SUMS.sig");
+    let key_path = dir.join("yt-dlp-public.key");
+    let keyring = dir.join("trustedkeys.kbx");
+
+    std::fs::create_dir(&home).map_err(|e| format!("cannot prepare GPG home: {e}"))?;
+    safe_fs::ensure_private_dir(&home).map_err(|e| format!("cannot prepare GPG home: {e}"))?;
+    std::fs::write(&sums_path, sums).map_err(|e| format!("cannot write checksum manifest: {e}"))?;
+    std::fs::write(&sig_path, signature)
+        .map_err(|e| format!("cannot write checksum signature: {e}"))?;
+    std::fs::write(&key_path, YTDLP_PUBLIC_KEY.as_bytes())
+        .map_err(|e| format!("cannot write yt-dlp public key: {e}"))?;
+
+    let mut import = crate::util::process::std_command(
+        &tools.gpg.to_string_lossy(),
+        crate::util::process::ProcessProfile::YtDlp,
+    );
+    import
+        .arg("--batch")
+        .arg("--quiet")
+        .arg("--homedir")
+        .arg(&home)
+        .arg("--no-default-keyring")
+        .arg("--keyring")
+        .arg(&keyring)
+        .arg("--import")
+        .arg(&key_path)
+        .stdin(Stdio::null());
+    run_verifier(import, "import yt-dlp signing key")?;
+
+    if let Some(gpgv) = &tools.gpgv {
+        let mut verify = crate::util::process::std_command(
+            &gpgv.to_string_lossy(),
+            crate::util::process::ProcessProfile::YtDlp,
+        );
+        verify
+            .arg("--homedir")
+            .arg(&home)
+            .arg("--keyring")
+            .arg(&keyring)
+            .arg(&sig_path)
+            .arg(&sums_path)
+            .stdin(Stdio::null());
+        run_verifier(verify, "verify yt-dlp checksum signature")
+    } else {
+        let mut verify = crate::util::process::std_command(
+            &tools.gpg.to_string_lossy(),
+            crate::util::process::ProcessProfile::YtDlp,
+        );
+        verify
+            .arg("--batch")
+            .arg("--quiet")
+            .arg("--homedir")
+            .arg(&home)
+            .arg("--no-default-keyring")
+            .arg("--keyring")
+            .arg(&keyring)
+            .arg("--verify")
+            .arg(&sig_path)
+            .arg(&sums_path)
+            .stdin(Stdio::null());
+        run_verifier(verify, "verify yt-dlp checksum signature")
+    }
+}
+
+fn run_verifier(mut cmd: std::process::Command, label: &str) -> Result<(), String> {
+    use std::io::Read;
+
+    let mut child = cmd
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{label} failed to start: {e}"))?;
+    let mut stderr = child.stderr.take();
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child
+            .try_wait()
+            .map_err(|e| format!("{label} failed to poll: {e}"))?
+        {
+            Some(status) => break status,
+            None if start.elapsed() >= GPG_VERIFY_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} timed out"));
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    let mut err = String::new();
+    if let Some(mut stderr) = stderr.take() {
+        let mut limited = stderr.by_ref().take(8 * 1024 + 1);
+        let _ = limited.read_to_string(&mut err);
+        if err.len() > 8 * 1024 {
+            err.truncate(8 * 1024);
+        }
+    }
+    if status.success() {
+        Ok(())
+    } else if err.trim().is_empty() {
+        Err(format!("{label} failed with {status}"))
+    } else {
+        Err(format!("{label} failed with {status}: {}", err.trim()))
+    }
 }
 
 /// `<64-hex>  <filename>` lines → the (lowercased) hash for `asset`.
@@ -874,6 +1092,31 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  yt-dlp_linux_a
             None
         );
         assert_eq!(parse_sha256sums("", "yt-dlp_linux"), None);
+    }
+
+    #[test]
+    fn pinned_public_key_is_yt_dlp_signing_key() {
+        assert!(YTDLP_PUBLIC_KEY.contains("BEGIN PGP PUBLIC KEY BLOCK"));
+        assert!(YTDLP_PUBLIC_KEY.contains("tDdTaW1vbiBTYXdpY2tp"));
+        assert!(YTDLP_PUBLIC_KEY.contains("dWI0ay54eXo+"));
+    }
+
+    #[test]
+    fn signature_verifier_rejects_invalid_signature_when_gpg_is_available() {
+        let Ok(tools) = resolve_gpg_tools() else {
+            return;
+        };
+        let dir = signature_work_dir().unwrap();
+
+        let err =
+            verify_sha256sums_signature_in(&tools, b"not a sums file\n", b"not a signature", &dir)
+                .expect_err("invalid detached signature must be rejected");
+
+        assert!(
+            err.contains("verify yt-dlp checksum signature"),
+            "unexpected error: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
