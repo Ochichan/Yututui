@@ -1,6 +1,10 @@
 //! Search-screen reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
 
 use super::*;
+use crate::util::query::{
+    MAX_FILTER_QUERY_BYTES, MAX_SEARCH_QUERY_BYTES, QueryRejectReason, sanitize_query_for_submit,
+    try_push_query_char,
+};
 
 impl App {
     /// The track under the search-results cursor, if any.
@@ -51,8 +55,11 @@ impl App {
                     if chord.is_typeable()
                         && let KeyCode::Char(c) = k.code
                     {
-                        self.search.input.clear();
-                        self.search.input.push(c);
+                        let mut replacement = String::new();
+                        match try_push_query_char(&mut replacement, c, MAX_SEARCH_QUERY_BYTES) {
+                            Ok(()) => self.search.input = replacement,
+                            Err(reason) => self.set_query_reject_status(reason),
+                        }
                         return Vec::new();
                     }
                     if matches!(
@@ -79,8 +86,10 @@ impl App {
                 if chord.is_typeable()
                     && let KeyCode::Char(c) = k.code
                 {
-                    self.search.input.push(c);
-                    self.dirty = true;
+                    match try_push_query_char(&mut self.search.input, c, MAX_SEARCH_QUERY_BYTES) {
+                        Ok(()) => self.dirty = true,
+                        Err(reason) => self.set_query_reject_status(reason),
+                    }
                     return Vec::new();
                 }
                 match self.keymap.action(KeyContext::SearchInput, k.into()) {
@@ -401,8 +410,11 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                self.search_filter.query.push(c);
-                self.after_search_filter_change();
+                match try_push_query_char(&mut self.search_filter.query, c, MAX_FILTER_QUERY_BYTES)
+                {
+                    Ok(()) => self.after_search_filter_change(),
+                    Err(reason) => self.set_query_reject_status(reason),
+                }
             }
             _ => {}
         }
@@ -411,34 +423,58 @@ impl App {
 
     pub(in crate::app) fn submit_search_query(&mut self) -> Vec<Cmd> {
         self.search.select_all = false;
-        let q = self.search.input.trim().to_owned();
         self.dirty = true;
-        if q.is_empty() {
-            Vec::new()
-        } else {
-            self.search.searching = true;
-            // A fresh submit gets a new id; results/errors stamped with an older id are dropped.
-            self.search.request_id = self.search.request_id.wrapping_add(1);
-            let request_id = self.search.request_id;
-            self.status.text.clear();
-            // Playlist kind is YouTube-only (no other provider has a playlist catalog),
-            // so it bypasses the source selection entirely.
-            if self.search.kind == SearchKind::Playlists && !self.radio_dedicated_mode {
-                return vec![Cmd::SearchPlaylists {
-                    request_id,
-                    query: q,
-                }];
+        let q = match sanitize_query_for_submit(&self.search.input, MAX_SEARCH_QUERY_BYTES) {
+            Ok(q) => q,
+            Err(QueryRejectReason::Empty) => return Vec::new(),
+            Err(reason) => {
+                self.set_query_reject_status(reason);
+                return Vec::new();
             }
-            let config = self.search_config_for_mode();
-            let source = config.normalized_source(self.search.source);
-            self.search.source = source;
-            vec![Cmd::Search {
+        };
+        self.search.searching = true;
+        // A fresh submit gets a new id; results/errors stamped with an older id are dropped.
+        self.search.request_id = self.search.request_id.wrapping_add(1);
+        let request_id = self.search.request_id;
+        self.status.text.clear();
+        // Playlist kind is YouTube-only (no other provider has a playlist catalog),
+        // so it bypasses the source selection entirely.
+        if self.search.kind == SearchKind::Playlists && !self.radio_dedicated_mode {
+            return vec![Cmd::SearchPlaylists {
                 request_id,
                 query: q,
-                source,
-                config,
-            }]
+            }];
         }
+        let config = self.search_config_for_mode();
+        let source = config.normalized_source(self.search.source);
+        self.search.source = source;
+        vec![Cmd::Search {
+            request_id,
+            query: q,
+            source,
+            config,
+        }]
+    }
+
+    pub(in crate::app) fn set_query_reject_status(&mut self, reason: QueryRejectReason) {
+        self.status.kind = StatusKind::Error;
+        self.status.text = match reason {
+            QueryRejectReason::Empty => {
+                t!("Search query is empty", "검색어가 비어 있음").to_owned()
+            }
+            QueryRejectReason::TooLong { max } if max == MAX_FILTER_QUERY_BYTES => {
+                t!("Filter query is too long", "필터 검색어가 너무 김").to_owned()
+            }
+            QueryRejectReason::TooLong { .. } => {
+                t!("Search query is too long", "검색어가 너무 김").to_owned()
+            }
+            QueryRejectReason::ForbiddenChar => t!(
+                "Unsupported character in query",
+                "검색어에 지원하지 않는 문자가 있음"
+            )
+            .to_owned(),
+        };
+        self.dirty = true;
     }
 
     /// `Ctrl+P`: flip the search box between tracks and public YouTube playlists.

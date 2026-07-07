@@ -41,7 +41,7 @@ Recommended implementation order:
 
 - [x] P0-1: DNS and redirect-aware playable URL destination guard.
 - [x] P0-2: Replace artwork and resize unbounded queues.
-- [ ] P1-1: Cap TUI search, filter, and paste input; redact query logs.
+- [x] P1-1: Cap TUI search, filter, and paste input; redact query logs.
 - [ ] P1-2: Add persist retry/backoff and bounded/latest-wins notification.
 - [ ] P1-3: Harden cookies-file handoff to external tools.
 - [ ] P2-1: Repair playlists on load.
@@ -292,7 +292,20 @@ Acceptance criteria:
 
 ## P1-1: Cap TUI Search, Filter, And Paste Input
 
-Current evidence:
+Status: completed in this hardening run.
+
+Implemented:
+
+- Added `src/util/query.rs` with shared search/filter byte caps, forbidden query-character
+  detection, submit sanitization, and safe log preview metadata.
+- Reused the shared 2048-byte search cap from the remote protocol.
+- Capped local TUI search input at 2048 bytes and search/library filters at 512 bytes.
+- Rejected control, bidi-control, and zero-width-control characters in TUI query entry and submit.
+- Replaced API/daemon full-query tracing fields with `{bytes, chars, preview, truncated}`.
+- Added reducer and util tests for over-cap input, forbidden characters, submit revalidation, and
+  log preview behavior.
+
+Original evidence:
 
 - `src/remote/proto/command.rs:16` caps remote query bytes at 2048.
 - `src/remote/proto/command.rs:150-160` rejects empty, too-long, and control-character remote

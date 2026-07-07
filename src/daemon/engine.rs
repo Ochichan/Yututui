@@ -1615,7 +1615,15 @@ impl DaemonEngine {
             Err(e) => {
                 let error = sanitize::sanitize_error_text(format!("{e:#}"));
                 self.last_error = Some(format!("search failed: {error}"));
-                tracing::warn!(%query, %error, "daemon remote search failed");
+                let query_log = crate::util::query::query_log_preview(query);
+                tracing::warn!(
+                    query_bytes = query_log.bytes,
+                    query_chars = query_log.chars,
+                    query_preview = %query_log.preview,
+                    query_truncated = query_log.truncated,
+                    %error,
+                    "daemon remote search failed"
+                );
                 Err(())
             }
         }

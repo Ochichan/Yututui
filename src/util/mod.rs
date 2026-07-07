@@ -24,6 +24,7 @@ pub mod github;
 pub mod http;
 pub mod io;
 pub mod process;
+pub mod query;
 pub mod runtime;
 pub mod safe_fs;
 pub mod sanitize;

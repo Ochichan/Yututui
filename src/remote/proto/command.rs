@@ -13,7 +13,7 @@ use super::ToggleState;
 
 /// Semantic cap on remote search strings. Frame caps bound bytes on the wire; this caps the
 /// amount of search/provider work a syntactically valid command can request.
-pub const REMOTE_MAX_QUERY_BYTES: usize = 2048;
+pub const REMOTE_MAX_QUERY_BYTES: usize = crate::util::query::MAX_SEARCH_QUERY_BYTES;
 /// Track ids in GUI commands are rows from prior search/library snapshots. Match the queue cap.
 pub const REMOTE_MAX_TRACK_IDS: usize = 999;
 /// A single row id should be tiny; this covers YouTube IDs and source-prefixed provider IDs.
@@ -155,7 +155,7 @@ fn validate_query(query: &str) -> Result<(), RemoteCommandValidationError> {
     if query.len() > REMOTE_MAX_QUERY_BYTES {
         return Err(validation_error("query_too_long"));
     }
-    if query.chars().any(forbidden_command_char) {
+    if query.chars().any(crate::util::query::forbidden_query_char) {
         return Err(validation_error("bad_request"));
     }
     Ok(())

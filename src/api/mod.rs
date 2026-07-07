@@ -994,7 +994,17 @@ where
             } => {
                 let event = match api.search_songs_reported(&query, source, &config).await {
                     Ok((songs, timed_out)) => {
-                        tracing::info!(count = songs.len(), query = %query, source = %source.code(), timed_out, "search results");
+                        let query_log = crate::util::query::query_log_preview(&query);
+                        tracing::info!(
+                            count = songs.len(),
+                            query_bytes = query_log.bytes,
+                            query_chars = query_log.chars,
+                            query_preview = %query_log.preview,
+                            query_truncated = query_log.truncated,
+                            source = %source.code(),
+                            timed_out,
+                            "search results"
+                        );
                         ApiEvent::SearchResults {
                             request_id,
                             query,
@@ -1022,9 +1032,13 @@ where
                 config,
             } => {
                 let groups = gui_search_groups(&api, &query, source, &config).await;
+                let query_log = crate::util::query::query_log_preview(&query);
                 tracing::info!(
                     ticket,
-                    query = %query,
+                    query_bytes = query_log.bytes,
+                    query_chars = query_log.chars,
+                    query_preview = %query_log.preview,
+                    query_truncated = query_log.truncated,
                     source = %source.code(),
                     groups = groups.len(),
                     "gui search completed"
@@ -1045,7 +1059,15 @@ where
                     .map_err(|e| sanitize::sanitize_error_text(format!("{e:#}")));
                 match &result {
                     Ok(songs) => {
-                        tracing::info!(count = songs.len(), query = %query, "track resolved")
+                        let query_log = crate::util::query::query_log_preview(&query);
+                        tracing::info!(
+                            count = songs.len(),
+                            query_bytes = query_log.bytes,
+                            query_chars = query_log.chars,
+                            query_preview = %query_log.preview,
+                            query_truncated = query_log.truncated,
+                            "track resolved"
+                        )
                     }
                     Err(error) => tracing::warn!(error = %error, "track resolve failed"),
                 }
@@ -1054,7 +1076,15 @@ where
             ApiCmd::SearchPlaylists { request_id, query } => {
                 let event = match api.search_playlists(&query).await {
                     Ok(songs) => {
-                        tracing::info!(count = songs.len(), query = %query, "playlist search results");
+                        let query_log = crate::util::query::query_log_preview(&query);
+                        tracing::info!(
+                            count = songs.len(),
+                            query_bytes = query_log.bytes,
+                            query_chars = query_log.chars,
+                            query_preview = %query_log.preview,
+                            query_truncated = query_log.truncated,
+                            "playlist search results"
+                        );
                         ApiEvent::SearchResults {
                             request_id,
                             query,

@@ -1,6 +1,7 @@
 //! Library-input reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
 
 use super::*;
+use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_push_query_char};
 
 impl App {
     /// Move the library cursor up/down by `lines`, clamped, collapsing the multi-select
@@ -96,8 +97,14 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                self.library_ui.filter_query.push(c);
-                self.after_library_filter_change();
+                match try_push_query_char(
+                    &mut self.library_ui.filter_query,
+                    c,
+                    MAX_FILTER_QUERY_BYTES,
+                ) {
+                    Ok(()) => self.after_library_filter_change(),
+                    Err(reason) => self.set_query_reject_status(reason),
+                }
             }
             _ => {}
         }
