@@ -67,6 +67,7 @@ mod queue;
 mod recorder_reducer;
 mod remote_reducer;
 mod romanize;
+mod scrobble_reducer;
 mod search;
 mod settings_reducer;
 mod stream_metadata;
@@ -1856,5 +1857,7 @@ fn spawn_video_overlay(
     cmd.spawn().ok()
 }
 
+#[cfg(test)]
+mod hardening_tests;
 #[cfg(test)]
 mod tests;

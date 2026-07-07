@@ -409,12 +409,11 @@ impl RuntimeHandles {
                 ));
             }
             Cmd::VideoLoad(url) => {
-                if let Some(v) = &self.video_handle {
-                    if v.try_send(crate::player::video::VideoCmd::Load(url))
+                if let Some(v) = &self.video_handle
+                    && v.try_send(crate::player::video::VideoCmd::Load(url))
                         .is_err()
-                    {
-                        tracing::warn!("video overlay command queue full or closed; dropping load");
-                    }
+                {
+                    tracing::warn!("video overlay command queue full or closed; dropping load");
                 }
             }
             Cmd::Search {
