@@ -6,9 +6,8 @@
 //! (the platform music folder) is tried. The header form feeds ytmapi-rs; the file is
 //! also handed to mpv/yt-dlp so they own stream resolution (PO tokens, throttling).
 
-#[cfg(test)]
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +35,7 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 /// jars are a few KB; this only rejects a pathological/hostile path before it's read wholesale
 /// into memory, and the read also refuses to follow a symlink.
 const MAX_COOKIE_BYTES: u64 = 4 * 1024 * 1024;
+const EXTERNAL_COOKIES_COPY: &str = "cookies.external.txt";
 
 /// Clamp range for the seek step (seconds) used by the seek-back/-forward keys, exposed as
 /// a slider on the Playback settings tab. Default is 10s.
@@ -845,13 +845,47 @@ impl Config {
     ///
     /// The effective path may be a default export location that does not exist yet. Passing a
     /// missing file makes yt-dlp fail instead of falling back to anonymous playback, so external
-    /// process spawns must use this helper rather than [`Self::effective_cookies_file`].
+    /// process spawns must use this helper rather than [`Self::effective_cookies_file`]. This also
+    /// rejects symlinks/reparse points and oversized files before an external process sees them.
     pub fn existing_cookies_file(&self) -> Option<PathBuf> {
-        // Require a real regular file, not merely an existing path: `exists()` also accepted a
-        // directory or a dangling symlink, which mpv/yt-dlp would then choke on opaquely.
-        // `is_file()` follows a symlink to a real file, so a user who symlinks their cookies.txt
-        // (same trust domain — the path is user-configured) still works.
-        self.effective_cookies_file().filter(|path| path.is_file())
+        self.effective_cookies_file()
+            .filter(|path| validate_external_cookies_file(path).is_ok())
+    }
+
+    /// The cookies file path to pass to external tools. A valid configured/default cookie jar is
+    /// copied into the private app data directory first, so mpv/yt-dlp receive an app-owned copy
+    /// rather than an arbitrary user-supplied path. If no app data directory is available, falls
+    /// back to the strictly validated source file.
+    pub fn cookies_file_for_external_tools(&self, data_dir: Option<&Path>) -> Option<PathBuf> {
+        let (path, warning) = self.cookies_file_for_external_tools_with_warning(data_dir);
+        if let Some(warning) = warning {
+            tracing::warn!(reason = %warning, "cookies file unavailable for external tools");
+        }
+        path
+    }
+
+    /// Same as [`Self::cookies_file_for_external_tools`], but also returns an actionable warning
+    /// suitable for the TUI status line. The warning intentionally avoids echoing the cookies path.
+    pub fn cookies_file_for_external_tools_with_warning(
+        &self,
+        data_dir: Option<&Path>,
+    ) -> (Option<PathBuf>, Option<String>) {
+        let Some(source) = self.effective_cookies_file() else {
+            return (None, None);
+        };
+        if let Err(e) = validate_external_cookies_file(&source) {
+            if self.cookies_file.is_none() && e.kind() == std::io::ErrorKind::NotFound {
+                return (None, None);
+            }
+            return (None, Some(external_cookies_warning(&e)));
+        }
+        let Some(data_dir) = data_dir else {
+            return (Some(source), None);
+        };
+        match import_external_cookies_file(&source, data_dir) {
+            Ok(path) => (Some(path), None),
+            Err(e) => (None, Some(external_cookies_warning(&e))),
+        }
     }
 
     /// The concrete directory downloads are saved to. Precedence: `YTM_DOWNLOAD_DIR`
@@ -1182,6 +1216,70 @@ pub fn default_cookies_file() -> Option<PathBuf> {
     default_ytm_dir().map(|dir| dir.join("cookies.txt"))
 }
 
+fn validate_external_cookies_file(path: &Path) -> std::io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "cookies file must not be a symlink",
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "cookies file must not be a reparse point",
+            ));
+        }
+    }
+    if !meta.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "cookies path is not a regular file",
+        ));
+    }
+    if meta.len() > MAX_COOKIE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "cookies file is too large",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o077 != 0 {
+            tracing::warn!(
+                "cookies file is readable outside the owner; importing a private external-tool copy"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn import_external_cookies_file(source: &Path, data_dir: &Path) -> std::io::Result<PathBuf> {
+    validate_external_cookies_file(source)?;
+    let bytes = safe_fs::read_no_symlink_limited(source, MAX_COOKIE_BYTES)?;
+    let target = data_dir.join(EXTERNAL_COOKIES_COPY);
+    safe_fs::write_private_atomic(&target, &bytes)?;
+    Ok(target)
+}
+
+fn external_cookies_warning(error: &std::io::Error) -> String {
+    let reason = match error.kind() {
+        std::io::ErrorKind::NotFound => "file was not found",
+        std::io::ErrorKind::PermissionDenied => "permission or symlink check failed",
+        std::io::ErrorKind::InvalidInput => "path is not a regular file",
+        std::io::ErrorKind::InvalidData => "file is too large or invalid",
+        _ => "file could not be read or imported",
+    };
+    format!(
+        "Cookies file not used for mpv/yt-dlp: {reason}. Use a real non-symlink cookies.txt under 4 MiB."
+    )
+}
+
 /// Default directory for downloaded tracks.
 ///
 /// macOS: `~/Music/ytm-tui`
@@ -1311,6 +1409,9 @@ fn parse_netscape_cookies(content: &str) -> String {
     }
     pairs.join("; ")
 }
+
+#[cfg(test)]
+mod hardening_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1948,96 +2049,6 @@ mod tests {
         // A missing "animations" key forward-migrates to all-off.
         let back: Config = serde_json::from_str("{}").unwrap();
         assert!(!back.animations.active());
-    }
-
-    #[test]
-    fn parses_netscape_cookies_youtube_only() {
-        let txt = "# Netscape HTTP Cookie File\n\
-                   .youtube.com\tTRUE\t/\tTRUE\t1999999999\tSAPISID\tsecret1\n\
-                   #HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1999999999\tSID\tsecret2\n\
-                   .example.com\tTRUE\t/\tFALSE\t1999999999\tIGNORED\tnope\n";
-        let header = parse_netscape_cookies(txt);
-        assert!(header.contains("SAPISID=secret1"));
-        assert!(header.contains("SID=secret2"));
-        assert!(!header.contains("IGNORED"));
-    }
-
-    #[test]
-    fn netscape_cookies_reject_lookalike_domains_and_header_breakers() {
-        let txt = "# Netscape HTTP Cookie File\n\
-                   evil-youtube.com\tTRUE\t/\tTRUE\t1999999999\tSAPISID\tbad1\n\
-                   notyoutube.com\tTRUE\t/\tTRUE\t1999999999\tSID\tbad2\n\
-                   youtube.com.evil.com\tTRUE\t/\tTRUE\t1999999999\tHSID\tbad3\n\
-                   .youtube.com\tTRUE\t/\tTRUE\t1999999999\tGOOD\tok;INJECTED=x\n\
-                   .youtube.com\tTRUE\t/\tTRUE\t1999999999\tSAPISID\tclean\n";
-        let header = parse_netscape_cookies(txt);
-        // Lookalike domains never contribute a pair.
-        assert!(!header.contains("bad1"));
-        assert!(!header.contains("bad2"));
-        assert!(!header.contains("bad3"));
-        // A value carrying a `;` (header-breaker) is dropped, not spliced in.
-        assert!(!header.contains("INJECTED"));
-        // The genuine youtube.com auth cookie still comes through.
-        assert!(header.contains("SAPISID=clean"));
-    }
-
-    #[test]
-    fn default_cookies_file_lives_under_audio_dir() {
-        assert_eq!(
-            ytm_dir_under_audio_dir(PathBuf::from("/Users/alice/Music")).join("cookies.txt"),
-            PathBuf::from("/Users/alice/Music/ytm-tui/cookies.txt")
-        );
-    }
-
-    #[test]
-    fn default_download_dir_lives_under_audio_dir() {
-        assert_eq!(
-            ytm_dir_under_audio_dir(PathBuf::from("/Users/alice/Music")),
-            PathBuf::from("/Users/alice/Music/ytm-tui")
-        );
-    }
-
-    #[test]
-    fn configured_cookies_file_overrides_default() {
-        let cfg = Config {
-            cookies_file: Some(PathBuf::from("/custom/cookies.txt")),
-            ..Config::default()
-        };
-        assert_eq!(
-            cfg.effective_cookies_file(),
-            Some(PathBuf::from("/custom/cookies.txt"))
-        );
-    }
-
-    #[test]
-    fn existing_cookies_file_requires_a_present_file() {
-        let missing = std::env::temp_dir().join(format!(
-            "ytm-tui-missing-cookies-{}-{:?}.txt",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_file(&missing);
-        let cfg = Config {
-            cookies_file: Some(missing),
-            ..Config::default()
-        };
-        assert_eq!(cfg.existing_cookies_file(), None);
-    }
-
-    #[test]
-    fn existing_cookies_file_keeps_a_present_file() {
-        let path = std::env::temp_dir().join(format!(
-            "ytm-tui-present-cookies-{}-{:?}.txt",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::write(&path, "# Netscape HTTP Cookie File\n").unwrap();
-        let cfg = Config {
-            cookies_file: Some(path.clone()),
-            ..Config::default()
-        };
-        assert_eq!(cfg.existing_cookies_file(), Some(path.clone()));
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]

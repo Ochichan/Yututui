@@ -43,7 +43,7 @@ Recommended implementation order:
 - [x] P0-2: Replace artwork and resize unbounded queues.
 - [x] P1-1: Cap TUI search, filter, and paste input; redact query logs.
 - [x] P1-2: Add persist retry/backoff and bounded/latest-wins notification.
-- [ ] P1-3: Harden cookies-file handoff to external tools.
+- [x] P1-3: Harden cookies-file handoff to external tools.
 - [ ] P2-1: Repair playlists on load.
 - [ ] P2-2: Rotate secret-bearing backups.
 - [ ] P2-3: Coalesce/cancel stale API search work.
@@ -458,6 +458,31 @@ Verification:
 - `~/.fable-harness/bin/run-gates .`
 
 ## P1-3: Cookies-File Handoff Hardening
+
+Status: completed in this hardening run.
+
+Implementation summary:
+
+- `Config::existing_cookies_file()` now rejects symlinks, Windows reparse points, non-regular
+  files, and files larger than the existing 4 MiB cookie cap before any external-tool handoff.
+- `Config::cookies_file_for_external_tools(_with_warning)` imports a valid cookies file into the
+  private app data directory as `cookies.external.txt` via `safe_fs::write_private_atomic`, so
+  mpv/yt-dlp receive an app-owned private copy when a data dir is available.
+- Startup playback/download runtime setup, daemon player spawn, and video overlay spawn now use the
+  hardened external-tool cookies helper. Inline cookie-header parsing remains unchanged.
+- Rejection/import warnings avoid printing the cookies path. The TUI startup and video overlay
+  paths surface actionable status text when an explicitly configured cookies file cannot be used.
+- Cookie hardening tests now cover missing files, real files, symlink rejection, oversized rejection,
+  private imported copies, strict-source fallback when no data dir exists, and preserved mpv/yt-dlp
+  cookie argument handoff.
+
+Verification:
+
+- `cargo test cookies_file --lib`
+- `cargo test external_tool_cookies --lib`
+- `cargo test passes_cookie_file --lib`
+- `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
+- `~/.fable-harness/bin/run-gates .`
 
 Current evidence:
 

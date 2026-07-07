@@ -630,13 +630,17 @@ async fn run(
     // Only hand mpv/yt-dlp a cookies file that actually exists: a configured/default
     // path that has not been exported yet would make yt-dlp error and break anonymous
     // playback.
-    let cookies_file = cfg.existing_cookies_file();
+    let (cookies_file, cookies_warning) =
+        cfg.cookies_file_for_external_tools_with_warning(data_dir.as_deref());
     let player_runtime = cfg.player_runtime(cookies_file.clone());
     let download_runtime = cfg.download_runtime(cookies_file.clone());
     let ai_runtime = cfg.ai_runtime();
     startup.mark("cookies_resolved");
 
     let mut app = App::new(player_runtime.volume);
+    if let Some(warning) = cookies_warning {
+        app.status.text = warning;
+    }
     // Radio recorder: point it at its temp dir. The dir wipe (only explicitly-saved files
     // persist across runs) and the `stream-record` capability probe are deferred to just
     // after `tools::init` below — off the pre-first-frame path. Neither is read by the first

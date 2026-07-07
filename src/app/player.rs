@@ -282,7 +282,14 @@ impl App {
         cmds: &mut Vec<Cmd>,
     ) -> bool {
         let url = format!("https://www.youtube.com/watch?v={id}");
-        let cookies = self.config.existing_cookies_file();
+        let data_dir = directories::ProjectDirs::from("", "", "ytm-tui")
+            .map(|dirs| dirs.data_dir().to_path_buf());
+        let (cookies, cookies_warning) = self
+            .config
+            .cookies_file_for_external_tools_with_warning(data_dir.as_deref());
+        if let Some(warning) = cookies_warning {
+            self.set_status_error(warning);
+        }
         self.video.generation = self.video.generation.wrapping_add(1);
         let generation = self.video.generation;
         let ipc_path = crate::player::mpv::video_ipc_path(generation)

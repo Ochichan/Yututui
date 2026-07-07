@@ -1942,7 +1942,8 @@ impl DaemonEngine {
         let (handle, guard) = player::spawn(
             move |event| (emit)(event),
             data_dir(),
-            self.config.existing_cookies_file(),
+            self.config
+                .cookies_file_for_external_tools(data_dir().as_deref()),
             self.config.effective_gapless(),
         )
         .await
