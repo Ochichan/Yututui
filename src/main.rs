@@ -1114,9 +1114,57 @@ async fn run(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard};
+    use std::time::{Duration, Instant};
+
+    use ytm_tui::app::App;
+
     use ratatui_image::picker::ProtocolType;
 
-    use super::parse_image_protocol_override;
+    use super::*;
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct EnvRestore(Vec<(String, Option<OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| ((*name).to_string(), std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(name.as_str(), value.as_os_str()) },
+                    None => unsafe { std::env::remove_var(name.as_str()) },
+                }
+            }
+        }
+    }
+
+    fn set_env(name: &str, value: Option<&str>) {
+        match value {
+            Some(value) => unsafe { std::env::set_var(name, value) },
+            None => unsafe { std::env::remove_var(name) },
+        }
+    }
+
+    fn with_env<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _restore = EnvRestore::capture(&[name]);
+        set_env(name, value);
+        f()
+    }
 
     #[test]
     fn image_protocol_override_accepts_supported_protocol_names() {
@@ -1141,5 +1189,157 @@ mod tests {
             Some(ProtocolType::Sixel)
         );
         assert_eq!(parse_image_protocol_override("bad"), None);
+    }
+
+    #[test]
+    fn image_protocol_override_reads_environment_exactly() {
+        let _guard = env_lock();
+        with_env("YTM_TUI_IMAGE_PROTOCOL", Some("kitty"), || {
+            assert_eq!(image_protocol_override(), Some(ProtocolType::Kitty));
+        });
+        with_env("YTM_TUI_IMAGE_PROTOCOL", Some("unsupported"), || {
+            assert_eq!(image_protocol_override(), None);
+        });
+        with_env("YTM_TUI_IMAGE_PROTOCOL", None, || {
+            assert_eq!(image_protocol_override(), None);
+        });
+    }
+
+    #[test]
+    fn terminal_native_image_hints_follow_known_env_vars() {
+        let _guard = env_lock();
+        const NAMES: &[&str] = &[
+            "KITTY_WINDOW_ID",
+            "WEZTERM_EXECUTABLE",
+            "KONSOLE_VERSION",
+            "TERM",
+            "TERM_PROGRAM",
+        ];
+        let _restore = EnvRestore::capture(NAMES);
+        for name in NAMES {
+            unsafe { std::env::remove_var(name) };
+        }
+        assert!(!terminal_has_native_image_hint());
+
+        with_env("KITTY_WINDOW_ID", Some("1"), || {
+            assert!(terminal_has_native_image_hint());
+        });
+        with_env("TERM", Some("xterm-kitty"), || {
+            assert!(terminal_has_native_image_hint());
+        });
+        with_env("TERM_PROGRAM", Some("iTerm.app"), || {
+            assert!(terminal_has_native_image_hint());
+        });
+        with_env("TERM_PROGRAM", Some("plain-terminal"), || {
+            assert!(!terminal_has_native_image_hint());
+        });
+    }
+
+    #[test]
+    fn terminal_probe_cache_key_changes_with_relevant_environment() {
+        let _guard = env_lock();
+        let _restore = EnvRestore::capture(&["YTM_TUI_IMAGE_PROTOCOL"]);
+        set_env("YTM_TUI_IMAGE_PROTOCOL", None);
+        let base = terminal_probe_cache_key();
+        with_env("YTM_TUI_IMAGE_PROTOCOL", Some("sixel"), || {
+            assert_ne!(terminal_probe_cache_key(), base);
+        });
+    }
+
+    #[test]
+    fn env_nonempty_distinguishes_absent_empty_and_present() {
+        let _guard = env_lock();
+        with_env("YTM_TUI_TEST_ENV_NONEMPTY", None, || {
+            assert!(!env_nonempty("YTM_TUI_TEST_ENV_NONEMPTY"));
+        });
+        with_env("YTM_TUI_TEST_ENV_NONEMPTY", Some(""), || {
+            assert!(!env_nonempty("YTM_TUI_TEST_ENV_NONEMPTY"));
+        });
+        with_env("YTM_TUI_TEST_ENV_NONEMPTY", Some("1"), || {
+            assert!(env_nonempty("YTM_TUI_TEST_ENV_NONEMPTY"));
+        });
+    }
+
+    #[test]
+    fn startup_trace_buffers_until_logging_is_ready() {
+        let mut disabled = StartupTrace {
+            enabled: false,
+            start: Instant::now(),
+            events: Vec::new(),
+            flushed: 0,
+            logging_ready: false,
+        };
+        disabled.mark("ignored");
+        assert!(disabled.events.is_empty());
+        assert_eq!(disabled.flushed, 0);
+
+        let mut enabled = StartupTrace {
+            enabled: true,
+            start: Instant::now(),
+            events: Vec::new(),
+            flushed: 0,
+            logging_ready: false,
+        };
+        enabled.mark("config_loaded");
+        enabled.mark("runtime_built");
+        assert_eq!(enabled.events.len(), 2);
+        assert_eq!(enabled.flushed, 0, "not flushed before logging is ready");
+
+        enabled.enable_logging();
+        assert_eq!(enabled.flushed, 2);
+        enabled.mark("first_draw");
+        assert_eq!(enabled.flushed, 3);
+    }
+
+    #[test]
+    fn perf_stats_track_draws_and_reset_after_log_window() {
+        let mut stats = PerfStats {
+            enabled: false,
+            last_log: Instant::now() - Duration::from_secs(10),
+            frames: 0,
+            draw_total: Duration::ZERO,
+            draw_max: Duration::ZERO,
+            art_resizes: 0,
+        };
+        stats.record_draw(Duration::from_millis(7));
+        stats.record_art_resize();
+        assert_eq!(stats.frames, 0);
+        assert_eq!(stats.art_resizes, 0);
+
+        stats.enabled = true;
+        stats.record_draw(Duration::from_millis(7));
+        stats.record_draw(Duration::from_millis(11));
+        stats.record_art_resize();
+        assert_eq!(stats.frames, 2);
+        assert_eq!(stats.draw_total, Duration::from_millis(18));
+        assert_eq!(stats.draw_max, Duration::from_millis(11));
+        assert_eq!(stats.art_resizes, 1);
+
+        stats.maybe_log(&App::new(100));
+        assert_eq!(stats.frames, 0);
+        assert_eq!(stats.draw_total, Duration::ZERO);
+        assert_eq!(stats.draw_max, Duration::ZERO);
+        assert_eq!(stats.art_resizes, 0);
+    }
+
+    #[tokio::test]
+    async fn animation_tick_period_clamps_extreme_frame_rates() {
+        assert_eq!(anim_tick_period(0), Duration::from_millis(1000));
+        assert_eq!(anim_tick_period(1), Duration::from_millis(1000));
+        assert_eq!(anim_tick_period(60), Duration::from_millis(16));
+        assert_eq!(anim_tick_period(2_000), Duration::from_millis(1));
+
+        let interval = anim_interval(30);
+        assert_eq!(interval.period(), Duration::from_millis(33));
+    }
+
+    #[test]
+    fn draw_cycle_and_transient_error_helpers_are_stable() {
+        let mut app = App::new(100);
+        finish_draw_cycle(&mut app);
+        assert!(!app.dirty);
+
+        let error = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+        assert!(!is_transient_terminal_draw_error(&error));
     }
 }

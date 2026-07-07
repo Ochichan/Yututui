@@ -767,6 +767,37 @@ fn dir_is_writable(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard};
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct EnvRestore(Vec<(String, Option<OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| ((*name).to_owned(), std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    None => unsafe { std::env::remove_var(name) },
+                }
+            }
+        }
+    }
 
     #[test]
     fn terminal_doctor_detects_common_protocol_hints_without_probing() {
@@ -789,6 +820,57 @@ mod tests {
         assert_eq!(
             terminal_zoom_mode(Some("xterm-256color"), None, true),
             "decdhl_expected"
+        );
+    }
+
+    #[test]
+    fn terminal_doctor_covers_protocol_keyboard_and_zoom_edges() {
+        let _guard = env_lock();
+        let _restore = EnvRestore::capture(&["YTM_TUI_TEXT_SIZING"]);
+        unsafe { std::env::remove_var("YTM_TUI_TEXT_SIZING") };
+
+        assert_eq!(terminal_image_protocol(Some("foot"), None, false), "sixel");
+        assert_eq!(
+            terminal_image_protocol(Some("ghostty"), Some("ignored"), false),
+            "kitty"
+        );
+        assert_eq!(
+            terminal_image_protocol(Some("linux"), None, false),
+            "halfblocks_or_retro"
+        );
+        assert_eq!(
+            terminal_image_protocol(Some("dumb"), None, false),
+            "unknown"
+        );
+
+        assert_eq!(
+            terminal_zoom_mode(Some("plain"), Some("Ghostty"), false),
+            "unknown_probe_required"
+        );
+        assert_eq!(
+            terminal_zoom_mode(Some("plain"), Some("WezTerm"), false),
+            "unknown_probe_required"
+        );
+        assert_eq!(terminal_zoom_mode(Some("plain"), None, false), "unknown");
+
+        unsafe { std::env::set_var("YTM_TUI_TEXT_SIZING", "false") };
+        assert_eq!(terminal_zoom_mode(None, None, false), "none_forced");
+        unsafe { std::env::set_var("YTM_TUI_TEXT_SIZING", "DHL") };
+        assert_eq!(terminal_zoom_mode(None, None, false), "decdhl_forced");
+        unsafe { std::env::set_var("YTM_TUI_TEXT_SIZING", "probe") };
+        assert_eq!(terminal_zoom_mode(None, None, false), "probe_requested");
+
+        assert_eq!(
+            terminal_keyboard_hint(Some("foot"), None, false),
+            Some(true)
+        );
+        assert_eq!(
+            terminal_keyboard_hint(Some("xterm"), Some("ghostty"), false),
+            Some(true)
+        );
+        assert_eq!(
+            terminal_keyboard_hint(Some("xterm"), None, true),
+            Some(true)
         );
     }
 
@@ -826,5 +908,30 @@ mod tests {
         assert!(dir_is_writable(&nested));
         // The probe must not have created the target tree.
         assert!(!nested.exists());
+    }
+
+    #[test]
+    fn a_missing_dir_below_a_file_is_not_writable() {
+        let path =
+            std::env::temp_dir().join(format!("ytt-doctor-file-anchor-{}", std::process::id()));
+        std::fs::write(&path, b"file").expect("write temp file");
+
+        assert!(!dir_is_writable(&path.join("child")));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn run_with_args_handles_help_terminal_json_and_bad_usage_without_full_doctor() {
+        assert_eq!(run_with_args(&["--help".to_owned()]), 0);
+        assert_eq!(
+            run_with_args(&["terminal".to_owned(), "--help".to_owned()]),
+            0
+        );
+        assert_eq!(
+            run_with_args(&["terminal".to_owned(), "--json".to_owned()]),
+            0
+        );
+        assert_eq!(run_with_args(&["--bogus".to_owned()]), 2);
     }
 }
