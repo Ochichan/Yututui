@@ -488,8 +488,8 @@ impl RuntimeHandles {
                 // Directory scan does per-file IO — keep it off the loop task too.
                 let tx = self.worker_tx.clone();
                 tokio::task::spawn_blocking(move || {
-                    let songs = crate::library::scan_downloads(&dir);
-                    emit(&tx, RuntimeEvent::App(Msg::DownloadsScanned(songs)));
+                    let scan = crate::library::scan_downloads(&dir);
+                    emit(&tx, RuntimeEvent::App(Msg::DownloadsScanned(scan)));
                 });
             }
             Cmd::Recorder(job) => {

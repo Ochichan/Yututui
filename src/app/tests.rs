@@ -5937,6 +5937,22 @@ fn downloads_tab_shows_download_folder_tracks() {
     assert_eq!(app.library_len(), 1);
 }
 
+#[test]
+fn download_scan_truncation_is_user_visible() {
+    let mut app = App::new(100);
+    let scan = crate::library::DownloadScan {
+        songs: vec![Song::local_file(PathBuf::from("/tmp/a.m4a"))],
+        truncated: true,
+        limit: 999,
+    };
+
+    app.update(Msg::DownloadsScanned(scan));
+
+    assert_eq!(app.library_ui.downloaded.len(), 1);
+    assert!(app.status.text.contains("999"));
+    assert!(app.status.text.contains("hidden") || app.status.text.contains("숨김"));
+}
+
 // --- in-library filter (`/`) -------------------------------------------------
 
 fn fsong(id: &str, title: &str, artist: &str) -> Song {

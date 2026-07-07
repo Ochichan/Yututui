@@ -1207,12 +1207,24 @@ impl App {
                 self.status.text = format!("{}: {error}", t!("Search error", "검색 오류"));
                 self.dirty = true;
             }
-            Msg::DownloadsScanned(songs) => {
+            Msg::DownloadsScanned(scan) => {
                 self.library_ui.downloaded_rev = self.library_ui.downloaded_rev.wrapping_add(1);
-                self.library_ui.downloaded = self.enrich_downloads(songs);
+                let truncated = scan.truncated;
+                let limit = scan.limit;
+                self.library_ui.downloaded = self.enrich_downloads(scan.songs);
                 let len = self.library_len();
                 if self.library_ui.selected >= len {
                     self.library_ui.selected = len.saturating_sub(1);
+                }
+                if truncated {
+                    self.status.text = format!(
+                        "{} {limit} {}",
+                        t!("Showing first", "처음"),
+                        t!(
+                            "download files; more are hidden",
+                            "개 다운로드 파일만 표시됨; 일부는 숨김"
+                        )
+                    );
                 }
                 self.dirty = true;
                 let downloaded = self.library_ui.downloaded.clone();

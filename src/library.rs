@@ -25,6 +25,13 @@ const RADIOS_MAX: usize = 999;
 const DOWNLOADS_MAX: usize = 999;
 const AUDIO_EXTENSIONS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"];
 
+#[derive(Debug, Clone, Default)]
+pub struct DownloadScan {
+    pub songs: Vec<Song>,
+    pub truncated: bool,
+    pub limit: usize,
+}
+
 /// Saved tracks and play history, persisted to `<data dir>/library.json`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -269,9 +276,12 @@ fn library_path() -> Option<PathBuf> {
 ///
 /// The downloader writes files directly under this folder, so this intentionally stays
 /// non-recursive and bounded. Missing/unreadable directories simply produce an empty list.
-pub fn scan_downloads(dir: &Path) -> Vec<Song> {
+pub fn scan_downloads(dir: &Path) -> DownloadScan {
     let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
+        return DownloadScan {
+            limit: DOWNLOADS_MAX,
+            ..DownloadScan::default()
+        };
     };
     // Bounded top-K by lowercased filename: keep at most DOWNLOADS_MAX entries while streaming
     // the directory (a max-heap drops the current largest once full), so a folder with far more
@@ -279,6 +289,7 @@ pub fn scan_downloads(dir: &Path) -> Vec<Song> {
     // Output is the alphabetically-first DOWNLOADS_MAX — the same set/order as before.
     use std::collections::BinaryHeap;
     let mut heap: BinaryHeap<(String, PathBuf)> = BinaryHeap::new();
+    let mut truncated = false;
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
         let is_file = entry.file_type().ok().is_some_and(|t| t.is_file());
@@ -291,12 +302,17 @@ pub fn scan_downloads(dir: &Path) -> Vec<Song> {
             .unwrap_or_default();
         heap.push((key, path));
         if heap.len() > DOWNLOADS_MAX {
+            truncated = true;
             heap.pop(); // drop the largest key, keeping the smallest DOWNLOADS_MAX
         }
     }
     let mut kept = heap.into_vec();
     kept.sort_by(|a, b| a.0.cmp(&b.0));
-    kept.into_iter().map(|(_, p)| Song::local_file(p)).collect()
+    DownloadScan {
+        songs: kept.into_iter().map(|(_, p)| Song::local_file(p)).collect(),
+        truncated,
+        limit: DOWNLOADS_MAX,
+    }
 }
 
 fn is_audio_file(path: &Path) -> bool {
@@ -501,18 +517,47 @@ mod tests {
         fs::create_dir_all(dir.join("album")).unwrap();
         fs::write(dir.join("album").join("nested.flac"), b"").unwrap();
 
-        let songs = scan_downloads(&dir);
-        let titles: Vec<&str> = songs.iter().map(|s| s.title.as_str()).collect();
+        let scan = scan_downloads(&dir);
+        let titles: Vec<&str> = scan.songs.iter().map(|s| s.title.as_str()).collect();
         assert_eq!(titles, vec!["a", "b"]);
-        assert!(songs.iter().all(Song::is_local));
-        assert!(songs.iter().all(|s| s.video_id.starts_with("local:")));
+        assert!(!scan.truncated);
+        assert_eq!(scan.limit, DOWNLOADS_MAX);
+        assert!(scan.songs.iter().all(Song::is_local));
+        assert!(scan.songs.iter().all(|s| s.video_id.starts_with("local:")));
 
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
     fn scan_downloads_ignores_missing_dirs() {
-        assert!(scan_downloads(&temp_dir().join("missing")).is_empty());
+        let scan = scan_downloads(&temp_dir().join("missing"));
+        assert!(scan.songs.is_empty());
+        assert!(!scan.truncated);
+        assert_eq!(scan.limit, DOWNLOADS_MAX);
+    }
+
+    #[test]
+    fn scan_downloads_reports_when_cap_hides_files() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        for i in 0..=DOWNLOADS_MAX {
+            fs::write(dir.join(format!("track{i:04}.mp3")), b"").unwrap();
+        }
+
+        let scan = scan_downloads(&dir);
+
+        assert!(scan.truncated);
+        assert_eq!(scan.songs.len(), DOWNLOADS_MAX);
+        assert_eq!(
+            scan.songs.first().map(|s| s.title.as_str()),
+            Some("track0000")
+        );
+        assert_eq!(
+            scan.songs.last().map(|s| s.title.as_str()),
+            Some("track0998")
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     fn temp_dir() -> PathBuf {

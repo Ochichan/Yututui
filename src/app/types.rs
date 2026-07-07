@@ -107,7 +107,7 @@ pub enum Msg {
         error: String,
     },
     /// Download folder scan completed.
-    DownloadsScanned(Vec<Song>),
+    DownloadsScanned(crate::library::DownloadScan),
     /// Synced lyrics for `video_id` (empty `lines` = none found).
     LyricsResult {
         video_id: String,

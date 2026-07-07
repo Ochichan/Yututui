@@ -659,8 +659,20 @@ async fn run(
     // after a restart; files the manifest doesn't know are recovered from their `[id]` filename.
     app.download_store = downloads::DownloadStore::load();
     let scanned = library::scan_downloads(&download_runtime.dir);
+    let scan_truncated = scanned.truncated;
+    let scan_limit = scanned.limit;
     app.library_ui.downloaded_rev = app.library_ui.downloaded_rev.wrapping_add(1);
-    app.library_ui.downloaded = app.enrich_downloads(scanned);
+    app.library_ui.downloaded = app.enrich_downloads(scanned.songs);
+    if scan_truncated {
+        app.status.text = format!(
+            "{} {scan_limit} {}",
+            ytm_tui::t!("Showing first", "처음"),
+            ytm_tui::t!(
+                "download files; more are hidden",
+                "개 다운로드 파일만 표시됨; 일부는 숨김"
+            )
+        );
+    }
     // Load local playlists (the DJ Gem playlist tools read/write these).
     app.playlists = playlists::Playlists::load();
     // Load the active natural-language station profile (explore level + avoided artists), if any.
