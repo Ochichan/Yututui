@@ -952,6 +952,7 @@ impl RuntimeHandles {
                     tracing::warn!("video overlay command queue full or closed; dropping load");
                 }
             }
+            Cmd::UpdateSeen { tag } => crate::update::mark_notified(&tag),
             Cmd::Search {
                 request_id,
                 query,

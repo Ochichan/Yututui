@@ -6,10 +6,10 @@
 //! tag for `Ochichan/Yututui` via [`crate::util::github::latest_release_tag`] (the
 //! `releases/latest` redirect — no API rate limit), compares it to
 //! `env!("CARGO_PKG_VERSION")`, and emits an [`UpdateEvent::Checked`] the reducer turns
-//! into an About-window notice + brand dot + one-time toast. State (last check, last seen
-//! tag, last toasted tag) persists to `<data>/update.json`, mirroring the yt-dlp
-//! [`crate::tools::ytdlp::ManagedState`] pattern, so we check at most once a day and toast a
-//! given new version only once.
+//! into an About-window notice + brand dot + one-time status toast + desktop notification.
+//! State (last check, last seen tag, last notified tag) persists to `<data>/update.json`,
+//! mirroring the yt-dlp [`crate::tools::ytdlp::ManagedState`] pattern, so we check at most
+//! once a day and notify about a given new version only once.
 //!
 //! Nothing here ever downloads or replaces the executable — [`update_instructions`] only
 //! reports the correct command for the detected channel. Development builds and the
@@ -253,7 +253,8 @@ pub struct UpdateStatus {
     pub latest: String,
     /// Whether `latest` is strictly newer than `current`.
     pub available: bool,
-    /// True only on the first sighting of this newer tag — gates the one-time toast.
+    /// True only before this newer tag has been accepted by the reducer — gates the
+    /// one-time status toast and desktop notification.
     pub first_seen: bool,
     /// How this binary was installed.
     pub method: InstallMethod,
@@ -282,8 +283,9 @@ struct UpdateState {
     last_attempt_unix: Option<u64>,
     /// The latest tag last resolved from GitHub.
     latest_tag: Option<String>,
-    /// The newest tag we have already shown a toast for (one toast per version).
-    toasted_tag: Option<String>,
+    /// The newest tag the reducer has accepted and requested notification for.
+    #[serde(alias = "toasted_tag")]
+    notified_tag: Option<String>,
 }
 
 fn state_path() -> Option<PathBuf> {
@@ -305,6 +307,20 @@ fn save_state(state: &UpdateState) {
     if let Err(e) = safe_fs::write_private_atomic_json(&path, state) {
         tracing::warn!(error = %e, "failed to persist update-check state");
     }
+}
+
+/// Mark a release tag as accepted by the app reducer and queued for notification.
+pub fn mark_notified(tag: &str) {
+    let tag = tag.trim();
+    if tag.is_empty() {
+        return;
+    }
+    let mut state = load_state();
+    if state.notified_tag.as_deref() == Some(tag) {
+        return;
+    }
+    state.notified_tag = Some(tag.to_owned());
+    save_state(&state);
 }
 
 fn now_unix() -> u64 {
@@ -437,10 +453,7 @@ where
         };
 
         let available = is_newer(&latest, current);
-        let first_seen = available && state.toasted_tag.as_deref() != Some(latest.as_str());
-        if first_seen {
-            state.toasted_tag = Some(latest.clone());
-        }
+        let first_seen = update_first_seen(available, &latest, &state);
         save_state(&state);
 
         emit(UpdateEvent::Checked(UpdateStatus {
@@ -451,6 +464,10 @@ where
             method,
         }));
     });
+}
+
+fn update_first_seen(available: bool, latest: &str, state: &UpdateState) -> bool {
+    available && state.notified_tag.as_deref() != Some(latest)
 }
 
 #[cfg(test)]
@@ -564,15 +581,36 @@ mod tests {
         let s = UpdateState {
             last_check_unix: Some(100),
             latest_tag: Some("v1.7.0".to_owned()),
-            toasted_tag: Some("v1.7.0".to_owned()),
+            notified_tag: Some("v1.7.0".to_owned()),
             ..Default::default()
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: UpdateState = serde_json::from_str(&json).unwrap();
         assert_eq!(back.latest_tag.as_deref(), Some("v1.7.0"));
+        assert_eq!(back.notified_tag.as_deref(), Some("v1.7.0"));
+        let old: UpdateState = serde_json::from_str(r#"{"toasted_tag":"v1.6.0"}"#).unwrap();
+        assert_eq!(old.notified_tag.as_deref(), Some("v1.6.0"));
         // Missing fields default (forward-migration from an older/smaller file).
         let sparse: UpdateState = serde_json::from_str("{}").unwrap();
         assert_eq!(sparse.latest_tag, None);
         assert_eq!(sparse.last_check_unix, None);
+        assert_eq!(sparse.notified_tag, None);
+    }
+
+    #[test]
+    fn first_seen_waits_for_reducer_notification_mark() {
+        let state = UpdateState {
+            latest_tag: Some("v1.7.0".to_owned()),
+            ..Default::default()
+        };
+        assert!(update_first_seen(true, "v1.7.0", &state));
+        assert!(!update_first_seen(false, "v1.7.0", &state));
+
+        let state = UpdateState {
+            notified_tag: Some("v1.7.0".to_owned()),
+            ..Default::default()
+        };
+        assert!(!update_first_seen(true, "v1.7.0", &state));
+        assert!(update_first_seen(true, "v1.7.1", &state));
     }
 }

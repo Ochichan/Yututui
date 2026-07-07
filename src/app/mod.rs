@@ -1551,10 +1551,10 @@ impl App {
             },
             Msg::Scrobble(event) => return self.on_scrobble_event(event),
             Msg::UpdateChecked(status) => {
-                // One-time toast the first time a newer release is seen (the check task
-                // sets `first_seen` and persists the toasted tag so it fires once per
-                // version). The persistent surfaces — About notice + brand dot — read
-                // `update_status` directly on every frame.
+                let mut cmds = Vec::new();
+                // One-time status toast + desktop notification the first time a newer
+                // release is accepted by the reducer. The persistent surfaces — About
+                // notice + brand dot — read `update_status` directly on every frame.
                 if status.available && status.first_seen {
                     self.status.kind = StatusKind::Info;
                     self.status.text = if crate::i18n::is_korean() {
@@ -1566,8 +1566,22 @@ impl App {
                         )
                     };
                     self.dirty = true;
+                    let instructions = crate::update::update_instructions(status.method);
+                    let action = instructions.command.unwrap_or(instructions.note);
+                    cmds.push(Cmd::DesktopNotify {
+                        title: format!("YuTuTui! v{} available", status.latest_display()),
+                        body: format!(
+                            "Latest: v{} (current: v{}). {action}",
+                            status.latest_display(),
+                            status.current
+                        ),
+                    });
+                    cmds.push(Cmd::UpdateSeen {
+                        tag: status.latest.clone(),
+                    });
                 }
                 self.overlays.update_status = Some(status);
+                return cmds;
             }
             Msg::Tools(event) => match event {
                 crate::tools::ToolsEvent::Progress { channel, percent } => {

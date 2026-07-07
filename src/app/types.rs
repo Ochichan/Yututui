@@ -214,6 +214,10 @@ pub enum Cmd {
     },
     /// `loadfile <url> replace` into the live overlay window (auto-continue).
     VideoLoad(String),
+    /// Mark a newer release tag as accepted by the reducer and queued for notification.
+    UpdateSeen {
+        tag: String,
+    },
     Search {
         request_id: u64,
         query: String,

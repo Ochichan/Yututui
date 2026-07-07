@@ -42,5 +42,6 @@ mod settings_forms;
 mod settings_ui;
 mod startup_playback;
 mod streaming_extend;
+mod update;
 mod video;
 mod zoom_retro_nav;
