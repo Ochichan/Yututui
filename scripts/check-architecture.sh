@@ -51,7 +51,7 @@ grep -q 'RESOLVER_QUEUE' src/util/backpressure.rs || {
 
 # C2: App keeps its flat fields on a reviewed allowlist. Extract the struct's field idents and
 # diff against scripts/app-fields.allow; a new flat field must either join a per-domain sub-struct
-# or be added to the allowlist on purpose (re-bless by re-running the same awk — see ARCHITECTURE.md).
+# or be added to the allowlist on purpose in scripts/app-fields.allow.
 tmp=$(mktemp)
 awk '/^pub struct App \{/{f=1;next} f&&/^\}/{exit}
      f&&/^ *(pub(\([^)]*\))? +)?[a-z_]+ *:/ {gsub(/^ *(pub(\([^)]*\))? +)?/,""); sub(/ *:.*/,""); print}' \

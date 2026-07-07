@@ -181,6 +181,7 @@ pub async fn tokio_output_limited(
     })
 }
 
+#[cfg(unix)]
 fn should_isolate_process_group(profile: ProcessProfile) -> bool {
     matches!(profile, ProcessProfile::YtDlp)
 }
@@ -225,6 +226,9 @@ fn configure_tokio_child(cmd: &mut TokioCommand, profile: ProcessProfile) {
 fn configure_tokio_child(_cmd: &mut TokioCommand, _profile: ProcessProfile) {}
 
 fn kill_and_wait_std(child: &mut std::process::Child, profile: ProcessProfile) {
+    #[cfg(not(unix))]
+    let _ = profile;
+
     #[cfg(unix)]
     if should_isolate_process_group(profile)
         && let Ok(pid) = libc::pid_t::try_from(child.id())
@@ -240,6 +244,9 @@ fn kill_and_wait_std(child: &mut std::process::Child, profile: ProcessProfile) {
 }
 
 pub async fn kill_and_wait_tokio(child: &mut tokio::process::Child, profile: ProcessProfile) {
+    #[cfg(not(unix))]
+    let _ = profile;
+
     #[cfg(unix)]
     if should_isolate_process_group(profile)
         && let Some(id) = child.id()
