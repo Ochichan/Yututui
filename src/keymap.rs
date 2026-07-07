@@ -1431,6 +1431,21 @@ pub fn chord_to_mpv_input(chord: Chord) -> Option<String> {
     Some(out)
 }
 
+/// Fixed mpv-compatibility aliases that remain active in the overlay even though the
+/// primary displayed bindings are the remappable YuTuTui defaults.
+pub fn mpv_overlay_fixed_alias(chord: Chord) -> Option<Action> {
+    let ch = |c| Chord::new(KeyCode::Char(c), KeyModifiers::empty());
+    if chord == ch('p') {
+        Some(Action::VideoTogglePause)
+    } else if chord == ch('>') {
+        Some(Action::VideoNext)
+    } else if chord == ch('<') {
+        Some(Action::VideoPrev)
+    } else {
+        None
+    }
+}
+
 fn code_token(code: KeyCode) -> &'static str {
     match code {
         KeyCode::Enter => "enter",

@@ -194,4 +194,92 @@ fn video_prev_key_goes_back_a_video() {
     app.close_video();
 }
 
+#[cfg(unix)]
+#[test]
+fn video_toggle_pause_event_emits_overlay_pause_command() {
+    let mut app = app_playing(2, 0);
+    app.video.proc = Some(fake_overlay_proc());
+    app.playback.paused = true;
+    app.video.paused_audio = true;
+
+    let generation = app.video.generation;
+    let cmds = app.update(PlayerMsg::VideoOverlay {
+        generation,
+        event: VideoEvent::TogglePause,
+    });
+
+    assert!(matches!(cmds.as_slice(), [Cmd::VideoTogglePause]));
+    assert!(app.playback.paused && app.video.paused_audio);
+    app.close_video();
+}
+
+#[cfg(unix)]
+#[test]
+fn video_pause_property_updates_status_without_resuming_audio() {
+    let mut app = app_playing(2, 0);
+    app.video.proc = Some(fake_overlay_proc());
+    app.playback.paused = true;
+    app.video.paused_audio = true;
+
+    let generation = app.video.generation;
+    let cmds = app.update(PlayerMsg::VideoOverlay {
+        generation,
+        event: VideoEvent::Paused(false),
+    });
+
+    assert!(cmds.is_empty());
+    assert_eq!(app.status.text, "Video playing");
+    assert!(app.playback.paused, "audio engine stays pinned paused");
+    assert!(app.video.paused_audio);
+    app.close_video();
+}
+
+#[cfg(unix)]
+#[test]
+fn video_close_key_uses_normal_finish_path() {
+    let mut app = app_playing(2, 0);
+    app.video.proc = Some(fake_overlay_proc());
+    app.playback.paused = true;
+    app.video.paused_audio = true;
+
+    let generation = app.video.generation;
+    let cmds = app.update(PlayerMsg::VideoOverlay {
+        generation,
+        event: VideoEvent::Close,
+    });
+
+    assert!(app.video.proc.is_none());
+    assert!(!app.playback.paused);
+    assert!(!app.video.paused_audio);
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Cmd::Player(PlayerCmd::SetProperty { name, value })
+            if name == "pause" && value == &serde_json::Value::Bool(false)
+    )));
+}
+
+#[cfg(unix)]
+#[test]
+fn video_fullscreen_and_mute_events_emit_overlay_commands() {
+    let mut app = app_playing(2, 0);
+    app.video.proc = Some(fake_overlay_proc());
+
+    let generation = app.video.generation;
+    let fullscreen = app.update(PlayerMsg::VideoOverlay {
+        generation,
+        event: VideoEvent::ToggleFullscreen,
+    });
+    assert!(matches!(
+        fullscreen.as_slice(),
+        [Cmd::VideoToggleFullscreen]
+    ));
+
+    let mute = app.update(PlayerMsg::VideoOverlay {
+        generation,
+        event: VideoEvent::ToggleMute,
+    });
+    assert!(matches!(mute.as_slice(), [Cmd::VideoToggleMute]));
+    app.close_video();
+}
+
 // --- Playlist search & import (`Ctrl+P` kind, ytpl: rows) -----------------

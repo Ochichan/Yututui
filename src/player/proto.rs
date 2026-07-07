@@ -10,7 +10,11 @@ use serde_json::{Value, json};
 /// A message read from mpv that the player actor cares about.
 pub enum MpvIncoming {
     /// An observed property changed (e.g. `time-pos`, `duration`, `pause`).
-    PropertyChange { name: String, value: Value },
+    PropertyChange {
+        id: Option<u64>,
+        name: String,
+        value: Value,
+    },
     /// Playback of the current file ended; `reason` is mpv's `end-file` reason
     /// (`eof`, `stop`, `error`, `quit`, ...). `file_error` is mpv's error detail, present
     /// only when `reason` is `error` (e.g. "Failed to open", "Unrecognized file format").
@@ -32,9 +36,10 @@ pub fn parse_line(line: &str) -> Option<MpvIncoming> {
     let v: Value = serde_json::from_str(line.trim()).ok()?;
     match v.get("event").and_then(Value::as_str) {
         Some("property-change") => {
+            let id = v.get("id").and_then(Value::as_u64);
             let name = v.get("name")?.as_str()?.to_owned();
             let value = v.get("data").cloned().unwrap_or(Value::Null);
-            Some(MpvIncoming::PropertyChange { name, value })
+            Some(MpvIncoming::PropertyChange { id, name, value })
         }
         Some("end-file") => {
             let reason = v
@@ -140,7 +145,8 @@ mod tests {
     fn parses_property_change() {
         let line = r#"{"event":"property-change","id":1,"name":"time-pos","data":12.5}"#;
         match parse_line(line) {
-            Some(MpvIncoming::PropertyChange { name, value }) => {
+            Some(MpvIncoming::PropertyChange { id, name, value }) => {
+                assert_eq!(id, Some(1));
                 assert_eq!(name, "time-pos");
                 assert_eq!(value.as_f64(), Some(12.5));
             }

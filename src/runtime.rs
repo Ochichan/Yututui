@@ -162,9 +162,7 @@ impl RuntimeEvent {
             ) => EventPolicy::MustReplyOrBusy {
                 lane: Lane::RemoteCommand,
             },
-            RuntimeEvent::Video { .. } => EventPolicy::DropIfStale {
-                stale_key: Key::VideoOverlayGeneration,
-            },
+            RuntimeEvent::Video { event, .. } => video_event_policy(event),
             RuntimeEvent::Resolver(_) => EventPolicy::DropIfStale {
                 stale_key: Key::ResolverVideo,
             },
@@ -406,8 +404,18 @@ fn app_player_msg_policy(msg: &PlayerMsg) -> EventPolicy {
         PlayerMsg::Eof | PlayerMsg::Error(_) => EventPolicy::MustDeliver {
             lane: Lane::Control,
         },
-        PlayerMsg::VideoOverlay { .. } => EventPolicy::DropIfStale {
-            stale_key: Key::VideoOverlayGeneration,
+        PlayerMsg::VideoOverlay { event, .. } => video_event_policy(event),
+    }
+}
+
+fn video_event_policy(event: &crate::player::video::VideoEvent) -> EventPolicy {
+    match event {
+        crate::player::video::VideoEvent::Paused(_) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::VideoOverlayPaused,
+        },
+        _ => EventPolicy::MustDeliver {
+            lane: Lane::Control,
         },
     }
 }
@@ -878,6 +886,16 @@ impl RuntimeHandles {
         emit(&self.worker_tx, RuntimeEvent::App(msg));
     }
 
+    fn send_video_cmd(&self, cmd: crate::player::video::VideoCmd, label: &'static str) {
+        let Some(video) = &self.video_handle else {
+            tracing::warn!(%label, "video overlay command requested with no IPC client");
+            return;
+        };
+        if video.try_send(cmd).is_err() {
+            tracing::warn!(%label, "video overlay command queue full or closed; dropping command");
+        }
+    }
+
     pub fn handle_player_ready(
         &mut self,
         result: Result<(PlayerHandle, crate::player::Mpv), String>,
@@ -934,11 +952,13 @@ impl RuntimeHandles {
             Cmd::VideoConnect {
                 ipc_path,
                 generation,
+                bindings,
             } => {
                 let tx = self.worker_tx.clone();
                 self.video_handle = Some(crate::player::video::connect(
                     ipc_path,
                     generation,
+                    bindings,
                     move |generation, event| {
                         emit(&tx, RuntimeEvent::Video { generation, event });
                     },
@@ -951,6 +971,18 @@ impl RuntimeHandles {
                 {
                     tracing::warn!("video overlay command queue full or closed; dropping load");
                 }
+            }
+            Cmd::VideoTogglePause => {
+                self.send_video_cmd(crate::player::video::VideoCmd::CyclePause, "pause");
+            }
+            Cmd::VideoToggleFullscreen => {
+                self.send_video_cmd(
+                    crate::player::video::VideoCmd::CycleFullscreen,
+                    "fullscreen",
+                );
+            }
+            Cmd::VideoToggleMute => {
+                self.send_video_cmd(crate::player::video::VideoCmd::CycleMute, "mute");
             }
             Cmd::UpdateSeen { tag } => crate::update::mark_notified(&tag),
             Cmd::Search {
@@ -1435,8 +1467,18 @@ mod tests {
                 generation: 1,
                 event: crate::player::video::VideoEvent::Next,
             },
-            EventPolicy::DropIfStale {
-                stale_key: EventKey::VideoOverlayGeneration,
+            EventPolicy::MustDeliver {
+                lane: EventLane::Control,
+            },
+        );
+        assert_policy(
+            RuntimeEvent::Video {
+                generation: 1,
+                event: crate::player::video::VideoEvent::Paused(true),
+            },
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::VideoOverlayPaused,
             },
         );
         assert_policy(
@@ -1669,8 +1711,8 @@ mod tests {
                 generation: 2,
                 event: crate::player::video::VideoEvent::Closed,
             }),
-            EventPolicy::DropIfStale {
-                stale_key: EventKey::VideoOverlayGeneration,
+            EventPolicy::MustDeliver {
+                lane: EventLane::Control,
             }
         );
         assert_eq!(

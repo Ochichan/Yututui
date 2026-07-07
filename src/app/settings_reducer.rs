@@ -308,6 +308,18 @@ impl App {
             .to_owned();
             return Vec::new();
         }
+        if ctx == KeyContext::MpvOverlay
+            && let Some(fixed_action) = crate::keymap::mpv_overlay_fixed_alias(chord)
+            && fixed_action != action
+        {
+            self.status.kind = StatusKind::Error;
+            self.status.text = t!(
+                "That mpv compatibility key is reserved",
+                "이 mpv 호환 키는 예약되어 있어요"
+            )
+            .to_owned();
+            return Vec::new();
+        }
         let Some(st) = self.settings.as_mut() else {
             return Vec::new();
         };

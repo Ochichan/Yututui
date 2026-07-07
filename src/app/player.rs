@@ -271,6 +271,40 @@ impl App {
         result
     }
 
+    /// Convert the current remappable overlay keymap into mpv keybind commands.
+    fn video_overlay_bindings(&self) -> Vec<crate::player::video::VideoKeyBinding> {
+        use crate::keymap::{Action, KeyContext};
+        use crate::player::video::{VideoKeyAction, VideoKeyBinding};
+
+        [
+            (Action::VideoTogglePause, VideoKeyAction::TogglePause),
+            (Action::VideoNext, VideoKeyAction::Next),
+            (Action::VideoPrev, VideoKeyAction::Prev),
+            (Action::VideoClose, VideoKeyAction::Close),
+            (
+                Action::VideoToggleFullscreen,
+                VideoKeyAction::ToggleFullscreen,
+            ),
+            (Action::VideoToggleMute, VideoKeyAction::ToggleMute),
+        ]
+        .into_iter()
+        .filter_map(|(action, video_action)| {
+            let chord = self.keymap.chord(KeyContext::MpvOverlay, action)?;
+            match crate::keymap::chord_to_mpv_input(chord) {
+                Some(key) => Some(VideoKeyBinding::new(key, video_action)),
+                None => {
+                    tracing::warn!(
+                        action = ?action,
+                        chord = %crate::keymap::chord_to_config(chord),
+                        "skipping unsupported mpv overlay keybinding"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+    }
+
     /// Spawn the overlay window for YouTube id `id` in `layout` and wire up its IPC client
     /// under a fresh spawn generation. Returns `false` when mpv failed to launch. When the
     /// IPC endpoint path can't be prepared, the window still opens — it just degrades to
@@ -302,6 +336,7 @@ impl App {
                     cmds.push(Cmd::VideoConnect {
                         ipc_path,
                         generation,
+                        bindings: self.video_overlay_bindings(),
                     });
                 }
                 true
@@ -455,6 +490,31 @@ impl App {
             VideoEvent::Quit => self.finish_video_overlay(t!("Video closed", "영상 닫음")),
             VideoEvent::Next => self.video_skip(true),
             VideoEvent::Prev => self.video_skip(false),
+            VideoEvent::TogglePause => vec![Cmd::VideoTogglePause],
+            VideoEvent::Paused(paused) => {
+                self.status.kind = StatusKind::Info;
+                self.status.text = if paused {
+                    t!("Video paused", "영상 일시정지").to_owned()
+                } else {
+                    t!("Video playing", "영상 재생 중").to_owned()
+                };
+                self.dirty = true;
+                Vec::new()
+            }
+            VideoEvent::Close => self.finish_video_overlay(t!("Video closed", "영상 닫음")),
+            VideoEvent::ToggleFullscreen => {
+                self.status.kind = StatusKind::Info;
+                self.status.text =
+                    t!("Toggling video fullscreen", "영상 전체 화면 전환").to_owned();
+                self.dirty = true;
+                vec![Cmd::VideoToggleFullscreen]
+            }
+            VideoEvent::ToggleMute => {
+                self.status.kind = StatusKind::Info;
+                self.status.text = t!("Toggling video mute", "영상 음소거 전환").to_owned();
+                self.dirty = true;
+                vec![Cmd::VideoToggleMute]
+            }
             VideoEvent::Closed => {
                 // Act only when the process is genuinely gone: an IPC hiccup with a live
                 // window degrades to the pre-IPC behavior instead of yanking the overlay.

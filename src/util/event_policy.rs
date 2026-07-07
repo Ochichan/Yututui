@@ -49,6 +49,7 @@ pub enum EventKey {
     TransferJob,
     UpdateCheck,
     VideoOverlayGeneration,
+    VideoOverlayPaused,
     YtdlpHealVideo,
 }
 
@@ -122,6 +123,7 @@ impl EventKey {
             EventKey::TransferJob => "transfer.job",
             EventKey::UpdateCheck => "update.check",
             EventKey::VideoOverlayGeneration => "video.overlay.generation",
+            EventKey::VideoOverlayPaused => "video.overlay.paused",
             EventKey::YtdlpHealVideo => "ytdlp.heal.video",
         }
     }
