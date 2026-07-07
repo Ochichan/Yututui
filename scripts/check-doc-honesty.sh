@@ -15,8 +15,14 @@ grep -q 'enum PersistCmd'      src/app/types.rs  || fail "PersistCmd missing (M3
 grep -q 'struct HitMap'        src/app/mouse.rs  || fail "HitMap missing (M1 regressed)"
 grep -q 'struct RenderBridges' src/app/state.rs  || fail "RenderBridges moved/renamed"
 grep -q 'struct App'           src/app/mod.rs    || fail "App moved/renamed"
-if grep -nEi 'production[- ]ready|works everywhere|all terminals|stable API|full Windows support' \
-  README.md README.ko.md README.ja.md docs/index.html; then
+public_docs=()
+for doc in README.md README.ko.md README.ja.md docs/index.html; do
+  [ -f "$doc" ] && public_docs+=("$doc")
+done
+
+if [ "${#public_docs[@]}" -gt 0 ] &&
+  grep -nEi 'production[- ]ready|works everywhere|all terminals|stable API|full Windows support' \
+    "${public_docs[@]}"; then
   fail "public docs contain unsupported beta/terminal overclaims"
 fi
 echo "doc honesty ok"

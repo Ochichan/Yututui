@@ -51,7 +51,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.overlays.mouse_help_visible {
         views::help::render_mouse(frame, app, area);
     }
-    // The About card draws on top too (clicking the `YuTuTui!` brand or F1).
+    // The About card draws on top too (clicking the `yututui` brand or F1).
     if app.overlays.about_visible {
         views::about::render(frame, app, area);
     }

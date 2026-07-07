@@ -713,7 +713,7 @@ impl App {
                 self.close_now_playing_overlay();
                 Vec::new()
             }
-            // Click the `YuTuTui!` brand to open the About card.
+            // Click the `yututui` brand to open the About card.
             MouseTarget::AboutTitle => {
                 self.overlays.about_visible = true;
                 self.dirty = true;

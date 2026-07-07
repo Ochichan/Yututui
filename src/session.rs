@@ -119,21 +119,7 @@ impl SessionCache {
 }
 
 fn session_cache_path() -> Option<PathBuf> {
-    if let Some(dir) = env_cache_dir() {
-        return Some(dir.join(SESSION_CACHE_FILE));
-    }
-    directories::ProjectDirs::from("", "", "yututui")
-        .map(|d| d.cache_dir().join(SESSION_CACHE_FILE))
-}
-
-fn env_cache_dir() -> Option<PathBuf> {
-    let raw = std::env::var("YTM_CACHE_DIR").ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(trimmed))
-    }
+    crate::paths::cache_dir().map(|d| d.join(SESSION_CACHE_FILE))
 }
 
 #[cfg(test)]

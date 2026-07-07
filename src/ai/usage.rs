@@ -83,7 +83,7 @@ impl AiUsageRecord {
 }
 
 fn log_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("ai_usage.jsonl"))
+    crate::paths::data_dir().map(|d| d.join("ai_usage.jsonl"))
 }
 
 /// Append one record as a JSON line. Best-effort; never panics.

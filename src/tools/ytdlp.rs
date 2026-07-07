@@ -94,7 +94,7 @@ pub fn tools_dir() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(env.trim()));
     }
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("tools"))
+    crate::paths::data_dir().map(|d| d.join("tools"))
 }
 
 /// Where the managed binary is installed.

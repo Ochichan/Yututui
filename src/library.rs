@@ -269,7 +269,7 @@ impl Library {
 }
 
 fn library_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("library.json"))
+    crate::paths::data_dir().map(|d| d.join("library.json"))
 }
 
 /// Scan the configured download directory for directly playable local audio files.

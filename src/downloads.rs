@@ -105,7 +105,7 @@ impl DownloadStore {
 }
 
 fn store_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("downloads.json"))
+    crate::paths::data_dir().map(|d| d.join("downloads.json"))
 }
 
 #[cfg(test)]

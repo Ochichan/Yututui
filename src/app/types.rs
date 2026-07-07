@@ -471,7 +471,7 @@ pub enum MouseTarget {
     NowPlayingAskAi,
     /// Close button on the "what's playing" overlay.
     CloseNowPlaying,
-    /// The `YuTuTui!` brand label at the top-left of the nav bar — opens the About card.
+    /// The `yututui` brand label at the top-left of the nav bar — opens the About card.
     AboutTitle,
     /// The GitHub link inside the About card — opens the repo in the system browser.
     AboutLink,

@@ -128,7 +128,7 @@ where
 }
 
 fn cache_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui").map(|dirs| dirs.cache_dir().join("media-art"))
+    crate::paths::cache_dir().map(|d| d.join("media-art"))
 }
 
 /// Resolve a track key to its cached artwork file, if one exists. The cache layout is

@@ -287,7 +287,7 @@ struct UpdateState {
 }
 
 fn state_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("update.json"))
+    crate::paths::data_dir().map(|d| d.join("update.json"))
 }
 
 fn load_state() -> UpdateState {

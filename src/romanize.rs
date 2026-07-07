@@ -219,7 +219,7 @@ impl RomanizeCache {
 }
 
 fn cache_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join(CACHE_FILE))
+    crate::paths::data_dir().map(|d| d.join(CACHE_FILE))
 }
 
 pub fn key_for_song(song: &Song) -> String {

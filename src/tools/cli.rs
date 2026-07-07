@@ -688,12 +688,7 @@ fn diagnostic_path() -> Option<PathBuf> {
 }
 
 fn tools_cache_dir() -> Option<PathBuf> {
-    if let Ok(env) = std::env::var("YTM_CACHE_DIR")
-        && !env.trim().is_empty()
-    {
-        return Some(PathBuf::from(env.trim()));
-    }
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.cache_dir().to_path_buf())
+    crate::paths::cache_dir()
 }
 
 fn parse_use_target(raw: &str) -> Result<UseTarget, &'static str> {

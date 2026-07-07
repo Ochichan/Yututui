@@ -1326,23 +1326,18 @@ fn ytm_dir_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
 }
 
 pub(crate) fn config_path() -> Option<PathBuf> {
-    if let Some(dir) = env_dir("YTM_CONFIG_DIR") {
-        return Some(dir.join("config.json"));
-    }
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.config_dir().join("config.json"))
+    crate::paths::config_dir().map(|d| d.join("config.json"))
 }
 
 fn old_config_path() -> Option<PathBuf> {
-    if env_dir("YTM_CONFIG_DIR").is_some() {
+    // Never import the original app's config while a config-dir override is active (a non-blank
+    // env override — mirroring `paths::config_dir`'s blank-is-unset rule — or the test sandbox):
+    // tests must not read the developer's real `~/.youtube-music-cli`.
+    let overridden = std::env::var("YTM_CONFIG_DIR").is_ok_and(|v| !v.trim().is_empty());
+    if overridden || cfg!(test) {
         return None;
     }
     directories::BaseDirs::new().map(|d| d.home_dir().join(".youtube-music-cli/config.json"))
-}
-
-fn env_dir(name: &str) -> Option<PathBuf> {
-    std::env::var(name)
-        .ok()
-        .and_then(|raw| normalize_user_dir(&raw))
 }
 
 /// Pull whatever we can reuse out of the old TypeScript app's config. Favorites,

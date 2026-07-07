@@ -75,13 +75,11 @@ impl SpotifyToken {
 }
 
 pub fn token_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui")
-        .map(|d| d.data_dir().join("spotify_token.json"))
+    crate::paths::data_dir().map(|d| d.join("spotify_token.json"))
 }
 
 pub fn pending_auth_url_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui")
-        .map(|d| d.data_dir().join("spotify_auth_url.txt"))
+    crate::paths::data_dir().map(|d| d.join("spotify_auth_url.txt"))
 }
 
 pub fn save_pending_auth_url(url: &str) -> std::io::Result<Option<PathBuf>> {

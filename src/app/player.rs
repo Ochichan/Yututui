@@ -282,8 +282,7 @@ impl App {
         cmds: &mut Vec<Cmd>,
     ) -> bool {
         let url = format!("https://www.youtube.com/watch?v={id}");
-        let data_dir = directories::ProjectDirs::from("", "", "yututui")
-            .map(|dirs| dirs.data_dir().to_path_buf());
+        let data_dir = crate::paths::data_dir();
         let (cookies, cookies_warning) = self
             .config
             .cookies_file_for_external_tools_with_warning(data_dir.as_deref());

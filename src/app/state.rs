@@ -757,7 +757,7 @@ pub struct Overlays {
     pub recording_settings: Option<RecordingSettingsPopup>,
     /// The recordings browser (Decide-mode save/discard/play), opened from the popup or a key.
     pub recordings_browser: Option<RecordingsBrowser>,
-    /// Whether the About card overlay is showing. Opened by clicking the `YuTuTui!` brand in the
+    /// Whether the About card overlay is showing. Opened by clicking the `yututui` brand in the
     /// nav bar or via `Action::ToggleAbout` (F1); any key/click (other than the GitHub link)
     /// dismisses it.
     pub about_visible: bool,

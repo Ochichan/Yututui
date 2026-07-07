@@ -324,7 +324,7 @@ fn sanitize_loaded_song(song: &mut Song) -> bool {
 }
 
 fn playlists_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("playlists.json"))
+    crate::paths::data_dir().map(|d| d.join("playlists.json"))
 }
 
 #[cfg(test)]

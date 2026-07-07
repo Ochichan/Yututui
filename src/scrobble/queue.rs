@@ -143,8 +143,7 @@ impl QueueFile {
 
     /// The production location, following the other data-dir stores.
     pub fn default_path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "yututui")
-            .map(|d| d.data_dir().join("scrobble-queue.jsonl"))
+        crate::paths::data_dir().map(|d| d.join("scrobble-queue.jsonl"))
     }
 
     #[cfg(test)]

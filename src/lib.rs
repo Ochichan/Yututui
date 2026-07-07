@@ -25,6 +25,7 @@ pub mod logging;
 pub mod lyrics;
 pub mod media;
 pub mod notify;
+pub mod paths;
 pub mod persist;
 pub mod playback_policy;
 pub mod player;

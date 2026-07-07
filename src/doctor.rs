@@ -970,9 +970,9 @@ fn tool_role(bin: &str, kr: bool) -> &'static str {
     }
 }
 
-/// The per-user data directory, mirroring `config.rs`'s `ProjectDirs::from("", "", "yututui")`.
+/// The per-user data directory, resolved through the shared [`crate::paths::data_dir`].
 fn data_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().to_path_buf())
+    crate::paths::data_dir()
 }
 
 /// Print one directory line and return whether it's usable.

@@ -149,7 +149,7 @@ fn normalize_keys(names: &[String]) -> Vec<String> {
 }
 
 fn station_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "yututui").map(|d| d.data_dir().join("station.json"))
+    crate::paths::data_dir().map(|d| d.join("station.json"))
 }
 
 #[cfg(test)]
