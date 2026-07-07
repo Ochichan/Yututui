@@ -770,7 +770,7 @@ fn verify_sha256sums_signature_in(
     let sums_path = dir.join("SHA2-256SUMS");
     let sig_path = dir.join("SHA2-256SUMS.sig");
     let key_path = dir.join("yt-dlp-public.key");
-    let keyring = dir.join("trustedkeys.kbx");
+    let keyring = "trustedkeys.kbx";
 
     std::fs::create_dir(&home).map_err(|e| format!("cannot prepare GPG home: {e}"))?;
     safe_fs::ensure_private_dir(&home).map_err(|e| format!("cannot prepare GPG home: {e}"))?;
@@ -791,10 +791,11 @@ fn verify_sha256sums_signature_in(
         .arg(&home)
         .arg("--no-default-keyring")
         .arg("--keyring")
-        .arg(&keyring)
+        .arg(keyring)
         .arg("--import")
         .arg(&key_path)
-        .stdin(Stdio::null());
+        .stdin(Stdio::null())
+        .current_dir(&home);
     run_verifier(import, "import yt-dlp signing key")?;
 
     if let Some(gpgv) = &tools.gpgv {
@@ -806,10 +807,11 @@ fn verify_sha256sums_signature_in(
             .arg("--homedir")
             .arg(&home)
             .arg("--keyring")
-            .arg(&keyring)
+            .arg(keyring)
             .arg(&sig_path)
             .arg(&sums_path)
-            .stdin(Stdio::null());
+            .stdin(Stdio::null())
+            .current_dir(&home);
         run_verifier(verify, "verify yt-dlp checksum signature")
     } else {
         let mut verify = crate::util::process::std_command(
@@ -823,11 +825,12 @@ fn verify_sha256sums_signature_in(
             .arg(&home)
             .arg("--no-default-keyring")
             .arg("--keyring")
-            .arg(&keyring)
+            .arg(keyring)
             .arg("--verify")
             .arg(&sig_path)
             .arg(&sums_path)
-            .stdin(Stdio::null());
+            .stdin(Stdio::null())
+            .current_dir(&home);
         run_verifier(verify, "verify yt-dlp checksum signature")
     }
 }
