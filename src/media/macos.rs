@@ -418,3 +418,23 @@ fn load_artwork(path: &std::path::Path) -> Option<Retained<MPMediaItemArtwork>> 
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_rate_tracks_playing_state_only() {
+        let mut snapshot = MediaSnapshot::idle();
+        snapshot.rate = 1.75;
+
+        snapshot.status = MediaPlaybackStatus::Stopped;
+        assert_eq!(effective_rate(&snapshot), 0.0);
+
+        snapshot.status = MediaPlaybackStatus::Paused;
+        assert_eq!(effective_rate(&snapshot), 0.0);
+
+        snapshot.status = MediaPlaybackStatus::Playing;
+        assert_eq!(effective_rate(&snapshot), 1.75);
+    }
+}

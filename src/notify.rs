@@ -116,3 +116,90 @@ fn emit_native(title: String, body: String) {
         }));
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard};
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    struct EnvRestore(Vec<(String, Option<OsString>)>);
+
+    impl EnvRestore {
+        fn capture(names: &[&str]) -> Self {
+            Self(
+                names
+                    .iter()
+                    .map(|name| ((*name).to_owned(), std::env::var_os(name)))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    None => unsafe { std::env::remove_var(name) },
+                }
+            }
+        }
+    }
+
+    fn clear_env(names: &[&str]) {
+        for name in names {
+            unsafe { std::env::remove_var(name) };
+        }
+    }
+
+    #[test]
+    fn detect_maps_terminal_environment_to_osc_capability() {
+        let _guard = env_lock();
+        const NAMES: &[&str] = &[
+            "TERM",
+            "TERM_PROGRAM",
+            "TMUX",
+            "KITTY_WINDOW_ID",
+            "WEZTERM_PANE",
+            "VTE_VERSION",
+            "WT_SESSION",
+        ];
+        let _restore = EnvRestore::capture(NAMES);
+        clear_env(NAMES);
+
+        let none = Notifier::detect();
+        assert_eq!(none.osc, Osc::None);
+        assert!(!none.tmux);
+
+        unsafe { std::env::set_var("KITTY_WINDOW_ID", "1") };
+        assert_eq!(Notifier::detect().osc, Osc::SevenSevenSeven);
+        unsafe { std::env::remove_var("KITTY_WINDOW_ID") };
+
+        unsafe { std::env::set_var("TERM_PROGRAM", "WezTerm") };
+        assert_eq!(Notifier::detect().osc, Osc::SevenSevenSeven);
+        unsafe { std::env::set_var("TERM_PROGRAM", "Apple_Terminal") };
+        assert_eq!(Notifier::detect().osc, Osc::Nine);
+
+        unsafe { std::env::remove_var("TERM_PROGRAM") };
+        unsafe { std::env::set_var("WT_SESSION", "abc") };
+        assert_eq!(Notifier::detect().osc, Osc::Nine);
+
+        unsafe { std::env::remove_var("WT_SESSION") };
+        unsafe { std::env::set_var("TERM", "screen-256color") };
+        let tmux = Notifier::detect();
+        assert_eq!(tmux.osc, Osc::None);
+        assert!(tmux.tmux);
+    }
+
+    #[test]
+    fn sanitize_strips_control_bytes_but_keeps_text() {
+        assert_eq!(sanitize("Title\x1b]9;evil\x07\nBody"), "Title]9;evilBody");
+        assert_eq!(sanitize("plain text"), "plain text");
+    }
+}

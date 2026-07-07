@@ -182,3 +182,155 @@ fn tag_file(
     tag.save_to_path(path, WriteOptions::default())
         .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let mut bytes = [0u8; 8];
+        getrandom::fill(&mut bytes).unwrap();
+        let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        std::env::temp_dir().join(format!(
+            "ytm-tui-recorder-job-{name}-{}-{suffix}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn wipe_and_discard_jobs_are_best_effort_without_events() {
+        let dir = temp_dir("wipe-discard");
+        let temp = dir.join("segment.tmp");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&temp, b"partial").unwrap();
+
+        assert!(run(RecorderJob::WipeTemp { dir: dir.clone() }).is_none());
+        assert!(dir.exists());
+        assert!(!temp.exists());
+
+        std::fs::write(&temp, b"partial").unwrap();
+        assert!(run(RecorderJob::Discard { temp: temp.clone() }).is_none());
+        assert!(!temp.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_job_copies_to_first_free_recording_path() {
+        let dir = temp_dir("save");
+        let temp = dir.join("tmp").join("rec-1.mkv");
+        let final_dir = dir.join("final");
+        std::fs::create_dir_all(temp.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&final_dir).unwrap();
+        std::fs::write(&temp, b"recording bytes").unwrap();
+        std::fs::write(final_dir.join("Song.mkv"), b"existing").unwrap();
+
+        let event = run(RecorderJob::Save {
+            id: 7,
+            temp: temp.clone(),
+            final_dir: final_dir.clone(),
+            filename: "Song".to_owned(),
+            ext: "mkv",
+            title: Some("Title".to_owned()),
+            artist: Some("Artist".to_owned()),
+            station: Some("Station".to_owned()),
+        })
+        .expect("save event");
+
+        match event {
+            RecorderEvent::Saved { id, final_path } => {
+                assert_eq!(id, 7);
+                assert_eq!(final_path, final_dir.join("Song (2).mkv"));
+                assert_eq!(std::fs::read(final_path).unwrap(), b"recording bytes");
+            }
+            RecorderEvent::SaveFailed { error, .. } => panic!("unexpected failure: {error}"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_job_reports_copy_failure_with_sanitized_error() {
+        let dir = temp_dir("missing-source");
+        let final_dir = dir.join("final");
+        let missing = dir.join("tmp").join("missing.mkv");
+
+        let event = run(RecorderJob::Save {
+            id: 8,
+            temp: missing,
+            final_dir,
+            filename: "Missing".to_owned(),
+            ext: "mkv",
+            title: None,
+            artist: None,
+            station: None,
+        })
+        .expect("save failure event");
+
+        match event {
+            RecorderEvent::SaveFailed { id, error } => {
+                assert_eq!(id, 8);
+                assert!(!error.is_empty());
+                assert!(
+                    !error.contains('\n'),
+                    "error text should be single-line sanitized"
+                );
+            }
+            RecorderEvent::Saved { final_path, .. } => {
+                panic!(
+                    "missing source unexpectedly saved to {}",
+                    final_path.display()
+                )
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tag_write_failure_does_not_fail_the_audio_save() {
+        let dir = temp_dir("tag-failure");
+        let temp = dir.join("tmp").join("rec-1.mp3");
+        let final_dir = dir.join("final");
+        std::fs::create_dir_all(temp.parent().unwrap()).unwrap();
+        // Not a valid mp3; `tag_file` should fail internally, but the copied bytes are kept.
+        std::fs::write(&temp, b"not actually audio").unwrap();
+
+        let event = run(RecorderJob::Save {
+            id: 9,
+            temp,
+            final_dir: final_dir.clone(),
+            filename: "Tagged".to_owned(),
+            ext: "mp3",
+            title: Some("Title".to_owned()),
+            artist: Some("Artist".to_owned()),
+            station: Some("Station".to_owned()),
+        })
+        .expect("save event");
+
+        match event {
+            RecorderEvent::Saved { id, final_path } => {
+                assert_eq!(id, 9);
+                assert_eq!(final_path, final_dir.join("Tagged.mp3"));
+                assert_eq!(std::fs::read(final_path).unwrap(), b"not actually audio");
+            }
+            RecorderEvent::SaveFailed { error, .. } => panic!("tag failure leaked: {error}"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unique_recording_path_advances_past_existing_names() {
+        let dir = temp_dir("unique");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Track.flac"), b"1").unwrap();
+        std::fs::write(dir.join("Track (2).flac"), b"2").unwrap();
+
+        assert_eq!(
+            unique_recording_path(&dir, "Track", "flac"),
+            dir.join("Track (3).flac")
+        );
+        assert_eq!(
+            unique_recording_path(&dir, "Other", "flac"),
+            dir.join("Other.flac")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

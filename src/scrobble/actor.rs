@@ -541,3 +541,355 @@ async fn flush_service<S: ScrobbleService>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    use super::super::{LastfmApp, LastfmSession, ListenBrainzSession};
+
+    struct FakeService {
+        kind: ServiceKind,
+        results: Mutex<Vec<Result<(), ScrobbleError>>>,
+        batches: Mutex<Vec<Vec<ScrobbleTrack>>>,
+    }
+
+    impl FakeService {
+        fn new(kind: ServiceKind, results: Vec<Result<(), ScrobbleError>>) -> Self {
+            Self {
+                kind,
+                results: Mutex::new(results),
+                batches: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn batch_sizes(&self) -> Vec<usize> {
+            self.batches.lock().unwrap().iter().map(Vec::len).collect()
+        }
+    }
+
+    impl ScrobbleService for FakeService {
+        fn kind(&self) -> ServiceKind {
+            self.kind
+        }
+
+        async fn now_playing(&self, _track: &ScrobbleTrack) -> Result<(), ScrobbleError> {
+            Ok(())
+        }
+
+        async fn scrobble_batch(&self, tracks: &[ScrobbleTrack]) -> Result<(), ScrobbleError> {
+            self.batches.lock().unwrap().push(tracks.to_vec());
+            self.results.lock().unwrap().pop().unwrap_or(Ok(()))
+        }
+
+        async fn love(
+            &self,
+            _artist: &str,
+            _title: &str,
+            _love: bool,
+        ) -> Result<(), ScrobbleError> {
+            Ok(())
+        }
+    }
+
+    fn temp_queue(name: &str) -> (std::path::PathBuf, QueueFile) {
+        let mut bytes = [0u8; 8];
+        getrandom::fill(&mut bytes).unwrap();
+        let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let dir = std::env::temp_dir().join(format!(
+            "ytm-tui-sactor-{name}-{}-{suffix}",
+            std::process::id()
+        ));
+        let queue = QueueFile::at(dir.join("scrobble-queue.jsonl"));
+        (dir, queue)
+    }
+
+    fn entry(idx: usize, pending: Vec<ServiceKind>) -> QueueEntry {
+        QueueEntry {
+            id: format!("1000-track-{idx}"),
+            track_key: format!("track-{idx}"),
+            ts: 1000 + idx as i64,
+            artist: format!("artist-{idx}"),
+            title: format!("title-{idx}"),
+            album: Some(format!("album-{idx}")),
+            duration: Some(180 + idx as u32),
+            origin_url: Some(format!("https://music.youtube.com/watch?v=track-{idx}")),
+            pending,
+        }
+    }
+
+    fn track(started_unix: i64) -> ScrobbleTrack {
+        ScrobbleTrack {
+            key: "track-key".to_owned(),
+            artist: "artist".to_owned(),
+            title: "title".to_owned(),
+            album: Some("album".to_owned()),
+            duration_secs: Some(240),
+            origin_url: Some("https://music.youtube.com/watch?v=track-key".to_owned()),
+            started_unix,
+        }
+    }
+
+    fn inactive_settings() -> ScrobbleSettings {
+        ScrobbleSettings {
+            lastfm_app: None,
+            lastfm: None,
+            listenbrainz: None,
+            local_files: false,
+        }
+    }
+
+    fn active_settings() -> ScrobbleSettings {
+        ScrobbleSettings {
+            lastfm_app: Some(LastfmApp {
+                api_key: "api-key".to_owned(),
+                api_secret: "api-secret".to_owned(),
+            }),
+            lastfm: Some(LastfmSession {
+                session_key: "session-key".to_owned(),
+                love_sync: true,
+            }),
+            listenbrainz: Some(ListenBrainzSession {
+                token: "listen-token".to_owned(),
+                api_url: "https://listen.example.test".to_owned(),
+            }),
+            local_files: true,
+        }
+    }
+
+    fn test_actor(settings: ScrobbleSettings, queue: Option<QueueFile>, emit: EventSink) -> Actor {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_millis(50))
+            .build()
+            .unwrap_or_default();
+        Actor {
+            lastfm: lastfm_client(&http, &settings),
+            listenbrainz: listenbrainz_client(&http, &settings),
+            settings,
+            emit,
+            monitor: ScrobbleMonitor::new(),
+            queue,
+            http,
+            lastfm_health: Health::default(),
+            listenbrainz_health: Health::default(),
+            auth_task: None,
+            next_flush: None,
+            last_stall_notice: None,
+            love_tasks: HashMap::new(),
+        }
+    }
+
+    fn captured_events() -> (Arc<Mutex<Vec<ScrobbleEvent>>>, EventSink) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = Arc::clone(&events);
+        let sink: EventSink = Arc::new(move |event| {
+            sink_events.lock().unwrap().push(event);
+        });
+        (events, sink)
+    }
+
+    #[test]
+    fn health_auth_latches_once_and_backoff_resets() {
+        let now = Instant::now();
+        let mut health = Health::default();
+
+        assert!(health.ready(now));
+        let first = health.note_error(
+            ServiceKind::Lastfm,
+            &ScrobbleError::Auth("bad key".to_owned()),
+            now,
+        );
+        assert!(matches!(
+            first,
+            Some(ScrobbleEvent::SessionInvalid(ServiceKind::Lastfm))
+        ));
+        assert!(health.auth_latched);
+        assert!(!health.ready(now));
+        assert!(
+            health
+                .note_error(
+                    ServiceKind::Lastfm,
+                    &ScrobbleError::Auth("still bad".to_owned()),
+                    now
+                )
+                .is_none()
+        );
+
+        health.reset();
+        assert!(health.ready(now));
+        health.note_error(
+            ServiceKind::ListenBrainz,
+            &ScrobbleError::Network("timeout".to_owned()),
+            now,
+        );
+        assert_eq!(health.backoff_step, 1);
+        assert!(!health.ready(now));
+        assert!(health.ready(now + BACKOFF_STEPS[0] + Duration::from_millis(1)));
+
+        health.note_error(
+            ServiceKind::ListenBrainz,
+            &ScrobbleError::RateLimited(Some(Duration::MAX)),
+            now,
+        );
+        assert_eq!(health.backoff_until, Some(now + MAX_SANE_BACKOFF));
+
+        health.note_success();
+        assert!(health.ready(now));
+        assert_eq!(health.backoff_step, 0);
+    }
+
+    #[tokio::test]
+    async fn flush_service_delivers_chunks_and_compacts_queue() {
+        let (dir, queue) = temp_queue("chunks");
+        let mut entries: Vec<QueueEntry> = (0..SCROBBLE_BATCH_MAX + 2)
+            .map(|idx| entry(idx, vec![ServiceKind::Lastfm]))
+            .collect();
+        queue.rewrite(&entries).unwrap();
+        let service = FakeService::new(ServiceKind::Lastfm, Vec::new());
+        let mut health = Health::default();
+        let (events, emit) = captured_events();
+
+        flush_service(&service, &mut entries, &queue, &mut health, &emit).await;
+
+        assert!(entries.is_empty());
+        assert_eq!(service.batch_sizes(), vec![SCROBBLE_BATCH_MAX, 2]);
+        assert!(
+            queue.load().entries.is_empty(),
+            "successful delivery removes all entries from disk"
+        );
+        assert!(health.ready(Instant::now()));
+        assert!(events.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn flush_service_treats_invalid_content_as_delivered() {
+        let (dir, queue) = temp_queue("invalid");
+        let mut entries = vec![entry(0, vec![ServiceKind::ListenBrainz])];
+        queue.rewrite(&entries).unwrap();
+        let service = FakeService::new(
+            ServiceKind::ListenBrainz,
+            vec![Err(ScrobbleError::Invalid("bad metadata".to_owned()))],
+        );
+        let mut health = Health::default();
+        let (events, emit) = captured_events();
+
+        flush_service(&service, &mut entries, &queue, &mut health, &emit).await;
+
+        assert!(entries.is_empty());
+        assert!(queue.load().entries.is_empty());
+        assert!(health.ready(Instant::now()));
+        assert!(events.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn flush_service_auth_failure_latches_and_leaves_pending() {
+        let (dir, queue) = temp_queue("auth");
+        let original = vec![entry(0, vec![ServiceKind::Lastfm])];
+        let mut entries = original.clone();
+        queue.rewrite(&entries).unwrap();
+        let service = FakeService::new(
+            ServiceKind::Lastfm,
+            vec![Err(ScrobbleError::Auth("revoked".to_owned()))],
+        );
+        let mut health = Health::default();
+        let (events, emit) = captured_events();
+
+        flush_service(&service, &mut entries, &queue, &mut health, &emit).await;
+
+        assert_eq!(entries, original);
+        assert_eq!(queue.load().entries, original);
+        assert!(health.auth_latched);
+        let captured = events.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert!(matches!(
+            captured[0],
+            ScrobbleEvent::SessionInvalid(ServiceKind::Lastfm)
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enqueue_scrobble_persists_pending_services_and_clamps_future_time() {
+        let (dir, queue) = temp_queue("enqueue");
+        let (_events, emit) = captured_events();
+        let mut actor = test_actor(active_settings(), Some(queue), emit);
+        let future = crate::signals::unix_now() + 3600;
+
+        actor.enqueue_scrobble(track(future));
+
+        let queue = actor.queue.as_ref().unwrap();
+        let loaded = queue.load();
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(
+            loaded.entries[0].pending,
+            vec![ServiceKind::Lastfm, ServiceKind::ListenBrainz]
+        );
+        assert!(
+            loaded.entries[0].ts <= crate::signals::unix_now(),
+            "future timestamps are moved behind now before queueing"
+        );
+        assert!(actor.next_flush.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn inactive_enqueue_does_not_create_queue_entry() {
+        let (dir, queue) = temp_queue("inactive");
+        let (_events, emit) = captured_events();
+        let mut actor = test_actor(inactive_settings(), Some(queue), emit);
+
+        actor.enqueue_scrobble(track(1000));
+
+        assert!(actor.queue.as_ref().unwrap().load().entries.is_empty());
+        assert!(actor.next_flush.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reconfigure_rebuilds_clients_resets_health_and_schedules_flush() {
+        let (_events, emit) = captured_events();
+        let mut actor = test_actor(inactive_settings(), None, emit);
+        actor.lastfm_health.auth_latched = true;
+        actor.listenbrainz_health.backoff_until = Some(Instant::now() + Duration::from_secs(60));
+
+        actor.reconfigure(active_settings());
+
+        assert!(actor.lastfm.is_some());
+        assert!(actor.listenbrainz.is_some());
+        assert!(actor.lastfm_health.ready(Instant::now()));
+        assert!(actor.listenbrainz_health.ready(Instant::now()));
+        assert!(actor.next_flush.is_some());
+    }
+
+    #[test]
+    fn start_auth_without_app_emits_failure_without_spawning() {
+        let (events, emit) = captured_events();
+        let mut actor = test_actor(inactive_settings(), None, emit);
+
+        actor.start_auth();
+
+        assert!(actor.auth_task.is_none());
+        let captured = events.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        match &captured[0] {
+            ScrobbleEvent::AuthFailed(msg) => assert!(msg.contains("app credentials missing")),
+            _ => panic!("expected AuthFailed"),
+        }
+    }
+
+    #[test]
+    fn schedule_flush_keeps_earliest_deadline() {
+        let (_events, emit) = captured_events();
+        let mut actor = test_actor(inactive_settings(), None, emit);
+
+        actor.schedule_flush(Duration::from_secs(30));
+        let later = actor.next_flush.unwrap();
+        actor.schedule_flush(Duration::from_secs(1));
+        let earlier = actor.next_flush.unwrap();
+
+        assert!(earlier < later);
+    }
+}

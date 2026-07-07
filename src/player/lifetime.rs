@@ -330,3 +330,74 @@ fn mpv_identity_matches(proc_: &sysinfo::Process, record: &Lifeline) -> bool {
     cmd.iter()
         .any(|arg| arg.to_string_lossy().contains(record.mpv_socket.as_str()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let mut bytes = [0u8; 8];
+        getrandom::fill(&mut bytes).unwrap();
+        let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        std::env::temp_dir().join(format!(
+            "ytm-tui-lifetime-{name}-{}-{suffix}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn mpv_pid_take_is_single_use_and_resets_to_empty() {
+        let _ = take_mpv_pid();
+        assert_eq!(take_mpv_pid(), None);
+
+        set_mpv_pid(123_456);
+        assert_eq!(take_mpv_pid(), Some(123_456));
+        assert_eq!(take_mpv_pid(), None);
+    }
+
+    #[test]
+    fn register_writes_lifeline_and_reap_removes_live_app_record() {
+        let dir = temp_dir("register");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        register(&dir, std::process::id(), 999_999, "/tmp/ytm-ipc-test.sock");
+
+        let path = registry_path(&dir);
+        let text = safe_fs::read_to_string_no_symlink(&path).unwrap();
+        let record: Lifeline = serde_json::from_str(&text).unwrap();
+        assert_eq!(record.app_pid, std::process::id());
+        assert_eq!(record.mpv_pid, 999_999);
+        assert_eq!(record.mpv_socket, "/tmp/ytm-ipc-test.sock");
+        assert!(record.written_at <= unix_now());
+
+        reap_orphans(&dir);
+        assert!(!path.exists(), "processed lifeline records are removed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reap_orphans_discards_corrupt_and_stale_lifelines_without_killing() {
+        let dir = temp_dir("bad-records");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = registry_path(&dir);
+
+        std::fs::write(&path, "{not json").unwrap();
+        reap_orphans(&dir);
+        assert!(!path.exists());
+
+        let stale = Lifeline {
+            app_pid: 999_991,
+            mpv_pid: 999_992,
+            mpv_socket: "/tmp/stale.sock".to_owned(),
+            written_at: unix_now().saturating_sub(8 * 24 * 3600),
+        };
+        safe_fs::write_private_atomic_json(&path, &stale).unwrap();
+        reap_orphans(&dir);
+        assert!(
+            !path.exists(),
+            "stale lifeline is discarded before pid lookup"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

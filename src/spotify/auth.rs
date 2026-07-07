@@ -416,6 +416,7 @@ fn token_from_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::SocketAddr;
 
     /// RFC 7636 Appendix B reference vector.
     #[test]
@@ -449,6 +450,17 @@ mod tests {
     }
 
     #[test]
+    fn redirect_uri_is_loopback_ip_literal() {
+        assert_eq!(redirect_uri(9271), "http://127.0.0.1:9271/callback");
+        assert!(!redirect_uri(9271).contains("localhost"));
+    }
+
+    #[test]
+    fn urlencode_leaves_only_unreserved_bytes_plain() {
+        assert_eq!(urlencode("AZaz09-._~ +/한"), "AZaz09-._~%20%2B%2F%ED%95%9C");
+    }
+
+    #[test]
     fn token_rotation_keeps_old_refresh_when_absent() {
         let body = serde_json::json!({
             "access_token": "new-access",
@@ -468,9 +480,147 @@ mod tests {
     }
 
     #[test]
+    fn token_from_response_defaults_scope_and_rejects_missing_bearer_fields() {
+        let body = serde_json::json!({
+            "access_token": "access",
+            "refresh_token": "refresh",
+        });
+        let token = token_from_response(&body, "cid", None).unwrap();
+        assert_eq!(token.scopes, SCOPES);
+        assert_eq!(token.client_id, "cid");
+        assert!(token.expires_at <= crate::signals::unix_now() + 3600);
+
+        assert!(token_from_response(&serde_json::json!({}), "cid", Some("r")).is_none());
+        assert!(
+            token_from_response(&serde_json::json!({"access_token": "a"}), "cid", None).is_none()
+        );
+    }
+
+    #[test]
     fn percent_decode_handles_common_cases() {
         assert_eq!(percent_decode("a%20b%2Bc+d"), "a b+c d");
         assert_eq!(percent_decode("plain"), "plain");
         assert_eq!(percent_decode("bad%zz"), "bad%zz");
+    }
+
+    fn callback_request(path: &str) -> String {
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+    }
+
+    async fn send_callback_request(addr: SocketAddr, request: String) -> String {
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect to callback listener");
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write callback request");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .await
+            .expect("read callback response");
+        response
+    }
+
+    #[tokio::test]
+    async fn wait_for_callback_ignores_noise_then_decodes_code() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind callback listener");
+        let addr = listener.local_addr().expect("callback listener address");
+
+        let server = wait_for_callback(&listener, "expected state");
+        let client = async {
+            let bad = send_callback_request(addr, "\r\n\r\n".to_owned()).await;
+            assert!(bad.starts_with("HTTP/1.1 400 Bad Request"));
+            assert!(bad.contains("Bad request"));
+
+            let missing = send_callback_request(addr, callback_request("/favicon.ico")).await;
+            assert!(missing.starts_with("HTTP/1.1 404 Not Found"));
+            assert!(missing.contains("Not found"));
+
+            let ok = send_callback_request(
+                addr,
+                callback_request("/callback?code=abc%2B123&state=expected+state"),
+            )
+            .await;
+            assert!(ok.starts_with("HTTP/1.1 200 OK"));
+            assert!(ok.contains("Spotify connected"));
+        };
+
+        let (code, ()) = tokio::join!(server, client);
+        assert_eq!(code.expect("callback accepted"), "abc+123");
+    }
+
+    #[tokio::test]
+    async fn wait_for_callback_rejects_state_mismatch_after_response() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind callback listener");
+        let addr = listener.local_addr().expect("callback listener address");
+
+        let server = async {
+            wait_for_callback(&listener, "good")
+                .await
+                .unwrap_err()
+                .to_string()
+        };
+        let client = async {
+            send_callback_request(addr, callback_request("/callback?code=abc&state=bad")).await
+        };
+
+        let (error, response) = tokio::join!(server, client);
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(response.contains("State mismatch"));
+        assert!(error.contains("state mismatch"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_callback_reports_denied_and_missing_code() {
+        let denied = {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .expect("bind callback listener");
+            let addr = listener.local_addr().expect("callback listener address");
+            let server = async {
+                wait_for_callback(&listener, "ok")
+                    .await
+                    .unwrap_err()
+                    .to_string()
+            };
+            let client = async {
+                send_callback_request(
+                    addr,
+                    callback_request("/callback?error=access_denied&state=ok"),
+                )
+                .await
+            };
+            let (error, response) = tokio::join!(server, client);
+            assert!(response.starts_with("HTTP/1.1 200 OK"));
+            assert!(response.contains("Authorization was denied"));
+            error
+        };
+        assert!(denied.contains("authorization denied: access_denied"));
+
+        let missing_code = {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .expect("bind callback listener");
+            let addr = listener.local_addr().expect("callback listener address");
+            let server = async {
+                wait_for_callback(&listener, "ok")
+                    .await
+                    .unwrap_err()
+                    .to_string()
+            };
+            let client =
+                async { send_callback_request(addr, callback_request("/callback?state=ok")).await };
+            let (error, response) = tokio::join!(server, client);
+            assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+            assert!(response.contains("Missing code"));
+            error
+        };
+        assert!(missing_code.contains("no code"));
     }
 }

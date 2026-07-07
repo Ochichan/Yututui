@@ -425,3 +425,230 @@ impl SpotifyClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn token() -> SpotifyToken {
+        SpotifyToken {
+            access_token: "access".to_owned(),
+            refresh_token: "refresh".to_owned(),
+            expires_at: crate::signals::unix_now() + 3600,
+            scopes: "scope-a scope-b".to_owned(),
+            client_id: "client-id".to_owned(),
+        }
+    }
+
+    #[test]
+    fn spotify_error_display_gives_actionable_messages() {
+        assert!(
+            SpotifyError::Auth("expired".to_owned())
+                .to_string()
+                .contains("ytt auth spotify")
+        );
+        assert!(
+            SpotifyError::NotAllowlisted
+                .to_string()
+                .contains("User Management")
+        );
+        assert!(
+            SpotifyError::RateLimited
+                .to_string()
+                .contains("resume the job")
+        );
+        assert_eq!(
+            SpotifyError::Network("timeout".to_owned()).to_string(),
+            "network: timeout"
+        );
+        assert_eq!(
+            SpotifyError::Api {
+                status: 418,
+                message: "teapot".to_owned(),
+            }
+            .to_string(),
+            "Spotify HTTP 418: teapot"
+        );
+        assert_eq!(
+            SpotifyError::Decode("bad json".to_owned()).to_string(),
+            "unexpected Spotify response: bad json"
+        );
+    }
+
+    #[test]
+    fn client_with_token_starts_without_cached_user_or_rate_debt() {
+        let client = SpotifyClient::with_token(token());
+
+        assert!(client.user.is_none());
+        assert!(client.last_call.is_none());
+        assert_eq!(client.rate_waited, Duration::ZERO);
+        assert_eq!(client.token.client_id, "client-id");
+    }
+
+    #[test]
+    fn reset_rate_budget_clears_cumulative_wait_without_touching_token() {
+        let mut client = SpotifyClient::with_token(token());
+        client.rate_waited = Duration::from_secs(42);
+
+        client.reset_rate_budget();
+
+        assert_eq!(client.rate_waited, Duration::ZERO);
+        assert_eq!(client.token.refresh_token, "refresh");
+    }
+
+    async fn serve_spotify_once(
+        status: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind spotify test server");
+        let addr = listener.local_addr().expect("spotify test server address");
+        let status = status.to_owned();
+        let headers: Vec<(String, String)> = headers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        let body = body.to_owned();
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept spotify request");
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = stream.read(&mut buf).await.expect("read spotify request");
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if let Some(head_end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&request[..head_end + 4]);
+                    let content_len = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= head_end + 4 + content_len {
+                        break;
+                    }
+                }
+            }
+
+            let mut response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n",
+                body.len()
+            );
+            for (name, value) in headers {
+                response.push_str(&format!("{name}: {value}\r\n"));
+            }
+            response.push_str("\r\n");
+            response.push_str(&body);
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write spotify response");
+            let _ = stream.shutdown().await;
+            String::from_utf8_lossy(&request).into_owned()
+        });
+        (format!("http://{addr}/v1/test"), handle)
+    }
+
+    #[tokio::test]
+    async fn request_json_sends_bearer_json_and_decodes_success() {
+        let (url, request) = serve_spotify_once(
+            "201 Created",
+            &[("Content-Type", "application/json")],
+            r#"{"ok":true,"id":"new-playlist"}"#,
+        )
+        .await;
+        let mut client = SpotifyClient::with_token(token());
+
+        let body: serde_json::Value = client
+            .request_json(
+                reqwest::Method::POST,
+                url,
+                Some(serde_json::json!({"name": "Roadtrip"})),
+            )
+            .await
+            .expect("successful response decodes");
+
+        assert_eq!(body["id"], "new-playlist");
+        assert!(client.last_call.is_some());
+        let request = request.await.expect("captured request");
+        assert!(request.starts_with("POST /v1/test HTTP/1.1"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer access")
+        );
+        assert!(request.contains(r#""name":"Roadtrip""#));
+    }
+
+    #[tokio::test]
+    async fn request_json_maps_forbidden_api_decode_and_rate_errors() {
+        let (url, request) = serve_spotify_once(
+            "403 Forbidden",
+            &[("Content-Type", "application/json")],
+            r#"{"error":{"message":"dev mode"}}"#,
+        )
+        .await;
+        let mut client = SpotifyClient::with_token(token());
+        let err = client
+            .request_json::<serde_json::Value>(reqwest::Method::GET, url, None)
+            .await
+            .expect_err("403 maps to not-allowlisted");
+        assert!(matches!(err, SpotifyError::NotAllowlisted));
+        assert!(request.await.expect("captured 403 request").contains("GET"));
+
+        let (url, _) = serve_spotify_once(
+            "418 I'm a teapot",
+            &[("Content-Type", "application/json")],
+            r#"{"error":{"message":"short and stout"}}"#,
+        )
+        .await;
+        let mut client = SpotifyClient::with_token(token());
+        let err = client
+            .request_json::<serde_json::Value>(reqwest::Method::GET, url, None)
+            .await
+            .expect_err("non-special HTTP error maps to Api");
+        assert!(matches!(
+            err,
+            SpotifyError::Api {
+                status: 418,
+                ref message
+            } if message == "short and stout"
+        ));
+
+        let (url, _) = serve_spotify_once(
+            "200 OK",
+            &[("Content-Type", "application/json")],
+            "not-json",
+        )
+        .await;
+        let mut client = SpotifyClient::with_token(token());
+        let err = client
+            .request_json::<serde_json::Value>(reqwest::Method::GET, url, None)
+            .await
+            .expect_err("bad JSON maps to Decode");
+        assert!(matches!(err, SpotifyError::Decode(_)));
+
+        let (url, _) = serve_spotify_once(
+            "429 Too Many Requests",
+            &[("Content-Type", "application/json"), ("Retry-After", "1")],
+            r#"{"error":{"message":"slow down"}}"#,
+        )
+        .await;
+        let mut client = SpotifyClient::with_token(token());
+        client.rate_waited = RATE_BUDGET;
+        let err = client
+            .request_json::<serde_json::Value>(reqwest::Method::GET, url, None)
+            .await
+            .expect_err("exhausted rate budget returns immediately");
+        assert!(matches!(err, SpotifyError::RateLimited));
+    }
+}
