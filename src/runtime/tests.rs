@@ -383,6 +383,15 @@ fn app_message_policy_covers_backpressure_lanes() {
         }
     );
     assert_eq!(
+        app_msg_policy(&Msg::Local(crate::app::LocalMsg::ScanProgress(
+            crate::local::LocalScanProgress::default(),
+        ))),
+        EventPolicy::CoalesceLatest {
+            lane: EventLane::Telemetry,
+            key: EventKey::LocalScanProgress,
+        }
+    );
+    assert_eq!(
         app_msg_policy(&Msg::SearchError {
             request_id: 1,
             source: crate::search_source::SearchSource::Youtube,

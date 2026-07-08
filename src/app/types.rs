@@ -108,6 +108,8 @@ pub enum Msg {
     },
     /// Download folder scan completed.
     DownloadsScanned(crate::library::DownloadScan),
+    /// Local Deck index load/scan result.
+    Local(LocalMsg),
     /// Synced lyrics for `video_id` (empty `lines` = none found).
     LyricsResult {
         video_id: String,
@@ -248,6 +250,8 @@ pub enum Cmd {
     Persist(PersistCmd),
     /// Refresh the local downloads list from this folder.
     ScanDownloads(PathBuf),
+    /// Load or rebuild the Local Deck index off the UI thread.
+    Local(LocalCmd),
     /// Fetch synced lyrics for a track.
     FetchLyrics {
         video_id: String,
@@ -368,6 +372,37 @@ pub enum PersistCmd {
     StationProfile,
 }
 
+/// Blocking Local Deck work requested by the reducer.
+#[derive(Debug, Clone)]
+pub enum LocalCmd {
+    LoadIndex {
+        index_path: Option<PathBuf>,
+    },
+    ScanRoots {
+        roots: Vec<crate::local::LocalScanRoot>,
+        index_path: Option<PathBuf>,
+        previous: crate::local::LocalIndex,
+    },
+}
+
+/// Local Deck worker results.
+#[derive(Debug, Clone)]
+pub enum LocalMsg {
+    IndexLoaded {
+        index_path: Option<PathBuf>,
+        index: crate::local::LocalIndex,
+        warnings: Vec<crate::local::ScanError>,
+    },
+    ScanFinished {
+        index_path: Option<PathBuf>,
+        result: crate::local::LocalScanResult,
+    },
+    ScanProgress(crate::local::LocalScanProgress),
+    ScanFailed {
+        error: String,
+    },
+}
+
 /// A clickable terminal region's semantic target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseTarget {
@@ -401,6 +436,10 @@ pub enum MouseTarget {
     SearchSourceSelect(SearchSource),
     /// A Library tab header.
     LibraryTab(LibraryTab),
+    /// A Local Deck sidebar section, by index into [`LocalSection::ALL`].
+    LocalNav(usize),
+    /// A row in the Local Deck list, by display index.
+    LocalRow(usize),
     /// The footer mouse-help icon. Mouse-only: no keybinding maps to this overlay.
     MouseHelp,
     /// A Settings tab header, by index into [`SettingsTab::ALL`].
@@ -476,6 +515,10 @@ pub enum MouseTarget {
     ConfirmRadioMode,
     /// Cancel button on the radio-mode confirmation modal.
     CancelRadioMode,
+    /// Confirm button on the local-player confirmation modal.
+    ConfirmLocalMode,
+    /// Cancel button on the local-player confirmation modal.
+    CancelLocalMode,
     /// "Save to favorites" on the "what's playing" overlay (resolves a real YT track first).
     NowPlayingFavorite,
     /// "Tell me more" on the "what's playing" overlay — hands off to the DJ Gem view.
@@ -793,6 +836,113 @@ impl RadioModeConfirm {
             ),
         }
     }
+}
+
+/// Pending confirmation for entering or leaving the Library-owned Local Deck shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalModeConfirm {
+    Enter,
+    Exit,
+}
+
+impl LocalModeConfirm {
+    pub fn title(self) -> &'static str {
+        match self {
+            LocalModeConfirm::Enter => t!(" Confirm local player ", " 로컬 플레이어 확인 "),
+            LocalModeConfirm::Exit => t!(" Confirm library mode ", " 라이브러리 모드 확인 "),
+        }
+    }
+
+    pub fn prompt(self) -> &'static str {
+        match self {
+            LocalModeConfirm::Enter => t!(
+                "Switch to Local Player mode?",
+                "로컬 플레이어 모드로 전환할까요?"
+            ),
+            LocalModeConfirm::Exit => {
+                t!(
+                    "Leave Local Player mode?",
+                    "로컬 플레이어 모드에서 나갈까요?"
+                )
+            }
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            LocalModeConfirm::Enter => t!(
+                "Browse downloaded local audio in an immersive Library shell.",
+                "라이브러리 안에서 다운로드된 로컬 오디오를 전용 화면으로 탐색합니다."
+            ),
+            LocalModeConfirm::Exit => t!(
+                "Return to the normal Library tabs.",
+                "일반 라이브러리 탭으로 돌아갑니다."
+            ),
+        }
+    }
+}
+
+/// The primary section visible in the Local Deck shell.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LocalSection {
+    #[default]
+    Home,
+    Tracks,
+    Albums,
+    Artists,
+    Genres,
+    Folders,
+    SmartLists,
+    ScanErrors,
+}
+
+impl LocalSection {
+    pub const ALL: [Self; 8] = [
+        Self::Home,
+        Self::Tracks,
+        Self::Albums,
+        Self::Artists,
+        Self::Genres,
+        Self::Folders,
+        Self::SmartLists,
+        Self::ScanErrors,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Home => t!("Home", "홈"),
+            Self::Tracks => t!("Tracks", "곡"),
+            Self::Albums => t!("Albums", "앨범"),
+            Self::Artists => t!("Artists", "아티스트"),
+            Self::Genres => t!("Genres", "장르"),
+            Self::Folders => t!("Folders", "폴더"),
+            Self::SmartLists => t!("Smart Lists", "스마트 목록"),
+            Self::ScanErrors => t!("Scan Errors", "스캔 오류"),
+        }
+    }
+
+    pub fn from_digit(ch: char) -> Option<Self> {
+        let digit = ch.to_digit(10)?;
+        let index = digit.checked_sub(1)? as usize;
+        Self::ALL.get(index).copied()
+    }
+}
+
+/// Focused pane inside the Local Deck shell.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LocalPane {
+    Sidebar,
+    #[default]
+    List,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalDrill {
+    Album(crate::local::LocalAlbumId),
+    Artist(crate::local::LocalArtistId),
+    Genre(String),
+    Folder(PathBuf),
+    Smart(crate::local::LocalSmartList),
 }
 
 /// What the "what's playing" (지듣노) card is showing — populated synchronously from the

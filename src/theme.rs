@@ -194,6 +194,7 @@ pub enum ThemePreset {
     Default,
     Retro,
     Radio,
+    LocalLaunch,
     Midnight,
     Light,
     HighContrast,
@@ -207,9 +208,10 @@ pub enum ThemePreset {
 }
 
 impl ThemePreset {
-    pub const ALL: [ThemePreset; 13] = [
+    pub const ALL: [ThemePreset; 14] = [
         ThemePreset::Default,
         ThemePreset::Midnight,
+        ThemePreset::LocalLaunch,
         ThemePreset::Light,
         ThemePreset::HighContrast,
         ThemePreset::TerminalGreen,
@@ -228,6 +230,7 @@ impl ThemePreset {
             ThemePreset::Default => "default",
             ThemePreset::Retro => "retro",
             ThemePreset::Radio => "dario",
+            ThemePreset::LocalLaunch => "local_launch",
             ThemePreset::Midnight => "midnight",
             ThemePreset::Light => "light",
             ThemePreset::HighContrast => "high_contrast",
@@ -246,6 +249,7 @@ impl ThemePreset {
             ThemePreset::Default => "Default",
             ThemePreset::Retro => "Retro",
             ThemePreset::Radio => "Radio",
+            ThemePreset::LocalLaunch => "Local Launch",
             ThemePreset::Midnight => "Midnight",
             ThemePreset::Light => "Light",
             ThemePreset::HighContrast => "High Contrast",
@@ -518,6 +522,7 @@ impl ThemeRole {
             ThemePreset::Default => self.default_dark(),
             ThemePreset::Retro => self.retro(),
             ThemePreset::Radio => self.radio(),
+            ThemePreset::LocalLaunch => self.local_launch(),
             ThemePreset::Midnight => self.midnight(),
             ThemePreset::Light => self.light(),
             ThemePreset::HighContrast => self.high_contrast(),
@@ -638,6 +643,39 @@ impl ThemeRole {
             | ThemeRole::SettingsValue
             | ThemeRole::HelpAction => "#F2F2F2",
             ThemeRole::SettingsLabel => "#BDBDBD",
+        }
+    }
+
+    fn local_launch(self) -> &'static str {
+        match self {
+            ThemeRole::Background => "none",
+            ThemeRole::TextPrimary => "#D8ECFF",
+            ThemeRole::TextMuted => "#6C86A5",
+            ThemeRole::TextSubtle | ThemeRole::SettingsLabel => "#9BB6D7",
+            ThemeRole::TextInverse => "#061827",
+            ThemeRole::BorderPrimary
+            | ThemeRole::BorderFocused
+            | ThemeRole::Accent
+            | ThemeRole::PlayerLabel
+            | ThemeRole::HelpGroup
+            | ThemeRole::SettingsValueFocused
+            | ThemeRole::AiUser
+            | ThemeRole::LyricsCurrent
+            | ThemeRole::SettingsGroup
+            | ThemeRole::GaugeFilled => "#5CC8FF",
+            ThemeRole::AccentAlt | ThemeRole::SelectionBg => "#A8B5FF",
+            ThemeRole::BorderMuted
+            | ThemeRole::GaugeEmpty
+            | ThemeRole::LyricsDim
+            | ThemeRole::SelectionInactiveBg => "#24415F",
+            ThemeRole::Success | ThemeRole::AiAssistant => "#5DE4A3",
+            ThemeRole::Warning | ThemeRole::HelpKey | ThemeRole::AiThinking => "#FFD166",
+            ThemeRole::Error | ThemeRole::AiError => "#FF6B8A",
+            ThemeRole::SelectionFg => "#061827",
+            ThemeRole::SelectionInactiveFg
+            | ThemeRole::PlayerControl
+            | ThemeRole::SettingsValue
+            | ThemeRole::HelpAction => "#D8ECFF",
         }
     }
 
@@ -1088,6 +1126,24 @@ mod tests {
         cfg.set_override(ThemeRole::Background, "TRANSPARENT")
             .unwrap();
         assert_eq!(cfg.effective_hex(ThemeRole::Background), "none");
+    }
+
+    #[test]
+    fn local_launch_preset_is_selectable_and_transparent() {
+        assert_eq!(
+            ThemePreset::from_id("local_launch"),
+            Some(ThemePreset::LocalLaunch)
+        );
+        assert_eq!(ThemePreset::LocalLaunch.id(), "local_launch");
+        assert_eq!(ThemePreset::LocalLaunch.label(), "Local Launch");
+        assert_eq!(ThemePreset::Midnight.stepped(1), ThemePreset::LocalLaunch);
+
+        let mut cfg = ThemeConfig::default();
+        cfg.set_preset(ThemePreset::LocalLaunch);
+        assert_eq!(cfg.effective_hex(ThemeRole::Background), "none");
+        assert!(cfg.is_role_transparent(ThemeRole::Background));
+        assert_eq!(cfg.color(ThemeRole::Background), Color::Reset);
+        assert_eq!(cfg.effective_hex(ThemeRole::Accent), "#5CC8FF");
     }
 
     #[test]

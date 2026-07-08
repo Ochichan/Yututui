@@ -21,6 +21,7 @@ pub enum LastMode {
     #[default]
     Normal,
     Radio,
+    Local,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +32,7 @@ pub struct SessionCache {
     pub last_mode: LastMode,
     pub normal_queue: Option<QueueSnapshot>,
     pub radio_queue: Option<QueueSnapshot>,
+    pub local_queue: Option<QueueSnapshot>,
 }
 
 impl Default for SessionCache {
@@ -41,30 +43,40 @@ impl Default for SessionCache {
             last_mode: LastMode::Normal,
             normal_queue: None,
             radio_queue: None,
+            local_queue: None,
         }
     }
 }
 
 impl SessionCache {
-    pub fn from_radio_mode(radio_mode: bool) -> Self {
+    pub fn from_last_mode(last_mode: LastMode) -> Self {
         Self {
-            last_mode: if radio_mode {
-                LastMode::Radio
-            } else {
-                LastMode::Normal
-            },
+            last_mode,
             ..Self::default()
         }
+    }
+
+    pub fn from_radio_mode(radio_mode: bool) -> Self {
+        Self::from_last_mode(if radio_mode {
+            LastMode::Radio
+        } else {
+            LastMode::Normal
+        })
     }
 
     pub fn was_radio_mode(&self) -> bool {
         self.last_mode == LastMode::Radio
     }
 
+    pub fn was_local_mode(&self) -> bool {
+        self.last_mode == LastMode::Local
+    }
+
     pub fn active_queue(&self) -> Option<&QueueSnapshot> {
         match self.last_mode {
             LastMode::Normal => self.normal_queue.as_ref(),
             LastMode::Radio => self.radio_queue.as_ref(),
+            LastMode::Local => self.local_queue.as_ref(),
         }
         .filter(|snapshot| !snapshot.is_empty())
     }
@@ -125,6 +137,17 @@ fn session_cache_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::Song;
+
+    fn snapshot(id: &str) -> QueueSnapshot {
+        QueueSnapshot {
+            songs: vec![Song::remote(id, format!("title-{id}"), "artist", "3:00")],
+            order: vec![0],
+            cursor: 0,
+            shuffle: false,
+            repeat: crate::queue::Repeat::Off,
+        }
+    }
 
     #[test]
     fn from_radio_mode_records_last_mode() {
@@ -137,6 +160,96 @@ mod tests {
             LastMode::Radio
         );
         assert!(SessionCache::from_radio_mode(true).was_radio_mode());
+    }
+
+    #[test]
+    fn from_last_mode_records_local_mode() {
+        let cache = SessionCache::from_last_mode(LastMode::Local);
+        assert_eq!(cache.last_mode, LastMode::Local);
+        assert!(cache.was_local_mode());
+        assert!(!cache.was_radio_mode());
+    }
+
+    #[test]
+    fn active_queue_reads_the_local_queue_for_local_mode() {
+        let mut cache = SessionCache::from_last_mode(LastMode::Local);
+        cache.normal_queue = Some(snapshot("normal"));
+        cache.local_queue = Some(snapshot("local"));
+
+        let active = cache.active_queue().expect("active local queue");
+
+        assert_eq!(active.songs[0].video_id, "local");
+    }
+
+    #[test]
+    fn old_v2_cache_without_local_queue_still_loads() {
+        let path = std::env::temp_dir().join(format!(
+            "ytm-tui-session-old-v2-no-local-{}",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"schema_version":2,"app_version":"{}","last_mode":"normal","normal_queue":null,"radio_queue":null}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+
+        let cache = SessionCache::load_from_path(&path);
+
+        assert_eq!(cache.last_mode, LastMode::Normal);
+        assert!(cache.local_queue.is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn old_v2_radio_cache_without_local_queue_still_loads() {
+        let path = std::env::temp_dir().join(format!(
+            "ytm-tui-session-old-v2-radio-no-local-{}",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"schema_version":2,"app_version":"{}","last_mode":"radio","normal_queue":null,"radio_queue":null}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+
+        let cache = SessionCache::load_from_path(&path);
+
+        assert_eq!(cache.last_mode, LastMode::Radio);
+        assert!(cache.local_queue.is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn local_session_cache_round_trips() {
+        let path = std::env::temp_dir().join(format!(
+            "ytm-tui-session-local-round-trip-{}",
+            std::process::id()
+        ));
+        let mut cache = SessionCache::from_last_mode(LastMode::Local);
+        cache.normal_queue = Some(snapshot("normal"));
+        cache.radio_queue = Some(snapshot("radio"));
+        cache.local_queue = Some(snapshot("local"));
+
+        cache.save_to_path(&path).unwrap();
+        let loaded = SessionCache::load_from_path(&path);
+
+        assert_eq!(loaded.last_mode, LastMode::Local);
+        assert_eq!(
+            loaded
+                .active_queue()
+                .and_then(|snapshot| snapshot.songs.first())
+                .map(|song| song.video_id.as_str()),
+            Some("local")
+        );
+        assert_eq!(loaded.normal_queue.as_ref().map(|s| s.songs.len()), Some(1));
+        assert_eq!(loaded.radio_queue.as_ref().map(|s| s.songs.len()), Some(1));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

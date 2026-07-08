@@ -117,6 +117,17 @@ impl App {
         if self.library_ui.create_input.is_some() {
             return self.on_key_playlist_create(k);
         }
+        let chord = crate::keymap::Chord::from(k);
+        // A non-text Local Deck toggle should still work while the Library filter is focused.
+        // If the user remaps it to a typeable key, the filter keeps owning that key.
+        if !chord.is_typeable()
+            && matches!(
+                self.keymap.action(KeyContext::Library, chord),
+                Some(Action::ToggleLocalMode)
+            )
+        {
+            return self.request_local_mode_switch();
+        }
         // While the filter box is capturing, typed characters edit the query (the list narrows
         // live) and the arrows still move within the filtered rows — see `on_key_library_filter`.
         if self.library_ui.filter_editing {
@@ -136,6 +147,12 @@ impl App {
             self.close_open_playlist();
             return Vec::new();
         }
+        if matches!(
+            self.keymap.action(KeyContext::Library, chord),
+            Some(Action::ToggleLocalMode)
+        ) {
+            return self.request_local_mode_switch();
+        }
         let len = self.library_len();
         // The Playlists tab resolves against its own context so its bindings (and the
         // cheat-sheet group) can differ from the song tabs; Common still supplies shared nav.
@@ -144,7 +161,7 @@ impl App {
         } else {
             KeyContext::Library
         };
-        match self.keymap.action(ctx, k.into()) {
+        match self.keymap.action(ctx, chord) {
             Some(Action::LibraryFilter) => {
                 // Open the filter input (re-opens with the current query if one is applied).
                 self.library_ui.filter_editing = true;

@@ -698,6 +698,52 @@ pub struct RadioMode {
     pub pending_radio_mode_confirm: Option<RadioModeConfirm>,
 }
 
+/// View state for the Library-owned Local Deck shell.
+#[derive(Default)]
+pub struct LocalUi {
+    /// Which Local Deck section is shown.
+    pub section: LocalSection,
+    /// Which Local Deck pane has keyboard focus.
+    pub pane: LocalPane,
+    /// The highlighted row in the current Local Deck list.
+    pub selected: usize,
+    /// Fixed end of a future multi-select range. Kept from the first shell so row
+    /// selection semantics can follow Library/Queue when range select lands.
+    pub anchor: usize,
+    /// Active drill-down path for section rows such as album -> tracks.
+    pub drill: Vec<LocalDrill>,
+    /// Current Local Deck live-filter query.
+    pub filter_query: String,
+    /// Whether typed keys edit `filter_query`.
+    pub filter_editing: bool,
+}
+
+/// Loaded Local Deck index plus transient scan/load status.
+#[derive(Default)]
+pub struct LocalIndexRuntime {
+    pub index: crate::local::LocalIndex,
+    pub index_path: Option<PathBuf>,
+    pub loaded: bool,
+    pub loading: bool,
+    pub scanning: bool,
+    pub progress: Option<crate::local::LocalScanProgress>,
+    pub last_summary: Option<crate::local::LocalScanSummary>,
+    pub load_errors: Vec<crate::local::ScanError>,
+    pub errors: Vec<crate::local::ScanError>,
+}
+
+/// Dedicated Local Deck state. The active `local_dedicated_mode` flag stays flat on
+/// [`App`], mirroring Radio mode, while this struct owns shell-local UI state and the
+/// pending enter/leave confirmation.
+#[derive(Default)]
+pub struct LocalMode {
+    pub ui: LocalUi,
+    pub index: LocalIndexRuntime,
+    pub(in crate::app) normal_mode_queue: Option<QueueSnapshot>,
+    pub(in crate::app) local_mode_queue: Option<QueueSnapshot>,
+    pub pending_confirm: Option<LocalModeConfirm>,
+}
+
 /// Animation clock and redraw-coalescing counters: the monotonic frame counter that drives every
 /// effect's phase, the fractional draw-credit scheduler and its last cadence, and the last whole
 /// second / cache second rendered (so sub-second mpv position spam is coalesced). The one-shot

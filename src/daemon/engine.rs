@@ -127,6 +127,7 @@ pub struct DaemonEngine {
     last_mode: LastMode,
     inactive_normal_queue: Option<QueueSnapshot>,
     inactive_radio_queue: Option<QueueSnapshot>,
+    inactive_local_queue: Option<QueueSnapshot>,
     session_events: VecDeque<DaemonSessionEvent>,
     /// The media-session artwork cache's resolved file for a track, keyed by
     /// `video_id`; surfaced in [`Self::media_snapshot`] while the keys match.
@@ -270,6 +271,7 @@ impl DaemonEngine {
             last_mode: LastMode::Normal,
             inactive_normal_queue: None,
             inactive_radio_queue: None,
+            inactive_local_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
             gui_search_index: std::collections::HashMap::new(),
@@ -1424,6 +1426,7 @@ impl DaemonEngine {
         self.last_mode = cache.last_mode;
         self.inactive_normal_queue = cache.normal_queue.clone();
         self.inactive_radio_queue = cache.radio_queue.clone();
+        self.inactive_local_queue = cache.local_queue.clone();
 
         if let Some(snapshot) = cache.active_queue().cloned() {
             self.queue.restore_snapshot(snapshot);
@@ -1434,6 +1437,7 @@ impl DaemonEngine {
         let songs: Vec<Song> = match cache.last_mode {
             LastMode::Radio => self.library.radios.iter().cloned().collect(),
             LastMode::Normal => self.library.history.iter().cloned().collect(),
+            LastMode::Local => Vec::new(),
         };
         if !songs.is_empty() {
             self.queue.set(songs, 0);
@@ -2308,15 +2312,22 @@ impl DaemonEngine {
     }
 
     fn session_cache_snapshot(&self) -> SessionCache {
-        let mut cache = SessionCache::from_radio_mode(self.last_mode == LastMode::Radio);
+        let mut cache = SessionCache::from_last_mode(self.last_mode);
         match self.last_mode {
             LastMode::Normal => {
                 cache.normal_queue = Some(self.queue.snapshot());
                 cache.radio_queue = self.inactive_radio_queue.clone();
+                cache.local_queue = self.inactive_local_queue.clone();
             }
             LastMode::Radio => {
                 cache.radio_queue = Some(self.queue.snapshot());
                 cache.normal_queue = self.inactive_normal_queue.clone();
+                cache.local_queue = self.inactive_local_queue.clone();
+            }
+            LastMode::Local => {
+                cache.local_queue = Some(self.queue.snapshot());
+                cache.normal_queue = self.inactive_normal_queue.clone();
+                cache.radio_queue = self.inactive_radio_queue.clone();
             }
         }
         cache
@@ -2395,6 +2406,7 @@ mod tests {
             last_mode: LastMode::Normal,
             inactive_normal_queue: None,
             inactive_radio_queue: None,
+            inactive_local_queue: None,
             session_events: VecDeque::new(),
             media_art: None,
             gui_search_index: std::collections::HashMap::new(),
@@ -3328,6 +3340,30 @@ mod tests {
 
         assert_eq!(snapshot.cursor, 1);
         assert_eq!(snapshot.songs.len(), 2);
+    }
+
+    #[test]
+    fn session_snapshot_preserves_local_mode_queue() {
+        let mut engine = engine_with_queue(&["local-a", "local-b"]);
+        engine.last_mode = LastMode::Local;
+        engine.queue.next(false);
+        engine.inactive_normal_queue = Some({
+            let mut queue = Queue::default();
+            queue.set(vec![song("normal")], 0);
+            queue.snapshot()
+        });
+        engine.inactive_radio_queue = Some({
+            let mut queue = Queue::default();
+            queue.set(vec![radio_station("radio")], 0);
+            queue.snapshot()
+        });
+
+        let cache = engine.session_cache_snapshot();
+
+        assert_eq!(cache.last_mode, LastMode::Local);
+        assert_eq!(cache.local_queue.as_ref().map(|s| s.cursor), Some(1));
+        assert_eq!(cache.normal_queue.as_ref().map(|s| s.songs.len()), Some(1));
+        assert_eq!(cache.radio_queue.as_ref().map(|s| s.songs.len()), Some(1));
     }
 
     // yt-dlp self-heal parity with the TUI reducer (src/app/tests.rs). Single-track

@@ -486,6 +486,9 @@ pub struct Config {
     pub volume: i64,
     /// Where downloads are saved. `None` -> `<user music dir>/yututui`.
     pub download_dir: Option<PathBuf>,
+    /// Local Deck scan roots. The download directory is included by default; explicit roots are
+    /// additional user music folders.
+    pub local: LocalConfig,
     /// Most simultaneous downloads. `None` -> [`DOWNLOAD_CONCURRENCY_DEFAULT`].
     pub download_concurrency: Option<usize>,
     /// Capture the mouse for buttons and click-to-seek. `None` → enabled.
@@ -618,6 +621,52 @@ pub struct Config {
     pub update_check_enabled: bool,
 }
 
+/// Local Deck library roots. Kept separate from `download_dir`: the download folder remains the
+/// app-owned fallback, while these settings describe broader user-owned music folders.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LocalConfig {
+    /// Include the configured/default download folder as a non-recursive scan root.
+    /// `None` preserves the default for older config files.
+    pub include_download_dir: Option<bool>,
+    /// Additional user music folders. The current Settings UI edits the first entry; the Vec
+    /// leaves room for a later multi-root editor without another config migration.
+    pub roots: Vec<LocalRootConfig>,
+}
+
+impl LocalConfig {
+    pub fn include_download_dir(&self) -> bool {
+        self.include_download_dir.unwrap_or(true)
+    }
+
+    pub fn first_root(&self) -> Option<&LocalRootConfig> {
+        self.roots.first()
+    }
+}
+
+/// One Local Deck user music folder.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LocalRootConfig {
+    pub path: PathBuf,
+    pub enabled: Option<bool>,
+    pub recursive: Option<bool>,
+}
+
+impl LocalRootConfig {
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
+    pub fn recursive(&self) -> bool {
+        self.recursive.unwrap_or(true)
+    }
+
+    pub fn normalized_path(&self) -> Option<PathBuf> {
+        normalize_user_dir(&self.path.to_string_lossy())
+    }
+}
+
 /// Radio recording (a Shortwave-style feature). Only takes effect while an internet-radio
 /// station plays. `#[serde(default)]` so older config files forward-migrate cleanly and an
 /// unknown `mode` string degrades to the default rather than resetting the whole file.
@@ -679,6 +728,7 @@ impl Default for Config {
             cookies_file: None,
             volume: 100,
             download_dir: None,
+            local: LocalConfig::default(),
             download_concurrency: None,
             mouse: None,
             album_art: None,
@@ -1580,6 +1630,14 @@ mod tests {
             cookies_file: Some(PathBuf::from("/tmp/cookies.txt")),
             volume: 70,
             download_dir: Some(PathBuf::from("/tmp/dl")),
+            local: LocalConfig {
+                include_download_dir: Some(false),
+                roots: vec![LocalRootConfig {
+                    path: PathBuf::from("/music/library"),
+                    enabled: Some(true),
+                    recursive: Some(false),
+                }],
+            },
             download_concurrency: Some(2),
             mouse: Some(false),
             album_art: Some(true),
@@ -1668,6 +1726,11 @@ mod tests {
         assert_eq!(back.volume, 70);
         assert_eq!(back.cookie.as_deref(), Some("SID=abc"));
         assert_eq!(back.download_dir, Some(PathBuf::from("/tmp/dl")));
+        assert!(!back.local.include_download_dir());
+        assert_eq!(back.local.roots.len(), 1);
+        assert_eq!(back.local.roots[0].path, PathBuf::from("/music/library"));
+        assert!(back.local.roots[0].enabled());
+        assert!(!back.local.roots[0].recursive());
         assert_eq!(back.mouse, Some(false));
         assert_eq!(back.album_art, Some(true));
         assert_eq!(back.eq_preset, EqPreset::BassBoost);
@@ -1730,6 +1793,14 @@ mod tests {
         );
         assert!(Config::default().radio_theme.is_none());
         assert!(Config::default().effective_radio_theme().is_none());
+    }
+
+    #[test]
+    fn missing_local_config_includes_downloads_by_default() {
+        let cfg: Config = serde_json::from_str(r#"{"download_dir":"/tmp/dl"}"#).unwrap();
+
+        assert!(cfg.local.include_download_dir());
+        assert!(cfg.local.roots.is_empty());
     }
 
     #[test]

@@ -55,6 +55,7 @@ mod download;
 mod keys;
 mod library;
 mod library_reducer;
+mod local;
 mod media_reducer;
 mod mouse;
 pub use mouse::HitMap;
@@ -174,6 +175,11 @@ pub struct App {
     /// Dedicated-Radio-mode theme+queue stash and the pending enter/leave confirmation — see
     /// [`RadioMode`]. The `radio_dedicated_mode` flag above stays flat (read pervasively).
     pub radio_mode: RadioMode,
+    /// Dedicated Local Deck shell under the Library mode. Phase 1 only swaps the rendered
+    /// shell; queue/session stashing lands with the later Local queue milestone.
+    pub local_dedicated_mode: bool,
+    /// Local Deck UI state and pending enter/leave confirmation.
+    pub local_mode: LocalMode,
     /// All transient modal/overlay state — help/mouse-help/about/why-DJ-Gem toggles, the
     /// key-conflict + settings confirmations, the Spotify picker, the recording popups, the
     /// update-check result, and the identify overlay with its cache/epoch. See [`Overlays`].
@@ -354,6 +360,8 @@ impl App {
             theme: ThemeConfig::default(),
             radio_dedicated_mode: false,
             radio_mode: RadioMode::default(),
+            local_dedicated_mode: false,
+            local_mode: LocalMode::default(),
             overlays: Overlays::default(),
             transfer_running: false,
             playback: Playback {
@@ -558,6 +566,16 @@ impl App {
     }
 
     pub(in crate::app) fn request_radio_mode_switch(&mut self) -> Vec<Cmd> {
+        if !self.radio_dedicated_mode && self.local_dedicated_mode {
+            self.status.kind = StatusKind::Error;
+            self.status.text = t!(
+                "Leave Local Player before entering Radio mode.",
+                "라디오 모드로 들어가기 전에 로컬 플레이어를 먼저 나가세요."
+            )
+            .to_owned();
+            self.dirty = true;
+            return Vec::new();
+        }
         self.radio_mode.pending_radio_mode_confirm = Some(if self.radio_dedicated_mode {
             RadioModeConfirm::Exit
         } else {
@@ -739,13 +757,30 @@ impl App {
     /// Build the persisted session cache from the active queue plus the inactive mode's stashed
     /// queue. This is the handoff used by both the next TUI launch and the headless daemon.
     pub fn session_cache_snapshot(&self) -> crate::session::SessionCache {
-        let mut cache = crate::session::SessionCache::from_radio_mode(self.radio_dedicated_mode);
-        if self.radio_dedicated_mode {
-            cache.radio_queue = Some(self.queue.snapshot());
-            cache.normal_queue = self.radio_mode.normal_mode_queue.clone();
+        let last_mode = if self.radio_dedicated_mode {
+            crate::session::LastMode::Radio
+        } else if self.local_dedicated_mode {
+            crate::session::LastMode::Local
         } else {
-            cache.normal_queue = Some(self.queue.snapshot());
-            cache.radio_queue = self.radio_mode.radio_mode_queue.clone();
+            crate::session::LastMode::Normal
+        };
+        let mut cache = crate::session::SessionCache::from_last_mode(last_mode);
+        match last_mode {
+            crate::session::LastMode::Normal => {
+                cache.normal_queue = Some(self.queue.snapshot());
+                cache.radio_queue = self.radio_mode.radio_mode_queue.clone();
+                cache.local_queue = self.local_mode.local_mode_queue.clone();
+            }
+            crate::session::LastMode::Radio => {
+                cache.radio_queue = Some(self.queue.snapshot());
+                cache.normal_queue = self.radio_mode.normal_mode_queue.clone();
+                cache.local_queue = self.local_mode.local_mode_queue.clone();
+            }
+            crate::session::LastMode::Local => {
+                cache.local_queue = Some(self.queue.snapshot());
+                cache.normal_queue = self.local_mode.normal_mode_queue.clone();
+                cache.radio_queue = self.radio_mode.radio_mode_queue.clone();
+            }
         }
         cache
     }
@@ -755,14 +790,22 @@ impl App {
     pub fn restore_last_session_from_cache(&mut self, cache: &crate::session::SessionCache) {
         self.radio_mode.normal_mode_queue = cache.normal_queue.clone();
         self.radio_mode.radio_mode_queue = cache.radio_queue.clone();
+        self.local_mode.normal_mode_queue = cache.normal_queue.clone();
+        self.local_mode.local_mode_queue = cache.local_queue.clone();
 
         if cache.was_radio_mode() {
             self.activate_radio_dedicated_mode_ui();
+        } else if cache.was_local_mode() {
+            self.activate_local_dedicated_mode_ui();
         }
 
         if let Some(snapshot) = cache.active_queue().cloned() {
             self.queue.restore_snapshot(snapshot);
             self.seed_restored_playback_state();
+            return;
+        }
+
+        if cache.was_local_mode() {
             return;
         }
 
@@ -1262,6 +1305,7 @@ impl App {
                 let downloaded = self.library_ui.downloaded.clone();
                 return self.request_romanization_for_songs(&downloaded);
             }
+            Msg::Local(msg) => return self.apply_local_msg(msg),
             Msg::LyricsResult { video_id, lines } => {
                 self.lyrics.loading = false;
                 // Ignore stale results for a track we've already skipped past.

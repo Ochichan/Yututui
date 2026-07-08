@@ -360,6 +360,14 @@ fn defaults_resolve_to_actions() {
         None
     );
     assert_eq!(
+        km.action(KeyContext::Library, parse_chord("alt+shift+l").unwrap()),
+        Some(Action::ToggleLocalMode)
+    );
+    assert_eq!(
+        km.action(KeyContext::Player, parse_chord("alt+shift+l").unwrap()),
+        None
+    );
+    assert_eq!(
         km.action(KeyContext::Player, parse_chord("q").unwrap()),
         Some(Action::Back)
     );
@@ -789,6 +797,28 @@ fn rebind_moves_binding() {
 }
 
 #[test]
+fn local_mode_toggle_is_rebindable_in_library_context() {
+    let mut km = KeyMap::default();
+    let f8 = parse_chord("f8").unwrap();
+
+    km.rebind(KeyContext::Library, Action::ToggleLocalMode, f8)
+        .unwrap();
+
+    assert_eq!(
+        km.action(KeyContext::Library, f8),
+        Some(Action::ToggleLocalMode)
+    );
+    assert_eq!(
+        km.action(KeyContext::Library, parse_chord("alt+shift+l").unwrap()),
+        None
+    );
+    assert_eq!(
+        km.to_overrides().get("library.toggle_local_mode"),
+        Some(&"f8".to_owned())
+    );
+}
+
+#[test]
 fn local_rebind_can_shadow_common_navigation() {
     let mut km = KeyMap::default();
     let page_up = parse_chord("pageup").unwrap();
@@ -1136,6 +1166,10 @@ fn editable_entries_cover_every_binding() {
     assert!(
         editable_entries().contains(&(KeyContext::Player, Action::ToggleRadioMode)),
         "Settings > Keys should list the Radio / Normal mode binding"
+    );
+    assert!(
+        editable_entries().contains(&(KeyContext::Library, Action::ToggleLocalMode)),
+        "Settings > Keys should list the Local Deck mode binding"
     );
     // Every action has a stable id and label.
     for (_, action, _) in default_bindings() {
