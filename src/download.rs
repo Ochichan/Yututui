@@ -340,6 +340,9 @@ async fn run_download_with_program(
     {
         tracing::warn!(embedded_id, requested = %song.video_id, "downloaded file id differs from requested");
     }
+    if let Err(e) = crate::downloads::write_sidecar(song, &path) {
+        tracing::warn!(error = %e, path = %path.display(), "could not write download sidecar");
+    }
     let path = path.to_string_lossy().into_owned();
     tracing::info!(path = %path, video_id = %song.video_id, "download done");
     emit(DownloadEvent::Done {
@@ -468,6 +471,12 @@ mod tests {
             }
             _ => panic!("expected done event"),
         }
+        let sidecar = crate::downloads::read_sidecar(&saved)
+            .unwrap()
+            .expect("download should write metadata sidecar");
+        assert_eq!(sidecar.title, "Track");
+        assert_eq!(sidecar.artist, "Artist");
+        assert_eq!(sidecar.linked_youtube_id(), Some("abc123def45"));
 
         let _ = fs::remove_dir_all(root);
     }

@@ -241,12 +241,20 @@ where
         }
 
         let was_known_path = self.previous.contains_path(&canonical);
-        let read = metadata::read_track(canonical.clone(), metadata.len(), modified_at);
+        let mut read = metadata::read_track(canonical.clone(), metadata.len(), modified_at);
         if let Some(warning) = read.warning {
             self.errors.push(ScanError {
                 path: canonical.clone(),
                 message: warning,
             });
+        }
+        match crate::downloads::read_sidecar(&canonical) {
+            Ok(Some(sidecar)) => apply_download_sidecar(&mut read.track, &sidecar),
+            Ok(None) => {}
+            Err(error) => self.errors.push(ScanError {
+                path: crate::downloads::sidecar_path(&canonical),
+                message: format!("download sidecar could not be read: {error}"),
+            }),
         }
         if was_known_path {
             self.summary.changed += 1;
@@ -267,6 +275,41 @@ where
             current,
         });
     }
+}
+
+fn apply_download_sidecar(track: &mut LocalTrack, sidecar: &crate::downloads::DownloadSidecar) {
+    if let Some(title) = clean_sidecar_text(&sidecar.title) {
+        track.title = title;
+    }
+    if let Some(artist) = clean_sidecar_text(&sidecar.artist)
+        && !artist.eq_ignore_ascii_case("local file")
+    {
+        track.artist = split_sidecar_people(&artist);
+    }
+    track.album = sidecar.album.as_deref().and_then(clean_sidecar_text);
+    if track.duration_ms.is_none() {
+        track.duration_ms = sidecar.duration_secs.map(|secs| u64::from(secs) * 1000);
+    }
+    if let Some(id) = sidecar.linked_youtube_id() {
+        track.linked_video_id = Some(id.to_owned());
+    }
+}
+
+fn clean_sidecar_text(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_owned())
+    }
+}
+
+fn split_sidecar_people(text: &str) -> Vec<String> {
+    text.split(&[';', '/', ','][..])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn canonical_or_original(path: &Path) -> PathBuf {
@@ -291,15 +334,13 @@ fn metadata_modified_unix(metadata: &fs::Metadata) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::SystemTime;
 
     fn temp_dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let mut bytes = [0u8; 8];
+        getrandom::fill(&mut bytes).unwrap();
+        let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         std::env::temp_dir().join(format!(
-            "ytm-tui-local-scan-test-{}-{nanos}",
+            "ytm-tui-local-scan-test-{}-{suffix}",
             std::process::id()
         ))
     }
@@ -319,6 +360,38 @@ mod tests {
         assert_eq!(result.index.tracks().len(), 1);
         assert_eq!(result.index.tracks()[0].title, "a");
         assert_eq!(result.summary.seen, 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scanner_applies_download_sidecar_metadata() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let audio = dir.join("Sidecar Track [abc123def45].m4a");
+        fs::write(&audio, b"not audio").unwrap();
+        let mut song = crate::api::Song::from_search(
+            "abc123def45",
+            "Canonical Title",
+            "Artist A, Artist B",
+            "3:03",
+            Some("Canonical Album".to_owned()),
+        );
+        song.duration_secs = Some(183);
+        crate::downloads::write_sidecar(&song, &audio).unwrap();
+
+        let result = scan_roots(
+            &[LocalScanRoot::download(dir.clone())],
+            &LocalIndex::default(),
+        );
+
+        assert_eq!(result.index.tracks().len(), 1);
+        let track = &result.index.tracks()[0];
+        assert_eq!(track.title, "Canonical Title");
+        assert_eq!(track.artist, vec!["Artist A", "Artist B"]);
+        assert_eq!(track.album.as_deref(), Some("Canonical Album"));
+        assert_eq!(track.duration_ms, Some(183_000));
+        assert_eq!(track.linked_video_id.as_deref(), Some("abc123def45"));
 
         let _ = fs::remove_dir_all(dir);
     }

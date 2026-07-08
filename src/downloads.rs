@@ -11,11 +11,16 @@
 //! doesn't know (e.g. copied from another machine); this manifest adds the richer metadata.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::Song;
+use crate::api::{Song, is_youtube_video_id};
+use crate::search_source::SearchSource;
 use crate::util::safe_fs;
 
 /// Cap on remembered downloads (bounded memory; matches the scan cap).
@@ -24,6 +29,65 @@ const STORE_MAX: usize = 999;
 /// at startup; an oversize file is moved to `*.too-large.bak` (never destroyed) and the store
 /// falls back to empty. `STORE_MAX` records of paths/titles stay far below this.
 const STORE_MAX_BYTES: u64 = 50 * 1024 * 1024;
+const SIDECAR_SCHEMA_VERSION: u32 = 1;
+const SIDECAR_MAX_BYTES: u64 = 64 * 1024;
+
+/// Per-file metadata handoff written next to downloaded audio.
+///
+/// The global download manifest is still the main app-level memory. This sidecar travels with
+/// the audio file, so a Local Deck rescan can recover the YouTube origin and catalog metadata
+/// even if the file is moved within a scanned root or the central manifest is missing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DownloadSidecar {
+    pub schema_version: u32,
+    pub video_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub youtube_id: Option<String>,
+    pub title: String,
+    pub artist: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<u32>,
+    pub source: SearchSource,
+}
+
+impl Default for DownloadSidecar {
+    fn default() -> Self {
+        Self {
+            schema_version: SIDECAR_SCHEMA_VERSION,
+            video_id: String::new(),
+            youtube_id: None,
+            title: String::new(),
+            artist: String::new(),
+            album: None,
+            duration_secs: None,
+            source: SearchSource::Youtube,
+        }
+    }
+}
+
+impl DownloadSidecar {
+    pub fn from_song(song: &Song) -> Self {
+        Self {
+            schema_version: SIDECAR_SCHEMA_VERSION,
+            video_id: song.video_id.clone(),
+            youtube_id: song.youtube_id().map(str::to_owned),
+            title: song.title.clone(),
+            artist: song.artist.clone(),
+            album: song.album.clone(),
+            duration_secs: song.duration_secs,
+            source: song.source,
+        }
+    }
+
+    pub fn linked_youtube_id(&self) -> Option<&str> {
+        self.youtube_id
+            .as_deref()
+            .or_else(|| is_youtube_video_id(&self.video_id).then_some(self.video_id.as_str()))
+    }
+}
 
 /// The download manifest, persisted to `<data dir>/downloads.json`.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -104,6 +168,68 @@ impl DownloadStore {
     }
 }
 
+pub fn sidecar_path(audio_path: &Path) -> PathBuf {
+    let file_name = audio_path
+        .file_name()
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("track"));
+    let mut sidecar_name = file_name;
+    sidecar_name.push(".ytt.json");
+    audio_path.with_file_name(sidecar_name)
+}
+
+pub fn write_sidecar(song: &Song, audio_path: &Path) -> io::Result<()> {
+    let path = sidecar_path(audio_path);
+    let json =
+        serde_json::to_vec_pretty(&DownloadSidecar::from_song(song)).map_err(io::Error::other)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = sidecar_temp_path(&path);
+    let write_result = (|| {
+        fs::write(&tmp, json)?;
+        fs::rename(&tmp, &path)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    write_result
+}
+
+pub fn read_sidecar(audio_path: &Path) -> io::Result<Option<DownloadSidecar>> {
+    let path = sidecar_path(audio_path);
+    let bytes = match safe_fs::read_no_symlink_limited(&path, SIDECAR_MAX_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let sidecar: DownloadSidecar = serde_json::from_slice(&bytes)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    if sidecar.schema_version != SIDECAR_SCHEMA_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "download sidecar schema version {} is not supported",
+                sidecar.schema_version
+            ),
+        ));
+    }
+    Ok(Some(sidecar))
+}
+
+fn sidecar_temp_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download.ytt.json");
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    path.with_file_name(format!(".{name}.tmp.{}-{nanos}", std::process::id()))
+}
+
 fn store_path() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join("downloads.json"))
 }
@@ -111,10 +237,21 @@ fn store_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::PathBuf;
 
     fn downloaded(path: &str, yt_id: &str) -> Song {
         Song::remote(yt_id, "Title", "Real Artist", "3:00").with_local_path(PathBuf::from(path))
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let mut bytes = [0u8; 8];
+        getrandom::fill(&mut bytes).unwrap();
+        let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        std::env::temp_dir().join(format!(
+            "yututui-downloads-{tag}-{}-{suffix}",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -197,5 +334,40 @@ mod tests {
         assert_eq!(back.tracks.len(), 1);
         let empty: DownloadStore = serde_json::from_str("{}").unwrap();
         assert!(empty.tracks.is_empty());
+    }
+
+    #[test]
+    fn sidecar_path_appends_to_audio_file_name() {
+        assert_eq!(
+            sidecar_path(&PathBuf::from("/tmp/Track.m4a")),
+            PathBuf::from("/tmp/Track.m4a.ytt.json")
+        );
+    }
+
+    #[test]
+    fn sidecar_round_trips_download_metadata() {
+        let dir = temp_dir("sidecar");
+        fs::create_dir_all(&dir).unwrap();
+        let audio = dir.join("Track [abc123def45].m4a");
+        let mut song = Song::from_search(
+            "abc123def45",
+            "Track",
+            "Artist A, Artist B",
+            "3:03",
+            Some("Album".to_owned()),
+        );
+        song.duration_secs = Some(183);
+
+        write_sidecar(&song, &audio).unwrap();
+        let sidecar = read_sidecar(&audio).unwrap().expect("sidecar exists");
+
+        assert_eq!(sidecar.video_id, "abc123def45");
+        assert_eq!(sidecar.linked_youtube_id(), Some("abc123def45"));
+        assert_eq!(sidecar.title, "Track");
+        assert_eq!(sidecar.artist, "Artist A, Artist B");
+        assert_eq!(sidecar.album.as_deref(), Some("Album"));
+        assert_eq!(sidecar.duration_secs, Some(183));
+
+        let _ = fs::remove_dir_all(dir);
     }
 }
