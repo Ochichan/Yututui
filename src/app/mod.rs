@@ -55,6 +55,7 @@ mod download;
 mod keys;
 mod library;
 mod library_reducer;
+mod local;
 mod media_reducer;
 mod mouse;
 pub use mouse::HitMap;
@@ -174,6 +175,11 @@ pub struct App {
     /// Dedicated-Radio-mode theme+queue stash and the pending enter/leave confirmation — see
     /// [`RadioMode`]. The `radio_dedicated_mode` flag above stays flat (read pervasively).
     pub radio_mode: RadioMode,
+    /// Dedicated Local Deck shell under the Library mode. Phase 1 only swaps the rendered
+    /// shell; queue/session stashing lands with the later Local queue milestone.
+    pub local_dedicated_mode: bool,
+    /// Local Deck UI state and pending enter/leave confirmation.
+    pub local_mode: LocalMode,
     /// All transient modal/overlay state — help/mouse-help/about/why-DJ-Gem toggles, the
     /// key-conflict + settings confirmations, the Spotify picker, the recording popups, the
     /// update-check result, and the identify overlay with its cache/epoch. See [`Overlays`].
@@ -354,6 +360,8 @@ impl App {
             theme: ThemeConfig::default(),
             radio_dedicated_mode: false,
             radio_mode: RadioMode::default(),
+            local_dedicated_mode: false,
+            local_mode: LocalMode::default(),
             overlays: Overlays::default(),
             transfer_running: false,
             playback: Playback {
@@ -558,6 +566,16 @@ impl App {
     }
 
     pub(in crate::app) fn request_radio_mode_switch(&mut self) -> Vec<Cmd> {
+        if !self.radio_dedicated_mode && self.local_dedicated_mode {
+            self.status.kind = StatusKind::Error;
+            self.status.text = t!(
+                "Leave Local Player before entering Radio mode.",
+                "라디오 모드로 들어가기 전에 로컬 플레이어를 먼저 나가세요."
+            )
+            .to_owned();
+            self.dirty = true;
+            return Vec::new();
+        }
         self.radio_mode.pending_radio_mode_confirm = Some(if self.radio_dedicated_mode {
             RadioModeConfirm::Exit
         } else {

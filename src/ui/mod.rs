@@ -39,6 +39,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     match app.mode {
         Mode::Player => views::player::render(frame, app, area),
         Mode::Search => views::search::render(frame, app, area),
+        Mode::Library if app.local_dedicated_mode => views::local::render(frame, app, area),
         Mode::Library => views::library::render(frame, app, area),
         Mode::Settings => views::settings::render(frame, app, area),
         Mode::Ai => views::ai::render(frame, app, area),
@@ -67,6 +68,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Radio mode switching is a global UI-mode confirmation.
     if let Some(confirm) = app.radio_mode.pending_radio_mode_confirm {
         views::player::render_radio_mode_confirm(frame, app, area, confirm);
+    }
+    // Local Player mode switching is a global Library-owned UI-mode confirmation.
+    if let Some(confirm) = app.local_mode.pending_confirm {
+        views::local::render_local_mode_confirm(frame, app, area, confirm);
     }
     // A keybinding-conflict warning (Keys tab) is modal — it sits above everything else.
     if let Some(conflict) = &app.overlays.key_conflict {

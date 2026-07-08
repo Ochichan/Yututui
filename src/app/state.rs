@@ -698,6 +698,27 @@ pub struct RadioMode {
     pub pending_radio_mode_confirm: Option<RadioModeConfirm>,
 }
 
+/// View state for the Library-owned Local Deck shell.
+#[derive(Default)]
+pub struct LocalUi {
+    /// Which Local Deck section is shown.
+    pub section: LocalSection,
+    /// The highlighted row in the current Local Deck list.
+    pub selected: usize,
+    /// Fixed end of a future multi-select range. Kept from the first shell so row
+    /// selection semantics can follow Library/Queue when range select lands.
+    pub anchor: usize,
+}
+
+/// Dedicated Local Deck state. The active `local_dedicated_mode` flag stays flat on
+/// [`App`], mirroring Radio mode, while this struct owns shell-local UI state and the
+/// pending enter/leave confirmation.
+#[derive(Default)]
+pub struct LocalMode {
+    pub ui: LocalUi,
+    pub pending_confirm: Option<LocalModeConfirm>,
+}
+
 /// Animation clock and redraw-coalescing counters: the monotonic frame counter that drives every
 /// effect's phase, the fractional draw-credit scheduler and its last cadence, and the last whole
 /// second / cache second rendered (so sub-second mpv position spam is coalesced). The one-shot

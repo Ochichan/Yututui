@@ -390,6 +390,8 @@ pub enum MouseTarget {
     SearchSourceSelect(SearchSource),
     /// A Library tab header.
     LibraryTab(LibraryTab),
+    /// A row in the Local Deck list, by display index.
+    LocalRow(usize),
     /// The footer mouse-help icon. Mouse-only: no keybinding maps to this overlay.
     MouseHelp,
     /// A Settings tab header, by index into [`SettingsTab::ALL`].
@@ -465,6 +467,10 @@ pub enum MouseTarget {
     ConfirmRadioMode,
     /// Cancel button on the radio-mode confirmation modal.
     CancelRadioMode,
+    /// Confirm button on the local-player confirmation modal.
+    ConfirmLocalMode,
+    /// Cancel button on the local-player confirmation modal.
+    CancelLocalMode,
     /// "Save to favorites" on the "what's playing" overlay (resolves a real YT track first).
     NowPlayingFavorite,
     /// "Tell me more" on the "what's playing" overlay — hands off to the DJ Gem view.
@@ -782,6 +788,58 @@ impl RadioModeConfirm {
             ),
         }
     }
+}
+
+/// Pending confirmation for entering or leaving the Library-owned Local Deck shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalModeConfirm {
+    Enter,
+    Exit,
+}
+
+impl LocalModeConfirm {
+    pub fn title(self) -> &'static str {
+        match self {
+            LocalModeConfirm::Enter => t!(" Confirm local player ", " 로컬 플레이어 확인 "),
+            LocalModeConfirm::Exit => t!(" Confirm library mode ", " 라이브러리 모드 확인 "),
+        }
+    }
+
+    pub fn prompt(self) -> &'static str {
+        match self {
+            LocalModeConfirm::Enter => t!(
+                "Switch to Local Player mode?",
+                "로컬 플레이어 모드로 전환할까요?"
+            ),
+            LocalModeConfirm::Exit => {
+                t!(
+                    "Leave Local Player mode?",
+                    "로컬 플레이어 모드에서 나갈까요?"
+                )
+            }
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            LocalModeConfirm::Enter => t!(
+                "Browse downloaded local audio in an immersive Library shell.",
+                "라이브러리 안에서 다운로드된 로컬 오디오를 전용 화면으로 탐색합니다."
+            ),
+            LocalModeConfirm::Exit => t!(
+                "Return to the normal Library tabs.",
+                "일반 라이브러리 탭으로 돌아갑니다."
+            ),
+        }
+    }
+}
+
+/// The primary section visible in the Local Deck shell.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum LocalSection {
+    #[default]
+    Home,
+    Tracks,
 }
 
 /// What the "what's playing" (지듣노) card is showing — populated synchronously from the

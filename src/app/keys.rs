@@ -35,6 +35,18 @@ impl App {
             };
         }
 
+        // Local Player mode switching is modal and follows the Radio confirmation rules.
+        if let Some(confirm) = self.local_mode.pending_confirm.take() {
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            return if confirmed {
+                self.apply_local_mode_confirm(confirm)
+            } else {
+                Vec::new()
+            };
+        }
+
         // Settings confirmations are modal: Enter or `y` confirms, anything else cancels.
         // Handle it here so the key can't leak through to the settings list.
         if let Some(confirm) = self.overlays.pending_settings_confirm.take() {
@@ -363,6 +375,7 @@ impl App {
         match self.mode {
             Mode::Player => self.on_key_player(k),
             Mode::Search => self.on_key_search(k),
+            Mode::Library if self.local_dedicated_mode => self.on_key_local(k),
             Mode::Library => self.on_key_library(k),
             Mode::Settings => self.on_key_settings(k),
             Mode::Ai => self.on_key_ai(k),

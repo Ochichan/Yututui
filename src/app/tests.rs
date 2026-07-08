@@ -2503,6 +2503,80 @@ fn alt_shift_r_radio_mode_switch_only_works_on_player() {
 }
 
 #[test]
+fn double_click_library_nav_confirms_local_deck_shell() {
+    let mut app = App::new(100);
+    app.mode = Mode::Library;
+
+    let cmds = double_click_target(&mut app, MouseTarget::Nav(Mode::Library));
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.local_mode.pending_confirm,
+        Some(LocalModeConfirm::Enter)
+    );
+    assert!(!app.local_dedicated_mode);
+
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.local_dedicated_mode);
+    assert_eq!(app.mode, Mode::Library);
+    assert!(app.local_mode.pending_confirm.is_none());
+
+    let cmds = double_click_target(&mut app, MouseTarget::Nav(Mode::Library));
+    assert!(cmds.is_empty());
+    assert_eq!(app.local_mode.pending_confirm, Some(LocalModeConfirm::Exit));
+
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(!app.local_dedicated_mode);
+    assert!(app.local_mode.pending_confirm.is_none());
+}
+
+#[test]
+fn local_deck_and_radio_mode_are_mutually_exclusive() {
+    let mut app = App::new(100);
+    app.mode = Mode::Library;
+    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    assert!(app.local_dedicated_mode);
+
+    app.mode = Mode::Player;
+    let cmds = app.request_radio_mode_switch();
+    assert!(cmds.is_empty());
+    assert!(app.radio_mode.pending_radio_mode_confirm.is_none());
+    assert!(!app.radio_dedicated_mode);
+    assert!(!app.status.text.is_empty());
+
+    app.apply_local_mode_confirm(LocalModeConfirm::Exit);
+    assert!(!app.local_dedicated_mode);
+    app.apply_radio_mode_confirm(RadioModeConfirm::Enter);
+    assert!(app.radio_dedicated_mode);
+
+    app.mode = Mode::Library;
+    let cmds = app.request_local_mode_switch();
+    assert!(cmds.is_empty());
+    assert!(app.local_mode.pending_confirm.is_none());
+    assert!(app.radio_dedicated_mode);
+}
+
+#[test]
+fn local_deck_renders_download_seed_rows_and_activates_them() {
+    let mut app = App::new(100);
+    app.mode = Mode::Library;
+    app.library_ui.downloaded = vec![Song::local_file(PathBuf::from("/tmp/Alpha.m4a"))];
+    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+
+    let buf = render_app_buffer(&app, 80, 24);
+    assert!(buffer_contains(&buf, "LOCAL DECK"));
+    assert!(
+        app.hits
+            .regions()
+            .iter()
+            .any(|r| r.target == MouseTarget::LocalRow(0))
+    );
+
+    let cmds = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(!cmds.is_empty());
+    assert_eq!(app.queue.current().map(|s| s.title.as_str()), Some("Alpha"));
+}
+
+#[test]
 fn radio_mode_switch_stops_playback_restores_cached_queues_and_themes() {
     let mut app = app_playing(3, 1);
     app.theme.set_preset(crate::theme::ThemePreset::Midnight);
