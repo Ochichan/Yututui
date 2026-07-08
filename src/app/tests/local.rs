@@ -847,6 +847,78 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
             "missing {expected:?} in {details:?}"
         );
     }
+
+    let root_play = app.update(Msg::Key(key(KeyCode::Char('P'))));
+    assert!(!root_play.is_empty());
+    assert_eq!(
+        app.queue.current().map(|song| song.title.as_str()),
+        Some("Linked")
+    );
+    assert!(
+        load_url(&root_play)
+            .expect("session root should load first local row")
+            .contains("/tmp/inbox/Linked.m4a")
+    );
+    app.mode = Mode::Library;
+
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(session_index));
+    assert!(open.is_empty());
+    assert_eq!(app.local_rows_len(), 3);
+    let row_labels: Vec<_> = app
+        .local_visible_rows()
+        .iter()
+        .map(|row| app.local_row_text(row))
+        .collect();
+    assert_eq!(row_labels[0], "#1 local Linked - Artist");
+    assert_eq!(row_labels[1], "#2 review Review - Artist");
+    assert_eq!(row_labels[2], "#3 failed Failed - Artist");
+
+    let linked_details = app.local_details_lines();
+    for expected in [
+        "Import session: sp2yt-local-inbox-session",
+        "Row: #1",
+        "Status: local",
+        "Title: Linked",
+        "Artist: Artist",
+        "Selected: linked00001",
+        "Path: /tmp/inbox/Linked.m4a",
+    ] {
+        assert!(
+            linked_details.iter().any(|line| line == expected),
+            "missing {expected:?} in {linked_details:?}"
+        );
+    }
+
+    app.local_mode.ui.selected = 2;
+    app.local_mode.ui.anchor = 2;
+    let failed_details = app.local_details_lines();
+    for expected in [
+        "Row: #3",
+        "Status: failed",
+        "Title: Failed",
+        "Error: download failed",
+    ] {
+        assert!(
+            failed_details.iter().any(|line| line == expected),
+            "missing {expected:?} in {failed_details:?}"
+        );
+    }
+    let failed_play = double_click_target(&mut app, MouseTarget::LocalRow(2));
+    assert!(failed_play.is_empty());
+
+    app.local_mode.ui.selected = 0;
+    app.local_mode.ui.anchor = 0;
+    let play = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(!play.is_empty());
+    assert_eq!(
+        app.queue.current().map(|song| song.title.as_str()),
+        Some("Linked")
+    );
+    assert!(
+        load_url(&play)
+            .expect("linked row should load local path")
+            .contains("/tmp/inbox/Linked.m4a")
+    );
 }
 
 #[test]

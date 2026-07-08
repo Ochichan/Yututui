@@ -340,6 +340,10 @@ pub enum LocalRowId {
     Folder(PathBuf),
     Smart(LocalSmartList),
     ImportSession(String),
+    ImportSessionRow {
+        session_id: String,
+        source_order: u32,
+    },
     ScanError(usize),
 }
 

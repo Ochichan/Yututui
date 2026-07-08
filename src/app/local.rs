@@ -1,6 +1,6 @@
 //! Local Deck reducer helpers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::local_format::*;
@@ -614,12 +614,9 @@ impl App {
                 .filter(|track| crate::local::query::track_matches_filter(track, query))
                 .map(|track| crate::local::LocalRowId::Track(track.id.clone()))
                 .collect(),
-            LocalDrill::ImportSession(session_id) => self
-                .local_tracks_for_import_session(session_id)
-                .into_iter()
-                .filter(|track| crate::local::query::track_matches_filter(track, query))
-                .map(|track| crate::local::LocalRowId::Track(track.id.clone()))
-                .collect(),
+            LocalDrill::ImportSession(session_id) => {
+                self.local_import_session_drill_rows(session_id, query)
+            }
         }
     }
 
@@ -733,71 +730,6 @@ impl App {
             .collect()
     }
 
-    fn local_import_session_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
-        let mut sessions = BTreeMap::<
-            String,
-            (
-                usize,
-                i64,
-                Option<crate::transfer::session::ImportSessionSummary>,
-            ),
-        >::new();
-        for track in self.local_mode.index.index.tracks() {
-            let Some(session_id) = track
-                .import_session_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-            else {
-                continue;
-            };
-            let entry =
-                sessions
-                    .entry(session_id.to_owned())
-                    .or_insert((0, track.modified_at, None));
-            entry.0 += 1;
-            entry.1 = entry.1.max(track.modified_at);
-        }
-        for summary in crate::transfer::session::ImportSession::list_all() {
-            let entry =
-                sessions
-                    .entry(summary.session_id.clone())
-                    .or_insert((0, summary.updated_at, None));
-            entry.1 = entry.1.max(summary.updated_at);
-            entry.2 = Some(summary);
-        }
-        let mut rows: Vec<_> = sessions.into_iter().collect();
-        rows.sort_by(|a, b| b.1.1.cmp(&a.1.1).then_with(|| a.0.cmp(&b.0)));
-        rows.into_iter()
-            .filter(|(session_id, (count, _, summary))| {
-                let count = count.to_string();
-                let total = summary
-                    .as_ref()
-                    .map(|summary| summary.counts.total.to_string())
-                    .unwrap_or_default();
-                let review = summary
-                    .as_ref()
-                    .map(|summary| summary.counts.ambiguous.to_string())
-                    .unwrap_or_default();
-                let missing = summary
-                    .as_ref()
-                    .map(|summary| summary.counts.not_found.to_string())
-                    .unwrap_or_default();
-                crate::local::query::fields_match_query(
-                    [
-                        session_id.as_str(),
-                        count.as_str(),
-                        total.as_str(),
-                        review.as_str(),
-                        missing.as_str(),
-                    ],
-                    query,
-                )
-            })
-            .map(|(session_id, _)| crate::local::LocalRowId::ImportSession(session_id))
-            .collect()
-    }
-
     fn local_scan_error_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
         self.local_mode
             .index
@@ -876,6 +808,13 @@ impl App {
                 self.reset_local_list_cursor();
                 Vec::new()
             }
+            crate::local::LocalRowId::ImportSessionRow {
+                session_id,
+                source_order,
+            } => self
+                .import_session_row_song(&session_id, source_order)
+                .map(|song| self.play_now(song))
+                .unwrap_or_default(),
             crate::local::LocalRowId::ScanError(_) => Vec::new(),
         }
     }
@@ -951,10 +890,15 @@ impl App {
                 .into_iter()
                 .map(|track| track.to_song())
                 .collect(),
-            crate::local::LocalRowId::ImportSession(session_id) => self
-                .local_tracks_for_import_session(session_id)
+            crate::local::LocalRowId::ImportSession(session_id) => {
+                self.import_session_songs(session_id)
+            }
+            crate::local::LocalRowId::ImportSessionRow {
+                session_id,
+                source_order,
+            } => self
+                .import_session_row_song(session_id, *source_order)
                 .into_iter()
-                .map(|track| track.to_song())
                 .collect(),
             crate::local::LocalRowId::ScanError(_) => Vec::new(),
         }
@@ -1063,6 +1007,10 @@ impl App {
                 session_id,
                 self.local_tracks_for_import_session(session_id).len(),
             ),
+            crate::local::LocalRowId::ImportSessionRow {
+                session_id,
+                source_order,
+            } => self.local_import_session_row_text(session_id, *source_order),
             crate::local::LocalRowId::ScanError(index) => self
                 .local_scan_issue(*index)
                 .map(|error| format!("{} - {}", error.path.display(), error.message))
@@ -1220,6 +1168,10 @@ impl App {
                     push_detail_line(lines, t!("Source order", "원본 순서"), value);
                 }
             }
+            crate::local::LocalRowId::ImportSessionRow {
+                session_id,
+                source_order,
+            } => self.push_import_session_row_details(lines, session_id, *source_order),
             crate::local::LocalRowId::ScanError(index) => {
                 if let Some(error) = self.local_scan_issue(*index) {
                     push_detail_line(lines, t!("Path", "경로"), error.path.display().to_string());
@@ -1524,24 +1476,6 @@ impl App {
         } else {
             sort_local_tracks(&mut tracks);
         }
-        tracks
-    }
-
-    fn local_tracks_for_import_session(&self, session_id: &str) -> Vec<&crate::local::LocalTrack> {
-        let mut tracks: Vec<_> = self
-            .local_mode
-            .index
-            .index
-            .tracks()
-            .iter()
-            .filter(|track| track.import_session_id.as_deref() == Some(session_id))
-            .collect();
-        tracks.sort_by(|a, b| {
-            a.import_source_order
-                .unwrap_or(u32::MAX)
-                .cmp(&b.import_source_order.unwrap_or(u32::MAX))
-                .then_with(|| a.path.cmp(&b.path))
-        });
         tracks
     }
 
