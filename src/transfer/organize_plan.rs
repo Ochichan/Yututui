@@ -10,7 +10,7 @@ use super::checkpoint::ReviewDecision;
 use super::session::{ImportSession, ImportSessionRow, ImportSessionRowStatus};
 
 pub const DEFAULT_IMPORT_ORGANIZE_TEMPLATE: &str =
-    "{album_artist}/{year} - {album}/{disc_track} - {title} [{youtube_id}]";
+    crate::config::LOCAL_IMPORT_PATH_TEMPLATE_DEFAULT;
 
 #[derive(Debug, Clone)]
 pub struct ImportOrganizeOptions {

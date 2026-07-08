@@ -623,6 +623,9 @@ pub struct Config {
 
 /// Local Deck library roots. Kept separate from `download_dir`: the download folder remains the
 /// app-owned fallback, while these settings describe broader user-owned music folders.
+pub const LOCAL_IMPORT_PATH_TEMPLATE_DEFAULT: &str =
+    "{album_artist}/{year} - {album}/{disc_track} - {title} [{youtube_id}]";
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct LocalConfig {
@@ -632,6 +635,8 @@ pub struct LocalConfig {
     /// Additional user music folders. The current Settings UI edits the first entry; the Vec
     /// leaves room for a later multi-root editor without another config migration.
     pub roots: Vec<LocalRootConfig>,
+    /// Path template used by import organization commands when no CLI override is provided.
+    pub import_path_template: Option<String>,
 }
 
 impl LocalConfig {
@@ -641,6 +646,14 @@ impl LocalConfig {
 
     pub fn first_root(&self) -> Option<&LocalRootConfig> {
         self.roots.first()
+    }
+
+    pub fn import_path_template(&self) -> &str {
+        self.import_path_template
+            .as_deref()
+            .map(str::trim)
+            .filter(|template| !template.is_empty())
+            .unwrap_or(LOCAL_IMPORT_PATH_TEMPLATE_DEFAULT)
     }
 }
 
@@ -1637,6 +1650,7 @@ mod tests {
                     enabled: Some(true),
                     recursive: Some(false),
                 }],
+                import_path_template: Some("{artist}/{title}".to_owned()),
             },
             download_concurrency: Some(2),
             mouse: Some(false),
@@ -1731,6 +1745,7 @@ mod tests {
         assert_eq!(back.local.roots[0].path, PathBuf::from("/music/library"));
         assert!(back.local.roots[0].enabled());
         assert!(!back.local.roots[0].recursive());
+        assert_eq!(back.local.import_path_template(), "{artist}/{title}");
         assert_eq!(back.mouse, Some(false));
         assert_eq!(back.album_art, Some(true));
         assert_eq!(back.eq_preset, EqPreset::BassBoost);
@@ -1801,6 +1816,16 @@ mod tests {
 
         assert!(cfg.local.include_download_dir());
         assert!(cfg.local.roots.is_empty());
+        assert_eq!(
+            cfg.local.import_path_template(),
+            LOCAL_IMPORT_PATH_TEMPLATE_DEFAULT
+        );
+        let blank: Config =
+            serde_json::from_str(r#"{"local":{"import_path_template":"  "}}"#).unwrap();
+        assert_eq!(
+            blank.local.import_path_template(),
+            LOCAL_IMPORT_PATH_TEMPLATE_DEFAULT
+        );
     }
 
     #[test]

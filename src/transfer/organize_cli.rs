@@ -4,10 +4,11 @@ use std::path::PathBuf;
 
 use super::cli::{EXIT_FAILED, EXIT_OK, EXIT_USAGE};
 use super::organize_plan::{
-    DEFAULT_IMPORT_ORGANIZE_TEMPLATE, ImportOrganizeDecision, ImportOrganizeOptions,
-    apply_import_organize_plan, build_import_organize_plan,
+    ImportOrganizeDecision, ImportOrganizeOptions, apply_import_organize_plan,
+    build_import_organize_plan,
 };
 use super::session::ImportSession;
+use crate::config::Config;
 
 const USAGE: &str = "\
 Usage:
@@ -34,11 +35,14 @@ pub fn run(args: &[&str]) -> i32 {
 fn run_inner(args: &[&str]) -> Result<(), OrganizeCliError> {
     let parsed = parse_args(args)?;
     let session = ImportSession::load(&parsed.session_id).map_err(OrganizeCliError::Other)?;
+    let template = parsed
+        .template
+        .unwrap_or_else(|| Config::load().local.import_path_template().to_owned());
     let plan = build_import_organize_plan(
         &session,
         &ImportOrganizeOptions {
             root: parsed.root,
-            template: parsed.template,
+            template,
         },
     )
     .map_err(OrganizeCliError::Other)?;
@@ -92,14 +96,14 @@ fn run_inner(args: &[&str]) -> Result<(), OrganizeCliError> {
 struct OrganizeArgs {
     session_id: String,
     root: PathBuf,
-    template: String,
+    template: Option<String>,
     apply: bool,
 }
 
 fn parse_args(args: &[&str]) -> Result<OrganizeArgs, OrganizeCliError> {
     let mut session_id = None;
     let mut root = None;
-    let mut template = DEFAULT_IMPORT_ORGANIZE_TEMPLATE.to_owned();
+    let mut template = None;
     let mut dry_run = false;
     let mut apply = false;
     let mut yes = false;
@@ -116,10 +120,13 @@ fn parse_args(args: &[&str]) -> Result<OrganizeArgs, OrganizeCliError> {
                 root = Some(PathBuf::from(value));
             }
             "--template" => {
-                template = it
-                    .next()
-                    .ok_or_else(|| OrganizeCliError::Usage("--template needs a value".to_owned()))?
-                    .to_owned();
+                template = Some(
+                    it.next()
+                        .ok_or_else(|| {
+                            OrganizeCliError::Usage("--template needs a value".to_owned())
+                        })?
+                        .to_owned(),
+                );
             }
             "--help" | "-h" => return Err(OrganizeCliError::Usage("help requested".to_owned())),
             other if other.starts_with('-') => {
@@ -206,7 +213,7 @@ mod tests {
 
         assert_eq!(parsed.session_id, "sp2yt-1");
         assert_eq!(parsed.root, PathBuf::from("/tmp/library"));
-        assert_eq!(parsed.template, "{artist}/{title}");
+        assert_eq!(parsed.template.as_deref(), Some("{artist}/{title}"));
         assert!(!parsed.apply);
     }
 
