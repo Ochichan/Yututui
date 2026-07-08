@@ -1,6 +1,7 @@
 //! Preview path planning for import-session files before committing them to a library root.
 
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context as _, bail};
@@ -33,6 +34,13 @@ pub struct ImportOrganizePlan {
     pub template: String,
     pub rows: Vec<ImportOrganizePlanRow>,
     pub move_count: u32,
+    pub already_count: u32,
+    pub skipped_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportOrganizeApplyReport {
+    pub moved_count: u32,
     pub already_count: u32,
     pub skipped_count: u32,
 }
@@ -94,6 +102,50 @@ pub fn build_import_organize_plan(
         template: template.to_owned(),
         rows,
         move_count,
+        already_count,
+        skipped_count,
+    })
+}
+
+pub fn apply_import_organize_plan(
+    plan: &ImportOrganizePlan,
+) -> anyhow::Result<ImportOrganizeApplyReport> {
+    let mut moved_count = 0u32;
+    let mut already_count = 0u32;
+    let mut skipped_count = 0u32;
+    for row in &plan.rows {
+        match row.decision {
+            ImportOrganizeDecision::Move => {
+                let from = row
+                    .current_path
+                    .as_ref()
+                    .context("move row missing current path")?;
+                let to = row
+                    .target_path
+                    .as_ref()
+                    .context("move row missing target path")?;
+                move_audio_and_sidecar(from, to, &plan.root)?;
+                super::session::record_download_done(
+                    &plan.session_id,
+                    row.source_order,
+                    to.clone(),
+                )
+                .with_context(|| {
+                    format!(
+                        "update import session {} row #{} after move",
+                        plan.session_id, row.source_order
+                    )
+                })?;
+                moved_count += 1;
+            }
+            ImportOrganizeDecision::AlreadyAtTarget => already_count += 1,
+            ImportOrganizeDecision::NotAccepted | ImportOrganizeDecision::MissingLocalPath => {
+                skipped_count += 1;
+            }
+        }
+    }
+    Ok(ImportOrganizeApplyReport {
+        moved_count,
         already_count,
         skipped_count,
     })
@@ -370,6 +422,33 @@ fn paths_equivalent(a: &Path, b: &Path) -> bool {
     a == b
 }
 
+fn move_audio_and_sidecar(from: &Path, to: &Path, root: &Path) -> anyhow::Result<()> {
+    if !to.starts_with(root) {
+        bail!("target path escaped organize root: {}", to.display());
+    }
+    if !from.is_file() {
+        bail!("source audio file is missing: {}", from.display());
+    }
+    if to.exists() {
+        bail!("target audio file already exists: {}", to.display());
+    }
+    let from_sidecar = crate::downloads::sidecar_path(from);
+    let to_sidecar = crate::downloads::sidecar_path(to);
+    if to_sidecar.exists() {
+        bail!("target sidecar already exists: {}", to_sidecar.display());
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create organize target dir {}", parent.display()))?;
+    }
+    fs::rename(from, to).with_context(|| format!("move import audio to {}", to.display()))?;
+    if from_sidecar.exists() {
+        fs::rename(&from_sidecar, &to_sidecar)
+            .with_context(|| format!("move import sidecar to {}", to_sidecar.display()))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,5 +575,58 @@ mod tests {
             plan.rows[1].decision,
             ImportOrganizeDecision::MissingLocalPath
         );
+    }
+
+    #[test]
+    fn apply_moves_audio_sidecar_and_updates_session() {
+        let root = temp_root("apply");
+        let inbox = root.join(".yututui-inbox").join("sp2yt-organize-apply");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let audio = inbox.join("Song.m4a");
+        std::fs::write(&audio, b"audio").unwrap();
+        let sidecar = crate::downloads::sidecar_path(&audio);
+        std::fs::write(&sidecar, b"{}").unwrap();
+        let session = ImportSession {
+            session_id: "sp2yt-organize-apply".to_owned(),
+            rows: vec![row(1, "Song", &audio.to_string_lossy())],
+            ..ImportSession::default()
+        };
+        session.save().unwrap();
+        let plan = build_import_organize_plan(&session, &ImportOrganizeOptions::new(root.clone()))
+            .unwrap();
+        let target = plan.rows[0].target_path.clone().unwrap();
+
+        let report = apply_import_organize_plan(&plan).unwrap();
+
+        assert_eq!(report.moved_count, 1);
+        assert!(!audio.exists());
+        assert!(!sidecar.exists());
+        assert!(target.exists());
+        assert!(crate::downloads::sidecar_path(&target).exists());
+        let saved = ImportSession::load("sp2yt-organize-apply").unwrap();
+        assert_eq!(saved.rows[0].local_path.as_deref(), Some(target.as_path()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_rejects_target_race_without_moving_source() {
+        let root = temp_root("apply-race");
+        let inbox = root.join(".yututui-inbox").join("sp2yt-organize-race");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let audio = inbox.join("Song.m4a");
+        std::fs::write(&audio, b"audio").unwrap();
+        let session = session(vec![row(1, "Song", &audio.to_string_lossy())]);
+        let plan = build_import_organize_plan(&session, &ImportOrganizeOptions::new(root.clone()))
+            .unwrap();
+        let target = plan.rows[0].target_path.clone().unwrap();
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"existing").unwrap();
+
+        let err = apply_import_organize_plan(&plan).unwrap_err();
+
+        assert!(err.to_string().contains("already exists"));
+        assert!(audio.exists());
+        assert_eq!(std::fs::read(&target).unwrap(), b"existing");
+        let _ = std::fs::remove_dir_all(root);
     }
 }

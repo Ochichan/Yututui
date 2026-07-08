@@ -5,15 +5,16 @@ use std::path::PathBuf;
 use super::cli::{EXIT_FAILED, EXIT_OK, EXIT_USAGE};
 use super::organize_plan::{
     DEFAULT_IMPORT_ORGANIZE_TEMPLATE, ImportOrganizeDecision, ImportOrganizeOptions,
-    build_import_organize_plan,
+    apply_import_organize_plan, build_import_organize_plan,
 };
 use super::session::ImportSession;
 
 const USAGE: &str = "\
 Usage:
   ytt transfer organize <JOB-ID> --root DIR --dry-run [--template TEMPLATE]
+  ytt transfer organize <JOB-ID> --root DIR --apply --yes [--template TEMPLATE]
 
-Preview where downloaded import-session files would move before committing them.";
+Preview or apply where downloaded import-session files move before committing them.";
 
 pub fn run(args: &[&str]) -> i32 {
     match run_inner(args) {
@@ -77,6 +78,13 @@ fn run_inner(args: &[&str]) -> Result<(), OrganizeCliError> {
             println!("        warning: {warning}");
         }
     }
+    if parsed.apply {
+        let report = apply_import_organize_plan(&plan).map_err(OrganizeCliError::Other)?;
+        println!(
+            "Applied: {} moved, {} already, {} skipped",
+            report.moved_count, report.already_count, report.skipped_count
+        );
+    }
     Ok(())
 }
 
@@ -85,6 +93,7 @@ struct OrganizeArgs {
     session_id: String,
     root: PathBuf,
     template: String,
+    apply: bool,
 }
 
 fn parse_args(args: &[&str]) -> Result<OrganizeArgs, OrganizeCliError> {
@@ -92,10 +101,14 @@ fn parse_args(args: &[&str]) -> Result<OrganizeArgs, OrganizeCliError> {
     let mut root = None;
     let mut template = DEFAULT_IMPORT_ORGANIZE_TEMPLATE.to_owned();
     let mut dry_run = false;
+    let mut apply = false;
+    let mut yes = false;
     let mut it = args.iter().copied();
     while let Some(arg) = it.next() {
         match arg {
             "--dry-run" => dry_run = true,
+            "--apply" => apply = true,
+            "--yes" => yes = true,
             "--root" => {
                 let value = it
                     .next()
@@ -121,10 +134,21 @@ fn parse_args(args: &[&str]) -> Result<OrganizeArgs, OrganizeCliError> {
             }
         }
     }
-    if !dry_run {
-        return Err(OrganizeCliError::Usage(
-            "organize currently requires --dry-run".to_owned(),
-        ));
+    match (dry_run, apply) {
+        (true, false) | (false, true) => {}
+        (false, false) => {
+            return Err(OrganizeCliError::Usage(
+                "organize requires --dry-run or --apply".to_owned(),
+            ));
+        }
+        (true, true) => {
+            return Err(OrganizeCliError::Usage(
+                "choose only one of --dry-run or --apply".to_owned(),
+            ));
+        }
+    }
+    if apply && !yes {
+        return Err(OrganizeCliError::Usage("--apply requires --yes".to_owned()));
     }
     let session_id =
         session_id.ok_or_else(|| OrganizeCliError::Usage("missing <JOB-ID>".to_owned()))?;
@@ -133,6 +157,7 @@ fn parse_args(args: &[&str]) -> Result<OrganizeArgs, OrganizeCliError> {
         session_id,
         root,
         template,
+        apply,
     })
 }
 
@@ -154,7 +179,7 @@ mod tests {
     #[test]
     fn parse_requires_dry_run_and_root() {
         let err = parse_args(&["sp2yt-1", "--root", "/tmp/library"])
-            .expect_err("missing dry-run should be usage");
+            .expect_err("missing mode should be usage");
         match err {
             OrganizeCliError::Usage(message) => assert!(message.contains("--dry-run")),
             OrganizeCliError::Other(error) => panic!("unexpected error: {error:#}"),
@@ -182,5 +207,21 @@ mod tests {
         assert_eq!(parsed.session_id, "sp2yt-1");
         assert_eq!(parsed.root, PathBuf::from("/tmp/library"));
         assert_eq!(parsed.template, "{artist}/{title}");
+        assert!(!parsed.apply);
+    }
+
+    #[test]
+    fn parse_apply_requires_yes() {
+        let err = parse_args(&["sp2yt-1", "--root", "/tmp/library", "--apply"])
+            .expect_err("apply without yes should be usage");
+        match err {
+            OrganizeCliError::Usage(message) => assert!(message.contains("--yes")),
+            OrganizeCliError::Other(error) => panic!("unexpected error: {error:#}"),
+        }
+
+        let parsed =
+            parse_args(&["sp2yt-1", "--root", "/tmp/library", "--apply", "--yes"]).unwrap();
+
+        assert!(parsed.apply);
     }
 }
