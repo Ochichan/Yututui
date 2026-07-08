@@ -156,6 +156,10 @@ impl DownloadStore {
         self.tracks.iter().any(|s| s.youtube_id() == Some(yt))
     }
 
+    pub fn tracks(&self) -> &[Song] {
+        &self.tracks
+    }
+
     /// Remember an enriched downloaded track (dedup by `video_id`, newest first).
     pub fn record(&mut self, song: &Song) {
         self.tracks.retain(|s| s.video_id != song.video_id);

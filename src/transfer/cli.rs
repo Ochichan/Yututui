@@ -36,6 +36,8 @@ Commands:
   sessions                         Import sessions for review/download follow-up
   session <JOB-ID>                 Show one import session's review rows
   review <JOB-ID> [filter]         Show or update import review decisions
+  download <JOB-ID> --accepted --dry-run
+                                   Preview session-aware download decisions
   import <SOURCE> [flags]          Spotify/file → YouTube Music
       SOURCE: a Spotify playlist URL/URI/id, the word `liked`, or a .json/.csv file
       --to-playlist NAME           Append to (or create) this YTM account playlist
@@ -89,6 +91,10 @@ pub fn run(args: &[String]) -> i32 {
         Some("review") => {
             let rest: Vec<&str> = it.collect();
             super::review_cli::run(&rest)
+        }
+        Some("download") => {
+            let rest: Vec<&str> = it.collect();
+            super::download_cli::run(&rest)
         }
         Some("import") => {
             let rest: Vec<&str> = it.collect();
@@ -554,6 +560,10 @@ fn next_step_lines(report: &TransferReport, session: Option<&ImportSession>) -> 
             .unwrap_or_else(|| "the imported playlist".to_owned());
         lines.push(format!(
             "Next: open Library > Playlists > {dest}, press Shift+D to download accepted tracks, rescan Local Deck, then open Import Sessions."
+        ));
+        lines.push(format!(
+            "Preview downloads: ytt transfer download {} --accepted --dry-run",
+            report.job_id
         ));
     }
     lines

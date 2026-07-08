@@ -9,6 +9,8 @@ pub mod actor;
 pub mod checkpoint;
 pub mod cli;
 pub mod csv;
+mod download_cli;
+pub mod download_plan;
 pub mod json;
 pub mod matching;
 mod review_cli;
