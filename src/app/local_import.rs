@@ -194,6 +194,55 @@ impl App {
         }
     }
 
+    pub(crate) fn local_import_action_hint(&self) -> Option<String> {
+        let row = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned()?;
+        match row {
+            crate::local::LocalRowId::ImportSession(session_id) => {
+                let failed = import_session_failed_download_count(&session_id).unwrap_or_default();
+                let mut actions = vec![t!("Enter rows", "Enter 행 보기")];
+                if failed > 0 {
+                    actions.push(t!("r retry failed", "r 실패 재시도"));
+                }
+                actions.push(t!("d download accepted", "d 수락 곡 다운로드"));
+                actions.push(t!("m commit inbox", "m 인박스 커밋"));
+                Some(actions.join("  |  "))
+            }
+            crate::local::LocalRowId::ImportSessionRow {
+                session_id,
+                source_order,
+            } => {
+                let row = load_import_session_row(&session_id, source_order)?;
+                let mut actions = Vec::new();
+                if import_session_row_accepts_manual_review_action(&row) {
+                    actions.extend([
+                        t!("a accept", "a 수락"),
+                        t!("r reject", "r 거부"),
+                        t!("c candidate", "c 후보"),
+                        t!("x skip", "x 건너뜀"),
+                    ]);
+                }
+                if !row.errors.is_empty() {
+                    actions.push(t!("r retry failed", "r 실패 재시도"));
+                }
+                if import_session_row_is_download_accepted(&row) && row.local_path.is_none() {
+                    actions.push(t!("d download", "d 다운로드"));
+                }
+                if import_session_row_candidate_url_key(&row).is_some() {
+                    actions.push(t!("o open candidate", "o 후보 열기"));
+                }
+                actions.push(t!("s search", "s 검색"));
+                if row.local_path.as_deref().is_some_and(path_is_import_inbox) {
+                    actions.push(t!("m commit", "m 커밋"));
+                }
+                (!actions.is_empty()).then(|| actions.join("  |  "))
+            }
+            _ => None,
+        }
+    }
+
     pub(in crate::app) fn push_import_session_row_details(
         &self,
         lines: &mut Vec<String>,

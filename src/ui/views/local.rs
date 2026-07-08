@@ -96,6 +96,8 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
                 app.local_mode.ui.filter_query
             )
         }
+    } else if let Some(hint) = app.local_import_action_hint() {
+        hint
     } else if app.local_mode.index.loading {
         t!(
             "Loading the Local Deck index...",

@@ -665,6 +665,17 @@ fn local_deck_import_row_s_starts_manual_youtube_search() {
     let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
     assert!(open.is_empty());
     app.local_mode.ui.filter_query.clear();
+    let hint = app.local_import_action_hint().expect("review action hint");
+    for expected in [
+        "a accept",
+        "r reject",
+        "c candidate",
+        "x skip",
+        "o open candidate",
+        "s search",
+    ] {
+        assert!(hint.contains(expected), "missing {expected:?} in {hint:?}");
+    }
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
     assert_eq!(app.mode, Mode::Search);
@@ -949,6 +960,8 @@ fn local_deck_import_inbox_organize_confirms_then_moves_session_files() {
     app.update(Msg::Key(key(KeyCode::Char('0'))));
     app.local_mode.ui.filter_query = session_id.to_owned();
     assert_eq!(app.local_rows_len(), 1);
+    let hint = app.local_import_action_hint().expect("inbox action hint");
+    assert!(hint.contains("m commit"), "missing commit hint in {hint:?}");
 
     let preview = app.local_details_lines();
     assert!(
