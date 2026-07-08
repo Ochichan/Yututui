@@ -1,8 +1,50 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use unicode_normalization::UnicodeNormalization;
+
 use super::model::{
     LocalAlbum, LocalAlbumId, LocalArtist, LocalArtistId, LocalTrack, LocalTrackId, normalize_key,
 };
+
+pub fn normalize_query_text(text: &str) -> String {
+    text.nfkc().flat_map(char::to_lowercase).collect()
+}
+
+pub fn fields_match_query<'a>(fields: impl IntoIterator<Item = &'a str>, query: &str) -> bool {
+    let needle = normalize_query_text(query.trim());
+    if needle.is_empty() {
+        return true;
+    }
+    fields
+        .into_iter()
+        .any(|field| normalize_query_text(field).contains(&needle))
+}
+
+pub fn track_matches_filter(track: &LocalTrack, query: &str) -> bool {
+    let title = track.display_title();
+    let artist = track.display_artist();
+    let album = track.album.as_deref().unwrap_or_default();
+    let album_artist = track.album_artist.as_deref().unwrap_or_default();
+    let genres = track.genre.join(" ");
+    let filename = track
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let path = track.path.to_string_lossy();
+    fields_match_query(
+        [
+            title.as_str(),
+            artist.as_str(),
+            album,
+            album_artist,
+            genres.as_str(),
+            filename,
+            path.as_ref(),
+        ],
+        query,
+    )
+}
 
 pub fn albums_from_tracks(tracks: &[LocalTrack]) -> Vec<LocalAlbum> {
     #[derive(Default)]
@@ -188,5 +230,33 @@ mod tests {
         assert_eq!(artists[0].name, "Various Artists");
         assert_eq!(artists[0].track_ids.len(), 2);
         assert_eq!(artists[0].album_ids.len(), 1);
+    }
+
+    #[test]
+    fn filter_matches_case_insensitively_across_fields() {
+        let mut track = track("/music/IU/Palette.flac", "Palette", &["IU"]);
+        track.album = Some("Palette".to_owned());
+        track.genre = vec!["K-Pop".to_owned()];
+
+        assert!(track_matches_filter(&track, "palette"));
+        assert!(track_matches_filter(&track, "iu"));
+        assert!(track_matches_filter(&track, "k-pop"));
+        assert!(track_matches_filter(&track, "music/iu"));
+        assert!(!track_matches_filter(&track, "missing"));
+    }
+
+    #[test]
+    fn filter_uses_nfkc_width_normalization() {
+        let track = track("/music/fullwidth.mp3", "ＡＢＣ ｶﾌｪ", &["Artist"]);
+
+        assert!(track_matches_filter(&track, "abc カフェ"));
+    }
+
+    #[test]
+    fn filter_matches_cjk_metadata() {
+        let track = track("/music/iu.mp3", "좋은 날", &["아이유"]);
+
+        assert!(track_matches_filter(&track, "아이유"));
+        assert!(track_matches_filter(&track, "좋은"));
     }
 }

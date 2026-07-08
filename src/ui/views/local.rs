@@ -47,7 +47,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let indexed = app.local_mode.index.index.tracks().len();
     let count = indexed.max(app.library_ui.downloaded.len());
-    let count_label = if count == 1 {
+    let visible_count = app.local_rows_len();
+    let count_label = if !app.local_mode.ui.filter_query.is_empty() {
+        if crate::i18n::is_korean() {
+            format!("{visible_count}/{count}곡")
+        } else {
+            format!("{visible_count}/{count} tracks")
+        }
+    } else if count == 1 {
         t!("1 track", "1곡").to_owned()
     } else if crate::i18n::is_korean() {
         format!("{count}곡")
@@ -81,7 +88,17 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let text = if app.local_mode.index.loading {
+    let text = if app.local_mode.ui.filter_editing || !app.local_mode.ui.filter_query.is_empty() {
+        if app.local_mode.ui.filter_editing {
+            format!("/{}", app.local_mode.ui.filter_query)
+        } else {
+            format!(
+                "{}: /{}",
+                t!("Filter", "필터"),
+                app.local_mode.ui.filter_query
+            )
+        }
+    } else if app.local_mode.index.loading {
         t!(
             "Loading the Local Deck index...",
             "로컬 덱 인덱스를 불러오는 중..."
@@ -195,7 +212,11 @@ fn render_tracks(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_indexed_tracks(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = app.local_mode.index.index.tracks();
+    let rows = app.local_visible_index_tracks();
+    if rows.is_empty() {
+        render_no_filter_matches(frame, app, area);
+        return;
+    }
     let len = rows.len();
     let cursor = app.local_mode.ui.selected.min(len - 1);
     let visible = area.height as usize;
@@ -276,9 +297,13 @@ fn render_indexed_tracks(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_download_seed_tracks(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = &app.library_ui.downloaded;
+    let rows = app.local_visible_download_seed_rows();
     if rows.is_empty() {
-        render_home(frame, app, area);
+        if app.local_mode.ui.filter_query.is_empty() {
+            render_home(frame, app, area);
+        } else {
+            render_no_filter_matches(frame, app, area);
+        }
         return;
     }
 
@@ -357,6 +382,26 @@ fn render_download_seed_tracks(frame: &mut Frame, app: &App, area: Rect) {
         len,
         start,
         visible,
+    );
+}
+
+fn render_no_filter_matches(frame: &mut Frame, app: &App, area: Rect) {
+    let msg = if crate::i18n::is_korean() {
+        format!(
+            "'{}' 와 일치하는 로컬 곡이 없어요.",
+            app.local_mode.ui.filter_query
+        )
+    } else {
+        format!(
+            "No local tracks match \"{}\".",
+            app.local_mode.ui.filter_query
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(msg))
+            .alignment(Alignment::Center)
+            .style(app.theme.style(R::TextMuted)),
+        area,
     );
 }
 

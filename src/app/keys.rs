@@ -423,7 +423,11 @@ impl App {
             Mode::Ai => self.ai.focus == AiFocus::Input,
             Mode::Settings => self.settings.as_ref().is_some_and(|s| s.editing_text),
             Mode::Library => {
-                self.library_ui.filter_editing || self.library_ui.create_input.is_some()
+                if self.local_dedicated_mode {
+                    self.local_mode.ui.filter_editing
+                } else {
+                    self.library_ui.filter_editing || self.library_ui.create_input.is_some()
+                }
             }
             _ => false,
         }

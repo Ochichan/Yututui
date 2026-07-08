@@ -1,6 +1,7 @@
 //! Local Deck reducer helpers.
 
 use super::*;
+use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_push_query_char};
 
 impl App {
     pub(in crate::app) fn request_local_mode_switch(&mut self) -> Vec<Cmd> {
@@ -99,6 +100,14 @@ impl App {
     }
 
     pub(in crate::app) fn on_key_local(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        if self.local_mode.ui.filter_editing {
+            return self.on_key_local_filter(k);
+        }
+        if k.code == KeyCode::Esc && !self.local_mode.ui.filter_query.is_empty() {
+            self.clear_local_filter();
+            self.dirty = true;
+            return Vec::new();
+        }
         if k.code == KeyCode::Esc {
             return self.request_local_mode_switch();
         }
@@ -112,6 +121,11 @@ impl App {
         }
 
         match self.keymap.action(KeyContext::Library, k.into()) {
+            Some(Action::LibraryFilter) => {
+                self.local_mode.ui.filter_editing = true;
+                self.dirty = true;
+                Vec::new()
+            }
             Some(Action::Back) => self.request_local_mode_switch(),
             Some(Action::MoveUp) => {
                 let step = self.nav_repeat_step(Action::MoveUp);
@@ -200,20 +214,7 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        let Some(song) = self
-            .local_mode
-            .index
-            .index
-            .tracks()
-            .get(self.local_mode.ui.selected)
-            .map(crate::local::LocalTrack::to_song)
-            .or_else(|| {
-                self.library_ui
-                    .downloaded
-                    .get(self.local_mode.ui.selected)
-                    .cloned()
-            })
-        else {
+        let Some(song) = self.local_song_at_display_index(self.local_mode.ui.selected) else {
             return Vec::new();
         };
         self.play_now(song)
@@ -335,11 +336,10 @@ impl App {
     }
 
     fn local_track_rows_len(&self) -> usize {
-        let indexed = self.local_mode.index.index.tracks().len();
-        if indexed > 0 {
-            indexed
+        if !self.local_mode.index.index.is_empty() {
+            self.local_visible_index_tracks().len()
         } else {
-            self.library_ui.downloaded.len()
+            self.local_visible_download_seed_rows().len()
         }
     }
 
@@ -351,5 +351,113 @@ impl App {
         self.local_mode.ui.selected = self.local_mode.ui.selected.min(len.saturating_sub(1));
         self.local_mode.ui.anchor = self.local_mode.ui.selected;
         self.bridges.library_scroll.reset();
+    }
+
+    pub(crate) fn local_visible_index_tracks(&self) -> Vec<&crate::local::LocalTrack> {
+        let query = self.local_mode.ui.filter_query.as_str();
+        self.local_mode
+            .index
+            .index
+            .tracks()
+            .iter()
+            .filter(|track| crate::local::query::track_matches_filter(track, query))
+            .collect()
+    }
+
+    pub(crate) fn local_visible_download_seed_rows(&self) -> Vec<&Song> {
+        let query = self.local_mode.ui.filter_query.as_str();
+        self.library_ui
+            .downloaded
+            .iter()
+            .filter(|song| {
+                crate::local::query::fields_match_query(
+                    [
+                        song.title.as_str(),
+                        song.artist.as_str(),
+                        song.album.as_deref().unwrap_or_default(),
+                        song.local_path
+                            .as_ref()
+                            .and_then(|path| path.file_name())
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_default(),
+                    ],
+                    query,
+                )
+            })
+            .collect()
+    }
+
+    fn local_song_at_display_index(&self, index: usize) -> Option<Song> {
+        if !self.local_mode.index.index.is_empty() {
+            self.local_visible_index_tracks()
+                .get(index)
+                .map(|track| track.to_song())
+        } else {
+            self.local_visible_download_seed_rows()
+                .get(index)
+                .cloned()
+                .cloned()
+        }
+    }
+
+    fn clear_local_filter(&mut self) {
+        self.local_mode.ui.filter_query.clear();
+        self.local_mode.ui.filter_editing = false;
+        self.local_mode.ui.selected = 0;
+        self.local_mode.ui.anchor = 0;
+        self.bridges.library_scroll.reset();
+    }
+
+    fn after_local_filter_change(&mut self) {
+        self.local_mode.ui.selected = 0;
+        self.local_mode.ui.anchor = 0;
+        self.bridges.library_scroll.reset();
+        self.dirty = true;
+    }
+
+    fn on_key_local_filter(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        match k.code {
+            KeyCode::Esc => {
+                self.clear_local_filter();
+                self.dirty = true;
+            }
+            KeyCode::Enter => {
+                self.local_mode.ui.filter_editing = false;
+                self.dirty = true;
+            }
+            KeyCode::Backspace => {
+                self.local_mode.ui.filter_query.pop();
+                self.after_local_filter_change();
+            }
+            KeyCode::Up => {
+                self.local_mode.ui.selected = self.local_mode.ui.selected.saturating_sub(1);
+                self.local_mode.ui.anchor = self.local_mode.ui.selected;
+                self.dirty = true;
+            }
+            KeyCode::Down => {
+                let len = self.local_rows_len();
+                if self.local_mode.ui.selected + 1 < len {
+                    self.local_mode.ui.selected += 1;
+                }
+                self.local_mode.ui.anchor = self.local_mode.ui.selected;
+                self.dirty = true;
+            }
+            KeyCode::Char(c)
+                if !k
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                match try_push_query_char(
+                    &mut self.local_mode.ui.filter_query,
+                    c,
+                    MAX_FILTER_QUERY_BYTES,
+                ) {
+                    Ok(()) => self.after_local_filter_change(),
+                    Err(reason) => self.set_query_reject_status(reason),
+                }
+            }
+            _ => {}
+        }
+        Vec::new()
     }
 }

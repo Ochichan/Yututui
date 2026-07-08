@@ -708,6 +708,10 @@ pub struct LocalUi {
     /// Fixed end of a future multi-select range. Kept from the first shell so row
     /// selection semantics can follow Library/Queue when range select lands.
     pub anchor: usize,
+    /// Current Local Deck live-filter query.
+    pub filter_query: String,
+    /// Whether typed keys edit `filter_query`.
+    pub filter_editing: bool,
 }
 
 /// Loaded Local Deck index plus transient scan/load status.

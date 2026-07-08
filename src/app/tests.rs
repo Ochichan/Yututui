@@ -2680,6 +2680,67 @@ fn local_deck_r_key_requests_incremental_rescan() {
 }
 
 #[test]
+fn local_deck_slash_filters_index_tracks_and_activation_uses_visible_row() {
+    let mut app = App::new(100);
+    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    let mut alpha = crate::local::LocalTrack::untagged(PathBuf::from("/tmp/Alpha.flac"), 7, 8);
+    alpha.title = "Alpha".to_owned();
+    let mut beta = crate::local::LocalTrack::untagged(PathBuf::from("/tmp/Beta.flac"), 9, 10);
+    beta.title = "Beta".to_owned();
+    beta.artist = vec!["Filtered Artist".to_owned()];
+    let mut index = crate::local::LocalIndex::default();
+    index.set_tracks(vec![alpha, beta]);
+    app.update(Msg::Local(LocalMsg::ScanFinished {
+        index_path: None,
+        result: crate::local::LocalScanResult {
+            index,
+            summary: crate::local::LocalScanSummary {
+                indexed: 2,
+                added: 2,
+                ..crate::local::LocalScanSummary::default()
+            },
+            errors: Vec::new(),
+        },
+    }));
+
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    assert!(app.local_mode.ui.filter_editing);
+    for ch in "filtered".chars() {
+        app.update(Msg::Key(key(KeyCode::Char(ch))));
+    }
+
+    assert_eq!(app.local_rows_len(), 1);
+    let cmds = double_click_target(&mut app, MouseTarget::LocalRow(0));
+
+    assert!(!cmds.is_empty());
+    assert_eq!(app.queue.current().map(|s| s.title.as_str()), Some("Beta"));
+}
+
+#[test]
+fn local_deck_escape_clears_committed_filter_before_exit() {
+    let mut app = App::new(100);
+    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    let mut track = crate::local::LocalTrack::untagged(PathBuf::from("/tmp/Alpha.flac"), 7, 8);
+    track.title = "Alpha".to_owned();
+    let mut index = crate::local::LocalIndex::default();
+    index.set_tracks(vec![track]);
+    app.local_mode.index.index = index;
+    app.local_mode.index.loaded = true;
+
+    app.update(Msg::Key(key(KeyCode::Char('/'))));
+    app.update(Msg::Key(key(KeyCode::Char('a'))));
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(!app.local_mode.ui.filter_editing);
+    assert_eq!(app.local_mode.ui.filter_query, "a");
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+
+    assert!(app.local_dedicated_mode);
+    assert!(app.local_mode.pending_confirm.is_none());
+    assert!(app.local_mode.ui.filter_query.is_empty());
+}
+
+#[test]
 fn local_deck_switch_stops_playback_and_restores_cached_queues() {
     let mut app = app_playing(3, 1);
     app.playback.paused = false;
