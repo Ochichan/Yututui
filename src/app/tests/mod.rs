@@ -21,6 +21,7 @@ mod library_drag;
 mod library_filter;
 mod library_queue_actions;
 mod local;
+mod local_import;
 mod lyrics_art_download;
 mod mouse_player;
 mod nav_mouse;

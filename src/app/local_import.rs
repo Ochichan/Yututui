@@ -106,6 +106,47 @@ impl App {
             .collect()
     }
 
+    pub(in crate::app) fn local_inbox_rows_for_query(
+        &self,
+        query: &str,
+    ) -> Vec<crate::local::LocalRowId> {
+        let mut rows = Vec::<(i64, String, u32)>::new();
+        for summary in ImportSession::list_all() {
+            let Ok(mut session) = ImportSession::load(&summary.session_id) else {
+                continue;
+            };
+            session.rows.sort_by(|a, b| {
+                a.source_order
+                    .cmp(&b.source_order)
+                    .then_with(|| a.row_id.cmp(&b.row_id))
+            });
+            for row in session.rows {
+                if import_session_row_needs_inbox_attention(&row)
+                    && import_session_row_matches_query(&row, query)
+                {
+                    rows.push((
+                        summary.updated_at,
+                        summary.session_id.clone(),
+                        row.source_order,
+                    ));
+                }
+            }
+        }
+        rows.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+        });
+        rows.into_iter()
+            .map(
+                |(_, session_id, source_order)| crate::local::LocalRowId::ImportSessionRow {
+                    session_id,
+                    source_order,
+                },
+            )
+            .collect()
+    }
+
     pub(in crate::app) fn local_tracks_for_import_session(
         &self,
         session_id: &str,
@@ -280,6 +321,9 @@ fn song_from_import_session_row(session_id: &str, row: &ImportSessionRow, path: 
 }
 
 fn import_session_row_status_label(row: &ImportSessionRow) -> &'static str {
+    if row.local_path.as_deref().is_some_and(path_is_import_inbox) {
+        return "inbox";
+    }
     if row.local_path.is_some() {
         return "local";
     }
@@ -293,6 +337,22 @@ fn import_session_row_status_label(row: &ImportSessionRow) -> &'static str {
         ImportSessionRowStatus::NotFound => "missing",
         ImportSessionRowStatus::SkippedLocal => "skipped",
     }
+}
+
+fn import_session_row_needs_inbox_attention(row: &ImportSessionRow) -> bool {
+    row.local_path.as_deref().is_some_and(path_is_import_inbox)
+        || !row.errors.is_empty()
+        || matches!(
+            row.status,
+            ImportSessionRowStatus::Pending
+                | ImportSessionRowStatus::Ambiguous
+                | ImportSessionRowStatus::NotFound
+        )
+}
+
+fn path_is_import_inbox(path: &std::path::Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == ".yututui-inbox")
 }
 
 fn import_session_row_artist(row: &ImportSessionRow) -> String {

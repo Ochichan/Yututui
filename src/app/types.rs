@@ -895,10 +895,11 @@ pub enum LocalSection {
     SmartLists,
     ScanErrors,
     ImportSessions,
+    Inbox,
 }
 
 impl LocalSection {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Home,
         Self::Tracks,
         Self::Albums,
@@ -908,6 +909,7 @@ impl LocalSection {
         Self::SmartLists,
         Self::ScanErrors,
         Self::ImportSessions,
+        Self::Inbox,
     ];
 
     pub fn label(self) -> &'static str {
@@ -921,12 +923,17 @@ impl LocalSection {
             Self::SmartLists => t!("Smart Lists", "스마트 목록"),
             Self::ScanErrors => t!("Scan Errors", "스캔 오류"),
             Self::ImportSessions => t!("Import Sessions", "임포트 세션"),
+            Self::Inbox => t!("Inbox", "인박스"),
         }
     }
 
     pub fn from_digit(ch: char) -> Option<Self> {
         let digit = ch.to_digit(10)?;
-        let index = digit.checked_sub(1)? as usize;
+        let index = if digit == 0 {
+            9
+        } else {
+            digit.checked_sub(1)? as usize
+        };
         Self::ALL.get(index).copied()
     }
 }

@@ -295,7 +295,12 @@ fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         let y = area.y + i as u16;
         let selected = *section == app.local_mode.ui.section;
         let marker = if selected { "> " } else { "  " };
-        let label = format!("{} {}", i + 1, section.label());
+        let key = if i == 9 {
+            "0".to_owned()
+        } else {
+            (i + 1).to_string()
+        };
+        let label = format!("{key} {}", section.label());
         let text = crate::ui::text::truncate_owned_to_width(
             format!("{marker}{label}"),
             width.saturating_sub(1),
@@ -420,6 +425,10 @@ fn render_empty_section(frame: &mut Frame, app: &App, area: Rect) {
         LocalSection::ImportSessions => t!(
             "No imported local downloads yet.",
             "아직 임포트된 로컬 다운로드가 없어요."
+        ),
+        LocalSection::Inbox => t!(
+            "No import inbox rows need attention.",
+            "정리할 임포트 인박스 행이 없어요."
         ),
         _ => t!("No local rows yet.", "아직 로컬 항목이 없어요."),
     };

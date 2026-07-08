@@ -569,6 +569,7 @@ impl App {
             LocalSection::SmartLists => self.local_smart_rows_for_query(query),
             LocalSection::ScanErrors => self.local_scan_error_rows_for_query(query),
             LocalSection::ImportSessions => self.local_import_session_rows_for_query(query),
+            LocalSection::Inbox => self.local_inbox_rows_for_query(query),
         }
     }
 
