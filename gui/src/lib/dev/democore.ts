@@ -1255,16 +1255,23 @@ export class DemoCoreTransport implements Transport {
         () => {
           if (this.#transfer.phase !== 'running') return;
           const failed = Math.round(total * 0.08);
+          const jobId = 'sp2yt-demo-session';
           this.#transfer = {
             ...this.#transfer,
             phase: 'done',
             job: { done: total, total, matched: total - failed, failed },
             report: {
+              job_id: jobId,
               matched: total - failed,
               failed,
               skipped: 0,
               unmatched: ['Obscure B-side (live)', 'Untitled demo #7'].slice(0, failed ? 2 : 0),
               dest: destLabel,
+              review_command: `ytt transfer review ${jobId}`,
+              report_command: `ytt transfer report ${jobId} --format json`,
+              download_preview_command: `ytt transfer download ${jobId} --accepted --dry-run`,
+              organize_preview_command: `ytt transfer organize ${jobId} --root <LOCAL_ROOT> --dry-run`,
+              local_deck_hint: 'Local Deck > Import Sessions / Inbox',
             },
           };
           this.#pushTransfer();

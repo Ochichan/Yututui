@@ -25,6 +25,8 @@ export interface TransferJob {
   failed: number;
 }
 export interface TransferReport {
+  /** Persisted transfer/import job id. Used for CLI review/report follow-up. */
+  job_id?: string;
   matched: number;
   failed: number;
   skipped: number;
@@ -32,6 +34,11 @@ export interface TransferReport {
   unmatched: string[];
   /** Human label of where the tracks landed. */
   dest: string;
+  review_command?: string;
+  report_command?: string;
+  download_preview_command?: string;
+  organize_preview_command?: string;
+  local_deck_hint?: string;
 }
 export interface TransferState {
   kind: 'transfer_state';

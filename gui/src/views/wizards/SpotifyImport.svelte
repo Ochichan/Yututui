@@ -6,7 +6,7 @@
   // (from ctx.playlists.list) as the mainline path, since dev-mode Spotify apps 403 on
   // creation. Wired — was the transfer.wizard patch-bay seam.
   import type { AppCtx } from '../../lib/ctx';
-  import type { TransferDest } from '../../lib/stores/transfer.svelte';
+  import type { TransferDest, TransferReport } from '../../lib/stores/transfer.svelte';
   import Modal from '../../lib/components/Modal.svelte';
   import { t } from '../../lib/i18n.svelte';
 
@@ -55,6 +55,35 @@
   const pct = $derived(
     xfer.job && xfer.job.total > 0 ? Math.round((xfer.job.done / xfer.job.total) * 100) : 0,
   );
+
+  interface FollowUpStep {
+    label: string;
+    command: string;
+  }
+
+  function followUpSteps(report: TransferReport | null): FollowUpStep[] {
+    if (!report) return [];
+    return [
+      report.review_command && {
+        label: t('transfer.reviewCommand'),
+        command: report.review_command,
+      },
+      report.report_command && {
+        label: t('transfer.reportCommand'),
+        command: report.report_command,
+      },
+      report.download_preview_command && {
+        label: t('transfer.downloadPreviewCommand'),
+        command: report.download_preview_command,
+      },
+      report.organize_preview_command && {
+        label: t('transfer.organizePreviewCommand'),
+        command: report.organize_preview_command,
+      },
+    ].filter((step): step is FollowUpStep => Boolean(step));
+  }
+
+  const followUps = $derived(followUpSteps(xfer.report));
 </script>
 
 <Modal title={t('transfer.title')} width="560px" onclose={close}>
@@ -166,6 +195,24 @@
             {/each}
           </ul>
         </details>
+      {/if}
+      {#if followUps.length > 0 || xfer.report?.local_deck_hint}
+        <div class="follow">
+          <p class="lbl">3 · {t('transfer.nextSteps')}</p>
+          {#if followUps.length > 0}
+            <ul>
+              {#each followUps as step (step.command)}
+                <li>
+                  <span>{step.label}</span>
+                  <code>{step.command}</code>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          {#if xfer.report?.local_deck_hint}
+            <p class="note">{xfer.report.local_deck_hint}</p>
+          {/if}
+        </div>
       {/if}
       <div class="frow">
         <button class="btn" onclick={() => transfer.reset()}>{t('transfer.importMore')}</button>
@@ -297,6 +344,36 @@
   .unmatched ul {
     margin: var(--space-2) 0 0;
     padding-left: var(--space-5);
+  }
+  .follow {
+    border-top: 1px solid var(--role-border-muted);
+    padding-top: var(--space-3);
+  }
+  .follow ul {
+    display: grid;
+    gap: var(--space-2);
+    margin: var(--space-2) 0;
+    padding: 0;
+    list-style: none;
+  }
+  .follow li {
+    display: grid;
+    grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+    gap: var(--space-2);
+    align-items: baseline;
+    font-size: 12px;
+    color: var(--role-text-muted);
+  }
+  .follow code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border: 1px solid var(--role-border-muted);
+    border-radius: var(--radius-s);
+    padding: 2px 6px;
+    background: var(--surface-2);
+    color: var(--role-text-primary);
+    white-space: nowrap;
   }
   .frow {
     display: flex;
