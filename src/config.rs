@@ -2,7 +2,7 @@
 //! of the old `~/.youtube-music-cli/config.json`.
 //!
 //! Auth: either an inline `cookie` (raw `Cookie:` header) or a `cookies_file` pointing
-//! at a Netscape `cookies.txt`. If no file is configured, `~/Music/ytm-tui/cookies.txt`
+//! at a Netscape `cookies.txt`. If no file is configured, `~/Music/yututui/cookies.txt`
 //! (the platform music folder) is tried. The header form feeds ytmapi-rs; the file is
 //! also handed to mpv/yt-dlp so they own stream resolution (PO tokens, throttling).
 
@@ -480,7 +480,7 @@ pub struct Config {
     /// Raw `Cookie:` header for music.youtube.com (takes precedence over the file).
     pub cookie: Option<String>,
     /// Path to a Netscape `cookies.txt` exported from the browser.
-    /// `None` -> `<user music dir>/ytm-tui/cookies.txt`.
+    /// `None` -> `<user music dir>/yututui/cookies.txt`.
     pub cookies_file: Option<PathBuf>,
     /// Startup volume, 0-100.
     pub volume: i64,
@@ -886,7 +886,7 @@ impl Config {
     }
 
     /// The cookies file to try. An explicit setting wins; otherwise the cross-platform
-    /// default is `<user music dir>/ytm-tui/cookies.txt`.
+    /// default is `<user music dir>/yututui/cookies.txt`.
     pub fn effective_cookies_file(&self) -> Option<PathBuf> {
         self.cookies_file.clone().or_else(default_cookies_file)
     }
@@ -1260,8 +1260,8 @@ impl Config {
 
 /// Default location for an optional exported Netscape cookies file.
 ///
-/// macOS: `~/Music/ytm-tui/cookies.txt`
-/// Windows: `%USERPROFILE%\Music\ytm-tui\cookies.txt`
+/// macOS: `~/Music/yututui/cookies.txt`
+/// Windows: `%USERPROFILE%\Music\yututui\cookies.txt`
 pub fn default_cookies_file() -> Option<PathBuf> {
     default_ytm_dir().map(|dir| dir.join("cookies.txt"))
 }
@@ -1332,10 +1332,10 @@ fn external_cookies_warning(error: &std::io::Error) -> String {
 
 /// Default directory for downloaded tracks.
 ///
-/// macOS: `~/Music/ytm-tui`
-/// Windows: `%USERPROFILE%\Music\ytm-tui`
+/// macOS: `~/Music/yututui`
+/// Windows: `%USERPROFILE%\Music\yututui`
 pub fn default_download_dir() -> PathBuf {
-    default_ytm_dir().unwrap_or_else(|| PathBuf::from("ytm-tui"))
+    default_ytm_dir().unwrap_or_else(|| PathBuf::from("yututui"))
 }
 
 /// Normalize a user-supplied directory (env override or stored config): trim surrounding
@@ -1358,11 +1358,11 @@ fn normalize_user_dir(raw: &str) -> Option<PathBuf> {
     Some(PathBuf::from(trimmed))
 }
 
-/// Default directory for saved radio recordings: `<music>/ytm-tui/recordings`.
+/// Default directory for saved radio recordings: `<music>/yututui/recordings`.
 pub fn default_recording_dir() -> PathBuf {
     default_ytm_dir()
         .map(|d| d.join("recordings"))
-        .unwrap_or_else(|| PathBuf::from("ytm-tui/recordings"))
+        .unwrap_or_else(|| PathBuf::from("yututui/recordings"))
 }
 
 fn default_ytm_dir() -> Option<PathBuf> {
@@ -1372,7 +1372,7 @@ fn default_ytm_dir() -> Option<PathBuf> {
 }
 
 fn ytm_dir_under_audio_dir(audio_dir: PathBuf) -> PathBuf {
-    audio_dir.join("ytm-tui")
+    audio_dir.join("yututui")
 }
 
 pub(crate) fn config_path() -> Option<PathBuf> {

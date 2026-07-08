@@ -276,12 +276,12 @@ TUI の中でも: 設定 → **アカウント** → *Spotify からインポー
 <details>
 <summary><b>サインイン Cookie & ファイルの場所</b></summary>
 
-**Cookie（任意）。** 公開曲は匿名で再生できます — メンバー限定/地域制限トラックとアカウントのプレイリストにだけ必要です。YouTube Music の Cookie を **Netscape 形式**で `~/Music/ytm-tui/cookies.txt`（Windows: `%USERPROFILE%\Music\ytm-tui\cookies.txt`）に書き出して再起動してください。**そのファイルはパスワードのように扱い**、*シークレットウィンドウ方式*で書き出すこと: プライベートウィンドウでサインインし、そのタブから `cookies.txt` を書き出して、ウィンドウを閉じます — ブラウザが消えたセッションはローテーションもサインアウトもされません。正しい書き出しには `SAPISID`/`SID` の行があります。
+**Cookie（任意）。** 公開曲は匿名で再生できます — メンバー限定/地域制限トラックとアカウントのプレイリストにだけ必要です。YouTube Music の Cookie を **Netscape 形式**で `~/Music/yututui/cookies.txt`（Windows: `%USERPROFILE%\Music\yututui\cookies.txt`）に書き出して再起動してください。**そのファイルはパスワードのように扱い**、*シークレットウィンドウ方式*で書き出すこと: プライベートウィンドウでサインインし、そのタブから `cookies.txt` を書き出して、ウィンドウを閉じます — ブラウザが消えたセッションはローテーションもサインアウトもされません。正しい書き出しには `SAPISID`/`SID` の行があります。
 
 **設定 & データ。**
 
 - 設定: `~/Library/Application Support/ytm-tui/config.json`（macOS）· `~/.config/ytm-tui/config.json`（Linux）· `%APPDATA%\ytm-tui\config.json`（Windows）— その隣に `playlists.json`、`scrobble-queue.jsonl`、`transfers/`。
-- ダウンロード: `~/Music/ytm-tui` — **Download dir** 設定か `YTM_DOWNLOAD_DIR` で変更。
+- ダウンロード: `~/Music/yututui` — **Download dir** 設定か `YTM_DOWNLOAD_DIR` で変更。
 - `GEMINI_API_KEY` と `YTM_DOWNLOAD_DIR` 環境変数は、起動時に保存済み設定より優先されます。
 
 </details>

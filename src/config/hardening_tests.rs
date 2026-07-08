@@ -34,7 +34,7 @@ fn netscape_cookies_reject_lookalike_domains_and_header_breakers() {
 fn default_cookies_file_lives_under_audio_dir() {
     assert_eq!(
         ytm_dir_under_audio_dir(PathBuf::from("/Users/alice/Music")).join("cookies.txt"),
-        PathBuf::from("/Users/alice/Music/ytm-tui/cookies.txt")
+        PathBuf::from("/Users/alice/Music/yututui/cookies.txt")
     );
 }
 
@@ -42,7 +42,7 @@ fn default_cookies_file_lives_under_audio_dir() {
 fn default_download_dir_lives_under_audio_dir() {
     assert_eq!(
         ytm_dir_under_audio_dir(PathBuf::from("/Users/alice/Music")),
-        PathBuf::from("/Users/alice/Music/ytm-tui")
+        PathBuf::from("/Users/alice/Music/yututui")
     );
 }
 

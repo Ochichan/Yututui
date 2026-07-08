@@ -276,12 +276,12 @@ Matching is metadata-based (NFKC-normalized, CJK-safe). Anything ambiguous lands
 <details>
 <summary><b>Sign-in cookies & file locations</b></summary>
 
-**Cookies (optional).** Public songs play anonymously — only members-only/region-locked tracks and account playlists need this. Export your YouTube Music cookies in **Netscape format** to `~/Music/ytm-tui/cookies.txt` (Windows: `%USERPROFILE%\Music\ytm-tui\cookies.txt`) and restart. **Treat that file like a password**, and export the *incognito way*: sign in inside a private window, export `cookies.txt` from that tab, then close the window — a session whose browser is gone never gets rotated or signed out. A good export has `SAPISID`/`SID` lines in it.
+**Cookies (optional).** Public songs play anonymously — only members-only/region-locked tracks and account playlists need this. Export your YouTube Music cookies in **Netscape format** to `~/Music/yututui/cookies.txt` (Windows: `%USERPROFILE%\Music\yututui\cookies.txt`) and restart. **Treat that file like a password**, and export the *incognito way*: sign in inside a private window, export `cookies.txt` from that tab, then close the window — a session whose browser is gone never gets rotated or signed out. A good export has `SAPISID`/`SID` lines in it.
 
 **Config & data.**
 
 - Config: `~/Library/Application Support/ytm-tui/config.json` (macOS) · `~/.config/ytm-tui/config.json` (Linux) · `%APPDATA%\ytm-tui\config.json` (Windows) — with `playlists.json`, `scrobble-queue.jsonl` and `transfers/` alongside.
-- Downloads: `~/Music/ytm-tui` — change via the **Download dir** setting or `YTM_DOWNLOAD_DIR`.
+- Downloads: `~/Music/yututui` — change via the **Download dir** setting or `YTM_DOWNLOAD_DIR`.
 - `GEMINI_API_KEY` and `YTM_DOWNLOAD_DIR` override saved settings at launch.
 
 </details>
