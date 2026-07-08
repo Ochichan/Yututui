@@ -173,6 +173,41 @@ fn save_organizable_import_session(session_id: &str, root: &std::path::Path) -> 
     audio
 }
 
+fn save_failed_download_import_session(session_id: &str) {
+    let session = crate::transfer::session::ImportSession {
+        schema_version: 1,
+        session_id: session_id.to_owned(),
+        job_id: session_id.to_owned(),
+        created_at: 0,
+        updated_at: 77,
+        stage: crate::transfer::Stage::Writing,
+        counts: crate::transfer::session::ImportSessionCounts {
+            total: 1,
+            matched: 1,
+            ..crate::transfer::session::ImportSessionCounts::default()
+        },
+        rows: vec![crate::transfer::session::ImportSessionRow {
+            row_id: "row-00009".to_owned(),
+            source_order: 9,
+            status: crate::transfer::session::ImportSessionRowStatus::Matched,
+            title: "Retry Me".to_owned(),
+            artists: vec!["Retry Artist".to_owned()],
+            album_artists: vec!["Retry Album Artist".to_owned()],
+            album: Some("Retry Album".to_owned()),
+            duration_secs: Some(199),
+            source_key: "spotify:track:retry-me".to_owned(),
+            source_url: Some("https://open.spotify.com/track/retry-me".to_owned()),
+            selected_key: Some("retry000001".to_owned()),
+            selected_score: Some(0.96),
+            selected_display: Some("Retry Artist - Retry Me".to_owned()),
+            errors: vec!["network failed".to_owned()],
+            ..crate::transfer::session::ImportSessionRow::default()
+        }],
+        ..crate::transfer::session::ImportSession::default()
+    };
+    session.save().expect("save failed download session");
+}
+
 #[test]
 fn local_deck_import_sessions_drill_down_in_source_order() {
     let mut second = local_deck_track(
@@ -577,6 +612,46 @@ fn local_deck_import_row_download_queues_import_inbox_request() {
     );
     assert_eq!(request.song.import_session_id.as_deref(), Some(session_id));
     assert_eq!(request.song.import_source_order, Some(7));
+}
+
+#[test]
+fn local_deck_import_failed_row_r_retries_download() {
+    let session_id = "sp2yt-local-download-retry";
+    save_failed_download_import_session(session_id);
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('0'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    assert_eq!(app.local_rows_len(), 1);
+    assert_eq!(
+        app.local_row_text(&app.local_visible_rows()[0]),
+        "#9 failed Retry Me - Retry Artist"
+    );
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
+    let [Cmd::Download(song)] = cmds.as_slice() else {
+        panic!("expected retry download command");
+    };
+    let request = crate::download::import_request_for_song(song).expect("import request");
+    assert_eq!(request.session_id, session_id);
+    assert_eq!(request.row_id, "row-00009");
+    assert_eq!(request.source_order, 9);
+    assert_eq!(request.song.video_id, "retry000001");
+    assert_eq!(request.song.title, "Retry Me");
+    assert_eq!(request.song.artist, "Retry Artist");
+    assert_eq!(request.song.album.as_deref(), Some("Retry Album"));
+    assert_eq!(
+        request.song.album_artist.as_deref(),
+        Some("Retry Album Artist")
+    );
+    assert_eq!(
+        request.song.origin_key.as_deref(),
+        Some("spotify:track:retry-me")
+    );
+    assert_eq!(
+        request.song.origin_url.as_deref(),
+        Some("https://open.spotify.com/track/retry-me")
+    );
 }
 
 #[test]

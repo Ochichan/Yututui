@@ -337,6 +337,84 @@ impl App {
             .collect()
     }
 
+    pub(in crate::app) fn local_retry_failed_import_downloads(&mut self) -> Option<Vec<Cmd>> {
+        let row = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned()?;
+        let (session_id, source_order, failed_count) = match row {
+            crate::local::LocalRowId::ImportSession(session_id) => {
+                let failed_count = import_session_failed_download_count(&session_id)?;
+                if failed_count == 0 {
+                    return None;
+                }
+                (session_id, None, failed_count)
+            }
+            crate::local::LocalRowId::ImportSessionRow {
+                session_id,
+                source_order,
+            } => {
+                let row = load_import_session_row(&session_id, source_order)?;
+                if row.errors.is_empty() {
+                    return None;
+                }
+                (session_id, Some(source_order), 1)
+            }
+            _ => return None,
+        };
+        let songs = self.import_session_failed_download_songs(&session_id, source_order);
+        if songs.is_empty() {
+            self.status.kind = StatusKind::Info;
+            self.status.text = format!(
+                "{}: {failed_count}",
+                t!(
+                    "No failed import downloads can be retried",
+                    "재시도할 수 있는 실패 다운로드 없음"
+                )
+            );
+            self.dirty = true;
+            return Some(Vec::new());
+        }
+        Some(self.start_or_confirm_local_download(songs))
+    }
+
+    fn import_session_failed_download_songs(
+        &self,
+        session_id: &str,
+        source_order: Option<u32>,
+    ) -> Vec<Song> {
+        let Ok(mut session) = ImportSession::load(session_id) else {
+            return Vec::new();
+        };
+        session.rows.sort_by(|a, b| {
+            a.source_order
+                .cmp(&b.source_order)
+                .then_with(|| a.row_id.cmp(&b.row_id))
+        });
+        let existing = self.import_download_dedupe_index();
+        let plan = build_import_download_plan(&session, &existing);
+        let retry_orders: BTreeSet<_> = plan
+            .rows
+            .into_iter()
+            .filter(|row| matches!(row.decision, ImportDownloadDecision::Enqueue))
+            .filter(|row| source_order.is_none_or(|wanted| wanted == row.source_order))
+            .filter(|planned| {
+                session
+                    .rows
+                    .iter()
+                    .find(|row| row.source_order == planned.source_order)
+                    .is_some_and(|row| !row.errors.is_empty())
+            })
+            .map(|row| row.source_order)
+            .collect();
+        session
+            .rows
+            .iter()
+            .filter(|row| retry_orders.contains(&row.source_order))
+            .filter_map(|row| remote_song_from_import_session_row(&session.session_id, row))
+            .collect()
+    }
+
     pub(in crate::app) fn local_accept_selected_import_candidate(&mut self) -> bool {
         let Some((session_id, source_order)) = self.selected_manual_review_import_row() else {
             return false;
@@ -713,6 +791,17 @@ fn load_import_session_and_row(
         .find(|row| row.source_order == source_order)
         .cloned()?;
     Some((session, row))
+}
+
+fn import_session_failed_download_count(session_id: &str) -> Option<usize> {
+    Some(
+        ImportSession::load(session_id)
+            .ok()?
+            .rows
+            .into_iter()
+            .filter(|row| !row.errors.is_empty())
+            .count(),
+    )
 }
 
 fn song_from_import_session_row(session_id: &str, row: &ImportSessionRow, path: PathBuf) -> Song {

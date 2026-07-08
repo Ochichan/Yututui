@@ -171,6 +171,9 @@ impl App {
             if self.local_reject_selected_import_row() {
                 return Vec::new();
             }
+            if let Some(cmds) = self.local_retry_failed_import_downloads() {
+                return cmds;
+            }
             return self.request_local_scan(false);
         }
         if matches!(k.code, KeyCode::Char('R'))
@@ -350,7 +353,7 @@ impl App {
         self.open_confirm_download(songs)
     }
 
-    fn start_or_confirm_local_download(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
+    pub(in crate::app) fn start_or_confirm_local_download(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
         let songs = self.downloadable_batch(songs);
         match songs.len() {
             0 => {
