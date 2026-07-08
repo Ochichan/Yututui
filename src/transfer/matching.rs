@@ -10,7 +10,7 @@
 //! remaster-vs-original tie-breaker. Accept ≥ 0.80; 0.60..0.80 is reported as ambiguous
 //! (top 3 candidates) rather than silently guessed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -185,6 +185,15 @@ impl Default for MatchConfig {
             ambiguous_floor: 0.60,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MatchScoreBreakdown {
+    pub total: f32,
+    pub title: f32,
+    pub artist: f32,
+    pub duration: f32,
+    pub album_bonus: f32,
 }
 
 // Normalization ------------------------------------------------------------------
@@ -415,8 +424,13 @@ fn containment(a: &str, b: &str) -> bool {
     a.len() >= 2 && b.len() >= 2 && (a.contains(b) || b.contains(a))
 }
 
-/// Score one candidate against the input (0..=1).
+/// Score one candidate against the input.
 pub fn score_candidate(input: &TrackInput, cand: &MatchCandidate) -> f32 {
+    score_candidate_breakdown(input, cand).total
+}
+
+/// Explain one candidate score against the input.
+pub fn score_candidate_breakdown(input: &TrackInput, cand: &MatchCandidate) -> MatchScoreBreakdown {
     let input_stripped = normalize_stripped(&input.title);
     // Title: best of full vs annotation-stripped comparisons. Video results often embed
     // the artist in the title ("IU 'Celebrity' MV") — a third form with the input's
@@ -508,7 +522,14 @@ pub fn score_candidate(input: &TrackInput, cand: &MatchCandidate) -> f32 {
 
     // Deliberately unclamped (max 1.05): clamping would erase the album bonus exactly
     // where it matters — as the tie-breaker between two otherwise-perfect candidates.
-    0.55 * title + 0.30 * artist + 0.15 * duration + album_bonus
+    let total = 0.55 * title + 0.30 * artist + 0.15 * duration + album_bonus;
+    MatchScoreBreakdown {
+        total,
+        title,
+        artist,
+        duration,
+        album_bonus,
+    }
 }
 
 /// Rank candidates and classify against the thresholds.
@@ -593,9 +614,69 @@ pub fn memo_key(input: &TrackInput) -> String {
     )
 }
 
-/// Find `input` on YouTube Music: query `"artist stripped-title"`, and when the best
-/// score falls short, retry with the title alone (absorbs romanized-vs-hangul artist
-/// mismatches, the dominant K-pop failure mode). At most two searches per track, ever.
+fn push_query_variant(out: &mut Vec<String>, seen: &mut HashSet<String>, query: String) {
+    let query = query.trim();
+    if query.is_empty() {
+        return;
+    }
+    let key = normalize(query);
+    if seen.insert(key) {
+        out.push(query.to_owned());
+    }
+}
+
+/// Build the bounded YTM query plan for a source track.
+///
+/// Easy tracks still stop after the first successful query. The extra variants are only
+/// reached when scoring is uncertain, and they target common Spotify-to-YouTube failure
+/// modes: featured-artist credits, album-specific uploads, and artist romanization drift.
+pub fn ytm_query_plan(input: &TrackInput) -> Vec<String> {
+    let stripped_title = strip_annotations(&input.title);
+    let stripped_title = stripped_title.trim();
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
+    let first_artist = input
+        .artists
+        .first()
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty());
+    if let Some(artist) = first_artist {
+        push_query_variant(&mut out, &mut seen, format!("{artist} {stripped_title}"));
+    }
+
+    let all_artists = input
+        .artists
+        .iter()
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !all_artists.is_empty() {
+        push_query_variant(
+            &mut out,
+            &mut seen,
+            format!("{all_artists} {stripped_title}"),
+        );
+    }
+
+    if let Some(album) = input
+        .album
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        && normalize(album) != normalize(stripped_title)
+    {
+        push_query_variant(&mut out, &mut seen, format!("{stripped_title} {album}"));
+    }
+
+    push_query_variant(&mut out, &mut seen, stripped_title.to_owned());
+    out
+}
+
+/// Find `input` on YouTube Music using a bounded query plan. The first query keeps the
+/// old fast path (`"artist stripped-title"`); later queries add all-artist, album, and
+/// title-only variants only while the best score remains below the accept threshold.
 pub async fn match_track_ytm(
     api: &YtMusicApi,
     input: &TrackInput,
@@ -620,29 +701,22 @@ pub async fn match_track_ytm(
         return Ok(hit.clone());
     }
 
-    let stripped_title = strip_annotations(&input.title);
-    let primary = match input.artists.first() {
-        Some(artist) if !artist.trim().is_empty() => format!("{artist} {stripped_title}"),
-        _ => stripped_title.clone(),
-    };
-    pace.tick().await;
-    let songs = api
-        .search_songs(&primary, SearchSource::Youtube, search_config)
-        .await?;
-    let mut candidates: Vec<MatchCandidate> = songs.iter().map(MatchCandidate::from).collect();
-    let mut outcome = best_outcome(input, &candidates, cfg);
-
-    if !matches!(outcome, MatchOutcome::Matched { .. }) && !input.artists.is_empty() {
+    let mut candidates = Vec::<MatchCandidate>::new();
+    let mut outcome = MatchOutcome::NotFound;
+    for query in ytm_query_plan(input) {
         pace.tick().await;
-        let fallback = api
-            .search_songs(&stripped_title, SearchSource::Youtube, search_config)
+        let songs = api
+            .search_songs(&query, SearchSource::Youtube, search_config)
             .await?;
-        for song in &fallback {
+        for song in &songs {
             if !candidates.iter().any(|c| c.key == song.video_id) {
                 candidates.push(MatchCandidate::from(song));
             }
         }
         outcome = best_outcome(input, &candidates, cfg);
+        if matches!(outcome, MatchOutcome::Matched { .. }) {
+            break;
+        }
     }
 
     memo.insert(key, outcome.clone());
@@ -754,6 +828,51 @@ mod tests {
     }
 
     #[test]
+    fn ytm_query_plan_adds_all_artists_album_and_title_fallbacks() {
+        let input = input(
+            "Song Title (feat. Guest)",
+            &["Primary", "Featured"],
+            Some("Album Name"),
+            Some(180),
+        );
+
+        assert_eq!(
+            ytm_query_plan(&input),
+            vec![
+                "Primary Song Title".to_owned(),
+                "Primary Featured Song Title".to_owned(),
+                "Song Title Album Name".to_owned(),
+                "Song Title".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ytm_query_plan_dedupes_empty_and_repeated_variants() {
+        let mut input = input("Song", &["Artist", "Artist"], Some("Song"), None);
+        input.artists.push(" ".to_owned());
+
+        assert_eq!(
+            ytm_query_plan(&input),
+            vec![
+                "Artist Song".to_owned(),
+                "Artist Artist Song".to_owned(),
+                "Song".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn ytm_query_plan_handles_missing_artists() {
+        let input = input("Song", &[], Some("Album"), None);
+
+        assert_eq!(
+            ytm_query_plan(&input),
+            vec!["Song Album".to_owned(), "Song".to_owned()]
+        );
+    }
+
+    #[test]
     fn dual_script_title_matches_either_form() {
         // "TT (티티)" vs "TT": the feat-stripper doesn't touch it (not noise), but the
         // full-form comparison still lands via similarity of normalized strings.
@@ -774,6 +893,20 @@ mod tests {
 
         let cover = cand("ETA", "Random Cover Band", None, Some(151));
         assert!(score_candidate(&i, &cover) < 0.80);
+    }
+
+    #[test]
+    fn score_breakdown_exposes_weighted_components() {
+        let i = input("ETA", &["NewJeans"], Some("Get Up"), Some(151));
+        let exact = cand("ETA", "NewJeans", Some("Get Up"), Some(151));
+
+        let breakdown = score_candidate_breakdown(&i, &exact);
+
+        assert_eq!(breakdown.title, 1.0);
+        assert_eq!(breakdown.artist, 1.0);
+        assert_eq!(breakdown.duration, 1.0);
+        assert_eq!(breakdown.album_bonus, 0.05);
+        assert_eq!(breakdown.total, score_candidate(&i, &exact));
     }
 
     #[test]
