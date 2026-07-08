@@ -35,6 +35,18 @@ impl App {
             };
         }
 
+        // Local Player mode switching is modal and follows the Radio confirmation rules.
+        if let Some(confirm) = self.local_mode.pending_confirm.take() {
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            return if confirmed {
+                self.apply_local_mode_confirm(confirm)
+            } else {
+                Vec::new()
+            };
+        }
+
         // Settings confirmations are modal: Enter or `y` confirms, anything else cancels.
         // Handle it here so the key can't leak through to the settings list.
         if let Some(confirm) = self.overlays.pending_settings_confirm.take() {
@@ -271,6 +283,18 @@ impl App {
             return Vec::new();
         }
 
+        // Local Deck owns Shift+A/`A` for "enqueue the current local result set". That chord
+        // overlaps the global animation toggle, so route it before globals only while the Local
+        // Deck list is active; filter text entry still receives typeable characters normally.
+        if self.mode == Mode::Library
+            && self.local_dedicated_mode
+            && !self.local_mode.ui.filter_editing
+            && matches!(k.code, KeyCode::Char('A'))
+            && (k.modifiers.is_empty() || k.modifiers == KeyModifiers::SHIFT)
+        {
+            return self.on_key_local(k);
+        }
+
         // Global shortcuts (help, streaming). Suppressed only when a *typeable* key would feed
         // a focused text field — so `?` types into the search box but opens help elsewhere,
         // while Ctrl-based globals (streaming) keep working everywhere as before.
@@ -363,6 +387,7 @@ impl App {
         match self.mode {
             Mode::Player => self.on_key_player(k),
             Mode::Search => self.on_key_search(k),
+            Mode::Library if self.local_dedicated_mode => self.on_key_local(k),
             Mode::Library => self.on_key_library(k),
             Mode::Settings => self.on_key_settings(k),
             Mode::Ai => self.on_key_ai(k),
@@ -410,7 +435,11 @@ impl App {
             Mode::Ai => self.ai.focus == AiFocus::Input,
             Mode::Settings => self.settings.as_ref().is_some_and(|s| s.editing_text),
             Mode::Library => {
-                self.library_ui.filter_editing || self.library_ui.create_input.is_some()
+                if self.local_dedicated_mode {
+                    self.local_mode.ui.filter_editing
+                } else {
+                    self.library_ui.filter_editing || self.library_ui.create_input.is_some()
+                }
             }
             _ => false,
         }

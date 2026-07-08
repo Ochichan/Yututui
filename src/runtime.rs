@@ -291,6 +291,10 @@ fn app_msg_policy(msg: &Msg) -> EventPolicy {
             lane: Lane::Telemetry,
             key: Key::MediaArtVideo,
         },
+        Msg::Local(crate::app::LocalMsg::ScanProgress(_)) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::LocalScanProgress,
+        },
         Msg::Tools(crate::tools::ToolsEvent::Progress { .. }) => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,
             key: Key::ToolProgress,
@@ -343,6 +347,7 @@ fn app_msg_policy(msg: &Msg) -> EventPolicy {
         | Msg::PlaylistTracks { .. }
         | Msg::PlaylistTracksError { .. }
         | Msg::DownloadsScanned(_)
+        | Msg::Local(_)
         | Msg::DownloadDone { .. }
         | Msg::DownloadError { .. }
         | Msg::DownloadDirError { .. }
@@ -1060,6 +1065,68 @@ impl RuntimeHandles {
                     emit(&tx, RuntimeEvent::App(Msg::DownloadsScanned(scan)));
                 });
             }
+            Cmd::Local(cmd) => match cmd {
+                crate::app::LocalCmd::LoadIndex { index_path } => {
+                    let tx = self.worker_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let load = index_path
+                            .as_deref()
+                            .map(crate::local::LocalIndex::load_with_diagnostics)
+                            .unwrap_or_default();
+                        let warnings = load
+                            .warnings
+                            .into_iter()
+                            .map(|warning| crate::local::ScanError {
+                                path: warning.path,
+                                message: warning.message,
+                            })
+                            .collect();
+                        emit(
+                            &tx,
+                            RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::IndexLoaded {
+                                index_path,
+                                index: load.index,
+                                warnings,
+                            })),
+                        );
+                    });
+                }
+                crate::app::LocalCmd::ScanRoots {
+                    roots,
+                    index_path,
+                    previous,
+                } => {
+                    let tx = self.worker_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let progress_tx = tx.clone();
+                        let mut result =
+                            crate::local::scan_roots_with_progress(&roots, &previous, |progress| {
+                                emit(
+                                    &progress_tx,
+                                    RuntimeEvent::App(Msg::Local(
+                                        crate::app::LocalMsg::ScanProgress(progress),
+                                    )),
+                                );
+                            });
+                        if let Some(path) = index_path.as_deref()
+                            && let Err(error) = result.index.save(path)
+                        {
+                            result.errors.push(crate::local::ScanError {
+                                path: path.to_path_buf(),
+                                message: format!("could not save local index: {error}"),
+                            });
+                            result.summary.errors = result.errors.len();
+                        }
+                        emit(
+                            &tx,
+                            RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::ScanFinished {
+                                index_path,
+                                result,
+                            })),
+                        );
+                    });
+                }
+            },
             Cmd::Recorder(job) => {
                 // Copy/tag/delete are blocking IO — keep them off the loop task. A `Save`
                 // reports back; `Discard`/`WipeTemp` are fire-and-forget.

@@ -740,6 +740,7 @@ mod tests {
             .expect("library group");
         for row in [
             ("Enter".to_owned(), "Play selected".to_owned()),
+            ("M-⇧l".to_owned(), "Enter / exit Local Deck".to_owned()),
             ("\\".to_owned(), "Add to queue".to_owned()),
             ("a".to_owned(), "Play whole tab".to_owned()),
         ] {

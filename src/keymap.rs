@@ -95,6 +95,7 @@ pub enum Action {
     // Global (active in any non-text-entry context).
     ToggleStreaming,
     ToggleRadioMode,
+    ToggleLocalMode,
     ToggleHelp,
     ToggleAbout,
     ToggleAnimations,
@@ -401,6 +402,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "라디오/일반 모드",
     ),
     (
+        Action::ToggleLocalMode,
+        "toggle_local_mode",
+        "Local Deck mode",
+        "로컬 덱 모드",
+    ),
+    (
         Action::ToggleHelp,
         "toggle_help",
         "Toggle help",
@@ -545,6 +552,9 @@ impl Action {
             (KeyContext::Library, Action::Confirm) => t!("Play selected", "선택 항목 재생"),
             (KeyContext::Library, Action::Back) => t!("Close Library", "라이브러리 닫기"),
             (KeyContext::Library, Action::LibraryRemove) => t!("Remove / delete", "제거 / 삭제"),
+            (KeyContext::Library, Action::ToggleLocalMode) => {
+                t!("Enter / exit Local Deck", "로컬 덱 들어가기 / 나가기")
+            }
             (KeyContext::Playlists, Action::Confirm) => {
                 t!("Open / play selected", "열기 / 선택 재생")
             }
@@ -1177,6 +1187,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Global, A::Quit, ctrl('q')),
         // Library list commands.
         (C::Library, A::Confirm, key(KeyCode::Enter)),
+        (C::Library, A::ToggleLocalMode, alt_shift('l')),
         (C::Library, A::Enqueue, ch('\\')),
         (C::Library, A::PlayAll, ch('a')),
         (C::Library, A::Favorite, ch('f')),

@@ -164,6 +164,14 @@ fn settings_keys_lists_radio_normal_mode_binding() {
         text.contains("Alt+Shift+R"),
         "Keys tab should show the default mode-switch key"
     );
+    assert!(
+        text.contains("Enter / exit Local Deck"),
+        "Keys tab should list the Local Deck mode binding"
+    );
+    assert!(
+        text.contains("Alt+Shift+L"),
+        "Keys tab should show the default Local Deck key"
+    );
 }
 
 #[test]

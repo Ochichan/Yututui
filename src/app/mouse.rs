@@ -123,6 +123,19 @@ impl App {
                 }
             }
         }
+        // Local Player confirmations are modal and mirror the Radio confirm behavior.
+        if self.local_mode.pending_confirm.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(t @ (MouseTarget::ConfirmLocalMode | MouseTarget::CancelLocalMode)) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.local_mode.pending_confirm = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
+        }
         // The "what's playing" identify overlay is modal: only its own buttons act; a
         // click anywhere else closes it (no click-through to the player/seekbar).
         if self.overlays.now_playing_overlay.is_some() {
@@ -563,6 +576,18 @@ impl App {
                 Vec::new()
             }
             MouseTarget::LibraryTab(_) => Vec::new(),
+            MouseTarget::LocalNav(i) if self.mode == Mode::Library && self.local_dedicated_mode => {
+                let Some(section) = LocalSection::ALL.get(i).copied() else {
+                    return Vec::new();
+                };
+                self.switch_local_section(section);
+                Vec::new()
+            }
+            MouseTarget::LocalNav(_) => Vec::new(),
+            MouseTarget::LocalRow(i) if self.mode == Mode::Library && self.local_dedicated_mode => {
+                self.local_row_click(i)
+            }
+            MouseTarget::LocalRow(_) => Vec::new(),
             // Footer mouse icon: opens a mouse-only cheat-sheet.
             MouseTarget::MouseHelp => {
                 self.overlays.help_visible = false;
@@ -707,6 +732,17 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            MouseTarget::ConfirmLocalMode => {
+                let Some(confirm) = self.local_mode.pending_confirm.take() else {
+                    return Vec::new();
+                };
+                self.apply_local_mode_confirm(confirm)
+            }
+            MouseTarget::CancelLocalMode => {
+                self.local_mode.pending_confirm = None;
+                self.dirty = true;
+                Vec::new()
+            }
             MouseTarget::NowPlayingFavorite => self.now_playing_favorite(),
             MouseTarget::NowPlayingAskAi => self.now_playing_ask_ai(),
             MouseTarget::CloseNowPlaying => {
@@ -761,6 +797,7 @@ impl App {
             || self.overlays.about_visible
             || self.overlays.key_conflict.is_some()
             || self.radio_mode.pending_radio_mode_confirm.is_some()
+            || self.local_mode.pending_confirm.is_some()
             || self.overlays.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
@@ -806,6 +843,9 @@ impl App {
             Some(MouseTarget::Nav(Mode::Player)) if self.mode == Mode::Player => {
                 self.request_radio_mode_switch()
             }
+            Some(MouseTarget::Nav(Mode::Library)) if self.mode == Mode::Library => {
+                self.request_local_mode_switch()
+            }
             Some(MouseTarget::AiSuggestionRow(i)) if self.mode == Mode::Ai => {
                 if i < self.ai.suggestions.len() {
                     self.ai.suggestions_selected = i;
@@ -813,6 +853,9 @@ impl App {
                     return self.play_ai_suggestion();
                 }
                 Vec::new()
+            }
+            Some(MouseTarget::LocalRow(i)) if self.local_dedicated_mode => {
+                self.local_row_activate(i)
             }
             Some(MouseTarget::ListRow(i)) => self.on_list_row_activate(i),
             _ => self.on_mouse_click(col, row),
@@ -1049,7 +1092,13 @@ impl App {
 
     fn scroll_content_len(&self, surface: ScrollSurface) -> Option<usize> {
         Some(match surface {
-            ScrollSurface::Library => self.library_len(),
+            ScrollSurface::Library => {
+                if self.local_dedicated_mode {
+                    self.local_rows_len()
+                } else {
+                    self.library_len()
+                }
+            }
             ScrollSurface::Search => self.search.results.len(),
             ScrollSurface::SearchFilter => self.search_filter.matches.len(),
             ScrollSurface::AiTranscript => self.bridges.ai_transcript_copy_lines.borrow().len(),
@@ -1183,7 +1232,12 @@ impl App {
         }
         match self.mode {
             Mode::Library => {
-                self.bridges.library_scroll.wheel(up, n, self.library_len());
+                let len = if self.local_dedicated_mode {
+                    self.local_rows_len()
+                } else {
+                    self.library_len()
+                };
+                self.bridges.library_scroll.wheel(up, n, len);
                 self.dirty = true;
             }
             Mode::Search => {
@@ -1229,6 +1283,7 @@ impl App {
                 self.search.focus = SearchFocus::Results;
                 self.dirty = true;
             }
+            Mode::Library if self.local_dedicated_mode => return self.local_row_click(index),
             Mode::Library if index < self.library_len() => {
                 self.library_ui.selected = index;
                 // A fresh single click re-anchors the multi-select range here.
@@ -1272,6 +1327,7 @@ impl App {
             // The shared activation path, so a double-clicked playlist row fetches its
             // tracks first (like Enter) instead of trying to play the row itself.
             Mode::Search if index < self.search.results.len() => self.activate_search_index(index),
+            Mode::Library if self.local_dedicated_mode => self.local_row_activate(index),
             Mode::Library if index < self.library_len() => {
                 self.library_ui.selected = index;
                 // At the Playlists root a double-click opens the playlist (the row is a
@@ -1298,6 +1354,7 @@ impl App {
             || self.overlays.about_visible
             || self.overlays.key_conflict.is_some()
             || self.radio_mode.pending_radio_mode_confirm.is_some()
+            || self.local_mode.pending_confirm.is_some()
             || self.overlays.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
@@ -1367,6 +1424,15 @@ impl App {
                 }
             }
             Mode::Library => {
+                if self.local_dedicated_mode {
+                    let MouseTarget::LocalRow(index) = target else {
+                        return Vec::new();
+                    };
+                    if index >= self.local_rows_len() {
+                        return Vec::new();
+                    }
+                    return self.local_enqueue_row_index(index);
+                }
                 let index = match target {
                     MouseTarget::ListRow(i) | MouseTarget::LibraryDel(i) => i,
                     _ => return Vec::new(),
