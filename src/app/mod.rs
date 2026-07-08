@@ -1344,12 +1344,14 @@ impl App {
                 self.downloads.dispatched = self.downloads.dispatched.saturating_sub(1);
                 let saved = !path.trim().is_empty();
                 if saved {
-                    let local = self
-                        .downloads
-                        .sources
-                        .remove(&video_id)
-                        .map(|source| source.with_local_path(PathBuf::from(&path)))
-                        .unwrap_or_else(|| Song::local_file(PathBuf::from(&path)));
+                    let path_buf = PathBuf::from(&path);
+                    let source = self.downloads.sources.remove(&video_id);
+                    if let Some(source) = source.as_ref() {
+                        self.record_import_download_done(source, &path_buf);
+                    }
+                    let local = source
+                        .map(|source| source.with_local_path(path_buf.clone()))
+                        .unwrap_or_else(|| Song::local_file(path_buf));
                     self.add_downloaded_track(local);
                 }
                 // Success toast — opt out of this turn's default error styling.
@@ -1368,7 +1370,9 @@ impl App {
                 self.downloads
                     .active
                     .insert(video_id.clone(), DownloadState::Failed);
-                self.downloads.sources.remove(&video_id);
+                if let Some(source) = self.downloads.sources.remove(&video_id) {
+                    self.record_import_download_error(&source, &error);
+                }
                 self.downloads.dispatched = self.downloads.dispatched.saturating_sub(1);
                 self.status.text = format!("{}: {error}", t!("Download failed", "다운로드 실패"));
                 self.dirty = true;

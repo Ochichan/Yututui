@@ -2,6 +2,7 @@
 
 use super::*;
 use std::collections::HashSet;
+use std::path::Path;
 
 /// Ceiling on in-flight (dispatched-but-unfinished) downloads. Held comfortably below the
 /// bounded command channel (`backpressure::DOWNLOAD_QUEUE` = 128) so a bulk batch drains
@@ -145,6 +146,40 @@ impl App {
         self.library_ui.downloaded.truncate(DOWNLOADED_TRACKS_MAX);
     }
 
+    pub(in crate::app) fn record_import_download_done(&self, source: &Song, path: &Path) {
+        let Some((session_id, source_order)) = import_session_ref(source) else {
+            return;
+        };
+        if let Err(error) = crate::transfer::session::record_download_done(
+            session_id,
+            source_order,
+            path.to_path_buf(),
+        ) {
+            tracing::warn!(
+                session_id,
+                source_order,
+                error = %error,
+                "could not update import session download path"
+            );
+        }
+    }
+
+    pub(in crate::app) fn record_import_download_error(&self, source: &Song, message: &str) {
+        let Some((session_id, source_order)) = import_session_ref(source) else {
+            return;
+        };
+        if let Err(error) =
+            crate::transfer::session::record_download_error(session_id, source_order, message)
+        {
+            tracing::warn!(
+                session_id,
+                source_order,
+                error = %error,
+                "could not update import session download error"
+            );
+        }
+    }
+
     /// Turn a bare disk scan into the Downloads-tab list, restoring each track's YouTube
     /// identity where possible: first from the persisted manifest (by `video_id` — brings back
     /// the real artist/duration too), then, for anything still id-less (e.g. files downloaded
@@ -176,4 +211,11 @@ impl App {
             .find(|e| e.youtube_id().is_some() && e.title.trim().to_lowercase() == key)
             .and_then(|e| e.youtube_id().map(str::to_owned))
     }
+}
+
+fn import_session_ref(song: &Song) -> Option<(&str, u32)> {
+    Some((
+        song.import_session_id.as_deref()?,
+        song.import_source_order?,
+    ))
 }

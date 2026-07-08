@@ -271,6 +271,57 @@ impl ImportSession {
     }
 }
 
+pub fn record_download_done(
+    session_id: &str,
+    source_order: u32,
+    local_path: PathBuf,
+) -> anyhow::Result<()> {
+    let mut session = ImportSession::load(session_id)?;
+    let row = row_by_source_order_mut(&mut session, source_order)?;
+    row.written = true;
+    row.local_path = Some(local_path);
+    row.errors.clear();
+    save_updated_session(session)
+}
+
+pub fn record_download_error(
+    session_id: &str,
+    source_order: u32,
+    error: &str,
+) -> anyhow::Result<()> {
+    let mut session = ImportSession::load(session_id)?;
+    let row = row_by_source_order_mut(&mut session, source_order)?;
+    row.written = false;
+    row.local_path = None;
+    row.errors.clear();
+    let message = error.trim();
+    if !message.is_empty() {
+        row.errors.push(message.chars().take(500).collect());
+    }
+    save_updated_session(session)
+}
+
+fn row_by_source_order_mut(
+    session: &mut ImportSession,
+    source_order: u32,
+) -> anyhow::Result<&mut ImportSessionRow> {
+    use anyhow::Context as _;
+    let session_id = session.session_id.clone();
+    session
+        .rows
+        .iter_mut()
+        .find(|row| row.source_order == source_order)
+        .with_context(|| {
+            format!("import session `{session_id}` has no row with source order {source_order}")
+        })
+}
+
+fn save_updated_session(mut session: ImportSession) -> anyhow::Result<()> {
+    session.updated_at = crate::signals::unix_now();
+    session.counts = ImportSessionCounts::from_rows(&session.rows);
+    session.save().map_err(Into::into)
+}
+
 impl ImportSessionCounts {
     fn from_rows(rows: &[ImportSessionRow]) -> Self {
         let mut counts = ImportSessionCounts {
@@ -644,5 +695,49 @@ mod tests {
             .display(),
             "kind"
         );
+    }
+
+    #[test]
+    fn download_updates_mark_rows_done_or_failed() {
+        let cp = Checkpoint::new(
+            "sp2yt-session-download-row".to_owned(),
+            spec(TransferDest::LocalPlaylist {
+                name: Some("Imported".to_owned()),
+            }),
+            vec![entry(
+                input("Matched", &["A"]),
+                Some(MatchOutcome::Matched {
+                    key: "vid-a".to_owned(),
+                    score: 0.94,
+                    display: "A - Matched".to_owned(),
+                    title: Some("Matched".to_owned()),
+                    artist: Some("A".to_owned()),
+                    album: Some("Album".to_owned()),
+                    duration_secs: Some(180),
+                    score_breakdown: None,
+                }),
+                false,
+            )],
+        );
+        ImportSession::from_checkpoint(&cp)
+            .save()
+            .expect("save import session");
+
+        let path = PathBuf::from("/tmp/imported/Matched.m4a");
+        record_download_done(&cp.job_id, 1, path.clone()).expect("record download done");
+
+        let done = ImportSession::load(&cp.job_id).expect("load done session");
+        assert!(done.rows[0].written);
+        assert_eq!(done.rows[0].local_path, Some(path));
+        assert!(done.rows[0].errors.is_empty());
+        assert_eq!(done.counts.written, 1);
+
+        record_download_error(&cp.job_id, 1, "network failed").expect("record download error");
+
+        let failed = ImportSession::load(&cp.job_id).expect("load failed session");
+        assert!(!failed.rows[0].written);
+        assert_eq!(failed.rows[0].local_path, None);
+        assert_eq!(failed.rows[0].errors, vec!["network failed"]);
+        assert_eq!(failed.counts.written, 0);
     }
 }

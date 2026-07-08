@@ -289,6 +289,80 @@ fn download_done_records_manifest_and_saves() {
 }
 
 #[test]
+fn download_done_updates_import_session_row() {
+    let mut app = App::new(100);
+    let session_id = "sp2yt-app-download-row";
+    let session = crate::transfer::session::ImportSession {
+        session_id: session_id.to_owned(),
+        job_id: session_id.to_owned(),
+        rows: vec![crate::transfer::session::ImportSessionRow {
+            row_id: "row-00003".to_owned(),
+            source_order: 3,
+            status: crate::transfer::session::ImportSessionRowStatus::Matched,
+            title: "Title".to_owned(),
+            artists: vec!["Artist".to_owned()],
+            selected_key: Some("dQw4w9WgXcQ".to_owned()),
+            ..crate::transfer::session::ImportSessionRow::default()
+        }],
+        ..crate::transfer::session::ImportSession::default()
+    };
+    session.save().expect("save import session");
+    let remote = Song::remote("dQw4w9WgXcQ", "Title", "Artist", "3:00")
+        .with_import_session(Some(session_id.to_owned()), Some(3));
+    app.start_download(remote);
+
+    app.update(Msg::DownloadDone {
+        video_id: "dQw4w9WgXcQ".to_owned(),
+        path: "/tmp/Title [dQw4w9WgXcQ].m4a".to_owned(),
+    });
+
+    let session = crate::transfer::session::ImportSession::load(session_id)
+        .expect("load updated import session");
+    assert!(session.rows[0].written);
+    assert_eq!(
+        session.rows[0].local_path,
+        Some(PathBuf::from("/tmp/Title [dQw4w9WgXcQ].m4a"))
+    );
+    assert_eq!(session.counts.written, 1);
+}
+
+#[test]
+fn download_error_updates_import_session_row() {
+    let mut app = App::new(100);
+    let session_id = "sp2yt-app-download-error";
+    let session = crate::transfer::session::ImportSession {
+        session_id: session_id.to_owned(),
+        job_id: session_id.to_owned(),
+        rows: vec![crate::transfer::session::ImportSessionRow {
+            row_id: "row-00002".to_owned(),
+            source_order: 2,
+            status: crate::transfer::session::ImportSessionRowStatus::Matched,
+            title: "Title".to_owned(),
+            artists: vec!["Artist".to_owned()],
+            selected_key: Some("dQw4w9WgXcQ".to_owned()),
+            ..crate::transfer::session::ImportSessionRow::default()
+        }],
+        ..crate::transfer::session::ImportSession::default()
+    };
+    session.save().expect("save import session");
+    let remote = Song::remote("dQw4w9WgXcQ", "Title", "Artist", "3:00")
+        .with_import_session(Some(session_id.to_owned()), Some(2));
+    app.start_download(remote);
+
+    app.update(Msg::DownloadError {
+        video_id: "dQw4w9WgXcQ".to_owned(),
+        error: "private video needs login".to_owned(),
+    });
+
+    let session = crate::transfer::session::ImportSession::load(session_id)
+        .expect("load updated import session");
+    assert!(!session.rows[0].written);
+    assert_eq!(session.rows[0].local_path, None);
+    assert_eq!(session.rows[0].errors, vec!["private video needs login"]);
+    assert_eq!(session.counts.written, 0);
+}
+
+#[test]
 fn download_done_with_empty_path_does_not_save() {
     let mut app = App::new(100);
     let cmds = app.update(Msg::DownloadDone {
