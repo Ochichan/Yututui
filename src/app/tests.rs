@@ -3095,6 +3095,86 @@ fn local_deck_smart_lists_report_counts_for_every_shipped_list() {
 }
 
 #[test]
+fn local_deck_details_include_selected_track_metadata_and_up_next() {
+    let mut first = local_deck_track(
+        "/tmp/music/Daft Punk/Discovery/01 One More Time.flac",
+        "One More Time",
+        &["Daft Punk"],
+        Some("Discovery"),
+        Some("Daft Punk"),
+        &["House"],
+        10,
+    );
+    first.year = Some(2001);
+    first.disc_no = Some(1);
+    first.track_no = Some(1);
+    first.duration_ms = Some(61_000);
+    first.format = Some(crate::local::AudioFormat::Flac);
+    first.sample_rate = Some(44_100);
+    first.bitrate = Some(320_000);
+    first.embedded_art_key = Some("embedded-cover".to_owned());
+    let mut second = local_deck_track(
+        "/tmp/music/Daft Punk/Discovery/02 Aerodynamic.flac",
+        "Aerodynamic",
+        &["Daft Punk"],
+        Some("Discovery"),
+        Some("Daft Punk"),
+        &["House"],
+        11,
+    );
+    second.track_no = Some(2);
+    let mut app = app_with_local_deck_index(vec![first.clone(), second.clone()]);
+    app.config.download_dir = Some(PathBuf::from("/tmp/music"));
+    app.queue.set(vec![first.to_song(), second.to_song()], 0);
+
+    let lines = app.local_details_lines();
+
+    for expected in [
+        "Title: One More Time",
+        "Artist: Daft Punk",
+        "Album: Discovery · 2001",
+        "Track: disc 1 · track 1",
+        "Duration: 1:01",
+        "Format: FLAC",
+        "Sample rate: 44.1 kHz",
+        "Bitrate: 320 kbps",
+        "Cover: embedded cover",
+        "File: 01 One More Time.flac",
+        "Path: Daft Punk/Discovery/01 One More Time.flac",
+        "1. Aerodynamic - Daft Punk  (1:00)",
+    ] {
+        assert!(
+            lines.iter().any(|line| line == expected),
+            "missing {expected:?} in {lines:?}"
+        );
+    }
+}
+
+#[test]
+fn local_deck_render_expands_details_then_collapses_to_summary() {
+    let mut track = local_deck_track(
+        "/tmp/music/IU/Palette/Palette.flac",
+        "Palette",
+        &["IU"],
+        Some("Palette"),
+        Some("IU"),
+        &["K-Pop"],
+        10,
+    );
+    track.year = Some(2017);
+    track.embedded_art_key = Some("embedded-cover".to_owned());
+    let app = app_with_local_deck_index(vec![track]);
+
+    let wide = render_app_buffer(&app, 120, 30);
+    assert!(buffer_contains(&wide, "Selected"));
+    assert!(buffer_contains(&wide, "Title: Palette"));
+    assert!(buffer_contains(&wide, "Cover: embedded cover"));
+
+    let medium = render_app_buffer(&app, 90, 24);
+    assert!(buffer_contains(&medium, "Selected: Palette - IU"));
+}
+
+#[test]
 fn local_deck_a_enqueues_selected_track_without_interrupting_current() {
     let mut app = app_with_local_deck_index(vec![local_deck_track(
         "/tmp/music/local-alpha.flac",
@@ -9057,6 +9137,26 @@ fn local_track_uses_local_art_source() {
     assert!(matches!(
         app.artwork_source(&song),
         Some(ArtSource::Local(_))
+    ));
+}
+
+#[test]
+fn local_deck_linked_track_artwork_still_uses_local_file_source() {
+    let mut app = App::new(100);
+    app.config.album_art = Some(true);
+    app.art.picker = Some(Picker::halfblocks());
+    let mut track = crate::local::LocalTrack::untagged(
+        std::path::PathBuf::from("/music/linked-song.m4a"),
+        10,
+        20,
+    );
+    track.linked_video_id = Some("abcdefghijk".to_owned());
+    let song = track.to_song();
+
+    assert!(song.youtube_id().is_some());
+    assert!(matches!(
+        app.artwork_source(&song),
+        Some(ArtSource::Local(path)) if path.ends_with("linked-song.m4a")
     ));
 }
 

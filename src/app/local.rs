@@ -933,6 +933,258 @@ impl App {
         }
     }
 
+    pub(crate) fn local_details_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        lines.push(t!("Selected", "선택").to_owned());
+        let selected = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned();
+        if let Some(row) = selected {
+            self.push_local_row_details(&mut lines, &row);
+        } else {
+            lines.push(t!("No local item selected.", "선택된 로컬 항목이 없습니다.").to_owned());
+        }
+
+        lines.push(String::new());
+        self.push_local_queue_details(&mut lines);
+        lines
+    }
+
+    pub(crate) fn local_details_summary(&self) -> String {
+        let selected = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .map(|row| self.local_row_text(row))
+            .unwrap_or_else(|| t!("No selection", "선택 없음").to_owned());
+        let Some(current) = self.queue.current() else {
+            return format!("{}: {selected}", t!("Selected", "선택"));
+        };
+        format!(
+            "{}: {selected}  |  {}: {}",
+            t!("Selected", "선택"),
+            t!("Now", "재생 중"),
+            local_song_text(self, current)
+        )
+    }
+
+    fn push_local_row_details(&self, lines: &mut Vec<String>, row: &crate::local::LocalRowId) {
+        match row {
+            crate::local::LocalRowId::Track(id) => {
+                if let Some(track) = self.local_track_by_id(id) {
+                    self.push_local_track_details(lines, track);
+                }
+            }
+            crate::local::LocalRowId::DownloadSeed(index) => {
+                if let Some(song) = self.library_ui.downloaded.get(*index) {
+                    self.push_local_song_details(lines, song);
+                }
+            }
+            crate::local::LocalRowId::Album(id) => {
+                if let Some(album) = self.local_album_by_id(id) {
+                    push_detail_line(lines, t!("Album", "앨범"), album.title);
+                    push_detail_line(lines, t!("Artist", "아티스트"), album.album_artist);
+                    if let Some(year) = album.year {
+                        push_detail_line(lines, t!("Year", "연도"), year.to_string());
+                    }
+                    push_detail_line(
+                        lines,
+                        t!("Tracks", "곡"),
+                        format!("{} {}", album.track_count, t!("tracks", "곡")),
+                    );
+                    if let Some(duration) = album.duration_ms {
+                        push_detail_line(
+                            lines,
+                            t!("Duration", "길이"),
+                            format_local_duration_ms(duration),
+                        );
+                    }
+                    let cover_count = self
+                        .local_tracks_for_album(id)
+                        .into_iter()
+                        .filter(|track| track.embedded_art_key.is_some())
+                        .count();
+                    push_detail_line(
+                        lines,
+                        t!("Cover", "커버"),
+                        format_embedded_cover_count(cover_count),
+                    );
+                }
+            }
+            crate::local::LocalRowId::Artist(id) => {
+                if let Some(artist) = self.local_artist_by_id(id) {
+                    push_detail_line(lines, t!("Artist", "아티스트"), artist.name);
+                    push_detail_line(
+                        lines,
+                        t!("Albums", "앨범"),
+                        format!("{} {}", artist.album_ids.len(), t!("albums", "앨범")),
+                    );
+                    push_detail_line(
+                        lines,
+                        t!("Tracks", "곡"),
+                        format!("{} {}", artist.track_ids.len(), t!("tracks", "곡")),
+                    );
+                }
+            }
+            crate::local::LocalRowId::Genre(genre) => {
+                let tracks = self.local_tracks_for_genre(genre);
+                push_detail_line(lines, t!("Genre", "장르"), genre.clone());
+                push_detail_line(
+                    lines,
+                    t!("Tracks", "곡"),
+                    format!("{} {}", tracks.len(), t!("tracks", "곡")),
+                );
+            }
+            crate::local::LocalRowId::Folder(folder) => {
+                let tracks = self.local_tracks_for_folder(folder);
+                push_detail_line(lines, t!("Folder", "폴더"), folder.display().to_string());
+                push_detail_line(
+                    lines,
+                    t!("Tracks", "곡"),
+                    format!("{} {}", tracks.len(), t!("tracks", "곡")),
+                );
+            }
+            crate::local::LocalRowId::Smart(smart) => {
+                let tracks = self.local_tracks_for_smart(*smart);
+                push_detail_line(lines, t!("Smart list", "스마트 목록"), smart.label());
+                push_detail_line(
+                    lines,
+                    t!("Tracks", "곡"),
+                    format!("{} {}", tracks.len(), t!("tracks", "곡")),
+                );
+            }
+            crate::local::LocalRowId::ScanError(index) => {
+                if let Some(error) = self.local_mode.index.errors.get(*index) {
+                    push_detail_line(lines, t!("Path", "경로"), error.path.display().to_string());
+                    push_detail_line(lines, t!("Error", "오류"), error.message.clone());
+                }
+            }
+        }
+    }
+
+    fn push_local_track_details(&self, lines: &mut Vec<String>, track: &crate::local::LocalTrack) {
+        push_detail_line(lines, t!("Title", "제목"), track.display_title());
+        push_detail_line(lines, t!("Artist", "아티스트"), track.display_artist());
+        if let Some(album) = format_album_year(track.album.as_deref(), track.year) {
+            push_detail_line(lines, t!("Album", "앨범"), album);
+        }
+        if let Some(number) = format_disc_track(track.disc_no, track.track_no) {
+            push_detail_line(lines, t!("Track", "트랙"), number);
+        }
+        if let Some(duration) = track.duration_ms {
+            push_detail_line(
+                lines,
+                t!("Duration", "길이"),
+                format_local_duration_ms(duration),
+            );
+        }
+        if let Some(format) = &track.format {
+            push_detail_line(lines, t!("Format", "포맷"), format_audio_format(format));
+        }
+        if let Some(sample_rate) = track.sample_rate {
+            push_detail_line(
+                lines,
+                t!("Sample rate", "샘플레이트"),
+                format_sample_rate(sample_rate),
+            );
+        }
+        if let Some(bitrate) = track.bitrate {
+            push_detail_line(lines, t!("Bitrate", "비트레이트"), format_bitrate(bitrate));
+        }
+        push_detail_line(
+            lines,
+            t!("Cover", "커버"),
+            if track.embedded_art_key.is_some() {
+                t!("embedded cover", "내장 커버")
+            } else {
+                t!("no embedded cover", "내장 커버 없음")
+            },
+        );
+        if let Some(name) = track.path.file_name().and_then(|name| name.to_str()) {
+            push_detail_line(lines, t!("File", "파일"), name);
+        }
+        push_detail_line(
+            lines,
+            t!("Path", "경로"),
+            self.local_path_for_display(&track.path),
+        );
+    }
+
+    fn push_local_song_details(&self, lines: &mut Vec<String>, song: &Song) {
+        push_detail_line(lines, t!("Title", "제목"), self.display_title(song));
+        push_detail_line(lines, t!("Artist", "아티스트"), self.display_artist(song));
+        if let Some(album) = song
+            .album
+            .as_deref()
+            .map(str::trim)
+            .filter(|album| !album.is_empty())
+        {
+            push_detail_line(lines, t!("Album", "앨범"), album);
+        }
+        if !song.duration.trim().is_empty() {
+            push_detail_line(lines, t!("Duration", "길이"), song.duration.as_str());
+        }
+        if let Some(path) = &song.local_path {
+            push_detail_line(
+                lines,
+                t!("Cover", "커버"),
+                t!("local file artwork source", "로컬 파일 아트워크 소스"),
+            );
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                push_detail_line(lines, t!("File", "파일"), name);
+            }
+            push_detail_line(lines, t!("Path", "경로"), self.local_path_for_display(path));
+        }
+    }
+
+    fn push_local_queue_details(&self, lines: &mut Vec<String>) {
+        lines.push(t!("Now playing", "재생 중").to_owned());
+        if let Some(current) = self.queue.current() {
+            let (position, total) = self.queue.position();
+            lines.push(local_song_text(self, current));
+            push_detail_line(lines, t!("Queue", "큐"), format!("{position}/{total}"));
+        } else {
+            lines.push(t!("Queue is empty.", "큐가 비어 있습니다.").to_owned());
+        }
+
+        lines.push(String::new());
+        lines.push(t!("Up next", "다음 곡").to_owned());
+        let upcoming = self.queue.upcoming(3);
+        if upcoming.is_empty() {
+            lines.push(t!("End of queue.", "큐의 끝입니다.").to_owned());
+        } else {
+            for (index, song) in upcoming.into_iter().enumerate() {
+                lines.push(format!("{}. {}", index + 1, local_song_text(self, song)));
+            }
+        }
+    }
+
+    fn local_path_for_display(&self, path: &Path) -> String {
+        for root in self.local_detail_roots() {
+            if let Ok(relative) = path.strip_prefix(&root)
+                && !relative.as_os_str().is_empty()
+            {
+                return relative.display().to_string();
+            }
+        }
+        path.display().to_string()
+    }
+
+    fn local_detail_roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        if self.config.local.include_download_dir() {
+            roots.push(self.config.effective_download_dir());
+        }
+        for root in &self.config.local.roots {
+            if root.enabled()
+                && let Some(path) = root.normalized_path()
+            {
+                roots.push(path);
+            }
+        }
+        roots
+    }
+
     fn local_track_by_id(
         &self,
         id: &crate::local::LocalTrackId,
@@ -1186,6 +1438,77 @@ fn local_song_text(app: &App, song: &Song) -> String {
         format!("{title} - {artist}")
     } else {
         format!("{title} - {artist}  ({})", song.duration)
+    }
+}
+
+fn push_detail_line(lines: &mut Vec<String>, label: &str, value: impl AsRef<str>) {
+    let value = value.as_ref().trim();
+    if !value.is_empty() {
+        lines.push(format!("{label}: {value}"));
+    }
+}
+
+fn format_album_year(album: Option<&str>, year: Option<i32>) -> Option<String> {
+    match (album.map(str::trim).filter(|album| !album.is_empty()), year) {
+        (Some(album), Some(year)) => Some(format!("{album} · {year}")),
+        (Some(album), None) => Some(album.to_owned()),
+        (None, Some(year)) => Some(year.to_string()),
+        (None, None) => None,
+    }
+}
+
+fn format_disc_track(disc_no: Option<u32>, track_no: Option<u32>) -> Option<String> {
+    match (disc_no, track_no) {
+        (Some(disc), Some(track)) => Some(format!("disc {disc} · track {track}")),
+        (Some(disc), None) => Some(format!("disc {disc}")),
+        (None, Some(track)) => Some(format!("track {track}")),
+        (None, None) => None,
+    }
+}
+
+fn format_audio_format(format: &crate::local::AudioFormat) -> String {
+    match format {
+        crate::local::AudioFormat::Aac => "AAC".to_owned(),
+        crate::local::AudioFormat::Flac => "FLAC".to_owned(),
+        crate::local::AudioFormat::M4a => "M4A".to_owned(),
+        crate::local::AudioFormat::Mp3 => "MP3".to_owned(),
+        crate::local::AudioFormat::Ogg => "OGG".to_owned(),
+        crate::local::AudioFormat::Opus => "OPUS".to_owned(),
+        crate::local::AudioFormat::Wav => "WAV".to_owned(),
+        crate::local::AudioFormat::Wma => "WMA".to_owned(),
+        crate::local::AudioFormat::Other(ext) => ext.to_ascii_uppercase(),
+    }
+}
+
+fn format_sample_rate(hz: u32) -> String {
+    if hz >= 1000 {
+        let whole = hz / 1000;
+        let tenth = (hz % 1000) / 100;
+        if tenth == 0 {
+            format!("{whole} kHz")
+        } else {
+            format!("{whole}.{tenth} kHz")
+        }
+    } else {
+        format!("{hz} Hz")
+    }
+}
+
+fn format_bitrate(value: u32) -> String {
+    let kbps = if value >= 1000 { value / 1000 } else { value };
+    format!("{kbps} kbps")
+}
+
+fn format_embedded_cover_count(count: usize) -> String {
+    if count == 0 {
+        t!("no embedded cover", "내장 커버 없음").to_owned()
+    } else if count == 1 {
+        t!("1 track with embedded cover", "내장 커버 1곡").to_owned()
+    } else {
+        format!(
+            "{count} {}",
+            t!("tracks with embedded cover", "곡에 내장 커버")
+        )
     }
 }
 

@@ -163,7 +163,30 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
         render_home(frame, app, area);
         return;
     }
-    if area.width >= 72 {
+    if area.width >= 110 {
+        let panes = Layout::new(
+            Direction::Horizontal,
+            [
+                Constraint::Length(18),
+                Constraint::Min(32),
+                Constraint::Length(30),
+            ],
+        )
+        .split(area);
+        render_sidebar(frame, app, panes[0]);
+        render_rows(frame, app, panes[1]);
+        render_details(frame, app, panes[2]);
+    } else if area.width >= 80 {
+        let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+        let panes = Layout::new(
+            Direction::Horizontal,
+            [Constraint::Length(18), Constraint::Min(0)],
+        )
+        .split(rows[0]);
+        render_sidebar(frame, app, panes[0]);
+        render_rows(frame, app, panes[1]);
+        render_details_strip(frame, app, rows[1]);
+    } else if area.width >= 72 {
         let panes = Layout::new(
             Direction::Horizontal,
             [Constraint::Length(18), Constraint::Min(0)],
@@ -174,6 +197,52 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         render_rows(frame, app, area);
     }
+}
+
+fn render_details(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let width = area.width as usize;
+    for (i, line) in app
+        .local_details_lines()
+        .into_iter()
+        .take(area.height as usize)
+        .enumerate()
+    {
+        let style = if line.is_empty() {
+            app.theme.style(R::TextMuted)
+        } else if i == 0 || line == t!("Now playing", "재생 중") || line == t!("Up next", "다음 곡")
+        {
+            app.theme.style(R::Accent).add_modifier(Modifier::BOLD)
+        } else {
+            app.theme.style(R::TextMuted)
+        };
+        let text = crate::ui::text::truncate_owned_to_width(line, width.saturating_sub(1));
+        frame.render_widget(
+            Paragraph::new(Line::from(text).style(style)),
+            Rect {
+                x: area.x,
+                y: area.y + i as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+fn render_details_strip(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let text = crate::ui::text::truncate_owned_to_width(
+        app.local_details_summary(),
+        area.width.saturating_sub(1) as usize,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(text).style(app.theme.style(R::TextMuted))),
+        area,
+    );
 }
 
 fn render_home(frame: &mut Frame, app: &App, area: Rect) {
