@@ -107,13 +107,21 @@ pub fn read_tracks(path: &Path) -> Result<Vec<TrackInput>> {
         out.push(TrackInput {
             title,
             artists,
+            album_artists: Vec::new(),
             album: field(album_col),
+            album_id: None,
+            album_uri: None,
+            album_release_date: None,
+            disc_number: None,
+            track_number: None,
             duration_secs: field(duration_col)
                 .and_then(|ms| ms.parse::<u64>().ok())
                 // `try_from` drops an absurd (hostile) value instead of wrapping `as u32`.
                 .and_then(|ms| u32::try_from(ms / 1000).ok())
                 .filter(|s| *s > 0),
             isrc: field(isrc_col),
+            explicit: None,
+            source_url: None,
             source_key: field(uri_col).unwrap_or_else(|| format!("csv-row-{}", row_no + 2)),
             known_video_id: field(ytid_col),
         });

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail};
 
-use super::checkpoint::{Checkpoint, ReportRow, TrackEntry, TransferReport};
+use super::checkpoint::{Checkpoint, ReportCandidate, ReportRow, TrackEntry, TransferReport};
 use super::matching::{
     MatchCandidate, MatchConfig, MatchOutcome, Pacing, TrackInput, best_outcome, match_track_ytm,
     normalize_stripped,
@@ -841,31 +841,63 @@ fn build_report(cp: &Checkpoint, skipped_local: u32) -> TransferReport {
         skipped_local,
         ..TransferReport::default()
     };
-    for entry in &cp.tracks {
+    for (idx, entry) in cp.tracks.iter().enumerate() {
         match &entry.outcome {
             Some(MatchOutcome::Ambiguous { candidates }) => {
+                let report_candidates: Vec<ReportCandidate> = candidates
+                    .iter()
+                    .map(|c| ReportCandidate {
+                        key: c.key.clone(),
+                        score: c.score,
+                        display: c.display.clone(),
+                    })
+                    .collect();
                 let note = candidates
                     .iter()
                     .map(|c| format!("{} ({:.2})", c.display, c.score))
                     .collect::<Vec<_>>()
                     .join(" | ");
-                report.ambiguous.push(ReportRow {
-                    title: entry.input.title.clone(),
-                    artists: entry.input.artists.join(", "),
-                    note,
-                });
+                let mut row = report_row_base(entry, idx, note);
+                row.selected_key = report_candidates.first().map(|c| c.key.clone());
+                row.selected_score = report_candidates.first().map(|c| c.score);
+                row.candidates = report_candidates;
+                report.ambiguous.push(row);
             }
             Some(MatchOutcome::NotFound) => {
-                report.not_found.push(ReportRow {
-                    title: entry.input.title.clone(),
-                    artists: entry.input.artists.join(", "),
-                    note: "no match on the destination".to_owned(),
-                });
+                report.not_found.push(report_row_base(
+                    entry,
+                    idx,
+                    "no match on the destination".to_owned(),
+                ));
             }
             _ => {}
         }
     }
     report
+}
+
+fn report_row_base(entry: &TrackEntry, idx: usize, note: String) -> ReportRow {
+    ReportRow {
+        title: entry.input.title.clone(),
+        artists: entry.input.artists.join(", "),
+        note,
+        source_order: Some(idx as u32 + 1),
+        source_key: Some(entry.input.source_key.clone()),
+        source_url: entry.input.source_url.clone(),
+        album: entry.input.album.clone(),
+        album_artists: entry.input.album_artists.clone(),
+        album_id: entry.input.album_id.clone(),
+        album_uri: entry.input.album_uri.clone(),
+        album_release_date: entry.input.album_release_date.clone(),
+        disc_number: entry.input.disc_number,
+        track_number: entry.input.track_number,
+        duration_secs: entry.input.duration_secs,
+        isrc: entry.input.isrc.clone(),
+        explicit: entry.input.explicit,
+        candidates: Vec::new(),
+        selected_key: None,
+        selected_score: None,
+    }
 }
 
 fn progress_write(cp: &Checkpoint, done: u32, total: u32, idx: usize) -> TransferProgress {
@@ -944,9 +976,17 @@ mod tests {
         TrackInput {
             title: title.to_owned(),
             artists: artists.iter().map(|s| (*s).to_owned()).collect(),
+            album_artists: Vec::new(),
             album: Some("Input Album".to_owned()),
+            album_id: None,
+            album_uri: None,
+            album_release_date: None,
+            disc_number: None,
+            track_number: None,
             duration_secs: Some(62),
             isrc: None,
+            explicit: None,
+            source_url: None,
             source_key: format!("src:{title}"),
             known_video_id: None,
         }
@@ -1279,13 +1319,23 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
 
     #[test]
     fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
+        let mut maybe = input("Maybe Song", &["Artist B"]);
+        maybe.album_artists = vec!["Album Artist B".to_owned()];
+        maybe.album_id = Some("spotify:album-id:b".to_owned());
+        maybe.album_uri = Some("spotify:album:b".to_owned());
+        maybe.album_release_date = Some("2026-07-01".to_owned());
+        maybe.disc_number = Some(1);
+        maybe.track_number = Some(2);
+        maybe.isrc = Some("ISRC-B".to_owned());
+        maybe.explicit = Some(false);
+        maybe.source_url = Some("https://open.spotify.com/track/b".to_owned());
         let cp = Checkpoint::new(
             "job-report".to_owned(),
             spec(TransferDest::YtmLikes),
             vec![
                 entry(input("Matched Song", &["Artist A"]), Some(matched("vid-a"))),
                 entry(
-                    input("Maybe Song", &["Artist B"]),
+                    maybe,
                     Some(MatchOutcome::Ambiguous {
                         candidates: vec![
                             AmbiguousCandidate {
@@ -1315,6 +1365,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
         let report = build_report(&cp, 1);
 
         assert_eq!(report.job_id, "job-report");
+        assert_eq!(report.schema_version, 2);
         assert_eq!(report.total, 4);
         assert_eq!(report.matched, 1);
         assert_eq!(report.skipped_local, 1);
@@ -1325,9 +1376,45 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
             report.ambiguous[0].note,
             "Artist B - Candidate 1 (0.79) | Artist B - Candidate 2 (0.64)"
         );
+        assert_eq!(report.ambiguous[0].source_order, Some(2));
+        assert_eq!(
+            report.ambiguous[0].source_key.as_deref(),
+            Some("src:Maybe Song")
+        );
+        assert_eq!(
+            report.ambiguous[0].source_url.as_deref(),
+            Some("https://open.spotify.com/track/b")
+        );
+        assert_eq!(report.ambiguous[0].album.as_deref(), Some("Input Album"));
+        assert_eq!(
+            report.ambiguous[0].album_artists,
+            vec!["Album Artist B".to_owned()]
+        );
+        assert_eq!(
+            report.ambiguous[0].album_id.as_deref(),
+            Some("spotify:album-id:b")
+        );
+        assert_eq!(
+            report.ambiguous[0].album_uri.as_deref(),
+            Some("spotify:album:b")
+        );
+        assert_eq!(
+            report.ambiguous[0].album_release_date.as_deref(),
+            Some("2026-07-01")
+        );
+        assert_eq!(report.ambiguous[0].disc_number, Some(1));
+        assert_eq!(report.ambiguous[0].track_number, Some(2));
+        assert_eq!(report.ambiguous[0].duration_secs, Some(62));
+        assert_eq!(report.ambiguous[0].isrc.as_deref(), Some("ISRC-B"));
+        assert_eq!(report.ambiguous[0].explicit, Some(false));
+        assert_eq!(report.ambiguous[0].selected_key.as_deref(), Some("vid-b"));
+        assert_eq!(report.ambiguous[0].selected_score, Some(0.79));
+        assert_eq!(report.ambiguous[0].candidates.len(), 2);
+        assert_eq!(report.ambiguous[0].candidates[0].key, "vid-b");
         assert_eq!(report.not_found.len(), 1);
         assert_eq!(report.not_found[0].artists, "Artist C, Feat D");
         assert_eq!(report.not_found[0].note, "no match on the destination");
+        assert_eq!(report.not_found[0].source_order, Some(3));
     }
 
     #[test]

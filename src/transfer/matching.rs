@@ -26,12 +26,28 @@ use crate::spotify::models::SpotifyTrack;
 pub struct TrackInput {
     pub title: String,
     pub artists: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub album_artists: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub album: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_release_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disc_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_number: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isrc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
     /// Where this input came from (Spotify URI, file row, YTM video id) — for reports.
     pub source_key: String,
     /// File-restore fast path: a known YouTube id skips matching entirely.
@@ -44,9 +60,17 @@ impl TrackInput {
         Self {
             title: t.name.clone(),
             artists: t.artists.clone(),
+            album_artists: t.album_artists.clone(),
             album: Some(t.album.clone()).filter(|a| !a.is_empty()),
+            album_id: t.album_id.clone(),
+            album_uri: t.album_uri.clone(),
+            album_release_date: t.album_release_date.clone(),
+            disc_number: t.disc_number,
+            track_number: t.track_number,
             duration_secs: Some(t.duration_ms / 1000).filter(|d| *d > 0),
             isrc: t.isrc.clone(),
+            explicit: Some(t.explicit),
+            source_url: t.spotify_url.clone(),
             source_key: t.uri.clone(),
             known_video_id: None,
         }
@@ -56,11 +80,19 @@ impl TrackInput {
         Self {
             title: s.title.clone(),
             artists: vec![s.artist.clone()],
+            album_artists: Vec::new(),
             album: s.album.clone(),
+            album_id: None,
+            album_uri: None,
+            album_release_date: None,
+            disc_number: None,
+            track_number: None,
             duration_secs: s
                 .duration_secs
                 .or_else(|| crate::streaming::candidate::parse_duration_secs(&s.duration)),
             isrc: None,
+            explicit: None,
+            source_url: None,
             source_key: s.video_id.clone(),
             known_video_id: s.youtube_id().map(str::to_owned),
         }
@@ -625,9 +657,17 @@ mod tests {
         TrackInput {
             title: title.to_owned(),
             artists: artists.iter().map(|s| (*s).to_owned()).collect(),
+            album_artists: Vec::new(),
             album: album.map(str::to_owned),
+            album_id: None,
+            album_uri: None,
+            album_release_date: None,
+            disc_number: None,
+            track_number: None,
             duration_secs: dur,
             isrc: None,
+            explicit: None,
+            source_url: None,
             source_key: "src".to_owned(),
             known_video_id: None,
         }
@@ -664,6 +704,53 @@ mod tests {
             normalize_stripped("Love Story (Taylor's Version)"),
             "love story taylor s version"
         );
+    }
+
+    #[test]
+    fn spotify_input_preserves_library_metadata() {
+        let track = SpotifyTrack {
+            id: Some("sp-track".to_owned()),
+            uri: "spotify:track:sp-track".to_owned(),
+            spotify_url: Some("https://open.spotify.com/track/sp-track".to_owned()),
+            name: "Song".to_owned(),
+            artists: vec!["Artist".to_owned()],
+            album_artists: vec!["Album Artist".to_owned()],
+            album: "Album".to_owned(),
+            album_id: Some("sp-album".to_owned()),
+            album_uri: Some("spotify:album:sp-album".to_owned()),
+            album_type: Some("album".to_owned()),
+            album_total_tracks: Some(10),
+            album_release_date: Some("2026-07-01".to_owned()),
+            album_release_date_precision: Some("day".to_owned()),
+            duration_ms: 123_456,
+            disc_number: Some(1),
+            track_number: Some(4),
+            isrc: Some("ISRC1".to_owned()),
+            explicit: true,
+            added_at: Some("2026-07-02T00:00:00Z".to_owned()),
+            is_playable: Some(true),
+            restriction_reason: None,
+        };
+
+        let input = TrackInput::from_spotify(&track);
+
+        assert_eq!(input.title, "Song");
+        assert_eq!(input.artists, vec!["Artist".to_owned()]);
+        assert_eq!(input.album_artists, vec!["Album Artist".to_owned()]);
+        assert_eq!(input.album.as_deref(), Some("Album"));
+        assert_eq!(input.album_id.as_deref(), Some("sp-album"));
+        assert_eq!(input.album_uri.as_deref(), Some("spotify:album:sp-album"));
+        assert_eq!(input.album_release_date.as_deref(), Some("2026-07-01"));
+        assert_eq!(input.disc_number, Some(1));
+        assert_eq!(input.track_number, Some(4));
+        assert_eq!(input.duration_secs, Some(123));
+        assert_eq!(input.isrc.as_deref(), Some("ISRC1"));
+        assert_eq!(input.explicit, Some(true));
+        assert_eq!(
+            input.source_url.as_deref(),
+            Some("https://open.spotify.com/track/sp-track")
+        );
+        assert_eq!(input.source_key, "spotify:track:sp-track");
     }
 
     #[test]

@@ -20,6 +20,7 @@ use crate::util::sanitize::sanitize_error_text;
 /// items = 1–2M entries), it exists only to bound a buggy or hostile `next` link that would
 /// otherwise loop forever and grow the result Vec without limit.
 const MAX_PAGES: u32 = 20_000;
+const PAGE_LIMIT: u32 = 50;
 
 /// Minimum interval between calls (gentle, well under any documented limit).
 const PACE: Duration = Duration::from_millis(250);
@@ -134,7 +135,7 @@ impl SpotifyClient {
 
     pub async fn my_playlists(&mut self) -> Result<Vec<SpotifyPlaylist>, SpotifyError> {
         let mut out = Vec::new();
-        let mut url = format!("{API_BASE}/me/playlists?limit=50");
+        let mut url = format!("{API_BASE}/me/playlists?limit={PAGE_LIMIT}");
         let mut pages = 0u32;
         loop {
             pages += 1;
@@ -181,8 +182,8 @@ impl SpotifyClient {
         id: &str,
         on_page: &mut (dyn FnMut(u32, u32) + Send),
     ) -> Result<Vec<SpotifyTrack>, SpotifyError> {
-        let fields = "items(is_local,item(type,uri,name,duration_ms,explicit,is_local,artists(name),album(name),external_ids(isrc))),total,next";
-        let mut url = format!("{API_BASE}/playlists/{id}/items?limit=100&fields={fields}");
+        let fields = "items(added_at,is_local,item(type,id,uri,name,duration_ms,explicit,is_local,is_playable,disc_number,track_number,artists(name,id,uri,external_urls(spotify)),album(id,uri,name,album_type,total_tracks,release_date,release_date_precision,artists(name,id,uri,external_urls(spotify)),external_urls(spotify)),external_ids(isrc),external_urls(spotify),restrictions(reason),linked_from(id,uri))),total,next";
+        let mut url = format!("{API_BASE}/playlists/{id}/items?limit={PAGE_LIMIT}&fields={fields}");
         let mut out = Vec::new();
         let mut seen = 0u32;
         let mut pages = 0u32;
@@ -213,7 +214,7 @@ impl SpotifyClient {
         &mut self,
         on_page: &mut (dyn FnMut(u32, u32) + Send),
     ) -> Result<Vec<SpotifyTrack>, SpotifyError> {
-        let mut url = format!("{API_BASE}/me/tracks?limit=50");
+        let mut url = format!("{API_BASE}/me/tracks?limit={PAGE_LIMIT}");
         let mut out = Vec::new();
         let mut seen = 0u32;
         let mut pages = 0u32;
