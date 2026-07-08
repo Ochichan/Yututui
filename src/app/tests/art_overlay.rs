@@ -277,7 +277,7 @@ fn popup_surfaces_render_opaque_backgrounds_with_transparent_theme() {
     let mut about = app_playing(1, 0);
     about.overlays.about_visible = true;
     let buf = render_app_buffer(&about, modal_area.width, modal_area.height);
-    assert_opaque_rect(&buf, centered_fixed(modal_area, 60, 22));
+    assert_opaque_rect(&buf, centered_fixed(modal_area, 60, 25));
 
     let mut why = app_playing(2, 0);
     why.streaming.last_explain = Some(StreamingAiExplain {
@@ -463,7 +463,7 @@ fn player_about_popup_keeps_full_kitty_art_rows_at_the_edges() {
     use ratatui_image::{Resize, ResizeEncodeRender};
 
     let area = Rect::new(0, 0, 120, 50);
-    let popup = centered_fixed(area, 60, 22);
+    let popup = centered_fixed(area, 60, 25);
     let image = image::DynamicImage::new_rgba8(160, 90);
     let mut app = app_playing(1, 0);
     app.overlays.about_visible = true;
@@ -515,6 +515,23 @@ fn player_about_popup_keeps_full_kitty_art_rows_at_the_edges() {
             "row {y} was replaced by a single Kitty marker instead of the full art row: {symbol:?}"
         );
     }
+}
+
+#[test]
+fn ai_empty_state_while_playing_renders_groove_frame() {
+    let mut app = app_playing(1, 0);
+    app.mode = Mode::Ai;
+    app.config.animations.master = true;
+    app.anim.anim_frame = 10;
+
+    assert!(app.ai_mascot_active());
+
+    let buf = render_app_buffer(&app, 100, 30);
+    assert!(
+        buffer_contains(&buf, "*/ DJ"),
+        "playing AI empty state should render a non-idle groove pose"
+    );
+    assert!(buffer_contains(&buf, "GEM"));
 }
 
 #[test]

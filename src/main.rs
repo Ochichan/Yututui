@@ -17,6 +17,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
+fn cli_identity() -> (&'static str, &'static str) {
+    match option_env!("CARGO_BIN_NAME") {
+        Some("ytt-dev") => ("ytt-dev", concat!(env!("CARGO_PKG_VERSION"), "-dev")),
+        _ => ("ytt", env!("CARGO_PKG_VERSION")),
+    }
+}
+
 fn main() -> Result<()> {
     // Windows shell identity (media flyout, taskbar grouping). Before anything else —
     // the daemon path below inherits it, and it must precede any window/session.
@@ -29,25 +36,27 @@ fn main() -> Result<()> {
     if let Some(arg) = std::env::args_os().nth(1) {
         match arg.to_string_lossy().as_ref() {
             "--version" | "-V" => {
-                println!("ytt {}", env!("CARGO_PKG_VERSION"));
+                let (bin, version) = cli_identity();
+                println!("{bin} {version}");
                 return Ok(());
             }
             "--help" | "-h" => {
-                println!("ytt {}", env!("CARGO_PKG_VERSION"));
+                let (bin, version) = cli_identity();
+                println!("{bin} {version}");
                 println!();
-                println!("Usage: ytt [OPTIONS]");
-                println!("       ytt -r <command>     Control a running instance");
-                println!("       ytt daemon <command> Manage the headless music daemon");
-                println!("       ytt auth <service>   Connect Last.fm / ListenBrainz / Spotify");
+                println!("Usage: {bin} [OPTIONS]");
+                println!("       {bin} -r <command>     Control a running instance");
+                println!("       {bin} daemon <command> Manage the headless music daemon");
+                println!("       {bin} auth <service>   Connect Last.fm / ListenBrainz / Spotify");
                 println!(
-                    "       ytt transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
+                    "       {bin} transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
                 );
-                println!("       ytt doctor [-v]      Check your environment and exit");
-                println!("       ytt doctor privacy [--cleanup]");
-                println!("       ytt doctor terminal --json");
+                println!("       {bin} doctor [-v]      Check your environment and exit");
+                println!("       {bin} doctor privacy [--cleanup]");
+                println!("       {bin} doctor terminal --json");
                 println!("                             Report terminal capability hints");
                 println!(
-                    "       ytt tools <cmd>      Manage the app-managed yt-dlp (status, update)"
+                    "       {bin} tools <cmd>      Manage the app-managed yt-dlp (status, update)"
                 );
                 println!();
                 println!("Launch the terminal YouTube Music player.");
@@ -262,8 +271,10 @@ impl StartupTrace {
 /// font size. Falls back to a halfblocks-only picker if the query fails (e.g. a terminal
 /// that doesn't answer the control sequences), so album art still renders — just blocky.
 fn build_art_picker() -> ratatui_image::picker::Picker {
-    use ratatui_image::picker::{Picker, cap_parser::QueryStdioOptions};
+    use ratatui_image::picker::{Picker, ProtocolType, cap_parser::QueryStdioOptions};
     use std::io::IsTerminal;
+    let override_protocol = image_protocol_override();
+    let override_is_set = std::env::var_os("YTM_TUI_IMAGE_PROTOCOL").is_some();
     // Now that this runs for every launch (not just album-art-on), skip the probe entirely when
     // stdout isn't a terminal (`ytt > file`, a pipe, CI): the query bytes would otherwise be
     // written into the redirect target and the poll would stall the full timeout waiting for a
@@ -272,15 +283,16 @@ fn build_art_picker() -> ratatui_image::picker::Picker {
     if !std::io::stdout().is_terminal() {
         return Picker::halfblocks();
     }
-    if image_protocol_override() == Some(ratatui_image::picker::ProtocolType::Halfblocks) {
+    if override_protocol == Some(ProtocolType::Halfblocks) {
         return Picker::halfblocks();
     }
     if let Some(picker) = cached_halfblocks_art_picker() {
         return picker;
     }
 
+    let has_native_hint = terminal_has_native_image_hint();
     let mut picker = match Picker::from_query_stdio_with_options(QueryStdioOptions {
-        timeout: Duration::from_millis(250),
+        timeout: terminal_image_probe_timeout(has_native_hint),
         ..QueryStdioOptions::default()
     }) {
         Ok(picker) => picker,
@@ -289,10 +301,19 @@ fn build_art_picker() -> ratatui_image::picker::Picker {
             Picker::halfblocks()
         }
     };
-    if let Some(protocol) = image_protocol_override() {
+    if let Some(protocol) = override_protocol {
+        picker.set_protocol_type(protocol);
+    } else if !override_is_set
+        && picker.protocol_type() == ProtocolType::Halfblocks
+        && let Some(protocol) = trusted_protocol_hint()
+    {
+        tracing::warn!(
+            ?protocol,
+            "terminal probe returned halfblocks despite strong native image hint; using hinted protocol"
+        );
         picker.set_protocol_type(protocol);
     }
-    if picker.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks {
+    if picker.protocol_type() == ProtocolType::Halfblocks {
         store_halfblocks_art_picker_cache();
     }
     picker
@@ -363,18 +384,65 @@ fn terminal_probe_cache_key() -> u64 {
 }
 
 fn terminal_has_native_image_hint() -> bool {
+    let term = std::env::var("TERM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let term_program = std::env::var("TERM_PROGRAM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     env_nonempty("KITTY_WINDOW_ID")
         || env_nonempty("WEZTERM_EXECUTABLE")
         || env_nonempty("KONSOLE_VERSION")
-        || std::env::var("TERM").is_ok_and(|term| {
-            term.contains("kitty") || term.contains("wezterm") || term.contains("ghostty")
-        })
-        || std::env::var("TERM_PROGRAM")
-            .is_ok_and(|program| program.eq_ignore_ascii_case("iTerm.app"))
+        || env_nonempty("WT_SESSION")
+        || term_program == "iterm.app"
+        || term_program.contains("wezterm")
+        || term_program.contains("ghostty")
+        || [
+            "kitty", "ghostty", "wezterm", "foot", "konsole", "mlterm", "mintty", "rio", "contour",
+        ]
+        .iter()
+        .any(|hint| term.contains(hint))
 }
 
 fn env_nonempty(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|value| !value.is_empty())
+}
+
+fn terminal_image_probe_timeout(has_native_hint: bool) -> Duration {
+    Duration::from_millis(if has_native_hint { 700 } else { 250 })
+}
+
+fn trusted_protocol_hint() -> Option<ratatui_image::picker::ProtocolType> {
+    use ratatui_image::picker::ProtocolType;
+
+    let term = std::env::var("TERM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let term_program = std::env::var("TERM_PROGRAM")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if env_nonempty("KITTY_WINDOW_ID")
+        || term.contains("xterm-kitty")
+        || term.contains("kitty")
+        || term.contains("ghostty")
+        || term_program.contains("ghostty")
+    {
+        return Some(ProtocolType::Kitty);
+    }
+
+    if term_program == "iterm.app" {
+        return Some(ProtocolType::Iterm2);
+    }
+
+    #[cfg(windows)]
+    {
+        if env_nonempty("WEZTERM_EXECUTABLE") {
+            return Some(ProtocolType::Iterm2);
+        }
+    }
+
+    None
 }
 
 fn unix_seconds() -> Option<u64> {
@@ -806,7 +874,7 @@ async fn run(
     // surface it in the About card (+ nav-brand dot + one-time toast). Never blocks startup;
     // no-ops entirely when disabled or on a development build.
     update::spawn_update_check(
-        env!("CARGO_PKG_VERSION"),
+        cli_identity().1,
         cfg.update_check_enabled,
         runtime::sink(worker_tx.clone(), RuntimeEvent::Update),
     );
@@ -1250,6 +1318,7 @@ mod tests {
             "KITTY_WINDOW_ID",
             "WEZTERM_EXECUTABLE",
             "KONSOLE_VERSION",
+            "WT_SESSION",
             "TERM",
             "TERM_PROGRAM",
         ];
@@ -1265,11 +1334,82 @@ mod tests {
         with_env("TERM", Some("xterm-kitty"), || {
             assert!(terminal_has_native_image_hint());
         });
+        with_env("WT_SESSION", Some("1"), || {
+            assert!(terminal_has_native_image_hint());
+        });
+        with_env("TERM", Some("foot"), || {
+            assert!(terminal_has_native_image_hint());
+        });
+        with_env("TERM", Some("mintty"), || {
+            assert!(terminal_has_native_image_hint());
+        });
+        with_env("TERM", Some("mlterm"), || {
+            assert!(terminal_has_native_image_hint());
+        });
+        with_env("TERM", Some("rio"), || {
+            assert!(terminal_has_native_image_hint());
+        });
+        with_env("TERM", Some("contour"), || {
+            assert!(terminal_has_native_image_hint());
+        });
+        with_env("TERM_PROGRAM", Some("WezTerm"), || {
+            assert!(terminal_has_native_image_hint());
+        });
         with_env("TERM_PROGRAM", Some("iTerm.app"), || {
             assert!(terminal_has_native_image_hint());
         });
         with_env("TERM_PROGRAM", Some("plain-terminal"), || {
             assert!(!terminal_has_native_image_hint());
+        });
+    }
+
+    #[test]
+    fn terminal_image_probe_timeout_only_extends_for_native_hints() {
+        assert_eq!(
+            terminal_image_probe_timeout(false),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            terminal_image_probe_timeout(true),
+            Duration::from_millis(700)
+        );
+    }
+
+    #[test]
+    fn trusted_protocol_hint_uses_only_strong_native_hints() {
+        let _guard = env_lock();
+        const NAMES: &[&str] = &[
+            "KITTY_WINDOW_ID",
+            "WEZTERM_EXECUTABLE",
+            "KONSOLE_VERSION",
+            "WT_SESSION",
+            "TERM",
+            "TERM_PROGRAM",
+        ];
+        let _restore = EnvRestore::capture(NAMES);
+        for name in NAMES {
+            unsafe { std::env::remove_var(name) };
+        }
+
+        assert_eq!(trusted_protocol_hint(), None);
+
+        with_env("KITTY_WINDOW_ID", Some("1"), || {
+            assert_eq!(trusted_protocol_hint(), Some(ProtocolType::Kitty));
+        });
+        with_env("TERM", Some("xterm-kitty"), || {
+            assert_eq!(trusted_protocol_hint(), Some(ProtocolType::Kitty));
+        });
+        with_env("TERM", Some("ghostty"), || {
+            assert_eq!(trusted_protocol_hint(), Some(ProtocolType::Kitty));
+        });
+        with_env("TERM_PROGRAM", Some("iTerm.app"), || {
+            assert_eq!(trusted_protocol_hint(), Some(ProtocolType::Iterm2));
+        });
+        with_env("WT_SESSION", Some("1"), || {
+            assert_eq!(trusted_protocol_hint(), None);
+        });
+        with_env("TERM", Some("foot"), || {
+            assert_eq!(trusted_protocol_hint(), None);
         });
     }
 
