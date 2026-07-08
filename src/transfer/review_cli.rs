@@ -197,20 +197,77 @@ fn format_review(session: &ImportSession, filter: ReviewFilter) -> String {
         if let Some(album) = &row.album {
             out.push_str(&format!("        album: {album}\n"));
         }
+        append_row_metadata(&mut out, row);
         for (idx, candidate) in row.candidates.iter().enumerate() {
-            out.push_str(&format!(
-                "        candidate {}: {:.2} {} ({})\n",
-                idx + 1,
-                candidate.score,
-                candidate.display,
-                candidate.key
-            ));
+            out.push_str(&format_candidate(idx + 1, candidate));
         }
     }
     if printed == 0 {
         out.push_str("No rows for this review filter.\n");
     }
     out
+}
+
+fn append_row_metadata(out: &mut String, row: &ImportSessionRow) {
+    if !row.album_artists.is_empty() {
+        out.push_str(&format!(
+            "        album artist: {}\n",
+            row.album_artists.join(", ")
+        ));
+    }
+    if let Some(track) = format_track_position(row) {
+        out.push_str(&format!("        track: {track}\n"));
+    }
+    if let Some(duration) = row.duration_secs {
+        out.push_str(&format!(
+            "        duration: {}\n",
+            crate::util::format::time(f64::from(duration))
+        ));
+    }
+    if let Some(isrc) = &row.isrc {
+        out.push_str(&format!("        isrc: {isrc}\n"));
+    }
+    if let Some(explicit) = row.explicit {
+        out.push_str(&format!(
+            "        explicit: {}\n",
+            if explicit { "yes" } else { "no" }
+        ));
+    }
+    if !row.source_key.is_empty() {
+        out.push_str(&format!("        source: {}\n", row.source_key));
+    }
+    if let Some(url) = row
+        .source_url
+        .as_deref()
+        .filter(|url| *url != row.source_key)
+    {
+        out.push_str(&format!("        source url: {url}\n"));
+    }
+}
+
+fn format_track_position(row: &ImportSessionRow) -> Option<String> {
+    match (row.disc_number, row.track_number) {
+        (Some(disc), Some(track)) => Some(format!("{disc}-{track:02}")),
+        (Some(disc), None) => Some(format!("disc {disc}")),
+        (None, Some(track)) => Some(track.to_string()),
+        (None, None) => None,
+    }
+}
+
+fn format_candidate(index: usize, candidate: &super::checkpoint::ReportCandidate) -> String {
+    let breakdown = candidate
+        .score_breakdown
+        .map(|breakdown| {
+            format!(
+                " [title {:.2}, artist {:.2}, duration {:.2}, album +{:.2}]",
+                breakdown.title, breakdown.artist, breakdown.duration, breakdown.album_bonus
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "        candidate {index}: {:.2} {} ({}){breakdown}\n",
+        candidate.score, candidate.display, candidate.key
+    )
 }
 
 fn row_status_label(status: ImportSessionRowStatus) -> &'static str {
@@ -395,17 +452,17 @@ mod tests {
         TrackInput {
             title: title.to_owned(),
             artists: vec!["Artist".to_owned()],
-            album_artists: Vec::new(),
+            album_artists: vec!["Album Artist".to_owned()],
             album: Some("Album".to_owned()),
             album_id: None,
             album_uri: None,
             album_release_date: None,
-            disc_number: None,
-            track_number: None,
+            disc_number: Some(1),
+            track_number: Some(2),
             duration_secs: Some(180),
-            isrc: None,
-            explicit: None,
-            source_url: None,
+            isrc: Some("USRC17607839".to_owned()),
+            explicit: Some(false),
+            source_url: Some(format!("https://open.spotify.com/track/{title}")),
             source_key: format!("spotify:track:{title}"),
             known_video_id: None,
         }
@@ -420,7 +477,13 @@ mod tests {
                         key: "vid-first".to_owned(),
                         score: 0.78,
                         display: "Artist - First".to_owned(),
-                        score_breakdown: None,
+                        score_breakdown: Some(MatchScoreBreakdown {
+                            total: 0.78,
+                            title: 0.90,
+                            artist: 1.0,
+                            duration: 0.8,
+                            album_bonus: 0.05,
+                        }),
                     },
                     AmbiguousCandidate {
                         key: "vid-second".to_owned(),
@@ -442,6 +505,31 @@ mod tests {
         ImportSession::from_checkpoint(&cp)
             .save()
             .expect("save session");
+    }
+
+    #[test]
+    fn review_output_includes_source_metadata_and_score_breakdown() {
+        let job_id = "sp2yt-review-metadata";
+        save_job(job_id, ambiguous_entry("Maybe"));
+
+        let output = run_inner(&[job_id, "--review"]).expect("review output");
+
+        for expected in [
+            "album: Album",
+            "album artist: Album Artist",
+            "track: 1-02",
+            "duration: 3:00",
+            "isrc: USRC17607839",
+            "explicit: no",
+            "source: spotify:track:Maybe",
+            "source url: https://open.spotify.com/track/Maybe",
+            "candidate 1: 0.78 Artist - First (vid-first) [title 0.90, artist 1.00, duration 0.80, album +0.05]",
+        ] {
+            assert!(
+                output.contains(expected),
+                "missing {expected:?} in {output}"
+            );
+        }
     }
 
     #[test]
