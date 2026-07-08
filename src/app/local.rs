@@ -144,7 +144,12 @@ impl App {
                     self.open_queue_popup();
                     return Vec::new();
                 }
-                KeyCode::Char('s') => return self.local_shuffle_visible(),
+                KeyCode::Char('s') => {
+                    if let Some(cmds) = self.local_search_selected_import_row() {
+                        return cmds;
+                    }
+                    return self.local_shuffle_visible();
+                }
                 KeyCode::Char('m') => return self.request_local_import_organize_apply(),
                 KeyCode::Char('x') if self.local_skip_selected_import_row() => return Vec::new(),
                 _ => {}

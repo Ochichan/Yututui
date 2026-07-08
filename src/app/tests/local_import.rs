@@ -655,6 +655,39 @@ fn local_deck_import_failed_row_r_retries_download() {
 }
 
 #[test]
+fn local_deck_import_row_s_starts_manual_youtube_search() {
+    let session_id = "sp2yt-local-manual-search";
+    save_ambiguous_import_job(session_id);
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open.is_empty());
+    app.local_mode.ui.filter_query.clear();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
+    assert_eq!(app.mode, Mode::Search);
+    assert_eq!(app.search.focus, SearchFocus::Input);
+    assert_eq!(app.search.kind, SearchKind::Songs);
+    assert_eq!(app.search.input, "Maybe Artist Album");
+    let [
+        Cmd::Search {
+            query,
+            source,
+            config,
+            ..
+        },
+    ] = cmds.as_slice()
+    else {
+        panic!("expected manual search command");
+    };
+    assert_eq!(query, "Maybe Artist Album");
+    assert_eq!(*source, crate::search_source::SearchSource::Youtube);
+    assert_eq!(config.source, crate::search_source::SearchSource::Youtube);
+}
+
+#[test]
 fn local_deck_import_review_keys_accept_and_reject_rows() {
     let accept_id = "sp2yt-local-review-accept";
     save_ambiguous_import_job(accept_id);

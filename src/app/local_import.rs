@@ -378,6 +378,39 @@ impl App {
         Some(self.start_or_confirm_local_download(songs))
     }
 
+    pub(in crate::app) fn local_search_selected_import_row(&mut self) -> Option<Vec<Cmd>> {
+        let row = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned()?;
+        let crate::local::LocalRowId::ImportSessionRow {
+            session_id,
+            source_order,
+        } = row
+        else {
+            return None;
+        };
+        let row = load_import_session_row(&session_id, source_order)?;
+        let Some(query) = import_session_manual_search_query(&row) else {
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!(
+                "Import row has no searchable metadata",
+                "검색할 임포트 메타데이터가 없음"
+            )
+            .to_owned();
+            self.dirty = true;
+            return Some(Vec::new());
+        };
+        self.mode = Mode::Search;
+        self.dropdowns.search_source_open = false;
+        self.search_filter.close();
+        self.search.input = query;
+        self.search.focus = SearchFocus::Input;
+        self.search.kind = SearchKind::Songs;
+        self.search.source = crate::search_source::SearchSource::Youtube;
+        Some(self.submit_search_query())
+    }
+
     fn import_session_failed_download_songs(
         &self,
         session_id: &str,
@@ -985,6 +1018,33 @@ fn import_session_row_matches_query(session_id: &str, row: &ImportSessionRow, qu
         ],
         query,
     )
+}
+
+fn import_session_manual_search_query(row: &ImportSessionRow) -> Option<String> {
+    let mut parts = Vec::new();
+    push_search_part(&mut parts, &row.title);
+    if !row.artists.is_empty() {
+        push_search_part(&mut parts, &row.artists.join(" "));
+    }
+    if let Some(album) = &row.album {
+        push_search_part(&mut parts, album);
+    }
+    if parts.is_empty() {
+        if let Some(display) = &row.selected_display {
+            push_search_part(&mut parts, display);
+        }
+        if let Some(key) = &row.selected_key {
+            push_search_part(&mut parts, key);
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+fn push_search_part(parts: &mut Vec<String>, value: &str) {
+    let trimmed = value.trim();
+    if !trimmed.is_empty() {
+        parts.push(trimmed.to_owned());
+    }
 }
 
 fn import_session_row_is_download_accepted(row: &ImportSessionRow) -> bool {
