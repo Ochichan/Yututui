@@ -615,18 +615,19 @@ pub(super) fn centered_fixed(area: ratatui::layout::Rect, w: u16, h: u16) -> rat
 }
 
 pub(super) fn about_icon_rect(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
-    let popup = centered_fixed(area, 60, 22);
+    let popup = centered_fixed(area, 60, 25);
     let inner = ratatui::layout::Rect {
         x: popup.x.saturating_add(1),
         y: popup.y.saturating_add(1),
         width: popup.width.saturating_sub(2),
         height: popup.height.saturating_sub(2),
     };
+    let icon_rows = inner.height.saturating_sub(11).clamp(1, 12);
     let band = ratatui::layout::Rect {
-        height: 9.min(inner.height),
+        height: icon_rows.min(inner.height),
         ..inner
     };
-    let h = band.height.clamp(1, 9);
+    let h = band.height.clamp(1, 12);
     let w = (h * 2).min(band.width);
     ratatui::layout::Rect {
         x: band.x + band.width.saturating_sub(w) / 2,

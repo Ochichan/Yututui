@@ -67,6 +67,11 @@ struct TerminalDoctor {
     wt_session: bool,
     image_protocol: &'static str,
     image_protocol_source: &'static str,
+    native_image_hint: bool,
+    image_probe_timeout_ms: u64,
+    image_protocol_override: Option<String>,
+    image_protocol_override_supported: Option<bool>,
+    image_protocol_override_suggestions: Vec<&'static str>,
     zoom_mode: &'static str,
     zoom_mode_source: &'static str,
     keyboard_enhancement_supported: Option<bool>,
@@ -81,6 +86,16 @@ fn run_terminal_json() -> i32 {
     let term = std::env::var("TERM").ok();
     let term_program = std::env::var("TERM_PROGRAM").ok();
     let wt_session = std::env::var_os("WT_SESSION").is_some();
+    let image_protocol_override = std::env::var("YTM_TUI_IMAGE_PROTOCOL").ok();
+    let image_protocol_override_supported = image_protocol_override
+        .as_deref()
+        .map(image_protocol_override_supported);
+    let image_protocol =
+        terminal_image_protocol(term.as_deref(), term_program.as_deref(), wt_session);
+    let native_image_hint =
+        terminal_native_image_hint(term.as_deref(), term_program.as_deref(), wt_session);
+    let image_protocol_override_suggestions =
+        terminal_image_override_suggestions(term.as_deref(), term_program.as_deref(), wt_session);
     let stdout_is_tty = std::io::stdout().is_terminal();
     let stdin_is_tty = std::io::stdin().is_terminal();
     let mut warnings = Vec::new();
@@ -90,14 +105,30 @@ fn run_terminal_json() -> i32 {
     if !stdin_is_tty {
         warnings.push("stdin is not a TTY; interactive terminal probes may not answer".to_string());
     }
+    if image_protocol_override_supported == Some(false) {
+        warnings.push(
+            "unsupported YTM_TUI_IMAGE_PROTOCOL; accepted values are halfblocks, sixel, kitty, iterm2"
+                .to_string(),
+        );
+    }
+    if native_image_hint
+        && matches!(image_protocol, "unknown" | "halfblocks_or_retro")
+        && !image_protocol_override_suggestions.is_empty()
+    {
+        warnings.push(format!(
+            "native image hint detected; if album art falls back to halfblocks, try {}",
+            image_protocol_override_suggestions.join(", ")
+        ));
+    }
 
     let report = TerminalDoctor {
-        image_protocol: terminal_image_protocol(
-            term.as_deref(),
-            term_program.as_deref(),
-            wt_session,
-        ),
+        image_protocol,
         image_protocol_source: "environment",
+        native_image_hint,
+        image_probe_timeout_ms: terminal_image_probe_timeout_ms(native_image_hint),
+        image_protocol_override,
+        image_protocol_override_supported,
+        image_protocol_override_suggestions,
         zoom_mode: terminal_zoom_mode(term.as_deref(), term_program.as_deref(), wt_session),
         zoom_mode_source: "environment",
         keyboard_enhancement_supported: terminal_keyboard_hint(
@@ -356,6 +387,89 @@ fn privacy_path(path: &Path) -> String {
     path.display().to_string()
 }
 
+fn terminal_native_image_hint(
+    term: Option<&str>,
+    term_program: Option<&str>,
+    wt_session: bool,
+) -> bool {
+    let term = term.unwrap_or_default().to_ascii_lowercase();
+    let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
+    wt_session
+        || env_nonempty("KITTY_WINDOW_ID")
+        || env_nonempty("WEZTERM_EXECUTABLE")
+        || env_nonempty("KONSOLE_VERSION")
+        || term_program == "iterm.app"
+        || term_program.contains("wezterm")
+        || term_program.contains("ghostty")
+        || [
+            "kitty", "ghostty", "wezterm", "foot", "konsole", "mlterm", "mintty", "rio", "contour",
+        ]
+        .iter()
+        .any(|hint| term.contains(hint))
+}
+
+fn env_nonempty(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| !value.is_empty())
+}
+
+fn terminal_image_probe_timeout_ms(native_image_hint: bool) -> u64 {
+    if native_image_hint { 700 } else { 250 }
+}
+
+fn image_protocol_override_supported(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "halfblocks" | "halfblock" | "blocks" | "block" | "sixel" | "kitty" | "iterm2" | "iterm"
+    )
+}
+
+fn terminal_image_override_suggestions(
+    term: Option<&str>,
+    term_program: Option<&str>,
+    wt_session: bool,
+) -> Vec<&'static str> {
+    let term = term.unwrap_or_default().to_ascii_lowercase();
+    let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
+
+    if env_nonempty("KITTY_WINDOW_ID")
+        || term.contains("kitty")
+        || term.contains("ghostty")
+        || term_program.contains("ghostty")
+    {
+        return vec!["YTM_TUI_IMAGE_PROTOCOL=kitty"];
+    }
+    if term_program == "iterm.app" {
+        return vec!["YTM_TUI_IMAGE_PROTOCOL=iterm2"];
+    }
+    if env_nonempty("WEZTERM_EXECUTABLE")
+        || term_program.contains("wezterm")
+        || term.contains("wezterm")
+    {
+        return vec![
+            "YTM_TUI_IMAGE_PROTOCOL=iterm2",
+            "YTM_TUI_IMAGE_PROTOCOL=kitty",
+            "YTM_TUI_IMAGE_PROTOCOL=sixel",
+        ];
+    }
+    if env_nonempty("KONSOLE_VERSION") || term.contains("konsole") {
+        return vec![
+            "YTM_TUI_IMAGE_PROTOCOL=kitty",
+            "YTM_TUI_IMAGE_PROTOCOL=sixel",
+        ];
+    }
+    if wt_session || term.contains("foot") || term.contains("mintty") || term.contains("mlterm") {
+        return vec!["YTM_TUI_IMAGE_PROTOCOL=sixel"];
+    }
+    if terminal_native_image_hint(Some(&term), Some(&term_program), wt_session) {
+        return vec![
+            "YTM_TUI_IMAGE_PROTOCOL=kitty",
+            "YTM_TUI_IMAGE_PROTOCOL=iterm2",
+            "YTM_TUI_IMAGE_PROTOCOL=sixel",
+        ];
+    }
+    Vec::new()
+}
+
 fn terminal_image_protocol(
     term: Option<&str>,
     term_program: Option<&str>,
@@ -365,12 +479,16 @@ fn terminal_image_protocol(
     let term_program = term_program.unwrap_or_default().to_ascii_lowercase();
     if term.contains("kitty") {
         "kitty"
+    } else if term_program == "iterm.app" {
+        "iterm2"
     } else if term_program.contains("wezterm") {
         "iterm2_or_kitty_or_sixel"
     } else if wt_session {
         "sixel_versioned"
-    } else if term.contains("foot") {
+    } else if term.contains("foot") || term.contains("mintty") || term.contains("mlterm") {
         "sixel"
+    } else if term.contains("konsole") {
+        "kitty_or_sixel"
     } else if term_program.contains("ghostty") || term.contains("ghostty") {
         "kitty"
     } else if term.contains("linux") {
@@ -1043,6 +1161,22 @@ mod tests {
         }
     }
 
+    fn clear_terminal_image_env() -> EnvRestore {
+        const NAMES: &[&str] = &[
+            "KITTY_WINDOW_ID",
+            "WEZTERM_EXECUTABLE",
+            "KONSOLE_VERSION",
+            "WT_SESSION",
+            "TERM",
+            "TERM_PROGRAM",
+        ];
+        let restore = EnvRestore::capture(NAMES);
+        for name in NAMES {
+            unsafe { std::env::remove_var(name) };
+        }
+        restore
+    }
+
     #[test]
     fn terminal_doctor_detects_common_protocol_hints_without_probing() {
         let _guard = env_lock();
@@ -1055,6 +1189,10 @@ mod tests {
         assert_eq!(
             terminal_image_protocol(Some("xterm-256color"), Some("WezTerm"), false),
             "iterm2_or_kitty_or_sixel"
+        );
+        assert_eq!(
+            terminal_image_protocol(Some("xterm-256color"), Some("iTerm.app"), false),
+            "iterm2"
         );
         assert_eq!(
             terminal_image_protocol(Some("xterm-256color"), None, true),
@@ -1077,6 +1215,14 @@ mod tests {
         unsafe { std::env::remove_var("YTM_TUI_TEXT_SIZING") };
 
         assert_eq!(terminal_image_protocol(Some("foot"), None, false), "sixel");
+        assert_eq!(
+            terminal_image_protocol(Some("mintty"), None, false),
+            "sixel"
+        );
+        assert_eq!(
+            terminal_image_protocol(Some("konsole"), None, false),
+            "kitty_or_sixel"
+        );
         assert_eq!(
             terminal_image_protocol(Some("ghostty"), Some("ignored"), false),
             "kitty"
@@ -1119,6 +1265,60 @@ mod tests {
             terminal_keyboard_hint(Some("xterm"), None, true),
             Some(true)
         );
+    }
+
+    #[test]
+    fn terminal_doctor_reports_native_hint_timeout_and_override_guidance() {
+        let _guard = env_lock();
+        let _restore = clear_terminal_image_env();
+
+        assert!(!terminal_native_image_hint(
+            Some("xterm-256color"),
+            Some("plain-terminal"),
+            false
+        ));
+        assert_eq!(terminal_image_probe_timeout_ms(false), 250);
+        assert!(
+            terminal_image_override_suggestions(
+                Some("xterm-256color"),
+                Some("plain-terminal"),
+                false
+            )
+            .is_empty()
+        );
+
+        assert!(terminal_native_image_hint(Some("foot"), None, false));
+        assert_eq!(terminal_image_probe_timeout_ms(true), 700);
+        assert_eq!(
+            terminal_image_override_suggestions(Some("foot"), None, false),
+            vec!["YTM_TUI_IMAGE_PROTOCOL=sixel"]
+        );
+
+        assert!(terminal_native_image_hint(Some("ghostty"), None, false));
+        assert_eq!(
+            terminal_image_override_suggestions(Some("ghostty"), None, false),
+            vec!["YTM_TUI_IMAGE_PROTOCOL=kitty"]
+        );
+
+        unsafe { std::env::set_var("WEZTERM_EXECUTABLE", "wezterm") };
+        assert!(terminal_native_image_hint(None, None, false));
+        assert_eq!(
+            terminal_image_override_suggestions(None, None, false),
+            vec![
+                "YTM_TUI_IMAGE_PROTOCOL=iterm2",
+                "YTM_TUI_IMAGE_PROTOCOL=kitty",
+                "YTM_TUI_IMAGE_PROTOCOL=sixel"
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_doctor_validates_image_protocol_overrides() {
+        assert!(image_protocol_override_supported("halfblocks"));
+        assert!(image_protocol_override_supported("  SIXEL  "));
+        assert!(image_protocol_override_supported("kitty"));
+        assert!(image_protocol_override_supported("iterm2"));
+        assert!(!image_protocol_override_supported("bad"));
     }
 
     #[test]
