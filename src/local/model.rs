@@ -339,6 +339,7 @@ pub enum LocalRowId {
     Genre(String),
     Folder(PathBuf),
     Smart(LocalSmartList),
+    ImportSession(String),
     ScanError(usize),
 }
 

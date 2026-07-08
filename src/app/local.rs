@@ -1,6 +1,6 @@
 //! Local Deck reducer helpers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -567,6 +567,7 @@ impl App {
             LocalSection::Folders => self.local_folder_rows_for_query(query),
             LocalSection::SmartLists => self.local_smart_rows_for_query(query),
             LocalSection::ScanErrors => self.local_scan_error_rows_for_query(query),
+            LocalSection::ImportSessions => self.local_import_session_rows_for_query(query),
         }
     }
 
@@ -608,6 +609,12 @@ impl App {
                 .collect(),
             LocalDrill::Smart(smart) => self
                 .local_tracks_for_smart(*smart)
+                .into_iter()
+                .filter(|track| crate::local::query::track_matches_filter(track, query))
+                .map(|track| crate::local::LocalRowId::Track(track.id.clone()))
+                .collect(),
+            LocalDrill::ImportSession(session_id) => self
+                .local_tracks_for_import_session(session_id)
                 .into_iter()
                 .filter(|track| crate::local::query::track_matches_filter(track, query))
                 .map(|track| crate::local::LocalRowId::Track(track.id.clone()))
@@ -725,6 +732,37 @@ impl App {
             .collect()
     }
 
+    fn local_import_session_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
+        let mut sessions = BTreeMap::<String, (usize, i64)>::new();
+        for track in self.local_mode.index.index.tracks() {
+            let Some(session_id) = track
+                .import_session_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
+            let entry = sessions
+                .entry(session_id.to_owned())
+                .or_insert((0, track.modified_at));
+            entry.0 += 1;
+            entry.1 = entry.1.max(track.modified_at);
+        }
+        let mut rows: Vec<_> = sessions.into_iter().collect();
+        rows.sort_by(|a, b| b.1.1.cmp(&a.1.1).then_with(|| a.0.cmp(&b.0)));
+        rows.into_iter()
+            .filter(|(session_id, (count, _))| {
+                let count = count.to_string();
+                crate::local::query::fields_match_query(
+                    [session_id.as_str(), count.as_str()],
+                    query,
+                )
+            })
+            .map(|(session_id, _)| crate::local::LocalRowId::ImportSession(session_id))
+            .collect()
+    }
+
     fn local_scan_error_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
         self.local_mode
             .index
@@ -792,6 +830,14 @@ impl App {
             }
             crate::local::LocalRowId::Smart(smart) => {
                 self.local_mode.ui.drill.push(LocalDrill::Smart(smart));
+                self.reset_local_list_cursor();
+                Vec::new()
+            }
+            crate::local::LocalRowId::ImportSession(session_id) => {
+                self.local_mode
+                    .ui
+                    .drill
+                    .push(LocalDrill::ImportSession(session_id));
                 self.reset_local_list_cursor();
                 Vec::new()
             }
@@ -870,6 +916,11 @@ impl App {
                 .into_iter()
                 .map(|track| track.to_song())
                 .collect(),
+            crate::local::LocalRowId::ImportSession(session_id) => self
+                .local_tracks_for_import_session(session_id)
+                .into_iter()
+                .map(|track| track.to_song())
+                .collect(),
             crate::local::LocalRowId::ScanError(_) => Vec::new(),
         }
     }
@@ -911,6 +962,7 @@ impl App {
                 .map(str::to_owned)
                 .unwrap_or_else(|| folder.display().to_string()),
             LocalDrill::Smart(smart) => smart.label().to_owned(),
+            LocalDrill::ImportSession(session_id) => session_id.clone(),
         }
     }
 
@@ -971,6 +1023,10 @@ impl App {
             crate::local::LocalRowId::Smart(smart) => {
                 let count = self.local_tracks_for_smart(*smart).len();
                 format!("{}  ({count} {})", smart.label(), t!("tracks", "곡"))
+            }
+            crate::local::LocalRowId::ImportSession(session_id) => {
+                let count = self.local_tracks_for_import_session(session_id).len();
+                format!("{session_id}  ({count} {})", t!("tracks", "곡"))
             }
             crate::local::LocalRowId::ScanError(index) => self
                 .local_scan_issue(*index)
@@ -1099,6 +1155,35 @@ impl App {
                     format!("{} {}", tracks.len(), t!("tracks", "곡")),
                 );
             }
+            crate::local::LocalRowId::ImportSession(session_id) => {
+                let tracks = self.local_tracks_for_import_session(session_id);
+                push_detail_line(
+                    lines,
+                    t!("Import session", "임포트 세션"),
+                    session_id.clone(),
+                );
+                push_detail_line(
+                    lines,
+                    t!("Tracks", "곡"),
+                    format!("{} {}", tracks.len(), t!("tracks", "곡")),
+                );
+                let first_order = tracks
+                    .iter()
+                    .filter_map(|track| track.import_source_order)
+                    .min();
+                let last_order = tracks
+                    .iter()
+                    .filter_map(|track| track.import_source_order)
+                    .max();
+                if let (Some(first), Some(last)) = (first_order, last_order) {
+                    let value = if first == last {
+                        format!("#{first}")
+                    } else {
+                        format!("#{first}-#{last}")
+                    };
+                    push_detail_line(lines, t!("Source order", "원본 순서"), value);
+                }
+            }
             crate::local::LocalRowId::ScanError(index) => {
                 if let Some(error) = self.local_scan_issue(*index) {
                     push_detail_line(lines, t!("Path", "경로"), error.path.display().to_string());
@@ -1148,6 +1233,12 @@ impl App {
         );
         if let Some(name) = track.path.file_name().and_then(|name| name.to_str()) {
             push_detail_line(lines, t!("File", "파일"), name);
+        }
+        if let Some(session_id) = track.import_session_id.as_deref() {
+            push_detail_line(lines, t!("Import session", "임포트 세션"), session_id);
+        }
+        if let Some(order) = track.import_source_order {
+            push_detail_line(lines, t!("Source order", "원본 순서"), format!("#{order}"));
         }
         push_detail_line(
             lines,
@@ -1397,6 +1488,24 @@ impl App {
         } else {
             sort_local_tracks(&mut tracks);
         }
+        tracks
+    }
+
+    fn local_tracks_for_import_session(&self, session_id: &str) -> Vec<&crate::local::LocalTrack> {
+        let mut tracks: Vec<_> = self
+            .local_mode
+            .index
+            .index
+            .tracks()
+            .iter()
+            .filter(|track| track.import_session_id.as_deref() == Some(session_id))
+            .collect();
+        tracks.sort_by(|a, b| {
+            a.import_source_order
+                .unwrap_or(u32::MAX)
+                .cmp(&b.import_source_order.unwrap_or(u32::MAX))
+                .then_with(|| a.path.cmp(&b.path))
+        });
         tracks
     }
 

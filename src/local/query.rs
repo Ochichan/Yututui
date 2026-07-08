@@ -26,6 +26,11 @@ pub fn track_matches_filter(track: &LocalTrack, query: &str) -> bool {
     let album = track.album.as_deref().unwrap_or_default();
     let album_artist = track.album_artist.as_deref().unwrap_or_default();
     let genres = track.genre.join(" ");
+    let import_session_id = track.import_session_id.as_deref().unwrap_or_default();
+    let import_source_order = track
+        .import_source_order
+        .map(|order| order.to_string())
+        .unwrap_or_default();
     let filename = track
         .path
         .file_name()
@@ -39,6 +44,8 @@ pub fn track_matches_filter(track: &LocalTrack, query: &str) -> bool {
             album,
             album_artist,
             genres.as_str(),
+            import_session_id,
+            import_source_order.as_str(),
             filename,
             path.as_ref(),
         ],
@@ -243,6 +250,16 @@ mod tests {
         assert!(track_matches_filter(&track, "k-pop"));
         assert!(track_matches_filter(&track, "music/iu"));
         assert!(!track_matches_filter(&track, "missing"));
+    }
+
+    #[test]
+    fn filter_matches_import_session_metadata() {
+        let mut track = track("/music/imported.m4a", "Imported", &["Artist"]);
+        track.import_session_id = Some("sp2yt-20260708-abcd".to_owned());
+        track.import_source_order = Some(17);
+
+        assert!(track_matches_filter(&track, "20260708"));
+        assert!(track_matches_filter(&track, "17"));
     }
 
     #[test]

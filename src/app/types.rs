@@ -894,10 +894,11 @@ pub enum LocalSection {
     Folders,
     SmartLists,
     ScanErrors,
+    ImportSessions,
 }
 
 impl LocalSection {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Home,
         Self::Tracks,
         Self::Albums,
@@ -906,6 +907,7 @@ impl LocalSection {
         Self::Folders,
         Self::SmartLists,
         Self::ScanErrors,
+        Self::ImportSessions,
     ];
 
     pub fn label(self) -> &'static str {
@@ -918,6 +920,7 @@ impl LocalSection {
             Self::Folders => t!("Folders", "폴더"),
             Self::SmartLists => t!("Smart Lists", "스마트 목록"),
             Self::ScanErrors => t!("Scan Errors", "스캔 오류"),
+            Self::ImportSessions => t!("Import Sessions", "임포트 세션"),
         }
     }
 
@@ -943,6 +946,7 @@ pub enum LocalDrill {
     Genre(String),
     Folder(PathBuf),
     Smart(crate::local::LocalSmartList),
+    ImportSession(String),
 }
 
 /// What the "what's playing" (지듣노) card is showing — populated synchronously from the

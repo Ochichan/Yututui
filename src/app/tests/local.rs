@@ -647,6 +647,110 @@ fn local_deck_smart_lists_report_counts_for_every_shipped_list() {
 }
 
 #[test]
+fn local_deck_import_sessions_drill_down_in_source_order() {
+    let mut second = local_deck_track(
+        "/tmp/music/import/session/02 Second.m4a",
+        "Second",
+        &["Artist"],
+        Some("Album"),
+        Some("Artist"),
+        &["Pop"],
+        20,
+    );
+    second.import_session_id = Some("sp2yt-session".to_owned());
+    second.import_source_order = Some(2);
+
+    let mut first = local_deck_track(
+        "/tmp/music/import/session/01 First.m4a",
+        "First",
+        &["Artist"],
+        Some("Album"),
+        Some("Artist"),
+        &["Pop"],
+        10,
+    );
+    first.import_session_id = Some("sp2yt-session".to_owned());
+    first.import_source_order = Some(1);
+
+    let mut other = local_deck_track(
+        "/tmp/music/import/other/01 Other.m4a",
+        "Other",
+        &["Other Artist"],
+        Some("Other Album"),
+        Some("Other Artist"),
+        &["Indie"],
+        30,
+    );
+    other.import_session_id = Some("sp2yt-other".to_owned());
+    other.import_source_order = Some(1);
+
+    let mut app = app_with_local_deck_index(vec![second, first, other]);
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+
+    assert_eq!(app.local_mode.ui.section, LocalSection::ImportSessions);
+    let labels: Vec<_> = app
+        .local_visible_rows()
+        .iter()
+        .map(|row| app.local_row_text(row))
+        .collect();
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "sp2yt-other  (1 tracks)")
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == "sp2yt-session  (2 tracks)")
+    );
+
+    let session_index = labels
+        .iter()
+        .position(|label| label.starts_with("sp2yt-session"))
+        .unwrap();
+    app.local_mode.ui.selected = session_index;
+    app.local_mode.ui.anchor = session_index;
+    let details = app.local_details_lines();
+    for expected in [
+        "Import session: sp2yt-session",
+        "Tracks: 2 tracks",
+        "Source order: #1-#2",
+    ] {
+        assert!(
+            details.iter().any(|line| line == expected),
+            "missing {expected:?} in {details:?}"
+        );
+    }
+
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(session_index));
+    assert!(open.is_empty());
+    assert_eq!(app.local_rows_len(), 2);
+    assert!(
+        app.local_row_text(&app.local_visible_rows()[0])
+            .contains("First")
+    );
+    assert!(
+        app.local_row_text(&app.local_visible_rows()[1])
+            .contains("Second")
+    );
+
+    let lines = app.local_details_lines();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Import session: sp2yt-session")
+    );
+    assert!(lines.iter().any(|line| line == "Source order: #1"));
+
+    let play = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(!play.is_empty());
+    assert_eq!(
+        app.queue.current().map(|song| song.title.as_str()),
+        Some("First")
+    );
+}
+
+#[test]
 fn local_deck_details_include_selected_track_metadata_and_up_next() {
     let mut first = local_deck_track(
         "/tmp/music/Daft Punk/Discovery/01 One More Time.flac",

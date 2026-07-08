@@ -417,6 +417,10 @@ fn render_empty_section(frame: &mut Frame, app: &App, area: Rect) {
             "사용할 수 있는 스마트 목록이 없어요."
         ),
         LocalSection::ScanErrors => t!("No scan errors.", "스캔 오류가 없어요."),
+        LocalSection::ImportSessions => t!(
+            "No imported local downloads yet.",
+            "아직 임포트된 로컬 다운로드가 없어요."
+        ),
         _ => t!("No local rows yet.", "아직 로컬 항목이 없어요."),
     };
     frame.render_widget(
