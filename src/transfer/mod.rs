@@ -11,6 +11,7 @@ pub mod cli;
 pub mod csv;
 pub mod json;
 pub mod matching;
+pub mod session;
 
 mod engine;
 

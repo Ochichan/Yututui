@@ -28,6 +28,9 @@ pub struct Checkpoint {
     /// Human name of the destination (report/UX).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dest_name: Option<String>,
+    /// Human name of the fetched source, preserved for import-session review surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
     /// Source items that were never matchable (Spotify local files / episodes / removed
     /// tracks), counted at fetch time for the report.
     #[serde(default)]
@@ -56,6 +59,7 @@ impl Checkpoint {
             stage: Stage::Fetching,
             dest_id: None,
             dest_name: None,
+            source_name: None,
             skipped_local: 0,
             tracks,
         }

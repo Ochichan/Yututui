@@ -114,10 +114,12 @@ pub async fn run_job(
         None => {
             let (source_name, entries, skipped_local) = fetch_source(&job_id, &spec, ctx).await?;
             let mut cp = Checkpoint::new(job_id.clone(), spec.clone(), entries);
+            cp.source_name = Some(source_name.clone());
             cp.dest_name = Some(default_dest_name(&spec.dest, &source_name));
             cp.skipped_local = skipped_local;
             cp.stage = Stage::Matching;
             cp.save().map_err(|e| JobError::fatal(e.into()))?;
+            save_import_session(&cp);
             cp
         }
     };
@@ -131,6 +133,7 @@ pub async fn run_job(
         match_stage(&mut cp, ctx, progress).await?;
         cp.stage = Stage::Writing;
         cp.save().map_err(|e| JobError::fatal(e.into()))?;
+        save_import_session(&cp);
     }
 
     let mut report = build_report(&cp, skipped_local);
@@ -141,6 +144,7 @@ pub async fn run_job(
         write_stage(&mut cp, ctx, progress, &mut report).await?;
         cp.stage = Stage::Done;
         cp.save().map_err(|e| JobError::fatal(e.into()))?;
+        save_import_session(&cp);
     }
 
     report.elapsed_secs = started.elapsed().as_secs();
@@ -937,8 +941,17 @@ fn progress_beat(job_id: &str, stage: Stage) -> impl FnMut(u32, u32, String) + u
 fn checkpointed(cp: &mut Checkpoint, err: JobError) -> JobError {
     if let Err(e) = cp.save() {
         tracing::warn!(error = %e, "could not save checkpoint while failing");
+    } else {
+        save_import_session(cp);
     }
     err
+}
+
+fn save_import_session(cp: &Checkpoint) {
+    let session = super::session::ImportSession::from_checkpoint(cp);
+    if let Err(e) = session.save() {
+        tracing::warn!(error = %e, "could not save import session");
+    }
 }
 
 fn spotify_job_error(e: SpotifyError) -> JobError {
