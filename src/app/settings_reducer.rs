@@ -27,6 +27,22 @@ fn spotify_row_state(token_client_id: Option<&str>, cfg_client_id: &str) -> (boo
     (connected, stale, effective)
 }
 
+fn transfer_done_status(report: &crate::transfer::checkpoint::TransferReport) -> String {
+    if crate::i18n::is_korean() {
+        format!(
+            "가져오기 완료: {} · 세션 보기: ytt transfer session {} · Library > Playlists에서 Shift+D로 다운로드",
+            report.render_text(),
+            report.job_id
+        )
+    } else {
+        format!(
+            "Import finished: {} · review: ytt transfer session {} · Library > Playlists: Shift+D downloads",
+            report.render_text(),
+            report.job_id
+        )
+    }
+}
+
 impl App {
     // --- Settings screen ----------------------------------------------------
 
@@ -1519,11 +1535,7 @@ impl App {
                 // The store changed under the Playlists tab: drop a drill-down or pending
                 // delete whose playlist vanished and re-clamp the cursor into the new rows.
                 self.reconcile_playlists_reload();
-                self.status.text = format!(
-                    "{}: {}",
-                    t!("Import finished", "가져오기 완료"),
-                    report.render_text()
-                );
+                self.status.text = transfer_done_status(&report);
                 self.status.kind = StatusKind::Info;
             }
             TransferEvent::JobFailed {

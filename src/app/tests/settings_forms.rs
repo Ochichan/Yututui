@@ -666,6 +666,22 @@ fn transfer_events_surface_playlist_progress_and_failures() {
     assert!(app.status.text.contains("Spotify import: matching 2/5"));
     assert!(app.status.text.contains("Artist - Song"));
 
+    app.transfer_running = true;
+    app.update(Msg::Transfer(TransferEvent::JobDone(Box::new(
+        crate::transfer::checkpoint::TransferReport {
+            job_id: "sp2yt-1".to_owned(),
+            total: 5,
+            matched: 4,
+            written: 4,
+            ..Default::default()
+        },
+    ))));
+    assert!(!app.transfer_running);
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert!(app.status.text.contains("Import finished"));
+    assert!(app.status.text.contains("ytt transfer session sp2yt-1"));
+    assert!(app.status.text.contains("Shift+D"));
+
     app.update(Msg::Transfer(TransferEvent::JobFailed {
         job_id: "sp2yt-1".to_owned(),
         error: "rate limited".to_owned(),

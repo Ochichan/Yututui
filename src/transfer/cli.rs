@@ -510,7 +510,34 @@ fn conclude(report: &TransferReport) -> i32 {
     if let Some(path) = super::checkpoint::report_path(&report.job_id) {
         println!("Report: {}", path.display());
     }
+    print_next_steps(report);
     EXIT_OK
+}
+
+fn print_next_steps(report: &TransferReport) {
+    let session = ImportSession::load(&report.job_id).ok();
+    for line in next_step_lines(report, session.as_ref()) {
+        println!("{line}");
+    }
+}
+
+fn next_step_lines(report: &TransferReport, session: Option<&ImportSession>) -> Vec<String> {
+    if report.job_id.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "Session review: ytt transfer session {}",
+        report.job_id
+    )];
+    if session.is_some_and(|session| session.destination.kind == "local_playlist") {
+        let dest = session
+            .map(|session| session.destination.display())
+            .unwrap_or_else(|| "the imported playlist".to_owned());
+        lines.push(format!(
+            "Next: open Library > Playlists > {dest}, press Shift+D to download accepted tracks, then rescan Local Deck."
+        ));
+    }
+    lines
 }
 
 fn print_job_error(job_id: &str, e: JobError) -> i32 {
@@ -1296,6 +1323,33 @@ mod tests {
         assert_eq!(unique_stem("mix".to_owned(), &mut used), "mix");
         assert_eq!(unique_stem("mix".to_owned(), &mut used), "mix-2");
         assert_eq!(unique_stem("mix".to_owned(), &mut used), "mix-3");
+    }
+
+    #[test]
+    fn next_steps_include_session_review_and_local_download_hint() {
+        let report = TransferReport {
+            job_id: "sp2yt-20260708-abcd".to_owned(),
+            ..TransferReport::default()
+        };
+        let session = ImportSession {
+            session_id: report.job_id.clone(),
+            destination: crate::transfer::session::SessionEndpoint {
+                kind: "local_playlist".to_owned(),
+                key: Some("playlist-key".to_owned()),
+                label: Some("Imported Mix".to_owned()),
+            },
+            ..ImportSession::default()
+        };
+
+        let lines = next_step_lines(&report, Some(&session));
+
+        assert_eq!(
+            lines[0],
+            "Session review: ytt transfer session sp2yt-20260708-abcd"
+        );
+        assert!(lines[1].contains("Imported Mix"));
+        assert!(lines[1].contains("Shift+D"));
+        assert!(lines[1].contains("Local Deck"));
     }
 
     #[test]
