@@ -340,6 +340,9 @@ async fn run_download_with_program(
     {
         tracing::warn!(embedded_id, requested = %song.video_id, "downloaded file id differs from requested");
     }
+    if let Err(e) = crate::downloads::write_audio_tags(song, &path) {
+        tracing::warn!(error = %e, path = %path.display(), "could not write download audio tags");
+    }
     if let Err(e) = crate::downloads::write_sidecar(song, &path) {
         tracing::warn!(error = %e, path = %path.display(), "could not write download sidecar");
     }

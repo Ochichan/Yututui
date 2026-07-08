@@ -197,6 +197,23 @@ pub fn write_sidecar(song: &Song, audio_path: &Path) -> io::Result<()> {
     write_result
 }
 
+pub fn write_audio_tags(song: &Song, audio_path: &Path) -> lofty::error::Result<()> {
+    use lofty::config::WriteOptions;
+    use lofty::file::{AudioFile, TaggedFileExt};
+    use lofty::tag::Tag;
+
+    let mut tagged = lofty::read_from_path(audio_path)?;
+    let tag_type = tagged.primary_tag_type();
+    if tagged.primary_tag_mut().is_none() {
+        tagged.insert_tag(Tag::new(tag_type));
+    }
+    let Some(tag) = tagged.primary_tag_mut() else {
+        return Ok(());
+    };
+    apply_song_tags(tag, song);
+    tagged.save_to_path(audio_path, WriteOptions::default())
+}
+
 pub fn read_sidecar(audio_path: &Path) -> io::Result<Option<DownloadSidecar>> {
     let path = sidecar_path(audio_path);
     let bytes = match safe_fs::read_no_symlink_limited(&path, SIDECAR_MAX_BYTES) {
@@ -216,6 +233,28 @@ pub fn read_sidecar(audio_path: &Path) -> io::Result<Option<DownloadSidecar>> {
         ));
     }
     Ok(Some(sidecar))
+}
+
+fn apply_song_tags(tag: &mut lofty::tag::Tag, song: &Song) {
+    use lofty::tag::{Accessor, ItemKey};
+
+    if !song.title.trim().is_empty() {
+        tag.set_title(song.title.clone());
+    }
+    if !song.artist.trim().is_empty() {
+        tag.set_artist(song.artist.clone());
+        tag.insert_text(ItemKey::TrackArtists, song.artist.clone());
+    }
+    if let Some(album) = song
+        .album
+        .as_deref()
+        .filter(|album| !album.trim().is_empty())
+    {
+        tag.set_album(album.to_owned());
+    }
+    if let Some(url) = song.share_url() {
+        tag.insert_text(ItemKey::Comment, format!("YouTube: {url}"));
+    }
 }
 
 fn sidecar_temp_path(path: &Path) -> PathBuf {
@@ -369,5 +408,30 @@ mod tests {
         assert_eq!(sidecar.duration_secs, Some(183));
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tag_writer_populates_common_catalog_fields() {
+        use lofty::tag::{Accessor, ItemKey, Tag, TagType};
+
+        let mut song = Song::from_search(
+            "abc123def45",
+            "Track",
+            "Artist A, Artist B",
+            "3:03",
+            Some("Album".to_owned()),
+        );
+        song.duration_secs = Some(183);
+        let mut tag = Tag::new(TagType::Mp4Ilst);
+
+        apply_song_tags(&mut tag, &song);
+
+        assert_eq!(tag.title().as_deref(), Some("Track"));
+        assert_eq!(tag.artist().as_deref(), Some("Artist A, Artist B"));
+        assert_eq!(tag.album().as_deref(), Some("Album"));
+        assert_eq!(
+            tag.get_string(ItemKey::Comment),
+            Some("YouTube: https://www.youtube.com/watch?v=abc123def45")
+        );
     }
 }
