@@ -10,7 +10,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
-use crate::config::{AnimationsConfig, Config, default_cookies_file, default_download_dir};
+use crate::config::{
+    AnimationsConfig, Config, LocalRootConfig, default_cookies_file, default_download_dir,
+};
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
 use crate::keymap::{Action, KeyContext, KeyMap};
@@ -101,6 +103,9 @@ impl SettingsTab {
                 Field::SearchRadioBrowser,
                 Field::CookiesFile,
                 Field::DownloadDir,
+                Field::LocalIncludeDownloadDir,
+                Field::LocalMusicRoot,
+                Field::LocalMusicRootRecursive,
                 Field::Mouse,
                 Field::AlbumArt,
                 Field::BigText,
@@ -253,6 +258,9 @@ pub enum Field {
     SearchRadioBrowser,
     CookiesFile,
     DownloadDir,
+    LocalIncludeDownloadDir,
+    LocalMusicRoot,
+    LocalMusicRootRecursive,
     Mouse,
     AlbumArt,
     AutoplayOnStart,
@@ -504,6 +512,7 @@ impl Field {
         match self {
             Field::CookiesFile
             | Field::DownloadDir
+            | Field::LocalMusicRoot
             | Field::AudiusAppName
             | Field::JamendoClientId
             | Field::ApiKey
@@ -513,6 +522,8 @@ impl Field {
             | Field::ThemeColor(_) => FieldKind::Text,
             Field::Mouse
             | Field::AlbumArt
+            | Field::LocalIncludeDownloadDir
+            | Field::LocalMusicRootRecursive
             | Field::AutoplayOnStart
             | Field::EnqueueNext
             | Field::SearchYoutube
@@ -642,6 +653,13 @@ impl Field {
             }
             Field::CookiesFile => t!("Cookies file", "쿠키 파일").to_owned(),
             Field::DownloadDir => t!("Download dir", "다운로드 폴더").to_owned(),
+            Field::LocalIncludeDownloadDir => {
+                t!("Local: include downloads", "로컬: 다운로드 포함").to_owned()
+            }
+            Field::LocalMusicRoot => t!("Local: music folder", "로컬: 음악 폴더").to_owned(),
+            Field::LocalMusicRootRecursive => {
+                t!("Local: scan subfolders", "로컬: 하위 폴더 스캔").to_owned()
+            }
             Field::Mouse => t!("Mouse (next launch)", "마우스 (재시작 후 적용)").to_owned(),
             Field::AlbumArt => t!("Album art", "앨범 아트").to_owned(),
             Field::AutoplayOnStart => t!("Autoplay on launch", "앱 시작 시 자동재생").to_owned(),
@@ -747,6 +765,9 @@ pub fn freq_label(i: usize) -> String {
 pub struct SettingsDraft {
     pub cookies_file: String,
     pub download_dir: String,
+    pub local_include_download_dir: bool,
+    pub local_music_root: String,
+    pub local_music_root_recursive: bool,
     pub search: SearchConfig,
     pub mouse: bool,
     pub album_art: bool,
@@ -886,6 +907,15 @@ impl SettingsDraft {
                     self.download_dir.clone()
                 }
             }
+            Field::LocalIncludeDownloadDir => toggle_str(self.local_include_download_dir),
+            Field::LocalMusicRoot => {
+                if self.local_music_root.is_empty() {
+                    t!("(none)", "(없음)").to_owned()
+                } else {
+                    self.local_music_root.clone()
+                }
+            }
+            Field::LocalMusicRootRecursive => toggle_str(self.local_music_root_recursive),
             Field::Mouse => toggle_str(self.mouse),
             Field::AlbumArt => toggle_str(self.album_art),
             Field::AutoplayOnStart => toggle_str(self.autoplay_on_start),
@@ -1049,6 +1079,7 @@ impl SettingsDraft {
         match field {
             Field::CookiesFile => Some(&self.cookies_file),
             Field::DownloadDir => Some(&self.download_dir),
+            Field::LocalMusicRoot => Some(&self.local_music_root),
             Field::AudiusAppName => self.search.audius_app_name.as_deref(),
             Field::JamendoClientId => self.search.jamendo_client_id.as_deref(),
             Field::ApiKey => Some(&self.gemini_api_key),
@@ -1065,6 +1096,8 @@ impl SettingsDraft {
     pub fn apply_to(&self, cfg: &mut Config) {
         cfg.cookies_file = blank_to_none(&self.cookies_file).map(PathBuf::from);
         cfg.download_dir = blank_to_none(&self.download_dir).map(PathBuf::from);
+        cfg.local.include_download_dir = Some(self.local_include_download_dir);
+        set_first_local_root(cfg, &self.local_music_root, self.local_music_root_recursive);
         cfg.search = self.search.clone().normalized();
         cfg.mouse = Some(self.mouse);
         cfg.album_art = Some(self.album_art);
@@ -1244,6 +1277,22 @@ pub(crate) fn blank_to_none(s: &str) -> Option<String> {
     }
 }
 
+pub(crate) fn set_first_local_root(cfg: &mut Config, path: &str, recursive: bool) {
+    let next = blank_to_none(path).map(|path| LocalRootConfig {
+        path: PathBuf::from(path),
+        enabled: Some(true),
+        recursive: Some(recursive),
+    });
+    match (next, cfg.local.roots.is_empty()) {
+        (Some(root), true) => cfg.local.roots.push(root),
+        (Some(root), false) => cfg.local.roots[0] = root,
+        (None, false) => {
+            cfg.local.roots.remove(0);
+        }
+        (None, true) => {}
+    }
+}
+
 // Band gain limits + clamp live in `eq`; speed/seek clamps live in `config`. Each is the
 // single source both the TUI controls and the headless daemon apply. Re-exported so
 // existing `settings::clamp_band` / `settings::clamp_speed` / `settings::clamp_seek_seconds`
@@ -1261,6 +1310,9 @@ mod tests {
         SettingsDraft {
             cookies_file: String::new(),
             download_dir: String::new(),
+            local_include_download_dir: true,
+            local_music_root: String::new(),
+            local_music_root_recursive: true,
             search: SearchConfig::default(),
             mouse: true,
             album_art: false,
@@ -1509,6 +1561,9 @@ mod tests {
                 Field::SearchRadioBrowser,
                 Field::CookiesFile,
                 Field::DownloadDir,
+                Field::LocalIncludeDownloadDir,
+                Field::LocalMusicRoot,
+                Field::LocalMusicRootRecursive,
                 Field::Mouse,
                 Field::AlbumArt,
                 Field::BigText,
@@ -1525,6 +1580,9 @@ mod tests {
         assert_eq!(Field::StreamingSource.kind(), FieldKind::Select);
         assert_eq!(Field::SearchSoundCloud.kind(), FieldKind::Toggle);
         assert_eq!(Field::JamendoClientId.kind(), FieldKind::Text);
+        assert_eq!(Field::LocalIncludeDownloadDir.kind(), FieldKind::Toggle);
+        assert_eq!(Field::LocalMusicRoot.kind(), FieldKind::Text);
+        assert_eq!(Field::LocalMusicRootRecursive.kind(), FieldKind::Toggle);
         assert_eq!(Field::AutoplayOnStart.kind(), FieldKind::Toggle);
         assert_eq!(Field::EnqueueNext.kind(), FieldKind::Toggle);
         assert_eq!(Field::AlbumArt.kind(), FieldKind::Toggle);
@@ -1538,6 +1596,9 @@ mod tests {
         assert_eq!(draft.value_display(Field::StreamingSource), "YouTube");
         assert_eq!(draft.value_display(Field::SearchSoundCloud), "[x]");
         assert_eq!(draft.value_display(Field::JamendoClientId), "(none)");
+        assert_eq!(draft.value_display(Field::LocalIncludeDownloadDir), "[x]");
+        assert_eq!(draft.value_display(Field::LocalMusicRoot), "(none)");
+        assert_eq!(draft.value_display(Field::LocalMusicRootRecursive), "[x]");
         assert!(!draft.autoplay_on_start);
         assert_eq!(draft.value_display(Field::AutoplayOnStart), "[ ]");
         assert!(!draft.enqueue_next);
@@ -1667,6 +1728,9 @@ mod tests {
         let draft = SettingsDraft {
             cookies_file: "/tmp/cookies.txt".to_owned(),
             download_dir: "/tmp/downloads".to_owned(),
+            local_include_download_dir: false,
+            local_music_root: "/Users/listener/Music".to_owned(),
+            local_music_root_recursive: false,
             search: SearchConfig {
                 source: SearchSource::SoundCloud,
                 streaming_source: SearchSource::All,
@@ -1751,6 +1815,14 @@ mod tests {
         assert!(!cfg.animations.pause_unfocused);
         assert_eq!(cfg.cookies_file, Some(PathBuf::from("/tmp/cookies.txt")));
         assert_eq!(cfg.download_dir, Some(PathBuf::from("/tmp/downloads")));
+        assert!(!cfg.local.include_download_dir());
+        assert_eq!(cfg.local.roots.len(), 1);
+        assert_eq!(
+            cfg.local.roots[0].path,
+            PathBuf::from("/Users/listener/Music")
+        );
+        assert!(cfg.local.roots[0].enabled());
+        assert!(!cfg.local.roots[0].recursive());
         assert_eq!(cfg.search.source, SearchSource::SoundCloud);
         assert_eq!(cfg.search.streaming_source, SearchSource::All);
         assert_eq!(cfg.search.jamendo_client_id.as_deref(), Some("jam-id"));

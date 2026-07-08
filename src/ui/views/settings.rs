@@ -424,7 +424,11 @@ fn field_value_text(app: &App, st: &SettingsState, field: Field, focused: bool) 
         }
         // Show the live edit buffer with a caret for the focused path field.
         (
-            Field::CookiesFile | Field::DownloadDir | Field::AudiusAppName | Field::JamendoClientId,
+            Field::CookiesFile
+            | Field::DownloadDir
+            | Field::LocalMusicRoot
+            | Field::AudiusAppName
+            | Field::JamendoClientId,
             _,
         ) if focused && st.editing_text => {
             format!(

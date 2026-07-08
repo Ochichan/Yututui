@@ -2700,6 +2700,50 @@ fn local_deck_enter_loads_index_then_scans_download_root_when_empty() {
 }
 
 #[test]
+fn local_deck_scan_roots_follow_local_config() {
+    let mut app = App::new(100);
+    let downloads = PathBuf::from("/tmp/yututui-local-downloads");
+    let music = PathBuf::from("/tmp/yututui-music-root");
+    app.config.download_dir = Some(downloads.clone());
+    app.config.local.roots = vec![crate::config::LocalRootConfig {
+        path: music.clone(),
+        enabled: Some(true),
+        recursive: Some(true),
+    }];
+
+    assert_eq!(
+        app.local_scan_roots(),
+        vec![
+            crate::local::LocalScanRoot::download(downloads.clone()),
+            crate::local::LocalScanRoot::recursive(music.clone()),
+        ]
+    );
+
+    app.config.local.include_download_dir = Some(false);
+    assert_eq!(
+        app.local_scan_roots(),
+        vec![crate::local::LocalScanRoot::recursive(music)]
+    );
+}
+
+#[test]
+fn local_deck_scan_roots_merge_duplicate_download_root_recursively() {
+    let mut app = App::new(100);
+    let root = PathBuf::from("/tmp/yututui-local-merged-root");
+    app.config.download_dir = Some(root.clone());
+    app.config.local.roots = vec![crate::config::LocalRootConfig {
+        path: root.clone(),
+        enabled: Some(true),
+        recursive: Some(true),
+    }];
+
+    assert_eq!(
+        app.local_scan_roots(),
+        vec![crate::local::LocalScanRoot::recursive(root)]
+    );
+}
+
+#[test]
 fn local_deck_scan_result_replaces_seed_rows_and_activates_index_track() {
     let mut app = App::new(100);
     app.mode = Mode::Library;
@@ -4131,6 +4175,84 @@ fn settings_text_fields_persist_provider_ids_and_download_dir() {
             .any(|c| matches!(c, Cmd::ScanDownloads(path) if path == &new_dir))
     );
     assert!(save_config(&cmds).is_some());
+}
+
+#[test]
+fn settings_local_music_root_persists_and_rescans_active_local_deck() {
+    let mut app = App::new(100);
+    let downloads = PathBuf::from("/tmp/ytt-local-downloads");
+    let music = PathBuf::from("/tmp/ytt-local-library");
+    app.config.download_dir = Some(downloads.clone());
+    app.local_dedicated_mode = true;
+    app.open_settings();
+
+    focus_settings_field(&mut app, SettingsTab::General, Field::LocalMusicRoot);
+    {
+        let draft = &mut app.settings.as_mut().unwrap().draft;
+        draft.local_music_root = music.display().to_string();
+        draft.local_music_root_recursive = false;
+    }
+
+    let cmds = app.settings_persist_text_field(Field::LocalMusicRoot);
+
+    assert_eq!(app.config.local.roots.len(), 1);
+    assert_eq!(app.config.local.roots[0].path, music);
+    assert!(!app.config.local.roots[0].recursive());
+    let Some(Cmd::Local(LocalCmd::ScanRoots { roots, .. })) = cmds
+        .iter()
+        .find(|cmd| matches!(cmd, Cmd::Local(LocalCmd::ScanRoots { .. })))
+    else {
+        panic!("expected Local Deck rescan after changing the music root");
+    };
+    assert_eq!(
+        roots,
+        &vec![
+            crate::local::LocalScanRoot::download(downloads),
+            crate::local::LocalScanRoot {
+                path: PathBuf::from("/tmp/ytt-local-library"),
+                recursive: false,
+            },
+        ]
+    );
+    assert!(save_config(&cmds).is_some());
+}
+
+#[test]
+fn closing_settings_with_local_root_toggles_rescans_active_local_deck() {
+    let mut app = App::new(100);
+    let downloads = PathBuf::from("/tmp/ytt-close-downloads");
+    let music = PathBuf::from("/tmp/ytt-close-library");
+    app.config.download_dir = Some(downloads);
+    app.config.local.roots = vec![crate::config::LocalRootConfig {
+        path: music.clone(),
+        enabled: Some(true),
+        recursive: Some(true),
+    }];
+    app.local_dedicated_mode = true;
+    app.open_settings();
+    {
+        let draft = &mut app.settings.as_mut().unwrap().draft;
+        draft.local_include_download_dir = false;
+        draft.local_music_root_recursive = false;
+    }
+
+    let cmds = app.close_settings();
+
+    assert!(!app.config.local.include_download_dir());
+    assert!(!app.config.local.roots[0].recursive());
+    let Some(Cmd::Local(LocalCmd::ScanRoots { roots, .. })) = cmds
+        .iter()
+        .find(|cmd| matches!(cmd, Cmd::Local(LocalCmd::ScanRoots { .. })))
+    else {
+        panic!("expected Local Deck rescan after changing local root toggles");
+    };
+    assert_eq!(
+        roots,
+        &vec![crate::local::LocalScanRoot {
+            path: music,
+            recursive: false,
+        }]
+    );
 }
 
 #[test]

@@ -381,7 +381,7 @@ impl App {
         Vec::new()
     }
 
-    fn request_local_scan(&mut self, full: bool) -> Vec<Cmd> {
+    pub(in crate::app) fn request_local_scan(&mut self, full: bool) -> Vec<Cmd> {
         if self.local_mode.index.scanning {
             return Vec::new();
         }
@@ -422,10 +422,30 @@ impl App {
         })]
     }
 
-    fn local_scan_roots(&self) -> Vec<crate::local::LocalScanRoot> {
-        vec![crate::local::LocalScanRoot::download(
-            self.config.effective_download_dir(),
-        )]
+    pub(in crate::app) fn local_scan_roots(&self) -> Vec<crate::local::LocalScanRoot> {
+        let mut roots = Vec::new();
+        if self.config.local.include_download_dir() {
+            push_local_scan_root(
+                &mut roots,
+                crate::local::LocalScanRoot::download(self.config.effective_download_dir()),
+            );
+        }
+        for root in &self.config.local.roots {
+            if !root.enabled() {
+                continue;
+            }
+            let Some(path) = root.normalized_path() else {
+                continue;
+            };
+            push_local_scan_root(
+                &mut roots,
+                crate::local::LocalScanRoot {
+                    path,
+                    recursive: root.recursive(),
+                },
+            );
+        }
+        roots
     }
 
     fn local_track_rows_len(&self) -> usize {
@@ -1141,6 +1161,17 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+}
+
+fn push_local_scan_root(
+    roots: &mut Vec<crate::local::LocalScanRoot>,
+    root: crate::local::LocalScanRoot,
+) {
+    if let Some(existing) = roots.iter_mut().find(|existing| existing.path == root.path) {
+        existing.recursive |= root.recursive;
+    } else {
+        roots.push(root);
     }
 }
 

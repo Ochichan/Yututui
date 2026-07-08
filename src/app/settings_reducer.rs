@@ -53,6 +53,7 @@ impl App {
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()
         };
+        let local_root = self.config.local.first_root();
         // Spotify connection state, decided once (one token-file read). See
         // `spotify_row_state`: recovers a lost Client ID from the token and flags an
         // orphaned connection so the row can offer a browser reconnect.
@@ -65,6 +66,13 @@ impl App {
         let draft = SettingsDraft {
             cookies_file: path_str(&self.config.cookies_file),
             download_dir: path_str(&self.config.download_dir),
+            local_include_download_dir: self.config.local.include_download_dir(),
+            local_music_root: local_root
+                .map(|root| root.path.display().to_string())
+                .unwrap_or_default(),
+            local_music_root_recursive: local_root
+                .map(crate::config::LocalRootConfig::recursive)
+                .unwrap_or(true),
             search: self.config.effective_search(),
             mouse: self.config.effective_mouse(),
             album_art: self.config.effective_album_art(),
@@ -422,6 +430,16 @@ impl App {
                 s.draft.update_check_enabled = !s.draft.update_check_enabled;
                 Vec::new()
             }
+            Field::LocalIncludeDownloadDir => {
+                let s = self.settings_mut();
+                s.draft.local_include_download_dir = !s.draft.local_include_download_dir;
+                Vec::new()
+            }
+            Field::LocalMusicRootRecursive => {
+                let s = self.settings_mut();
+                s.draft.local_music_root_recursive = !s.draft.local_music_root_recursive;
+                Vec::new()
+            }
             Field::AutoplayOnStart => {
                 let s = self.settings_mut();
                 s.draft.autoplay_on_start = !s.draft.autoplay_on_start;
@@ -765,6 +783,7 @@ impl App {
             // value to nudge — Enter activates it (see `settings_activate`).
             Field::CookiesFile
             | Field::DownloadDir
+            | Field::LocalMusicRoot
             | Field::AudiusAppName
             | Field::JamendoClientId
             | Field::ApiKey
@@ -1783,12 +1802,29 @@ impl App {
             }
             Field::DownloadDir => {
                 let old_dir = self.config.effective_download_dir();
+                let old_roots = self.local_scan_roots();
                 self.config.download_dir =
                     settings::blank_to_none(&value).map(std::path::PathBuf::from);
                 let new_dir = self.config.effective_download_dir();
                 if new_dir != old_dir {
                     cmds.push(Cmd::SetDownloadDir(new_dir.clone()));
                     cmds.push(Cmd::ScanDownloads(new_dir));
+                }
+                if self.local_dedicated_mode && self.local_scan_roots() != old_roots {
+                    cmds.extend(self.request_local_scan(false));
+                }
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+            }
+            Field::LocalMusicRoot => {
+                let recursive = self
+                    .settings
+                    .as_ref()
+                    .map(|s| s.draft.local_music_root_recursive)
+                    .unwrap_or(true);
+                let old_roots = self.local_scan_roots();
+                settings::set_first_local_root(&mut self.config, &value, recursive);
+                if self.local_dedicated_mode && self.local_scan_roots() != old_roots {
+                    cmds.extend(self.request_local_scan(false));
                 }
                 self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
@@ -1884,6 +1920,7 @@ impl App {
         match st.current_field()? {
             Field::CookiesFile => Some(&mut st.draft.cookies_file),
             Field::DownloadDir => Some(&mut st.draft.download_dir),
+            Field::LocalMusicRoot => Some(&mut st.draft.local_music_root),
             Field::AudiusAppName => st.draft.search.audius_app_name.as_mut(),
             Field::JamendoClientId => st.draft.search.jamendo_client_id.as_mut(),
             Field::ApiKey => Some(&mut st.draft.gemini_api_key),
@@ -1940,6 +1977,7 @@ impl App {
         let old_ai_enabled = self.config.effective_ai_enabled();
         let old_romanized_titles = self.config.effective_romanized_titles();
         let old_download_dir = self.config.effective_download_dir();
+        let old_local_roots = self.local_scan_roots();
         let normal_theme = if self.radio_dedicated_mode {
             Some(
                 self.radio_mode
@@ -2030,6 +2068,9 @@ impl App {
         if new_download_dir != old_download_dir {
             cmds.push(Cmd::SetDownloadDir(new_download_dir.clone()));
             cmds.push(Cmd::ScanDownloads(new_download_dir));
+        }
+        if self.local_dedicated_mode && self.local_scan_roots() != old_local_roots {
+            cmds.extend(self.request_local_scan(false));
         }
         // Hand the scrobble actor the committed account settings. Unconditional: the
         // snapshot is a few strings and the actor's swap is trivial, so this is cheaper
