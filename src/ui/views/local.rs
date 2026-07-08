@@ -1,7 +1,7 @@
 //! Local Deck shell rendered under the Library mode.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -45,21 +45,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-    let indexed = app.local_mode.index.index.tracks().len();
-    let count = indexed.max(app.library_ui.downloaded.len());
+    let count = app.local_total_rows_len();
     let visible_count = app.local_rows_len();
     let count_label = if !app.local_mode.ui.filter_query.is_empty() {
         if crate::i18n::is_korean() {
-            format!("{visible_count}/{count}곡")
+            format!("{visible_count}/{count}개")
         } else {
-            format!("{visible_count}/{count} tracks")
+            format!("{visible_count}/{count} rows")
         }
     } else if count == 1 {
-        t!("1 track", "1곡").to_owned()
+        t!("1 row", "1개").to_owned()
     } else if crate::i18n::is_korean() {
-        format!("{count}곡")
+        format!("{count}개")
     } else {
-        format!("{count} tracks")
+        format!("{count} rows")
     };
     let scan_label = if app.local_mode.index.scanning {
         t!("scan: running", "스캔: 진행 중")
@@ -68,10 +67,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         t!("scan: idle", "스캔: 대기")
     };
-    let section = match app.local_mode.ui.section {
-        LocalSection::Home => t!("Home", "홈"),
-        LocalSection::Tracks => t!("Tracks", "곡"),
-    };
+    let section = app.local_section_title();
     let line = Line::from(vec![
         Span::styled(
             " LOCAL DECK ",
@@ -163,9 +159,20 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 || area.width < 4 {
         return;
     }
-    match app.local_mode.ui.section {
-        LocalSection::Home => render_home(frame, app, area),
-        LocalSection::Tracks => render_tracks(frame, app, area),
+    if app.local_mode.ui.section == LocalSection::Home {
+        render_home(frame, app, area);
+        return;
+    }
+    if area.width >= 72 {
+        let panes = Layout::new(
+            Direction::Horizontal,
+            [Constraint::Length(18), Constraint::Min(0)],
+        )
+        .split(area);
+        render_sidebar(frame, app, panes[0]);
+        render_rows(frame, app, panes[1]);
+    } else {
+        render_rows(frame, app, area);
     }
 }
 
@@ -178,8 +185,8 @@ fn render_home(frame: &mut Frame, app: &App, area: Rect) {
             )),
             Line::from(""),
             Line::from(t!(
-                "The first scanner milestone will add music folders and recursive indexing.",
-                "첫 스캐너 단계에서 음악 폴더와 재귀 인덱싱을 추가합니다."
+                "Press r to scan the download folder.",
+                "r로 다운로드 폴더를 스캔하세요."
             )),
         ]
     } else {
@@ -190,8 +197,8 @@ fn render_home(frame: &mut Frame, app: &App, area: Rect) {
             )),
             Line::from(""),
             Line::from(t!(
-                "Press Enter to open Tracks.",
-                "Enter로 곡 목록을 여세요."
+                "Open Tracks to play downloaded files.",
+                "곡 목록에서 다운로드 파일을 재생하세요."
             )),
         ]
     };
@@ -203,72 +210,32 @@ fn render_home(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_tracks(frame: &mut Frame, app: &App, area: Rect) {
-    if !app.local_mode.index.index.is_empty() {
-        render_indexed_tracks(frame, app, area);
+fn render_sidebar(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 || area.width == 0 {
         return;
     }
-    render_download_seed_tracks(frame, app, area);
-}
-
-fn render_indexed_tracks(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = app.local_visible_index_tracks();
-    if rows.is_empty() {
-        render_no_filter_matches(frame, app, area);
-        return;
-    }
-    let len = rows.len();
-    let cursor = app.local_mode.ui.selected.min(len - 1);
-    let visible = area.height as usize;
-    let start =
-        app.bridges
-            .library_scroll
-            .resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
-    let body_w = area.width.saturating_sub(1) as usize;
-
-    for (vis, (i, track)) in rows
+    let width = area.width as usize;
+    for (i, section) in LocalSection::ALL
         .iter()
         .enumerate()
-        .skip(start)
-        .take(visible)
-        .enumerate()
+        .take(area.height as usize)
     {
-        let y = area.y + vis as u16;
-        let selected = i == cursor;
+        let y = area.y + i as u16;
+        let selected = *section == app.local_mode.ui.section;
         let marker = if selected { "> " } else { "  " };
-        let song = track.to_song();
-        let title = app.display_title(&song);
-        let artist = app.display_artist(&song);
-        let text = if song.duration.is_empty() {
-            format!("{title} - {artist}")
-        } else {
-            format!("{title} - {artist}  ({})", song.duration)
-        };
-        let text = if selected {
-            crate::ui::anim::selected_marquee(
-                app,
-                ScrollSurface::Library,
-                i,
-                &text,
-                body_w.saturating_sub(3),
-            )
-        } else {
-            text
-        };
-        let body = crate::ui::text::truncate_owned_to_width(
-            format!("{marker}{text}"),
-            body_w.saturating_sub(1),
+        let label = format!("{} {}", i + 1, section.label());
+        let text = crate::ui::text::truncate_owned_to_width(
+            format!("{marker}{label}"),
+            width.saturating_sub(1),
         );
         let style = if selected {
-            crate::ui::anim::selection_style(
-                app,
-                Style::default()
-                    .fg(app.theme.color(R::SelectionFg))
-                    .bg(app.theme.color(R::SelectionBg))
-                    .add_modifier(Modifier::BOLD),
-            )
+            let base = Style::default()
+                .fg(app.theme.color(R::SelectionFg))
+                .bg(app.theme.color(R::SelectionBg))
+                .add_modifier(Modifier::BOLD);
+            crate::ui::anim::selection_style(app, base)
         } else {
-            app.theme.style(R::TextPrimary)
+            app.theme.style(R::TextMuted)
         };
         let row = Rect {
             x: area.x,
@@ -276,31 +243,16 @@ fn render_indexed_tracks(frame: &mut Frame, app: &App, area: Rect) {
             width: area.width.saturating_sub(1),
             height: 1,
         };
-        frame.render_widget(Paragraph::new(Line::from(body).style(style)), row);
-        app.register_mouse_button(row, MouseTarget::LocalRow(i));
+        frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
+        app.register_mouse_button(row, MouseTarget::LocalNav(i));
     }
-
-    buttons::render_list_scrollbar(
-        frame,
-        app,
-        Rect {
-            x: area.right().saturating_sub(1),
-            y: area.y,
-            width: 1,
-            height: area.height,
-        },
-        ScrollSurface::Library,
-        len,
-        start,
-        visible,
-    );
 }
 
-fn render_download_seed_tracks(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = app.local_visible_download_seed_rows();
+fn render_rows(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = app.local_visible_rows();
     if rows.is_empty() {
         if app.local_mode.ui.filter_query.is_empty() {
-            render_home(frame, app, area);
+            render_empty_section(frame, app, area);
         } else {
             render_no_filter_matches(frame, app, area);
         }
@@ -326,13 +278,7 @@ fn render_download_seed_tracks(frame: &mut Frame, app: &App, area: Rect) {
         let y = area.y + vis as u16;
         let selected = i == cursor;
         let marker = if selected { "> " } else { "  " };
-        let title = app.display_title(song);
-        let artist = app.display_artist(song);
-        let text = if song.duration.is_empty() {
-            format!("{title} - {artist}")
-        } else {
-            format!("{title} - {artist}  ({})", song.duration)
-        };
+        let text = app.local_row_text(song);
         let text = if selected {
             crate::ui::anim::selected_marquee(
                 app,
@@ -385,15 +331,39 @@ fn render_download_seed_tracks(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn render_empty_section(frame: &mut Frame, app: &App, area: Rect) {
+    let msg = match app.local_mode.ui.section {
+        LocalSection::Albums => t!("No indexed albums yet.", "아직 인덱싱된 앨범이 없어요."),
+        LocalSection::Artists => t!(
+            "No indexed artists yet.",
+            "아직 인덱싱된 아티스트가 없어요."
+        ),
+        LocalSection::Genres => t!("No indexed genres yet.", "아직 인덱싱된 장르가 없어요."),
+        LocalSection::Folders => t!("No indexed folders yet.", "아직 인덱싱된 폴더가 없어요."),
+        LocalSection::SmartLists => t!(
+            "No smart lists available.",
+            "사용할 수 있는 스마트 목록이 없어요."
+        ),
+        LocalSection::ScanErrors => t!("No scan errors.", "스캔 오류가 없어요."),
+        _ => t!("No local rows yet.", "아직 로컬 항목이 없어요."),
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(msg))
+            .alignment(Alignment::Center)
+            .style(app.theme.style(R::TextMuted)),
+        area,
+    );
+}
+
 fn render_no_filter_matches(frame: &mut Frame, app: &App, area: Rect) {
     let msg = if crate::i18n::is_korean() {
         format!(
-            "'{}' 와 일치하는 로컬 곡이 없어요.",
+            "'{}' 와 일치하는 로컬 항목이 없어요.",
             app.local_mode.ui.filter_query
         )
     } else {
         format!(
-            "No local tracks match \"{}\".",
+            "No Local Deck rows match \"{}\".",
             app.local_mode.ui.filter_query
         )
     };

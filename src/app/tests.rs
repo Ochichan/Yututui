@@ -2506,6 +2506,50 @@ fn alt_shift_r_radio_mode_switch_only_works_on_player() {
     );
 }
 
+fn local_deck_track(
+    path: &str,
+    title: &str,
+    artist: &[&str],
+    album: Option<&str>,
+    album_artist: Option<&str>,
+    genre: &[&str],
+    modified_at: i64,
+) -> crate::local::LocalTrack {
+    let mut track = crate::local::LocalTrack::untagged(
+        PathBuf::from(path),
+        path.len() as u64 + 100,
+        modified_at,
+    );
+    track.title = title.to_owned();
+    track.artist = artist.iter().map(|value| (*value).to_owned()).collect();
+    track.album = album.map(str::to_owned);
+    track.album_artist = album_artist.map(str::to_owned);
+    track.genre = genre.iter().map(|value| (*value).to_owned()).collect();
+    track.duration_ms = Some(60_000);
+    track
+}
+
+fn app_with_local_deck_index(tracks: Vec<crate::local::LocalTrack>) -> App {
+    let mut app = App::new(100);
+    app.mode = Mode::Library;
+    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    let mut index = crate::local::LocalIndex::default();
+    index.set_tracks(tracks);
+    app.update(Msg::Local(LocalMsg::ScanFinished {
+        index_path: None,
+        result: crate::local::LocalScanResult {
+            summary: crate::local::LocalScanSummary {
+                indexed: index.tracks().len(),
+                added: index.tracks().len(),
+                ..crate::local::LocalScanSummary::default()
+            },
+            index,
+            errors: Vec::new(),
+        },
+    }));
+    app
+}
+
 #[test]
 fn double_click_library_nav_confirms_local_deck_shell() {
     let mut app = App::new(100);
@@ -2738,6 +2782,231 @@ fn local_deck_escape_clears_committed_filter_before_exit() {
     assert!(app.local_dedicated_mode);
     assert!(app.local_mode.pending_confirm.is_none());
     assert!(app.local_mode.ui.filter_query.is_empty());
+}
+
+#[test]
+fn local_deck_sidebar_switches_sections_with_mouse_and_number_keys() {
+    let mut app = app_with_local_deck_index(vec![local_deck_track(
+        "/tmp/music/Daft Punk/Discovery/One More Time.flac",
+        "One More Time",
+        &["Daft Punk"],
+        Some("Discovery"),
+        Some("Daft Punk"),
+        &["House"],
+        10,
+    )]);
+
+    let buf = render_app_buffer(&app, 100, 24);
+    assert!(buffer_contains(&buf, "3 Albums"));
+    assert!(
+        app.hits
+            .regions()
+            .iter()
+            .any(|r| r.target == MouseTarget::LocalNav(2))
+    );
+
+    let cmds = click_target(&mut app, MouseTarget::LocalNav(2));
+    assert!(cmds.is_empty());
+    assert_eq!(app.local_mode.ui.section, LocalSection::Albums);
+    assert_eq!(app.local_rows_len(), 1);
+
+    app.update(Msg::Key(key(KeyCode::Char('4'))));
+    assert_eq!(app.local_mode.ui.section, LocalSection::Artists);
+    assert_eq!(app.local_rows_len(), 1);
+}
+
+#[test]
+fn local_deck_album_rows_drill_down_to_tracks_and_play() {
+    let mut first = local_deck_track(
+        "/tmp/music/Daft Punk/Discovery/01 One More Time.flac",
+        "One More Time",
+        &["Daft Punk"],
+        Some("Discovery"),
+        Some("Daft Punk"),
+        &["House"],
+        10,
+    );
+    first.track_no = Some(1);
+    let mut second = local_deck_track(
+        "/tmp/music/Daft Punk/Discovery/02 Aerodynamic.flac",
+        "Aerodynamic",
+        &["Daft Punk"],
+        Some("Discovery"),
+        Some("Daft Punk"),
+        &["House"],
+        11,
+    );
+    second.track_no = Some(2);
+    let mut app = app_with_local_deck_index(vec![second, first]);
+
+    app.update(Msg::Key(key(KeyCode::Char('3'))));
+    assert_eq!(app.local_mode.ui.section, LocalSection::Albums);
+    assert_eq!(app.local_rows_len(), 1);
+    assert!(
+        app.local_row_text(&app.local_visible_rows()[0])
+            .contains("Discovery")
+    );
+
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open.is_empty());
+    assert_eq!(app.local_mode.ui.drill.len(), 1);
+    assert_eq!(app.local_rows_len(), 2);
+
+    let play = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(!play.is_empty());
+    assert_eq!(
+        app.queue.current().map(|song| song.title.as_str()),
+        Some("One More Time")
+    );
+}
+
+#[test]
+fn local_deck_artist_rows_open_album_drill_down() {
+    let mut app = app_with_local_deck_index(vec![local_deck_track(
+        "/tmp/music/IU/Palette/Palette.flac",
+        "Palette",
+        &["IU"],
+        Some("Palette"),
+        Some("IU"),
+        &["K-Pop"],
+        10,
+    )]);
+
+    app.update(Msg::Key(key(KeyCode::Char('4'))));
+    assert_eq!(app.local_mode.ui.section, LocalSection::Artists);
+    assert_eq!(app.local_rows_len(), 1);
+
+    let open_artist = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open_artist.is_empty());
+    assert_eq!(app.local_rows_len(), 1);
+    assert!(
+        app.local_row_text(&app.local_visible_rows()[0])
+            .contains("Palette")
+    );
+
+    let open_album = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open_album.is_empty());
+    assert_eq!(app.local_rows_len(), 1);
+
+    let play = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(!play.is_empty());
+    assert_eq!(
+        app.queue.current().map(|song| song.title.as_str()),
+        Some("Palette")
+    );
+}
+
+#[test]
+fn local_deck_folder_smart_and_scan_error_sections_render_rows() {
+    let untagged = local_deck_track(
+        "/tmp/music/Misc/untagged.flac",
+        "untagged",
+        &[],
+        None,
+        None,
+        &[],
+        9,
+    );
+    let tagged = local_deck_track(
+        "/tmp/music/Tagged/song.flac",
+        "Song",
+        &["Artist"],
+        Some("Album"),
+        Some("Artist"),
+        &["Indie"],
+        10,
+    );
+    let mut app = app_with_local_deck_index(vec![untagged, tagged]);
+    app.local_mode.index.errors = vec![crate::local::ScanError {
+        path: PathBuf::from("/tmp/music/bad.mp3"),
+        message: "bad tags".to_owned(),
+    }];
+
+    app.update(Msg::Key(key(KeyCode::Char('6'))));
+    assert_eq!(app.local_mode.ui.section, LocalSection::Folders);
+    assert_eq!(app.local_rows_len(), 2);
+    let open_folder = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open_folder.is_empty());
+    assert_eq!(app.local_rows_len(), 1);
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    app.update(Msg::Key(key(KeyCode::Char('7'))));
+    assert_eq!(app.local_mode.ui.section, LocalSection::SmartLists);
+    let open_missing_artist = double_click_target(&mut app, MouseTarget::LocalRow(3));
+    assert!(open_missing_artist.is_empty());
+    assert_eq!(app.local_rows_len(), 1);
+    assert!(
+        app.local_row_text(&app.local_visible_rows()[0])
+            .contains("untagged")
+    );
+
+    app.update(Msg::Key(key(KeyCode::Esc)));
+    app.update(Msg::Key(key(KeyCode::Char('8'))));
+    assert_eq!(app.local_mode.ui.section, LocalSection::ScanErrors);
+    let buf = render_app_buffer(&app, 100, 24);
+    assert!(buffer_contains(&buf, "bad tags"));
+}
+
+#[test]
+fn local_deck_smart_lists_report_counts_for_every_shipped_list() {
+    let mut downloaded = local_deck_track(
+        "/tmp/music/Ytm/downloaded.m4a",
+        "Downloaded",
+        &["Artist"],
+        Some("Album"),
+        Some("Artist"),
+        &["Pop"],
+        12,
+    );
+    downloaded.linked_video_id = Some("abcdefghijk".to_owned());
+    downloaded.embedded_art_key = Some("cover".to_owned());
+
+    let mut missing = local_deck_track(
+        "/tmp/music/Misc/missing.mp3",
+        "Missing",
+        &[],
+        None,
+        None,
+        &[],
+        11,
+    );
+    missing.file_size = 60 * 1024 * 1024;
+
+    let mut lossless = local_deck_track(
+        "/tmp/music/Tagged/lossless.flac",
+        "Lossless",
+        &["Band"],
+        Some("Record"),
+        Some("Band"),
+        &["Rock"],
+        10,
+    );
+    lossless.embedded_art_key = Some("cover".to_owned());
+
+    let mut app = app_with_local_deck_index(vec![downloaded, missing, lossless]);
+    app.update(Msg::Key(key(KeyCode::Char('7'))));
+
+    let labels: Vec<_> = app
+        .local_visible_rows()
+        .iter()
+        .map(|row| app.local_row_text(row))
+        .collect();
+
+    for expected in [
+        "Recently Added  (3 tracks)",
+        "Downloaded from YouTube Music  (1 tracks)",
+        "Local-only  (2 tracks)",
+        "Missing Artist  (1 tracks)",
+        "Missing Album  (1 tracks)",
+        "No Embedded Cover  (1 tracks)",
+        "Large Files  (1 tracks)",
+        "Lossless  (1 tracks)",
+    ] {
+        assert!(
+            labels.iter().any(|label| label == expected),
+            "missing smart list label {expected:?} in {labels:?}"
+        );
+    }
 }
 
 #[test]

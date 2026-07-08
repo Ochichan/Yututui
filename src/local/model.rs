@@ -269,6 +269,56 @@ pub struct LocalArtist {
     pub track_ids: Vec<LocalTrackId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LocalSmartList {
+    RecentlyAdded,
+    DownloadedFromYoutubeMusic,
+    LocalOnly,
+    MissingArtist,
+    MissingAlbum,
+    NoEmbeddedCover,
+    LargeFiles,
+    Lossless,
+}
+
+impl LocalSmartList {
+    pub const ALL: [Self; 8] = [
+        Self::RecentlyAdded,
+        Self::DownloadedFromYoutubeMusic,
+        Self::LocalOnly,
+        Self::MissingArtist,
+        Self::MissingAlbum,
+        Self::NoEmbeddedCover,
+        Self::LargeFiles,
+        Self::Lossless,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RecentlyAdded => "Recently Added",
+            Self::DownloadedFromYoutubeMusic => "Downloaded from YouTube Music",
+            Self::LocalOnly => "Local-only",
+            Self::MissingArtist => "Missing Artist",
+            Self::MissingAlbum => "Missing Album",
+            Self::NoEmbeddedCover => "No Embedded Cover",
+            Self::LargeFiles => "Large Files",
+            Self::Lossless => "Lossless",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalRowId {
+    Track(LocalTrackId),
+    DownloadSeed(usize),
+    Album(LocalAlbumId),
+    Artist(LocalArtistId),
+    Genre(String),
+    Folder(PathBuf),
+    Smart(LocalSmartList),
+    ScanError(usize),
+}
+
 pub(crate) fn normalize_key(s: &str) -> String {
     s.trim().to_lowercase()
 }

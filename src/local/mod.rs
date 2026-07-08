@@ -12,7 +12,7 @@ pub mod scan;
 
 pub use index::{LocalIndex, default_index_path};
 pub use model::{
-    AudioFormat, FileFingerprint, LocalAlbum, LocalAlbumId, LocalArtist, LocalArtistId, LocalTrack,
-    LocalTrackId,
+    AudioFormat, FileFingerprint, LocalAlbum, LocalAlbumId, LocalArtist, LocalArtistId, LocalRowId,
+    LocalSmartList, LocalTrack, LocalTrackId,
 };
 pub use scan::{LocalScanResult, LocalScanRoot, LocalScanSummary, ScanError, scan_roots};

@@ -703,11 +703,15 @@ pub struct RadioMode {
 pub struct LocalUi {
     /// Which Local Deck section is shown.
     pub section: LocalSection,
+    /// Which Local Deck pane has keyboard focus.
+    pub pane: LocalPane,
     /// The highlighted row in the current Local Deck list.
     pub selected: usize,
     /// Fixed end of a future multi-select range. Kept from the first shell so row
     /// selection semantics can follow Library/Queue when range select lands.
     pub anchor: usize,
+    /// Active drill-down path for section rows such as album -> tracks.
+    pub drill: Vec<LocalDrill>,
     /// Current Local Deck live-filter query.
     pub filter_query: String,
     /// Whether typed keys edit `filter_query`.

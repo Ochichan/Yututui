@@ -1,5 +1,8 @@
 //! Local Deck reducer helpers.
 
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
 use super::*;
 use crate::util::query::{MAX_FILTER_QUERY_BYTES, try_push_query_char};
 
@@ -93,10 +96,7 @@ impl App {
     }
 
     pub fn local_rows_len(&self) -> usize {
-        match self.local_mode.ui.section {
-            LocalSection::Home => 0,
-            LocalSection::Tracks => self.local_track_rows_len(),
-        }
+        self.local_visible_rows().len()
     }
 
     pub(in crate::app) fn on_key_local(&mut self, k: KeyEvent) -> Vec<Cmd> {
@@ -109,7 +109,18 @@ impl App {
             return Vec::new();
         }
         if k.code == KeyCode::Esc {
-            return self.request_local_mode_switch();
+            return self.local_back_or_exit();
+        }
+        if k.code == KeyCode::Tab && k.modifiers.is_empty() {
+            self.cycle_local_pane();
+            return Vec::new();
+        }
+        if let KeyCode::Char(ch) = k.code
+            && k.modifiers.is_empty()
+            && let Some(section) = LocalSection::from_digit(ch)
+        {
+            self.switch_local_section(section);
+            return Vec::new();
         }
         if k.modifiers.is_empty() && matches!(k.code, KeyCode::Char('r')) {
             return self.request_local_scan(false);
@@ -126,15 +137,23 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
-            Some(Action::Back) => self.request_local_mode_switch(),
+            Some(Action::Back) => self.local_back_or_exit(),
             Some(Action::MoveUp) => {
                 let step = self.nav_repeat_step(Action::MoveUp);
-                self.move_local_cursor(true, step);
+                if self.local_mode.ui.pane == LocalPane::Sidebar {
+                    self.move_local_sidebar(true);
+                } else {
+                    self.move_local_cursor(true, step);
+                }
                 Vec::new()
             }
             Some(Action::MoveDown) => {
                 let step = self.nav_repeat_step(Action::MoveDown);
-                self.move_local_cursor(false, step);
+                if self.local_mode.ui.pane == LocalPane::Sidebar {
+                    self.move_local_sidebar(false);
+                } else {
+                    self.move_local_cursor(false, step);
+                }
                 Vec::new()
             }
             Some(Action::PageUp) => {
@@ -204,20 +223,17 @@ impl App {
 
     fn local_activate_selected(&mut self) -> Vec<Cmd> {
         if self.local_mode.ui.section == LocalSection::Home {
-            self.local_mode.ui.section = LocalSection::Tracks;
-            self.local_mode.ui.selected = self
-                .local_mode
-                .ui
-                .selected
-                .min(self.local_rows_len().saturating_sub(1));
-            self.local_mode.ui.anchor = self.local_mode.ui.selected;
-            self.dirty = true;
+            self.switch_local_section(LocalSection::Tracks);
             return Vec::new();
         }
-        let Some(song) = self.local_song_at_display_index(self.local_mode.ui.selected) else {
+        let Some(row) = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned()
+        else {
             return Vec::new();
         };
-        self.play_now(song)
+        self.activate_local_row(row)
     }
 
     pub(in crate::app) fn apply_local_msg(&mut self, msg: LocalMsg) -> Vec<Cmd> {
@@ -336,40 +352,154 @@ impl App {
     }
 
     fn local_track_rows_len(&self) -> usize {
-        if !self.local_mode.index.index.is_empty() {
-            self.local_visible_index_tracks().len()
-        } else {
-            self.local_visible_download_seed_rows().len()
-        }
+        self.local_track_rows_for_query(self.local_mode.ui.filter_query.as_str())
+            .len()
     }
 
     fn clamp_local_after_index_change(&mut self) {
-        if !self.local_mode.index.index.is_empty() {
+        if !self.local_mode.index.index.is_empty()
+            && self.local_mode.ui.section == LocalSection::Home
+        {
             self.local_mode.ui.section = LocalSection::Tracks;
         }
+        self.local_mode.ui.drill.clear();
         let len = self.local_rows_len();
         self.local_mode.ui.selected = self.local_mode.ui.selected.min(len.saturating_sub(1));
         self.local_mode.ui.anchor = self.local_mode.ui.selected;
         self.bridges.library_scroll.reset();
     }
 
-    pub(crate) fn local_visible_index_tracks(&self) -> Vec<&crate::local::LocalTrack> {
-        let query = self.local_mode.ui.filter_query.as_str();
-        self.local_mode
-            .index
-            .index
-            .tracks()
-            .iter()
-            .filter(|track| crate::local::query::track_matches_filter(track, query))
-            .collect()
+    pub(in crate::app) fn switch_local_section(&mut self, section: LocalSection) {
+        self.local_mode.ui.section = section;
+        self.local_mode.ui.drill.clear();
+        self.local_mode.ui.selected = 0;
+        self.local_mode.ui.anchor = 0;
+        self.local_mode.ui.pane = LocalPane::List;
+        self.bridges.library_scroll.reset();
+        self.dirty = true;
     }
 
-    pub(crate) fn local_visible_download_seed_rows(&self) -> Vec<&Song> {
-        let query = self.local_mode.ui.filter_query.as_str();
+    fn cycle_local_pane(&mut self) {
+        self.local_mode.ui.pane = match self.local_mode.ui.pane {
+            LocalPane::Sidebar => LocalPane::List,
+            LocalPane::List => LocalPane::Sidebar,
+        };
+        self.dirty = true;
+    }
+
+    fn move_local_sidebar(&mut self, up: bool) {
+        let current = LocalSection::ALL
+            .iter()
+            .position(|section| *section == self.local_mode.ui.section)
+            .unwrap_or_default();
+        let next = if up {
+            current.saturating_sub(1)
+        } else {
+            (current + 1).min(LocalSection::ALL.len().saturating_sub(1))
+        };
+        if let Some(section) = LocalSection::ALL.get(next).copied() {
+            self.switch_local_section(section);
+            self.local_mode.ui.pane = LocalPane::Sidebar;
+        }
+    }
+
+    fn local_back_or_exit(&mut self) -> Vec<Cmd> {
+        if self.local_mode.ui.drill.pop().is_some() {
+            self.local_mode.ui.selected = 0;
+            self.local_mode.ui.anchor = 0;
+            self.bridges.library_scroll.reset();
+            self.dirty = true;
+            return Vec::new();
+        }
+        self.request_local_mode_switch()
+    }
+
+    pub(crate) fn local_visible_rows(&self) -> Vec<crate::local::LocalRowId> {
+        self.local_rows_for_query(self.local_mode.ui.filter_query.as_str())
+    }
+
+    pub(crate) fn local_total_rows_len(&self) -> usize {
+        self.local_rows_for_query("").len()
+    }
+
+    fn local_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
+        if let Some(drill) = self.local_mode.ui.drill.last() {
+            return self.local_drill_rows(drill, query);
+        }
+        match self.local_mode.ui.section {
+            LocalSection::Home => Vec::new(),
+            LocalSection::Tracks => self.local_track_rows_for_query(query),
+            LocalSection::Albums => self.local_album_rows_for_query(query),
+            LocalSection::Artists => self.local_artist_rows_for_query(query),
+            LocalSection::Genres => self.local_genre_rows_for_query(query),
+            LocalSection::Folders => self.local_folder_rows_for_query(query),
+            LocalSection::SmartLists => self.local_smart_rows_for_query(query),
+            LocalSection::ScanErrors => self.local_scan_error_rows_for_query(query),
+        }
+    }
+
+    fn local_drill_rows(&self, drill: &LocalDrill, query: &str) -> Vec<crate::local::LocalRowId> {
+        match drill {
+            LocalDrill::Album(album_id) => self
+                .local_tracks_for_album(album_id)
+                .into_iter()
+                .filter(|track| crate::local::query::track_matches_filter(track, query))
+                .map(|track| crate::local::LocalRowId::Track(track.id.clone()))
+                .collect(),
+            LocalDrill::Artist(artist_id) => {
+                let albums = self.local_albums_for_artist(artist_id);
+                if albums.is_empty() {
+                    return self
+                        .local_tracks_for_artist(artist_id)
+                        .into_iter()
+                        .filter(|track| crate::local::query::track_matches_filter(track, query))
+                        .map(|track| crate::local::LocalRowId::Track(track.id.clone()))
+                        .collect();
+                }
+                albums
+                    .into_iter()
+                    .filter(|album| local_album_matches_filter(album, query))
+                    .map(|album| crate::local::LocalRowId::Album(album.id))
+                    .collect()
+            }
+            LocalDrill::Genre(genre) => self
+                .local_tracks_for_genre(genre)
+                .into_iter()
+                .filter(|track| crate::local::query::track_matches_filter(track, query))
+                .map(|track| crate::local::LocalRowId::Track(track.id.clone()))
+                .collect(),
+            LocalDrill::Folder(folder) => self
+                .local_tracks_for_folder(folder)
+                .into_iter()
+                .filter(|track| crate::local::query::track_matches_filter(track, query))
+                .map(|track| crate::local::LocalRowId::Track(track.id.clone()))
+                .collect(),
+            LocalDrill::Smart(smart) => self
+                .local_tracks_for_smart(*smart)
+                .into_iter()
+                .filter(|track| crate::local::query::track_matches_filter(track, query))
+                .map(|track| crate::local::LocalRowId::Track(track.id.clone()))
+                .collect(),
+        }
+    }
+
+    fn local_track_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
+        if !self.local_mode.index.index.is_empty() {
+            return self
+                .local_mode
+                .index
+                .index
+                .tracks()
+                .iter()
+                .filter(|track| crate::local::query::track_matches_filter(track, query))
+                .map(|track| crate::local::LocalRowId::Track(track.id.clone()))
+                .collect();
+        }
         self.library_ui
             .downloaded
             .iter()
-            .filter(|song| {
+            .enumerate()
+            .filter(|(_, song)| {
                 crate::local::query::fields_match_query(
                     [
                         song.title.as_str(),
@@ -384,20 +514,420 @@ impl App {
                     query,
                 )
             })
+            .map(|(index, _)| crate::local::LocalRowId::DownloadSeed(index))
             .collect()
     }
 
-    fn local_song_at_display_index(&self, index: usize) -> Option<Song> {
-        if !self.local_mode.index.index.is_empty() {
-            self.local_visible_index_tracks()
-                .get(index)
-                .map(|track| track.to_song())
-        } else {
-            self.local_visible_download_seed_rows()
-                .get(index)
-                .cloned()
-                .cloned()
+    fn local_album_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
+        self.local_mode
+            .index
+            .index
+            .albums()
+            .into_iter()
+            .filter(|album| local_album_matches_filter(album, query))
+            .map(|album| crate::local::LocalRowId::Album(album.id))
+            .collect()
+    }
+
+    fn local_artist_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
+        self.local_mode
+            .index
+            .index
+            .artists()
+            .into_iter()
+            .filter(|artist| {
+                let albums = artist.album_ids.len().to_string();
+                let tracks = artist.track_ids.len().to_string();
+                crate::local::query::fields_match_query(
+                    [artist.name.as_str(), albums.as_str(), tracks.as_str()],
+                    query,
+                )
+            })
+            .map(|artist| crate::local::LocalRowId::Artist(artist.id))
+            .collect()
+    }
+
+    fn local_genre_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
+        let mut genres = BTreeSet::new();
+        for track in self.local_mode.index.index.tracks() {
+            for genre in &track.genre {
+                let genre = genre.trim();
+                if !genre.is_empty() {
+                    genres.insert(genre.to_owned());
+                }
+            }
         }
+        genres
+            .into_iter()
+            .filter(|genre| crate::local::query::fields_match_query([genre.as_str()], query))
+            .map(crate::local::LocalRowId::Genre)
+            .collect()
+    }
+
+    fn local_folder_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
+        let mut folders = BTreeSet::<PathBuf>::new();
+        for track in self.local_mode.index.index.tracks() {
+            if let Some(parent) = track.path.parent() {
+                folders.insert(parent.to_path_buf());
+            }
+        }
+        folders
+            .into_iter()
+            .filter(|folder| {
+                let name = folder
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                let path = folder.to_string_lossy();
+                crate::local::query::fields_match_query([name, path.as_ref()], query)
+            })
+            .map(crate::local::LocalRowId::Folder)
+            .collect()
+    }
+
+    fn local_smart_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
+        crate::local::LocalSmartList::ALL
+            .into_iter()
+            .filter(|smart| crate::local::query::fields_match_query([smart.label()], query))
+            .map(crate::local::LocalRowId::Smart)
+            .collect()
+    }
+
+    fn local_scan_error_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
+        self.local_mode
+            .index
+            .errors
+            .iter()
+            .enumerate()
+            .filter(|(_, error)| {
+                let path = error.path.to_string_lossy();
+                crate::local::query::fields_match_query(
+                    [path.as_ref(), error.message.as_str()],
+                    query,
+                )
+            })
+            .map(|(index, _)| crate::local::LocalRowId::ScanError(index))
+            .collect()
+    }
+
+    fn activate_local_row(&mut self, row: crate::local::LocalRowId) -> Vec<Cmd> {
+        match row {
+            crate::local::LocalRowId::Track(id) => {
+                let Some(song) = self.local_track_by_id(&id).map(|track| track.to_song()) else {
+                    return Vec::new();
+                };
+                self.play_now(song)
+            }
+            crate::local::LocalRowId::DownloadSeed(index) => {
+                let Some(song) = self.library_ui.downloaded.get(index).cloned() else {
+                    return Vec::new();
+                };
+                self.play_now(song)
+            }
+            crate::local::LocalRowId::Album(id) => {
+                self.local_mode.ui.drill.push(LocalDrill::Album(id));
+                self.reset_local_list_cursor();
+                Vec::new()
+            }
+            crate::local::LocalRowId::Artist(id) => {
+                self.local_mode.ui.drill.push(LocalDrill::Artist(id));
+                self.reset_local_list_cursor();
+                Vec::new()
+            }
+            crate::local::LocalRowId::Genre(genre) => {
+                self.local_mode.ui.drill.push(LocalDrill::Genre(genre));
+                self.reset_local_list_cursor();
+                Vec::new()
+            }
+            crate::local::LocalRowId::Folder(folder) => {
+                self.local_mode.ui.drill.push(LocalDrill::Folder(folder));
+                self.reset_local_list_cursor();
+                Vec::new()
+            }
+            crate::local::LocalRowId::Smart(smart) => {
+                self.local_mode.ui.drill.push(LocalDrill::Smart(smart));
+                self.reset_local_list_cursor();
+                Vec::new()
+            }
+            crate::local::LocalRowId::ScanError(_) => Vec::new(),
+        }
+    }
+
+    fn reset_local_list_cursor(&mut self) {
+        self.local_mode.ui.selected = 0;
+        self.local_mode.ui.anchor = 0;
+        self.local_mode.ui.pane = LocalPane::List;
+        self.bridges.library_scroll.reset();
+        self.dirty = true;
+    }
+
+    pub(crate) fn local_section_title(&self) -> String {
+        let mut title = self.local_mode.ui.section.label().to_owned();
+        for drill in &self.local_mode.ui.drill {
+            let label = self.local_drill_label(drill);
+            if !label.is_empty() {
+                title.push_str(" / ");
+                title.push_str(&label);
+            }
+        }
+        title
+    }
+
+    fn local_drill_label(&self, drill: &LocalDrill) -> String {
+        match drill {
+            LocalDrill::Album(id) => self
+                .local_album_by_id(id)
+                .map(|album| album.title)
+                .unwrap_or_default(),
+            LocalDrill::Artist(id) => self
+                .local_artist_by_id(id)
+                .map(|artist| artist.name)
+                .unwrap_or_default(),
+            LocalDrill::Genre(genre) => genre.clone(),
+            LocalDrill::Folder(folder) => folder
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| folder.display().to_string()),
+            LocalDrill::Smart(smart) => smart.label().to_owned(),
+        }
+    }
+
+    pub(crate) fn local_row_text(&self, row: &crate::local::LocalRowId) -> String {
+        match row {
+            crate::local::LocalRowId::Track(id) => self
+                .local_track_by_id(id)
+                .map(|track| local_track_text(self, track))
+                .unwrap_or_else(|| t!("Missing track", "없는 곡").to_owned()),
+            crate::local::LocalRowId::DownloadSeed(index) => self
+                .library_ui
+                .downloaded
+                .get(*index)
+                .map(|song| local_song_text(self, song))
+                .unwrap_or_else(|| t!("Missing track", "없는 곡").to_owned()),
+            crate::local::LocalRowId::Album(id) => self
+                .local_album_by_id(id)
+                .map(|album| {
+                    let duration = album.duration_ms.map(format_local_duration_ms);
+                    let year = album.year.map(|year| year.to_string()).unwrap_or_default();
+                    let suffix = match (year.is_empty(), duration) {
+                        (false, Some(duration)) => format!("  {year} - {duration}"),
+                        (false, None) => format!("  {year}"),
+                        (true, Some(duration)) => format!("  {duration}"),
+                        (true, None) => String::new(),
+                    };
+                    format!(
+                        "{} - {}  ({} {}){}",
+                        album.title,
+                        album.album_artist,
+                        album.track_count,
+                        t!("tracks", "곡"),
+                        suffix
+                    )
+                })
+                .unwrap_or_else(|| t!("Missing album", "없는 앨범").to_owned()),
+            crate::local::LocalRowId::Artist(id) => self
+                .local_artist_by_id(id)
+                .map(|artist| {
+                    format!(
+                        "{}  ({} {}, {} {})",
+                        artist.name,
+                        artist.album_ids.len(),
+                        t!("albums", "앨범"),
+                        artist.track_ids.len(),
+                        t!("tracks", "곡")
+                    )
+                })
+                .unwrap_or_else(|| t!("Missing artist", "없는 아티스트").to_owned()),
+            crate::local::LocalRowId::Genre(genre) => {
+                let count = self.local_tracks_for_genre(genre).len();
+                format!("{genre}  ({count} {})", t!("tracks", "곡"))
+            }
+            crate::local::LocalRowId::Folder(folder) => {
+                let count = self.local_tracks_for_folder(folder).len();
+                format!("{}  ({count} {})", folder.display(), t!("tracks", "곡"))
+            }
+            crate::local::LocalRowId::Smart(smart) => {
+                let count = self.local_tracks_for_smart(*smart).len();
+                format!("{}  ({count} {})", smart.label(), t!("tracks", "곡"))
+            }
+            crate::local::LocalRowId::ScanError(index) => self
+                .local_mode
+                .index
+                .errors
+                .get(*index)
+                .map(|error| format!("{} - {}", error.path.display(), error.message))
+                .unwrap_or_else(|| t!("Missing scan error", "없는 스캔 오류").to_owned()),
+        }
+    }
+
+    fn local_track_by_id(
+        &self,
+        id: &crate::local::LocalTrackId,
+    ) -> Option<&crate::local::LocalTrack> {
+        self.local_mode
+            .index
+            .index
+            .tracks()
+            .iter()
+            .find(|track| &track.id == id)
+    }
+
+    fn local_album_by_id(
+        &self,
+        id: &crate::local::LocalAlbumId,
+    ) -> Option<crate::local::LocalAlbum> {
+        self.local_mode
+            .index
+            .index
+            .albums()
+            .into_iter()
+            .find(|album| &album.id == id)
+    }
+
+    fn local_artist_by_id(
+        &self,
+        id: &crate::local::LocalArtistId,
+    ) -> Option<crate::local::LocalArtist> {
+        self.local_mode
+            .index
+            .index
+            .artists()
+            .into_iter()
+            .find(|artist| &artist.id == id)
+    }
+
+    fn local_tracks_for_album(
+        &self,
+        album_id: &crate::local::LocalAlbumId,
+    ) -> Vec<&crate::local::LocalTrack> {
+        let Some(album) = self.local_album_by_id(album_id) else {
+            return Vec::new();
+        };
+        let track_ids: BTreeSet<_> = album.track_ids.into_iter().collect();
+        let mut tracks: Vec<_> = self
+            .local_mode
+            .index
+            .index
+            .tracks()
+            .iter()
+            .filter(|track| track_ids.contains(&track.id))
+            .collect();
+        sort_local_tracks(&mut tracks);
+        tracks
+    }
+
+    fn local_albums_for_artist(
+        &self,
+        artist_id: &crate::local::LocalArtistId,
+    ) -> Vec<crate::local::LocalAlbum> {
+        let Some(artist) = self.local_artist_by_id(artist_id) else {
+            return Vec::new();
+        };
+        let album_ids: BTreeSet<_> = artist.album_ids.into_iter().collect();
+        self.local_mode
+            .index
+            .index
+            .albums()
+            .into_iter()
+            .filter(|album| album_ids.contains(&album.id))
+            .collect()
+    }
+
+    fn local_tracks_for_artist(
+        &self,
+        artist_id: &crate::local::LocalArtistId,
+    ) -> Vec<&crate::local::LocalTrack> {
+        let Some(artist) = self.local_artist_by_id(artist_id) else {
+            return Vec::new();
+        };
+        let track_ids: BTreeSet<_> = artist.track_ids.into_iter().collect();
+        let mut tracks: Vec<_> = self
+            .local_mode
+            .index
+            .index
+            .tracks()
+            .iter()
+            .filter(|track| track_ids.contains(&track.id))
+            .collect();
+        sort_local_tracks(&mut tracks);
+        tracks
+    }
+
+    fn local_tracks_for_genre(&self, genre: &str) -> Vec<&crate::local::LocalTrack> {
+        let key = crate::local::model::normalize_key(genre);
+        let mut tracks: Vec<_> = self
+            .local_mode
+            .index
+            .index
+            .tracks()
+            .iter()
+            .filter(|track| {
+                track
+                    .genre
+                    .iter()
+                    .any(|g| crate::local::model::normalize_key(g) == key)
+            })
+            .collect();
+        sort_local_tracks(&mut tracks);
+        tracks
+    }
+
+    fn local_tracks_for_folder(&self, folder: &Path) -> Vec<&crate::local::LocalTrack> {
+        let mut tracks: Vec<_> = self
+            .local_mode
+            .index
+            .index
+            .tracks()
+            .iter()
+            .filter(|track| track.path.parent() == Some(folder))
+            .collect();
+        sort_local_tracks(&mut tracks);
+        tracks
+    }
+
+    fn local_tracks_for_smart(
+        &self,
+        smart: crate::local::LocalSmartList,
+    ) -> Vec<&crate::local::LocalTrack> {
+        let download_dir = self.config.effective_download_dir();
+        let mut tracks: Vec<_> = self
+            .local_mode
+            .index
+            .index
+            .tracks()
+            .iter()
+            .filter(|track| match smart {
+                crate::local::LocalSmartList::RecentlyAdded => true,
+                crate::local::LocalSmartList::DownloadedFromYoutubeMusic => {
+                    track.linked_video_id.is_some() || track.path.starts_with(&download_dir)
+                }
+                crate::local::LocalSmartList::LocalOnly => track.linked_video_id.is_none(),
+                crate::local::LocalSmartList::MissingArtist => track.artist.is_empty(),
+                crate::local::LocalSmartList::MissingAlbum => track
+                    .album
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|album| !album.is_empty())
+                    .is_none(),
+                crate::local::LocalSmartList::NoEmbeddedCover => track.embedded_art_key.is_none(),
+                crate::local::LocalSmartList::LargeFiles => track.file_size >= 50 * 1024 * 1024,
+                crate::local::LocalSmartList::Lossless => matches!(
+                    track.format,
+                    Some(crate::local::AudioFormat::Flac | crate::local::AudioFormat::Wav)
+                ),
+            })
+            .collect();
+        if smart == crate::local::LocalSmartList::RecentlyAdded {
+            tracks.sort_by(|a, b| {
+                b.modified_at
+                    .cmp(&a.modified_at)
+                    .then_with(|| a.path.cmp(&b.path))
+            });
+        } else {
+            sort_local_tracks(&mut tracks);
+        }
+        tracks
     }
 
     fn clear_local_filter(&mut self) {
@@ -459,5 +989,55 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+}
+
+fn local_track_text(app: &App, track: &crate::local::LocalTrack) -> String {
+    local_song_text(app, &track.to_song())
+}
+
+fn local_song_text(app: &App, song: &Song) -> String {
+    let title = app.display_title(song);
+    let artist = app.display_artist(song);
+    if song.duration.is_empty() {
+        format!("{title} - {artist}")
+    } else {
+        format!("{title} - {artist}  ({})", song.duration)
+    }
+}
+
+fn local_album_matches_filter(album: &crate::local::LocalAlbum, query: &str) -> bool {
+    let year = album.year.map(|year| year.to_string()).unwrap_or_default();
+    let track_count = album.track_count.to_string();
+    crate::local::query::fields_match_query(
+        [
+            album.title.as_str(),
+            album.album_artist.as_str(),
+            year.as_str(),
+            track_count.as_str(),
+        ],
+        query,
+    )
+}
+
+fn sort_local_tracks(tracks: &mut Vec<&crate::local::LocalTrack>) {
+    tracks.sort_by(|a, b| {
+        a.disc_no
+            .cmp(&b.disc_no)
+            .then_with(|| a.track_no.cmp(&b.track_no))
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.title.cmp(&b.title))
+    });
+}
+
+fn format_local_duration_ms(ms: u64) -> String {
+    let total = ms / 1000;
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
     }
 }

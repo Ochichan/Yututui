@@ -576,6 +576,14 @@ impl App {
                 Vec::new()
             }
             MouseTarget::LibraryTab(_) => Vec::new(),
+            MouseTarget::LocalNav(i) if self.mode == Mode::Library && self.local_dedicated_mode => {
+                let Some(section) = LocalSection::ALL.get(i).copied() else {
+                    return Vec::new();
+                };
+                self.switch_local_section(section);
+                Vec::new()
+            }
+            MouseTarget::LocalNav(_) => Vec::new(),
             MouseTarget::LocalRow(i) if self.mode == Mode::Library && self.local_dedicated_mode => {
                 self.local_row_click(i)
             }
