@@ -56,6 +56,7 @@ mod keys;
 mod library;
 mod library_reducer;
 mod local;
+mod local_format;
 mod media_reducer;
 mod mouse;
 pub use mouse::HitMap;
