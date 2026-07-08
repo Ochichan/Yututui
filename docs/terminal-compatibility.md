@@ -24,12 +24,18 @@ ytm-tui configuration.
 | Terminal | Album Art | Mouse | CJK / IME | Retro | Video Overlay | Text Zoom | ytm-tui Notes |
 |---|---|---|---|---|---|---|---|
 | Kitty | Expected via Kitty graphics | Expected | Expected; ytm-tui avoids all-keys enhancement to preserve IME | Yes | Expected on GUI OS with mpv | Versioned: OSC 66 on kitty >= 0.40 | Best target for full protocol path. |
+| iTerm2 | Expected via iTerm2 graphics | Expected | Expected | Yes | Expected on macOS with mpv | Unknown until a ytm-tui probe run records OSC 66 or DECDHL behavior | Strong environment hint: `TERM_PROGRAM=iTerm.app`. |
 | WezTerm | Expected via iTerm2, Kitty, or Sixel | Expected | Expected | Yes | Expected on GUI OS with mpv | Unknown until a ytm-tui probe run records OSC 66 or DECDHL behavior | WezTerm documents iTerm2, Kitty, and Sixel image protocols. |
 | Windows Terminal | Versioned: Sixel in v1.22+ | Expected | Versioned: v1.22 added grapheme cluster work and improved IME paths | Yes | Expected in a desktop session with mpv | Expected through the `WT_SESSION` DECDHL path; needs smoke evidence | Use Microsoft release notes, not stale Sixel trackers. |
 | cmd.exe inside Windows Terminal | Same as Windows Terminal | Same as Windows Terminal | Same as Windows Terminal | Yes | Same as Windows Terminal | Same as Windows Terminal | Shell is `cmd`; terminal capability is Windows Terminal. |
 | Legacy conhost / bare cmd.exe | Unknown / Versioned | Expected partial | Version-dependent | Yes | Expected only in a desktop session with mpv | Unknown | Do not promise without a Windows build and terminal version. |
 | Ghostty | Expected via Kitty graphics | Expected | Expected; grapheme clustering is documented | Yes | Expected on macOS/Linux with mpv | Unknown unless OSC 66 lands or DECDHL probe passes | Windows support must be verified separately. |
 | foot | Expected via Sixel | Expected | Expected; package descriptions document IME through text-input-v3 | Yes | Expected on Linux GUI with mpv | Unknown | Wayland-only in normal use; verify on the target compositor. |
+| Konsole | Expected via Kitty or Sixel | Expected | Expected | Yes | Expected on Linux GUI with mpv | Unknown | Probe longer, but use an override until smoke evidence records the best protocol. |
+| mintty | Expected via Sixel | Expected | Expected | Yes | Expected on Windows desktop with mpv | Unknown | Probe longer, but Sixel is the first override to try. |
+| mlterm | Expected via Sixel | Expected | Expected | Yes | Expected on GUI OS with mpv | Unknown | Probe longer, but Sixel is the first override to try. |
+| VS Code integrated terminal | Fallback: halfblocks | Expected | Expected | Yes | Expected only through the host desktop session | Unknown | Keep conservative fallback unless a specific VS Code build is verified. |
+| Apple Terminal | Fallback: halfblocks | Expected | Expected | Yes | Expected on macOS with mpv | Unknown / likely No | No native image protocol is expected. |
 | Bare Linux TTY | Fallback: retro ASCII or halfblocks | No for crossterm mouse capture | Limited by console font/input method | Yes | No | No | Recommend retro mode. |
 | Alacritty | Fallback: halfblocks; no native Sixel baseline | Expected | Expected | Yes | Expected on GUI OS with mpv | Unknown / likely No | Alacritty is a daily-driver beta model, but graphics support is deliberately conservative here. |
 
@@ -55,6 +61,23 @@ ytt doctor terminal --json
 This command is a no-playback diagnostic. It reports environment-derived
 terminal facts and does not start mpv, initialize playback, read cookies, or
 write user config.
+
+`ytt doctor terminal --json` also reports native image hints, the probe timeout
+ytm-tui will use for that environment, any `YTM_TUI_IMAGE_PROTOCOL` override,
+and override suggestions. Supported override values are `halfblocks`, `sixel`,
+`kitty`, and `iterm2`.
+
+Recommended first override by terminal:
+
+| Terminal hint | First override | Other candidates |
+|---|---|---|
+| Kitty / Ghostty | `YTM_TUI_IMAGE_PROTOCOL=kitty` | None |
+| iTerm2 | `YTM_TUI_IMAGE_PROTOCOL=iterm2` | None |
+| WezTerm | `YTM_TUI_IMAGE_PROTOCOL=iterm2` | `kitty`, `sixel` |
+| Windows Terminal | `YTM_TUI_IMAGE_PROTOCOL=sixel` | None |
+| foot / mintty / mlterm | `YTM_TUI_IMAGE_PROTOCOL=sixel` | None |
+| Konsole | `YTM_TUI_IMAGE_PROTOCOL=kitty` | `sixel` |
+| Unknown native hint | `YTM_TUI_IMAGE_PROTOCOL=kitty` | `iterm2`, `sixel` |
 
 ## Smoke Runbook
 

@@ -148,6 +148,21 @@ fn doctor_terminal_json_reports_capabilities_without_config_or_runtime_startup()
             .and_then(|v| v.as_str())
             .is_some()
     );
+    assert!(
+        json.get("native_image_hint")
+            .and_then(|v| v.as_bool())
+            .is_some()
+    );
+    assert!(
+        json.get("image_probe_timeout_ms")
+            .and_then(|v| v.as_u64())
+            .is_some()
+    );
+    assert!(
+        json.get("image_protocol_override_suggestions")
+            .and_then(|v| v.as_array())
+            .is_some()
+    );
     assert!(json.get("zoom_mode").and_then(|v| v.as_str()).is_some());
     assert_eq!(
         json.get("mouse_capture_configured")

@@ -30,14 +30,16 @@ const GITHUB_LABEL: &str = "github.com/Ochichan/ytm-tui";
 const ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/ytm-tui-about.png");
 
 /// How many rows the icon band gets at the top of the card.
-const ICON_ROWS: u16 = 9;
+const ICON_ROWS: u16 = 12;
+const NORMAL_TEXT_ROWS: u16 = 11;
+const UPDATE_TEXT_ROWS: u16 = 14;
 /// The About icon is foreground UI, unlike album art, which is deliberately pushed behind text.
 const ABOUT_ICON_KITTY_Z_INDEX: i32 = 0;
 
 /// Render the About card as a centered popup over `area`.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Grow the card by the update block's three rows only when there's an update to show.
-    let height = if update_available(app) { 25 } else { 22 };
+    let height = if update_available(app) { 28 } else { 25 };
     let popup = centered_fixed(area, 60, height);
     crate::ui::render_popup_background(frame, app, popup);
 
@@ -49,7 +51,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let rows = Layout::vertical([Constraint::Length(ICON_ROWS), Constraint::Min(0)]).split(inner);
+    let icon_rows = about_icon_rows(inner.height, update_available(app));
+    let rows = Layout::vertical([Constraint::Length(icon_rows), Constraint::Min(0)]).split(inner);
     let icon = draw_icon(frame, app, rows[0]);
     // Sparkles twinkle on the blank cells around the icon while the About animation is on
     // (never inside the icon's own rect — a native-graphics icon leaves its text cells
@@ -58,6 +61,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     draw_text(frame, app, rows[1]);
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
+fn about_icon_rows(inner_height: u16, update_available: bool) -> u16 {
+    let text_rows = if update_available {
+        UPDATE_TEXT_ROWS
+    } else {
+        NORMAL_TEXT_ROWS
+    };
+    inner_height.saturating_sub(text_rows).clamp(1, ICON_ROWS)
 }
 
 /// Draw the embedded icon centered in `band`, building (and caching) its protocol on first use.
