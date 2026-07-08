@@ -283,6 +283,18 @@ impl App {
             return Vec::new();
         }
 
+        // Local Deck owns Shift+A/`A` for "enqueue the current local result set". That chord
+        // overlaps the global animation toggle, so route it before globals only while the Local
+        // Deck list is active; filter text entry still receives typeable characters normally.
+        if self.mode == Mode::Library
+            && self.local_dedicated_mode
+            && !self.local_mode.ui.filter_editing
+            && matches!(k.code, KeyCode::Char('A'))
+            && (k.modifiers.is_empty() || k.modifiers == KeyModifiers::SHIFT)
+        {
+            return self.on_key_local(k);
+        }
+
         // Global shortcuts (help, streaming). Suppressed only when a *typeable* key would feed
         // a focused text field — so `?` types into the search box but opens help elsewhere,
         // while Ctrl-based globals (streaming) keep working everywhere as before.

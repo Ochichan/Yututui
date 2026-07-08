@@ -1431,12 +1431,7 @@ impl App {
                     if index >= self.local_rows_len() {
                         return Vec::new();
                     }
-                    self.local_mode.ui.selected = index;
-                    self.local_mode.ui.anchor = index;
-                    return match self.library_ui.downloaded.get(index).cloned() {
-                        Some(song) => self.enqueue(song),
-                        None => Vec::new(),
-                    };
+                    return self.local_enqueue_row_index(index);
                 }
                 let index = match target {
                     MouseTarget::ListRow(i) | MouseTarget::LibraryDel(i) => i,

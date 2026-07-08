@@ -100,6 +100,18 @@ impl App {
     }
 
     pub(in crate::app) fn on_key_local(&mut self, k: KeyEvent) -> Vec<Cmd> {
+        let chord = crate::keymap::Chord::from(k);
+        // Keep the remappable Local Deck toggle available for non-text keys while the
+        // Local Deck filter is focused. Typeable remaps still belong to the filter input.
+        if self.local_mode.ui.filter_editing
+            && !chord.is_typeable()
+            && matches!(
+                self.keymap.action(KeyContext::Library, chord),
+                Some(Action::ToggleLocalMode)
+            )
+        {
+            return self.request_local_mode_switch();
+        }
         if self.local_mode.ui.filter_editing {
             return self.on_key_local_filter(k);
         }
@@ -114,6 +126,28 @@ impl App {
         if k.code == KeyCode::Tab && k.modifiers.is_empty() {
             self.cycle_local_pane();
             return Vec::new();
+        }
+        if k.modifiers.is_empty() {
+            match k.code {
+                KeyCode::Char(' ') => return self.on_player_action(Action::TogglePause),
+                KeyCode::Char('a') => return self.local_enqueue_selected(),
+                KeyCode::Char('c') => {
+                    self.open_queue_popup();
+                    return Vec::new();
+                }
+                KeyCode::Char('s') => return self.local_shuffle_visible(),
+                _ => {}
+            }
+        }
+        if matches!(k.code, KeyCode::Char('A'))
+            && (k.modifiers.is_empty() || k.modifiers == KeyModifiers::SHIFT)
+        {
+            return self.local_enqueue_visible();
+        }
+        if matches!(k.code, KeyCode::Char('P'))
+            && (k.modifiers.is_empty() || k.modifiers == KeyModifiers::SHIFT)
+        {
+            return self.local_play_selected_now();
         }
         if let KeyCode::Char(ch) = k.code
             && k.modifiers.is_empty()
@@ -131,7 +165,8 @@ impl App {
             return self.request_local_scan(true);
         }
 
-        match self.keymap.action(KeyContext::Library, k.into()) {
+        match self.keymap.action(KeyContext::Library, chord) {
+            Some(Action::ToggleLocalMode) => self.request_local_mode_switch(),
             Some(Action::LibraryFilter) => {
                 self.local_mode.ui.filter_editing = true;
                 self.dirty = true;
@@ -199,6 +234,15 @@ impl App {
         self.local_activate_selected()
     }
 
+    pub(in crate::app) fn local_enqueue_row_index(&mut self, index: usize) -> Vec<Cmd> {
+        let Some(row) = self.local_visible_rows().get(index).cloned() else {
+            return Vec::new();
+        };
+        self.local_mode.ui.selected = index;
+        self.local_mode.ui.anchor = index;
+        self.enqueue_many(self.local_songs_for_row(&row))
+    }
+
     fn move_local_cursor(&mut self, up: bool, step: usize) {
         let len = self.local_rows_len();
         if len == 0 {
@@ -234,6 +278,39 @@ impl App {
             return Vec::new();
         };
         self.activate_local_row(row)
+    }
+
+    fn local_enqueue_selected(&mut self) -> Vec<Cmd> {
+        self.enqueue_many(self.local_selected_songs())
+    }
+
+    fn local_enqueue_visible(&mut self) -> Vec<Cmd> {
+        let (songs, _) = self.local_visible_songs_with_start();
+        self.enqueue_many(songs)
+    }
+
+    fn local_play_selected_now(&mut self) -> Vec<Cmd> {
+        self.play_now_many(self.local_selected_songs())
+    }
+
+    fn local_shuffle_visible(&mut self) -> Vec<Cmd> {
+        let (songs, start) = self.local_visible_songs_with_start();
+        if songs.is_empty() {
+            return Vec::new();
+        }
+        let requested_songs = songs.clone();
+        let shuffle_changed = !self.queue.shuffle;
+        self.queue.set(songs, start);
+        self.queue.set_shuffle(true);
+        self.mode = Mode::Player;
+        self.status.text.clear();
+        let song = self.queue.current().cloned();
+        let mut cmds = self.load_song(song);
+        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+        if shuffle_changed {
+            cmds.push(self.save_playback_modes_cmd());
+        }
+        cmds
     }
 
     pub(in crate::app) fn apply_local_msg(&mut self, msg: LocalMsg) -> Vec<Cmd> {
@@ -649,6 +726,81 @@ impl App {
                 self.reset_local_list_cursor();
                 Vec::new()
             }
+            crate::local::LocalRowId::ScanError(_) => Vec::new(),
+        }
+    }
+
+    fn local_selected_songs(&self) -> Vec<Song> {
+        let Some(row) = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned()
+        else {
+            return Vec::new();
+        };
+        self.local_songs_for_row(&row)
+    }
+
+    fn local_visible_songs_with_start(&self) -> (Vec<Song>, usize) {
+        let rows = self.local_visible_rows();
+        if rows.is_empty() {
+            return (Vec::new(), 0);
+        }
+        let cursor = self.local_mode.ui.selected.min(rows.len() - 1);
+        let mut songs = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut start = None;
+        for (index, row) in rows.iter().enumerate() {
+            for song in self.local_songs_for_row(row) {
+                if seen.insert(song.video_id.clone()) {
+                    if index == cursor && start.is_none() {
+                        start = Some(songs.len());
+                    }
+                    songs.push(song);
+                }
+            }
+        }
+        (songs, start.unwrap_or(0))
+    }
+
+    fn local_songs_for_row(&self, row: &crate::local::LocalRowId) -> Vec<Song> {
+        match row {
+            crate::local::LocalRowId::Track(id) => self
+                .local_track_by_id(id)
+                .map(|track| vec![track.to_song()])
+                .unwrap_or_default(),
+            crate::local::LocalRowId::DownloadSeed(index) => self
+                .library_ui
+                .downloaded
+                .get(*index)
+                .cloned()
+                .into_iter()
+                .collect(),
+            crate::local::LocalRowId::Album(id) => self
+                .local_tracks_for_album(id)
+                .into_iter()
+                .map(|track| track.to_song())
+                .collect(),
+            crate::local::LocalRowId::Artist(id) => self
+                .local_tracks_for_artist(id)
+                .into_iter()
+                .map(|track| track.to_song())
+                .collect(),
+            crate::local::LocalRowId::Genre(genre) => self
+                .local_tracks_for_genre(genre)
+                .into_iter()
+                .map(|track| track.to_song())
+                .collect(),
+            crate::local::LocalRowId::Folder(folder) => self
+                .local_tracks_for_folder(folder)
+                .into_iter()
+                .map(|track| track.to_song())
+                .collect(),
+            crate::local::LocalRowId::Smart(smart) => self
+                .local_tracks_for_smart(*smart)
+                .into_iter()
+                .map(|track| track.to_song())
+                .collect(),
             crate::local::LocalRowId::ScanError(_) => Vec::new(),
         }
     }

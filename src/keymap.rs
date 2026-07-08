@@ -95,6 +95,7 @@ pub enum Action {
     // Global (active in any non-text-entry context).
     ToggleStreaming,
     ToggleRadioMode,
+    ToggleLocalMode,
     ToggleHelp,
     ToggleAbout,
     ToggleAnimations,
@@ -395,6 +396,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "라디오/일반 모드",
     ),
     (
+        Action::ToggleLocalMode,
+        "toggle_local_mode",
+        "Local Deck mode",
+        "로컬 덱 모드",
+    ),
+    (
         Action::ToggleHelp,
         "toggle_help",
         "Toggle help",
@@ -508,6 +515,9 @@ impl Action {
             (KeyContext::Library, Action::Confirm) => t!("Play selected", "선택 항목 재생"),
             (KeyContext::Library, Action::Back) => t!("Close Library", "라이브러리 닫기"),
             (KeyContext::Library, Action::LibraryRemove) => t!("Remove / delete", "제거 / 삭제"),
+            (KeyContext::Library, Action::ToggleLocalMode) => {
+                t!("Enter / exit Local Deck", "로컬 덱 들어가기 / 나가기")
+            }
             (KeyContext::Playlists, Action::Confirm) => {
                 t!("Open / play selected", "열기 / 선택 재생")
             }
@@ -1124,6 +1134,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Global, A::Quit, ctrl('q')),
         // Library list commands.
         (C::Library, A::Confirm, key(KeyCode::Enter)),
+        (C::Library, A::ToggleLocalMode, alt_shift('l')),
         (C::Library, A::Enqueue, ch('\\')),
         (C::Library, A::PlayAll, ch('a')),
         (C::Library, A::Favorite, ch('f')),
@@ -1915,6 +1926,14 @@ mod tests {
             None
         );
         assert_eq!(
+            km.action(KeyContext::Library, parse_chord("alt+shift+l").unwrap()),
+            Some(Action::ToggleLocalMode)
+        );
+        assert_eq!(
+            km.action(KeyContext::Player, parse_chord("alt+shift+l").unwrap()),
+            None
+        );
+        assert_eq!(
             km.action(KeyContext::Player, parse_chord("q").unwrap()),
             Some(Action::Back)
         );
@@ -2286,6 +2305,28 @@ mod tests {
     }
 
     #[test]
+    fn local_mode_toggle_is_rebindable_in_library_context() {
+        let mut km = KeyMap::default();
+        let f8 = parse_chord("f8").unwrap();
+
+        km.rebind(KeyContext::Library, Action::ToggleLocalMode, f8)
+            .unwrap();
+
+        assert_eq!(
+            km.action(KeyContext::Library, f8),
+            Some(Action::ToggleLocalMode)
+        );
+        assert_eq!(
+            km.action(KeyContext::Library, parse_chord("alt+shift+l").unwrap()),
+            None
+        );
+        assert_eq!(
+            km.to_overrides().get("library.toggle_local_mode"),
+            Some(&"f8".to_owned())
+        );
+    }
+
+    #[test]
     fn local_rebind_can_shadow_common_navigation() {
         let mut km = KeyMap::default();
         let page_up = parse_chord("pageup").unwrap();
@@ -2633,6 +2674,10 @@ mod tests {
         assert!(
             editable_entries().contains(&(KeyContext::Player, Action::ToggleRadioMode)),
             "Settings > Keys should list the Radio / Normal mode binding"
+        );
+        assert!(
+            editable_entries().contains(&(KeyContext::Library, Action::ToggleLocalMode)),
+            "Settings > Keys should list the Local Deck mode binding"
         );
         // Every action has a stable id and label.
         for (_, action, _) in default_bindings() {

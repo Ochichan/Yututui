@@ -2604,6 +2604,47 @@ fn local_deck_and_radio_mode_are_mutually_exclusive() {
 }
 
 #[test]
+fn alt_shift_l_confirms_local_deck_enter_and_exit_from_keyboard() {
+    let mut app = App::new(100);
+    app.mode = Mode::Library;
+
+    let cmds = app.update(Msg::Key(alt_shift(KeyCode::Char('l'))));
+
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.local_mode.pending_confirm,
+        Some(LocalModeConfirm::Enter)
+    );
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(app.local_dedicated_mode);
+
+    let cmds = app.update(Msg::Key(alt_shift(KeyCode::Char('l'))));
+
+    assert!(cmds.is_empty());
+    assert_eq!(app.local_mode.pending_confirm, Some(LocalModeConfirm::Exit));
+}
+
+#[test]
+fn local_deck_keyboard_toggle_uses_user_rebound_key() {
+    let mut app = App::new(100);
+    app.mode = Mode::Library;
+    app.keymap
+        .rebind(
+            KeyContext::Library,
+            Action::ToggleLocalMode,
+            crate::keymap::parse_chord("f8").unwrap(),
+        )
+        .unwrap();
+
+    app.update(Msg::Key(key(KeyCode::F(8))));
+
+    assert_eq!(
+        app.local_mode.pending_confirm,
+        Some(LocalModeConfirm::Enter)
+    );
+}
+
+#[test]
 fn local_deck_renders_download_seed_rows_and_activates_them() {
     let mut app = App::new(100);
     app.mode = Mode::Library;
@@ -3007,6 +3048,226 @@ fn local_deck_smart_lists_report_counts_for_every_shipped_list() {
             "missing smart list label {expected:?} in {labels:?}"
         );
     }
+}
+
+#[test]
+fn local_deck_a_enqueues_selected_track_without_interrupting_current() {
+    let mut app = app_with_local_deck_index(vec![local_deck_track(
+        "/tmp/music/local-alpha.flac",
+        "Local Alpha",
+        &["Local Artist"],
+        None,
+        None,
+        &[],
+        10,
+    )]);
+    app.queue.set(songs(1), 0);
+    app.load_song(app.queue.current().cloned());
+    app.mode = Mode::Library;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('a'))));
+
+    assert!(load_url(&cmds).is_none());
+    assert_eq!(current(&app), "id0");
+    assert_eq!(app.queue.len(), 2);
+    let ordered: Vec<_> = app
+        .queue
+        .ordered()
+        .iter()
+        .map(|s| s.title.as_str())
+        .collect();
+    assert_eq!(ordered, vec!["t0", "Local Alpha"]);
+}
+
+#[test]
+fn local_deck_shift_a_enqueues_visible_filtered_rows() {
+    let mut app = app_with_local_deck_index(vec![
+        local_deck_track(
+            "/tmp/music/a-alpha.flac",
+            "Alpha",
+            &["A"],
+            None,
+            None,
+            &[],
+            10,
+        ),
+        local_deck_track(
+            "/tmp/music/b-beta.flac",
+            "Beta",
+            &["Filtered Artist"],
+            None,
+            None,
+            &[],
+            11,
+        ),
+    ]);
+    app.local_mode.ui.filter_query = "filtered".to_owned();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('A'))));
+
+    assert_eq!(app.queue.len(), 1);
+    assert_eq!(app.queue.current().map(|s| s.title.as_str()), Some("Beta"));
+    assert!(
+        load_url(&cmds)
+            .expect("filtered local load")
+            .contains("b-beta")
+    );
+}
+
+#[test]
+fn local_deck_p_plays_selected_collection_now() {
+    let mut first = local_deck_track(
+        "/tmp/music/Daft Punk/Discovery/01 One More Time.flac",
+        "One More Time",
+        &["Daft Punk"],
+        Some("Discovery"),
+        Some("Daft Punk"),
+        &["House"],
+        10,
+    );
+    first.track_no = Some(1);
+    let mut second = local_deck_track(
+        "/tmp/music/Daft Punk/Discovery/02 Aerodynamic.flac",
+        "Aerodynamic",
+        &["Daft Punk"],
+        Some("Discovery"),
+        Some("Daft Punk"),
+        &["House"],
+        11,
+    );
+    second.track_no = Some(2);
+    let mut app = app_with_local_deck_index(vec![second, first]);
+    app.update(Msg::Key(key(KeyCode::Char('3'))));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('P'))));
+
+    assert_eq!(app.mode, Mode::Player);
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(
+        app.queue.current().map(|song| song.title.as_str()),
+        Some("One More Time")
+    );
+    assert!(load_url(&cmds).expect("album load").contains("01 One"));
+}
+
+#[test]
+fn local_deck_s_shuffles_current_view_from_selected_row() {
+    let mut app = app_with_local_deck_index(vec![
+        local_deck_track(
+            "/tmp/music/a-alpha.flac",
+            "Alpha",
+            &["A"],
+            None,
+            None,
+            &[],
+            10,
+        ),
+        local_deck_track(
+            "/tmp/music/b-beta.flac",
+            "Beta",
+            &["B"],
+            None,
+            None,
+            &[],
+            11,
+        ),
+        local_deck_track(
+            "/tmp/music/c-gamma.flac",
+            "Gamma",
+            &["C"],
+            None,
+            None,
+            &[],
+            12,
+        ),
+    ]);
+    app.update(Msg::Key(key(KeyCode::Down)));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('s'))));
+
+    assert_eq!(app.mode, Mode::Player);
+    assert!(app.queue.shuffle);
+    assert_eq!(app.queue.len(), 3);
+    assert_eq!(app.queue.current().map(|s| s.title.as_str()), Some("Beta"));
+    assert!(
+        load_url(&cmds)
+            .expect("shuffled local load")
+            .contains("b-beta")
+    );
+    assert!(
+        cmds.iter()
+            .any(|cmd| matches!(cmd, Cmd::Persist(PersistCmd::Config(_))))
+    );
+}
+
+#[test]
+fn local_deck_c_opens_queue_popup_and_space_toggles_pause() {
+    let mut app = app_with_local_deck_index(vec![local_deck_track(
+        "/tmp/music/local-alpha.flac",
+        "Local Alpha",
+        &["Local Artist"],
+        None,
+        None,
+        &[],
+        10,
+    )]);
+    app.queue.set(songs(1), 0);
+    app.load_song(app.queue.current().cloned());
+    app.mode = Mode::Library;
+
+    app.update(Msg::Key(key(KeyCode::Char('c'))));
+    assert!(app.queue_popup.open);
+
+    app.queue_popup.open = false;
+    app.playback.paused = false;
+    let cmds = app.update(Msg::Key(key(KeyCode::Char(' '))));
+
+    assert!(app.playback.paused);
+    assert!(matches!(
+        cmds.as_slice(),
+        [Cmd::Player(PlayerCmd::CyclePause)]
+    ));
+}
+
+#[test]
+fn right_clicking_local_deck_collection_enqueues_it() {
+    let mut first = local_deck_track(
+        "/tmp/music/Daft Punk/Discovery/01 One More Time.flac",
+        "One More Time",
+        &["Daft Punk"],
+        Some("Discovery"),
+        Some("Daft Punk"),
+        &["House"],
+        10,
+    );
+    first.track_no = Some(1);
+    let mut second = local_deck_track(
+        "/tmp/music/Daft Punk/Discovery/02 Aerodynamic.flac",
+        "Aerodynamic",
+        &["Daft Punk"],
+        Some("Discovery"),
+        Some("Daft Punk"),
+        &["House"],
+        11,
+    );
+    second.track_no = Some(2);
+    let mut app = app_with_local_deck_index(vec![second, first]);
+    app.update(Msg::Key(key(KeyCode::Char('3'))));
+    render_app(&app);
+    let (col, row) = button_center(&app, MouseTarget::LocalRow(0));
+
+    let cmds = app.update(Msg::MouseRightClick { col, row });
+
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(
+        app.queue.current().map(|song| song.title.as_str()),
+        Some("One More Time")
+    );
+    assert!(
+        load_url(&cmds)
+            .expect("right-click album load")
+            .contains("01 One")
+    );
 }
 
 #[test]
@@ -5039,6 +5300,14 @@ fn settings_keys_lists_radio_normal_mode_binding() {
     assert!(
         text.contains("Alt+Shift+R"),
         "Keys tab should show the default mode-switch key"
+    );
+    assert!(
+        text.contains("Enter / exit Local Deck"),
+        "Keys tab should list the Local Deck mode binding"
+    );
+    assert!(
+        text.contains("Alt+Shift+L"),
+        "Keys tab should show the default Local Deck key"
     );
 }
 
