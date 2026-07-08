@@ -11,7 +11,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::checkpoint::{Checkpoint, TransferReport};
+use super::checkpoint::{Checkpoint, ReviewDecision, TransferReport};
 use super::session::{ImportSession, ImportSessionRowStatus};
 use super::{
     FileFormat, JobCtx, JobError, JobSpec, Stage, TransferDest, TransferProgress, TransferSource,
@@ -35,6 +35,7 @@ Commands:
   jobs                             Known transfer jobs and their state
   sessions                         Import sessions for review/download follow-up
   session <JOB-ID>                 Show one import session's review rows
+  review <JOB-ID> [filter]         Show or update import review decisions
   import <SOURCE> [flags]          Spotify/file → YouTube Music
       SOURCE: a Spotify playlist URL/URI/id, the word `liked`, or a .json/.csv file
       --to-playlist NAME           Append to (or create) this YTM account playlist
@@ -85,6 +86,10 @@ pub fn run(args: &[String]) -> i32 {
                 EXIT_USAGE
             }
         },
+        Some("review") => {
+            let rest: Vec<&str> = it.collect();
+            super::review_cli::run(&rest)
+        }
         Some("import") => {
             let rest: Vec<&str> = it.collect();
             match parse_import(&rest) {
@@ -696,6 +701,9 @@ fn show_session(job_id: &str) -> i32 {
         if let Some(isrc) = &row.isrc {
             println!("        isrc: {isrc}");
         }
+        if let Some(decision) = &row.review_decision {
+            println!("        decision: {}", review_decision_label(decision));
+        }
         if !row.candidates.is_empty() {
             for candidate in &row.candidates {
                 println!(
@@ -715,6 +723,18 @@ fn show_session(job_id: &str) -> i32 {
         println!("No review rows.");
     }
     EXIT_OK
+}
+
+fn review_decision_label(decision: &ReviewDecision) -> String {
+    match decision {
+        ReviewDecision::Accepted {
+            key,
+            score,
+            display,
+        } => format!("accepted {display} ({key}, {score:.2})"),
+        ReviewDecision::Rejected => "rejected".to_owned(),
+        ReviewDecision::Skipped => "skipped".to_owned(),
+    }
 }
 
 fn row_status_label(status: ImportSessionRowStatus) -> &'static str {

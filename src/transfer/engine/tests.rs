@@ -1,4 +1,5 @@
 use super::*;
+use crate::transfer::checkpoint::ReviewDecision;
 use crate::transfer::matching::{AmbiguousCandidate, MatchScoreBreakdown};
 
 fn spec(dest: TransferDest) -> JobSpec {
@@ -36,6 +37,7 @@ fn entry(input: TrackInput, outcome: Option<MatchOutcome>) -> TrackEntry {
     TrackEntry {
         input,
         outcome,
+        review_decision: None,
         written: false,
     }
 }
@@ -646,6 +648,7 @@ async fn run_job_resume_rematch_resets_checkpointed_matches_without_persisting()
                     ..input("Known Id", &["Artist A"])
                 },
                 outcome: Some(matched("cached-yt-id")),
+                review_decision: None,
                 written: true,
             },
             entry(
@@ -757,6 +760,39 @@ async fn write_stage_dedupes_matches_before_missing_client_error() {
     assert_eq!(report.written, 0);
     assert!(progress.is_empty());
     assert!(cp.tracks.iter().all(|track| !track.written));
+}
+
+#[test]
+fn collect_writes_skips_rejected_review_rows_even_with_take_best() {
+    let mut rejected = entry(
+        input("Rejected", &["A"]),
+        Some(MatchOutcome::Ambiguous {
+            candidates: vec![AmbiguousCandidate {
+                key: "reject-id".to_owned(),
+                score: 0.79,
+                display: "A - Rejected".to_owned(),
+                score_breakdown: None,
+            }],
+        }),
+    );
+    rejected.review_decision = Some(ReviewDecision::Rejected);
+    let mut cp = Checkpoint::new(
+        "job_review_rejected_local".to_owned(),
+        spec(TransferDest::YtmLikes),
+        vec![
+            rejected,
+            entry(input("Accepted", &["B"]), Some(matched("accepted-id"))),
+        ],
+    );
+    cp.stage = Stage::Writing;
+    cp.spec.take_best = true;
+    let mut report = build_report(&cp, 0);
+
+    let writes = collect_writes(&cp, &mut report);
+
+    assert_eq!(writes, vec![(1, "accepted-id".to_owned())]);
+    assert_eq!(report.duplicates_dropped, 0);
+    assert_eq!(report.written, 0);
 }
 
 #[tokio::test]

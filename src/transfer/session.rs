@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::checkpoint::{Checkpoint, ReportCandidate};
+use super::checkpoint::{Checkpoint, ReportCandidate, ReviewDecision};
 use super::matching::{MatchOutcome, TrackInput};
 use super::{Stage, TransferDest, TransferSource};
 use crate::util::safe_fs;
@@ -127,6 +127,8 @@ pub struct ImportSessionRow {
     pub selected_score: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_display: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_decision: Option<ReviewDecision>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<ReportCandidate>,
     #[serde(default)]
@@ -162,6 +164,7 @@ impl Default for ImportSessionRow {
             selected_key: None,
             selected_score: None,
             selected_display: None,
+            review_decision: None,
             candidates: Vec::new(),
             written: false,
             local_path: None,
@@ -189,7 +192,13 @@ impl ImportSession {
             .iter()
             .enumerate()
             .map(|(idx, entry)| {
-                row_from_input(idx, &entry.input, entry.outcome.as_ref(), entry.written)
+                row_from_input(
+                    idx,
+                    &entry.input,
+                    entry.outcome.as_ref(),
+                    entry.review_decision.clone(),
+                    entry.written,
+                )
             })
             .collect();
         let counts = ImportSessionCounts::from_rows(&rows);
@@ -288,6 +297,7 @@ fn row_from_input(
     idx: usize,
     input: &TrackInput,
     outcome: Option<&MatchOutcome>,
+    review_decision: Option<ReviewDecision>,
     written: bool,
 ) -> ImportSessionRow {
     let mut row = ImportSessionRow {
@@ -307,6 +317,7 @@ fn row_from_input(
         explicit: input.explicit,
         source_key: input.source_key.clone(),
         source_url: input.source_url.clone(),
+        review_decision,
         written,
         ..ImportSessionRow::default()
     };
@@ -485,6 +496,7 @@ mod tests {
         TrackEntry {
             input,
             outcome,
+            review_decision: None,
             written,
         }
     }
@@ -575,6 +587,7 @@ mod tests {
             session.rows[1].candidates[0].score_breakdown,
             Some(breakdown)
         );
+        assert_eq!(session.rows[1].review_decision, None);
         assert_eq!(session.rows[2].status, ImportSessionRowStatus::NotFound);
         assert_eq!(session.rows[3].status, ImportSessionRowStatus::SkippedLocal);
         assert_eq!(session.rows[4].status, ImportSessionRowStatus::Pending);

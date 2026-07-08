@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail};
 
+use super::checkpoint::ReviewDecision;
 use super::checkpoint::{Checkpoint, ReportCandidate, ReportRow, TrackEntry, TransferReport};
 use super::matching::{
     MatchCandidate, MatchConfig, MatchOutcome, Pacing, TrackInput, best_outcome, match_track_ytm,
@@ -250,6 +251,7 @@ async fn fetch_source(
         .map(|input| TrackEntry {
             input,
             outcome: None,
+            review_decision: None,
             written: false,
         })
         .collect();
@@ -409,24 +411,7 @@ async fn write_stage(
     progress: &mut (dyn FnMut(TransferProgress) + Send),
     report: &mut TransferReport,
 ) -> Result<(), JobError> {
-    // Collect the ordered, deduped write list: (entry index, destination key).
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut writes: Vec<(usize, String)> = Vec::new();
-    for (idx, entry) in cp.tracks.iter().enumerate() {
-        let key = match (&entry.outcome, cp.spec.take_best) {
-            (Some(MatchOutcome::Matched { key, .. }), _) => key.clone(),
-            (Some(MatchOutcome::Ambiguous { candidates }), true) => match candidates.first() {
-                Some(best) => best.key.clone(),
-                None => continue,
-            },
-            _ => continue,
-        };
-        if !seen.insert(key.clone()) {
-            report.duplicates_dropped += 1;
-            continue;
-        }
-        writes.push((idx, key));
-    }
+    let writes = collect_writes(cp, report);
     let total = writes.len() as u32;
 
     // The local store needs no network at all — handle it before the client-bound arms.
@@ -514,6 +499,30 @@ async fn write_stage(
         TransferDest::LocalPlaylist { .. } => unreachable!("handled before the client arms"),
     }
     Ok(())
+}
+
+fn collect_writes(cp: &Checkpoint, report: &mut TransferReport) -> Vec<(usize, String)> {
+    // Collect the ordered, deduped write list: (entry index, destination key).
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut writes: Vec<(usize, String)> = Vec::new();
+    for (idx, entry) in cp.tracks.iter().enumerate() {
+        let key = match (&entry.review_decision, &entry.outcome, cp.spec.take_best) {
+            (Some(ReviewDecision::Rejected | ReviewDecision::Skipped), _, _) => continue,
+            (Some(ReviewDecision::Accepted { key, .. }), _, _) => key.clone(),
+            (_, Some(MatchOutcome::Matched { key, .. }), _) => key.clone(),
+            (_, Some(MatchOutcome::Ambiguous { candidates }), true) => match candidates.first() {
+                Some(best) => best.key.clone(),
+                None => continue,
+            },
+            _ => continue,
+        };
+        if !seen.insert(key.clone()) {
+            report.duplicates_dropped += 1;
+            continue;
+        }
+        writes.push((idx, key));
+    }
+    writes
 }
 
 /// Write matches into the app's own playlist store (`playlists.json`): visible in the

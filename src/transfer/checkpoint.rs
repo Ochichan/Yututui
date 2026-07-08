@@ -43,8 +43,32 @@ pub struct TrackEntry {
     pub input: TrackInput,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<MatchOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_decision: Option<ReviewDecision>,
     #[serde(default)]
     pub written: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ReviewDecision {
+    Accepted {
+        key: String,
+        score: f32,
+        display: String,
+    },
+    Rejected,
+    Skipped,
+}
+
+impl ReviewDecision {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Accepted { .. } => "accepted",
+            Self::Rejected => "rejected",
+            Self::Skipped => "skipped",
+        }
+    }
 }
 
 impl Checkpoint {
@@ -290,6 +314,7 @@ mod tests {
                 known_video_id: None,
             },
             outcome: None,
+            review_decision: None,
             written: false,
         }
     }
@@ -313,6 +338,7 @@ mod tests {
         });
         cp.tracks[0].written = true;
         cp.tracks[1].outcome = Some(MatchOutcome::NotFound);
+        cp.tracks[1].review_decision = Some(ReviewDecision::Rejected);
         cp.stage = Stage::Writing;
         cp.dest_id = Some("PL123".to_owned());
 
@@ -325,6 +351,10 @@ mod tests {
             Some(MatchOutcome::Matched { .. })
         ));
         assert!(!back.tracks[1].written);
+        assert_eq!(
+            back.tracks[1].review_decision,
+            Some(ReviewDecision::Rejected)
+        );
         assert_eq!(back.dest_id.as_deref(), Some("PL123"));
         assert_eq!(back.stage, Stage::Writing);
         // FileFormat round-trip sanity for specs that carry it.
