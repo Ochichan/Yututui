@@ -734,7 +734,14 @@ impl App {
     }
 
     fn local_import_session_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
-        let mut sessions = BTreeMap::<String, (usize, i64)>::new();
+        let mut sessions = BTreeMap::<
+            String,
+            (
+                usize,
+                i64,
+                Option<crate::transfer::session::ImportSessionSummary>,
+            ),
+        >::new();
         for track in self.local_mode.index.index.tracks() {
             let Some(session_id) = track
                 .import_session_id
@@ -744,19 +751,46 @@ impl App {
             else {
                 continue;
             };
-            let entry = sessions
-                .entry(session_id.to_owned())
-                .or_insert((0, track.modified_at));
+            let entry =
+                sessions
+                    .entry(session_id.to_owned())
+                    .or_insert((0, track.modified_at, None));
             entry.0 += 1;
             entry.1 = entry.1.max(track.modified_at);
+        }
+        for summary in crate::transfer::session::ImportSession::list_all() {
+            let entry =
+                sessions
+                    .entry(summary.session_id.clone())
+                    .or_insert((0, summary.updated_at, None));
+            entry.1 = entry.1.max(summary.updated_at);
+            entry.2 = Some(summary);
         }
         let mut rows: Vec<_> = sessions.into_iter().collect();
         rows.sort_by(|a, b| b.1.1.cmp(&a.1.1).then_with(|| a.0.cmp(&b.0)));
         rows.into_iter()
-            .filter(|(session_id, (count, _))| {
+            .filter(|(session_id, (count, _, summary))| {
                 let count = count.to_string();
+                let total = summary
+                    .as_ref()
+                    .map(|summary| summary.counts.total.to_string())
+                    .unwrap_or_default();
+                let review = summary
+                    .as_ref()
+                    .map(|summary| summary.counts.ambiguous.to_string())
+                    .unwrap_or_default();
+                let missing = summary
+                    .as_ref()
+                    .map(|summary| summary.counts.not_found.to_string())
+                    .unwrap_or_default();
                 crate::local::query::fields_match_query(
-                    [session_id.as_str(), count.as_str()],
+                    [
+                        session_id.as_str(),
+                        count.as_str(),
+                        total.as_str(),
+                        review.as_str(),
+                        missing.as_str(),
+                    ],
                     query,
                 )
             })
@@ -1025,10 +1059,10 @@ impl App {
                 let count = self.local_tracks_for_smart(*smart).len();
                 format!("{}  ({count} {})", smart.label(), t!("tracks", "곡"))
             }
-            crate::local::LocalRowId::ImportSession(session_id) => {
-                let count = self.local_tracks_for_import_session(session_id).len();
-                format!("{session_id}  ({count} {})", t!("tracks", "곡"))
-            }
+            crate::local::LocalRowId::ImportSession(session_id) => local_import_session_text(
+                session_id,
+                self.local_tracks_for_import_session(session_id).len(),
+            ),
             crate::local::LocalRowId::ScanError(index) => self
                 .local_scan_issue(*index)
                 .map(|error| format!("{} - {}", error.path.display(), error.message))
@@ -1163,6 +1197,7 @@ impl App {
                     t!("Import session", "임포트 세션"),
                     session_id.clone(),
                 );
+                push_import_session_summary_details(lines, session_id);
                 push_detail_line(
                     lines,
                     t!("Tracks", "곡"),

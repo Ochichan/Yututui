@@ -751,6 +751,105 @@ fn local_deck_import_sessions_drill_down_in_source_order() {
 }
 
 #[test]
+fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
+    let session_id = "sp2yt-local-inbox-session";
+    let session = crate::transfer::session::ImportSession {
+        schema_version: 1,
+        session_id: session_id.to_owned(),
+        job_id: session_id.to_owned(),
+        created_at: 0,
+        updated_at: 99,
+        stage: crate::transfer::Stage::Writing,
+        source: crate::transfer::session::SessionEndpoint {
+            kind: "spotify_playlist".to_owned(),
+            key: Some("spotify-source".to_owned()),
+            label: Some("Source".to_owned()),
+        },
+        destination: crate::transfer::session::SessionEndpoint {
+            kind: "local_playlist".to_owned(),
+            key: None,
+            label: Some("Imported".to_owned()),
+        },
+        counts: crate::transfer::session::ImportSessionCounts {
+            total: 3,
+            matched: 1,
+            ambiguous: 1,
+            not_found: 1,
+            ..crate::transfer::session::ImportSessionCounts::default()
+        },
+        rows: vec![
+            crate::transfer::session::ImportSessionRow {
+                row_id: "row-00001".to_owned(),
+                source_order: 1,
+                status: crate::transfer::session::ImportSessionRowStatus::Matched,
+                title: "Linked".to_owned(),
+                artists: vec!["Artist".to_owned()],
+                source_key: "spotify:track:linked".to_owned(),
+                selected_key: Some("linked00001".to_owned()),
+                local_path: Some(PathBuf::from("/tmp/inbox/Linked.m4a")),
+                ..crate::transfer::session::ImportSessionRow::default()
+            },
+            crate::transfer::session::ImportSessionRow {
+                row_id: "row-00002".to_owned(),
+                source_order: 2,
+                status: crate::transfer::session::ImportSessionRowStatus::Ambiguous,
+                title: "Review".to_owned(),
+                artists: vec!["Artist".to_owned()],
+                source_key: "spotify:track:review".to_owned(),
+                ..crate::transfer::session::ImportSessionRow::default()
+            },
+            crate::transfer::session::ImportSessionRow {
+                row_id: "row-00003".to_owned(),
+                source_order: 3,
+                status: crate::transfer::session::ImportSessionRowStatus::NotFound,
+                title: "Failed".to_owned(),
+                artists: vec!["Artist".to_owned()],
+                source_key: "spotify:track:failed".to_owned(),
+                errors: vec!["download failed".to_owned()],
+                ..crate::transfer::session::ImportSessionRow::default()
+            },
+        ],
+    };
+    session.save().expect("save import session");
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+
+    let labels: Vec<_> = app
+        .local_visible_rows()
+        .iter()
+        .map(|row| app.local_row_text(row))
+        .collect();
+    let session_index = labels
+        .iter()
+        .position(|label| label.starts_with(session_id))
+        .unwrap_or_else(|| panic!("missing saved session in labels: {labels:?}"));
+    assert_eq!(
+        labels[session_index],
+        "sp2yt-local-inbox-session  (1/3 local, 1 failed, 1 review, 1 missing)"
+    );
+
+    app.local_mode.ui.selected = session_index;
+    app.local_mode.ui.anchor = session_index;
+    let details = app.local_details_lines();
+    for expected in [
+        "Import session: sp2yt-local-inbox-session",
+        "Rows: 3 rows",
+        "Local files: 1",
+        "Failed: 1",
+        "Review: 1",
+        "Missing: 1",
+        "Source: Source",
+        "Destination: Imported",
+    ] {
+        assert!(
+            details.iter().any(|line| line == expected),
+            "missing {expected:?} in {details:?}"
+        );
+    }
+}
+
+#[test]
 fn local_deck_details_include_selected_track_metadata_and_up_next() {
     let mut first = local_deck_track(
         "/tmp/music/Daft Punk/Discovery/01 One More Time.flac",

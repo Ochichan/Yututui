@@ -29,6 +29,72 @@ pub(in crate::app) fn local_song_text(app: &App, song: &Song) -> String {
     }
 }
 
+pub(in crate::app) fn local_import_session_text(session_id: &str, track_count: usize) -> String {
+    if let Ok(session) = crate::transfer::session::ImportSession::load(session_id) {
+        let local_files = session
+            .rows
+            .iter()
+            .filter(|row| row.local_path.is_some())
+            .count();
+        let failed = session
+            .rows
+            .iter()
+            .filter(|row| !row.errors.is_empty())
+            .count();
+        return format!(
+            "{session_id}  ({local_files}/{} local, {failed} failed, {} review, {} missing)",
+            session.counts.total, session.counts.ambiguous, session.counts.not_found
+        );
+    }
+    format!("{session_id}  ({track_count} {})", t!("tracks", "곡"))
+}
+
+pub(in crate::app) fn push_import_session_summary_details(
+    lines: &mut Vec<String>,
+    session_id: &str,
+) {
+    let Ok(session) = crate::transfer::session::ImportSession::load(session_id) else {
+        return;
+    };
+    let local_files = session
+        .rows
+        .iter()
+        .filter(|row| row.local_path.is_some())
+        .count();
+    let failed = session
+        .rows
+        .iter()
+        .filter(|row| !row.errors.is_empty())
+        .count();
+    push_detail_line(
+        lines,
+        t!("Rows", "행"),
+        format!("{} {}", session.counts.total, t!("rows", "행")),
+    );
+    push_detail_line(
+        lines,
+        t!("Local files", "로컬 파일"),
+        local_files.to_string(),
+    );
+    push_detail_line(lines, t!("Failed", "실패"), failed.to_string());
+    push_detail_line(
+        lines,
+        t!("Review", "검토"),
+        session.counts.ambiguous.to_string(),
+    );
+    push_detail_line(
+        lines,
+        t!("Missing", "누락"),
+        session.counts.not_found.to_string(),
+    );
+    push_detail_line(lines, t!("Source", "원본"), session.source.display());
+    push_detail_line(
+        lines,
+        t!("Destination", "대상"),
+        session.destination.display(),
+    );
+}
+
 pub(in crate::app) fn push_detail_line(
     lines: &mut Vec<String>,
     label: &str,
