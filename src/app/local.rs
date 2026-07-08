@@ -47,7 +47,8 @@ impl App {
         self.local_mode.normal_mode_queue = Some(self.queue.snapshot());
         self.activate_local_dedicated_mode_ui();
         let restore = self.local_mode.local_mode_queue.take();
-        let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
+        let mut cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
+        cmds.extend(self.ensure_local_index_ready());
         self.status.kind = StatusKind::Info;
         self.status.text = t!("Local Player mode enabled", "로컬 플레이어 모드 켜짐").to_owned();
         self.dirty = true;
@@ -57,7 +58,7 @@ impl App {
     pub(in crate::app) fn activate_local_dedicated_mode_ui(&mut self) {
         self.local_dedicated_mode = true;
         self.mode = Mode::Library;
-        self.local_mode.ui.section = if self.library_ui.downloaded.is_empty() {
+        self.local_mode.ui.section = if self.local_track_rows_len() == 0 {
             LocalSection::Home
         } else {
             LocalSection::Tracks
@@ -93,13 +94,21 @@ impl App {
     pub fn local_rows_len(&self) -> usize {
         match self.local_mode.ui.section {
             LocalSection::Home => 0,
-            LocalSection::Tracks => self.library_ui.downloaded.len(),
+            LocalSection::Tracks => self.local_track_rows_len(),
         }
     }
 
     pub(in crate::app) fn on_key_local(&mut self, k: KeyEvent) -> Vec<Cmd> {
         if k.code == KeyCode::Esc {
             return self.request_local_mode_switch();
+        }
+        if k.modifiers.is_empty() && matches!(k.code, KeyCode::Char('r')) {
+            return self.request_local_scan(false);
+        }
+        if matches!(k.code, KeyCode::Char('R'))
+            && (k.modifiers.is_empty() || k.modifiers == KeyModifiers::SHIFT)
+        {
+            return self.request_local_scan(true);
         }
 
         match self.keymap.action(KeyContext::Library, k.into()) {
@@ -192,13 +201,155 @@ impl App {
             return Vec::new();
         }
         let Some(song) = self
-            .library_ui
-            .downloaded
+            .local_mode
+            .index
+            .index
+            .tracks()
             .get(self.local_mode.ui.selected)
-            .cloned()
+            .map(crate::local::LocalTrack::to_song)
+            .or_else(|| {
+                self.library_ui
+                    .downloaded
+                    .get(self.local_mode.ui.selected)
+                    .cloned()
+            })
         else {
             return Vec::new();
         };
         self.play_now(song)
+    }
+
+    pub(in crate::app) fn apply_local_msg(&mut self, msg: LocalMsg) -> Vec<Cmd> {
+        match msg {
+            LocalMsg::IndexLoaded { index_path, index } => {
+                self.local_mode.index.index_path = index_path;
+                self.local_mode.index.index = index;
+                self.local_mode.index.loaded = true;
+                self.local_mode.index.loading = false;
+                self.local_mode.index.scanning = false;
+                self.local_mode.index.errors.clear();
+                self.clamp_local_after_index_change();
+                self.dirty = true;
+                if self.local_dedicated_mode && self.local_mode.index.index.is_empty() {
+                    return self.request_local_scan(false);
+                }
+                Vec::new()
+            }
+            LocalMsg::ScanFinished { index_path, result } => {
+                self.local_mode.index.index_path = index_path;
+                self.local_mode.index.index = result.index;
+                self.local_mode.index.loaded = true;
+                self.local_mode.index.loading = false;
+                self.local_mode.index.scanning = false;
+                self.local_mode.index.last_summary = Some(result.summary.clone());
+                self.local_mode.index.errors = result.errors;
+                self.clamp_local_after_index_change();
+                self.status.kind = if self.local_mode.index.errors.is_empty() {
+                    StatusKind::Info
+                } else {
+                    StatusKind::Error
+                };
+                self.status.text = format!(
+                    "{}: {} {}",
+                    t!("Local scan finished", "로컬 스캔 완료"),
+                    result.summary.indexed,
+                    t!("tracks", "곡")
+                );
+                self.dirty = true;
+                Vec::new()
+            }
+            LocalMsg::ScanFailed { error } => {
+                self.local_mode.index.loading = false;
+                self.local_mode.index.scanning = false;
+                self.status.kind = StatusKind::Error;
+                self.status.text =
+                    format!("{}: {error}", t!("Local scan failed", "로컬 스캔 실패"));
+                self.dirty = true;
+                Vec::new()
+            }
+        }
+    }
+
+    fn ensure_local_index_ready(&mut self) -> Vec<Cmd> {
+        if self.local_mode.index.loading || self.local_mode.index.scanning {
+            return Vec::new();
+        }
+        if !self.local_mode.index.loaded {
+            let index_path = crate::local::default_index_path();
+            self.local_mode.index.index_path = index_path.clone();
+            self.local_mode.index.loading = true;
+            self.dirty = true;
+            return vec![Cmd::Local(LocalCmd::LoadIndex { index_path })];
+        }
+        if self.local_mode.index.index.is_empty() {
+            return self.request_local_scan(false);
+        }
+        Vec::new()
+    }
+
+    fn request_local_scan(&mut self, full: bool) -> Vec<Cmd> {
+        if self.local_mode.index.scanning {
+            return Vec::new();
+        }
+        let roots = self.local_scan_roots();
+        if roots.is_empty() {
+            self.status.kind = StatusKind::Error;
+            self.status.text = t!(
+                "No local music roots configured",
+                "설정된 로컬 음악 폴더가 없습니다."
+            )
+            .to_owned();
+            self.dirty = true;
+            return Vec::new();
+        }
+        self.local_mode.index.loaded = true;
+        self.local_mode.index.loading = false;
+        self.local_mode.index.scanning = true;
+        self.local_mode.index.errors.clear();
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!("Scanning local music...", "로컬 음악 스캔 중...").to_owned();
+        self.dirty = true;
+        let previous = if full {
+            crate::local::LocalIndex::default()
+        } else {
+            self.local_mode.index.index.clone()
+        };
+        let index_path = self
+            .local_mode
+            .index
+            .index_path
+            .clone()
+            .or_else(crate::local::default_index_path);
+        self.local_mode.index.index_path = index_path.clone();
+        vec![Cmd::Local(LocalCmd::ScanRoots {
+            roots,
+            index_path,
+            previous,
+        })]
+    }
+
+    fn local_scan_roots(&self) -> Vec<crate::local::LocalScanRoot> {
+        vec![crate::local::LocalScanRoot::download(
+            self.config.effective_download_dir(),
+        )]
+    }
+
+    fn local_track_rows_len(&self) -> usize {
+        let indexed = self.local_mode.index.index.tracks().len();
+        if indexed > 0 {
+            indexed
+        } else {
+            self.library_ui.downloaded.len()
+        }
+    }
+
+    fn clamp_local_after_index_change(&mut self) {
+        if !self.local_mode.index.index.is_empty() {
+            self.local_mode.ui.section = LocalSection::Tracks;
+        }
+        let len = self.local_rows_len();
+        self.local_mode.ui.selected = self.local_mode.ui.selected.min(len.saturating_sub(1));
+        self.local_mode.ui.anchor = self.local_mode.ui.selected;
+        self.bridges.library_scroll.reset();
     }
 }

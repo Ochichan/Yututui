@@ -2581,6 +2581,105 @@ fn local_deck_renders_download_seed_rows_and_activates_them() {
 }
 
 #[test]
+fn local_deck_enter_loads_index_then_scans_download_root_when_empty() {
+    let mut app = App::new(100);
+    let root = PathBuf::from("/tmp/yututui-local-deck-test-root");
+    app.config.download_dir = Some(root.clone());
+
+    let enter = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+
+    assert!(app.local_dedicated_mode);
+    assert!(app.local_mode.index.loading);
+    assert!(
+        enter
+            .iter()
+            .any(|cmd| matches!(cmd, Cmd::Local(LocalCmd::LoadIndex { .. })))
+    );
+
+    let scan = app.update(Msg::Local(LocalMsg::IndexLoaded {
+        index_path: None,
+        index: crate::local::LocalIndex::default(),
+    }));
+
+    assert!(app.local_mode.index.scanning);
+    let Some(Cmd::Local(LocalCmd::ScanRoots {
+        roots, previous, ..
+    })) = scan
+        .iter()
+        .find(|cmd| matches!(cmd, Cmd::Local(LocalCmd::ScanRoots { .. })))
+    else {
+        panic!("expected Local Deck scan command after empty index load");
+    };
+    assert_eq!(roots, &vec![crate::local::LocalScanRoot::download(root)]);
+    assert!(previous.is_empty());
+}
+
+#[test]
+fn local_deck_scan_result_replaces_seed_rows_and_activates_index_track() {
+    let mut app = App::new(100);
+    app.mode = Mode::Library;
+    app.library_ui.downloaded = vec![Song::local_file(PathBuf::from("/tmp/Seed.m4a"))];
+    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+
+    let mut track = crate::local::LocalTrack::untagged(PathBuf::from("/tmp/Indexed.flac"), 7, 8);
+    track.title = "Indexed Title".to_owned();
+    track.artist = vec!["Indexed Artist".to_owned()];
+    track.duration_ms = Some(61_000);
+    let mut index = crate::local::LocalIndex::default();
+    index.set_tracks(vec![track]);
+    app.update(Msg::Local(LocalMsg::ScanFinished {
+        index_path: None,
+        result: crate::local::LocalScanResult {
+            index,
+            summary: crate::local::LocalScanSummary {
+                indexed: 1,
+                added: 1,
+                ..crate::local::LocalScanSummary::default()
+            },
+            errors: Vec::new(),
+        },
+    }));
+
+    assert_eq!(app.local_rows_len(), 1);
+    assert_eq!(app.local_mode.ui.section, LocalSection::Tracks);
+
+    let cmds = double_click_target(&mut app, MouseTarget::LocalRow(0));
+
+    assert!(!cmds.is_empty());
+    assert_eq!(
+        app.queue.current().map(|s| s.title.as_str()),
+        Some("Indexed Title")
+    );
+    assert_eq!(
+        app.queue.current().map(|s| s.artist.as_str()),
+        Some("Indexed Artist")
+    );
+}
+
+#[test]
+fn local_deck_r_key_requests_incremental_rescan() {
+    let mut app = App::new(100);
+    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    app.local_mode.index.loading = false;
+    app.local_mode.index.loaded = true;
+    let track = crate::local::LocalTrack::untagged(PathBuf::from("/tmp/Indexed.flac"), 7, 8);
+    let mut index = crate::local::LocalIndex::default();
+    index.set_tracks(vec![track]);
+    app.local_mode.index.index = index;
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
+
+    assert!(app.local_mode.index.scanning);
+    let Some(Cmd::Local(LocalCmd::ScanRoots { previous, .. })) = cmds
+        .iter()
+        .find(|cmd| matches!(cmd, Cmd::Local(LocalCmd::ScanRoots { .. })))
+    else {
+        panic!("expected Local Deck rescan command");
+    };
+    assert_eq!(previous.tracks().len(), 1);
+}
+
+#[test]
 fn local_deck_switch_stops_playback_and_restores_cached_queues() {
     let mut app = app_playing(3, 1);
     app.playback.paused = false;

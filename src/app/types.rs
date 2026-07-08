@@ -108,6 +108,8 @@ pub enum Msg {
     },
     /// Download folder scan completed.
     DownloadsScanned(crate::library::DownloadScan),
+    /// Local Deck index load/scan result.
+    Local(LocalMsg),
     /// Synced lyrics for `video_id` (empty `lines` = none found).
     LyricsResult {
         video_id: String,
@@ -237,6 +239,8 @@ pub enum Cmd {
     Persist(PersistCmd),
     /// Refresh the local downloads list from this folder.
     ScanDownloads(PathBuf),
+    /// Load or rebuild the Local Deck index off the UI thread.
+    Local(LocalCmd),
     /// Fetch synced lyrics for a track.
     FetchLyrics {
         video_id: String,
@@ -355,6 +359,35 @@ pub enum PersistCmd {
     Playlists,
     /// Persist the active natural-language station profile to disk (after vibe-shaped streaming).
     StationProfile,
+}
+
+/// Blocking Local Deck work requested by the reducer.
+#[derive(Debug, Clone)]
+pub enum LocalCmd {
+    LoadIndex {
+        index_path: Option<PathBuf>,
+    },
+    ScanRoots {
+        roots: Vec<crate::local::LocalScanRoot>,
+        index_path: Option<PathBuf>,
+        previous: crate::local::LocalIndex,
+    },
+}
+
+/// Local Deck worker results.
+#[derive(Debug, Clone)]
+pub enum LocalMsg {
+    IndexLoaded {
+        index_path: Option<PathBuf>,
+        index: crate::local::LocalIndex,
+    },
+    ScanFinished {
+        index_path: Option<PathBuf>,
+        result: crate::local::LocalScanResult,
+    },
+    ScanFailed {
+        error: String,
+    },
 }
 
 /// A clickable terminal region's semantic target.

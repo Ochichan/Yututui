@@ -1305,6 +1305,7 @@ impl App {
                 let downloaded = self.library_ui.downloaded.clone();
                 return self.request_romanization_for_songs(&downloaded);
             }
+            Msg::Local(msg) => return self.apply_local_msg(msg),
             Msg::LyricsResult { video_id, lines } => {
                 self.lyrics.loading = false;
                 // Ignore stale results for a track we've already skipped past.

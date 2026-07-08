@@ -345,6 +345,7 @@ fn app_msg_policy(msg: &Msg) -> EventPolicy {
         | Msg::PlaylistTracks { .. }
         | Msg::PlaylistTracksError { .. }
         | Msg::DownloadsScanned(_)
+        | Msg::Local(_)
         | Msg::DownloadDone { .. }
         | Msg::DownloadError { .. }
         | Msg::DownloadDirError { .. }
@@ -1027,6 +1028,50 @@ impl RuntimeHandles {
                     emit(&tx, RuntimeEvent::App(Msg::DownloadsScanned(scan)));
                 });
             }
+            Cmd::Local(cmd) => match cmd {
+                crate::app::LocalCmd::LoadIndex { index_path } => {
+                    let tx = self.worker_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let index = index_path
+                            .as_deref()
+                            .map(crate::local::LocalIndex::load)
+                            .unwrap_or_default();
+                        emit(
+                            &tx,
+                            RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::IndexLoaded {
+                                index_path,
+                                index,
+                            })),
+                        );
+                    });
+                }
+                crate::app::LocalCmd::ScanRoots {
+                    roots,
+                    index_path,
+                    previous,
+                } => {
+                    let tx = self.worker_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let mut result = crate::local::scan_roots(&roots, &previous);
+                        if let Some(path) = index_path.as_deref()
+                            && let Err(error) = result.index.save(path)
+                        {
+                            result.errors.push(crate::local::ScanError {
+                                path: path.to_path_buf(),
+                                message: format!("could not save local index: {error}"),
+                            });
+                            result.summary.errors = result.errors.len();
+                        }
+                        emit(
+                            &tx,
+                            RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::ScanFinished {
+                                index_path,
+                                result,
+                            })),
+                        );
+                    });
+                }
+            },
             Cmd::Recorder(job) => {
                 // Copy/tag/delete are blocking IO — keep them off the loop task. A `Save`
                 // reports back; `Discard`/`WipeTemp` are fire-and-forget.

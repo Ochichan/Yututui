@@ -45,13 +45,21 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-    let count = app.library_ui.downloaded.len();
+    let indexed = app.local_mode.index.index.tracks().len();
+    let count = indexed.max(app.library_ui.downloaded.len());
     let count_label = if count == 1 {
         t!("1 track", "1곡").to_owned()
     } else if crate::i18n::is_korean() {
         format!("{count}곡")
     } else {
         format!("{count} tracks")
+    };
+    let scan_label = if app.local_mode.index.scanning {
+        t!("scan: running", "스캔: 진행 중")
+    } else if app.local_mode.index.loading {
+        t!("scan: loading", "스캔: 로드 중")
+    } else {
+        t!("scan: idle", "스캔: 대기")
     };
     let section = match app.local_mode.ui.section {
         LocalSection::Home => t!("Home", "홈"),
@@ -66,21 +74,67 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(section, app.theme.style(R::TextPrimary)),
         Span::styled("  -  ", app.theme.style(R::TextMuted)),
         Span::styled(count_label, app.theme.style(R::TextMuted)),
+        Span::styled("  -  ", app.theme.style(R::TextMuted)),
+        Span::styled(scan_label, app.theme.style(R::TextMuted)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let text = if app.library_ui.downloaded.is_empty() {
+    let text = if app.local_mode.index.loading {
         t!(
-            "No local downloads indexed yet - use the normal Downloads tab or scan later.",
-            "아직 로컬 다운로드가 없어요 - 일반 다운로드 탭을 쓰거나 나중에 스캔하세요."
+            "Loading the Local Deck index...",
+            "로컬 덱 인덱스를 불러오는 중..."
         )
+        .to_owned()
+    } else if app.local_mode.index.scanning {
+        t!(
+            "Scanning the download folder for local audio...",
+            "다운로드 폴더의 로컬 오디오를 스캔 중..."
+        )
+        .to_owned()
+    } else if let Some(summary) = &app.local_mode.index.last_summary {
+        if summary.errors > 0 {
+            format!(
+                "{}: {} {} (+{} / ~{} / -{} / {} {})",
+                t!("Last scan", "마지막 스캔"),
+                summary.indexed,
+                t!("tracks", "곡"),
+                summary.added,
+                summary.changed,
+                summary.removed,
+                summary.errors,
+                t!("errors", "오류")
+            )
+        } else {
+            format!(
+                "{}: {} {} (+{} / ~{} / -{})",
+                t!("Last scan", "마지막 스캔"),
+                summary.indexed,
+                t!("tracks", "곡"),
+                summary.added,
+                summary.changed,
+                summary.removed
+            )
+        }
+    } else if !app.local_mode.index.index.is_empty() {
+        t!(
+            "Indexed local audio. Press r to rescan or R for a full rebuild.",
+            "로컬 오디오 인덱스 사용 중. r로 재스캔, R로 전체 재빌드."
+        )
+        .to_owned()
+    } else if app.library_ui.downloaded.is_empty() {
+        t!(
+            "No local downloads indexed yet - press r to scan the download folder.",
+            "아직 로컬 다운로드가 없어요 - r로 다운로드 폴더를 스캔하세요."
+        )
+        .to_owned()
     } else {
         t!(
-            "Phase 1 shell: showing downloaded local audio. Full indexing arrives later.",
-            "1단계 셸: 다운로드된 로컬 오디오를 표시합니다. 전체 인덱싱은 이후에 추가됩니다."
+            "Showing downloaded audio until the Local Deck index is built.",
+            "로컬 덱 인덱스가 만들어질 때까지 다운로드 오디오를 표시합니다."
         )
+        .to_owned()
     };
     frame.render_widget(
         Paragraph::new(Line::from(text).style(app.theme.style(R::TextMuted))),
@@ -133,6 +187,95 @@ fn render_home(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_tracks(frame: &mut Frame, app: &App, area: Rect) {
+    if !app.local_mode.index.index.is_empty() {
+        render_indexed_tracks(frame, app, area);
+        return;
+    }
+    render_download_seed_tracks(frame, app, area);
+}
+
+fn render_indexed_tracks(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = app.local_mode.index.index.tracks();
+    let len = rows.len();
+    let cursor = app.local_mode.ui.selected.min(len - 1);
+    let visible = area.height as usize;
+    let start =
+        app.bridges
+            .library_scroll
+            .resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
+    let body_w = area.width.saturating_sub(1) as usize;
+
+    for (vis, (i, track)) in rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible)
+        .enumerate()
+    {
+        let y = area.y + vis as u16;
+        let selected = i == cursor;
+        let marker = if selected { "> " } else { "  " };
+        let song = track.to_song();
+        let title = app.display_title(&song);
+        let artist = app.display_artist(&song);
+        let text = if song.duration.is_empty() {
+            format!("{title} - {artist}")
+        } else {
+            format!("{title} - {artist}  ({})", song.duration)
+        };
+        let text = if selected {
+            crate::ui::anim::selected_marquee(
+                app,
+                ScrollSurface::Library,
+                i,
+                &text,
+                body_w.saturating_sub(3),
+            )
+        } else {
+            text
+        };
+        let body = crate::ui::text::truncate_owned_to_width(
+            format!("{marker}{text}"),
+            body_w.saturating_sub(1),
+        );
+        let style = if selected {
+            crate::ui::anim::selection_style(
+                app,
+                Style::default()
+                    .fg(app.theme.color(R::SelectionFg))
+                    .bg(app.theme.color(R::SelectionBg))
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            app.theme.style(R::TextPrimary)
+        };
+        let row = Rect {
+            x: area.x,
+            y,
+            width: area.width.saturating_sub(1),
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(Line::from(body).style(style)), row);
+        app.register_mouse_button(row, MouseTarget::LocalRow(i));
+    }
+
+    buttons::render_list_scrollbar(
+        frame,
+        app,
+        Rect {
+            x: area.right().saturating_sub(1),
+            y: area.y,
+            width: 1,
+            height: area.height,
+        },
+        ScrollSurface::Library,
+        len,
+        start,
+        visible,
+    );
+}
+
+fn render_download_seed_tracks(frame: &mut Frame, app: &App, area: Rect) {
     let rows = &app.library_ui.downloaded;
     if rows.is_empty() {
         render_home(frame, app, area);

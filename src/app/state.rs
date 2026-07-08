@@ -710,12 +710,25 @@ pub struct LocalUi {
     pub anchor: usize,
 }
 
+/// Loaded Local Deck index plus transient scan/load status.
+#[derive(Default)]
+pub struct LocalIndexRuntime {
+    pub index: crate::local::LocalIndex,
+    pub index_path: Option<PathBuf>,
+    pub loaded: bool,
+    pub loading: bool,
+    pub scanning: bool,
+    pub last_summary: Option<crate::local::LocalScanSummary>,
+    pub errors: Vec<crate::local::ScanError>,
+}
+
 /// Dedicated Local Deck state. The active `local_dedicated_mode` flag stays flat on
 /// [`App`], mirroring Radio mode, while this struct owns shell-local UI state and the
 /// pending enter/leave confirmation.
 #[derive(Default)]
 pub struct LocalMode {
     pub ui: LocalUi,
+    pub index: LocalIndexRuntime,
     pub(in crate::app) normal_mode_queue: Option<QueueSnapshot>,
     pub(in crate::app) local_mode_queue: Option<QueueSnapshot>,
     pub pending_confirm: Option<LocalModeConfirm>,
