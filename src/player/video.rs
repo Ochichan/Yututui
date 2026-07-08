@@ -1,10 +1,10 @@
 //! IPC client for the `v` video-overlay mpv window.
 //!
-//! Unlike the audio engine's actor ([`super::ipc::run_actor`]), this client observes a
-//! single property — `eof-reached` — because the overlay runs with `--keep-open=yes`:
-//! at a natural end mpv pauses on the last frame (no `end-file` fires) and flips
-//! `eof-reached` to `true`, leaving a live window we can `loadfile` the next video into.
-//! A user quit (`q` / window close) still arrives as `end-file reason=quit`.
+//! Unlike the audio engine's actor ([`super::ipc::run_actor`]), this client observes only
+//! the overlay properties YuTuTui needs: `eof-reached` for auto-continue under
+//! `--keep-open=yes`, and `pause` so overlay-local pause changes can update status without
+//! mutating the underlying audio engine. A user quit (window close) still arrives as
+//! `end-file reason=quit`; YuTuTui-owned keys arrive as `script-message` events.
 
 use tokio::io::BufReader;
 use tokio::sync::mpsc::{self, Sender};
@@ -33,6 +33,51 @@ pub enum VideoEvent {
     Next,
     /// The user pressed the previous-track key (`<`) inside the overlay window.
     Prev,
+    /// The user pressed the overlay pause key.
+    TogglePause,
+    /// mpv reported the overlay pause property.
+    Paused(bool),
+    /// The user requested the app-owned close path from inside the overlay.
+    Close,
+    /// The user pressed the overlay fullscreen key.
+    ToggleFullscreen,
+    /// The user pressed the overlay mute key.
+    ToggleMute,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoKeyAction {
+    TogglePause,
+    Next,
+    Prev,
+    Close,
+    ToggleFullscreen,
+    ToggleMute,
+}
+
+impl VideoKeyAction {
+    fn command(self) -> &'static str {
+        match self {
+            Self::TogglePause => "script-message ytt-video-toggle-pause",
+            Self::Next => "script-message ytt-video-next",
+            Self::Prev => "script-message ytt-video-prev",
+            Self::Close => "script-message ytt-video-close",
+            Self::ToggleFullscreen => "script-message ytt-video-toggle-fullscreen",
+            Self::ToggleMute => "script-message ytt-video-toggle-mute",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoKeyBinding {
+    pub key: String,
+    pub action: VideoKeyAction,
+}
+
+impl VideoKeyBinding {
+    pub fn new(key: String, action: VideoKeyAction) -> Self {
+        Self { key, action }
+    }
 }
 
 /// Commands the reducer sends to the overlay window.
@@ -40,13 +85,21 @@ pub enum VideoCmd {
     /// `loadfile <url> replace` into the live window, then unpause (keep-open leaves
     /// mpv paused on the ended frame, and `pause` is sticky across loads).
     Load(String),
+    CyclePause,
+    CycleFullscreen,
+    CycleMute,
 }
 
 /// Connect the IPC client for one overlay window and return its command sender
 /// immediately; the connection (with retry) and the read loop run on a spawned task.
 /// A connect failure is logged and the task ends silently — the overlay then degrades
 /// to the pre-IPC fire-and-forget behavior rather than falsely reporting a close.
-pub fn connect<F>(ipc_path: String, generation: u64, emit: F) -> Sender<VideoCmd>
+pub fn connect<F>(
+    ipc_path: String,
+    generation: u64,
+    bindings: Vec<VideoKeyBinding>,
+    emit: F,
+) -> Sender<VideoCmd>
 where
     F: Fn(u64, VideoEvent) + Send + Sync + 'static,
 {
@@ -60,7 +113,7 @@ where
                 return;
             }
         };
-        run(conn, rx, generation, &emit).await;
+        run(conn, rx, generation, bindings, &emit).await;
         // Give mpv a beat to finish exiting so the reducer's `try_wait` probe sees a
         // dead process (a live-window IPC hiccup then reads as "still open" instead).
         sleep(Duration::from_millis(300)).await;
@@ -75,6 +128,7 @@ async fn run<F>(
     conn: interprocess::local_socket::tokio::Stream,
     mut cmd_rx: mpsc::Receiver<VideoCmd>,
     generation: u64,
+    bindings: Vec<VideoKeyBinding>,
     emit: &F,
 ) where
     F: Fn(u64, VideoEvent),
@@ -82,21 +136,23 @@ async fn run<F>(
     if let Err(e) = write_json(&conn, &proto::cmd_observe(1, "eof-reached")).await {
         tracing::warn!(error = %e, "failed to observe eof-reached on the video overlay");
     }
-    // Route mpv's own playlist-next/prev keys to the app queue. The overlay always
-    // plays a single-entry playlist, so the default bindings are dead ends anyway; on
-    // an mpv too old for `keybind` the command errors harmlessly and the keys stay dead.
-    for (id, key, msg) in [
-        (2u64, ">", "script-message ytt-video-next"),
-        (3, "<", "script-message ytt-video-prev"),
-    ] {
-        if let Err(e) = write_json(&conn, &proto::cmd_keybind(key, msg, id)).await {
+    if let Err(e) = write_json(&conn, &proto::cmd_observe(2, "pause")).await {
+        tracing::warn!(error = %e, "failed to observe pause on the video overlay");
+    }
+    // Route configured YuTuTui overlay keys plus fixed mpv-compatibility aliases
+    // through the app. On an mpv too old for `keybind`, errors are harmless and the
+    // affected keys keep their mpv defaults.
+    let mut setup_request_id: u64 = 10;
+    for (key, msg) in keybind_specs(&bindings) {
+        if let Err(e) = write_json(&conn, &proto::cmd_keybind(key, msg, setup_request_id)).await {
             tracing::warn!(error = %e, key, "failed to bind a video overlay key");
         }
+        setup_request_id += 1;
     }
 
     let mut reader = BufReader::new(&conn);
     let mut line: Vec<u8> = Vec::new();
-    let mut request_id: u64 = 10;
+    let mut request_id: u64 = setup_request_id + 10;
     // One Eof per ended file: `eof-reached` re-arms the latch when it flips back to
     // false after a load, and the latch also swallows a duplicate `end-file reason=eof`.
     let mut eof_latched = false;
@@ -136,9 +192,40 @@ async fn run<F>(
                         }
                     }
                 }
+                Some(VideoCmd::CyclePause) => {
+                    request_id += 1;
+                    if let Err(e) = write_json(&conn, &proto::cmd_cycle("pause", request_id)).await {
+                        tracing::warn!(error = %e, "failed to toggle video overlay pause");
+                    }
+                }
+                Some(VideoCmd::CycleFullscreen) => {
+                    request_id += 1;
+                    if let Err(e) = write_json(&conn, &proto::cmd_cycle("fullscreen", request_id)).await {
+                        tracing::warn!(error = %e, "failed to toggle video overlay fullscreen");
+                    }
+                }
+                Some(VideoCmd::CycleMute) => {
+                    request_id += 1;
+                    if let Err(e) = write_json(&conn, &proto::cmd_cycle("mute", request_id)).await {
+                        tracing::warn!(error = %e, "failed to toggle video overlay mute");
+                    }
+                }
             },
         }
     }
+}
+
+fn keybind_specs(bindings: &[VideoKeyBinding]) -> Vec<(&str, &'static str)> {
+    let mut out: Vec<(&str, &'static str)> = bindings
+        .iter()
+        .map(|binding| (binding.key.as_str(), binding.action.command()))
+        .collect();
+    out.extend([
+        (">", VideoKeyAction::Next.command()),
+        ("<", VideoKeyAction::Prev.command()),
+        ("p", VideoKeyAction::TogglePause.command()),
+    ]);
+    out
 }
 
 /// Translate one mpv line into an overlay event. `eof_latched` dedups the natural-end
@@ -146,19 +233,26 @@ async fn run<F>(
 /// as `end-file reason=eof`.
 fn interpret(line: &str, eof_latched: &mut bool) -> Option<VideoEvent> {
     match proto::parse_line(line)? {
-        MpvIncoming::PropertyChange { name, value } if name == "eof-reached" => {
-            match value.as_bool() {
-                Some(true) if !*eof_latched => {
-                    *eof_latched = true;
-                    Some(VideoEvent::Eof)
-                }
-                Some(false) => {
-                    *eof_latched = false;
-                    None
-                }
-                _ => None,
+        MpvIncoming::PropertyChange {
+            id: Some(1),
+            name,
+            value,
+        } if name == "eof-reached" => match value.as_bool() {
+            Some(true) if !*eof_latched => {
+                *eof_latched = true;
+                Some(VideoEvent::Eof)
             }
-        }
+            Some(false) => {
+                *eof_latched = false;
+                None
+            }
+            _ => None,
+        },
+        MpvIncoming::PropertyChange {
+            id: Some(2),
+            name,
+            value,
+        } if name == "pause" => value.as_bool().map(VideoEvent::Paused),
         MpvIncoming::EndFile { reason, file_error } => match reason.as_str() {
             "eof" if !*eof_latched => {
                 *eof_latched = true;
@@ -173,6 +267,10 @@ fn interpret(line: &str, eof_latched: &mut bool) -> Option<VideoEvent> {
         MpvIncoming::ClientMessage { args } => match args.first().map(String::as_str) {
             Some("ytt-video-next") => Some(VideoEvent::Next),
             Some("ytt-video-prev") => Some(VideoEvent::Prev),
+            Some("ytt-video-toggle-pause") => Some(VideoEvent::TogglePause),
+            Some("ytt-video-close") => Some(VideoEvent::Close),
+            Some("ytt-video-toggle-fullscreen") => Some(VideoEvent::ToggleFullscreen),
+            Some("ytt-video-toggle-mute") => Some(VideoEvent::ToggleMute),
             _ => None,
         },
         _ => None,
@@ -252,6 +350,34 @@ mod tests {
             ),
             Some(VideoEvent::Prev)
         ));
+        assert!(matches!(
+            interp(
+                r#"{"event":"client-message","args":["ytt-video-toggle-pause"]}"#,
+                &mut latched
+            ),
+            Some(VideoEvent::TogglePause)
+        ));
+        assert!(matches!(
+            interp(
+                r#"{"event":"client-message","args":["ytt-video-close"]}"#,
+                &mut latched
+            ),
+            Some(VideoEvent::Close)
+        ));
+        assert!(matches!(
+            interp(
+                r#"{"event":"client-message","args":["ytt-video-toggle-fullscreen"]}"#,
+                &mut latched
+            ),
+            Some(VideoEvent::ToggleFullscreen)
+        ));
+        assert!(matches!(
+            interp(
+                r#"{"event":"client-message","args":["ytt-video-toggle-mute"]}"#,
+                &mut latched
+            ),
+            Some(VideoEvent::ToggleMute)
+        ));
         // Foreign script messages (user scripts run in the overlay too) are ignored.
         assert!(
             interp(
@@ -264,10 +390,45 @@ mod tests {
     }
 
     #[test]
+    fn pause_property_changes_map_to_pause_events() {
+        let mut latched = false;
+        assert!(matches!(
+            interp(
+                r#"{"event":"property-change","id":2,"name":"pause","data":true}"#,
+                &mut latched
+            ),
+            Some(VideoEvent::Paused(true))
+        ));
+        assert!(matches!(
+            interp(
+                r#"{"event":"property-change","id":2,"name":"pause","data":false}"#,
+                &mut latched
+            ),
+            Some(VideoEvent::Paused(false))
+        ));
+    }
+
+    #[test]
+    fn keybind_specs_include_remapped_keys_and_fixed_aliases() {
+        let bindings = vec![
+            VideoKeyBinding::new("SPACE".to_owned(), VideoKeyAction::TogglePause),
+            VideoKeyBinding::new(".".to_owned(), VideoKeyAction::Next),
+            VideoKeyBinding::new(",".to_owned(), VideoKeyAction::Prev),
+        ];
+        let specs = keybind_specs(&bindings);
+        assert!(specs.contains(&("SPACE", "script-message ytt-video-toggle-pause")));
+        assert!(specs.contains(&(".", "script-message ytt-video-next")));
+        assert!(specs.contains(&(",", "script-message ytt-video-prev")));
+        assert!(specs.contains(&(">", "script-message ytt-video-next")));
+        assert!(specs.contains(&("<", "script-message ytt-video-prev")));
+        assert!(specs.contains(&("p", "script-message ytt-video-toggle-pause")));
+    }
+
+    #[test]
     fn unrelated_lines_are_ignored() {
         let mut latched = false;
         for line in [
-            r#"{"event":"property-change","id":3,"name":"pause","data":true}"#,
+            r#"{"event":"property-change","id":3,"name":"mute","data":true}"#,
             r#"{"error":"success","request_id":11}"#,
             "",
             "garbage",

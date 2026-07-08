@@ -211,9 +211,20 @@ pub enum Cmd {
     VideoConnect {
         ipc_path: String,
         generation: u64,
+        bindings: Vec<crate::player::video::VideoKeyBinding>,
     },
     /// `loadfile <url> replace` into the live overlay window (auto-continue).
     VideoLoad(String),
+    /// Toggle the external video overlay's own pause state.
+    VideoTogglePause,
+    /// Toggle the external video overlay's fullscreen state.
+    VideoToggleFullscreen,
+    /// Toggle the external video overlay's mute state.
+    VideoToggleMute,
+    /// Mark a newer release tag as accepted by the reducer and queued for notification.
+    UpdateSeen {
+        tag: String,
+    },
     Search {
         request_id: u64,
         query: String,

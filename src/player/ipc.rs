@@ -218,7 +218,7 @@ fn dispatch_incoming(line: &str, emit: &EventSink, state: &mut DispatchState) {
         return;
     };
     match incoming {
-        MpvIncoming::PropertyChange { name, value } => match name.as_str() {
+        MpvIncoming::PropertyChange { name, value, .. } => match name.as_str() {
             "time-pos" => {
                 if let Some(t) = value.as_f64() {
                     let t = crate::playback_policy::norm_position(t);

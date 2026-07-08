@@ -115,7 +115,7 @@ Actual cover images drawn right in the terminal (Kitty/Sixel/iTerm2, auto-detect
 
 ### The music video, floating over your terminal
 
-**`v`** opens it in a small mpv window; *Auto-continue videos* hands each video off to the next track's.
+**`v`** opens it in a small mpv window; *Auto-continue videos* hands each video off to the next track's. When that mpv window has focus, `Space`, `.`, `,`, `q`, `f`, and `m` control play/pause, next, previous, close, fullscreen, and mute. Those mpv overlay bindings show up in Help/Hotkeys too; fixed compatibility aliases `<`, `>`, and `p` still work.
 
 > 🖼️ *GIF coming soon.*
 <!-- 📸 TO FILL: add docs/media/video.gif, delete the "coming soon" line above, then uncomment:
@@ -189,7 +189,7 @@ Press **`?`** in-app for the complete live cheat sheet — it reflects *your* bi
 | Key | Does |
 | --- | --- |
 | `Space` | Play / pause |
-| `,` / `.` | Previous / next |
+| `,` / `.` | Previous / next (also inside the mpv video window) |
 | `←` / `→` · `↑` / `↓` | Seek · volume |
 | `s` | Search (`Tab` picks the catalog) |
 | `l` / `c` | Library / queue |
@@ -325,6 +325,7 @@ The app's own yt-dlp calls ignore your yt-dlp config file by default, so options
 | No album art | Off by default: Settings → General → **Album art**, then restart. |
 | Album art or zoom behaves differently by terminal | Run `ytt doctor terminal --json` and compare with the [terminal matrix](docs/terminal-compatibility.md). |
 | No Control Center / SMTC / MPRIS entry | Settings → Playback → **OS media controls**; it publishes once something has played. |
+| No desktop update notification | Update notices still appear in About/status; desktop notifications are best-effort and depend on terminal, tmux, and OS notification support. |
 | Flyout shows "Unknown app" / two entries | Run `ytt register-media-identity` once (two entries = mpv's own media session; auto-disabled on mpv ≥ 0.39). |
 | DJ Gem won't respond | Add a free Gemini key in Settings → DJ Gem and switch **Enable DJ Gem** on. |
 | Spotify 403 / "not allowlisted" | Add your own account under *User Management* in your Spotify app dashboard, and check the Client ID for typos. |

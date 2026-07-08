@@ -38,7 +38,7 @@ function pushKeymap(t: MockTransport): void {
 const settle = () => new Promise((r) => setTimeout(r, 60));
 
 describe('KeymapStore model + lookup', () => {
-  it('mirrors the pushed model and groups all 11 contexts', () => {
+  it('mirrors the pushed model and groups all 13 contexts', () => {
     const t = new MockTransport();
     const store = new KeymapStore(new Client(t));
     expect(store.model).toBeNull();
@@ -100,11 +100,11 @@ describe('KeymapStore against the demo core', () => {
     store.unbind('Player', 'next');
     await settle();
     expect(store.chordFor(next)).toBe('');
-    expect(store.match('Player', 'n')).toBeNull();
+    expect(store.match('Player', '.')).toBeNull();
 
     store.resetAll();
     await settle();
-    expect(store.chordFor(next)).toBe('n');
+    expect(store.chordFor(next)).toBe('.');
   });
 
   it('capture rebinds the target and clears itself', async () => {
