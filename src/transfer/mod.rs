@@ -13,6 +13,8 @@ mod download_cli;
 pub mod download_plan;
 pub mod json;
 pub mod matching;
+mod organize_cli;
+pub mod organize_plan;
 mod review_cli;
 pub mod session;
 

@@ -38,6 +38,8 @@ Commands:
   review <JOB-ID> [filter]         Show or update import review decisions
   download <JOB-ID> --accepted --dry-run
                                    Preview session-aware download decisions
+  organize <JOB-ID> --root DIR --dry-run [--template TEMPLATE]
+                                   Preview Local Deck library move paths
   import <SOURCE> [flags]          Spotify/file → YouTube Music
       SOURCE: a Spotify playlist URL/URI/id, the word `liked`, or a .json/.csv file
       --to-playlist NAME           Append to (or create) this YTM account playlist
@@ -95,6 +97,10 @@ pub fn run(args: &[String]) -> i32 {
         Some("download") => {
             let rest: Vec<&str> = it.collect();
             super::download_cli::run(&rest)
+        }
+        Some("organize") => {
+            let rest: Vec<&str> = it.collect();
+            super::organize_cli::run(&rest)
         }
         Some("import") => {
             let rest: Vec<&str> = it.collect();
