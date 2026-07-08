@@ -1194,6 +1194,10 @@ fn radio_station(id: &str) -> Song {
     )
 }
 
+fn local_song(stem: &str) -> Song {
+    Song::local_file(PathBuf::from(format!("/tmp/{stem}.m4a")))
+}
+
 /// An app with an `n`-track queue, playing track `start`. Builds the queue directly so
 /// it stays independent of how individual play paths populate the queue (e.g. search-play
 /// only queues the one picked track).
@@ -2574,6 +2578,103 @@ fn local_deck_renders_download_seed_rows_and_activates_them() {
     let cmds = double_click_target(&mut app, MouseTarget::LocalRow(0));
     assert!(!cmds.is_empty());
     assert_eq!(app.queue.current().map(|s| s.title.as_str()), Some("Alpha"));
+}
+
+#[test]
+fn local_deck_switch_stops_playback_and_restores_cached_queues() {
+    let mut app = app_playing(3, 1);
+    app.playback.paused = false;
+    app.streaming.pending = true;
+    app.streaming.pending_rerank = Some(PendingRerank {
+        seed_video_id: "id1".to_owned(),
+        shortlist: Vec::new(),
+        local_pick: Vec::new(),
+        cid_map: Vec::new(),
+        mode: crate::streaming::config::StreamingMode::Balanced,
+        cache_key: 42,
+    });
+
+    let enter = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+
+    assert!(app.local_dedicated_mode);
+    assert_eq!(app.mode, Mode::Library);
+    assert!(has_stop(&enter), "entering Local Deck should stop mpv");
+    assert!(app.queue.is_empty());
+    assert!(load_url(&enter).is_none());
+    assert!(!app.streaming.pending);
+    assert!(app.streaming.pending_rerank.is_none());
+
+    app.queue
+        .set(vec![local_song("local_alpha"), local_song("local_beta")], 1);
+    app.load_song(app.queue.current().cloned());
+    app.playback.paused = false;
+    let exit = app.apply_local_mode_confirm(LocalModeConfirm::Exit);
+
+    assert!(!app.local_dedicated_mode);
+    assert!(has_stop(&exit), "leaving Local Deck should stop mpv");
+    assert_eq!(app.queue.len(), 3);
+    assert_eq!(current(&app), "id1");
+    assert!(
+        load_url(&exit)
+            .expect("restored normal load")
+            .contains("id1")
+    );
+    assert!(!app.playback.paused);
+
+    app.queue.set(songs(1), 0);
+    app.load_song(app.queue.current().cloned());
+    let reenter = app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+
+    assert!(app.local_dedicated_mode);
+    assert!(has_stop(&reenter));
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(
+        app.queue.current().map(|s| s.title.as_str()),
+        Some("local_beta")
+    );
+    assert!(
+        load_url(&reenter)
+            .expect("restored local load")
+            .contains("/tmp/local_beta.m4a")
+    );
+}
+
+#[test]
+fn local_deck_session_snapshot_and_restore_use_local_queue() {
+    let mut app = app_playing(2, 1);
+    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    app.queue
+        .set(vec![local_song("local_alpha"), local_song("local_beta")], 1);
+
+    let cache = app.session_cache_snapshot();
+
+    assert_eq!(cache.last_mode, crate::session::LastMode::Local);
+    assert_eq!(cache.normal_queue.as_ref().map(|s| s.songs.len()), Some(2));
+    assert_eq!(cache.local_queue.as_ref().map(|s| s.cursor), Some(1));
+
+    let mut restored = App::new(100);
+    restored.restore_last_session_from_cache(&cache);
+
+    assert!(restored.local_dedicated_mode);
+    assert_eq!(restored.mode, Mode::Library);
+    assert_eq!(restored.queue.len(), 2);
+    assert_eq!(
+        restored.queue.current().map(|s| s.title.as_str()),
+        Some("local_beta")
+    );
+    assert!(restored.playback.paused);
+}
+
+#[test]
+fn restoring_empty_local_session_does_not_fall_back_to_normal_history() {
+    let mut app = App::new(100);
+    app.library.record_play(&songs(1)[0]);
+    let cache = crate::session::SessionCache::from_last_mode(crate::session::LastMode::Local);
+
+    app.restore_last_session_from_cache(&cache);
+
+    assert!(app.local_dedicated_mode);
+    assert!(app.queue.is_empty());
 }
 
 #[test]

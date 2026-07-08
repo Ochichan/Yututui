@@ -757,13 +757,30 @@ impl App {
     /// Build the persisted session cache from the active queue plus the inactive mode's stashed
     /// queue. This is the handoff used by both the next TUI launch and the headless daemon.
     pub fn session_cache_snapshot(&self) -> crate::session::SessionCache {
-        let mut cache = crate::session::SessionCache::from_radio_mode(self.radio_dedicated_mode);
-        if self.radio_dedicated_mode {
-            cache.radio_queue = Some(self.queue.snapshot());
-            cache.normal_queue = self.radio_mode.normal_mode_queue.clone();
+        let last_mode = if self.radio_dedicated_mode {
+            crate::session::LastMode::Radio
+        } else if self.local_dedicated_mode {
+            crate::session::LastMode::Local
         } else {
-            cache.normal_queue = Some(self.queue.snapshot());
-            cache.radio_queue = self.radio_mode.radio_mode_queue.clone();
+            crate::session::LastMode::Normal
+        };
+        let mut cache = crate::session::SessionCache::from_last_mode(last_mode);
+        match last_mode {
+            crate::session::LastMode::Normal => {
+                cache.normal_queue = Some(self.queue.snapshot());
+                cache.radio_queue = self.radio_mode.radio_mode_queue.clone();
+                cache.local_queue = self.local_mode.local_mode_queue.clone();
+            }
+            crate::session::LastMode::Radio => {
+                cache.radio_queue = Some(self.queue.snapshot());
+                cache.normal_queue = self.radio_mode.normal_mode_queue.clone();
+                cache.local_queue = self.local_mode.local_mode_queue.clone();
+            }
+            crate::session::LastMode::Local => {
+                cache.local_queue = Some(self.queue.snapshot());
+                cache.normal_queue = self.local_mode.normal_mode_queue.clone();
+                cache.radio_queue = self.radio_mode.radio_mode_queue.clone();
+            }
         }
         cache
     }
@@ -773,14 +790,22 @@ impl App {
     pub fn restore_last_session_from_cache(&mut self, cache: &crate::session::SessionCache) {
         self.radio_mode.normal_mode_queue = cache.normal_queue.clone();
         self.radio_mode.radio_mode_queue = cache.radio_queue.clone();
+        self.local_mode.normal_mode_queue = cache.normal_queue.clone();
+        self.local_mode.local_mode_queue = cache.local_queue.clone();
 
         if cache.was_radio_mode() {
             self.activate_radio_dedicated_mode_ui();
+        } else if cache.was_local_mode() {
+            self.activate_local_dedicated_mode_ui();
         }
 
         if let Some(snapshot) = cache.active_queue().cloned() {
             self.queue.restore_snapshot(snapshot);
             self.seed_restored_playback_state();
+            return;
+        }
+
+        if cache.was_local_mode() {
             return;
         }
 

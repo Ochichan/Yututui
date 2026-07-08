@@ -716,6 +716,8 @@ pub struct LocalUi {
 #[derive(Default)]
 pub struct LocalMode {
     pub ui: LocalUi,
+    pub(in crate::app) normal_mode_queue: Option<QueueSnapshot>,
+    pub(in crate::app) local_mode_queue: Option<QueueSnapshot>,
     pub pending_confirm: Option<LocalModeConfirm>,
 }
 

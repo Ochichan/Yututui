@@ -44,6 +44,17 @@ impl App {
         if self.local_dedicated_mode || self.radio_dedicated_mode {
             return Vec::new();
         }
+        self.local_mode.normal_mode_queue = Some(self.queue.snapshot());
+        self.activate_local_dedicated_mode_ui();
+        let restore = self.local_mode.local_mode_queue.take();
+        let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!("Local Player mode enabled", "로컬 플레이어 모드 켜짐").to_owned();
+        self.dirty = true;
+        cmds
+    }
+
+    pub(in crate::app) fn activate_local_dedicated_mode_ui(&mut self) {
         self.local_dedicated_mode = true;
         self.mode = Mode::Library;
         self.local_mode.ui.section = if self.library_ui.downloaded.is_empty() {
@@ -60,23 +71,23 @@ impl App {
         self.bridges.library_scroll.reset();
         self.clear_library_filter();
         self.reset_playlist_ui_state();
-        self.status.kind = StatusKind::Info;
-        self.status.text = t!("Local Player mode enabled", "로컬 플레이어 모드 켜짐").to_owned();
         self.dirty = true;
-        Vec::new()
     }
 
     fn exit_local_dedicated_mode(&mut self) -> Vec<Cmd> {
         if !self.local_dedicated_mode {
             return Vec::new();
         }
+        self.local_mode.local_mode_queue = Some(self.queue.snapshot());
         self.local_dedicated_mode = false;
         self.local_mode.pending_confirm = None;
         self.bridges.library_scroll.reset();
+        let restore = self.local_mode.normal_mode_queue.take();
+        let cmds = self.stop_clear_and_restore_queue_for_mode_switch(restore);
         self.status.kind = StatusKind::Info;
         self.status.text = t!("Local Player mode disabled", "로컬 플레이어 모드 꺼짐").to_owned();
         self.dirty = true;
-        Vec::new()
+        cmds
     }
 
     pub fn local_rows_len(&self) -> usize {
