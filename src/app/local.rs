@@ -315,16 +315,30 @@ impl App {
 
     pub(in crate::app) fn apply_local_msg(&mut self, msg: LocalMsg) -> Vec<Cmd> {
         match msg {
-            LocalMsg::IndexLoaded { index_path, index } => {
+            LocalMsg::IndexLoaded {
+                index_path,
+                index,
+                warnings,
+            } => {
                 self.local_mode.index.index_path = index_path;
                 self.local_mode.index.index = index;
                 self.local_mode.index.loaded = true;
                 self.local_mode.index.loading = false;
                 self.local_mode.index.scanning = false;
                 self.local_mode.index.progress = None;
+                self.local_mode.index.load_errors = warnings;
                 self.local_mode.index.errors.clear();
                 self.clamp_local_after_index_change();
                 self.dirty = true;
+                if !self.local_mode.index.load_errors.is_empty() {
+                    self.status.kind = StatusKind::Error;
+                    self.status.text = format!(
+                        "{}: {} {}",
+                        t!("Local index recovered", "로컬 인덱스 복구됨"),
+                        self.local_mode.index.load_errors.len(),
+                        t!("issues", "문제")
+                    );
+                }
                 if self.local_dedicated_mode && self.local_mode.index.index.is_empty() {
                     return self.request_local_scan(false);
                 }
@@ -714,8 +728,9 @@ impl App {
     fn local_scan_error_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
         self.local_mode
             .index
-            .errors
+            .load_errors
             .iter()
+            .chain(self.local_mode.index.errors.iter())
             .enumerate()
             .filter(|(_, error)| {
                 let path = error.path.to_string_lossy();
@@ -726,6 +741,19 @@ impl App {
             })
             .map(|(index, _)| crate::local::LocalRowId::ScanError(index))
             .collect()
+    }
+
+    fn local_scan_issue(&self, index: usize) -> Option<&crate::local::ScanError> {
+        self.local_mode
+            .index
+            .load_errors
+            .iter()
+            .chain(self.local_mode.index.errors.iter())
+            .nth(index)
+    }
+
+    pub(crate) fn local_scan_issue_count(&self) -> usize {
+        self.local_mode.index.load_errors.len() + self.local_mode.index.errors.len()
     }
 
     fn activate_local_row(&mut self, row: crate::local::LocalRowId) -> Vec<Cmd> {
@@ -945,10 +973,7 @@ impl App {
                 format!("{}  ({count} {})", smart.label(), t!("tracks", "곡"))
             }
             crate::local::LocalRowId::ScanError(index) => self
-                .local_mode
-                .index
-                .errors
-                .get(*index)
+                .local_scan_issue(*index)
                 .map(|error| format!("{} - {}", error.path.display(), error.message))
                 .unwrap_or_else(|| t!("Missing scan error", "없는 스캔 오류").to_owned()),
         }
@@ -1075,7 +1100,7 @@ impl App {
                 );
             }
             crate::local::LocalRowId::ScanError(index) => {
-                if let Some(error) = self.local_mode.index.errors.get(*index) {
+                if let Some(error) = self.local_scan_issue(*index) {
                     push_detail_line(lines, t!("Path", "경로"), error.path.display().to_string());
                     push_detail_line(lines, t!("Error", "오류"), error.message.clone());
                 }

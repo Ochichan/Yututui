@@ -380,6 +380,7 @@ pub enum LocalMsg {
     IndexLoaded {
         index_path: Option<PathBuf>,
         index: crate::local::LocalIndex,
+        warnings: Vec<crate::local::ScanError>,
     },
     ScanFinished {
         index_path: Option<PathBuf>,

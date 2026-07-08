@@ -1036,15 +1036,24 @@ impl RuntimeHandles {
                 crate::app::LocalCmd::LoadIndex { index_path } => {
                     let tx = self.worker_tx.clone();
                     tokio::task::spawn_blocking(move || {
-                        let index = index_path
+                        let load = index_path
                             .as_deref()
-                            .map(crate::local::LocalIndex::load)
+                            .map(crate::local::LocalIndex::load_with_diagnostics)
                             .unwrap_or_default();
+                        let warnings = load
+                            .warnings
+                            .into_iter()
+                            .map(|warning| crate::local::ScanError {
+                                path: warning.path,
+                                message: warning.message,
+                            })
+                            .collect();
                         emit(
                             &tx,
                             RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::IndexLoaded {
                                 index_path,
-                                index,
+                                index: load.index,
+                                warnings,
                             })),
                         );
                     });

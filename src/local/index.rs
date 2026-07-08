@@ -6,12 +6,26 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::model::{FileFingerprint, LocalAlbum, LocalArtist, LocalTrack, LocalTrackId};
 use crate::util::safe_fs;
 
 const INDEX_SCHEMA_VERSION: u32 = 1;
 const INDEX_MAX_BYTES: u64 = 128 * 1024 * 1024;
+
+#[derive(Debug, Clone, Default)]
+pub struct LocalIndexLoad {
+    pub index: LocalIndex,
+    pub warnings: Vec<LocalIndexLoadWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalIndexLoadWarning {
+    pub path: PathBuf,
+    pub message: String,
+    pub backup_path: Option<PathBuf>,
+}
 
 /// Read-only Local Deck catalog built from on-disk audio files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,9 +48,93 @@ impl Default for LocalIndex {
 
 impl LocalIndex {
     pub fn load(path: &Path) -> Self {
-        let mut index = safe_fs::load_json_or_default_limited::<LocalIndex>(path, INDEX_MAX_BYTES);
+        Self::load_with_diagnostics(path).index
+    }
+
+    pub fn load_with_diagnostics(path: &Path) -> LocalIndexLoad {
+        Self::load_with_diagnostics_limited(path, INDEX_MAX_BYTES)
+    }
+
+    fn load_with_diagnostics_limited(path: &Path, max_bytes: u64) -> LocalIndexLoad {
+        let bytes = match safe_fs::read_no_symlink_limited(path, max_bytes) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return LocalIndexLoad::default();
+            }
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                let backup_path = safe_fs::backup_too_large(path).ok();
+                return LocalIndexLoad {
+                    index: LocalIndex::default(),
+                    warnings: vec![load_warning(
+                        path,
+                        format!("local index was too large and was rebuilt: {error}"),
+                        backup_path,
+                    )],
+                };
+            }
+            Err(error) => {
+                return LocalIndexLoad {
+                    index: LocalIndex::default(),
+                    warnings: vec![load_warning(
+                        path,
+                        format!("local index could not be read and was rebuilt: {error}"),
+                        None,
+                    )],
+                };
+            }
+        };
+
+        let text = match String::from_utf8(bytes.clone()) {
+            Ok(text) => text,
+            Err(error) => {
+                let backup_path = write_bad_copy(path, &bytes).ok();
+                return LocalIndexLoad {
+                    index: LocalIndex::default(),
+                    warnings: vec![load_warning(
+                        path,
+                        format!("local index was not valid UTF-8 and was rebuilt: {error}"),
+                        backup_path,
+                    )],
+                };
+            }
+        };
+
+        let value = match serde_json::from_str::<Value>(&text) {
+            Ok(value) => value,
+            Err(error) => {
+                let backup_path = write_bad_copy(path, &bytes).ok();
+                return LocalIndexLoad {
+                    index: LocalIndex::default(),
+                    warnings: vec![load_warning(
+                        path,
+                        format!("local index JSON was corrupt and was rebuilt: {error}"),
+                        backup_path,
+                    )],
+                };
+            }
+        };
+
+        if let Some(schema_version) = unsupported_schema_version(&value) {
+            let backup_path = write_bad_copy(path, &bytes).ok();
+            return LocalIndexLoad {
+                index: LocalIndex::default(),
+                warnings: vec![load_warning(
+                    path,
+                    format!(
+                        "local index schema version {schema_version} is newer than supported version {INDEX_SCHEMA_VERSION}; rebuilt empty index"
+                    ),
+                    backup_path,
+                )],
+            };
+        }
+
+        let mut index = serde_json::from_value::<LocalIndex>(value.clone())
+            .unwrap_or_else(|_| safe_fs::recover_lenient::<LocalIndex>(value));
         index.normalize();
-        index
+        LocalIndexLoad {
+            index,
+            warnings: Vec::new(),
+        }
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
@@ -110,6 +208,49 @@ impl LocalIndex {
     }
 }
 
+fn unsupported_schema_version(value: &Value) -> Option<u64> {
+    value
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .filter(|version| *version > u64::from(INDEX_SCHEMA_VERSION))
+}
+
+fn load_warning(
+    path: &Path,
+    mut message: String,
+    backup_path: Option<PathBuf>,
+) -> LocalIndexLoadWarning {
+    if let Some(backup_path) = &backup_path {
+        message.push_str(&format!("; preserved copy: {}", backup_path.display()));
+    }
+    LocalIndexLoadWarning {
+        path: path.to_path_buf(),
+        message,
+        backup_path,
+    }
+}
+
+fn write_bad_copy(path: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("local-index.json");
+    for n in 0..1000 {
+        let backup_name = if n == 0 {
+            format!("{file_name}.bad")
+        } else {
+            format!("{file_name}.{n}.bad")
+        };
+        let backup_path = path.with_file_name(backup_name);
+        if backup_path.exists() {
+            continue;
+        }
+        safe_fs::write_private_atomic(&backup_path, bytes)?;
+        return Ok(backup_path);
+    }
+    Err(io::Error::other("too many local index backup copies"))
+}
+
 pub fn default_index_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "ytm-tui")
         .map(|dirs| dirs.data_dir().join("local-index.json"))
@@ -166,6 +307,72 @@ mod tests {
         let loaded = LocalIndex::load(&path);
 
         assert!(loaded.tracks.is_empty());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn corrupt_index_load_preserves_bad_copy() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("local-index.json");
+        std::fs::write(&path, b"{not json").unwrap();
+
+        let loaded = LocalIndex::load_with_diagnostics(&path);
+
+        assert!(loaded.index.tracks.is_empty());
+        assert_eq!(loaded.warnings.len(), 1);
+        let backup = loaded.warnings[0]
+            .backup_path
+            .as_ref()
+            .expect("corrupt index should preserve a bad copy");
+        assert_eq!(std::fs::read(backup).unwrap(), b"{not json");
+        assert!(backup.ends_with("local-index.json.bad"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unsupported_schema_version_loads_empty_and_preserves_bad_copy() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("local-index.json");
+        let contents = br#"{"schema_version":999,"tracks":[],"updated_at":1}"#;
+        std::fs::write(&path, contents).unwrap();
+
+        let loaded = LocalIndex::load_with_diagnostics(&path);
+
+        assert!(loaded.index.tracks.is_empty());
+        assert_eq!(loaded.warnings.len(), 1);
+        assert!(loaded.warnings[0].message.contains("newer than supported"));
+        let backup = loaded.warnings[0]
+            .backup_path
+            .as_ref()
+            .expect("unsupported index should preserve a bad copy");
+        assert_eq!(std::fs::read(backup).unwrap(), contents);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn oversized_index_loads_empty_and_moves_original_aside() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("local-index.json");
+        let contents = br#"{"schema_version":1,"tracks":[],"updated_at":1}"#;
+        std::fs::write(&path, contents).unwrap();
+
+        let loaded = LocalIndex::load_with_diagnostics_limited(&path, 8);
+
+        assert!(loaded.index.tracks.is_empty());
+        assert_eq!(loaded.warnings.len(), 1);
+        assert!(loaded.warnings[0].message.contains("too large"));
+        let backup = loaded.warnings[0]
+            .backup_path
+            .as_ref()
+            .expect("oversized index should be moved aside");
+        assert_eq!(std::fs::read(backup).unwrap(), contents);
+        assert!(!path.exists());
 
         let _ = std::fs::remove_dir_all(dir);
     }

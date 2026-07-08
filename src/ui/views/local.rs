@@ -109,7 +109,8 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             .to_owned()
         })
     } else if let Some(summary) = &app.local_mode.index.last_summary {
-        if summary.errors > 0 {
+        let issue_count = app.local_scan_issue_count();
+        if issue_count > 0 {
             format!(
                 "{}: {} {} (+{} / ~{} / -{} / {} {})",
                 t!("Last scan", "마지막 스캔"),
@@ -118,7 +119,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
                 summary.added,
                 summary.changed,
                 summary.removed,
-                summary.errors,
+                issue_count,
                 t!("errors", "오류")
             )
         } else {

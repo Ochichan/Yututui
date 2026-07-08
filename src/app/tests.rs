@@ -2684,6 +2684,7 @@ fn local_deck_enter_loads_index_then_scans_download_root_when_empty() {
     let scan = app.update(Msg::Local(LocalMsg::IndexLoaded {
         index_path: None,
         index: crate::local::LocalIndex::default(),
+        warnings: Vec::new(),
     }));
 
     assert!(app.local_mode.index.scanning);
@@ -3047,6 +3048,10 @@ fn local_deck_folder_smart_and_scan_error_sections_render_rows() {
         10,
     );
     let mut app = app_with_local_deck_index(vec![untagged, tagged]);
+    app.local_mode.index.load_errors = vec![crate::local::ScanError {
+        path: PathBuf::from("/tmp/local-index.json"),
+        message: "local index JSON was corrupt and was rebuilt".to_owned(),
+    }];
     app.local_mode.index.errors = vec![crate::local::ScanError {
         path: PathBuf::from("/tmp/music/bad.mp3"),
         message: "bad tags".to_owned(),
@@ -3073,7 +3078,9 @@ fn local_deck_folder_smart_and_scan_error_sections_render_rows() {
     app.update(Msg::Key(key(KeyCode::Esc)));
     app.update(Msg::Key(key(KeyCode::Char('8'))));
     assert_eq!(app.local_mode.ui.section, LocalSection::ScanErrors);
+    assert_eq!(app.local_rows_len(), 2);
     let buf = render_app_buffer(&app, 100, 24);
+    assert!(buffer_contains(&buf, "index JSON"));
     assert!(buffer_contains(&buf, "bad tags"));
 }
 

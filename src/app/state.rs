@@ -728,6 +728,7 @@ pub struct LocalIndexRuntime {
     pub scanning: bool,
     pub progress: Option<crate::local::LocalScanProgress>,
     pub last_summary: Option<crate::local::LocalScanSummary>,
+    pub load_errors: Vec<crate::local::ScanError>,
     pub errors: Vec<crate::local::ScanError>,
 }
 

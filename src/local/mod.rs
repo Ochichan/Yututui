@@ -10,7 +10,7 @@ pub mod model;
 pub mod query;
 pub mod scan;
 
-pub use index::{LocalIndex, default_index_path};
+pub use index::{LocalIndex, LocalIndexLoad, LocalIndexLoadWarning, default_index_path};
 pub use model::{
     AudioFormat, FileFingerprint, LocalAlbum, LocalAlbumId, LocalArtist, LocalArtistId, LocalRowId,
     LocalSmartList, LocalTrack, LocalTrackId,
