@@ -80,20 +80,20 @@ impl TrackInput {
         Self {
             title: s.title.clone(),
             artists: vec![s.artist.clone()],
-            album_artists: Vec::new(),
+            album_artists: s.album_artist.iter().cloned().collect(),
             album: s.album.clone(),
             album_id: None,
             album_uri: None,
             album_release_date: None,
-            disc_number: None,
-            track_number: None,
+            disc_number: s.disc_number,
+            track_number: s.track_number,
             duration_secs: s
                 .duration_secs
                 .or_else(|| crate::streaming::candidate::parse_duration_secs(&s.duration)),
-            isrc: None,
+            isrc: s.isrc.clone(),
             explicit: None,
-            source_url: None,
-            source_key: s.video_id.clone(),
+            source_url: s.origin_url.clone(),
+            source_key: s.origin_key.clone().unwrap_or_else(|| s.video_id.clone()),
             known_video_id: s.youtube_id().map(str::to_owned),
         }
     }
@@ -836,6 +836,42 @@ mod tests {
             Some("https://open.spotify.com/track/sp-track")
         );
         assert_eq!(input.source_key, "spotify:track:sp-track");
+    }
+
+    #[test]
+    fn song_input_preserves_catalog_metadata() {
+        let song = Song::from_search(
+            "dQw4w9WgXcQ",
+            "Song",
+            "Artist",
+            "3:03",
+            Some("Album".to_owned()),
+        )
+        .with_catalog_metadata(
+            Some("Album Artist".to_owned()),
+            Some(1),
+            Some(4),
+            Some("ISRC123".to_owned()),
+            Some("spotify:track:abc".to_owned()),
+            Some("https://open.spotify.com/track/abc".to_owned()),
+        );
+
+        let input = TrackInput::from_song(&song);
+
+        assert_eq!(input.title, "Song");
+        assert_eq!(input.artists, vec!["Artist".to_owned()]);
+        assert_eq!(input.album_artists, vec!["Album Artist".to_owned()]);
+        assert_eq!(input.album.as_deref(), Some("Album"));
+        assert_eq!(input.disc_number, Some(1));
+        assert_eq!(input.track_number, Some(4));
+        assert_eq!(input.duration_secs, Some(183));
+        assert_eq!(input.isrc.as_deref(), Some("ISRC123"));
+        assert_eq!(input.source_key, "spotify:track:abc");
+        assert_eq!(
+            input.source_url.as_deref(),
+            Some("https://open.spotify.com/track/abc")
+        );
+        assert_eq!(input.known_video_id.as_deref(), Some("dQw4w9WgXcQ"));
     }
 
     #[test]

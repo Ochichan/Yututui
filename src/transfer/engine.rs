@@ -567,36 +567,48 @@ fn write_local(
     Ok(())
 }
 
-/// Reconstruct a playable `Song` for a write target, preferring the matched candidate's
-/// metadata (carried in the checkpoint) and degrading to the source input's fields (a
-/// take-best ambiguous pick only carries its display line).
+/// Reconstruct a playable `Song` for a write target. The YouTube candidate supplies the
+/// playable key; the source input supplies canonical music metadata so downloaded imports
+/// carry Spotify/CSV album grouping and track ordering into Local Deck.
 fn song_for_entry(entry: &TrackEntry, video_id: &str) -> Song {
-    let (title, artist, album, duration_secs) = match &entry.outcome {
+    let (matched_title, matched_artist, matched_album, matched_duration_secs) = match &entry.outcome
+    {
         Some(MatchOutcome::Matched {
-            title: Some(title),
+            title,
             artist,
             album,
             duration_secs,
             ..
-        }) => (
-            title.clone(),
-            artist.clone().unwrap_or_default(),
-            album.clone(),
-            *duration_secs,
-        ),
-        _ => (
-            entry.input.title.clone(),
-            entry.input.artists.join(", "),
-            entry.input.album.clone(),
-            entry.input.duration_secs,
-        ),
+        }) => (title.clone(), artist.clone(), album.clone(), *duration_secs),
+        _ => (None, None, None, None),
     };
+    let title = if entry.input.title.trim().is_empty() {
+        matched_title.unwrap_or_default()
+    } else {
+        entry.input.title.clone()
+    };
+    let artist = if entry.input.artists.is_empty() {
+        matched_artist.unwrap_or_default()
+    } else {
+        entry.input.artists.join(", ")
+    };
+    let album = entry.input.album.clone().or(matched_album);
+    let duration_secs = entry.input.duration_secs.or(matched_duration_secs);
     let duration = duration_secs
         .map(|s| crate::util::format::time(f64::from(s)))
         .unwrap_or_default();
     let mut song = Song::from_search(video_id, title, artist, duration, album);
     song.duration_secs = duration_secs;
-    song
+    let album_artist =
+        (!entry.input.album_artists.is_empty()).then(|| entry.input.album_artists.join(", "));
+    song.with_catalog_metadata(
+        album_artist,
+        entry.input.disc_number,
+        entry.input.track_number,
+        entry.input.isrc.clone(),
+        Some(entry.input.source_key.clone()),
+        entry.input.source_url.clone(),
+    )
 }
 
 /// Create (once) or find the YTM destination playlist; the id is checkpointed before
@@ -1469,9 +1481,15 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
     }
 
     #[test]
-    fn song_for_entry_prefers_matched_catalog_metadata() {
+    fn song_for_entry_prefers_source_catalog_metadata_for_local_downloads() {
+        let mut source = input("Input Title", &["Input Artist"]);
+        source.album_artists = vec!["Input Album Artist".to_owned()];
+        source.disc_number = Some(1);
+        source.track_number = Some(7);
+        source.isrc = Some("ISRC123".to_owned());
+        source.source_url = Some("https://open.spotify.com/track/input".to_owned());
         let track = entry(
-            input("Input Title", &["Input Artist"]),
+            source,
             Some(MatchOutcome::Matched {
                 key: "vid-1".to_owned(),
                 score: 0.95,
@@ -1487,11 +1505,20 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
         let song = song_for_entry(&track, "vid-1");
 
         assert_eq!(song.video_id, "vid-1");
-        assert_eq!(song.title, "Matched Title");
-        assert_eq!(song.artist, "Matched Artist");
-        assert_eq!(song.album.as_deref(), Some("Matched Album"));
-        assert_eq!(song.duration, "3:45");
-        assert_eq!(song.duration_secs, Some(225));
+        assert_eq!(song.title, "Input Title");
+        assert_eq!(song.artist, "Input Artist");
+        assert_eq!(song.album.as_deref(), Some("Input Album"));
+        assert_eq!(song.duration, "1:02");
+        assert_eq!(song.duration_secs, Some(62));
+        assert_eq!(song.album_artist.as_deref(), Some("Input Album Artist"));
+        assert_eq!(song.disc_number, Some(1));
+        assert_eq!(song.track_number, Some(7));
+        assert_eq!(song.isrc.as_deref(), Some("ISRC123"));
+        assert_eq!(song.origin_key.as_deref(), Some("src:Input Title"));
+        assert_eq!(
+            song.origin_url.as_deref(),
+            Some("https://open.spotify.com/track/input")
+        );
     }
 
     #[test]
@@ -1509,9 +1536,12 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
     }
 
     #[test]
-    fn song_for_entry_uses_empty_fields_when_only_matched_title_is_known() {
+    fn song_for_entry_falls_back_to_candidate_when_source_fields_are_missing() {
+        let mut source = input("", &[]);
+        source.album = None;
+        source.duration_secs = None;
         let track = entry(
-            input("Input Title", &["Input Artist"]),
+            source,
             Some(MatchOutcome::Matched {
                 key: "vid-empty".to_owned(),
                 score: 0.91,

@@ -51,6 +51,7 @@ pub fn read_track(path: PathBuf, file_size: u64, modified_at: i64) -> MetadataRe
         track.year = tag.date().map(|date| i32::from(date.year));
         track.track_no = tag.track();
         track.disc_no = tag.disk();
+        track.isrc = tag.get_string(ItemKey::Isrc).and_then(clean_str);
         if !tag.pictures().is_empty() {
             track.embedded_art_key = Some(format!("embedded:{}", track.id.as_str()));
         }

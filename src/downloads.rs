@@ -49,7 +49,19 @@ pub struct DownloadSidecar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub album: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disc_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isrc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_url: Option<String>,
     pub source: SearchSource,
 }
 
@@ -62,7 +74,13 @@ impl Default for DownloadSidecar {
             title: String::new(),
             artist: String::new(),
             album: None,
+            album_artist: None,
+            disc_number: None,
+            track_number: None,
             duration_secs: None,
+            isrc: None,
+            origin_key: None,
+            origin_url: None,
             source: SearchSource::Youtube,
         }
     }
@@ -77,7 +95,13 @@ impl DownloadSidecar {
             title: song.title.clone(),
             artist: song.artist.clone(),
             album: song.album.clone(),
+            album_artist: song.album_artist.clone(),
+            disc_number: song.disc_number,
+            track_number: song.track_number,
             duration_secs: song.duration_secs,
+            isrc: song.isrc.clone(),
+            origin_key: song.origin_key.clone(),
+            origin_url: song.origin_url.clone(),
             source: song.source,
         }
     }
@@ -158,6 +182,12 @@ impl DownloadStore {
                     artist: rec.artist.clone(),
                     duration: rec.duration.clone(),
                     album: rec.album.clone(),
+                    album_artist: rec.album_artist.clone(),
+                    disc_number: rec.disc_number,
+                    track_number: rec.track_number,
+                    isrc: rec.isrc.clone(),
+                    origin_key: rec.origin_key.clone(),
+                    origin_url: rec.origin_url.clone(),
                     duration_secs: rec.duration_secs,
                     yt_video_id: rec.yt_video_id.clone(),
                     ..song
@@ -252,8 +282,36 @@ fn apply_song_tags(tag: &mut lofty::tag::Tag, song: &Song) {
     {
         tag.set_album(album.to_owned());
     }
+    if let Some(album_artist) = song
+        .album_artist
+        .as_deref()
+        .filter(|album_artist| !album_artist.trim().is_empty())
+    {
+        tag.insert_text(ItemKey::AlbumArtist, album_artist.to_owned());
+        tag.insert_text(ItemKey::AlbumArtists, album_artist.to_owned());
+    }
+    if let Some(track_number) = song.track_number {
+        tag.set_track(track_number);
+    }
+    if let Some(disc_number) = song.disc_number {
+        tag.set_disk(disc_number);
+    }
+    if let Some(isrc) = song.isrc.as_deref().filter(|isrc| !isrc.trim().is_empty()) {
+        tag.insert_text(ItemKey::Isrc, isrc.to_owned());
+    }
+    let mut comment = Vec::new();
     if let Some(url) = song.share_url() {
-        tag.insert_text(ItemKey::Comment, format!("YouTube: {url}"));
+        comment.push(format!("YouTube: {url}"));
+    }
+    if let Some(url) = song
+        .origin_url
+        .as_deref()
+        .filter(|url| !url.trim().is_empty())
+    {
+        comment.push(format!("Origin: {url}"));
+    }
+    if !comment.is_empty() {
+        tag.insert_text(ItemKey::Comment, comment.join("\n"));
     }
 }
 
@@ -396,6 +454,14 @@ mod tests {
             Some("Album".to_owned()),
         );
         song.duration_secs = Some(183);
+        song = song.with_catalog_metadata(
+            Some("Album Artist".to_owned()),
+            Some(1),
+            Some(4),
+            Some("ISRC123".to_owned()),
+            Some("spotify:track:abc".to_owned()),
+            Some("https://open.spotify.com/track/abc".to_owned()),
+        );
 
         write_sidecar(&song, &audio).unwrap();
         let sidecar = read_sidecar(&audio).unwrap().expect("sidecar exists");
@@ -405,7 +471,16 @@ mod tests {
         assert_eq!(sidecar.title, "Track");
         assert_eq!(sidecar.artist, "Artist A, Artist B");
         assert_eq!(sidecar.album.as_deref(), Some("Album"));
+        assert_eq!(sidecar.album_artist.as_deref(), Some("Album Artist"));
+        assert_eq!(sidecar.disc_number, Some(1));
+        assert_eq!(sidecar.track_number, Some(4));
         assert_eq!(sidecar.duration_secs, Some(183));
+        assert_eq!(sidecar.isrc.as_deref(), Some("ISRC123"));
+        assert_eq!(sidecar.origin_key.as_deref(), Some("spotify:track:abc"));
+        assert_eq!(
+            sidecar.origin_url.as_deref(),
+            Some("https://open.spotify.com/track/abc")
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -422,6 +497,14 @@ mod tests {
             Some("Album".to_owned()),
         );
         song.duration_secs = Some(183);
+        song = song.with_catalog_metadata(
+            Some("Album Artist".to_owned()),
+            Some(1),
+            Some(4),
+            Some("ISRC123".to_owned()),
+            Some("spotify:track:abc".to_owned()),
+            Some("https://open.spotify.com/track/abc".to_owned()),
+        );
         let mut tag = Tag::new(TagType::Mp4Ilst);
 
         apply_song_tags(&mut tag, &song);
@@ -429,9 +512,15 @@ mod tests {
         assert_eq!(tag.title().as_deref(), Some("Track"));
         assert_eq!(tag.artist().as_deref(), Some("Artist A, Artist B"));
         assert_eq!(tag.album().as_deref(), Some("Album"));
+        assert_eq!(tag.get_string(ItemKey::AlbumArtist), Some("Album Artist"));
+        assert_eq!(tag.get_string(ItemKey::TrackNumber), Some("4"));
+        assert_eq!(tag.get_string(ItemKey::DiscNumber), Some("1"));
+        assert_eq!(tag.get_string(ItemKey::Isrc), Some("ISRC123"));
         assert_eq!(
             tag.get_string(ItemKey::Comment),
-            Some("YouTube: https://www.youtube.com/watch?v=abc123def45")
+            Some(
+                "YouTube: https://www.youtube.com/watch?v=abc123def45\nOrigin: https://open.spotify.com/track/abc"
+            )
         );
     }
 }

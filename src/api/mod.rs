@@ -28,6 +28,7 @@ pub const MAX_ARTIST_CHARS: usize = 200;
 pub const MAX_ALBUM_CHARS: usize = 200;
 pub const MAX_DURATION_CHARS: usize = 32;
 pub const MAX_PROVIDER_ID_CHARS: usize = 256;
+pub const MAX_ORIGIN_URL_CHARS: usize = 512;
 const MAX_PLAYABLE_URL_BYTES: usize = 4096;
 
 pub fn is_youtube_video_id(id: &str) -> bool {
@@ -75,6 +76,11 @@ pub fn sanitize_provider_id(raw: &str) -> String {
     sanitize_metadata_text(raw, MAX_PROVIDER_ID_CHARS)
 }
 
+fn sanitize_optional_metadata(raw: Option<String>, max_chars: usize) -> Option<String> {
+    raw.map(|value| sanitize_metadata_text(&value, max_chars))
+        .filter(|value| !value.trim().is_empty())
+}
+
 pub fn sanitize_metadata_text(raw: &str, max_chars: usize) -> String {
     let mut out = String::new();
     let mut kept = 0;
@@ -120,6 +126,22 @@ pub struct Song {
     /// metadata and Spotify↔YTM matching; old persisted JSON omits it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub album: Option<String>,
+    /// Album artist from the source catalog, when available. Local Deck uses this for
+    /// album grouping after downloaded tracks are scanned back from disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disc_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isrc: Option<String>,
+    /// Source catalog key/URI that produced this playable song, such as a Spotify URI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_key: Option<String>,
+    /// Human-openable source URL, when the import source provides one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_url: Option<String>,
     /// Numeric duration in seconds, when known exactly (search results, imports). Display
     /// still uses `duration`; consumers needing seconds fall back to parsing that string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -292,6 +314,12 @@ impl Song {
             artist: sanitize_artist(&artist),
             duration: sanitize_duration(&duration),
             album: None,
+            album_artist: None,
+            disc_number: None,
+            track_number: None,
+            isrc: None,
+            origin_key: None,
+            origin_url: None,
             duration_secs: None,
             source: SearchSource::Youtube,
             playable: None,
@@ -341,6 +369,12 @@ impl Song {
             artist: sanitize_artist(&artist),
             duration: sanitize_duration(&duration),
             album: None,
+            album_artist: None,
+            disc_number: None,
+            track_number: None,
+            isrc: None,
+            origin_key: None,
+            origin_url: None,
             duration_secs: None,
             source,
             playable: Some(playable),
@@ -372,6 +406,12 @@ impl Song {
             artist: "Local file".to_owned(),
             duration: String::new(),
             album: None,
+            album_artist: None,
+            disc_number: None,
+            track_number: None,
+            isrc: None,
+            origin_key: None,
+            origin_url: None,
             duration_secs: None,
             source: SearchSource::Youtube,
             playable: None,
@@ -405,6 +445,12 @@ impl Song {
             artist: self.artist.clone(),
             duration: self.duration.clone(),
             album: self.album.clone(),
+            album_artist: self.album_artist.clone(),
+            disc_number: self.disc_number,
+            track_number: self.track_number,
+            isrc: self.isrc.clone(),
+            origin_key: self.origin_key.clone(),
+            origin_url: self.origin_url.clone(),
             duration_secs: self.duration_secs,
             source: self.source,
             playable: self.playable.clone(),
@@ -417,6 +463,24 @@ impl Song {
     /// restored from the download manifest or a title match rather than the filename).
     pub fn with_yt_id(mut self, id: String) -> Self {
         self.yt_video_id = Some(id);
+        self
+    }
+
+    pub fn with_catalog_metadata(
+        mut self,
+        album_artist: Option<String>,
+        disc_number: Option<u32>,
+        track_number: Option<u32>,
+        isrc: Option<String>,
+        origin_key: Option<String>,
+        origin_url: Option<String>,
+    ) -> Self {
+        self.album_artist = sanitize_optional_metadata(album_artist, MAX_ARTIST_CHARS);
+        self.disc_number = disc_number.filter(|number| *number > 0);
+        self.track_number = track_number.filter(|number| *number > 0);
+        self.isrc = sanitize_optional_metadata(isrc, MAX_PROVIDER_ID_CHARS);
+        self.origin_key = sanitize_optional_metadata(origin_key, MAX_PROVIDER_ID_CHARS);
+        self.origin_url = sanitize_optional_metadata(origin_url, MAX_ORIGIN_URL_CHARS);
         self
     }
 

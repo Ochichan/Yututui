@@ -287,12 +287,18 @@ fn apply_download_sidecar(track: &mut LocalTrack, sidecar: &crate::downloads::Do
         track.artist = split_sidecar_people(&artist);
     }
     track.album = sidecar.album.as_deref().and_then(clean_sidecar_text);
+    track.album_artist = sidecar.album_artist.as_deref().and_then(clean_sidecar_text);
+    track.disc_no = sidecar.disc_number;
+    track.track_no = sidecar.track_number;
+    track.isrc = sidecar.isrc.as_deref().and_then(clean_sidecar_text);
     if track.duration_ms.is_none() {
         track.duration_ms = sidecar.duration_secs.map(|secs| u64::from(secs) * 1000);
     }
     if let Some(id) = sidecar.linked_youtube_id() {
         track.linked_video_id = Some(id.to_owned());
     }
+    track.origin_key = sidecar.origin_key.as_deref().and_then(clean_sidecar_text);
+    track.origin_url = sidecar.origin_url.as_deref().and_then(clean_sidecar_text);
 }
 
 fn clean_sidecar_text(text: &str) -> Option<String> {
@@ -378,6 +384,14 @@ mod tests {
             Some("Canonical Album".to_owned()),
         );
         song.duration_secs = Some(183);
+        song = song.with_catalog_metadata(
+            Some("Album Artist".to_owned()),
+            Some(1),
+            Some(4),
+            Some("ISRC123".to_owned()),
+            Some("spotify:track:abc".to_owned()),
+            Some("https://open.spotify.com/track/abc".to_owned()),
+        );
         crate::downloads::write_sidecar(&song, &audio).unwrap();
 
         let result = scan_roots(
@@ -390,8 +404,17 @@ mod tests {
         assert_eq!(track.title, "Canonical Title");
         assert_eq!(track.artist, vec!["Artist A", "Artist B"]);
         assert_eq!(track.album.as_deref(), Some("Canonical Album"));
+        assert_eq!(track.album_artist.as_deref(), Some("Album Artist"));
+        assert_eq!(track.disc_no, Some(1));
+        assert_eq!(track.track_no, Some(4));
         assert_eq!(track.duration_ms, Some(183_000));
+        assert_eq!(track.isrc.as_deref(), Some("ISRC123"));
         assert_eq!(track.linked_video_id.as_deref(), Some("abc123def45"));
+        assert_eq!(track.origin_key.as_deref(), Some("spotify:track:abc"));
+        assert_eq!(
+            track.origin_url.as_deref(),
+            Some("https://open.spotify.com/track/abc")
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

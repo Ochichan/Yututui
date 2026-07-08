@@ -163,6 +163,8 @@ pub struct LocalTrack {
     pub year: Option<i32>,
     pub disc_no: Option<u32>,
     pub track_no: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isrc: Option<String>,
     pub duration_ms: Option<u64>,
     pub format: Option<AudioFormat>,
     pub bitrate: Option<u32>,
@@ -172,6 +174,10 @@ pub struct LocalTrack {
     pub fingerprint: FileFingerprint,
     pub embedded_art_key: Option<String>,
     pub linked_video_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_url: Option<String>,
 }
 
 impl LocalTrack {
@@ -194,6 +200,7 @@ impl LocalTrack {
             year: None,
             disc_no: None,
             track_no: None,
+            isrc: None,
             duration_ms: None,
             format: AudioFormat::from_extension(&path),
             bitrate: None,
@@ -203,6 +210,8 @@ impl LocalTrack {
             fingerprint,
             embedded_art_key: None,
             linked_video_id: None,
+            origin_key: None,
+            origin_url: None,
         }
     }
 
@@ -216,7 +225,14 @@ impl LocalTrack {
         if let Some(id) = &self.linked_video_id {
             song = song.with_yt_id(id.clone());
         }
-        song
+        song.with_catalog_metadata(
+            self.album_artist.clone(),
+            self.disc_no,
+            self.track_no,
+            self.isrc.clone(),
+            self.origin_key.clone(),
+            self.origin_url.clone(),
+        )
     }
 
     pub fn display_title(&self) -> String {
@@ -380,6 +396,12 @@ mod tests {
         track.title = "Real Title".to_owned();
         track.artist = vec!["A".to_owned(), "B".to_owned()];
         track.album = Some("Album".to_owned());
+        track.album_artist = Some("Album Artist".to_owned());
+        track.disc_no = Some(1);
+        track.track_no = Some(3);
+        track.isrc = Some("ISRC123".to_owned());
+        track.origin_key = Some("spotify:track:abc".to_owned());
+        track.origin_url = Some("https://open.spotify.com/track/abc".to_owned());
         track.duration_ms = Some(185_000);
         track.linked_video_id = Some("abcdefghijk".to_owned());
 
@@ -388,6 +410,15 @@ mod tests {
         assert_eq!(song.title, "Real Title");
         assert_eq!(song.artist, "A, B");
         assert_eq!(song.album.as_deref(), Some("Album"));
+        assert_eq!(song.album_artist.as_deref(), Some("Album Artist"));
+        assert_eq!(song.disc_number, Some(1));
+        assert_eq!(song.track_number, Some(3));
+        assert_eq!(song.isrc.as_deref(), Some("ISRC123"));
+        assert_eq!(song.origin_key.as_deref(), Some("spotify:track:abc"));
+        assert_eq!(
+            song.origin_url.as_deref(),
+            Some("https://open.spotify.com/track/abc")
+        );
         assert_eq!(song.duration, "3:05");
         assert_eq!(song.duration_secs, Some(185));
         assert_eq!(
