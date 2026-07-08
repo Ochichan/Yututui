@@ -17,7 +17,7 @@
           lib = pkgs.lib;
           yututui = pkgs.rustPlatform.buildRustPackage {
             pname = "yututui";
-            version = "1.6.23"; # keep in sync with Cargo.toml
+            version = "1.6.24"; # keep in sync with Cargo.toml
 
             # Drop build artifacts and flake results from the copied source so the store path
             # stays small and rebuilds aren't invalidated by a local `target/`.
