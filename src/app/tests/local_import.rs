@@ -82,18 +82,32 @@ fn save_ambiguous_import_job(job_id: &str) {
                 known_video_id: None,
             },
             outcome: Some(MatchOutcome::Ambiguous {
-                candidates: vec![AmbiguousCandidate {
-                    key: "dQw4w9WgXcQ".to_owned(),
-                    score: 0.74,
-                    display: "Artist - Maybe".to_owned(),
-                    score_breakdown: Some(MatchScoreBreakdown {
-                        total: 0.74,
-                        title: 0.85,
-                        artist: 1.0,
-                        duration: 0.80,
-                        album_bonus: 0.05,
-                    }),
-                }],
+                candidates: vec![
+                    AmbiguousCandidate {
+                        key: "dQw4w9WgXcQ".to_owned(),
+                        score: 0.74,
+                        display: "Artist - Maybe".to_owned(),
+                        score_breakdown: Some(MatchScoreBreakdown {
+                            total: 0.74,
+                            title: 0.85,
+                            artist: 1.0,
+                            duration: 0.80,
+                            album_bonus: 0.05,
+                        }),
+                    },
+                    AmbiguousCandidate {
+                        key: "eQw4w9WgXcQ".to_owned(),
+                        score: 0.71,
+                        display: "Artist - Maybe alternate".to_owned(),
+                        score_breakdown: Some(MatchScoreBreakdown {
+                            total: 0.71,
+                            title: 0.80,
+                            artist: 1.0,
+                            duration: 0.72,
+                            album_bonus: 0.05,
+                        }),
+                    },
+                ],
             }),
             review_decision: None,
             written: false,
@@ -573,6 +587,55 @@ fn local_deck_import_review_keys_accept_and_reject_rows() {
         crate::transfer::session::ImportSessionRowStatus::Ambiguous
     );
     assert!(app.status.text.contains("Rejected import row"));
+}
+
+#[test]
+fn local_deck_import_review_keys_choose_next_and_skip_rows() {
+    let choose_id = "sp2yt-local-review-choose";
+    save_ambiguous_import_job(choose_id);
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = choose_id.to_owned();
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open.is_empty());
+    app.local_mode.ui.filter_query.clear();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('c'))));
+    assert!(cmds.is_empty());
+    let chosen =
+        crate::transfer::session::ImportSession::load(choose_id).expect("load chosen session");
+    assert!(matches!(
+        chosen.rows[0].review_decision,
+        Some(ReviewDecision::Accepted { ref key, .. }) if key == "eQw4w9WgXcQ"
+    ));
+    assert_eq!(
+        chosen.rows[0].selected_display.as_deref(),
+        Some("Artist - Maybe alternate")
+    );
+    assert!(app.status.text.contains("Selected import candidate"));
+
+    let skip_id = "sp2yt-local-review-skip";
+    save_ambiguous_import_job(skip_id);
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('0'))));
+    app.local_mode.ui.filter_query = skip_id.to_owned();
+    assert_eq!(app.local_rows_len(), 1);
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('x'))));
+    assert!(cmds.is_empty());
+    let skipped =
+        crate::transfer::session::ImportSession::load(skip_id).expect("load skipped session");
+    assert_eq!(
+        skipped.rows[0].review_decision,
+        Some(ReviewDecision::Skipped)
+    );
+    assert!(app.status.text.contains("Skipped import row"));
+    assert_eq!(
+        app.local_rows_len(),
+        0,
+        "skipped rows should leave the attention inbox"
+    );
 }
 
 #[test]

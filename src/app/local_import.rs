@@ -98,7 +98,7 @@ impl App {
             return session
                 .rows
                 .into_iter()
-                .filter(|row| import_session_row_matches_query(row, query))
+                .filter(|row| import_session_row_matches_query(session_id, row, query))
                 .map(|row| crate::local::LocalRowId::ImportSessionRow {
                     session_id: session_id.to_owned(),
                     source_order: row.source_order,
@@ -129,7 +129,7 @@ impl App {
             });
             for row in session.rows {
                 if import_session_row_needs_inbox_attention(&row)
-                    && import_session_row_matches_query(&row, query)
+                    && import_session_row_matches_query(&summary.session_id, &row, query)
                 {
                     rows.push((
                         summary.updated_at,
@@ -368,6 +368,38 @@ impl App {
         true
     }
 
+    pub(in crate::app) fn local_choose_next_import_candidate(&mut self) -> bool {
+        let Some((session_id, source_order)) = self.selected_manual_review_import_row() else {
+            return false;
+        };
+        match crate::transfer::review_action::choose_next_candidate(&session_id, source_order) {
+            Ok(summary) => {
+                self.status.kind = StatusKind::Info;
+                self.status.text = match summary.display {
+                    Some(display) => format!(
+                        "{} #{}: {display}",
+                        t!("Selected import candidate", "임포트 후보 선택"),
+                        summary.source_order
+                    ),
+                    None => format!(
+                        "{} #{}",
+                        t!("Selected import candidate", "임포트 후보 선택"),
+                        summary.source_order
+                    ),
+                };
+            }
+            Err(error) => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!(
+                    "{}: {error:#}",
+                    t!("Import review failed", "임포트 검토 실패")
+                );
+            }
+        }
+        self.dirty = true;
+        true
+    }
+
     pub(in crate::app) fn local_reject_selected_import_row(&mut self) -> bool {
         let Some((session_id, source_order)) = self.selected_manual_review_import_row() else {
             return false;
@@ -378,6 +410,31 @@ impl App {
                 self.status.text = format!(
                     "{} #{}",
                     t!("Rejected import row", "임포트 행 거부"),
+                    summary.source_order
+                );
+            }
+            Err(error) => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!(
+                    "{}: {error:#}",
+                    t!("Import review failed", "임포트 검토 실패")
+                );
+            }
+        }
+        self.dirty = true;
+        true
+    }
+
+    pub(in crate::app) fn local_skip_selected_import_row(&mut self) -> bool {
+        let Some((session_id, source_order)) = self.selected_manual_review_import_row() else {
+            return false;
+        };
+        match crate::transfer::review_action::skip_row(&session_id, source_order) {
+            Ok(summary) => {
+                self.status.kind = StatusKind::Info;
+                self.status.text = format!(
+                    "{} #{}",
+                    t!("Skipped import row", "임포트 행 건너뜀"),
                     summary.source_order
                 );
             }
@@ -612,6 +669,12 @@ fn import_session_row_status_label(row: &ImportSessionRow) -> &'static str {
 }
 
 fn import_session_row_needs_inbox_attention(row: &ImportSessionRow) -> bool {
+    if matches!(
+        row.review_decision,
+        Some(ReviewDecision::Rejected | ReviewDecision::Skipped)
+    ) {
+        return false;
+    }
     row.local_path.as_deref().is_some_and(path_is_import_inbox)
         || !row.errors.is_empty()
         || matches!(
@@ -635,7 +698,7 @@ fn import_session_row_artist(row: &ImportSessionRow) -> String {
     }
 }
 
-fn import_session_row_matches_query(row: &ImportSessionRow, query: &str) -> bool {
+fn import_session_row_matches_query(session_id: &str, row: &ImportSessionRow, query: &str) -> bool {
     let source_order = row.source_order.to_string();
     let status = import_session_row_status_label(row);
     let artist = import_session_row_artist(row);
@@ -679,6 +742,7 @@ fn import_session_row_matches_query(row: &ImportSessionRow, query: &str) -> bool
     crate::local::query::fields_match_query(
         [
             row.row_id.as_str(),
+            session_id,
             source_order.as_str(),
             status,
             row.title.as_str(),
@@ -748,6 +812,10 @@ fn import_session_download_label(row: &ImportSessionRow) -> &'static str {
         "downloaded"
     } else if !row.errors.is_empty() {
         "failed"
+    } else if matches!(row.review_decision, Some(ReviewDecision::Rejected)) {
+        "rejected"
+    } else if matches!(row.review_decision, Some(ReviewDecision::Skipped)) {
+        "skipped"
     } else if import_session_row_is_download_accepted(row)
         && import_session_row_selected_key(row).is_some()
     {

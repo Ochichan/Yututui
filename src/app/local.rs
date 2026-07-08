@@ -138,10 +138,14 @@ impl App {
                     return self.local_enqueue_selected();
                 }
                 KeyCode::Char('c') => {
+                    if self.local_choose_next_import_candidate() {
+                        return Vec::new();
+                    }
                     self.open_queue_popup();
                     return Vec::new();
                 }
                 KeyCode::Char('s') => return self.local_shuffle_visible(),
+                KeyCode::Char('x') if self.local_skip_selected_import_row() => return Vec::new(),
                 _ => {}
             }
         }

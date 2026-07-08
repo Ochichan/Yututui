@@ -30,8 +30,53 @@ pub fn accept_first_candidate(
     let mut cp = Checkpoint::load(job_id)?;
     let index = row_order_to_index(&cp, source_order)?;
     ensure_not_written(&cp, index)?;
-    let selected = first_candidate(&cp.tracks[index].outcome)
+    let selected = candidates_from_outcome(&cp.tracks[index].outcome)
+        .into_iter()
+        .next()
         .ok_or_else(|| anyhow!("row {source_order} has no candidate to accept"))?;
+    accept_candidate(&mut cp, index, source_order, selected, "accepted")
+}
+
+pub fn choose_next_candidate(
+    job_id: &str,
+    source_order: u32,
+) -> anyhow::Result<ReviewActionSummary> {
+    let mut cp = Checkpoint::load(job_id)?;
+    let index = row_order_to_index(&cp, source_order)?;
+    ensure_not_written(&cp, index)?;
+    let candidates = candidates_from_outcome(&cp.tracks[index].outcome);
+    if candidates.is_empty() {
+        bail!("row {source_order} has no candidate to choose");
+    }
+    let current_key = selected_key(&cp.tracks[index]);
+    let next = current_key
+        .and_then(|key| candidates.iter().position(|candidate| candidate.key == key))
+        .map(|idx| (idx + 1) % candidates.len())
+        .unwrap_or(0);
+    accept_candidate(
+        &mut cp,
+        index,
+        source_order,
+        candidates[next].clone(),
+        "selected",
+    )
+}
+
+pub fn reject_row(job_id: &str, source_order: u32) -> anyhow::Result<ReviewActionSummary> {
+    apply_terminal_decision(job_id, source_order, ReviewDecision::Rejected, "rejected")
+}
+
+pub fn skip_row(job_id: &str, source_order: u32) -> anyhow::Result<ReviewActionSummary> {
+    apply_terminal_decision(job_id, source_order, ReviewDecision::Skipped, "skipped")
+}
+
+fn accept_candidate(
+    cp: &mut Checkpoint,
+    index: usize,
+    source_order: u32,
+    selected: SelectedCandidate,
+    label: &'static str,
+) -> anyhow::Result<ReviewActionSummary> {
     cp.tracks[index].outcome = Some(MatchOutcome::Matched {
         key: selected.key.clone(),
         score: selected.score,
@@ -47,18 +92,14 @@ pub fn accept_first_candidate(
         score: selected.score,
         display: selected.display.clone(),
     });
-    save_checkpoint_and_session(&mut cp)?;
+    save_checkpoint_and_session(cp)?;
     Ok(ReviewActionSummary {
         source_order,
-        label: "accepted",
+        label,
         key: Some(selected.key),
         display: Some(selected.display),
         score: Some(selected.score),
     })
-}
-
-pub fn reject_row(job_id: &str, source_order: u32) -> anyhow::Result<ReviewActionSummary> {
-    apply_terminal_decision(job_id, source_order, ReviewDecision::Rejected, "rejected")
 }
 
 fn apply_terminal_decision(
@@ -114,7 +155,7 @@ fn ensure_not_written(cp: &Checkpoint, index: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn first_candidate(outcome: &Option<MatchOutcome>) -> Option<SelectedCandidate> {
+fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandidate> {
     match outcome {
         Some(MatchOutcome::Matched {
             key,
@@ -122,20 +163,34 @@ fn first_candidate(outcome: &Option<MatchOutcome>) -> Option<SelectedCandidate> 
             display,
             score_breakdown,
             ..
-        }) => Some(SelectedCandidate {
+        }) => vec![SelectedCandidate {
             key: key.clone(),
             score: *score,
             display: display.clone(),
             score_breakdown: *score_breakdown,
-        }),
-        Some(MatchOutcome::Ambiguous { candidates }) => {
-            candidates.first().map(|candidate| SelectedCandidate {
+        }],
+        Some(MatchOutcome::Ambiguous { candidates }) => candidates
+            .iter()
+            .map(|candidate| SelectedCandidate {
                 key: candidate.key.clone(),
                 score: candidate.score,
                 display: candidate.display.clone(),
                 score_breakdown: candidate.score_breakdown,
             })
-        }
-        _ => None,
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn selected_key(entry: &super::checkpoint::TrackEntry) -> Option<&str> {
+    match &entry.review_decision {
+        Some(ReviewDecision::Accepted { key, .. }) => Some(key.as_str()),
+        _ => match &entry.outcome {
+            Some(MatchOutcome::Matched { key, .. }) => Some(key.as_str()),
+            Some(MatchOutcome::Ambiguous { candidates }) => {
+                candidates.first().map(|c| c.key.as_str())
+            }
+            _ => None,
+        },
     }
 }
