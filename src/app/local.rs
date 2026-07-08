@@ -173,6 +173,8 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            Some(Action::Download) => self.local_download_selected(),
+            Some(Action::DownloadAll) => self.local_download_visible(),
             Some(Action::Back) => self.local_back_or_exit(),
             Some(Action::MoveUp) => {
                 let step = self.nav_repeat_step(Action::MoveUp);
@@ -312,6 +314,41 @@ impl App {
             cmds.push(self.save_playback_modes_cmd());
         }
         cmds
+    }
+
+    fn local_download_selected(&mut self) -> Vec<Cmd> {
+        let Some(row) = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned()
+        else {
+            return Vec::new();
+        };
+        let songs = self.local_downloadable_songs_for_row(&row);
+        self.start_or_confirm_local_download(songs)
+    }
+
+    fn local_download_visible(&mut self) -> Vec<Cmd> {
+        let songs = self
+            .local_visible_rows()
+            .into_iter()
+            .flat_map(|row| self.local_downloadable_songs_for_row(&row))
+            .collect();
+        self.open_confirm_download(songs)
+    }
+
+    fn start_or_confirm_local_download(&mut self, songs: Vec<Song>) -> Vec<Cmd> {
+        let songs = self.downloadable_batch(songs);
+        match songs.len() {
+            0 => {
+                self.status.kind = StatusKind::Info;
+                self.status.text = t!("Nothing to download", "다운로드할 곡이 없음").to_owned();
+                self.dirty = true;
+                Vec::new()
+            }
+            1 => self.start_download(songs.into_iter().next().unwrap()),
+            _ => self.open_confirm_download(songs),
+        }
     }
 
     pub(in crate::app) fn apply_local_msg(&mut self, msg: LocalMsg) -> Vec<Cmd> {
@@ -902,6 +939,19 @@ impl App {
                 .into_iter()
                 .collect(),
             crate::local::LocalRowId::ScanError(_) => Vec::new(),
+        }
+    }
+
+    fn local_downloadable_songs_for_row(&self, row: &crate::local::LocalRowId) -> Vec<Song> {
+        match row {
+            crate::local::LocalRowId::ImportSession(session_id) => {
+                self.import_session_download_songs(session_id, None)
+            }
+            crate::local::LocalRowId::ImportSessionRow {
+                session_id,
+                source_order,
+            } => self.import_session_download_songs(session_id, Some(*source_order)),
+            _ => self.local_songs_for_row(row),
         }
     }
 

@@ -1,4 +1,6 @@
 use super::*;
+use crate::transfer::checkpoint::ReportCandidate;
+use crate::transfer::matching::MatchScoreBreakdown;
 use std::path::PathBuf;
 
 fn local_deck_track(
@@ -188,8 +190,31 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
                 status: crate::transfer::session::ImportSessionRowStatus::Matched,
                 title: "Linked".to_owned(),
                 artists: vec!["Artist".to_owned()],
+                album_artists: vec!["Album Artist".to_owned()],
+                album: Some("Album".to_owned()),
+                album_release_date: Some("2024-05-01".to_owned()),
+                disc_number: Some(1),
+                track_number: Some(2),
+                duration_secs: Some(180),
+                isrc: Some("USRC17607839".to_owned()),
+                explicit: Some(false),
                 source_key: "spotify:track:linked".to_owned(),
+                source_url: Some("https://open.spotify.com/track/linked".to_owned()),
                 selected_key: Some("linked00001".to_owned()),
+                selected_score: Some(0.91),
+                selected_display: Some("Artist - Linked".to_owned()),
+                candidates: vec![ReportCandidate {
+                    key: "linked00001".to_owned(),
+                    score: 0.91,
+                    display: "Artist - Linked".to_owned(),
+                    score_breakdown: Some(MatchScoreBreakdown {
+                        total: 0.91,
+                        title: 0.95,
+                        artist: 1.0,
+                        duration: 0.90,
+                        album_bonus: 0.05,
+                    }),
+                }],
                 local_path: Some(PathBuf::from("/tmp/inbox/Linked.m4a")),
                 ..crate::transfer::session::ImportSessionRow::default()
             },
@@ -289,6 +314,15 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
     assert_eq!(row_labels[1], "#2 review Review - Artist");
     assert_eq!(row_labels[2], "#3 failed Failed - Artist");
 
+    app.local_mode.ui.filter_query = "USRC17607839".to_owned();
+    let filtered: Vec<_> = app
+        .local_visible_rows()
+        .iter()
+        .map(|row| app.local_row_text(row))
+        .collect();
+    assert_eq!(filtered, vec!["#1 local Linked - Artist"]);
+    app.local_mode.ui.filter_query.clear();
+
     let linked_details = app.local_details_lines();
     for expected in [
         "Import session: sp2yt-local-inbox-session",
@@ -296,7 +330,21 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
         "Status: local",
         "Title: Linked",
         "Artist: Artist",
-        "Selected: linked00001",
+        "Album: Album",
+        "Album artist: Album Artist",
+        "Release date: 2024-05-01",
+        "Track: disc 1 · track 2",
+        "Duration: 3:00",
+        "ISRC: USRC17607839",
+        "Explicit: no",
+        "Source: spotify:track:linked",
+        "Source URL: https://open.spotify.com/track/linked",
+        "Selected: Artist - Linked",
+        "Score: 0.91",
+        "Decision: undecided",
+        "Download: downloaded",
+        "Candidate 1: 0.91 Artist - Linked (linked00001)",
+        "Score detail 1: total 0.91, title 0.95, artist 1.00, duration 0.90, album +0.05",
         "Path: /tmp/inbox/Linked.m4a",
     ] {
         assert!(
@@ -335,6 +383,74 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
             .expect("linked row should load local path")
             .contains("/tmp/inbox/Linked.m4a")
     );
+}
+
+#[test]
+fn local_deck_import_row_download_queues_import_inbox_request() {
+    let session_id = "sp2yt-local-download-row";
+    let session = crate::transfer::session::ImportSession {
+        schema_version: 1,
+        session_id: session_id.to_owned(),
+        job_id: session_id.to_owned(),
+        created_at: 0,
+        updated_at: 88,
+        stage: crate::transfer::Stage::Writing,
+        counts: crate::transfer::session::ImportSessionCounts {
+            total: 1,
+            matched: 1,
+            ..crate::transfer::session::ImportSessionCounts::default()
+        },
+        rows: vec![crate::transfer::session::ImportSessionRow {
+            row_id: "row-00007".to_owned(),
+            source_order: 7,
+            status: crate::transfer::session::ImportSessionRowStatus::Matched,
+            title: "Download Me".to_owned(),
+            artists: vec!["Artist".to_owned()],
+            album_artists: vec!["Album Artist".to_owned()],
+            album: Some("Album".to_owned()),
+            duration_secs: Some(181),
+            isrc: Some("ISRC-DOWNLOAD".to_owned()),
+            source_key: "spotify:track:download-me".to_owned(),
+            source_url: Some("https://open.spotify.com/track/download-me".to_owned()),
+            selected_key: Some("dQw4w9WgXcQ".to_owned()),
+            selected_score: Some(0.94),
+            selected_display: Some("Artist - Download Me".to_owned()),
+            ..crate::transfer::session::ImportSessionRow::default()
+        }],
+        ..crate::transfer::session::ImportSession::default()
+    };
+    session.save().expect("save import session");
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open.is_empty());
+    app.local_mode.ui.filter_query.clear();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('d'))));
+    let [Cmd::Download(song)] = cmds.as_slice() else {
+        panic!("expected download command");
+    };
+    let request = crate::download::import_request_for_song(song).expect("import request");
+    assert_eq!(request.session_id, session_id);
+    assert_eq!(request.row_id, "row-00007");
+    assert_eq!(request.source_order, 7);
+    assert_eq!(request.song.video_id, "dQw4w9WgXcQ");
+    assert_eq!(request.song.title, "Download Me");
+    assert_eq!(request.song.artist, "Artist");
+    assert_eq!(request.song.album.as_deref(), Some("Album"));
+    assert_eq!(request.song.album_artist.as_deref(), Some("Album Artist"));
+    assert_eq!(
+        request.song.origin_key.as_deref(),
+        Some("spotify:track:download-me")
+    );
+    assert_eq!(
+        request.song.origin_url.as_deref(),
+        Some("https://open.spotify.com/track/download-me")
+    );
+    assert_eq!(request.song.import_session_id.as_deref(), Some(session_id));
+    assert_eq!(request.song.import_source_order, Some(7));
 }
 
 #[test]

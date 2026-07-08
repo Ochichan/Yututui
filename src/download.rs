@@ -39,6 +39,27 @@ pub struct ImportDownloadRequest {
     pub song: Song,
 }
 
+pub fn import_request_for_song(song: &Song) -> Option<ImportDownloadRequest> {
+    let session_id = song.import_session_id.as_ref()?.clone();
+    let source_order = song.import_source_order?;
+    let row_id = crate::transfer::session::ImportSession::load(&session_id)
+        .ok()
+        .and_then(|session| {
+            session
+                .rows
+                .into_iter()
+                .find(|row| row.source_order == source_order)
+                .map(|row| row.row_id)
+        })
+        .unwrap_or_else(|| format!("row-{source_order:05}"));
+    Some(ImportDownloadRequest {
+        session_id,
+        row_id,
+        source_order,
+        song: song.clone(),
+    })
+}
+
 pub enum DownloadEvent {
     Progress { video_id: String, percent: f64 },
     Done { video_id: String, path: String },

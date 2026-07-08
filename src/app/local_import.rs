@@ -1,11 +1,18 @@
 //! Local Deck import session rows and playback helpers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use super::local_format::*;
 use super::*;
 use crate::t;
+use crate::transfer::checkpoint::{ReportCandidate, ReviewDecision};
+use crate::transfer::download_plan::{
+    ImportDownloadDecision, ImportDownloadDedupeIndex, build_import_download_plan,
+};
+use crate::transfer::organize_plan::{
+    ImportOrganizeDecision, ImportOrganizeOptions, build_import_organize_plan,
+};
 use crate::transfer::session::{ImportSession, ImportSessionRow, ImportSessionRowStatus};
 
 impl App {
@@ -192,7 +199,7 @@ impl App {
         session_id: &str,
         source_order: u32,
     ) {
-        let Some(row) = load_import_session_row(session_id, source_order) else {
+        let Some((session, row)) = load_import_session_and_row(session_id, source_order) else {
             push_detail_line(lines, t!("Import session", "임포트 세션"), session_id);
             push_detail_line(lines, t!("Row", "행"), format!("#{source_order}"));
             return;
@@ -213,6 +220,16 @@ impl App {
         if let Some(album) = row.album.clone() {
             push_detail_line(lines, t!("Album", "앨범"), album);
         }
+        if !row.album_artists.is_empty() {
+            push_detail_line(
+                lines,
+                t!("Album artist", "앨범 아티스트"),
+                row.album_artists.join(", "),
+            );
+        }
+        if let Some(release_date) = row.album_release_date.clone() {
+            push_detail_line(lines, t!("Release date", "발매일"), release_date);
+        }
         if let Some(number) = format_disc_track(row.disc_number, row.track_number) {
             push_detail_line(lines, t!("Track", "트랙"), number);
         }
@@ -226,20 +243,156 @@ impl App {
         if let Some(isrc) = row.isrc.clone() {
             push_detail_line(lines, "ISRC", isrc);
         }
+        if let Some(explicit) = row.explicit {
+            push_detail_line(lines, t!("Explicit", "Explicit"), yes_no(explicit));
+        }
+        push_detail_line(lines, t!("Source", "원본"), row.source_key.clone());
+        if let Some(url) = row
+            .source_url
+            .as_deref()
+            .filter(|url| *url != row.source_key)
+        {
+            push_detail_line(lines, t!("Source URL", "원본 URL"), url);
+        }
         if let Some(display) = row.selected_display.clone() {
             push_detail_line(lines, t!("Selected", "선택"), display);
         } else if let Some(key) = row.selected_key.clone() {
             push_detail_line(lines, t!("Selected", "선택"), key);
         }
+        if let Some(score) = import_session_row_selected_score(&row) {
+            push_detail_line(lines, t!("Score", "점수"), format_score(score));
+        }
+        push_detail_line(
+            lines,
+            t!("Decision", "결정"),
+            import_session_review_decision_label(row.review_decision.as_ref()),
+        );
+        push_detail_line(
+            lines,
+            t!("Download", "다운로드"),
+            import_session_download_label(&row),
+        );
+        for (index, candidate) in row.candidates.iter().take(5).enumerate() {
+            let number = index + 1;
+            push_detail_line(
+                lines,
+                &format!("Candidate {number}"),
+                format_candidate(candidate),
+            );
+            if let Some(breakdown) = candidate.score_breakdown {
+                push_detail_line(
+                    lines,
+                    &format!("Score detail {number}"),
+                    format_score_breakdown(breakdown),
+                );
+            }
+        }
+        if row.candidates.len() > 5 {
+            push_detail_line(
+                lines,
+                t!("Candidates", "후보"),
+                format!("+{} more", row.candidates.len() - 5),
+            );
+        }
         if let Some(path) = row.local_path.clone() {
             push_detail_line(lines, t!("Path", "경로"), path.display().to_string());
         }
-        for warning in row.warnings {
+        self.push_import_session_organize_preview(lines, &session, source_order);
+        for warning in &row.warnings {
             push_detail_line(lines, t!("Warning", "경고"), warning);
         }
-        for error in row.errors {
+        for error in &row.errors {
             push_detail_line(lines, t!("Error", "오류"), error);
         }
+    }
+
+    pub(in crate::app) fn import_session_download_songs(
+        &self,
+        session_id: &str,
+        source_order: Option<u32>,
+    ) -> Vec<Song> {
+        let Ok(mut session) = ImportSession::load(session_id) else {
+            return Vec::new();
+        };
+        session.rows.sort_by(|a, b| {
+            a.source_order
+                .cmp(&b.source_order)
+                .then_with(|| a.row_id.cmp(&b.row_id))
+        });
+        let existing = self.import_download_dedupe_index();
+        let plan = build_import_download_plan(&session, &existing);
+        let enqueue_orders: BTreeSet<_> = plan
+            .rows
+            .into_iter()
+            .filter(|row| matches!(row.decision, ImportDownloadDecision::Enqueue))
+            .filter(|row| source_order.is_none_or(|wanted| wanted == row.source_order))
+            .map(|row| row.source_order)
+            .collect();
+        session
+            .rows
+            .iter()
+            .filter(|row| enqueue_orders.contains(&row.source_order))
+            .filter_map(|row| remote_song_from_import_session_row(&session.session_id, row))
+            .collect()
+    }
+
+    fn import_download_dedupe_index(&self) -> ImportDownloadDedupeIndex {
+        let mut existing = ImportDownloadDedupeIndex::from_download_store(&self.download_store);
+        for song in &self.library_ui.downloaded {
+            existing.add_downloaded_song(song);
+        }
+        existing.add_local_index(&self.local_mode.index.index);
+        existing
+    }
+
+    fn push_import_session_organize_preview(
+        &self,
+        lines: &mut Vec<String>,
+        session: &ImportSession,
+        source_order: u32,
+    ) {
+        let options = ImportOrganizeOptions {
+            root: self.import_organize_root(),
+            template: self.config.local.import_path_template().to_owned(),
+        };
+        let Ok(plan) = build_import_organize_plan(session, &options) else {
+            return;
+        };
+        let Some(row) = plan
+            .rows
+            .iter()
+            .find(|row| row.source_order == source_order)
+        else {
+            return;
+        };
+        match row.decision {
+            ImportOrganizeDecision::Move => {
+                if let Some(target) = &row.target_path {
+                    push_detail_line(lines, t!("Target", "대상"), target.display().to_string());
+                }
+            }
+            ImportOrganizeDecision::AlreadyAtTarget => {
+                push_detail_line(
+                    lines,
+                    t!("Target", "대상"),
+                    t!("already organized", "이미 정리됨"),
+                );
+            }
+            ImportOrganizeDecision::NotAccepted | ImportOrganizeDecision::MissingLocalPath => {}
+        }
+        for warning in &row.warnings {
+            push_detail_line(lines, t!("Organize warning", "정리 경고"), warning);
+        }
+    }
+
+    fn import_organize_root(&self) -> PathBuf {
+        self.config
+            .local
+            .roots
+            .iter()
+            .find(|root| root.enabled())
+            .and_then(|root| root.normalized_path())
+            .unwrap_or_else(|| self.config.effective_download_dir())
     }
 
     pub(in crate::app) fn import_session_row_song(
@@ -288,6 +441,19 @@ fn load_import_session_row(session_id: &str, source_order: u32) -> Option<Import
         .find(|row| row.source_order == source_order)
 }
 
+fn load_import_session_and_row(
+    session_id: &str,
+    source_order: u32,
+) -> Option<(ImportSession, ImportSessionRow)> {
+    let session = ImportSession::load(session_id).ok()?;
+    let row = session
+        .rows
+        .iter()
+        .find(|row| row.source_order == source_order)
+        .cloned()?;
+    Some((session, row))
+}
+
 fn song_from_import_session_row(session_id: &str, row: &ImportSessionRow, path: PathBuf) -> Song {
     let mut song = Song::local_file(path);
     if !row.title.trim().is_empty() {
@@ -318,6 +484,39 @@ fn song_from_import_session_row(session_id: &str, row: &ImportSessionRow, path: 
         song = song.with_yt_id(key);
     }
     song
+}
+
+fn remote_song_from_import_session_row(session_id: &str, row: &ImportSessionRow) -> Option<Song> {
+    if row.local_path.is_some() || !import_session_row_is_download_accepted(row) {
+        return None;
+    }
+    let selected_key = import_session_row_selected_key(row)?.to_owned();
+    let title = if row.title.trim().is_empty() {
+        row.selected_display
+            .clone()
+            .unwrap_or_else(|| selected_key.clone())
+    } else {
+        row.title.clone()
+    };
+    let artist = import_session_row_artist(row);
+    let duration = row
+        .duration_secs
+        .map(|secs| format_local_duration_ms(u64::from(secs) * 1000))
+        .unwrap_or_default();
+    let mut song = Song::from_search(selected_key, title, artist, duration, row.album.clone());
+    song.duration_secs = row.duration_secs;
+    let album_artist = (!row.album_artists.is_empty()).then(|| row.album_artists.join(", "));
+    Some(
+        song.with_catalog_metadata(
+            album_artist,
+            row.disc_number,
+            row.track_number,
+            row.isrc.clone(),
+            Some(row.source_key.clone()),
+            row.source_url.clone(),
+        )
+        .with_import_session(Some(session_id.to_owned()), Some(row.source_order)),
+    )
 }
 
 fn import_session_row_status_label(row: &ImportSessionRow) -> &'static str {
@@ -368,17 +567,42 @@ fn import_session_row_matches_query(row: &ImportSessionRow, query: &str) -> bool
     let status = import_session_row_status_label(row);
     let artist = import_session_row_artist(row);
     let album = row.album.as_deref().unwrap_or_default();
+    let album_artists = row.album_artists.join(" ");
+    let release_date = row.album_release_date.as_deref().unwrap_or_default();
+    let duration = row
+        .duration_secs
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let isrc = row.isrc.as_deref().unwrap_or_default();
+    let explicit = row.explicit.map(yes_no).unwrap_or_default();
+    let source_url = row.source_url.as_deref().unwrap_or_default();
     let selected = row
         .selected_display
         .as_deref()
         .or(row.selected_key.as_deref())
         .unwrap_or_default();
+    let selected_score = import_session_row_selected_score(row)
+        .map(format_score)
+        .unwrap_or_default();
+    let decision = import_session_review_decision_label(row.review_decision.as_ref());
+    let candidates = row
+        .candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "{} {} {}",
+                candidate.display, candidate.key, candidate.score
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     let path = row
         .local_path
         .as_ref()
         .map(|path| path.to_string_lossy())
         .unwrap_or_default();
-    let error = row.errors.first().map(String::as_str).unwrap_or_default();
+    let warnings = row.warnings.join(" ");
+    let errors = row.errors.join(" ");
     crate::local::query::fields_match_query(
         [
             row.row_id.as_str(),
@@ -387,11 +611,96 @@ fn import_session_row_matches_query(row: &ImportSessionRow, query: &str) -> bool
             row.title.as_str(),
             artist.as_str(),
             album,
+            album_artists.as_str(),
+            release_date,
+            duration.as_str(),
+            isrc,
+            explicit,
             row.source_key.as_str(),
+            source_url,
             selected,
+            selected_score.as_str(),
+            decision,
+            candidates.as_str(),
             path.as_ref(),
-            error,
+            warnings.as_str(),
+            errors.as_str(),
         ],
         query,
     )
+}
+
+fn import_session_row_is_download_accepted(row: &ImportSessionRow) -> bool {
+    matches!(row.status, ImportSessionRowStatus::Matched)
+        && !matches!(
+            row.review_decision,
+            Some(ReviewDecision::Rejected | ReviewDecision::Skipped)
+        )
+}
+
+fn import_session_row_selected_key(row: &ImportSessionRow) -> Option<&str> {
+    match &row.review_decision {
+        Some(ReviewDecision::Accepted { key, .. }) => Some(key.as_str()),
+        _ => row.selected_key.as_deref(),
+    }
+}
+
+fn import_session_row_selected_score(row: &ImportSessionRow) -> Option<f32> {
+    match row.review_decision {
+        Some(ReviewDecision::Accepted { score, .. }) => Some(score),
+        _ => row.selected_score,
+    }
+}
+
+fn import_session_review_decision_label(decision: Option<&ReviewDecision>) -> &'static str {
+    match decision {
+        Some(ReviewDecision::Accepted { .. }) => "accepted",
+        Some(ReviewDecision::Rejected) => "rejected",
+        Some(ReviewDecision::Skipped) => "skipped",
+        None => "undecided",
+    }
+}
+
+fn import_session_download_label(row: &ImportSessionRow) -> &'static str {
+    if row.local_path.is_some() {
+        "downloaded"
+    } else if !row.errors.is_empty() {
+        "failed"
+    } else if import_session_row_is_download_accepted(row)
+        && import_session_row_selected_key(row).is_some()
+    {
+        "ready"
+    } else if matches!(row.status, ImportSessionRowStatus::NotFound) {
+        "missing"
+    } else {
+        "needs review"
+    }
+}
+
+fn format_candidate(candidate: &ReportCandidate) -> String {
+    format!(
+        "{} {} ({})",
+        format_score(candidate.score),
+        candidate.display,
+        candidate.key
+    )
+}
+
+fn format_score_breakdown(breakdown: crate::transfer::matching::MatchScoreBreakdown) -> String {
+    format!(
+        "total {}, title {}, artist {}, duration {}, album +{}",
+        format_score(breakdown.total),
+        format_score(breakdown.title),
+        format_score(breakdown.artist),
+        format_score(breakdown.duration),
+        format_score(breakdown.album_bonus)
+    )
+}
+
+fn format_score(score: f32) -> String {
+    format!("{score:.2}")
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }

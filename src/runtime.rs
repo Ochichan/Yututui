@@ -1148,7 +1148,13 @@ impl RuntimeHandles {
                 self.artwork_handle.fetch(video_id, source);
             }
             Cmd::Download(song) => {
-                if let Err(error) = self.download_handle.start(song) {
+                let result = if let Some(request) = crate::download::import_request_for_song(&song)
+                {
+                    self.download_handle.start_for_import(request)
+                } else {
+                    self.download_handle.start(song)
+                };
+                if let Err(error) = result {
                     tracing::warn!(video_id = %error.video_id, "download queue full; dropping request");
                     emit(
                         &self.worker_tx,
