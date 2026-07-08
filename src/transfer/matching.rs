@@ -156,6 +156,8 @@ pub enum MatchOutcome {
         album: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_secs: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        score_breakdown: Option<MatchScoreBreakdown>,
     },
     Ambiguous {
         candidates: Vec<AmbiguousCandidate>,
@@ -170,6 +172,8 @@ pub struct AmbiguousCandidate {
     pub key: String,
     pub score: f32,
     pub display: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_breakdown: Option<MatchScoreBreakdown>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -538,30 +542,36 @@ pub fn best_outcome(
     candidates: &[MatchCandidate],
     cfg: &MatchConfig,
 ) -> MatchOutcome {
-    let mut scored: Vec<(f32, &MatchCandidate)> = candidates
+    let mut scored: Vec<(MatchScoreBreakdown, &MatchCandidate)> = candidates
         .iter()
-        .map(|c| (score_candidate(input, c), c))
+        .map(|c| (score_candidate_breakdown(input, c), c))
         .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.0.total
+            .partial_cmp(&a.0.total)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     match scored.first() {
-        Some((score, best)) if *score >= cfg.accept => MatchOutcome::Matched {
+        Some((score, best)) if score.total >= cfg.accept => MatchOutcome::Matched {
             key: best.key.clone(),
-            score: *score,
+            score: score.total,
             display: format!("{} — {}", best.artist, best.title),
             title: Some(best.title.clone()),
             artist: Some(best.artist.clone()),
             album: best.album.clone(),
             duration_secs: best.duration_secs,
+            score_breakdown: Some(*score),
         },
-        Some((score, _)) if *score >= cfg.ambiguous_floor => MatchOutcome::Ambiguous {
+        Some((score, _)) if score.total >= cfg.ambiguous_floor => MatchOutcome::Ambiguous {
             candidates: scored
                 .into_iter()
                 .take(3)
-                .filter(|(s, _)| *s >= cfg.ambiguous_floor)
+                .filter(|(s, _)| s.total >= cfg.ambiguous_floor)
                 .map(|(score, c)| AmbiguousCandidate {
                     key: c.key.clone(),
-                    score,
+                    score: score.total,
                     display: format!("{} — {}", c.artist, c.title),
+                    score_breakdown: Some(score),
                 })
                 .collect(),
         },
@@ -694,6 +704,7 @@ pub async fn match_track_ytm(
             artist: Some(input.artists.join(", ")),
             album: input.album.clone(),
             duration_secs: input.duration_secs,
+            score_breakdown: None,
         });
     }
     let key = memo_key(input);
@@ -950,10 +961,25 @@ mod tests {
         let i = input("ETA", &["NewJeans"], None, Some(151));
         // Accept.
         let out = best_outcome(&i, &[cand("ETA", "NewJeans", None, Some(151))], &cfg);
-        assert!(matches!(out, MatchOutcome::Matched { .. }));
+        match out {
+            MatchOutcome::Matched {
+                score,
+                score_breakdown: Some(score_breakdown),
+                ..
+            } => assert_eq!(score_breakdown.total, score),
+            other => panic!("got {other:?}"),
+        }
         // Ambiguous band: same title, artist edit-distance-ish, duration off.
         let out = best_outcome(&i, &[cand("ETA", "NewJeanz Tribute", None, None)], &cfg);
-        assert!(matches!(out, MatchOutcome::Ambiguous { .. }), "got {out:?}");
+        match out {
+            MatchOutcome::Ambiguous { candidates } => {
+                assert_eq!(
+                    candidates[0].score_breakdown.unwrap().total,
+                    candidates[0].score
+                );
+            }
+            other => panic!("got {other:?}"),
+        }
         // Nothing close.
         let out = best_outcome(&i, &[cand("Different Song", "Other", None, Some(90))], &cfg);
         assert!(matches!(out, MatchOutcome::NotFound));

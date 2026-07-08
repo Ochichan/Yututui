@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail};
 use super::checkpoint::{Checkpoint, ReportCandidate, ReportRow, TrackEntry, TransferReport};
 use super::matching::{
     MatchCandidate, MatchConfig, MatchOutcome, Pacing, TrackInput, best_outcome, match_track_ytm,
-    normalize_stripped,
+    normalize_stripped, ytm_query_plan,
 };
 use super::{FileFormat, JobSpec, Stage, TransferDest, TransferProgress, TransferSource};
 use crate::api::Song;
@@ -834,6 +834,7 @@ fn outcome_counts(tracks: &[TrackEntry]) -> (u32, u32, u32) {
 
 fn build_report(cp: &Checkpoint, skipped_local: u32) -> TransferReport {
     let (matched, _, _) = outcome_counts(&cp.tracks);
+    let searched_ytm = !matches!(cp.spec.dest, TransferDest::SpotifyNewPlaylist { .. });
     let mut report = TransferReport {
         job_id: cp.job_id.clone(),
         total: cp.tracks.len() as u32,
@@ -850,6 +851,7 @@ fn build_report(cp: &Checkpoint, skipped_local: u32) -> TransferReport {
                         key: c.key.clone(),
                         score: c.score,
                         display: c.display.clone(),
+                        score_breakdown: c.score_breakdown,
                     })
                     .collect();
                 let note = candidates
@@ -858,17 +860,20 @@ fn build_report(cp: &Checkpoint, skipped_local: u32) -> TransferReport {
                     .collect::<Vec<_>>()
                     .join(" | ");
                 let mut row = report_row_base(entry, idx, note);
+                if searched_ytm && entry.input.known_video_id.is_none() {
+                    row.search_queries = ytm_query_plan(&entry.input);
+                }
                 row.selected_key = report_candidates.first().map(|c| c.key.clone());
                 row.selected_score = report_candidates.first().map(|c| c.score);
                 row.candidates = report_candidates;
                 report.ambiguous.push(row);
             }
             Some(MatchOutcome::NotFound) => {
-                report.not_found.push(report_row_base(
-                    entry,
-                    idx,
-                    "no match on the destination".to_owned(),
-                ));
+                let mut row = report_row_base(entry, idx, "no match on the destination".to_owned());
+                if searched_ytm && entry.input.known_video_id.is_none() {
+                    row.search_queries = ytm_query_plan(&entry.input);
+                }
+                report.not_found.push(row);
             }
             _ => {}
         }
@@ -897,6 +902,7 @@ fn report_row_base(entry: &TrackEntry, idx: usize, note: String) -> ReportRow {
         candidates: Vec::new(),
         selected_key: None,
         selected_score: None,
+        search_queries: Vec::new(),
     }
 }
 
@@ -959,7 +965,7 @@ fn ytm_job_error(e: anyhow::Error) -> JobError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transfer::matching::AmbiguousCandidate;
+    use crate::transfer::matching::{AmbiguousCandidate, MatchScoreBreakdown};
 
     fn spec(dest: TransferDest) -> JobSpec {
         JobSpec {
@@ -1009,6 +1015,7 @@ mod tests {
             artist: None,
             album: None,
             duration_secs: None,
+            score_breakdown: None,
         }
     }
 
@@ -1155,6 +1162,7 @@ spotify:track:1,\"CSV Song\",\"Artist A, Artist B\",\"CSV Album\",90000,ISRC1,dQ
                         key: "vid-b".to_owned(),
                         score: 0.70,
                         display: "B - Ambiguous".to_owned(),
+                        score_breakdown: None,
                     }],
                 }),
             ),
@@ -1319,6 +1327,13 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
 
     #[test]
     fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
+        let breakdown = MatchScoreBreakdown {
+            total: 0.79,
+            title: 0.90,
+            artist: 0.80,
+            duration: 0.50,
+            album_bonus: 0.0,
+        };
         let mut maybe = input("Maybe Song", &["Artist B"]);
         maybe.album_artists = vec!["Album Artist B".to_owned()];
         maybe.album_id = Some("spotify:album-id:b".to_owned());
@@ -1342,11 +1357,13 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
                                 key: "vid-b".to_owned(),
                                 score: 0.79,
                                 display: "Artist B - Candidate 1".to_owned(),
+                                score_breakdown: Some(breakdown),
                             },
                             AmbiguousCandidate {
                                 key: "vid-c".to_owned(),
                                 score: 0.64,
                                 display: "Artist B - Candidate 2".to_owned(),
+                                score_breakdown: None,
                             },
                         ],
                     }),
@@ -1365,7 +1382,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
         let report = build_report(&cp, 1);
 
         assert_eq!(report.job_id, "job-report");
-        assert_eq!(report.schema_version, 2);
+        assert_eq!(report.schema_version, 3);
         assert_eq!(report.total, 4);
         assert_eq!(report.matched, 1);
         assert_eq!(report.skipped_local, 1);
@@ -1409,12 +1426,33 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
         assert_eq!(report.ambiguous[0].explicit, Some(false));
         assert_eq!(report.ambiguous[0].selected_key.as_deref(), Some("vid-b"));
         assert_eq!(report.ambiguous[0].selected_score, Some(0.79));
+        assert_eq!(
+            report.ambiguous[0].search_queries,
+            vec![
+                "Artist B Maybe Song".to_owned(),
+                "Maybe Song Input Album".to_owned(),
+                "Maybe Song".to_owned(),
+            ]
+        );
         assert_eq!(report.ambiguous[0].candidates.len(), 2);
         assert_eq!(report.ambiguous[0].candidates[0].key, "vid-b");
+        assert_eq!(
+            report.ambiguous[0].candidates[0].score_breakdown,
+            Some(breakdown)
+        );
         assert_eq!(report.not_found.len(), 1);
         assert_eq!(report.not_found[0].artists, "Artist C, Feat D");
         assert_eq!(report.not_found[0].note, "no match on the destination");
         assert_eq!(report.not_found[0].source_order, Some(3));
+        assert_eq!(
+            report.not_found[0].search_queries,
+            vec![
+                "Artist C Missing Song".to_owned(),
+                "Artist C Feat D Missing Song".to_owned(),
+                "Missing Song Input Album".to_owned(),
+                "Missing Song".to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -1429,6 +1467,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
                 artist: Some("Matched Artist".to_owned()),
                 album: Some("Matched Album".to_owned()),
                 duration_secs: Some(225),
+                score_breakdown: None,
             }),
         );
 
@@ -1468,6 +1507,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
                 artist: None,
                 album: None,
                 duration_secs: None,
+                score_breakdown: None,
             }),
         );
 
@@ -1494,6 +1534,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
                             key: "vid-b".to_owned(),
                             score: 0.70,
                             display: "Artist B - Candidate".to_owned(),
+                            score_breakdown: None,
                         }],
                     }),
                 ),
@@ -1630,6 +1671,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
                             key: "ambig-id".to_owned(),
                             score: 0.79,
                             display: "C - Candidate".to_owned(),
+                            score_breakdown: None,
                         }],
                     }),
                 ),

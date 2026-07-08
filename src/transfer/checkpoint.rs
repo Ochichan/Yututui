@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::matching::{MatchOutcome, TrackInput};
+use super::matching::{MatchOutcome, MatchScoreBreakdown, TrackInput};
 use super::{JobSpec, Stage};
 use crate::util::safe_fs;
 
@@ -133,7 +133,7 @@ pub fn report_path(job_id: &str) -> Option<PathBuf> {
     Some(transfers_dir()?.join(format!("{}.report.json", safe_job_id(job_id)?)))
 }
 
-const TRANSFER_REPORT_SCHEMA_VERSION: u32 = 2;
+const TRANSFER_REPORT_SCHEMA_VERSION: u32 = 3;
 
 /// The end-of-job summary (also serialized next to the checkpoint).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +207,8 @@ pub struct ReportRow {
     pub selected_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_score: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_queries: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,6 +216,8 @@ pub struct ReportCandidate {
     pub key: String,
     pub score: f32,
     pub display: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_breakdown: Option<MatchScoreBreakdown>,
 }
 
 impl TransferReport {
@@ -301,6 +305,7 @@ mod tests {
             artist: Some("A".to_owned()),
             album: None,
             duration_secs: Some(200),
+            score_breakdown: None,
         });
         cp.tracks[0].written = true;
         cp.tracks[1].outcome = Some(MatchOutcome::NotFound);
