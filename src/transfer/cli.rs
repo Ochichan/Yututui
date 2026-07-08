@@ -239,11 +239,7 @@ fn parse_import(args: &[&str]) -> Result<(JobSpec, bool), String> {
             "`{source_arg}` is not an existing file, `liked`, or a Spotify playlist URL/URI/id"
         ));
     };
-    let dest = dest.unwrap_or(match source {
-        // Liked songs default to the like button; playlists to a fresh playlist.
-        TransferSource::SpotifyLiked => TransferDest::YtmLikes,
-        _ => TransferDest::YtmNewPlaylist { name: None },
-    });
+    let dest = dest.unwrap_or(TransferDest::YtmNewPlaylist { name: None });
     Ok((
         JobSpec {
             source,
@@ -974,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn import_liked_defaults_to_ytm_likes_and_keeps_flags() {
+    fn import_liked_defaults_to_new_playlist_and_keeps_flags() {
         let (spec, yes) = parse_import(&[
             "liked",
             "--dry-run",
@@ -988,11 +984,22 @@ mod tests {
 
         assert!(yes);
         assert!(matches!(spec.source, TransferSource::SpotifyLiked));
-        assert!(matches!(spec.dest, TransferDest::YtmLikes));
+        assert!(matches!(
+            spec.dest,
+            TransferDest::YtmNewPlaylist { name: None }
+        ));
         assert!(spec.dry_run);
         assert_eq!(spec.min_score, 0.72);
         assert!(spec.take_best);
         assert!(spec.rematch);
+    }
+
+    #[test]
+    fn import_liked_can_still_target_ytm_likes_explicitly() {
+        let (spec, _yes) = parse_import(&["liked", "--to", "likes"]).expect("liked import");
+
+        assert!(matches!(spec.source, TransferSource::SpotifyLiked));
+        assert!(matches!(spec.dest, TransferDest::YtmLikes));
     }
 
     #[test]

@@ -1573,6 +1573,50 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
     }
 
     #[tokio::test]
+    async fn write_stage_creates_local_playlist_for_spotify_liked_source() {
+        let playlist_name = "Spotify Liked Songs Local Write Test".to_owned();
+        let mut cp = Checkpoint::new(
+            "job-liked-local-playlist".to_owned(),
+            spec(TransferDest::LocalPlaylist {
+                name: Some(playlist_name.clone()),
+            }),
+            vec![entry(
+                input("Liked Song", &["Artist A"]),
+                Some(matched("vid-liked")),
+            )],
+        );
+        cp.stage = Stage::Writing;
+        cp.dest_name = Some(default_dest_name(&cp.spec.dest, "Spotify Liked Songs"));
+        let mut ctx = JobCtx {
+            ytm: None,
+            spotify: None,
+            search_config: SearchConfig::default(),
+            market: None,
+        };
+        let mut report = build_report(&cp, 0);
+        let mut progress = Vec::new();
+
+        write_stage(&mut cp, &mut ctx, &mut |p| progress.push(p), &mut report)
+            .await
+            .unwrap_or_else(|err| {
+                panic!("local write should not need service clients: {}", err.error)
+            });
+
+        let store = crate::playlists::Playlists::load();
+        let playlist = store
+            .find(&playlist_name)
+            .expect("liked songs local import should create a playlist");
+
+        assert_eq!(playlist.songs.len(), 1);
+        assert_eq!(playlist.songs[0].video_id, "vid-liked");
+        assert_eq!(playlist.songs[0].title, "Liked Song");
+        assert_eq!(cp.dest_id.as_deref(), Some(playlist.id.as_str()));
+        assert_eq!(report.written, 1);
+        assert_eq!(progress.len(), 1);
+        assert!(cp.tracks[0].written);
+    }
+
+    #[tokio::test]
     async fn file_export_rejects_sources_that_cannot_be_exported_without_clients() {
         let mut ctx = JobCtx {
             ytm: None,

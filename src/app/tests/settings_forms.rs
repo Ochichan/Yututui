@@ -406,7 +406,7 @@ fn settings_change_updates_stored_selectors_and_toggles_across_tabs() {
 }
 
 #[test]
-fn spotify_picker_keyboard_confirm_maps_liked_to_likes_and_playlists_to_local() {
+fn spotify_picker_keyboard_confirm_maps_all_spotify_imports_to_local_playlists() {
     use crate::transfer::actor::PickerPlaylist;
 
     let mut app = App::new(100);
@@ -436,9 +436,9 @@ fn spotify_picker_keyboard_confirm_maps_liked_to_likes_and_playlists_to_local() 
             cmd,
             Cmd::Transfer(crate::transfer::actor::TransferCmd::StartJob(spec))
                 if matches!(spec.source, crate::transfer::TransferSource::SpotifyLiked)
-                    && matches!(spec.dest, crate::transfer::TransferDest::YtmLikes)
+                    && matches!(spec.dest, crate::transfer::TransferDest::LocalPlaylist { name: None })
         )),
-        "liked songs import should target YTM likes"
+        "liked songs import should target a local library playlist"
     );
 
     app.transfer_running = false;

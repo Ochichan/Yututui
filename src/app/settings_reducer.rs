@@ -1079,12 +1079,7 @@ impl App {
         self.dirty = true;
         // The TUI can't browse account playlists, so the picker lands imports in the app's own
         // Library playlists — playable the moment the job finishes.
-        let dest = match item.source {
-            crate::transfer::TransferSource::SpotifyLiked => {
-                crate::transfer::TransferDest::YtmLikes
-            }
-            _ => crate::transfer::TransferDest::LocalPlaylist { name: None },
-        };
+        let dest = crate::transfer::TransferDest::LocalPlaylist { name: None };
         let spec = crate::transfer::JobSpec {
             source: item.source,
             dest,

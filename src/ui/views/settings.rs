@@ -862,7 +862,7 @@ pub fn render_confirm(frame: &mut Frame, app: &App, area: Rect, confirm: Setting
 }
 
 /// The Spotify playlist picker overlay (Import from Spotify…): ↑/↓ select, Enter
-/// imports into a new YTM playlist (Liked Songs → the like button), Esc closes.
+/// imports into a local Library playlist, Esc closes.
 pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
     let Some(picker) = app.overlays.spotify_picker.as_ref() else {
         return;
