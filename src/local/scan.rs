@@ -299,6 +299,11 @@ fn apply_download_sidecar(track: &mut LocalTrack, sidecar: &crate::downloads::Do
     }
     track.origin_key = sidecar.origin_key.as_deref().and_then(clean_sidecar_text);
     track.origin_url = sidecar.origin_url.as_deref().and_then(clean_sidecar_text);
+    track.import_session_id = sidecar
+        .import_session_id
+        .as_deref()
+        .and_then(clean_sidecar_text);
+    track.import_source_order = sidecar.import_source_order.filter(|order| *order > 0);
 }
 
 fn clean_sidecar_text(text: &str) -> Option<String> {
@@ -392,6 +397,7 @@ mod tests {
             Some("spotify:track:abc".to_owned()),
             Some("https://open.spotify.com/track/abc".to_owned()),
         );
+        song = song.with_import_session(Some("sp2yt-20260708-abcd".to_owned()), Some(7));
         crate::downloads::write_sidecar(&song, &audio).unwrap();
 
         let result = scan_roots(
@@ -415,6 +421,11 @@ mod tests {
             track.origin_url.as_deref(),
             Some("https://open.spotify.com/track/abc")
         );
+        assert_eq!(
+            track.import_session_id.as_deref(),
+            Some("sp2yt-20260708-abcd")
+        );
+        assert_eq!(track.import_source_order, Some(7));
 
         let _ = fs::remove_dir_all(dir);
     }

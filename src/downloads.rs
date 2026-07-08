@@ -62,6 +62,10 @@ pub struct DownloadSidecar {
     pub origin_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_source_order: Option<u32>,
     pub source: SearchSource,
 }
 
@@ -81,6 +85,8 @@ impl Default for DownloadSidecar {
             isrc: None,
             origin_key: None,
             origin_url: None,
+            import_session_id: None,
+            import_source_order: None,
             source: SearchSource::Youtube,
         }
     }
@@ -102,6 +108,8 @@ impl DownloadSidecar {
             isrc: song.isrc.clone(),
             origin_key: song.origin_key.clone(),
             origin_url: song.origin_url.clone(),
+            import_session_id: song.import_session_id.clone(),
+            import_source_order: song.import_source_order,
             source: song.source,
         }
     }
@@ -188,6 +196,8 @@ impl DownloadStore {
                     isrc: rec.isrc.clone(),
                     origin_key: rec.origin_key.clone(),
                     origin_url: rec.origin_url.clone(),
+                    import_session_id: rec.import_session_id.clone(),
+                    import_source_order: rec.import_source_order,
                     duration_secs: rec.duration_secs,
                     yt_video_id: rec.yt_video_id.clone(),
                     ..song
@@ -462,6 +472,7 @@ mod tests {
             Some("spotify:track:abc".to_owned()),
             Some("https://open.spotify.com/track/abc".to_owned()),
         );
+        song = song.with_import_session(Some("sp2yt-20260708-abcd".to_owned()), Some(7));
 
         write_sidecar(&song, &audio).unwrap();
         let sidecar = read_sidecar(&audio).unwrap().expect("sidecar exists");
@@ -481,6 +492,11 @@ mod tests {
             sidecar.origin_url.as_deref(),
             Some("https://open.spotify.com/track/abc")
         );
+        assert_eq!(
+            sidecar.import_session_id.as_deref(),
+            Some("sp2yt-20260708-abcd")
+        );
+        assert_eq!(sidecar.import_source_order, Some(7));
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -541,7 +541,7 @@ fn write_local(
     let total = writes.len() as u32;
     let mut done = 0u32;
     for (idx, video_id) in writes {
-        let song = song_for_entry(&cp.tracks[idx], &video_id);
+        let song = song_for_entry(&cp.tracks[idx], &video_id, &cp.job_id, idx as u32 + 1);
         match store.add(&key, song) {
             crate::playlists::AddResult::Added | crate::playlists::AddResult::Duplicate => {
                 cp.tracks[idx].written = true;
@@ -570,7 +570,7 @@ fn write_local(
 /// Reconstruct a playable `Song` for a write target. The YouTube candidate supplies the
 /// playable key; the source input supplies canonical music metadata so downloaded imports
 /// carry Spotify/CSV album grouping and track ordering into Local Deck.
-fn song_for_entry(entry: &TrackEntry, video_id: &str) -> Song {
+fn song_for_entry(entry: &TrackEntry, video_id: &str, job_id: &str, source_order: u32) -> Song {
     let (matched_title, matched_artist, matched_album, matched_duration_secs) = match &entry.outcome
     {
         Some(MatchOutcome::Matched {
@@ -609,6 +609,7 @@ fn song_for_entry(entry: &TrackEntry, video_id: &str) -> Song {
         Some(entry.input.source_key.clone()),
         entry.input.source_url.clone(),
     )
+    .with_import_session(Some(job_id.to_owned()), Some(source_order))
 }
 
 /// Create (once) or find the YTM destination playlist; the id is checkpointed before
@@ -1502,7 +1503,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
             }),
         );
 
-        let song = song_for_entry(&track, "vid-1");
+        let song = song_for_entry(&track, "vid-1", "sp2yt-test", 7);
 
         assert_eq!(song.video_id, "vid-1");
         assert_eq!(song.title, "Input Title");
@@ -1519,13 +1520,15 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
             song.origin_url.as_deref(),
             Some("https://open.spotify.com/track/input")
         );
+        assert_eq!(song.import_session_id.as_deref(), Some("sp2yt-test"));
+        assert_eq!(song.import_source_order, Some(7));
     }
 
     #[test]
     fn song_for_entry_falls_back_to_source_input_when_candidate_metadata_is_missing() {
         let track = entry(input("Input Title", &["Artist A", "Artist B"]), None);
 
-        let song = song_for_entry(&track, "vid-fallback");
+        let song = song_for_entry(&track, "vid-fallback", "sp2yt-test", 3);
 
         assert_eq!(song.video_id, "vid-fallback");
         assert_eq!(song.title, "Input Title");
@@ -1533,6 +1536,8 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
         assert_eq!(song.album.as_deref(), Some("Input Album"));
         assert_eq!(song.duration, "1:02");
         assert_eq!(song.duration_secs, Some(62));
+        assert_eq!(song.import_session_id.as_deref(), Some("sp2yt-test"));
+        assert_eq!(song.import_source_order, Some(3));
     }
 
     #[test]
@@ -1554,13 +1559,15 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
             }),
         );
 
-        let song = song_for_entry(&track, "vid-empty");
+        let song = song_for_entry(&track, "vid-empty", "sp2yt-test", 11);
 
         assert_eq!(song.title, "Matched Title");
         assert_eq!(song.artist, "");
         assert_eq!(song.album, None);
         assert_eq!(song.duration, "");
         assert_eq!(song.duration_secs, None);
+        assert_eq!(song.import_session_id.as_deref(), Some("sp2yt-test"));
+        assert_eq!(song.import_source_order, Some(11));
     }
 
     #[test]

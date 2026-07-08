@@ -178,6 +178,10 @@ pub struct LocalTrack {
     pub origin_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_source_order: Option<u32>,
 }
 
 impl LocalTrack {
@@ -212,6 +216,8 @@ impl LocalTrack {
             linked_video_id: None,
             origin_key: None,
             origin_url: None,
+            import_session_id: None,
+            import_source_order: None,
         }
     }
 
@@ -233,6 +239,7 @@ impl LocalTrack {
             self.origin_key.clone(),
             self.origin_url.clone(),
         )
+        .with_import_session(self.import_session_id.clone(), self.import_source_order)
     }
 
     pub fn display_title(&self) -> String {
@@ -402,6 +409,8 @@ mod tests {
         track.isrc = Some("ISRC123".to_owned());
         track.origin_key = Some("spotify:track:abc".to_owned());
         track.origin_url = Some("https://open.spotify.com/track/abc".to_owned());
+        track.import_session_id = Some("sp2yt-20260708-abcd".to_owned());
+        track.import_source_order = Some(7);
         track.duration_ms = Some(185_000);
         track.linked_video_id = Some("abcdefghijk".to_owned());
 
@@ -419,6 +428,11 @@ mod tests {
             song.origin_url.as_deref(),
             Some("https://open.spotify.com/track/abc")
         );
+        assert_eq!(
+            song.import_session_id.as_deref(),
+            Some("sp2yt-20260708-abcd")
+        );
+        assert_eq!(song.import_source_order, Some(7));
         assert_eq!(song.duration, "3:05");
         assert_eq!(song.duration_secs, Some(185));
         assert_eq!(

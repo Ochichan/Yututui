@@ -142,6 +142,11 @@ pub struct Song {
     /// Human-openable source URL, when the import source provides one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_url: Option<String>,
+    /// Transfer/import session that produced this row, if it came through the import flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_source_order: Option<u32>,
     /// Numeric duration in seconds, when known exactly (search results, imports). Display
     /// still uses `duration`; consumers needing seconds fall back to parsing that string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,6 +325,8 @@ impl Song {
             isrc: None,
             origin_key: None,
             origin_url: None,
+            import_session_id: None,
+            import_source_order: None,
             duration_secs: None,
             source: SearchSource::Youtube,
             playable: None,
@@ -375,6 +382,8 @@ impl Song {
             isrc: None,
             origin_key: None,
             origin_url: None,
+            import_session_id: None,
+            import_source_order: None,
             duration_secs: None,
             source,
             playable: Some(playable),
@@ -412,6 +421,8 @@ impl Song {
             isrc: None,
             origin_key: None,
             origin_url: None,
+            import_session_id: None,
+            import_source_order: None,
             duration_secs: None,
             source: SearchSource::Youtube,
             playable: None,
@@ -451,6 +462,8 @@ impl Song {
             isrc: self.isrc.clone(),
             origin_key: self.origin_key.clone(),
             origin_url: self.origin_url.clone(),
+            import_session_id: self.import_session_id.clone(),
+            import_source_order: self.import_source_order,
             duration_secs: self.duration_secs,
             source: self.source,
             playable: self.playable.clone(),
@@ -481,6 +494,16 @@ impl Song {
         self.isrc = sanitize_optional_metadata(isrc, MAX_PROVIDER_ID_CHARS);
         self.origin_key = sanitize_optional_metadata(origin_key, MAX_PROVIDER_ID_CHARS);
         self.origin_url = sanitize_optional_metadata(origin_url, MAX_ORIGIN_URL_CHARS);
+        self
+    }
+
+    pub fn with_import_session(
+        mut self,
+        session_id: Option<String>,
+        source_order: Option<u32>,
+    ) -> Self {
+        self.import_session_id = sanitize_optional_metadata(session_id, MAX_PROVIDER_ID_CHARS);
+        self.import_source_order = source_order.filter(|order| *order > 0);
         self
     }
 

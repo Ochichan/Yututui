@@ -387,6 +387,8 @@ pub(super) fn bare_local(path: &str, title: &str) -> Song {
         isrc: None,
         origin_key: None,
         origin_url: None,
+        import_session_id: None,
+        import_source_order: None,
         duration_secs: None,
         source: SearchSource::Youtube,
         playable: None,
