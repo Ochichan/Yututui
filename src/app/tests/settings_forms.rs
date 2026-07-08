@@ -681,6 +681,7 @@ fn transfer_events_surface_playlist_progress_and_failures() {
     assert!(app.status.text.contains("Import finished"));
     assert!(app.status.text.contains("ytt transfer session sp2yt-1"));
     assert!(app.status.text.contains("Shift+D"));
+    assert!(app.status.text.contains("Import Sessions"));
 
     app.update(Msg::Transfer(TransferEvent::JobFailed {
         job_id: "sp2yt-1".to_owned(),

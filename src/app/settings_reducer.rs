@@ -30,13 +30,13 @@ fn spotify_row_state(token_client_id: Option<&str>, cfg_client_id: &str) -> (boo
 fn transfer_done_status(report: &crate::transfer::checkpoint::TransferReport) -> String {
     if crate::i18n::is_korean() {
         format!(
-            "가져오기 완료: {} · 세션 보기: ytt transfer session {} · Library > Playlists에서 Shift+D로 다운로드",
+            "가져오기 완료: {} · 세션 보기: ytt transfer session {} · Library > Playlists에서 Shift+D 다운로드 후 Local Deck > Import Sessions",
             report.render_text(),
             report.job_id
         )
     } else {
         format!(
-            "Import finished: {} · review: ytt transfer session {} · Library > Playlists: Shift+D downloads",
+            "Import finished: {} · review: ytt transfer session {} · Library > Playlists: Shift+D downloads, then Local Deck > Import Sessions",
             report.render_text(),
             report.job_id
         )

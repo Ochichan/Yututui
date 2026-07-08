@@ -548,7 +548,7 @@ fn next_step_lines(report: &TransferReport, session: Option<&ImportSession>) -> 
             .map(|session| session.destination.display())
             .unwrap_or_else(|| "the imported playlist".to_owned());
         lines.push(format!(
-            "Next: open Library > Playlists > {dest}, press Shift+D to download accepted tracks, then rescan Local Deck."
+            "Next: open Library > Playlists > {dest}, press Shift+D to download accepted tracks, rescan Local Deck, then open Import Sessions."
         ));
     }
     lines
@@ -1387,6 +1387,7 @@ mod tests {
         assert!(lines[1].contains("Imported Mix"));
         assert!(lines[1].contains("Shift+D"));
         assert!(lines[1].contains("Local Deck"));
+        assert!(lines[1].contains("Import Sessions"));
     }
 
     #[tokio::test]
