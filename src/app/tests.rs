@@ -9967,6 +9967,23 @@ fn buffer_contains(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
 }
 
 #[test]
+fn ai_empty_state_while_playing_renders_groove_frame() {
+    let mut app = app_playing(1, 0);
+    app.mode = Mode::Ai;
+    app.config.animations.master = true;
+    app.anim.anim_frame = 10;
+
+    assert!(app.ai_mascot_active());
+
+    let buf = render_app_buffer(&app, 100, 30);
+    assert!(
+        buffer_contains(&buf, "*/ DJ"),
+        "playing AI empty state should render a non-idle groove pose"
+    );
+    assert!(buffer_contains(&buf, "GEM"));
+}
+
+#[test]
 fn now_playing_overlay_render_registers_state_specific_actions() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = radio_card("Artist - Track");

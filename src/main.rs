@@ -17,6 +17,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
+fn cli_identity() -> (&'static str, &'static str) {
+    match option_env!("CARGO_BIN_NAME") {
+        Some("ytt-dev") => ("ytt-dev", concat!(env!("CARGO_PKG_VERSION"), "-dev")),
+        _ => ("ytt", env!("CARGO_PKG_VERSION")),
+    }
+}
+
 fn main() -> Result<()> {
     // Windows shell identity (media flyout, taskbar grouping). Before anything else —
     // the daemon path below inherits it, and it must precede any window/session.
@@ -29,25 +36,27 @@ fn main() -> Result<()> {
     if let Some(arg) = std::env::args_os().nth(1) {
         match arg.to_string_lossy().as_ref() {
             "--version" | "-V" => {
-                println!("ytt {}", env!("CARGO_PKG_VERSION"));
+                let (bin, version) = cli_identity();
+                println!("{bin} {version}");
                 return Ok(());
             }
             "--help" | "-h" => {
-                println!("ytt {}", env!("CARGO_PKG_VERSION"));
+                let (bin, version) = cli_identity();
+                println!("{bin} {version}");
                 println!();
-                println!("Usage: ytt [OPTIONS]");
-                println!("       ytt -r <command>     Control a running instance");
-                println!("       ytt daemon <command> Manage the headless music daemon");
-                println!("       ytt auth <service>   Connect Last.fm / ListenBrainz / Spotify");
+                println!("Usage: {bin} [OPTIONS]");
+                println!("       {bin} -r <command>     Control a running instance");
+                println!("       {bin} daemon <command> Manage the headless music daemon");
+                println!("       {bin} auth <service>   Connect Last.fm / ListenBrainz / Spotify");
                 println!(
-                    "       ytt transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
+                    "       {bin} transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
                 );
-                println!("       ytt doctor [-v]      Check your environment and exit");
-                println!("       ytt doctor privacy [--cleanup]");
-                println!("       ytt doctor terminal --json");
+                println!("       {bin} doctor [-v]      Check your environment and exit");
+                println!("       {bin} doctor privacy [--cleanup]");
+                println!("       {bin} doctor terminal --json");
                 println!("                             Report terminal capability hints");
                 println!(
-                    "       ytt tools <cmd>      Manage the app-managed yt-dlp (status, update)"
+                    "       {bin} tools <cmd>      Manage the app-managed yt-dlp (status, update)"
                 );
                 println!();
                 println!("Launch the terminal YouTube Music player.");
@@ -865,7 +874,7 @@ async fn run(
     // surface it in the About card (+ nav-brand dot + one-time toast). Never blocks startup;
     // no-ops entirely when disabled or on a development build.
     update::spawn_update_check(
-        env!("CARGO_PKG_VERSION"),
+        cli_identity().1,
         cfg.update_check_enabled,
         runtime::sink(worker_tx.clone(), RuntimeEvent::Update),
     );
