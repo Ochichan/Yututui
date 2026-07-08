@@ -227,10 +227,13 @@ mod tests {
 
     #[test]
     fn local_session_cache_round_trips() {
-        let path = std::env::temp_dir().join(format!(
+        let dir = std::env::temp_dir().join(format!(
             "ytm-tui-session-local-round-trip-{}",
             std::process::id()
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+        safe_fs::ensure_private_dir(&dir).unwrap();
+        let path = dir.join("session.json");
         let mut cache = SessionCache::from_last_mode(LastMode::Local);
         cache.normal_queue = Some(snapshot("normal"));
         cache.radio_queue = Some(snapshot("radio"));
@@ -249,7 +252,7 @@ mod tests {
         );
         assert_eq!(loaded.normal_queue.as_ref().map(|s| s.songs.len()), Some(1));
         assert_eq!(loaded.radio_queue.as_ref().map(|s| s.songs.len()), Some(1));
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
