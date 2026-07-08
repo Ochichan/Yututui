@@ -264,7 +264,7 @@ pub enum Cmd {
         source: ArtSource,
     },
     /// Download a track to disk (best audio + tags + cover art).
-    Download(Song),
+    Download(Box<Song>),
     /// Point the download actor at a new folder for future downloads.
     SetDownloadDir(PathBuf),
     /// Prefetch a track's direct stream URL for instant skip.

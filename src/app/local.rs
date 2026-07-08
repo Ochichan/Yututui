@@ -131,7 +131,12 @@ impl App {
         if k.modifiers.is_empty() {
             match k.code {
                 KeyCode::Char(' ') => return self.on_player_action(Action::TogglePause),
-                KeyCode::Char('a') => return self.local_enqueue_selected(),
+                KeyCode::Char('a') => {
+                    if self.local_accept_selected_import_candidate() {
+                        return Vec::new();
+                    }
+                    return self.local_enqueue_selected();
+                }
                 KeyCode::Char('c') => {
                     self.open_queue_popup();
                     return Vec::new();
@@ -158,6 +163,9 @@ impl App {
             return Vec::new();
         }
         if k.modifiers.is_empty() && matches!(k.code, KeyCode::Char('r')) {
+            if self.local_reject_selected_import_row() {
+                return Vec::new();
+            }
             return self.request_local_scan(false);
         }
         if matches!(k.code, KeyCode::Char('R'))

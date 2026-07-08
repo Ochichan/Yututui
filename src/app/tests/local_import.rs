@@ -1,6 +1,9 @@
 use super::*;
-use crate::transfer::checkpoint::ReportCandidate;
-use crate::transfer::matching::MatchScoreBreakdown;
+use crate::transfer::checkpoint::{Checkpoint, ReportCandidate, ReviewDecision, TrackEntry};
+use crate::transfer::matching::{
+    AmbiguousCandidate, MatchOutcome, MatchScoreBreakdown, TrackInput,
+};
+use crate::transfer::{JobSpec, TransferDest, TransferSource};
 use std::path::PathBuf;
 
 fn local_deck_track(
@@ -45,6 +48,62 @@ fn app_with_local_deck_index(tracks: Vec<crate::local::LocalTrack>) -> App {
         },
     }));
     app
+}
+
+fn save_ambiguous_import_job(job_id: &str) {
+    let mut cp = Checkpoint::new(
+        job_id.to_owned(),
+        JobSpec {
+            source: TransferSource::SpotifyPlaylist {
+                id: "spotify-playlist".to_owned(),
+            },
+            dest: TransferDest::LocalPlaylist { name: None },
+            dry_run: true,
+            min_score: 0.80,
+            take_best: false,
+            rematch: false,
+        },
+        vec![TrackEntry {
+            input: TrackInput {
+                title: "Maybe".to_owned(),
+                artists: vec!["Artist".to_owned()],
+                album_artists: vec!["Album Artist".to_owned()],
+                album: Some("Album".to_owned()),
+                album_id: None,
+                album_uri: None,
+                album_release_date: Some("2024-05-01".to_owned()),
+                disc_number: Some(1),
+                track_number: Some(1),
+                duration_secs: Some(180),
+                isrc: Some("USRC17607839".to_owned()),
+                explicit: Some(false),
+                source_url: Some("https://open.spotify.com/track/maybe".to_owned()),
+                source_key: "spotify:track:maybe".to_owned(),
+                known_video_id: None,
+            },
+            outcome: Some(MatchOutcome::Ambiguous {
+                candidates: vec![AmbiguousCandidate {
+                    key: "dQw4w9WgXcQ".to_owned(),
+                    score: 0.74,
+                    display: "Artist - Maybe".to_owned(),
+                    score_breakdown: Some(MatchScoreBreakdown {
+                        total: 0.74,
+                        title: 0.85,
+                        artist: 1.0,
+                        duration: 0.80,
+                        album_bonus: 0.05,
+                    }),
+                }],
+            }),
+            review_decision: None,
+            written: false,
+        }],
+    );
+    cp.stage = crate::transfer::Stage::Writing;
+    cp.save().expect("save checkpoint");
+    crate::transfer::session::ImportSession::from_checkpoint(&cp)
+        .save()
+        .expect("save import session");
 }
 
 #[test]
@@ -451,6 +510,69 @@ fn local_deck_import_row_download_queues_import_inbox_request() {
     );
     assert_eq!(request.song.import_session_id.as_deref(), Some(session_id));
     assert_eq!(request.song.import_source_order, Some(7));
+}
+
+#[test]
+fn local_deck_import_review_keys_accept_and_reject_rows() {
+    let accept_id = "sp2yt-local-review-accept";
+    save_ambiguous_import_job(accept_id);
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = accept_id.to_owned();
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open.is_empty());
+    app.local_mode.ui.filter_query.clear();
+    assert_eq!(
+        app.local_row_text(&app.local_visible_rows()[0]),
+        "#1 review Maybe - Artist"
+    );
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('a'))));
+    assert!(cmds.is_empty());
+    let accepted =
+        crate::transfer::session::ImportSession::load(accept_id).expect("load accepted session");
+    assert!(matches!(
+        accepted.rows[0].review_decision,
+        Some(ReviewDecision::Accepted { ref key, .. }) if key == "dQw4w9WgXcQ"
+    ));
+    assert_eq!(
+        accepted.rows[0].status,
+        crate::transfer::session::ImportSessionRowStatus::Matched
+    );
+    let details = app.local_details_lines();
+    for expected in ["Decision: accepted", "Download: ready"] {
+        assert!(
+            details.iter().any(|line| line == expected),
+            "missing {expected:?} in {details:?}"
+        );
+    }
+
+    let download = app.update(Msg::Key(key(KeyCode::Char('d'))));
+    assert!(matches!(download.as_slice(), [Cmd::Download(_)]));
+
+    let reject_id = "sp2yt-local-review-reject";
+    save_ambiguous_import_job(reject_id);
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = reject_id.to_owned();
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open.is_empty());
+    app.local_mode.ui.filter_query.clear();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
+    assert!(cmds.is_empty());
+    let rejected =
+        crate::transfer::session::ImportSession::load(reject_id).expect("load rejected session");
+    assert_eq!(
+        rejected.rows[0].review_decision,
+        Some(ReviewDecision::Rejected)
+    );
+    assert_eq!(
+        rejected.rows[0].status,
+        crate::transfer::session::ImportSessionRowStatus::Ambiguous
+    );
+    assert!(app.status.text.contains("Rejected import row"));
 }
 
 #[test]

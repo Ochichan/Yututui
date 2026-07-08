@@ -129,7 +129,7 @@ impl App {
                 .sources
                 .insert(song.video_id.clone(), song.clone());
             self.downloads.dispatched += 1;
-            cmds.push(Cmd::Download(song));
+            cmds.push(Cmd::Download(Box::new(song)));
         }
         cmds
     }

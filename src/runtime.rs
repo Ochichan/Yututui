@@ -1152,7 +1152,7 @@ impl RuntimeHandles {
                 {
                     self.download_handle.start_for_import(request)
                 } else {
-                    self.download_handle.start(song)
+                    self.download_handle.start(*song)
                 };
                 if let Err(error) = result {
                     tracing::warn!(video_id = %error.video_id, "download queue full; dropping request");

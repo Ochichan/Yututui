@@ -16,6 +16,7 @@ pub mod matching;
 mod organize_cli;
 pub mod organize_plan;
 mod report_cli;
+pub mod review_action;
 mod review_cli;
 pub mod session;
 

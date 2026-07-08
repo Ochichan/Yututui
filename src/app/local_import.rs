@@ -336,6 +336,79 @@ impl App {
             .collect()
     }
 
+    pub(in crate::app) fn local_accept_selected_import_candidate(&mut self) -> bool {
+        let Some((session_id, source_order)) = self.selected_manual_review_import_row() else {
+            return false;
+        };
+        match crate::transfer::review_action::accept_first_candidate(&session_id, source_order) {
+            Ok(summary) => {
+                self.status.kind = StatusKind::Info;
+                self.status.text = match summary.display {
+                    Some(display) => format!(
+                        "{} #{}: {display}",
+                        t!("Accepted import row", "임포트 행 수락"),
+                        summary.source_order
+                    ),
+                    None => format!(
+                        "{} #{}",
+                        t!("Accepted import row", "임포트 행 수락"),
+                        summary.source_order
+                    ),
+                };
+            }
+            Err(error) => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!(
+                    "{}: {error:#}",
+                    t!("Import review failed", "임포트 검토 실패")
+                );
+            }
+        }
+        self.dirty = true;
+        true
+    }
+
+    pub(in crate::app) fn local_reject_selected_import_row(&mut self) -> bool {
+        let Some((session_id, source_order)) = self.selected_manual_review_import_row() else {
+            return false;
+        };
+        match crate::transfer::review_action::reject_row(&session_id, source_order) {
+            Ok(summary) => {
+                self.status.kind = StatusKind::Info;
+                self.status.text = format!(
+                    "{} #{}",
+                    t!("Rejected import row", "임포트 행 거부"),
+                    summary.source_order
+                );
+            }
+            Err(error) => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!(
+                    "{}: {error:#}",
+                    t!("Import review failed", "임포트 검토 실패")
+                );
+            }
+        }
+        self.dirty = true;
+        true
+    }
+
+    fn selected_manual_review_import_row(&self) -> Option<(String, u32)> {
+        let row = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned()?;
+        let crate::local::LocalRowId::ImportSessionRow {
+            session_id,
+            source_order,
+        } = row
+        else {
+            return None;
+        };
+        let row = load_import_session_row(&session_id, source_order)?;
+        import_session_row_accepts_manual_review_action(&row).then_some((session_id, source_order))
+    }
+
     fn import_download_dedupe_index(&self) -> ImportDownloadDedupeIndex {
         let mut existing = ImportDownloadDedupeIndex::from_download_store(&self.download_store);
         for song in &self.library_ui.downloaded {
@@ -635,6 +708,15 @@ fn import_session_row_is_download_accepted(row: &ImportSessionRow) -> bool {
         && !matches!(
             row.review_decision,
             Some(ReviewDecision::Rejected | ReviewDecision::Skipped)
+        )
+}
+
+fn import_session_row_accepts_manual_review_action(row: &ImportSessionRow) -> bool {
+    !row.written
+        && row.local_path.is_none()
+        && !matches!(
+            row.status,
+            ImportSessionRowStatus::Matched | ImportSessionRowStatus::SkippedLocal
         )
 }
 
