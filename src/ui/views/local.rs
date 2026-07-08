@@ -101,11 +101,13 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         )
         .to_owned()
     } else if app.local_mode.index.scanning {
-        t!(
-            "Scanning the download folder for local audio...",
-            "다운로드 폴더의 로컬 오디오를 스캔 중..."
-        )
-        .to_owned()
+        app.local_scan_progress_text().unwrap_or_else(|| {
+            t!(
+                "Scanning the download folder for local audio...",
+                "다운로드 폴더의 로컬 오디오를 스캔 중..."
+            )
+            .to_owned()
+        })
     } else if let Some(summary) = &app.local_mode.index.last_summary {
         if summary.errors > 0 {
             format!(

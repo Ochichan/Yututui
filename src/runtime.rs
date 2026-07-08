@@ -293,6 +293,10 @@ fn app_msg_policy(msg: &Msg) -> EventPolicy {
             lane: Lane::Telemetry,
             key: Key::MediaArtVideo,
         },
+        Msg::Local(crate::app::LocalMsg::ScanProgress(_)) => EventPolicy::CoalesceLatest {
+            lane: Lane::Telemetry,
+            key: Key::LocalScanProgress,
+        },
         Msg::Tools(crate::tools::ToolsEvent::Progress { .. }) => EventPolicy::CoalesceLatest {
             lane: Lane::Telemetry,
             key: Key::ToolProgress,
@@ -1052,7 +1056,16 @@ impl RuntimeHandles {
                 } => {
                     let tx = self.worker_tx.clone();
                     tokio::task::spawn_blocking(move || {
-                        let mut result = crate::local::scan_roots(&roots, &previous);
+                        let progress_tx = tx.clone();
+                        let mut result =
+                            crate::local::scan_roots_with_progress(&roots, &previous, |progress| {
+                                emit(
+                                    &progress_tx,
+                                    RuntimeEvent::App(Msg::Local(
+                                        crate::app::LocalMsg::ScanProgress(progress),
+                                    )),
+                                );
+                            });
                         if let Some(path) = index_path.as_deref()
                             && let Err(error) = result.index.save(path)
                         {
@@ -1635,6 +1648,15 @@ mod tests {
             EventPolicy::CoalesceLatest {
                 lane: EventLane::Telemetry,
                 key: EventKey::MediaArtVideo,
+            }
+        );
+        assert_eq!(
+            app_msg_policy(&Msg::Local(crate::app::LocalMsg::ScanProgress(
+                crate::local::LocalScanProgress::default(),
+            ))),
+            EventPolicy::CoalesceLatest {
+                lane: EventLane::Telemetry,
+                key: EventKey::LocalScanProgress,
             }
         );
         assert_eq!(

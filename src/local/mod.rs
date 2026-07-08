@@ -15,4 +15,7 @@ pub use model::{
     AudioFormat, FileFingerprint, LocalAlbum, LocalAlbumId, LocalArtist, LocalArtistId, LocalRowId,
     LocalSmartList, LocalTrack, LocalTrackId,
 };
-pub use scan::{LocalScanResult, LocalScanRoot, LocalScanSummary, ScanError, scan_roots};
+pub use scan::{
+    LocalScanProgress, LocalScanResult, LocalScanRoot, LocalScanSummary, ScanError, scan_roots,
+    scan_roots_with_progress,
+};

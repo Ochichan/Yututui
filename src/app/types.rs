@@ -385,6 +385,7 @@ pub enum LocalMsg {
         index_path: Option<PathBuf>,
         result: crate::local::LocalScanResult,
     },
+    ScanProgress(crate::local::LocalScanProgress),
     ScanFailed {
         error: String,
     },

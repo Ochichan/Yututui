@@ -2809,6 +2809,51 @@ fn local_deck_r_key_requests_incremental_rescan() {
 }
 
 #[test]
+fn local_deck_scan_progress_updates_status_line_until_finished() {
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.config.download_dir = Some(PathBuf::from("/tmp/music"));
+
+    app.request_local_scan(false);
+    app.update(Msg::Local(LocalMsg::ScanProgress(
+        crate::local::LocalScanProgress {
+            seen: 3,
+            indexed: 2,
+            skipped: 1,
+            errors: 1,
+            current: Some(PathBuf::from("/tmp/music/song.flac")),
+        },
+    )));
+
+    assert!(app.local_mode.index.scanning);
+    assert_eq!(
+        app.local_mode
+            .index
+            .progress
+            .as_ref()
+            .map(|progress| progress.seen),
+        Some(3)
+    );
+    assert!(app.status.text.contains("3 seen"));
+    assert!(app.status.text.contains("2 indexed"));
+    assert!(app.status.text.contains("song.flac"));
+    let buf = render_app_buffer(&app, 100, 24);
+    assert!(buffer_contains(&buf, "3 seen"));
+    assert!(buffer_contains(&buf, "2 indexed"));
+
+    app.update(Msg::Local(LocalMsg::ScanFinished {
+        index_path: None,
+        result: crate::local::LocalScanResult {
+            index: crate::local::LocalIndex::default(),
+            summary: crate::local::LocalScanSummary::default(),
+            errors: Vec::new(),
+        },
+    }));
+
+    assert!(app.local_mode.index.progress.is_none());
+    assert!(!app.local_mode.index.scanning);
+}
+
+#[test]
 fn local_deck_slash_filters_index_tracks_and_activation_uses_visible_row() {
     let mut app = App::new(100);
     app.apply_local_mode_confirm(LocalModeConfirm::Enter);

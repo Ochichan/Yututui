@@ -321,6 +321,7 @@ impl App {
                 self.local_mode.index.loaded = true;
                 self.local_mode.index.loading = false;
                 self.local_mode.index.scanning = false;
+                self.local_mode.index.progress = None;
                 self.local_mode.index.errors.clear();
                 self.clamp_local_after_index_change();
                 self.dirty = true;
@@ -335,6 +336,7 @@ impl App {
                 self.local_mode.index.loaded = true;
                 self.local_mode.index.loading = false;
                 self.local_mode.index.scanning = false;
+                self.local_mode.index.progress = None;
                 self.local_mode.index.last_summary = Some(result.summary.clone());
                 self.local_mode.index.errors = result.errors;
                 self.clamp_local_after_index_change();
@@ -352,9 +354,19 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            LocalMsg::ScanProgress(progress) => {
+                if self.local_mode.index.scanning {
+                    self.local_mode.index.progress = Some(progress.clone());
+                    self.status.kind = StatusKind::Info;
+                    self.status.text = format_local_scan_progress(&progress);
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             LocalMsg::ScanFailed { error } => {
                 self.local_mode.index.loading = false;
                 self.local_mode.index.scanning = false;
+                self.local_mode.index.progress = None;
                 self.status.kind = StatusKind::Error;
                 self.status.text =
                     format!("{}: {error}", t!("Local scan failed", "로컬 스캔 실패"));
@@ -399,6 +411,7 @@ impl App {
         self.local_mode.index.loaded = true;
         self.local_mode.index.loading = false;
         self.local_mode.index.scanning = true;
+        self.local_mode.index.progress = Some(crate::local::LocalScanProgress::default());
         self.local_mode.index.errors.clear();
         self.status.kind = StatusKind::Info;
         self.status.text = t!("Scanning local music...", "로컬 음악 스캔 중...").to_owned();
@@ -517,6 +530,14 @@ impl App {
 
     pub(crate) fn local_total_rows_len(&self) -> usize {
         self.local_rows_for_query("").len()
+    }
+
+    pub(crate) fn local_scan_progress_text(&self) -> Option<String> {
+        self.local_mode
+            .index
+            .progress
+            .as_ref()
+            .map(format_local_scan_progress)
     }
 
     fn local_rows_for_query(&self, query: &str) -> Vec<crate::local::LocalRowId> {
@@ -1510,6 +1531,27 @@ fn format_embedded_cover_count(count: usize) -> String {
             t!("tracks with embedded cover", "곡에 내장 커버")
         )
     }
+}
+
+fn format_local_scan_progress(progress: &crate::local::LocalScanProgress) -> String {
+    let mut text = format!(
+        "{}: {} {}, {} {}, {} {}",
+        t!("Scanning local music", "로컬 음악 스캔 중"),
+        progress.seen,
+        t!("seen", "확인"),
+        progress.indexed,
+        t!("indexed", "인덱싱"),
+        progress.skipped,
+        t!("skipped", "건너뜀")
+    );
+    if progress.errors > 0 {
+        text.push_str(&format!(", {} {}", progress.errors, t!("errors", "오류")));
+    }
+    if let Some(current) = &progress.current {
+        text.push_str(" - ");
+        text.push_str(&current.display().to_string());
+    }
+    text
 }
 
 fn local_album_matches_filter(album: &crate::local::LocalAlbum, query: &str) -> bool {

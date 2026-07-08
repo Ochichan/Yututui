@@ -59,13 +59,31 @@ pub struct LocalScanResult {
     pub errors: Vec<ScanError>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalScanProgress {
+    pub seen: usize,
+    pub indexed: usize,
+    pub skipped: usize,
+    pub errors: usize,
+    pub current: Option<PathBuf>,
+}
+
 pub fn scan_roots(roots: &[LocalScanRoot], previous: &LocalIndex) -> LocalScanResult {
+    scan_roots_with_progress(roots, previous, |_| {})
+}
+
+pub fn scan_roots_with_progress(
+    roots: &[LocalScanRoot],
+    previous: &LocalIndex,
+    progress: impl FnMut(LocalScanProgress),
+) -> LocalScanResult {
     let mut scanner = Scanner {
         previous,
         tracks: Vec::new(),
         seen_ids: Vec::new(),
         summary: LocalScanSummary::default(),
         errors: Vec::new(),
+        progress,
     };
     for root in roots {
         scanner.scan_root(root);
@@ -101,15 +119,22 @@ pub fn is_supported_audio_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-struct Scanner<'a> {
+struct Scanner<'a, F>
+where
+    F: FnMut(LocalScanProgress),
+{
     previous: &'a LocalIndex,
     tracks: Vec<LocalTrack>,
     seen_ids: Vec<LocalTrackId>,
     summary: LocalScanSummary,
     errors: Vec<ScanError>,
+    progress: F,
 }
 
-impl Scanner<'_> {
+impl<F> Scanner<'_, F>
+where
+    F: FnMut(LocalScanProgress),
+{
     fn scan_root(&mut self, root: &LocalScanRoot) {
         let root_path = canonical_or_original(&root.path);
         if !root_path.is_dir() {
@@ -117,6 +142,7 @@ impl Scanner<'_> {
                 path: root.path.clone(),
                 message: "root is not a readable directory".to_owned(),
             });
+            self.emit_progress(Some(root.path.clone()));
             return;
         }
         self.scan_dir(&root_path, root.recursive);
@@ -148,6 +174,7 @@ impl Scanner<'_> {
             let path = entry.path();
             if is_hidden_path(&path) {
                 self.summary.skipped += 1;
+                self.emit_progress(Some(path));
                 continue;
             }
             let file_type = match entry.file_type() {
@@ -157,11 +184,13 @@ impl Scanner<'_> {
                         path,
                         message: error.to_string(),
                     });
+                    self.emit_progress(None);
                     continue;
                 }
             };
             if file_type.is_symlink() {
                 self.summary.skipped += 1;
+                self.emit_progress(Some(path));
                 continue;
             }
             if file_type.is_dir() {
@@ -169,15 +198,18 @@ impl Scanner<'_> {
                     self.scan_dir(&path, recursive);
                 } else {
                     self.summary.skipped += 1;
+                    self.emit_progress(Some(path));
                 }
                 continue;
             }
             if !file_type.is_file() {
                 self.summary.skipped += 1;
+                self.emit_progress(Some(path));
                 continue;
             }
             if !is_supported_audio_path(&path) {
                 self.summary.skipped += 1;
+                self.emit_progress(Some(path));
                 continue;
             }
             self.scan_file(path);
@@ -191,9 +223,10 @@ impl Scanner<'_> {
             Ok(metadata) => metadata,
             Err(error) => {
                 self.errors.push(ScanError {
-                    path: canonical,
+                    path: canonical.clone(),
                     message: error.to_string(),
                 });
+                self.emit_progress(Some(canonical));
                 return;
             }
         };
@@ -203,6 +236,7 @@ impl Scanner<'_> {
             self.seen_ids.push(track.id.clone());
             self.tracks.push(track.clone());
             self.summary.reused += 1;
+            self.emit_progress(Some(canonical));
             return;
         }
 
@@ -210,7 +244,7 @@ impl Scanner<'_> {
         let read = metadata::read_track(canonical.clone(), metadata.len(), modified_at);
         if let Some(warning) = read.warning {
             self.errors.push(ScanError {
-                path: canonical,
+                path: canonical.clone(),
                 message: warning,
             });
         }
@@ -221,6 +255,17 @@ impl Scanner<'_> {
         }
         self.seen_ids.push(read.track.id.clone());
         self.tracks.push(read.track);
+        self.emit_progress(Some(canonical));
+    }
+
+    fn emit_progress(&mut self, current: Option<PathBuf>) {
+        (self.progress)(LocalScanProgress {
+            seen: self.summary.seen,
+            indexed: self.tracks.len(),
+            skipped: self.summary.skipped,
+            errors: self.errors.len(),
+            current,
+        });
     }
 }
 
@@ -298,6 +343,43 @@ mod tests {
             .collect();
         assert_eq!(titles, vec!["a", "b"]);
         assert_eq!(result.summary.seen, 2);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scanner_reports_progress_while_walking_files() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.mp3"), b"not audio").unwrap();
+        fs::write(dir.join("b.flac"), b"not audio").unwrap();
+        let mut progress = Vec::new();
+
+        let result = scan_roots_with_progress(
+            &[LocalScanRoot::download(dir.clone())],
+            &LocalIndex::default(),
+            |update| progress.push(update),
+        );
+
+        assert_eq!(result.summary.seen, 2);
+        assert!(
+            progress
+                .iter()
+                .any(|update| update.seen == 1 && update.indexed == 1),
+            "missing first-file progress in {progress:?}"
+        );
+        assert!(
+            progress
+                .iter()
+                .any(|update| update.seen == 2 && update.indexed == 2),
+            "missing second-file progress in {progress:?}"
+        );
+        assert!(progress.iter().any(|update| {
+            update
+                .current
+                .as_ref()
+                .is_some_and(|path| path.ends_with("a.mp3"))
+        }));
 
         let _ = fs::remove_dir_all(dir);
     }
