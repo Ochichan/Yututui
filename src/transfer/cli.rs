@@ -35,6 +35,8 @@ Commands:
   jobs                             Known transfer jobs and their state
   sessions                         Import sessions for review/download follow-up
   session <JOB-ID>                 Show one import session's review rows
+  report <JOB-ID> [--format text|json]
+                                   Print a saved transfer report
   review <JOB-ID> [filter]         Show or update import review decisions
   download <JOB-ID> --accepted --dry-run
                                    Preview session-aware download decisions
@@ -93,6 +95,10 @@ pub fn run(args: &[String]) -> i32 {
         Some("review") => {
             let rest: Vec<&str> = it.collect();
             super::review_cli::run(&rest)
+        }
+        Some("report") => {
+            let rest: Vec<&str> = it.collect();
+            super::report_cli::run(&rest)
         }
         Some("download") => {
             let rest: Vec<&str> = it.collect();
