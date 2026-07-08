@@ -151,6 +151,9 @@ impl App {
                     return self.local_shuffle_visible();
                 }
                 KeyCode::Char('m') => return self.request_local_import_organize_apply(),
+                KeyCode::Char('o') if self.local_open_selected_import_candidate_url() => {
+                    return Vec::new();
+                }
                 KeyCode::Char('x') if self.local_skip_selected_import_row() => return Vec::new(),
                 _ => {}
             }

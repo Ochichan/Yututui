@@ -411,6 +411,55 @@ impl App {
         Some(self.submit_search_query())
     }
 
+    pub(in crate::app) fn local_open_selected_import_candidate_url(&mut self) -> bool {
+        let Some(row) = self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned()
+        else {
+            return false;
+        };
+        let crate::local::LocalRowId::ImportSessionRow {
+            session_id,
+            source_order,
+        } = row
+        else {
+            return false;
+        };
+        let Some(row) = load_import_session_row(&session_id, source_order) else {
+            return false;
+        };
+        let Some(key) = import_session_row_candidate_url_key(&row) else {
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!(
+                "Import row has no candidate URL",
+                "열 후보 URL이 없는 임포트 행"
+            )
+            .to_owned();
+            self.dirty = true;
+            return true;
+        };
+        let Some(url) = youtube_watch_url_for_candidate(key) else {
+            self.status.kind = StatusKind::Error;
+            self.status.text = t!(
+                "Import candidate key is not a YouTube video id",
+                "임포트 후보 키가 YouTube 동영상 ID가 아님"
+            )
+            .to_owned();
+            self.dirty = true;
+            return true;
+        };
+        self.status.kind = StatusKind::Info;
+        self.status.text = format!(
+            "{}: {url}",
+            t!("Opening import candidate", "임포트 후보 열기")
+        );
+        #[cfg(not(test))]
+        open_in_browser(&url);
+        self.dirty = true;
+        true
+    }
+
     fn import_session_failed_download_songs(
         &self,
         session_id: &str,
@@ -1069,6 +1118,22 @@ fn import_session_row_selected_key(row: &ImportSessionRow) -> Option<&str> {
         Some(ReviewDecision::Accepted { key, .. }) => Some(key.as_str()),
         _ => row.selected_key.as_deref(),
     }
+}
+
+fn import_session_row_candidate_url_key(row: &ImportSessionRow) -> Option<&str> {
+    import_session_row_selected_key(row).or_else(|| row.candidates.first().map(|c| c.key.as_str()))
+}
+
+fn youtube_watch_url_for_candidate(key: &str) -> Option<String> {
+    let key = key.trim();
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return None;
+    }
+    Some(format!("https://www.youtube.com/watch?v={key}"))
 }
 
 fn import_session_row_selected_score(row: &ImportSessionRow) -> Option<f32> {

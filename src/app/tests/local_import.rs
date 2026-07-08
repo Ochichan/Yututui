@@ -688,6 +688,27 @@ fn local_deck_import_row_s_starts_manual_youtube_search() {
 }
 
 #[test]
+fn local_deck_import_row_o_opens_selected_candidate_url() {
+    let session_id = "sp2yt-local-open-candidate";
+    save_ambiguous_import_job(session_id);
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open.is_empty());
+    app.local_mode.ui.filter_query.clear();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('o'))));
+    assert!(cmds.is_empty());
+    assert!(
+        app.status
+            .text
+            .contains("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    );
+}
+
+#[test]
 fn local_deck_import_review_keys_accept_and_reject_rows() {
     let accept_id = "sp2yt-local-review-accept";
     save_ambiguous_import_job(accept_id);
