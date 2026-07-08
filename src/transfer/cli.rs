@@ -571,6 +571,10 @@ fn next_step_lines(report: &TransferReport, session: Option<&ImportSession>) -> 
             "Preview downloads: ytt transfer download {} --accepted --dry-run",
             report.job_id
         ));
+        lines.push(format!(
+            "Preview organize: ytt transfer organize {} --root <LOCAL_ROOT> --dry-run",
+            report.job_id
+        ));
     }
     lines
 }
@@ -1424,6 +1428,14 @@ mod tests {
         assert!(lines[1].contains("Shift+D"));
         assert!(lines[1].contains("Local Deck"));
         assert!(lines[1].contains("Import Sessions"));
+        assert_eq!(
+            lines[2],
+            "Preview downloads: ytt transfer download sp2yt-20260708-abcd --accepted --dry-run"
+        );
+        assert_eq!(
+            lines[3],
+            "Preview organize: ytt transfer organize sp2yt-20260708-abcd --root <LOCAL_ROOT> --dry-run"
+        );
     }
 
     #[tokio::test]
