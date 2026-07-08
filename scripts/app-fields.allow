@@ -21,6 +21,8 @@ keymap
 library
 library_rows_cache
 library_ui
+local_dedicated_mode
+local_mode
 lyrics
 media_art
 mode

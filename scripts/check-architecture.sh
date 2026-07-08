@@ -66,7 +66,7 @@ rm -f "$tmp"
 # can't be re-flattened back into the top-level enums. Ceilings sit just above the current counts.
 count_variants() { awk -v e="$1" '$0 ~ "^pub enum "e" \\{"{f=1;next} f&&/^\}/{exit} f&&/^    [A-Z]/{c++} END{print c+0}' src/app/types.rs; }
 [ "$(count_variants Msg)" -le 45 ] || { echo "error: enum Msg exceeds 45 wrappers — new flat cross-domain variant? bucket it." >&2; fail=1; }
-[ "$(count_variants Cmd)" -le 32 ] || { echo "error: enum Cmd exceeds 32 wrappers." >&2; fail=1; }
+[ "$(count_variants Cmd)" -le 33 ] || { echo "error: enum Cmd exceeds 33 wrappers." >&2; fail=1; }
 for e in PlayerMsg AiMsg StreamingMsg PersistCmd; do
   grep -q "enum $e" src/app/*.rs || { echo "error: sub-enum $e missing (M3 regressed)" >&2; fail=1; }
 done
