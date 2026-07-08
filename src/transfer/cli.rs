@@ -371,19 +371,33 @@ async fn build_ctx(spec: &JobSpec, cfg: &Config) -> Result<JobCtx, String> {
         None
     };
     let ytm = if needs_ytm {
-        let cookie = cfg.effective_cookie().ok_or_else(|| {
-            "this needs a YouTube Music cookie — add cookies.txt (or `cookie`) in Settings › General"
-                .to_owned()
-        })?;
-        Some(
-            crate::api::ytmusic::YtMusicApi::from_cookie(&cookie)
-                .await
-                .map_err(|e| {
-                    crate::util::sanitize::sanitize_error_text(format!(
-                        "YouTube Music auth failed: {e:#}"
-                    ))
-                })?,
-        )
+        match cfg.effective_cookie() {
+            Some(cookie) => Some(
+                crate::api::ytmusic::YtMusicApi::from_cookie(&cookie)
+                    .await
+                    .map_err(|e| {
+                        crate::util::sanitize::sanitize_error_text(format!(
+                            "YouTube Music auth failed: {e:#}"
+                        ))
+                    })?,
+            ),
+            None => {
+                let account_op = matches!(spec.source, TransferSource::YtmPlaylist { .. })
+                    || matches!(
+                        spec.dest,
+                        TransferDest::YtmNewPlaylist { .. }
+                            | TransferDest::YtmExistingPlaylist { .. }
+                            | TransferDest::YtmLikes
+                    );
+                if account_op {
+                    return Err(
+                        "this needs a YouTube Music cookie — add cookies.txt (or `cookie`) in Settings › General"
+                            .to_owned(),
+                    );
+                }
+                Some(crate::api::ytmusic::YtMusicApi::Anonymous)
+            }
+        }
     } else {
         None
     };
@@ -1060,6 +1074,29 @@ mod tests {
         "37i9dQZF1DXcBWIGoYBM5M"
     }
 
+    fn file_spec(dest: TransferDest) -> JobSpec {
+        JobSpec {
+            source: TransferSource::File {
+                path: "input.csv".into(),
+            },
+            dest,
+            dry_run: false,
+            min_score: 0.80,
+            take_best: false,
+            rematch: false,
+        }
+    }
+
+    fn config_without_cookie() -> Config {
+        Config {
+            cookie: None,
+            cookies_file: Some(
+                std::env::temp_dir().join(format!("yututui-missing-cookie-{}", std::process::id())),
+            ),
+            ..Config::default()
+        }
+    }
+
     fn parse_common_err(args: &mut Vec<&str>) -> String {
         match parse_common(args) {
             Ok(_) => panic!("parse_common should have failed"),
@@ -1350,6 +1387,35 @@ mod tests {
         assert!(lines[1].contains("Imported Mix"));
         assert!(lines[1].contains("Shift+D"));
         assert!(lines[1].contains("Local Deck"));
+    }
+
+    #[tokio::test]
+    async fn build_ctx_uses_anonymous_ytm_for_local_playlist_without_cookie() {
+        let spec = file_spec(TransferDest::LocalPlaylist {
+            name: Some("Imported".to_owned()),
+        });
+        let cfg = config_without_cookie();
+
+        let ctx = build_ctx(&spec, &cfg).await.unwrap();
+
+        assert!(matches!(
+            ctx.ytm,
+            Some(crate::api::ytmusic::YtMusicApi::Anonymous)
+        ));
+        assert!(ctx.spotify.is_none());
+    }
+
+    #[tokio::test]
+    async fn build_ctx_requires_cookie_for_account_writes() {
+        let spec = file_spec(TransferDest::YtmLikes);
+        let cfg = config_without_cookie();
+
+        let err = match build_ctx(&spec, &cfg).await {
+            Ok(_) => panic!("account write without a cookie should fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("YouTube Music cookie"));
     }
 
     #[test]
