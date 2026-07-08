@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::checkpoint::{Checkpoint, TransferReport};
+use super::session::{ImportSession, ImportSessionRowStatus};
 use super::{
     FileFormat, JobCtx, JobError, JobSpec, Stage, TransferDest, TransferProgress, TransferSource,
     new_job_id, run_job,
@@ -32,6 +33,8 @@ Usage: ytt transfer <command>
 Commands:
   list spotify | list ytm          Playlists on either side (id, tracks, name)
   jobs                             Known transfer jobs and their state
+  sessions                         Import sessions for review/download follow-up
+  session <JOB-ID>                 Show one import session's review rows
   import <SOURCE> [flags]          Spotify/file → YouTube Music
       SOURCE: a Spotify playlist URL/URI/id, the word `liked`, or a .json/.csv file
       --to-playlist NAME           Append to (or create) this YTM account playlist
@@ -74,6 +77,14 @@ pub fn run(args: &[String]) -> i32 {
             }
         },
         Some("jobs") => jobs(),
+        Some("sessions") => sessions(),
+        Some("session") => match it.next() {
+            Some(job_id) => show_session(job_id),
+            None => {
+                eprintln!("ytt transfer session: missing <JOB-ID> (see `ytt transfer sessions`)");
+                EXIT_USAGE
+            }
+        },
         Some("import") => {
             let rest: Vec<&str> = it.collect();
             match parse_import(&rest) {
@@ -574,6 +585,117 @@ fn jobs() -> i32 {
         println!("{job_id:<28} {:<10} {updated}", stage.label());
     }
     EXIT_OK
+}
+
+fn sessions() -> i32 {
+    let sessions = ImportSession::list_all();
+    if sessions.is_empty() {
+        println!("No import sessions.");
+        return EXIT_OK;
+    }
+    println!(
+        "{:<28} {:<10} {:>5} {:>6} {:>5} {:>7}  {:<24} -> {:<24} UPDATED",
+        "SESSION", "STAGE", "OK", "REVIEW", "MISS", "WRITTEN", "SOURCE", "DEST"
+    );
+    for session in sessions {
+        println!(
+            "{:<28} {:<10} {:>5} {:>6} {:>5} {:>7}  {:<24} -> {:<24} {}",
+            session.session_id,
+            session.stage.label(),
+            session.counts.matched,
+            session.counts.ambiguous,
+            session.counts.not_found,
+            session.counts.written,
+            truncate_col(&session.source.display(), 24),
+            truncate_col(&session.destination.display(), 24),
+            session.updated_at
+        );
+    }
+    EXIT_OK
+}
+
+fn show_session(job_id: &str) -> i32 {
+    let session = match ImportSession::load(job_id) {
+        Ok(session) => session,
+        Err(e) => {
+            eprintln!("ytt transfer session: {e:#}");
+            return EXIT_FAILED;
+        }
+    };
+    println!("Session: {}", session.session_id);
+    println!("Stage: {}", session.stage.label());
+    println!("Source: {}", session.source.display());
+    println!("Destination: {}", session.destination.display());
+    println!(
+        "Rows: {} total, {} matched, {} review, {} not found, {} pending, {} skipped, {} written",
+        session.counts.total,
+        session.counts.matched,
+        session.counts.ambiguous,
+        session.counts.not_found,
+        session.counts.pending,
+        session.counts.skipped_local,
+        session.counts.written
+    );
+    let mut printed = 0usize;
+    for row in &session.rows {
+        if matches!(row.status, ImportSessionRowStatus::Matched) {
+            continue;
+        }
+        printed += 1;
+        println!(
+            "  {:>4}. {:<11} {} — {}",
+            row.source_order,
+            row_status_label(row.status),
+            row.artists.join(", "),
+            row.title
+        );
+        if let Some(album) = &row.album {
+            println!("        album: {album}");
+        }
+        if let Some(isrc) = &row.isrc {
+            println!("        isrc: {isrc}");
+        }
+        if !row.candidates.is_empty() {
+            for candidate in &row.candidates {
+                println!(
+                    "        candidate {:.2}: {} ({})",
+                    candidate.score, candidate.display, candidate.key
+                );
+            }
+        }
+        for warning in &row.warnings {
+            println!("        warning: {warning}");
+        }
+        for error in &row.errors {
+            println!("        error: {error}");
+        }
+    }
+    if printed == 0 {
+        println!("No review rows.");
+    }
+    EXIT_OK
+}
+
+fn row_status_label(status: ImportSessionRowStatus) -> &'static str {
+    match status {
+        ImportSessionRowStatus::Pending => "pending",
+        ImportSessionRowStatus::Matched => "matched",
+        ImportSessionRowStatus::Ambiguous => "review",
+        ImportSessionRowStatus::NotFound => "not_found",
+        ImportSessionRowStatus::SkippedLocal => "skipped",
+    }
+}
+
+fn truncate_col(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx + 1 >= max_chars {
+            out.push('~');
+            return out;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 async fn backup(dir: PathBuf, also_csv: bool) -> i32 {

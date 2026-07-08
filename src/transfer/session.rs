@@ -32,6 +32,16 @@ pub struct ImportSession {
     pub rows: Vec<ImportSessionRow>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ImportSessionSummary {
+    pub session_id: String,
+    pub stage: Stage,
+    pub updated_at: i64,
+    pub source: SessionEndpoint,
+    pub destination: SessionEndpoint,
+    pub counts: ImportSessionCounts,
+}
+
 impl Default for ImportSession {
     fn default() -> Self {
         Self {
@@ -57,6 +67,15 @@ pub struct SessionEndpoint {
     pub key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+}
+
+impl SessionEndpoint {
+    pub fn display(&self) -> String {
+        self.label
+            .clone()
+            .or_else(|| self.key.clone())
+            .unwrap_or_else(|| self.kind.clone())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +229,36 @@ impl ImportSession {
             );
         }
         Ok(session)
+    }
+
+    pub fn list_all() -> Vec<ImportSessionSummary> {
+        let Some(dir) = sessions_dir() else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut out: Vec<ImportSessionSummary> = entries
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                    return None;
+                }
+                let bytes =
+                    safe_fs::read_no_symlink_limited(&path, IMPORT_SESSION_MAX_BYTES).ok()?;
+                let session: ImportSession = serde_json::from_slice(&bytes).ok()?;
+                Some(ImportSessionSummary {
+                    session_id: session.session_id,
+                    stage: session.stage,
+                    updated_at: session.updated_at,
+                    source: session.source,
+                    destination: session.destination,
+                    counts: session.counts,
+                })
+            })
+            .collect();
+        out.sort_by_key(|summary| std::cmp::Reverse(summary.updated_at));
+        out
     }
 }
 
@@ -551,5 +600,36 @@ mod tests {
         );
         let session = ImportSession::from_checkpoint(&cp);
         assert_eq!(session.destination.kind, "file_csv");
+    }
+
+    #[test]
+    fn endpoint_display_prefers_label_then_key_then_kind() {
+        assert_eq!(
+            SessionEndpoint {
+                kind: "kind".to_owned(),
+                key: Some("key".to_owned()),
+                label: Some("label".to_owned()),
+            }
+            .display(),
+            "label"
+        );
+        assert_eq!(
+            SessionEndpoint {
+                kind: "kind".to_owned(),
+                key: Some("key".to_owned()),
+                label: None,
+            }
+            .display(),
+            "key"
+        );
+        assert_eq!(
+            SessionEndpoint {
+                kind: "kind".to_owned(),
+                key: None,
+                label: None,
+            }
+            .display(),
+            "kind"
+        );
     }
 }
