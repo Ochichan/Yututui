@@ -14,7 +14,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{Sender, error::TrySendError};
@@ -27,7 +27,16 @@ const YTDLP_STDOUT_MAX: usize = 64 * 1024;
 
 pub enum DownloadCmd {
     Start(Box<Song>),
+    StartForImport(Box<ImportDownloadRequest>),
     SetDir(PathBuf),
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportDownloadRequest {
+    pub session_id: String,
+    pub row_id: String,
+    pub source_order: u32,
+    pub song: Song,
 }
 
 pub enum DownloadEvent {
@@ -88,6 +97,30 @@ impl DownloadHandle {
             }),
             Err(TrySendError::Full(DownloadCmd::SetDir(_)))
             | Err(TrySendError::Closed(DownloadCmd::SetDir(_))) => unreachable!(),
+            Err(TrySendError::Full(DownloadCmd::StartForImport(_)))
+            | Err(TrySendError::Closed(DownloadCmd::StartForImport(_))) => unreachable!(),
+        }
+    }
+
+    pub fn start_for_import(
+        &self,
+        request: ImportDownloadRequest,
+    ) -> std::result::Result<(), DownloadStartError> {
+        match self
+            .tx
+            .try_send(DownloadCmd::StartForImport(Box::new(request)))
+        {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(DownloadCmd::StartForImport(request)))
+            | Err(TrySendError::Closed(DownloadCmd::StartForImport(request))) => {
+                Err(DownloadStartError {
+                    video_id: request.song.video_id,
+                })
+            }
+            Err(TrySendError::Full(DownloadCmd::Start(_)))
+            | Err(TrySendError::Closed(DownloadCmd::Start(_)))
+            | Err(TrySendError::Full(DownloadCmd::SetDir(_)))
+            | Err(TrySendError::Closed(DownloadCmd::SetDir(_))) => unreachable!(),
         }
     }
 
@@ -101,7 +134,9 @@ impl DownloadHandle {
                 Err(DownloadSetDirError::Closed(dir))
             }
             Err(TrySendError::Full(DownloadCmd::Start(_)))
-            | Err(TrySendError::Closed(DownloadCmd::Start(_))) => unreachable!(),
+            | Err(TrySendError::Closed(DownloadCmd::Start(_)))
+            | Err(TrySendError::Full(DownloadCmd::StartForImport(_)))
+            | Err(TrySendError::Closed(DownloadCmd::StartForImport(_))) => unreachable!(),
         }
     }
 }
@@ -148,6 +183,34 @@ where
                         }
                     });
                 }
+                DownloadCmd::StartForImport(request) => {
+                    let Ok(permit) = sem.clone().acquire_owned().await else {
+                        return;
+                    };
+                    let emit = emit.clone();
+                    let dir = dir.clone();
+                    let cookies = cookies.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        if let Err(e) =
+                            run_import_download(&request, &dir, cookies.as_deref(), &emit).await
+                        {
+                            let error = sanitize::sanitize_error_text(format!("{e:#}"));
+                            tracing::warn!(
+                                error = %error,
+                                session_id = %request.session_id,
+                                row_id = %request.row_id,
+                                source_order = request.source_order,
+                                video_id = %request.song.video_id,
+                                "import download failed"
+                            );
+                            emit(DownloadEvent::Error {
+                                video_id: request.song.video_id.clone(),
+                                error,
+                            });
+                        }
+                    });
+                }
             }
         }
     });
@@ -170,6 +233,83 @@ async fn run_download_with_program(
     cookies: Option<&Path>,
     emit: &EventSink,
 ) -> Result<()> {
+    let path = run_download_to_path(program, song, dir, cookies, emit).await?;
+    let path = path.to_string_lossy().into_owned();
+    tracing::info!(path = %path, video_id = %song.video_id, "download done");
+    emit(DownloadEvent::Done {
+        video_id: song.video_id.clone(),
+        path,
+    });
+    Ok(())
+}
+
+async fn run_import_download(
+    request: &ImportDownloadRequest,
+    dir: &Path,
+    cookies: Option<&Path>,
+    emit: &EventSink,
+) -> Result<()> {
+    run_import_download_with_program(&crate::tools::ytdlp_program(), request, dir, cookies, emit)
+        .await
+}
+
+async fn run_import_download_with_program(
+    program: &str,
+    request: &ImportDownloadRequest,
+    dir: &Path,
+    cookies: Option<&Path>,
+    emit: &EventSink,
+) -> Result<()> {
+    let dirs = import_inbox_dirs(dir, &request.session_id)?;
+    tokio::fs::create_dir_all(&dirs.incoming)
+        .await
+        .with_context(|| format!("create import inbox {}", dirs.incoming.display()))?;
+    tokio::fs::create_dir_all(&dirs.complete)
+        .await
+        .with_context(|| format!("create import inbox {}", dirs.complete.display()))?;
+    tokio::fs::create_dir_all(&dirs.failed)
+        .await
+        .with_context(|| format!("create import inbox {}", dirs.failed.display()))?;
+
+    let incoming = run_download_to_path(program, &request.song, &dirs.incoming, cookies, emit)
+        .await
+        .with_context(|| {
+            format!(
+                "download import row {} ({})",
+                request.row_id, request.source_order
+            )
+        })?;
+    let file_name = incoming
+        .file_name()
+        .ok_or_else(|| anyhow!("downloaded import file has no file name"))?;
+    let complete = dirs.complete.join(file_name);
+    if tokio::fs::try_exists(&complete).await? {
+        bail!("import inbox file already exists: {}", complete.display());
+    }
+    move_download_artifacts(&incoming, &complete).await?;
+    let path = complete.to_string_lossy().into_owned();
+    tracing::info!(
+        path = %path,
+        session_id = %request.session_id,
+        row_id = %request.row_id,
+        source_order = request.source_order,
+        video_id = %request.song.video_id,
+        "import download done"
+    );
+    emit(DownloadEvent::Done {
+        video_id: request.song.video_id.clone(),
+        path,
+    });
+    Ok(())
+}
+
+async fn run_download_to_path(
+    program: &str,
+    song: &Song,
+    dir: &Path,
+    cookies: Option<&Path>,
+    emit: &EventSink,
+) -> Result<PathBuf> {
     // Re-check at the actor boundary (not just in the UI reducer): a non-video YouTube ref
     // (channel/playlist) would otherwise have `playback_target()` fall back to a channel URL,
     // handing yt-dlp something that isn't a downloadable track.
@@ -346,12 +486,57 @@ async fn run_download_with_program(
     if let Err(e) = crate::downloads::write_sidecar(song, &path) {
         tracing::warn!(error = %e, path = %path.display(), "could not write download sidecar");
     }
-    let path = path.to_string_lossy().into_owned();
-    tracing::info!(path = %path, video_id = %song.video_id, "download done");
-    emit(DownloadEvent::Done {
-        video_id: song.video_id.clone(),
-        path,
-    });
+    Ok(path)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImportInboxDirs {
+    incoming: PathBuf,
+    complete: PathBuf,
+    failed: PathBuf,
+}
+
+fn import_inbox_dirs(root: &Path, session_id: &str) -> Result<ImportInboxDirs> {
+    let session = safe_import_session_component(session_id)?;
+    let base = root.join(".yututui-inbox").join(session);
+    Ok(ImportInboxDirs {
+        incoming: base.join("incoming"),
+        complete: base.join("complete"),
+        failed: base.join("failed"),
+    })
+}
+
+fn safe_import_session_component(session_id: &str) -> Result<&str> {
+    let trimmed = session_id.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || !trimmed
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        bail!("invalid import session id for inbox path: {session_id:?}");
+    }
+    Ok(trimmed)
+}
+
+async fn move_download_artifacts(from: &Path, to: &Path) -> Result<()> {
+    if let Some(parent) = to.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let to_sidecar = crate::downloads::sidecar_path(to);
+    if tokio::fs::try_exists(to).await? || tokio::fs::try_exists(&to_sidecar).await? {
+        bail!("import inbox destination already exists: {}", to.display());
+    }
+    let from_sidecar = crate::downloads::sidecar_path(from);
+    tokio::fs::rename(from, to)
+        .await
+        .with_context(|| format!("move import download to {}", to.display()))?;
+    if tokio::fs::try_exists(&from_sidecar).await? {
+        tokio::fs::rename(&from_sidecar, &to_sidecar)
+            .await
+            .with_context(|| format!("move import download sidecar to {}", to_sidecar.display()))?;
+    }
     Ok(())
 }
 
@@ -482,6 +667,82 @@ mod tests {
         assert_eq!(sidecar.linked_youtube_id(), Some("abc123def45"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_import_download_moves_from_incoming_to_complete() {
+        let root = temp_dir("download-import");
+        let bin_dir = root.join("bin");
+        let download_dir = root.join("music");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let incoming = download_dir
+            .join(".yututui-inbox")
+            .join("sp2yt-import")
+            .join("incoming")
+            .join("Track [abc123def45].m4a");
+        let complete = download_dir
+            .join(".yututui-inbox")
+            .join("sp2yt-import")
+            .join("complete")
+            .join("Track [abc123def45].m4a");
+        let fake = write_executable(
+            &bin_dir,
+            "yt-dlp",
+            &format!(
+                "#!/bin/sh\nprintf 'download: 100.0%%\\n' >&2\nprintf 'audio' > '{incoming}'\nprintf '%s\\n' '{incoming}'\n",
+                incoming = incoming.display()
+            ),
+        );
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let emit: EventSink = Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+        });
+        let request = ImportDownloadRequest {
+            session_id: "sp2yt-import".to_owned(),
+            row_id: "row-00001".to_owned(),
+            source_order: 1,
+            song: Song::remote("abc123def45", "Track", "Artist", "3:12")
+                .with_import_session(Some("sp2yt-import".to_owned()), Some(1)),
+        };
+
+        run_import_download_with_program(
+            fake.to_str().unwrap(),
+            &request,
+            &download_dir,
+            None,
+            &emit,
+        )
+        .await
+        .unwrap();
+
+        assert!(!incoming.exists());
+        assert!(complete.exists());
+        assert!(crate::downloads::sidecar_path(&complete).exists());
+        assert!(!crate::downloads::sidecar_path(&incoming).exists());
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                DownloadEvent::Done { video_id, path }
+                    if video_id == "abc123def45" && path == complete.to_string_lossy().as_ref()
+            )
+        }));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn import_inbox_dirs_reject_traversal_session_ids() {
+        assert!(import_inbox_dirs(Path::new("/tmp"), "../escape").is_err());
+        assert!(import_inbox_dirs(Path::new("/tmp"), "UPPER").is_err());
+        let dirs = import_inbox_dirs(Path::new("/tmp"), "sp2yt-safe-1").unwrap();
+        assert_eq!(
+            dirs.complete,
+            PathBuf::from("/tmp/.yututui-inbox/sp2yt-safe-1/complete")
+        );
     }
 
     #[cfg(unix)]
