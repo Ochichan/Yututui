@@ -11,7 +11,8 @@ use crate::transfer::download_plan::{
     ImportDownloadDecision, ImportDownloadDedupeIndex, build_import_download_plan,
 };
 use crate::transfer::organize_plan::{
-    ImportOrganizeDecision, ImportOrganizeOptions, build_import_organize_plan,
+    ImportOrganizeDecision, ImportOrganizeOptions, apply_import_organize_plan,
+    build_import_organize_plan,
 };
 use crate::transfer::session::{ImportSession, ImportSessionRow, ImportSessionRowStatus};
 
@@ -450,6 +451,120 @@ impl App {
         true
     }
 
+    pub(in crate::app) fn request_local_import_organize_apply(&mut self) -> Vec<Cmd> {
+        let Some(session_id) = self.selected_import_session_id_for_organize() else {
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!(
+                "Select an import session or inbox row to organize",
+                "정리할 임포트 세션 또는 인박스 행을 선택하세요"
+            )
+            .to_owned();
+            self.dirty = true;
+            return Vec::new();
+        };
+        let Ok(session) = ImportSession::load(&session_id) else {
+            self.status.kind = StatusKind::Error;
+            self.status.text = format!(
+                "{}: {session_id}",
+                t!("Import session not found", "임포트 세션을 찾을 수 없음")
+            );
+            self.dirty = true;
+            return Vec::new();
+        };
+        let plan = match build_import_organize_plan(&session, &self.import_organize_options()) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!(
+                    "{}: {error:#}",
+                    t!("Import organize failed", "임포트 정리 실패")
+                );
+                self.dirty = true;
+                return Vec::new();
+            }
+        };
+        if plan.move_count == 0 {
+            self.status.kind = StatusKind::Info;
+            self.status.text = format!(
+                "{}: {} {} / {} {}",
+                t!("Nothing to organize", "정리할 항목 없음"),
+                plan.already_count,
+                t!("already", "이미 정리됨"),
+                plan.skipped_count,
+                t!("skipped", "건너뜀")
+            );
+            self.dirty = true;
+            return Vec::new();
+        }
+        self.local_mode.pending_organize_confirm = Some(LocalOrganizeConfirm {
+            session_id: plan.session_id,
+            root: plan.root,
+            move_count: plan.move_count,
+            already_count: plan.already_count,
+            skipped_count: plan.skipped_count,
+        });
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!(
+            "Confirm import organize to move inbox files",
+            "인박스 파일 이동을 확인하세요"
+        )
+        .to_owned();
+        self.dirty = true;
+        Vec::new()
+    }
+
+    pub(in crate::app) fn apply_local_import_organize_confirm(
+        &mut self,
+        confirm: LocalOrganizeConfirm,
+    ) -> Vec<Cmd> {
+        self.local_mode.pending_organize_confirm = None;
+        let result = (|| {
+            let session = ImportSession::load(&confirm.session_id)?;
+            let plan = build_import_organize_plan(
+                &session,
+                &ImportOrganizeOptions {
+                    root: confirm.root.clone(),
+                    template: self.config.local.import_path_template().to_owned(),
+                },
+            )?;
+            apply_import_organize_plan(&plan)
+        })();
+        match result {
+            Ok(report) => {
+                let cmds = self.request_local_scan(false);
+                self.status.kind = StatusKind::Info;
+                self.status.text = format!(
+                    "{} {}: {} {}, {} {}, {} {}",
+                    t!("Organized import session", "임포트 세션 정리됨"),
+                    confirm.session_id,
+                    report.moved_count,
+                    t!("moved", "이동됨"),
+                    report.already_count,
+                    t!("already", "이미 정리됨"),
+                    report.skipped_count,
+                    t!("skipped", "건너뜀")
+                );
+                self.local_mode.ui.selected = self
+                    .local_mode
+                    .ui
+                    .selected
+                    .min(self.local_rows_len().saturating_sub(1));
+                self.local_mode.ui.anchor = self.local_mode.ui.selected;
+                self.dirty = true;
+                cmds
+            }
+            Err(error) => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!(
+                    "{}: {error:#}",
+                    t!("Import organize failed", "임포트 정리 실패")
+                );
+                self.dirty = true;
+                Vec::new()
+            }
+        }
+    }
+
     fn selected_manual_review_import_row(&self) -> Option<(String, u32)> {
         let row = self
             .local_visible_rows()
@@ -464,6 +579,18 @@ impl App {
         };
         let row = load_import_session_row(&session_id, source_order)?;
         import_session_row_accepts_manual_review_action(&row).then_some((session_id, source_order))
+    }
+
+    fn selected_import_session_id_for_organize(&self) -> Option<String> {
+        match self
+            .local_visible_rows()
+            .get(self.local_mode.ui.selected)
+            .cloned()?
+        {
+            crate::local::LocalRowId::ImportSession(session_id)
+            | crate::local::LocalRowId::ImportSessionRow { session_id, .. } => Some(session_id),
+            _ => None,
+        }
     }
 
     fn import_download_dedupe_index(&self) -> ImportDownloadDedupeIndex {
@@ -481,10 +608,7 @@ impl App {
         session: &ImportSession,
         source_order: u32,
     ) {
-        let options = ImportOrganizeOptions {
-            root: self.import_organize_root(),
-            template: self.config.local.import_path_template().to_owned(),
-        };
+        let options = self.import_organize_options();
         let Ok(plan) = build_import_organize_plan(session, &options) else {
             return;
         };
@@ -512,6 +636,13 @@ impl App {
         }
         for warning in &row.warnings {
             push_detail_line(lines, t!("Organize warning", "정리 경고"), warning);
+        }
+    }
+
+    fn import_organize_options(&self) -> ImportOrganizeOptions {
+        ImportOrganizeOptions {
+            root: self.import_organize_root(),
+            template: self.config.local.import_path_template().to_owned(),
         }
     }
 

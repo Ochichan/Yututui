@@ -1696,6 +1696,7 @@ impl App {
         self.search_filter.close();
         self.library_ui.confirm_delete = None;
         self.library_ui.confirm_download = None;
+        self.local_mode.pending_organize_confirm = None;
         self.playlist_picker = None;
         // These three render as top-level overlays but route input only inside Settings-mode
         // dispatch, so leaving the screen must drop them explicitly or they'd paint on top of
@@ -1787,6 +1788,7 @@ impl App {
         self.search_filter.close();
         self.library_ui.confirm_delete = None;
         self.library_ui.confirm_download = None;
+        self.local_mode.pending_organize_confirm = None;
         // Popup-like playlist surfaces dismiss on any navigation (the drill-down itself is
         // content state — it resets only on a fresh Library entry below).
         self.library_ui.create_input = None;

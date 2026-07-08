@@ -47,6 +47,19 @@ impl App {
             };
         }
 
+        // Local import organize is modal because it moves files on disk. Enter/`y` applies
+        // the latest organize plan; any other key backs out.
+        if let Some(confirm) = self.local_mode.pending_organize_confirm.take() {
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            return if confirmed {
+                self.apply_local_import_organize_confirm(confirm)
+            } else {
+                Vec::new()
+            };
+        }
+
         // Settings confirmations are modal: Enter or `y` confirms, anything else cancels.
         // Handle it here so the key can't leak through to the settings list.
         if let Some(confirm) = self.overlays.pending_settings_confirm.take() {

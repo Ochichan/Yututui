@@ -742,6 +742,7 @@ pub struct LocalMode {
     pub(in crate::app) normal_mode_queue: Option<QueueSnapshot>,
     pub(in crate::app) local_mode_queue: Option<QueueSnapshot>,
     pub pending_confirm: Option<LocalModeConfirm>,
+    pub pending_organize_confirm: Option<LocalOrganizeConfirm>,
 }
 
 /// Animation clock and redraw-coalescing counters: the monotonic frame counter that drives every

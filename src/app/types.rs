@@ -519,6 +519,10 @@ pub enum MouseTarget {
     ConfirmLocalMode,
     /// Cancel button on the local-player confirmation modal.
     CancelLocalMode,
+    /// Confirm button on the local import organize modal.
+    ConfirmLocalOrganize,
+    /// Cancel button on the local import organize modal.
+    CancelLocalOrganize,
     /// "Save to favorites" on the "what's playing" overlay (resolves a real YT track first).
     NowPlayingFavorite,
     /// "Tell me more" on the "what's playing" overlay — hands off to the DJ Gem view.
@@ -878,6 +882,54 @@ impl LocalModeConfirm {
                 "Return to the normal Library tabs.",
                 "일반 라이브러리 탭으로 돌아갑니다."
             ),
+        }
+    }
+}
+
+/// Pending confirmation before moving an import session's inbox files into the local library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalOrganizeConfirm {
+    pub session_id: String,
+    pub root: PathBuf,
+    pub move_count: u32,
+    pub already_count: u32,
+    pub skipped_count: u32,
+}
+
+impl LocalOrganizeConfirm {
+    pub fn title(&self) -> &'static str {
+        t!(" Commit import files ", " 임포트 파일 커밋 ")
+    }
+
+    pub fn prompt(&self) -> String {
+        if crate::i18n::is_korean() {
+            format!("{}개 파일을 로컬 라이브러리로 이동할까요?", self.move_count)
+        } else {
+            format!(
+                "Move {} import file{} into the local library?",
+                self.move_count,
+                if self.move_count == 1 { "" } else { "s" }
+            )
+        }
+    }
+
+    pub fn detail(&self) -> String {
+        if crate::i18n::is_korean() {
+            format!(
+                "{} -> {}  (이미 정리됨 {}, 건너뜀 {})",
+                self.session_id,
+                self.root.display(),
+                self.already_count,
+                self.skipped_count
+            )
+        } else {
+            format!(
+                "{} -> {}  ({} already, {} skipped)",
+                self.session_id,
+                self.root.display(),
+                self.already_count,
+                self.skipped_count
+            )
         }
     }
 }

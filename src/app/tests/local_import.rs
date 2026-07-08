@@ -4,7 +4,7 @@ use crate::transfer::matching::{
     AmbiguousCandidate, MatchOutcome, MatchScoreBreakdown, TrackInput,
 };
 use crate::transfer::{JobSpec, TransferDest, TransferSource};
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 fn local_deck_track(
     path: &str,
@@ -118,6 +118,59 @@ fn save_ambiguous_import_job(job_id: &str) {
     crate::transfer::session::ImportSession::from_checkpoint(&cp)
         .save()
         .expect("save import session");
+}
+
+fn temp_import_root(name: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "yututui-local-import-{name}-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp import root");
+    root
+}
+
+fn save_organizable_import_session(session_id: &str, root: &std::path::Path) -> PathBuf {
+    let inbox = root
+        .join(".yututui-inbox")
+        .join(session_id)
+        .join("complete");
+    fs::create_dir_all(&inbox).expect("create import inbox");
+    let audio = inbox.join("Move Me.m4a");
+    fs::write(&audio, b"audio").expect("write inbox audio");
+    fs::write(crate::downloads::sidecar_path(&audio), b"{}").expect("write inbox sidecar");
+
+    let session = crate::transfer::session::ImportSession {
+        schema_version: 1,
+        session_id: session_id.to_owned(),
+        job_id: session_id.to_owned(),
+        created_at: 0,
+        updated_at: 101,
+        stage: crate::transfer::Stage::Writing,
+        counts: crate::transfer::session::ImportSessionCounts {
+            total: 1,
+            matched: 1,
+            ..crate::transfer::session::ImportSessionCounts::default()
+        },
+        rows: vec![crate::transfer::session::ImportSessionRow {
+            row_id: "row-00001".to_owned(),
+            source_order: 1,
+            status: crate::transfer::session::ImportSessionRowStatus::Matched,
+            title: "Move Me".to_owned(),
+            artists: vec!["Track Artist".to_owned()],
+            album_artists: vec!["Album Artist".to_owned()],
+            album: Some("Album".to_owned()),
+            disc_number: Some(1),
+            track_number: Some(1),
+            source_key: "spotify:track:move-me".to_owned(),
+            selected_key: Some("move0000001".to_owned()),
+            local_path: Some(audio.clone()),
+            ..crate::transfer::session::ImportSessionRow::default()
+        }],
+        ..crate::transfer::session::ImportSession::default()
+    };
+    session.save().expect("save organizable session");
+    audio
 }
 
 #[test]
@@ -745,4 +798,78 @@ fn local_deck_inbox_lists_actionable_import_rows() {
             .expect("inbox row should load local path")
             .contains(".yututui-inbox/sp2yt-local-inbox-section/complete/Inbox Ready.m4a")
     );
+}
+
+#[test]
+fn local_deck_import_inbox_organize_confirms_then_moves_session_files() {
+    let session_id = "sp2yt-local-organize-tui";
+    let root = temp_import_root("organize-tui");
+    let audio = save_organizable_import_session(session_id, &root);
+    let sidecar = crate::downloads::sidecar_path(&audio);
+    let target = root.join("Album Artist").join("01 - Move Me.m4a");
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.config.local.include_download_dir = Some(false);
+    app.config.local.roots = vec![crate::config::LocalRootConfig {
+        path: root.clone(),
+        enabled: Some(true),
+        recursive: Some(true),
+    }];
+    app.config.local.import_path_template =
+        Some("{album_artist}/{disc_track} - {title}".to_owned());
+    app.update(Msg::Key(key(KeyCode::Char('0'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    assert_eq!(app.local_rows_len(), 1);
+
+    let preview = app.local_details_lines();
+    assert!(
+        preview
+            .iter()
+            .any(|line| line == &format!("Target: {}", target.display())),
+        "missing target preview in {preview:?}"
+    );
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('m'))));
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.local_mode
+            .pending_organize_confirm
+            .as_ref()
+            .map(|confirm| confirm.move_count),
+        Some(1)
+    );
+
+    let cancel = app.update(Msg::Key(key(KeyCode::Esc)));
+    assert!(cancel.is_empty());
+    assert!(app.local_mode.pending_organize_confirm.is_none());
+    assert!(audio.exists(), "cancel must leave the inbox audio in place");
+    assert!(
+        sidecar.exists(),
+        "cancel must leave the inbox sidecar in place"
+    );
+
+    app.update(Msg::Key(key(KeyCode::Char('m'))));
+    let apply = app.update(Msg::Key(key(KeyCode::Enter)));
+    assert!(matches!(
+        apply.as_slice(),
+        [Cmd::Local(LocalCmd::ScanRoots { .. })]
+    ));
+    assert!(!audio.exists(), "audio should move out of the inbox");
+    assert!(!sidecar.exists(), "sidecar should move out of the inbox");
+    assert!(target.exists(), "audio should land at the organize target");
+    assert!(
+        crate::downloads::sidecar_path(&target).exists(),
+        "sidecar should follow the audio"
+    );
+    let saved =
+        crate::transfer::session::ImportSession::load(session_id).expect("load organized session");
+    assert_eq!(saved.rows[0].local_path.as_deref(), Some(target.as_path()));
+    assert_eq!(
+        app.local_rows_len(),
+        0,
+        "organized rows should leave the attention inbox"
+    );
+    assert!(app.status.text.contains("Organized import session"));
+
+    let _ = fs::remove_dir_all(root);
 }

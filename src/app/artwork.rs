@@ -549,12 +549,13 @@ impl App {
                 self.overlays.pending_settings_confirm.is_some(),
                 ART_OVERLAY_SETTINGS_CONFIRM_BIT,
             )
-            // Bit 9 is shared by the two Library confirm modals (file-delete and bulk-download):
-            // they are mutually exclusive (each captures all keys while open) and share the same
-            // centered footprint, so one bit tracks both without missing a graphics-clear edge.
+            // Bit 9 is shared by Library/Local file-operation confirm modals. They are modal
+            // and use the same centered footprint, so one bit tracks them without claiming
+            // another scarce overlay bit.
             | flag(
                 self.library_ui.confirm_delete.is_some()
-                    || self.library_ui.confirm_download.is_some(),
+                    || self.library_ui.confirm_download.is_some()
+                    || self.local_mode.pending_organize_confirm.is_some(),
                 ART_OVERLAY_LIBRARY_CONFIRM_BIT,
             )
             | flag(!matches!(self.mode, Mode::Player), ART_OVERLAY_NOT_PLAYER_BIT)
