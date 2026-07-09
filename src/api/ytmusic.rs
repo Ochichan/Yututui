@@ -94,6 +94,12 @@ pub enum YtMusicApi {
     Anonymous,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YoutubeSearchKind {
+    YtmCatalogSong,
+    YoutubeVideoSearch,
+}
+
 impl YtMusicApi {
     /// Authenticate with a raw browser `Cookie:` header.
     pub async fn from_cookie(cookie: &str) -> Result<Self> {
@@ -257,6 +263,22 @@ impl YtMusicApi {
         Ok(self.search_songs_reported(query, source, config).await?.0)
     }
 
+    /// YouTube-only search for transfer matching, preserving whether rows came from the
+    /// authenticated YouTube Music song catalog or the public yt-dlp video fallback.
+    pub async fn search_transfer_youtube(
+        &self,
+        query: &str,
+        config: &SearchConfig,
+    ) -> Result<Vec<(Song, YoutubeSearchKind)>> {
+        if !config.is_enabled(SearchSource::Youtube) {
+            bail!(
+                "{} is disabled in Settings → General",
+                SearchSource::Youtube.label()
+            );
+        }
+        self.search_youtube_classified(query).await
+    }
+
     /// Like [`search_songs`] but also reports whether the multi-source operation deadline
     /// dropped one or more sources, so the Search screen can surface a subtle "some sources
     /// timed out" indicator. The flag is always `false` for a single-source search (its own
@@ -412,11 +434,27 @@ impl YtMusicApi {
     }
 
     async fn search_youtube(&self, query: &str) -> Result<Vec<Song>> {
+        Ok(self
+            .search_youtube_classified(query)
+            .await?
+            .into_iter()
+            .map(|(song, _)| song)
+            .collect())
+    }
+
+    async fn search_youtube_classified(
+        &self,
+        query: &str,
+    ) -> Result<Vec<(Song, YoutubeSearchKind)>> {
         // Once one authenticated search comes back empty/unparseable this process, they
         // all will (Google gates innertube search behind browser attestation as of
         // mid-2026) — skip the wasted round-trip and go straight to yt-dlp.
         if auth_search_degraded() {
-            return ytdlp_search(query, SEARCH_RESULT_LIMIT).await;
+            return Ok(ytdlp_search(query, SEARCH_RESULT_LIMIT)
+                .await?
+                .into_iter()
+                .map(|song| (song, YoutubeSearchKind::YoutubeVideoSearch))
+                .collect());
         }
         match self {
             // The simplified `search_songs` wrapper only fetches the first page (~20). Drive
@@ -448,7 +486,11 @@ impl YtMusicApi {
                                 error = %sanitize::sanitize_error_text(format!("{e:#}")),
                                 "authenticated search parse failed; using yt-dlp for the rest of this session"
                             );
-                            return ytdlp_search(query, SEARCH_RESULT_LIMIT).await;
+                            return Ok(ytdlp_search(query, SEARCH_RESULT_LIMIT)
+                                .await?
+                                .into_iter()
+                                .map(|song| (song, YoutubeSearchKind::YoutubeVideoSearch))
+                                .collect());
                         }
                         Err(_) => break,
                     };
@@ -465,9 +507,16 @@ impl YtMusicApi {
                         }
                     }
                 }
-                Ok(songs)
+                Ok(songs
+                    .into_iter()
+                    .map(|song| (song, YoutubeSearchKind::YtmCatalogSong))
+                    .collect())
             }
-            Self::Anonymous => ytdlp_search(query, SEARCH_RESULT_LIMIT).await,
+            Self::Anonymous => Ok(ytdlp_search(query, SEARCH_RESULT_LIMIT)
+                .await?
+                .into_iter()
+                .map(|song| (song, YoutubeSearchKind::YoutubeVideoSearch))
+                .collect()),
         }
     }
 

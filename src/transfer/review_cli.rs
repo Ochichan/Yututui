@@ -257,6 +257,7 @@ fn format_track_position(row: &ImportSessionRow) -> Option<String> {
 fn format_candidate(index: usize, candidate: &super::checkpoint::ReportCandidate) -> String {
     let breakdown = candidate
         .score_breakdown
+        .as_ref()
         .map(|breakdown| {
             format!(
                 " [title {:.2}, artist {:.2}, duration {:.2}, album +{:.2}]",
@@ -331,7 +332,7 @@ fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandid
             key: key.clone(),
             score: *score,
             display: display.clone(),
-            score_breakdown: *score_breakdown,
+            score_breakdown: score_breakdown.clone(),
         }],
         Some(MatchOutcome::Ambiguous { candidates }) => candidates
             .iter()
@@ -339,7 +340,7 @@ fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandid
                 key: candidate.key.clone(),
                 score: candidate.score,
                 display: candidate.display.clone(),
-                score_breakdown: candidate.score_breakdown,
+                score_breakdown: candidate.score_breakdown.clone(),
             })
             .collect(),
         _ => Vec::new(),
@@ -457,6 +458,10 @@ mod tests {
             album_id: None,
             album_uri: None,
             album_release_date: None,
+            album_release_date_precision: None,
+            album_total_tracks: None,
+            album_type: None,
+            album_art_url: None,
             disc_number: Some(1),
             track_number: Some(2),
             duration_secs: Some(180),
@@ -479,10 +484,17 @@ mod tests {
                         display: "Artist - First".to_owned(),
                         score_breakdown: Some(MatchScoreBreakdown {
                             total: 0.78,
+                            raw_total: 0.78,
                             title: 0.90,
                             artist: 1.0,
                             duration: 0.8,
                             album_bonus: 0.05,
+                            quality_bonus: 0.0,
+                            identity_penalty: 0.0,
+                            non_music_penalty: 0.0,
+                            accept_blocked: false,
+                            reject_reason: None,
+                            reason_codes: Vec::new(),
                         }),
                     },
                     AmbiguousCandidate {

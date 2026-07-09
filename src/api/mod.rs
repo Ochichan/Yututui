@@ -81,6 +81,13 @@ fn sanitize_optional_metadata(raw: Option<String>, max_chars: usize) -> Option<S
         .filter(|value| !value.trim().is_empty())
 }
 
+fn sanitize_metadata_vec(raw: Vec<String>, max_chars: usize) -> Vec<String> {
+    raw.into_iter()
+        .map(|value| sanitize_metadata_text(&value, max_chars))
+        .filter(|value| !value.trim().is_empty())
+        .collect()
+}
+
 pub fn sanitize_metadata_text(raw: &str, max_chars: usize) -> String {
     let mut out = String::new();
     let mut kept = 0;
@@ -120,6 +127,8 @@ pub struct Song {
     pub video_id: String,
     pub title: String,
     pub artist: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artists: Vec<String>,
     /// Pre-formatted duration string (e.g. "3:45").
     pub duration: String,
     /// Album name, when the provider exposes it (YT Music search does). Feeds scrobble
@@ -130,10 +139,24 @@ pub struct Song {
     /// album grouping after downloaded tracks are scanned back from disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub album_artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub album_artists: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_release_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_release_date_precision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_total_tracks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_art_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disc_number: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isrc: Option<String>,
     /// Source catalog key/URI that produced this playable song, such as a Spotify URI.
@@ -164,6 +187,18 @@ pub struct Song {
     /// tracks (whose `video_id` is already the YouTube ID). Old persisted JSON omits it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yt_video_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SongImportMetadata {
+    pub artists: Vec<String>,
+    pub album_artists: Vec<String>,
+    pub album_release_date: Option<String>,
+    pub album_release_date_precision: Option<String>,
+    pub album_total_tracks: Option<u32>,
+    pub album_type: Option<String>,
+    pub album_art_url: Option<String>,
+    pub explicit: Option<bool>,
 }
 
 /// How a non-local track should be handed to mpv/yt-dlp.
@@ -317,11 +352,19 @@ impl Song {
             video_id: sanitize_provider_id(&video_id),
             title: sanitize_title(&title),
             artist: sanitize_artist(&artist),
+            artists: Vec::new(),
             duration: sanitize_duration(&duration),
             album: None,
             album_artist: None,
+            album_artists: Vec::new(),
+            album_release_date: None,
+            album_release_date_precision: None,
+            album_total_tracks: None,
+            album_type: None,
+            album_art_url: None,
             disc_number: None,
             track_number: None,
+            explicit: None,
             isrc: None,
             origin_key: None,
             origin_url: None,
@@ -374,11 +417,19 @@ impl Song {
             video_id,
             title: sanitize_title(&title),
             artist: sanitize_artist(&artist),
+            artists: Vec::new(),
             duration: sanitize_duration(&duration),
             album: None,
             album_artist: None,
+            album_artists: Vec::new(),
+            album_release_date: None,
+            album_release_date_precision: None,
+            album_total_tracks: None,
+            album_type: None,
+            album_art_url: None,
             disc_number: None,
             track_number: None,
+            explicit: None,
             isrc: None,
             origin_key: None,
             origin_url: None,
@@ -413,11 +464,19 @@ impl Song {
             video_id: Self::local_id(&path),
             title: sanitize_title(&title),
             artist: "Local file".to_owned(),
+            artists: Vec::new(),
             duration: String::new(),
             album: None,
             album_artist: None,
+            album_artists: Vec::new(),
+            album_release_date: None,
+            album_release_date_precision: None,
+            album_total_tracks: None,
+            album_type: None,
+            album_art_url: None,
             disc_number: None,
             track_number: None,
+            explicit: None,
             isrc: None,
             origin_key: None,
             origin_url: None,
@@ -454,11 +513,19 @@ impl Song {
             video_id: Self::local_id(&path),
             title: self.title.clone(),
             artist: self.artist.clone(),
+            artists: self.artists.clone(),
             duration: self.duration.clone(),
             album: self.album.clone(),
             album_artist: self.album_artist.clone(),
+            album_artists: self.album_artists.clone(),
+            album_release_date: self.album_release_date.clone(),
+            album_release_date_precision: self.album_release_date_precision.clone(),
+            album_total_tracks: self.album_total_tracks,
+            album_type: self.album_type.clone(),
+            album_art_url: self.album_art_url.clone(),
             disc_number: self.disc_number,
             track_number: self.track_number,
+            explicit: self.explicit,
             isrc: self.isrc.clone(),
             origin_key: self.origin_key.clone(),
             origin_url: self.origin_url.clone(),
@@ -489,11 +556,27 @@ impl Song {
         origin_url: Option<String>,
     ) -> Self {
         self.album_artist = sanitize_optional_metadata(album_artist, MAX_ARTIST_CHARS);
+        self.album_artists = self.album_artist.iter().cloned().collect::<Vec<_>>();
         self.disc_number = disc_number.filter(|number| *number > 0);
         self.track_number = track_number.filter(|number| *number > 0);
         self.isrc = sanitize_optional_metadata(isrc, MAX_PROVIDER_ID_CHARS);
         self.origin_key = sanitize_optional_metadata(origin_key, MAX_PROVIDER_ID_CHARS);
         self.origin_url = sanitize_optional_metadata(origin_url, MAX_ORIGIN_URL_CHARS);
+        self
+    }
+
+    pub fn with_import_metadata(mut self, metadata: SongImportMetadata) -> Self {
+        self.artists = sanitize_metadata_vec(metadata.artists, MAX_ARTIST_CHARS);
+        self.album_artists = sanitize_metadata_vec(metadata.album_artists, MAX_ARTIST_CHARS);
+        self.album_release_date =
+            sanitize_optional_metadata(metadata.album_release_date, MAX_DURATION_CHARS);
+        self.album_release_date_precision =
+            sanitize_optional_metadata(metadata.album_release_date_precision, MAX_DURATION_CHARS);
+        self.album_total_tracks = metadata.album_total_tracks.filter(|number| *number > 0);
+        self.album_type = sanitize_optional_metadata(metadata.album_type, MAX_PROVIDER_ID_CHARS);
+        self.album_art_url =
+            sanitize_optional_metadata(metadata.album_art_url, MAX_ORIGIN_URL_CHARS);
+        self.explicit = metadata.explicit;
         self
     }
 

@@ -112,6 +112,10 @@ pub fn read_tracks(path: &Path) -> Result<Vec<TrackInput>> {
             album_id: None,
             album_uri: None,
             album_release_date: None,
+            album_release_date_precision: None,
+            album_total_tracks: None,
+            album_type: None,
+            album_art_url: None,
             disc_number: None,
             track_number: None,
             duration_secs: field(duration_col)

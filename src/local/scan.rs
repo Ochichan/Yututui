@@ -281,13 +281,30 @@ fn apply_download_sidecar(track: &mut LocalTrack, sidecar: &crate::downloads::Do
     if let Some(title) = clean_sidecar_text(&sidecar.title) {
         track.title = title;
     }
-    if let Some(artist) = clean_sidecar_text(&sidecar.artist)
+    if !sidecar.artists.is_empty() {
+        track.artist = sidecar
+            .artists
+            .iter()
+            .filter_map(|artist| clean_sidecar_text(artist))
+            .collect();
+    } else if let Some(artist) = clean_sidecar_text(&sidecar.artist)
         && !artist.eq_ignore_ascii_case("local file")
     {
         track.artist = split_sidecar_people(&artist);
     }
     track.album = sidecar.album.as_deref().and_then(clean_sidecar_text);
-    track.album_artist = sidecar.album_artist.as_deref().and_then(clean_sidecar_text);
+    track.album_artist = if sidecar.album_artists.is_empty() {
+        sidecar.album_artist.as_deref().and_then(clean_sidecar_text)
+    } else {
+        Some(sidecar.album_artists.join(", "))
+    };
+    if track.year.is_none() {
+        track.year = sidecar
+            .album_release_date
+            .as_deref()
+            .and_then(|date| date.get(..4))
+            .and_then(|year| year.parse::<i32>().ok());
+    }
     track.disc_no = sidecar.disc_number;
     track.track_no = sidecar.track_number;
     track.isrc = sidecar.isrc.as_deref().and_then(clean_sidecar_text);
@@ -389,14 +406,25 @@ mod tests {
             Some("Canonical Album".to_owned()),
         );
         song.duration_secs = Some(183);
-        song = song.with_catalog_metadata(
-            Some("Album Artist".to_owned()),
-            Some(1),
-            Some(4),
-            Some("ISRC123".to_owned()),
-            Some("spotify:track:abc".to_owned()),
-            Some("https://open.spotify.com/track/abc".to_owned()),
-        );
+        song = song
+            .with_catalog_metadata(
+                Some("Album Artist".to_owned()),
+                Some(1),
+                Some(4),
+                Some("ISRC123".to_owned()),
+                Some("spotify:track:abc".to_owned()),
+                Some("https://open.spotify.com/track/abc".to_owned()),
+            )
+            .with_import_metadata(crate::api::SongImportMetadata {
+                artists: vec!["Artist A".to_owned(), "Artist B".to_owned()],
+                album_artists: vec!["Album Artist".to_owned()],
+                album_release_date: Some("2026-07-08".to_owned()),
+                album_release_date_precision: Some("day".to_owned()),
+                album_total_tracks: Some(10),
+                album_type: Some("album".to_owned()),
+                album_art_url: Some("https://i.scdn.co/image/cover".to_owned()),
+                explicit: Some(false),
+            });
         song = song.with_import_session(Some("sp2yt-20260708-abcd".to_owned()), Some(7));
         crate::downloads::write_sidecar(&song, &audio).unwrap();
 
@@ -411,6 +439,7 @@ mod tests {
         assert_eq!(track.artist, vec!["Artist A", "Artist B"]);
         assert_eq!(track.album.as_deref(), Some("Canonical Album"));
         assert_eq!(track.album_artist.as_deref(), Some("Album Artist"));
+        assert_eq!(track.year, Some(2026));
         assert_eq!(track.disc_no, Some(1));
         assert_eq!(track.track_no, Some(4));
         assert_eq!(track.duration_ms, Some(183_000));

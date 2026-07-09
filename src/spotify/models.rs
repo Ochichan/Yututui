@@ -94,6 +94,14 @@ impl From<RawPlaylist> for SpotifyPlaylist {
     }
 }
 
+/// One Spotify album artwork image.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpotifyImage {
+    pub url: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
 /// A playable Spotify catalog track, simplified to what matching/export needs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpotifyTrack {
@@ -102,14 +110,18 @@ pub struct SpotifyTrack {
     pub spotify_url: Option<String>,
     pub name: String,
     pub artists: Vec<String>,
+    pub artist_ids: Vec<String>,
     pub album_artists: Vec<String>,
+    pub album_artist_ids: Vec<String>,
     pub album: String,
     pub album_id: Option<String>,
     pub album_uri: Option<String>,
+    pub album_url: Option<String>,
     pub album_type: Option<String>,
     pub album_total_tracks: Option<u32>,
     pub album_release_date: Option<String>,
     pub album_release_date_precision: Option<String>,
+    pub album_images: Vec<SpotifyImage>,
     pub duration_ms: u32,
     pub disc_number: Option<u32>,
     pub track_number: Option<u32>,
@@ -118,6 +130,21 @@ pub struct SpotifyTrack {
     pub added_at: Option<String>,
     pub is_playable: Option<bool>,
     pub restriction_reason: Option<String>,
+}
+
+impl SpotifyTrack {
+    pub fn best_album_image_url(&self) -> Option<String> {
+        self.album_images
+            .iter()
+            .max_by_key(|image| {
+                image
+                    .width
+                    .unwrap_or(0)
+                    .saturating_mul(image.height.unwrap_or(0))
+            })
+            .or_else(|| self.album_images.first())
+            .map(|image| image.url.clone())
+    }
 }
 
 /// Playlist / liked-songs item wrapper (the payload can be null; episodes have other
@@ -160,7 +187,9 @@ pub fn simplify(item: &RawTrackItem) -> Option<SpotifyTrack> {
     let uri = string_field(track, "uri")?;
     let name = string_field(track, "name")?;
     let artists = named_array(track.get("artists"));
+    let artist_ids = id_array(track.get("artists"));
     let album = track.get("album");
+    let album_artists_value = album.and_then(|a| a.get("artists"));
     Some(SpotifyTrack {
         id: string_field(track, "id"),
         uri,
@@ -170,18 +199,27 @@ pub fn simplify(item: &RawTrackItem) -> Option<SpotifyTrack> {
             .map(str::to_owned),
         name,
         artists,
-        album_artists: named_array(album.and_then(|a| a.get("artists"))),
+        artist_ids,
+        album_artists: named_array(album_artists_value),
+        album_artist_ids: id_array(album_artists_value),
         album: album
             .and_then(|a| string_field(a, "name"))
             .unwrap_or_default(),
         album_id: album.and_then(|a| string_field(a, "id")),
         album_uri: album.and_then(|a| string_field(a, "uri")),
+        album_url: album
+            .and_then(|a| a.pointer("/external_urls/spotify"))
+            .and_then(|s| s.as_str())
+            .map(str::to_owned),
         album_type: album.and_then(|a| string_field(a, "album_type")),
         album_total_tracks: album
             .and_then(|a| a.get("total_tracks"))
             .and_then(value_u32),
         album_release_date: album.and_then(|a| string_field(a, "release_date")),
         album_release_date_precision: album.and_then(|a| string_field(a, "release_date_precision")),
+        album_images: album
+            .and_then(|a| image_array(a.get("images")))
+            .unwrap_or_default(),
         duration_ms: track
             .get("duration_ms")
             .and_then(|d| d.as_u64())
@@ -230,6 +268,36 @@ fn named_array(value: Option<&serde_json::Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn id_array(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| a.get("id").and_then(|n| n.as_str()))
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn image_array(value: Option<&serde_json::Value>) -> Option<Vec<SpotifyImage>> {
+    Some(
+        value?
+            .as_array()?
+            .iter()
+            .filter_map(|image| {
+                let url = image.get("url")?.as_str()?.to_owned();
+                Some(SpotifyImage {
+                    url,
+                    width: image.get("width").and_then(value_u32),
+                    height: image.get("height").and_then(value_u32),
+                })
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,7 +314,11 @@ mod tests {
                     "id": "album1", "uri": "spotify:album:album1", "name": "Get Up",
                     "album_type": "ep", "total_tracks": 6,
                     "release_date": "2023-07-21", "release_date_precision": "day",
-                    "artists": [{"name": "NewJeans"}],
+                    "images": [
+                        {"url": "https://i.scdn.co/image/small", "width": 64, "height": 64},
+                        {"url": "https://i.scdn.co/image/large", "width": 640, "height": 640}
+                    ],
+                    "artists": [{"name": "NewJeans", "id": "artist1"}],
                     "external_urls": {"spotify": "https://open.spotify.com/album/album1"}
                 },
                 "duration_ms": 151000, "explicit": false, "disc_number": 1,
@@ -259,14 +331,24 @@ mod tests {
         assert_eq!(t.id.as_deref(), Some("abc"));
         assert_eq!(t.name, "ETA");
         assert_eq!(t.artists, vec!["NewJeans"]);
+        assert_eq!(t.artist_ids, vec!["artist1"]);
         assert_eq!(t.album_artists, vec!["NewJeans"]);
+        assert_eq!(t.album_artist_ids, vec!["artist1"]);
         assert_eq!(t.album, "Get Up");
         assert_eq!(t.album_id.as_deref(), Some("album1"));
         assert_eq!(t.album_uri.as_deref(), Some("spotify:album:album1"));
+        assert_eq!(
+            t.album_url.as_deref(),
+            Some("https://open.spotify.com/album/album1")
+        );
         assert_eq!(t.album_type.as_deref(), Some("ep"));
         assert_eq!(t.album_total_tracks, Some(6));
         assert_eq!(t.album_release_date.as_deref(), Some("2023-07-21"));
         assert_eq!(t.album_release_date_precision.as_deref(), Some("day"));
+        assert_eq!(
+            t.best_album_image_url().as_deref(),
+            Some("https://i.scdn.co/image/large")
+        );
         assert_eq!(t.disc_number, Some(1));
         assert_eq!(t.track_number, Some(3));
         assert_eq!(t.isrc.as_deref(), Some("KRA402300123"));
