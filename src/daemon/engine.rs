@@ -22,6 +22,7 @@ use crate::session::{LastMode, SessionCache};
 use crate::signals::{self, Signals};
 use crate::station::StationStore;
 use crate::streaming::{self, CandidateSource, Cooc, StationState, StreamingConfig, StreamingMode};
+use crate::tools::PlaybackFailureClass;
 use crate::util::sanitize;
 
 // Autoplay/streaming policy + volume bounds are single-sourced with the TUI App in
@@ -1801,12 +1802,13 @@ impl DaemonEngine {
     }
 
     async fn handle_playback_error(&mut self, error: String) -> Vec<EngineEffect> {
+        let failure_class = crate::tools::classify_playback_failure(&error);
         // Self-heal (mirrors the TUI reducer): an extraction-shaped failure on a
         // yt-dlp-resolved track is the stale-yt-dlp signature — update in the
         // background and retry this track once. Unlike the TUI (whose session mpv
         // keeps its spawn-time ytdl_path), the daemon can simply drop its player:
         // the respawn re-pins ytdl_hook to the fresh binary.
-        if crate::tools::looks_like_extraction_failure(&error)
+        if failure_class == PlaybackFailureClass::Extraction
             && self.heal_pending.is_none()
             && let Some(song) = self.queue.current()
             && song.prefetch_target().is_some()
@@ -1824,13 +1826,19 @@ impl DaemonEngine {
             self.heal_attempted.insert(video_id.clone());
             self.heal_last_check = Some(Instant::now());
             self.heal_pending = Some(video_id.clone());
-            self.last_error = Some(error);
+            self.last_error = Some(crate::tools::playback_failure_actionable_error(
+                failure_class,
+                &error,
+            ));
             return vec![EngineEffect::YtdlpSelfHeal {
                 video_id,
                 tools: self.config.tools.clone(),
             }];
         }
-        self.last_error = Some(error);
+        self.last_error = Some(crate::tools::playback_failure_actionable_error(
+            failure_class,
+            &error,
+        ));
         self.consecutive_play_errors = self.consecutive_play_errors.saturating_add(1);
         if self.consecutive_play_errors <= MAX_CONSECUTIVE_PLAY_ERRORS
             && self.queue.peek_next().is_some()
@@ -1871,8 +1879,11 @@ impl DaemonEngine {
             }
             return Vec::new();
         }
-        self.handle_playback_error("stream resolution failed (yt-dlp already current)".to_owned())
-            .await
+        self.handle_playback_error(
+            "mpv could not play this track (unrecognized file format; yt-dlp already current)"
+                .to_owned(),
+        )
+        .await
     }
 
     async fn load_current(&mut self) -> Result<(), EngineError> {
@@ -3442,18 +3453,25 @@ mod tests {
 
     #[tokio::test]
     async fn non_extraction_error_skips_without_healing() {
-        let mut engine = engine_with_queue(&["a"]);
-        let effects = engine
-            .handle_player_event(PlayerEvent::Error(
-                "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
-            ))
-            .await;
-        assert!(
-            !effects
-                .iter()
-                .any(|e| matches!(e, EngineEffect::YtdlpSelfHeal { .. })),
-            "network errors take the plain path"
-        );
-        assert_eq!(engine.consecutive_play_errors, 1);
+        for error in [
+            "mpv could not play this track (HTTP error 403 Forbidden)",
+            "mpv could not play this track (HTTP Error 429: Too Many Requests)",
+        ] {
+            let mut engine = engine_with_queue(&["a"]);
+            let effects = engine
+                .handle_player_event(PlayerEvent::Error(error.to_owned()))
+                .await;
+            assert!(
+                !effects
+                    .iter()
+                    .any(|e| matches!(e, EngineEffect::YtdlpSelfHeal { .. })),
+                "HTTP rejection errors take the plain path: {error}"
+            );
+            assert_eq!(engine.consecutive_play_errors, 1);
+            let last_error = engine.last_error.as_deref().unwrap_or_default();
+            assert!(last_error.contains("YouTube rejected the stream"));
+            assert!(last_error.contains("ytt doctor --verbose"));
+            assert!(last_error.contains("JS runtime"));
+        }
     }
 }

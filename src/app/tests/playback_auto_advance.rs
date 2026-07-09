@@ -57,6 +57,10 @@ fn prefetched_stream_error_retries_same_track_via_watch_url_once() {
     assert!(!app.prefetch.resolved.contains_fresh("id0"));
     assert!(app.prefetch.watch_retry_attempted.contains("id0"));
     assert!(!app.prefetch.last_load_prefetched);
+    assert_eq!(
+        app.consecutive_play_errors, 0,
+        "prefetched URL retry is not a playback strike"
+    );
 
     let cmds = app.update(PlayerMsg::Error(
         "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
@@ -66,6 +70,68 @@ fn prefetched_stream_error_retries_same_track_via_watch_url_once() {
         current(&app),
         "id1",
         "second failure uses the existing skip path"
+    );
+    assert_eq!(app.consecutive_play_errors, 1);
+}
+
+#[test]
+fn repeated_prefetched_stream_failures_pause_prefetch_temporarily() {
+    let mut app = app_playing(4, 0);
+    app.prefetch.resolved.insert(
+        "id0".to_owned(),
+        "https://cdn.example/stale-id0.m4a".to_owned(),
+    );
+    app.prefetch.last_load_prefetched = true;
+
+    let cmds = app.update(PlayerMsg::Error(
+        "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
+    ));
+    assert_loads_video(&cmds, "id0");
+    assert!(app.prefetch.disabled_until.is_none());
+
+    app.queue.next(false);
+    app.prefetch.loaded_video_id = Some("id1".to_owned());
+    app.prefetch.resolved.insert(
+        "id1".to_owned(),
+        "https://cdn.example/stale-id1.m4a".to_owned(),
+    );
+    app.prefetch.last_load_prefetched = true;
+
+    let cmds = app.update(PlayerMsg::Error(
+        "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
+    ));
+    assert_loads_video(&cmds, "id1");
+    assert!(
+        app.prefetch.disabled_until.is_some(),
+        "second direct URL failure pauses prefetch"
+    );
+    assert_eq!(
+        app.prefetch.resolved.len(),
+        0,
+        "cooldown clears direct URLs"
+    );
+
+    let cmds = app.load_song(app.queue.current().cloned());
+    assert_eq!(
+        resolve_cmd_id(&cmds),
+        None,
+        "new prefetch requests are blocked during cooldown"
+    );
+    app.update(StreamingMsg::Resolved {
+        video_id: "id2".to_owned(),
+        stream_url: "https://cdn.example/late-id2.m4a".to_owned(),
+    });
+    assert!(
+        !app.prefetch.resolved.contains_fresh("id2"),
+        "late resolver results are not cached during cooldown"
+    );
+
+    app.prefetch.disabled_until = Some(Instant::now() - Duration::from_secs(1));
+    let cmds = app.load_song(app.queue.current().cloned());
+    assert_eq!(
+        resolve_cmd_id(&cmds),
+        Some("id2"),
+        "prefetch resumes after the cooldown expires"
     );
 }
 

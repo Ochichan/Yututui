@@ -568,7 +568,8 @@ impl App {
         // Still playing: pre-resolve the now-known next track's stream so the EOF→next hop is
         // instant (mirrors load_song's peek-next prefetch).
         let mut cmds = self.request_romanization_for_songs(&queued_songs);
-        if let Some(next) = self.queue.peek_next()
+        if self.prefetch.enabled()
+            && let Some(next) = self.queue.peek_next()
             && let Some(watch_url) = next.prefetch_target()
         {
             let video_id = next.video_id.clone();

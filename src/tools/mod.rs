@@ -292,6 +292,79 @@ pub(crate) fn classify_ytdlp_failure(stderr: &str) -> Option<&'static str> {
     None
 }
 
+/// Coarse class for playback errors reported by mpv. This is intentionally smaller than
+/// yt-dlp stderr classification: by the time the reducer sees a `PlayerEvent::Error`,
+/// it only has mpv's `file_error` text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaybackFailureClass {
+    /// ytdl_hook produced no playable stream and mpv tried to parse the watch page itself.
+    Extraction,
+    /// YouTube/CDN rejected the stream with HTTP 403.
+    Http403,
+    /// YouTube/CDN rate-limited the stream (HTTP 429 / too many requests).
+    RateLimited,
+    /// Transport/DNS/timeout style failure.
+    Network,
+    /// Anything else.
+    Unknown,
+}
+
+/// Classify the mpv playback error string surfaced by `player::ipc`.
+pub fn classify_playback_failure(player_error: &str) -> PlaybackFailureClass {
+    let e = player_error.to_ascii_lowercase();
+    if e.contains("http error 403") || e.contains("error 403") || e.contains("403 forbidden") {
+        return PlaybackFailureClass::Http403;
+    }
+    if e.contains("http error 429")
+        || e.contains("error 429")
+        || e.contains("429 too many requests")
+        || e.contains("too many requests")
+        || e.contains("rate limit")
+        || e.contains("rate-limit")
+    {
+        return PlaybackFailureClass::RateLimited;
+    }
+    if e.contains("unrecognized file format") || e.contains("failed to recognize file format") {
+        return PlaybackFailureClass::Extraction;
+    }
+    if e.contains("connection refused")
+        || e.contains("connection reset")
+        || e.contains("connection timed out")
+        || e.contains("timed out")
+        || e.contains("timeout")
+        || e.contains("temporary failure in name resolution")
+        || e.contains("could not resolve")
+        || e.contains("name or service not known")
+        || e.contains("network is unreachable")
+        || e.contains("no route to host")
+        || e.contains("http error 500")
+        || e.contains("http error 502")
+        || e.contains("http error 503")
+        || e.contains("http error 504")
+    {
+        return PlaybackFailureClass::Network;
+    }
+    PlaybackFailureClass::Unknown
+}
+
+pub fn playback_failure_actionable_error(
+    class: PlaybackFailureClass,
+    player_error: &str,
+) -> String {
+    match class {
+        PlaybackFailureClass::Extraction => format!(
+            "stream resolution failed; run `ytt tools update`, then `ytt doctor --verbose`: {player_error}"
+        ),
+        PlaybackFailureClass::Http403 | PlaybackFailureClass::RateLimited => format!(
+            "YouTube rejected the stream; run `ytt doctor --verbose`, check cookies and JS runtime: {player_error}"
+        ),
+        PlaybackFailureClass::Network => {
+            format!("network error while opening stream: {player_error}")
+        }
+        PlaybackFailureClass::Unknown => player_error.to_owned(),
+    }
+}
+
 pub(crate) fn ytdlp_failure_detail(stderr_tail: &[u8]) -> String {
     let stderr = String::from_utf8_lossy(stderr_tail);
     let class = classify_ytdlp_failure(&stderr);
@@ -692,8 +765,7 @@ pub const HEAL_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 /// opposed to a network/HTTP error. This is the signature of a stale yt-dlp and
 /// gates the self-heal (update, then retry the same track once).
 pub fn looks_like_extraction_failure(player_error: &str) -> bool {
-    let e = player_error.to_ascii_lowercase();
-    e.contains("unrecognized file format") || e.contains("failed to recognize file format")
+    classify_playback_failure(player_error) == PlaybackFailureClass::Extraction
 }
 
 /// Probe `<program> --version`. Returns the first stdout line when it looks like a
@@ -914,6 +986,35 @@ mod tests {
             "mpv could not play this track"
         ));
         assert!(!looks_like_extraction_failure("connection refused"));
+    }
+
+    #[test]
+    fn playback_failure_classification_splits_recovery_policies() {
+        use PlaybackFailureClass as C;
+
+        let cases = [
+            (
+                "mpv could not play this track (unrecognized file format)",
+                C::Extraction,
+            ),
+            (
+                "mpv could not play this track (HTTP error 403 Forbidden)",
+                C::Http403,
+            ),
+            (
+                "mpv could not play this track (HTTP Error 429: Too Many Requests)",
+                C::RateLimited,
+            ),
+            (
+                "mpv could not play this track (connection timed out)",
+                C::Network,
+            ),
+            ("mpv could not play this track", C::Unknown),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(classify_playback_failure(error), expected, "{error}");
+        }
     }
 
     #[test]

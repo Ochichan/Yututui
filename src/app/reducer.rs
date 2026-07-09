@@ -470,12 +470,20 @@ impl App {
                     video_id,
                     stream_url,
                 } => {
+                    let healing = self.heal.pending_video_id.as_deref() == Some(video_id.as_str());
+                    if !healing && !self.prefetch.enabled() {
+                        tracing::debug!(
+                            video_id = %video_id,
+                            "dropping resolved stream while prefetch is paused"
+                        );
+                        return Vec::new();
+                    }
                     // Bounded prefetch cache; no redraw (purely a skip-latency optimization).
                     self.prefetch.resolved.insert(video_id.clone(), stream_url);
                     // A pending self-heal retry: the freshly-updated yt-dlp resolved the
                     // failed track — reload it now through the direct CDN URL just cached
                     // (bypassing the session mpv's stale spawn-time ytdl_hook).
-                    if self.heal.pending_video_id.as_deref() == Some(video_id.as_str()) {
+                    if healing {
                         self.heal.pending_video_id = None;
                         if self.queue.current().is_some_and(|s| s.video_id == video_id) {
                             return self.load_song(self.queue.current().cloned());

@@ -1,6 +1,7 @@
 //! Player/playback reducer methods, split out of the monolithic `app.rs` (behaviour-preserving).
 
 use super::*;
+use crate::tools::PlaybackFailureClass;
 
 /// A player/playback runtime message: mpv property changes, EOF, playback errors, and
 /// video-overlay IPC events. Bucketed under [`Msg::Player`] to keep the flat `Msg` lean.
@@ -84,24 +85,38 @@ impl App {
             prefetched = self.prefetch.last_load_prefetched,
             "playback error"
         );
-        let extraction = crate::tools::looks_like_extraction_failure(&e);
+        let failure_class = crate::tools::classify_playback_failure(&e);
+        let extraction = failure_class == PlaybackFailureClass::Extraction;
         if self.prefetch.last_load_prefetched
             && let Some(song) = self.queue.current()
             && let Some(watch_url) = song.prefetch_target()
             && !self.prefetch.watch_retry_attempted.contains(&song.video_id)
         {
             let video_id = song.video_id.clone();
+            let prefetch_paused = self.prefetch.record_direct_url_failure();
             self.prefetch.resolved.remove(&video_id);
             self.prefetch.watch_retry_attempted.insert(video_id.clone());
             self.prefetch.last_load_prefetched = false;
             self.status.kind = StatusKind::Info;
-            self.status.text = t!(
-                "Prefetched stream failed — retrying the track",
-                "미리 해석한 스트림 실패 — 같은 곡을 다시 시도"
-            )
-            .to_owned();
+            self.status.text = if prefetch_paused {
+                t!(
+                    "Prefetched streams are being rejected — pausing prefetch and retrying this track",
+                    "미리 받은 스트림이 반복 거부됨 — 프리페치를 쉬고 같은 곡을 다시 시도"
+                )
+                .to_owned()
+            } else {
+                t!(
+                    "Prefetched stream was rejected — retrying this track",
+                    "미리 받은 스트림이 거부됨 — 같은 곡을 다시 시도"
+                )
+                .to_owned()
+            };
             self.dirty = true;
-            tracing::info!(video_id = %video_id, "retrying failed prefetched stream via watch URL");
+            tracing::info!(
+                video_id = %video_id,
+                prefetch_paused,
+                "retrying failed prefetched stream via watch URL"
+            );
             return vec![Cmd::Player(PlayerCmd::Load(watch_url))];
         }
         // Self-heal: an extraction-shaped failure on a yt-dlp-resolved track is
@@ -153,35 +168,14 @@ impl App {
         {
             // `advance(false)` always moves on (ignores repeat-one), unlike an EOF.
             let cmds = self.advance(false);
-            self.status.text = if extraction {
-                t!(
-                    "⚠ Couldn't resolve the stream (yt-dlp may be outdated) — skipped",
-                    "⚠ 스트림 해석 실패 (yt-dlp가 오래됐을 수 있음) — 건너뜀"
-                )
-            } else {
-                t!(
-                    "⚠ Track unavailable — skipped to next",
-                    "⚠ 재생할 수 없는 곡 — 다음 곡으로 건너뜀"
-                )
-            }
-            .to_owned();
+            self.status.text = playback_error::skipped_status_for_failure(failure_class);
             self.dirty = true;
             return cmds;
         }
         self.status.text = if self.consecutive_play_errors > MAX_CONSECUTIVE_PLAY_ERRORS {
-            if extraction {
-                t!(
-                            "Several tracks failed — run `ytt tools reset --playback`, then `ytt doctor --verbose` if it continues.",
-                            "여러 곡 재생 실패 — `ytt tools reset --playback` 실행 후 계속되면 `ytt doctor --verbose`를 확인하세요."
-                        ).to_owned()
-            } else {
-                t!(
-                            "Several tracks failed to play — stopped. Check your connection, or sign in (cookies) for gated tracks.",
-                            "여러 곡 재생에 실패해서 중단했어요. 연결을 확인하거나, 제한된 곡은 로그인(쿠키)하세요."
-                        ).to_owned()
-            }
+            playback_error::breaker_status_for_failure(failure_class)
         } else {
-            format!("{}: {e}", t!("Playback error", "재생 오류"))
+            playback_error::playback_error_status_for_failure(failure_class, &e)
         };
         self.dirty = true;
         Vec::new()
@@ -1304,7 +1298,8 @@ impl App {
                     });
                 }
                 // Prefetch the upcoming track's stream so the next skip is instant.
-                if let Some(next) = self.queue.peek_next()
+                if self.prefetch.enabled()
+                    && let Some(next) = self.queue.peek_next()
                     && let Some(watch_url) = next.prefetch_target()
                 {
                     let video_id = next.video_id.clone();

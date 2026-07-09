@@ -321,6 +321,7 @@ The app's own yt-dlp calls ignore your yt-dlp config file by default, so options
 | Nothing plays, or it errors on play | mpv or yt-dlp missing — run `ytt doctor`. |
 | `ytt: command not found` | Open a fresh terminal; still stuck, add the `PATH` line the installer printed. |
 | Worked yesterday, not today | YouTube changed something — `ytt tools update`, then `ytt tools status --why`; if a managed update is bad, `ytt tools use system`. |
+| Several tracks fail with 403/429 or "YouTube rejected the stream" | Run `ytt doctor --verbose`, check the cookies section above, and make sure a supported JS runtime is available; `ytt tools status --why` shows the active yt-dlp. |
 | A specific song won't play | It may need sign-in — see the cookies section above. |
 | No album art | Off by default: Settings → General → **Album art**, then restart. |
 | Album art or zoom behaves differently by terminal | Run `ytt doctor terminal --json` and compare with the [terminal matrix](docs/terminal-compatibility.md). |

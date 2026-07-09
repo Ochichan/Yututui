@@ -3,6 +3,9 @@ use std::time::{Duration, Instant};
 
 /// Resolved stream URLs are yt-dlp CDN URLs: useful for immediate skips, but not durable.
 pub(in crate::app) const PREFETCH_TTL: Duration = Duration::from_secs(30 * 60);
+pub(in crate::app) const PREFETCH_FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
+pub(in crate::app) const PREFETCH_DISABLE_DURATION: Duration = Duration::from_secs(30 * 60);
+const PREFETCH_FAILURE_THRESHOLD: usize = 2;
 const PREFETCH_MAX: usize = 64;
 
 pub(in crate::app) struct ResolvedStream {
@@ -45,6 +48,11 @@ impl PrefetchCache {
     pub(in crate::app) fn remove(&mut self, video_id: &str) {
         self.entries.remove(video_id);
         self.order.retain(|existing| existing != video_id);
+    }
+
+    pub(in crate::app) fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
     }
 
     #[cfg(test)]
@@ -126,5 +134,47 @@ impl ResolvedStream {
 
         now.checked_duration_since(self.inserted_at)
             .is_some_and(|age| age < PREFETCH_TTL)
+    }
+}
+
+impl super::Prefetch {
+    /// Whether ordinary skip-ahead prefetch is currently allowed. This also expires the session-only
+    /// cooldown once its deadline passes.
+    pub(in crate::app) fn enabled(&mut self) -> bool {
+        self.enabled_at(Instant::now())
+    }
+
+    /// Record that a prefetched direct URL was loaded into mpv and failed. Returns true when this
+    /// failure crosses the threshold and pauses ordinary prefetch for the cooldown period.
+    pub(in crate::app) fn record_direct_url_failure(&mut self) -> bool {
+        self.record_direct_url_failure_at(Instant::now())
+    }
+
+    fn enabled_at(&mut self, now: Instant) -> bool {
+        if let Some(until) = self.disabled_until {
+            if now < until {
+                return false;
+            }
+            self.disabled_until = None;
+            self.recent_failures.clear();
+        }
+        true
+    }
+
+    fn record_direct_url_failure_at(&mut self, now: Instant) -> bool {
+        self.enabled_at(now);
+        self.recent_failures.retain(|at| {
+            now.checked_duration_since(*at)
+                .is_some_and(|age| age <= PREFETCH_FAILURE_WINDOW)
+        });
+        self.recent_failures.push_back(now);
+        if self.recent_failures.len() < PREFETCH_FAILURE_THRESHOLD {
+            return false;
+        }
+
+        self.recent_failures.clear();
+        self.disabled_until = now.checked_add(PREFETCH_DISABLE_DURATION);
+        self.resolved.clear();
+        true
     }
 }

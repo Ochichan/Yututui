@@ -280,6 +280,12 @@ pub struct Prefetch {
     pub loaded_video_id: Option<String>,
     /// Tracks whose prefetched direct URL already failed once and was retried via the watch URL.
     pub watch_retry_attempted: HashSet<String>,
+    /// Timestamps of recent prefetched direct-URL playback failures. Session-only; used to dampen
+    /// prefetch when YouTube/CDN URLs are being rejected repeatedly.
+    pub recent_failures: VecDeque<Instant>,
+    /// When set to a future instant, ordinary skip-ahead prefetch is paused. Self-heal resolves
+    /// still run because they are not latency prefetches.
+    pub disabled_until: Option<Instant>,
 }
 
 /// Playback self-heal driven by extraction-shaped errors (the stale-yt-dlp signature):
