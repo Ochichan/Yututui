@@ -5,6 +5,7 @@
 //! ```text
 //! tools/
 //!   yt-dlp[.exe]     the managed standalone binary (official release asset)
+//!   yt-dlp.previous[.exe] previous verified managed binary for playback self-heal rollback
 //!   ytdlp.json       ManagedState: channel/version/check timestamps + probe cache
 //!   .update.lock     cross-process single-flight for downloads (bandwidth dedup)
 //!   .yt-dlp.tmp-<pid> in-flight download (atomically renamed into place)
@@ -38,6 +39,8 @@ use crate::util::safe_fs;
 
 use super::{ToolsEvent, YtdlpChannel};
 
+mod rollback;
+
 /// Upper bound on probe-cache entries (override + managed + system is 3; a few
 /// spares for paths that moved).
 const PROBE_CACHE_MAX: usize = 8;
@@ -59,6 +62,18 @@ pub struct ManagedState {
     pub installed_mtime_unix: Option<u64>,
     /// Last verified byte length of the installed managed binary.
     pub installed_len: Option<u64>,
+    /// Channel of the previous verified managed binary, if one is retained.
+    pub previous_channel: Option<YtdlpChannel>,
+    /// Version (release tag) of the previous verified managed binary.
+    pub previous_version: Option<String>,
+    /// Hex SHA-256 the previous managed binary was verified against.
+    pub previous_sha256: Option<String>,
+    /// Last verified mtime of the previous managed binary.
+    pub previous_mtime_unix: Option<u64>,
+    /// Last verified byte length of the previous managed binary.
+    pub previous_len: Option<u64>,
+    /// Unix seconds of the last automatic rollback.
+    pub last_rollback_unix: Option<u64>,
     /// Unix seconds of the last *successful* update check.
     pub last_check_unix: Option<u64>,
     /// Unix seconds of the last check *attempt* (backoff for failing networks).
@@ -103,6 +118,16 @@ pub fn managed_path() -> Option<PathBuf> {
         "yt-dlp.exe"
     } else {
         "yt-dlp"
+    };
+    tools_dir().map(|d| d.join(name))
+}
+
+/// Last verified managed binary retained for rollback after a bad update.
+pub fn previous_managed_path() -> Option<PathBuf> {
+    let name = if cfg!(windows) {
+        "yt-dlp.previous.exe"
+    } else {
+        "yt-dlp.previous"
     };
     tools_dir().map(|d| d.join(name))
 }
@@ -250,6 +275,55 @@ async fn managed_installation_matches(
         return Err("metadata file stamp does not match installed binary".to_owned());
     }
     Ok(actual)
+}
+
+fn preserve_current_as_previous(dest: &Path, state: &mut ManagedState) -> std::io::Result<bool> {
+    let Some(previous) = previous_managed_path() else {
+        return Ok(false);
+    };
+    let Some(version) = state.version.clone() else {
+        return Ok(false);
+    };
+    let Some(sha256) = state.sha256.clone() else {
+        return Ok(false);
+    };
+    if !dest.is_file() || !state_stamp_matches(dest, state) {
+        return Ok(false);
+    }
+
+    copy_binary_atomic(dest, &previous)?;
+    let Some((mtime, len)) = file_stamp(&previous) else {
+        return Ok(false);
+    };
+    state.previous_channel = state.channel;
+    state.previous_version = Some(version);
+    state.previous_sha256 = Some(sha256);
+    state.previous_mtime_unix = Some(mtime);
+    state.previous_len = Some(len);
+    Ok(true)
+}
+
+fn previous_stamp_matches(path: &Path, state: &ManagedState) -> bool {
+    file_stamp(path).is_some_and(|(mtime, len)| {
+        state.previous_mtime_unix == Some(mtime) && state.previous_len == Some(len)
+    })
+}
+
+fn record_current_from_inspection(
+    state: &mut ManagedState,
+    channel: Option<YtdlpChannel>,
+    inspection: &BinaryInspection,
+) {
+    state.channel = channel;
+    state.version = Some(inspection.version.clone());
+    state.sha256 = Some(inspection.sha256.clone());
+    state.installed_mtime_unix = Some(inspection.mtime_unix);
+    state.installed_len = Some(inspection.len);
+}
+
+fn remove_probe_cache_for(path: &Path, state: &mut ManagedState) {
+    let path_str = path.to_string_lossy().into_owned();
+    state.probe_cache.retain(|e| e.path != path_str);
 }
 
 /// Probe a binary's version through the persistent cache: a hit for the same
@@ -413,6 +487,21 @@ pub async fn check_and_update(
     outcome
 }
 
+pub async fn rollback_or_check_and_update(
+    cfg: &ToolsConfig,
+    progress: &(dyn Fn(ToolsEvent) + Sync),
+    reason: &str,
+) -> UpdateOutcome {
+    match rollback::to_previous(cfg, reason).await {
+        UpdateOutcome::Installed { version } => UpdateOutcome::Installed { version },
+        UpdateOutcome::AlreadyCurrent => UpdateOutcome::AlreadyCurrent,
+        UpdateOutcome::Unavailable(error) => {
+            tracing::debug!(error = %error, "managed yt-dlp rollback unavailable");
+            check_and_update(cfg, progress).await
+        }
+    }
+}
+
 async fn check_and_update_inner(
     cfg: &ToolsConfig,
     progress: &(dyn Fn(ToolsEvent) + Sync),
@@ -527,6 +616,17 @@ async fn check_and_update_inner(
             "checksum mismatch for {asset} {tag} — download discarded"
         ));
     }
+    match preserve_current_as_previous(&dest, &mut state) {
+        Ok(true) => {}
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(
+                path = %dest.display(),
+                error = %error,
+                "failed to preserve previous managed yt-dlp before update"
+            );
+        }
+    }
     if let Err(e) = install_file(&tmp, &dest) {
         let _ = std::fs::remove_file(&tmp);
         save_state(&state);
@@ -553,15 +653,10 @@ async fn check_and_update_inner(
         ));
     }
 
-    state.channel = Some(channel);
-    state.version = Some(tag.clone());
-    state.sha256 = Some(installed.sha256);
-    state.installed_mtime_unix = Some(installed.mtime_unix);
-    state.installed_len = Some(installed.len);
+    record_current_from_inspection(&mut state, Some(channel), &installed);
     state.last_check_unix = Some(now_unix());
     // The fresh binary re-probes on next selection (its mtime/len changed anyway).
-    let dest_str = dest.to_string_lossy().into_owned();
-    state.probe_cache.retain(|e| e.path != dest_str);
+    remove_probe_cache_for(&dest, &mut state);
     save_state(&state);
 
     super::refresh_selection(cfg).await;
@@ -1029,6 +1124,55 @@ pub(crate) fn install_file(tmp: &Path, dest: &Path) -> std::io::Result<()> {
     }
 }
 
+fn copy_binary_to_install_temp(src: &Path, dir: &Path) -> std::io::Result<PathBuf> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let tmp = dir.join(format!(".yt-dlp.rollback-{}-{nanos}", std::process::id()));
+    std::fs::copy(src, &tmp)?;
+    let file = std::fs::OpenOptions::new().read(true).open(&tmp)?;
+    file.sync_all()?;
+    drop(file);
+    Ok(tmp)
+}
+
+fn copy_binary_atomic(src: &Path, dest: &Path) -> std::io::Result<()> {
+    let Some(dir) = dest.parent() else {
+        return Err(std::io::Error::other("destination has no parent"));
+    };
+    safe_fs::ensure_private_dir(dir)?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("yt-dlp.previous");
+    let tmp = dest.with_file_name(format!(".{name}.tmp-{}-{nanos}", std::process::id()));
+    std::fs::copy(src, &tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let file = std::fs::OpenOptions::new().read(true).open(&tmp)?;
+    file.sync_all()?;
+    drop(file);
+    #[cfg(windows)]
+    {
+        retry_file_op(|| {
+            let _ = std::fs::remove_file(dest);
+            std::fs::rename(&tmp, dest)
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(&tmp, dest)
+    }
+}
+
 #[cfg(windows)]
 fn retry_file_op(mut op: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
     let mut last = None;
@@ -1058,6 +1202,12 @@ mod tests {
             sha256: Some("ab".repeat(32)),
             installed_mtime_unix: Some(1_780_000_050),
             installed_len: Some(42),
+            previous_channel: Some(YtdlpChannel::Stable),
+            previous_version: Some("2026.06.30".to_owned()),
+            previous_sha256: Some("cd".repeat(32)),
+            previous_mtime_unix: Some(1_780_000_040),
+            previous_len: Some(41),
+            last_rollback_unix: Some(1_780_000_120),
             last_check_unix: Some(1_780_000_000),
             last_attempt_unix: Some(1_780_000_100),
             probe_cache: vec![ProbeEntry {
@@ -1072,6 +1222,10 @@ mod tests {
         assert_eq!(back.version.as_deref(), Some("2026.07.03.234421"));
         assert_eq!(back.installed_mtime_unix, Some(1_780_000_050));
         assert_eq!(back.installed_len, Some(42));
+        assert_eq!(back.previous_channel, Some(YtdlpChannel::Stable));
+        assert_eq!(back.previous_version.as_deref(), Some("2026.06.30"));
+        assert_eq!(back.previous_len, Some(41));
+        assert_eq!(back.last_rollback_unix, Some(1_780_000_120));
         assert_eq!(back.probe_cache, state.probe_cache);
 
         // An empty/older file loads as defaults (never fails).
@@ -1103,6 +1257,42 @@ mod tests {
                     .to_string_lossy()
                     .starts_with("yt-dlp")
             );
+        }
+    }
+
+    #[test]
+    fn preserve_current_records_previous_slot_metadata() {
+        let _guard = crate::i18n::lock_for_test();
+        let original_tools_dir = std::env::var_os("YTM_TOOLS_DIR");
+        let dir = std::env::temp_dir().join(format!("ytt-ytdlp-prev-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe { std::env::set_var("YTM_TOOLS_DIR", &dir) };
+
+        let dest = managed_path().unwrap();
+        std::fs::write(&dest, b"previous-binary").unwrap();
+        let (mtime, len) = file_stamp(&dest).unwrap();
+        let sha256 = sha256_file(&dest).unwrap();
+        let mut state = ManagedState {
+            channel: Some(YtdlpChannel::Nightly),
+            version: Some("2026.07.03.234421".to_owned()),
+            sha256: Some(sha256.clone()),
+            installed_mtime_unix: Some(mtime),
+            installed_len: Some(len),
+            ..ManagedState::default()
+        };
+
+        assert!(preserve_current_as_previous(&dest, &mut state).unwrap());
+        let previous = previous_managed_path().unwrap();
+        assert_eq!(std::fs::read(&previous).unwrap(), b"previous-binary");
+        assert_eq!(state.previous_channel, Some(YtdlpChannel::Nightly));
+        assert_eq!(state.previous_version.as_deref(), Some("2026.07.03.234421"));
+        assert_eq!(state.previous_sha256.as_deref(), Some(sha256.as_str()));
+        assert!(previous_stamp_matches(&previous, &state));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        match original_tools_dir {
+            Some(value) => unsafe { std::env::set_var("YTM_TOOLS_DIR", value) },
+            None => unsafe { std::env::remove_var("YTM_TOOLS_DIR") },
         }
     }
 

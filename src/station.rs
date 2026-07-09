@@ -116,7 +116,13 @@ impl StationStore {
         // Schema-drift tolerant: preserves the active station across incompatible changes.
         // Size-capped like the sibling Playlists load.
         const MAX_BYTES: u64 = 16 * 1024 * 1024;
-        safe_fs::load_json_or_default_limited::<StationStore>(&path, MAX_BYTES)
+        let store = safe_fs::load_json_or_default_limited::<StationStore>(&path, MAX_BYTES);
+        crate::persist::replay_journaled_snapshot(
+            crate::persist::StoreKind::Station,
+            &path,
+            store,
+            MAX_BYTES,
+        )
     }
 
     /// Persist atomically (temp file + rename). A missing data dir is a no-op.
@@ -148,7 +154,7 @@ fn normalize_keys(names: &[String]) -> Vec<String> {
     out
 }
 
-fn station_path() -> Option<PathBuf> {
+pub(crate) fn station_path() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join("station.json"))
 }
 

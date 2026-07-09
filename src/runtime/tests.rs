@@ -35,6 +35,61 @@ fn update_status() -> crate::update::UpdateStatus {
     }
 }
 
+#[test]
+fn pending_player_cmds_coalesce_latest_setters_and_load() {
+    let mut pending = PendingPlayerCmds::default();
+    pending.push(PlayerCmd::SetVolume(10));
+    pending.push(PlayerCmd::SetProperty {
+        name: "speed".to_owned(),
+        value: serde_json::json!(1.2),
+    });
+    pending.push(PlayerCmd::Load("https://example.invalid/old".to_owned()));
+    pending.push(PlayerCmd::CyclePause);
+    pending.push(PlayerCmd::SetVolume(30));
+    pending.push(PlayerCmd::SetProperty {
+        name: "speed".to_owned(),
+        value: serde_json::json!(1.5),
+    });
+    pending.push(PlayerCmd::Load("https://example.invalid/new".to_owned()));
+
+    let drained = pending.drain();
+
+    assert_eq!(drained.len(), 4);
+    assert!(
+        drained
+            .iter()
+            .any(|cmd| matches!(cmd, PlayerCmd::CyclePause))
+    );
+    assert!(
+        drained
+            .iter()
+            .any(|cmd| matches!(cmd, PlayerCmd::SetVolume(30)))
+    );
+    assert!(drained.iter().any(|cmd| {
+        matches!(cmd, PlayerCmd::SetProperty { name, value } if name == "speed" && value == &serde_json::json!(1.5))
+    }));
+    assert!(drained.iter().any(|cmd| {
+        matches!(cmd, PlayerCmd::Load(url) if url == "https://example.invalid/new")
+    }));
+}
+
+#[test]
+fn pending_player_cmds_cap_keeps_latest_load() {
+    let mut pending = PendingPlayerCmds::default();
+    pending.push(PlayerCmd::Load(
+        "https://example.invalid/current".to_owned(),
+    ));
+    for i in 0..80 {
+        pending.push(PlayerCmd::SeekRelative(i as f64));
+    }
+
+    assert_eq!(pending.len(), PENDING_PLAYER_CMDS_MAX);
+    let drained = pending.drain();
+    assert!(drained.iter().any(|cmd| {
+        matches!(cmd, PlayerCmd::Load(url) if url == "https://example.invalid/current")
+    }));
+}
+
 fn assert_policy(event: RuntimeEvent, expected: EventPolicy) {
     assert_eq!(event.policy(), expected);
 }

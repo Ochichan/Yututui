@@ -1235,7 +1235,7 @@ impl App {
                 self.clear_artwork();
                 // Use a prefetched direct URL if we have one (instant skip); else hand mpv
                 // the track's own playback target (watch URL or local file path).
-                let prefetched_url = self.prefetch.resolved.get(&song.video_id).cloned();
+                let prefetched_url = self.prefetch.resolved.get_fresh_url(&song.video_id);
                 let (url, prefetched) = match prefetched_url {
                     Some(prefetched) => {
                         match crate::api::validate_playable_url(song.source, &prefetched) {
@@ -1289,7 +1289,7 @@ impl App {
                     && let Some(watch_url) = next.prefetch_target()
                 {
                     let video_id = next.video_id.clone();
-                    if !self.prefetch.resolved.contains_key(&video_id) {
+                    if !self.prefetch.resolved.contains_fresh(&video_id) {
                         cmds.push(Cmd::Resolve {
                             video_id,
                             watch_url,

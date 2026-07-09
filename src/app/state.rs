@@ -70,6 +70,7 @@ pub struct RenderBridges {
     pub marquee_key: Cell<Option<(ScrollSurface, usize)>>,
     pub marquee_origin: Cell<u64>,
     pub marquee_ran: Cell<bool>,
+    pub marquee_cache: RefCell<crate::ui::marquee::MarqueeCache>,
 }
 
 impl RenderBridges {
@@ -268,7 +269,7 @@ pub struct Playback {
 #[derive(Default)]
 pub struct Prefetch {
     /// Pre-resolved direct stream URLs, keyed by `video_id` (for instant skip).
-    pub resolved: HashMap<String, String>,
+    pub resolved: super::prefetch::PrefetchCache,
     /// Whether the current track was loaded from a prefetched direct URL (vs the watch
     /// URL mpv resolves itself). Recorded so a playback error can note the likelier cause
     /// (a stale prefetched CDN URL) in the log.

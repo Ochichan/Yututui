@@ -325,7 +325,7 @@ impl App {
         if songs.is_empty() {
             return Vec::new();
         }
-        let requested_songs = songs.clone();
+        let romanize_cmds = self.request_romanization_for_songs(&songs);
         let shuffle_changed = !self.queue.shuffle;
         self.queue.set(songs, start);
         self.queue.set_shuffle(true);
@@ -333,7 +333,7 @@ impl App {
         self.status.text.clear();
         let song = self.queue.current().cloned();
         let mut cmds = self.load_song(song);
-        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+        cmds.extend(romanize_cmds);
         if shuffle_changed {
             cmds.push(self.save_playback_modes_cmd());
         }

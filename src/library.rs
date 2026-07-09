@@ -62,6 +62,12 @@ impl Library {
         // aside instead of being read wholesale into memory at startup.
         const MAX_BYTES: u64 = 50 * 1024 * 1024;
         let mut lib = safe_fs::load_json_or_default_limited::<Library>(&path, MAX_BYTES);
+        lib = crate::persist::replay_journaled_snapshot(
+            crate::persist::StoreKind::Library,
+            &path,
+            lib,
+            MAX_BYTES,
+        );
         lib.trim_to_caps();
         lib
     }
@@ -268,7 +274,7 @@ impl Library {
     }
 }
 
-fn library_path() -> Option<PathBuf> {
+pub(crate) fn library_path() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join("library.json"))
 }
 

@@ -158,6 +158,11 @@ impl ScrobbleHandle {
         }
     }
 
+    pub fn heartbeat_due(&self) -> bool {
+        self.last_sent
+            .is_none_or(|t| t.elapsed().as_secs_f64() >= 1.0)
+    }
+
     pub fn reconfigure(&self, settings: ScrobbleSettings) {
         let _ = self
             .tx

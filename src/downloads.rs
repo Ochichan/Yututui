@@ -138,6 +138,12 @@ impl DownloadStore {
         // Schema-drift tolerant: one changed field no longer discards download history.
         let mut store =
             safe_fs::load_json_or_default_limited::<DownloadStore>(&path, STORE_MAX_BYTES);
+        store = crate::persist::replay_journaled_snapshot(
+            crate::persist::StoreKind::Downloads,
+            &path,
+            store,
+            STORE_MAX_BYTES,
+        );
         store.tracks.truncate(STORE_MAX);
         store
     }
@@ -341,7 +347,7 @@ fn sidecar_temp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.tmp.{}-{nanos}", std::process::id()))
 }
 
-fn store_path() -> Option<PathBuf> {
+pub(crate) fn store_path() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join("downloads.json"))
 }
 

@@ -182,6 +182,16 @@ impl Publisher {
         }
     }
 
+    pub fn should_observe(&self, state_changed: bool) -> bool {
+        state_changed
+            || self.last_player.is_none()
+            || self.last_queue_rev == 0
+            || self.last_settings.is_none()
+            || self.hub.any_subscribed(Topic::Player)
+            || self.hub.any_subscribed(Topic::Queue)
+            || self.hub.any_subscribed(Topic::Settings)
+    }
+
     /// Owner-lane handler for [`super::server::RemoteEvent::SessionSubscribe`]: record
     /// the subscriptions, emit one initial snapshot per **newly** subscribed topic, then
     /// the `Reply{ok}` — all into this session's queue, in that order (docs/gui/02 §6).
