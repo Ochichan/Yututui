@@ -253,6 +253,7 @@ The daemon keeps streaming, scrobbling and OS media controls working. Launching 
 ytt auth spotify --client-id <YOUR-CLIENT-ID>   # one-time PKCE browser connect
 ytt transfer import <spotify-url-or-id>          # → a new YTM playlist
 ytt transfer import liked --to likes             # Spotify likes → YTM likes (order kept)
+ytt transfer import <url> --policy strict        # stricter review-heavy matching
 ytt transfer export ytm:<id> --to spotify        # the other direction
 ytt transfer backup --dir ~/music-backup --csv   # every YTM playlist → JSON (+CSV)
 ytt transfer resume <job-id>                     # continue after a rate-limit/abort
@@ -271,7 +272,7 @@ Or stay in the TUI: Settings → **Accounts** → *Import from Spotify…* while
 7. Open **User Management** (in the app's settings) and add your own account — your name plus the email on your Spotify account. Dev-Mode apps serve up to 25 such allowlisted users.
 8. In ytt: **Settings → Accounts → Spotify**, paste the Client ID, and choose **Connect** (or run `ytt auth spotify --client-id <ID>`). Your browser opens Spotify's approval page — approve it and you're done. On headless/SSH where no browser opens, the URL is copied to your clipboard and saved to `spotify_auth_url.txt`, so you can open it on any device.
 
-Matching is metadata-based (NFKC-normalized, CJK-safe). Anything ambiguous lands in the job report instead of being silently guessed — re-run with `--take-best` / `--min-score`, or preview big playlists with `--dry-run` and then `ytt transfer resume <job-id>`.
+Matching is metadata-based (NFKC-normalized, CJK-safe) and now resolves Spotify imports cache-first, album-aware, and YTM-catalog-first before falling back to public YouTube videos. The CLI default is `--policy balanced`; use `--policy strict` for conservative review-heavy matching, `--policy aggressive` for fewer review rows, and `--allow-user-videos` only if generic public uploads are acceptable. Anything still ambiguous lands in the job report instead of being silently guessed — re-run with `--take-best` / `--min-score`, or preview big playlists with `--dry-run` and then `ytt transfer resume <job-id>`.
 
 </details>
 

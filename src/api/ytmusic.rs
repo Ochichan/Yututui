@@ -20,6 +20,9 @@ use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{self, StreamingConfig, StreamingMode};
 use crate::util::{format, http, sanitize};
 
+mod transfer_api;
+pub use transfer_api::{TransferAlbum, TransferAlbumCandidate, TransferAlbumTrack};
+
 /// How many results a search returns, for both backends. The anonymous yt-dlp path asks
 /// for exactly this many; the authenticated path pages through continuations until it has
 /// at least this many (or runs out). Capped at 50 — `ytdlp_search` clamps to the same.
@@ -94,7 +97,8 @@ pub enum YtMusicApi {
     Anonymous,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum YoutubeSearchKind {
     YtmCatalogSong,
     YoutubeVideoSearch,
@@ -461,52 +465,24 @@ impl YtMusicApi {
             // the continuation stream directly so we can collect up to SEARCH_RESULT_LIMIT,
             // stopping early once we have enough (or the pages run out).
             Self::Browser(c) => {
-                use futures::StreamExt;
-                use ytmapi_rs::query::SearchQuery;
-                use ytmapi_rs::query::search::{FilteredSearch, SongsFilter};
-
-                // The blanket `From<&str>` builds the songs-filtered query (same conversion the
-                // `search_songs` wrapper does) without the deprecated `new`/`with_filter`.
-                let q: SearchQuery<FilteredSearch<SongsFilter>> = query.into();
-                let mut pages = std::pin::pin!(c.stream(&q));
-                let mut songs = Vec::new();
-                while songs.len() < SEARCH_RESULT_LIMIT
-                    && let Some(page) = pages.next().await
-                {
-                    let page = match page {
-                        Ok(page) => page,
-                        // ytmapi-rs response parsers rot as YouTube shifts layouts
-                        // (0.3.2 is current upstream). Degrade instead of failing the
-                        // search: keep whatever pages parsed; with nothing at all,
-                        // fall back to the anonymous yt-dlp path (no album metadata,
-                        // but results).
-                        Err(e) if songs.is_empty() => {
-                            mark_auth_search_degraded();
-                            tracing::warn!(
-                                error = %sanitize::sanitize_error_text(format!("{e:#}")),
-                                "authenticated search parse failed; using yt-dlp for the rest of this session"
-                            );
-                            return Ok(ytdlp_search(query, SEARCH_RESULT_LIMIT)
-                                .await?
-                                .into_iter()
-                                .map(|song| (song, YoutubeSearchKind::YoutubeVideoSearch))
-                                .collect());
-                        }
-                        Err(_) => break,
-                    };
-                    for s in page {
-                        songs.push(Song::from_search(
-                            s.video_id.get_raw(),
-                            s.title,
-                            s.artist,
-                            s.duration,
-                            s.album.map(|a| a.name),
-                        ));
-                        if songs.len() >= SEARCH_RESULT_LIMIT {
-                            break;
-                        }
+                let songs = match transfer_api::search_catalog_songs(c, query).await {
+                    Ok(songs) => songs,
+                    // ytmapi-rs response parsers rot as YouTube shifts layouts
+                    // (0.3.2 is current upstream). Degrade instead of failing the
+                    // search: fall back to the anonymous yt-dlp path.
+                    Err(e) => {
+                        mark_auth_search_degraded();
+                        tracing::warn!(
+                            error = %sanitize::sanitize_error_text(format!("{e:#}")),
+                            "authenticated search parse failed; using yt-dlp for the rest of this session"
+                        );
+                        return Ok(ytdlp_search(query, SEARCH_RESULT_LIMIT)
+                            .await?
+                            .into_iter()
+                            .map(|song| (song, YoutubeSearchKind::YoutubeVideoSearch))
+                            .collect());
                     }
-                }
+                };
                 Ok(songs
                     .into_iter()
                     .map(|song| (song, YoutubeSearchKind::YtmCatalogSong))
@@ -969,7 +945,7 @@ async fn lookup_video_song(video_id: &str) -> Song {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct YtdlpVideoMeta {
     pub title: String,
     pub channel: String,

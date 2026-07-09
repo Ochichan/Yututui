@@ -10,17 +10,24 @@
 //! remaster-vs-original tie-breaker. Accept ≥ 0.80; 0.60..0.80 is reported as ambiguous
 //! (top 3 candidates) rather than silently guessed.
 
-use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::api::Song;
-use crate::api::ytmusic::{YoutubeSearchKind, YtMusicApi, YtdlpVideoMeta};
-use crate::search_source::SearchConfig;
+use crate::api::ytmusic::YoutubeSearchKind;
 use crate::spotify::models::SpotifyTrack;
 use crate::streaming::musicgate;
+
+use super::MatchPolicy;
+
+mod ytm_retrieval;
+pub(crate) use ytm_retrieval::YtmMatchDiagnostics;
+pub use ytm_retrieval::{
+    Pacing, memo_key, ytm_catalog_query_plan, ytm_fallback_query_plan, ytm_query_plan,
+};
+pub(crate) use ytm_retrieval::{SharedYtmMatchState, match_track_ytm_shared};
 
 /// One track to find a counterpart for, whichever side it came from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +139,7 @@ impl TrackInput {
 pub enum CandidateSourceKind {
     #[default]
     Unknown,
+    YtmAlbumTrack,
     YtmCatalogSong,
     YoutubeVideoSearch,
     SpotifyCatalog,
@@ -155,12 +163,13 @@ pub struct MatchCandidate {
     pub artist: String,
     pub album: Option<String>,
     pub duration_secs: Option<u32>,
+    pub track_number: Option<u32>,
     pub source_kind: CandidateSourceKind,
     pub channel: Option<String>,
     pub isrc: Option<String>,
-    preflighted: bool,
-    preflight_reject_reason: Option<String>,
-    preflight_reason_codes: Vec<String>,
+    pub(crate) preflighted: bool,
+    pub(crate) preflight_reject_reason: Option<String>,
+    pub(crate) preflight_reason_codes: Vec<String>,
 }
 
 impl From<&Song> for MatchCandidate {
@@ -179,6 +188,7 @@ impl MatchCandidate {
             duration_secs: s
                 .duration_secs
                 .or_else(|| crate::streaming::candidate::parse_duration_secs(&s.duration)),
+            track_number: s.track_number,
             source_kind,
             channel: Some(s.artist.clone()).filter(|a| !a.trim().is_empty()),
             isrc: s.isrc.clone(),
@@ -197,6 +207,7 @@ impl From<&SpotifyTrack> for MatchCandidate {
             artist: t.artists.join(", "),
             album: Some(t.album.clone()).filter(|a| !a.is_empty()),
             duration_secs: Some(t.duration_ms / 1000).filter(|d| *d > 0),
+            track_number: t.track_number,
             source_kind: CandidateSourceKind::SpotifyCatalog,
             channel: None,
             isrc: t.isrc.clone(),
@@ -243,34 +254,13 @@ pub struct AmbiguousCandidate {
     pub score_breakdown: Option<MatchScoreBreakdown>,
 }
 
-pub(crate) struct YtmMatchState<'a> {
-    memo: &'a mut HashMap<String, MatchOutcome>,
-    query_memo: &'a mut HashMap<String, Vec<(Song, YoutubeSearchKind)>>,
-    video_memo: &'a mut HashMap<String, Option<YtdlpVideoMeta>>,
-    pace: &'a mut Pacing,
-}
-
-impl<'a> YtmMatchState<'a> {
-    pub(crate) fn new(
-        memo: &'a mut HashMap<String, MatchOutcome>,
-        query_memo: &'a mut HashMap<String, Vec<(Song, YoutubeSearchKind)>>,
-        video_memo: &'a mut HashMap<String, Option<YtdlpVideoMeta>>,
-        pace: &'a mut Pacing,
-    ) -> Self {
-        Self {
-            memo,
-            query_memo,
-            video_memo,
-            pace,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct MatchConfig {
     pub accept: f32,
     pub ambiguous_floor: f32,
     pub accept_margin: f32,
+    pub policy: MatchPolicy,
+    pub allow_user_videos: bool,
 }
 
 impl Default for MatchConfig {
@@ -279,6 +269,8 @@ impl Default for MatchConfig {
             accept: 0.80,
             ambiguous_floor: 0.60,
             accept_margin: 0.06,
+            policy: MatchPolicy::Strict,
+            allow_user_videos: false,
         }
     }
 }
@@ -291,12 +283,16 @@ pub struct MatchScoreBreakdown {
     pub source_kind: String,
     #[serde(default)]
     pub quality_tier: String,
+    #[serde(default)]
+    pub confidence_tier: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_delta_secs: Option<i32>,
     pub title: f32,
     pub artist: f32,
     pub duration: f32,
     pub album_bonus: f32,
+    #[serde(default)]
+    pub track_number_bonus: f32,
     #[serde(default)]
     pub quality_bonus: f32,
     #[serde(default)]
@@ -539,6 +535,109 @@ fn containment(a: &str, b: &str) -> bool {
     a.len() >= 2 && b.len() >= 2 && (a.contains(b) || b.contains(a))
 }
 
+fn token_sort_similarity(a: &str, b: &str) -> f32 {
+    let sorted = |value: &str| -> String {
+        let mut tokens = normalize(value)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        tokens.sort();
+        tokens.join(" ")
+    };
+    similarity(&sorted(a), &sorted(b))
+}
+
+fn token_set_similarity(a: &str, b: &str) -> f32 {
+    let set = |value: &str| -> HashSet<String> {
+        normalize(value)
+            .split_whitespace()
+            .filter(|token| token.chars().count() >= 2)
+            .map(str::to_owned)
+            .collect()
+    };
+    let a = set(a);
+    let b = set(b);
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let intersection = a.intersection(&b).count() as f32;
+    2.0 * intersection / (a.len() + b.len()) as f32
+}
+
+fn title_similarity(input: &TrackInput, cand: &MatchCandidate) -> f32 {
+    let input_stripped = normalize_stripped(&input.title);
+    let cand_stripped = normalize_stripped(&cand.title);
+    let full = similarity(&normalize(&input.title), &normalize(&cand.title));
+    let stripped = similarity(&input_stripped, &cand_stripped);
+    let tokens = token_set_similarity(&input.title, &cand.title)
+        .max(token_sort_similarity(&input.title, &cand.title));
+    let mut best = full.max(stripped).max(tokens);
+
+    let mut without_artists = format!(" {cand_stripped} ");
+    for a in &input.artists {
+        let a = normalize(a);
+        if a.len() >= 2 {
+            without_artists = without_artists.replace(&format!(" {a} "), " ");
+        }
+    }
+    let without_artists = without_artists
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if without_artists != cand_stripped && !without_artists.is_empty() {
+        best = best.max(similarity(&input_stripped, &without_artists));
+    }
+
+    let contain = |needle: &str, hay: &str| -> f32 {
+        let n = needle.chars().count();
+        if n >= 3 && hay.contains(needle) {
+            0.75 + 0.25 * (n as f32 / hay.chars().count().max(1) as f32)
+        } else {
+            0.0
+        }
+    };
+    let cand_clean = strip_video_noise(&normalize(&strip_annotations(&cand.title)));
+    best.max(contain(&input_stripped, &cand_clean))
+        .max(contain(&cand_stripped, &input_stripped))
+}
+
+fn single_artist_similarity(candidate: &str, artist: &str) -> f32 {
+    let artist = normalize(artist);
+    if artist.is_empty() {
+        return 0.0;
+    }
+    if containment(candidate, &artist) {
+        1.0
+    } else {
+        similarity(&artist, candidate)
+    }
+}
+
+fn artist_similarity(input: &TrackInput, cand: &MatchCandidate) -> f32 {
+    let cand_artist = normalize(&cand.artist);
+    let cand_artist = cand_artist
+        .strip_suffix(" topic")
+        .unwrap_or(&cand_artist)
+        .to_owned();
+    let primary = input
+        .artists
+        .first()
+        .map(|artist| single_artist_similarity(&cand_artist, artist))
+        .unwrap_or(0.0);
+    let featured = input
+        .artists
+        .iter()
+        .skip(1)
+        .map(|artist| single_artist_similarity(&cand_artist, artist) * 0.85)
+        .fold(0.0f32, f32::max);
+    let album = input
+        .album_artists
+        .iter()
+        .map(|artist| single_artist_similarity(&cand_artist, artist) * 0.92)
+        .fold(0.0f32, f32::max);
+    primary.max(featured).max(album)
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 struct IdentityFlags {
     instrumental: bool,
@@ -723,6 +822,7 @@ fn identity_gate(input: &TrackInput, cand: &MatchCandidate) -> IdentityGate {
 fn source_kind_code(kind: CandidateSourceKind) -> &'static str {
     match kind {
         CandidateSourceKind::Unknown => "unknown",
+        CandidateSourceKind::YtmAlbumTrack => "ytm_album_track",
         CandidateSourceKind::YtmCatalogSong => "ytm_catalog_song",
         CandidateSourceKind::YoutubeVideoSearch => "youtube_video_search",
         CandidateSourceKind::SpotifyCatalog => "spotify_catalog",
@@ -732,7 +832,9 @@ fn source_kind_code(kind: CandidateSourceKind) -> &'static str {
 fn official_signal_score(cand: &MatchCandidate) -> f32 {
     if matches!(
         cand.source_kind,
-        CandidateSourceKind::YtmCatalogSong | CandidateSourceKind::SpotifyCatalog
+        CandidateSourceKind::YtmAlbumTrack
+            | CandidateSourceKind::YtmCatalogSong
+            | CandidateSourceKind::SpotifyCatalog
     ) {
         return 1.0;
     }
@@ -753,6 +855,7 @@ fn official_signal_score(cand: &MatchCandidate) -> f32 {
 
 fn quality_tier(cand: &MatchCandidate) -> &'static str {
     match cand.source_kind {
+        CandidateSourceKind::YtmAlbumTrack => "album_track",
         CandidateSourceKind::YtmCatalogSong | CandidateSourceKind::SpotifyCatalog => "catalog",
         CandidateSourceKind::YoutubeVideoSearch | CandidateSourceKind::Unknown => {
             let official = official_signal_score(cand);
@@ -769,6 +872,20 @@ fn quality_tier(cand: &MatchCandidate) -> &'static str {
     }
 }
 
+fn soft_duration_limit(input: &TrackInput) -> u32 {
+    input
+        .duration_secs
+        .map(|duration| ((duration as f32 * 0.04).round() as u32).clamp(8, 20))
+        .unwrap_or(10)
+}
+
+fn hard_duration_limit(input: &TrackInput) -> u32 {
+    input
+        .duration_secs
+        .map(|duration| ((duration as f32 * 0.20).round() as u32).max(30))
+        .unwrap_or(15 * 60)
+}
+
 fn duration_delta_secs(input: &TrackInput, cand: &MatchCandidate) -> Option<i32> {
     let input = i32::try_from(input.duration_secs?).ok()?;
     let cand = i32::try_from(cand.duration_secs?).ok()?;
@@ -782,9 +899,15 @@ fn quality_adjustment(cand: &MatchCandidate) -> (f32, f32, Vec<&'static str>) {
     let channel = cand.channel.as_deref().unwrap_or(&cand.artist);
 
     match cand.source_kind {
-        CandidateSourceKind::YtmCatalogSong | CandidateSourceKind::SpotifyCatalog => {
+        CandidateSourceKind::YtmAlbumTrack
+        | CandidateSourceKind::YtmCatalogSong
+        | CandidateSourceKind::SpotifyCatalog => {
             bonus += 0.07;
             reasons.push("catalog_song");
+            if cand.source_kind == CandidateSourceKind::YtmAlbumTrack {
+                bonus += 0.03;
+                reasons.push("album_track");
+            }
         }
         CandidateSourceKind::YoutubeVideoSearch | CandidateSourceKind::Unknown => {}
     }
@@ -817,6 +940,49 @@ fn quality_adjustment(cand: &MatchCandidate) -> (f32, f32, Vec<&'static str>) {
     (bonus, penalty, reasons)
 }
 
+fn confidence_tier(
+    cand: &MatchCandidate,
+    total: f32,
+    title: f32,
+    artist: f32,
+    duration_delta: Option<u32>,
+    accept_blocked: bool,
+    reject_reason: Option<&str>,
+) -> &'static str {
+    if reject_reason.is_some() {
+        return "reject";
+    }
+    if accept_blocked {
+        return "review";
+    }
+    let duration_exact = duration_delta.is_none_or(|delta| delta <= 3);
+    if matches!(
+        cand.source_kind,
+        CandidateSourceKind::YtmAlbumTrack | CandidateSourceKind::YtmCatalogSong
+    ) && title >= 0.98
+        && artist >= 0.92
+        && duration_exact
+    {
+        return "exact";
+    }
+    if matches!(
+        cand.source_kind,
+        CandidateSourceKind::YtmAlbumTrack | CandidateSourceKind::YtmCatalogSong
+    ) && total >= 0.86
+        && title >= 0.90
+        && artist >= 0.80
+    {
+        return "strong";
+    }
+    if matches!(cand.source_kind, CandidateSourceKind::YoutubeVideoSearch)
+        && official_signal_score(cand) >= 0.7
+        && total >= 0.88
+    {
+        return "strong";
+    }
+    "review"
+}
+
 /// Score one candidate against the input.
 pub fn score_candidate(input: &TrackInput, cand: &MatchCandidate) -> f32 {
     score_candidate_breakdown(input, cand).total
@@ -824,67 +990,16 @@ pub fn score_candidate(input: &TrackInput, cand: &MatchCandidate) -> f32 {
 
 /// Explain one candidate score against the input.
 pub fn score_candidate_breakdown(input: &TrackInput, cand: &MatchCandidate) -> MatchScoreBreakdown {
-    let input_stripped = normalize_stripped(&input.title);
-    // Title: best of full vs annotation-stripped comparisons. Video results often embed
-    // the artist in the title ("IU 'Celebrity' MV") — a third form with the input's
-    // artists removed from the candidate title covers that. And dual-script video
-    // titles ("숀 - 웨이백홈 (Way Back Home) [Lyric Video]") are handled by a
-    // containment path against the gloss-KEPT cleaned form: a clean input title fully
-    // contained in the candidate scores by how much of the candidate it explains.
-    let title = {
-        let full = similarity(&normalize(&input.title), &normalize(&cand.title));
-        let cand_stripped = normalize_stripped(&cand.title);
-        let stripped = similarity(&input_stripped, &cand_stripped);
-        let mut best = full.max(stripped);
-        let mut without_artists = format!(" {cand_stripped} ");
-        for a in &input.artists {
-            let a = normalize(a);
-            if a.len() >= 2 {
-                without_artists = without_artists.replace(&format!(" {a} "), " ");
-            }
-        }
-        let without_artists = without_artists
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if without_artists != cand_stripped && !without_artists.is_empty() {
-            best = best.max(similarity(&input_stripped, &without_artists));
-        }
-        let contain = |needle: &str, hay: &str| -> f32 {
-            let n = needle.chars().count();
-            if n >= 3 && hay.contains(needle) {
-                0.75 + 0.25 * (n as f32 / hay.chars().count().max(1) as f32)
-            } else {
-                0.0
-            }
-        };
-        let cand_clean = strip_video_noise(&normalize(&strip_annotations(&cand.title)));
-        best = best
-            .max(contain(&input_stripped, &cand_clean))
-            .max(contain(&cand_stripped, &input_stripped));
-        best
-    };
+    score_candidate_breakdown_with_config(input, cand, &MatchConfig::default())
+}
 
-    // Artist: candidate side is one display string (possibly several names joined, or a
-    // YouTube channel — "<Artist> - Topic" is the auto-generated catalog channel);
-    // containment either way is a full score, else edit similarity; max over inputs.
-    let cand_artist = normalize(&cand.artist);
-    let cand_artist = cand_artist
-        .strip_suffix(" topic")
-        .unwrap_or(&cand_artist)
-        .to_owned();
-    let artist = input
-        .artists
-        .iter()
-        .map(|a| {
-            let a = normalize(a);
-            if containment(&cand_artist, &a) {
-                1.0
-            } else {
-                similarity(&a, &cand_artist)
-            }
-        })
-        .fold(0.0f32, f32::max);
+pub fn score_candidate_breakdown_with_config(
+    input: &TrackInput,
+    cand: &MatchCandidate,
+    cfg: &MatchConfig,
+) -> MatchScoreBreakdown {
+    let title = title_similarity(input, cand);
+    let artist = artist_similarity(input, cand);
 
     // Duration proximity; neutral when either side is unknown.
     let duration = match (input.duration_secs, cand.duration_secs) {
@@ -892,8 +1007,10 @@ pub fn score_candidate_breakdown(input: &TrackInput, cand: &MatchCandidate) -> M
             let delta = a.abs_diff(b);
             if delta <= 3 {
                 1.0
-            } else if delta <= 10 {
-                0.5
+            } else if delta <= soft_duration_limit(input) {
+                0.6
+            } else if delta <= hard_duration_limit(input) {
+                0.2
             } else {
                 0.0
             }
@@ -912,15 +1029,25 @@ pub fn score_candidate_breakdown(input: &TrackInput, cand: &MatchCandidate) -> M
         }
         _ => 0.0,
     };
+    let track_number_bonus = match (input.track_number, cand.track_number) {
+        (Some(a), Some(b)) if a == b => 0.04,
+        _ => 0.0,
+    };
 
     // Deliberately starts unclamped (max 1.05): clamping would erase the album bonus exactly
     // where it matters — as the tie-breaker between two otherwise-perfect candidates.
-    let raw_total = 0.55 * title + 0.30 * artist + 0.15 * duration + album_bonus;
+    let raw_total =
+        0.55 * title + 0.30 * artist + 0.15 * duration + album_bonus + track_number_bonus;
     let mut gate = identity_gate(input, cand);
     let delta_secs = duration_delta_secs(input, cand);
-    if delta_secs.is_some_and(|delta| delta.unsigned_abs() > 10) {
-        gate.accept_blocked = true;
-        gate.reasons.push("duration_mismatch");
+    if let Some(delta) = delta_secs.map(i32::unsigned_abs) {
+        if delta > hard_duration_limit(input) {
+            gate.hard_reject = Some("duration_mismatch");
+            gate.reasons.push("duration_mismatch");
+        } else if delta > soft_duration_limit(input) {
+            gate.accept_blocked = true;
+            gate.reasons.push("duration_mismatch");
+        }
     }
     if input.duration_secs.is_none()
         && cand
@@ -930,10 +1057,13 @@ pub fn score_candidate_breakdown(input: &TrackInput, cand: &MatchCandidate) -> M
         gate.accept_blocked = true;
         gate.reasons.push("long_mix_duration");
     }
-    if matches!(
-        cand.source_kind,
-        CandidateSourceKind::YoutubeVideoSearch | CandidateSourceKind::Unknown
-    ) && official_signal_score(cand) < 0.7
+    let generic_video_allowed = cfg.allow_user_videos || cfg.policy == MatchPolicy::Aggressive;
+    if !generic_video_allowed
+        && matches!(
+            cand.source_kind,
+            CandidateSourceKind::YoutubeVideoSearch | CandidateSourceKind::Unknown
+        )
+        && official_signal_score(cand) < 0.7
     {
         gate.accept_blocked = true;
         gate.reasons.push("unverified_youtube_upload");
@@ -954,23 +1084,35 @@ pub fn score_candidate_breakdown(input: &TrackInput, cand: &MatchCandidate) -> M
     if reject_reason.is_some() {
         total = 0.0;
     }
+    let accept_blocked = gate.accept_blocked;
     let mut reason_codes: Vec<String> = gate.reasons.into_iter().map(str::to_owned).collect();
     reason_codes.extend(quality_reasons.into_iter().map(str::to_owned));
     reason_codes.extend(cand.preflight_reason_codes.iter().cloned());
+    let confidence_tier = confidence_tier(
+        cand,
+        total,
+        title,
+        artist,
+        delta_secs.map(i32::unsigned_abs),
+        accept_blocked,
+        reject_reason.as_deref(),
+    );
     MatchScoreBreakdown {
         total,
         raw_total,
         source_kind: source_kind_code(cand.source_kind).to_owned(),
         quality_tier: quality_tier(cand).to_owned(),
+        confidence_tier: confidence_tier.to_owned(),
         duration_delta_secs: delta_secs,
         title,
         artist,
         duration,
         album_bonus,
+        track_number_bonus,
         quality_bonus,
         identity_penalty,
         non_music_penalty,
-        accept_blocked: gate.accept_blocked,
+        accept_blocked,
         reject_reason,
         reason_codes,
     }
@@ -984,7 +1126,7 @@ pub fn best_outcome(
 ) -> MatchOutcome {
     let mut scored: Vec<(MatchScoreBreakdown, &MatchCandidate)> = candidates
         .iter()
-        .map(|c| (score_candidate_breakdown(input, c), c))
+        .map(|c| (score_candidate_breakdown_with_config(input, c, cfg), c))
         .collect();
     scored.sort_by(|a, b| {
         b.0.total
@@ -1038,50 +1180,7 @@ pub fn best_outcome(
     }
 }
 
-// Retrieval (YTM direction) ---------------------------------------------------------
-
-/// Self-pacing between catalog searches. YTM default 600 ms (~1.6 rps), overridable via
-/// `YTM_TRANSFER_PACE_MS` when a run trips throttling (or for the brave).
-pub struct Pacing {
-    min_interval: Duration,
-    last: Option<Instant>,
-}
-
-impl Pacing {
-    pub fn new(min_interval: Duration) -> Self {
-        Self {
-            min_interval,
-            last: None,
-        }
-    }
-
-    pub fn ytm_default() -> Self {
-        let ms = std::env::var("YTM_TRANSFER_PACE_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(600);
-        Self::new(Duration::from_millis(ms))
-    }
-
-    pub async fn tick(&mut self) {
-        if let Some(last) = self.last {
-            let since = last.elapsed();
-            if since < self.min_interval {
-                tokio::time::sleep(self.min_interval - since).await;
-            }
-        }
-        self.last = Some(Instant::now());
-    }
-}
-
-/// Memo key: repeated tracks across playlists/runs resolve once per engine run.
-pub fn memo_key(input: &TrackInput) -> String {
-    format!(
-        "{}|{}",
-        normalize(&input.artists.join(" ")),
-        normalize_stripped(&input.title)
-    )
-}
+// Retrieval query helpers ---------------------------------------------------------
 
 fn push_query_variant(out: &mut Vec<String>, seen: &mut HashSet<String>, query: String) {
     let query = query.trim();
@@ -1092,118 +1191,6 @@ fn push_query_variant(out: &mut Vec<String>, seen: &mut HashSet<String>, query: 
     if seen.insert(key) {
         out.push(query.to_owned());
     }
-}
-
-/// Build the bounded YTM query plan for a source track.
-///
-/// Easy tracks still stop after the first successful query. The extra variants are only
-/// reached when scoring is uncertain, and they target common Spotify-to-YouTube failure
-/// modes: featured-artist credits, album-specific uploads, and artist romanization drift.
-pub fn ytm_query_plan(input: &TrackInput) -> Vec<String> {
-    let stripped_title = strip_annotations(&input.title);
-    let stripped_title = stripped_title.trim();
-    let original_title = input.title.trim();
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-
-    let first_artist = input
-        .artists
-        .first()
-        .map(|a| a.trim())
-        .filter(|a| !a.is_empty());
-    if let Some(artist) = first_artist {
-        push_query_variant(&mut out, &mut seen, format!("{artist} {stripped_title}"));
-    }
-
-    let all_artists = input
-        .artists
-        .iter()
-        .map(|a| a.trim())
-        .filter(|a| !a.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if !all_artists.is_empty() {
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{all_artists} {stripped_title}"),
-        );
-        if normalize(original_title) != normalize(stripped_title) {
-            push_query_variant(
-                &mut out,
-                &mut seen,
-                format!("{all_artists} {original_title}"),
-            );
-        }
-    }
-
-    let album_artists = input
-        .album_artists
-        .iter()
-        .map(|a| a.trim())
-        .filter(|a| !a.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if !album_artists.is_empty() {
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{album_artists} {stripped_title}"),
-        );
-    }
-
-    if let Some(album) = input
-        .album
-        .as_deref()
-        .map(str::trim)
-        .filter(|a| !a.is_empty())
-        && normalize(album) != normalize(stripped_title)
-    {
-        if let Some(artist) = first_artist {
-            push_query_variant(
-                &mut out,
-                &mut seen,
-                format!("{artist} {stripped_title} {album}"),
-            );
-        }
-        push_query_variant(&mut out, &mut seen, format!("{stripped_title} {album}"));
-    }
-
-    if let Some(year) = release_year(input) {
-        if let Some(artist) = first_artist {
-            push_query_variant(
-                &mut out,
-                &mut seen,
-                format!("{artist} {stripped_title} {year}"),
-            );
-        }
-        if !all_artists.is_empty() {
-            push_query_variant(
-                &mut out,
-                &mut seen,
-                format!("{all_artists} {stripped_title} {year}"),
-            );
-        }
-    }
-
-    if let Some(artist) = first_artist {
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{artist} {stripped_title} official audio"),
-        );
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{artist} {stripped_title} topic"),
-        );
-    }
-
-    if normalize(original_title) != normalize(stripped_title) {
-        push_query_variant(&mut out, &mut seen, original_title.to_owned());
-    }
-    push_query_variant(&mut out, &mut seen, stripped_title.to_owned());
-    out
 }
 
 fn release_year(input: &TrackInput) -> Option<&str> {
@@ -1251,198 +1238,6 @@ pub fn spotify_query_plan(input: &TrackInput) -> Vec<String> {
 
 fn spotify_query_escape(value: &str) -> String {
     value.replace('"', " ")
-}
-
-/// Find `input` on YouTube Music using a bounded query plan. The first query keeps the
-/// old fast path (`"artist stripped-title"`); later queries add all-artist, album, and
-/// title-only variants only while the best score remains below the accept threshold.
-pub(crate) async fn match_track_ytm(
-    api: &YtMusicApi,
-    input: &TrackInput,
-    cfg: &MatchConfig,
-    search_config: &SearchConfig,
-    state: &mut YtmMatchState<'_>,
-) -> anyhow::Result<MatchOutcome> {
-    if let Some(id) = &input.known_video_id {
-        return Ok(MatchOutcome::Matched {
-            key: id.clone(),
-            score: 1.0,
-            display: input.display(),
-            title: Some(input.title.clone()),
-            artist: Some(input.artists.join(", ")),
-            album: input.album.clone(),
-            duration_secs: input.duration_secs,
-            score_breakdown: None,
-        });
-    }
-    let key = memo_key(input);
-    if let Some(hit) = state.memo.get(&key) {
-        return Ok(hit.clone());
-    }
-
-    let mut candidates = Vec::<MatchCandidate>::new();
-    let mut outcome = MatchOutcome::NotFound;
-    for query in ytm_query_plan(input) {
-        let songs = if let Some(hit) = state.query_memo.get(&query) {
-            hit.clone()
-        } else {
-            state.pace.tick().await;
-            let songs = api.search_transfer_youtube(&query, search_config).await?;
-            state.query_memo.insert(query.clone(), songs.clone());
-            songs
-        };
-        for (song, kind) in &songs {
-            if !candidates.iter().any(|c| c.key == song.video_id) {
-                candidates.push(MatchCandidate::from_song_with_kind(song, (*kind).into()));
-            }
-        }
-        preflight_ytm_candidates(api, input, cfg, &mut candidates, state.video_memo).await;
-        outcome = best_outcome(input, &candidates, cfg);
-        if should_stop_ytm_search(&outcome) {
-            break;
-        }
-    }
-
-    state.memo.insert(key, outcome.clone());
-    Ok(outcome)
-}
-
-const TRANSFER_PREFLIGHT_TOP_N: usize = 5;
-
-async fn preflight_ytm_candidates(
-    api: &YtMusicApi,
-    input: &TrackInput,
-    cfg: &MatchConfig,
-    candidates: &mut [MatchCandidate],
-    video_memo: &mut HashMap<String, Option<YtdlpVideoMeta>>,
-) {
-    let mut ranked: Vec<(f32, usize)> = candidates
-        .iter()
-        .enumerate()
-        .filter(|(_, candidate)| needs_transfer_preflight(candidate))
-        .map(|(idx, candidate)| (score_candidate_breakdown(input, candidate).total, idx))
-        .filter(|(score, _)| *score >= cfg.ambiguous_floor)
-        .collect();
-    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    for (_, idx) in ranked.into_iter().take(TRANSFER_PREFLIGHT_TOP_N) {
-        let key = candidates[idx].key.clone();
-        let meta = match video_memo.get(&key) {
-            Some(hit) => hit.clone(),
-            None => {
-                let hit = match api.youtube_video_metadata(&key).await {
-                    Ok(meta) => Some(meta),
-                    Err(error) => {
-                        tracing::debug!(
-                            video_id = %key,
-                            error = %crate::util::sanitize::sanitize_error_text(format!("{error:#}")),
-                            "transfer metadata preflight failed"
-                        );
-                        None
-                    }
-                };
-                video_memo.insert(key.clone(), hit.clone());
-                hit
-            }
-        };
-        candidates[idx].preflighted = true;
-        if let Some(meta) = meta {
-            apply_transfer_preflight(input, &mut candidates[idx], &meta);
-        }
-    }
-}
-
-fn needs_transfer_preflight(candidate: &MatchCandidate) -> bool {
-    !candidate.preflighted
-        && matches!(
-            candidate.source_kind,
-            CandidateSourceKind::YoutubeVideoSearch | CandidateSourceKind::Unknown
-        )
-}
-
-fn apply_transfer_preflight(
-    input: &TrackInput,
-    candidate: &mut MatchCandidate,
-    meta: &YtdlpVideoMeta,
-) {
-    if !meta.title.trim().is_empty() && candidate.title.trim().is_empty() {
-        candidate.title = meta.title.clone();
-    }
-    if !meta.channel.trim().is_empty() {
-        candidate.channel = Some(meta.channel.clone());
-        if candidate.artist.trim().is_empty() {
-            candidate.artist = meta.channel.clone();
-        }
-    }
-    if candidate.duration_secs.is_none() {
-        candidate.duration_secs = meta.duration_secs;
-    }
-    candidate
-        .preflight_reason_codes
-        .push("metadata_preflight".to_owned());
-
-    let mut reject = |reason: &str| {
-        if candidate.preflight_reject_reason.is_none() {
-            candidate.preflight_reject_reason = Some(reason.to_owned());
-        }
-        if !candidate
-            .preflight_reason_codes
-            .iter()
-            .any(|code| code == reason)
-        {
-            candidate.preflight_reason_codes.push(reason.to_owned());
-        }
-    };
-
-    if meta.is_live == Some(true)
-        || matches!(
-            meta.live_status.as_deref(),
-            Some("is_live" | "is_upcoming" | "post_live")
-        )
-    {
-        reject("live_or_upcoming");
-    }
-    if matches!(meta.media_type.as_deref(), Some("playlist" | "multi_video")) {
-        reject("non_track_media");
-    }
-    if let Some(duration) = meta.duration_secs {
-        if let Some(source_duration) = input.duration_secs {
-            if source_duration.abs_diff(duration) > 10 {
-                reject("duration_mismatch");
-            }
-        } else if duration > 15 * 60 {
-            reject("long_mix_duration");
-        }
-    }
-    let channel = meta.channel.as_str();
-    let rich_title = match meta.description.as_deref() {
-        Some(desc) if !desc.trim().is_empty() => format!("{} {}", meta.title, desc),
-        _ => meta.title.clone(),
-    };
-    if let Some(reason) = musicgate::non_music_reason(&rich_title, channel) {
-        reject(reason);
-    }
-}
-
-fn should_stop_ytm_search(outcome: &MatchOutcome) -> bool {
-    match outcome {
-        MatchOutcome::Matched {
-            score_breakdown: Some(breakdown),
-            score: total,
-            ..
-        } => {
-            let quality_source = score_breakdown_has(breakdown, "catalog_song")
-                || score_breakdown_has(breakdown, "trusted_channel")
-                || score_breakdown_has(breakdown, "official_like");
-            *total >= 0.90 && quality_source
-        }
-        MatchOutcome::Matched { .. } => true,
-        _ => false,
-    }
-}
-
-fn score_breakdown_has(score: &MatchScoreBreakdown, reason: &str) -> bool {
-    score.reason_codes.iter().any(|r| r == reason)
 }
 
 #[cfg(test)]
