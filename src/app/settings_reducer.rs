@@ -128,6 +128,11 @@ impl App {
             media_controls: self.config.effective_media_controls(),
             auto_continue_videos: self.config.effective_auto_continue_videos(),
             video_layout: self.config.video_layout,
+            audio_backend: self.config.audio.backend,
+            audio_mpv_output: self.config.audio.mpv.output.clone().unwrap_or_default(),
+            audio_mpv_device: self.config.audio.mpv.device.clone().unwrap_or_default(),
+            audio_mpv_cache_forward: self.config.audio.mpv.cache_forward.clone(),
+            audio_mpv_cache_back: self.config.audio.mpv.cache_back.clone(),
             autoplay_streaming: self.autoplay_streaming,
             curating_mode: crate::streaming::CuratingMode::from_ai(
                 self.config.streaming.ai.enabled,
@@ -654,6 +659,10 @@ impl App {
                 self.status.text = format!("{}: {}", t!("Video window", "영상 창"), next.label());
                 Vec::new()
             }
+            Field::AudioBackend => {
+                self.status.text = t!("Audio backend: mpv", "오디오 백엔드: mpv").to_owned();
+                Vec::new()
+            }
             Field::Language => {
                 let s = self.settings_mut();
                 if s.draft.retro_mode {
@@ -868,6 +877,10 @@ impl App {
             Field::CookiesFile
             | Field::DownloadDir
             | Field::LocalMusicRoot
+            | Field::AudioMpvOutput
+            | Field::AudioMpvDevice
+            | Field::AudioMpvCacheForward
+            | Field::AudioMpvCacheBack
             | Field::AudiusAppName
             | Field::JamendoClientId
             | Field::ApiKey
@@ -1866,6 +1879,24 @@ impl App {
                 }
                 self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
             }
+            Field::AudioMpvOutput => {
+                self.config.audio.mpv.output = settings::blank_to_none(&value);
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+            }
+            Field::AudioMpvDevice => {
+                self.config.audio.mpv.device = settings::blank_to_none(&value);
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+            }
+            Field::AudioMpvCacheForward => {
+                self.config.audio.mpv.cache_forward = settings::blank_to_none(&value)
+                    .unwrap_or_else(|| crate::config::MPV_CACHE_FORWARD_DEFAULT.to_owned());
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+            }
+            Field::AudioMpvCacheBack => {
+                self.config.audio.mpv.cache_back = settings::blank_to_none(&value)
+                    .unwrap_or_else(|| crate::config::MPV_CACHE_BACK_DEFAULT.to_owned());
+                self.status.text = t!("Settings saved", "설정을 저장했어요").to_owned();
+            }
             Field::ApiKey => {
                 let old_key = self.config.gemini_api_key.clone();
                 self.config.gemini_api_key = settings::blank_to_none(&value);
@@ -1959,6 +1990,10 @@ impl App {
             Field::CookiesFile => Some(&mut st.draft.cookies_file),
             Field::DownloadDir => Some(&mut st.draft.download_dir),
             Field::LocalMusicRoot => Some(&mut st.draft.local_music_root),
+            Field::AudioMpvOutput => Some(&mut st.draft.audio_mpv_output),
+            Field::AudioMpvDevice => Some(&mut st.draft.audio_mpv_device),
+            Field::AudioMpvCacheForward => Some(&mut st.draft.audio_mpv_cache_forward),
+            Field::AudioMpvCacheBack => Some(&mut st.draft.audio_mpv_cache_back),
             Field::AudiusAppName => st.draft.search.audius_app_name.as_mut(),
             Field::JamendoClientId => st.draft.search.jamendo_client_id.as_mut(),
             Field::ApiKey => Some(&mut st.draft.gemini_api_key),

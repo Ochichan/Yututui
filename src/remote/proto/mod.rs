@@ -34,9 +34,9 @@ pub use command::{
 pub use model::{ArtworkRef, TrackModel};
 pub use model_player::{EqModel, PlayerModel, QueueModel};
 pub use model_settings::{
-    ActionInfoModel, AnimationsModel, KeymapSettingsModel, PlaybackSettingsModel,
-    SearchSettingsModel, SettingsModelV8, StorageSettingsModel, StreamingSettingsModel,
-    ThemePresetModel, ThemeSettingsModel, UiSettingsModel,
+    ActionInfoModel, AnimationsModel, AudioSettingsModel, KeymapSettingsModel,
+    PlaybackSettingsModel, SearchSettingsModel, SettingsModelV8, StorageSettingsModel,
+    StreamingSettingsModel, ThemePresetModel, ThemeSettingsModel, UiSettingsModel,
 };
 pub use session::{
     ClientFrame, ClientOp, HelloAck, HelloBody, HelloRequest, PushEvent, SearchGroup, ServerFrame,

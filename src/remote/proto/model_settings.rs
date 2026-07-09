@@ -31,6 +31,7 @@ pub struct SettingsModelV8 {
     pub search: SearchSettingsModel,
     pub ui: UiSettingsModel,
     pub storage: StorageSettingsModel,
+    pub audio: AudioSettingsModel,
     pub animations: AnimationsModel,
     pub theme: ThemeSettingsModel,
     pub keymap: KeymapSettingsModel,
@@ -117,6 +118,21 @@ pub struct StorageSettingsModel {
     pub download_dir: Option<String>,
     pub cookies_file: Option<String>,
     pub download_concurrency: u32,
+}
+
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-export",
+    ts(export, export_to = "gui/src/generated/protocol/")
+)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioSettingsModel {
+    /// v1 supports only `mpv`; exposed so the GUI can name the backend explicitly.
+    pub backend: String,
+    pub mpv_output: Option<String>,
+    pub mpv_device: Option<String>,
+    pub mpv_cache_forward: String,
+    pub mpv_cache_back: String,
 }
 
 /// Mirrors [`crate::config::AnimationsConfig`] field-for-field (minus the TUI-only

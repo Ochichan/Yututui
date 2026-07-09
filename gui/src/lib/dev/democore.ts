@@ -277,6 +277,13 @@ function defaultSettings(): SettingsModelV8 {
     },
     ui: { language: 'en', mouse: true, album_art: true, romanized_titles: false },
     storage: { download_dir: '~/Music/yututui', cookies_file: null, download_concurrency: 3 },
+    audio: {
+      backend: 'mpv',
+      mpv_output: null,
+      mpv_device: null,
+      mpv_cache_forward: '32MiB',
+      mpv_cache_back: '8MiB',
+    },
     // Core defaults: every effect off, pause-unfocused on, 30 fps (the generic setter mutates
     // this block on `apply { group: 'animations' }`, like every other group).
     animations: defaultAnimations(),

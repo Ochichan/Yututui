@@ -1,5 +1,19 @@
 use super::*;
 
+fn focus_current_settings_field(app: &mut App, field: Field) {
+    let row = app
+        .settings
+        .as_ref()
+        .expect("settings open")
+        .fields()
+        .iter()
+        .position(|f| *f == field)
+        .expect("field exists in current settings tab");
+    for _ in 0..row {
+        app.update(Msg::Key(key(KeyCode::Down)));
+    }
+}
+
 #[test]
 fn settings_key_opens_and_q_closes_without_quitting() {
     let mut app = app_playing(1, 0);
@@ -873,11 +887,7 @@ fn settings_band_edit_sets_custom_and_emits_filter() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..8 {
-        // Speed → Seek → Wheel volume → Gapless → Media controls → Auto-continue videos
-        // → Video window → EqPreset → Band(0) at row 8.
-        app.update(Msg::Key(key(KeyCode::Down)));
-    }
+    focus_current_settings_field(&mut app, Field::Band(0));
     let cmds = app.update(Msg::Key(key(KeyCode::Right))); // raise the band
     let st = app.settings.as_ref().unwrap();
     assert_eq!(st.draft.eq_preset, EqPreset::Custom);
@@ -898,9 +908,7 @@ fn settings_close_reasserts_audio_and_persists_volume() {
     app.playback.volume = 55; // a `=`/`-` change during the session
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..8 {
-        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 8
-    }
+    focus_current_settings_field(&mut app, Field::Band(0));
     app.update(Msg::Key(key(KeyCode::Right))); // raise it (draft = Custom)
     let cmds = app.update(Msg::Key(key(KeyCode::Char('q')))); // save+quit
     // Closing re-asserts the committed chain so the current track matches what was saved
@@ -916,9 +924,7 @@ fn settings_preset_selector_snaps_from_custom_to_flat() {
     let mut app = app_playing(1, 0);
     app.update(Msg::Key(key(KeyCode::Char('o')))); // open
     app.update(Msg::Key(key(KeyCode::Tab))); // Playback tab (EQ section lives here)
-    for _ in 0..8 {
-        app.update(Msg::Key(key(KeyCode::Down))); // → Band(0) at row 8
-    }
+    focus_current_settings_field(&mut app, Field::Band(0));
     app.update(Msg::Key(key(KeyCode::Right))); // hand-tune → Custom
     assert_eq!(
         app.settings.as_ref().unwrap().draft.eq_preset,

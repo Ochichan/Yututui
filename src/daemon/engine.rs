@@ -549,6 +549,48 @@ impl DaemonEngine {
                     Err(_) => bad(),
                 }
             }
+            ("audio", "backend") => match as_str().as_deref() {
+                Some("mpv") => {
+                    self.config.audio.backend = crate::config::AudioBackend::Mpv;
+                    self.save_config("daemon audio backend setting");
+                    ok(self)
+                }
+                _ => bad(),
+            },
+            ("audio", "mpv_output") => match as_optional_str() {
+                Some(value) => {
+                    self.config.audio.mpv.output = value;
+                    self.save_config("daemon mpv output setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("audio", "mpv_device") => match as_optional_str() {
+                Some(value) => {
+                    self.config.audio.mpv.device = value;
+                    self.save_config("daemon mpv device setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("audio", "mpv_cache_forward") => match as_str() {
+                Some(value) => {
+                    self.config.audio.mpv.cache_forward = crate::settings::blank_to_none(&value)
+                        .unwrap_or_else(|| crate::config::MPV_CACHE_FORWARD_DEFAULT.to_owned());
+                    self.save_config("daemon mpv forward-cache setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
+            ("audio", "mpv_cache_back") => match as_str() {
+                Some(value) => {
+                    self.config.audio.mpv.cache_back = crate::settings::blank_to_none(&value)
+                        .unwrap_or_else(|| crate::config::MPV_CACHE_BACK_DEFAULT.to_owned());
+                    self.save_config("daemon mpv back-cache setting");
+                    ok(self)
+                }
+                None => bad(),
+            },
             ("eq", "preset") => match as_str()
                 .and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok())
             {
@@ -1960,6 +2002,7 @@ impl DaemonEngine {
             self.config
                 .cookies_file_for_external_tools(data_dir().as_deref()),
             self.config.effective_gapless(),
+            self.config.audio.runtime(),
         )
         .await
         .map_err(|e| EngineError::Player(format!("failed to start mpv: {e:#}")))?;

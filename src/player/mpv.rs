@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use tokio::process::Child;
 
+use crate::config::MpvAudioRuntimeConfig;
 use crate::util::process;
 #[cfg(unix)]
 use crate::util::runtime;
@@ -128,7 +129,12 @@ pub fn video_ipc_path(generation: u64) -> Result<String> {
 /// long-lived mpv keeps its spawn-time binary until restart — the playback self-heal
 /// therefore feeds mpv *resolved* CDN URLs (via the resolver) instead of watch URLs
 /// when a fresher yt-dlp lands mid-session; the daemon simply respawns its player.
-pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Result<Child> {
+pub fn spawn(
+    ipc_path: &str,
+    cookies_file: Option<&Path>,
+    gapless: bool,
+    audio: &MpvAudioRuntimeConfig,
+) -> Result<Child> {
     let mut cmd =
         process::tokio_command(&crate::tools::mpv_program(), process::ProcessProfile::Media);
     cmd.arg("--no-video")
@@ -146,9 +152,10 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
         // which would balloon RAM on long tracks. ~40 MiB total is plenty of audio
         // buffering while keeping us honest on priority #1 (low RAM).
         .arg("--cache=yes")
-        .arg("--demuxer-max-bytes=32MiB")
-        .arg("--demuxer-max-back-bytes=8MiB")
         .arg(format!("--input-ipc-server={ipc_path}"));
+    for arg in structured_audio_args(audio) {
+        cmd.arg(arg);
+    }
 
     for arg in crate::tools::mpv_ytdl_raw_option_args(cookies_file) {
         cmd.arg(arg);
@@ -182,6 +189,10 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
         cmd.arg("--media-controls=no");
     }
 
+    for arg in &audio.extra_args {
+        cmd.arg(arg);
+    }
+
     // Escape hatch for tests/debugging, e.g. `YTM_MPV_EXTRA="--ao=null --volume=0"`.
     // Quote-aware so a value with spaces (`--x="/My Music/y"`) survives as one arg; simple
     // space-separated flags behave exactly as the previous `split_whitespace`.
@@ -198,6 +209,19 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
 
     cmd.spawn()
         .context("failed to spawn mpv — is it installed and on PATH?")
+}
+
+pub(crate) fn structured_audio_args(audio: &MpvAudioRuntimeConfig) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(output) = &audio.output {
+        args.push(format!("--ao={output}"));
+    }
+    if let Some(device) = &audio.device {
+        args.push(format!("--audio-device={device}"));
+    }
+    args.push(format!("--demuxer-max-bytes={}", audio.cache_forward));
+    args.push(format!("--demuxer-max-back-bytes={}", audio.cache_back));
+    args
 }
 
 /// Split a `YTM_MPV_EXTRA`-style string into args, honoring single/double quotes so a value
@@ -242,7 +266,8 @@ fn split_shell_like(s: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::split_shell_like;
+    use super::{split_shell_like, structured_audio_args};
+    use crate::config::MpvAudioRuntimeConfig;
 
     #[test]
     fn split_shell_like_matches_whitespace_for_simple_values() {
@@ -261,5 +286,26 @@ mod tests {
             ["--ao-null-device=/My Music/x", "--volume=0"]
         );
         assert_eq!(split_shell_like("--x='a b c'"), ["--x=a b c"]);
+    }
+
+    #[test]
+    fn structured_audio_args_include_output_device_and_cache() {
+        let audio = MpvAudioRuntimeConfig {
+            output: Some("pipewire".to_owned()),
+            device: Some("auto".to_owned()),
+            cache_forward: "64MiB".to_owned(),
+            cache_back: "16MiB".to_owned(),
+            extra_args: vec!["--ao=null".to_owned()],
+        };
+
+        assert_eq!(
+            structured_audio_args(&audio),
+            [
+                "--ao=pipewire",
+                "--audio-device=auto",
+                "--demuxer-max-bytes=64MiB",
+                "--demuxer-max-back-bytes=16MiB",
+            ]
+        );
     }
 }

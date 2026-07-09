@@ -427,6 +427,10 @@ fn field_value_text(app: &App, st: &SettingsState, field: Field, focused: bool) 
             Field::CookiesFile
             | Field::DownloadDir
             | Field::LocalMusicRoot
+            | Field::AudioMpvOutput
+            | Field::AudioMpvDevice
+            | Field::AudioMpvCacheForward
+            | Field::AudioMpvCacheBack
             | Field::AudiusAppName
             | Field::JamendoClientId,
             _,
