@@ -255,6 +255,8 @@ where
         let modified_at = metadata_modified_unix(&metadata);
         let fingerprint = FileFingerprint::path_mtime_size(&canonical, modified_at, metadata.len());
         if let Some(track) = self.previous.find_unchanged(&fingerprint) {
+            // Cheap path-hint fill still runs on reuse: older indexes may lack
+            // artist/album that folder names can supply without re-reading tags.
             let mut track = track.clone();
             apply_path_metadata_fallback(&mut track, root, &canonical);
             self.seen_ids.push(track.id.clone());
