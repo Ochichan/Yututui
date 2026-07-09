@@ -72,11 +72,13 @@ pub struct MpvAudioConfig {
     pub output: Option<String>,
     /// mpv audio device (`--audio-device`). `None`, blank, and `auto` leave mpv on its default.
     pub device: Option<String>,
-    /// Forward demuxer cache size (`--demuxer-max-bytes`).
+    /// Forward demuxer cache size (`--demuxer-max-bytes`). Takes effect on the next player launch.
     pub cache_forward: String,
-    /// Backward demuxer cache size (`--demuxer-max-back-bytes`).
+    /// Backward demuxer cache size (`--demuxer-max-back-bytes`). Takes effect on the next player launch.
     pub cache_back: String,
     /// Config-file escape hatch appended after structured audio args.
+    /// Edit `audio.mpv.extra_args` in the config file; there is no settings UI for this yet.
+    /// Takes effect on the next player launch (same as output/device/cache).
     pub extra_args: Vec<String>,
 }
 

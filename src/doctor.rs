@@ -50,6 +50,12 @@ pub fn run_with_args(args: &[String]) -> i32 {
     if matches!(args, [cmd, flag] if cmd == "audio" && (flag == "--help" || flag == "-h")) {
         println!("Usage: ytt doctor audio [--verbose]");
         println!("       Report the active audio backend, mpv settings, and capabilities");
+        println!(
+            "       Note: mpv output/device/cache/extra_args apply on the next player launch"
+        );
+        println!(
+            "       Config escape hatch: audio.mpv.extra_args (no settings UI; config file only)"
+        );
         return 0;
     }
     let verbose = match args {
@@ -349,11 +355,16 @@ fn run_audio(verbose: bool) -> i32 {
         }
     );
     println!(
-        "  extra mpv args: {}",
+        "  extra mpv args: {}{}",
         if status.extra_args_count == 0 {
             "none".to_owned()
         } else {
             status.extra_args_count.to_string()
+        },
+        if kr {
+            " · config `audio.mpv.extra_args` (재시작 후 적용)"
+        } else {
+            " · config `audio.mpv.extra_args` (next launch)"
         }
     );
 

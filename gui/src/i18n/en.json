@@ -244,7 +244,7 @@
   "settings.playback.backendHint": "yututui controls mpv as the playback engine",
   "settings.playback.cacheBack": "Cache back",
   "settings.playback.cacheForward": "Cache forward",
-  "settings.playback.cacheHint": "mpv demuxer cache size used on the next player launch",
+  "settings.playback.cacheHint": "mpv demuxer cache size; applies on the next player launch (extra_args is config-file only)",
   "settings.playback.eqBandsAria": "EQ bands",
   "settings.playback.equalizer": "Equalizer",
   "settings.playback.gapless": "Gapless playback",

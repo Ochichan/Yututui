@@ -710,8 +710,12 @@ impl Field {
             Field::AudioMpvDevice => {
                 t!("mpv device (next launch)", "mpv 장치 (재시작 후 적용)").to_owned()
             }
-            Field::AudioMpvCacheForward => t!("Cache forward", "앞쪽 캐시").to_owned(),
-            Field::AudioMpvCacheBack => t!("Cache back", "뒤쪽 캐시").to_owned(),
+            Field::AudioMpvCacheForward => {
+                t!("Cache forward (next launch)", "앞쪽 캐시 (재시작 후 적용)").to_owned()
+            }
+            Field::AudioMpvCacheBack => {
+                t!("Cache back (next launch)", "뒤쪽 캐시 (재시작 후 적용)").to_owned()
+            }
             Field::AutoplayStreaming => t!("Autoplay", "자동재생").to_owned(),
             Field::CuratingMode => t!("Curating mode", "큐레이팅 방식").to_owned(),
             Field::StreamingMode => t!("Curating style", "큐레이팅 스타일").to_owned(),

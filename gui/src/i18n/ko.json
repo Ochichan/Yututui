@@ -244,7 +244,7 @@
   "settings.playback.backendHint": "yututui는 mpv를 재생 엔진으로 제어합니다",
   "settings.playback.cacheBack": "역방향 캐시",
   "settings.playback.cacheForward": "전방 캐시",
-  "settings.playback.cacheHint": "다음 플레이어 실행 때 사용할 mpv demuxer 캐시 크기",
+  "settings.playback.cacheHint": "다음 플레이어 실행 때 적용되는 mpv demuxer 캐시 크기 (extra_args는 설정 파일 전용)",
   "settings.playback.eqBandsAria": "EQ 밴드",
   "settings.playback.equalizer": "이퀄라이저",
   "settings.playback.gapless": "갭리스 재생",
