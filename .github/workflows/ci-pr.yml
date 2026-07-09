@@ -1,0 +1,220 @@
+name: ci-pr
+
+# Daily PR / main merge gate on the debian-ts self-hosted runner.
+# Full multi-OS release builds stay in build.yml (v* tags + workflow_dispatch).
+# Optional Windows/macOS light jobs run only with label ci:windows / ci:macos
+# or workflow_dispatch inputs — never required, so offline PCs cannot block merge.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_windows:
+        description: Run optional Windows light job on self-hosted Windows runner
+        type: boolean
+        default: false
+      run_macos:
+        description: Run optional macOS light job on self-hosted Mac runner
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality gates
+    # Repo-scoped self-hosted only; never schedule on fork PRs.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, debian, yututui]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Persist cargo target dir
+        run: |
+          mkdir -p "$HOME/.cache/yututui-ci/target"
+          echo "CARGO_TARGET_DIR=$HOME/.cache/yututui-ci/target" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$HOME/.rustup" >> "$GITHUB_ENV"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Architecture invariants
+        run: scripts/check-architecture.sh
+
+      - name: File-size ratchet
+        run: scripts/check-file-size.sh
+
+      - name: Public docs honesty
+        run: scripts/check-doc-honesty.sh
+
+      - name: Vendored ratatui-image patch invariants
+        run: scripts/check-ratatui-image-patch.sh
+
+      - name: Ensure supply-chain tools
+        run: |
+          command -v cargo-audit >/dev/null || cargo install --locked cargo-audit
+          command -v cargo-deny >/dev/null || cargo install --locked cargo-deny
+
+      - name: RustSec audit
+        run: |
+          cargo audit --deny warnings \
+            --ignore RUSTSEC-2024-0411 \
+            --ignore RUSTSEC-2024-0412 \
+            --ignore RUSTSEC-2024-0413 \
+            --ignore RUSTSEC-2024-0414 \
+            --ignore RUSTSEC-2024-0415 \
+            --ignore RUSTSEC-2024-0416 \
+            --ignore RUSTSEC-2024-0418 \
+            --ignore RUSTSEC-2024-0419 \
+            --ignore RUSTSEC-2024-0420 \
+            --ignore RUSTSEC-2024-0429 \
+            --ignore RUSTSEC-2024-0436 \
+            --ignore RUSTSEC-2024-0370
+
+      - name: Dependency policy
+        run: cargo deny check
+
+      - name: GUI frontend (typecheck, test, build)
+        run: |
+          cd gui
+          npm ci
+          npm run check
+          npm run test
+          npm run build
+
+      - name: GUI protocol type drift
+        run: scripts/check-gui-types.sh
+
+      - name: Feature graph invariants
+        run: |
+          grep -qE '^default = \[\]' Cargo.toml
+          if grep -E '^desktop = \[' Cargo.toml | grep -q 'ts-export'; then
+            echo "error: the desktop feature must not enable ts-export" >&2
+            exit 1
+          fi
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  linux:
+    name: Linux (x64)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, debian, yututui]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Persist cargo target dir
+        run: |
+          mkdir -p "$HOME/.cache/yututui-ci/target"
+          echo "CARGO_TARGET_DIR=$HOME/.cache/yututui-ci/target" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$HOME/.rustup" >> "$GITHUB_ENV"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install Linux system dependencies
+        run: |
+          # Prefer already-installed packages; apt only if missing (may need passwordless sudo).
+          if ! pkg-config --exists openssl 2>/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y libssl-dev pkg-config
+          fi
+
+      - name: Clippy (warnings = errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  windows-optional:
+    name: Windows (optional light)
+    if: |
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.run_windows == true) ||
+        (github.event_name == 'pull_request' && contains(join(github.event.pull_request.labels.*.name, ','), 'ci:windows'))
+      ) && (
+        github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      )
+    runs-on: [self-hosted, windows, x64, yututui]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Clippy (warnings = errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Test tray helper
+        run: cargo test --features desktop -- desktop::
+
+  macos-optional:
+    name: macOS (optional light)
+    if: |
+      (
+        (github.event_name == 'workflow_dispatch' && inputs.run_macos == true) ||
+        (github.event_name == 'pull_request' && contains(join(github.event.pull_request.labels.*.name, ','), 'ci:macos'))
+      ) && (
+        github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      )
+    runs-on: [self-hosted, macOS, ARM64, yututui]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Persist cargo target dir
+        run: |
+          mkdir -p "$HOME/.cache/yututui-ci/target"
+          echo "CARGO_TARGET_DIR=$HOME/.cache/yututui-ci/target" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$HOME/.cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$HOME/.rustup" >> "$GITHUB_ENV"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Clippy (warnings = errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Test tray helper
+        run: cargo test --features desktop -- desktop::
