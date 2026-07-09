@@ -329,7 +329,7 @@ impl App {
                 &format!("Candidate {number}"),
                 format_candidate(candidate),
             );
-            if let Some(breakdown) = candidate.score_breakdown {
+            if let Some(breakdown) = candidate.score_breakdown.as_ref() {
                 push_detail_line(
                     lines,
                     &format!("Score detail {number}"),
@@ -960,6 +960,16 @@ fn song_from_import_session_row(session_id: &str, row: &ImportSessionRow, path: 
             Some(row.source_key.clone()),
             row.source_url.clone(),
         )
+        .with_import_metadata(crate::api::SongImportMetadata {
+            artists: row.artists.clone(),
+            album_artists: row.album_artists.clone(),
+            album_release_date: row.album_release_date.clone(),
+            album_release_date_precision: row.album_release_date_precision.clone(),
+            album_total_tracks: row.album_total_tracks,
+            album_type: row.album_type.clone(),
+            album_art_url: row.album_art_url.clone(),
+            explicit: row.explicit,
+        })
         .with_import_session(Some(session_id.to_owned()), Some(row.source_order));
     if let Some(key) = row.selected_key.clone() {
         song = song.with_yt_id(key);
@@ -996,6 +1006,16 @@ fn remote_song_from_import_session_row(session_id: &str, row: &ImportSessionRow)
             Some(row.source_key.clone()),
             row.source_url.clone(),
         )
+        .with_import_metadata(crate::api::SongImportMetadata {
+            artists: row.artists.clone(),
+            album_artists: row.album_artists.clone(),
+            album_release_date: row.album_release_date.clone(),
+            album_release_date_precision: row.album_release_date_precision.clone(),
+            album_total_tracks: row.album_total_tracks,
+            album_type: row.album_type.clone(),
+            album_art_url: row.album_art_url.clone(),
+            explicit: row.explicit,
+        })
         .with_import_session(Some(session_id.to_owned()), Some(row.source_order)),
     )
 }
@@ -1230,7 +1250,7 @@ fn format_candidate(candidate: &ReportCandidate) -> String {
     )
 }
 
-fn format_score_breakdown(breakdown: crate::transfer::matching::MatchScoreBreakdown) -> String {
+fn format_score_breakdown(breakdown: &crate::transfer::matching::MatchScoreBreakdown) -> String {
     format!(
         "total {}, title {}, artist {}, duration {}, album +{}",
         format_score(breakdown.total),

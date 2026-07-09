@@ -220,6 +220,14 @@ pub struct ReportRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub album_release_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_release_date_precision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_total_tracks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_art_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disc_number: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track_number: Option<u32>,
@@ -304,6 +312,10 @@ mod tests {
                 album_id: None,
                 album_uri: None,
                 album_release_date: None,
+                album_release_date_precision: None,
+                album_total_tracks: None,
+                album_type: None,
+                album_art_url: None,
                 disc_number: None,
                 track_number: None,
                 duration_secs: Some(200),

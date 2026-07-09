@@ -1,7 +1,7 @@
-//! Track downloads via `yt-dlp` + `ffmpeg`: best audio → m4a, with embedded metadata
-//! and cover art, saved directly under `<download dir>/<title> [<id>].m4a`. The YouTube id
-//! is embedded in the filename so a rescan (or a fresh launch) can recover the track's online
-//! identity — see [`crate::api::Song::local_file`] / [`crate::api::Song::parse_embedded_id`].
+//! Track downloads via `yt-dlp` + `ffmpeg`: profile-selected audio with embedded metadata
+//! and cover art, saved directly under `<download dir>/<title> [<id>].<ext>`. The YouTube id is
+//! embedded in the filename so a rescan (or a fresh launch) can recover the track's online identity
+//! — see [`crate::api::Song::local_file`] / [`crate::api::Song::parse_embedded_id`].
 //!
 //! The actor receives [`DownloadCmd::Start`] and spawns one task per track, gated by a
 //! [`Semaphore`] so only a configured number run at once (priority #1: bounded work).
@@ -24,6 +24,59 @@ use crate::util::{backpressure, sanitize};
 
 const OUTPUT_TEMPLATE: &str = "%(title)s [%(id)s].%(ext)s";
 const YTDLP_STDOUT_MAX: usize = 64 * 1024;
+const ALBUM_ART_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadAudioProfile {
+    CompatibleM4a,
+    PreferNativeM4a,
+    KeepNative,
+}
+
+impl DownloadAudioProfile {
+    fn from_env() -> Self {
+        match std::env::var("YTM_DOWNLOAD_AUDIO_PROFILE")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+        {
+            Some("prefer-native-m4a" | "m4a-native") => Self::PreferNativeM4a,
+            Some("keep-native" | "best-source" | "best-native") => Self::KeepNative,
+            Some(other) if !other.is_empty() => {
+                tracing::warn!(
+                    profile = other,
+                    "unknown YTM_DOWNLOAD_AUDIO_PROFILE; using compatible-m4a"
+                );
+                Self::CompatibleM4a
+            }
+            _ => Self::CompatibleM4a,
+        }
+    }
+
+    fn ytdlp_args(self) -> &'static [&'static str] {
+        match self {
+            Self::CompatibleM4a => &[
+                "-f",
+                "bestaudio",
+                "-x",
+                "--audio-format",
+                "m4a",
+                "--audio-quality",
+                "0",
+            ],
+            Self::PreferNativeM4a => &[
+                "-f",
+                "ba[ext=m4a]/ba",
+                "-x",
+                "--audio-format",
+                "m4a",
+                "--audio-quality",
+                "0",
+            ],
+            Self::KeepNative => &["-f", "bestaudio", "-x", "--audio-format", "best"],
+        }
+    }
+}
 
 pub enum DownloadCmd {
     Start(Box<Song>),
@@ -348,7 +401,7 @@ async fn run_download_to_path(
 
     let mut cmd = crate::tools::ytdlp_command_for(program);
     cmd.arg(playback_target)
-        .args(["-f", "bestaudio", "-x", "--audio-format", "m4a"])
+        .args(DownloadAudioProfile::from_env().ytdlp_args())
         .args([
             "--embed-metadata",
             "--embed-thumbnail",
@@ -501,13 +554,60 @@ async fn run_download_to_path(
     {
         tracing::warn!(embedded_id, requested = %song.video_id, "downloaded file id differs from requested");
     }
-    if let Err(e) = crate::downloads::write_audio_tags(song, &path) {
+    let cover_art = match song.album_art_url.as_deref() {
+        Some(url) => match fetch_album_art(url).await {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not fetch album artwork for download tags");
+                None
+            }
+        },
+        None => None,
+    };
+    if let Err(e) = crate::downloads::write_audio_tags_with_art(song, &path, cover_art.as_deref()) {
         tracing::warn!(error = %e, path = %path.display(), "could not write download audio tags");
     }
     if let Err(e) = crate::downloads::write_sidecar(song, &path) {
         tracing::warn!(error = %e, path = %path.display(), "could not write download sidecar");
     }
     Ok(path)
+}
+
+async fn fetch_album_art(url: &str) -> Result<Vec<u8>> {
+    let parsed = reqwest::Url::parse(url).context("invalid album artwork URL")?;
+    if parsed.scheme() != "https" {
+        bail!("album artwork URL must be https");
+    }
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    if host != "i.scdn.co" && !host.ends_with(".scdn.co") && !host.ends_with(".spotifycdn.com") {
+        bail!("album artwork host is not trusted: {host}");
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .user_agent(format!("yututui/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("build album artwork client")?;
+    let resp = client
+        .get(parsed)
+        .send()
+        .await
+        .context("download album artwork")?
+        .error_for_status()
+        .context("album artwork HTTP error")?;
+    let mime = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !mime.starts_with("image/jpeg") && !mime.starts_with("image/png") {
+        bail!("album artwork is not jpeg/png");
+    }
+    let bytes = resp.bytes().await.context("read album artwork")?;
+    if bytes.len() > ALBUM_ART_MAX_BYTES {
+        bail!("album artwork is too large");
+    }
+    Ok(bytes.to_vec())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -592,6 +692,38 @@ mod tests {
         assert_eq!(parse_percent("[download] Destination: foo.m4a"), None);
         assert_eq!(parse_percent("download:n/a"), None);
         assert_eq!(parse_percent(""), None);
+    }
+
+    #[test]
+    fn audio_profiles_map_to_expected_ytdlp_args() {
+        assert_eq!(
+            DownloadAudioProfile::CompatibleM4a.ytdlp_args(),
+            [
+                "-f",
+                "bestaudio",
+                "-x",
+                "--audio-format",
+                "m4a",
+                "--audio-quality",
+                "0"
+            ]
+        );
+        assert_eq!(
+            DownloadAudioProfile::PreferNativeM4a.ytdlp_args(),
+            [
+                "-f",
+                "ba[ext=m4a]/ba",
+                "-x",
+                "--audio-format",
+                "m4a",
+                "--audio-quality",
+                "0"
+            ]
+        );
+        assert_eq!(
+            DownloadAudioProfile::KeepNative.ytdlp_args(),
+            ["-f", "bestaudio", "-x", "--audio-format", "best"]
+        );
     }
 
     #[test]

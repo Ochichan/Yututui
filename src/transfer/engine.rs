@@ -14,8 +14,8 @@ use super::matching::{
     normalize_stripped, ytm_query_plan,
 };
 use super::{FileFormat, JobSpec, Stage, TransferDest, TransferProgress, TransferSource};
-use crate::api::Song;
 use crate::api::ytmusic::YtMusicApi;
+use crate::api::{Song, SongImportMetadata};
 use crate::search_source::SearchConfig;
 use crate::spotify::client::{SpotifyClient, SpotifyError};
 
@@ -292,6 +292,7 @@ async fn match_stage(
     let cfg = MatchConfig {
         accept: cp.spec.min_score,
         ambiguous_floor: (cp.spec.min_score - 0.20).max(0.40),
+        accept_margin: MatchConfig::default().accept_margin,
     };
     let to_spotify = matches!(cp.spec.dest, TransferDest::SpotifyNewPlaylist { .. });
     let total = cp.tracks.len() as u32;
@@ -510,10 +511,17 @@ fn collect_writes(cp: &Checkpoint, report: &mut TransferReport) -> Vec<(usize, S
             (Some(ReviewDecision::Rejected | ReviewDecision::Skipped), _, _) => continue,
             (Some(ReviewDecision::Accepted { key, .. }), _, _) => key.clone(),
             (_, Some(MatchOutcome::Matched { key, .. }), _) => key.clone(),
-            (_, Some(MatchOutcome::Ambiguous { candidates }), true) => match candidates.first() {
-                Some(best) => best.key.clone(),
-                None => continue,
-            },
+            (_, Some(MatchOutcome::Ambiguous { candidates }), true) => {
+                match candidates.iter().find(|candidate| {
+                    candidate
+                        .score_breakdown
+                        .as_ref()
+                        .is_none_or(|score| !score.accept_blocked && score.reject_reason.is_none())
+                }) {
+                    Some(best) => best.key.clone(),
+                    None => continue,
+                }
+            }
             _ => continue,
         };
         if !seen.insert(key.clone()) {
@@ -618,6 +626,16 @@ fn song_for_entry(entry: &TrackEntry, video_id: &str, job_id: &str, source_order
         Some(entry.input.source_key.clone()),
         entry.input.source_url.clone(),
     )
+    .with_import_metadata(SongImportMetadata {
+        artists: entry.input.artists.clone(),
+        album_artists: entry.input.album_artists.clone(),
+        album_release_date: entry.input.album_release_date.clone(),
+        album_release_date_precision: entry.input.album_release_date_precision.clone(),
+        album_total_tracks: entry.input.album_total_tracks,
+        album_type: entry.input.album_type.clone(),
+        album_art_url: entry.input.album_art_url.clone(),
+        explicit: entry.input.explicit,
+    })
     .with_import_session(Some(job_id.to_owned()), Some(source_order))
 }
 
@@ -877,7 +895,7 @@ fn build_report(cp: &Checkpoint, skipped_local: u32) -> TransferReport {
                         key: c.key.clone(),
                         score: c.score,
                         display: c.display.clone(),
-                        score_breakdown: c.score_breakdown,
+                        score_breakdown: c.score_breakdown.clone(),
                     })
                     .collect();
                 let note = candidates
@@ -920,6 +938,10 @@ fn report_row_base(entry: &TrackEntry, idx: usize, note: String) -> ReportRow {
         album_id: entry.input.album_id.clone(),
         album_uri: entry.input.album_uri.clone(),
         album_release_date: entry.input.album_release_date.clone(),
+        album_release_date_precision: entry.input.album_release_date_precision.clone(),
+        album_total_tracks: entry.input.album_total_tracks,
+        album_type: entry.input.album_type.clone(),
+        album_art_url: entry.input.album_art_url.clone(),
         disc_number: entry.input.disc_number,
         track_number: entry.input.track_number,
         duration_secs: entry.input.duration_secs,

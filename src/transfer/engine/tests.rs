@@ -22,6 +22,10 @@ fn input(title: &str, artists: &[&str]) -> TrackInput {
         album_id: None,
         album_uri: None,
         album_release_date: None,
+        album_release_date_precision: None,
+        album_total_tracks: None,
+        album_type: None,
+        album_art_url: None,
         disc_number: None,
         track_number: None,
         duration_secs: Some(62),
@@ -365,10 +369,17 @@ fn progress_beat_accepts_fetch_progress_without_surface_state() {
 fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
     let breakdown = MatchScoreBreakdown {
         total: 0.79,
+        raw_total: 0.79,
         title: 0.90,
         artist: 0.80,
         duration: 0.50,
         album_bonus: 0.0,
+        quality_bonus: 0.0,
+        identity_penalty: 0.0,
+        non_music_penalty: 0.0,
+        accept_blocked: false,
+        reject_reason: None,
+        reason_codes: Vec::new(),
     };
     let mut maybe = input("Maybe Song", &["Artist B"]);
     maybe.album_artists = vec!["Album Artist B".to_owned()];
@@ -393,7 +404,7 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
                             key: "vid-b".to_owned(),
                             score: 0.79,
                             display: "Artist B - Candidate 1".to_owned(),
-                            score_breakdown: Some(breakdown),
+                            score_breakdown: Some(breakdown.clone()),
                         },
                         AmbiguousCandidate {
                             key: "vid-c".to_owned(),
@@ -466,7 +477,10 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
         report.ambiguous[0].search_queries,
         vec![
             "Artist B Maybe Song".to_owned(),
+            "Artist B Maybe Song Input Album".to_owned(),
             "Maybe Song Input Album".to_owned(),
+            "Artist B Maybe Song official audio".to_owned(),
+            "Artist B Maybe Song topic".to_owned(),
             "Maybe Song".to_owned(),
         ]
     );
@@ -485,7 +499,10 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
         vec![
             "Artist C Missing Song".to_owned(),
             "Artist C Feat D Missing Song".to_owned(),
+            "Artist C Missing Song Input Album".to_owned(),
             "Missing Song Input Album".to_owned(),
+            "Artist C Missing Song official audio".to_owned(),
+            "Artist C Missing Song topic".to_owned(),
             "Missing Song".to_owned(),
         ]
     );

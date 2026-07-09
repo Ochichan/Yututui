@@ -182,7 +182,7 @@ impl SpotifyClient {
         id: &str,
         on_page: &mut (dyn FnMut(u32, u32) + Send),
     ) -> Result<Vec<SpotifyTrack>, SpotifyError> {
-        let fields = "items(added_at,is_local,item(type,id,uri,name,duration_ms,explicit,is_local,is_playable,disc_number,track_number,artists(name,id,uri,external_urls(spotify)),album(id,uri,name,album_type,total_tracks,release_date,release_date_precision,artists(name,id,uri,external_urls(spotify)),external_urls(spotify)),external_ids(isrc),external_urls(spotify),restrictions(reason),linked_from(id,uri))),total,next";
+        let fields = "items(added_at,is_local,item(type,id,uri,name,duration_ms,explicit,is_local,is_playable,disc_number,track_number,artists(name,id,uri,external_urls(spotify)),album(id,uri,name,album_type,total_tracks,release_date,release_date_precision,images(url,width,height),artists(name,id,uri,external_urls(spotify)),external_urls(spotify)),external_ids(isrc),external_urls(spotify),restrictions(reason),linked_from(id,uri))),total,next";
         let mut url = format!("{API_BASE}/playlists/{id}/items?limit={PAGE_LIMIT}&fields={fields}");
         let mut out = Vec::new();
         let mut seen = 0u32;

@@ -109,6 +109,14 @@ pub struct ImportSessionRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub album_release_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_release_date_precision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_total_tracks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_art_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disc_number: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track_number: Option<u32>,
@@ -154,6 +162,10 @@ impl Default for ImportSessionRow {
             album_id: None,
             album_uri: None,
             album_release_date: None,
+            album_release_date_precision: None,
+            album_total_tracks: None,
+            album_type: None,
+            album_art_url: None,
             disc_number: None,
             track_number: None,
             duration_secs: None,
@@ -361,6 +373,10 @@ fn row_from_input(
         album_id: input.album_id.clone(),
         album_uri: input.album_uri.clone(),
         album_release_date: input.album_release_date.clone(),
+        album_release_date_precision: input.album_release_date_precision.clone(),
+        album_total_tracks: input.album_total_tracks,
+        album_type: input.album_type.clone(),
+        album_art_url: input.album_art_url.clone(),
         disc_number: input.disc_number,
         track_number: input.track_number,
         duration_secs: input.duration_secs,
@@ -389,7 +405,7 @@ fn row_from_input(
                 key: key.clone(),
                 score: *score,
                 display: display.clone(),
-                score_breakdown: *score_breakdown,
+                score_breakdown: score_breakdown.clone(),
             });
         }
         Some(MatchOutcome::Ambiguous { candidates }) => {
@@ -403,7 +419,7 @@ fn row_from_input(
                     key: c.key.clone(),
                     score: c.score,
                     display: c.display.clone(),
-                    score_breakdown: c.score_breakdown,
+                    score_breakdown: c.score_breakdown.clone(),
                 })
                 .collect();
         }
@@ -532,6 +548,10 @@ mod tests {
             album_id: Some("spotify:album-id".to_owned()),
             album_uri: Some("spotify:album:uri".to_owned()),
             album_release_date: Some("2026-07-01".to_owned()),
+            album_release_date_precision: Some("day".to_owned()),
+            album_total_tracks: Some(10),
+            album_type: Some("album".to_owned()),
+            album_art_url: Some("https://i.scdn.co/image/cover".to_owned()),
             disc_number: Some(1),
             track_number: Some(2),
             duration_secs: Some(180),
@@ -556,10 +576,17 @@ mod tests {
     fn session_projects_checkpoint_rows_for_review() {
         let breakdown = MatchScoreBreakdown {
             total: 0.78,
+            raw_total: 0.78,
             title: 0.90,
             artist: 0.75,
             duration: 1.0,
             album_bonus: 0.05,
+            quality_bonus: 0.0,
+            identity_penalty: 0.0,
+            non_music_penalty: 0.0,
+            accept_blocked: false,
+            reject_reason: None,
+            reason_codes: Vec::new(),
         };
         let mut cp = Checkpoint::new(
             "sp2yt-20260708-abcd".to_owned(),
@@ -588,7 +615,7 @@ mod tests {
                             key: "vid-b".to_owned(),
                             score: 0.78,
                             display: "B — Maybe".to_owned(),
-                            score_breakdown: Some(breakdown),
+                            score_breakdown: Some(breakdown.clone()),
                         }],
                     }),
                     false,

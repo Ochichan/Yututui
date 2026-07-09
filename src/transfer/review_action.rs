@@ -167,7 +167,7 @@ fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandid
             key: key.clone(),
             score: *score,
             display: display.clone(),
-            score_breakdown: *score_breakdown,
+            score_breakdown: score_breakdown.clone(),
         }],
         Some(MatchOutcome::Ambiguous { candidates }) => candidates
             .iter()
@@ -175,7 +175,7 @@ fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandid
                 key: candidate.key.clone(),
                 score: candidate.score,
                 display: candidate.display.clone(),
-                score_breakdown: candidate.score_breakdown,
+                score_breakdown: candidate.score_breakdown.clone(),
             })
             .collect(),
         _ => Vec::new(),
