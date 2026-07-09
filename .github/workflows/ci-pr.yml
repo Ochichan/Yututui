@@ -32,8 +32,8 @@ jobs:
     name: Quality gates
     # Repo-scoped self-hosted only; never schedule on fork PRs.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Shared pool: debian-ci and fedora-ci both carry the yututui label.
-    runs-on: [self-hosted, yututui]
+    # Shared Linux pool: debian-ci and fedora-ci both carry the yututui label.
+    runs-on: [self-hosted, Linux, yututui]
     steps:
       - uses: actions/checkout@v4
 
@@ -125,8 +125,8 @@ jobs:
   linux:
     name: Linux (x64)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Shared pool: debian-ci and fedora-ci both carry the yututui label.
-    runs-on: [self-hosted, yututui]
+    # Shared Linux pool: debian-ci and fedora-ci both carry the yututui label.
+    runs-on: [self-hosted, Linux, yututui]
     steps:
       - uses: actions/checkout@v4
 
@@ -146,10 +146,17 @@ jobs:
 
       - name: Install Linux system dependencies
         run: |
-          # Prefer already-installed packages; apt only if missing (may need passwordless sudo).
+          # Prefer already-installed packages; install only if missing.
           if ! pkg-config --exists openssl 2>/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y libssl-dev pkg-config
+            if command -v apt-get >/dev/null; then
+              sudo apt-get update
+              sudo apt-get install -y libssl-dev pkg-config
+            elif command -v dnf >/dev/null; then
+              sudo dnf install -y openssl-devel pkgconf-pkg-config
+            else
+              echo "error: unsupported Linux package manager; install OpenSSL development headers and pkg-config" >&2
+              exit 1
+            fi
           fi
 
       - name: Clippy (warnings = errors)
