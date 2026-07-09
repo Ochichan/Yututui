@@ -235,11 +235,12 @@ impl App {
             .suggestions_selected
             .min(self.ai.suggestions.len() - 1);
         let requested_songs = self.ai.suggestions.clone();
-        self.queue.set(requested_songs.clone(), start);
+        let romanize_cmds = self.request_romanization_for_songs(&requested_songs);
+        self.queue.set(requested_songs, start);
         self.status.text.clear();
         let song = self.queue.current().cloned();
         let mut cmds = self.load_song(song);
-        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+        cmds.extend(romanize_cmds);
         cmds
     }
 

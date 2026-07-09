@@ -89,6 +89,12 @@ impl Playlists {
         // into memory. Loaded entries are then count-repaired to the same caps as mutations.
         let mut playlists =
             safe_fs::load_json_or_default_limited::<Playlists>(&path, MAX_PLAYLISTS_BYTES);
+        playlists = crate::persist::replay_journaled_snapshot(
+            crate::persist::StoreKind::Playlists,
+            &path,
+            playlists,
+            MAX_PLAYLISTS_BYTES,
+        );
         let report = playlists.repair_loaded();
         (playlists, report)
     }
@@ -323,7 +329,7 @@ fn sanitize_loaded_song(song: &mut Song) -> bool {
     changed
 }
 
-fn playlists_path() -> Option<PathBuf> {
+pub(crate) fn playlists_path() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join("playlists.json"))
 }
 

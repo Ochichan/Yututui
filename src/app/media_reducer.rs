@@ -9,6 +9,7 @@
 //! Outbound: [`App::media_snapshot`] is the single translation from app state to the
 //! platform-independent [`MediaSnapshot`] the adapters publish to the OS.
 
+use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use super::*;
@@ -18,6 +19,70 @@ use crate::media::{
 use crate::streaming::candidate::parse_duration_secs;
 
 impl App {
+    pub fn media_scrobble_heartbeat_active(&self) -> bool {
+        self.queue.current().is_some() && !self.playback.paused
+    }
+
+    pub fn media_fingerprint(&self) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let current = self.queue.current();
+        current.map(|song| song.video_id.as_str()).hash(&mut h);
+        self.playback.paused.hash(&mut h);
+        self.playback.speed.to_bits().hash(&mut h);
+        self.playback.volume.hash(&mut h);
+        self.playback.position_epoch.hash(&mut h);
+        self.queue.shuffle.hash(&mut h);
+        match self.queue.repeat {
+            crate::queue::Repeat::Off => 0u8,
+            crate::queue::Repeat::All => 1,
+            crate::queue::Repeat::One => 2,
+        }
+        .hash(&mut h);
+        self.queue.len().hash(&mut h);
+        self.queue.position().hash(&mut h);
+        self.queue
+            .peek_next()
+            .map(|song| song.video_id.as_str())
+            .hash(&mut h);
+        self.media_can_seek().hash(&mut h);
+        self.playback.duration.map(f64::to_bits).hash(&mut h);
+
+        if let Some(song) = current {
+            let is_live = song.is_radio_station();
+            is_live.hash(&mut h);
+            self.display_title(song).as_ref().hash(&mut h);
+            self.display_artist(song).as_ref().hash(&mut h);
+            if is_live {
+                if let Some(now) = &self.playback.stream_now_playing {
+                    now.title.as_deref().hash(&mut h);
+                    now.artist.as_deref().hash(&mut h);
+                    now.raw.hash(&mut h);
+                }
+            } else {
+                song.album.as_deref().hash(&mut h);
+                song.duration.hash(&mut h);
+            }
+            song.youtube_id().hash(&mut h);
+            song.local_path.hash(&mut h);
+            if song.local_path.is_some() && song.youtube_id().is_none() {
+                self.library.rev.hash(&mut h);
+                self.library_ui.downloaded_rev.hash(&mut h);
+                self.library.favorites.len().hash(&mut h);
+                self.library.history.len().hash(&mut h);
+                self.library_ui.downloaded.len().hash(&mut h);
+            }
+            self.library.is_favorite(&song.video_id).hash(&mut h);
+            self.signals.is_disliked(&song.video_id).hash(&mut h);
+            self.media_art
+                .as_ref()
+                .filter(|art| art.key == song.video_id)
+                .map(|art| (&art.key, &art.path))
+                .hash(&mut h);
+        }
+
+        h.finish()
+    }
+
     /// Apply one OS media-session command, returning effects for the run loop.
     pub(in crate::app) fn apply_media(&mut self, cmd: MediaCommand) -> Vec<Cmd> {
         tracing::debug!(?cmd, "media command");
@@ -409,6 +474,34 @@ mod tests {
         app.playback.duration = Some(180.0);
         app.playback.time_pos = Some(10.0);
         app.playback.paused = false;
+    }
+
+    #[test]
+    fn media_fingerprint_ignores_non_media_selection_state() {
+        let mut app = app_with_queue(2);
+        mark_loaded(&mut app);
+        let before = app.media_fingerprint();
+
+        app.library_ui.selected = 1;
+        app.search.selected = 1;
+        app.queue_popup.cursor = 1;
+        app.queue_popup.anchor = 1;
+
+        assert_eq!(app.media_fingerprint(), before);
+    }
+
+    #[test]
+    fn media_fingerprint_tracks_position_epochs_not_time_pos_ticks() {
+        let mut app = app_with_queue(1);
+        mark_loaded(&mut app);
+        let before = app.media_fingerprint();
+
+        app.playback.time_pos = Some(11.0);
+        app.playback.time_pos_at = Some(Instant::now());
+        assert_eq!(app.media_fingerprint(), before);
+
+        app.bump_position_epoch(PositionEpochReason::Seek);
+        assert_ne!(app.media_fingerprint(), before);
     }
 
     #[test]

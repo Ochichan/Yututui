@@ -74,7 +74,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             };
             frame.render_widget(
                 Paragraph::new(
-                    Line::from(app.status.text.clone())
+                    Line::from(app.status.text.as_str())
                         .style(app.theme.style(role))
                         .alignment(Alignment::Center),
                 ),
@@ -341,7 +341,7 @@ fn render_status_line(frame: &mut Frame, app: &App, area: Rect) {
 /// drop away, so the clickable toggles never fall off the right edge.
 fn status_line_parts_at(
     app: &App,
-    gap: &str,
+    gap: &'static str,
     minimal: bool,
 ) -> Vec<(Option<MouseTarget>, Cow<'static, str>)> {
     let retro = app.retro_mode();
@@ -365,7 +365,7 @@ fn status_line_parts_at(
         let (pos, _) = app.queue.position();
         // Clickable (opens the queue window) but styled exactly like the labels around it,
         // so the line looks unchanged — same as the `S:`/`R:` toggles next to it.
-        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((None, Cow::Borrowed(gap)));
         parts.push((
             Some(MouseTarget::QueuePos),
             Cow::Owned(format!("{pos}/{}", app.queue.len())),
@@ -377,7 +377,7 @@ fn status_line_parts_at(
     if let Some(cur) = app.queue.current() {
         let liked = app.library.is_favorite(&cur.video_id);
         let disliked = app.signals.is_disliked(&cur.video_id);
-        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((None, Cow::Borrowed(gap)));
         parts.push((
             Some(MouseTarget::Player(Action::CycleRating)),
             Cow::Borrowed(rating_glyph(liked, disliked, retro)),
@@ -390,7 +390,7 @@ fn status_line_parts_at(
     // On a live radio stream the same two slots (and the same actions/keys behind them)
     // read as the live transport instead: `LIVE:` sync verdict, `SYNC:` re-sync.
     if app.current_is_radio_stream() {
-        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((None, Cow::Borrowed(gap)));
         parts.push((
             Some(MouseTarget::Player(Action::ToggleShuffle)),
             Cow::Owned(format!(
@@ -398,7 +398,7 @@ fn status_line_parts_at(
                 live_sync_glyph(app.radio_live_synced(), retro)
             )),
         ));
-        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((None, Cow::Borrowed(gap)));
         parts.push((
             Some(MouseTarget::Player(Action::CycleRepeat)),
             Cow::Owned(format!("SYNC:{}", resync_glyph(retro))),
@@ -406,7 +406,7 @@ fn status_line_parts_at(
         // The "what's playing" card — now ICY-metadata-backed, so always offered on a live
         // radio stream, DJ Gem or not. A text label, not a glyph: EAW-ambiguous symbols
         // (♪ …) render wide on some CJK terminals and would drift every later hit rect.
-        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((None, Cow::Borrowed(gap)));
         parts.push((
             Some(MouseTarget::Player(Action::IdentifyNowPlaying)),
             Cow::Borrowed(t!("ID?", "지듣노")),
@@ -415,19 +415,19 @@ fn status_line_parts_at(
         // text label (not a glyph) for the same EAW-neutral reason as `ID?` above — an
         // ambiguous-width mark would drift later hit rects on some CJK terminals.
         if app.recorder.is_recording() {
-            parts.push((None, Cow::Owned(gap.to_owned())));
+            parts.push((None, Cow::Borrowed(gap)));
             parts.push((
                 Some(MouseTarget::Player(Action::ToggleRecordings)),
                 Cow::Borrowed(t!("REC", "녹음")),
             ));
         }
     } else {
-        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((None, Cow::Borrowed(gap)));
         parts.push((
             Some(MouseTarget::Player(Action::ToggleShuffle)),
             Cow::Owned(format!("S:{}", shuffle_glyph(app.queue.shuffle, retro))),
         ));
-        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((None, Cow::Borrowed(gap)));
         parts.push((
             Some(MouseTarget::Player(Action::CycleRepeat)),
             Cow::Owned(format!("R:{}", repeat_glyph(app.queue.repeat, retro))),
@@ -436,7 +436,7 @@ fn status_line_parts_at(
     if !minimal && (app.playback.speed - 1.0).abs() > f64::EPSILON {
         parts.push((None, Cow::Owned(format!("{gap}{:.1}x", app.playback.speed))));
     }
-    parts.push((None, Cow::Owned(gap.to_owned())));
+    parts.push((None, Cow::Borrowed(gap)));
     parts.push((
         Some(MouseTarget::EqMenu),
         Cow::Owned(format!("eq:{}", app.audio.preset.label())),
@@ -448,7 +448,7 @@ fn status_line_parts_at(
     if app.streaming_active() {
         // Show the station's mode (Focused/Balanced/Discovery) as a click target that opens the
         // mode dropdown — same affordance as the `eq:` label next to it.
-        parts.push((None, Cow::Owned(gap.to_owned())));
+        parts.push((None, Cow::Borrowed(gap)));
         parts.push((
             Some(MouseTarget::StreamingMenu),
             Cow::Owned(format!(

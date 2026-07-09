@@ -352,7 +352,9 @@ impl App {
                 self.library_ui.downloaded_rev = self.library_ui.downloaded_rev.wrapping_add(1);
                 let truncated = scan.truncated;
                 let limit = scan.limit;
-                self.library_ui.downloaded = self.enrich_downloads(scan.songs);
+                let downloaded = self.enrich_downloads(scan.songs);
+                let romanize_cmds = self.request_romanization_for_songs(&downloaded);
+                self.library_ui.downloaded = downloaded;
                 let len = self.library_len();
                 if self.library_ui.selected >= len {
                     self.library_ui.selected = len.saturating_sub(1);
@@ -368,8 +370,7 @@ impl App {
                     );
                 }
                 self.dirty = true;
-                let downloaded = self.library_ui.downloaded.clone();
-                return self.request_romanization_for_songs(&downloaded);
+                return romanize_cmds;
             }
             Msg::Local(msg) => return self.apply_local_msg(msg),
             Msg::LyricsResult { video_id, lines } => {
@@ -470,9 +471,6 @@ impl App {
                     stream_url,
                 } => {
                     // Bounded prefetch cache; no redraw (purely a skip-latency optimization).
-                    if self.prefetch.resolved.len() >= RESOLVED_MAX {
-                        self.prefetch.resolved.clear();
-                    }
                     self.prefetch.resolved.insert(video_id.clone(), stream_url);
                     // A pending self-heal retry: the freshly-updated yt-dlp resolved the
                     // failed track — reload it now through the direct CDN URL just cached
@@ -553,12 +551,12 @@ impl App {
                 }
                 AiMsg::PlayTracks(songs) => {
                     if !songs.is_empty() {
-                        let requested_songs = songs.clone();
+                        let romanize_cmds = self.request_romanization_for_songs(&songs);
                         self.queue.set(songs, 0);
                         self.status.text.clear();
                         let song = self.queue.current().cloned();
                         let mut cmds = self.load_song(song);
-                        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+                        cmds.extend(romanize_cmds);
                         return cmds;
                     }
                 }
@@ -566,12 +564,12 @@ impl App {
                     return self.extend_queue_from_streaming(songs);
                 }
                 AiMsg::Suggestions(songs) => {
+                    let cmds = self.request_romanization_for_songs(&songs);
                     self.ai.suggestions = songs;
                     self.ai.suggestions_selected = 0;
                     self.bridges.ai_scroll.reset();
                     self.dirty = true;
-                    let suggestions = self.ai.suggestions.clone();
-                    return self.request_romanization_for_songs(&suggestions);
+                    return cmds;
                 }
                 AiMsg::SetAutoplay(on) => {
                     // Music-mode invariant: DJ Gem can't enable autoplay while repeat is on.
@@ -631,12 +629,12 @@ impl App {
                     if let Some(songs) = self.playlists.find(&key).map(|p| p.songs.clone())
                         && !songs.is_empty()
                     {
-                        let requested_songs = songs.clone();
+                        let romanize_cmds = self.request_romanization_for_songs(&songs);
                         self.queue.set(songs, 0);
                         self.status.text.clear();
                         let song = self.queue.current().cloned();
                         let mut cmds = self.load_song(song);
-                        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+                        cmds.extend(romanize_cmds);
                         return cmds;
                     }
                 }

@@ -285,10 +285,25 @@ fn youtube_playlist_rows_keep_playlist_identity_out_of_track_playback() {
     assert!(playable_channel.prefetch_target().is_none());
 }
 
+fn test_api_handle(
+    interactive_cap: usize,
+    bulk_cap: usize,
+) -> (ApiHandle, Receiver<ApiCmd>, Receiver<ApiCmd>) {
+    let (interactive_tx, interactive_rx) = mpsc::channel(interactive_cap);
+    let (bulk_tx, bulk_rx) = mpsc::channel(bulk_cap);
+    (
+        ApiHandle {
+            interactive_tx,
+            bulk_tx,
+        },
+        interactive_rx,
+        bulk_rx,
+    )
+}
+
 #[test]
 fn api_handle_reports_full_queue() {
-    let (tx, _rx) = mpsc::channel(1);
-    let handle = ApiHandle { tx };
+    let (handle, _interactive_rx, _bulk_rx) = test_api_handle(1, 1);
 
     handle
         .search(1, "first", SearchSource::Youtube, SearchConfig::default())
@@ -307,9 +322,8 @@ fn api_handle_reports_full_queue() {
 
 #[test]
 fn api_handle_reports_closed_queue() {
-    let (tx, rx) = mpsc::channel(1);
-    drop(rx);
-    let handle = ApiHandle { tx };
+    let (handle, interactive_rx, _bulk_rx) = test_api_handle(1, 1);
+    drop(interactive_rx);
 
     let err = handle
         .search(1, "lost", SearchSource::Youtube, SearchConfig::default())
@@ -325,8 +339,7 @@ fn api_handle_reports_closed_queue() {
 
 #[test]
 fn api_handle_enqueues_all_command_kinds_with_payloads() {
-    let (tx, mut rx) = mpsc::channel(8);
-    let handle = ApiHandle { tx };
+    let (handle, mut interactive_rx, mut bulk_rx) = test_api_handle(8, 8);
 
     handle
         .gui_search(7, "gui", SearchSource::All, SearchConfig::default())
@@ -359,7 +372,7 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
         .unwrap();
 
     assert!(matches!(
-        rx.try_recv().unwrap(),
+        interactive_rx.try_recv().unwrap(),
         ApiCmd::GuiSearch {
             ticket: 7,
             source: SearchSource::All,
@@ -367,7 +380,15 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
         }
     ));
     assert!(matches!(
-        rx.try_recv().unwrap(),
+        interactive_rx.try_recv().unwrap(),
+        ApiCmd::ResolveTrack { seq: 9, .. }
+    ));
+    assert!(matches!(
+        interactive_rx.try_recv().unwrap(),
+        ApiCmd::SearchPlaylists { request_id: 10, .. }
+    ));
+    assert!(matches!(
+        bulk_rx.try_recv().unwrap(),
         ApiCmd::Streaming {
             limit: 12,
             mode: StreamingMode::Discovery,
@@ -375,27 +396,30 @@ fn api_handle_enqueues_all_command_kinds_with_payloads() {
         }
     ));
     assert!(matches!(
-        rx.try_recv().unwrap(),
+        bulk_rx.try_recv().unwrap(),
         ApiCmd::StreamingPreflight {
             mode: StreamingMode::Focused,
             ..
         }
     ));
     assert!(matches!(
-        rx.try_recv().unwrap(),
-        ApiCmd::ResolveTrack { seq: 9, .. }
-    ));
-    assert!(matches!(
-        rx.try_recv().unwrap(),
-        ApiCmd::SearchPlaylists { request_id: 10, .. }
-    ));
-    assert!(matches!(
-        rx.try_recv().unwrap(),
+        bulk_rx.try_recv().unwrap(),
         ApiCmd::PlaylistTracks {
             intent: PlaylistIntent::Import,
             ..
         }
     ));
+}
+
+#[test]
+fn api_command_kinds_route_to_expected_lanes() {
+    assert_eq!(ApiCommandKind::Search.lane(), ApiLane::Interactive);
+    assert_eq!(ApiCommandKind::GuiSearch.lane(), ApiLane::Interactive);
+    assert_eq!(ApiCommandKind::ResolveTrack.lane(), ApiLane::Interactive);
+    assert_eq!(ApiCommandKind::SearchPlaylists.lane(), ApiLane::Interactive);
+    assert_eq!(ApiCommandKind::Streaming.lane(), ApiLane::Bulk);
+    assert_eq!(ApiCommandKind::StreamingPreflight.lane(), ApiLane::Bulk);
+    assert_eq!(ApiCommandKind::PlaylistTracks.lane(), ApiLane::Bulk);
 }
 
 #[test]

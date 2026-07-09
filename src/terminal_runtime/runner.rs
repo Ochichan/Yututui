@@ -364,7 +364,7 @@ pub async fn run(
             while let Ok(newer) = art_resize_rx.try_recv() {
                 request = newer;
             }
-            match tokio::task::spawn_blocking(move || request.resize_encode()).await {
+            match crate::util::blocking::spawn_cpu(move || request.resize_encode()).await {
                 Ok(Ok(response)) => {
                     runtime::emit(&art_resize_msg_tx, RuntimeEvent::ArtworkResized(response));
                 }
@@ -564,8 +564,16 @@ pub async fn run(
         // Mostly blocks until input or a worker message arrives. Outside text-entry fields,
         // a low-rate redraw scrubs IME preedit text that some terminals paint without
         // sending an input event to the app.
-        let msg = if let Some(msg) = pending_worker_msgs.pop_front() {
-            msg
+        let msg = if !pending_worker_msgs.is_empty() {
+            let mut polled_input = None;
+            match event::poll_terminal_input_now(&mut events, &mut input, &zoom, &mut polled_input)
+            {
+                event::InputPoll::Ready => polled_input.expect("ready input message"),
+                event::InputPoll::Empty => pending_worker_msgs
+                    .pop_front()
+                    .expect("pending worker message"),
+                event::InputPoll::Closed => break,
+            }
         } else {
             tokio::select! {
                 maybe = events.next() => match maybe {
@@ -587,11 +595,7 @@ pub async fn run(
                         for event in worker_tx.drain_coalesced() {
                             pending_worker_msgs.push_back(event.into());
                         }
-                        if let Some(msg) = pending_worker_msgs.pop_front() {
-                            msg
-                        } else {
-                            continue;
-                        }
+                        continue;
                     } else {
                         // Owner lane (docs/gui/02 §8/§14): session subscribe ops run here,
                         // between reducer turns, and never become a Msg - the Publisher emits
@@ -639,6 +643,7 @@ pub async fn run(
         // anything a media snapshot reads, so skip rebuilding it (snapshot construction
         // allocates ~10 Strings, and AnimTick fires at up to the configured FPS).
         let media_inert = matches!(&msg, Msg::AnimTick | Msg::StatusTick);
+        let media_before = (!media_inert).then(|| app.media_fingerprint());
         for cmd in app.update(msg) {
             // Desktop notifications are handled here (not in `RuntimeHandles`) because the OSC
             // path writes to the terminal's stdout, which this scope owns; do it between frames
@@ -678,17 +683,30 @@ pub async fn run(
         // it must keep working when media controls are disabled (publish early-returns).
         // Scrobble cadence is unaffected by the inert skip: elapsed time is credited from
         // the 1 Hz PlayerTimePos observations, which always take this path.
-        media.set_enabled(app.config.effective_media_controls());
-        if !media_inert {
+        let media_enabled = app.config.effective_media_controls();
+        let media_enabled_changed = media.set_enabled(media_enabled);
+        let media_observed_turn = media_before.is_some();
+        let media_changed = media_before.is_some_and(|before| before != app.media_fingerprint());
+        let scrobble_due = media_observed_turn
+            && app.media_scrobble_heartbeat_active()
+            && handles.scrobble_heartbeat_due();
+        let publish_due = media_changed || (media_enabled_changed && media_enabled);
+        if media_changed || scrobble_due || publish_due {
             let snapshot = app.media_snapshot();
-            handles.scrobble_observe(&snapshot);
-            media.publish(snapshot);
-            // v8 push: fingerprint-diffed, so this is a cheap compare when nothing
-            // session-visible changed. Shares the inert gate - AnimTick/StatusTick
-            // turns can't change anything the publisher watches (audited by tests).
-            if let Some(publisher) = publisher.as_mut() {
-                publisher.observe(&app.core_view());
+            if media_changed || scrobble_due {
+                handles.scrobble_observe(&snapshot);
             }
+            if publish_due {
+                media.publish(snapshot);
+            }
+        }
+        // v8 push: fingerprint-diffed internally. Avoid building the borrowed core view
+        // on idle standalone turns after the publisher has primed its baselines.
+        if !media_inert
+            && let Some(publisher) = publisher.as_mut()
+            && publisher.should_observe(media_changed || media_enabled_changed)
+        {
+            publisher.observe(&app.core_view());
         }
         perf.maybe_log(&app);
     }

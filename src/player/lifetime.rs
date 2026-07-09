@@ -316,19 +316,28 @@ pub fn reap_orphans(dir: &Path) {
 }
 
 /// Confirm a candidate really is *our* mpv before killing it, defeating pid reuse: an unrelated
-/// mpv won't carry our unique `--input-ipc-server=<socket>` path in its command line. Falls back
-/// to permissive (the name check already applied) when we recorded no socket (a pre-upgrade
-/// record) or the OS won't expose this process's command line.
+/// mpv won't carry our unique `--input-ipc-server=<socket>` path in its command line.
 fn mpv_identity_matches(proc_: &sysinfo::Process, record: &Lifeline) -> bool {
+    let args: Vec<String> = proc_
+        .cmd()
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    mpv_identity_matches_args(&args, record)
+}
+
+fn mpv_identity_matches_args(args: &[String], record: &Lifeline) -> bool {
     if record.mpv_socket.is_empty() {
+        // Legacy records had no socket identity; keep the historical name-check-only fallback.
         return true;
     }
-    let cmd = proc_.cmd();
-    if cmd.is_empty() {
-        return true; // command line unavailable on this platform/process; rely on the name check
+    if args.is_empty() {
+        // New records have a unique socket identity. If the OS will not expose argv, do not risk
+        // killing an unrelated user-started mpv after PID reuse.
+        return false;
     }
-    cmd.iter()
-        .any(|arg| arg.to_string_lossy().contains(record.mpv_socket.as_str()))
+    args.iter()
+        .any(|arg| arg.contains(record.mpv_socket.as_str()))
 }
 
 #[cfg(test)]
@@ -399,5 +408,35 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn identity_matching_requires_socket_when_record_has_one() {
+        let legacy = Lifeline {
+            app_pid: 1,
+            mpv_pid: 2,
+            mpv_socket: String::new(),
+            written_at: unix_now(),
+        };
+        assert!(mpv_identity_matches_args(&[], &legacy));
+
+        let record = Lifeline {
+            app_pid: 1,
+            mpv_pid: 2,
+            mpv_socket: "/tmp/ytm-ipc-abc.sock".to_owned(),
+            written_at: unix_now(),
+        };
+        assert!(!mpv_identity_matches_args(&[], &record));
+        assert!(!mpv_identity_matches_args(
+            &["mpv".to_owned(), "--idle=yes".to_owned()],
+            &record
+        ));
+        assert!(mpv_identity_matches_args(
+            &[
+                "mpv".to_owned(),
+                "--input-ipc-server=/tmp/ytm-ipc-abc.sock".to_owned()
+            ],
+            &record
+        ));
     }
 }

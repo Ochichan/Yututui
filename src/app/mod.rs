@@ -134,8 +134,6 @@ const DEFAULT_PAGE_ROWS: usize = 10;
 /// Volume step / ceiling, single-sourced with the headless daemon in
 /// [`crate::playback_policy`] so the bound can't drift between the two owners.
 pub(crate) use crate::playback_policy::{VOLUME_MAX, VOLUME_STEP};
-/// Cap on cached prefetched stream URLs (bounded memory; we only look a step ahead).
-const RESOLVED_MAX: usize = 999;
 /// Cap on local download-folder rows held in memory.
 const DOWNLOADED_TRACKS_MAX: usize = 999;
 /// Playback-speed change per `>`/`<` press.

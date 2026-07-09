@@ -4,6 +4,7 @@
 //! This module is the single orchestration boundary that maps those events back into
 //! reducer messages.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use ratatui_image::thread::ResizeResponse;
@@ -15,6 +16,8 @@ use crate::player::{PlayerCmd, PlayerHandle};
 use crate::util::event_policy::{
     EventKey as Key, EventLane as Lane, EventPolicy, LatestEventBuffer,
 };
+
+mod must_deliver;
 
 pub enum RuntimeEvent {
     App(Msg),
@@ -651,6 +654,7 @@ enum RuntimeTelemetrySlot {
 pub struct RuntimeSender {
     tx: Sender<RuntimeEvent>,
     telemetry: Arc<Mutex<LatestEventBuffer<RuntimeTelemetrySlot, RuntimeEvent>>>,
+    must_deliver_overflow: Arc<must_deliver::MustDeliverOverflow>,
 }
 
 impl RuntimeSender {
@@ -658,6 +662,7 @@ impl RuntimeSender {
         Self {
             tx,
             telemetry: Arc::new(Mutex::new(LatestEventBuffer::new(RUNTIME_TELEMETRY_SLOTS))),
+            must_deliver_overflow: Arc::new(must_deliver::MustDeliverOverflow::new()),
         }
     }
 
@@ -682,16 +687,16 @@ pub fn emit(tx: &RuntimeSender, event: RuntimeEvent) -> bool {
     if matches!(policy, EventPolicy::CoalesceLatest { .. }) {
         return emit_coalesced(tx, event, event_kind, policy);
     }
-    emit_direct(&tx.tx, event, event_kind, policy)
+    emit_direct(tx, event, event_kind, policy)
 }
 
 fn emit_direct(
-    tx: &Sender<RuntimeEvent>,
+    tx: &RuntimeSender,
     event: RuntimeEvent,
     event_kind: &'static str,
     policy: EventPolicy,
 ) -> bool {
-    match tx.try_send(event) {
+    match tx.tx.try_send(event) {
         Ok(()) => true,
         Err(TrySendError::Full(event)) if matches!(policy, EventPolicy::MustDeliver { .. }) => {
             tracing::warn!(
@@ -702,7 +707,8 @@ fn emit_direct(
                 drop_reason = "must_deliver_delayed",
                 "runtime owner event queue full; deferring must-deliver event"
             );
-            defer_must_deliver(tx.clone(), event, event_kind, policy);
+            tx.must_deliver_overflow
+                .push(tx.tx.clone(), event, event_kind, policy);
             true
         }
         Err(TrySendError::Full(_)) => {
@@ -727,7 +733,7 @@ fn emit_coalesced(
     policy: EventPolicy,
 ) -> bool {
     let Some(slot) = event.telemetry_slot() else {
-        return emit_direct(&tx.tx, event, event_kind, policy);
+        return emit_direct(tx, event, event_kind, policy);
     };
     let insert = tx
         .telemetry
@@ -750,7 +756,7 @@ fn emit_coalesced(
     }
     if insert.should_wake {
         emit_direct(
-            &tx.tx,
+            tx,
             RuntimeEvent::TelemetryWake,
             RuntimeEvent::TelemetryWake.kind(),
             RuntimeEvent::TelemetryWake.policy(),
@@ -770,36 +776,82 @@ fn full_queue_reason(policy: EventPolicy) -> &'static str {
     }
 }
 
-fn defer_must_deliver(
-    tx: Sender<RuntimeEvent>,
-    event: RuntimeEvent,
-    event_kind: &'static str,
-    policy: EventPolicy,
-) {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(async move {
-            if tx.send(event).await.is_err() {
-                tracing::error!(
-                    event_policy = policy.name(),
-                    event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
-                    event_kind,
-                    drop_reason = "must_deliver_failed",
-                    "runtime owner event queue closed before must-deliver event was accepted"
-                );
+const PENDING_PLAYER_CMDS_MAX: usize = 64;
+
+#[derive(Default)]
+struct PendingPlayerCmds {
+    cmds: VecDeque<PlayerCmd>,
+}
+
+impl PendingPlayerCmds {
+    fn push(&mut self, cmd: PlayerCmd) {
+        match &cmd {
+            PlayerCmd::Load(_) => {
+                self.cmds
+                    .retain(|existing| !matches!(existing, PlayerCmd::Load(_)));
             }
-        });
-    } else {
-        std::thread::spawn(move || {
-            if tx.blocking_send(event).is_err() {
-                tracing::error!(
-                    event_policy = policy.name(),
-                    event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
-                    event_kind,
-                    drop_reason = "must_deliver_failed",
-                    "runtime owner event queue closed before must-deliver event was accepted"
-                );
+            PlayerCmd::SetVolume(_) => {
+                self.cmds
+                    .retain(|existing| !matches!(existing, PlayerCmd::SetVolume(_)));
             }
-        });
+            PlayerCmd::SetAudioFilter(_) => {
+                self.cmds
+                    .retain(|existing| !matches!(existing, PlayerCmd::SetAudioFilter(_)));
+            }
+            PlayerCmd::SetProperty { name, .. } => {
+                self.cmds.retain(|existing| {
+                    !matches!(existing, PlayerCmd::SetProperty { name: existing_name, .. } if existing_name == name)
+                });
+            }
+            PlayerCmd::Stop
+            | PlayerCmd::CyclePause
+            | PlayerCmd::SeekRelative(_)
+            | PlayerCmd::SeekAbsolute(_)
+            | PlayerCmd::AfCommand { .. } => {}
+        }
+        self.cmds.push_back(cmd);
+        while self.cmds.len() > PENDING_PLAYER_CMDS_MAX {
+            let idx = self
+                .cmds
+                .iter()
+                .position(|cmd| !matches!(cmd, PlayerCmd::Load(_)))
+                .unwrap_or(0);
+            if let Some(dropped) = self.cmds.remove(idx) {
+                tracing::warn!(
+                    kind = player_cmd_kind(&dropped),
+                    "pending player command buffer full; dropping oldest queued command"
+                );
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn drain(&mut self) -> Vec<PlayerCmd> {
+        self.cmds.drain(..).collect()
+    }
+
+    fn clear(&mut self) {
+        self.cmds.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.cmds.len()
+    }
+}
+
+fn player_cmd_kind(cmd: &PlayerCmd) -> &'static str {
+    match cmd {
+        PlayerCmd::Load(_) => "load",
+        PlayerCmd::Stop => "stop",
+        PlayerCmd::CyclePause => "cycle_pause",
+        PlayerCmd::SeekRelative(_) => "seek_relative",
+        PlayerCmd::SeekAbsolute(_) => "seek_absolute",
+        PlayerCmd::SetVolume(_) => "set_volume",
+        PlayerCmd::SetAudioFilter(_) => "set_audio_filter",
+        PlayerCmd::AfCommand { .. } => "af_command",
+        PlayerCmd::SetProperty { .. } => "set_property",
     }
 }
 
@@ -822,7 +874,7 @@ pub fn remote_sink(
 pub struct RuntimeHandles {
     worker_tx: RuntimeSender,
     player_handle: Option<PlayerHandle>,
-    pending_player_cmds: Vec<PlayerCmd>,
+    pending_player_cmds: PendingPlayerCmds,
     player_failed: bool,
     _mpv_guard: Option<crate::player::Mpv>,
     /// Command sender for the *current* video overlay's IPC client. Replaced wholesale
@@ -858,7 +910,7 @@ impl RuntimeHandles {
         Self {
             worker_tx,
             player_handle: None,
-            pending_player_cmds: Vec::new(),
+            pending_player_cmds: PendingPlayerCmds::default(),
             player_failed: false,
             _mpv_guard: None,
             video_handle: None,
@@ -879,6 +931,10 @@ impl RuntimeHandles {
     /// must survive `media_controls: false`.
     pub fn scrobble_observe(&mut self, snapshot: &crate::media::MediaSnapshot) {
         self.scrobble_handle.observe(snapshot);
+    }
+
+    pub fn scrobble_heartbeat_due(&self) -> bool {
+        self.scrobble_handle.heartbeat_due()
     }
 
     /// Best-effort queue flush on quit, bounded by `budget`.
@@ -923,7 +979,7 @@ impl RuntimeHandles {
                 if let Ok(url) = std::env::var("YTM_PLAY_URL") {
                     handle.load(url);
                 }
-                for cmd in self.pending_player_cmds.drain(..) {
+                for cmd in self.pending_player_cmds.drain() {
                     handle.send(cmd);
                 }
                 self.player_handle = Some(handle);
@@ -1060,35 +1116,47 @@ impl RuntimeHandles {
             Cmd::ScanDownloads(dir) => {
                 // Directory scan does per-file IO — keep it off the loop task too.
                 let tx = self.worker_tx.clone();
-                tokio::task::spawn_blocking(move || {
-                    let scan = crate::library::scan_downloads(&dir);
-                    emit(&tx, RuntimeEvent::App(Msg::DownloadsScanned(scan)));
+                tokio::spawn(async move {
+                    if let Err(error) = crate::util::blocking::spawn_io(move || {
+                        let scan = crate::library::scan_downloads(&dir);
+                        emit(&tx, RuntimeEvent::App(Msg::DownloadsScanned(scan)));
+                    })
+                    .await
+                    {
+                        tracing::warn!(%error, "download scan task failed");
+                    }
                 });
             }
             Cmd::Local(cmd) => match cmd {
                 crate::app::LocalCmd::LoadIndex { index_path } => {
                     let tx = self.worker_tx.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let load = index_path
-                            .as_deref()
-                            .map(crate::local::LocalIndex::load_with_diagnostics)
-                            .unwrap_or_default();
-                        let warnings = load
-                            .warnings
-                            .into_iter()
-                            .map(|warning| crate::local::ScanError {
-                                path: warning.path,
-                                message: warning.message,
-                            })
-                            .collect();
-                        emit(
-                            &tx,
-                            RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::IndexLoaded {
-                                index_path,
-                                index: load.index,
-                                warnings,
-                            })),
-                        );
+                    tokio::spawn(async move {
+                        if let Err(error) = crate::util::blocking::spawn_io(move || {
+                            let load = index_path
+                                .as_deref()
+                                .map(crate::local::LocalIndex::load_with_diagnostics)
+                                .unwrap_or_default();
+                            let warnings = load
+                                .warnings
+                                .into_iter()
+                                .map(|warning| crate::local::ScanError {
+                                    path: warning.path,
+                                    message: warning.message,
+                                })
+                                .collect();
+                            emit(
+                                &tx,
+                                RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::IndexLoaded {
+                                    index_path,
+                                    index: load.index,
+                                    warnings,
+                                })),
+                            );
+                        })
+                        .await
+                        {
+                            tracing::warn!(%error, "local index load task failed");
+                        }
                     });
                 }
                 crate::app::LocalCmd::ScanRoots {
@@ -1097,33 +1165,42 @@ impl RuntimeHandles {
                     previous,
                 } => {
                     let tx = self.worker_tx.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let progress_tx = tx.clone();
-                        let mut result =
-                            crate::local::scan_roots_with_progress(&roots, &previous, |progress| {
-                                emit(
-                                    &progress_tx,
-                                    RuntimeEvent::App(Msg::Local(
-                                        crate::app::LocalMsg::ScanProgress(progress),
-                                    )),
-                                );
-                            });
-                        if let Some(path) = index_path.as_deref()
-                            && let Err(error) = result.index.save(path)
+                    tokio::spawn(async move {
+                        if let Err(error) = crate::util::blocking::spawn_io(move || {
+                            let progress_tx = tx.clone();
+                            let mut result = crate::local::scan_roots_with_progress(
+                                &roots,
+                                &previous,
+                                |progress| {
+                                    emit(
+                                        &progress_tx,
+                                        RuntimeEvent::App(Msg::Local(
+                                            crate::app::LocalMsg::ScanProgress(progress),
+                                        )),
+                                    );
+                                },
+                            );
+                            if let Some(path) = index_path.as_deref()
+                                && let Err(error) = result.index.save(path)
+                            {
+                                result.errors.push(crate::local::ScanError {
+                                    path: path.to_path_buf(),
+                                    message: format!("could not save local index: {error}"),
+                                });
+                                result.summary.errors = result.errors.len();
+                            }
+                            emit(
+                                &tx,
+                                RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::ScanFinished {
+                                    index_path,
+                                    result,
+                                })),
+                            );
+                        })
+                        .await
                         {
-                            result.errors.push(crate::local::ScanError {
-                                path: path.to_path_buf(),
-                                message: format!("could not save local index: {error}"),
-                            });
-                            result.summary.errors = result.errors.len();
+                            tracing::warn!(%error, "local root scan task failed");
                         }
-                        emit(
-                            &tx,
-                            RuntimeEvent::App(Msg::Local(crate::app::LocalMsg::ScanFinished {
-                                index_path,
-                                result,
-                            })),
-                        );
                     });
                 }
                 crate::app::LocalCmd::ReviewImport {
@@ -1213,9 +1290,15 @@ impl RuntimeHandles {
                 // Copy/tag/delete are blocking IO — keep them off the loop task. A `Save`
                 // reports back; `Discard`/`WipeTemp` are fire-and-forget.
                 let tx = self.worker_tx.clone();
-                tokio::task::spawn_blocking(move || {
-                    if let Some(event) = crate::recorder::job::run(job) {
-                        emit(&tx, RuntimeEvent::App(Msg::Recorder(event)));
+                tokio::spawn(async move {
+                    if let Err(error) = crate::util::blocking::spawn_io(move || {
+                        if let Some(event) = crate::recorder::job::run(job) {
+                            emit(&tx, RuntimeEvent::App(Msg::Recorder(event)));
+                        }
+                    })
+                    .await
+                    {
+                        tracing::warn!(%error, "recorder file task failed");
                     }
                 });
             }
@@ -1272,9 +1355,13 @@ impl RuntimeHandles {
                 tokio::spawn(async move {
                     let progress_tx = tx.clone();
                     crate::tools::ytdlp::clear_probe_cache();
-                    let outcome = crate::tools::ytdlp::check_and_update(&tools, &move |event| {
-                        emit(&progress_tx, RuntimeEvent::Tools(event));
-                    })
+                    let outcome = crate::tools::ytdlp::rollback_or_check_and_update(
+                        &tools,
+                        &move |event| {
+                            emit(&progress_tx, RuntimeEvent::Tools(event));
+                        },
+                        "playback self-heal",
+                    )
                     .await;
                     let updated = matches!(
                         outcome,

@@ -17,9 +17,13 @@
 //!   data, not payment ledgers.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -112,6 +116,36 @@ impl Snapshot {
         }
     }
 
+    fn storage_path(&self) -> Option<PathBuf> {
+        match self {
+            Snapshot::Library(_) => crate::library::library_path(),
+            Snapshot::Signals(_) => crate::signals::signals_path(),
+            Snapshot::Downloads(_) => crate::downloads::store_path(),
+            Snapshot::Config(_) => crate::config::config_path(),
+            Snapshot::Playlists(_) => crate::playlists::playlists_path(),
+            Snapshot::Station(_) => crate::station::station_path(),
+            Snapshot::RomanizedTitles(_) => crate::romanize::cache_path(),
+            Snapshot::Session(_) => crate::session::session_cache_path(),
+            #[cfg(test)]
+            Snapshot::Test { .. } => None,
+        }
+    }
+
+    fn to_json_bytes(&self) -> serde_json::Result<Vec<u8>> {
+        match self {
+            Snapshot::Library(s) => serde_json::to_vec_pretty(s),
+            Snapshot::Signals(s) => serde_json::to_vec_pretty(s),
+            Snapshot::Downloads(s) => serde_json::to_vec_pretty(s),
+            Snapshot::Config(s) => serde_json::to_vec_pretty(s),
+            Snapshot::Playlists(s) => serde_json::to_vec_pretty(s),
+            Snapshot::Station(s) => serde_json::to_vec_pretty(s),
+            Snapshot::RomanizedTitles(s) => serde_json::to_vec_pretty(s),
+            Snapshot::Session(s) => serde_json::to_vec_pretty(s),
+            #[cfg(test)]
+            Snapshot::Test { .. } => serde_json::to_vec(&serde_json::Value::Null),
+        }
+    }
+
     fn label(&self) -> &'static str {
         #[cfg(test)]
         if let Snapshot::Test { label, .. } = self {
@@ -139,6 +173,15 @@ fn debounce(kind: StoreKind) -> Duration {
 }
 
 type SharedPending = Arc<Mutex<HashMap<StoreKind, Snapshot>>>;
+
+const INTENT_JOURNAL_MAX_BYTES: u64 = 1024 * 1024;
+const INTENT_SNAPSHOT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+struct JournalIntent {
+    kind: StoreKind,
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
 
 enum PersistMsg {
     DeleteRomanizedTitles,
@@ -281,7 +324,8 @@ async fn run_actor(
                     lock(&pending).remove(&StoreKind::RomanizedTitles);
                     due.remove(&StoreKind::RomanizedTitles);
                     retries.remove(&StoreKind::RomanizedTitles);
-                    let result = tokio::task::spawn_blocking(
+                    clear_store_journal_for_kind(StoreKind::RomanizedTitles);
+                    let result = crate::util::blocking::spawn_io(
                         crate::romanize::RomanizeCache::delete_saved,
                     )
                     .await;
@@ -290,16 +334,19 @@ async fn run_actor(
                     }
                 }
                 Some(PersistMsg::Flush(ack)) => {
+                    journal_pending_snapshots(&pending).await;
                     let clean = write_stores(&pending, &mut due, &mut retries, &events, true).await;
                     let _ = ack.send(clean);
                 }
                 // All senders dropped (quit already flushed; this is a backstop).
                 None => {
+                    journal_pending_snapshots(&pending).await;
                     write_stores(&pending, &mut due, &mut retries, &events, true).await;
                     break;
                 }
             },
             _ = dirty.notified() => {
+                journal_pending_snapshots(&pending).await;
                 arm_due_for_pending(&pending, &mut due);
             },
             _ = tokio::time::sleep_until(next_due.unwrap_or_else(tokio::time::Instant::now)),
@@ -357,6 +404,207 @@ fn emit_persist_event(events: &EventSinkSlot, event: PersistEvent) {
     if let Some(emit) = sink {
         emit(event);
     }
+}
+
+async fn journal_pending_snapshots(pending: &SharedPending) {
+    let intents: Vec<JournalIntent> = {
+        let guard = lock(pending);
+        guard
+            .values()
+            .filter_map(|snapshot| {
+                let path = snapshot.storage_path()?;
+                let bytes = match snapshot.to_json_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        tracing::warn!(
+                            store = snapshot.kind().label(),
+                            error = %error,
+                            "failed to encode persistence intent"
+                        );
+                        return None;
+                    }
+                };
+                Some(JournalIntent {
+                    kind: snapshot.kind(),
+                    path,
+                    bytes,
+                })
+            })
+            .collect()
+    };
+    if intents.is_empty() {
+        return;
+    }
+    let result = crate::util::blocking::spawn_io(move || {
+        for intent in intents {
+            if let Err(error) = write_journal_intent(&intent) {
+                tracing::warn!(
+                    store = intent.kind.label(),
+                    error = %error,
+                    "failed to write persistence intent"
+                );
+            }
+        }
+    })
+    .await;
+    if let Err(error) = result {
+        tracing::warn!(error = %error, "persistence intent task failed");
+    }
+}
+
+fn write_journal_intent(intent: &JournalIntent) -> std::io::Result<()> {
+    let Some(journal_path) = intent_journal_path(&intent.path) else {
+        return Ok(());
+    };
+    let Some(sidecar_path) = intent_sidecar_path(&intent.path) else {
+        return Ok(());
+    };
+    crate::util::safe_fs::write_private_atomic(&sidecar_path, &intent.bytes)?;
+    let sidecar = sidecar_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| std::io::Error::other("invalid intent sidecar name"))?;
+    let record = serde_json::json!({
+        "v": 1,
+        "op": "replace",
+        "kind": intent.kind.label(),
+        "sidecar": sidecar,
+        "sha256": sha256_hex(&intent.bytes),
+    });
+    crate::util::safe_fs::append_private_jsonl_durable(&journal_path, &record.to_string())
+}
+
+fn clear_store_journal_for_kind(kind: StoreKind) {
+    let path = match kind {
+        StoreKind::Library => crate::library::library_path(),
+        StoreKind::Signals => crate::signals::signals_path(),
+        StoreKind::Downloads => crate::downloads::store_path(),
+        StoreKind::Config => crate::config::config_path(),
+        StoreKind::Playlists => crate::playlists::playlists_path(),
+        StoreKind::Station => crate::station::station_path(),
+        StoreKind::RomanizedTitles => crate::romanize::cache_path(),
+        StoreKind::Session => crate::session::session_cache_path(),
+    };
+    if let Some(path) = path {
+        clear_store_journal(&path);
+    }
+}
+
+fn clear_store_journal(path: &Path) {
+    for path in [intent_journal_path(path), intent_sidecar_path(path)]
+        .into_iter()
+        .flatten()
+    {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "failed to remove persistence intent"
+                );
+            }
+        }
+    }
+}
+
+pub(crate) fn replay_journaled_snapshot<T>(
+    kind: StoreKind,
+    path: &Path,
+    current: T,
+    max_bytes: u64,
+) -> T
+where
+    T: DeserializeOwned,
+{
+    let Some(journal_path) = intent_journal_path(path) else {
+        return current;
+    };
+    let Ok(bytes) =
+        crate::util::safe_fs::read_no_symlink_limited(&journal_path, INTENT_JOURNAL_MAX_BYTES)
+    else {
+        return current;
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return current;
+    };
+    for line in text.lines().rev() {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if record.get("v").and_then(|v| v.as_u64()) != Some(1)
+            || record.get("op").and_then(|v| v.as_str()) != Some("replace")
+            || record.get("kind").and_then(|v| v.as_str()) != Some(kind.label())
+        {
+            continue;
+        }
+        let Some(sidecar_name) = record.get("sidecar").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(expected_hash) = record.get("sha256").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(sidecar_path) = sibling_path_from_record(path, sidecar_name) else {
+            continue;
+        };
+        let cap = max_bytes.min(INTENT_SNAPSHOT_MAX_BYTES);
+        let Ok(snapshot_bytes) = crate::util::safe_fs::read_no_symlink_limited(&sidecar_path, cap)
+        else {
+            continue;
+        };
+        if sha256_hex(&snapshot_bytes) != expected_hash {
+            tracing::warn!(
+                store = kind.label(),
+                "discarding persistence intent with checksum mismatch"
+            );
+            continue;
+        }
+        match serde_json::from_slice::<T>(&snapshot_bytes) {
+            Ok(snapshot) => {
+                tracing::info!(store = kind.label(), "replayed pending persistence intent");
+                return snapshot;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    store = kind.label(),
+                    error = %error,
+                    "discarding invalid persistence intent"
+                );
+            }
+        }
+    }
+    current
+}
+
+fn intent_journal_path(path: &Path) -> Option<PathBuf> {
+    sibling_with_suffix(path, ".intent.jsonl")
+}
+
+fn intent_sidecar_path(path: &Path) -> Option<PathBuf> {
+    sibling_with_suffix(path, ".intent.latest.json")
+}
+
+fn sibling_with_suffix(path: &Path, suffix: &str) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    Some(path.with_file_name(format!("{name}{suffix}")))
+}
+
+fn sibling_path_from_record(path: &Path, name: &str) -> Option<PathBuf> {
+    let recorded = Path::new(name);
+    if recorded.file_name().and_then(|file| file.to_str()) != Some(name) {
+        return None;
+    }
+    path.parent().map(|parent| parent.join(name))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
 }
 
 fn requeue_failed_snapshot(
@@ -455,7 +703,7 @@ async fn write_stores(
         let Some(snapshot) = lock(pending).remove(&kind) else {
             continue;
         };
-        let result = tokio::task::spawn_blocking(move || {
+        let result = crate::util::blocking::spawn_io(move || {
             let outcome = snapshot.write();
             (outcome, snapshot)
         })
@@ -466,6 +714,9 @@ async fn write_stores(
             }
             Err(e) => tracing::warn!(error = %e, "persist write task failed"),
             Ok((Ok(()), snapshot)) => {
+                if let Some(path) = snapshot.storage_path() {
+                    clear_store_journal(&path);
+                }
                 retries.remove(&snapshot.kind());
             }
         }
@@ -478,6 +729,18 @@ mod tests {
     use super::*;
     use std::panic::AssertUnwindSafe;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde::{Deserialize, Serialize};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let mut bytes = [0u8; 8];
+        getrandom::fill(&mut bytes).unwrap();
+        let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        std::env::temp_dir().join(format!(
+            "yututui-persist-{name}-{}-{suffix}",
+            std::process::id()
+        ))
+    }
 
     #[test]
     fn debounce_windows_match_store_durability_policy() {
@@ -505,6 +768,34 @@ mod tests {
 
         let guard = lock(&pending);
         assert!(guard.is_empty());
+    }
+
+    #[test]
+    fn journaled_snapshot_replays_and_clears() {
+        #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+        struct Tiny {
+            value: u8,
+        }
+
+        let dir = temp_dir("intent");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tiny.json");
+        let bytes = serde_json::to_vec_pretty(&Tiny { value: 7 }).unwrap();
+
+        write_journal_intent(&JournalIntent {
+            kind: StoreKind::Config,
+            path: path.clone(),
+            bytes,
+        })
+        .unwrap();
+
+        let replayed = replay_journaled_snapshot(StoreKind::Config, &path, Tiny { value: 1 }, 1024);
+        assert_eq!(replayed, Tiny { value: 7 });
+
+        clear_store_journal(&path);
+        let replayed = replay_journaled_snapshot(StoreKind::Config, &path, Tiny { value: 1 }, 1024);
+        assert_eq!(replayed, Tiny { value: 1 });
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

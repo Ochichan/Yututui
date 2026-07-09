@@ -374,9 +374,9 @@ impl MediaSession {
 
     /// Live enable/disable (the Settings toggle). Disabling tears the OS session down
     /// (no ghost entry); re-enabling brings it back with the next published snapshot.
-    pub fn set_enabled(&mut self, enabled: bool) {
+    pub fn set_enabled(&mut self, enabled: bool) -> bool {
         if enabled == self.enabled {
-            return;
+            return false;
         }
         self.enabled = enabled;
         self.activated = false;
@@ -386,6 +386,7 @@ impl MediaSession {
         if !enabled {
             self.backend = None; // Drop tears down the platform session.
         }
+        true
     }
 
     /// Whether the run loop should drive [`Self::pump`] on a short interval.

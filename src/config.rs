@@ -22,6 +22,8 @@ use crate::streaming::StreamingConfig;
 use crate::t;
 use crate::theme::ThemeConfig;
 
+mod recovery;
+
 /// Clamp range for playback speed (matches the `>`/`<` controls and the settings slider).
 pub const SPEED_MIN: f64 = 0.5;
 pub const SPEED_MAX: f64 = 2.0;
@@ -804,41 +806,7 @@ impl Config {
     /// present-but-unloadable file is set aside *before* the defaults `save()` below can
     /// overwrite it — matching `safe_fs::load_json_or_default_limited`'s backup-aside policy.
     fn load_from(path: &std::path::Path) -> Self {
-        match safe_fs::read_no_symlink_limited(path, MAX_CONFIG_BYTES) {
-            Ok(bytes) => match String::from_utf8(bytes) {
-                Ok(text) => {
-                    // Fast path: schema unchanged since this file was written.
-                    if let Ok(cfg) = serde_json::from_str::<Config>(&text) {
-                        return cfg;
-                    }
-                    // Schema drifted (a renamed enum, retyped field, …): keep every field
-                    // that still fits instead of resetting the whole config to defaults.
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                        return safe_fs::recover_lenient::<Config>(value);
-                    }
-                    // Present but not JSON at all: preserve it rather than clobbering.
-                    let _ = safe_fs::backup_aside_secret(path);
-                }
-                // Present but not valid UTF-8: preserve rather than clobber.
-                Err(_) => {
-                    let _ = safe_fs::backup_aside_secret(path);
-                }
-            },
-            // Oversize (`read_no_symlink_limited` reports it as `InvalidData`): preserve.
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                let _ = safe_fs::backup_too_large_secret(path);
-            }
-            // Missing / permission / symlink: nothing safe to preserve. (First run is a
-            // missing file; a symlink is left intact because `save()` refuses to follow it.)
-            Err(_) => {}
-        }
-        // First run (or unreadable/corrupt, now backed up): migrate from the old app, persist.
-        let mut cfg = Config::default();
-        if let Some(old) = old_config_path() {
-            import_old_from(&old, &mut cfg);
-        }
-        let _ = cfg.save_to(path);
-        cfg
+        recovery::load_from_path(path)
     }
 
     /// Persist atomically (write a temp file, then rename over the target).

@@ -112,6 +112,12 @@ impl SessionCache {
         // holds is itself capped on restore.
         const MAX_BYTES: u64 = 32 * 1024 * 1024;
         let cache = safe_fs::load_json_or_default_limited::<SessionCache>(path, MAX_BYTES);
+        let cache = crate::persist::replay_journaled_snapshot(
+            crate::persist::StoreKind::Session,
+            path,
+            cache,
+            MAX_BYTES,
+        );
         if cache.schema_version != SESSION_SCHEMA_VERSION
             || cache.app_version != env!("CARGO_PKG_VERSION")
         {
@@ -130,7 +136,7 @@ impl SessionCache {
     }
 }
 
-fn session_cache_path() -> Option<PathBuf> {
+pub(crate) fn session_cache_path() -> Option<PathBuf> {
     crate::paths::cache_dir().map(|d| d.join(SESSION_CACHE_FILE))
 }
 

@@ -20,6 +20,7 @@ use crate::util::event_policy::{
 use crate::util::process::{self, ProcessProfile};
 
 mod engine;
+mod must_deliver;
 #[cfg(test)]
 mod parity_tests;
 
@@ -321,6 +322,7 @@ enum DaemonTelemetrySlot {
 struct DaemonEventSender {
     tx: mpsc::Sender<DaemonEvent>,
     telemetry: Arc<Mutex<LatestEventBuffer<DaemonTelemetrySlot, DaemonEvent>>>,
+    must_deliver_overflow: Arc<must_deliver::DaemonMustDeliverOverflow>,
 }
 
 impl DaemonEventSender {
@@ -328,6 +330,7 @@ impl DaemonEventSender {
         Self {
             tx,
             telemetry: Arc::new(Mutex::new(LatestEventBuffer::new(DAEMON_TELEMETRY_SLOTS))),
+            must_deliver_overflow: Arc::new(must_deliver::DaemonMustDeliverOverflow::new()),
         }
     }
 
@@ -345,16 +348,16 @@ fn emit_daemon_event(tx: &DaemonEventSender, event: DaemonEvent) -> bool {
     if matches!(policy, EventPolicy::CoalesceLatest { .. }) {
         return emit_daemon_coalesced(tx, event, event_kind, policy);
     }
-    emit_daemon_direct(&tx.tx, event, event_kind, policy)
+    emit_daemon_direct(tx, event, event_kind, policy)
 }
 
 fn emit_daemon_direct(
-    tx: &mpsc::Sender<DaemonEvent>,
+    tx: &DaemonEventSender,
     event: DaemonEvent,
     event_kind: &'static str,
     policy: EventPolicy,
 ) -> bool {
-    match tx.try_send(event) {
+    match tx.tx.try_send(event) {
         Ok(()) => true,
         Err(mpsc::error::TrySendError::Full(event))
             if matches!(policy, EventPolicy::MustDeliver { .. }) =>
@@ -367,7 +370,8 @@ fn emit_daemon_direct(
                 drop_reason = "must_deliver_delayed",
                 "daemon owner event queue full; deferring must-deliver event"
             );
-            defer_daemon_must_deliver(tx.clone(), event, event_kind, policy);
+            tx.must_deliver_overflow
+                .push(tx.tx.clone(), event, event_kind, policy);
             true
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
@@ -392,7 +396,7 @@ fn emit_daemon_coalesced(
     policy: EventPolicy,
 ) -> bool {
     let Some(slot) = event.telemetry_slot() else {
-        return emit_daemon_direct(&tx.tx, event, event_kind, policy);
+        return emit_daemon_direct(tx, event, event_kind, policy);
     };
     let insert = tx
         .telemetry
@@ -415,7 +419,7 @@ fn emit_daemon_coalesced(
     }
     if insert.should_wake {
         emit_daemon_direct(
-            &tx.tx,
+            tx,
             DaemonEvent::TelemetryWake,
             DaemonEvent::TelemetryWake.kind(),
             DaemonEvent::TelemetryWake.policy(),
@@ -432,39 +436,6 @@ fn daemon_full_queue_reason(policy: EventPolicy) -> &'static str {
         EventPolicy::DropIfStale { .. } => "stale_or_full",
         EventPolicy::CoalesceLatest { .. } => "coalesced_wake_full",
         EventPolicy::MustDeliver { .. } => "must_deliver_failed",
-    }
-}
-
-fn defer_daemon_must_deliver(
-    tx: mpsc::Sender<DaemonEvent>,
-    event: DaemonEvent,
-    event_kind: &'static str,
-    policy: EventPolicy,
-) {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(async move {
-            if tx.send(event).await.is_err() {
-                tracing::error!(
-                    event_policy = policy.name(),
-                    event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
-                    event_kind,
-                    drop_reason = "must_deliver_failed",
-                    "daemon owner event queue closed before must-deliver event was accepted"
-                );
-            }
-        });
-    } else {
-        std::thread::spawn(move || {
-            if tx.blocking_send(event).is_err() {
-                tracing::error!(
-                    event_policy = policy.name(),
-                    event_lane = policy.lane().map(Lane::name).unwrap_or("none"),
-                    event_kind,
-                    drop_reason = "must_deliver_failed",
-                    "daemon owner event queue closed before must-deliver event was accepted"
-                );
-            }
-        });
     }
 }
 
@@ -870,7 +841,12 @@ fn dispatch_engine_effects(
                 let tx = event_tx.clone();
                 tokio::spawn(async move {
                     crate::tools::ytdlp::clear_probe_cache();
-                    let outcome = crate::tools::ytdlp::check_and_update(&tools, &|_| {}).await;
+                    let outcome = crate::tools::ytdlp::rollback_or_check_and_update(
+                        &tools,
+                        &|_| {},
+                        "daemon playback self-heal",
+                    )
+                    .await;
                     let updated = matches!(
                         outcome,
                         crate::tools::ytdlp::UpdateOutcome::Installed { .. }
