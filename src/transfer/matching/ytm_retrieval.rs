@@ -381,6 +381,7 @@ async fn shared_video_songs(
 }
 
 const TRANSFER_PREFLIGHT_TOP_N: usize = 2;
+const TRANSFER_EXHAUSTIVE_PREFLIGHT_TOP_N: usize = 5;
 
 async fn preflight_ytm_candidates_shared(
     api: &YtMusicApi,
@@ -404,7 +405,11 @@ async fn preflight_ytm_candidates_shared(
     ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut lookups = 0;
-    for (_, idx) in ranked.into_iter().take(TRANSFER_PREFLIGHT_TOP_N) {
+    let preflight_top_n = match cfg.policy {
+        MatchPolicy::Exhaustive => TRANSFER_EXHAUSTIVE_PREFLIGHT_TOP_N,
+        _ => TRANSFER_PREFLIGHT_TOP_N,
+    };
+    for (_, idx) in ranked.into_iter().take(preflight_top_n) {
         let key = candidates[idx].key.clone();
         let meta = match state.video_memo.lock().await.get(&key).cloned() {
             Some(hit) => hit,
@@ -522,6 +527,9 @@ fn reject_preflight(candidate: &mut MatchCandidate, reason: &str) {
 }
 
 fn should_stop_ytm_search(outcome: &MatchOutcome, cfg: &MatchConfig) -> bool {
+    if cfg.policy == MatchPolicy::Exhaustive {
+        return false;
+    }
     match outcome {
         MatchOutcome::Matched {
             score_breakdown: Some(breakdown),
@@ -535,6 +543,7 @@ fn should_stop_ytm_search(outcome: &MatchOutcome, cfg: &MatchConfig) -> bool {
                 MatchPolicy::Strict => 0.90,
                 MatchPolicy::Balanced => cfg.accept.max(0.84),
                 MatchPolicy::Aggressive => cfg.accept,
+                MatchPolicy::Exhaustive => unreachable!("handled above"),
             };
             *total >= target && quality_source
         }

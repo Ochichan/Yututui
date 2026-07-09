@@ -167,6 +167,7 @@ impl App {
                 }
             },
             allow_user_videos: false,
+            cache_mode: crate::transfer::TransferCacheMode::Use,
             rematch: false,
         };
         self.status.text = if crate::i18n::is_korean() {

@@ -106,6 +106,9 @@ pub struct JobSpec {
     /// gates otherwise agree. Off by default; such rows normally stay review-only.
     #[serde(default)]
     pub allow_user_videos: bool,
+    /// Persistent transfer cache behavior for Spotify -> YouTube Music matching.
+    #[serde(default)]
+    pub cache_mode: TransferCacheMode,
     /// Ignore checkpointed outcomes and match afresh (also disables file fast-path ids).
     pub rematch: bool,
 }
@@ -117,6 +120,7 @@ pub enum MatchPolicy {
     Strict,
     Balanced,
     Aggressive,
+    Exhaustive,
 }
 
 impl std::str::FromStr for MatchPolicy {
@@ -127,8 +131,43 @@ impl std::str::FromStr for MatchPolicy {
             "strict" => Ok(Self::Strict),
             "balanced" => Ok(Self::Balanced),
             "aggressive" => Ok(Self::Aggressive),
+            "exhaustive" => Ok(Self::Exhaustive),
             other => Err(format!(
-                "--policy expects `strict`, `balanced`, or `aggressive` (got `{other}`)"
+                "--policy expects `strict`, `balanced`, `aggressive`, or `exhaustive` (got `{other}`)"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferCacheMode {
+    #[default]
+    Use,
+    Refresh,
+    Off,
+}
+
+impl TransferCacheMode {
+    pub fn read_enabled(self) -> bool {
+        matches!(self, Self::Use)
+    }
+
+    pub fn write_enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+impl std::str::FromStr for TransferCacheMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "use" => Ok(Self::Use),
+            "refresh" => Ok(Self::Refresh),
+            "off" => Ok(Self::Off),
+            other => Err(format!(
+                "--cache expects `use`, `refresh`, or `off` (got `{other}`)"
             )),
         }
     }

@@ -31,6 +31,7 @@ pub(super) async fn prefill_album_matches(
     cfg: &MatchConfig,
     search_config: &SearchConfig,
     cache: &mut TransferMatchCache,
+    cache_read_enabled: bool,
     pace: &mut Pacing,
 ) -> anyhow::Result<bool> {
     let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
@@ -49,7 +50,7 @@ pub(super) async fn prefill_album_matches(
             continue;
         }
         cp.match_stats.album_groups_attempted += 1;
-        if let Some(album) = cache.lookup_album(&key).cloned() {
+        if cache_read_enabled && let Some(album) = cache.lookup_album(&key).cloned() {
             let matched = apply_cached_album_matches(cp, cfg, cache, &album, &indexes);
             if matched > 0 {
                 cp.match_stats.album_groups_matched += 1;

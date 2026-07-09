@@ -336,6 +336,7 @@ fn accept_margin_for_policy(policy: MatchPolicy) -> f32 {
         MatchPolicy::Strict => MatchConfig::default().accept_margin,
         MatchPolicy::Balanced => 0.03,
         MatchPolicy::Aggressive => 0.0,
+        MatchPolicy::Exhaustive => MatchConfig::default().accept_margin,
     }
 }
 
@@ -380,20 +381,33 @@ async fn match_stage(
     let mut pace = Pacing::ytm_default();
     let search_config = ctx.search_config.clone();
     let market = ctx.market.clone();
-    let mut match_cache = (!to_spotify).then(TransferMatchCache::load);
+    let cache_read_enabled = !to_spotify && !cp.spec.rematch && cp.spec.cache_mode.read_enabled();
+    let cache_write_enabled = !to_spotify && cp.spec.cache_mode.write_enabled();
+    let mut match_cache = (!to_spotify).then(|| {
+        if cache_read_enabled || cache_write_enabled {
+            TransferMatchCache::load()
+        } else {
+            TransferMatchCache::default()
+        }
+    });
     let mut cache_dirty = false;
-    if !to_spotify
-        && !cp.spec.rematch
-        && let Some(cache) = match_cache.as_ref()
-    {
+    if cache_read_enabled && let Some(cache) = match_cache.as_ref() {
         cache_dirty |= apply_persistent_cache(cp, cache);
     }
     if !to_spotify && cp.tracks.iter().any(|track| track.outcome.is_none()) {
         let ytm = ctx.ytm()?;
         if let Some(cache) = match_cache.as_mut() {
-            cache_dirty |= prefill_album_matches(cp, ytm, &cfg, &search_config, cache, &mut pace)
-                .await
-                .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
+            cache_dirty |= prefill_album_matches(
+                cp,
+                ytm,
+                &cfg,
+                &search_config,
+                cache,
+                cache_read_enabled,
+                &mut pace,
+            )
+            .await
+            .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
         }
     }
     if to_spotify {
@@ -464,7 +478,8 @@ async fn match_stage(
             let outcome = match result {
                 Ok(outcome) => {
                     consecutive_failures = 0;
-                    if let Some(cache) = match_cache.as_mut()
+                    if cache_write_enabled
+                        && let Some(cache) = match_cache.as_mut()
                         && matches!(outcome, MatchOutcome::Matched { .. })
                     {
                         cache.save_match(&input, &outcome);
@@ -512,7 +527,10 @@ async fn match_stage(
         }
         merge_ytm_diagnostics(&mut cp.match_stats, shared_state.diagnostics().await);
     }
-    if cache_dirty && let Some(cache) = match_cache.as_ref() {
+    if cache_dirty
+        && cache_write_enabled
+        && let Some(cache) = match_cache.as_ref()
+    {
         cache.save();
     }
     cp.save().map_err(|e| JobError::fatal(e.into()))?;

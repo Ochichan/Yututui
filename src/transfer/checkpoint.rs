@@ -374,6 +374,7 @@ mod tests {
             auto_accept_ambiguous_min_score: None,
             match_policy: crate::transfer::MatchPolicy::Strict,
             allow_user_videos: false,
+            cache_mode: crate::transfer::TransferCacheMode::Use,
             rematch: false,
         }
     }
@@ -458,6 +459,23 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn job_spec_defaults_new_matching_fields_for_old_json() {
+        let json = r#"{
+            "source": {"kind": "spotify_liked"},
+            "dest": {"kind": "ytm_likes"},
+            "dry_run": false,
+            "min_score": 0.8,
+            "take_best": false,
+            "rematch": false
+        }"#;
+        let spec: JobSpec = serde_json::from_str(json).expect("old job spec should deserialize");
+
+        assert_eq!(spec.match_policy, crate::transfer::MatchPolicy::Strict);
+        assert_eq!(spec.cache_mode, crate::transfer::TransferCacheMode::Use);
+        assert!(!spec.allow_user_videos);
     }
 
     #[test]

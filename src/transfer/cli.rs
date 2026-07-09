@@ -14,8 +14,8 @@ use std::time::Duration;
 use super::checkpoint::{Checkpoint, ReviewDecision, TransferReport};
 use super::session::{ImportSession, ImportSessionRowStatus};
 use super::{
-    FileFormat, JobCtx, JobError, JobSpec, MatchPolicy, Stage, TransferDest, TransferProgress,
-    TransferSource, new_job_id, run_job,
+    FileFormat, JobCtx, JobError, JobSpec, MatchPolicy, Stage, TransferCacheMode, TransferDest,
+    TransferProgress, TransferSource, new_job_id, run_job,
 };
 use crate::config::Config;
 use crate::spotify::auth::{self, SpotifyToken};
@@ -50,7 +50,8 @@ Commands:
       --dry-run                    Fetch + match only; `resume` performs the writes
       --yes                        Skip the confirmation gate
       --min-score 0.80             Match accept threshold (0..1)
-      --policy strict|balanced|aggressive  Match preset for speed/recall tradeoff
+      --policy strict|balanced|aggressive|exhaustive  Match preset for speed/recall tradeoff
+      --cache use|refresh|off     Persistent transfer cache behavior
       --allow-user-videos          Let generic YouTube uploads auto-match when safe
       --take-best                  Accept the best ambiguous candidate too
       --rematch                    Ignore cached matches / file fast-path ids
@@ -176,6 +177,7 @@ struct CommonFlags {
     yes: bool,
     min_score: f32,
     match_policy: Option<MatchPolicy>,
+    cache_mode: TransferCacheMode,
     allow_user_videos: bool,
     take_best: bool,
     rematch: bool,
@@ -187,6 +189,7 @@ fn parse_common(args: &mut Vec<&str>) -> Result<CommonFlags, String> {
         yes: false,
         min_score: 0.80,
         match_policy: None,
+        cache_mode: TransferCacheMode::Use,
         allow_user_videos: false,
         take_best: false,
         rematch: false,
@@ -203,6 +206,10 @@ fn parse_common(args: &mut Vec<&str>) -> Result<CommonFlags, String> {
             "--policy" => {
                 let v = it.next().ok_or("--policy needs a value")?;
                 flags.match_policy = Some(v.parse()?);
+            }
+            "--cache" => {
+                let v = it.next().ok_or("--cache needs a value")?;
+                flags.cache_mode = v.parse()?;
             }
             "--min-score" => {
                 let v = it.next().ok_or("--min-score needs a value")?;
@@ -295,6 +302,7 @@ fn parse_import(args: &[&str]) -> Result<(JobSpec, bool), String> {
             auto_accept_ambiguous_min_score: None,
             match_policy: flags.match_policy.unwrap_or(MatchPolicy::Balanced),
             allow_user_videos: flags.allow_user_videos,
+            cache_mode: flags.cache_mode,
             rematch: flags.rematch,
         },
         flags.yes,
@@ -365,6 +373,7 @@ fn parse_export(args: &[&str]) -> Result<(JobSpec, bool), String> {
             auto_accept_ambiguous_min_score: None,
             match_policy: flags.match_policy.unwrap_or(MatchPolicy::Strict),
             allow_user_videos: flags.allow_user_videos,
+            cache_mode: flags.cache_mode,
             rematch: flags.rematch,
         },
         flags.yes,
@@ -1149,6 +1158,7 @@ mod tests {
             auto_accept_ambiguous_min_score: None,
             match_policy: MatchPolicy::Strict,
             allow_user_videos: false,
+            cache_mode: TransferCacheMode::Use,
             rematch: false,
         }
     }
@@ -1198,7 +1208,9 @@ mod tests {
             "--min-score",
             "0.65",
             "--policy",
-            "aggressive",
+            "exhaustive",
+            "--cache",
+            "refresh",
             "--allow-user-videos",
             "--take-best",
             "--rematch",
@@ -1210,7 +1222,8 @@ mod tests {
         assert!(flags.dry_run);
         assert!(flags.yes);
         assert_eq!(flags.min_score, 0.65);
-        assert_eq!(flags.match_policy, Some(MatchPolicy::Aggressive));
+        assert_eq!(flags.match_policy, Some(MatchPolicy::Exhaustive));
+        assert_eq!(flags.cache_mode, TransferCacheMode::Refresh);
         assert!(flags.allow_user_videos);
         assert!(flags.take_best);
         assert!(flags.rematch);
@@ -1230,6 +1243,12 @@ mod tests {
 
         let mut bad_policy = vec!["--policy", "reckless"];
         assert!(parse_common_err(&mut bad_policy).contains("strict"));
+
+        let mut missing_cache = vec!["--cache"];
+        assert!(parse_common_err(&mut missing_cache).contains("needs a value"));
+
+        let mut bad_cache = vec!["--cache", "stale"];
+        assert!(parse_common_err(&mut bad_cache).contains("use"));
     }
 
     #[test]
@@ -1241,6 +1260,8 @@ mod tests {
             "--min-score",
             "0.72",
             "--take-best",
+            "--cache",
+            "off",
             "--rematch",
         ])
         .expect("liked import");
@@ -1255,6 +1276,7 @@ mod tests {
         assert_eq!(spec.min_score, 0.72);
         assert_eq!(spec.match_policy, MatchPolicy::Balanced);
         assert!(!spec.allow_user_videos);
+        assert_eq!(spec.cache_mode, TransferCacheMode::Off);
         assert!(spec.take_best);
         assert!(spec.rematch);
     }

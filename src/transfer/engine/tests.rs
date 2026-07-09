@@ -12,6 +12,7 @@ fn spec(dest: TransferDest) -> JobSpec {
         auto_accept_ambiguous_min_score: None,
         match_policy: MatchPolicy::Strict,
         allow_user_videos: false,
+        cache_mode: crate::transfer::TransferCacheMode::Use,
         rematch: false,
     }
 }
@@ -268,6 +269,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
         auto_accept_ambiguous_min_score: None,
         match_policy: MatchPolicy::Strict,
         allow_user_videos: false,
+        cache_mode: crate::transfer::TransferCacheMode::Use,
         rematch: false,
     };
     let mut ctx = JobCtx {
@@ -315,6 +317,7 @@ async fn fetch_source_caps_large_file_inputs_before_checkpointing() {
         auto_accept_ambiguous_min_score: None,
         match_policy: MatchPolicy::Strict,
         allow_user_videos: false,
+        cache_mode: crate::transfer::TransferCacheMode::Use,
         rematch: false,
     };
     let mut ctx = JobCtx {
@@ -1124,6 +1127,7 @@ async fn file_export_rejects_sources_that_cannot_be_exported_without_clients() {
         auto_accept_ambiguous_min_score: None,
         match_policy: MatchPolicy::Strict,
         allow_user_videos: false,
+        cache_mode: crate::transfer::TransferCacheMode::Use,
         rematch: false,
     };
 
