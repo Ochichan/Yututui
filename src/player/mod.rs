@@ -5,6 +5,7 @@
 //! scope for the whole session: dropping it kills mpv. See [`lifetime`] for the full
 //! no-orphan story.
 
+pub mod backend;
 pub mod ipc;
 pub mod lifetime;
 pub mod mpv;
@@ -317,12 +318,13 @@ pub async fn spawn<F>(
     data_dir: Option<PathBuf>,
     cookies_file: Option<PathBuf>,
     gapless: bool,
+    audio: crate::config::AudioRuntimeConfig,
 ) -> Result<(PlayerHandle, Mpv)>
 where
     F: Fn(PlayerEvent) + Send + Sync + 'static,
 {
     let ipc_path = mpv::ipc_path()?;
-    let child = mpv::spawn(&ipc_path, cookies_file.as_deref(), gapless)?;
+    let child = mpv::spawn(&ipc_path, cookies_file.as_deref(), gapless, &audio.mpv)?;
     let mpv_pid = child.id().context("mpv exited before reporting a pid")?;
 
     lifetime::set_mpv_pid(mpv_pid);

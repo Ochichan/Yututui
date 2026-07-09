@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
 use crate::config::{
-    AnimationsConfig, Config, LocalRootConfig, SpotifyImportMode, default_cookies_file,
-    default_download_dir,
+    AnimationsConfig, Config, LocalRootConfig, MPV_CACHE_BACK_DEFAULT, MPV_CACHE_FORWARD_DEFAULT,
+    SpotifyImportMode, default_cookies_file, default_download_dir,
 };
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
@@ -133,6 +133,11 @@ impl SettingsTab {
                     // `SettingsState::fields` when not in radio mode. Keep it last in the
                     // "Now Playing" section so the static count below stays partition-correct.
                     Field::RadioRecording,
+                    Field::AudioBackend,
+                    Field::AudioMpvOutput,
+                    Field::AudioMpvDevice,
+                    Field::AudioMpvCacheForward,
+                    Field::AudioMpvCacheBack,
                     Field::EqPreset,
                 ];
                 f.extend((0..eq::BANDS).map(Field::Band));
@@ -219,6 +224,7 @@ impl SettingsTab {
                 // in radio mode, `SettingsState::sections` decrements this back to 7 in
                 // lockstep with `SettingsState::fields` hiding `RadioRecording`.
                 (t!("Now Playing", "현재 재생"), 8),
+                (t!("Audio backend", "오디오 백엔드"), 5),
                 (t!("EQ", "EQ"), eq::BANDS + 2),
             ],
             SettingsTab::Graphics => vec![
@@ -297,6 +303,12 @@ pub enum Field {
     /// Opens the radio-recording settings popup. Radio-mode only — hidden outside it by
     /// [`SettingsState::fields`]; lives in the "Now Playing" section.
     RadioRecording,
+    /// The selected audio backend. v1 exposes mpv as the only backend.
+    AudioBackend,
+    AudioMpvOutput,
+    AudioMpvDevice,
+    AudioMpvCacheForward,
+    AudioMpvCacheBack,
     // EQ
     EqPreset,
     Band(usize),
@@ -520,6 +532,10 @@ impl Field {
             Field::CookiesFile
             | Field::DownloadDir
             | Field::LocalMusicRoot
+            | Field::AudioMpvOutput
+            | Field::AudioMpvDevice
+            | Field::AudioMpvCacheForward
+            | Field::AudioMpvCacheBack
             | Field::AudiusAppName
             | Field::JamendoClientId
             | Field::ApiKey
@@ -590,6 +606,7 @@ impl Field {
             | Field::ThemePreset
             | Field::CuratingMode
             | Field::DjGemLanguage
+            | Field::AudioBackend
             | Field::VideoLayout
             | Field::SpotifyImportMode
             | Field::StreamingMode => FieldKind::Select,
@@ -686,6 +703,15 @@ impl Field {
             }
             Field::VideoLayout => t!("Video window", "영상 창").to_owned(),
             Field::RadioRecording => t!("Radio recording", "라디오 녹음").to_owned(),
+            Field::AudioBackend => t!("Backend (mpv)", "백엔드 (mpv)").to_owned(),
+            Field::AudioMpvOutput => {
+                t!("mpv output (next launch)", "mpv 출력 (재시작 후 적용)").to_owned()
+            }
+            Field::AudioMpvDevice => {
+                t!("mpv device (next launch)", "mpv 장치 (재시작 후 적용)").to_owned()
+            }
+            Field::AudioMpvCacheForward => t!("Cache forward", "앞쪽 캐시").to_owned(),
+            Field::AudioMpvCacheBack => t!("Cache back", "뒤쪽 캐시").to_owned(),
             Field::AutoplayStreaming => t!("Autoplay", "자동재생").to_owned(),
             Field::CuratingMode => t!("Curating mode", "큐레이팅 방식").to_owned(),
             Field::StreamingMode => t!("Curating style", "큐레이팅 스타일").to_owned(),
@@ -803,6 +829,11 @@ pub struct SettingsDraft {
     pub auto_continue_videos: bool,
     /// Which layout the `v` video overlay opens in by default.
     pub video_layout: crate::config::VideoOverlay,
+    pub audio_backend: crate::config::AudioBackend,
+    pub audio_mpv_output: String,
+    pub audio_mpv_device: String,
+    pub audio_mpv_cache_forward: String,
+    pub audio_mpv_cache_back: String,
     pub autoplay_streaming: bool,
     /// Who curates the autoplay stream (YT Native vs DJ Gem); persists to `streaming.ai.enabled`.
     pub curating_mode: CuratingMode,
@@ -946,6 +977,15 @@ impl SettingsDraft {
             Field::MediaControls => toggle_str(self.media_controls),
             Field::AutoContinueVideos => toggle_str(self.auto_continue_videos),
             Field::VideoLayout => self.video_layout.label().to_owned(),
+            Field::AudioBackend => self.audio_backend.id().to_owned(),
+            Field::AudioMpvOutput => audio_optional_display(&self.audio_mpv_output),
+            Field::AudioMpvDevice => audio_optional_display(&self.audio_mpv_device),
+            Field::AudioMpvCacheForward => {
+                cache_display(&self.audio_mpv_cache_forward, MPV_CACHE_FORWARD_DEFAULT)
+            }
+            Field::AudioMpvCacheBack => {
+                cache_display(&self.audio_mpv_cache_back, MPV_CACHE_BACK_DEFAULT)
+            }
             Field::AutoplayStreaming => toggle_str(self.autoplay_streaming),
             Field::CuratingMode => self.curating_mode.label().to_owned(),
             Field::StreamingMode => self.streaming_mode.label().to_owned(),
@@ -1094,6 +1134,10 @@ impl SettingsDraft {
             Field::CookiesFile => Some(&self.cookies_file),
             Field::DownloadDir => Some(&self.download_dir),
             Field::LocalMusicRoot => Some(&self.local_music_root),
+            Field::AudioMpvOutput => Some(&self.audio_mpv_output),
+            Field::AudioMpvDevice => Some(&self.audio_mpv_device),
+            Field::AudioMpvCacheForward => Some(&self.audio_mpv_cache_forward),
+            Field::AudioMpvCacheBack => Some(&self.audio_mpv_cache_back),
             Field::AudiusAppName => self.search.audius_app_name.as_deref(),
             Field::JamendoClientId => self.search.jamendo_client_id.as_deref(),
             Field::ApiKey => Some(&self.gemini_api_key),
@@ -1135,6 +1179,13 @@ impl SettingsDraft {
         cfg.media_controls = Some(self.media_controls);
         cfg.auto_continue_videos = Some(self.auto_continue_videos);
         cfg.video_layout = self.video_layout;
+        cfg.audio.backend = self.audio_backend;
+        cfg.audio.mpv.output = blank_to_none(&self.audio_mpv_output);
+        cfg.audio.mpv.device = blank_to_none(&self.audio_mpv_device);
+        cfg.audio.mpv.cache_forward = blank_to_none(&self.audio_mpv_cache_forward)
+            .unwrap_or_else(|| MPV_CACHE_FORWARD_DEFAULT.to_owned());
+        cfg.audio.mpv.cache_back = blank_to_none(&self.audio_mpv_cache_back)
+            .unwrap_or_else(|| MPV_CACHE_BACK_DEFAULT.to_owned());
         // Radio recording. Keep max strictly above min so the two sliders can't invert.
         cfg.recording.mode = self.recording_mode;
         cfg.recording.min_duration_secs = self.recording_min_seconds;
@@ -1285,6 +1336,14 @@ fn toggle_str(on: bool) -> String {
     }
 }
 
+fn audio_optional_display(value: &str) -> String {
+    blank_to_none(value).unwrap_or_else(|| "auto".to_owned())
+}
+
+fn cache_display(value: &str, fallback: &str) -> String {
+    blank_to_none(value).unwrap_or_else(|| fallback.to_owned())
+}
+
 pub(crate) fn blank_to_none(s: &str) -> Option<String> {
     let t = s.trim();
     if t.is_empty() {
@@ -1345,6 +1404,11 @@ mod tests {
             media_controls: true,
             auto_continue_videos: false,
             video_layout: crate::config::VideoOverlay::Compact,
+            audio_backend: crate::config::AudioBackend::Mpv,
+            audio_mpv_output: String::new(),
+            audio_mpv_device: String::new(),
+            audio_mpv_cache_forward: MPV_CACHE_FORWARD_DEFAULT.to_owned(),
+            audio_mpv_cache_back: MPV_CACHE_BACK_DEFAULT.to_owned(),
             autoplay_streaming: false,
             curating_mode: CuratingMode::DjGem,
             streaming_mode: StreamingMode::Balanced,
@@ -1538,8 +1602,8 @@ mod tests {
     fn playback_tab_groups_now_playing_and_eq() {
         let f = SettingsTab::Playback.fields();
         // Speed + SeekInterval + WheelVolume + Gapless + MediaControls + AutoContinueVideos +
-        // VideoLayout + RadioRecording (radio-only), then EqPreset + ten bands + Normalize.
-        assert_eq!(f.len(), 8 + 1 + eq::BANDS + 1);
+        // VideoLayout + RadioRecording (radio-only), then audio backend, then EQ.
+        assert_eq!(f.len(), 8 + 5 + 1 + eq::BANDS + 1);
         assert_eq!(f[0], Field::Speed);
         assert_eq!(f[1], Field::SeekInterval);
         assert_eq!(f[2], Field::MouseWheelVolume);
@@ -1548,10 +1612,14 @@ mod tests {
         assert_eq!(f[5], Field::AutoContinueVideos);
         assert_eq!(f[6], Field::VideoLayout);
         assert_eq!(f[7], Field::RadioRecording);
-        assert_eq!(f[8], Field::EqPreset);
-        assert_eq!(f[8 + eq::BANDS + 1], Field::Normalize);
+        assert_eq!(f[8], Field::AudioBackend);
+        assert_eq!(f[9], Field::AudioMpvOutput);
+        assert_eq!(f[12], Field::AudioMpvCacheBack);
+        assert_eq!(f[13], Field::EqPreset);
+        assert_eq!(f[13 + eq::BANDS + 1], Field::Normalize);
         assert_eq!(Field::MouseWheelVolume.kind(), FieldKind::Toggle);
         assert_eq!(base_draft().value_display(Field::MouseWheelVolume), "[x]");
+        assert_eq!(base_draft().value_display(Field::AudioBackend), "mpv");
         let total: usize = SettingsTab::Playback
             .sections()
             .iter()
@@ -1770,6 +1838,11 @@ mod tests {
             media_controls: false,
             auto_continue_videos: true,
             video_layout: crate::config::VideoOverlay::Fullscreen,
+            audio_backend: crate::config::AudioBackend::Mpv,
+            audio_mpv_output: "pipewire".to_owned(),
+            audio_mpv_device: "alsa/default".to_owned(),
+            audio_mpv_cache_forward: "64MiB".to_owned(),
+            audio_mpv_cache_back: "16MiB".to_owned(),
             autoplay_streaming: true,
             curating_mode: CuratingMode::YtNative,
             streaming_mode: StreamingMode::Discovery,
@@ -1858,6 +1931,11 @@ mod tests {
         assert_eq!(cfg.media_controls, Some(false));
         assert_eq!(cfg.auto_continue_videos, Some(true));
         assert_eq!(cfg.video_layout, crate::config::VideoOverlay::Fullscreen);
+        assert_eq!(cfg.audio.backend, crate::config::AudioBackend::Mpv);
+        assert_eq!(cfg.audio.mpv.output.as_deref(), Some("pipewire"));
+        assert_eq!(cfg.audio.mpv.device.as_deref(), Some("alsa/default"));
+        assert_eq!(cfg.audio.mpv.cache_forward, "64MiB");
+        assert_eq!(cfg.audio.mpv.cache_back, "16MiB");
         assert_eq!(cfg.autoplay_streaming, Some(true));
         assert_eq!(cfg.streaming.mode, StreamingMode::Discovery);
         // Curating mode = YT Native → the AI rerank flag persists as false.

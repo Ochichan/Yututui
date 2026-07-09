@@ -62,6 +62,13 @@ function baseModel(): SettingsModelV8 {
     },
     ui: { language: 'en', mouse: true, album_art: true, romanized_titles: false },
     storage: { download_dir: '~/Music/yututui', cookies_file: null, download_concurrency: 3 },
+    audio: {
+      backend: 'mpv',
+      mpv_output: null,
+      mpv_device: null,
+      mpv_cache_forward: '32MiB',
+      mpv_cache_back: '8MiB',
+    },
     animations: defaultAnimations(),
     theme: { preset: 'Default', roles: {}, overrides: {}, background_none: false, retro: false, presets: [] },
     keymap: defaultKeymap(),
@@ -179,6 +186,24 @@ describe('SettingsStore', () => {
     expect(store.dirty).toBe(true);
   });
 
+  it('exposes the audio block and overlays mpv edits optimistically', () => {
+    const t = new MockTransport();
+    const store = new SettingsStore(new Client(t));
+    push(t, baseModel());
+    expect(store.audio?.backend).toBe('mpv');
+    expect(store.audio?.mpv_output).toBeNull();
+
+    store.apply('audio', 'mpv_output', 'pipewire');
+    expect(t.sent.at(-1)).toMatchObject({
+      kind: 'cmd',
+      name: 'apply',
+      payload: { change: { group: 'audio', field: 'mpv_output', value: 'pipewire' } },
+    });
+    expect(store.audio?.mpv_output).toBe('pipewire');
+    expect(store.model?.audio.mpv_output).toBeNull();
+    expect(store.dirty).toBe(true);
+  });
+
   it('setGeminiKey is write-only; resetAll drops the overlay', () => {
     const t = new MockTransport();
     const store = new SettingsStore(new Client(t));
@@ -289,6 +314,18 @@ describe('demo core settings', () => {
     });
     vi.advanceTimersByTime(20);
     expect(lastSettings(frames).animations.master).toBe(true);
+  });
+
+  it('apply mutates an audio setting and re-pushes', () => {
+    const { t, frames } = boot();
+    t.send({
+      v: 1,
+      kind: 'cmd',
+      name: 'apply',
+      payload: { change: { group: 'audio', field: 'mpv_device', value: 'alsa/default' } },
+    });
+    vi.advanceTimersByTime(20);
+    expect(lastSettings(frames).audio.mpv_device).toBe('alsa/default');
   });
 
   it('reset_all_settings restores the defaults', () => {

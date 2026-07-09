@@ -22,8 +22,13 @@ use crate::streaming::StreamingConfig;
 use crate::t;
 use crate::theme::ThemeConfig;
 
+mod audio;
 mod recovery;
 mod spotify;
+pub use audio::{
+    AudioBackend, AudioConfig, AudioRuntimeConfig, MPV_CACHE_BACK_DEFAULT,
+    MPV_CACHE_FORWARD_DEFAULT, MpvAudioConfig, MpvAudioRuntimeConfig,
+};
 pub use spotify::SpotifyImportMode;
 
 /// Clamp range for playback speed (matches the `>`/`<` controls and the settings slider).
@@ -616,6 +621,11 @@ pub struct Config {
     /// Managed yt-dlp + binary-path overrides. See [`ToolsConfig`] and [`crate::tools`].
     pub tools: ToolsConfig,
 
+    // Audio backend ------------------------------------------------------------------
+    /// First-class audio backend settings. The only supported backend is mpv; this group
+    /// makes its output/device/cache policy explicit instead of relying only on escape hatches.
+    pub audio: AudioConfig,
+
     // Radio recording -----------------------------------------------------------------
     /// Shortwave-style recording of the live radio stream. See [`RecordingConfig`].
     pub recording: RecordingConfig,
@@ -724,6 +734,7 @@ pub struct PlayerRuntimeConfig {
     pub volume: i64,
     pub cookies_file: Option<PathBuf>,
     pub gapless: bool,
+    pub audio: AudioRuntimeConfig,
 }
 
 #[derive(Clone)]
@@ -784,6 +795,7 @@ impl Default for Config {
             scrobble: ScrobbleConfig::default(),
             spotify: SpotifyConfig::default(),
             tools: ToolsConfig::default(),
+            audio: AudioConfig::default(),
             recording: RecordingConfig::default(),
             update_check_enabled: true,
         }
@@ -830,6 +842,7 @@ impl Config {
             volume: self.volume,
             cookies_file,
             gapless: self.effective_gapless(),
+            audio: self.audio.runtime(),
         }
     }
 
@@ -1690,6 +1703,16 @@ mod tests {
                 ytdlp_path: Some(PathBuf::from("/opt/yt-dlp")),
                 mpv_path: Some(PathBuf::from("/opt/mpv")),
             },
+            audio: AudioConfig {
+                backend: AudioBackend::Mpv,
+                mpv: MpvAudioConfig {
+                    output: Some("pipewire".to_owned()),
+                    device: Some("alsa/default".to_owned()),
+                    cache_forward: "64MiB".to_owned(),
+                    cache_back: "16MiB".to_owned(),
+                    extra_args: vec!["--audio-exclusive=no".to_owned()],
+                },
+            },
             recording: RecordingConfig {
                 mode: crate::recorder::RecordingMode::Decide,
                 min_duration_secs: 20,
@@ -1764,6 +1787,12 @@ mod tests {
         );
         assert_eq!(back.tools.ytdlp_path, Some(PathBuf::from("/opt/yt-dlp")));
         assert_eq!(back.tools.mpv_path, Some(PathBuf::from("/opt/mpv")));
+        assert_eq!(back.audio.backend, AudioBackend::Mpv);
+        assert_eq!(back.audio.mpv.output.as_deref(), Some("pipewire"));
+        assert_eq!(back.audio.mpv.device.as_deref(), Some("alsa/default"));
+        assert_eq!(back.audio.mpv.cache_forward, "64MiB");
+        assert_eq!(back.audio.mpv.cache_back, "16MiB");
+        assert_eq!(back.audio.mpv.extra_args, ["--audio-exclusive=no"]);
         assert_eq!(back.theme.preset, "midnight");
         assert_eq!(
             back.theme
