@@ -42,11 +42,16 @@ struct WindowsMutex(windows_sys::Win32::Foundation::HANDLE);
 #[cfg(windows)]
 impl Drop for WindowsMutex {
     fn drop(&mut self) {
+        // SAFETY: `WindowsMutex` owns this handle and drops it once when the guard
+        // leaves scope; CloseHandle failure only means the handle was already invalid.
         unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
     }
 }
-// The mutex handle is owned solely by the main thread's guard; the raw HANDLE is not shared.
 #[cfg(windows)]
+/// # Safety
+/// The mutex handle is owned by the guard and is never concurrently accessed through
+/// shared Rust references; moving the owner to another thread preserves ownership.
+// SAFETY: `WindowsMutex` has unique ownership of the raw HANDLE and Drop closes it.
 unsafe impl Send for WindowsMutex {}
 
 #[cfg(unix)]
@@ -59,6 +64,8 @@ pub fn acquire() -> io::Result<Acquire> {
         .truncate(false)
         .open(&path)?;
     // Advisory, non-blocking exclusive lock on the open file description.
+    // SAFETY: `file.as_raw_fd()` is valid for the lifetime of `file`; flock reports
+    // contention or OS errors via its return value.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
         Ok(Acquire::Primary(InstanceGuard { _lock: file }))
@@ -81,11 +88,17 @@ pub fn acquire() -> io::Result<Acquire> {
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
+    // SAFETY: the mutex name is NUL-terminated and lives for the call; null security
+    // attributes request defaults and errors are checked via the returned handle.
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, wide.as_ptr()) };
     if handle.is_null() {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: `GetLastError` is read immediately after CreateMutexW on this thread,
+    // as required for detecting an existing named mutex.
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // SAFETY: this branch does not take ownership for the process; close the
+        // newly opened mutex handle before reporting AlreadyRunning.
         unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
         Ok(Acquire::AlreadyRunning)
     } else {
@@ -185,6 +198,8 @@ mod tests {
             .truncate(false)
             .open(&path)
             .unwrap();
+        // SAFETY: `a` owns a valid fd and flock returns -1/errno instead of UB on
+        // contention or platform failure.
         let rc_a = unsafe { libc::flock(a.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         assert_eq!(rc_a, 0, "first holder should acquire");
 
@@ -195,6 +210,8 @@ mod tests {
             .truncate(false)
             .open(&path)
             .unwrap();
+        // SAFETY: `b` owns a distinct valid fd for the same path; LOCK_NB reports
+        // contention via -1/EWOULDBLOCK.
         let rc_b = unsafe { libc::flock(b.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         assert_eq!(
             rc_b, -1,
@@ -202,6 +219,7 @@ mod tests {
         );
 
         drop(a); // releasing lets the next holder in
+        // SAFETY: after dropping `a`, `b` remains a valid fd and can acquire the lock.
         let rc_b2 = unsafe { libc::flock(b.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         assert_eq!(rc_b2, 0, "after release the lock is available");
         let _ = std::fs::remove_file(&path);

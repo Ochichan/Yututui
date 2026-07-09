@@ -1257,187 +1257,159 @@ fn dir_is_writable(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
-    use std::sync::{Mutex, MutexGuard};
 
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: Mutex<()> = Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    use crate::test_util::env::{with_var, with_vars};
 
-    struct EnvRestore(Vec<(String, Option<OsString>)>);
+    const TERMINAL_ENV: &[(&str, Option<&str>)] = &[
+        ("KITTY_WINDOW_ID", None),
+        ("WEZTERM_EXECUTABLE", None),
+        ("KONSOLE_VERSION", None),
+        ("WT_SESSION", None),
+        ("TERM", None),
+        ("TERM_PROGRAM", None),
+    ];
 
-    impl EnvRestore {
-        fn capture(names: &[&str]) -> Self {
-            Self(
-                names
-                    .iter()
-                    .map(|name| ((*name).to_owned(), std::env::var_os(name)))
-                    .collect(),
-            )
-        }
-    }
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (name, value) in &self.0 {
-                match value {
-                    Some(value) => unsafe { std::env::set_var(name, value) },
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
-
-    fn clear_terminal_image_env() -> EnvRestore {
-        const NAMES: &[&str] = &[
-            "KITTY_WINDOW_ID",
-            "WEZTERM_EXECUTABLE",
-            "KONSOLE_VERSION",
-            "WT_SESSION",
-            "TERM",
-            "TERM_PROGRAM",
-        ];
-        let restore = EnvRestore::capture(NAMES);
-        for name in NAMES {
-            unsafe { std::env::remove_var(name) };
-        }
-        restore
+    fn with_terminal_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+        let mut scoped = TERMINAL_ENV.to_vec();
+        scoped.extend_from_slice(vars);
+        with_vars(&scoped, f)
     }
 
     #[test]
     fn terminal_doctor_detects_common_protocol_hints_without_probing() {
-        let _guard = env_lock();
-        let _restore = EnvRestore::capture(&["YTM_TUI_TEXT_SIZING"]);
-        unsafe { std::env::remove_var("YTM_TUI_TEXT_SIZING") };
-        assert_eq!(
-            terminal_image_protocol(Some("xterm-kitty"), None, false),
-            "kitty"
-        );
-        assert_eq!(
-            terminal_image_protocol(Some("xterm-256color"), Some("WezTerm"), false),
-            "iterm2_or_kitty_or_sixel"
-        );
-        assert_eq!(
-            terminal_image_protocol(Some("xterm-256color"), Some("iTerm.app"), false),
-            "iterm2"
-        );
-        assert_eq!(
-            terminal_image_protocol(Some("xterm-256color"), None, true),
-            "sixel_versioned"
-        );
-        assert_eq!(
-            terminal_zoom_mode(Some("xterm-kitty"), None, false),
-            "osc66_versioned"
-        );
-        assert_eq!(
-            terminal_zoom_mode(Some("xterm-256color"), None, true),
-            "decdhl_expected"
-        );
+        with_var("YTM_TUI_TEXT_SIZING", None, || {
+            assert_eq!(
+                terminal_image_protocol(Some("xterm-kitty"), None, false),
+                "kitty"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("xterm-256color"), Some("WezTerm"), false),
+                "iterm2_or_kitty_or_sixel"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("xterm-256color"), Some("iTerm.app"), false),
+                "iterm2"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("xterm-256color"), None, true),
+                "sixel_versioned"
+            );
+            assert_eq!(
+                terminal_zoom_mode(Some("xterm-kitty"), None, false),
+                "osc66_versioned"
+            );
+            assert_eq!(
+                terminal_zoom_mode(Some("xterm-256color"), None, true),
+                "decdhl_expected"
+            );
+        });
     }
 
     #[test]
     fn terminal_doctor_covers_protocol_keyboard_and_zoom_edges() {
-        let _guard = env_lock();
-        let _restore = EnvRestore::capture(&["YTM_TUI_TEXT_SIZING"]);
-        unsafe { std::env::remove_var("YTM_TUI_TEXT_SIZING") };
+        with_var("YTM_TUI_TEXT_SIZING", None, || {
+            assert_eq!(terminal_image_protocol(Some("foot"), None, false), "sixel");
+            assert_eq!(
+                terminal_image_protocol(Some("mintty"), None, false),
+                "sixel"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("konsole"), None, false),
+                "kitty_or_sixel"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("ghostty"), Some("ignored"), false),
+                "kitty"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("linux"), None, false),
+                "halfblocks_or_retro"
+            );
+            assert_eq!(
+                terminal_image_protocol(Some("dumb"), None, false),
+                "unknown"
+            );
+            assert_eq!(
+                terminal_zoom_mode(Some("plain"), Some("Ghostty"), false),
+                "unknown_probe_required"
+            );
+            assert_eq!(
+                terminal_zoom_mode(Some("plain"), Some("WezTerm"), false),
+                "unknown_probe_required"
+            );
+            assert_eq!(terminal_zoom_mode(Some("plain"), None, false), "unknown");
+            assert_eq!(
+                terminal_keyboard_hint(Some("foot"), None, false),
+                Some(true)
+            );
+            assert_eq!(
+                terminal_keyboard_hint(Some("xterm"), Some("ghostty"), false),
+                Some(true)
+            );
+            assert_eq!(
+                terminal_keyboard_hint(Some("xterm"), None, true),
+                Some(true)
+            );
+        });
 
-        assert_eq!(terminal_image_protocol(Some("foot"), None, false), "sixel");
-        assert_eq!(
-            terminal_image_protocol(Some("mintty"), None, false),
-            "sixel"
-        );
-        assert_eq!(
-            terminal_image_protocol(Some("konsole"), None, false),
-            "kitty_or_sixel"
-        );
-        assert_eq!(
-            terminal_image_protocol(Some("ghostty"), Some("ignored"), false),
-            "kitty"
-        );
-        assert_eq!(
-            terminal_image_protocol(Some("linux"), None, false),
-            "halfblocks_or_retro"
-        );
-        assert_eq!(
-            terminal_image_protocol(Some("dumb"), None, false),
-            "unknown"
-        );
-
-        assert_eq!(
-            terminal_zoom_mode(Some("plain"), Some("Ghostty"), false),
-            "unknown_probe_required"
-        );
-        assert_eq!(
-            terminal_zoom_mode(Some("plain"), Some("WezTerm"), false),
-            "unknown_probe_required"
-        );
-        assert_eq!(terminal_zoom_mode(Some("plain"), None, false), "unknown");
-
-        unsafe { std::env::set_var("YTM_TUI_TEXT_SIZING", "false") };
-        assert_eq!(terminal_zoom_mode(None, None, false), "none_forced");
-        unsafe { std::env::set_var("YTM_TUI_TEXT_SIZING", "DHL") };
-        assert_eq!(terminal_zoom_mode(None, None, false), "decdhl_forced");
-        unsafe { std::env::set_var("YTM_TUI_TEXT_SIZING", "probe") };
-        assert_eq!(terminal_zoom_mode(None, None, false), "probe_requested");
-
-        assert_eq!(
-            terminal_keyboard_hint(Some("foot"), None, false),
-            Some(true)
-        );
-        assert_eq!(
-            terminal_keyboard_hint(Some("xterm"), Some("ghostty"), false),
-            Some(true)
-        );
-        assert_eq!(
-            terminal_keyboard_hint(Some("xterm"), None, true),
-            Some(true)
-        );
+        with_var("YTM_TUI_TEXT_SIZING", Some("false"), || {
+            assert_eq!(terminal_zoom_mode(None, None, false), "none_forced");
+        });
+        with_var("YTM_TUI_TEXT_SIZING", Some("DHL"), || {
+            assert_eq!(terminal_zoom_mode(None, None, false), "decdhl_forced");
+        });
+        with_var("YTM_TUI_TEXT_SIZING", Some("probe"), || {
+            assert_eq!(terminal_zoom_mode(None, None, false), "probe_requested");
+        });
     }
 
     #[test]
     fn terminal_doctor_reports_native_hint_timeout_and_override_guidance() {
-        let _guard = env_lock();
-        let _restore = clear_terminal_image_env();
-
-        assert!(!terminal_native_image_hint(
-            Some("xterm-256color"),
-            Some("plain-terminal"),
-            false
-        ));
-        assert_eq!(terminal_image_probe_timeout_ms(false), 250);
-        assert!(
-            terminal_image_override_suggestions(
+        with_terminal_env(&[], || {
+            assert!(!terminal_native_image_hint(
                 Some("xterm-256color"),
                 Some("plain-terminal"),
                 false
-            )
-            .is_empty()
-        );
+            ));
+            assert_eq!(terminal_image_probe_timeout_ms(false), 250);
+            assert!(
+                terminal_image_override_suggestions(
+                    Some("xterm-256color"),
+                    Some("plain-terminal"),
+                    false
+                )
+                .is_empty()
+            );
+        });
 
-        assert!(terminal_native_image_hint(Some("foot"), None, false));
-        assert_eq!(terminal_image_probe_timeout_ms(true), 700);
-        assert_eq!(
-            terminal_image_override_suggestions(Some("foot"), None, false),
-            vec!["YTM_TUI_IMAGE_PROTOCOL=sixel"]
-        );
+        with_terminal_env(&[("TERM", Some("foot"))], || {
+            assert!(terminal_native_image_hint(Some("foot"), None, false));
+            assert_eq!(terminal_image_probe_timeout_ms(true), 700);
+            assert_eq!(
+                terminal_image_override_suggestions(Some("foot"), None, false),
+                vec!["YTM_TUI_IMAGE_PROTOCOL=sixel"]
+            );
+        });
 
-        assert!(terminal_native_image_hint(Some("ghostty"), None, false));
-        assert_eq!(
-            terminal_image_override_suggestions(Some("ghostty"), None, false),
-            vec!["YTM_TUI_IMAGE_PROTOCOL=kitty"]
-        );
+        with_terminal_env(&[("TERM", Some("ghostty"))], || {
+            assert!(terminal_native_image_hint(Some("ghostty"), None, false));
+            assert_eq!(
+                terminal_image_override_suggestions(Some("ghostty"), None, false),
+                vec!["YTM_TUI_IMAGE_PROTOCOL=kitty"]
+            );
+        });
 
-        unsafe { std::env::set_var("WEZTERM_EXECUTABLE", "wezterm") };
-        assert!(terminal_native_image_hint(None, None, false));
-        assert_eq!(
-            terminal_image_override_suggestions(None, None, false),
-            vec![
-                "YTM_TUI_IMAGE_PROTOCOL=iterm2",
-                "YTM_TUI_IMAGE_PROTOCOL=kitty",
-                "YTM_TUI_IMAGE_PROTOCOL=sixel"
-            ]
-        );
+        with_terminal_env(&[("WEZTERM_EXECUTABLE", Some("wezterm"))], || {
+            assert!(terminal_native_image_hint(None, None, false));
+            assert_eq!(
+                terminal_image_override_suggestions(None, None, false),
+                vec![
+                    "YTM_TUI_IMAGE_PROTOCOL=iterm2",
+                    "YTM_TUI_IMAGE_PROTOCOL=kitty",
+                    "YTM_TUI_IMAGE_PROTOCOL=sixel"
+                ]
+            );
+        });
     }
 
     #[test]

@@ -92,6 +92,8 @@ impl Backend {
 
     pub fn apply(&mut self, snapshot: &MediaSnapshot, changes: MediaChanges) {
         if self.tx.send((snapshot.clone(), changes)).is_ok() {
+            // SAFETY: `worker_thread_id` was captured from the live SMTC worker after
+            // its message queue was created; a failed post only drops this wake-up.
             unsafe {
                 let _ =
                     PostThreadMessageW(self.worker_thread_id, WM_APP_UPDATE, WPARAM(0), LPARAM(0));
@@ -102,6 +104,8 @@ impl Backend {
 
 impl Drop for Backend {
     fn drop(&mut self) {
+        // SAFETY: best-effort shutdown post to the worker thread id captured at
+        // startup; failure is harmless because join handles already-ended threads.
         unsafe {
             let _ = PostThreadMessageW(self.worker_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
         }
@@ -138,12 +142,16 @@ fn worker(
             return;
         }
     };
+    // SAFETY: `GetCurrentThreadId` has no preconditions and identifies this worker
+    // thread for later `PostThreadMessageW` wake-ups.
     let thread_id = unsafe { GetCurrentThreadId() };
     let _ = ready_tx.send(Ok(thread_id));
 
     // The message pump: SMTC event delivery and our posted wake-ups both flow
     // through here. Thread messages (hwnd == 0) are handled inline; anything for
     // the hidden window goes through DefWindowProc.
+    // SAFETY: `msg` points to valid storage for the duration of the pump; Win32
+    // message APIs report termination/errors through return values.
     unsafe {
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -170,6 +178,8 @@ fn worker(
 }
 
 fn init_session(sink: &CommandSink) -> Result<Session> {
+    // SAFETY: all Win32/WinRT calls are made on this dedicated worker thread after
+    // RoInitialize; handles and HRESULT/Result values are checked before use.
     unsafe {
         // Per-thread WinRT init; a "already initialized" style failure is fine.
         let _ = RoInitialize(RO_INIT_MULTITHREADED);
@@ -457,6 +467,8 @@ impl Session {
                 .track
                 .as_ref()
                 .is_some_and(|t| !t.is_live && t.duration.is_some());
+        // SAFETY: thread timers use a null HWND, so WM_TIMER is delivered to this
+        // worker's message queue; the returned timer id is stored for KillTimer.
         unsafe {
             if want && self.timer_id == 0 {
                 // Thread timer (no window): WM_TIMER lands in the pump directly.
@@ -501,6 +513,8 @@ impl Session {
             let _ = updater.Update();
         }
         let _ = self.smtc.SetIsEnabled(false);
+        // SAFETY: `timer_id` was returned by SetTimer for this thread, and `hwnd` was
+        // created by this worker; both calls are best-effort during teardown.
         unsafe {
             if self.timer_id != 0 {
                 let _ = KillTimer(None, self.timer_id);
@@ -513,12 +527,20 @@ impl Session {
 /// The hidden window needs no behavior of its own — everything defers to
 /// `DefWindowProcW` (which the `windows` crate wraps as a plain fn, so it can't be
 /// used as a `WNDPROC` directly).
+///
+/// # Safety
+/// Windows calls this function with the standard window-procedure ABI and message
+/// parameters for the hidden SMTC window; the function forwards them unchanged.
+// SAFETY: this function is installed as a WNDPROC for the hidden window and matches
+// the required system ABI; all parameters are forwarded to DefWindowProcW.
 unsafe extern "system" fn default_wndproc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // SAFETY: parameters are forwarded exactly as received from the window manager;
+    // DefWindowProcW owns validation and returns the default result.
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 

@@ -1072,6 +1072,8 @@ fn set_app_user_model_id() {
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
+    // SAFETY: `app_id` is NUL-terminated UTF-16 and lives for the duration of the
+    // Shell API call; the HRESULT is checked for failure.
     let hr = unsafe { SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()) };
     if hr < 0 {
         report_error(format_args!(

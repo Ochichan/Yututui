@@ -1459,6 +1459,7 @@ mod hardening_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::env::{with_var, with_vars};
 
     #[test]
     fn defaults_have_full_volume() {
@@ -1908,21 +1909,21 @@ mod tests {
             gemini_api_key: Some("from_config".to_owned()),
             ..Config::default()
         };
-        // SAFETY: single-threaded test; set+unset around the calls.
-        unsafe { std::env::set_var("GEMINI_API_KEY", "  from_env  ") };
-        assert_eq!(cfg.effective_gemini_api_key().as_deref(), Some("from_env"));
-        unsafe { std::env::remove_var("GEMINI_API_KEY") };
-        assert_eq!(
-            cfg.effective_gemini_api_key().as_deref(),
-            Some("from_config")
-        );
-
+        with_var("GEMINI_API_KEY", Some("  from_env  "), || {
+            assert_eq!(cfg.effective_gemini_api_key().as_deref(), Some("from_env"));
+        });
         // Empty/whitespace key reads as unset.
         let blank = Config {
             gemini_api_key: Some("   ".to_owned()),
             ..Config::default()
         };
-        assert_eq!(blank.effective_gemini_api_key(), None);
+        with_var("GEMINI_API_KEY", None, || {
+            assert_eq!(
+                cfg.effective_gemini_api_key().as_deref(),
+                Some("from_config")
+            );
+            assert_eq!(blank.effective_gemini_api_key(), None);
+        });
     }
 
     #[test]
@@ -2083,19 +2084,22 @@ mod tests {
             mpv_path: Some(PathBuf::from("/pin/mpv")),
             ..Default::default()
         };
-        // SAFETY: single-threaded test; set+unset around the calls.
-        unsafe { std::env::remove_var("YTM_YTDLP") };
-        unsafe { std::env::remove_var("YTM_MPV") };
-        assert_eq!(pinned.ytdlp_override(), Some(PathBuf::from("/pin/yt-dlp")));
-        assert_eq!(pinned.mpv_program(), "/pin/mpv");
+        with_vars(&[("YTM_YTDLP", None), ("YTM_MPV", None)], || {
+            assert_eq!(pinned.ytdlp_override(), Some(PathBuf::from("/pin/yt-dlp")));
+            assert_eq!(pinned.mpv_program(), "/pin/mpv");
+        });
 
         // Env vars beat the config paths.
-        unsafe { std::env::set_var("YTM_YTDLP", "/env/yt-dlp") };
-        unsafe { std::env::set_var("YTM_MPV", "/env/mpv") };
-        assert_eq!(pinned.ytdlp_override(), Some(PathBuf::from("/env/yt-dlp")));
-        assert_eq!(pinned.mpv_program(), "/env/mpv");
-        unsafe { std::env::remove_var("YTM_YTDLP") };
-        unsafe { std::env::remove_var("YTM_MPV") };
+        with_vars(
+            &[
+                ("YTM_YTDLP", Some("/env/yt-dlp")),
+                ("YTM_MPV", Some("/env/mpv")),
+            ],
+            || {
+                assert_eq!(pinned.ytdlp_override(), Some(PathBuf::from("/env/yt-dlp")));
+                assert_eq!(pinned.mpv_program(), "/env/mpv");
+            },
+        );
     }
 
     #[test]
@@ -2177,55 +2181,35 @@ mod tests {
 
     #[test]
     fn env_overrides_download_dir() {
-        // SAFETY: single-threaded test; we set+unset around the call.
-        unsafe { std::env::set_var("YTM_DOWNLOAD_DIR", "/tmp/ytm-dl-test") };
-        let dir = Config::default().effective_download_dir();
-        unsafe { std::env::remove_var("YTM_DOWNLOAD_DIR") };
-        assert_eq!(dir, PathBuf::from("/tmp/ytm-dl-test"));
+        with_var("YTM_DOWNLOAD_DIR", Some("/tmp/ytm-dl-test"), || {
+            assert_eq!(
+                Config::default().effective_download_dir(),
+                PathBuf::from("/tmp/ytm-dl-test")
+            );
+        });
     }
 
     #[test]
     fn download_concurrency_defaults_clamps_and_honors_env() {
-        let old = std::env::var_os("YTM_DOWNLOAD_CONCURRENCY");
-        unsafe { std::env::remove_var("YTM_DOWNLOAD_CONCURRENCY") };
-
-        assert_eq!(
-            Config::default().effective_download_concurrency(),
-            DOWNLOAD_CONCURRENCY_DEFAULT
-        );
-        let high = Config {
-            download_concurrency: Some(99),
-            ..Config::default()
+        let configured = |download_concurrency| {
+            Config {
+                download_concurrency,
+                ..Config::default()
+            }
+            .effective_download_concurrency()
         };
-        assert_eq!(
-            high.effective_download_concurrency(),
-            DOWNLOAD_CONCURRENCY_MAX
-        );
-        let zero = Config {
-            download_concurrency: Some(0),
-            ..Config::default()
-        };
-        assert_eq!(
-            zero.effective_download_concurrency(),
-            DOWNLOAD_CONCURRENCY_MIN
-        );
 
-        unsafe { std::env::set_var("YTM_DOWNLOAD_CONCURRENCY", "99") };
-        assert_eq!(
-            Config::default().effective_download_concurrency(),
-            DOWNLOAD_CONCURRENCY_MAX
-        );
-        unsafe { std::env::set_var("YTM_DOWNLOAD_CONCURRENCY", "not-a-number") };
-        let configured = Config {
-            download_concurrency: Some(1),
-            ..Config::default()
-        };
-        assert_eq!(configured.effective_download_concurrency(), 1);
-
-        match old {
-            Some(v) => unsafe { std::env::set_var("YTM_DOWNLOAD_CONCURRENCY", v) },
-            None => unsafe { std::env::remove_var("YTM_DOWNLOAD_CONCURRENCY") },
-        }
+        with_var("YTM_DOWNLOAD_CONCURRENCY", None, || {
+            assert_eq!(configured(None), DOWNLOAD_CONCURRENCY_DEFAULT);
+            assert_eq!(configured(Some(99)), DOWNLOAD_CONCURRENCY_MAX);
+            assert_eq!(configured(Some(0)), DOWNLOAD_CONCURRENCY_MIN);
+        });
+        with_var("YTM_DOWNLOAD_CONCURRENCY", Some("99"), || {
+            assert_eq!(configured(None), DOWNLOAD_CONCURRENCY_MAX);
+        });
+        with_var("YTM_DOWNLOAD_CONCURRENCY", Some("not-a-number"), || {
+            assert_eq!(configured(Some(1)), 1);
+        });
     }
 
     #[test]
