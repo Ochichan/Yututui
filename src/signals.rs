@@ -95,6 +95,12 @@ impl Signals {
         };
         // Schema-drift tolerant: a renamed field can no longer wipe the whole play history.
         let mut sig = safe_fs::load_json_or_default_limited::<Signals>(&path, SIGNALS_MAX_BYTES);
+        sig = crate::persist::replay_journaled_snapshot(
+            crate::persist::StoreKind::Signals,
+            &path,
+            sig,
+            SIGNALS_MAX_BYTES,
+        );
         sig.enforce_caps();
         sig
     }
@@ -309,7 +315,7 @@ pub fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-fn signals_path() -> Option<PathBuf> {
+pub(crate) fn signals_path() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join("signals.json"))
 }
 

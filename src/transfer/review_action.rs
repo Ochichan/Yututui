@@ -15,6 +15,13 @@ pub struct ReviewActionSummary {
     pub score: Option<f32>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewBatchSummary {
+    pub session_id: String,
+    pub accepted_count: u32,
+    pub rows: Vec<ReviewActionSummary>,
+}
+
 #[derive(Debug, Clone)]
 struct SelectedCandidate {
     key: String,
@@ -70,6 +77,36 @@ pub fn skip_row(job_id: &str, source_order: u32) -> anyhow::Result<ReviewActionS
     apply_terminal_decision(job_id, source_order, ReviewDecision::Skipped, "skipped")
 }
 
+pub fn accept_all_candidates(job_id: &str) -> anyhow::Result<ReviewBatchSummary> {
+    let mut cp = Checkpoint::load(job_id)?;
+    let mut rows = Vec::new();
+    for index in 0..cp.tracks.len() {
+        if cp.tracks[index].written {
+            continue;
+        }
+        let source_order = u32::try_from(index + 1).unwrap_or(u32::MAX);
+        let Some(selected) = first_ambiguous_candidate(&cp.tracks[index].outcome) else {
+            continue;
+        };
+        apply_accepted_candidate(&mut cp, index, selected.clone());
+        rows.push(ReviewActionSummary {
+            source_order,
+            label: "accepted",
+            key: Some(selected.key),
+            display: Some(selected.display),
+            score: Some(selected.score),
+        });
+    }
+    if !rows.is_empty() {
+        save_checkpoint_and_session(&mut cp)?;
+    }
+    Ok(ReviewBatchSummary {
+        session_id: job_id.to_owned(),
+        accepted_count: rows.len() as u32,
+        rows,
+    })
+}
+
 fn accept_candidate(
     cp: &mut Checkpoint,
     index: usize,
@@ -77,6 +114,18 @@ fn accept_candidate(
     selected: SelectedCandidate,
     label: &'static str,
 ) -> anyhow::Result<ReviewActionSummary> {
+    apply_accepted_candidate(cp, index, selected.clone());
+    save_checkpoint_and_session(cp)?;
+    Ok(ReviewActionSummary {
+        source_order,
+        label,
+        key: Some(selected.key),
+        display: Some(selected.display),
+        score: Some(selected.score),
+    })
+}
+
+fn apply_accepted_candidate(cp: &mut Checkpoint, index: usize, selected: SelectedCandidate) {
     cp.tracks[index].outcome = Some(MatchOutcome::Matched {
         key: selected.key.clone(),
         score: selected.score,
@@ -88,18 +137,10 @@ fn accept_candidate(
         score_breakdown: selected.score_breakdown,
     });
     cp.tracks[index].review_decision = Some(ReviewDecision::Accepted {
-        key: selected.key.clone(),
+        key: selected.key,
         score: selected.score,
-        display: selected.display.clone(),
+        display: selected.display,
     });
-    save_checkpoint_and_session(cp)?;
-    Ok(ReviewActionSummary {
-        source_order,
-        label,
-        key: Some(selected.key),
-        display: Some(selected.display),
-        score: Some(selected.score),
-    })
 }
 
 fn apply_terminal_decision(
@@ -167,7 +208,7 @@ fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandid
             key: key.clone(),
             score: *score,
             display: display.clone(),
-            score_breakdown: *score_breakdown,
+            score_breakdown: score_breakdown.clone(),
         }],
         Some(MatchOutcome::Ambiguous { candidates }) => candidates
             .iter()
@@ -175,11 +216,23 @@ fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandid
                 key: candidate.key.clone(),
                 score: candidate.score,
                 display: candidate.display.clone(),
-                score_breakdown: candidate.score_breakdown,
+                score_breakdown: candidate.score_breakdown.clone(),
             })
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn first_ambiguous_candidate(outcome: &Option<MatchOutcome>) -> Option<SelectedCandidate> {
+    let Some(MatchOutcome::Ambiguous { candidates }) = outcome else {
+        return None;
+    };
+    candidates.first().map(|candidate| SelectedCandidate {
+        key: candidate.key.clone(),
+        score: candidate.score,
+        display: candidate.display.clone(),
+        score_breakdown: candidate.score_breakdown.clone(),
+    })
 }
 
 fn selected_key(entry: &super::checkpoint::TrackEntry) -> Option<&str> {

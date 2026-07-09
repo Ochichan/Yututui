@@ -179,7 +179,7 @@ async fn fetch_remote(client: &reqwest::Client, video_id: &str) -> Option<Vec<u8
 /// Read embedded cover art from a local audio file (off-thread; lofty parses tags).
 async fn fetch_local(path: PathBuf) -> Option<Vec<u8>> {
     // Shared with the TUI art actor; caps the embedded-cover size before copy.
-    tokio::task::spawn_blocking(move || crate::util::art::local_cover_bytes(&path))
+    crate::util::blocking::spawn_io(move || crate::util::art::local_cover_bytes(&path))
         .await
         .ok()
         .flatten()
@@ -189,7 +189,7 @@ async fn fetch_local(path: PathBuf) -> Option<Vec<u8>> {
 /// (temp file + rename so a crash never leaves a truncated cache entry).
 async fn store_processed(bytes: Vec<u8>, path: &Path) -> bool {
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
+    crate::util::blocking::spawn_cpu(move || {
         // Decode-bomb-guarded decode (shared with the TUI art actor).
         let img = crate::util::art::decode_untrusted(&bytes)?;
         let side = img.width().min(img.height());

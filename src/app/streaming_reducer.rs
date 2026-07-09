@@ -572,7 +572,7 @@ impl App {
             && let Some(watch_url) = next.prefetch_target()
         {
             let video_id = next.video_id.clone();
-            if !self.prefetch.resolved.contains_key(&video_id) {
+            if !self.prefetch.resolved.contains_fresh(&video_id) {
                 cmds.push(Cmd::Resolve {
                     video_id,
                     watch_url,

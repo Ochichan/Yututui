@@ -151,6 +151,21 @@ impl App {
                 }
             }
         }
+        // Local import accept-all is modal: only its Confirm/Cancel buttons act.
+        if self.local_mode.pending_accept_all_confirm.is_some() {
+            match self.mouse_target_at(col, row) {
+                Some(
+                    t @ (MouseTarget::ConfirmLocalAcceptAll | MouseTarget::CancelLocalAcceptAll),
+                ) => {
+                    return self.on_mouse_target(t);
+                }
+                _ => {
+                    self.local_mode.pending_accept_all_confirm = None;
+                    self.dirty = true;
+                    return Vec::new();
+                }
+            }
+        }
         // The "what's playing" identify overlay is modal: only its own buttons act; a
         // click anywhere else closes it (no click-through to the player/seekbar).
         if self.overlays.now_playing_overlay.is_some() {
@@ -553,6 +568,8 @@ impl App {
             MouseTarget::AiInput => Vec::new(),
             MouseTarget::AiSubmit if self.mode == Mode::Ai => self.submit_ai_prompt(),
             MouseTarget::AiSubmit => Vec::new(),
+            MouseTarget::AiModel if self.mode == Mode::Ai => self.cycle_ai_model_from_chat(),
+            MouseTarget::AiModel => Vec::new(),
             MouseTarget::AiSuggestionRow(i) if self.mode == Mode::Ai => {
                 if i < self.ai.suggestions.len() {
                     self.ai.suggestions_selected = i;
@@ -769,6 +786,17 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            MouseTarget::ConfirmLocalAcceptAll => {
+                let Some(confirm) = self.local_mode.pending_accept_all_confirm.take() else {
+                    return Vec::new();
+                };
+                self.apply_local_import_accept_all_confirm(confirm)
+            }
+            MouseTarget::CancelLocalAcceptAll => {
+                self.local_mode.pending_accept_all_confirm = None;
+                self.dirty = true;
+                Vec::new()
+            }
             MouseTarget::NowPlayingFavorite => self.now_playing_favorite(),
             MouseTarget::NowPlayingAskAi => self.now_playing_ask_ai(),
             MouseTarget::CloseNowPlaying => {
@@ -825,6 +853,7 @@ impl App {
             || self.radio_mode.pending_radio_mode_confirm.is_some()
             || self.local_mode.pending_confirm.is_some()
             || self.local_mode.pending_organize_confirm.is_some()
+            || self.local_mode.pending_accept_all_confirm.is_some()
             || self.overlays.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()
@@ -1383,6 +1412,7 @@ impl App {
             || self.radio_mode.pending_radio_mode_confirm.is_some()
             || self.local_mode.pending_confirm.is_some()
             || self.local_mode.pending_organize_confirm.is_some()
+            || self.local_mode.pending_accept_all_confirm.is_some()
             || self.overlays.pending_settings_confirm.is_some()
             || self.library_ui.confirm_delete.is_some()
             || self.library_ui.confirm_playlist_delete.is_some()

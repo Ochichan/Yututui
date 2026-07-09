@@ -165,7 +165,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             };
             frame.render_widget(
                 Paragraph::new(
-                    Line::from(app.status.text.clone())
+                    Line::from(app.status.text.as_str())
                         .style(theme.style(role))
                         .alignment(Alignment::Center),
                 ),

@@ -128,18 +128,24 @@ impl App {
             self.cycle_local_pane();
             return Vec::new();
         }
+        if self.keymap.context_action(KeyContext::LocalDeck, chord)
+            == Some(Action::AcceptAllImportReview)
+            && let Some(cmds) = self.request_local_import_accept_all()
+        {
+            return cmds;
+        }
         if k.modifiers.is_empty() {
             match k.code {
                 KeyCode::Char(' ') => return self.on_player_action(Action::TogglePause),
                 KeyCode::Char('a') => {
-                    if self.local_accept_selected_import_candidate() {
-                        return Vec::new();
+                    if let Some(cmds) = self.request_local_accept_selected_import_candidate() {
+                        return cmds;
                     }
                     return self.local_enqueue_selected();
                 }
                 KeyCode::Char('c') => {
-                    if self.local_choose_next_import_candidate() {
-                        return Vec::new();
+                    if let Some(cmds) = self.request_local_choose_next_import_candidate() {
+                        return cmds;
                     }
                     self.open_queue_popup();
                     return Vec::new();
@@ -154,7 +160,11 @@ impl App {
                 KeyCode::Char('o') if self.local_open_selected_import_candidate_url() => {
                     return Vec::new();
                 }
-                KeyCode::Char('x') if self.local_skip_selected_import_row() => return Vec::new(),
+                KeyCode::Char('x') => {
+                    if let Some(cmds) = self.request_local_skip_selected_import_row() {
+                        return cmds;
+                    }
+                }
                 _ => {}
             }
         }
@@ -176,8 +186,8 @@ impl App {
             return Vec::new();
         }
         if k.modifiers.is_empty() && matches!(k.code, KeyCode::Char('r')) {
-            if self.local_reject_selected_import_row() {
-                return Vec::new();
+            if let Some(cmds) = self.request_local_reject_selected_import_row() {
+                return cmds;
             }
             if let Some(cmds) = self.local_retry_failed_import_downloads() {
                 return cmds;
@@ -325,7 +335,7 @@ impl App {
         if songs.is_empty() {
             return Vec::new();
         }
-        let requested_songs = songs.clone();
+        let romanize_cmds = self.request_romanization_for_songs(&songs);
         let shuffle_changed = !self.queue.shuffle;
         self.queue.set(songs, start);
         self.queue.set_shuffle(true);
@@ -333,7 +343,7 @@ impl App {
         self.status.text.clear();
         let song = self.queue.current().cloned();
         let mut cmds = self.load_song(song);
-        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+        cmds.extend(romanize_cmds);
         if shuffle_changed {
             cmds.push(self.save_playback_modes_cmd());
         }
@@ -449,6 +459,20 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            LocalMsg::ImportReviewFinished {
+                op_id,
+                session_id,
+                source_order: _,
+                action,
+                result,
+                elapsed_ms: _,
+            } => self.apply_local_import_review_finished(op_id, session_id, action, result),
+            LocalMsg::ImportReviewAcceptAllFinished {
+                op_id,
+                session_id,
+                result,
+                elapsed_ms: _,
+            } => self.apply_local_import_accept_all_finished(op_id, session_id, result),
         }
     }
 

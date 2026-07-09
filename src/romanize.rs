@@ -90,7 +90,13 @@ impl RomanizeCache {
             return Self::default();
         };
         // Schema-drift tolerant: keeps cached romanizations across incompatible changes.
-        safe_fs::load_json_or_default_limited::<RomanizeCache>(&path, CACHE_MAX_BYTES)
+        let cache = safe_fs::load_json_or_default_limited::<RomanizeCache>(&path, CACHE_MAX_BYTES);
+        crate::persist::replay_journaled_snapshot(
+            crate::persist::StoreKind::RomanizedTitles,
+            &path,
+            cache,
+            CACHE_MAX_BYTES,
+        )
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -218,7 +224,7 @@ impl RomanizeCache {
     }
 }
 
-fn cache_path() -> Option<PathBuf> {
+pub(crate) fn cache_path() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join(CACHE_FILE))
 }
 

@@ -29,7 +29,7 @@ const STORE_MAX: usize = 999;
 /// at startup; an oversize file is moved to `*.too-large.bak` (never destroyed) and the store
 /// falls back to empty. `STORE_MAX` records of paths/titles stay far below this.
 const STORE_MAX_BYTES: u64 = 50 * 1024 * 1024;
-const SIDECAR_SCHEMA_VERSION: u32 = 1;
+const SIDECAR_SCHEMA_VERSION: u32 = 2;
 const SIDECAR_MAX_BYTES: u64 = 64 * 1024;
 
 /// Per-file metadata handoff written next to downloaded audio.
@@ -46,14 +46,30 @@ pub struct DownloadSidecar {
     pub youtube_id: Option<String>,
     pub title: String,
     pub artist: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artists: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub album: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub album_artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub album_artists: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_release_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_release_date_precision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_total_tracks: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_art_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disc_number: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,10 +93,18 @@ impl Default for DownloadSidecar {
             youtube_id: None,
             title: String::new(),
             artist: String::new(),
+            artists: Vec::new(),
             album: None,
             album_artist: None,
+            album_artists: Vec::new(),
+            album_release_date: None,
+            album_release_date_precision: None,
+            album_total_tracks: None,
+            album_type: None,
+            album_art_url: None,
             disc_number: None,
             track_number: None,
+            explicit: None,
             duration_secs: None,
             isrc: None,
             origin_key: None,
@@ -94,16 +118,35 @@ impl Default for DownloadSidecar {
 
 impl DownloadSidecar {
     pub fn from_song(song: &Song) -> Self {
+        let artists = if song.artists.is_empty() {
+            (!song.artist.trim().is_empty()).then(|| vec![song.artist.clone()])
+        } else {
+            Some(song.artists.clone())
+        }
+        .unwrap_or_default();
+        let album_artists = if song.album_artists.is_empty() {
+            song.album_artist.iter().cloned().collect()
+        } else {
+            song.album_artists.clone()
+        };
         Self {
             schema_version: SIDECAR_SCHEMA_VERSION,
             video_id: song.video_id.clone(),
             youtube_id: song.youtube_id().map(str::to_owned),
             title: song.title.clone(),
             artist: song.artist.clone(),
+            artists,
             album: song.album.clone(),
             album_artist: song.album_artist.clone(),
+            album_artists,
+            album_release_date: song.album_release_date.clone(),
+            album_release_date_precision: song.album_release_date_precision.clone(),
+            album_total_tracks: song.album_total_tracks,
+            album_type: song.album_type.clone(),
+            album_art_url: song.album_art_url.clone(),
             disc_number: song.disc_number,
             track_number: song.track_number,
+            explicit: song.explicit,
             duration_secs: song.duration_secs,
             isrc: song.isrc.clone(),
             origin_key: song.origin_key.clone(),
@@ -138,6 +181,12 @@ impl DownloadStore {
         // Schema-drift tolerant: one changed field no longer discards download history.
         let mut store =
             safe_fs::load_json_or_default_limited::<DownloadStore>(&path, STORE_MAX_BYTES);
+        store = crate::persist::replay_journaled_snapshot(
+            crate::persist::StoreKind::Downloads,
+            &path,
+            store,
+            STORE_MAX_BYTES,
+        );
         store.tracks.truncate(STORE_MAX);
         store
     }
@@ -192,11 +241,19 @@ impl DownloadStore {
                 Some(rec) => Song {
                     title: rec.title.clone(),
                     artist: rec.artist.clone(),
+                    artists: rec.artists.clone(),
                     duration: rec.duration.clone(),
                     album: rec.album.clone(),
                     album_artist: rec.album_artist.clone(),
+                    album_artists: rec.album_artists.clone(),
+                    album_release_date: rec.album_release_date.clone(),
+                    album_release_date_precision: rec.album_release_date_precision.clone(),
+                    album_total_tracks: rec.album_total_tracks,
+                    album_type: rec.album_type.clone(),
+                    album_art_url: rec.album_art_url.clone(),
                     disc_number: rec.disc_number,
                     track_number: rec.track_number,
+                    explicit: rec.explicit,
                     isrc: rec.isrc.clone(),
                     origin_key: rec.origin_key.clone(),
                     origin_url: rec.origin_url.clone(),
@@ -242,8 +299,17 @@ pub fn write_sidecar(song: &Song, audio_path: &Path) -> io::Result<()> {
 }
 
 pub fn write_audio_tags(song: &Song, audio_path: &Path) -> lofty::error::Result<()> {
+    write_audio_tags_with_art(song, audio_path, None)
+}
+
+pub fn write_audio_tags_with_art(
+    song: &Song,
+    audio_path: &Path,
+    cover_art: Option<&[u8]>,
+) -> lofty::error::Result<()> {
     use lofty::config::WriteOptions;
     use lofty::file::{AudioFile, TaggedFileExt};
+    use lofty::picture::{Picture, PictureType};
     use lofty::tag::Tag;
 
     let mut tagged = lofty::read_from_path(audio_path)?;
@@ -255,6 +321,13 @@ pub fn write_audio_tags(song: &Song, audio_path: &Path) -> lofty::error::Result<
         return Ok(());
     };
     apply_song_tags(tag, song);
+    if let Some(bytes) = cover_art.filter(|bytes| !bytes.is_empty()) {
+        let mut reader = std::io::Cursor::new(bytes);
+        let mut picture = Picture::from_reader(&mut reader)?;
+        picture.set_pic_type(PictureType::CoverFront);
+        tag.remove_picture_type(PictureType::CoverFront);
+        tag.push_picture(picture);
+    }
     tagged.save_to_path(audio_path, WriteOptions::default())
 }
 
@@ -267,7 +340,7 @@ pub fn read_sidecar(audio_path: &Path) -> io::Result<Option<DownloadSidecar>> {
     };
     let sidecar: DownloadSidecar = serde_json::from_slice(&bytes)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    if sidecar.schema_version != SIDECAR_SCHEMA_VERSION {
+    if !(1..=SIDECAR_SCHEMA_VERSION).contains(&sidecar.schema_version) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -287,7 +360,12 @@ fn apply_song_tags(tag: &mut lofty::tag::Tag, song: &Song) {
     }
     if !song.artist.trim().is_empty() {
         tag.set_artist(song.artist.clone());
-        tag.insert_text(ItemKey::TrackArtists, song.artist.clone());
+        let artists = if song.artists.is_empty() {
+            song.artist.clone()
+        } else {
+            song.artists.join("; ")
+        };
+        tag.insert_text(ItemKey::TrackArtists, artists);
     }
     if let Some(album) = song
         .album
@@ -302,16 +380,44 @@ fn apply_song_tags(tag: &mut lofty::tag::Tag, song: &Song) {
         .filter(|album_artist| !album_artist.trim().is_empty())
     {
         tag.insert_text(ItemKey::AlbumArtist, album_artist.to_owned());
-        tag.insert_text(ItemKey::AlbumArtists, album_artist.to_owned());
+        let album_artists = if song.album_artists.is_empty() {
+            album_artist.to_owned()
+        } else {
+            song.album_artists.join("; ")
+        };
+        tag.insert_text(ItemKey::AlbumArtists, album_artists);
     }
     if let Some(track_number) = song.track_number {
         tag.set_track(track_number);
     }
+    if let Some(track_total) = song.album_total_tracks {
+        tag.insert_text(ItemKey::TrackTotal, track_total.to_string());
+    }
     if let Some(disc_number) = song.disc_number {
         tag.set_disk(disc_number);
     }
+    if let Some(release_date) = song
+        .album_release_date
+        .as_deref()
+        .filter(|date| !date.trim().is_empty())
+    {
+        tag.insert_text(ItemKey::RecordingDate, release_date.to_owned());
+        tag.insert_text(ItemKey::ReleaseDate, release_date.to_owned());
+        if let Some(year) = release_date
+            .get(..4)
+            .filter(|year| year.bytes().all(|b| b.is_ascii_digit()))
+        {
+            tag.insert_text(ItemKey::Year, year.to_owned());
+        }
+    }
     if let Some(isrc) = song.isrc.as_deref().filter(|isrc| !isrc.trim().is_empty()) {
         tag.insert_text(ItemKey::Isrc, isrc.to_owned());
+    }
+    if let Some(explicit) = song.explicit {
+        tag.insert_text(
+            ItemKey::ParentalAdvisory,
+            if explicit { "1" } else { "0" }.to_owned(),
+        );
     }
     let mut comment = Vec::new();
     if let Some(url) = song.share_url() {
@@ -323,6 +429,13 @@ fn apply_song_tags(tag: &mut lofty::tag::Tag, song: &Song) {
         .filter(|url| !url.trim().is_empty())
     {
         comment.push(format!("Origin: {url}"));
+    }
+    if let Some(album_art_url) = song
+        .album_art_url
+        .as_deref()
+        .filter(|url| !url.trim().is_empty())
+    {
+        comment.push(format!("Album art: {album_art_url}"));
     }
     if !comment.is_empty() {
         tag.insert_text(ItemKey::Comment, comment.join("\n"));
@@ -341,7 +454,7 @@ fn sidecar_temp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.tmp.{}-{nanos}", std::process::id()))
 }
 
-fn store_path() -> Option<PathBuf> {
+pub(crate) fn store_path() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join("downloads.json"))
 }
 

@@ -70,7 +70,12 @@ pub async fn connect_retry(path: &str) -> io::Result<Stream> {
 /// Drive one mpv connection: subscribe to progress properties, then loop forwarding
 /// mpv events to the runtime (`emit`) and writing player commands (`cmd_rx`) to mpv.
 /// Returns when mpv closes the connection or all command senders drop.
-pub async fn run_actor(conn: Stream, mut cmd_rx: Receiver<PlayerCmd>, emit: EventSink) {
+pub async fn run_actor(
+    conn: Stream,
+    mut urgent_rx: Receiver<PlayerCmd>,
+    mut cmd_rx: Receiver<PlayerCmd>,
+    emit: EventSink,
+) {
     let mut state = DispatchState::default();
 
     // Subscribe to the properties the player view needs. IDs are arbitrary but stable.
@@ -94,10 +99,19 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: Receiver<PlayerCmd>, emit: Even
     let mut reader = BufReader::new(&conn);
     let mut line: Vec<u8> = Vec::new();
     let mut request_id: u64 = 10;
+    let mut urgent_closed = false;
 
     loop {
         line.clear();
         tokio::select! {
+            biased;
+            cmd = urgent_rx.recv(), if !urgent_closed => match cmd {
+                None => urgent_closed = true,
+                Some(cmd) => {
+                    request_id += 1;
+                    dispatch_command(&conn, &emit, &mut state, request_id, cmd).await;
+                }
+            },
             // Bounded read (shared with the remote protocol): a well-behaved mpv sends tiny
             // JSON lines, so a line past the cap means a broken/hostile endpoint — tear down
             // rather than let one line grow memory without limit.
@@ -116,63 +130,80 @@ pub async fn run_actor(conn: Stream, mut cmd_rx: Receiver<PlayerCmd>, emit: Even
                 None => break, // all senders dropped: shutting down
                 Some(cmd) => {
                     request_id += 1;
-                    let (json, label) = match cmd {
-                        PlayerCmd::Load(url) => {
-                            let url = match crate::api::validate_playback_target_for_handoff(&url).await {
-                                Ok(url) => url,
-                                Err(error) => {
-                                    tracing::warn!(%error, "blocked unsafe playback URL");
-                                    emit(PlayerEvent::Error(format!("blocked playback URL: {error}")));
-                                    continue;
-                                }
-                            };
-                            state.last_sent_time_sec = None;
-                            state.last_sent_cache_sec = None;
-                            state.duration_known = false;
-                            (proto::cmd_loadfile(&url, "replace", request_id), "loadfile".to_owned())
-                        },
-                        PlayerCmd::Stop => {
-                            state.last_sent_time_sec = None;
-                            state.last_sent_cache_sec = None;
-                            state.duration_known = false;
-                            (proto::cmd_stop(request_id), "stop".to_owned())
-                        },
-                        PlayerCmd::CyclePause => {
-                            (proto::cmd_cycle("pause", request_id), "cycle pause".to_owned())
-                        }
-                        PlayerCmd::SeekRelative(secs) => {
-                            (proto::cmd_seek_relative(secs, request_id), "seek".to_owned())
-                        }
-                        PlayerCmd::SeekAbsolute(secs) => {
-                            (proto::cmd_seek_absolute(secs, request_id), "seek".to_owned())
-                        }
-                        PlayerCmd::SetVolume(vol) => {
-                            (proto::cmd_set_volume(vol, request_id), "set volume".to_owned())
-                        }
-                        PlayerCmd::SetAudioFilter(af) => {
-                            (
-                                proto::cmd_set_property("af", &serde_json::Value::from(af), request_id),
-                                "set af".to_owned(),
-                            )
-                        }
-                        PlayerCmd::AfCommand { label, param, value } => {
-                            (
-                                proto::cmd_af_command(&label, &param, &value, request_id),
-                                "af-command".to_owned(),
-                            )
-                        }
-                        PlayerCmd::SetProperty { name, value } => {
-                            let label = format!("set_property {name}");
-                            (proto::cmd_set_property(&name, &value, request_id), label)
-                        }
-                    };
-                    remember_pending_command(&mut state, request_id, label);
-                    if let Err(e) = write_json(&conn, &json).await {
-                        tracing::warn!(error = %e, "failed to write mpv command");
-                    }
+                    dispatch_command(&conn, &emit, &mut state, request_id, cmd).await;
                 }
             },
         }
+    }
+}
+
+async fn dispatch_command(
+    conn: &Stream,
+    emit: &EventSink,
+    state: &mut DispatchState,
+    request_id: u64,
+    cmd: PlayerCmd,
+) {
+    let (json, label) = match cmd {
+        PlayerCmd::Load(url) => {
+            let url = match crate::api::validate_playback_target_for_handoff(&url).await {
+                Ok(url) => url,
+                Err(error) => {
+                    tracing::warn!(%error, "blocked unsafe playback URL");
+                    emit(PlayerEvent::Error(format!("blocked playback URL: {error}")));
+                    return;
+                }
+            };
+            state.last_sent_time_sec = None;
+            state.last_sent_cache_sec = None;
+            state.duration_known = false;
+            (
+                proto::cmd_loadfile(&url, "replace", request_id),
+                "loadfile".to_owned(),
+            )
+        }
+        PlayerCmd::Stop => {
+            state.last_sent_time_sec = None;
+            state.last_sent_cache_sec = None;
+            state.duration_known = false;
+            (proto::cmd_stop(request_id), "stop".to_owned())
+        }
+        PlayerCmd::CyclePause => (
+            proto::cmd_cycle("pause", request_id),
+            "cycle pause".to_owned(),
+        ),
+        PlayerCmd::SeekRelative(secs) => (
+            proto::cmd_seek_relative(secs, request_id),
+            "seek".to_owned(),
+        ),
+        PlayerCmd::SeekAbsolute(secs) => (
+            proto::cmd_seek_absolute(secs, request_id),
+            "seek".to_owned(),
+        ),
+        PlayerCmd::SetVolume(vol) => (
+            proto::cmd_set_volume(vol, request_id),
+            "set volume".to_owned(),
+        ),
+        PlayerCmd::SetAudioFilter(af) => (
+            proto::cmd_set_property("af", &serde_json::Value::from(af), request_id),
+            "set af".to_owned(),
+        ),
+        PlayerCmd::AfCommand {
+            label,
+            param,
+            value,
+        } => (
+            proto::cmd_af_command(&label, &param, &value, request_id),
+            "af-command".to_owned(),
+        ),
+        PlayerCmd::SetProperty { name, value } => {
+            let label = format!("set_property {name}");
+            (proto::cmd_set_property(&name, &value, request_id), label)
+        }
+    };
+    remember_pending_command(state, request_id, label);
+    if let Err(e) = write_json(conn, &json).await {
+        tracing::warn!(error = %e, "failed to write mpv command");
     }
 }
 

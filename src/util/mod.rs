@@ -17,6 +17,7 @@ pub fn finite_or_f32(x: f32, default: f32) -> f32 {
 
 pub mod art;
 pub mod backpressure;
+pub mod blocking;
 pub mod browser;
 pub mod event_policy;
 pub mod format;

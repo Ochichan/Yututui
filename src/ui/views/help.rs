@@ -749,6 +749,17 @@ mod tests {
     }
 
     #[test]
+    fn local_deck_group_lists_accept_all_import_candidates() {
+        let _guard = crate::i18n::lock_for_test();
+        let app = App::new(100);
+        let local_deck = help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Local Deck").then_some(rows))
+            .expect("local deck group");
+        assert!(local_deck.contains(&("A".to_owned(), "Accept all import candidates".to_owned())));
+    }
+
+    #[test]
     fn player_lists_delete_current_queue_binding() {
         let _guard = crate::i18n::lock_for_test();
         let app = App::new(100);

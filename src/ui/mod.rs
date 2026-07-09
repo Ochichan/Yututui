@@ -3,6 +3,7 @@
 pub mod anim;
 pub mod ascii_art;
 pub mod buttons;
+pub mod marquee;
 pub mod mascot;
 pub mod retro;
 pub mod scroll;
@@ -76,6 +77,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if let Some(confirm) = &app.local_mode.pending_organize_confirm {
         views::local::render_local_organize_confirm(frame, app, area, confirm);
+    }
+    if let Some(confirm) = &app.local_mode.pending_accept_all_confirm {
+        views::local::render_local_accept_all_confirm(frame, app, area, confirm);
     }
     // A keybinding-conflict warning (Keys tab) is modal — it sits above everything else.
     if let Some(conflict) = &app.overlays.key_conflict {

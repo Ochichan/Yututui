@@ -33,7 +33,15 @@ fn radio_live_sync_verdict_follows_behind_distance() {
     assert_eq!(app.radio_behind_secs().map(|b| b as i64), Some(5));
     assert_eq!(app.radio_live_synced(), Some(true));
 
-    app.update(PlayerMsg::CacheTime(Some(180.0)));
+    app.update(PlayerMsg::CacheTime(Some(117.0)));
+    assert_eq!(app.radio_behind_secs().map(|b| b as i64), Some(17));
+    assert_eq!(app.radio_live_synced(), Some(true));
+
+    app.update(PlayerMsg::CacheTime(Some(120.0)));
+    assert_eq!(app.radio_behind_secs().map(|b| b as i64), Some(20));
+    assert_eq!(app.radio_live_synced(), Some(true));
+
+    app.update(PlayerMsg::CacheTime(Some(130.0)));
     assert_eq!(app.radio_live_synced(), Some(false));
 
     // A regular track never gets a verdict, even with cache reports flowing.
@@ -47,7 +55,7 @@ fn radio_live_sync_verdict_follows_behind_distance() {
 fn stale_cache_time_degrades_synced_to_unknown_but_keeps_behind() {
     let mut app = radio_playing("groove");
     app.update(PlayerMsg::TimePos(100.0));
-    app.update(PlayerMsg::CacheTime(Some(103.0)));
+    app.update(PlayerMsg::CacheTime(Some(117.0)));
     // An old at-edge report proves nothing while playing (mpv freezes the property
     // once the forward buffer saturates) → unknown.
     app.playback.cache_time_at = Some(Instant::now() - Duration::from_secs(30));
@@ -56,9 +64,30 @@ fn stale_cache_time_degrades_synced_to_unknown_but_keeps_behind() {
     app.playback.cache_time = Some(200.0);
     assert_eq!(app.radio_live_synced(), Some(false));
     // While paused the frozen report stays authoritative (behind only grows).
-    app.playback.cache_time = Some(103.0);
+    app.playback.cache_time = Some(117.0);
     app.playback.paused = true;
     assert_eq!(app.radio_live_synced(), Some(true));
+}
+
+#[test]
+fn radio_repeat_key_at_normal_live_buffer_does_not_seek_or_reconnect() {
+    let mut app = radio_playing("groove");
+    app.update(PlayerMsg::TimePos(100.0));
+    app.update(PlayerMsg::CacheTime(Some(117.0)));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
+
+    assert!(
+        cmds.is_empty(),
+        "normal live buffer should need no player command"
+    );
+    assert!(app.radio_resync_at.is_none());
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert!(
+        app.status.text.contains("live edge") || app.status.text.contains("실시간"),
+        "status should report live, got {:?}",
+        app.status.text
+    );
 }
 
 #[test]

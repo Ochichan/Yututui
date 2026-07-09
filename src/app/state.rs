@@ -70,6 +70,7 @@ pub struct RenderBridges {
     pub marquee_key: Cell<Option<(ScrollSurface, usize)>>,
     pub marquee_origin: Cell<u64>,
     pub marquee_ran: Cell<bool>,
+    pub marquee_cache: RefCell<crate::ui::marquee::MarqueeCache>,
 }
 
 impl RenderBridges {
@@ -268,7 +269,7 @@ pub struct Playback {
 #[derive(Default)]
 pub struct Prefetch {
     /// Pre-resolved direct stream URLs, keyed by `video_id` (for instant skip).
-    pub resolved: HashMap<String, String>,
+    pub resolved: super::prefetch::PrefetchCache,
     /// Whether the current track was loaded from a prefetched direct URL (vs the watch
     /// URL mpv resolves itself). Recorded so a playback error can note the likelier cause
     /// (a stale prefetched CDN URL) in the log.
@@ -743,6 +744,9 @@ pub struct LocalMode {
     pub(in crate::app) local_mode_queue: Option<QueueSnapshot>,
     pub pending_confirm: Option<LocalModeConfirm>,
     pub pending_organize_confirm: Option<LocalOrganizeConfirm>,
+    pub pending_accept_all_confirm: Option<LocalImportAcceptAllConfirm>,
+    pub(in crate::app) pending_import_reviews: HashMap<String, u64>,
+    pub(in crate::app) next_import_review_op_id: u64,
 }
 
 /// Animation clock and redraw-coalescing counters: the monotonic frame counter that drives every

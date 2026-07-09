@@ -309,27 +309,28 @@ fn nav_arrows_hollow_at_first_and_last_tab() {
 }
 
 #[test]
-fn ai_model_label_yields_to_nav_when_narrow() {
+fn ai_model_label_stays_off_nav_border_when_narrow() {
     let _guard = crate::i18n::lock_for_test();
     let mut app = App::new(100);
     app.mode = Mode::Ai;
-    // Pin the model so the label under test is stable (the reported artifact was the
-    // "Latest" label surviving as a clipped "est" after the nav's ▶ arrow).
+    // Pin the model so the label under test is stable. The label now lives below the prompt,
+    // so no part of it should survive on the nav border at any width.
     app.ai.model = crate::ai::GeminiModel::Latest;
 
-    // Wide: the model label rides the right end of the border row, as before.
-    let (_, top) = render_at(&app, 100, 30);
+    let (targets, top) = render_at(&app, 100, 30);
     assert!(
-        top.contains("Latest"),
-        "wide: the model label should show: {top:?}"
+        !top.contains("Latest"),
+        "wide: the model label should not be on the nav border: {top:?}"
+    );
+    assert!(
+        targets.contains(&MouseTarget::AiModel),
+        "wide: the model label should remain clickable below the prompt"
     );
 
-    // Narrow: the nav strip needs the row — the label disappears entirely instead of
-    // leaving a clipped tail (this used to render as a stray \"est\" after the ▶ arrow).
     let (_, top) = render_at(&app, 30, 30);
     assert!(
         !top.contains("Latest") && !top.contains("est"),
-        "narrow: no label and no clipped remnant: {top:?}"
+        "narrow: no model label and no clipped remnant on the nav border: {top:?}"
     );
 }
 

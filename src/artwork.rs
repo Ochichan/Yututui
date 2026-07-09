@@ -117,7 +117,7 @@ async fn fetch_remote(client: &reqwest::Client, video_id: &str) -> Option<Vec<u8
 
 /// Read embedded cover art from a local audio file (off-thread; lofty parses tags).
 async fn fetch_local(path: PathBuf) -> Option<Vec<u8>> {
-    tokio::task::spawn_blocking(move || local_cover_bytes(&path))
+    crate::util::blocking::spawn_io(move || local_cover_bytes(&path))
         .await
         .ok()
         .flatten()
@@ -130,7 +130,7 @@ fn local_cover_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
 
 /// Decode the raw bytes and downscale to [`MAX_DIM`] (off-thread — decode/resize is CPU).
 async fn decode_scaled(bytes: Vec<u8>) -> Option<DynamicImage> {
-    tokio::task::spawn_blocking(move || {
+    crate::util::blocking::spawn_cpu(move || {
         // Decode-bomb-guarded decode (shared): a hostile/corrupt image can't spike RAM.
         let img = crate::util::art::decode_untrusted(&bytes)?;
         Some(if img.width() > MAX_DIM || img.height() > MAX_DIM {

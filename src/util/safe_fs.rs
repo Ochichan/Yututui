@@ -7,6 +7,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
@@ -35,6 +36,36 @@ pub struct RecoveryBackup {
     pub label: String,
     pub len: u64,
     pub modified_unix: Option<u64>,
+}
+
+static DO_NOT_CLOBBER: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+
+fn do_not_clobber() -> &'static Mutex<Vec<PathBuf>> {
+    DO_NOT_CLOBBER.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn mark_do_not_clobber(path: &Path) {
+    let mut guard = do_not_clobber()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !guard.iter().any(|p| p == path) {
+        guard.push(path.to_path_buf());
+    }
+}
+
+fn is_do_not_clobber(path: &Path) -> bool {
+    do_not_clobber()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|p| p == path)
+}
+
+fn clear_do_not_clobber(path: &Path) {
+    do_not_clobber()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|p| p != path);
 }
 
 #[cfg(unix)]
@@ -216,6 +247,18 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         ensure_private_dir(dir)?;
     }
     reject_symlink(path)?;
+    if is_do_not_clobber(path) {
+        if path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "refusing to overwrite {} after recovery backup failed",
+                    path.display()
+                ),
+            ));
+        }
+        clear_do_not_clobber(path);
+    }
     let tmp = temp_path_for(path)?;
     let write_result = (|| {
         let mut file = create_private_file(&tmp)?;
@@ -425,6 +468,7 @@ where
         }
     };
     let Ok(text) = String::from_utf8(bytes) else {
+        let _ = backup_with_label(path, "unreadable");
         return T::default();
     };
     if let Ok(value) = serde_json::from_str::<T>(&text) {
@@ -606,6 +650,11 @@ pub fn backup_too_large_secret(path: &Path) -> io::Result<PathBuf> {
     backup_with_label_retained(path, "too-large", SECRET_BACKUP_RETENTION)
 }
 
+/// Secret-bearing backup for present-but-unreadable files.
+pub fn backup_unreadable_secret(path: &Path) -> io::Result<PathBuf> {
+    backup_with_label_retained(path, "unreadable", SECRET_BACKUP_RETENTION)
+}
+
 /// List app-created recovery backups for `path` without reading their contents.
 pub fn recovery_backups(path: &Path) -> io::Result<Vec<RecoveryBackup>> {
     recovery_backups_for_labels(path, RECOVERY_BACKUP_LABELS)
@@ -641,10 +690,39 @@ fn backup_with_label_inner(path: &Path, label: &str) -> io::Result<PathBuf> {
                 return Ok(bak);
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
+            Err(_) => match backup_by_copy(path, &bak) {
+                Ok(()) => return Ok(bak),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    mark_do_not_clobber(path);
+                    return Err(e);
+                }
+            },
         }
     }
-    Err(io::Error::other("too many backups"))
+    let err = io::Error::other("too many backups");
+    mark_do_not_clobber(path);
+    Err(err)
+}
+
+fn backup_by_copy(path: &Path, bak: &Path) -> io::Result<()> {
+    let mut src = open_no_symlink(path)?;
+    let meta = src.metadata()?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("not a regular file: {}", path.display()),
+        ));
+    }
+    let mut dst = create_private_file(bak)?;
+    io::copy(&mut src, &mut dst)?;
+    dst.sync_all()?;
+    drop(dst);
+    #[cfg(unix)]
+    fs::set_permissions(bak, fs::Permissions::from_mode(private_file_mode()))?;
+    fs::remove_file(path)?;
+    sync_parent_dir(path)?;
+    Ok(())
 }
 
 fn rotate_recovery_backups(
@@ -824,6 +902,12 @@ mod tests {
         assert!(!path.exists());
         assert!(path.with_extension("too-large.bak").exists());
 
+        // Invalid UTF-8 under the cap is still present-but-unreadable and must be preserved.
+        write_private_atomic(&path, &[0xff, 0xfe, 0xfd]).unwrap();
+        assert_eq!(load_json_or_default_limited::<S>(&path, 1024), S::default());
+        assert!(!path.exists());
+        assert!(path.with_extension("unreadable.bak").exists());
+
         // Missing file → default (no panic, no backup).
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(load_json_or_default_limited::<S>(&path, 1024), S::default());
@@ -851,6 +935,39 @@ mod tests {
         let missing = dir.join("missing.json");
         assert_eq!(load_json_or_default::<S>(&missing), S::default());
         assert!(!missing.with_extension("unreadable.bak").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn copy_backup_preserves_original_when_linking_is_unavailable() {
+        let dir = temp_root("backup-copy");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.json");
+        let bak = path.with_extension("corrupt.bak");
+        fs::write(&path, b"copy-me").unwrap();
+
+        backup_by_copy(&path, &bak).unwrap();
+
+        assert!(!path.exists());
+        assert_eq!(fs::read(&bak).unwrap(), b"copy-me");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_recovery_blocks_default_overwrite_until_original_is_removed() {
+        let dir = temp_root("backup-guard");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.json");
+        fs::write(&path, b"original").unwrap();
+
+        mark_do_not_clobber(&path);
+        let err = write_private_atomic(&path, b"replacement").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+
+        fs::remove_file(&path).unwrap();
+        write_private_atomic(&path, b"replacement").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
         let _ = fs::remove_dir_all(dir);
     }
 

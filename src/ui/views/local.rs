@@ -7,7 +7,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{
-    App, LocalModeConfirm, LocalOrganizeConfirm, LocalSection, MouseTarget, ScrollSurface,
+    App, LocalImportAcceptAllConfirm, LocalModeConfirm, LocalOrganizeConfirm, LocalSection,
+    MouseTarget, ScrollSurface,
 };
 use crate::t;
 use crate::theme::ThemeRole as R;
@@ -470,7 +471,7 @@ pub fn render_local_mode_confirm(
     area: Rect,
     confirm: LocalModeConfirm,
 ) {
-    let popup = centered_fixed(area, 64, 9);
+    let popup = centered_fixed(area, 64, 11);
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
@@ -486,7 +487,8 @@ pub fn render_local_mode_confirm(
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Min(1),
+        Constraint::Length(3),
+        Constraint::Min(0),
     ])
     .split(inner);
     frame.render_widget(
@@ -513,14 +515,17 @@ pub fn render_local_mode_confirm(
             t!(" Cancel (Esc) ", " 취소 (Esc) "),
         ),
     ];
-    buttons::render_segments(
+    buttons::render_segments_with_hit_height(
         frame,
         app,
         rows[4],
         &segs,
-        crate::ui::confirm_button_style(app),
-        crate::ui::confirm_gap_style(app),
+        (
+            crate::ui::confirm_button_style(app),
+            crate::ui::confirm_gap_style(app),
+        ),
         Alignment::Center,
+        3,
     );
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);
@@ -531,6 +536,72 @@ pub fn render_local_organize_confirm(
     app: &App,
     area: Rect,
     confirm: &LocalOrganizeConfirm,
+) {
+    let popup = centered_fixed(area, 72, 11);
+    crate::ui::render_popup_background(frame, app, popup);
+
+    let block = Block::default()
+        .title(confirm.title())
+        .borders(Borders::ALL)
+        .border_style(crate::ui::confirm_border_style(app))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Min(0),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new(confirm.prompt())
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::TextPrimary)),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(confirm.detail())
+            .alignment(Alignment::Center)
+            .style(crate::ui::popup_style(app, R::TextMuted)),
+        rows[2],
+    );
+
+    let segs = [
+        buttons::Seg::button(
+            MouseTarget::ConfirmLocalOrganize,
+            t!(" Commit (Enter) ", " 커밋 (Enter) "),
+        ),
+        buttons::Seg::label("    "),
+        buttons::Seg::button(
+            MouseTarget::CancelLocalOrganize,
+            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+        ),
+    ];
+    buttons::render_segments_with_hit_height(
+        frame,
+        app,
+        rows[4],
+        &segs,
+        (
+            crate::ui::confirm_button_style(app),
+            crate::ui::confirm_gap_style(app),
+        ),
+        Alignment::Center,
+        3,
+    );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
+pub fn render_local_accept_all_confirm(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    confirm: &LocalImportAcceptAllConfirm,
 ) {
     let popup = centered_fixed(area, 72, 9);
     crate::ui::render_popup_background(frame, app, popup);
@@ -566,12 +637,12 @@ pub fn render_local_organize_confirm(
 
     let segs = [
         buttons::Seg::button(
-            MouseTarget::ConfirmLocalOrganize,
-            t!(" Commit (Enter) ", " 커밋 (Enter) "),
+            MouseTarget::ConfirmLocalAcceptAll,
+            t!(" Accept (Enter) ", " 수락 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(
-            MouseTarget::CancelLocalOrganize,
+            MouseTarget::CancelLocalAcceptAll,
             t!(" Cancel (Esc) ", " 취소 (Esc) "),
         ),
     ];

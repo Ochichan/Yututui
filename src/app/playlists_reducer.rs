@@ -86,13 +86,13 @@ impl App {
             self.dirty = true;
             return Vec::new();
         }
-        let requested_songs = songs.clone();
+        let romanize_cmds = self.request_romanization_for_songs(&songs);
         self.queue.set(songs, 0);
         self.mode = Mode::Player;
         self.status.text.clear();
         let song = self.queue.current().cloned();
         let mut cmds = self.load_song(song);
-        cmds.extend(self.request_romanization_for_songs(&requested_songs));
+        cmds.extend(romanize_cmds);
         cmds
     }
 

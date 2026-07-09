@@ -91,6 +91,64 @@ pub fn render_segments(
     label_style: Style,
     alignment: Alignment,
 ) {
+    render_segments_inner(
+        frame,
+        app,
+        area,
+        segments,
+        SegmentRenderOptions {
+            button_style,
+            label_style,
+            alignment,
+            hit_height: 1,
+            center_vertically: false,
+        },
+    );
+}
+
+/// Render a control strip in `area`, vertically centering its text while allowing clickable
+/// segments to publish a taller hit rect. Used by confirmation popups whose buttons need
+/// more vertical target area without changing normal one-line controls.
+pub fn render_segments_with_hit_height(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    segments: &[Seg<'_>],
+    styles: (Style, Style),
+    alignment: Alignment,
+    hit_height: u16,
+) {
+    let (button_style, label_style) = styles;
+    render_segments_inner(
+        frame,
+        app,
+        area,
+        segments,
+        SegmentRenderOptions {
+            button_style,
+            label_style,
+            alignment,
+            hit_height,
+            center_vertically: true,
+        },
+    );
+}
+
+struct SegmentRenderOptions {
+    button_style: Style,
+    label_style: Style,
+    alignment: Alignment,
+    hit_height: u16,
+    center_vertically: bool,
+}
+
+fn render_segments_inner(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    segments: &[Seg<'_>],
+    opts: SegmentRenderOptions,
+) {
     let mut widths = Vec::with_capacity(segments.len());
     let mut total = 0u16;
     for seg in segments {
@@ -98,7 +156,7 @@ pub fn render_segments(
         total = total.saturating_add(width);
         widths.push(width);
     }
-    let mut x = match alignment {
+    let mut x = match opts.alignment {
         Alignment::Center => area.x + area.width.saturating_sub(total) / 2,
         Alignment::Right => area.x + area.width.saturating_sub(total),
         Alignment::Left => area.x,
@@ -114,24 +172,42 @@ pub fn render_segments(
                 .saturating_add(width)
                 .saturating_add(seg.hit_pad)
                 .min(area.right());
+            let hit_h = opts.hit_height.min(area.height);
+            let hit_y = if opts.center_vertically {
+                area.y + area.height.saturating_sub(hit_h) / 2
+            } else {
+                area.y
+            };
             app.register_mouse_button(
                 Rect {
                     x: x0,
-                    y: area.y,
+                    y: hit_y,
                     width: end.saturating_sub(x0),
-                    height: area.height.min(1),
+                    height: hit_h,
                 },
                 target,
             );
-            button_style
+            opts.button_style
         } else {
-            label_style
+            opts.label_style
         };
         spans.push(Span::styled(seg.text, style));
         x = x.saturating_add(width);
     }
 
-    frame.render_widget(Paragraph::new(Line::from(spans).alignment(alignment)), area);
+    let text_area = if opts.center_vertically {
+        Rect {
+            y: area.y + area.height.saturating_sub(1) / 2,
+            height: area.height.min(1),
+            ..area
+        }
+    } else {
+        area
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(spans).alignment(opts.alignment)),
+        text_area,
+    );
 }
 
 /// Every screen in nav order. Radio mode swaps only the player tab's *label*

@@ -44,10 +44,10 @@ impl From<PlayerMsg> for Msg {
     }
 }
 
-/// How far behind the live edge still counts as "in sync" (a healthy at-edge stream keeps
-/// a single-digit-seconds forward buffer; 15 avoids false ✗ on bursty stations while
-/// catching any real pause-behind).
-pub(in crate::app) const LIVE_SYNC_THRESHOLD_SECS: f64 = 15.0;
+/// How far behind mpv's newest demuxed sample still counts as "in sync". A practical
+/// at-edge radio stream can sit around 17s behind `demuxer-cache-time`; 20s covers that
+/// normal forward buffer plus jitter while still catching real timeshift drift.
+pub(in crate::app) const LIVE_SYNC_THRESHOLD_SECS: f64 = 20.0;
 /// Re-sync seeks this far short of the newest demuxed data, never into the undemuxed tail.
 pub(in crate::app) const LIVE_EDGE_SEEK_MARGIN_SECS: f64 = 2.0;
 /// A `demuxer-cache-time` older than this (while playing) no longer proves we're at the
@@ -1235,7 +1235,7 @@ impl App {
                 self.clear_artwork();
                 // Use a prefetched direct URL if we have one (instant skip); else hand mpv
                 // the track's own playback target (watch URL or local file path).
-                let prefetched_url = self.prefetch.resolved.get(&song.video_id).cloned();
+                let prefetched_url = self.prefetch.resolved.get_fresh_url(&song.video_id);
                 let (url, prefetched) = match prefetched_url {
                     Some(prefetched) => {
                         match crate::api::validate_playable_url(song.source, &prefetched) {
@@ -1289,7 +1289,7 @@ impl App {
                     && let Some(watch_url) = next.prefetch_target()
                 {
                     let video_id = next.video_id.clone();
-                    if !self.prefetch.resolved.contains_key(&video_id) {
+                    if !self.prefetch.resolved.contains_fresh(&video_id) {
                         cmds.push(Cmd::Resolve {
                             video_id,
                             watch_url,

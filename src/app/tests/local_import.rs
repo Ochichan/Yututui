@@ -72,6 +72,10 @@ fn save_ambiguous_import_job(job_id: &str) {
                 album_id: None,
                 album_uri: None,
                 album_release_date: Some("2024-05-01".to_owned()),
+                album_release_date_precision: Some("day".to_owned()),
+                album_total_tracks: Some(10),
+                album_type: Some("album".to_owned()),
+                album_art_url: Some("https://i.scdn.co/image/cover".to_owned()),
                 disc_number: Some(1),
                 track_number: Some(1),
                 duration_secs: Some(180),
@@ -89,10 +93,17 @@ fn save_ambiguous_import_job(job_id: &str) {
                         display: "Artist - Maybe".to_owned(),
                         score_breakdown: Some(MatchScoreBreakdown {
                             total: 0.74,
+                            raw_total: 0.74,
                             title: 0.85,
                             artist: 1.0,
                             duration: 0.80,
                             album_bonus: 0.05,
+                            quality_bonus: 0.0,
+                            identity_penalty: 0.0,
+                            non_music_penalty: 0.0,
+                            accept_blocked: false,
+                            reject_reason: None,
+                            reason_codes: Vec::new(),
                         }),
                     },
                     AmbiguousCandidate {
@@ -101,10 +112,17 @@ fn save_ambiguous_import_job(job_id: &str) {
                         display: "Artist - Maybe alternate".to_owned(),
                         score_breakdown: Some(MatchScoreBreakdown {
                             total: 0.71,
+                            raw_total: 0.71,
                             title: 0.80,
                             artist: 1.0,
                             duration: 0.72,
                             album_bonus: 0.05,
+                            quality_bonus: 0.0,
+                            identity_penalty: 0.0,
+                            non_music_penalty: 0.0,
+                            accept_blocked: false,
+                            reject_reason: None,
+                            reason_codes: Vec::new(),
                         }),
                     },
                 ],
@@ -118,6 +136,60 @@ fn save_ambiguous_import_job(job_id: &str) {
     crate::transfer::session::ImportSession::from_checkpoint(&cp)
         .save()
         .expect("save import session");
+}
+
+fn single_cmd(cmds: Vec<Cmd>) -> Cmd {
+    assert_eq!(cmds.len(), 1, "expected exactly one command");
+    cmds.into_iter().next().unwrap()
+}
+
+fn finish_import_review_cmd(app: &mut App, cmd: Cmd) {
+    let Cmd::Local(LocalCmd::ReviewImport {
+        op_id,
+        session_id,
+        source_order,
+        action,
+    }) = cmd
+    else {
+        panic!("expected import review command");
+    };
+    let result = match action {
+        ImportReviewAction::AcceptFirst => {
+            crate::transfer::review_action::accept_first_candidate(&session_id, source_order)
+        }
+        ImportReviewAction::ChooseNext => {
+            crate::transfer::review_action::choose_next_candidate(&session_id, source_order)
+        }
+        ImportReviewAction::Reject => {
+            crate::transfer::review_action::reject_row(&session_id, source_order)
+        }
+        ImportReviewAction::Skip => {
+            crate::transfer::review_action::skip_row(&session_id, source_order)
+        }
+    }
+    .map_err(|error| format!("{error:#}"));
+    app.update(Msg::Local(LocalMsg::ImportReviewFinished {
+        op_id,
+        session_id,
+        source_order,
+        action,
+        result,
+        elapsed_ms: 0,
+    }));
+}
+
+fn finish_import_accept_all_cmd(app: &mut App, cmd: Cmd) {
+    let Cmd::Local(LocalCmd::ReviewImportAcceptAll { op_id, session_id }) = cmd else {
+        panic!("expected import accept-all command");
+    };
+    let result = crate::transfer::review_action::accept_all_candidates(&session_id)
+        .map_err(|error| format!("{error:#}"));
+    app.update(Msg::Local(LocalMsg::ImportReviewAcceptAllFinished {
+        op_id,
+        session_id,
+        result,
+        elapsed_ms: 0,
+    }));
 }
 
 fn temp_import_root(name: &str) -> PathBuf {
@@ -354,6 +426,10 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
                 album_artists: vec!["Album Artist".to_owned()],
                 album: Some("Album".to_owned()),
                 album_release_date: Some("2024-05-01".to_owned()),
+                album_release_date_precision: Some("day".to_owned()),
+                album_total_tracks: Some(10),
+                album_type: Some("single".to_owned()),
+                album_art_url: Some("https://i.scdn.co/image/linked".to_owned()),
                 disc_number: Some(1),
                 track_number: Some(2),
                 duration_secs: Some(180),
@@ -370,10 +446,17 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
                     display: "Artist - Linked".to_owned(),
                     score_breakdown: Some(MatchScoreBreakdown {
                         total: 0.91,
+                        raw_total: 0.91,
                         title: 0.95,
                         artist: 1.0,
                         duration: 0.90,
                         album_bonus: 0.05,
+                        quality_bonus: 0.0,
+                        identity_penalty: 0.0,
+                        non_music_penalty: 0.0,
+                        accept_blocked: false,
+                        reject_reason: None,
+                        reason_codes: Vec::new(),
                     }),
                 }],
                 local_path: Some(PathBuf::from("/tmp/inbox/Linked.m4a")),
@@ -720,6 +803,24 @@ fn local_deck_import_row_o_opens_selected_candidate_url() {
 }
 
 #[test]
+fn local_deck_recovers_corrupt_import_session_from_checkpoint() {
+    let session_id = "sp2yt-local-recover-session";
+    save_ambiguous_import_job(session_id);
+    let session_path =
+        crate::transfer::session::session_path(session_id).expect("import session path");
+    fs::write(&session_path, b"{not valid json").expect("corrupt import session");
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('0'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+
+    assert_eq!(app.local_rows_len(), 1);
+    let recovered =
+        crate::transfer::session::ImportSession::load(session_id).expect("load recovered session");
+    assert_eq!(recovered.rows[0].source_order, 1);
+}
+
+#[test]
 fn local_deck_import_review_keys_accept_and_reject_rows() {
     let accept_id = "sp2yt-local-review-accept";
     save_ambiguous_import_job(accept_id);
@@ -736,7 +837,12 @@ fn local_deck_import_review_keys_accept_and_reject_rows() {
     );
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('a'))));
-    assert!(cmds.is_empty());
+    let cmd = single_cmd(cmds);
+    let before =
+        crate::transfer::session::ImportSession::load(accept_id).expect("load pending session");
+    assert_eq!(before.rows[0].review_decision, None);
+    assert!(app.status.text.contains("Accepting import row"));
+    finish_import_review_cmd(&mut app, cmd);
     let accepted =
         crate::transfer::session::ImportSession::load(accept_id).expect("load accepted session");
     assert!(matches!(
@@ -768,7 +874,8 @@ fn local_deck_import_review_keys_accept_and_reject_rows() {
     app.local_mode.ui.filter_query.clear();
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('r'))));
-    assert!(cmds.is_empty());
+    let cmd = single_cmd(cmds);
+    finish_import_review_cmd(&mut app, cmd);
     let rejected =
         crate::transfer::session::ImportSession::load(reject_id).expect("load rejected session");
     assert_eq!(
@@ -795,7 +902,8 @@ fn local_deck_import_review_keys_choose_next_and_skip_rows() {
     app.local_mode.ui.filter_query.clear();
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('c'))));
-    assert!(cmds.is_empty());
+    let cmd = single_cmd(cmds);
+    finish_import_review_cmd(&mut app, cmd);
     let chosen =
         crate::transfer::session::ImportSession::load(choose_id).expect("load chosen session");
     assert!(matches!(
@@ -816,7 +924,8 @@ fn local_deck_import_review_keys_choose_next_and_skip_rows() {
     assert_eq!(app.local_rows_len(), 1);
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('x'))));
-    assert!(cmds.is_empty());
+    let cmd = single_cmd(cmds);
+    finish_import_review_cmd(&mut app, cmd);
     let skipped =
         crate::transfer::session::ImportSession::load(skip_id).expect("load skipped session");
     assert_eq!(
@@ -829,6 +938,39 @@ fn local_deck_import_review_keys_choose_next_and_skip_rows() {
         0,
         "skipped rows should leave the attention inbox"
     );
+}
+
+#[test]
+fn local_deck_shift_a_confirms_and_accepts_all_session_candidates() {
+    let session_id = "sp2yt-local-review-accept-all";
+    save_ambiguous_import_job(session_id);
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open.is_empty());
+    app.local_mode.ui.filter_query.clear();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('A'))));
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.local_mode
+            .pending_accept_all_confirm
+            .as_ref()
+            .map(|confirm| (confirm.session_id.clone(), confirm.candidate_count)),
+        Some((session_id.to_owned(), 1))
+    );
+
+    let cmd = single_cmd(app.update(Msg::Key(key(KeyCode::Enter))));
+    finish_import_accept_all_cmd(&mut app, cmd);
+    let accepted =
+        crate::transfer::session::ImportSession::load(session_id).expect("load accepted session");
+    assert!(matches!(
+        accepted.rows[0].review_decision,
+        Some(ReviewDecision::Accepted { ref key, .. }) if key == "dQw4w9WgXcQ"
+    ));
+    assert!(app.status.text.contains("Accepted 1 import candidate"));
 }
 
 #[test]
