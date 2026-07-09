@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 
 use crate::ai::GeminiModel;
 use crate::config::{
-    AnimationsConfig, Config, LocalRootConfig, default_cookies_file, default_download_dir,
+    AnimationsConfig, Config, LocalRootConfig, SpotifyImportMode, default_cookies_file,
+    default_download_dir,
 };
 use crate::eq::{self, EqPreset};
 use crate::i18n::Language;
@@ -20,6 +21,9 @@ use crate::search_source::SearchConfig;
 use crate::streaming::{CuratingMode, StreamingMode};
 use crate::t;
 use crate::theme::{ThemeConfig, ThemeRole};
+
+#[cfg(test)]
+mod spotify_tests;
 
 /// Per-band gain keyboard step (dB) for the EQ sliders. The gain limits and the clamp
 /// live in [`crate::eq`] (re-exported below) so band semantics have a single home.
@@ -195,6 +199,7 @@ impl SettingsTab {
                 Field::SpotifyClientId,
                 Field::SpotifyRedirectPort,
                 Field::SpotifyConnect,
+                Field::SpotifyImportMode,
                 Field::SpotifyImport,
                 Field::ScrobbleLocalFiles,
             ],
@@ -224,7 +229,7 @@ impl SettingsTab {
             SettingsTab::Accounts => vec![
                 ("Last.fm", 3),
                 ("ListenBrainz", 2),
-                ("Spotify", 4),
+                ("Spotify", 5),
                 (t!("Scrobbling", "스크로블링"), 1),
             ],
             // Separate the chat/assistant config from the autoplay + curation trio so the
@@ -377,6 +382,8 @@ pub enum Field {
     SpotifyRedirectPort,
     /// A button: run the PKCE browser flow, or disconnect when connected.
     SpotifyConnect,
+    /// How TUI Spotify imports write local Library playlists.
+    SpotifyImportMode,
     /// A button: list Spotify playlists and import the picked one.
     SpotifyImport,
 }
@@ -584,6 +591,7 @@ impl Field {
             | Field::CuratingMode
             | Field::DjGemLanguage
             | Field::VideoLayout
+            | Field::SpotifyImportMode
             | Field::StreamingMode => FieldKind::Select,
             Field::Speed | Field::SeekInterval | Field::Band(_) | Field::AnimFps => {
                 FieldKind::Slider
@@ -739,6 +747,9 @@ impl Field {
             Field::SpotifyClientId => t!("Client ID", "클라이언트 ID").to_owned(),
             Field::SpotifyRedirectPort => t!("Redirect port", "리다이렉트 포트").to_owned(),
             Field::SpotifyConnect => t!("Spotify account", "Spotify 계정").to_owned(),
+            Field::SpotifyImportMode => {
+                t!("Spotify import mode", "Spotify 가져오기 모드").to_owned()
+            }
             Field::SpotifyImport => t!("Import from Spotify…", "Spotify에서 가져오기…").to_owned(),
         }
     }
@@ -837,6 +848,8 @@ pub struct SettingsDraft {
     pub spotify_client_id: String,
     /// Edited as text; validated + parsed on apply.
     pub spotify_redirect_port: String,
+    /// Spotify playlist import mode for the TUI picker.
+    pub spotify_import_mode: SpotifyImportMode,
     /// Display-only: whether a saved token exists (checked when the screen opens) /
     /// the display name once a connect flow completes this session.
     pub spotify_connected: bool,
@@ -1064,6 +1077,7 @@ impl SettingsDraft {
                     format!("connected as {} · ↵ disconnect", self.spotify_username)
                 }
             }
+            Field::SpotifyImportMode => self.spotify_import_mode.label().to_owned(),
             Field::SpotifyImport => t!(
                 "↵ pick a playlist (↵ again cancels a running import)",
                 "↵ 플레이리스트 선택 (실행 중엔 ↵로 취소)"
@@ -1171,6 +1185,7 @@ impl SettingsDraft {
         cfg.spotify.client_id = blank_to_none(&self.spotify_client_id);
         // Invalid port text falls back to the default rather than persisting garbage.
         cfg.spotify.redirect_port = self.spotify_redirect_port.trim().parse::<u16>().ok();
+        cfg.spotify.import_mode = self.spotify_import_mode;
     }
 }
 
@@ -1203,6 +1218,8 @@ pub struct SettingsState {
     pub keymap: KeyMap,
     /// The binding being rebound (Keys tab), while waiting to capture its new key.
     pub capturing: Option<(KeyContext, Action)>,
+    /// Open Settings dropdown for the Spotify import mode. Holds the highlighted option index.
+    pub spotify_import_mode_dropdown: Option<usize>,
     /// Whether the user was in a radio context when Settings opened — dedicated Radio mode OR
     /// a radio station currently loaded/playing. Gates the radio-only `RadioRecording` item's
     /// visibility. Captured once at open (neither input can change while Settings is open), so
@@ -1352,6 +1369,7 @@ mod tests {
             scrobble_local_files: true,
             spotify_client_id: String::new(),
             spotify_redirect_port: String::new(),
+            spotify_import_mode: SpotifyImportMode::FastPlaylist,
             spotify_connected: false,
             spotify_stale: false,
             spotify_username: String::new(),
@@ -1376,6 +1394,7 @@ mod tests {
             secret_restore: None,
             keymap: KeyMap::default(),
             capturing: None,
+            spotify_import_mode_dropdown: None,
             radio_mode,
         }
     }
@@ -1781,6 +1800,7 @@ mod tests {
             scrobble_local_files: false,
             spotify_client_id: "  spotify-cid  ".to_owned(),
             spotify_redirect_port: "9333".to_owned(),
+            spotify_import_mode: crate::config::SpotifyImportMode::StrictPlaylist,
             spotify_connected: true,
             spotify_stale: false,
             spotify_username: "listener".to_owned(),
@@ -1851,6 +1871,10 @@ mod tests {
         assert_eq!(cfg.scrobble.local_files, Some(false));
         assert_eq!(cfg.spotify.client_id.as_deref(), Some("spotify-cid"));
         assert_eq!(cfg.spotify.redirect_port, Some(9333));
+        assert_eq!(
+            cfg.spotify.import_mode,
+            crate::config::SpotifyImportMode::StrictPlaylist
+        );
         assert_eq!(cfg.eq_preset, EqPreset::Custom);
         assert_eq!(cfg.eq_bands, Some(bands));
         assert_eq!(cfg.normalize, Some(true));

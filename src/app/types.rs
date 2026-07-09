@@ -486,6 +486,10 @@ pub enum MouseTarget {
     /// A clickable Settings button or text value, by field-row index — enters edit mode (text)
     /// or fires the action (button); the mouse equivalent of Enter on that row.
     SettingsActivate(usize),
+    /// Open/close the Settings Spotify import-mode dropdown.
+    SettingsSpotifyImportModeMenu,
+    /// Pick a Settings Spotify import-mode dropdown option.
+    SettingsSpotifyImportModeSelect(crate::config::SpotifyImportMode),
     /// A list row, by absolute item index (interpreted per the active screen). Single-click
     /// selects; double-click plays.
     ListRow(usize),
@@ -977,30 +981,44 @@ impl LocalOrganizeConfirm {
 pub struct LocalImportAcceptAllConfirm {
     pub session_id: String,
     pub candidate_count: u32,
+    pub ready_count: u32,
+    pub review_left: u32,
+    pub missing_left: u32,
 }
 
 impl LocalImportAcceptAllConfirm {
     pub fn title(&self) -> &'static str {
-        t!(" Accept import candidates ", " 임포트 후보 수락 ")
+        t!(" Accept & write import ", " 임포트 수락 및 작성 ")
     }
 
     pub fn prompt(&self) -> String {
         if crate::i18n::is_korean() {
-            format!("{}개 임포트 후보를 모두 수락할까요?", self.candidate_count)
+            format!(
+                "후보 {}개를 수락하고 준비된 {}행을 Library 플레이리스트에 쓸까요?",
+                self.candidate_count, self.ready_count
+            )
         } else {
             format!(
-                "Accept {} import candidate{}?",
+                "Accept {} candidate{} and write {} ready row{} to the Library playlist?",
                 self.candidate_count,
-                if self.candidate_count == 1 { "" } else { "s" }
+                if self.candidate_count == 1 { "" } else { "s" },
+                self.ready_count,
+                if self.ready_count == 1 { "" } else { "s" }
             )
         }
     }
 
     pub fn detail(&self) -> String {
         if crate::i18n::is_korean() {
-            format!("세션: {}", self.session_id)
+            format!(
+                "세션: {} · 남을 검토 {} · 누락 {}",
+                self.session_id, self.review_left, self.missing_left
+            )
         } else {
-            format!("Session: {}", self.session_id)
+            format!(
+                "Session: {} · review left {} · missing {}",
+                self.session_id, self.review_left, self.missing_left
+            )
         }
     }
 }

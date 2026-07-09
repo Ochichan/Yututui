@@ -42,8 +42,13 @@ pub(in crate::app) fn local_import_session_text(session_id: &str, track_count: u
             .filter(|row| !row.errors.is_empty())
             .count();
         return format!(
-            "{session_id}  ({local_files}/{} local, {failed} failed, {} review, {} missing)",
-            session.counts.total, session.counts.ambiguous, session.counts.not_found
+            "{session_id}  ({} written, {}/{} local, {failed} failed, {} review, {} missing, {} pending)",
+            session.counts.written,
+            local_files,
+            session.counts.total,
+            session.counts.ambiguous,
+            session.counts.not_found,
+            session.counts.pending
         );
     }
     format!("{session_id}  ({track_count} {})", t!("tracks", "곡"))
@@ -73,8 +78,13 @@ pub(in crate::app) fn push_import_session_summary_details(
     );
     push_detail_line(
         lines,
+        t!("Written", "작성됨"),
+        session.counts.written.to_string(),
+    );
+    push_detail_line(
+        lines,
         t!("Local files", "로컬 파일"),
-        local_files.to_string(),
+        format!("{local_files}/{}", session.counts.total),
     );
     push_detail_line(lines, t!("Failed", "실패"), failed.to_string());
     push_detail_line(
@@ -86,6 +96,11 @@ pub(in crate::app) fn push_import_session_summary_details(
         lines,
         t!("Missing", "누락"),
         session.counts.not_found.to_string(),
+    );
+    push_detail_line(
+        lines,
+        t!("Pending", "대기"),
+        session.counts.pending.to_string(),
     );
     push_detail_line(lines, t!("Source", "원본"), session.source.display());
     push_detail_line(

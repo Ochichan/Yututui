@@ -9,7 +9,10 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use super::checkpoint::TransferReport;
 use super::engine::JobCtx;
-use super::{JobSpec, TransferDest, TransferProgress, TransferSource, new_job_id, run_job};
+use super::{
+    JobSpec, TransferDest, TransferProgress, TransferSource, new_job_id, run_job,
+    write_reviewed_local_job,
+};
 use crate::config::Config;
 use crate::spotify::auth;
 use crate::spotify::client::SpotifyClient;
@@ -23,6 +26,9 @@ pub enum TransferCmd {
     Disconnect,
     ListSpotifyPlaylists,
     StartJob(Box<JobSpec>),
+    WriteReviewedLocal {
+        job_id: String,
+    },
     CancelJob,
 }
 
@@ -114,6 +120,22 @@ async fn run_actor(mut rx: UnboundedReceiver<TransferCmd>, emit: EventSink) {
                     tokio::spawn(async move { run_one_job(id_clone, *spec, emit).await }),
                 ));
             }
+            TransferCmd::WriteReviewedLocal { job_id } => {
+                if job_task.as_ref().is_some_and(|(_, t)| !t.is_finished()) {
+                    emit(TransferEvent::JobFailed {
+                        job_id,
+                        error: "a transfer is already running".to_owned(),
+                        resumable: false,
+                    });
+                    continue;
+                }
+                let emit = Arc::clone(&emit);
+                let id_clone = job_id.clone();
+                job_task = Some((
+                    job_id,
+                    tokio::spawn(async move { run_reviewed_local_write(id_clone, emit).await }),
+                ));
+            }
             TransferCmd::CancelJob => {
                 if let Some((job_id, task)) = job_task.take() {
                     // Aborting between awaits is safe: the checkpoint flushes at every
@@ -127,6 +149,26 @@ async fn run_actor(mut rx: UnboundedReceiver<TransferCmd>, emit: EventSink) {
                 }
             }
         }
+    }
+}
+
+async fn run_reviewed_local_write(job_id: String, emit: EventSink) {
+    let mut last_beat: Option<Instant> = None;
+    let emit_progress = Arc::clone(&emit);
+    let mut progress = move |p: TransferProgress| {
+        let due = last_beat.is_none_or(|t| t.elapsed() >= Duration::from_secs(1));
+        if due || p.done == p.total {
+            last_beat = Some(Instant::now());
+            emit_progress(TransferEvent::Progress(p));
+        }
+    };
+    match write_reviewed_local_job(&job_id, &mut progress).await {
+        Ok(report) => emit(TransferEvent::JobDone(Box::new(report))),
+        Err(e) => emit(TransferEvent::JobFailed {
+            job_id,
+            error: format!("{:#}", e.error),
+            resumable: e.resumable,
+        }),
     }
 }
 
@@ -290,6 +332,7 @@ mod tests {
             dry_run: false,
             min_score: 0.80,
             take_best: false,
+            auto_accept_ambiguous_min_score: None,
             rematch: false,
         }
     }

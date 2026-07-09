@@ -449,10 +449,15 @@ impl App {
         if self.dropdowns.eq_open
             || self.dropdowns.streaming_open
             || self.dropdowns.search_source_open
+            || self
+                .settings
+                .as_ref()
+                .is_some_and(|st| st.spotify_import_mode_dropdown.is_some())
         {
             self.dropdowns.eq_open = false;
             self.dropdowns.streaming_open = false;
             self.dropdowns.search_source_open = false;
+            self.settings_close_spotify_import_mode_dropdown();
             self.dirty = true;
             return Vec::new();
         }
@@ -620,7 +625,6 @@ impl App {
                 self.local_row_click(i)
             }
             MouseTarget::LocalRow(_) => Vec::new(),
-            // Footer mouse icon: opens a mouse-only cheat-sheet.
             MouseTarget::MouseHelp => {
                 self.overlays.help_visible = false;
                 self.overlays.mouse_help_visible = true;
@@ -628,24 +632,45 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
-            // Settings tab header.
             MouseTarget::SettingsTab(i) if self.mode == Mode::Settings => {
                 self.settings_select_tab(i);
                 Vec::new()
             }
             MouseTarget::SettingsTab(_) => Vec::new(),
-            // Click a checkbox or `<`/`>` arrow: focus that row, then nudge it like ←/→.
             MouseTarget::SettingsChange { row, delta } if self.mode == Mode::Settings => {
+                if self.settings_close_spotify_import_mode_dropdown() {
+                    return Vec::new();
+                }
                 self.settings_focus_row(row);
                 self.settings_change(delta)
             }
             MouseTarget::SettingsChange { .. } => Vec::new(),
-            // Click a button or text value: focus that row, then activate it like Enter.
             MouseTarget::SettingsActivate(row) if self.mode == Mode::Settings => {
+                if self.settings_close_spotify_import_mode_dropdown() {
+                    return Vec::new();
+                }
                 self.settings_focus_row(row);
                 self.settings_activate()
             }
             MouseTarget::SettingsActivate(_) => Vec::new(),
+            MouseTarget::SettingsSpotifyImportModeMenu if self.mode == Mode::Settings => {
+                if self
+                    .settings
+                    .as_ref()
+                    .is_some_and(|st| st.spotify_import_mode_dropdown.is_some())
+                {
+                    self.settings_close_spotify_import_mode_dropdown();
+                } else {
+                    self.settings_open_spotify_import_mode_dropdown();
+                }
+                Vec::new()
+            }
+            MouseTarget::SettingsSpotifyImportModeMenu => Vec::new(),
+            MouseTarget::SettingsSpotifyImportModeSelect(mode) if self.mode == Mode::Settings => {
+                self.settings_select_spotify_import_mode(mode);
+                Vec::new()
+            }
+            MouseTarget::SettingsSpotifyImportModeSelect(_) => Vec::new(),
             // Single-click a list row: select it (double-click plays — see double-click path).
             MouseTarget::ListRow(i) => self.on_list_row_click(i),
             // Scrollbar targets are handled by the coordinate-aware click/drag paths.

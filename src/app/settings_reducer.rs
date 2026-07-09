@@ -30,15 +30,39 @@ fn spotify_row_state(token_client_id: Option<&str>, cfg_client_id: &str) -> (boo
 fn transfer_done_status(report: &crate::transfer::checkpoint::TransferReport) -> String {
     if crate::i18n::is_korean() {
         format!(
-            "가져오기 완료: {} · 세션 보기: ytt transfer session {} · Library > Playlists에서 Shift+D 다운로드 후 Local Deck > Import Sessions",
+            "가져오기 완료: {} · Library > Playlists에 저장됨 · 검토: Local Deck > Import Sessions 또는 ytt transfer session {}",
             report.render_text(),
             report.job_id
         )
     } else {
         format!(
-            "Import finished: {} · review: ytt transfer session {} · Library > Playlists: Shift+D downloads, then Local Deck > Import Sessions",
+            "Import finished: {} · saved in Library > Playlists · review: Local Deck > Import Sessions or ytt transfer session {}",
             report.render_text(),
             report.job_id
+        )
+    }
+}
+
+fn local_accept_write_done_status(
+    report: &crate::transfer::checkpoint::TransferReport,
+    accepted_count: u32,
+) -> String {
+    let review_left = report.ambiguous.len() as u32;
+    let missing_left = report.not_found.len() as u32;
+    if crate::i18n::is_korean() {
+        format!(
+            "임포트 세션 작성 완료: 후보 {}개 수락 · 준비 행 {}개 작성 · 검토 {}개 남음 · 누락 {}개 남음 · Library > Playlists",
+            accepted_count, report.written, review_left, missing_left
+        )
+    } else {
+        format!(
+            "Import session written: {} candidate{} accepted · {} ready row{} written · {} review left · {} missing left · Library > Playlists",
+            accepted_count,
+            if accepted_count == 1 { "" } else { "s" },
+            report.written,
+            if report.written == 1 { "" } else { "s" },
+            review_left,
+            missing_left
         )
     }
 }
@@ -159,6 +183,7 @@ impl App {
                 .redirect_port
                 .map(|p| p.to_string())
                 .unwrap_or_default(),
+            spotify_import_mode: self.config.spotify.import_mode,
             // Connection state computed above; the display name arrives only when a
             // connect flow completes in this session.
             spotify_connected,
@@ -179,6 +204,7 @@ impl App {
             secret_restore: None,
             keymap: self.keymap.clone(),
             capturing: None,
+            spotify_import_mode_dropdown: None,
             // Show the radio-recording item whenever the user is in a radio context —
             // dedicated Radio mode OR a radio station is currently loaded/playing (recording
             // runs on any station, not only in the dedicated UI), so it's never hidden when
@@ -199,6 +225,13 @@ impl App {
         // is intercepted higher up in `on_key`, since it can also open over the player.
         if self.overlays.recording_settings.is_some() {
             return self.recording_settings_key(k);
+        }
+        if self
+            .settings
+            .as_ref()
+            .is_some_and(|s| s.spotify_import_mode_dropdown.is_some())
+        {
+            return self.settings_spotify_import_mode_dropdown_key(k);
         }
         // While editing a text field, keys feed the buffer until Enter/Esc commits it.
         if self.settings.as_ref().is_some_and(|s| s.editing_text) {
@@ -416,6 +449,7 @@ impl App {
             st.row = 0;
             st.editing_text = false;
             st.capturing = None;
+            st.spotify_import_mode_dropdown = None;
             // The new tab has a different row set; drop the old offset so it starts at the top.
             self.bridges.reset_settings_scroll();
             self.dirty = true;
@@ -431,6 +465,7 @@ impl App {
             };
             st.row = (st.row as i32 + delta).clamp(0, n.max(1) - 1) as usize;
             st.editing_text = false;
+            st.spotify_import_mode_dropdown = None;
             self.dirty = true;
         }
     }
@@ -594,6 +629,18 @@ impl App {
                 self.status.text = format!(
                     "{}: {}",
                     t!("Curating style", "큐레이팅 스타일"),
+                    next.label()
+                );
+                Vec::new()
+            }
+            Field::SpotifyImportMode => {
+                let s = self.settings_mut();
+                let next = s.draft.spotify_import_mode.cycled(dir >= 0);
+                s.draft.spotify_import_mode = next;
+                s.spotify_import_mode_dropdown = None;
+                self.status.text = format!(
+                    "{}: {}",
+                    t!("Spotify import mode", "Spotify 가져오기 모드"),
                     next.label()
                 );
                 Vec::new()
@@ -926,6 +973,10 @@ impl App {
                 Vec::new()
             }
             FieldKind::Toggle => self.settings_change(1),
+            FieldKind::Select if field == Field::SpotifyImportMode => {
+                self.settings_open_spotify_import_mode_dropdown();
+                Vec::new()
+            }
             FieldKind::Button => match field {
                 Field::ResetKeybindings => {
                     self.settings_request_confirm(SettingsConfirm::ResetKeybindings);
@@ -1050,69 +1101,6 @@ impl App {
             },
             _ => Vec::new(),
         }
-    }
-
-    /// Keys while the Spotify playlist picker overlay is open (↑/↓/Enter/Esc).
-    pub(in crate::app) fn spotify_picker_key(&mut self, k: KeyEvent) -> Vec<Cmd> {
-        let action = self
-            .keymap
-            .action(KeyContext::Settings, k.into())
-            .or_else(|| Self::settings_safety_action(k));
-        let Some(picker) = self.overlays.spotify_picker.as_mut() else {
-            return Vec::new();
-        };
-        self.dirty = true;
-        match action {
-            Some(Action::MoveUp) => {
-                picker.selected = picker.selected.saturating_sub(1);
-                Vec::new()
-            }
-            Some(Action::MoveDown) => {
-                picker.selected = (picker.selected + 1).min(picker.items.len().saturating_sub(1));
-                Vec::new()
-            }
-            Some(Action::Confirm) => self.spotify_picker_confirm(),
-            Some(Action::SettingsCancel | Action::Back) => {
-                self.overlays.spotify_picker = None;
-                Vec::new()
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    /// Start importing the picker's selected item — shared by the Enter and mouse-click paths.
-    pub(in crate::app) fn spotify_picker_confirm(&mut self) -> Vec<Cmd> {
-        let Some(item) = self
-            .overlays
-            .spotify_picker
-            .as_ref()
-            .and_then(|p| p.items.get(p.selected).cloned())
-        else {
-            return Vec::new();
-        };
-        self.overlays.spotify_picker = None;
-        self.transfer_running = true;
-        self.dirty = true;
-        // The TUI can't browse account playlists, so the picker lands imports in the app's own
-        // Library playlists — playable the moment the job finishes.
-        let dest = crate::transfer::TransferDest::LocalPlaylist { name: None };
-        let spec = crate::transfer::JobSpec {
-            source: item.source,
-            dest,
-            dry_run: false,
-            min_score: 0.80,
-            take_best: false,
-            rematch: false,
-        };
-        self.status.text = if crate::i18n::is_korean() {
-            format!("가져오는 중: {}", item.label)
-        } else {
-            format!("Importing: {}", item.label)
-        };
-        self.status.kind = StatusKind::Info;
-        vec![Cmd::Transfer(
-            crate::transfer::actor::TransferCmd::StartJob(Box::new(spec)),
-        )]
     }
 
     /// Keys while the radio-recording settings popup is open. Rows: 0 mode · 1 min · 2 max ·
@@ -1508,18 +1496,28 @@ impl App {
                 self.transfer_running = true;
                 self.status.text = if crate::i18n::is_korean() {
                     format!(
-                        "Spotify 가져오기: {} {}/{} · {}",
+                        "Spotify 가져오기: {} {}/{} · 맞춤 {} · 자동 {} · 검토 {} · 누락 {} · 작성 {} · {}",
                         p.stage.label(),
                         p.done,
                         p.total,
+                        p.matched,
+                        p.auto_accepted,
+                        p.ambiguous,
+                        p.not_found,
+                        p.written,
                         p.current
                     )
                 } else {
                     format!(
-                        "Spotify import: {} {}/{} · {}",
+                        "Spotify import: {} {}/{} · matched {} · auto {} · review {} · missing {} · written {} · {}",
                         p.stage.label(),
                         p.done,
                         p.total,
+                        p.matched,
+                        p.auto_accepted,
+                        p.ambiguous,
+                        p.not_found,
+                        p.written,
                         p.current
                     )
                 };
@@ -1535,7 +1533,15 @@ impl App {
                 // The store changed under the Playlists tab: drop a drill-down or pending
                 // delete whose playlist vanished and re-clamp the cursor into the new rows.
                 self.reconcile_playlists_reload();
-                self.status.text = transfer_done_status(&report);
+                if let Some(accepted_count) = self
+                    .local_mode
+                    .pending_accept_write_summaries
+                    .remove(&report.job_id)
+                {
+                    self.status.text = local_accept_write_done_status(&report, accepted_count);
+                } else {
+                    self.status.text = transfer_done_status(&report);
+                }
                 self.status.kind = StatusKind::Info;
             }
             TransferEvent::JobFailed {
@@ -1544,6 +1550,9 @@ impl App {
                 resumable,
             } => {
                 self.transfer_running = false;
+                self.local_mode
+                    .pending_accept_write_summaries
+                    .remove(&job_id);
                 let error = crate::util::sanitize::sanitize_error_text(error);
                 self.status.text = if resumable && !job_id.is_empty() {
                     format!(
@@ -1719,6 +1728,7 @@ impl App {
             d.listenbrainz_enabled = true;
             d.scrobble_local_files = true;
             d.spotify_redirect_port = String::new();
+            d.spotify_import_mode = def.spotify.import_mode;
             // Radio recording: reset the settings, but never touch recordings already on disk.
             d.recording_mode = def.recording.mode;
             d.recording_min_seconds = def.effective_recording_min();

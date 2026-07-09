@@ -482,6 +482,7 @@ mod tests {
             dry_run: true,
             min_score: 0.80,
             take_best: false,
+            auto_accept_ambiguous_min_score: None,
             rematch: false,
         }
     }

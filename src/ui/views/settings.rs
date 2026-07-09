@@ -551,6 +551,7 @@ fn render_fields(frame: &mut Frame, app: &App, st: &SettingsState, area: Rect) {
     // Per-control click targets (checkbox / arrows / button / text) on top of the row rects, so
     // they win where they overlap (`mouse_target_at` takes the last-registered match).
     register_field_controls(app, st, area, offset, &display_to_field);
+    render_spotify_import_mode_dropdown(frame, app, st, area, offset, &display_to_field);
     // Right-border scrollbar tracking the viewport; a no-op when every row fits.
     buttons::render_list_scrollbar(
         frame,
@@ -632,6 +633,9 @@ fn register_field_controls(
                 put(vx, 3, y, MouseTarget::SettingsChange { row: i, delta: 1 });
             }
             FieldKind::Select | FieldKind::Slider => {
+                if field == Field::SpotifyImportMode {
+                    put(vx, w, y, MouseTarget::SettingsSpotifyImportModeMenu);
+                }
                 put(vx, 1, y, MouseTarget::SettingsChange { row: i, delta: -1 });
                 let last = vx.saturating_add(w.saturating_sub(1));
                 put(last, 1, y, MouseTarget::SettingsChange { row: i, delta: 1 });
@@ -640,6 +644,103 @@ fn register_field_controls(
                 put(vx, w, y, MouseTarget::SettingsActivate(i));
             }
         }
+    }
+}
+
+fn render_spotify_import_mode_dropdown(
+    frame: &mut Frame,
+    app: &App,
+    st: &SettingsState,
+    area: Rect,
+    offset: usize,
+    display_to_field: &[Option<usize>],
+) {
+    let Some(selected) = st.spotify_import_mode_dropdown else {
+        return;
+    };
+    let fields = st.fields();
+    let Some(field_index) = fields
+        .iter()
+        .position(|field| *field == Field::SpotifyImportMode)
+    else {
+        return;
+    };
+    let Some(display_row) = display_to_field
+        .iter()
+        .position(|mapped| *mapped == Some(field_index))
+    else {
+        return;
+    };
+    if display_row < offset {
+        return;
+    }
+    let visible = display_row - offset;
+    if visible >= area.height as usize {
+        return;
+    }
+
+    let theme = &st.draft.theme;
+    let gutter = buttons::text_width(HL_SYMBOL);
+    let vx = area.x + gutter + other_label_width(st.tab) as u16;
+    let available_width = area.right().saturating_sub(vx);
+    if available_width == 0 {
+        return;
+    }
+    let value = field_value_text(app, st, Field::SpotifyImportMode, field_index == st.row);
+    let label_width = buttons::text_width(&value)
+        .max(
+            crate::config::SpotifyImportMode::ALL
+                .iter()
+                .map(|mode| buttons::text_width(mode.label()))
+                .max()
+                .unwrap_or(0)
+                + 4,
+        )
+        .min(available_width);
+    let leading = vx.saturating_sub(area.x) as usize;
+    let start_y = area.y + visible as u16 + 1;
+    for (idx, mode) in crate::config::SpotifyImportMode::ALL
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        let y = start_y + idx as u16;
+        if y >= area.bottom() {
+            break;
+        }
+        let focused = idx == selected;
+        let marker = if focused { ">" } else { " " };
+        let text = format!(
+            "{marker} {}",
+            pad_to_width(mode.label(), label_width.saturating_sub(2) as usize)
+        );
+        let text = pad_to_width(
+            &format!("{}{}", " ".repeat(leading), text),
+            area.width as usize,
+        );
+        let role = if focused {
+            R::SettingsValueFocused
+        } else {
+            R::SettingsValue
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, theme.style(role)))),
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+        );
+        app.register_mouse_button(
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+            MouseTarget::SettingsSpotifyImportModeSelect(mode),
+        );
     }
 }
 
@@ -867,8 +968,8 @@ pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
     let Some(picker) = app.overlays.spotify_picker.as_ref() else {
         return;
     };
-    let h = (picker.items.len() as u16 + 4).clamp(7, 18);
-    let popup = centered_fixed(area, 62, h);
+    let h = (picker.items.len() as u16 + 6).clamp(9, 20);
+    let popup = centered_fixed(area, 72, h);
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
@@ -879,8 +980,37 @@ pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
-    let visible = rows[0].height as usize;
+    let rows = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    let import_mode = app
+        .settings
+        .as_ref()
+        .map(|st| st.draft.spotify_import_mode)
+        .unwrap_or(app.config.spotify.import_mode);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(t!(
+                "Destination: Library > Playlists",
+                "대상: Library > Playlists"
+            )),
+            Line::from(format!(
+                "{}: {} · {}",
+                t!("Mode", "모드"),
+                import_mode.label(),
+                t!(
+                    "change in Settings > Accounts",
+                    "Settings > Accounts에서 변경"
+                )
+            )),
+        ])
+        .style(crate::ui::popup_style(app, R::TextMuted)),
+        rows[0],
+    );
+    let visible = rows[1].height as usize;
     // Keep the selection in view for long playlist lists.
     let first = picker
         .selected
@@ -908,15 +1038,15 @@ pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
             ratatui::text::Line::styled(format!("{marker}{}{count}", item.label), style)
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines), rows[0]);
+    frame.render_widget(Paragraph::new(lines), rows[1]);
     // One click target per visible row: click selects, clicking the selected row (or a
     // double-click) imports. Indices match the `.skip(first).take(visible)` render above.
     for (vis, i) in (first..picker.items.len()).take(visible).enumerate() {
         app.register_mouse_button(
             Rect {
-                x: rows[0].x,
-                y: rows[0].y + vis as u16,
-                width: rows[0].width,
+                x: rows[1].x,
+                y: rows[1].y + vis as u16,
+                width: rows[1].width,
                 height: 1,
             },
             MouseTarget::SpotifyPickRow(i),
@@ -929,7 +1059,7 @@ pub fn render_spotify_picker(frame: &mut Frame, app: &App, area: Rect) {
         ))
         .alignment(Alignment::Center)
         .style(crate::ui::popup_style(app, R::TextMuted)),
-        rows[1],
+        rows[2],
     );
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);

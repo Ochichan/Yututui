@@ -228,8 +228,8 @@ fn first_ambiguous_candidate(outcome: &Option<MatchOutcome>) -> Option<SelectedC
         return None;
     };
     candidates
-        .iter()
-        .find(|candidate| {
+        .first()
+        .filter(|candidate| {
             candidate
                 .score_breakdown
                 .as_ref()

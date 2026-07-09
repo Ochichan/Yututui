@@ -19,8 +19,10 @@ fn transfer_progress(job_id: &str) -> crate::transfer::TransferProgress {
         done: 1,
         total: 2,
         matched: 1,
+        auto_accepted: 0,
         ambiguous: 0,
         not_found: 0,
+        written: 0,
         current: "Artist - Title".to_owned(),
     }
 }

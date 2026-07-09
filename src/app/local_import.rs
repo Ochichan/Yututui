@@ -4,9 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use super::local_format::*;
+use super::local_import_helpers::*;
 use super::*;
 use crate::t;
-use crate::transfer::checkpoint::{Checkpoint, ReportCandidate, ReviewDecision};
+use crate::transfer::checkpoint::Checkpoint;
 use crate::transfer::download_plan::{
     ImportDownloadDecision, ImportDownloadDedupeIndex, build_import_download_plan,
 };
@@ -206,8 +207,15 @@ impl App {
                 if failed > 0 {
                     actions.push(t!("r retry failed", "r 실패 재시도"));
                 }
-                if import_session_accept_all_candidate_count_by_id(&session_id).unwrap_or(0) > 0 {
-                    actions.push(t!("A accept all", "A 전체 수락"));
+                if load_import_session_recovering(&session_id)
+                    .ok()
+                    .is_some_and(|session| {
+                        import_session_accept_all_candidate_count(&session)
+                            + import_session_unwritten_ready_count(&session)
+                            > 0
+                    })
+                {
+                    actions.push(t!("A accept & write", "A 수락 및 작성"));
                 }
                 actions.push(t!("d download accepted", "d 수락 곡 다운로드"));
                 actions.push(t!("m commit inbox", "m 인박스 커밋"));
@@ -227,8 +235,15 @@ impl App {
                         t!("x skip", "x 건너뜀"),
                     ]);
                 }
-                if import_session_accept_all_candidate_count_by_id(&session_id).unwrap_or(0) > 0 {
-                    actions.push(t!("A accept all", "A 전체 수락"));
+                if load_import_session_recovering(&session_id)
+                    .ok()
+                    .is_some_and(|session| {
+                        import_session_accept_all_candidate_count(&session)
+                            + import_session_unwritten_ready_count(&session)
+                            > 0
+                    })
+                {
+                    actions.push(t!("A accept & write", "A 수락 및 작성"));
                 }
                 if !row.errors.is_empty() {
                     actions.push(t!("r retry failed", "r 실패 재시도"));
@@ -267,6 +282,9 @@ impl App {
             t!("Status", "상태"),
             import_session_row_status_label(&row),
         );
+        if let Some(detail) = import_session_row_status_detail(&row) {
+            push_detail_line(lines, t!("Status detail", "상태 설명"), detail);
+        }
         push_detail_line(lines, t!("Title", "제목"), row.title.clone());
         push_detail_line(
             lines,
@@ -317,6 +335,17 @@ impl App {
         }
         if let Some(score) = import_session_row_selected_score(&row) {
             push_detail_line(lines, t!("Score", "점수"), format_score(score));
+        }
+        if matches!(row.status, ImportSessionRowStatus::NotFound) && !row.search_queries.is_empty()
+        {
+            push_detail_line(
+                lines,
+                t!("Tried queries", "시도한 검색어"),
+                row.search_queries.join(" | "),
+            );
+        }
+        if let Some(reason) = row.reject_reason.clone() {
+            push_detail_line(lines, t!("Top rejection", "주요 거부 이유"), reason);
         }
         push_detail_line(
             lines,
@@ -634,11 +663,12 @@ impl App {
             return Some(Vec::new());
         };
         let candidate_count = import_session_accept_all_candidate_count(&session);
-        if candidate_count == 0 {
+        let ready_count = import_session_unwritten_ready_count(&session) + candidate_count;
+        if candidate_count == 0 && ready_count == 0 {
             self.status.kind = StatusKind::Info;
             self.status.text = t!(
-                "No import candidates to accept",
-                "수락할 임포트 후보가 없음"
+                "No import candidates or ready rows to write",
+                "수락할 후보나 작성할 준비 행이 없음"
             )
             .to_owned();
             self.dirty = true;
@@ -647,11 +677,14 @@ impl App {
         self.local_mode.pending_accept_all_confirm = Some(LocalImportAcceptAllConfirm {
             session_id,
             candidate_count,
+            ready_count,
+            review_left: session.counts.ambiguous.saturating_sub(candidate_count),
+            missing_left: session.counts.not_found,
         });
         self.status.kind = StatusKind::Info;
         self.status.text = t!(
-            "Confirm accepting all import candidates",
-            "임포트 후보 전체 수락을 확인하세요"
+            "Confirm accepting and writing the import",
+            "임포트 수락 및 작성을 확인하세요"
         )
         .to_owned();
         self.dirty = true;
@@ -682,6 +715,26 @@ impl App {
             .pending_import_reviews
             .insert(confirm.session_id.clone(), op_id);
         self.status.kind = StatusKind::Info;
+        if confirm.candidate_count == 0 {
+            self.local_mode
+                .pending_import_reviews
+                .remove(&confirm.session_id);
+            self.local_mode
+                .pending_accept_write_summaries
+                .insert(confirm.session_id.clone(), 0);
+            self.transfer_running = true;
+            self.status.text = t!(
+                "Writing accepted import rows to Library playlist...",
+                "수락된 임포트 행을 Library 플레이리스트에 쓰는 중..."
+            )
+            .to_owned();
+            self.dirty = true;
+            return vec![Cmd::Transfer(
+                crate::transfer::actor::TransferCmd::WriteReviewedLocal {
+                    job_id: confirm.session_id,
+                },
+            )];
+        }
         self.status.text = format!(
             "{} {}...",
             t!("Accepting import candidates", "임포트 후보 수락 중"),
@@ -748,21 +801,27 @@ impl App {
         match result {
             Ok(summary) => {
                 self.status.kind = StatusKind::Info;
-                self.status.text = if summary.accepted_count == 0 {
-                    t!(
-                        "No import candidates to accept",
-                        "수락할 임포트 후보가 없음"
+                self.local_mode
+                    .pending_accept_write_summaries
+                    .insert(session_id.clone(), summary.accepted_count);
+                self.transfer_running = true;
+                self.status.text = if crate::i18n::is_korean() {
+                    format!(
+                        "임포트 후보 {}개 수락 · Library 플레이리스트 작성 중...",
+                        summary.accepted_count
                     )
-                    .to_owned()
-                } else if crate::i18n::is_korean() {
-                    format!("임포트 후보 {}개 수락", summary.accepted_count)
                 } else {
                     format!(
-                        "Accepted {} import candidate{}",
+                        "Accepted {} import candidate{} · writing Library playlist...",
                         summary.accepted_count,
                         if summary.accepted_count == 1 { "" } else { "s" }
                     )
                 };
+                self.clamp_local_after_import_change();
+                self.dirty = true;
+                return vec![Cmd::Transfer(
+                    crate::transfer::actor::TransferCmd::WriteReviewedLocal { job_id: session_id },
+                )];
             }
             Err(error) => {
                 self.status.kind = StatusKind::Error;
@@ -1177,184 +1236,6 @@ fn remote_song_from_import_session_row(session_id: &str, row: &ImportSessionRow)
     )
 }
 
-fn import_session_row_status_label(row: &ImportSessionRow) -> &'static str {
-    if row.local_path.as_deref().is_some_and(path_is_import_inbox) {
-        return "inbox";
-    }
-    if row.local_path.is_some() {
-        return "local";
-    }
-    if !row.errors.is_empty() {
-        return "failed";
-    }
-    match row.status {
-        ImportSessionRowStatus::Pending => "pending",
-        ImportSessionRowStatus::Matched => "ready",
-        ImportSessionRowStatus::Ambiguous => "review",
-        ImportSessionRowStatus::NotFound => "missing",
-        ImportSessionRowStatus::SkippedLocal => "skipped",
-    }
-}
-
-fn import_session_row_needs_inbox_attention(row: &ImportSessionRow) -> bool {
-    if matches!(
-        row.review_decision,
-        Some(ReviewDecision::Rejected | ReviewDecision::Skipped)
-    ) {
-        return false;
-    }
-    row.local_path.as_deref().is_some_and(path_is_import_inbox)
-        || !row.errors.is_empty()
-        || matches!(
-            row.status,
-            ImportSessionRowStatus::Pending
-                | ImportSessionRowStatus::Ambiguous
-                | ImportSessionRowStatus::NotFound
-        )
-}
-
-fn path_is_import_inbox(path: &std::path::Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == ".yututui-inbox")
-}
-
-fn import_session_row_artist(row: &ImportSessionRow) -> String {
-    if row.artists.is_empty() {
-        t!("Local file", "로컬 파일").to_owned()
-    } else {
-        row.artists.join(", ")
-    }
-}
-
-fn import_session_row_matches_query(session_id: &str, row: &ImportSessionRow, query: &str) -> bool {
-    let source_order = row.source_order.to_string();
-    let status = import_session_row_status_label(row);
-    let artist = import_session_row_artist(row);
-    let album = row.album.as_deref().unwrap_or_default();
-    let album_artists = row.album_artists.join(" ");
-    let release_date = row.album_release_date.as_deref().unwrap_or_default();
-    let duration = row
-        .duration_secs
-        .map(|value| value.to_string())
-        .unwrap_or_default();
-    let isrc = row.isrc.as_deref().unwrap_or_default();
-    let explicit = row.explicit.map(yes_no).unwrap_or_default();
-    let source_url = row.source_url.as_deref().unwrap_or_default();
-    let selected = row
-        .selected_display
-        .as_deref()
-        .or(row.selected_key.as_deref())
-        .unwrap_or_default();
-    let selected_score = import_session_row_selected_score(row)
-        .map(format_score)
-        .unwrap_or_default();
-    let decision = import_session_review_decision_label(row.review_decision.as_ref());
-    let candidates = row
-        .candidates
-        .iter()
-        .map(|candidate| {
-            format!(
-                "{} {} {}",
-                candidate.display, candidate.key, candidate.score
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    let path = row
-        .local_path
-        .as_ref()
-        .map(|path| path.to_string_lossy())
-        .unwrap_or_default();
-    let warnings = row.warnings.join(" ");
-    let errors = row.errors.join(" ");
-    crate::local::query::fields_match_query(
-        [
-            row.row_id.as_str(),
-            session_id,
-            source_order.as_str(),
-            status,
-            row.title.as_str(),
-            artist.as_str(),
-            album,
-            album_artists.as_str(),
-            release_date,
-            duration.as_str(),
-            isrc,
-            explicit,
-            row.source_key.as_str(),
-            source_url,
-            selected,
-            selected_score.as_str(),
-            decision,
-            candidates.as_str(),
-            path.as_ref(),
-            warnings.as_str(),
-            errors.as_str(),
-        ],
-        query,
-    )
-}
-
-fn import_session_manual_search_query(row: &ImportSessionRow) -> Option<String> {
-    let mut parts = Vec::new();
-    push_search_part(&mut parts, &row.title);
-    if !row.artists.is_empty() {
-        push_search_part(&mut parts, &row.artists.join(" "));
-    }
-    if let Some(album) = &row.album {
-        push_search_part(&mut parts, album);
-    }
-    if parts.is_empty() {
-        if let Some(display) = &row.selected_display {
-            push_search_part(&mut parts, display);
-        }
-        if let Some(key) = &row.selected_key {
-            push_search_part(&mut parts, key);
-        }
-    }
-    (!parts.is_empty()).then(|| parts.join(" "))
-}
-
-fn push_search_part(parts: &mut Vec<String>, value: &str) {
-    let trimmed = value.trim();
-    if !trimmed.is_empty() {
-        parts.push(trimmed.to_owned());
-    }
-}
-
-fn import_session_row_is_download_accepted(row: &ImportSessionRow) -> bool {
-    matches!(row.status, ImportSessionRowStatus::Matched)
-        && !matches!(
-            row.review_decision,
-            Some(ReviewDecision::Rejected | ReviewDecision::Skipped)
-        )
-}
-
-fn import_session_row_accepts_manual_review_action(row: &ImportSessionRow) -> bool {
-    !row.written
-        && row.local_path.is_none()
-        && !matches!(
-            row.status,
-            ImportSessionRowStatus::Matched | ImportSessionRowStatus::SkippedLocal
-        )
-}
-
-fn import_session_accept_all_candidate_count(session: &ImportSession) -> u32 {
-    session
-        .rows
-        .iter()
-        .filter(|row| {
-            import_session_row_accepts_manual_review_action(row) && !row.candidates.is_empty()
-        })
-        .count() as u32
-}
-
-fn import_session_accept_all_candidate_count_by_id(session_id: &str) -> Option<u32> {
-    load_import_session_recovering(session_id)
-        .ok()
-        .map(|session| import_session_accept_all_candidate_count(&session))
-}
-
 fn import_review_action_progress_label(action: ImportReviewAction) -> &'static str {
     match action {
         ImportReviewAction::AcceptFirst => {
@@ -1408,91 +1289,4 @@ fn import_review_success_text(
             summary.source_order
         ),
     }
-}
-
-fn import_session_row_selected_key(row: &ImportSessionRow) -> Option<&str> {
-    match &row.review_decision {
-        Some(ReviewDecision::Accepted { key, .. }) => Some(key.as_str()),
-        _ => row.selected_key.as_deref(),
-    }
-}
-
-fn import_session_row_candidate_url_key(row: &ImportSessionRow) -> Option<&str> {
-    import_session_row_selected_key(row).or_else(|| row.candidates.first().map(|c| c.key.as_str()))
-}
-
-fn youtube_watch_url_for_candidate(key: &str) -> Option<String> {
-    let key = key.trim();
-    if key.is_empty()
-        || !key
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
-    {
-        return None;
-    }
-    Some(format!("https://www.youtube.com/watch?v={key}"))
-}
-
-fn import_session_row_selected_score(row: &ImportSessionRow) -> Option<f32> {
-    match row.review_decision {
-        Some(ReviewDecision::Accepted { score, .. }) => Some(score),
-        _ => row.selected_score,
-    }
-}
-
-fn import_session_review_decision_label(decision: Option<&ReviewDecision>) -> &'static str {
-    match decision {
-        Some(ReviewDecision::Accepted { .. }) => "accepted",
-        Some(ReviewDecision::Rejected) => "rejected",
-        Some(ReviewDecision::Skipped) => "skipped",
-        None => "undecided",
-    }
-}
-
-fn import_session_download_label(row: &ImportSessionRow) -> &'static str {
-    if row.local_path.is_some() {
-        "downloaded"
-    } else if !row.errors.is_empty() {
-        "failed"
-    } else if matches!(row.review_decision, Some(ReviewDecision::Rejected)) {
-        "rejected"
-    } else if matches!(row.review_decision, Some(ReviewDecision::Skipped)) {
-        "skipped"
-    } else if import_session_row_is_download_accepted(row)
-        && import_session_row_selected_key(row).is_some()
-    {
-        "ready"
-    } else if matches!(row.status, ImportSessionRowStatus::NotFound) {
-        "missing"
-    } else {
-        "needs review"
-    }
-}
-
-fn format_candidate(candidate: &ReportCandidate) -> String {
-    format!(
-        "{} {} ({})",
-        format_score(candidate.score),
-        candidate.display,
-        candidate.key
-    )
-}
-
-fn format_score_breakdown(breakdown: &crate::transfer::matching::MatchScoreBreakdown) -> String {
-    format!(
-        "total {}, title {}, artist {}, duration {}, album +{}",
-        format_score(breakdown.total),
-        format_score(breakdown.title),
-        format_score(breakdown.artist),
-        format_score(breakdown.duration),
-        format_score(breakdown.album_bonus)
-    )
-}
-
-fn format_score(score: f32) -> String {
-    format!("{score:.2}")
-}
-
-fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
 }

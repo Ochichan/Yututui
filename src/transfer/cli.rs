@@ -281,6 +281,7 @@ fn parse_import(args: &[&str]) -> Result<(JobSpec, bool), String> {
             dry_run: flags.dry_run,
             min_score: flags.min_score,
             take_best: flags.take_best,
+            auto_accept_ambiguous_min_score: None,
             rematch: flags.rematch,
         },
         flags.yes,
@@ -348,6 +349,7 @@ fn parse_export(args: &[&str]) -> Result<(JobSpec, bool), String> {
             dry_run: flags.dry_run,
             min_score: flags.min_score,
             take_best: flags.take_best,
+            auto_accept_ambiguous_min_score: None,
             rematch: flags.rematch,
         },
         flags.yes,
@@ -609,10 +611,10 @@ fn print_report_details(report: &TransferReport) {
 }
 
 fn print_progress(p: TransferProgress) {
-    let counts = if p.stage == Stage::Matching {
+    let counts = if p.stage == Stage::Matching || p.stage == Stage::Writing {
         format!(
-            " ({} ok, {} ambiguous, {} miss)",
-            p.matched, p.ambiguous, p.not_found
+            " ({} ok, {} auto, {} review, {} miss, {} written)",
+            p.matched, p.auto_accepted, p.ambiguous, p.not_found, p.written
         )
     } else {
         String::new()
@@ -1129,6 +1131,7 @@ mod tests {
             dry_run: false,
             min_score: 0.80,
             take_best: false,
+            auto_accept_ambiguous_min_score: None,
             rematch: false,
         }
     }

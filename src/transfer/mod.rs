@@ -22,7 +22,7 @@ pub mod session;
 
 mod engine;
 
-pub use engine::{JobCtx, JobError, run_job};
+pub use engine::{JobCtx, JobError, run_job, write_reviewed_local_job};
 
 use std::path::PathBuf;
 
@@ -93,6 +93,10 @@ pub struct JobSpec {
     pub min_score: f32,
     /// Accept the best ambiguous candidate instead of skipping it.
     pub take_best: bool,
+    /// TUI fast-import policy: auto-accept only the first safe ambiguous candidate at or above
+    /// this score. CLI defaults leave it unset; `take_best` keeps its existing behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_accept_ambiguous_min_score: Option<f32>,
     /// Ignore checkpointed outcomes and match afresh (also disables file fast-path ids).
     pub rematch: bool,
 }
@@ -127,8 +131,10 @@ pub struct TransferProgress {
     pub done: u32,
     pub total: u32,
     pub matched: u32,
+    pub auto_accepted: u32,
     pub ambiguous: u32,
     pub not_found: u32,
+    pub written: u32,
     /// Display line for the current item ("Artist — Title").
     pub current: String,
 }

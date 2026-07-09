@@ -61,6 +61,7 @@ fn save_ambiguous_import_job(job_id: &str) {
             dry_run: true,
             min_score: 0.80,
             take_best: false,
+            auto_accept_ambiguous_min_score: None,
             rematch: false,
         },
         vec![TrackEntry {
@@ -180,7 +181,7 @@ fn finish_import_review_cmd(app: &mut App, cmd: Cmd) {
     }));
 }
 
-fn finish_import_accept_all_cmd(app: &mut App, cmd: Cmd) {
+fn finish_import_accept_all_cmd(app: &mut App, cmd: Cmd) -> Vec<Cmd> {
     let Cmd::Local(LocalCmd::ReviewImportAcceptAll { op_id, session_id }) = cmd else {
         panic!("expected import accept-all command");
     };
@@ -191,7 +192,7 @@ fn finish_import_accept_all_cmd(app: &mut App, cmd: Cmd) {
         session_id,
         result,
         elapsed_ms: 0,
-    }));
+    }))
 }
 
 fn temp_import_root(name: &str) -> PathBuf {
@@ -245,6 +246,65 @@ fn save_organizable_import_session(session_id: &str, root: &std::path::Path) -> 
     };
     session.save().expect("save organizable session");
     audio
+}
+
+fn save_ready_local_playlist_job(session_id: &str) {
+    let mut cp = Checkpoint::new(
+        session_id.to_owned(),
+        JobSpec {
+            source: TransferSource::SpotifyPlaylist {
+                id: "spotify-ready-playlist".to_owned(),
+            },
+            dest: TransferDest::LocalPlaylist { name: None },
+            dry_run: true,
+            min_score: 0.80,
+            take_best: false,
+            auto_accept_ambiguous_min_score: None,
+            rematch: false,
+        },
+        vec![TrackEntry {
+            input: TrackInput {
+                title: "Ready".to_owned(),
+                artists: vec!["Artist".to_owned()],
+                album_artists: Vec::new(),
+                album: None,
+                album_id: None,
+                album_uri: None,
+                album_release_date: None,
+                album_release_date_precision: None,
+                album_total_tracks: None,
+                album_type: None,
+                album_art_url: None,
+                disc_number: None,
+                track_number: None,
+                duration_secs: Some(180),
+                isrc: None,
+                explicit: None,
+                source_url: None,
+                source_key: "spotify:track:ready".to_owned(),
+                known_video_id: None,
+            },
+            outcome: Some(MatchOutcome::Matched {
+                key: "ready000001".to_owned(),
+                score: 0.91,
+                display: "Artist - Ready".to_owned(),
+                title: None,
+                artist: None,
+                album: None,
+                duration_secs: None,
+                score_breakdown: None,
+            }),
+            review_decision: None,
+            written: false,
+        }],
+    );
+    cp.source_name = Some("Ready source".to_owned());
+    cp.dest_name = Some("Ready source".to_owned());
+    cp.stage = crate::transfer::Stage::Done;
+    cp.save().expect("save ready checkpoint");
+    crate::transfer::session::ImportSession::from_checkpoint(&cp)
+        .save()
+        .expect("save ready import session");
 }
 
 fn save_failed_download_import_session(session_id: &str) {
@@ -502,7 +562,7 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
         .unwrap_or_else(|| panic!("missing saved session in labels: {labels:?}"));
     assert_eq!(
         labels[session_index],
-        "sp2yt-local-inbox-session  (1/3 local, 1 failed, 1 review, 1 missing)"
+        "sp2yt-local-inbox-session  (0 written, 1/3 local, 1 failed, 1 review, 1 missing, 0 pending)"
     );
 
     app.local_mode.ui.filter_query = session_id.to_owned();
@@ -513,7 +573,9 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
         .collect();
     assert_eq!(
         labels,
-        vec!["sp2yt-local-inbox-session  (1/3 local, 1 failed, 1 review, 1 missing)"]
+        vec![
+            "sp2yt-local-inbox-session  (0 written, 1/3 local, 1 failed, 1 review, 1 missing, 0 pending)"
+        ]
     );
     let session_index = 0;
     app.local_mode.ui.selected = session_index;
@@ -522,10 +584,12 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
     for expected in [
         "Import session: sp2yt-local-inbox-session",
         "Rows: 3 rows",
-        "Local files: 1",
+        "Written: 0",
+        "Local files: 1/3",
         "Failed: 1",
         "Review: 1",
         "Missing: 1",
+        "Pending: 0",
         "Source: Source",
         "Destination: Imported",
     ] {
@@ -767,7 +831,7 @@ fn local_deck_import_row_s_starts_manual_youtube_search() {
     assert_eq!(app.mode, Mode::Search);
     assert_eq!(app.search.focus, SearchFocus::Input);
     assert_eq!(app.search.kind, SearchKind::Songs);
-    assert_eq!(app.search.input, "Maybe Artist Album");
+    assert_eq!(app.search.input, "Maybe Artist");
     let [
         Cmd::Search {
             query,
@@ -779,7 +843,7 @@ fn local_deck_import_row_s_starts_manual_youtube_search() {
     else {
         panic!("expected manual search command");
     };
-    assert_eq!(query, "Maybe Artist Album");
+    assert_eq!(query, "Maybe Artist");
     assert_eq!(*source, crate::search_source::SearchSource::Youtube);
     assert_eq!(config.source, crate::search_source::SearchSource::Youtube);
 }
@@ -961,19 +1025,65 @@ fn local_deck_shift_a_confirms_and_accepts_all_session_candidates() {
         app.local_mode
             .pending_accept_all_confirm
             .as_ref()
-            .map(|confirm| (confirm.session_id.clone(), confirm.candidate_count)),
-        Some((session_id.to_owned(), 1))
+            .map(|confirm| (
+                confirm.session_id.clone(),
+                confirm.candidate_count,
+                confirm.ready_count
+            )),
+        Some((session_id.to_owned(), 1, 1))
     );
 
     let cmd = single_cmd(app.update(Msg::Key(key(KeyCode::Enter))));
-    finish_import_accept_all_cmd(&mut app, cmd);
+    let write_cmd = single_cmd(finish_import_accept_all_cmd(&mut app, cmd));
     let accepted =
         crate::transfer::session::ImportSession::load(session_id).expect("load accepted session");
     assert!(matches!(
         accepted.rows[0].review_decision,
         Some(ReviewDecision::Accepted { ref key, .. }) if key == "dQw4w9WgXcQ"
     ));
-    assert!(app.status.text.contains("Accepted 1 import candidate"));
+    assert!(matches!(
+        write_cmd,
+        Cmd::Transfer(crate::transfer::actor::TransferCmd::WriteReviewedLocal { ref job_id })
+            if job_id == session_id
+    ));
+    assert!(app.transfer_running);
+    assert!(app.status.text.contains("writing Library playlist"));
+}
+
+#[test]
+fn local_deck_shift_a_writes_ready_rows_without_review_candidates() {
+    let session_id = "sp2yt-local-ready-write";
+    save_ready_local_playlist_job(session_id);
+
+    let mut app = app_with_local_deck_index(Vec::new());
+    app.update(Msg::Key(key(KeyCode::Char('9'))));
+    app.local_mode.ui.filter_query = session_id.to_owned();
+    let open = double_click_target(&mut app, MouseTarget::LocalRow(0));
+    assert!(open.is_empty());
+    app.local_mode.ui.filter_query.clear();
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('A'))));
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.local_mode
+            .pending_accept_all_confirm
+            .as_ref()
+            .map(|confirm| (confirm.candidate_count, confirm.ready_count)),
+        Some((0, 1))
+    );
+
+    let write_cmd = single_cmd(app.update(Msg::Key(key(KeyCode::Enter))));
+    assert!(matches!(
+        write_cmd,
+        Cmd::Transfer(crate::transfer::actor::TransferCmd::WriteReviewedLocal { ref job_id })
+            if job_id == session_id
+    ));
+    assert!(app.transfer_running);
+    assert!(
+        app.status
+            .text
+            .contains("Writing accepted import rows to Library playlist")
+    );
 }
 
 #[test]

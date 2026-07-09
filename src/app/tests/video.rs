@@ -216,6 +216,7 @@ fn video_toggle_pause_event_emits_overlay_pause_command() {
 #[cfg(unix)]
 #[test]
 fn video_pause_property_updates_status_without_resuming_audio() {
+    let _guard = crate::i18n::lock_for_test();
     let mut app = app_playing(2, 0);
     app.video.proc = Some(fake_overlay_proc());
     app.playback.paused = true;

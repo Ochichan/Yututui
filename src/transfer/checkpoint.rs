@@ -171,6 +171,7 @@ pub struct TransferReport {
     pub job_id: String,
     pub total: u32,
     pub matched: u32,
+    pub auto_accepted: u32,
     pub written: u32,
     pub ambiguous: Vec<ReportRow>,
     pub not_found: Vec<ReportRow>,
@@ -186,6 +187,7 @@ impl Default for TransferReport {
             job_id: String::new(),
             total: 0,
             matched: 0,
+            auto_accepted: 0,
             written: 0,
             ambiguous: Vec::new(),
             not_found: Vec::new(),
@@ -284,6 +286,9 @@ impl TransferReport {
             self.ambiguous.len(),
             self.not_found.len(),
         );
+        if self.auto_accepted > 0 {
+            out.push_str(&format!(", {} auto-accepted", self.auto_accepted));
+        }
         if self.skipped_local > 0 {
             out.push_str(&format!(", {} local/episode skipped", self.skipped_local));
         }
@@ -308,6 +313,7 @@ mod tests {
             dry_run: false,
             min_score: 0.80,
             take_best: false,
+            auto_accept_ambiguous_min_score: None,
             rematch: false,
         }
     }
@@ -408,6 +414,7 @@ mod tests {
             job_id: "j".to_owned(),
             total: 10,
             matched: 8,
+            auto_accepted: 2,
             written: 8,
             ambiguous: vec![ReportRow {
                 title: "t".to_owned(),
@@ -423,6 +430,7 @@ mod tests {
         };
         let text = report.render_text();
         assert!(text.contains("8/10 matched"));
+        assert!(text.contains("2 auto-accepted"));
         assert!(text.contains("1 ambiguous"));
         assert!(text.contains("local/episode skipped"));
     }

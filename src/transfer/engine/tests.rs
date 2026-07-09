@@ -9,6 +9,7 @@ fn spec(dest: TransferDest) -> JobSpec {
         dry_run: false,
         min_score: 0.80,
         take_best: false,
+        auto_accept_ambiguous_min_score: None,
         rematch: false,
     }
 }
@@ -67,6 +68,37 @@ fn temp_path(name: &str, ext: &str) -> std::path::PathBuf {
         "yututui-engine-{name}-{}-{suffix}.{ext}",
         std::process::id()
     ))
+}
+
+fn random_job_id(prefix: &str) -> String {
+    let mut bytes = [0u8; 6];
+    getrandom::fill(&mut bytes).expect("random job suffix");
+    let suffix = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    format!("{prefix}-{}-{suffix}", std::process::id())
+}
+
+fn ambiguous_candidate(
+    key: &str,
+    score: f32,
+    accept_blocked: bool,
+    reject_reason: Option<&str>,
+) -> AmbiguousCandidate {
+    AmbiguousCandidate {
+        key: key.to_owned(),
+        score,
+        display: format!("Candidate {key}"),
+        score_breakdown: Some(MatchScoreBreakdown {
+            total: score,
+            raw_total: score,
+            accept_blocked,
+            reject_reason: reject_reason.map(str::to_owned),
+            ..MatchScoreBreakdown::default()
+        }),
+    }
+}
+
+fn ambiguous(candidates: Vec<AmbiguousCandidate>) -> MatchOutcome {
+    MatchOutcome::Ambiguous { candidates }
 }
 
 #[test]
@@ -231,6 +263,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
         dry_run: false,
         min_score: 0.80,
         take_best: false,
+        auto_accept_ambiguous_min_score: None,
         rematch: false,
     };
     let mut ctx = JobCtx {
@@ -275,6 +308,7 @@ async fn fetch_source_caps_large_file_inputs_before_checkpointing() {
         dry_run: false,
         min_score: 0.80,
         take_best: false,
+        auto_accept_ambiguous_min_score: None,
         rematch: false,
     };
     let mut ctx = JobCtx {
@@ -625,15 +659,17 @@ fn progress_write_reports_current_track_and_outcome_counts() {
         ],
     );
 
-    let progress = progress_write(&cp, 2, 3, 1);
+    let progress = progress_write(&cp, 2, 3, 1, 1);
 
     assert_eq!(progress.job_id, "job-progress");
     assert_eq!(progress.stage, Stage::Writing);
     assert_eq!(progress.done, 2);
     assert_eq!(progress.total, 3);
     assert_eq!(progress.matched, 1);
+    assert_eq!(progress.auto_accepted, 1);
     assert_eq!(progress.ambiguous, 1);
     assert_eq!(progress.not_found, 1);
+    assert_eq!(progress.written, 0);
     assert_eq!(progress.current, "Artist B — Maybe Song");
 }
 
@@ -648,11 +684,13 @@ fn progress_write_handles_missing_index_without_panicking() {
         )],
     );
 
-    let progress = progress_write(&cp, 1, 1, 99);
+    let progress = progress_write(&cp, 1, 1, 99, 0);
 
     assert_eq!(progress.job_id, "job-progress-missing");
     assert_eq!(progress.current, "");
     assert_eq!(progress.matched, 1);
+    assert_eq!(progress.auto_accepted, 0);
+    assert_eq!(progress.written, 0);
 }
 
 #[tokio::test]
@@ -815,6 +853,126 @@ fn collect_writes_skips_rejected_review_rows_even_with_take_best() {
     assert_eq!(report.written, 0);
 }
 
+#[test]
+fn fast_auto_accept_promotes_only_safe_first_candidates_above_threshold() {
+    let mut spec = spec(TransferDest::LocalPlaylist { name: None });
+    spec.auto_accept_ambiguous_min_score = Some(0.75);
+    let mut already_reviewed = entry(
+        input("Already reviewed", &["Artist"]),
+        Some(ambiguous(vec![ambiguous_candidate(
+            "already-reviewed",
+            0.91,
+            false,
+            None,
+        )])),
+    );
+    already_reviewed.review_decision = Some(ReviewDecision::Skipped);
+    let mut already_written = entry(
+        input("Already written", &["Artist"]),
+        Some(ambiguous(vec![ambiguous_candidate(
+            "already-written",
+            0.92,
+            false,
+            None,
+        )])),
+    );
+    already_written.written = true;
+    let mut cp = Checkpoint::new(
+        random_job_id("job-auto-accept"),
+        spec,
+        vec![
+            entry(
+                input("Safe first", &["Artist"]),
+                Some(ambiguous(vec![
+                    ambiguous_candidate("safe-first", 0.76, false, None),
+                    ambiguous_candidate("safe-second", 0.95, false, None),
+                ])),
+            ),
+            entry(
+                input("Below threshold", &["Artist"]),
+                Some(ambiguous(vec![ambiguous_candidate(
+                    "below-threshold",
+                    0.74,
+                    false,
+                    None,
+                )])),
+            ),
+            entry(
+                input("Second only", &["Artist"]),
+                Some(ambiguous(vec![
+                    ambiguous_candidate("low-first", 0.70, false, None),
+                    ambiguous_candidate("high-second", 0.99, false, None),
+                ])),
+            ),
+            already_reviewed,
+            already_written,
+        ],
+    );
+
+    let accepted = auto_accept_ambiguous_candidates(&mut cp)
+        .unwrap_or_else(|err| panic!("auto-accept safe candidates failed: {}", err.error));
+
+    assert_eq!(accepted, 1);
+    assert!(matches!(
+        cp.tracks[0].review_decision,
+        Some(ReviewDecision::Accepted { ref key, .. }) if key == "safe-first"
+    ));
+    assert!(matches!(
+        cp.tracks[0].outcome,
+        Some(MatchOutcome::Matched { ref key, .. }) if key == "safe-first"
+    ));
+    assert!(cp.tracks[1].review_decision.is_none());
+    assert!(matches!(
+        cp.tracks[1].outcome,
+        Some(MatchOutcome::Ambiguous { .. })
+    ));
+    assert!(cp.tracks[2].review_decision.is_none());
+    assert_eq!(cp.tracks[3].review_decision, Some(ReviewDecision::Skipped));
+    assert!(cp.tracks[4].review_decision.is_none());
+}
+
+#[test]
+fn fast_auto_accept_never_promotes_blocked_or_rejected_candidates() {
+    let mut spec = spec(TransferDest::LocalPlaylist { name: None });
+    spec.auto_accept_ambiguous_min_score = Some(0.75);
+    let mut cp = Checkpoint::new(
+        random_job_id("job-auto-accept-blocked"),
+        spec,
+        vec![
+            entry(
+                input("Blocked", &["Artist"]),
+                Some(ambiguous(vec![ambiguous_candidate(
+                    "blocked", 0.95, true, None,
+                )])),
+            ),
+            entry(
+                input("Rejected", &["Artist"]),
+                Some(ambiguous(vec![ambiguous_candidate(
+                    "rejected",
+                    0.95,
+                    false,
+                    Some("duration mismatch"),
+                )])),
+            ),
+        ],
+    );
+
+    let accepted = auto_accept_ambiguous_candidates(&mut cp)
+        .unwrap_or_else(|err| panic!("auto-accept inspection failed: {}", err.error));
+
+    assert_eq!(accepted, 0);
+    assert!(
+        cp.tracks
+            .iter()
+            .all(|track| track.review_decision.is_none())
+    );
+    assert!(
+        cp.tracks
+            .iter()
+            .all(|track| matches!(track.outcome, Some(MatchOutcome::Ambiguous { .. })))
+    );
+}
+
 #[tokio::test]
 async fn write_stage_creates_local_playlist_for_spotify_liked_source() {
     let playlist_name = "Spotify Liked Songs Local Write Test".to_owned();
@@ -858,6 +1016,89 @@ async fn write_stage_creates_local_playlist_for_spotify_liked_source() {
 }
 
 #[tokio::test]
+async fn write_reviewed_local_job_writes_ready_rows_idempotently() {
+    let job_id = random_job_id("job-local-reviewed-write");
+    let playlist_name = format!("Reviewed Write {}", job_id);
+    let mut accepted = entry(
+        input("Accepted Song", &["Artist"]),
+        Some(ambiguous(vec![ambiguous_candidate(
+            "vid-accepted",
+            0.78,
+            false,
+            None,
+        )])),
+    );
+    accepted.review_decision = Some(ReviewDecision::Accepted {
+        key: "vid-accepted".to_owned(),
+        score: 0.78,
+        display: "Artist - Accepted Song".to_owned(),
+    });
+    let already_written = TrackEntry {
+        written: true,
+        ..entry(
+            input("Already Written", &["Artist"]),
+            Some(matched("vid-written")),
+        )
+    };
+    let mut cp = Checkpoint::new(
+        job_id.clone(),
+        spec(TransferDest::LocalPlaylist {
+            name: Some(playlist_name.clone()),
+        }),
+        vec![
+            entry(
+                input("Duplicate First", &["Artist"]),
+                Some(matched("vid-duplicate")),
+            ),
+            accepted,
+            entry(
+                input("Duplicate Second", &["Artist"]),
+                Some(matched("vid-duplicate")),
+            ),
+            already_written,
+        ],
+    );
+    cp.source_name = Some("Spotify source".to_owned());
+    cp.dest_name = Some(playlist_name.clone());
+    cp.stage = Stage::Done;
+    cp.save().expect("save completed dry-run checkpoint");
+    crate::transfer::session::ImportSession::from_checkpoint(&cp)
+        .save()
+        .expect("save completed import session");
+    let mut progress = Vec::new();
+
+    let report = write_reviewed_local_job(&job_id, &mut |p| progress.push(p))
+        .await
+        .unwrap_or_else(|err| panic!("reviewed local write failed: {}", err.error));
+
+    assert_eq!(report.written, 2);
+    assert_eq!(report.job_id, job_id);
+    assert_eq!(progress.len(), 3);
+    assert_eq!(progress.last().map(|p| p.written), Some(4));
+    let saved = Checkpoint::load(&job_id).expect("load written checkpoint");
+    assert!(saved.tracks.iter().all(|track| track.written));
+    assert_eq!(saved.stage, Stage::Done);
+    let playlist_id = saved.dest_id.clone().expect("destination id checkpointed");
+
+    let store = crate::playlists::Playlists::load();
+    let playlist = store.find(&playlist_id).expect("playlist remains");
+    let ids: Vec<_> = playlist
+        .songs
+        .iter()
+        .map(|song| song.video_id.as_str())
+        .collect();
+    assert_eq!(ids.iter().filter(|id| **id == "vid-duplicate").count(), 1);
+    assert_eq!(ids.iter().filter(|id| **id == "vid-accepted").count(), 1);
+
+    let session = crate::transfer::session::ImportSession::load(&job_id)
+        .expect("load written import session");
+    assert_eq!(
+        session.destination.key.as_deref(),
+        Some(playlist_id.as_str())
+    );
+}
+
+#[tokio::test]
 async fn file_export_rejects_sources_that_cannot_be_exported_without_clients() {
     let mut ctx = JobCtx {
         ytm: None,
@@ -874,6 +1115,7 @@ async fn file_export_rejects_sources_that_cannot_be_exported_without_clients() {
         dry_run: false,
         min_score: 0.80,
         take_best: false,
+        auto_accept_ambiguous_min_score: None,
         rematch: false,
     };
 

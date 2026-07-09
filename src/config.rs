@@ -23,6 +23,8 @@ use crate::t;
 use crate::theme::ThemeConfig;
 
 mod recovery;
+mod spotify;
+pub use spotify::SpotifyImportMode;
 
 /// Clamp range for playback speed (matches the `>`/`<` controls and the settings slider).
 pub const SPEED_MIN: f64 = 0.5;
@@ -407,6 +409,8 @@ pub struct SpotifyConfig {
     pub redirect_port: Option<u16>,
     /// Optional market (ISO country code) for Spotify track search during export.
     pub market: Option<String>,
+    /// How the TUI import flow handles ambiguous matches when creating local Library playlists.
+    pub import_mode: SpotifyImportMode,
 }
 
 pub const SPOTIFY_REDIRECT_PORT_DEFAULT: u16 = 9271;
@@ -1678,6 +1682,7 @@ mod tests {
                 client_id: Some("spotify-app-id".to_owned()),
                 redirect_port: Some(9333),
                 market: Some("KR".to_owned()),
+                import_mode: SpotifyImportMode::StrictPlaylist,
             },
             tools: ToolsConfig {
                 ytdlp_managed: Some(false),
@@ -1751,6 +1756,7 @@ mod tests {
         assert!(back.scrobble.lastfm.is_active());
         assert_eq!(back.spotify.client_id.as_deref(), Some("spotify-app-id"));
         assert_eq!(back.effective_spotify_port(), 9333);
+        assert_eq!(back.spotify.import_mode, SpotifyImportMode::StrictPlaylist);
         assert_eq!(back.tools.ytdlp_managed, Some(false));
         assert_eq!(
             back.tools.ytdlp_channel,
@@ -2022,6 +2028,10 @@ mod tests {
     fn missing_fields_use_defaults() {
         let back: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(back.volume, 100);
+        assert_eq!(back.spotify.import_mode, SpotifyImportMode::FastPlaylist);
+
+        let legacy: Config = serde_json::from_str(r#"{"spotify":{"client_id":"app"}}"#).unwrap();
+        assert_eq!(legacy.spotify.import_mode, SpotifyImportMode::FastPlaylist);
     }
 
     #[test]

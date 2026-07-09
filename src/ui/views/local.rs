@@ -428,8 +428,8 @@ fn render_empty_section(frame: &mut Frame, app: &App, area: Rect) {
         ),
         LocalSection::ScanErrors => t!("No scan errors.", "스캔 오류가 없어요."),
         LocalSection::ImportSessions => t!(
-            "No imported local downloads yet.",
-            "아직 임포트된 로컬 다운로드가 없어요."
+            "No import sessions yet. Spotify imports appear here for review and follow-up.",
+            "아직 임포트 세션이 없어요. Spotify 가져오기는 검토와 후속 작업을 위해 여기에 표시됩니다."
         ),
         LocalSection::Inbox => t!(
             "No import inbox rows need attention.",
@@ -638,7 +638,7 @@ pub fn render_local_accept_all_confirm(
     let segs = [
         buttons::Seg::button(
             MouseTarget::ConfirmLocalAcceptAll,
-            t!(" Accept (Enter) ", " 수락 (Enter) "),
+            t!(" Accept & write (Enter) ", " 수락 및 작성 (Enter) "),
         ),
         buttons::Seg::label("    "),
         buttons::Seg::button(

@@ -308,6 +308,10 @@ impl ImportSession {
             })
             .collect();
         let counts = ImportSessionCounts::from_rows(&rows);
+        let mut destination = endpoint_from_dest(&cp.spec.dest, cp.dest_name.clone());
+        if matches!(cp.spec.dest, TransferDest::LocalPlaylist { .. }) {
+            destination.key = cp.dest_id.clone();
+        }
         Self {
             schema_version: IMPORT_SESSION_SCHEMA_VERSION,
             session_id: cp.job_id.clone(),
@@ -316,7 +320,7 @@ impl ImportSession {
             updated_at: cp.updated_at,
             stage: cp.stage,
             source: endpoint_from_source(&cp.spec.source, cp.source_name.clone()),
-            destination: endpoint_from_dest(&cp.spec.dest, cp.dest_name.clone()),
+            destination,
             counts,
             rows,
         }
@@ -709,6 +713,7 @@ mod tests {
             dry_run: false,
             min_score: 0.80,
             take_best: false,
+            auto_accept_ambiguous_min_score: None,
             rematch: false,
         }
     }

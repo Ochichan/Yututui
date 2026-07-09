@@ -277,6 +277,7 @@ fn settings_change_updates_stored_selectors_and_toggles_across_tabs() {
         draft.lastfm_love_sync = true;
         draft.listenbrainz_enabled = true;
         draft.scrobble_local_files = false;
+        draft.spotify_import_mode = crate::config::SpotifyImportMode::FastPlaylist;
     }
     change_stored!(SettingsTab::General, Field::SearchSource);
     assert_eq!(
@@ -401,6 +402,11 @@ fn settings_change_updates_stored_selectors_and_toggles_across_tabs() {
     assert!(!app.settings.as_ref().unwrap().draft.lastfm_love_sync);
     change_stored!(SettingsTab::Accounts, Field::ListenBrainzEnabled);
     assert!(!app.settings.as_ref().unwrap().draft.listenbrainz_enabled);
+    change_stored!(SettingsTab::Accounts, Field::SpotifyImportMode);
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.spotify_import_mode,
+        crate::config::SpotifyImportMode::StrictPlaylist
+    );
     change_stored!(SettingsTab::Accounts, Field::ScrobbleLocalFiles);
     assert!(app.settings.as_ref().unwrap().draft.scrobble_local_files);
 }
@@ -437,6 +443,10 @@ fn spotify_picker_keyboard_confirm_maps_all_spotify_imports_to_local_playlists()
             Cmd::Transfer(crate::transfer::actor::TransferCmd::StartJob(spec))
                 if matches!(spec.source, crate::transfer::TransferSource::SpotifyLiked)
                     && matches!(spec.dest, crate::transfer::TransferDest::LocalPlaylist { name: None })
+                    && !spec.dry_run
+                    && spec.min_score == 0.80
+                    && !spec.take_best
+                    && spec.auto_accept_ambiguous_min_score == Some(0.75)
         )),
         "liked songs import should target a local library playlist"
     );
@@ -466,8 +476,172 @@ fn spotify_picker_keyboard_confirm_maps_all_spotify_imports_to_local_playlists()
             Cmd::Transfer(crate::transfer::actor::TransferCmd::StartJob(spec))
                 if matches!(spec.source, crate::transfer::TransferSource::SpotifyPlaylist { .. })
                     && matches!(spec.dest, crate::transfer::TransferDest::LocalPlaylist { name: None })
+                    && !spec.dry_run
+                    && spec.auto_accept_ambiguous_min_score == Some(0.75)
         )),
         "playlist import should target a local library playlist"
+    );
+}
+
+#[test]
+fn spotify_picker_import_modes_map_to_job_specs() {
+    use crate::transfer::actor::PickerPlaylist;
+
+    let mut app = App::new(100);
+    app.open_settings();
+    let item = PickerPlaylist {
+        source: crate::transfer::TransferSource::SpotifyPlaylist {
+            id: "pl-1".to_owned(),
+        },
+        label: "Roadtrip".to_owned(),
+        total: 42,
+    };
+
+    let confirm_for = |app: &mut App, mode| {
+        app.transfer_running = false;
+        app.overlays.spotify_picker = Some(crate::app::state::SpotifyPicker {
+            selected: 0,
+            items: vec![item.clone()],
+        });
+        app.settings.as_mut().unwrap().draft.spotify_import_mode = mode;
+        app.spotify_picker_confirm()
+    };
+
+    let strict = confirm_for(&mut app, crate::config::SpotifyImportMode::StrictPlaylist);
+    assert!(strict.iter().any(|cmd| matches!(
+        cmd,
+        Cmd::Transfer(crate::transfer::actor::TransferCmd::StartJob(spec))
+            if !spec.dry_run && spec.auto_accept_ambiguous_min_score.is_none()
+    )));
+
+    let review = confirm_for(&mut app, crate::config::SpotifyImportMode::ReviewFirst);
+    assert!(review.iter().any(|cmd| matches!(
+        cmd,
+        Cmd::Transfer(crate::transfer::actor::TransferCmd::StartJob(spec))
+            if spec.dry_run && spec.auto_accept_ambiguous_min_score.is_none()
+    )));
+}
+
+#[test]
+fn spotify_import_mode_dropdown_keyboard_selects_and_dismisses() {
+    let mut app = App::new(100);
+    app.open_settings();
+    focus_settings_field(&mut app, SettingsTab::Accounts, Field::SpotifyImportMode);
+
+    let cmds = app.settings_activate();
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.settings.as_ref().unwrap().spotify_import_mode_dropdown,
+        Some(crate::config::SpotifyImportMode::FastPlaylist.index())
+    );
+
+    app.on_key_settings(key(KeyCode::Down));
+    assert_eq!(
+        app.settings.as_ref().unwrap().spotify_import_mode_dropdown,
+        Some(crate::config::SpotifyImportMode::StrictPlaylist.index())
+    );
+    app.on_key_settings(key(KeyCode::Enter));
+    let st = app.settings.as_ref().unwrap();
+    assert_eq!(
+        st.draft.spotify_import_mode,
+        crate::config::SpotifyImportMode::StrictPlaylist
+    );
+    assert!(st.spotify_import_mode_dropdown.is_none());
+
+    app.settings_activate();
+    assert!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .spotify_import_mode_dropdown
+            .is_some()
+    );
+    app.on_key_settings(key(KeyCode::Esc));
+    assert!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .spotify_import_mode_dropdown
+            .is_none()
+    );
+}
+
+#[test]
+fn spotify_import_mode_dropdown_mouse_targets_select_and_dismiss() {
+    let mut app = App::new(100);
+    app.mode = Mode::Settings;
+    app.open_settings();
+    focus_settings_field(&mut app, SettingsTab::Accounts, Field::SpotifyImportMode);
+
+    let _ = render_app_buffer(&app, 100, 32);
+    assert!(
+        app.hits
+            .regions()
+            .iter()
+            .any(|r| r.target == MouseTarget::SettingsSpotifyImportModeMenu)
+    );
+
+    let cmds = click_target(&mut app, MouseTarget::SettingsSpotifyImportModeMenu);
+    assert!(cmds.is_empty());
+    assert!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .spotify_import_mode_dropdown
+            .is_some()
+    );
+
+    let _ = render_app_buffer(&app, 100, 32);
+    for mode in crate::config::SpotifyImportMode::ALL {
+        assert!(
+            app.hits
+                .regions()
+                .iter()
+                .any(|r| r.target == MouseTarget::SettingsSpotifyImportModeSelect(mode)),
+            "missing dropdown hit rect for {mode:?}"
+        );
+    }
+
+    let cmds = click_target(
+        &mut app,
+        MouseTarget::SettingsSpotifyImportModeSelect(crate::config::SpotifyImportMode::ReviewFirst),
+    );
+    assert!(cmds.is_empty());
+    let st = app.settings.as_ref().unwrap();
+    assert_eq!(
+        st.draft.spotify_import_mode,
+        crate::config::SpotifyImportMode::ReviewFirst
+    );
+    assert!(st.spotify_import_mode_dropdown.is_none());
+
+    let cmds = click_target(&mut app, MouseTarget::SettingsSpotifyImportModeMenu);
+    assert!(cmds.is_empty());
+    assert!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .spotify_import_mode_dropdown
+            .is_some()
+    );
+    let _ = render_app_buffer(&app, 100, 32);
+    let other_control = app
+        .hits
+        .regions()
+        .iter()
+        .find(|r| r.target == (MouseTarget::SettingsChange { row: 0, delta: 1 }))
+        .map(|r| (r.rect.x + r.rect.width / 2, r.rect.y + r.rect.height / 2))
+        .expect("outside settings control hit rect");
+    let cmds = app.update(Msg::MouseClick {
+        col: other_control.0,
+        row: other_control.1,
+    });
+    assert!(cmds.is_empty());
+    let st = app.settings.as_ref().unwrap();
+    assert!(st.spotify_import_mode_dropdown.is_none());
+    assert_eq!(
+        st.draft.spotify_import_mode,
+        crate::config::SpotifyImportMode::ReviewFirst,
+        "outside click should dismiss without applying the other setting"
     );
 }
 
@@ -657,13 +831,17 @@ fn transfer_events_surface_playlist_progress_and_failures() {
         done: 2,
         total: 5,
         matched: 1,
+        auto_accepted: 0,
         ambiguous: 1,
         not_found: 0,
+        written: 0,
         current: "Artist - Song".to_owned(),
     })));
     assert!(app.transfer_running);
     assert_eq!(app.status.kind, StatusKind::Info);
     assert!(app.status.text.contains("Spotify import: matching 2/5"));
+    assert!(app.status.text.contains("matched 1"));
+    assert!(app.status.text.contains("review 1"));
     assert!(app.status.text.contains("Artist - Song"));
 
     app.transfer_running = true;
@@ -680,7 +858,8 @@ fn transfer_events_surface_playlist_progress_and_failures() {
     assert_eq!(app.status.kind, StatusKind::Info);
     assert!(app.status.text.contains("Import finished"));
     assert!(app.status.text.contains("ytt transfer session sp2yt-1"));
-    assert!(app.status.text.contains("Shift+D"));
+    assert!(app.status.text.contains("Library > Playlists"));
+    assert!(!app.status.text.contains("Shift+D"));
     assert!(app.status.text.contains("Import Sessions"));
 
     app.update(Msg::Transfer(TransferEvent::JobFailed {
