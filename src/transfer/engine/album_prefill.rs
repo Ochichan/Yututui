@@ -436,7 +436,7 @@ mod tests {
             album_type: Some("album".to_owned()),
         };
         assert_eq!(
-            best_album_candidate(&input, &[clear.clone()]).map(|c| c.album_id),
+            best_album_candidate(&input, std::slice::from_ref(&clear)).map(|c| c.album_id),
             Some("album-1".to_owned())
         );
 
@@ -447,7 +447,7 @@ mod tests {
             year: Some("1999".to_owned()),
             album_type: None,
         };
-        assert!(best_album_candidate(&input, &[weak]).is_none());
+        assert!(best_album_candidate(&input, std::slice::from_ref(&weak)).is_none());
 
         let twin_a = TransferAlbumCandidate {
             album_id: "album-a".to_owned(),
