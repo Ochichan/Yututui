@@ -57,3 +57,6 @@ cookies.txt
 /.claude/settings.json
 /.claude/hooks/
 /.claude/harness/
+/.agents/
+/.codex/
+/.codex-worktrees/
