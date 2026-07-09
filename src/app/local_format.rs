@@ -10,6 +10,13 @@ pub(in crate::app) fn push_local_scan_root(
 ) {
     if let Some(existing) = roots.iter_mut().find(|existing| existing.path == root.path) {
         existing.recursive |= root.recursive;
+        if existing.recursive {
+            existing.max_depth = None;
+        } else if existing.max_depth.is_none() {
+            existing.max_depth = root.max_depth;
+        } else if let Some(incoming) = root.max_depth {
+            existing.max_depth = Some(existing.max_depth.unwrap_or(0).max(incoming));
+        }
     } else {
         roots.push(root);
     }

@@ -555,6 +555,7 @@ impl App {
                 crate::local::LocalScanRoot {
                     path,
                     recursive: root.recursive(),
+                    max_depth: None,
                 },
             );
         }

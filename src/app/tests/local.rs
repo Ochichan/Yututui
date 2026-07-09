@@ -1077,6 +1077,7 @@ fn settings_local_music_root_persists_and_rescans_active_local_deck() {
             crate::local::LocalScanRoot {
                 path: PathBuf::from("/tmp/ytt-local-library"),
                 recursive: false,
+                max_depth: None,
             },
         ]
     );
@@ -1117,6 +1118,7 @@ fn closing_settings_with_local_root_toggles_rescans_active_local_deck() {
         &vec![crate::local::LocalScanRoot {
             path: music,
             recursive: false,
+            max_depth: None,
         }]
     );
 }
