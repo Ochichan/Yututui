@@ -181,8 +181,12 @@ pub struct MatchStats {
     pub video_searches: u32,
     pub preflight_lookups: u32,
     pub authenticated_catalog_degraded: u32,
+    pub query_cache_hits: u32,
+    pub video_meta_cache_hits: u32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_kinds: BTreeMap<String, u32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub quality_tiers: BTreeMap<String, u32>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reason_codes: BTreeMap<String, u32>,
 }
@@ -197,7 +201,10 @@ impl MatchStats {
             && self.video_searches == 0
             && self.preflight_lookups == 0
             && self.authenticated_catalog_degraded == 0
+            && self.query_cache_hits == 0
+            && self.video_meta_cache_hits == 0
             && self.source_kinds.is_empty()
+            && self.quality_tiers.is_empty()
             && self.reason_codes.is_empty()
     }
 
@@ -208,6 +215,12 @@ impl MatchStats {
     pub fn bump_source_kind(&mut self, kind: &str) {
         if !kind.is_empty() {
             *self.source_kinds.entry(kind.to_owned()).or_default() += 1;
+        }
+    }
+
+    pub fn bump_quality_tier(&mut self, tier: &str) {
+        if !tier.is_empty() {
+            *self.quality_tiers.entry(tier.to_owned()).or_default() += 1;
         }
     }
 

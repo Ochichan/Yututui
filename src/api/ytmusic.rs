@@ -97,7 +97,8 @@ pub enum YtMusicApi {
     Anonymous,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum YoutubeSearchKind {
     YtmCatalogSong,
     YoutubeVideoSearch,
@@ -944,7 +945,7 @@ async fn lookup_video_song(video_id: &str) -> Song {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct YtdlpVideoMeta {
     pub title: String,
     pub channel: String,

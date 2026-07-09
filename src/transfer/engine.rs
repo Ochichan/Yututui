@@ -459,6 +459,14 @@ async fn match_stage(
             ytm_video_concurrency(),
             ytm_preflight_concurrency(),
         );
+        if cache_read_enabled && let Some(cache) = match_cache.as_ref() {
+            shared_state
+                .seed_persistent_cache(
+                    cache.query_cache_entries(),
+                    cache.video_meta_cache_entries(),
+                )
+                .await;
+        }
         let mut stream = futures::stream::iter(pending)
             .map(|(idx, input)| {
                 let state = shared_state.clone();
@@ -524,6 +532,10 @@ async fn match_stage(
             if completed.is_multiple_of(CHECKPOINT_EVERY as u32) {
                 cp.save().map_err(|e| JobError::fatal(e.into()))?;
             }
+        }
+        if cache_write_enabled && let Some(cache) = match_cache.as_mut() {
+            let snapshot = shared_state.cache_snapshot().await;
+            cache_dirty |= cache.merge_query_cache(snapshot.queries, snapshot.video_metadata);
         }
         merge_ytm_diagnostics(&mut cp.match_stats, shared_state.diagnostics().await);
     }

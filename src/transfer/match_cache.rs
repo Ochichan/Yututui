@@ -6,12 +6,17 @@ use serde::{Deserialize, Serialize};
 use super::matching::{
     MatchOutcome, MatchScoreBreakdown, TrackInput, normalize, normalize_stripped,
 };
-use crate::api::ytmusic::TransferAlbum;
+use crate::api::Song;
+use crate::api::ytmusic::{TransferAlbum, YoutubeSearchKind, YtdlpVideoMeta};
 use crate::util::safe_fs;
 
 const CACHE_SCHEMA_VERSION: u32 = 1;
 const MATCHER_VERSION: u32 = 2;
 const CACHE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const QUERY_CACHE_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+const VIDEO_META_CACHE_TTL_SECS: i64 = 90 * 24 * 60 * 60;
+const QUERY_CACHE_MAX: usize = 512;
+const VIDEO_META_CACHE_MAX: usize = 2048;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -22,6 +27,8 @@ pub(crate) struct TransferMatchCache {
     pub isrc: HashMap<String, CachedMatch>,
     pub normalized: HashMap<String, CachedMatch>,
     pub albums: HashMap<String, CachedAlbum>,
+    pub query_results: HashMap<String, CachedQueryResult>,
+    pub video_metadata: HashMap<String, CachedVideoMeta>,
 }
 
 impl Default for TransferMatchCache {
@@ -33,6 +40,8 @@ impl Default for TransferMatchCache {
             isrc: HashMap::new(),
             normalized: HashMap::new(),
             albums: HashMap::new(),
+            query_results: HashMap::new(),
+            video_metadata: HashMap::new(),
         }
     }
 }
@@ -71,6 +80,24 @@ pub(crate) struct CachedAlbumTrack {
     pub duration_secs: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CachedQueryResult {
+    pub songs: Vec<CachedQuerySong>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CachedQuerySong {
+    pub song: Song,
+    pub kind: YoutubeSearchKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CachedVideoMeta {
+    pub meta: YtdlpVideoMeta,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CacheLookup {
     pub outcome: MatchOutcome,
@@ -95,7 +122,9 @@ impl TransferMatchCache {
         let Some(path) = cache_path() else {
             return;
         };
-        if let Err(error) = safe_fs::write_private_atomic_json(&path, self) {
+        let mut cache = self.clone();
+        cache.prune();
+        if let Err(error) = safe_fs::write_private_atomic_json(&path, &cache) {
             tracing::warn!(error = %error, "failed to save transfer match cache");
         }
     }
@@ -173,6 +202,84 @@ impl TransferMatchCache {
                 updated_at: crate::signals::unix_now(),
             },
         );
+    }
+
+    pub fn query_cache_entries(&self) -> Vec<(String, Vec<(Song, YoutubeSearchKind)>)> {
+        let now = crate::signals::unix_now();
+        self.query_results
+            .iter()
+            .filter(|(_, cached)| !is_expired(cached.updated_at, now, QUERY_CACHE_TTL_SECS))
+            .filter_map(|(key, cached)| {
+                let songs = cached
+                    .songs
+                    .iter()
+                    .map(|entry| (entry.song.clone(), entry.kind))
+                    .collect::<Vec<_>>();
+                (!songs.is_empty()).then(|| (key.clone(), songs))
+            })
+            .collect()
+    }
+
+    pub fn video_meta_cache_entries(&self) -> Vec<(String, YtdlpVideoMeta)> {
+        let now = crate::signals::unix_now();
+        self.video_metadata
+            .iter()
+            .filter(|(_, cached)| !is_expired(cached.updated_at, now, VIDEO_META_CACHE_TTL_SECS))
+            .map(|(key, cached)| (key.clone(), cached.meta.clone()))
+            .collect()
+    }
+
+    pub fn merge_query_cache(
+        &mut self,
+        queries: Vec<(String, Vec<(Song, YoutubeSearchKind)>)>,
+        videos: Vec<(String, YtdlpVideoMeta)>,
+    ) -> bool {
+        let now = crate::signals::unix_now();
+        let mut changed = false;
+        for (key, songs) in queries {
+            if key.trim().is_empty() || songs.is_empty() {
+                continue;
+            }
+            let songs = songs
+                .into_iter()
+                .map(|(song, kind)| CachedQuerySong { song, kind })
+                .collect::<Vec<_>>();
+            self.query_results.insert(
+                key,
+                CachedQueryResult {
+                    songs,
+                    updated_at: now,
+                },
+            );
+            changed = true;
+        }
+        for (key, meta) in videos {
+            if key.trim().is_empty() {
+                continue;
+            }
+            self.video_metadata.insert(
+                key,
+                CachedVideoMeta {
+                    meta,
+                    updated_at: now,
+                },
+            );
+            changed = true;
+        }
+        if changed {
+            self.prune();
+        }
+        changed
+    }
+
+    fn prune(&mut self) {
+        let now = crate::signals::unix_now();
+        self.query_results
+            .retain(|_, cached| !is_expired(cached.updated_at, now, QUERY_CACHE_TTL_SECS));
+        self.video_metadata
+            .retain(|_, cached| !is_expired(cached.updated_at, now, VIDEO_META_CACHE_TTL_SECS));
+        prune_query_map(&mut self.query_results, QUERY_CACHE_MAX);
+        prune_video_map(&mut self.video_metadata, VIDEO_META_CACHE_MAX);
     }
 }
 
@@ -278,6 +385,38 @@ fn normalized_track_key(input: &TrackInput) -> Option<String> {
     Some(format!("{artist}|{title}|{duration}"))
 }
 
+fn is_expired(updated_at: i64, now: i64, ttl_secs: i64) -> bool {
+    updated_at <= 0 || now.saturating_sub(updated_at) > ttl_secs
+}
+
+fn prune_query_map(map: &mut HashMap<String, CachedQueryResult>, max_entries: usize) {
+    if map.len() <= max_entries {
+        return;
+    }
+    let mut entries = map
+        .iter()
+        .map(|(key, cached)| (cached.updated_at, key.clone()))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(updated_at, _)| *updated_at);
+    for (_, key) in entries.into_iter().take(map.len() - max_entries) {
+        map.remove(&key);
+    }
+}
+
+fn prune_video_map(map: &mut HashMap<String, CachedVideoMeta>, max_entries: usize) {
+    if map.len() <= max_entries {
+        return;
+    }
+    let mut entries = map
+        .iter()
+        .map(|(key, cached)| (cached.updated_at, key.clone()))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(updated_at, _)| *updated_at);
+    for (_, key) in entries.into_iter().take(map.len() - max_entries) {
+        map.remove(&key);
+    }
+}
+
 fn cache_path() -> Option<PathBuf> {
     crate::paths::cache_dir().map(|dir| dir.join("transfer-match-cache.json"))
 }
@@ -285,6 +424,8 @@ fn cache_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::Song;
+    use crate::api::ytmusic::{YoutubeSearchKind, YtdlpVideoMeta};
 
     fn input(title: &str, artist: &str) -> TrackInput {
         TrackInput {
@@ -329,6 +470,19 @@ mod tests {
         }
     }
 
+    fn video_meta() -> YtdlpVideoMeta {
+        YtdlpVideoMeta {
+            title: "Song".to_owned(),
+            channel: "Artist - Topic".to_owned(),
+            duration_secs: Some(180),
+            live_status: None,
+            is_live: None,
+            was_live: None,
+            media_type: None,
+            description: None,
+        }
+    }
+
     #[test]
     fn track_cache_looks_up_by_source_isrc_then_normalized_identity() {
         let mut cache = TransferMatchCache::default();
@@ -365,5 +519,48 @@ mod tests {
             album_key(&without_id).as_deref(),
             Some("album:album artist|album|2024")
         );
+    }
+
+    #[test]
+    fn query_cache_persists_positive_results_and_ignores_empty_results() {
+        let mut cache = TransferMatchCache::default();
+        let song = Song::from_search("video-id", "Song", "Artist", "3:00", Some("Album".into()));
+
+        assert!(!cache.merge_query_cache(vec![("catalog:empty".to_owned(), Vec::new())], vec![]));
+        assert!(cache.query_cache_entries().is_empty());
+
+        assert!(cache.merge_query_cache(
+            vec![(
+                "catalog:artist song".to_owned(),
+                vec![(song, YoutubeSearchKind::YtmCatalogSong)],
+            )],
+            vec![],
+        ));
+        let entries = cache.query_cache_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "catalog:artist song");
+        assert_eq!(entries[0].1[0].0.video_id, "video-id");
+        assert_eq!(entries[0].1[0].1, YoutubeSearchKind::YtmCatalogSong);
+
+        cache
+            .query_results
+            .get_mut("catalog:artist song")
+            .unwrap()
+            .updated_at = 1;
+        assert!(cache.query_cache_entries().is_empty());
+    }
+
+    #[test]
+    fn video_metadata_cache_returns_only_fresh_positive_metadata() {
+        let mut cache = TransferMatchCache::default();
+        assert!(cache.merge_query_cache(Vec::new(), vec![("video-id".to_owned(), video_meta())]));
+
+        let entries = cache.video_meta_cache_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "video-id");
+        assert_eq!(entries[0].1.channel, "Artist - Topic");
+
+        cache.video_metadata.get_mut("video-id").unwrap().updated_at = 1;
+        assert!(cache.video_meta_cache_entries().is_empty());
     }
 }

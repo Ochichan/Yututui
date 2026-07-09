@@ -2,7 +2,7 @@
 
 use anyhow::{Context, anyhow};
 
-use super::checkpoint::{ReportCandidate, ReportRow, TransferReport, report_path};
+use super::checkpoint::{MatchStats, ReportCandidate, ReportRow, TransferReport, report_path};
 use super::cli::{EXIT_FAILED, EXIT_OK, EXIT_USAGE};
 
 const USAGE: &str = "\
@@ -77,9 +77,72 @@ fn load_report(job_id: &str) -> anyhow::Result<TransferReport> {
 
 fn format_text_report(report: &TransferReport) -> String {
     let mut out = format!("Report: {}\n{}\n", report.job_id, report.render_text());
+    append_match_stats(&mut out, &report.match_stats);
     append_rows(&mut out, "Ambiguous", &report.ambiguous);
     append_rows(&mut out, "Not found", &report.not_found);
     out
+}
+
+fn append_match_stats(out: &mut String, stats: &MatchStats) {
+    if stats.is_empty() {
+        return;
+    }
+    out.push_str("Matching stats:\n");
+    if stats.query_cache_hits > 0 {
+        out.push_str(&format!(
+            "        query cache hits: {}\n",
+            stats.query_cache_hits
+        ));
+    }
+    if stats.video_meta_cache_hits > 0 {
+        out.push_str(&format!(
+            "        video metadata cache hits: {}\n",
+            stats.video_meta_cache_hits
+        ));
+    }
+    if stats.catalog_searches > 0 {
+        out.push_str(&format!(
+            "        catalog searches: {}\n",
+            stats.catalog_searches
+        ));
+    }
+    if stats.video_searches > 0 {
+        out.push_str(&format!(
+            "        video searches: {}\n",
+            stats.video_searches
+        ));
+    }
+    if stats.preflight_lookups > 0 {
+        out.push_str(&format!(
+            "        metadata preflight lookups: {}\n",
+            stats.preflight_lookups
+        ));
+    }
+    if stats.authenticated_catalog_degraded > 0 {
+        out.push_str(&format!(
+            "        authenticated catalog degraded: {}\n",
+            stats.authenticated_catalog_degraded
+        ));
+    }
+    append_counter_map(out, "source kinds", &stats.source_kinds);
+    append_counter_map(out, "quality tiers", &stats.quality_tiers);
+    append_counter_map(out, "reason codes", &stats.reason_codes);
+}
+
+fn append_counter_map(
+    out: &mut String,
+    label: &str,
+    values: &std::collections::BTreeMap<String, u32>,
+) {
+    if values.is_empty() {
+        return;
+    }
+    let rendered = values
+        .iter()
+        .map(|(key, count)| format!("{key}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    out.push_str(&format!("        {label}: {rendered}\n"));
 }
 
 fn append_rows(out: &mut String, label: &str, rows: &[ReportRow]) {
@@ -210,6 +273,39 @@ mod tests {
         assert!(output.contains(r#""job_id": "sp2yt-report-json""#));
         assert!(output.contains(r#""schema_version": 4"#));
         assert!(output.contains(r#""source_key": "spotify:track:maybe""#));
+    }
+
+    #[test]
+    fn text_report_prints_matching_stats_when_present() {
+        let mut report = sample_report("sp2yt-report-stats");
+        report.match_stats.query_cache_hits = 2;
+        report.match_stats.video_meta_cache_hits = 1;
+        report.match_stats.catalog_searches = 3;
+        report
+            .match_stats
+            .source_kinds
+            .insert("ytm_catalog_song".to_owned(), 2);
+        report
+            .match_stats
+            .quality_tiers
+            .insert("catalog".to_owned(), 2);
+        report.save().expect("save report");
+
+        let output = run_inner(&["sp2yt-report-stats"]).expect("text report");
+
+        for expected in [
+            "Matching stats:",
+            "query cache hits: 2",
+            "video metadata cache hits: 1",
+            "catalog searches: 3",
+            "source kinds: ytm_catalog_song=2",
+            "quality tiers: catalog=2",
+        ] {
+            assert!(
+                output.contains(expected),
+                "missing {expected:?} in {output}"
+            );
+        }
     }
 
     #[test]

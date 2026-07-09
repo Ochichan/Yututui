@@ -280,6 +280,8 @@ pub(super) fn merge_ytm_diagnostics(stats: &mut MatchStats, diagnostics: YtmMatc
     stats.video_searches += diagnostics.video_searches;
     stats.preflight_lookups += diagnostics.preflight_lookups;
     stats.authenticated_catalog_degraded += diagnostics.authenticated_catalog_degraded;
+    stats.query_cache_hits += diagnostics.query_cache_hits;
+    stats.video_meta_cache_hits += diagnostics.video_meta_cache_hits;
 }
 
 pub(super) fn record_match_outcome_stats(stats: &mut MatchStats, outcome: &MatchOutcome) {
@@ -304,6 +306,7 @@ fn record_score_stats(
     score: &crate::transfer::matching::MatchScoreBreakdown,
 ) {
     stats.bump_source_kind(&score.source_kind);
+    stats.bump_quality_tier(&score.quality_tier);
     for code in &score.reason_codes {
         stats.bump_reason_code(code);
     }

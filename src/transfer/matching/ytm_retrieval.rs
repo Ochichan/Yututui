@@ -24,6 +24,10 @@ pub(crate) struct SharedYtmMatchState {
     memo: Arc<AsyncMutex<HashMap<String, MatchOutcome>>>,
     query_memo: Arc<AsyncMutex<QueryMemo>>,
     video_memo: Arc<AsyncMutex<HashMap<String, Option<YtdlpVideoMeta>>>>,
+    persistent_query_keys: Arc<AsyncMutex<HashSet<String>>>,
+    persistent_video_keys: Arc<AsyncMutex<HashSet<String>>>,
+    query_locks: Arc<AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
+    video_locks: Arc<AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
     pace: Arc<AsyncMutex<Pacing>>,
     diagnostics: Arc<AsyncMutex<YtmMatchDiagnostics>>,
     catalog_gate: Arc<Semaphore>,
@@ -42,6 +46,10 @@ impl SharedYtmMatchState {
             memo: Arc::new(AsyncMutex::new(HashMap::new())),
             query_memo: Arc::new(AsyncMutex::new(HashMap::new())),
             video_memo: Arc::new(AsyncMutex::new(HashMap::new())),
+            persistent_query_keys: Arc::new(AsyncMutex::new(HashSet::new())),
+            persistent_video_keys: Arc::new(AsyncMutex::new(HashSet::new())),
+            query_locks: Arc::new(AsyncMutex::new(HashMap::new())),
+            video_locks: Arc::new(AsyncMutex::new(HashMap::new())),
             pace: Arc::new(AsyncMutex::new(pace)),
             diagnostics: Arc::new(AsyncMutex::new(YtmMatchDiagnostics::default())),
             catalog_gate: Arc::new(Semaphore::new(catalog_concurrency.max(1))),
@@ -53,6 +61,53 @@ impl SharedYtmMatchState {
     pub(crate) async fn diagnostics(&self) -> YtmMatchDiagnostics {
         self.diagnostics.lock().await.clone()
     }
+
+    pub(crate) async fn seed_persistent_cache(
+        &self,
+        queries: Vec<(String, Vec<(Song, YoutubeSearchKind)>)>,
+        videos: Vec<(String, YtdlpVideoMeta)>,
+    ) {
+        if !queries.is_empty() {
+            let mut memo = self.query_memo.lock().await;
+            let mut persistent = self.persistent_query_keys.lock().await;
+            for (key, songs) in queries {
+                if songs.is_empty() {
+                    continue;
+                }
+                persistent.insert(key.clone());
+                memo.insert(key, songs);
+            }
+        }
+        if !videos.is_empty() {
+            let mut memo = self.video_memo.lock().await;
+            let mut persistent = self.persistent_video_keys.lock().await;
+            for (key, meta) in videos {
+                persistent.insert(key.clone());
+                memo.insert(key, Some(meta));
+            }
+        }
+    }
+
+    pub(crate) async fn cache_snapshot(&self) -> YtmCacheSnapshot {
+        let queries = self
+            .query_memo
+            .lock()
+            .await
+            .iter()
+            .map(|(key, songs)| (key.clone(), songs.clone()))
+            .collect();
+        let video_metadata = self
+            .video_memo
+            .lock()
+            .await
+            .iter()
+            .filter_map(|(key, meta)| meta.clone().map(|meta| (key.clone(), meta)))
+            .collect();
+        YtmCacheSnapshot {
+            queries,
+            video_metadata,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -61,6 +116,13 @@ pub(crate) struct YtmMatchDiagnostics {
     pub video_searches: u32,
     pub preflight_lookups: u32,
     pub authenticated_catalog_degraded: u32,
+    pub query_cache_hits: u32,
+    pub video_meta_cache_hits: u32,
+}
+
+pub(crate) struct YtmCacheSnapshot {
+    pub queries: Vec<(String, Vec<(Song, YoutubeSearchKind)>)>,
+    pub video_metadata: Vec<(String, YtdlpVideoMeta)>,
 }
 
 /// Self-pacing between catalog searches. YTM default 600 ms (~1.6 rps), overridable via
@@ -322,6 +384,13 @@ async fn shared_catalog_songs(
 ) -> anyhow::Result<Vec<(Song, YoutubeSearchKind)>> {
     let memo_key = format!("catalog:{query}");
     if let Some(hit) = state.query_memo.lock().await.get(&memo_key).cloned() {
+        count_persistent_query_hit(state, &memo_key).await;
+        return Ok(hit);
+    }
+    let lock = query_lock(state, &memo_key).await;
+    let _guard = lock.lock().await;
+    if let Some(hit) = state.query_memo.lock().await.get(&memo_key).cloned() {
+        count_persistent_query_hit(state, &memo_key).await;
         return Ok(hit);
     }
     let _permit = state
@@ -358,6 +427,13 @@ async fn shared_video_songs(
 ) -> anyhow::Result<Vec<(Song, YoutubeSearchKind)>> {
     let memo_key = format!("video:{query}");
     if let Some(hit) = state.query_memo.lock().await.get(&memo_key).cloned() {
+        count_persistent_query_hit(state, &memo_key).await;
+        return Ok(hit);
+    }
+    let lock = query_lock(state, &memo_key).await;
+    let _guard = lock.lock().await;
+    if let Some(hit) = state.query_memo.lock().await.get(&memo_key).cloned() {
+        count_persistent_query_hit(state, &memo_key).await;
         return Ok(hit);
     }
     let _permit = state
@@ -378,6 +454,34 @@ async fn shared_video_songs(
         .await
         .insert(memo_key, songs.clone());
     Ok(songs)
+}
+
+async fn query_lock(state: &SharedYtmMatchState, key: &str) -> Arc<AsyncMutex<()>> {
+    let mut locks = state.query_locks.lock().await;
+    locks
+        .entry(key.to_owned())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
+
+async fn video_lock(state: &SharedYtmMatchState, key: &str) -> Arc<AsyncMutex<()>> {
+    let mut locks = state.video_locks.lock().await;
+    locks
+        .entry(key.to_owned())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
+
+async fn count_persistent_query_hit(state: &SharedYtmMatchState, key: &str) {
+    if state.persistent_query_keys.lock().await.remove(key) {
+        state.diagnostics.lock().await.query_cache_hits += 1;
+    }
+}
+
+async fn count_persistent_video_hit(state: &SharedYtmMatchState, key: &str) {
+    if state.persistent_video_keys.lock().await.remove(key) {
+        state.diagnostics.lock().await.video_meta_cache_hits += 1;
+    }
 }
 
 const TRANSFER_PREFLIGHT_TOP_N: usize = 2;
@@ -412,31 +516,41 @@ async fn preflight_ytm_candidates_shared(
     for (_, idx) in ranked.into_iter().take(preflight_top_n) {
         let key = candidates[idx].key.clone();
         let meta = match state.video_memo.lock().await.get(&key).cloned() {
-            Some(hit) => hit,
-            None => {
-                let _permit = state
-                    .preflight_gate
-                    .acquire()
-                    .await
-                    .expect("preflight semaphore should not close");
-                lookups += 1;
-                let hit = match api.youtube_video_metadata(&key).await {
-                    Ok(meta) => Some(meta),
-                    Err(error) => {
-                        tracing::debug!(
-                            video_id = %key,
-                            error = %crate::util::sanitize::sanitize_error_text(format!("{error:#}")),
-                            "transfer metadata preflight failed"
-                        );
-                        None
-                    }
-                };
-                state
-                    .video_memo
-                    .lock()
-                    .await
-                    .insert(key.clone(), hit.clone());
+            Some(hit) => {
+                count_persistent_video_hit(state, &key).await;
                 hit
+            }
+            None => {
+                let lock = video_lock(state, &key).await;
+                let _guard = lock.lock().await;
+                if let Some(hit) = state.video_memo.lock().await.get(&key).cloned() {
+                    count_persistent_video_hit(state, &key).await;
+                    hit
+                } else {
+                    let _permit = state
+                        .preflight_gate
+                        .acquire()
+                        .await
+                        .expect("preflight semaphore should not close");
+                    lookups += 1;
+                    let hit = match api.youtube_video_metadata(&key).await {
+                        Ok(meta) => Some(meta),
+                        Err(error) => {
+                            tracing::debug!(
+                                video_id = %key,
+                                error = %crate::util::sanitize::sanitize_error_text(format!("{error:#}")),
+                                "transfer metadata preflight failed"
+                            );
+                            None
+                        }
+                    };
+                    state
+                        .video_memo
+                        .lock()
+                        .await
+                        .insert(key.clone(), hit.clone());
+                    hit
+                }
             }
         };
         candidates[idx].preflighted = true;
