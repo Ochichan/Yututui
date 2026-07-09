@@ -28,6 +28,8 @@ fn user_tag() -> String {
 
 #[cfg(unix)]
 fn uid_tag() -> String {
+    // SAFETY: `geteuid` has no preconditions and returns the effective uid for the
+    // current process; failure is not represented by this libc API.
     unsafe { libc::geteuid() }.to_string()
 }
 
@@ -41,9 +43,12 @@ fn secure_existing_runtime_base(path: &Path) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return false;
     };
+    // SAFETY: `geteuid` has no preconditions; comparing metadata ownership is a
+    // read-only permission check for the already-stat'ed runtime directory.
+    let euid = unsafe { libc::geteuid() };
     meta.is_dir()
         && !meta.file_type().is_symlink()
-        && meta.uid() == unsafe { libc::geteuid() }
+        && meta.uid() == euid
         && (meta.permissions().mode() & 0o077) == 0
 }
 

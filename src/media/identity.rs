@@ -38,6 +38,8 @@ pub fn adopt_process_identity() {
     use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
 
     let id = wide(APP_USER_MODEL_ID);
+    // SAFETY: `id` is NUL-terminated UTF-16 and lives for the Shell call; failure is
+    // intentionally ignored because process identity is cosmetic.
     unsafe {
         let _ = SetCurrentProcessExplicitAppUserModelID(id.as_ptr());
     }
@@ -139,6 +141,8 @@ fn write_registration(icon: Option<&std::path::Path>) -> Result<(), String> {
 
     let key_path = format!(r"Software\Classes\AppUserModelId\{APP_USER_MODEL_ID}");
     let mut key: HKEY = null_mut();
+    // SAFETY: `key_path` is provided as NUL-terminated UTF-16; `key` points to valid
+    // output storage and the return code gates subsequent handle use.
     let rc = unsafe {
         RegCreateKeyExW(
             HKEY_CURRENT_USER,
@@ -160,6 +164,8 @@ fn write_registration(icon: Option<&std::path::Path>) -> Result<(), String> {
         let data = wide(value);
         let bytes =
             u32::try_from(data.len() * 2).map_err(|_| format!("value for {name} is too long"))?;
+        // SAFETY: `key` is the open registration key; `name` and `data` are
+        // NUL-terminated UTF-16 buffers valid for this call.
         let rc = unsafe {
             RegSetValueExW(
                 key,
@@ -183,6 +189,8 @@ fn write_registration(icon: Option<&std::path::Path>) -> Result<(), String> {
     {
         result = set("IconUri", &icon.display().to_string());
     }
+    // SAFETY: `key` is owned by this function after RegCreateKeyExW succeeds and is
+    // closed exactly once after all value writes.
     unsafe {
         RegCloseKey(key);
     }
@@ -223,31 +231,49 @@ fn write_start_menu_shortcut(icon: Option<&std::path::Path>) -> Result<std::path
     struct ComGuard;
     impl Drop for ComGuard {
         fn drop(&mut self) {
+            // SAFETY: this guard is constructed only after successful CoInitializeEx
+            // on the current thread, so it balances that COM apartment initialization.
             unsafe { CoUninitialize() };
         }
     }
+    // SAFETY: initializes COM for this thread before creating ShellLink COM objects;
+    // failure is converted into an error and no COM APIs run before success.
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
         .ok()
         .map_err(|e| format!("CoInitializeEx failed: {e}"))?;
     let _com = ComGuard;
 
     let result: windows::core::Result<()> = (|| {
+        // SAFETY: COM is initialized on this thread and ShellLink is an in-proc COM
+        // class; errors are propagated through the windows Result.
         let link: IShellLinkW =
             unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }?;
+        // SAFETY: the executable path buffer is NUL-terminated UTF-16 and lives until
+        // SetPath returns; ShellLink copies the value.
         unsafe { link.SetPath(PCWSTR(wide(&exe.display().to_string()).as_ptr())) }?;
         if let Some(icon) = icon {
+            // SAFETY: the icon path buffer is NUL-terminated UTF-16 and lives until
+            // SetIconLocation returns; ShellLink copies the value.
             unsafe { link.SetIconLocation(PCWSTR(wide(&icon.display().to_string()).as_ptr()), 0) }?;
         }
 
         let store: IPropertyStore = link.cast()?;
         let value = PROPVARIANT::from(APP_USER_MODEL_ID);
+        // SAFETY: PKEY_AppUserModel_ID expects a string PROPVARIANT; `value` is kept
+        // alive until SetValue returns and the HRESULT is checked.
         unsafe { store.SetValue(&PKEY_APP_USER_MODEL_ID, &value) }?;
+        // SAFETY: commits the property store for the live ShellLink COM object; errors
+        // are propagated to the caller.
         unsafe { store.Commit() }?;
 
         let file: IPersistFile = link.cast()?;
+        // SAFETY: the shortcut path is NUL-terminated UTF-16 and lives until Save
+        // returns; `true` permits overwrite and HRESULT is checked.
         unsafe { file.Save(PCWSTR(wide(&lnk.display().to_string()).as_ptr()), true) }?;
 
         // Readback: the stamp must round-trip or the flyout will still say Unknown app.
+        // SAFETY: reads the same string property from the live property store; the
+        // returned PROPVARIANT owns its data through the windows crate wrapper.
         let back = unsafe { store.GetValue(&PKEY_APP_USER_MODEL_ID) }?;
         let back = back.to_string();
         if back != APP_USER_MODEL_ID {

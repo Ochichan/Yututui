@@ -55,6 +55,9 @@ pub mod update;
 pub mod util;
 pub mod zoom;
 
+#[cfg(test)]
+pub mod test_util;
+
 #[cfg(feature = "desktop")]
 pub mod desktop;
 

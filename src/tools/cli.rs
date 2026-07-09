@@ -946,33 +946,8 @@ fn update() -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
-
     use super::*;
-
-    struct EnvRestore(Vec<(String, Option<OsString>)>);
-
-    impl EnvRestore {
-        fn capture(names: &[&str]) -> Self {
-            Self(
-                names
-                    .iter()
-                    .map(|name| ((*name).to_owned(), std::env::var_os(name)))
-                    .collect(),
-            )
-        }
-    }
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (name, value) in &self.0 {
-                match value {
-                    Some(value) => unsafe { std::env::set_var(name, value) },
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
+    use crate::test_util::env::with_var;
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("yututui-tools-cli-{name}-{}", std::process::id()))
@@ -1082,19 +1057,18 @@ mod tests {
 
     #[test]
     fn active_env_override_trims_and_ignores_empty_values() {
-        let _restore = EnvRestore::capture(&["YTM_YTDLP"]);
-
-        unsafe { std::env::remove_var("YTM_YTDLP") };
-        assert_eq!(active_env_ytdlp_override(), None);
-
-        unsafe { std::env::set_var("YTM_YTDLP", "   ") };
-        assert_eq!(active_env_ytdlp_override(), None);
-
-        unsafe { std::env::set_var("YTM_YTDLP", "  /opt/bin/yt-dlp  ") };
-        assert_eq!(
-            active_env_ytdlp_override().as_deref(),
-            Some("/opt/bin/yt-dlp")
-        );
+        with_var("YTM_YTDLP", None, || {
+            assert_eq!(active_env_ytdlp_override(), None);
+        });
+        with_var("YTM_YTDLP", Some("   "), || {
+            assert_eq!(active_env_ytdlp_override(), None);
+        });
+        with_var("YTM_YTDLP", Some("  /opt/bin/yt-dlp  "), || {
+            assert_eq!(
+                active_env_ytdlp_override().as_deref(),
+                Some("/opt/bin/yt-dlp")
+            );
+        });
     }
 
     #[test]
@@ -1160,14 +1134,13 @@ mod tests {
 
     #[test]
     fn resolve_pin_target_reports_missing_system_when_path_is_empty() {
-        let _restore = EnvRestore::capture(&["PATH"]);
-        unsafe { std::env::set_var("PATH", "") };
+        with_var("PATH", Some(""), || {
+            let err = resolve_pin_target(&UseTarget::System, false).unwrap_err();
+            assert!(err.contains("system yt-dlp was not found"));
 
-        let err = resolve_pin_target(&UseTarget::System, false).unwrap_err();
-        assert!(err.contains("system yt-dlp was not found"));
-
-        let err = resolve_pin_target(&UseTarget::System, true).unwrap_err();
-        assert!(err.contains("system yt-dlp"));
+            let err = resolve_pin_target(&UseTarget::System, true).unwrap_err();
+            assert!(err.contains("system yt-dlp"));
+        });
     }
 
     #[test]
