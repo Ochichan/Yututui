@@ -226,13 +226,9 @@ fn skip_uses_prefetched_url_when_available() {
 #[test]
 fn skip_drops_stale_prefetched_url_and_falls_back() {
     let mut app = app_playing(3, 0);
-    app.prefetch.resolved.insert_at(
-        "id1".to_owned(),
-        "https://cdn.example/stale-id1".to_owned(),
-        std::time::Instant::now()
-            - crate::app::prefetch::PREFETCH_TTL
-            - std::time::Duration::from_millis(1),
-    );
+    app.prefetch
+        .resolved
+        .insert_expired("id1".to_owned(), "https://cdn.example/stale-id1".to_owned());
 
     let cmds = app.update(Msg::Key(key(KeyCode::Char('.'))));
 

@@ -8,6 +8,8 @@ const PREFETCH_MAX: usize = 64;
 pub(in crate::app) struct ResolvedStream {
     url: String,
     inserted_at: Instant,
+    #[cfg(test)]
+    force_expired: bool,
 }
 
 #[derive(Default)]
@@ -65,11 +67,26 @@ impl PrefetchCache {
         self.insert_inner(video_id, url, inserted_at);
     }
 
+    #[cfg(test)]
+    pub(in crate::app) fn insert_expired(&mut self, video_id: String, url: String) {
+        self.insert_inner(video_id.clone(), url, Instant::now());
+        if let Some(entry) = self.entries.get_mut(&video_id) {
+            entry.force_expired = true;
+        }
+    }
+
     fn insert_inner(&mut self, video_id: String, url: String, inserted_at: Instant) {
         self.prune_expired();
         self.order.retain(|existing| existing != &video_id);
-        self.entries
-            .insert(video_id.clone(), ResolvedStream { url, inserted_at });
+        self.entries.insert(
+            video_id.clone(),
+            ResolvedStream {
+                url,
+                inserted_at,
+                #[cfg(test)]
+                force_expired: false,
+            },
+        );
         self.order.push_back(video_id);
         while self.entries.len() > PREFETCH_MAX {
             if let Some(oldest) = self.order.pop_front() {
@@ -81,9 +98,10 @@ impl PrefetchCache {
     }
 
     fn is_fresh(&self, video_id: &str) -> bool {
+        let now = Instant::now();
         self.entries
             .get(video_id)
-            .is_some_and(|entry| entry.inserted_at.elapsed() < PREFETCH_TTL)
+            .is_some_and(|entry| entry.is_fresh_at(now))
     }
 
     fn touch(&mut self, video_id: &str) {
@@ -93,9 +111,20 @@ impl PrefetchCache {
 
     fn prune_expired(&mut self) {
         let now = Instant::now();
-        self.entries
-            .retain(|_, entry| now.duration_since(entry.inserted_at) < PREFETCH_TTL);
+        self.entries.retain(|_, entry| entry.is_fresh_at(now));
         self.order
             .retain(|video_id| self.entries.contains_key(video_id));
+    }
+}
+
+impl ResolvedStream {
+    fn is_fresh_at(&self, now: Instant) -> bool {
+        #[cfg(test)]
+        if self.force_expired {
+            return false;
+        }
+
+        now.checked_duration_since(self.inserted_at)
+            .is_some_and(|age| age < PREFETCH_TTL)
     }
 }

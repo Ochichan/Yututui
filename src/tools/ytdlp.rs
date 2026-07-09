@@ -1264,7 +1264,12 @@ mod tests {
     fn preserve_current_records_previous_slot_metadata() {
         let _guard = crate::i18n::lock_for_test();
         let original_tools_dir = std::env::var_os("YTM_TOOLS_DIR");
-        let dir = std::env::temp_dir().join(format!("ytt-ytdlp-prev-{}", std::process::id()));
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let dir =
+            std::env::temp_dir().join(format!("ytt-ytdlp-prev-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         unsafe { std::env::set_var("YTM_TOOLS_DIR", &dir) };
 
@@ -1289,11 +1294,14 @@ mod tests {
         assert_eq!(state.previous_sha256.as_deref(), Some(sha256.as_str()));
         assert!(previous_stamp_matches(&previous, &state));
 
-        let _ = std::fs::remove_dir_all(&dir);
         match original_tools_dir {
             Some(value) => unsafe { std::env::set_var("YTM_TOOLS_DIR", value) },
             None => unsafe { std::env::remove_var("YTM_TOOLS_DIR") },
         }
+        #[cfg(windows)]
+        let _ = retry_file_op(|| std::fs::remove_dir_all(&dir));
+        #[cfg(not(windows))]
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // `parse_tag_from_location` moved to `crate::util::github`; its unit test lives there.
