@@ -3,6 +3,7 @@
 //! or dry-run picks up exactly where it left off (`ytt transfer resume <job-id>`). The
 //! human-facing summary lands next to it as `<job-id>.report.json`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,10 @@ pub struct Checkpoint {
     /// tracks), counted at fetch time for the report.
     #[serde(default)]
     pub skipped_local: u32,
+    /// Diagnostic counters accumulated while matching. This is intentionally summary-level
+    /// so resumed jobs can explain why rows landed in review without storing every probe.
+    #[serde(default, skip_serializing_if = "MatchStats::is_empty")]
+    pub match_stats: MatchStats,
     pub tracks: Vec<TrackEntry>,
 }
 
@@ -85,6 +90,7 @@ impl Checkpoint {
             dest_name: None,
             source_name: None,
             skipped_local: 0,
+            match_stats: MatchStats::default(),
             tracks,
         }
     }
@@ -161,7 +167,56 @@ pub fn report_path(job_id: &str) -> Option<PathBuf> {
     Some(transfers_dir()?.join(format!("{}.report.json", safe_job_id(job_id)?)))
 }
 
-const TRANSFER_REPORT_SCHEMA_VERSION: u32 = 3;
+const TRANSFER_REPORT_SCHEMA_VERSION: u32 = 4;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MatchStats {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cache_hits: BTreeMap<String, u32>,
+    pub album_groups_attempted: u32,
+    pub album_groups_matched: u32,
+    pub album_tracks_matched: u32,
+    pub catalog_searches: u32,
+    pub video_searches: u32,
+    pub preflight_lookups: u32,
+    pub authenticated_catalog_degraded: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_kinds: BTreeMap<String, u32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reason_codes: BTreeMap<String, u32>,
+}
+
+impl MatchStats {
+    pub fn is_empty(&self) -> bool {
+        self.cache_hits.is_empty()
+            && self.album_groups_attempted == 0
+            && self.album_groups_matched == 0
+            && self.album_tracks_matched == 0
+            && self.catalog_searches == 0
+            && self.video_searches == 0
+            && self.preflight_lookups == 0
+            && self.authenticated_catalog_degraded == 0
+            && self.source_kinds.is_empty()
+            && self.reason_codes.is_empty()
+    }
+
+    pub fn bump_cache_hit(&mut self, kind: &str) {
+        *self.cache_hits.entry(kind.to_owned()).or_default() += 1;
+    }
+
+    pub fn bump_source_kind(&mut self, kind: &str) {
+        if !kind.is_empty() {
+            *self.source_kinds.entry(kind.to_owned()).or_default() += 1;
+        }
+    }
+
+    pub fn bump_reason_code(&mut self, code: &str) {
+        if !code.is_empty() {
+            *self.reason_codes.entry(code.to_owned()).or_default() += 1;
+        }
+    }
+}
 
 /// The end-of-job summary (also serialized next to the checkpoint).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +233,8 @@ pub struct TransferReport {
     pub skipped_local: u32,
     pub duplicates_dropped: u32,
     pub elapsed_secs: u64,
+    #[serde(default, skip_serializing_if = "MatchStats::is_empty")]
+    pub match_stats: MatchStats,
 }
 
 impl Default for TransferReport {
@@ -194,6 +251,7 @@ impl Default for TransferReport {
             skipped_local: 0,
             duplicates_dropped: 0,
             elapsed_secs: 0,
+            match_stats: MatchStats::default(),
         }
     }
 }
@@ -314,6 +372,8 @@ mod tests {
             min_score: 0.80,
             take_best: false,
             auto_accept_ambiguous_min_score: None,
+            match_policy: crate::transfer::MatchPolicy::Strict,
+            allow_user_videos: false,
             rematch: false,
         }
     }

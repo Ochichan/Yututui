@@ -14,8 +14,8 @@ use std::time::Duration;
 use super::checkpoint::{Checkpoint, ReviewDecision, TransferReport};
 use super::session::{ImportSession, ImportSessionRowStatus};
 use super::{
-    FileFormat, JobCtx, JobError, JobSpec, Stage, TransferDest, TransferProgress, TransferSource,
-    new_job_id, run_job,
+    FileFormat, JobCtx, JobError, JobSpec, MatchPolicy, Stage, TransferDest, TransferProgress,
+    TransferSource, new_job_id, run_job,
 };
 use crate::config::Config;
 use crate::spotify::auth::{self, SpotifyToken};
@@ -50,6 +50,8 @@ Commands:
       --dry-run                    Fetch + match only; `resume` performs the writes
       --yes                        Skip the confirmation gate
       --min-score 0.80             Match accept threshold (0..1)
+      --policy strict|balanced|aggressive  Match preset for speed/recall tradeoff
+      --allow-user-videos          Let generic YouTube uploads auto-match when safe
       --take-best                  Accept the best ambiguous candidate too
       --rematch                    Ignore cached matches / file fast-path ids
   export <ytm:ID|local:KEY> --to spotify [--name NAME] [--dry-run] [--yes] [--min-score X]
@@ -173,6 +175,8 @@ struct CommonFlags {
     dry_run: bool,
     yes: bool,
     min_score: f32,
+    match_policy: Option<MatchPolicy>,
+    allow_user_videos: bool,
     take_best: bool,
     rematch: bool,
 }
@@ -182,6 +186,8 @@ fn parse_common(args: &mut Vec<&str>) -> Result<CommonFlags, String> {
         dry_run: false,
         yes: false,
         min_score: 0.80,
+        match_policy: None,
+        allow_user_videos: false,
         take_best: false,
         rematch: false,
     };
@@ -192,7 +198,12 @@ fn parse_common(args: &mut Vec<&str>) -> Result<CommonFlags, String> {
             "--dry-run" => flags.dry_run = true,
             "--yes" => flags.yes = true,
             "--take-best" => flags.take_best = true,
+            "--allow-user-videos" => flags.allow_user_videos = true,
             "--rematch" => flags.rematch = true,
+            "--policy" => {
+                let v = it.next().ok_or("--policy needs a value")?;
+                flags.match_policy = Some(v.parse()?);
+            }
             "--min-score" => {
                 let v = it.next().ok_or("--min-score needs a value")?;
                 let score: f32 = v.parse().map_err(|_| format!("bad --min-score `{v}`"))?;
@@ -282,6 +293,8 @@ fn parse_import(args: &[&str]) -> Result<(JobSpec, bool), String> {
             min_score: flags.min_score,
             take_best: flags.take_best,
             auto_accept_ambiguous_min_score: None,
+            match_policy: flags.match_policy.unwrap_or(MatchPolicy::Balanced),
+            allow_user_videos: flags.allow_user_videos,
             rematch: flags.rematch,
         },
         flags.yes,
@@ -350,6 +363,8 @@ fn parse_export(args: &[&str]) -> Result<(JobSpec, bool), String> {
             min_score: flags.min_score,
             take_best: flags.take_best,
             auto_accept_ambiguous_min_score: None,
+            match_policy: flags.match_policy.unwrap_or(MatchPolicy::Strict),
+            allow_user_videos: flags.allow_user_videos,
             rematch: flags.rematch,
         },
         flags.yes,
@@ -1132,6 +1147,8 @@ mod tests {
             min_score: 0.80,
             take_best: false,
             auto_accept_ambiguous_min_score: None,
+            match_policy: MatchPolicy::Strict,
+            allow_user_videos: false,
             rematch: false,
         }
     }
@@ -1180,6 +1197,9 @@ mod tests {
             "--yes",
             "--min-score",
             "0.65",
+            "--policy",
+            "aggressive",
+            "--allow-user-videos",
             "--take-best",
             "--rematch",
             "--to",
@@ -1190,6 +1210,8 @@ mod tests {
         assert!(flags.dry_run);
         assert!(flags.yes);
         assert_eq!(flags.min_score, 0.65);
+        assert_eq!(flags.match_policy, Some(MatchPolicy::Aggressive));
+        assert!(flags.allow_user_videos);
         assert!(flags.take_best);
         assert!(flags.rematch);
         assert_eq!(args, vec!["liked", "--to", "likes"]);
@@ -1202,6 +1224,12 @@ mod tests {
 
         let mut out_of_range = vec!["--min-score", "1.2"];
         assert!(parse_common_err(&mut out_of_range).contains("must be 0..1"));
+
+        let mut missing_policy = vec!["--policy"];
+        assert!(parse_common_err(&mut missing_policy).contains("needs a value"));
+
+        let mut bad_policy = vec!["--policy", "reckless"];
+        assert!(parse_common_err(&mut bad_policy).contains("strict"));
     }
 
     #[test]
@@ -1225,6 +1253,8 @@ mod tests {
         ));
         assert!(spec.dry_run);
         assert_eq!(spec.min_score, 0.72);
+        assert_eq!(spec.match_policy, MatchPolicy::Balanced);
+        assert!(!spec.allow_user_videos);
         assert!(spec.take_best);
         assert!(spec.rematch);
     }
@@ -1255,6 +1285,7 @@ mod tests {
         }
         assert!(!spec.dry_run);
         assert_eq!(spec.min_score, 0.80);
+        assert_eq!(spec.match_policy, MatchPolicy::Balanced);
     }
 
     #[test]
@@ -1322,6 +1353,7 @@ mod tests {
         .expect("spotify export");
         assert!(!yes);
         assert!(spec.dry_run);
+        assert_eq!(spec.match_policy, MatchPolicy::Strict);
         match spec.dest {
             TransferDest::SpotifyNewPlaylist { name } => {
                 assert_eq!(name, Some("Mirror".to_owned()));

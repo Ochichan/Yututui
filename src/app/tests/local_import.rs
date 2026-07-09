@@ -62,6 +62,8 @@ fn save_ambiguous_import_job(job_id: &str) {
             min_score: 0.80,
             take_best: false,
             auto_accept_ambiguous_min_score: None,
+            match_policy: crate::transfer::MatchPolicy::Strict,
+            allow_user_videos: false,
             rematch: false,
         },
         vec![TrackEntry {
@@ -260,6 +262,8 @@ fn save_ready_local_playlist_job(session_id: &str) {
             min_score: 0.80,
             take_best: false,
             auto_accept_ambiguous_min_score: None,
+            match_policy: crate::transfer::MatchPolicy::Strict,
+            allow_user_videos: false,
             rematch: false,
         },
         vec![TrackEntry {

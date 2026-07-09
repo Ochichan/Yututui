@@ -10,6 +10,8 @@ fn spec(dest: TransferDest) -> JobSpec {
         min_score: 0.80,
         take_best: false,
         auto_accept_ambiguous_min_score: None,
+        match_policy: MatchPolicy::Strict,
+        allow_user_videos: false,
         rematch: false,
     }
 }
@@ -264,6 +266,8 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
         min_score: 0.80,
         take_best: false,
         auto_accept_ambiguous_min_score: None,
+        match_policy: MatchPolicy::Strict,
+        allow_user_videos: false,
         rematch: false,
     };
     let mut ctx = JobCtx {
@@ -309,6 +313,8 @@ async fn fetch_source_caps_large_file_inputs_before_checkpointing() {
         min_score: 0.80,
         take_best: false,
         auto_accept_ambiguous_min_score: None,
+        match_policy: MatchPolicy::Strict,
+        allow_user_videos: false,
         rematch: false,
     };
     let mut ctx = JobCtx {
@@ -464,7 +470,7 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
     let report = build_report(&cp, 1);
 
     assert_eq!(report.job_id, "job-report");
-    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.schema_version, 4);
     assert_eq!(report.total, 4);
     assert_eq!(report.matched, 1);
     assert_eq!(report.skipped_local, 1);
@@ -1116,6 +1122,8 @@ async fn file_export_rejects_sources_that_cannot_be_exported_without_clients() {
         min_score: 0.80,
         take_best: false,
         auto_accept_ambiguous_min_score: None,
+        match_policy: MatchPolicy::Strict,
+        allow_user_videos: false,
         rematch: false,
     };
 

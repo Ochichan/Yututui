@@ -157,6 +157,16 @@ impl App {
             min_score: 0.80,
             take_best: false,
             auto_accept_ambiguous_min_score,
+            match_policy: match import_mode {
+                crate::config::SpotifyImportMode::FastPlaylist => {
+                    crate::transfer::MatchPolicy::Balanced
+                }
+                crate::config::SpotifyImportMode::StrictPlaylist
+                | crate::config::SpotifyImportMode::ReviewFirst => {
+                    crate::transfer::MatchPolicy::Strict
+                }
+            },
+            allow_user_videos: false,
             rematch: false,
         };
         self.status.text = if crate::i18n::is_korean() {

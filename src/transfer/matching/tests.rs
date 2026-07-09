@@ -31,6 +31,7 @@ fn cand(title: &str, artist: &str, album: Option<&str>, dur: Option<u32>) -> Mat
         artist: artist.to_owned(),
         album: album.map(str::to_owned),
         duration_secs: dur,
+        track_number: None,
         source_kind: CandidateSourceKind::YtmCatalogSong,
         channel: Some(artist.to_owned()),
         isrc: None,
@@ -232,6 +233,31 @@ fn ytm_query_plan_handles_missing_artists() {
 }
 
 #[test]
+fn ytm_catalog_plan_uses_only_fast_primary_queries_before_fallbacks() {
+    let mut input = input(
+        "Song Title (feat. Guest)",
+        &["Primary", "Featured"],
+        Some("Album Name"),
+        Some(180),
+    );
+    input.album_artists = vec!["Album Artist".to_owned()];
+    input.album_release_date = Some("2024-05-01".to_owned());
+
+    assert_eq!(
+        ytm_catalog_query_plan(&input),
+        vec![
+            "Primary Song Title".to_owned(),
+            "Primary Song Title (feat. Guest)".to_owned(),
+            "Song Title Primary".to_owned(),
+        ]
+    );
+    let fallback = ytm_fallback_query_plan(&input);
+    assert!(!fallback.contains(&"Primary Song Title".to_owned()));
+    assert!(fallback.contains(&"Primary Song Title official audio".to_owned()));
+    assert!(fallback.contains(&"Primary Song Title topic".to_owned()));
+}
+
+#[test]
 fn plain_track_does_not_auto_accept_instrumental_candidate() {
     let i = input("Song", &["Artist"], None, Some(180));
     let c = cand("Song (Instrumental)", "Artist", None, Some(180));
@@ -325,6 +351,29 @@ fn generic_youtube_high_score_without_official_signal_needs_review() {
 }
 
 #[test]
+fn generic_youtube_can_match_when_user_videos_are_allowed() {
+    let i = input("Song", &["Artist"], Some("Album"), Some(180));
+    let mut video = cand("Song", "Artist", Some("Album"), Some(180));
+    video.source_kind = CandidateSourceKind::YoutubeVideoSearch;
+    video.channel = Some("Random Uploads".to_owned());
+    let cfg = MatchConfig {
+        allow_user_videos: true,
+        ..MatchConfig::default()
+    };
+
+    match best_outcome(&i, &[video], &cfg) {
+        MatchOutcome::Matched {
+            score_breakdown: Some(score),
+            ..
+        } => {
+            assert!(!score.accept_blocked);
+            assert_eq!(score.confidence_tier, "review");
+        }
+        other => panic!("expected allowed generic upload match, got {other:?}"),
+    }
+}
+
+#[test]
 fn official_topic_youtube_candidate_can_auto_accept() {
     let i = input("Song", &["Artist"], Some("Album"), Some(180));
     let mut video = cand("Song", "Artist", Some("Album"), Some(180));
@@ -411,6 +460,22 @@ fn score_breakdown_exposes_weighted_components() {
     assert_eq!(breakdown.duration, 1.0);
     assert_eq!(breakdown.album_bonus, 0.05);
     assert_eq!(breakdown.total, score_candidate(&i, &exact));
+}
+
+#[test]
+fn album_track_candidate_gets_track_number_bonus() {
+    let mut i = input("Album Cut", &["Artist"], Some("Album"), Some(180));
+    i.track_number = Some(7);
+    let mut exact = cand("Album Cut", "Artist", Some("Album"), Some(180));
+    exact.source_kind = CandidateSourceKind::YtmAlbumTrack;
+    exact.track_number = Some(7);
+
+    let breakdown = score_candidate_breakdown(&i, &exact);
+
+    assert_eq!(breakdown.source_kind, "ytm_album_track");
+    assert_eq!(breakdown.track_number_bonus, 0.04);
+    assert_eq!(breakdown.confidence_tier, "exact");
+    assert!(breakdown.reason_codes.contains(&"album_track".to_owned()));
 }
 
 #[test]

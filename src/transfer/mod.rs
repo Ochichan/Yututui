@@ -12,6 +12,7 @@ pub mod csv;
 mod download_cli;
 pub mod download_plan;
 pub mod json;
+mod match_cache;
 pub mod matching;
 mod organize_cli;
 pub mod organize_plan;
@@ -97,8 +98,40 @@ pub struct JobSpec {
     /// this score. CLI defaults leave it unset; `take_best` keeps its existing behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_accept_ambiguous_min_score: Option<f32>,
+    /// Matching preset. Old checkpoints deserialize to `Strict`; new CLI/TUI imports
+    /// choose a more useful default explicitly.
+    #[serde(default)]
+    pub match_policy: MatchPolicy,
+    /// Permit generic, non-official public YouTube uploads to auto-match when policy
+    /// gates otherwise agree. Off by default; such rows normally stay review-only.
+    #[serde(default)]
+    pub allow_user_videos: bool,
     /// Ignore checkpointed outcomes and match afresh (also disables file fast-path ids).
     pub rematch: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchPolicy {
+    #[default]
+    Strict,
+    Balanced,
+    Aggressive,
+}
+
+impl std::str::FromStr for MatchPolicy {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "strict" => Ok(Self::Strict),
+            "balanced" => Ok(Self::Balanced),
+            "aggressive" => Ok(Self::Aggressive),
+            other => Err(format!(
+                "--policy expects `strict`, `balanced`, or `aggressive` (got `{other}`)"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

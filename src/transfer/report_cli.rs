@@ -208,7 +208,7 @@ mod tests {
         let output = run_inner(&[job_id, "--format", "json"]).expect("json report");
 
         assert!(output.contains(r#""job_id": "sp2yt-report-json""#));
-        assert!(output.contains(r#""schema_version": 3"#));
+        assert!(output.contains(r#""schema_version": 4"#));
         assert!(output.contains(r#""source_key": "spotify:track:maybe""#));
     }
 

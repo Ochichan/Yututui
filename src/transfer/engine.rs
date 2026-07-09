@@ -9,15 +9,24 @@ use anyhow::{anyhow, bail};
 
 use super::checkpoint::ReviewDecision;
 use super::checkpoint::{Checkpoint, ReportCandidate, ReportRow, TrackEntry, TransferReport};
+use super::match_cache::TransferMatchCache;
 use super::matching::{
     MatchCandidate, MatchConfig, MatchOutcome, Pacing, TrackInput, YtmMatchState, best_outcome,
     match_track_ytm, spotify_query_plan, ytm_query_plan,
 };
-use super::{FileFormat, JobSpec, Stage, TransferDest, TransferProgress, TransferSource};
+use super::{
+    FileFormat, JobSpec, MatchPolicy, Stage, TransferDest, TransferProgress, TransferSource,
+};
 use crate::api::ytmusic::YtMusicApi;
 use crate::api::{Song, SongImportMetadata};
 use crate::search_source::SearchConfig;
 use crate::spotify::client::{SpotifyClient, SpotifyError};
+
+mod album_prefill;
+use album_prefill::{
+    apply_persistent_cache, merge_ytm_diagnostics, prefill_album_matches,
+    record_match_outcome_stats,
+};
 
 /// Every job caps its work list here (YTM's own playlist cap is ~5,000 anyway).
 const TRACK_CAP: usize = 10_000;
@@ -321,6 +330,14 @@ fn read_file_inputs(path: &std::path::Path) -> anyhow::Result<(String, Vec<Track
 
 // Match ---------------------------------------------------------------------------
 
+fn accept_margin_for_policy(policy: MatchPolicy) -> f32 {
+    match policy {
+        MatchPolicy::Strict => MatchConfig::default().accept_margin,
+        MatchPolicy::Balanced => 0.03,
+        MatchPolicy::Aggressive => 0.0,
+    }
+}
+
 async fn match_stage(
     cp: &mut Checkpoint,
     ctx: &mut JobCtx,
@@ -329,7 +346,9 @@ async fn match_stage(
     let cfg = MatchConfig {
         accept: cp.spec.min_score,
         ambiguous_floor: (cp.spec.min_score - 0.20).max(0.40),
-        accept_margin: MatchConfig::default().accept_margin,
+        accept_margin: accept_margin_for_policy(cp.spec.match_policy),
+        policy: cp.spec.match_policy,
+        allow_user_videos: cp.spec.allow_user_videos,
     };
     let to_spotify = matches!(cp.spec.dest, TransferDest::SpotifyNewPlaylist { .. });
     let total = cp.tracks.len() as u32;
@@ -339,6 +358,22 @@ async fn match_stage(
     let mut pace = Pacing::ytm_default();
     let search_config = ctx.search_config.clone();
     let market = ctx.market.clone();
+    let mut match_cache = (!to_spotify).then(TransferMatchCache::load);
+    let mut cache_dirty = false;
+    if !to_spotify
+        && !cp.spec.rematch
+        && let Some(cache) = match_cache.as_ref()
+    {
+        cache_dirty |= apply_persistent_cache(cp, cache);
+    }
+    if !to_spotify && cp.tracks.iter().any(|track| track.outcome.is_none()) {
+        let ytm = ctx.ytm()?;
+        if let Some(cache) = match_cache.as_mut() {
+            cache_dirty |= prefill_album_matches(cp, ytm, &cfg, &search_config, cache, &mut pace)
+                .await
+                .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
+        }
+    }
     // One weird track must not kill a 300-track job: an isolated search failure
     // becomes NotFound (reported, retryable via --rematch). A *streak* means the
     // backend itself died (cookie, network) — abort resumably then.
@@ -361,6 +396,13 @@ async fn match_stage(
             match match_track_ytm(ctx.ytm()?, &input, &cfg, &search_config, &mut ytm_state).await {
                 Ok(outcome) => {
                     consecutive_failures = 0;
+                    merge_ytm_diagnostics(&mut cp.match_stats, ytm_state.diagnostics());
+                    if let Some(cache) = match_cache.as_mut()
+                        && matches!(outcome, MatchOutcome::Matched { .. })
+                    {
+                        cache.save_match(&input, &outcome);
+                        cache_dirty = true;
+                    }
                     outcome
                 }
                 Err(e) => {
@@ -377,6 +419,7 @@ async fn match_stage(
                 }
             }
         };
+        record_match_outcome_stats(&mut cp.match_stats, &outcome);
         cp.tracks[idx].outcome = Some(outcome);
 
         let (matched, ambiguous, not_found) = outcome_counts(&cp.tracks);
@@ -395,6 +438,9 @@ async fn match_stage(
         if (idx + 1) % CHECKPOINT_EVERY == 0 {
             cp.save().map_err(|e| JobError::fatal(e.into()))?;
         }
+    }
+    if cache_dirty && let Some(cache) = match_cache.as_ref() {
+        cache.save();
     }
     cp.save().map_err(|e| JobError::fatal(e.into()))?;
     Ok(())
@@ -1030,6 +1076,7 @@ fn build_report(cp: &Checkpoint, skipped_local: u32) -> TransferReport {
         total: cp.tracks.len() as u32,
         matched,
         skipped_local,
+        match_stats: cp.match_stats.clone(),
         ..TransferReport::default()
     };
     for (idx, entry) in cp.tracks.iter().enumerate() {
