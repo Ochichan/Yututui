@@ -60,6 +60,18 @@ impl App {
             };
         }
 
+        // Local import accept-all is modal because it changes many review decisions at once.
+        if let Some(confirm) = self.local_mode.pending_accept_all_confirm.take() {
+            self.dirty = true;
+            let confirmed = k.code == KeyCode::Enter
+                || chord == Chord::new(KeyCode::Char('y'), KeyModifiers::empty());
+            return if confirmed {
+                self.apply_local_import_accept_all_confirm(confirm)
+            } else {
+                Vec::new()
+            };
+        }
+
         // Settings confirmations are modal: Enter or `y` confirms, anything else cancels.
         // Handle it here so the key can't leak through to the settings list.
         if let Some(confirm) = self.overlays.pending_settings_confirm.take() {
@@ -296,9 +308,10 @@ impl App {
             return Vec::new();
         }
 
-        // Local Deck owns Shift+A/`A` for "enqueue the current local result set". That chord
-        // overlaps the global animation toggle, so route it before globals only while the Local
-        // Deck list is active; filter text entry still receives typeable characters normally.
+        // Local Deck owns Shift+A/`A` for import accept-all and, outside import review rows,
+        // "enqueue the current local result set". That chord overlaps the global animation
+        // toggle, so route it before globals only while the Local Deck list is active; filter
+        // text entry still receives typeable characters normally.
         if self.mode == Mode::Library
             && self.local_dedicated_mode
             && !self.local_mode.ui.filter_editing

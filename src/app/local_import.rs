@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use super::local_format::*;
 use super::*;
 use crate::t;
-use crate::transfer::checkpoint::{ReportCandidate, ReviewDecision};
+use crate::transfer::checkpoint::{Checkpoint, ReportCandidate, ReviewDecision};
 use crate::transfer::download_plan::{
     ImportDownloadDecision, ImportDownloadDedupeIndex, build_import_download_plan,
 };
@@ -90,7 +90,7 @@ impl App {
         session_id: &str,
         query: &str,
     ) -> Vec<crate::local::LocalRowId> {
-        if let Ok(mut session) = ImportSession::load(session_id) {
+        if let Ok(mut session) = load_import_session_recovering(session_id) {
             session.rows.sort_by(|a, b| {
                 a.source_order
                     .cmp(&b.source_order)
@@ -120,7 +120,7 @@ impl App {
     ) -> Vec<crate::local::LocalRowId> {
         let mut rows = Vec::<(i64, String, u32)>::new();
         for summary in ImportSession::list_all() {
-            let Ok(mut session) = ImportSession::load(&summary.session_id) else {
+            let Ok(mut session) = load_import_session_recovering(&summary.session_id) else {
                 continue;
             };
             session.rows.sort_by(|a, b| {
@@ -206,6 +206,9 @@ impl App {
                 if failed > 0 {
                     actions.push(t!("r retry failed", "r 실패 재시도"));
                 }
+                if import_session_accept_all_candidate_count_by_id(&session_id).unwrap_or(0) > 0 {
+                    actions.push(t!("A accept all", "A 전체 수락"));
+                }
                 actions.push(t!("d download accepted", "d 수락 곡 다운로드"));
                 actions.push(t!("m commit inbox", "m 인박스 커밋"));
                 Some(actions.join("  |  "))
@@ -223,6 +226,9 @@ impl App {
                         t!("c candidate", "c 후보"),
                         t!("x skip", "x 건너뜀"),
                     ]);
+                }
+                if import_session_accept_all_candidate_count_by_id(&session_id).unwrap_or(0) > 0 {
+                    actions.push(t!("A accept all", "A 전체 수락"));
                 }
                 if !row.errors.is_empty() {
                     actions.push(t!("r retry failed", "r 실패 재시도"));
@@ -361,7 +367,7 @@ impl App {
         session_id: &str,
         source_order: Option<u32>,
     ) -> Vec<Song> {
-        let Ok(mut session) = ImportSession::load(session_id) else {
+        let Ok(mut session) = load_import_session_recovering(session_id) else {
             return Vec::new();
         };
         session.rows.sort_by(|a, b| {
@@ -514,7 +520,7 @@ impl App {
         session_id: &str,
         source_order: Option<u32>,
     ) -> Vec<Song> {
-        let Ok(mut session) = ImportSession::load(session_id) else {
+        let Ok(mut session) = load_import_session_recovering(session_id) else {
             return Vec::new();
         };
         session.rows.sort_by(|a, b| {
@@ -546,118 +552,244 @@ impl App {
             .collect()
     }
 
-    pub(in crate::app) fn local_accept_selected_import_candidate(&mut self) -> bool {
-        let Some((session_id, source_order)) = self.selected_manual_review_import_row() else {
-            return false;
+    pub(in crate::app) fn request_local_accept_selected_import_candidate(
+        &mut self,
+    ) -> Option<Vec<Cmd>> {
+        self.request_local_import_review_action(ImportReviewAction::AcceptFirst)
+    }
+
+    pub(in crate::app) fn request_local_choose_next_import_candidate(
+        &mut self,
+    ) -> Option<Vec<Cmd>> {
+        self.request_local_import_review_action(ImportReviewAction::ChooseNext)
+    }
+
+    pub(in crate::app) fn request_local_reject_selected_import_row(&mut self) -> Option<Vec<Cmd>> {
+        self.request_local_import_review_action(ImportReviewAction::Reject)
+    }
+
+    pub(in crate::app) fn request_local_skip_selected_import_row(&mut self) -> Option<Vec<Cmd>> {
+        self.request_local_import_review_action(ImportReviewAction::Skip)
+    }
+
+    fn request_local_import_review_action(
+        &mut self,
+        action: ImportReviewAction,
+    ) -> Option<Vec<Cmd>> {
+        let (session_id, source_order) = self.selected_manual_review_import_row()?;
+        if self
+            .local_mode
+            .pending_import_reviews
+            .contains_key(&session_id)
+        {
+            self.status.kind = StatusKind::Info;
+            self.status.text = format!(
+                "{}: {session_id}",
+                t!("Import review already in progress", "임포트 검토 진행 중")
+            );
+            self.dirty = true;
+            return Some(Vec::new());
+        }
+        let op_id = self.next_local_import_review_op_id();
+        self.local_mode
+            .pending_import_reviews
+            .insert(session_id.clone(), op_id);
+        self.status.kind = StatusKind::Info;
+        self.status.text = format!(
+            "{} #{}...",
+            import_review_action_progress_label(action),
+            source_order
+        );
+        self.dirty = true;
+        Some(vec![Cmd::Local(LocalCmd::ReviewImport {
+            op_id,
+            session_id,
+            source_order,
+            action,
+        })])
+    }
+
+    pub(in crate::app) fn request_local_import_accept_all(&mut self) -> Option<Vec<Cmd>> {
+        let session_id = self.selected_import_session_id_for_organize()?;
+        if self
+            .local_mode
+            .pending_import_reviews
+            .contains_key(&session_id)
+        {
+            self.status.kind = StatusKind::Info;
+            self.status.text = format!(
+                "{}: {session_id}",
+                t!("Import review already in progress", "임포트 검토 진행 중")
+            );
+            self.dirty = true;
+            return Some(Vec::new());
+        }
+        let Ok(session) = load_import_session_recovering(&session_id) else {
+            self.status.kind = StatusKind::Error;
+            self.status.text = format!(
+                "{}: {session_id}",
+                t!("Import session not found", "임포트 세션을 찾을 수 없음")
+            );
+            self.dirty = true;
+            return Some(Vec::new());
         };
-        match crate::transfer::review_action::accept_first_candidate(&session_id, source_order) {
+        let candidate_count = import_session_accept_all_candidate_count(&session);
+        if candidate_count == 0 {
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!(
+                "No import candidates to accept",
+                "수락할 임포트 후보가 없음"
+            )
+            .to_owned();
+            self.dirty = true;
+            return Some(Vec::new());
+        }
+        self.local_mode.pending_accept_all_confirm = Some(LocalImportAcceptAllConfirm {
+            session_id,
+            candidate_count,
+        });
+        self.status.kind = StatusKind::Info;
+        self.status.text = t!(
+            "Confirm accepting all import candidates",
+            "임포트 후보 전체 수락을 확인하세요"
+        )
+        .to_owned();
+        self.dirty = true;
+        Some(Vec::new())
+    }
+
+    pub(in crate::app) fn apply_local_import_accept_all_confirm(
+        &mut self,
+        confirm: LocalImportAcceptAllConfirm,
+    ) -> Vec<Cmd> {
+        self.local_mode.pending_accept_all_confirm = None;
+        if self
+            .local_mode
+            .pending_import_reviews
+            .contains_key(&confirm.session_id)
+        {
+            self.status.kind = StatusKind::Info;
+            self.status.text = format!(
+                "{}: {}",
+                t!("Import review already in progress", "임포트 검토 진행 중"),
+                confirm.session_id
+            );
+            self.dirty = true;
+            return Vec::new();
+        }
+        let op_id = self.next_local_import_review_op_id();
+        self.local_mode
+            .pending_import_reviews
+            .insert(confirm.session_id.clone(), op_id);
+        self.status.kind = StatusKind::Info;
+        self.status.text = format!(
+            "{} {}...",
+            t!("Accepting import candidates", "임포트 후보 수락 중"),
+            confirm.candidate_count
+        );
+        self.dirty = true;
+        vec![Cmd::Local(LocalCmd::ReviewImportAcceptAll {
+            op_id,
+            session_id: confirm.session_id,
+        })]
+    }
+
+    pub(in crate::app) fn apply_local_import_review_finished(
+        &mut self,
+        op_id: u64,
+        session_id: String,
+        action: ImportReviewAction,
+        result: Result<crate::transfer::review_action::ReviewActionSummary, String>,
+    ) -> Vec<Cmd> {
+        if self
+            .local_mode
+            .pending_import_reviews
+            .get(&session_id)
+            .copied()
+            != Some(op_id)
+        {
+            return Vec::new();
+        }
+        self.local_mode.pending_import_reviews.remove(&session_id);
+        match result {
             Ok(summary) => {
                 self.status.kind = StatusKind::Info;
-                self.status.text = match summary.display {
-                    Some(display) => format!(
-                        "{} #{}: {display}",
-                        t!("Accepted import row", "임포트 행 수락"),
-                        summary.source_order
-                    ),
-                    None => format!(
-                        "{} #{}",
-                        t!("Accepted import row", "임포트 행 수락"),
-                        summary.source_order
-                    ),
+                self.status.text = import_review_success_text(action, &summary);
+            }
+            Err(error) => {
+                self.status.kind = StatusKind::Error;
+                self.status.text = format!(
+                    "{}: {error}",
+                    t!("Import review failed", "임포트 검토 실패")
+                );
+            }
+        }
+        self.clamp_local_after_import_change();
+        self.dirty = true;
+        Vec::new()
+    }
+
+    pub(in crate::app) fn apply_local_import_accept_all_finished(
+        &mut self,
+        op_id: u64,
+        session_id: String,
+        result: Result<crate::transfer::review_action::ReviewBatchSummary, String>,
+    ) -> Vec<Cmd> {
+        if self
+            .local_mode
+            .pending_import_reviews
+            .get(&session_id)
+            .copied()
+            != Some(op_id)
+        {
+            return Vec::new();
+        }
+        self.local_mode.pending_import_reviews.remove(&session_id);
+        match result {
+            Ok(summary) => {
+                self.status.kind = StatusKind::Info;
+                self.status.text = if summary.accepted_count == 0 {
+                    t!(
+                        "No import candidates to accept",
+                        "수락할 임포트 후보가 없음"
+                    )
+                    .to_owned()
+                } else if crate::i18n::is_korean() {
+                    format!("임포트 후보 {}개 수락", summary.accepted_count)
+                } else {
+                    format!(
+                        "Accepted {} import candidate{}",
+                        summary.accepted_count,
+                        if summary.accepted_count == 1 { "" } else { "s" }
+                    )
                 };
             }
             Err(error) => {
                 self.status.kind = StatusKind::Error;
                 self.status.text = format!(
-                    "{}: {error:#}",
+                    "{}: {error}",
                     t!("Import review failed", "임포트 검토 실패")
                 );
             }
         }
+        self.clamp_local_after_import_change();
         self.dirty = true;
-        true
+        Vec::new()
     }
 
-    pub(in crate::app) fn local_choose_next_import_candidate(&mut self) -> bool {
-        let Some((session_id, source_order)) = self.selected_manual_review_import_row() else {
-            return false;
-        };
-        match crate::transfer::review_action::choose_next_candidate(&session_id, source_order) {
-            Ok(summary) => {
-                self.status.kind = StatusKind::Info;
-                self.status.text = match summary.display {
-                    Some(display) => format!(
-                        "{} #{}: {display}",
-                        t!("Selected import candidate", "임포트 후보 선택"),
-                        summary.source_order
-                    ),
-                    None => format!(
-                        "{} #{}",
-                        t!("Selected import candidate", "임포트 후보 선택"),
-                        summary.source_order
-                    ),
-                };
-            }
-            Err(error) => {
-                self.status.kind = StatusKind::Error;
-                self.status.text = format!(
-                    "{}: {error:#}",
-                    t!("Import review failed", "임포트 검토 실패")
-                );
-            }
-        }
-        self.dirty = true;
-        true
+    fn next_local_import_review_op_id(&mut self) -> u64 {
+        self.local_mode.next_import_review_op_id =
+            self.local_mode.next_import_review_op_id.wrapping_add(1);
+        self.local_mode.next_import_review_op_id
     }
 
-    pub(in crate::app) fn local_reject_selected_import_row(&mut self) -> bool {
-        let Some((session_id, source_order)) = self.selected_manual_review_import_row() else {
-            return false;
-        };
-        match crate::transfer::review_action::reject_row(&session_id, source_order) {
-            Ok(summary) => {
-                self.status.kind = StatusKind::Info;
-                self.status.text = format!(
-                    "{} #{}",
-                    t!("Rejected import row", "임포트 행 거부"),
-                    summary.source_order
-                );
-            }
-            Err(error) => {
-                self.status.kind = StatusKind::Error;
-                self.status.text = format!(
-                    "{}: {error:#}",
-                    t!("Import review failed", "임포트 검토 실패")
-                );
-            }
-        }
-        self.dirty = true;
-        true
-    }
-
-    pub(in crate::app) fn local_skip_selected_import_row(&mut self) -> bool {
-        let Some((session_id, source_order)) = self.selected_manual_review_import_row() else {
-            return false;
-        };
-        match crate::transfer::review_action::skip_row(&session_id, source_order) {
-            Ok(summary) => {
-                self.status.kind = StatusKind::Info;
-                self.status.text = format!(
-                    "{} #{}",
-                    t!("Skipped import row", "임포트 행 건너뜀"),
-                    summary.source_order
-                );
-            }
-            Err(error) => {
-                self.status.kind = StatusKind::Error;
-                self.status.text = format!(
-                    "{}: {error:#}",
-                    t!("Import review failed", "임포트 검토 실패")
-                );
-            }
-        }
-        self.dirty = true;
-        true
+    fn clamp_local_after_import_change(&mut self) {
+        self.local_mode.ui.selected = self
+            .local_mode
+            .ui
+            .selected
+            .min(self.local_rows_len().saturating_sub(1));
+        self.local_mode.ui.anchor = self.local_mode.ui.selected;
     }
 
     pub(in crate::app) fn request_local_import_organize_apply(&mut self) -> Vec<Cmd> {
@@ -671,7 +803,7 @@ impl App {
             self.dirty = true;
             return Vec::new();
         };
-        let Ok(session) = ImportSession::load(&session_id) else {
+        let Ok(session) = load_import_session_recovering(&session_id) else {
             self.status.kind = StatusKind::Error;
             self.status.text = format!(
                 "{}: {session_id}",
@@ -728,7 +860,7 @@ impl App {
     ) -> Vec<Cmd> {
         self.local_mode.pending_organize_confirm = None;
         let result = (|| {
-            let session = ImportSession::load(&confirm.session_id)?;
+            let session = load_import_session_recovering(&confirm.session_id)?;
             let plan = build_import_organize_plan(
                 &session,
                 &ImportOrganizeOptions {
@@ -884,7 +1016,7 @@ impl App {
     }
 
     pub(in crate::app) fn import_session_songs(&self, session_id: &str) -> Vec<Song> {
-        if let Ok(mut session) = ImportSession::load(session_id) {
+        if let Ok(mut session) = load_import_session_recovering(session_id) {
             session.rows.sort_by(|a, b| {
                 a.source_order
                     .cmp(&b.source_order)
@@ -903,8 +1035,33 @@ impl App {
     }
 }
 
+fn load_import_session_recovering(session_id: &str) -> anyhow::Result<ImportSession> {
+    match ImportSession::load(session_id) {
+        Ok(session) => Ok(session),
+        Err(session_error) => {
+            let cp = Checkpoint::load(session_id).map_err(|checkpoint_error| {
+                anyhow::anyhow!(
+                    "load import session `{session_id}` failed ({session_error:#}); checkpoint recovery failed ({checkpoint_error:#})"
+                )
+            })?;
+            let session = ImportSession::from_checkpoint(&cp);
+            session.save().map_err(|save_error| {
+                anyhow::anyhow!(
+                    "recover import session `{session_id}` from checkpoint failed while saving: {save_error}"
+                )
+            })?;
+            tracing::warn!(
+                session_id,
+                error = %session_error,
+                "recovered import session from checkpoint"
+            );
+            Ok(session)
+        }
+    }
+}
+
 fn load_import_session_row(session_id: &str, source_order: u32) -> Option<ImportSessionRow> {
-    ImportSession::load(session_id)
+    load_import_session_recovering(session_id)
         .ok()?
         .rows
         .into_iter()
@@ -915,7 +1072,7 @@ fn load_import_session_and_row(
     session_id: &str,
     source_order: u32,
 ) -> Option<(ImportSession, ImportSessionRow)> {
-    let session = ImportSession::load(session_id).ok()?;
+    let session = load_import_session_recovering(session_id).ok()?;
     let row = session
         .rows
         .iter()
@@ -926,7 +1083,7 @@ fn load_import_session_and_row(
 
 fn import_session_failed_download_count(session_id: &str) -> Option<usize> {
     Some(
-        ImportSession::load(session_id)
+        load_import_session_recovering(session_id)
             .ok()?
             .rows
             .into_iter()
@@ -1180,6 +1337,77 @@ fn import_session_row_accepts_manual_review_action(row: &ImportSessionRow) -> bo
             row.status,
             ImportSessionRowStatus::Matched | ImportSessionRowStatus::SkippedLocal
         )
+}
+
+fn import_session_accept_all_candidate_count(session: &ImportSession) -> u32 {
+    session
+        .rows
+        .iter()
+        .filter(|row| {
+            import_session_row_accepts_manual_review_action(row) && !row.candidates.is_empty()
+        })
+        .count() as u32
+}
+
+fn import_session_accept_all_candidate_count_by_id(session_id: &str) -> Option<u32> {
+    load_import_session_recovering(session_id)
+        .ok()
+        .map(|session| import_session_accept_all_candidate_count(&session))
+}
+
+fn import_review_action_progress_label(action: ImportReviewAction) -> &'static str {
+    match action {
+        ImportReviewAction::AcceptFirst => {
+            t!("Accepting import row", "임포트 행 수락 중")
+        }
+        ImportReviewAction::ChooseNext => {
+            t!("Selecting import candidate", "임포트 후보 선택 중")
+        }
+        ImportReviewAction::Reject => t!("Rejecting import row", "임포트 행 거부 중"),
+        ImportReviewAction::Skip => t!("Skipping import row", "임포트 행 건너뛰는 중"),
+    }
+}
+
+fn import_review_success_text(
+    action: ImportReviewAction,
+    summary: &crate::transfer::review_action::ReviewActionSummary,
+) -> String {
+    match action {
+        ImportReviewAction::AcceptFirst => match &summary.display {
+            Some(display) => format!(
+                "{} #{}: {display}",
+                t!("Accepted import row", "임포트 행 수락"),
+                summary.source_order
+            ),
+            None => format!(
+                "{} #{}",
+                t!("Accepted import row", "임포트 행 수락"),
+                summary.source_order
+            ),
+        },
+        ImportReviewAction::ChooseNext => match &summary.display {
+            Some(display) => format!(
+                "{} #{}: {display}",
+                t!("Selected import candidate", "임포트 후보 선택"),
+                summary.source_order
+            ),
+            None => format!(
+                "{} #{}",
+                t!("Selected import candidate", "임포트 후보 선택"),
+                summary.source_order
+            ),
+        },
+        ImportReviewAction::Reject => format!(
+            "{} #{}",
+            t!("Rejected import row", "임포트 행 거부"),
+            summary.source_order
+        ),
+        ImportReviewAction::Skip => format!(
+            "{} #{}",
+            t!("Skipped import row", "임포트 행 건너뜀"),
+            summary.source_order
+        ),
+    }
 }
 
 fn import_session_row_selected_key(row: &ImportSessionRow) -> Option<&str> {

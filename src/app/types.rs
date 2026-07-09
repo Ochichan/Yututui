@@ -383,6 +383,16 @@ pub enum LocalCmd {
         index_path: Option<PathBuf>,
         previous: crate::local::LocalIndex,
     },
+    ReviewImport {
+        op_id: u64,
+        session_id: String,
+        source_order: u32,
+        action: ImportReviewAction,
+    },
+    ReviewImportAcceptAll {
+        op_id: u64,
+        session_id: String,
+    },
 }
 
 /// Local Deck worker results.
@@ -401,6 +411,28 @@ pub enum LocalMsg {
     ScanFailed {
         error: String,
     },
+    ImportReviewFinished {
+        op_id: u64,
+        session_id: String,
+        source_order: u32,
+        action: ImportReviewAction,
+        result: Result<crate::transfer::review_action::ReviewActionSummary, String>,
+        elapsed_ms: u128,
+    },
+    ImportReviewAcceptAllFinished {
+        op_id: u64,
+        session_id: String,
+        result: Result<crate::transfer::review_action::ReviewBatchSummary, String>,
+        elapsed_ms: u128,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportReviewAction {
+    AcceptFirst,
+    ChooseNext,
+    Reject,
+    Skip,
 }
 
 /// A clickable terminal region's semantic target.
@@ -525,6 +557,10 @@ pub enum MouseTarget {
     ConfirmLocalOrganize,
     /// Cancel button on the local import organize modal.
     CancelLocalOrganize,
+    /// Confirm button on the local import accept-all modal.
+    ConfirmLocalAcceptAll,
+    /// Cancel button on the local import accept-all modal.
+    CancelLocalAcceptAll,
     /// "Save to favorites" on the "what's playing" overlay (resolves a real YT track first).
     NowPlayingFavorite,
     /// "Tell me more" on the "what's playing" overlay — hands off to the DJ Gem view.
@@ -932,6 +968,39 @@ impl LocalOrganizeConfirm {
                 self.already_count,
                 self.skipped_count
             )
+        }
+    }
+}
+
+/// Pending confirmation before accepting every reviewable candidate in an import session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalImportAcceptAllConfirm {
+    pub session_id: String,
+    pub candidate_count: u32,
+}
+
+impl LocalImportAcceptAllConfirm {
+    pub fn title(&self) -> &'static str {
+        t!(" Accept import candidates ", " 임포트 후보 수락 ")
+    }
+
+    pub fn prompt(&self) -> String {
+        if crate::i18n::is_korean() {
+            format!("{}개 임포트 후보를 모두 수락할까요?", self.candidate_count)
+        } else {
+            format!(
+                "Accept {} import candidate{}?",
+                self.candidate_count,
+                if self.candidate_count == 1 { "" } else { "s" }
+            )
+        }
+    }
+
+    pub fn detail(&self) -> String {
+        if crate::i18n::is_korean() {
+            format!("세션: {}", self.session_id)
+        } else {
+            format!("Session: {}", self.session_id)
         }
     }
 }

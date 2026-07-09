@@ -38,6 +38,7 @@ pub enum Action {
     /// Download every song in the current list/playlist at once (deduped), distinct from the
     /// single-track `Download`.
     DownloadAll,
+    AcceptAllImportReview,
     ToggleShuffle,
     CycleRepeat,
     CycleEq,
@@ -185,6 +186,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "download_all",
         "Download all",
         "전체 다운로드",
+    ),
+    (
+        Action::AcceptAllImportReview,
+        "accept_all_import_review",
+        "Accept all import candidates",
+        "임포트 후보 전체 수락",
     ),
     (
         Action::ToggleShuffle,
@@ -623,6 +630,7 @@ pub enum KeyContext {
     Common,
     Global,
     Library,
+    LocalDeck,
     Playlists,
     Queue,
     SearchInput,
@@ -658,6 +666,7 @@ const CONTEXT_META: &[(KeyContext, &str, &str, &str)] = &[
     ),
     (KeyContext::Global, "global", "Global", "전역"),
     (KeyContext::Library, "library", "Library", "라이브러리"),
+    (KeyContext::LocalDeck, "local_deck", "Local Deck", "로컬 덱"),
     (
         KeyContext::Playlists,
         "playlists",
@@ -989,7 +998,20 @@ impl KeyMap {
         chord: Chord,
     ) -> Option<Conflict> {
         let existing = self.bindings.get(&(ctx, chord)).copied()?;
-        (existing != action).then_some(Conflict {
+        let animation_shadow = chord == Chord::new(KeyCode::Char('A'), KeyModifiers::empty())
+            && match ctx {
+                KeyContext::Global => {
+                    (existing, action) == (Action::ToggleAnimations, Action::AcceptAllImportReview)
+                }
+                KeyContext::LocalDeck => {
+                    (existing, action) == (Action::AcceptAllImportReview, Action::ToggleAnimations)
+                }
+                _ => false,
+            };
+        if existing == action || animation_shadow {
+            return None;
+        }
+        Some(Conflict {
             ctx,
             existing,
             chord,
@@ -1198,6 +1220,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Library, A::LibraryRemove, key(KeyCode::Delete)),
         (C::Library, A::LibraryFilter, ch('/')),
         (C::Library, A::Back, ch('q')),
+        (C::LocalDeck, A::AcceptAllImportReview, ch('A')),
         // Playlists tab (root list of playlists + opened-playlist drill-down).
         (C::Playlists, A::Confirm, key(KeyCode::Enter)),
         (C::Playlists, A::PlayAll, ch('a')),

@@ -251,13 +251,21 @@ fn default_bindings_are_conflict_free() {
         }
     }
     // Global chords are consulted before every per-screen handler, so a non-Global
-    // default reusing one is dead at runtime — mirror the asymmetric conflict
-    // definition of `KeyMap::conflict` (Common shadowing, by contrast, is deliberate).
+    // default reusing one is dead at runtime unless dispatch deliberately gives a
+    // local context first claim. Mirror the asymmetric conflict definition of
+    // `KeyMap::conflict` (Common shadowing, by contrast, is deliberate).
     for (ctx, action, chord) in default_bindings() {
         if ctx == KeyContext::Global {
             continue;
         }
         if let Some(&global) = by_chord.get(&(KeyContext::Global, chord)) {
+            let local_deck_accept_all_shadows_global_animation = ctx == KeyContext::LocalDeck
+                && action == Action::AcceptAllImportReview
+                && global == Action::ToggleAnimations
+                && chord == Chord::new(KeyCode::Char('A'), KeyModifiers::empty());
+            if local_deck_accept_all_shadows_global_animation {
+                continue;
+            }
             panic!(
                 "{ctx:?} {action:?}: `{}` is shadowed by Global {global:?}",
                 format_chord(chord)
@@ -1157,6 +1165,17 @@ fn text_zoom_defaults_bind_ctrl_equals_and_minus_globally() {
 }
 
 #[test]
+fn local_deck_accept_all_shadows_global_animation_toggle_on_a() {
+    let km = KeyMap::default();
+    let chord = parse_chord("A").unwrap();
+    assert_eq!(km.global_action(chord), Some(Action::ToggleAnimations));
+    assert_eq!(
+        km.action(KeyContext::LocalDeck, chord),
+        Some(Action::AcceptAllImportReview)
+    );
+}
+
+#[test]
 fn editable_entries_cover_every_binding() {
     assert_eq!(editable_entries().len(), default_bindings().len());
     assert!(
@@ -1170,6 +1189,10 @@ fn editable_entries_cover_every_binding() {
     assert!(
         editable_entries().contains(&(KeyContext::Library, Action::ToggleLocalMode)),
         "Settings > Keys should list the Local Deck mode binding"
+    );
+    assert!(
+        editable_entries().contains(&(KeyContext::LocalDeck, Action::AcceptAllImportReview)),
+        "Settings > Keys should list the Local Deck accept-all binding"
     );
     // Every action has a stable id and label.
     for (_, action, _) in default_bindings() {

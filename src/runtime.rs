@@ -1126,6 +1126,88 @@ impl RuntimeHandles {
                         );
                     });
                 }
+                crate::app::LocalCmd::ReviewImport {
+                    op_id,
+                    session_id,
+                    source_order,
+                    action,
+                } => {
+                    let tx = self.worker_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let t0 = std::time::Instant::now();
+                        let result = match action {
+                            crate::app::ImportReviewAction::AcceptFirst => {
+                                crate::transfer::review_action::accept_first_candidate(
+                                    &session_id,
+                                    source_order,
+                                )
+                            }
+                            crate::app::ImportReviewAction::ChooseNext => {
+                                crate::transfer::review_action::choose_next_candidate(
+                                    &session_id,
+                                    source_order,
+                                )
+                            }
+                            crate::app::ImportReviewAction::Reject => {
+                                crate::transfer::review_action::reject_row(
+                                    &session_id,
+                                    source_order,
+                                )
+                            }
+                            crate::app::ImportReviewAction::Skip => {
+                                crate::transfer::review_action::skip_row(&session_id, source_order)
+                            }
+                        }
+                        .map_err(|error| format!("{error:#}"));
+                        let elapsed_ms = t0.elapsed().as_millis();
+                        tracing::debug!(
+                            session_id = %session_id,
+                            source_order,
+                            ?action,
+                            elapsed_ms,
+                            "finished import review action"
+                        );
+                        emit(
+                            &tx,
+                            RuntimeEvent::App(Msg::Local(
+                                crate::app::LocalMsg::ImportReviewFinished {
+                                    op_id,
+                                    session_id,
+                                    source_order,
+                                    action,
+                                    result,
+                                    elapsed_ms,
+                                },
+                            )),
+                        );
+                    });
+                }
+                crate::app::LocalCmd::ReviewImportAcceptAll { op_id, session_id } => {
+                    let tx = self.worker_tx.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let t0 = std::time::Instant::now();
+                        let result =
+                            crate::transfer::review_action::accept_all_candidates(&session_id)
+                                .map_err(|error| format!("{error:#}"));
+                        let elapsed_ms = t0.elapsed().as_millis();
+                        tracing::debug!(
+                            session_id = %session_id,
+                            elapsed_ms,
+                            "finished import review accept all"
+                        );
+                        emit(
+                            &tx,
+                            RuntimeEvent::App(Msg::Local(
+                                crate::app::LocalMsg::ImportReviewAcceptAllFinished {
+                                    op_id,
+                                    session_id,
+                                    result,
+                                    elapsed_ms,
+                                },
+                            )),
+                        );
+                    });
+                }
             },
             Cmd::Recorder(job) => {
                 // Copy/tag/delete are blocking IO — keep them off the loop task. A `Save`
