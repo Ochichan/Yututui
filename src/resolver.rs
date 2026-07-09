@@ -174,6 +174,11 @@ async fn resolve_url_with_format(
     cmd.args(["-f", format_selector, "-g", "--no-playlist"])
         .arg(watch_url);
     crate::tools::append_ytdlp_cookie_args(&mut cmd, cookies);
+    // Match mpv's cookie-auth stream client so prefetched CDN URLs are not the
+    // TVHTML5 URLs that ffmpeg then rejects with HTTP 403.
+    if cookies.is_some() {
+        crate::tools::append_ytdlp_youtube_stream_extractor_args(&mut cmd);
+    }
     cmd.stdin(Stdio::null());
     let out = process::tokio_output_limited(
         cmd,

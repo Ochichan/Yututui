@@ -710,6 +710,24 @@ pub(crate) fn append_ytdlp_cookie_args(cmd: &mut tokio::process::Command, cookie
     }
 }
 
+/// Player client used when minting YouTube stream URLs under cookie auth.
+///
+/// Cookie-authenticated yt-dlp defaults (notably `TVHTML5`) often return googlevideo
+/// URLs that ffmpeg/mpv then open with HTTP 403 — so playlist streaming skips while
+/// the same track still downloads (yt-dlp fetches the bytes itself). `web_safari`
+/// keeps authenticated catalog access and yields CDN URLs mpv can open.
+pub const YOUTUBE_STREAM_PLAYER_CLIENT: &str = "web_safari";
+
+pub fn youtube_stream_extractor_args() -> String {
+    format!("youtube:player_client={YOUTUBE_STREAM_PLAYER_CLIENT}")
+}
+
+/// Pin the stream player client on a direct yt-dlp invocation (prefetch resolver).
+pub(crate) fn append_ytdlp_youtube_stream_extractor_args(cmd: &mut tokio::process::Command) {
+    cmd.arg("--extractor-args")
+        .arg(youtube_stream_extractor_args());
+}
+
 fn mpv_ytdl_js_runtime_arg_for(runtime: Option<JsRuntime>) -> Option<String> {
     js_runtimes_flag_for(runtime).map(|rt| format!("--ytdl-raw-options-append=js-runtimes={rt}"))
 }
@@ -724,6 +742,11 @@ pub fn mpv_ytdl_raw_option_args(cookies: Option<&Path>) -> Vec<String> {
         args.push(format!(
             "--ytdl-raw-options-append=cookies={}",
             path.display()
+        ));
+        // Only with cookies: anonymous playback keeps yt-dlp's default client chain.
+        args.push(format!(
+            "--ytdl-raw-options-append=extractor-args={}",
+            youtube_stream_extractor_args()
         ));
     }
     if let Some(arg) = mpv_ytdl_js_runtime_arg() {
@@ -1119,6 +1142,29 @@ mod tests {
             Some("--ytdl-raw-options-append=js-runtimes=node")
         );
         assert_eq!(mpv_ytdl_js_runtime_arg_for(Some(JsRuntime::Deno)), None);
+    }
+
+    #[test]
+    fn mpv_ytdl_raw_options_pin_web_safari_only_with_cookies() {
+        let with_cookies = mpv_ytdl_raw_option_args(Some(Path::new("/tmp/cookies.txt")));
+        assert!(
+            with_cookies.iter().any(|a| a.contains("cookies=/tmp/cookies.txt")),
+            "{with_cookies:?}"
+        );
+        assert!(
+            with_cookies.iter().any(|a| {
+                a.contains("extractor-args=") && a.contains("player_client=web_safari")
+            }),
+            "cookie auth must pin web_safari to avoid TVHTML5 CDN 403s: {with_cookies:?}"
+        );
+
+        let anonymous = mpv_ytdl_raw_option_args(None);
+        assert!(
+            anonymous
+                .iter()
+                .all(|a| !a.contains("extractor-args=") && !a.contains("cookies=")),
+            "anonymous playback must not force a player client: {anonymous:?}"
+        );
     }
 
     #[test]
