@@ -72,6 +72,21 @@ impl App {
         self.dirty = true;
     }
 
+    /// Cycle the committed DJ Gem model from the chat screen. Unlike the Settings tab, this
+    /// is not draft state: the visible model, saved config, and live actor all update now.
+    pub(in crate::app) fn cycle_ai_model_from_chat(&mut self) -> Vec<Cmd> {
+        let next = self.ai.model.cycled(true);
+        self.ai.model = next;
+        self.config.gemini_model = next;
+        self.status.kind = StatusKind::Info;
+        self.status.text = format!("DJ Gem model: {}", next.label());
+        self.dirty = true;
+        vec![
+            Cmd::Persist(PersistCmd::Config(Box::new(self.config.clone()))),
+            Cmd::SetAiModel(next),
+        ]
+    }
+
     pub(in crate::app) fn on_key_ai(&mut self, k: KeyEvent) -> Vec<Cmd> {
         match self.ai.focus {
             AiFocus::Input => {

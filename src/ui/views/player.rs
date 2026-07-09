@@ -1330,7 +1330,7 @@ pub fn render_radio_mode_confirm(
     area: Rect,
     confirm: RadioModeConfirm,
 ) {
-    let popup = centered_fixed(area, 60, 9);
+    let popup = centered_fixed(area, 60, 11);
     crate::ui::render_popup_background(frame, app, popup);
 
     let block = Block::default()
@@ -1346,7 +1346,8 @@ pub fn render_radio_mode_confirm(
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Min(1),
+        Constraint::Length(3),
+        Constraint::Min(0),
     ])
     .split(inner);
     frame.render_widget(
@@ -1373,14 +1374,17 @@ pub fn render_radio_mode_confirm(
             t!(" Cancel (Esc) ", " 취소 (Esc) "),
         ),
     ];
-    buttons::render_segments(
+    buttons::render_segments_with_hit_height(
         frame,
         app,
         rows[4],
         &segs,
-        crate::ui::confirm_button_style(app),
-        crate::ui::confirm_gap_style(app),
+        (
+            crate::ui::confirm_button_style(app),
+            crate::ui::confirm_gap_style(app),
+        ),
         Alignment::Center,
+        3,
     );
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);

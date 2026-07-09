@@ -38,7 +38,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     // The nav strip rides the top border line itself; `render_nav` overlays only the cells
     // its text covers, so the border keeps drawing on either side of it.
-    let nav_used = buttons::render_nav(
+    buttons::render_nav(
         frame,
         app,
         Rect {
@@ -48,23 +48,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             height: 1,
         },
     );
-
-    // Model indicator on the right end of the same border line — metadata, not chrome.
-    // Drawn only when it fully clears the nav strip: a partially covered label reads as
-    // stray garbage (a narrow window used to leave "est" of " Latest " past the strip).
-    let label = format!(" {} ", app.ai.model.label());
-    let label_w = buttons::text_width(&label);
-    if inner.width.saturating_sub(nav_used) >= label_w.saturating_add(1) {
-        frame.render_widget(
-            Paragraph::new(Line::from(label).style(app.theme.style(R::TextMuted))),
-            Rect {
-                x: inner.right().saturating_sub(label_w),
-                y: area.y,
-                width: label_w,
-                height: 1,
-            },
-        );
-    }
 
     let rows = Layout::vertical([
         Constraint::Length(2), // reserved top band (aligns with Settings/Library)
@@ -101,7 +84,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
     render_input(frame, app, rows[3]);
 
-    buttons::render_help_button(frame, app, rows[4]);
+    render_footer(frame, app, rows[4]);
 
     // DJ Gem mascot sits in the upper-center-right while the start screen shows.
     // Drawn last so it overlays cleanly; it hides once a conversation begins.
@@ -112,6 +95,39 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_mascot(frame: &mut Frame, app: &App, inner: Rect) {
     crate::ui::mascot::render_dj_gem(frame, app, inner);
+}
+
+fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+    buttons::render_help_button(frame, app, area);
+
+    let label = format!(" Model: {} ", app.ai.model.label());
+    let label_w = buttons::text_width(&label);
+    let key_label = app.help_footer();
+    let mouse_label = if app.retro_mode() {
+        t!("mouse", "마우스").to_owned()
+    } else {
+        format!("🖱 {}", t!("mouse", "마우스"))
+    };
+    let help_w = buttons::text_width(key_label.as_str())
+        .saturating_add(buttons::text_width("   "))
+        .saturating_add(buttons::text_width(mouse_label.as_str()));
+    let help_left = area.x + area.width.saturating_sub(help_w) / 2;
+    if area.x.saturating_add(label_w).saturating_add(1) <= help_left {
+        let model_area = Rect {
+            width: label_w,
+            ..area
+        };
+        let segs = [buttons::Seg::button(MouseTarget::AiModel, label.as_str())];
+        buttons::render_segments(
+            frame,
+            app,
+            model_area,
+            &segs,
+            app.theme.style(R::Accent).add_modifier(Modifier::BOLD),
+            app.theme.style(R::TextMuted),
+            Alignment::Left,
+        );
+    }
 }
 
 fn render_transcript(frame: &mut Frame, app: &App, area: Rect) {

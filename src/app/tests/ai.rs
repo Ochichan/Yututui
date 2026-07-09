@@ -218,6 +218,64 @@ fn ai_submit_button_matches_enter_submit() {
 }
 
 #[test]
+fn ai_model_label_renders_under_prompt_and_not_on_nav_border() {
+    let mut app = App::new(100);
+    app.mode = Mode::Ai;
+    app.ai.model = crate::ai::GeminiModel::Latest;
+
+    let buf = render_app_buffer(&app, 80, 24);
+    assert!(
+        !buffer_row(&buf, 0).contains("Latest"),
+        "model label should no longer ride the top nav border"
+    );
+    assert!(
+        (0..buf.area.height).any(|y| buffer_row(&buf, y).contains("Model: Latest")),
+        "model label should render below the prompt"
+    );
+
+    let model = app
+        .hits
+        .regions()
+        .iter()
+        .find(|b| b.target == MouseTarget::AiModel)
+        .map(|b| b.rect)
+        .expect("model label hit rect");
+    let input = app
+        .hits
+        .regions()
+        .iter()
+        .find(|b| b.target == MouseTarget::AiInput)
+        .map(|b| b.rect)
+        .expect("prompt input hit rect");
+    assert!(
+        model.y > input.y,
+        "model label should sit below prompt input: model={model:?} input={input:?}"
+    );
+}
+
+#[test]
+fn clicking_ai_model_label_cycles_model_live_and_persists() {
+    let mut app = App::new(100);
+    app.mode = Mode::Ai;
+    app.ai.model = crate::ai::GeminiModel::FlashLite;
+    app.config.gemini_model = crate::ai::GeminiModel::FlashLite;
+    let next = app.ai.model.cycled(true);
+
+    let cmds = click_target(&mut app, MouseTarget::AiModel);
+
+    assert_eq!(app.ai.model, next);
+    assert_eq!(app.config.gemini_model, next);
+    assert_eq!(save_config(&cmds).unwrap().gemini_model, next);
+    assert!(
+        cmds.iter()
+            .any(|c| matches!(c, Cmd::SetAiModel(model) if *model == next)),
+        "click should hot-swap the running DJ Gem actor"
+    );
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert!(app.status.text.contains(next.label()));
+}
+
+#[test]
 fn ai_suggestion_rows_are_clickable_choices() {
     let mut app = App::new(100);
     app.mode = Mode::Ai;

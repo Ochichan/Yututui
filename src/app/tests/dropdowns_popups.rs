@@ -16,6 +16,50 @@ fn rendering_player_registers_streaming_menu_when_autoplay_on() {
 }
 
 #[test]
+fn radio_and_local_confirm_buttons_have_taller_click_targets() {
+    let mut app = App::new(100);
+    app.radio_mode.pending_radio_mode_confirm = Some(RadioModeConfirm::Enter);
+    render_app(&app);
+    assert_tall_hit(&app, MouseTarget::ConfirmRadioMode);
+    assert_tall_hit(&app, MouseTarget::CancelRadioMode);
+
+    app.radio_mode.pending_radio_mode_confirm = None;
+    app.local_mode.pending_confirm = Some(LocalModeConfirm::Enter);
+    render_app(&app);
+    assert_tall_hit(&app, MouseTarget::ConfirmLocalMode);
+    assert_tall_hit(&app, MouseTarget::CancelLocalMode);
+}
+
+#[test]
+fn local_organize_confirm_buttons_have_taller_click_targets() {
+    let mut app = App::new(100);
+    app.local_mode.pending_organize_confirm = Some(LocalOrganizeConfirm {
+        session_id: "sp2yt-session".to_owned(),
+        root: std::path::PathBuf::from("/tmp/music"),
+        move_count: 2,
+        already_count: 1,
+        skipped_count: 0,
+    });
+    render_app(&app);
+    assert_tall_hit(&app, MouseTarget::ConfirmLocalOrganize);
+    assert_tall_hit(&app, MouseTarget::CancelLocalOrganize);
+}
+
+fn assert_tall_hit(app: &App, target: MouseTarget) {
+    let rect = app
+        .hits
+        .regions()
+        .iter()
+        .find(|b| b.target == target)
+        .map(|b| b.rect)
+        .unwrap_or_else(|| panic!("missing hit rect for {target:?}"));
+    assert!(
+        rect.height >= 2,
+        "{target:?} should have a taller click target, got {rect:?}"
+    );
+}
+
+#[test]
 fn streaming_dropdown_renders_mode_rows_when_open() {
     let mut app = app_playing(2, 0);
     app.autoplay_streaming = true;
