@@ -467,6 +467,23 @@ async fn match_stage(
                 )
                 .await;
         }
+        // Surface matching start immediately — otherwise the CLI looks hung while the
+        // first concurrent yt-dlp searches run (often many seconds with no progress).
+        progress(TransferProgress {
+            job_id: cp.job_id.clone(),
+            stage: Stage::Matching,
+            done: 0,
+            total,
+            matched: 0,
+            auto_accepted: 0,
+            ambiguous: 0,
+            not_found: 0,
+            written: written_count(&cp.tracks),
+            current: pending
+                .first()
+                .map(|(_, input)| input.display())
+                .unwrap_or_default(),
+        });
         let mut stream = futures::stream::iter(pending)
             .map(|(idx, input)| {
                 let state = shared_state.clone();
@@ -1341,12 +1358,26 @@ fn spotify_job_error(e: SpotifyError) -> JobError {
 }
 
 fn ytm_job_error(e: anyhow::Error) -> JobError {
-    // YTM failures mid-job (expired cookie, throttling) are the classic resume case.
+    // Mid-job YTM/yt-dlp failures are resumable. Do not blame cookies when the cause is
+    // clearly a public yt-dlp search / YouTube API rejection.
+    let detail = format!("{e:#}");
+    let detail_lc = detail.to_ascii_lowercase();
+    let ytdlp_search = detail_lc.contains("yt-dlp")
+        || detail_lc.contains("unable to download api page")
+        || detail_lc.contains("http error 403")
+        || detail_lc.contains("403 forbidden")
+        || detail_lc.contains("http error 429")
+        || detail_lc.contains("too many requests")
+        || detail_lc.contains("rate-limited")
+        || crate::tools::classify_ytdlp_failure(&detail).is_some();
+    let context = if ytdlp_search {
+        "YouTube/yt-dlp search failed — wait and retry, or run `ytt tools update` / `ytt doctor --verbose`; then resume this job"
+    } else {
+        "YouTube Music request failed — after fixing the cookie you can resume this job"
+    };
     JobError {
         resumable: true,
-        error: e.context(
-            "YouTube Music request failed — after fixing the cookie you can resume this job",
-        ),
+        error: e.context(context),
     }
 }
 
