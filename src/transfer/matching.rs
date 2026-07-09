@@ -23,10 +23,11 @@ use crate::streaming::musicgate;
 use super::MatchPolicy;
 
 mod ytm_retrieval;
+pub(crate) use ytm_retrieval::YtmMatchDiagnostics;
 pub use ytm_retrieval::{
     Pacing, memo_key, ytm_catalog_query_plan, ytm_fallback_query_plan, ytm_query_plan,
 };
-pub(crate) use ytm_retrieval::{YtmMatchDiagnostics, YtmMatchState, match_track_ytm};
+pub(crate) use ytm_retrieval::{SharedYtmMatchState, match_track_ytm_shared};
 
 /// One track to find a counterpart for, whichever side it came from.
 #[derive(Debug, Clone, Serialize, Deserialize)]

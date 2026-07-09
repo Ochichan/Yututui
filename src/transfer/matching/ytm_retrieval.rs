@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
 use crate::api::Song;
 use crate::api::ytmusic::{YoutubeSearchKind, YtMusicApi, YtdlpVideoMeta};
@@ -14,32 +17,41 @@ use super::{
     strip_annotations,
 };
 
-pub(crate) struct YtmMatchState<'a> {
-    memo: &'a mut HashMap<String, MatchOutcome>,
-    query_memo: &'a mut HashMap<String, Vec<(Song, YoutubeSearchKind)>>,
-    video_memo: &'a mut HashMap<String, Option<YtdlpVideoMeta>>,
-    pace: &'a mut Pacing,
-    diagnostics: YtmMatchDiagnostics,
+type QueryMemo = HashMap<String, Vec<(Song, YoutubeSearchKind)>>;
+
+#[derive(Clone)]
+pub(crate) struct SharedYtmMatchState {
+    memo: Arc<AsyncMutex<HashMap<String, MatchOutcome>>>,
+    query_memo: Arc<AsyncMutex<QueryMemo>>,
+    video_memo: Arc<AsyncMutex<HashMap<String, Option<YtdlpVideoMeta>>>>,
+    pace: Arc<AsyncMutex<Pacing>>,
+    diagnostics: Arc<AsyncMutex<YtmMatchDiagnostics>>,
+    catalog_gate: Arc<Semaphore>,
+    video_gate: Arc<Semaphore>,
+    preflight_gate: Arc<Semaphore>,
 }
 
-impl<'a> YtmMatchState<'a> {
+impl SharedYtmMatchState {
     pub(crate) fn new(
-        memo: &'a mut HashMap<String, MatchOutcome>,
-        query_memo: &'a mut HashMap<String, Vec<(Song, YoutubeSearchKind)>>,
-        video_memo: &'a mut HashMap<String, Option<YtdlpVideoMeta>>,
-        pace: &'a mut Pacing,
+        pace: Pacing,
+        catalog_concurrency: usize,
+        video_concurrency: usize,
+        preflight_concurrency: usize,
     ) -> Self {
         Self {
-            memo,
-            query_memo,
-            video_memo,
-            pace,
-            diagnostics: YtmMatchDiagnostics::default(),
+            memo: Arc::new(AsyncMutex::new(HashMap::new())),
+            query_memo: Arc::new(AsyncMutex::new(HashMap::new())),
+            video_memo: Arc::new(AsyncMutex::new(HashMap::new())),
+            pace: Arc::new(AsyncMutex::new(pace)),
+            diagnostics: Arc::new(AsyncMutex::new(YtmMatchDiagnostics::default())),
+            catalog_gate: Arc::new(Semaphore::new(catalog_concurrency.max(1))),
+            video_gate: Arc::new(Semaphore::new(video_concurrency.max(1))),
+            preflight_gate: Arc::new(Semaphore::new(preflight_concurrency.max(1))),
         }
     }
 
-    pub(crate) fn diagnostics(&self) -> YtmMatchDiagnostics {
-        self.diagnostics.clone()
+    pub(crate) async fn diagnostics(&self) -> YtmMatchDiagnostics {
+        self.diagnostics.lock().await.clone()
     }
 }
 
@@ -240,13 +252,12 @@ pub fn ytm_fallback_query_plan(input: &TrackInput) -> Vec<String> {
         .collect()
 }
 
-/// Find `input` on YouTube Music using a catalog-first plan and delayed metadata preflight.
-pub(crate) async fn match_track_ytm(
+pub(crate) async fn match_track_ytm_shared(
     api: &YtMusicApi,
     input: &TrackInput,
     cfg: &MatchConfig,
     search_config: &SearchConfig,
-    state: &mut YtmMatchState<'_>,
+    state: &SharedYtmMatchState,
 ) -> anyhow::Result<MatchOutcome> {
     if let Some(id) = &input.known_video_id {
         return Ok(MatchOutcome::Matched {
@@ -261,30 +272,14 @@ pub(crate) async fn match_track_ytm(
         });
     }
     let key = memo_key(input);
-    if let Some(hit) = state.memo.get(&key) {
-        return Ok(hit.clone());
+    if let Some(hit) = state.memo.lock().await.get(&key).cloned() {
+        return Ok(hit);
     }
 
     let mut candidates = Vec::<MatchCandidate>::new();
     let mut outcome = MatchOutcome::NotFound;
     for query in ytm_catalog_query_plan(input) {
-        let memo_key = format!("catalog:{query}");
-        let songs = if let Some(hit) = state.query_memo.get(&memo_key) {
-            hit.clone()
-        } else {
-            state.pace.tick().await;
-            let (songs, degraded) = api.search_transfer_catalog(&query, search_config).await?;
-            state.diagnostics.catalog_searches += 1;
-            if degraded {
-                state.diagnostics.authenticated_catalog_degraded += 1;
-            }
-            let songs = songs
-                .into_iter()
-                .map(|song| (song, YoutubeSearchKind::YtmCatalogSong))
-                .collect::<Vec<_>>();
-            state.query_memo.insert(memo_key, songs.clone());
-            songs
-        };
+        let songs = shared_catalog_songs(api, &query, search_config, state).await?;
         for (song, kind) in &songs {
             if !candidates.iter().any(|c| c.key == song.video_id) {
                 candidates.push(MatchCandidate::from_song_with_kind(song, (*kind).into()));
@@ -298,20 +293,7 @@ pub(crate) async fn match_track_ytm(
 
     if !matches!(outcome, MatchOutcome::Matched { .. }) {
         for query in ytm_fallback_query_plan(input) {
-            let memo_key = format!("video:{query}");
-            let songs = if let Some(hit) = state.query_memo.get(&memo_key) {
-                hit.clone()
-            } else {
-                state.pace.tick().await;
-                let songs = api.search_transfer_video(&query, search_config).await?;
-                state.diagnostics.video_searches += 1;
-                let songs = songs
-                    .into_iter()
-                    .map(|song| (song, YoutubeSearchKind::YoutubeVideoSearch))
-                    .collect::<Vec<_>>();
-                state.query_memo.insert(memo_key, songs.clone());
-                songs
-            };
+            let songs = shared_video_songs(api, &query, search_config, state).await?;
             for (song, kind) in &songs {
                 if !candidates.iter().any(|c| c.key == song.video_id) {
                     candidates.push(MatchCandidate::from_song_with_kind(song, (*kind).into()));
@@ -323,23 +305,89 @@ pub(crate) async fn match_track_ytm(
             }
         }
         let preflighted =
-            preflight_ytm_candidates(api, input, cfg, &mut candidates, state.video_memo).await;
-        state.diagnostics.preflight_lookups += preflighted;
+            preflight_ytm_candidates_shared(api, input, cfg, &mut candidates, state).await;
+        state.diagnostics.lock().await.preflight_lookups += preflighted;
         outcome = best_outcome(input, &candidates, cfg);
     }
 
-    state.memo.insert(key, outcome.clone());
+    state.memo.lock().await.insert(key, outcome.clone());
     Ok(outcome)
+}
+
+async fn shared_catalog_songs(
+    api: &YtMusicApi,
+    query: &str,
+    search_config: &SearchConfig,
+    state: &SharedYtmMatchState,
+) -> anyhow::Result<Vec<(Song, YoutubeSearchKind)>> {
+    let memo_key = format!("catalog:{query}");
+    if let Some(hit) = state.query_memo.lock().await.get(&memo_key).cloned() {
+        return Ok(hit);
+    }
+    let _permit = state
+        .catalog_gate
+        .acquire()
+        .await
+        .expect("catalog semaphore should not close");
+    state.pace.lock().await.tick().await;
+    let (songs, degraded) = api.search_transfer_catalog(query, search_config).await?;
+    {
+        let mut diagnostics = state.diagnostics.lock().await;
+        diagnostics.catalog_searches += 1;
+        if degraded {
+            diagnostics.authenticated_catalog_degraded += 1;
+        }
+    }
+    let songs = songs
+        .into_iter()
+        .map(|song| (song, YoutubeSearchKind::YtmCatalogSong))
+        .collect::<Vec<_>>();
+    state
+        .query_memo
+        .lock()
+        .await
+        .insert(memo_key, songs.clone());
+    Ok(songs)
+}
+
+async fn shared_video_songs(
+    api: &YtMusicApi,
+    query: &str,
+    search_config: &SearchConfig,
+    state: &SharedYtmMatchState,
+) -> anyhow::Result<Vec<(Song, YoutubeSearchKind)>> {
+    let memo_key = format!("video:{query}");
+    if let Some(hit) = state.query_memo.lock().await.get(&memo_key).cloned() {
+        return Ok(hit);
+    }
+    let _permit = state
+        .video_gate
+        .acquire()
+        .await
+        .expect("video semaphore should not close");
+    state.pace.lock().await.tick().await;
+    let songs = api.search_transfer_video(query, search_config).await?;
+    state.diagnostics.lock().await.video_searches += 1;
+    let songs = songs
+        .into_iter()
+        .map(|song| (song, YoutubeSearchKind::YoutubeVideoSearch))
+        .collect::<Vec<_>>();
+    state
+        .query_memo
+        .lock()
+        .await
+        .insert(memo_key, songs.clone());
+    Ok(songs)
 }
 
 const TRANSFER_PREFLIGHT_TOP_N: usize = 2;
 
-async fn preflight_ytm_candidates(
+async fn preflight_ytm_candidates_shared(
     api: &YtMusicApi,
     input: &TrackInput,
     cfg: &MatchConfig,
     candidates: &mut [MatchCandidate],
-    video_memo: &mut HashMap<String, Option<YtdlpVideoMeta>>,
+    state: &SharedYtmMatchState,
 ) -> u32 {
     let mut ranked: Vec<(f32, usize)> = candidates
         .iter()
@@ -358,9 +406,14 @@ async fn preflight_ytm_candidates(
     let mut lookups = 0;
     for (_, idx) in ranked.into_iter().take(TRANSFER_PREFLIGHT_TOP_N) {
         let key = candidates[idx].key.clone();
-        let meta = match video_memo.get(&key) {
-            Some(hit) => hit.clone(),
+        let meta = match state.video_memo.lock().await.get(&key).cloned() {
+            Some(hit) => hit,
             None => {
+                let _permit = state
+                    .preflight_gate
+                    .acquire()
+                    .await
+                    .expect("preflight semaphore should not close");
                 lookups += 1;
                 let hit = match api.youtube_video_metadata(&key).await {
                     Ok(meta) => Some(meta),
@@ -373,7 +426,11 @@ async fn preflight_ytm_candidates(
                         None
                     }
                 };
-                video_memo.insert(key.clone(), hit.clone());
+                state
+                    .video_memo
+                    .lock()
+                    .await
+                    .insert(key.clone(), hit.clone());
                 hit
             }
         };

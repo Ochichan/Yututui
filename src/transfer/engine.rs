@@ -6,13 +6,14 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail};
+use futures::StreamExt;
 
 use super::checkpoint::ReviewDecision;
 use super::checkpoint::{Checkpoint, ReportCandidate, ReportRow, TrackEntry, TransferReport};
 use super::match_cache::TransferMatchCache;
 use super::matching::{
-    MatchCandidate, MatchConfig, MatchOutcome, Pacing, TrackInput, YtmMatchState, best_outcome,
-    match_track_ytm, spotify_query_plan, ytm_query_plan,
+    MatchCandidate, MatchConfig, MatchOutcome, Pacing, SharedYtmMatchState, TrackInput,
+    best_outcome, match_track_ytm_shared, spotify_query_plan, ytm_query_plan,
 };
 use super::{
     FileFormat, JobSpec, MatchPolicy, Stage, TransferDest, TransferProgress, TransferSource,
@@ -338,6 +339,30 @@ fn accept_margin_for_policy(policy: MatchPolicy) -> f32 {
     }
 }
 
+fn env_concurrency(name: &str, default: usize, max: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default)
+        .clamp(1, max)
+}
+
+fn ytm_track_concurrency() -> usize {
+    env_concurrency("YTM_TRANSFER_MATCH_CONCURRENCY", 4, 8)
+}
+
+fn ytm_catalog_concurrency() -> usize {
+    env_concurrency("YTM_TRANSFER_CATALOG_CONCURRENCY", 4, 8)
+}
+
+fn ytm_video_concurrency() -> usize {
+    env_concurrency("YTM_TRANSFER_VIDEO_CONCURRENCY", 2, 4)
+}
+
+fn ytm_preflight_concurrency() -> usize {
+    env_concurrency("YTM_TRANSFER_PREFLIGHT_CONCURRENCY", 3, 6)
+}
+
 async fn match_stage(
     cp: &mut Checkpoint,
     ctx: &mut JobCtx,
@@ -352,9 +377,6 @@ async fn match_stage(
     };
     let to_spotify = matches!(cp.spec.dest, TransferDest::SpotifyNewPlaylist { .. });
     let total = cp.tracks.len() as u32;
-    let mut memo = std::collections::HashMap::new();
-    let mut query_memo = std::collections::HashMap::new();
-    let mut video_memo = std::collections::HashMap::new();
     let mut pace = Pacing::ytm_default();
     let search_config = ctx.search_config.clone();
     let market = ctx.market.clone();
@@ -374,29 +396,74 @@ async fn match_stage(
                 .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
         }
     }
-    // One weird track must not kill a 300-track job: an isolated search failure
-    // becomes NotFound (reported, retryable via --rematch). A *streak* means the
-    // backend itself died (cookie, network) — abort resumably then.
-    let mut consecutive_failures = 0u32;
-
-    for idx in 0..cp.tracks.len() {
-        if cp.tracks[idx].outcome.is_some() {
-            continue; // resumed work
-        }
-        let input = cp.tracks[idx].input.clone();
-        let outcome = if to_spotify {
+    if to_spotify {
+        for idx in 0..cp.tracks.len() {
+            if cp.tracks[idx].outcome.is_some() {
+                continue; // resumed work
+            }
+            let input = cp.tracks[idx].input.clone();
             // Spotify's client already absorbs transient trouble internally; anything
             // surfacing here (rate budget, auth) is systemic — abort resumably.
-            match_track_spotify(ctx.spotify()?, &input, &cfg, market.clone())
+            let outcome = match_track_spotify(ctx.spotify()?, &input, &cfg, market.clone())
                 .await
-                .map_err(|e| checkpointed(cp, e))?
-        } else {
-            let mut ytm_state =
-                YtmMatchState::new(&mut memo, &mut query_memo, &mut video_memo, &mut pace);
-            match match_track_ytm(ctx.ytm()?, &input, &cfg, &search_config, &mut ytm_state).await {
+                .map_err(|e| checkpointed(cp, e))?;
+            record_match_outcome_stats(&mut cp.match_stats, &outcome);
+            cp.tracks[idx].outcome = Some(outcome);
+
+            let (matched, ambiguous, not_found) = outcome_counts(&cp.tracks);
+            progress(TransferProgress {
+                job_id: cp.job_id.clone(),
+                stage: Stage::Matching,
+                done: (idx + 1) as u32,
+                total,
+                matched,
+                auto_accepted: 0,
+                ambiguous,
+                not_found,
+                written: written_count(&cp.tracks),
+                current: input.display(),
+            });
+            if (idx + 1) % CHECKPOINT_EVERY == 0 {
+                cp.save().map_err(|e| JobError::fatal(e.into()))?;
+            }
+        }
+    } else {
+        // One weird track must not kill a 300-track job: an isolated search failure
+        // becomes NotFound (reported, retryable via --rematch). A *streak* means the
+        // backend itself died (cookie, network) — abort resumably then.
+        let ytm = ctx.ytm()?;
+        let pending = cp
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.outcome.is_none())
+            .map(|(idx, entry)| (idx, entry.input.clone()))
+            .collect::<Vec<_>>();
+        let shared_state = SharedYtmMatchState::new(
+            pace,
+            ytm_catalog_concurrency(),
+            ytm_video_concurrency(),
+            ytm_preflight_concurrency(),
+        );
+        let mut stream = futures::stream::iter(pending)
+            .map(|(idx, input)| {
+                let state = shared_state.clone();
+                let match_cfg = cfg;
+                let search_config = search_config.clone();
+                async move {
+                    let outcome =
+                        match_track_ytm_shared(ytm, &input, &match_cfg, &search_config, &state)
+                            .await;
+                    (idx, input, outcome)
+                }
+            })
+            .buffer_unordered(ytm_track_concurrency());
+        let mut consecutive_failures = 0u32;
+        let mut completed = 0u32;
+        while let Some((idx, input, result)) = stream.next().await {
+            let outcome = match result {
                 Ok(outcome) => {
                     consecutive_failures = 0;
-                    merge_ytm_diagnostics(&mut cp.match_stats, ytm_state.diagnostics());
                     if let Some(cache) = match_cache.as_mut()
                         && matches!(outcome, MatchOutcome::Matched { .. })
                     {
@@ -417,27 +484,33 @@ async fn match_stage(
                     );
                     MatchOutcome::NotFound
                 }
-            }
-        };
-        record_match_outcome_stats(&mut cp.match_stats, &outcome);
-        cp.tracks[idx].outcome = Some(outcome);
+            };
+            record_match_outcome_stats(&mut cp.match_stats, &outcome);
+            cp.tracks[idx].outcome = Some(outcome);
+            completed += 1;
 
-        let (matched, ambiguous, not_found) = outcome_counts(&cp.tracks);
-        progress(TransferProgress {
-            job_id: cp.job_id.clone(),
-            stage: Stage::Matching,
-            done: (idx + 1) as u32,
-            total,
-            matched,
-            auto_accepted: 0,
-            ambiguous,
-            not_found,
-            written: written_count(&cp.tracks),
-            current: input.display(),
-        });
-        if (idx + 1) % CHECKPOINT_EVERY == 0 {
-            cp.save().map_err(|e| JobError::fatal(e.into()))?;
+            let (matched, ambiguous, not_found) = outcome_counts(&cp.tracks);
+            progress(TransferProgress {
+                job_id: cp.job_id.clone(),
+                stage: Stage::Matching,
+                done: cp
+                    .tracks
+                    .iter()
+                    .filter(|entry| entry.outcome.is_some())
+                    .count() as u32,
+                total,
+                matched,
+                auto_accepted: 0,
+                ambiguous,
+                not_found,
+                written: written_count(&cp.tracks),
+                current: input.display(),
+            });
+            if completed.is_multiple_of(CHECKPOINT_EVERY as u32) {
+                cp.save().map_err(|e| JobError::fatal(e.into()))?;
+            }
         }
+        merge_ytm_diagnostics(&mut cp.match_stats, shared_state.diagnostics().await);
     }
     if cache_dirty && let Some(cache) = match_cache.as_ref() {
         cache.save();
