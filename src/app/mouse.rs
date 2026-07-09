@@ -553,6 +553,8 @@ impl App {
             MouseTarget::AiInput => Vec::new(),
             MouseTarget::AiSubmit if self.mode == Mode::Ai => self.submit_ai_prompt(),
             MouseTarget::AiSubmit => Vec::new(),
+            MouseTarget::AiModel if self.mode == Mode::Ai => self.cycle_ai_model_from_chat(),
+            MouseTarget::AiModel => Vec::new(),
             MouseTarget::AiSuggestionRow(i) if self.mode == Mode::Ai => {
                 if i < self.ai.suggestions.len() {
                     self.ai.suggestions_selected = i;

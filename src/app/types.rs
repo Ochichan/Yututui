@@ -467,6 +467,8 @@ pub enum MouseTarget {
     AiInput,
     /// The DJ Gem prompt submit button.
     AiSubmit,
+    /// The DJ Gem model label under the prompt — cycles the active model.
+    AiModel,
     /// A pickable DJ Gem suggestion row.
     AiSuggestionRow(usize),
     /// The `N/M` queue-position label on the player status line — opens the queue window.
