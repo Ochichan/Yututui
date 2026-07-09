@@ -563,4 +563,75 @@ mod tests {
         cache.video_metadata.get_mut("video-id").unwrap().updated_at = 1;
         assert!(cache.video_meta_cache_entries().is_empty());
     }
+
+    #[test]
+    fn prune_drops_expired_query_entries_and_caps_to_max() {
+        let mut cache = TransferMatchCache::default();
+        let song = Song::from_search("video-id", "Song", "Artist", "3:00", Some("Album".into()));
+        let now = crate::signals::unix_now();
+
+        cache.query_results.insert(
+            "expired".to_owned(),
+            CachedQueryResult {
+                songs: vec![CachedQuerySong {
+                    song: song.clone(),
+                    kind: YoutubeSearchKind::YtmCatalogSong,
+                }],
+                updated_at: 1,
+            },
+        );
+        for idx in 0..(QUERY_CACHE_MAX + 2) {
+            cache.query_results.insert(
+                format!("fresh-{idx}"),
+                CachedQueryResult {
+                    songs: vec![CachedQuerySong {
+                        song: song.clone(),
+                        kind: YoutubeSearchKind::YtmCatalogSong,
+                    }],
+                    updated_at: now - (QUERY_CACHE_MAX as i64 + 2 - idx as i64),
+                },
+            );
+        }
+
+        cache.prune();
+
+        assert!(!cache.query_results.contains_key("expired"));
+        assert_eq!(cache.query_results.len(), QUERY_CACHE_MAX);
+        assert!(!cache.query_results.contains_key("fresh-0"));
+        assert!(cache.query_results.contains_key(&format!("fresh-{}", QUERY_CACHE_MAX + 1)));
+    }
+
+    #[test]
+    fn prune_drops_expired_video_meta_and_caps_to_max() {
+        let mut cache = TransferMatchCache::default();
+        let now = crate::signals::unix_now();
+
+        cache.video_metadata.insert(
+            "expired".to_owned(),
+            CachedVideoMeta {
+                meta: video_meta(),
+                updated_at: 1,
+            },
+        );
+        for idx in 0..(VIDEO_META_CACHE_MAX + 2) {
+            cache.video_metadata.insert(
+                format!("fresh-{idx}"),
+                CachedVideoMeta {
+                    meta: video_meta(),
+                    updated_at: now - (VIDEO_META_CACHE_MAX as i64 + 2 - idx as i64),
+                },
+            );
+        }
+
+        cache.prune();
+
+        assert!(!cache.video_metadata.contains_key("expired"));
+        assert_eq!(cache.video_metadata.len(), VIDEO_META_CACHE_MAX);
+        assert!(!cache.video_metadata.contains_key("fresh-0"));
+        assert!(
+            cache
+                .video_metadata
+                .contains_key(&format!("fresh-{}", VIDEO_META_CACHE_MAX + 1))
+        );
+    }
 }

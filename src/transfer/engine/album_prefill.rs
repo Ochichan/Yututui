@@ -314,3 +314,224 @@ fn record_score_stats(
         stats.bump_reason_code(reason);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transfer::checkpoint::{Checkpoint, TrackEntry};
+    use crate::transfer::match_cache::CachedAlbumTrack;
+    use crate::transfer::matching::{MatchOutcome, MatchScoreBreakdown, TrackInput};
+    use crate::transfer::{
+        JobSpec, MatchPolicy, TransferCacheMode, TransferDest, TransferSource,
+    };
+
+    fn track_input(title: &str, artist: &str, album: &str, track_number: u32) -> TrackInput {
+        TrackInput {
+            title: title.to_owned(),
+            artists: vec![artist.to_owned()],
+            album_artists: vec![artist.to_owned()],
+            album: Some(album.to_owned()),
+            album_id: Some("sp-album".to_owned()),
+            album_uri: None,
+            album_release_date: Some("2024-01-01".to_owned()),
+            album_release_date_precision: None,
+            album_total_tracks: Some(2),
+            album_type: Some("album".to_owned()),
+            album_art_url: None,
+            disc_number: Some(1),
+            track_number: Some(track_number),
+            duration_secs: Some(180),
+            isrc: None,
+            explicit: None,
+            source_url: None,
+            source_key: format!("spotify:track:{title}"),
+            known_video_id: None,
+        }
+    }
+
+    fn matched(key: &str) -> MatchOutcome {
+        MatchOutcome::Matched {
+            key: key.to_owned(),
+            score: 0.96,
+            display: "Artist — Song".to_owned(),
+            title: Some("Song".to_owned()),
+            artist: Some("Artist".to_owned()),
+            album: Some("Album".to_owned()),
+            duration_secs: Some(180),
+            score_breakdown: Some(Box::new(MatchScoreBreakdown {
+                source_kind: "ytm_album_track".to_owned(),
+                quality_tier: "catalog".to_owned(),
+                total: 0.96,
+                raw_total: 0.96,
+                ..MatchScoreBreakdown::default()
+            })),
+        }
+    }
+
+    fn job_spec() -> JobSpec {
+        JobSpec {
+            source: TransferSource::SpotifyLiked,
+            dest: TransferDest::YtmLikes,
+            dry_run: true,
+            min_score: 0.80,
+            take_best: false,
+            auto_accept_ambiguous_min_score: None,
+            match_policy: MatchPolicy::Strict,
+            allow_user_videos: false,
+            cache_mode: TransferCacheMode::Use,
+            rematch: false,
+        }
+    }
+
+    #[test]
+    fn apply_persistent_cache_fills_unmatched_rows_and_skips_existing() {
+        let mut cache = TransferMatchCache::default();
+        let hit_input = track_input("Song A", "Artist", "Album", 1);
+        cache.save_match(&hit_input, &matched("ytm-a"));
+
+        let mut cp = Checkpoint::new(
+            "job-cache".to_owned(),
+            job_spec(),
+            vec![
+                TrackEntry {
+                    input: hit_input.clone(),
+                    outcome: None,
+                    review_decision: None,
+                    written: false,
+                },
+                TrackEntry {
+                    input: track_input("Song B", "Artist", "Album", 2),
+                    outcome: Some(matched("already")),
+                    review_decision: None,
+                    written: false,
+                },
+                TrackEntry {
+                    input: track_input("Song C", "Other", "Elsewhere", 1),
+                    outcome: None,
+                    review_decision: None,
+                    written: false,
+                },
+            ],
+        );
+
+        assert!(apply_persistent_cache(&mut cp, &cache));
+        assert!(matches!(
+            cp.tracks[0].outcome,
+            Some(MatchOutcome::Matched { ref key, .. }) if key == "ytm-a"
+        ));
+        assert!(matches!(
+            cp.tracks[1].outcome,
+            Some(MatchOutcome::Matched { ref key, .. }) if key == "already"
+        ));
+        assert!(cp.tracks[2].outcome.is_none());
+        assert_eq!(cp.match_stats.cache_hits.get("source_key"), Some(&1));
+    }
+
+    #[test]
+    fn best_album_candidate_accepts_clear_hit_and_rejects_ambiguous_or_weak() {
+        let input = track_input("Song A", "Artist", "Album", 1);
+        let clear = TransferAlbumCandidate {
+            album_id: "album-1".to_owned(),
+            title: "Album".to_owned(),
+            artist: "Artist".to_owned(),
+            year: Some("2024".to_owned()),
+            album_type: Some("album".to_owned()),
+        };
+        assert_eq!(
+            best_album_candidate(&input, &[clear.clone()])
+                .map(|c| c.album_id),
+            Some("album-1".to_owned())
+        );
+
+        let weak = TransferAlbumCandidate {
+            album_id: "album-weak".to_owned(),
+            title: "Totally Different".to_owned(),
+            artist: "Someone Else".to_owned(),
+            year: Some("1999".to_owned()),
+            album_type: None,
+        };
+        assert!(best_album_candidate(&input, &[weak]).is_none());
+
+        let twin_a = TransferAlbumCandidate {
+            album_id: "album-a".to_owned(),
+            title: "Album".to_owned(),
+            artist: "Artist".to_owned(),
+            year: Some("2024".to_owned()),
+            album_type: Some("album".to_owned()),
+        };
+        let twin_b = TransferAlbumCandidate {
+            album_id: "album-b".to_owned(),
+            title: "Album".to_owned(),
+            artist: "Artist".to_owned(),
+            year: Some("2024".to_owned()),
+            album_type: Some("album".to_owned()),
+        };
+        assert!(best_album_candidate(&input, &[twin_a, twin_b]).is_none());
+    }
+
+    #[test]
+    fn apply_cached_album_matches_fills_matching_tracks_only() {
+        let mut cache = TransferMatchCache::default();
+        let mut cp = Checkpoint::new(
+            "job-album".to_owned(),
+            job_spec(),
+            vec![
+                TrackEntry {
+                    input: track_input("Alpha Theme", "Artist", "Album", 1),
+                    outcome: None,
+                    review_decision: None,
+                    written: false,
+                },
+                TrackEntry {
+                    input: track_input("Beta Groove", "Artist", "Album", 2),
+                    outcome: None,
+                    review_decision: None,
+                    written: false,
+                },
+                TrackEntry {
+                    input: track_input("Missing Track", "Artist", "Album", 9),
+                    outcome: None,
+                    review_decision: None,
+                    written: false,
+                },
+            ],
+        );
+        let album = CachedAlbum {
+            ytm_album_id: "ytm-album".to_owned(),
+            title: "Album".to_owned(),
+            artist: "Artist".to_owned(),
+            year: Some("2024".to_owned()),
+            tracks: vec![
+                CachedAlbumTrack {
+                    video_id: "vid-a".to_owned(),
+                    title: "Alpha Theme".to_owned(),
+                    artist: "Artist".to_owned(),
+                    album: "Album".to_owned(),
+                    track_number: Some(1),
+                    duration_secs: Some(180),
+                },
+                CachedAlbumTrack {
+                    video_id: "vid-b".to_owned(),
+                    title: "Beta Groove".to_owned(),
+                    artist: "Artist".to_owned(),
+                    album: "Album".to_owned(),
+                    track_number: Some(2),
+                    duration_secs: Some(180),
+                },
+            ],
+            updated_at: crate::signals::unix_now(),
+        };
+        let cfg = MatchConfig::default();
+        let matched = apply_cached_album_matches(&mut cp, &cfg, &mut cache, &album, &[0, 1, 2]);
+        assert_eq!(matched, 2);
+        assert!(matches!(
+            cp.tracks[0].outcome,
+            Some(MatchOutcome::Matched { ref key, .. }) if key == "vid-a"
+        ));
+        assert!(matches!(
+            cp.tracks[1].outcome,
+            Some(MatchOutcome::Matched { ref key, .. }) if key == "vid-b"
+        ));
+        assert!(cp.tracks[2].outcome.is_none());
+    }
+}

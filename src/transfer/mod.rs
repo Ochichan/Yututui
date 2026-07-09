@@ -230,3 +230,32 @@ pub fn new_job_id(kind: &str) -> String {
         bytes[1]
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transfer_cache_mode_read_write_matrix() {
+        assert!(TransferCacheMode::Use.read_enabled());
+        assert!(TransferCacheMode::Use.write_enabled());
+        assert!(!TransferCacheMode::Refresh.read_enabled());
+        assert!(TransferCacheMode::Refresh.write_enabled());
+        assert!(!TransferCacheMode::Off.read_enabled());
+        assert!(!TransferCacheMode::Off.write_enabled());
+    }
+
+    #[test]
+    fn match_policy_and_cache_mode_parse_matrix() {
+        assert_eq!("strict".parse(), Ok(MatchPolicy::Strict));
+        assert_eq!("balanced".parse(), Ok(MatchPolicy::Balanced));
+        assert_eq!("aggressive".parse(), Ok(MatchPolicy::Aggressive));
+        assert_eq!("exhaustive".parse(), Ok(MatchPolicy::Exhaustive));
+        assert!("reckless".parse::<MatchPolicy>().is_err());
+
+        assert_eq!("use".parse(), Ok(TransferCacheMode::Use));
+        assert_eq!("refresh".parse(), Ok(TransferCacheMode::Refresh));
+        assert_eq!("off".parse(), Ok(TransferCacheMode::Off));
+        assert!("stale".parse::<TransferCacheMode>().is_err());
+    }
+}
