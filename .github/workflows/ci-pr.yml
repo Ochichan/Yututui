@@ -157,13 +157,13 @@ jobs:
 
   windows-optional:
     name: Windows (optional light)
-    if: |
-      (
-        (github.event_name == 'workflow_dispatch' && inputs.run_windows == true) ||
-        (github.event_name == 'pull_request' && contains(join(github.event.pull_request.labels.*.name, ','), 'ci:windows'))
-      ) && (
-        github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-      )
+    # Label/dispatch gated so offline Windows PCs never block merge. Keep expressions
+    # event-safe: do not touch pull_request.* except inside a pull_request event_name check.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.run_windows) ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(github.event.pull_request.labels.*.name, 'ci:windows'))
     runs-on: [self-hosted, windows, x64, yututui]
     timeout-minutes: 45
     steps:
@@ -181,17 +181,15 @@ jobs:
         run: cargo test --workspace
 
       - name: Test tray helper
-        run: cargo test --features desktop -- desktop::
+        run: "cargo test --features desktop -- desktop::"
 
   macos-optional:
     name: macOS (optional light)
-    if: |
-      (
-        (github.event_name == 'workflow_dispatch' && inputs.run_macos == true) ||
-        (github.event_name == 'pull_request' && contains(join(github.event.pull_request.labels.*.name, ','), 'ci:macos'))
-      ) && (
-        github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-      )
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.run_macos) ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(github.event.pull_request.labels.*.name, 'ci:macos'))
     runs-on: [self-hosted, macOS, ARM64, yututui]
     timeout-minutes: 45
     steps:
@@ -217,4 +215,4 @@ jobs:
         run: cargo test --workspace
 
       - name: Test tray helper
-        run: cargo test --features desktop -- desktop::
+        run: "cargo test --features desktop -- desktop::"
