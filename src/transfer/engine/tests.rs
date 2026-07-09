@@ -399,6 +399,26 @@ fn provider_errors_are_classified_for_resume_safety() {
             .to_string()
             .contains("YouTube Music request failed")
     );
+    assert!(
+        ytm_error
+            .error
+            .to_string()
+            .contains("after fixing the cookie")
+    );
+
+    let ytdlp_error = ytm_job_error(anyhow!(
+        "yt-dlp search exited with status exit status: 1 (ERROR: query \"x\" page 1: Unable to download API page: HTTP Error 403: Forbidden)"
+    ));
+    assert!(ytdlp_error.resumable);
+    let msg = format!("{:#}", ytdlp_error.error);
+    assert!(
+        msg.contains("YouTube/yt-dlp search failed"),
+        "yt-dlp 403 must not blame cookies: {msg}"
+    );
+    assert!(
+        !msg.contains("after fixing the cookie"),
+        "yt-dlp 403 must not blame cookies: {msg}"
+    );
 }
 
 #[test]

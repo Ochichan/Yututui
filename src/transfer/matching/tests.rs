@@ -1,3 +1,4 @@
+use super::ytm_retrieval::{is_noisy_video_fallback_query, video_search_error_is_soft};
 use super::*;
 
 fn input(title: &str, artists: &[&str], album: Option<&str>, dur: Option<u32>) -> TrackInput {
@@ -254,7 +255,36 @@ fn ytm_catalog_plan_uses_only_fast_primary_queries_before_fallbacks() {
     let fallback = ytm_fallback_query_plan(&input);
     assert!(!fallback.contains(&"Primary Song Title".to_owned()));
     assert!(fallback.contains(&"Primary Song Title official audio".to_owned()));
-    assert!(fallback.contains(&"Primary Song Title topic".to_owned()));
+    assert!(
+        !fallback.contains(&"Primary Song Title topic".to_owned()),
+        "bare topic suffix is filtered from video fallback"
+    );
+    assert!(
+        !fallback.iter().any(|q| q.ends_with(" 2024")),
+        "year-suffix variants are filtered from video fallback: {fallback:?}"
+    );
+}
+
+#[test]
+fn noisy_video_fallback_query_filter_drops_topic_and_year_suffix() {
+    assert!(is_noisy_video_fallback_query("Aimyon Marigold topic"));
+    assert!(is_noisy_video_fallback_query(
+        "21univ. Sticker picture 2022"
+    ));
+    assert!(!is_noisy_video_fallback_query(
+        "Primary Song Title official audio"
+    ));
+    assert!(!is_noisy_video_fallback_query(
+        "Primary Song Title Album Name"
+    ));
+}
+
+#[test]
+fn video_search_errors_are_soft_at_matching_boundary() {
+    let err = anyhow::anyhow!(
+        "yt-dlp search exited with status exit status: 1 (ERROR: query \"Aimyon Marigold topic\" page 1: Unable to download API page: HTTP Error 403: Forbidden)"
+    );
+    assert!(video_search_error_is_soft(&err));
 }
 
 #[test]

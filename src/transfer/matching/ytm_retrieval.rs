@@ -311,7 +311,32 @@ pub fn ytm_fallback_query_plan(input: &TrackInput) -> Vec<String> {
     ytm_query_plan(input)
         .into_iter()
         .filter(|query| !fast.contains(&normalize(query)))
+        // Under degraded catalog search, every fallback hits yt-dlp. Drop variants that
+        // mostly amplify 403s without unique signal (`… topic`, bare year suffixes).
+        .filter(|query| !is_noisy_video_fallback_query(query))
         .collect()
+}
+
+/// Video-fallback queries that add little unique signal and inflate yt-dlp call volume.
+pub(crate) fn is_noisy_video_fallback_query(query: &str) -> bool {
+    let query = query.trim_end();
+    if query.ends_with(" topic") {
+        return true;
+    }
+    if let Some((_, year)) = query.rsplit_once(' ')
+        && year.len() == 4
+        && year.chars().all(|c| c.is_ascii_digit())
+    {
+        return true;
+    }
+    false
+}
+
+/// Transfer matching soft-fails yt-dlp video-search errors so one bad query cannot abort
+/// a whole playlist job. Video search is the noisy path; catalog already soft-fails the
+/// same way. Engine consecutive-failure abort still covers systemic Err from other paths.
+pub(crate) fn video_search_error_is_soft(_err: &anyhow::Error) -> bool {
+    true
 }
 
 pub(crate) async fn match_track_ytm_shared(
@@ -354,8 +379,20 @@ pub(crate) async fn match_track_ytm_shared(
     }
 
     if !matches!(outcome, MatchOutcome::Matched { .. }) {
+        // Soft-continue on video-search errors: one yt-dlp 403 must not promote to a
+        // whole-track Err (engine consecutive-failure abort). Keep candidates already found.
         for query in ytm_fallback_query_plan(input) {
-            let songs = shared_video_songs(api, &query, search_config, state).await?;
+            let songs = match shared_video_songs(api, &query, search_config, state).await {
+                Ok(songs) => songs,
+                Err(error) => {
+                    tracing::warn!(
+                        query = %query,
+                        error = %crate::util::sanitize::sanitize_error_text(format!("{error:#}")),
+                        "transfer video search failed; continuing with remaining fallback queries"
+                    );
+                    continue;
+                }
+            };
             for (song, kind) in &songs {
                 if !candidates.iter().any(|c| c.key == song.video_id) {
                     candidates.push(MatchCandidate::from_song_with_kind(song, (*kind).into()));
@@ -366,10 +403,15 @@ pub(crate) async fn match_track_ytm_shared(
                 break;
             }
         }
-        let preflighted =
-            preflight_ytm_candidates_shared(api, input, cfg, &mut candidates, state).await;
-        state.diagnostics.lock().await.preflight_lookups += preflighted;
-        outcome = best_outcome(input, &candidates, cfg);
+        // Early-stop can produce Matched inside the loop above. Do NOT still run
+        // yt-dlp metadata preflight in that case — it re-spawns slow/403-prone
+        // lookups and keeps the CLI stuck at 0/N with no progress.
+        if !matches!(outcome, MatchOutcome::Matched { .. }) {
+            let preflighted =
+                preflight_ytm_candidates_shared(api, input, cfg, &mut candidates, state).await;
+            state.diagnostics.lock().await.preflight_lookups += preflighted;
+            outcome = best_outcome(input, &candidates, cfg);
+        }
     }
 
     state.memo.lock().await.insert(key, outcome.clone());
@@ -442,7 +484,23 @@ async fn shared_video_songs(
         .await
         .expect("video semaphore should not close");
     state.pace.lock().await.tick().await;
-    let songs = api.search_transfer_video(query, search_config).await?;
+    // Soft-fail like catalog/album: yt-dlp 403/exit-1 must become Ok([]) so matching
+    // records NotFound instead of a track-level Err that trips the engine streak abort.
+    let songs = match api.search_transfer_video(query, search_config).await {
+        Ok(songs) => songs,
+        Err(error) => {
+            debug_assert!(
+                video_search_error_is_soft(&error),
+                "video search errors are soft-failed at the matching boundary"
+            );
+            tracing::warn!(
+                query = %query,
+                error = %crate::util::sanitize::sanitize_error_text(format!("{error:#}")),
+                "transfer video search soft-failed; treating as no results"
+            );
+            Vec::new()
+        }
+    };
     state.diagnostics.lock().await.video_searches += 1;
     let songs = songs
         .into_iter()
@@ -562,11 +620,20 @@ async fn preflight_ytm_candidates_shared(
 }
 
 fn needs_transfer_preflight(candidate: &MatchCandidate) -> bool {
+    // Flat yt-dlp search already carries duration/channel for most rows. Full
+    // `--dump-single-json` metadata enrichment is the hang we saw under 403
+    // pressure (preflight_before with no preflight_after for 75s+). Skip when
+    // the flat row is already rich enough for scoring.
     !candidate.preflighted
         && matches!(
             candidate.source_kind,
             CandidateSourceKind::YoutubeVideoSearch | CandidateSourceKind::Unknown
         )
+        && (candidate.duration_secs.is_none()
+            || candidate
+                .channel
+                .as_ref()
+                .is_none_or(|c| c.trim().is_empty()))
 }
 
 fn apply_transfer_preflight(
@@ -659,7 +726,15 @@ fn should_stop_ytm_search(outcome: &MatchOutcome, cfg: &MatchConfig) -> bool {
                 MatchPolicy::Aggressive => cfg.accept,
                 MatchPolicy::Exhaustive => unreachable!("handled above"),
             };
-            *total >= target && quality_source
+            // Under authenticated-catalog degrade, video-only matches never carry
+            // catalog_song/trusted_channel/official_like. Requiring quality_source then
+            // forces every fallback query (multi-second yt-dlp each) and looks hung.
+            // Strict still wants a quality signal; Balanced/Aggressive stop on score alone.
+            match cfg.policy {
+                MatchPolicy::Strict => *total >= target && quality_source,
+                MatchPolicy::Balanced | MatchPolicy::Aggressive => *total >= target,
+                MatchPolicy::Exhaustive => unreachable!("handled above"),
+            }
         }
         MatchOutcome::Matched { .. } => true,
         _ => false,

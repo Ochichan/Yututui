@@ -60,3 +60,6 @@ cookies.txt
 /.agents/
 /.codex/
 /.codex-worktrees/
+
+# Cursor IDE / debug session artifacts
+.cursor/
