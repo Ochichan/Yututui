@@ -255,8 +255,10 @@ where
         let modified_at = metadata_modified_unix(&metadata);
         let fingerprint = FileFingerprint::path_mtime_size(&canonical, modified_at, metadata.len());
         if let Some(track) = self.previous.find_unchanged(&fingerprint) {
+            let mut track = track.clone();
+            apply_path_metadata_fallback(&mut track, root, &canonical);
             self.seen_ids.push(track.id.clone());
-            self.tracks.push(track.clone());
+            self.tracks.push(track);
             self.summary.reused += 1;
             self.emit_progress(Some(canonical));
             return;
@@ -568,6 +570,35 @@ mod tests {
         assert_eq!(track.artist, vec!["Tag Artist"]);
         assert_eq!(track.album.as_deref(), Some("Tag Album"));
         assert_eq!(track.album_artist.as_deref(), Some("Tag Album Artist"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reused_tracks_apply_path_metadata_fallback() {
+        let dir = temp_dir();
+        let album_dir = dir.join("Folder Artist").join("Folder Album");
+        fs::create_dir_all(&album_dir).unwrap();
+        fs::write(album_dir.join("song.mp3"), b"not audio").unwrap();
+
+        let first = scan_roots(
+            &[LocalScanRoot::download(dir.clone())],
+            &LocalIndex::default(),
+        );
+        let mut legacy_track = first.index.tracks()[0].clone();
+        legacy_track.artist.clear();
+        legacy_track.album = None;
+        legacy_track.album_artist = None;
+        let mut previous = LocalIndex::default();
+        previous.set_tracks(vec![legacy_track]);
+
+        let second = scan_roots(&[LocalScanRoot::download(dir.clone())], &previous);
+
+        assert_eq!(second.summary.reused, 1);
+        let track = &second.index.tracks()[0];
+        assert_eq!(track.artist, vec!["Folder Artist"]);
+        assert_eq!(track.album.as_deref(), Some("Folder Album"));
+        assert_eq!(track.album_artist.as_deref(), Some("Folder Artist"));
 
         let _ = fs::remove_dir_all(dir);
     }
