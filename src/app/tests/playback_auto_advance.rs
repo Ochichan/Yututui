@@ -41,6 +41,35 @@ fn player_error_auto_skips_to_next_track() {
 }
 
 #[test]
+fn prefetched_stream_error_retries_same_track_via_watch_url_once() {
+    let mut app = app_playing(3, 0);
+    app.prefetch.resolved.insert(
+        "id0".to_owned(),
+        "https://cdn.example/stale-id0.m4a".to_owned(),
+    );
+    app.prefetch.last_load_prefetched = true;
+
+    let cmds = app.update(PlayerMsg::Error(
+        "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
+    ));
+    assert_loads_video(&cmds, "id0");
+    assert_eq!(current(&app), "id0", "first failure retries the same track");
+    assert!(!app.prefetch.resolved.contains_fresh("id0"));
+    assert!(app.prefetch.watch_retry_attempted.contains("id0"));
+    assert!(!app.prefetch.last_load_prefetched);
+
+    let cmds = app.update(PlayerMsg::Error(
+        "mpv could not play this track (HTTP error 403 Forbidden)".to_owned(),
+    ));
+    assert_loads_video(&cmds, "id1");
+    assert_eq!(
+        current(&app),
+        "id1",
+        "second failure uses the existing skip path"
+    );
+}
+
+#[test]
 fn player_error_stops_after_repeated_failures() {
     let mut app = app_playing(6, 0);
     // First MAX failures auto-skip...

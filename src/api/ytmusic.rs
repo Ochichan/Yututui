@@ -969,19 +969,19 @@ async fn lookup_video_song(video_id: &str) -> Song {
     }
 }
 
-#[derive(Debug)]
-struct EnrichedVideoMeta {
-    title: String,
-    channel: String,
-    duration_secs: Option<u32>,
-    live_status: Option<String>,
-    is_live: Option<bool>,
-    was_live: Option<bool>,
-    media_type: Option<String>,
-    description: Option<String>,
+#[derive(Debug, Clone)]
+pub(crate) struct YtdlpVideoMeta {
+    pub title: String,
+    pub channel: String,
+    pub duration_secs: Option<u32>,
+    pub live_status: Option<String>,
+    pub is_live: Option<bool>,
+    pub was_live: Option<bool>,
+    pub media_type: Option<String>,
+    pub description: Option<String>,
 }
 
-async fn enrich_video_meta(video_id: &str) -> Result<EnrichedVideoMeta> {
+async fn enrich_video_meta(video_id: &str) -> Result<YtdlpVideoMeta> {
     let url = format!("https://www.youtube.com/watch?v={video_id}");
     let mut cmd = ytmusic_ytdlp_command();
     cmd.arg("--dump-single-json")
@@ -995,7 +995,7 @@ async fn enrich_video_meta(video_id: &str) -> Result<EnrichedVideoMeta> {
         "metadata lookup",
     )
     .await?;
-    Ok(EnrichedVideoMeta {
+    Ok(YtdlpVideoMeta {
         title: json_string(&json, &["title"]).unwrap_or_default(),
         channel: json_string(&json, &["channel", "uploader"]).unwrap_or_default(),
         duration_secs: json
@@ -1011,6 +1011,12 @@ async fn enrich_video_meta(video_id: &str) -> Result<EnrichedVideoMeta> {
     })
 }
 
+impl YtMusicApi {
+    pub(crate) async fn youtube_video_metadata(&self, video_id: &str) -> Result<YtdlpVideoMeta> {
+        enrich_video_meta(video_id).await
+    }
+}
+
 fn json_string(json: &serde_json::Value, keys: &[&str]) -> Option<String> {
     keys.iter()
         .find_map(|key| json.get(key).and_then(serde_json::Value::as_str))
@@ -1022,7 +1028,7 @@ fn json_bool(json: &serde_json::Value, keys: &[&str]) -> Option<bool> {
         .find_map(|key| json.get(key).and_then(serde_json::Value::as_bool))
 }
 
-fn reject_enriched(meta: &EnrichedVideoMeta, mode: StreamingMode, cfg: &StreamingConfig) -> bool {
+fn reject_enriched(meta: &YtdlpVideoMeta, mode: StreamingMode, cfg: &StreamingConfig) -> bool {
     if meta.is_live == Some(true) {
         return true;
     }
@@ -2261,7 +2267,7 @@ fi
     #[test]
     fn preflight_metadata_rejects_live_and_long_non_music() {
         let cfg = StreamingConfig::default();
-        let mut meta = EnrichedVideoMeta {
+        let mut meta = YtdlpVideoMeta {
             title: "Episode 12 interview".to_owned(),
             channel: "Music Podcast".to_owned(),
             duration_secs: Some(1_800),
@@ -2273,7 +2279,7 @@ fi
         };
         assert!(reject_enriched(&meta, StreamingMode::Balanced, &cfg));
 
-        meta = EnrichedVideoMeta {
+        meta = YtdlpVideoMeta {
             title: "Artist - Song".to_owned(),
             channel: "Artist".to_owned(),
             duration_secs: Some(180),
@@ -2289,7 +2295,7 @@ fi
     #[test]
     fn preflight_metadata_keeps_trusted_music_track() {
         let cfg = StreamingConfig::default();
-        let meta = EnrichedVideoMeta {
+        let meta = YtdlpVideoMeta {
             title: "Artist - Song (Official Audio)".to_owned(),
             channel: "Artist - Topic".to_owned(),
             duration_secs: Some(210),
@@ -2309,7 +2315,7 @@ fi
             max_duration_secs: 900,
             ..StreamingConfig::default()
         };
-        let mut meta = EnrichedVideoMeta {
+        let mut meta = YtdlpVideoMeta {
             title: "Artist - Song (Official Audio)".to_owned(),
             channel: "Artist - Topic".to_owned(),
             duration_secs: Some(59),
@@ -2339,9 +2345,9 @@ fi
     }
 
     #[test]
-    fn preflight_metadata_keeps_archive_like_live_replay_when_music_tier_is_clear() {
+    fn preflight_metadata_rejects_live_replay_in_balanced_but_not_discovery() {
         let cfg = StreamingConfig::default();
-        let meta = EnrichedVideoMeta {
+        let meta = YtdlpVideoMeta {
             title: "Artist - Song (Live at Seoul)".to_owned(),
             channel: "Artist".to_owned(),
             duration_secs: Some(260),
@@ -2351,7 +2357,8 @@ fi
             media_type: None,
             description: Some("official live performance".to_owned()),
         };
-        assert!(!reject_enriched(&meta, StreamingMode::Balanced, &cfg));
+        assert!(reject_enriched(&meta, StreamingMode::Balanced, &cfg));
+        assert!(!reject_enriched(&meta, StreamingMode::Discovery, &cfg));
     }
 
     #[tokio::test]

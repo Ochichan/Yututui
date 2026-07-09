@@ -149,6 +149,18 @@ pub fn decide(
     source: CandidateSource,
     mode: StreamingMode,
 ) -> MusicGateDecision {
+    if let Some(reason) = altered_version_reason(title) {
+        let action = match mode {
+            StreamingMode::Focused | StreamingMode::Balanced => GateAction::Reject,
+            StreamingMode::Discovery => GateAction::Demote,
+        };
+        return MusicGateDecision {
+            action,
+            reason: Some(reason),
+            risk: 0.85,
+            confidence: 0.90,
+        };
+    }
     if is_trusted_music_channel(channel) {
         return MusicGateDecision {
             action: GateAction::Keep,
@@ -237,6 +249,51 @@ pub fn gimmick_reason(title: &str) -> Option<&'static str> {
         .iter()
         .find(|(m, _)| t.contains(m))
         .map(|&(_, reason)| reason)
+}
+
+/// Altered-version marker used by the stricter streaming gate. This is broader than
+/// [`gimmick_reason`]: Focused/Balanced reject these by default, while Discovery only demotes.
+pub fn altered_version_reason(title: &str) -> Option<&'static str> {
+    let t = title.to_lowercase();
+    for (needle, reason) in [
+        ("karaoke", "karaoke"),
+        ("backing track", "backing track"),
+        ("instrumental", "instrumental"),
+        ("off vocal", "instrumental"),
+        ("no vocal", "instrumental"),
+        ("cover", "cover"),
+        ("nightcore", "nightcore"),
+        ("8d audio", "8d audio"),
+        ("8d version", "8d audio"),
+        (" 8d", "8d audio"),
+        ("sped up", "sped up"),
+        ("sped-up", "sped up"),
+        ("slowed", "slowed"),
+        ("slowed + reverb", "slowed reverb"),
+        ("slowed+reverb", "slowed reverb"),
+        ("slowed reverb", "slowed reverb"),
+        ("remix", "remix"),
+        ("acoustic", "acoustic"),
+    ] {
+        if t.contains(needle) {
+            return Some(reason);
+        }
+    }
+    if live_version_marker(&t) {
+        return Some("live");
+    }
+    None
+}
+
+fn live_version_marker(lower_title: &str) -> bool {
+    lower_title.contains("(live")
+        || lower_title.contains("[live")
+        || lower_title.contains(" live at ")
+        || lower_title.contains(" live from ")
+        || lower_title.contains(" live in ")
+        || lower_title.contains(" live on ")
+        || lower_title.contains(" live version")
+        || lower_title.ends_with(" live")
 }
 
 /// A positive [0,1] "this is real, official music" signal from the title + channel. Used as a

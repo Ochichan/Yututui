@@ -631,12 +631,32 @@ pub(crate) fn append_ytdlp_js_runtime_args(cmd: &mut tokio::process::Command) {
     }
 }
 
+pub(crate) fn append_ytdlp_cookie_args(cmd: &mut tokio::process::Command, cookies: Option<&Path>) {
+    if let Some(path) = cookies {
+        cmd.arg("--cookies").arg(path);
+    }
+}
+
 fn mpv_ytdl_js_runtime_arg_for(runtime: Option<JsRuntime>) -> Option<String> {
     js_runtimes_flag_for(runtime).map(|rt| format!("--ytdl-raw-options-append=js-runtimes={rt}"))
 }
 
 pub fn mpv_ytdl_js_runtime_arg() -> Option<String> {
     mpv_ytdl_js_runtime_arg_for(detect_js_runtime())
+}
+
+pub fn mpv_ytdl_raw_option_args(cookies: Option<&Path>) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(path) = cookies {
+        args.push(format!(
+            "--ytdl-raw-options-append=cookies={}",
+            path.display()
+        ));
+    }
+    if let Some(arg) = mpv_ytdl_js_runtime_arg() {
+        args.push(arg);
+    }
+    args
 }
 
 /// Compare two yt-dlp version strings (`2025.04.30`, nightly `2026.07.03.234421`) by

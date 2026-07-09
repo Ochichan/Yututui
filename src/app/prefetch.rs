@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Resolved stream URLs are yt-dlp CDN URLs: useful for immediate skips, but not durable.
-pub(in crate::app) const PREFETCH_TTL: Duration = Duration::from_secs(60 * 60);
+pub(in crate::app) const PREFETCH_TTL: Duration = Duration::from_secs(30 * 60);
 const PREFETCH_MAX: usize = 64;
 
 pub(in crate::app) struct ResolvedStream {

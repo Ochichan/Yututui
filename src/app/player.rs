@@ -85,6 +85,25 @@ impl App {
             "playback error"
         );
         let extraction = crate::tools::looks_like_extraction_failure(&e);
+        if self.prefetch.last_load_prefetched
+            && let Some(song) = self.queue.current()
+            && let Some(watch_url) = song.prefetch_target()
+            && !self.prefetch.watch_retry_attempted.contains(&song.video_id)
+        {
+            let video_id = song.video_id.clone();
+            self.prefetch.resolved.remove(&video_id);
+            self.prefetch.watch_retry_attempted.insert(video_id.clone());
+            self.prefetch.last_load_prefetched = false;
+            self.status.kind = StatusKind::Info;
+            self.status.text = t!(
+                "Prefetched stream failed — retrying the track",
+                "미리 해석한 스트림 실패 — 같은 곡을 다시 시도"
+            )
+            .to_owned();
+            self.dirty = true;
+            tracing::info!(video_id = %video_id, "retrying failed prefetched stream via watch URL");
+            return vec![Cmd::Player(PlayerCmd::Load(watch_url))];
+        }
         // Self-heal: an extraction-shaped failure on a yt-dlp-resolved track is
         // the stale-yt-dlp signature. Update it in the background and retry this
         // track ONCE — via a resolver-resolved direct URL, because the session

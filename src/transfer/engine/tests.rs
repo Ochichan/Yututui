@@ -380,6 +380,7 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
         accept_blocked: false,
         reject_reason: None,
         reason_codes: Vec::new(),
+        ..MatchScoreBreakdown::default()
     };
     let mut maybe = input("Maybe Song", &["Artist B"]);
     maybe.album_artists = vec!["Album Artist B".to_owned()];
@@ -477,8 +478,10 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
         report.ambiguous[0].search_queries,
         vec![
             "Artist B Maybe Song".to_owned(),
+            "Album Artist B Maybe Song".to_owned(),
             "Artist B Maybe Song Input Album".to_owned(),
             "Maybe Song Input Album".to_owned(),
+            "Artist B Maybe Song 2026".to_owned(),
             "Artist B Maybe Song official audio".to_owned(),
             "Artist B Maybe Song topic".to_owned(),
             "Maybe Song".to_owned(),

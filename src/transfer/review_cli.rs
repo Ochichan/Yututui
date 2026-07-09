@@ -243,6 +243,23 @@ fn append_row_metadata(out: &mut String, row: &ImportSessionRow) {
     {
         out.push_str(&format!("        source url: {url}\n"));
     }
+    if let Some(kind) = &row.source_kind {
+        out.push_str(&format!("        source kind: {kind}\n"));
+    }
+    if let Some(tier) = &row.quality_tier {
+        out.push_str(&format!("        quality: {tier}\n"));
+    }
+    if let Some(delta) = row.duration_delta_secs {
+        out.push_str(&format!("        duration delta: {delta:+}s\n"));
+    }
+    if let Some(reason) = &row.reject_reason {
+        out.push_str(&format!("        blocked: {reason}\n"));
+    } else if !row.reason_codes.is_empty() {
+        out.push_str(&format!(
+            "        reasons: {}\n",
+            row.reason_codes.join(", ")
+        ));
+    }
 }
 
 fn format_track_position(row: &ImportSessionRow) -> Option<String> {
@@ -260,15 +277,35 @@ fn format_candidate(index: usize, candidate: &super::checkpoint::ReportCandidate
         .as_ref()
         .map(|breakdown| {
             format!(
-                " [title {:.2}, artist {:.2}, duration {:.2}, album +{:.2}]",
+                " [title {:.2}, artist {:.2}, duration {:.2}, album +{:.2}",
                 breakdown.title, breakdown.artist, breakdown.duration, breakdown.album_bonus
-            )
+            ) + &format_quality_suffix(breakdown)
         })
         .unwrap_or_default();
     format!(
         "        candidate {index}: {:.2} {} ({}){breakdown}\n",
         candidate.score, candidate.display, candidate.key
     )
+}
+
+fn format_quality_suffix(breakdown: &MatchScoreBreakdown) -> String {
+    let mut parts = Vec::new();
+    if !breakdown.quality_tier.is_empty() {
+        parts.push(format!("quality {}", breakdown.quality_tier));
+    }
+    if let Some(delta) = breakdown.duration_delta_secs {
+        parts.push(format!("delta {delta:+}s"));
+    }
+    if let Some(reason) = &breakdown.reject_reason {
+        parts.push(format!("blocked {reason}"));
+    } else if breakdown.accept_blocked && !breakdown.reason_codes.is_empty() {
+        parts.push(format!("blocked {}", breakdown.reason_codes.join(",")));
+    }
+    if parts.is_empty() {
+        "]".to_owned()
+    } else {
+        format!(", {}]", parts.join(", "))
+    }
 }
 
 fn row_status_label(status: ImportSessionRowStatus) -> &'static str {
@@ -332,7 +369,7 @@ fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandid
             key: key.clone(),
             score: *score,
             display: display.clone(),
-            score_breakdown: score_breakdown.clone(),
+            score_breakdown: score_breakdown.as_deref().cloned(),
         }],
         Some(MatchOutcome::Ambiguous { candidates }) => candidates
             .iter()
@@ -384,7 +421,7 @@ fn apply_accept(
         artist: None,
         album: None,
         duration_secs: None,
-        score_breakdown: selected.score_breakdown,
+        score_breakdown: selected.score_breakdown.map(Box::new),
     });
     cp.tracks[index].review_decision = Some(ReviewDecision::Accepted {
         key: selected.key.clone(),
@@ -495,6 +532,7 @@ mod tests {
                             accept_blocked: false,
                             reject_reason: None,
                             reason_codes: Vec::new(),
+                            ..MatchScoreBreakdown::default()
                         }),
                     },
                     AmbiguousCandidate {

@@ -134,7 +134,7 @@ fn apply_accepted_candidate(cp: &mut Checkpoint, index: usize, selected: Selecte
         artist: None,
         album: None,
         duration_secs: None,
-        score_breakdown: selected.score_breakdown,
+        score_breakdown: selected.score_breakdown.map(Box::new),
     });
     cp.tracks[index].review_decision = Some(ReviewDecision::Accepted {
         key: selected.key,
@@ -208,7 +208,7 @@ fn candidates_from_outcome(outcome: &Option<MatchOutcome>) -> Vec<SelectedCandid
             key: key.clone(),
             score: *score,
             display: display.clone(),
-            score_breakdown: score_breakdown.clone(),
+            score_breakdown: score_breakdown.as_deref().cloned(),
         }],
         Some(MatchOutcome::Ambiguous { candidates }) => candidates
             .iter()
@@ -227,12 +227,20 @@ fn first_ambiguous_candidate(outcome: &Option<MatchOutcome>) -> Option<SelectedC
     let Some(MatchOutcome::Ambiguous { candidates }) = outcome else {
         return None;
     };
-    candidates.first().map(|candidate| SelectedCandidate {
-        key: candidate.key.clone(),
-        score: candidate.score,
-        display: candidate.display.clone(),
-        score_breakdown: candidate.score_breakdown.clone(),
-    })
+    candidates
+        .iter()
+        .find(|candidate| {
+            candidate
+                .score_breakdown
+                .as_ref()
+                .is_none_or(|score| !score.accept_blocked && score.reject_reason.is_none())
+        })
+        .map(|candidate| SelectedCandidate {
+            key: candidate.key.clone(),
+            score: candidate.score,
+            display: candidate.display.clone(),
+            score_breakdown: candidate.score_breakdown.clone(),
+        })
 }
 
 fn selected_key(entry: &super::checkpoint::TrackEntry) -> Option<&str> {

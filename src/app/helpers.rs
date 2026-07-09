@@ -59,13 +59,7 @@ pub(in crate::app) fn spawn_video_overlay(
         cmd.arg(format!("--input-ipc-server={path}"));
         cmd.arg("--keep-open=yes");
     }
-    if let Some(path) = cookies {
-        cmd.arg(format!(
-            "--ytdl-raw-options-append=cookies={}",
-            path.display()
-        ));
-    }
-    if let Some(arg) = crate::tools::mpv_ytdl_js_runtime_arg() {
+    for arg in crate::tools::mpv_ytdl_raw_option_args(cookies) {
         cmd.arg(arg);
     }
     // Pin ytdl_hook to the selected yt-dlp (managed/override), like the audio

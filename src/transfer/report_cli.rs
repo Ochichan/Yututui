@@ -108,6 +108,23 @@ fn append_rows(out: &mut String, label: &str, rows: &[ReportRow]) {
         if let Some(source) = &row.source_key {
             out.push_str(&format!("        source: {source}\n"));
         }
+        if let Some(kind) = &row.source_kind {
+            out.push_str(&format!("        source kind: {kind}\n"));
+        }
+        if let Some(tier) = &row.quality_tier {
+            out.push_str(&format!("        quality: {tier}\n"));
+        }
+        if let Some(delta) = row.duration_delta_secs {
+            out.push_str(&format!("        duration delta: {delta:+}s\n"));
+        }
+        if let Some(reason) = &row.reject_reason {
+            out.push_str(&format!("        blocked: {reason}\n"));
+        } else if !row.reason_codes.is_empty() {
+            out.push_str(&format!(
+                "        reasons: {}\n",
+                row.reason_codes.join(", ")
+            ));
+        }
         for (idx, candidate) in row.candidates.iter().enumerate() {
             out.push_str(&format_report_candidate(idx + 1, candidate));
         }

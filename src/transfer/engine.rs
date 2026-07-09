@@ -10,8 +10,8 @@ use anyhow::{anyhow, bail};
 use super::checkpoint::ReviewDecision;
 use super::checkpoint::{Checkpoint, ReportCandidate, ReportRow, TrackEntry, TransferReport};
 use super::matching::{
-    MatchCandidate, MatchConfig, MatchOutcome, Pacing, TrackInput, best_outcome, match_track_ytm,
-    normalize_stripped, ytm_query_plan,
+    MatchCandidate, MatchConfig, MatchOutcome, Pacing, TrackInput, YtmMatchState, best_outcome,
+    match_track_ytm, spotify_query_plan, ytm_query_plan,
 };
 use super::{FileFormat, JobSpec, Stage, TransferDest, TransferProgress, TransferSource};
 use crate::api::ytmusic::YtMusicApi;
@@ -297,6 +297,8 @@ async fn match_stage(
     let to_spotify = matches!(cp.spec.dest, TransferDest::SpotifyNewPlaylist { .. });
     let total = cp.tracks.len() as u32;
     let mut memo = std::collections::HashMap::new();
+    let mut query_memo = std::collections::HashMap::new();
+    let mut video_memo = std::collections::HashMap::new();
     let mut pace = Pacing::ytm_default();
     let search_config = ctx.search_config.clone();
     let market = ctx.market.clone();
@@ -317,16 +319,9 @@ async fn match_stage(
                 .await
                 .map_err(|e| checkpointed(cp, e))?
         } else {
-            match match_track_ytm(
-                ctx.ytm()?,
-                &input,
-                &cfg,
-                &search_config,
-                &mut memo,
-                &mut pace,
-            )
-            .await
-            {
+            let mut ytm_state =
+                YtmMatchState::new(&mut memo, &mut query_memo, &mut video_memo, &mut pace);
+            match match_track_ytm(ctx.ytm()?, &input, &cfg, &search_config, &mut ytm_state).await {
                 Ok(outcome) => {
                     consecutive_failures = 0;
                     outcome
@@ -366,32 +361,19 @@ async fn match_stage(
     Ok(())
 }
 
-/// Spotify-direction retrieval: `track:"…" artist:"…"` first, plain text second.
+/// Spotify-direction retrieval: ISRC first when available, then Spotify field filters,
+/// release year, and finally plain text.
 async fn match_track_spotify(
     spotify: &mut SpotifyClient,
     input: &TrackInput,
     cfg: &MatchConfig,
     market: Option<String>,
 ) -> Result<MatchOutcome, JobError> {
-    let stripped = normalize_stripped(&input.title);
-    let artist = input.artists.first().cloned().unwrap_or_default();
-    let fielded = if artist.is_empty() {
-        format!("track:\"{stripped}\"")
-    } else {
-        format!("track:\"{stripped}\" artist:\"{artist}\"")
-    };
-    let mut candidates: Vec<MatchCandidate> = spotify
-        .search_track(&fielded, market.as_deref())
-        .await
-        .map_err(spotify_job_error)?
-        .iter()
-        .map(MatchCandidate::from)
-        .collect();
-    let mut outcome = best_outcome(input, &candidates, cfg);
-    if !matches!(outcome, MatchOutcome::Matched { .. }) {
-        let plain = format!("{artist} {}", input.title);
+    let mut candidates: Vec<MatchCandidate> = Vec::new();
+    let mut outcome = MatchOutcome::NotFound;
+    for query in spotify_query_plan(input) {
         let more = spotify
-            .search_track(plain.trim(), market.as_deref())
+            .search_track(&query, market.as_deref())
             .await
             .map_err(spotify_job_error)?;
         for track in &more {
@@ -400,6 +382,15 @@ async fn match_track_spotify(
             }
         }
         outcome = best_outcome(input, &candidates, cfg);
+        if matches!(outcome, MatchOutcome::Matched { .. }) {
+            break;
+        }
+    }
+    if candidates.is_empty() && market.as_deref().is_none_or(str::is_empty) {
+        tracing::debug!(
+            track = %input.display(),
+            "Spotify search returned no candidates and no market is configured"
+        );
     }
     Ok(outcome)
 }
@@ -909,6 +900,12 @@ fn build_report(cp: &Checkpoint, skipped_local: u32) -> TransferReport {
                 }
                 row.selected_key = report_candidates.first().map(|c| c.key.clone());
                 row.selected_score = report_candidates.first().map(|c| c.score);
+                if let Some(score) = report_candidates
+                    .first()
+                    .and_then(|candidate| candidate.score_breakdown.as_ref())
+                {
+                    apply_report_quality(&mut row, score);
+                }
                 row.candidates = report_candidates;
                 report.ambiguous.push(row);
             }
@@ -951,7 +948,24 @@ fn report_row_base(entry: &TrackEntry, idx: usize, note: String) -> ReportRow {
         selected_key: None,
         selected_score: None,
         search_queries: Vec::new(),
+        source_kind: None,
+        quality_tier: None,
+        reject_reason: None,
+        reason_codes: Vec::new(),
+        duration_delta_secs: None,
     }
+}
+
+fn apply_report_quality(row: &mut ReportRow, score: &super::matching::MatchScoreBreakdown) {
+    if !score.source_kind.is_empty() {
+        row.source_kind = Some(score.source_kind.clone());
+    }
+    if !score.quality_tier.is_empty() {
+        row.quality_tier = Some(score.quality_tier.clone());
+    }
+    row.reject_reason = score.reject_reason.clone();
+    row.reason_codes = score.reason_codes.clone();
+    row.duration_delta_secs = score.duration_delta_secs;
 }
 
 fn progress_write(cp: &Checkpoint, done: u32, total: u32, idx: usize) -> TransferProgress {

@@ -221,6 +221,18 @@ pub struct ImportSessionRow {
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_queries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reject_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reason_codes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_delta_secs: Option<i32>,
 }
 
 impl Default for ImportSessionRow {
@@ -256,6 +268,12 @@ impl Default for ImportSessionRow {
             local_path: None,
             warnings: Vec::new(),
             errors: Vec::new(),
+            search_queries: Vec::new(),
+            source_kind: None,
+            quality_tier: None,
+            reject_reason: None,
+            reason_codes: Vec::new(),
+            duration_delta_secs: None,
         }
     }
 }
@@ -273,6 +291,7 @@ pub enum ImportSessionRowStatus {
 
 impl ImportSession {
     pub fn from_checkpoint(cp: &Checkpoint) -> Self {
+        let searched_ytm = !matches!(cp.spec.dest, TransferDest::SpotifyNewPlaylist { .. });
         let rows: Vec<ImportSessionRow> = cp
             .tracks
             .iter()
@@ -284,6 +303,7 @@ impl ImportSession {
                     entry.outcome.as_ref(),
                     entry.review_decision.clone(),
                     entry.written,
+                    searched_ytm,
                 )
             })
             .collect();
@@ -442,6 +462,7 @@ fn row_from_input(
     outcome: Option<&MatchOutcome>,
     review_decision: Option<ReviewDecision>,
     written: bool,
+    searched_ytm: bool,
 ) -> ImportSessionRow {
     let mut row = ImportSessionRow {
         row_id: format!("row-{:05}", idx + 1),
@@ -485,8 +506,11 @@ fn row_from_input(
                 key: key.clone(),
                 score: *score,
                 display: display.clone(),
-                score_breakdown: score_breakdown.clone(),
+                score_breakdown: score_breakdown.as_deref().cloned(),
             });
+            if let Some(score) = score_breakdown {
+                apply_row_quality(&mut row, score);
+            }
         }
         Some(MatchOutcome::Ambiguous { candidates }) => {
             row.status = ImportSessionRowStatus::Ambiguous;
@@ -502,6 +526,12 @@ fn row_from_input(
                     score_breakdown: c.score_breakdown.clone(),
                 })
                 .collect();
+            if let Some(score) = candidates
+                .first()
+                .and_then(|candidate| candidate.score_breakdown.as_ref())
+            {
+                apply_row_quality(&mut row, score);
+            }
         }
         Some(MatchOutcome::NotFound) => {
             row.status = ImportSessionRowStatus::NotFound;
@@ -515,7 +545,22 @@ fn row_from_input(
             row.status = ImportSessionRowStatus::Pending;
         }
     }
+    if searched_ytm && input.known_video_id.is_none() {
+        row.search_queries = super::matching::ytm_query_plan(input);
+    }
     row
+}
+
+fn apply_row_quality(row: &mut ImportSessionRow, score: &super::matching::MatchScoreBreakdown) {
+    if !score.source_kind.is_empty() {
+        row.source_kind = Some(score.source_kind.clone());
+    }
+    if !score.quality_tier.is_empty() {
+        row.quality_tier = Some(score.quality_tier.clone());
+    }
+    row.reject_reason = score.reject_reason.clone();
+    row.reason_codes = score.reason_codes.clone();
+    row.duration_delta_secs = score.duration_delta_secs;
 }
 
 fn endpoint_from_source(source: &TransferSource, label: Option<String>) -> SessionEndpoint {
@@ -716,6 +761,7 @@ mod tests {
             accept_blocked: false,
             reject_reason: None,
             reason_codes: Vec::new(),
+            ..MatchScoreBreakdown::default()
         };
         let mut cp = Checkpoint::new(
             "sp2yt-20260708-abcd".to_owned(),

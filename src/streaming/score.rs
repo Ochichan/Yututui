@@ -234,11 +234,12 @@ fn reject_reason(
     // MusicGate: hard-reject obvious non-music (reactions, podcasts, tutorials, …). The clean
     // WatchPlaylist source is gated too by default (the strong-reject list rarely trips on it),
     // but can be exempted via `gate.gate_watch_playlist = false`.
-    if cfg.gate.enabled
-        && (c.source != CandidateSource::WatchPlaylist || cfg.gate.gate_watch_playlist)
-    {
+    if cfg.gate.enabled {
         let decision = musicgate::decide(&c.song.title, &c.song.artist, c.source, st.mode);
-        if decision.action == GateAction::Reject {
+        let watch_exempt =
+            c.source == CandidateSource::WatchPlaylist && !cfg.gate.gate_watch_playlist;
+        let altered = musicgate::altered_version_reason(&c.song.title).is_some();
+        if decision.action == GateAction::Reject && (!watch_exempt || altered) {
             return decision.reason;
         }
     }
@@ -648,8 +649,8 @@ mod tests {
     }
 
     #[test]
-    fn gimmick_blocking_kept_in_balanced_mode() {
-        let cfg = StreamingConfig::default(); // Balanced default, block_altered_versions = false
+    fn altered_versions_drop_in_balanced_mode() {
+        let cfg = StreamingConfig::default();
         let st = station("seed");
         let mut pool = vec![cand("ng", "Song (Nightcore)", "A", 0)];
         pool.extend(
@@ -658,8 +659,8 @@ mod tests {
         let scored = filter_and_score(pool, &st, &Signals::default(), &Cooc::default(), &cfg, 0);
         let ids: Vec<&str> = scored.iter().map(Candidate::video_id).collect();
         assert!(
-            ids.contains(&"ng"),
-            "gimmicks kept in Balanced (soft-penalized, not gated)"
+            !ids.contains(&"ng"),
+            "altered versions are dropped in Balanced mode"
         );
     }
 
@@ -711,16 +712,15 @@ mod tests {
     }
 
     #[test]
-    fn gimmick_blocking_skipped_when_pool_starved() {
+    fn altered_versions_demote_without_starving_discovery_pool() {
         let cfg = StreamingConfig::default();
         let mut st = station("seed");
-        st.mode = StreamingMode::Focused;
-        // Fewer than GATE_MIN_POOL candidates → gimmick blocking is skipped.
+        st.mode = StreamingMode::Discovery;
         let pool = vec![
             cand("ng1", "A (Nightcore)", "A", 0),
             cand("ng2", "B (Karaoke)", "B", 0),
         ];
         let scored = filter_and_score(pool, &st, &Signals::default(), &Cooc::default(), &cfg, 0);
-        assert_eq!(scored.len(), 2, "gimmicks kept when the pool would starve");
+        assert_eq!(scored.len(), 2, "Discovery demotes but does not starve");
     }
 }

@@ -104,6 +104,7 @@ fn save_ambiguous_import_job(job_id: &str) {
                             accept_blocked: false,
                             reject_reason: None,
                             reason_codes: Vec::new(),
+                            ..MatchScoreBreakdown::default()
                         }),
                     },
                     AmbiguousCandidate {
@@ -123,6 +124,7 @@ fn save_ambiguous_import_job(job_id: &str) {
                             accept_blocked: false,
                             reject_reason: None,
                             reason_codes: Vec::new(),
+                            ..MatchScoreBreakdown::default()
                         }),
                     },
                 ],
@@ -457,6 +459,7 @@ fn local_deck_import_sessions_include_saved_session_rows_without_tracks() {
                         accept_blocked: false,
                         reject_reason: None,
                         reason_codes: Vec::new(),
+                        ..MatchScoreBreakdown::default()
                     }),
                 }],
                 local_path: Some(PathBuf::from("/tmp/inbox/Linked.m4a")),

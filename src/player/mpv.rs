@@ -150,12 +150,8 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
         .arg("--demuxer-max-back-bytes=8MiB")
         .arg(format!("--input-ipc-server={ipc_path}"));
 
-    if let Some(path) = cookies_file {
-        // mpv forwards this to yt-dlp as `--cookies <file>`.
-        cmd.arg(format!(
-            "--ytdl-raw-options-append=cookies={}",
-            path.display()
-        ));
+    for arg in crate::tools::mpv_ytdl_raw_option_args(cookies_file) {
+        cmd.arg(arg);
     }
 
     // Pin ytdl_hook to the selected yt-dlp. Ancient option, no probe needed;
@@ -177,14 +173,6 @@ pub fn spawn(ipc_path: &str, cookies_file: Option<&Path>, gapless: bool) -> Resu
             "--script-opts-append=ytdl_hook-ytdl_path={}",
             pin.display()
         ));
-    }
-
-    // Modern yt-dlp needs a JS runtime for YouTube nsig solving. Deno is auto-detected (no flag);
-    // if only a non-default runtime (node/bun/quickjs) is installed, name it via the same
-    // ytdl_hook raw-options channel as cookies above. Bare name — the yt-dlp subprocess inherits
-    // our PATH. Without this, ytdl_hook's yt-dlp warns and format availability degrades.
-    if let Some(arg) = crate::tools::mpv_ytdl_js_runtime_arg() {
-        cmd.arg(arg);
     }
 
     // The OS media session is ours (`crate::media`), not mpv's — see the probe

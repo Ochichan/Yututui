@@ -278,6 +278,8 @@ pub struct Prefetch {
     /// be visible before it is loaded; the first play action then loads it instead of only
     /// toggling mpv's pause property.
     pub loaded_video_id: Option<String>,
+    /// Tracks whose prefetched direct URL already failed once and was retried via the watch URL.
+    pub watch_retry_attempted: HashSet<String>,
 }
 
 /// Playback self-heal driven by extraction-shaped errors (the stale-yt-dlp signature):

@@ -413,9 +413,7 @@ async fn run_download_to_path(
         .args(["-o", OUTPUT_TEMPLATE])
         .args(["--progress-template", "download:%(progress._percent_str)s"])
         .args(["--no-simulate", "--print", "after_move:filepath"]);
-    if let Some(c) = cookies {
-        cmd.arg("--cookies").arg(c);
-    }
+    crate::tools::append_ytdlp_cookie_args(&mut cmd, cookies);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
