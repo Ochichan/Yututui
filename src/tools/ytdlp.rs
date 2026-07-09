@@ -1131,7 +1131,7 @@ fn copy_binary_to_install_temp(src: &Path, dir: &Path) -> std::io::Result<PathBu
         .unwrap_or_default();
     let tmp = dir.join(format!(".yt-dlp.rollback-{}-{nanos}", std::process::id()));
     std::fs::copy(src, &tmp)?;
-    let file = std::fs::OpenOptions::new().read(true).open(&tmp)?;
+    let file = std::fs::OpenOptions::new().write(true).open(&tmp)?;
     file.sync_all()?;
     drop(file);
     Ok(tmp)
@@ -1157,7 +1157,7 @@ fn copy_binary_atomic(src: &Path, dest: &Path) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
     }
-    let file = std::fs::OpenOptions::new().read(true).open(&tmp)?;
+    let file = std::fs::OpenOptions::new().write(true).open(&tmp)?;
     file.sync_all()?;
     drop(file);
     #[cfg(windows)]
