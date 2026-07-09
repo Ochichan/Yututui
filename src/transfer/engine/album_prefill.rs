@@ -321,9 +321,7 @@ mod tests {
     use crate::transfer::checkpoint::{Checkpoint, TrackEntry};
     use crate::transfer::match_cache::CachedAlbumTrack;
     use crate::transfer::matching::{MatchOutcome, MatchScoreBreakdown, TrackInput};
-    use crate::transfer::{
-        JobSpec, MatchPolicy, TransferCacheMode, TransferDest, TransferSource,
-    };
+    use crate::transfer::{JobSpec, MatchPolicy, TransferCacheMode, TransferDest, TransferSource};
 
     fn track_input(title: &str, artist: &str, album: &str, track_number: u32) -> TrackInput {
         TrackInput {
@@ -438,8 +436,7 @@ mod tests {
             album_type: Some("album".to_owned()),
         };
         assert_eq!(
-            best_album_candidate(&input, &[clear.clone()])
-                .map(|c| c.album_id),
+            best_album_candidate(&input, &[clear.clone()]).map(|c| c.album_id),
             Some("album-1".to_owned())
         );
 

@@ -598,7 +598,11 @@ mod tests {
         assert!(!cache.query_results.contains_key("expired"));
         assert_eq!(cache.query_results.len(), QUERY_CACHE_MAX);
         assert!(!cache.query_results.contains_key("fresh-0"));
-        assert!(cache.query_results.contains_key(&format!("fresh-{}", QUERY_CACHE_MAX + 1)));
+        assert!(
+            cache
+                .query_results
+                .contains_key(&format!("fresh-{}", QUERY_CACHE_MAX + 1))
+        );
     }
 
     #[test]
