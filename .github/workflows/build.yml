@@ -1,21 +1,21 @@
 name: build
 
-# Builds, lints, tests, and packages the current release surface on native runners (no
-# cross-compilation): `ytt` for every platform, plus the `yututray` tray companion on
-# macOS and Windows only. Linux ships the TUI binary only; its desktop integration lives in
-# `ytt` via MPRIS. The full GUI app is intentionally not a release artifact yet. native-tls
-# means each OS uses its system TLS — Security.framework / SChannel / OpenSSL — so Windows
-# needs no NASM/C-crypto toolchain and Linux only needs libssl-dev. Every archive gets a
-# SHA-256 sidecar; the release job folds them into a single checksums.txt. On a v* tag,
-# three publish jobs render the packaging/ templates from those checksums and push the
-# Homebrew formula, Scoop manifest, and AUR PKGBUILD to their external repos (see
-# packaging/README.md).
+# Release / packaging pipeline on GitHub-hosted runners (no cross-compilation): `ytt` for
+# every platform, plus the `yututray` tray companion on macOS and Windows only. Linux ships
+# the TUI binary only; its desktop integration lives in `ytt` via MPRIS. The full GUI app is
+# intentionally not a release artifact yet. native-tls means each OS uses its system TLS —
+# Security.framework / SChannel / OpenSSL — so Windows needs no NASM/C-crypto toolchain and
+# Linux only needs libssl-dev. Every archive gets a SHA-256 sidecar; the release job folds
+# them into a single checksums.txt. On a v* tag, three publish jobs render the packaging/
+# templates from those checksums and push the Homebrew formula, Scoop manifest, and AUR
+# PKGBUILD to their external repos (see packaging/README.md).
+#
+# Daily PR / main merge gates live in ci-pr.yml (debian-ts self-hosted). This workflow is
+# intentionally release-only so slow Intel Mac / Windows full smokes do not block merge.
 
 on:
   push:
-    branches: [main, master]
     tags: ["v*"]
-  pull_request:
   workflow_dispatch:
 
 env:
