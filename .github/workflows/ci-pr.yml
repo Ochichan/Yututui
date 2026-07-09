@@ -31,7 +31,8 @@ jobs:
     name: Quality gates
     # Repo-scoped self-hosted only; never schedule on fork PRs.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, debian, yututui]
+    # Match debian-ts custom labels; OS/arch come from the runner automatically.
+    runs-on: [self-hosted, debian, yututui]
     steps:
       - uses: actions/checkout@v4
 
@@ -123,7 +124,8 @@ jobs:
   linux:
     name: Linux (x64)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, debian, yututui]
+    # Match debian-ts custom labels; OS/arch come from the runner automatically.
+    runs-on: [self-hosted, debian, yututui]
     steps:
       - uses: actions/checkout@v4
 
