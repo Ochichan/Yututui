@@ -50,9 +50,7 @@ pub fn run_with_args(args: &[String]) -> i32 {
     if matches!(args, [cmd, flag] if cmd == "audio" && (flag == "--help" || flag == "-h")) {
         println!("Usage: ytt doctor audio [--verbose]");
         println!("       Report the active audio backend, mpv settings, and capabilities");
-        println!(
-            "       Note: mpv output/device/cache/extra_args apply on the next player launch"
-        );
+        println!("       Note: mpv output/device/cache/extra_args apply on the next player launch");
         println!(
             "       Config escape hatch: audio.mpv.extra_args (no settings UI; config file only)"
         );
