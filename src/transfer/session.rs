@@ -15,7 +15,9 @@ use super::{Stage, TransferDest, TransferSource};
 use crate::util::safe_fs;
 
 const IMPORT_SESSION_SCHEMA_VERSION: u32 = 1;
+const IMPORT_SESSION_SUMMARY_SCHEMA_VERSION: u32 = 1;
 const IMPORT_SESSION_MAX_BYTES: u64 = 50 * 1024 * 1024;
+const IMPORT_SESSION_SUMMARY_MAX_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -40,6 +42,78 @@ pub struct ImportSessionSummary {
     pub source: SessionEndpoint,
     pub destination: SessionEndpoint,
     pub counts: ImportSessionCounts,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct ImportSessionSummaryFile {
+    schema_version: u32,
+    session_id: String,
+    stage: Stage,
+    updated_at: i64,
+    source: SessionEndpoint,
+    destination: SessionEndpoint,
+    counts: ImportSessionCounts,
+}
+
+impl Default for ImportSessionSummaryFile {
+    fn default() -> Self {
+        Self {
+            schema_version: IMPORT_SESSION_SUMMARY_SCHEMA_VERSION,
+            session_id: String::new(),
+            stage: Stage::Fetching,
+            updated_at: 0,
+            source: SessionEndpoint::default(),
+            destination: SessionEndpoint::default(),
+            counts: ImportSessionCounts::default(),
+        }
+    }
+}
+
+impl From<&ImportSession> for ImportSessionSummary {
+    fn from(session: &ImportSession) -> Self {
+        Self {
+            session_id: session.session_id.clone(),
+            stage: session.stage,
+            updated_at: session.updated_at,
+            source: session.source.clone(),
+            destination: session.destination.clone(),
+            counts: session.counts.clone(),
+        }
+    }
+}
+
+impl From<&ImportSession> for ImportSessionSummaryFile {
+    fn from(session: &ImportSession) -> Self {
+        ImportSessionSummary::from(session).into()
+    }
+}
+
+impl From<ImportSessionSummary> for ImportSessionSummaryFile {
+    fn from(summary: ImportSessionSummary) -> Self {
+        Self {
+            schema_version: IMPORT_SESSION_SUMMARY_SCHEMA_VERSION,
+            session_id: summary.session_id,
+            stage: summary.stage,
+            updated_at: summary.updated_at,
+            source: summary.source,
+            destination: summary.destination,
+            counts: summary.counts,
+        }
+    }
+}
+
+impl From<ImportSessionSummaryFile> for ImportSessionSummary {
+    fn from(file: ImportSessionSummaryFile) -> Self {
+        Self {
+            session_id: file.session_id,
+            stage: file.stage,
+            updated_at: file.updated_at,
+            source: file.source,
+            destination: file.destination,
+            counts: file.counts,
+        }
+    }
 }
 
 impl Default for ImportSession {
@@ -220,7 +294,11 @@ impl ImportSession {
         let Some(path) = session_path(&self.session_id) else {
             return Ok(());
         };
-        safe_fs::write_private_atomic_json(&path, self)
+        safe_fs::write_private_atomic_json(&path, self)?;
+        if let Some(path) = session_summary_path(&self.session_id) {
+            safe_fs::write_private_atomic_json(&path, &ImportSessionSummaryFile::from(self))?;
+        }
+        Ok(())
     }
 
     pub fn load(session_id: &str) -> anyhow::Result<Self> {
@@ -250,20 +328,22 @@ impl ImportSession {
         let mut out: Vec<ImportSessionSummary> = entries
             .filter_map(|entry| {
                 let path = entry.ok()?.path();
-                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                let name = path.file_name()?.to_str()?;
+                let session_id = name.strip_suffix(".json")?;
+                if session_id.ends_with(".summary") {
                     return None;
                 }
-                let bytes =
-                    safe_fs::read_no_symlink_limited(&path, IMPORT_SESSION_MAX_BYTES).ok()?;
-                let session: ImportSession = serde_json::from_slice(&bytes).ok()?;
-                Some(ImportSessionSummary {
-                    session_id: session.session_id,
-                    stage: session.stage,
-                    updated_at: session.updated_at,
-                    source: session.source,
-                    destination: session.destination,
-                    counts: session.counts,
-                })
+                read_fresh_summary(session_id, &path)
+                    .or_else(|| {
+                        let bytes =
+                            safe_fs::read_no_symlink_limited(&path, IMPORT_SESSION_MAX_BYTES)
+                                .ok()?;
+                        let session: ImportSession = serde_json::from_slice(&bytes).ok()?;
+                        let summary = ImportSessionSummary::from(&session);
+                        let _ = write_session_summary(&session);
+                        Some(summary)
+                    })
+                    .or_else(|| read_session_summary(session_id))
             })
             .collect();
         out.sort_by_key(|summary| std::cmp::Reverse(summary.updated_at));
@@ -491,6 +571,55 @@ pub fn session_path(session_id: &str) -> Option<PathBuf> {
     Some(sessions_dir()?.join(format!("{}.json", safe_session_id(session_id)?)))
 }
 
+fn session_summary_path(session_id: &str) -> Option<PathBuf> {
+    Some(sessions_dir()?.join(format!("{}.summary.json", safe_session_id(session_id)?)))
+}
+
+fn read_fresh_summary(
+    session_id: &str,
+    session_path: &std::path::Path,
+) -> Option<ImportSessionSummary> {
+    let summary_path = session_summary_path(session_id)?;
+    if summary_is_older_than_session(&summary_path, session_path) {
+        return None;
+    }
+    read_session_summary(session_id)
+}
+
+fn read_session_summary(session_id: &str) -> Option<ImportSessionSummary> {
+    let summary_path = session_summary_path(session_id)?;
+    let bytes =
+        safe_fs::read_no_symlink_limited(&summary_path, IMPORT_SESSION_SUMMARY_MAX_BYTES).ok()?;
+    let file: ImportSessionSummaryFile = serde_json::from_slice(&bytes).ok()?;
+    if file.schema_version != IMPORT_SESSION_SUMMARY_SCHEMA_VERSION || file.session_id != session_id
+    {
+        return None;
+    }
+    Some(file.into())
+}
+
+fn summary_is_older_than_session(
+    summary_path: &std::path::Path,
+    session_path: &std::path::Path,
+) -> bool {
+    let Ok(summary_modified) = std::fs::metadata(summary_path).and_then(|meta| meta.modified())
+    else {
+        return true;
+    };
+    let Ok(session_modified) = std::fs::metadata(session_path).and_then(|meta| meta.modified())
+    else {
+        return false;
+    };
+    summary_modified < session_modified
+}
+
+fn write_session_summary(session: &ImportSession) -> std::io::Result<()> {
+    let Some(path) = session_summary_path(&session.session_id) else {
+        return Ok(());
+    };
+    safe_fs::write_private_atomic_json(&path, &ImportSessionSummaryFile::from(session))
+}
+
 fn sessions_dir() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join("transfers").join("sessions"))
 }
@@ -695,6 +824,28 @@ mod tests {
             .display(),
             "kind"
         );
+    }
+
+    #[test]
+    fn save_writes_summary_sidecar_used_by_list_all() {
+        let cp = Checkpoint::new(
+            "sp2yt-session-summary-sidecar".to_owned(),
+            spec(TransferDest::LocalPlaylist {
+                name: Some("Imported".to_owned()),
+            }),
+            vec![entry(input("Matched", &["A"]), None, false)],
+        );
+        let session = ImportSession::from_checkpoint(&cp);
+        session.save().expect("save import session");
+        let summary_path = session_summary_path(&session.session_id).expect("summary path");
+        assert!(summary_path.exists(), "summary sidecar should be written");
+
+        let summary = ImportSession::list_all()
+            .into_iter()
+            .find(|summary| summary.session_id == session.session_id)
+            .expect("summary from list_all");
+        assert_eq!(summary.session_id, session.session_id);
+        assert_eq!(summary.counts.total, 1);
     }
 
     #[test]

@@ -555,7 +555,8 @@ impl App {
             | flag(
                 self.library_ui.confirm_delete.is_some()
                     || self.library_ui.confirm_download.is_some()
-                    || self.local_mode.pending_organize_confirm.is_some(),
+                    || self.local_mode.pending_organize_confirm.is_some()
+                    || self.local_mode.pending_accept_all_confirm.is_some(),
                 ART_OVERLAY_LIBRARY_CONFIRM_BIT,
             )
             | flag(!matches!(self.mode, Mode::Player), ART_OVERLAY_NOT_PLAYER_BIT)
