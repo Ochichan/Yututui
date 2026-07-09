@@ -906,6 +906,8 @@ fn spawn_daemon_process(options: &StartOptions) -> Result<(), DaemonError> {
         use std::os::unix::process::CommandExt;
         // Become a real background daemon on Unix/macOS too. Without a new session, the child
         // stays tied to the launching shell and can receive SIGHUP when that shell exits.
+        // SAFETY: `pre_exec` runs in the child after fork and before exec; `setsid` is
+        // an async-signal-safe syscall and reports failure through errno.
         unsafe {
             cmd.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -930,6 +932,8 @@ fn spawn_daemon_process(options: &StartOptions) -> Result<(), DaemonError> {
         // daemon start | Out-String` hung forever; the CI smoke's Invoke-Checked hit
         // the same). The client is about to exit and spawns nothing else, so stripping
         // the inherit flag from its std handles closes the leak at the source.
+        // SAFETY: `GetStdHandle` returns process-owned pseudo/real handles; invalid or
+        // null handles are skipped, and clearing HANDLE_FLAG_INHERIT is best-effort.
         unsafe {
             use windows_sys::Win32::Foundation::{
                 HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,

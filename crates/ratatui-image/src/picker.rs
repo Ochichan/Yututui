@@ -397,6 +397,8 @@ fn enable_raw_mode() -> Result<impl FnOnce() -> Result<()>> {
     let utf16: Vec<u16> = "CONIN$\0".encode_utf16().collect();
     let utf16_ptr: *const u16 = utf16.as_ptr();
 
+    // SAFETY: `utf16_ptr` points to a NUL-terminated "CONIN$" buffer that lives for
+    // the call; CreateFileW returns a Result-wrapped console input handle.
     let in_handle = unsafe {
         FileSystem::CreateFileW(
             PCWSTR(utf16_ptr),
@@ -410,13 +412,19 @@ fn enable_raw_mode() -> Result<impl FnOnce() -> Result<()>> {
     }?;
 
     let mut original_in_mode = CONSOLE_MODE::default();
+    // SAFETY: `in_handle` is the console input handle returned by CreateFileW and
+    // `original_in_mode` is valid output storage.
     unsafe { Console::GetConsoleMode(in_handle, &mut original_in_mode) }?;
 
     let requested_in_modes = !ENABLE_ECHO_INPUT & !ENABLE_LINE_INPUT & !ENABLE_PROCESSED_INPUT;
     let in_mode = original_in_mode & requested_in_modes;
+    // SAFETY: `in_handle` is a console input handle and `in_mode` is derived from the
+    // current mode by clearing documented raw-input flags.
     unsafe { Console::SetConsoleMode(in_handle, in_mode) }?;
 
     Ok(move || {
+        // SAFETY: restores the saved mode on the same console input handle; failure is
+        // returned to the caller.
         unsafe { Console::SetConsoleMode(in_handle, original_in_mode) }?;
         Ok(())
     })
@@ -522,8 +530,12 @@ fn wait_readable(timeout: Duration) -> Result<bool> {
     use windows::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
     use windows::Win32::System::Threading::WaitForSingleObject;
 
+    // SAFETY: STD_INPUT_HANDLE is the documented selector and the Result captures
+    // invalid-handle failures.
     let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) }?;
     let millis: u32 = timeout.as_millis().try_into().unwrap_or(u32::MAX);
+    // SAFETY: waiting on the console input handle is a bounded read readiness probe;
+    // timeout conversion saturates and the result is compared to WAIT_OBJECT_0.
     let result = unsafe { WaitForSingleObject(handle, millis) };
     Ok(result == WAIT_OBJECT_0)
 }

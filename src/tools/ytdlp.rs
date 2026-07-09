@@ -1192,6 +1192,8 @@ fn retry_file_op(mut op: impl FnMut() -> std::io::Result<()>) -> std::io::Result
 
 #[cfg(test)]
 mod tests {
+    use crate::test_util::env::with_var;
+
     use super::*;
 
     #[test]
@@ -1263,7 +1265,6 @@ mod tests {
     #[test]
     fn preserve_current_records_previous_slot_metadata() {
         let _guard = crate::i18n::lock_for_test();
-        let original_tools_dir = std::env::var_os("YTM_TOOLS_DIR");
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
@@ -1271,33 +1272,29 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ytt-ytdlp-prev-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        unsafe { std::env::set_var("YTM_TOOLS_DIR", &dir) };
+        let dir_value = dir.to_string_lossy();
+        with_var("YTM_TOOLS_DIR", Some(dir_value.as_ref()), || {
+            let dest = managed_path().unwrap();
+            std::fs::write(&dest, b"previous-binary").unwrap();
+            let (mtime, len) = file_stamp(&dest).unwrap();
+            let sha256 = sha256_file(&dest).unwrap();
+            let mut state = ManagedState {
+                channel: Some(YtdlpChannel::Nightly),
+                version: Some("2026.07.03.234421".to_owned()),
+                sha256: Some(sha256.clone()),
+                installed_mtime_unix: Some(mtime),
+                installed_len: Some(len),
+                ..ManagedState::default()
+            };
 
-        let dest = managed_path().unwrap();
-        std::fs::write(&dest, b"previous-binary").unwrap();
-        let (mtime, len) = file_stamp(&dest).unwrap();
-        let sha256 = sha256_file(&dest).unwrap();
-        let mut state = ManagedState {
-            channel: Some(YtdlpChannel::Nightly),
-            version: Some("2026.07.03.234421".to_owned()),
-            sha256: Some(sha256.clone()),
-            installed_mtime_unix: Some(mtime),
-            installed_len: Some(len),
-            ..ManagedState::default()
-        };
-
-        assert!(preserve_current_as_previous(&dest, &mut state).unwrap());
-        let previous = previous_managed_path().unwrap();
-        assert_eq!(std::fs::read(&previous).unwrap(), b"previous-binary");
-        assert_eq!(state.previous_channel, Some(YtdlpChannel::Nightly));
-        assert_eq!(state.previous_version.as_deref(), Some("2026.07.03.234421"));
-        assert_eq!(state.previous_sha256.as_deref(), Some(sha256.as_str()));
-        assert!(previous_stamp_matches(&previous, &state));
-
-        match original_tools_dir {
-            Some(value) => unsafe { std::env::set_var("YTM_TOOLS_DIR", value) },
-            None => unsafe { std::env::remove_var("YTM_TOOLS_DIR") },
-        }
+            assert!(preserve_current_as_previous(&dest, &mut state).unwrap());
+            let previous = previous_managed_path().unwrap();
+            assert_eq!(std::fs::read(&previous).unwrap(), b"previous-binary");
+            assert_eq!(state.previous_channel, Some(YtdlpChannel::Nightly));
+            assert_eq!(state.previous_version.as_deref(), Some("2026.07.03.234421"));
+            assert_eq!(state.previous_sha256.as_deref(), Some(sha256.as_str()));
+            assert!(previous_stamp_matches(&previous, &state));
+        });
         #[cfg(windows)]
         let _ = retry_file_op(|| std::fs::remove_dir_all(&dir));
         #[cfg(not(windows))]

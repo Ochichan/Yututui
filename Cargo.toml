@@ -11,6 +11,12 @@ keywords = ["youtube-music", "tui", "music", "mpv", "yt-dlp"]
 categories = ["command-line-utilities", "multimedia::audio"]
 readme = "README.md"
 
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 # The shipped command is `ytt` — short to type and what the README/installers expose.
 # The crate keeps the longer `yututui` name (and the config/data dir string stays
 # "yututui"), so this only renames the produced binary, nothing user-facing.

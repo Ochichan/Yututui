@@ -49,6 +49,8 @@ pub fn kill_mpv_now() {
 #[cfg(unix)]
 fn kill_pid(pid: u32) {
     // SIGKILL is async-signal-safe and a single syscall — usable from the panic hook.
+    // SAFETY: `pid` came from the spawned mpv child registry; if it has exited or is
+    // no longer signalable, `kill` reports an error that this best-effort path ignores.
     unsafe {
         libc::kill(pid as libc::pid_t, libc::SIGKILL);
     }
@@ -154,6 +156,8 @@ pub fn assign_to_job(process_handle: std::os::windows::io::RawHandle) -> Option<
         SetInformationJobObject,
     };
 
+    // SAFETY: all Win32 handles used here are either returned by the preceding API
+    // call or supplied by the mpv child process; errors are checked after each call.
     unsafe {
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if job.is_null() {
@@ -185,6 +189,8 @@ pub fn assign_to_job(process_handle: std::os::windows::io::RawHandle) -> Option<
 
 #[cfg(windows)]
 fn close_handle(handle: windows_sys::Win32::Foundation::HANDLE) {
+    // SAFETY: callers pass an owned Win32 handle that must be closed exactly once;
+    // CloseHandle failure only means the handle was already invalid.
     unsafe {
         windows_sys::Win32::Foundation::CloseHandle(handle);
     }
@@ -207,6 +213,11 @@ pub fn install_console_ctrl_handler() {
     };
 
     // `windows-sys` models Win32 `BOOL` as a plain `i32` (1 = TRUE, 0 = FALSE).
+    /// # Safety
+    /// Called only by the Windows console subsystem with the documented control-event
+    /// code; the handler does not dereference raw pointers or retain OS-owned state.
+    // SAFETY: registered only through SetConsoleCtrlHandler with the required system
+    // ABI; the body performs only atomic pid access and a best-effort kill.
     unsafe extern "system" fn handler(ctrl_type: u32) -> i32 {
         kill_mpv_now();
         match ctrl_type {
@@ -217,6 +228,8 @@ pub fn install_console_ctrl_handler() {
         }
     }
 
+    // SAFETY: `handler` has the required system ABI and static lifetime; failure to
+    // register is reported by the return value and only weakens prompt cleanup.
     unsafe {
         if SetConsoleCtrlHandler(Some(handler), 1) == 0 {
             tracing::warn!("SetConsoleCtrlHandler failed");

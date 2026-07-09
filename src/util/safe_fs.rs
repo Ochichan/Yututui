@@ -80,7 +80,10 @@ fn private_file_mode() -> u32 {
 
 #[cfg(unix)]
 fn is_owned_by_current_user(meta: &fs::Metadata) -> bool {
-    meta.uid() == unsafe { libc::geteuid() }
+    // SAFETY: `geteuid` has no preconditions and cannot fail; the returned uid is
+    // only compared against metadata ownership.
+    let euid = unsafe { libc::geteuid() };
+    meta.uid() == euid
 }
 
 #[cfg(unix)]
