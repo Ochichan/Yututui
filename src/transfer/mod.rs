@@ -12,6 +12,7 @@ pub mod csv;
 mod download_cli;
 pub mod download_plan;
 pub mod json;
+mod match_cache;
 pub mod matching;
 mod organize_cli;
 pub mod organize_plan;
@@ -97,8 +98,79 @@ pub struct JobSpec {
     /// this score. CLI defaults leave it unset; `take_best` keeps its existing behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_accept_ambiguous_min_score: Option<f32>,
+    /// Matching preset. Old checkpoints deserialize to `Strict`; new CLI/TUI imports
+    /// choose a more useful default explicitly.
+    #[serde(default)]
+    pub match_policy: MatchPolicy,
+    /// Permit generic, non-official public YouTube uploads to auto-match when policy
+    /// gates otherwise agree. Off by default; such rows normally stay review-only.
+    #[serde(default)]
+    pub allow_user_videos: bool,
+    /// Persistent transfer cache behavior for Spotify -> YouTube Music matching.
+    #[serde(default)]
+    pub cache_mode: TransferCacheMode,
     /// Ignore checkpointed outcomes and match afresh (also disables file fast-path ids).
     pub rematch: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchPolicy {
+    #[default]
+    Strict,
+    Balanced,
+    Aggressive,
+    Exhaustive,
+}
+
+impl std::str::FromStr for MatchPolicy {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "strict" => Ok(Self::Strict),
+            "balanced" => Ok(Self::Balanced),
+            "aggressive" => Ok(Self::Aggressive),
+            "exhaustive" => Ok(Self::Exhaustive),
+            other => Err(format!(
+                "--policy expects `strict`, `balanced`, `aggressive`, or `exhaustive` (got `{other}`)"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferCacheMode {
+    #[default]
+    Use,
+    Refresh,
+    Off,
+}
+
+impl TransferCacheMode {
+    pub fn read_enabled(self) -> bool {
+        matches!(self, Self::Use)
+    }
+
+    pub fn write_enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+impl std::str::FromStr for TransferCacheMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "use" => Ok(Self::Use),
+            "refresh" => Ok(Self::Refresh),
+            "off" => Ok(Self::Off),
+            other => Err(format!(
+                "--cache expects `use`, `refresh`, or `off` (got `{other}`)"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,4 +229,33 @@ pub fn new_job_id(kind: &str) -> String {
         bytes[0],
         bytes[1]
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transfer_cache_mode_read_write_matrix() {
+        assert!(TransferCacheMode::Use.read_enabled());
+        assert!(TransferCacheMode::Use.write_enabled());
+        assert!(!TransferCacheMode::Refresh.read_enabled());
+        assert!(TransferCacheMode::Refresh.write_enabled());
+        assert!(!TransferCacheMode::Off.read_enabled());
+        assert!(!TransferCacheMode::Off.write_enabled());
+    }
+
+    #[test]
+    fn match_policy_and_cache_mode_parse_matrix() {
+        assert_eq!("strict".parse(), Ok(MatchPolicy::Strict));
+        assert_eq!("balanced".parse(), Ok(MatchPolicy::Balanced));
+        assert_eq!("aggressive".parse(), Ok(MatchPolicy::Aggressive));
+        assert_eq!("exhaustive".parse(), Ok(MatchPolicy::Exhaustive));
+        assert!("reckless".parse::<MatchPolicy>().is_err());
+
+        assert_eq!("use".parse(), Ok(TransferCacheMode::Use));
+        assert_eq!("refresh".parse(), Ok(TransferCacheMode::Refresh));
+        assert_eq!("off".parse(), Ok(TransferCacheMode::Off));
+        assert!("stale".parse::<TransferCacheMode>().is_err());
+    }
 }

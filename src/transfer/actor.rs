@@ -333,6 +333,9 @@ mod tests {
             min_score: 0.80,
             take_best: false,
             auto_accept_ambiguous_min_score: None,
+            match_policy: crate::transfer::MatchPolicy::Strict,
+            allow_user_videos: false,
+            cache_mode: crate::transfer::TransferCacheMode::Use,
             rematch: false,
         }
     }

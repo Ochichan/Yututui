@@ -14,8 +14,8 @@ use std::time::Duration;
 use super::checkpoint::{Checkpoint, ReviewDecision, TransferReport};
 use super::session::{ImportSession, ImportSessionRowStatus};
 use super::{
-    FileFormat, JobCtx, JobError, JobSpec, Stage, TransferDest, TransferProgress, TransferSource,
-    new_job_id, run_job,
+    FileFormat, JobCtx, JobError, JobSpec, MatchPolicy, Stage, TransferCacheMode, TransferDest,
+    TransferProgress, TransferSource, new_job_id, run_job,
 };
 use crate::config::Config;
 use crate::spotify::auth::{self, SpotifyToken};
@@ -50,6 +50,9 @@ Commands:
       --dry-run                    Fetch + match only; `resume` performs the writes
       --yes                        Skip the confirmation gate
       --min-score 0.80             Match accept threshold (0..1)
+      --policy strict|balanced|aggressive|exhaustive  Match preset for speed/recall tradeoff
+      --cache use|refresh|off     Persistent transfer cache behavior
+      --allow-user-videos          Let generic YouTube uploads auto-match when safe
       --take-best                  Accept the best ambiguous candidate too
       --rematch                    Ignore cached matches / file fast-path ids
   export <ytm:ID|local:KEY> --to spotify [--name NAME] [--dry-run] [--yes] [--min-score X]
@@ -173,6 +176,9 @@ struct CommonFlags {
     dry_run: bool,
     yes: bool,
     min_score: f32,
+    match_policy: Option<MatchPolicy>,
+    cache_mode: TransferCacheMode,
+    allow_user_videos: bool,
     take_best: bool,
     rematch: bool,
 }
@@ -182,6 +188,9 @@ fn parse_common(args: &mut Vec<&str>) -> Result<CommonFlags, String> {
         dry_run: false,
         yes: false,
         min_score: 0.80,
+        match_policy: None,
+        cache_mode: TransferCacheMode::Use,
+        allow_user_videos: false,
         take_best: false,
         rematch: false,
     };
@@ -192,7 +201,16 @@ fn parse_common(args: &mut Vec<&str>) -> Result<CommonFlags, String> {
             "--dry-run" => flags.dry_run = true,
             "--yes" => flags.yes = true,
             "--take-best" => flags.take_best = true,
+            "--allow-user-videos" => flags.allow_user_videos = true,
             "--rematch" => flags.rematch = true,
+            "--policy" => {
+                let v = it.next().ok_or("--policy needs a value")?;
+                flags.match_policy = Some(v.parse()?);
+            }
+            "--cache" => {
+                let v = it.next().ok_or("--cache needs a value")?;
+                flags.cache_mode = v.parse()?;
+            }
             "--min-score" => {
                 let v = it.next().ok_or("--min-score needs a value")?;
                 let score: f32 = v.parse().map_err(|_| format!("bad --min-score `{v}`"))?;
@@ -282,6 +300,9 @@ fn parse_import(args: &[&str]) -> Result<(JobSpec, bool), String> {
             min_score: flags.min_score,
             take_best: flags.take_best,
             auto_accept_ambiguous_min_score: None,
+            match_policy: flags.match_policy.unwrap_or(MatchPolicy::Balanced),
+            allow_user_videos: flags.allow_user_videos,
+            cache_mode: flags.cache_mode,
             rematch: flags.rematch,
         },
         flags.yes,
@@ -350,6 +371,9 @@ fn parse_export(args: &[&str]) -> Result<(JobSpec, bool), String> {
             min_score: flags.min_score,
             take_best: flags.take_best,
             auto_accept_ambiguous_min_score: None,
+            match_policy: flags.match_policy.unwrap_or(MatchPolicy::Strict),
+            allow_user_videos: flags.allow_user_videos,
+            cache_mode: flags.cache_mode,
             rematch: flags.rematch,
         },
         flags.yes,
@@ -1118,6 +1142,8 @@ async fn list_ytm() -> i32 {
 mod tests {
     use super::*;
 
+    mod size_tests;
+
     fn raw_playlist_id() -> &'static str {
         "37i9dQZF1DXcBWIGoYBM5M"
     }
@@ -1132,6 +1158,9 @@ mod tests {
             min_score: 0.80,
             take_best: false,
             auto_accept_ambiguous_min_score: None,
+            match_policy: MatchPolicy::Strict,
+            allow_user_videos: false,
+            cache_mode: TransferCacheMode::Use,
             rematch: false,
         }
     }
@@ -1180,6 +1209,11 @@ mod tests {
             "--yes",
             "--min-score",
             "0.65",
+            "--policy",
+            "exhaustive",
+            "--cache",
+            "refresh",
+            "--allow-user-videos",
             "--take-best",
             "--rematch",
             "--to",
@@ -1190,6 +1224,9 @@ mod tests {
         assert!(flags.dry_run);
         assert!(flags.yes);
         assert_eq!(flags.min_score, 0.65);
+        assert_eq!(flags.match_policy, Some(MatchPolicy::Exhaustive));
+        assert_eq!(flags.cache_mode, TransferCacheMode::Refresh);
+        assert!(flags.allow_user_videos);
         assert!(flags.take_best);
         assert!(flags.rematch);
         assert_eq!(args, vec!["liked", "--to", "likes"]);
@@ -1202,6 +1239,18 @@ mod tests {
 
         let mut out_of_range = vec!["--min-score", "1.2"];
         assert!(parse_common_err(&mut out_of_range).contains("must be 0..1"));
+
+        let mut missing_policy = vec!["--policy"];
+        assert!(parse_common_err(&mut missing_policy).contains("needs a value"));
+
+        let mut bad_policy = vec!["--policy", "reckless"];
+        assert!(parse_common_err(&mut bad_policy).contains("strict"));
+
+        let mut missing_cache = vec!["--cache"];
+        assert!(parse_common_err(&mut missing_cache).contains("needs a value"));
+
+        let mut bad_cache = vec!["--cache", "stale"];
+        assert!(parse_common_err(&mut bad_cache).contains("use"));
     }
 
     #[test]
@@ -1213,6 +1262,8 @@ mod tests {
             "--min-score",
             "0.72",
             "--take-best",
+            "--cache",
+            "off",
             "--rematch",
         ])
         .expect("liked import");
@@ -1225,6 +1276,9 @@ mod tests {
         ));
         assert!(spec.dry_run);
         assert_eq!(spec.min_score, 0.72);
+        assert_eq!(spec.match_policy, MatchPolicy::Balanced);
+        assert!(!spec.allow_user_videos);
+        assert_eq!(spec.cache_mode, TransferCacheMode::Off);
         assert!(spec.take_best);
         assert!(spec.rematch);
     }
@@ -1255,6 +1309,7 @@ mod tests {
         }
         assert!(!spec.dry_run);
         assert_eq!(spec.min_score, 0.80);
+        assert_eq!(spec.match_policy, MatchPolicy::Balanced);
     }
 
     #[test]
@@ -1322,6 +1377,7 @@ mod tests {
         .expect("spotify export");
         assert!(!yes);
         assert!(spec.dry_run);
+        assert_eq!(spec.match_policy, MatchPolicy::Strict);
         match spec.dest {
             TransferDest::SpotifyNewPlaylist { name } => {
                 assert_eq!(name, Some("Mirror".to_owned()));
@@ -1444,50 +1500,6 @@ mod tests {
         assert_eq!(
             lines[3],
             "Preview organize: ytt transfer organize sp2yt-20260708-abcd --root <LOCAL_ROOT> --dry-run"
-        );
-    }
-
-    #[tokio::test]
-    async fn build_ctx_uses_anonymous_ytm_for_local_playlist_without_cookie() {
-        let spec = file_spec(TransferDest::LocalPlaylist {
-            name: Some("Imported".to_owned()),
-        });
-        let cfg = config_without_cookie();
-
-        let ctx = build_ctx(&spec, &cfg).await.unwrap();
-
-        assert!(matches!(
-            ctx.ytm,
-            Some(crate::api::ytmusic::YtMusicApi::Anonymous)
-        ));
-        assert!(ctx.spotify.is_none());
-    }
-
-    #[tokio::test]
-    async fn build_ctx_requires_cookie_for_account_writes() {
-        let spec = file_spec(TransferDest::YtmLikes);
-        let cfg = config_without_cookie();
-
-        let err = match build_ctx(&spec, &cfg).await {
-            Ok(_) => panic!("account write without a cookie should fail"),
-            Err(err) => err,
-        };
-
-        assert!(err.contains("YouTube Music cookie"));
-    }
-
-    #[test]
-    fn run_reports_usage_without_starting_runtime_for_parse_failures() {
-        assert_eq!(run(&[]), EXIT_USAGE);
-        assert_eq!(run(&["--help".to_owned()]), EXIT_OK);
-        assert_eq!(run(&["unknown".to_owned()]), EXIT_USAGE);
-        assert_eq!(
-            run(&["list".to_owned(), "unknown-side".to_owned()]),
-            EXIT_USAGE
-        );
-        assert_eq!(
-            run(&["import".to_owned(), "not-a-source".to_owned()]),
-            EXIT_USAGE
         );
     }
 }
