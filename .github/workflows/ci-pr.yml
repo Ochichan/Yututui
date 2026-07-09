@@ -1,7 +1,8 @@
 name: ci-pr
 
-# Daily PR / main merge gate on the debian-ts self-hosted runner.
+# Daily PR / main merge gate on self-hosted Linux runners (debian-ci / fedora-ci).
 # Full multi-OS release builds stay in build.yml (v* tags + workflow_dispatch).
+# Intel Mac (macos-15-intel) stays GitHub-hosted on build.yml only.
 # Optional Windows/macOS light jobs run only with label ci:windows / ci:macos
 # or workflow_dispatch inputs — never required, so offline PCs cannot block merge.
 
@@ -31,8 +32,8 @@ jobs:
     name: Quality gates
     # Repo-scoped self-hosted only; never schedule on fork PRs.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Match debian-ts custom labels; OS/arch come from the runner automatically.
-    runs-on: [self-hosted, debian, yututui]
+    # Shared pool: debian-ci and fedora-ci both carry the yututui label.
+    runs-on: [self-hosted, yututui]
     steps:
       - uses: actions/checkout@v4
 
@@ -124,8 +125,8 @@ jobs:
   linux:
     name: Linux (x64)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Match debian-ts custom labels; OS/arch come from the runner automatically.
-    runs-on: [self-hosted, debian, yututui]
+    # Shared pool: debian-ci and fedora-ci both carry the yututui label.
+    runs-on: [self-hosted, yututui]
     steps:
       - uses: actions/checkout@v4
 
