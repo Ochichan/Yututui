@@ -41,6 +41,7 @@ fn main() -> Result<()> {
                     "       {bin} transfer <cmd>   Import/export playlists (Spotify ↔ YTM ↔ files)"
                 );
                 println!("       {bin} doctor [-v]      Check your environment and exit");
+                println!("       {bin} doctor audio [-v]");
                 println!("       {bin} doctor privacy [--cleanup]");
                 println!("       {bin} doctor terminal --json");
                 println!("                             Report terminal capability hints");

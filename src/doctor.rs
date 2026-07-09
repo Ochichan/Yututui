@@ -41,23 +41,51 @@ pub fn run_with_args(args: &[String]) -> i32 {
         println!("       Report secret-bearing files and recovery backups");
         return 0;
     }
+    if matches!(args, [cmd] if cmd == "audio") {
+        return run_audio(false);
+    }
+    if matches!(args, [cmd, flag] if cmd == "audio" && (flag == "--verbose" || flag == "-v")) {
+        return run_audio(true);
+    }
+    if matches!(args, [cmd, flag] if cmd == "audio" && (flag == "--help" || flag == "-h")) {
+        println!("Usage: ytt doctor audio [--verbose]");
+        println!("       Report the active audio backend, mpv settings, and capabilities");
+        println!("       Note: mpv output/device/cache/extra_args apply on the next player launch");
+        println!(
+            "       Config escape hatch: audio.mpv.extra_args (no settings UI; config file only)"
+        );
+        return 0;
+    }
     let verbose = match args {
         [] => false,
         [arg] if arg == "--verbose" || arg == "-v" => true,
         [arg] if arg == "--help" || arg == "-h" => {
             println!("Usage: ytt doctor [--verbose]");
+            println!("       ytt doctor audio [--verbose]");
             println!("       ytt doctor privacy [--cleanup]");
             println!("       ytt doctor terminal --json");
             return 0;
         }
         _ => {
             eprintln!("usage: ytt doctor [--verbose]");
+            eprintln!("       ytt doctor audio [--verbose]");
             eprintln!("       ytt doctor privacy [--cleanup]");
             eprintln!("       ytt doctor terminal --json");
             return 2;
         }
     };
     run_inner(verbose)
+}
+
+fn init_tools_sync(cfg: &config::Config) {
+    // Resolve the yt-dlp/mpv selection exactly as the app would (doctor runs in the
+    // synchronous main path, so block on a throwaway current-thread runtime).
+    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        rt.block_on(crate::tools::init(&cfg.tools));
+    }
 }
 
 #[derive(Serialize)]
@@ -262,6 +290,111 @@ fn run_privacy(cleanup: bool) -> i32 {
     }
 
     if ok { 0 } else { 1 }
+}
+
+fn run_audio(verbose: bool) -> i32 {
+    let cfg = config::Config::load();
+    i18n::set_language(cfg.effective_language());
+    let kr = i18n::is_korean();
+    init_tools_sync(&cfg);
+
+    let status = crate::player::backend::runtime_status(&cfg);
+    let backend = status.backend.id();
+    let ok = status.mpv_available && crate::tools::ytdlp_selection().is_some();
+
+    println!(
+        "{}",
+        if kr {
+            "오디오 백엔드"
+        } else {
+            "Audio backend"
+        }
+    );
+    println!("  backend: {backend}");
+    println!(
+        "  mpv: {}",
+        if status.mpv_available {
+            match status.mpv_version.as_deref() {
+                Some(version) => format!("{version} · {}", status.mpv_program),
+                None => status.mpv_program.clone(),
+            }
+        } else {
+            format!("missing · {}", status.mpv_program)
+        }
+    );
+    match (
+        &status.ytdlp_source,
+        &status.ytdlp_version,
+        &status.ytdlp_path,
+    ) {
+        (Some(source), version, Some(path)) => println!(
+            "  yt-dlp: {source} {} · {}",
+            version.as_deref().unwrap_or("?"),
+            path.display()
+        ),
+        _ => println!(
+            "  yt-dlp: {}",
+            crate::tools::ytdlp_selection_error().unwrap_or_else(|| "missing".to_owned())
+        ),
+    }
+    println!("  output: {}", status.output.as_deref().unwrap_or("auto"));
+    println!("  device: {}", status.device.as_deref().unwrap_or("auto"));
+    println!(
+        "  cache: {} forward, {} back",
+        status.cache_forward, status.cache_back
+    );
+    println!("  gapless: {}", enabled_label(status.gapless));
+    println!(
+        "  media controls: {}",
+        if status.media_controls_disabled_by_yututui {
+            "mpv disabled; yututui owns OS session"
+        } else {
+            "mpv flag unsupported; yututui OS session still configured separately"
+        }
+    );
+    println!(
+        "  extra mpv args: {}{}",
+        if status.extra_args_count == 0 {
+            "none".to_owned()
+        } else {
+            status.extra_args_count.to_string()
+        },
+        if kr {
+            " · config `audio.mpv.extra_args` (재시작 후 적용)"
+        } else {
+            " · config `audio.mpv.extra_args` (next launch)"
+        }
+    );
+
+    if verbose {
+        println!();
+        println!("{}", if kr { "기능" } else { "Capabilities" });
+        println!("  gapless: {}", yes_no(status.caps.supports_gapless));
+        println!("  eq: {}", yes_no(status.caps.supports_eq));
+        println!(
+            "  device selection: {}",
+            yes_no(status.caps.supports_device_selection)
+        );
+        println!(
+            "  stream record: {}",
+            yes_no(status.caps.supports_stream_record)
+        );
+        println!(
+            "  visualization tap: {}",
+            yes_no(status.caps.supports_visualization_tap)
+        );
+        println!("  owns media keys: {}", yes_no(status.caps.owns_media_keys));
+    }
+
+    if ok { 0 } else { 1 }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn enabled_label(value: bool) -> &'static str {
+    if value { "enabled" } else { "disabled" }
 }
 
 fn secret_files(cfg: &config::Config) -> Vec<SecretFile> {
@@ -549,14 +682,7 @@ fn run_inner(verbose: bool) -> i32 {
     i18n::set_language(cfg.effective_language());
     let kr = i18n::is_korean();
 
-    // Resolve the yt-dlp/mpv selection exactly as the app would (doctor runs in the
-    // synchronous main path, so block on a throwaway current-thread runtime).
-    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        rt.block_on(crate::tools::init(&cfg.tools));
-    }
+    init_tools_sync(&cfg);
 
     // `ok` flips to false only on a problem that actually stops the app working
     // (a Core tool missing, or a required directory not writable).

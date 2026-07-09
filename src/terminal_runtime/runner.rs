@@ -408,12 +408,14 @@ pub async fn run(
     let player_data_dir = data_dir.clone();
     let player_cookies_file = player_runtime.cookies_file.clone();
     let player_gapless = player_runtime.gapless;
+    let player_audio = player_runtime.audio.clone();
     tokio::spawn(async move {
         let result = player::spawn(
             runtime::sink(player_msg_tx, RuntimeEvent::Player),
             player_data_dir,
             player_cookies_file,
             player_gapless,
+            player_audio,
         )
         .await
         .map_err(|e| format!("{e:#}"));

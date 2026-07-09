@@ -75,6 +75,15 @@ export interface StorageSettings {
   download_concurrency: number;
 }
 
+export interface AudioSettings {
+  /** v1 supports only mpv. */
+  backend: string;
+  mpv_output: string | null;
+  mpv_device: string | null;
+  mpv_cache_forward: string;
+  mpv_cache_back: string;
+}
+
 export interface SettingsModelV8 {
   rev: number;
   playback: PlaybackSettings;
@@ -84,6 +93,7 @@ export interface SettingsModelV8 {
   search: SearchSettings;
   ui: UiSettings;
   storage: StorageSettings;
+  audio: AudioSettings;
   /** Live as of the settings.animations wire (mirrors the core's AnimationsConfig). */
   animations: AnimationsModel;
   /** Live as of the settings.theme-editor wire (the resolved 34 roles + preset/overrides). */
@@ -99,7 +109,7 @@ export interface SettingsSnapshot {
 }
 
 export type SettingGroup =
-  'playback' | 'eq' | 'streaming' | 'search' | 'ui' | 'storage' | 'animations' | 'theme';
+  'playback' | 'eq' | 'streaming' | 'search' | 'ui' | 'storage' | 'audio' | 'animations' | 'theme';
 
 /** The provisional uniform mutation. The real wire is the grouped `SettingChangeV8` (§13.3). */
 export interface SettingChange {
@@ -138,6 +148,9 @@ export class SettingsStore {
   }
   get storage(): StorageSettings | null {
     return this.model ? this.#merge('storage', this.model.storage) : null;
+  }
+  get audio(): AudioSettings | null {
+    return this.model ? this.#merge('audio', this.model.audio) : null;
   }
   get animations(): AnimationsModel | null {
     return this.model ? this.#merge('animations', this.model.animations) : null;

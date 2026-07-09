@@ -19,6 +19,7 @@
   const BAND_LABELS = ['31', '62', '125', '250', '500', '1k', '2k', '4k', '8k', '16k'];
   const pb = $derived(settings.playback);
   const eq = $derived(settings.eq);
+  const audio = $derived(settings.audio);
   const speed = $derived((pb?.speed_tenths ?? 10) / 10);
   const SEEKS = [5, 10, 30];
 
@@ -86,6 +87,46 @@
   </SettingRow>
 </SettingSection>
 
+<SettingSection title={t('settings.playback.audioBackend')}>
+  <SettingRow label={t('settings.playback.backend')} hint={t('settings.playback.backendHint')}>
+    <span class="val mono">{audio?.backend ?? 'mpv'}</span>
+  </SettingRow>
+  <SettingRow label={t('settings.playback.mpvOutput')} hint={t('settings.playback.mpvOutputHint')}>
+    <input
+      class="text"
+      type="text"
+      value={audio?.mpv_output ?? ''}
+      placeholder="auto"
+      onchange={(e) => settings.apply('audio', 'mpv_output', e.currentTarget.value || null)}
+    />
+  </SettingRow>
+  <SettingRow label={t('settings.playback.mpvDevice')} hint={t('settings.playback.mpvDeviceHint')}>
+    <input
+      class="text"
+      type="text"
+      value={audio?.mpv_device ?? ''}
+      placeholder="auto"
+      onchange={(e) => settings.apply('audio', 'mpv_device', e.currentTarget.value || null)}
+    />
+  </SettingRow>
+  <SettingRow label={t('settings.playback.cacheForward')} hint={t('settings.playback.cacheHint')}>
+    <input
+      class="short-text"
+      type="text"
+      value={audio?.mpv_cache_forward ?? '32MiB'}
+      onchange={(e) => settings.apply('audio', 'mpv_cache_forward', e.currentTarget.value)}
+    />
+  </SettingRow>
+  <SettingRow label={t('settings.playback.cacheBack')} hint={t('settings.playback.cacheHint')}>
+    <input
+      class="short-text"
+      type="text"
+      value={audio?.mpv_cache_back ?? '8MiB'}
+      onchange={(e) => settings.apply('audio', 'mpv_cache_back', e.currentTarget.value)}
+    />
+  </SettingRow>
+</SettingSection>
+
 <SettingSection title={t('settings.playback.equalizer')}>
   <SettingRow label={t('settings.playback.preset')} hint={t('settings.playback.presetHint')}>
     <select class="sel" onchange={(e) => settings.apply('eq', 'preset', e.currentTarget.value)}>
@@ -131,6 +172,22 @@
     text-align: right;
     font-size: 12px;
     color: var(--role-settings-value);
+  }
+  .text {
+    width: 180px;
+  }
+  .short-text {
+    width: 84px;
+  }
+  .text,
+  .short-text {
+    min-height: 30px;
+    border: 1px solid var(--role-border-muted);
+    border-radius: var(--radius-s);
+    background: var(--surface-0);
+    color: var(--role-settings-value);
+    padding: 0 var(--space-2);
+    font: inherit;
   }
   .mono {
     font-family: var(--font-mono);

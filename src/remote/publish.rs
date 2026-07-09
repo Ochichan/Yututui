@@ -318,13 +318,14 @@ pub(crate) fn queue_model(view: &CoreView<'_>) -> QueueModel {
 /// Option defaults mirror the documented config semantics (`gapless: None → on`, …).
 pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::SettingsModelV8 {
     use super::proto::{
-        AnimationsModel, KeymapSettingsModel, PlaybackSettingsModel, SearchSettingsModel,
-        SettingsModelV8, StorageSettingsModel, StreamingSettingsModel, ThemePresetModel,
-        ThemeSettingsModel, UiSettingsModel,
+        AnimationsModel, AudioSettingsModel, KeymapSettingsModel, PlaybackSettingsModel,
+        SearchSettingsModel, SettingsModelV8, StorageSettingsModel, StreamingSettingsModel,
+        ThemePresetModel, ThemeSettingsModel, UiSettingsModel,
     };
     use crate::theme::{ThemePreset, ThemeRole};
 
     let c = view.config;
+    let audio = c.audio.runtime();
     let anim = &c.animations;
     let has_key = std::env::var_os("GEMINI_API_KEY").is_some_and(|v| !v.is_empty())
         || c.gemini_api_key
@@ -383,6 +384,13 @@ pub(crate) fn settings_model(view: &CoreView<'_>, rev: u64) -> super::proto::Set
             download_dir: c.download_dir.as_ref().map(|p| p.display().to_string()),
             cookies_file: c.cookies_file.as_ref().map(|p| p.display().to_string()),
             download_concurrency: c.download_concurrency.unwrap_or(3) as u32,
+        },
+        audio: AudioSettingsModel {
+            backend: audio.backend.id().to_owned(),
+            mpv_output: audio.mpv.output,
+            mpv_device: audio.mpv.device,
+            mpv_cache_forward: audio.mpv.cache_forward,
+            mpv_cache_back: audio.mpv.cache_back,
         },
         animations: AnimationsModel {
             master: anim.master,

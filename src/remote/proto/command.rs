@@ -206,7 +206,15 @@ fn validate_gui_setting_change(
 fn known_setting_group(group: &str) -> bool {
     matches!(
         group,
-        "playback" | "eq" | "streaming" | "search" | "ui" | "storage" | "animations" | "theme"
+        "playback"
+            | "eq"
+            | "streaming"
+            | "search"
+            | "ui"
+            | "storage"
+            | "audio"
+            | "animations"
+            | "theme"
     )
 }
 
@@ -255,6 +263,8 @@ fn nullable_setting(group: &str, field: &str) -> bool {
             | ("search", "jamendo_client_id")
             | ("storage", "download_dir")
             | ("storage", "cookies_file")
+            | ("audio", "mpv_output")
+            | ("audio", "mpv_device")
     )
 }
 
