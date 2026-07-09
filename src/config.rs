@@ -645,8 +645,8 @@ pub const LOCAL_IMPORT_PATH_TEMPLATE_DEFAULT: &str =
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct LocalConfig {
-    /// Include the configured/default download folder as a non-recursive scan root.
-    /// `None` preserves the default for older config files.
+    /// Include the configured/default download folder as a depth-limited scan root
+    /// (up to Artist/Album nesting). `None` preserves the default for older config files.
     pub include_download_dir: Option<bool>,
     /// Additional user music folders. The current Settings UI edits the first entry; the Vec
     /// leaves room for a later multi-root editor without another config migration.

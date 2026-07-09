@@ -1148,7 +1148,9 @@ mod tests {
     fn mpv_ytdl_raw_options_pin_web_safari_only_with_cookies() {
         let with_cookies = mpv_ytdl_raw_option_args(Some(Path::new("/tmp/cookies.txt")));
         assert!(
-            with_cookies.iter().any(|a| a.contains("cookies=/tmp/cookies.txt")),
+            with_cookies
+                .iter()
+                .any(|a| a.contains("cookies=/tmp/cookies.txt")),
             "{with_cookies:?}"
         );
         assert!(

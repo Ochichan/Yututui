@@ -278,40 +278,34 @@ pub(crate) fn library_path() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join("library.json"))
 }
 
+/// Max directory depth under the download root (`Artist/Album/track` = depth 2).
+const DOWNLOADS_MAX_DEPTH: u32 = 2;
+
 /// Scan the configured download directory for directly playable local audio files.
 ///
-/// The downloader writes files directly under this folder, so this intentionally stays
-/// non-recursive and bounded. Missing/unreadable directories simply produce an empty list.
+/// Walks up to [`DOWNLOADS_MAX_DEPTH`] directory levels so mixed layouts work:
+/// root files, `Artist/track`, and `Artist/Album/track`. Deeper nesting is skipped.
+/// Missing/unreadable directories simply produce an empty list.
 pub fn scan_downloads(dir: &Path) -> DownloadScan {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return DownloadScan {
-            limit: DOWNLOADS_MAX,
-            ..DownloadScan::default()
-        };
-    };
-    // Bounded top-K by lowercased filename: keep at most DOWNLOADS_MAX entries while streaming
-    // the directory (a max-heap drops the current largest once full), so a folder with far more
-    // files than the cap uses O(cap) memory instead of collecting + sorting the whole listing.
-    // Output is the alphabetically-first DOWNLOADS_MAX — the same set/order as before.
+    // Bounded top-K by lowercased relative path: keep at most DOWNLOADS_MAX entries while
+    // streaming the walk (a max-heap drops the current largest once full), so a folder with
+    // far more files than the cap uses O(cap) memory instead of collecting + sorting everything.
+    // Output is the alphabetically-first DOWNLOADS_MAX.
     use std::collections::BinaryHeap;
     let mut heap: BinaryHeap<(String, PathBuf)> = BinaryHeap::new();
     let mut truncated = false;
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        let is_file = entry.file_type().ok().is_some_and(|t| t.is_file());
-        if !(is_file && is_audio_file(&path)) {
-            continue;
-        }
+    walk_download_audio(dir, 0, &mut |path| {
         let key = path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        heap.push((key, path));
+            .strip_prefix(dir)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_lowercase();
+        heap.push((key, path.to_path_buf()));
         if heap.len() > DOWNLOADS_MAX {
             truncated = true;
             heap.pop(); // drop the largest key, keeping the smallest DOWNLOADS_MAX
         }
-    }
+    });
     let mut kept = heap.into_vec();
     kept.sort_by(|a, b| a.0.cmp(&b.0));
     DownloadScan {
@@ -319,6 +313,39 @@ pub fn scan_downloads(dir: &Path) -> DownloadScan {
         truncated,
         limit: DOWNLOADS_MAX,
     }
+}
+
+fn walk_download_audio(dir: &Path, depth: u32, on_audio: &mut dyn FnMut(&Path)) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if is_hidden_path(&path) {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            if depth < DOWNLOADS_MAX_DEPTH {
+                walk_download_audio(&path, depth + 1, on_audio);
+            }
+            continue;
+        }
+        if file_type.is_file() && is_audio_file(&path) {
+            on_audio(&path);
+        }
+    }
+}
+
+fn is_hidden_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
 }
 
 fn is_audio_file(path: &Path) -> bool {
@@ -520,12 +547,25 @@ mod tests {
         fs::write(dir.join("b.MP3"), b"").unwrap();
         fs::write(dir.join("a.m4a"), b"").unwrap();
         fs::write(dir.join("note.txt"), b"").unwrap();
-        fs::create_dir_all(dir.join("album")).unwrap();
-        fs::write(dir.join("album").join("nested.flac"), b"").unwrap();
+        fs::create_dir_all(dir.join("Artist").join("Album")).unwrap();
+        fs::write(dir.join("Artist").join("cover.mp3"), b"").unwrap();
+        fs::write(dir.join("Artist").join("Album").join("nested.flac"), b"").unwrap();
+        fs::create_dir_all(dir.join("Artist").join("Album").join("extra")).unwrap();
+        fs::write(
+            dir.join("Artist")
+                .join("Album")
+                .join("extra")
+                .join("too-deep.wav"),
+            b"",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join(".hidden")).unwrap();
+        fs::write(dir.join(".hidden").join("secret.mp3"), b"").unwrap();
 
         let scan = scan_downloads(&dir);
         let titles: Vec<&str> = scan.songs.iter().map(|s| s.title.as_str()).collect();
-        assert_eq!(titles, vec!["a", "b"]);
+        // Sorted by lowercased relative path: a, Artist/Album/nested, Artist/cover, b
+        assert_eq!(titles, vec!["a", "nested", "cover", "b"]);
         assert!(!scan.truncated);
         assert_eq!(scan.limit, DOWNLOADS_MAX);
         assert!(scan.songs.iter().all(Song::is_local));

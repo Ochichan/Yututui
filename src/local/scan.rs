@@ -12,10 +12,18 @@ use super::model::{FileFingerprint, LocalTrack, LocalTrackId};
 
 const AUDIO_EXTENSIONS: &[&str] = &["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma"];
 
+/// Max directory depth for the download-folder scan root (`Artist/Album/track` = 2).
+pub const DOWNLOAD_SCAN_MAX_DEPTH: u32 = 2;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalScanRoot {
     pub path: PathBuf,
     pub recursive: bool,
+    /// When set, descend at most this many directory levels below the root
+    /// (files at depth 0..=max_depth are indexed). Ignored when `recursive` is true
+    /// after merge with a full music root.
+    #[serde(default)]
+    pub max_depth: Option<u32>,
 }
 
 impl LocalScanRoot {
@@ -23,6 +31,7 @@ impl LocalScanRoot {
         Self {
             path,
             recursive: false,
+            max_depth: Some(DOWNLOAD_SCAN_MAX_DEPTH),
         }
     }
 
@@ -30,6 +39,7 @@ impl LocalScanRoot {
         Self {
             path,
             recursive: true,
+            max_depth: None,
         }
     }
 }
@@ -145,10 +155,17 @@ where
             self.emit_progress(Some(root.path.clone()));
             return;
         }
-        self.scan_dir(&root_path, root.recursive);
+        self.scan_dir(&root_path, &root_path, 0, root.recursive, root.max_depth);
     }
 
-    fn scan_dir(&mut self, dir: &Path, recursive: bool) {
+    fn scan_dir(
+        &mut self,
+        root: &Path,
+        dir: &Path,
+        depth: u32,
+        recursive: bool,
+        max_depth: Option<u32>,
+    ) {
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(error) => {
@@ -194,8 +211,13 @@ where
                 continue;
             }
             if file_type.is_dir() {
-                if recursive {
-                    self.scan_dir(&path, recursive);
+                let can_descend = if recursive {
+                    true
+                } else {
+                    max_depth.is_some_and(|max| depth < max)
+                };
+                if can_descend {
+                    self.scan_dir(root, &path, depth + 1, recursive, max_depth);
                 } else {
                     self.summary.skipped += 1;
                     self.emit_progress(Some(path));
@@ -212,11 +234,11 @@ where
                 self.emit_progress(Some(path));
                 continue;
             }
-            self.scan_file(path);
+            self.scan_file(root, path);
         }
     }
 
-    fn scan_file(&mut self, path: PathBuf) {
+    fn scan_file(&mut self, root: &Path, path: PathBuf) {
         self.summary.seen += 1;
         let canonical = canonical_or_original(&path);
         let metadata = match fs::metadata(&canonical) {
@@ -233,8 +255,12 @@ where
         let modified_at = metadata_modified_unix(&metadata);
         let fingerprint = FileFingerprint::path_mtime_size(&canonical, modified_at, metadata.len());
         if let Some(track) = self.previous.find_unchanged(&fingerprint) {
+            // Cheap path-hint fill still runs on reuse: older indexes may lack
+            // artist/album that folder names can supply without re-reading tags.
+            let mut track = track.clone();
+            apply_path_metadata_fallback(&mut track, root, &canonical);
             self.seen_ids.push(track.id.clone());
-            self.tracks.push(track.clone());
+            self.tracks.push(track);
             self.summary.reused += 1;
             self.emit_progress(Some(canonical));
             return;
@@ -256,6 +282,7 @@ where
                 message: format!("download sidecar could not be read: {error}"),
             }),
         }
+        apply_path_metadata_fallback(&mut read.track, root, &canonical);
         if was_known_path {
             self.summary.changed += 1;
         } else {
@@ -323,6 +350,72 @@ fn apply_download_sidecar(track: &mut LocalTrack, sidecar: &crate::downloads::Do
     track.import_source_order = sidecar.import_source_order.filter(|order| *order > 0);
 }
 
+/// Fill empty artist/album fields from parent folder names relative to `root`.
+///
+/// - 0 dirs under root → no hints
+/// - 1 dir → artist = that folder
+/// - 2+ dirs → artist = first component, album = last component
+fn apply_path_metadata_fallback(track: &mut LocalTrack, root: &Path, file: &Path) {
+    let Some((artist_hint, album_hint)) = path_metadata_hints(root, file) else {
+        return;
+    };
+    let artist_empty = track.artist.is_empty()
+        || track
+            .artist
+            .iter()
+            .all(|a| a.eq_ignore_ascii_case("local file"));
+    if artist_empty {
+        track.artist = vec![artist_hint.clone()];
+    }
+    if track
+        .album_artist
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
+        track.album_artist = Some(artist_hint);
+    }
+    if track
+        .album
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_none()
+        && let Some(album) = album_hint
+    {
+        track.album = Some(album);
+    }
+}
+
+fn path_metadata_hints(root: &Path, file: &Path) -> Option<(String, Option<String>)> {
+    let parent = file.parent()?;
+    let relative = parent.strip_prefix(root).ok()?;
+    let components: Vec<String> = relative
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(name) => {
+                let s = name.to_string_lossy();
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_owned())
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    match components.as_slice() {
+        [] => None,
+        [artist] => Some((artist.clone(), None)),
+        [artist, ..] => {
+            let album = components.last().cloned();
+            Some((artist.clone(), album))
+        }
+    }
+}
+
 fn clean_sidecar_text(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
@@ -374,11 +467,100 @@ mod tests {
     }
 
     #[test]
-    fn download_root_is_non_recursive() {
+    fn download_root_walks_two_directory_levels() {
         let dir = temp_dir();
-        fs::create_dir_all(dir.join("nested")).unwrap();
+        fs::create_dir_all(dir.join("Artist").join("Album").join("extra")).unwrap();
         fs::write(dir.join("a.mp3"), b"not audio").unwrap();
-        fs::write(dir.join("nested").join("b.flac"), b"not audio").unwrap();
+        fs::write(dir.join("Artist").join("b.flac"), b"not audio").unwrap();
+        fs::write(dir.join("Artist").join("Album").join("c.m4a"), b"not audio").unwrap();
+        fs::write(
+            dir.join("Artist").join("Album").join("extra").join("d.wav"),
+            b"not audio",
+        )
+        .unwrap();
+
+        let result = scan_roots(
+            &[LocalScanRoot::download(dir.clone())],
+            &LocalIndex::default(),
+        );
+
+        let mut titles: Vec<_> = result
+            .index
+            .tracks()
+            .iter()
+            .map(|track| track.title.as_str())
+            .collect();
+        titles.sort_unstable();
+        assert_eq!(titles, vec!["a", "b", "c"]);
+        assert_eq!(result.summary.seen, 3);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn path_metadata_fallback_fills_empty_artist_and_album() {
+        let dir = temp_dir();
+        fs::create_dir_all(dir.join("Isegye Rockstar").join("Debut")).unwrap();
+        fs::write(
+            dir.join("Isegye Rockstar").join("Debut").join("song.mp3"),
+            b"not audio",
+        )
+        .unwrap();
+        fs::write(dir.join("Isegye Rockstar").join("cover.flac"), b"not audio").unwrap();
+
+        let result = scan_roots(
+            &[LocalScanRoot::download(dir.clone())],
+            &LocalIndex::default(),
+        );
+
+        let album_track = result
+            .index
+            .tracks()
+            .iter()
+            .find(|t| t.title == "song")
+            .expect("album track");
+        assert_eq!(album_track.artist, vec!["Isegye Rockstar"]);
+        assert_eq!(album_track.album.as_deref(), Some("Debut"));
+        assert_eq!(album_track.album_artist.as_deref(), Some("Isegye Rockstar"));
+
+        let cover = result
+            .index
+            .tracks()
+            .iter()
+            .find(|t| t.title == "cover")
+            .expect("artist-level track");
+        assert_eq!(cover.artist, vec!["Isegye Rockstar"]);
+        assert!(cover.album.is_none());
+        assert_eq!(cover.album_artist.as_deref(), Some("Isegye Rockstar"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn path_metadata_fallback_does_not_override_sidecar() {
+        let dir = temp_dir();
+        fs::create_dir_all(dir.join("Folder Artist").join("Folder Album")).unwrap();
+        let audio = dir
+            .join("Folder Artist")
+            .join("Folder Album")
+            .join("Sidecar Track [abc123def45].m4a");
+        fs::write(&audio, b"not audio").unwrap();
+        let mut song = crate::api::Song::from_search(
+            "abc123def45",
+            "Canonical Title",
+            "Tag Artist",
+            "3:03",
+            Some("Tag Album".to_owned()),
+        );
+        song = song.with_catalog_metadata(
+            Some("Tag Album Artist".to_owned()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        crate::downloads::write_sidecar(&song, &audio).unwrap();
 
         let result = scan_roots(
             &[LocalScanRoot::download(dir.clone())],
@@ -386,8 +568,39 @@ mod tests {
         );
 
         assert_eq!(result.index.tracks().len(), 1);
-        assert_eq!(result.index.tracks()[0].title, "a");
-        assert_eq!(result.summary.seen, 1);
+        let track = &result.index.tracks()[0];
+        assert_eq!(track.artist, vec!["Tag Artist"]);
+        assert_eq!(track.album.as_deref(), Some("Tag Album"));
+        assert_eq!(track.album_artist.as_deref(), Some("Tag Album Artist"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reused_tracks_apply_path_metadata_fallback() {
+        let dir = temp_dir();
+        let album_dir = dir.join("Folder Artist").join("Folder Album");
+        fs::create_dir_all(&album_dir).unwrap();
+        fs::write(album_dir.join("song.mp3"), b"not audio").unwrap();
+
+        let first = scan_roots(
+            &[LocalScanRoot::download(dir.clone())],
+            &LocalIndex::default(),
+        );
+        let mut legacy_track = first.index.tracks()[0].clone();
+        legacy_track.artist.clear();
+        legacy_track.album = None;
+        legacy_track.album_artist = None;
+        let mut previous = LocalIndex::default();
+        previous.set_tracks(vec![legacy_track]);
+
+        let second = scan_roots(&[LocalScanRoot::download(dir.clone())], &previous);
+
+        assert_eq!(second.summary.reused, 1);
+        let track = &second.index.tracks()[0];
+        assert_eq!(track.artist, vec!["Folder Artist"]);
+        assert_eq!(track.album.as_deref(), Some("Folder Album"));
+        assert_eq!(track.album_artist.as_deref(), Some("Folder Artist"));
 
         let _ = fs::remove_dir_all(dir);
     }
