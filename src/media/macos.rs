@@ -58,7 +58,10 @@ pub struct Backend {
 
 impl Backend {
     pub fn new(sink: CommandSink) -> Result<Self> {
+        // SAFETY: objc2 exposes these MediaPlayer singleton accessors as unsafe; they
+        // return retained Objective-C objects or abort through the binding on contract failure.
         let center = unsafe { MPNowPlayingInfoCenter::defaultCenter() };
+        // SAFETY: same singleton contract as above for the remote command center.
         let commands = unsafe { MPRemoteCommandCenter::sharedCommandCenter() };
         let backend = Self {
             center,
@@ -73,6 +76,8 @@ impl Backend {
     /// Drain the main run loop / main dispatch queue once, non-blocking. Remote
     /// command handlers registered below are delivered during this call.
     pub fn pump(&mut self) {
+        // SAFETY: called on the backend's main-thread owner; mode is the constant
+        // default run-loop mode, duration is zero, so this only pumps pending work.
         unsafe {
             CFRunLoop::run_in_mode(kCFRunLoopDefaultMode, 0.0, false);
         }
@@ -80,6 +85,8 @@ impl Backend {
 
     fn register_commands(&self, sink: &CommandSink) {
         let c = &self.commands;
+        // SAFETY: all commands come from the live MPRemoteCommandCenter singleton and
+        // handler blocks only enqueue app commands before returning to MediaPlayer.
         unsafe {
             register(&c.playCommand(), sink, |_| Some(MediaCommand::Play));
             register(&c.pauseCommand(), sink, |_| Some(MediaCommand::Pause));
@@ -133,6 +140,8 @@ impl Backend {
     }
 
     pub fn apply(&mut self, snapshot: &MediaSnapshot, changes: MediaChanges) {
+        // SAFETY: the backend owns all retained MediaPlayer/Foundation objects on the
+        // main thread and writes only Foundation object values matching Apple's keys.
         unsafe {
             match &snapshot.track {
                 None => {
@@ -247,9 +256,9 @@ impl Backend {
 
     /// Build a fresh now-playing dictionary for the current track.
     ///
-    /// # Safety-ish
-    /// Callers hold no aliases to the returned dictionary; all values are proper
-    /// Foundation objects, so `insert`'s type expectations hold.
+    /// # Safety
+    /// Must be called on the backend's main-thread owner. Inserted values must match
+    /// the Foundation object types expected by the MediaPlayer now-playing keys.
     unsafe fn build_info(
         &mut self,
         snapshot: &MediaSnapshot,
@@ -258,6 +267,8 @@ impl Backend {
         let Some(track) = &snapshot.track else {
             return info;
         };
+        // SAFETY: keys and values are MediaPlayer/Foundation constants and objects
+        // with the exact types expected by NSMutableDictionary insertion.
         unsafe {
             info.insert(MPMediaItemPropertyTitle, &*NSString::from_str(&track.title));
             if !track.artist.is_empty() {
@@ -301,6 +312,10 @@ impl Backend {
 
     /// Attach the cached artwork file (if any) to `info`, loading + wrapping it in
     /// an `MPMediaItemArtwork` once per file.
+    ///
+    /// # Safety
+    /// `info` must be a mutable now-playing dictionary owned by this backend, and
+    /// the retained artwork object must outlive its insertion into that dictionary.
     unsafe fn set_artwork(
         &mut self,
         info: &NSMutableDictionary<NSString, AnyObject>,
@@ -316,6 +331,8 @@ impl Backend {
             self.artwork = Some((path, artwork));
         }
         if let Some((_, artwork)) = &self.artwork {
+            // SAFETY: `artwork` is retained by `self.artwork`; the key expects an
+            // MPMediaItemArtwork Foundation object.
             unsafe {
                 info.insert(MPMediaItemPropertyArtwork, artwork.as_ref());
             }
@@ -326,6 +343,8 @@ impl Backend {
 impl Drop for Backend {
     fn drop(&mut self) {
         // Tear the session down so quitting never leaves a ghost Now Playing entry.
+        // SAFETY: `self` still owns the retained MediaPlayer objects; removing targets
+        // and clearing now-playing info are valid shutdown calls for these commands.
         unsafe {
             self.center.setNowPlayingInfo(None);
             self.center
@@ -364,6 +383,10 @@ fn effective_rate(snapshot: &MediaSnapshot) -> f64 {
 /// Register a handler on `command` that maps the event to a [`MediaCommand`] and
 /// forwards it through the sink. Handlers must return immediately (spec C-1): the
 /// actual work happens on the app's reducer thread.
+///
+/// # Safety
+/// `command` must be a live `MPRemoteCommand` from the command center, and MediaPlayer
+/// must call the block with a non-null event pointer for the block's dynamic lifetime.
 unsafe fn register<F>(command: &MPRemoteCommand, sink: &CommandSink, map: F)
 where
     F: Fn(&MPRemoteCommandEvent) -> Option<MediaCommand> + 'static,
@@ -371,6 +394,8 @@ where
     let sink = std::sync::Arc::clone(sink);
     let handler = RcBlock::new(
         move |event: NonNull<MPRemoteCommandEvent>| -> MPRemoteCommandHandlerStatus {
+            // SAFETY: MediaPlayer invokes the block with a valid event pointer for
+            // the duration of the callback; we do not store the borrowed reference.
             let event = unsafe { event.as_ref() };
             match map(event) {
                 Some(cmd) => {
@@ -381,6 +406,8 @@ where
             }
         },
     );
+    // SAFETY: `command` is live for this registration call and the block is copied by
+    // MediaPlayer; failure is reported by the Objective-C binding rather than UB.
     unsafe {
         command.setEnabled(true);
         let _token = command.addTargetWithHandler(&handler);
@@ -410,6 +437,8 @@ fn load_artwork(path: &std::path::Path) -> Option<Retained<MPMediaItemArtwork>> 
         // The captured `Retained` keeps the image alive for the block's lifetime.
         NonNull::from(&*image)
     });
+    // SAFETY: the request handler always returns a non-null NSImage retained by the
+    // copied block, and `bounds` is finite positive fallback image geometry.
     Some(unsafe {
         MPMediaItemArtwork::initWithBoundsSize_requestHandler(
             MPMediaItemArtwork::alloc(),

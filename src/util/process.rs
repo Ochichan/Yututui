@@ -235,6 +235,8 @@ fn kill_and_wait_std(child: &mut std::process::Child, profile: ProcessProfile) {
     {
         // Best effort: the direct child may already have exited; the group kill catches
         // still-running yt-dlp helpers such as ffmpeg that inherited the process group.
+        // SAFETY: negative pid targets the child's process group; `kill` is a single
+        // syscall and any ESRCH/EPERM failure is intentionally ignored as best-effort cleanup.
         unsafe {
             libc::kill(-pid, libc::SIGKILL);
         }
@@ -252,6 +254,8 @@ pub async fn kill_and_wait_tokio(child: &mut tokio::process::Child, profile: Pro
         && let Some(id) = child.id()
         && let Ok(pid) = libc::pid_t::try_from(id)
     {
+        // SAFETY: same process-group kill contract as the std child path; failure only
+        // means the group no longer exists or cannot be signaled, so cleanup continues.
         unsafe {
             libc::kill(-pid, libc::SIGKILL);
         }
@@ -586,6 +590,8 @@ mod tests {
             .parse()
             .expect("pid file should contain a pid");
         for _ in 0..20 {
+            // SAFETY: signal 0 probes process existence without delivery; a stale or
+            // unauthorized pid just reports failure through errno/false.
             let alive = unsafe { libc::kill(pid, 0) == 0 };
             if !alive {
                 let _ = std::fs::remove_dir_all(&root);

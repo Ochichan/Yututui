@@ -96,6 +96,8 @@ fn platform_install(_exe: &Path, command: &str) -> Result<(), StartupError> {
     };
 
     let mut key: HKEY = null_mut();
+    // SAFETY: `RUN_KEY` is passed as a NUL-terminated UTF-16 string; output `key`
+    // points to valid storage and the return code is checked before use.
     let rc = unsafe {
         RegCreateKeyExW(
             HKEY_CURRENT_USER,
@@ -115,6 +117,8 @@ fn platform_install(_exe: &Path, command: &str) -> Result<(), StartupError> {
 
     let command_wide = wide(command);
     let bytes = bytes_len(&command_wide)?;
+    // SAFETY: `key` is a successfully opened registry handle; `command_wide` is
+    // NUL-terminated UTF-16 and `bytes` covers the buffer in bytes.
     let rc = unsafe {
         RegSetValueExW(
             key,
@@ -125,6 +129,8 @@ fn platform_install(_exe: &Path, command: &str) -> Result<(), StartupError> {
             bytes,
         )
     };
+    // SAFETY: `key` is owned by this function after RegCreateKeyExW succeeds and is
+    // closed exactly once before returning.
     unsafe {
         RegCloseKey(key);
     }
@@ -183,6 +189,8 @@ fn platform_uninstall() -> Result<(), StartupError> {
     };
 
     let mut key: HKEY = null_mut();
+    // SAFETY: `RUN_KEY` is a NUL-terminated UTF-16 string; output `key` storage is
+    // valid and the return code is checked before any handle use.
     let rc = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -199,7 +207,11 @@ fn platform_uninstall() -> Result<(), StartupError> {
         return Err(registry_error("open HKCU Run", rc));
     }
 
+    // SAFETY: `key` is a valid open registry handle and the value name is
+    // NUL-terminated for the duration of the call.
     let rc = unsafe { RegDeleteValueW(key, wide(RUN_VALUE_NAME).as_ptr()) };
+    // SAFETY: `key` is owned by this function after RegOpenKeyExW succeeds and is
+    // closed exactly once before returning.
     unsafe {
         RegCloseKey(key);
     }
@@ -238,6 +250,8 @@ fn platform_status() -> Result<StartupStatus, StartupError> {
     };
 
     let mut key: HKEY = null_mut();
+    // SAFETY: `RUN_KEY` is a NUL-terminated UTF-16 string; output `key` storage is
+    // valid and the return code is checked before any handle use.
     let rc = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -257,6 +271,8 @@ fn platform_status() -> Result<StartupStatus, StartupError> {
     let name = wide(RUN_VALUE_NAME);
     let mut value_type = 0u32;
     let mut bytes = 0u32;
+    // SAFETY: `key` and `name` are valid; null data buffer requests the required byte
+    // size, which Windows writes into `bytes`.
     let rc = unsafe {
         RegQueryValueExW(
             key,
@@ -268,18 +284,21 @@ fn platform_status() -> Result<StartupStatus, StartupError> {
         )
     };
     if rc == ERROR_FILE_NOT_FOUND {
+        // SAFETY: close the valid query handle before returning Disabled.
         unsafe {
             RegCloseKey(key);
         }
         return Ok(StartupStatus::Disabled);
     }
     if rc != ERROR_SUCCESS {
+        // SAFETY: close the valid query handle before returning the registry error.
         unsafe {
             RegCloseKey(key);
         }
         return Err(registry_error("query HKCU Run value", rc));
     }
     if value_type != REG_SZ || bytes == 0 {
+        // SAFETY: close the valid query handle before returning Disabled.
         unsafe {
             RegCloseKey(key);
         }
@@ -287,6 +306,8 @@ fn platform_status() -> Result<StartupStatus, StartupError> {
     }
 
     let mut buffer = vec![0u16; (bytes as usize).div_ceil(2)];
+    // SAFETY: `buffer` has at least the byte length reported by the size query;
+    // Windows writes UTF-16 data and updates `bytes`.
     let rc = unsafe {
         RegQueryValueExW(
             key,
@@ -297,6 +318,8 @@ fn platform_status() -> Result<StartupStatus, StartupError> {
             &mut bytes,
         )
     };
+    // SAFETY: `key` is owned by this function after RegOpenKeyExW succeeds and is
+    // closed exactly once after the final query.
     unsafe {
         RegCloseKey(key);
     }

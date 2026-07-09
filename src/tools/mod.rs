@@ -1228,8 +1228,7 @@ mod tests {
                 let dir =
                     std::env::temp_dir().join(format!("ytt-tools-state-{}", std::process::id()));
                 std::fs::create_dir_all(&dir).unwrap();
-                // SAFETY: test-only; set once before any concurrent reader can care.
-                unsafe { std::env::set_var("YTM_TOOLS_DIR", &dir) };
+                crate::test_util::env::set_var("YTM_TOOLS_DIR", &dir);
             });
         }
 

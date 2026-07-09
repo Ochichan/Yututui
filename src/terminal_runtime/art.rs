@@ -241,53 +241,24 @@ pub(crate) fn log_art_picker(picker: Option<&ratatui_image::picker::Picker>) {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
-    use std::sync::{Mutex, MutexGuard};
-
+    use crate::test_util::env::{with_var, with_vars};
     use ratatui_image::picker::ProtocolType;
 
     use super::*;
 
-    fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: Mutex<()> = Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    const TERMINAL_ENV: &[(&str, Option<&str>)] = &[
+        ("KITTY_WINDOW_ID", None),
+        ("WEZTERM_EXECUTABLE", None),
+        ("KONSOLE_VERSION", None),
+        ("WT_SESSION", None),
+        ("TERM", None),
+        ("TERM_PROGRAM", None),
+    ];
 
-    struct EnvRestore(Vec<(String, Option<OsString>)>);
-
-    impl EnvRestore {
-        fn capture(names: &[&str]) -> Self {
-            Self(
-                names
-                    .iter()
-                    .map(|name| ((*name).to_string(), std::env::var_os(name)))
-                    .collect(),
-            )
-        }
-    }
-
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (name, value) in &self.0 {
-                match value {
-                    Some(value) => unsafe { std::env::set_var(name.as_str(), value.as_os_str()) },
-                    None => unsafe { std::env::remove_var(name.as_str()) },
-                }
-            }
-        }
-    }
-
-    fn set_env(name: &str, value: Option<&str>) {
-        match value {
-            Some(value) => unsafe { std::env::set_var(name, value) },
-            None => unsafe { std::env::remove_var(name) },
-        }
-    }
-
-    fn with_env<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _restore = EnvRestore::capture(&[name]);
-        set_env(name, value);
-        f()
+    fn with_terminal_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+        let mut scoped = TERMINAL_ENV.to_vec();
+        scoped.extend_from_slice(vars);
+        with_vars(&scoped, f)
     }
 
     #[test]
@@ -317,66 +288,52 @@ mod tests {
 
     #[test]
     fn image_protocol_override_reads_environment_exactly() {
-        let _guard = env_lock();
-        with_env("YTM_TUI_IMAGE_PROTOCOL", Some("kitty"), || {
+        with_var("YTM_TUI_IMAGE_PROTOCOL", Some("kitty"), || {
             assert_eq!(image_protocol_override(), Some(ProtocolType::Kitty));
         });
-        with_env("YTM_TUI_IMAGE_PROTOCOL", Some("unsupported"), || {
+        with_var("YTM_TUI_IMAGE_PROTOCOL", Some("unsupported"), || {
             assert_eq!(image_protocol_override(), None);
         });
-        with_env("YTM_TUI_IMAGE_PROTOCOL", None, || {
+        with_var("YTM_TUI_IMAGE_PROTOCOL", None, || {
             assert_eq!(image_protocol_override(), None);
         });
     }
 
     #[test]
     fn terminal_native_image_hints_follow_known_env_vars() {
-        let _guard = env_lock();
-        const NAMES: &[&str] = &[
-            "KITTY_WINDOW_ID",
-            "WEZTERM_EXECUTABLE",
-            "KONSOLE_VERSION",
-            "WT_SESSION",
-            "TERM",
-            "TERM_PROGRAM",
-        ];
-        let _restore = EnvRestore::capture(NAMES);
-        for name in NAMES {
-            unsafe { std::env::remove_var(name) };
-        }
-        assert!(!terminal_has_native_image_hint());
+        with_terminal_env(&[], || assert!(!terminal_has_native_image_hint()));
 
-        with_env("KITTY_WINDOW_ID", Some("1"), || {
+        with_terminal_env(&[("KITTY_WINDOW_ID", Some("1"))], || {
             assert!(terminal_has_native_image_hint());
         });
-        with_env("TERM", Some("xterm-kitty"), || {
+        with_terminal_env(&[("TERM", Some("xterm-kitty"))], || {
             assert!(terminal_has_native_image_hint());
         });
-        with_env("WT_SESSION", Some("1"), || {
+        with_terminal_env(&[("WT_SESSION", Some("1"))], || {
             assert!(terminal_has_native_image_hint());
         });
-        with_env("TERM", Some("foot"), || {
+        with_terminal_env(&[("TERM", Some("foot"))], || {
             assert!(terminal_has_native_image_hint());
         });
-        with_env("TERM", Some("mintty"), || {
+        with_terminal_env(&[("TERM", Some("mintty"))], || {
             assert!(terminal_has_native_image_hint());
         });
-        with_env("TERM", Some("mlterm"), || {
+        with_terminal_env(&[("TERM", Some("mlterm"))], || {
             assert!(terminal_has_native_image_hint());
         });
-        with_env("TERM", Some("rio"), || {
+        with_terminal_env(&[("TERM", Some("rio"))], || {
             assert!(terminal_has_native_image_hint());
         });
-        with_env("TERM", Some("contour"), || {
+        with_terminal_env(&[("TERM", Some("contour"))], || {
             assert!(terminal_has_native_image_hint());
         });
-        with_env("TERM_PROGRAM", Some("WezTerm"), || {
+        with_terminal_env(&[("TERM_PROGRAM", Some("WezTerm"))], || {
             assert!(terminal_has_native_image_hint());
         });
-        with_env("TERM_PROGRAM", Some("iTerm.app"), || {
+        with_terminal_env(&[("TERM_PROGRAM", Some("iTerm.app"))], || {
             assert!(terminal_has_native_image_hint());
         });
-        with_env("TERM_PROGRAM", Some("plain-terminal"), || {
+        with_terminal_env(&[("TERM_PROGRAM", Some("plain-terminal"))], || {
             assert!(!terminal_has_native_image_hint());
         });
     }
@@ -395,63 +352,45 @@ mod tests {
 
     #[test]
     fn trusted_protocol_hint_uses_only_strong_native_hints() {
-        let _guard = env_lock();
-        const NAMES: &[&str] = &[
-            "KITTY_WINDOW_ID",
-            "WEZTERM_EXECUTABLE",
-            "KONSOLE_VERSION",
-            "WT_SESSION",
-            "TERM",
-            "TERM_PROGRAM",
-        ];
-        let _restore = EnvRestore::capture(NAMES);
-        for name in NAMES {
-            unsafe { std::env::remove_var(name) };
-        }
+        with_terminal_env(&[], || assert_eq!(trusted_protocol_hint(), None));
 
-        assert_eq!(trusted_protocol_hint(), None);
-
-        with_env("KITTY_WINDOW_ID", Some("1"), || {
+        with_terminal_env(&[("KITTY_WINDOW_ID", Some("1"))], || {
             assert_eq!(trusted_protocol_hint(), Some(ProtocolType::Kitty));
         });
-        with_env("TERM", Some("xterm-kitty"), || {
+        with_terminal_env(&[("TERM", Some("xterm-kitty"))], || {
             assert_eq!(trusted_protocol_hint(), Some(ProtocolType::Kitty));
         });
-        with_env("TERM", Some("ghostty"), || {
+        with_terminal_env(&[("TERM", Some("ghostty"))], || {
             assert_eq!(trusted_protocol_hint(), Some(ProtocolType::Kitty));
         });
-        with_env("TERM_PROGRAM", Some("iTerm.app"), || {
+        with_terminal_env(&[("TERM_PROGRAM", Some("iTerm.app"))], || {
             assert_eq!(trusted_protocol_hint(), Some(ProtocolType::Iterm2));
         });
-        with_env("WT_SESSION", Some("1"), || {
+        with_terminal_env(&[("WT_SESSION", Some("1"))], || {
             assert_eq!(trusted_protocol_hint(), None);
         });
-        with_env("TERM", Some("foot"), || {
+        with_terminal_env(&[("TERM", Some("foot"))], || {
             assert_eq!(trusted_protocol_hint(), None);
         });
     }
 
     #[test]
     fn terminal_probe_cache_key_changes_with_relevant_environment() {
-        let _guard = env_lock();
-        let _restore = EnvRestore::capture(&["YTM_TUI_IMAGE_PROTOCOL"]);
-        set_env("YTM_TUI_IMAGE_PROTOCOL", None);
-        let base = terminal_probe_cache_key();
-        with_env("YTM_TUI_IMAGE_PROTOCOL", Some("sixel"), || {
+        let base = with_var("YTM_TUI_IMAGE_PROTOCOL", None, terminal_probe_cache_key);
+        with_var("YTM_TUI_IMAGE_PROTOCOL", Some("sixel"), || {
             assert_ne!(terminal_probe_cache_key(), base);
         });
     }
 
     #[test]
     fn env_nonempty_distinguishes_absent_empty_and_present() {
-        let _guard = env_lock();
-        with_env("YTM_TUI_TEST_ENV_NONEMPTY", None, || {
+        with_var("YTM_TUI_TEST_ENV_NONEMPTY", None, || {
             assert!(!env_nonempty("YTM_TUI_TEST_ENV_NONEMPTY"));
         });
-        with_env("YTM_TUI_TEST_ENV_NONEMPTY", Some(""), || {
+        with_var("YTM_TUI_TEST_ENV_NONEMPTY", Some(""), || {
             assert!(!env_nonempty("YTM_TUI_TEST_ENV_NONEMPTY"));
         });
-        with_env("YTM_TUI_TEST_ENV_NONEMPTY", Some("1"), || {
+        with_var("YTM_TUI_TEST_ENV_NONEMPTY", Some("1"), || {
             assert!(env_nonempty("YTM_TUI_TEST_ENV_NONEMPTY"));
         });
     }

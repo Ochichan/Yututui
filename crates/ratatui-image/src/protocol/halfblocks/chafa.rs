@@ -21,6 +21,11 @@ const CHAFA_PIXEL_RGB8: u32 = 8;
 
 // FFI declarations - linked via build.rs (static or dynamic based on feature)
 #[cfg_attr(feature = "chafa-dyn", link(name = "chafa"))]
+/// # Safety
+/// The linked chafa library must provide ABI-compatible symbols matching these
+/// declarations; callers must pass only chafa-owned pointers and valid pixel buffers.
+// SAFETY: declarations mirror the chafa C API signatures used below; link features
+// choose the library, and call sites validate pointer lifetimes/ownership.
 unsafe extern "C" {
     fn chafa_symbol_map_new() -> ChafaSymbolMap;
     fn chafa_symbol_map_add_by_tags(symbol_map: ChafaSymbolMap, tags: u32);
@@ -48,13 +53,22 @@ struct ChafaState {
     symbol_map: ChafaSymbolMap,
 }
 
-// SAFETY: The chafa library functions are thread-safe for independent canvases.
-// The symbol_map is created once and only read afterwards.
+/// # Safety
+/// The cached symbol map is initialized once, then shared read-only across encode
+/// calls; canvases remain per-call and are not shared between threads.
+// SAFETY: chafa supports reading a symbol map from independent canvases; Drop owns
+// the single unref when the process-global cache is torn down.
 unsafe impl Send for ChafaState {}
+/// # Safety
+/// Same invariant as `Send`: shared access never mutates the cached symbol map after
+/// initialization, and each encode call owns its canvas/config.
+// SAFETY: the raw pointer is treated as immutable after setup and is only freed once.
 unsafe impl Sync for ChafaState {}
 
 impl Drop for ChafaState {
     fn drop(&mut self) {
+        // SAFETY: `symbol_map` was returned by `chafa_symbol_map_new` and is owned by
+        // this state; Drop releases it exactly once.
         unsafe {
             chafa_symbol_map_unref(self.symbol_map);
         }
@@ -64,6 +78,8 @@ impl Drop for ChafaState {
 static CHAFA: OnceLock<ChafaState> = OnceLock::new();
 
 fn init_chafa() -> ChafaState {
+    // SAFETY: creates a chafa symbol map, configures it before sharing, and transfers
+    // ownership to `ChafaState` for a single unref in Drop.
     unsafe {
         let symbol_map = chafa_symbol_map_new();
         chafa_symbol_map_add_by_tags(symbol_map, CHAFA_SYMBOL_TAG_ALL);
@@ -78,6 +94,8 @@ pub fn encode(img: &DynamicImage, size: Size) -> Option<Vec<HalfBlock>> {
     let width = size.width;
     let height = size.height;
 
+    // SAFETY: config/canvas pointers are created by chafa constructors and released
+    // once; the RGB buffer lives through `draw_all_pixels`, and output pointers are valid.
     unsafe {
         let config = chafa_canvas_config_new();
         chafa_canvas_config_set_symbol_map(config, chafa.symbol_map);

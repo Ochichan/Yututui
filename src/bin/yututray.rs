@@ -171,6 +171,8 @@ async fn run_polling() {
 fn attach_parent_console() {
     use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
     // Best-effort: fails when there is no parent console, which is fine.
+    // SAFETY: ATTACH_PARENT_PROCESS is the documented sentinel; failure only means
+    // this process has no attachable parent console.
     unsafe {
         AttachConsole(ATTACH_PARENT_PROCESS);
     }
