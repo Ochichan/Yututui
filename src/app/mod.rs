@@ -76,6 +76,7 @@ pub use mouse::HitMap;
 mod now_playing;
 mod now_playing_reducer;
 mod player;
+pub(in crate::app) mod prefetch;
 pub use player::PlayerMsg;
 mod playlists_reducer;
 mod queue;

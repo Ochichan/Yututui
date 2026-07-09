@@ -231,7 +231,7 @@ fn first_ambiguous_candidate(outcome: &Option<MatchOutcome>) -> Option<SelectedC
         key: candidate.key.clone(),
         score: candidate.score,
         display: candidate.display.clone(),
-        score_breakdown: candidate.score_breakdown,
+        score_breakdown: candidate.score_breakdown.clone(),
     })
 }
 
