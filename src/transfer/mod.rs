@@ -70,6 +70,11 @@ pub enum TransferDest {
     SpotifyNewPlaylist {
         name: Option<String>,
     },
+    /// Replace the contents of one explicitly selected, owned Spotify playlist.
+    /// CLI parsing requires an accompanying destructive `--sync` acknowledgement.
+    SpotifyMirrorPlaylist {
+        id: String,
+    },
     File {
         path: PathBuf,
         format: FileFormat,
@@ -83,10 +88,24 @@ pub enum FileFormat {
     Csv,
 }
 
+/// Destination media intent for Spotify -> YouTube Music/local imports.
+///
+/// The default preserves the historical song-first matcher for old settings and checkpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMediaKind {
+    #[default]
+    Track,
+    MusicVideo,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobSpec {
     pub source: TransferSource,
     pub dest: TransferDest,
+    /// Select the normal song catalog or the official-music-video retrieval path.
+    #[serde(default)]
+    pub media_kind: ImportMediaKind,
     /// Fetch + match + checkpoint, but skip every write. Resuming the job afterwards
     /// performs the writes reusing the saved matches — the recommended big-playlist flow.
     pub dry_run: bool,
@@ -257,5 +276,41 @@ mod tests {
         assert_eq!("refresh".parse(), Ok(TransferCacheMode::Refresh));
         assert_eq!("off".parse(), Ok(TransferCacheMode::Off));
         assert!("stale".parse::<TransferCacheMode>().is_err());
+    }
+
+    #[test]
+    fn old_job_specs_default_to_track_media() {
+        let spec: JobSpec = serde_json::from_value(serde_json::json!({
+            "source": { "kind": "spotify_liked" },
+            "dest": { "kind": "local_playlist", "name": null },
+            "dry_run": true,
+            "min_score": 0.8,
+            "take_best": false,
+            "match_policy": "strict",
+            "allow_user_videos": false,
+            "cache_mode": "use",
+            "rematch": false
+        }))
+        .expect("legacy job spec");
+
+        assert_eq!(spec.media_kind, ImportMediaKind::Track);
+        assert_eq!(
+            serde_json::to_value(ImportMediaKind::MusicVideo).expect("serialize media kind"),
+            serde_json::json!("music_video")
+        );
+    }
+
+    #[test]
+    fn spotify_mirror_destination_keeps_the_explicit_id() {
+        let dest = TransferDest::SpotifyMirrorPlaylist {
+            id: "0123456789ABCDEFGHIJKL".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_value(dest).expect("serialize mirror destination"),
+            serde_json::json!({
+                "kind": "spotify_mirror_playlist",
+                "id": "0123456789ABCDEFGHIJKL"
+            })
+        );
     }
 }

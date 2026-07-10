@@ -36,6 +36,7 @@ fn cand(title: &str, artist: &str, album: Option<&str>, dur: Option<u32>) -> Mat
         release_year: None,
         explicit: None,
         source_kind: CandidateSourceKind::YtmCatalogSong,
+        music_video_type: None,
         channel: Some(artist.to_owned()),
         channel_id: None,
         channel_verified: None,
@@ -239,6 +240,164 @@ fn ytm_query_plan_handles_missing_artists() {
         ytm_query_plan(&input),
         vec!["Song Album".to_owned(), "Song".to_owned()]
     );
+}
+
+#[test]
+fn music_video_query_plan_is_video_first_and_never_requests_audio() {
+    let input = input(
+        "Song Title (feat. Guest)",
+        &["Primary"],
+        Some("Album"),
+        Some(180),
+    );
+
+    let queries = ytm_music_video_query_plan(&input);
+    assert_eq!(
+        queries,
+        vec![
+            "Primary Song Title official music video".to_owned(),
+            "Primary Song Title official video".to_owned(),
+            "Primary Song Title (feat. Guest) music video".to_owned(),
+            "Song Title official music video".to_owned(),
+        ]
+    );
+    assert!(queries.iter().all(|query| !query.contains("audio")));
+}
+
+#[test]
+fn in_run_memo_keys_partition_track_and_music_video_intents() {
+    let input = input("Song", &["Artist"], Some("Album"), Some(180));
+    assert_ne!(
+        memo_key_for_media(&input, ImportMediaKind::Track),
+        memo_key_for_media(&input, ImportMediaKind::MusicVideo)
+    );
+    assert_eq!(
+        memo_key(&input),
+        memo_key_for_media(&input, ImportMediaKind::Track)
+    );
+}
+
+fn music_video_candidate(video_type: YtmMusicVideoType) -> MatchCandidate {
+    let mut candidate = cand("Song (Official Music Video)", "Artist", None, Some(184));
+    candidate.source_kind = CandidateSourceKind::YtmCatalogVideo;
+    candidate.music_video_type = Some(video_type);
+    candidate.preflighted = true;
+    candidate.has_audio_format = Some(true);
+    candidate
+}
+
+fn music_video_config() -> MatchConfig {
+    MatchConfig {
+        media_kind: ImportMediaKind::MusicVideo,
+        ..MatchConfig::default()
+    }
+}
+
+#[test]
+fn omv_and_official_source_music_are_eligible_after_normal_safety_gates() {
+    let input = input("Song", &["Artist"], None, Some(180));
+    for video_type in [
+        YtmMusicVideoType::Omv,
+        YtmMusicVideoType::OfficialSourceMusic,
+    ] {
+        let candidate = music_video_candidate(video_type);
+        let score =
+            score_candidate_breakdown_with_config(&input, &candidate, &music_video_config());
+        assert_eq!(score.reject_reason, None, "{video_type:?}");
+        assert!(!score.accept_blocked, "{video_type:?}");
+        assert_eq!(
+            score.music_video_type.as_deref(),
+            Some(video_type.code()),
+            "{video_type:?}"
+        );
+    }
+}
+
+#[test]
+fn official_video_type_still_requires_metadata_preflight() {
+    let input = input("Song", &["Artist"], None, Some(180));
+    let mut candidate = music_video_candidate(YtmMusicVideoType::Omv);
+    candidate.preflighted = false;
+
+    let score = score_candidate_breakdown_with_config(&input, &candidate, &music_video_config());
+    assert!(score.accept_blocked);
+    assert!(
+        score
+            .reason_codes
+            .contains(&"music_video_preflight_required".to_owned())
+    );
+}
+
+#[test]
+fn known_non_mv_types_are_hard_rejected_even_under_aggressive_user_video_policy() {
+    let input = input("Song", &["Artist"], None, Some(180));
+    let cfg = MatchConfig {
+        policy: MatchPolicy::Aggressive,
+        allow_user_videos: true,
+        media_kind: ImportMediaKind::MusicVideo,
+        ..MatchConfig::default()
+    };
+    for (video_type, reason) in [
+        (YtmMusicVideoType::Ugc, "music_video_type_ugc"),
+        (YtmMusicVideoType::Atv, "music_video_type_atv"),
+        (YtmMusicVideoType::Shoulder, "music_video_type_shoulder"),
+        (YtmMusicVideoType::Upload, "music_video_type_upload"),
+        (YtmMusicVideoType::Episode, "music_video_type_episode"),
+    ] {
+        let candidate = music_video_candidate(video_type);
+        let score = score_candidate_breakdown_with_config(&input, &candidate, &cfg);
+        assert_eq!(score.total, 0.0, "{video_type:?}");
+        assert_eq!(
+            score.reject_reason.as_deref(),
+            Some(reason),
+            "{video_type:?}"
+        );
+        assert!(
+            score
+                .reason_codes
+                .contains(&"music_video_hard_reject".to_owned()),
+            "{video_type:?}"
+        );
+    }
+}
+
+#[test]
+fn unknown_type_needs_strong_preflight_corroboration() {
+    let input = input("Song", &["Artist"], None, Some(180));
+    let mut candidate = music_video_candidate(YtmMusicVideoType::Unknown);
+    candidate.channel = Some("Random uploader".to_owned());
+    candidate.channel_verified = Some(false);
+    let review = score_candidate_breakdown_with_config(&input, &candidate, &music_video_config());
+    assert!(review.accept_blocked);
+    assert_eq!(review.reject_reason, None);
+
+    candidate.channel = Some("Artist - Topic".to_owned());
+    let corroborated =
+        score_candidate_breakdown_with_config(&input, &candidate, &music_video_config());
+    assert!(!corroborated.accept_blocked);
+    assert!(
+        corroborated
+            .reason_codes
+            .contains(&"music_video_official_corroborated".to_owned())
+    );
+
+    candidate.title = "Song".to_owned();
+    candidate.metadata_title = None;
+    let topic_art_track =
+        score_candidate_breakdown_with_config(&input, &candidate, &music_video_config());
+    assert!(
+        topic_art_track.accept_blocked,
+        "a trusted channel without an explicit MV marker is not enough for an unknown type"
+    );
+}
+
+#[test]
+fn song_catalog_candidates_cannot_cross_into_music_video_mode() {
+    let input = input("Song", &["Artist"], None, Some(180));
+    let candidate = cand("Song", "Artist", None, Some(180));
+    let score = score_candidate_breakdown_with_config(&input, &candidate, &music_video_config());
+    assert_eq!(score.reject_reason.as_deref(), Some("music_video_required"));
+    assert_eq!(score.total, 0.0);
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! The minimal Spotify Web API client. One central [`SpotifyClient::request_json`] path
 //! carries all policy: self-pacing, proactive + reactive token refresh (rotation-safe),
-//! 429 handling with a per-job wait budget, dev-mode 403 detection, body caps, and
+//! 429 handling with a per-job wait budget, message-preserving 403 handling, body caps, and
 //! secret-safe errors. Exclusive `&mut self` ownership (one task per client) is what
 //! makes refresh single-flight — documented invariant, no mutex.
 
@@ -11,7 +11,8 @@ use serde::de::DeserializeOwned;
 
 use super::auth::{self, SpotifyToken};
 use super::models::{
-    Paging, RawPlaylist, RawTrackItem, SpotifyPlaylist, SpotifyTrack, SpotifyUser, simplify,
+    Paging, RawPlaylist, RawTrackItem, SpotifyPlaylist, SpotifyPlaylistItemRef, SpotifyTrack,
+    SpotifyUser, playlist_item_ref, simplify,
 };
 use super::{API_BASE, BODY_MAX};
 use crate::util::http::json_limited;
@@ -196,6 +197,25 @@ fn can_replay_after_transient_failure(method: &reqwest::Method) -> bool {
     )
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct PlaylistItemsSnapshot {
+    #[serde(default)]
+    snapshot_id: Option<String>,
+}
+
+fn validate_playlist_item_batch(uris: &[String]) -> Result<(), SpotifyError> {
+    if uris.len() <= 100 {
+        return Ok(());
+    }
+    Err(SpotifyError::Api {
+        status: 400,
+        message: format!(
+            "playlist item update contains {} URIs; Spotify accepts at most 100 per request",
+            uris.len()
+        ),
+    })
+}
+
 fn transient_backoff(attempt: u32) -> Duration {
     let multiplier = 1u32 << attempt.min(8);
     TRANSIENT_BACKOFF_BASE.saturating_mul(multiplier)
@@ -206,7 +226,9 @@ fn transient_backoff(attempt: u32) -> Duration {
 pub enum SpotifyError {
     /// 401 after a refresh attempt, or the refresh itself failed: reconnect.
     Auth(String),
-    /// 403 from a Development Mode app: the account isn't on the app's allowlist.
+    /// Explicit Development Mode guidance for callers that have positively identified
+    /// an allowlist failure. Generic 403 responses remain `Api` so their sanitized Spotify
+    /// message is not discarded or misclassified as an allowlist problem.
     NotAllowlisted,
     /// The per-job 429 budget ran out; the job should checkpoint and abort resumably.
     RateLimited,
@@ -344,12 +366,61 @@ impl SpotifyClient {
             .request_json(
                 reqwest::Method::GET,
                 format!(
-                    "{API_BASE}/playlists/{id}?fields=id,name,collaborative,owner(display_name,id),items(total),tracks(total)"
+                    "{API_BASE}/playlists/{id}?fields=id,name,collaborative,snapshot_id,owner(display_name,id),items(total),tracks(total)"
                 ),
                 None,
             )
             .await?;
         Ok(raw.into())
+    }
+
+    /// Every row in a playlist, in destination order, including episodes, local files,
+    /// unknown future item types, and removed/null rows. Unlike [`Self::playlist_tracks`],
+    /// this method never filters the envelope's item rows.
+    pub async fn playlist_item_refs(
+        &mut self,
+        id: &str,
+        on_page: &mut (dyn FnMut(u32, u32) + Send),
+    ) -> Result<Vec<SpotifyPlaylistItemRef>, SpotifyError> {
+        let fields = "items(is_local,item(type,uri,is_local)),total,next,offset,limit";
+        let mut url = format!("{API_BASE}/playlists/{id}/items?limit={PAGE_LIMIT}&fields={fields}");
+        let mut out = Vec::new();
+        let mut seen = 0u32;
+        let mut visited = HashSet::from([url.clone()]);
+        let mut last_end = None;
+        let mut expected_total = None;
+        let mut pages = 0u32;
+        loop {
+            pages += 1;
+            let page: Paging<RawTrackItem> =
+                self.request_json(reqwest::Method::GET, url, None).await?;
+            let item_count = page.items.len();
+            response_page_is_monotonic(
+                &mut last_end,
+                page.offset,
+                item_count,
+                "playlist_item_refs",
+            )?;
+            response_total_is_stable(&mut expected_total, page.total, "playlist_item_refs")?;
+            if pages == 1 {
+                reserve_reported_total(&mut out, page.total);
+            }
+            seen = seen.saturating_add(u32::try_from(item_count).unwrap_or(u32::MAX));
+            out.extend(page.items.iter().map(playlist_item_ref));
+            on_page(seen, page.total);
+            let Some(next) = next_page_url(
+                page.next,
+                pages,
+                page.offset,
+                item_count,
+                &mut visited,
+                "playlist_item_refs",
+            )?
+            else {
+                return Ok(out);
+            };
+            url = next;
+        }
     }
 
     /// All of a playlist's playable tracks, in order; `on_page(done, total)` reports
@@ -483,9 +554,9 @@ impl SpotifyClient {
         &mut self,
         max_tracks: usize,
         on_page: &mut (dyn FnMut(u32, u32) + Send),
-    ) -> Result<Vec<SpotifyTrack>, SpotifyError> {
+    ) -> Result<(Vec<SpotifyTrack>, bool), SpotifyError> {
         if max_tracks == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
 
         let first_url = format!("{API_BASE}/me/tracks?limit={PAGE_LIMIT}&offset=0");
@@ -499,6 +570,7 @@ impl SpotifyClient {
             )));
         }
         let total = first.total;
+        let truncated = usize::try_from(total).unwrap_or(usize::MAX) > max_tracks;
         if usize::try_from(total).unwrap_or(usize::MAX) <= max_tracks {
             let mut out = Vec::new();
             reserve_reported_total(&mut out, total);
@@ -534,7 +606,7 @@ impl SpotifyClient {
                     "liked_tracks_for_transfer",
                 )?
                 else {
-                    return Ok(out);
+                    return Ok((out, truncated));
                 };
                 page = self.request_json(reqwest::Method::GET, next, None).await?;
             }
@@ -590,7 +662,7 @@ impl SpotifyClient {
             upper = offset;
         }
         oldest_first.reverse();
-        Ok(oldest_first)
+        Ok((oldest_first, truncated))
     }
 
     /// Create a private playlist; returns its id.
@@ -599,11 +671,10 @@ impl SpotifyClient {
         name: &str,
         description: &str,
     ) -> Result<String, SpotifyError> {
-        let uid = self.me().await?.id;
         let body: serde_json::Value = self
             .request_json(
                 reqwest::Method::POST,
-                format!("{API_BASE}/users/{uid}/playlists"),
+                format!("{API_BASE}/me/playlists"),
                 Some(serde_json::json!({
                     "name": name, "description": description, "public": false,
                 })),
@@ -615,22 +686,41 @@ impl SpotifyClient {
             .ok_or_else(|| SpotifyError::Decode("create playlist: no id".to_owned()))
     }
 
-    /// Append ≤100 URIs (caller pre-chunks; order within a call is preserved).
+    /// Append ≤100 URIs (caller pre-chunks; order within a call is preserved), returning
+    /// Spotify's successor snapshot when present.
     /// Post-migration endpoint; works on existing own playlists even in Development Mode.
     pub async fn add_tracks(
         &mut self,
         playlist_id: &str,
         uris: &[String],
-    ) -> Result<(), SpotifyError> {
-        debug_assert!(uris.len() <= 100);
-        let _: serde_json::Value = self
+    ) -> Result<Option<String>, SpotifyError> {
+        validate_playlist_item_batch(uris)?;
+        let snapshot: PlaylistItemsSnapshot = self
             .request_json(
                 reqwest::Method::POST,
                 format!("{API_BASE}/playlists/{playlist_id}/items"),
                 Some(serde_json::json!({ "uris": uris })),
             )
             .await?;
-        Ok(())
+        Ok(snapshot.snapshot_id.filter(|id| !id.is_empty()))
+    }
+
+    /// Replace a playlist with at most 100 initial URIs, returning Spotify's successor
+    /// snapshot when present. An empty slice is intentional and clears the playlist.
+    pub async fn replace_playlist_items(
+        &mut self,
+        playlist_id: &str,
+        uris: &[String],
+    ) -> Result<Option<String>, SpotifyError> {
+        validate_playlist_item_batch(uris)?;
+        let snapshot: PlaylistItemsSnapshot = self
+            .request_json(
+                reqwest::Method::PUT,
+                format!("{API_BASE}/playlists/{playlist_id}/items"),
+                Some(serde_json::json!({ "uris": uris })),
+            )
+            .await?;
+        Ok(snapshot.snapshot_id.filter(|id| !id.is_empty()))
     }
 
     /// Track search for the YTM→Spotify direction, top 10.
@@ -764,19 +854,16 @@ impl SpotifyClient {
             if !status.is_success() {
                 let body: serde_json::Value =
                     json_limited(resp, BODY_MAX).await.unwrap_or_default();
-                let message = body
-                    .pointer("/error/message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown")
-                    .to_owned();
+                let message = sanitize_error_text(
+                    body.pointer("/error/message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("unknown"),
+                );
                 return Err(match status.as_u16() {
                     401 => SpotifyError::Auth(message),
-                    // Dev-mode allowlist rejection is *the* predictable first-run failure;
-                    // the error text does the support work.
-                    403 => SpotifyError::NotAllowlisted,
                     code => SpotifyError::Api {
                         status: code,
-                        message: sanitize_error_text(message),
+                        message,
                     },
                 });
             }
@@ -1048,6 +1135,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn playlist_item_batches_enforce_spotifys_hundred_uri_limit() {
+        assert!(validate_playlist_item_batch(&[]).is_ok());
+        let hundred: [String; 100] = std::array::from_fn(|_| "uri".to_owned());
+        assert!(validate_playlist_item_batch(&hundred).is_ok());
+        let oversized: [String; 101] = std::array::from_fn(|_| "uri".to_owned());
+        let error = validate_playlist_item_batch(&oversized)
+            .expect_err("oversized write must fail before making a request");
+        assert!(matches!(
+            error,
+            SpotifyError::Api {
+                status: 400,
+                ref message
+            } if message.contains("at most 100")
+        ));
+    }
+
     async fn read_spotify_test_request(stream: &mut tokio::net::TcpStream) -> String {
         let mut request = Vec::new();
         let mut buf = [0u8; 1024];
@@ -1185,6 +1289,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_json_sends_put_and_decodes_playlist_snapshot() {
+        let (url, request) = serve_spotify_once(
+            "200 OK",
+            &[("Content-Type", "application/json")],
+            r#"{"snapshot_id":"successor-snapshot"}"#,
+        )
+        .await;
+        let mut client = SpotifyClient::with_token(token());
+
+        let snapshot: PlaylistItemsSnapshot = client
+            .request_json(
+                reqwest::Method::PUT,
+                url,
+                Some(serde_json::json!({"uris": Vec::<String>::new()})),
+            )
+            .await
+            .expect("empty replacement request succeeds");
+
+        assert_eq!(snapshot.snapshot_id.as_deref(), Some("successor-snapshot"));
+        let request = request.await.expect("captured PUT request");
+        assert!(request.starts_with("PUT /v1/test HTTP/1.1"));
+        assert!(request.contains(r#""uris":[]"#));
+    }
+
+    #[tokio::test]
     async fn request_json_retries_replay_safe_get_after_transient_server_failure() {
         let (url, requests) = serve_transient_then_success().await;
         let mut client = SpotifyClient::with_token(token());
@@ -1205,15 +1334,23 @@ mod tests {
         let (url, request) = serve_spotify_once(
             "403 Forbidden",
             &[("Content-Type", "application/json")],
-            r#"{"error":{"message":"dev mode"}}"#,
+            r#"{"error":{"message":"insufficient scope; access_token=secret-value"}}"#,
         )
         .await;
         let mut client = SpotifyClient::with_token(token());
         let err = client
             .request_json::<serde_json::Value>(reqwest::Method::GET, url, None)
             .await
-            .expect_err("403 maps to not-allowlisted");
-        assert!(matches!(err, SpotifyError::NotAllowlisted));
+            .expect_err("403 remains a message-preserving API error");
+        assert!(matches!(
+            err,
+            SpotifyError::Api {
+                status: 403,
+                ref message
+            } if message.contains("insufficient scope")
+                && message.contains("access_token=<redacted>")
+                && !message.contains("secret-value")
+        ));
         assert!(request.await.expect("captured 403 request").contains("GET"));
 
         let (url, _) = serve_spotify_once(

@@ -20,8 +20,12 @@ use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{self, StreamingConfig, StreamingMode};
 use crate::util::{format, http, sanitize};
 
+mod official_video_search;
+mod search_fallback;
 mod transfer_api;
 mod video_metadata;
+pub(crate) use official_video_search::TransferVideoSearchResult;
+pub use official_video_search::YtmMusicVideoType;
 pub use transfer_api::{TransferAlbum, TransferAlbumCandidate, TransferAlbumTrack};
 pub(crate) use video_metadata::YtdlpVideoMeta;
 #[cfg(test)]
@@ -46,6 +50,8 @@ static AUTH_SEARCH_HEALTH: Mutex<AuthSearchHealth> = Mutex::new(AuthSearchHealth
     consecutive_failures: 0,
     degraded_until: None,
 });
+#[cfg(test)]
+static AUTH_SEARCH_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const AUTH_DEGRADE_COOLDOWN: Duration = Duration::from_secs(600);
 const AUTH_FAILURES_BEFORE_DEGRADE: u8 = 2;
 
@@ -116,8 +122,20 @@ pub enum YtMusicApi {
 #[serde(rename_all = "snake_case")]
 pub enum YoutubeSearchKind {
     YtmCatalogSong,
+    /// Legacy/untyped video-filter row retained for old cache/report compatibility.
     YtmCatalogVideo,
+    YtmCatalogTypedVideo(YtmMusicVideoType),
     YoutubeVideoSearch,
+}
+
+impl YoutubeSearchKind {
+    pub fn music_video_type(self) -> Option<YtmMusicVideoType> {
+        match self {
+            Self::YtmCatalogTypedVideo(video_type) => Some(video_type),
+            Self::YtmCatalogVideo => Some(YtmMusicVideoType::Unknown),
+            Self::YtmCatalogSong | Self::YoutubeVideoSearch => None,
+        }
+    }
 }
 
 impl YtMusicApi {
@@ -480,29 +498,11 @@ impl YtMusicApi {
             // the continuation stream directly so we can collect up to SEARCH_RESULT_LIMIT,
             // stopping early once we have enough (or the pages run out).
             Self::Browser(c) => {
-                let songs = match transfer_api::search_catalog_songs(c, query).await {
-                    Ok(songs) => songs,
-                    // ytmapi-rs response parsers rot as YouTube shifts layouts
-                    // (0.3.2 is current upstream). Degrade instead of failing the
-                    // search: fall back to the anonymous yt-dlp path.
-                    Err(e) => {
-                        mark_auth_search_degraded();
-                        tracing::warn!(
-                            error = %sanitize::sanitize_error_text(format!("{e:#}")),
-                            "authenticated search failed; using yt-dlp for this query"
-                        );
-                        return Ok(ytdlp_search(query, SEARCH_RESULT_LIMIT)
-                            .await?
-                            .into_iter()
-                            .map(|song| (song, YoutubeSearchKind::YoutubeVideoSearch))
-                            .collect());
-                    }
-                };
-                mark_auth_search_healthy();
-                Ok(songs
-                    .into_iter()
-                    .map(|song| (song, YoutubeSearchKind::YtmCatalogSong))
-                    .collect())
+                search_fallback::authenticated_youtube_search_with_fallback(
+                    query,
+                    transfer_api::search_catalog_songs(c, query),
+                )
+                .await
             }
             Self::Anonymous => Ok(ytdlp_search(query, SEARCH_RESULT_LIMIT)
                 .await?
@@ -1513,8 +1513,9 @@ fi
         FakeYtdlpGuard { _guard: guard }
     }
 
-    #[test]
-    fn auth_search_breaker_requires_a_streak_resets_and_expires() {
+    #[tokio::test]
+    async fn auth_search_breaker_requires_a_streak_resets_and_expires() {
+        let _guard = AUTH_SEARCH_TEST_LOCK.lock().await;
         mark_auth_search_healthy();
         assert!(!auth_search_degraded());
 

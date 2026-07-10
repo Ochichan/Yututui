@@ -145,14 +145,24 @@ impl App {
             .as_ref()
             .map(|st| st.draft.spotify_import_mode)
             .unwrap_or(self.config.spotify.import_mode);
-        let (dry_run, auto_accept_ambiguous_min_score) = match import_mode {
-            crate::config::SpotifyImportMode::FastPlaylist => (false, Some(0.75)),
-            crate::config::SpotifyImportMode::StrictPlaylist => (false, None),
-            crate::config::SpotifyImportMode::ReviewFirst => (true, None),
+        let (dry_run, auto_accept_ambiguous_min_score, media_kind) = match import_mode {
+            crate::config::SpotifyImportMode::FastPlaylist => {
+                (false, Some(0.75), crate::transfer::ImportMediaKind::Track)
+            }
+            crate::config::SpotifyImportMode::StrictPlaylist => {
+                (false, None, crate::transfer::ImportMediaKind::Track)
+            }
+            crate::config::SpotifyImportMode::ReviewFirst => {
+                (true, None, crate::transfer::ImportMediaKind::Track)
+            }
+            crate::config::SpotifyImportMode::MusicVideoPlaylist => {
+                (false, None, crate::transfer::ImportMediaKind::MusicVideo)
+            }
         };
         let spec = crate::transfer::JobSpec {
             source: item.source,
             dest: crate::transfer::TransferDest::LocalPlaylist { name: None },
+            media_kind,
             dry_run,
             min_score: 0.80,
             take_best: false,
@@ -162,7 +172,8 @@ impl App {
                     crate::transfer::MatchPolicy::Balanced
                 }
                 crate::config::SpotifyImportMode::StrictPlaylist
-                | crate::config::SpotifyImportMode::ReviewFirst => {
+                | crate::config::SpotifyImportMode::ReviewFirst
+                | crate::config::SpotifyImportMode::MusicVideoPlaylist => {
                     crate::transfer::MatchPolicy::Strict
                 }
             },

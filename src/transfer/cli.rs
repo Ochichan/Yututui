@@ -13,13 +13,21 @@ use std::time::Duration;
 
 use super::checkpoint::{Checkpoint, ReviewDecision, TransferReport};
 use super::session::{ImportSession, ImportSessionRowStatus};
+#[cfg(test)]
+use super::{FileFormat, ImportMediaKind, MatchPolicy, TransferCacheMode};
 use super::{
-    FileFormat, JobCtx, JobError, JobSpec, MatchPolicy, Stage, TransferCacheMode, TransferDest,
-    TransferProgress, TransferSource, new_job_id, run_job,
+    JobCtx, JobError, JobSpec, Stage, TransferDest, TransferProgress, TransferSource, new_job_id,
+    run_job,
 };
 use crate::config::Config;
 use crate::spotify::auth::{self, SpotifyToken};
 use crate::spotify::client::{SpotifyClient, SpotifyError};
+
+mod parsing;
+
+use parsing::{parse_backup, parse_export, parse_import};
+#[cfg(test)]
+use parsing::{parse_common, parse_spotify_playlist_id, parse_ytm_source};
 
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_FAILED: i32 = 1;
@@ -47,6 +55,7 @@ Commands:
       --to-playlist NAME           Append to (or create) this YTM account playlist
       --to likes                   Like each track instead of building a playlist
       --to local[:NAME]            Into the TUI's own Library playlists (playable in-app)
+      --media track|music-video    Match normal tracks (default) or official-family videos
       --dry-run                    Fetch + match only; `resume` performs the writes
       --yes                        Skip the confirmation gate
       --min-score 0.80             Match accept threshold (0..1)
@@ -56,6 +65,7 @@ Commands:
       --take-best                  Accept the best ambiguous candidate too
       --rematch                    Ignore cached matches / file fast-path ids
   export <ytm:ID|local:KEY> --to spotify [--name NAME] [--dry-run] [--yes] [--min-score X]
+  export <ytm:ID|local:KEY> --to spotify:<PLAYLIST-ID> --sync [--dry-run] [--yes]
   export <ytm:ID|local:KEY> --to <FILE.json|FILE.csv>
   backup --dir DIR [--csv]         Every YTM playlist → one JSON (+CSV) file each
   resume <JOB-ID> [--yes]          Continue a checkpointed job
@@ -170,230 +180,6 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
-// Parsing ---------------------------------------------------------------------------
-
-struct CommonFlags {
-    dry_run: bool,
-    yes: bool,
-    min_score: f32,
-    match_policy: Option<MatchPolicy>,
-    cache_mode: TransferCacheMode,
-    allow_user_videos: bool,
-    take_best: bool,
-    rematch: bool,
-}
-
-fn parse_common(args: &mut Vec<&str>) -> Result<CommonFlags, String> {
-    let mut flags = CommonFlags {
-        dry_run: false,
-        yes: false,
-        min_score: 0.80,
-        match_policy: None,
-        cache_mode: TransferCacheMode::Use,
-        allow_user_videos: false,
-        take_best: false,
-        rematch: false,
-    };
-    let mut keep = Vec::new();
-    let mut it = args.iter().copied().peekable();
-    while let Some(arg) = it.next() {
-        match arg {
-            "--dry-run" => flags.dry_run = true,
-            "--yes" => flags.yes = true,
-            "--take-best" => flags.take_best = true,
-            "--allow-user-videos" => flags.allow_user_videos = true,
-            "--rematch" => flags.rematch = true,
-            "--policy" => {
-                let v = it.next().ok_or("--policy needs a value")?;
-                flags.match_policy = Some(v.parse()?);
-            }
-            "--cache" => {
-                let v = it.next().ok_or("--cache needs a value")?;
-                flags.cache_mode = v.parse()?;
-            }
-            "--min-score" => {
-                let v = it.next().ok_or("--min-score needs a value")?;
-                let score: f32 = v.parse().map_err(|_| format!("bad --min-score `{v}`"))?;
-                if !(0.0..=1.0).contains(&score) {
-                    return Err(format!("--min-score must be 0..1 (got {score})"));
-                }
-                flags.min_score = score;
-            }
-            other => keep.push(other),
-        }
-    }
-    *args = keep;
-    Ok(flags)
-}
-
-/// A Spotify playlist reference in any of the shapes people paste.
-fn parse_spotify_playlist_id(s: &str) -> Option<String> {
-    if let Some(rest) = s.strip_prefix("spotify:playlist:") {
-        return Some(rest.to_owned());
-    }
-    if let Some(idx) = s.find("open.spotify.com/playlist/") {
-        let rest = &s[idx + "open.spotify.com/playlist/".len()..];
-        let id: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric())
-            .collect();
-        return (!id.is_empty()).then_some(id);
-    }
-    (s.len() == 22 && s.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| s.to_owned())
-}
-
-fn parse_import(args: &[&str]) -> Result<(JobSpec, bool), String> {
-    let mut args: Vec<&str> = args.to_vec();
-    let flags = parse_common(&mut args)?;
-    let mut source_arg = None;
-    let mut dest = None;
-    let mut it = args.iter().copied().peekable();
-    while let Some(arg) = it.next() {
-        match arg {
-            "--to-playlist" => {
-                let name = it.next().ok_or("--to-playlist needs a name")?;
-                dest = Some(TransferDest::YtmExistingPlaylist {
-                    name: name.to_owned(),
-                });
-            }
-            "--to" => match it.next() {
-                Some("likes") => dest = Some(TransferDest::YtmLikes),
-                Some("local") => dest = Some(TransferDest::LocalPlaylist { name: None }),
-                Some(other) if other.starts_with("local:") => {
-                    dest = Some(TransferDest::LocalPlaylist {
-                        name: Some(other["local:".len()..].to_owned())
-                            .filter(|n| !n.trim().is_empty()),
-                    });
-                }
-                other => {
-                    return Err(format!(
-                        "--to expects `likes`, `local`, or `local:NAME` (got {other:?})"
-                    ));
-                }
-            },
-            other if source_arg.is_none() => source_arg = Some(other.to_owned()),
-            other => return Err(format!("unexpected argument `{other}`")),
-        }
-    }
-    let source_arg = source_arg.ok_or("missing source (Spotify URL/id, `liked`, or a file)")?;
-    // Deterministic source resolution: existing file → file import; `liked`; else it
-    // must parse as a Spotify playlist reference.
-    let source = if std::path::Path::new(&source_arg).is_file() {
-        TransferSource::File {
-            path: PathBuf::from(&source_arg),
-        }
-    } else if source_arg.eq_ignore_ascii_case("liked") {
-        TransferSource::SpotifyLiked
-    } else if let Some(id) = parse_spotify_playlist_id(&source_arg) {
-        TransferSource::SpotifyPlaylist { id }
-    } else {
-        return Err(format!(
-            "`{source_arg}` is not an existing file, `liked`, or a Spotify playlist URL/URI/id"
-        ));
-    };
-    let dest = dest.unwrap_or(TransferDest::YtmNewPlaylist { name: None });
-    Ok((
-        JobSpec {
-            source,
-            dest,
-            dry_run: flags.dry_run,
-            min_score: flags.min_score,
-            take_best: flags.take_best,
-            auto_accept_ambiguous_min_score: None,
-            match_policy: flags.match_policy.unwrap_or(MatchPolicy::Balanced),
-            allow_user_videos: flags.allow_user_videos,
-            cache_mode: flags.cache_mode,
-            rematch: flags.rematch,
-        },
-        flags.yes,
-    ))
-}
-
-fn parse_ytm_source(s: &str) -> Result<TransferSource, String> {
-    if let Some(id) = s.strip_prefix("ytm:") {
-        Ok(TransferSource::YtmPlaylist { id: id.to_owned() })
-    } else if let Some(key) = s.strip_prefix("local:") {
-        Ok(TransferSource::LocalPlaylist {
-            key: key.to_owned(),
-        })
-    } else {
-        Err(format!(
-            "`{s}` — expected `ytm:<playlist-id>` (see `ytt transfer list ytm`) or `local:<name>`"
-        ))
-    }
-}
-
-fn parse_export(args: &[&str]) -> Result<(JobSpec, bool), String> {
-    let mut args: Vec<&str> = args.to_vec();
-    let flags = parse_common(&mut args)?;
-    let mut source = None;
-    let mut dest = None;
-    let mut name = None;
-    let mut it = args.iter().copied().peekable();
-    while let Some(arg) = it.next() {
-        match arg {
-            "--to" => match it.next() {
-                Some("spotify") => dest = Some(None),
-                Some(path) => dest = Some(Some(PathBuf::from(path))),
-                None => return Err("--to needs `spotify` or a file path".to_owned()),
-            },
-            "--name" => name = Some(it.next().ok_or("--name needs a value")?.to_owned()),
-            other if source.is_none() => source = Some(parse_ytm_source(other)?),
-            other => return Err(format!("unexpected argument `{other}`")),
-        }
-    }
-    let source = source.ok_or("missing source (`ytm:<id>` or `local:<key>`)")?;
-    let dest = match dest.ok_or("missing --to (spotify | FILE.json | FILE.csv)")? {
-        None => TransferDest::SpotifyNewPlaylist { name },
-        Some(path) => {
-            let format = match path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(str::to_ascii_lowercase)
-                .as_deref()
-            {
-                Some("json") => FileFormat::Json,
-                Some("csv") => FileFormat::Csv,
-                other => {
-                    return Err(format!(
-                        "--to file must end in .json or .csv (got {other:?})"
-                    ));
-                }
-            };
-            TransferDest::File { path, format }
-        }
-    };
-    Ok((
-        JobSpec {
-            source,
-            dest,
-            dry_run: flags.dry_run,
-            min_score: flags.min_score,
-            take_best: flags.take_best,
-            auto_accept_ambiguous_min_score: None,
-            match_policy: flags.match_policy.unwrap_or(MatchPolicy::Strict),
-            allow_user_videos: flags.allow_user_videos,
-            cache_mode: flags.cache_mode,
-            rematch: flags.rematch,
-        },
-        flags.yes,
-    ))
-}
-
-fn parse_backup(args: &[&str]) -> Result<(PathBuf, bool), String> {
-    let mut dir = None;
-    let mut csv = false;
-    let mut it = args.iter().copied();
-    while let Some(arg) = it.next() {
-        match arg {
-            "--dir" => dir = Some(PathBuf::from(it.next().ok_or("--dir needs a path")?)),
-            "--csv" => csv = true,
-            other => return Err(format!("unexpected argument `{other}`")),
-        }
-    }
-    Ok((dir.ok_or("missing --dir DIR")?, csv))
-}
-
 // Execution ---------------------------------------------------------------------------
 
 /// Build the clients the spec needs (and only those), with setup hints on failure.
@@ -401,7 +187,10 @@ async fn build_ctx(spec: &JobSpec, cfg: &Config) -> Result<JobCtx, String> {
     let needs_spotify = matches!(
         spec.source,
         TransferSource::SpotifyPlaylist { .. } | TransferSource::SpotifyLiked
-    ) || matches!(spec.dest, TransferDest::SpotifyNewPlaylist { .. });
+    ) || matches!(
+        spec.dest,
+        TransferDest::SpotifyNewPlaylist { .. } | TransferDest::SpotifyMirrorPlaylist { .. }
+    );
     // LocalPlaylist writes locally but still *matches* against YouTube Music.
     let needs_ytm = matches!(spec.source, TransferSource::YtmPlaylist { .. })
         || matches!(
@@ -498,10 +287,14 @@ async fn execute_new(spec: JobSpec, yes: bool, kind: &str) -> i32 {
     if gate {
         println!("{}", report.render_text());
         print_report_details(&report);
-        if !confirm(&format!(
-            "Write {} tracks to the destination? [y/N] ",
-            report.matched
-        )) {
+        if report.spotify_sync.as_ref().is_some_and(|sync| !sync.ready) {
+            eprintln!(
+                "Spotify exact sync is blocked; review or rematch every unresolved row before resuming."
+            );
+            return EXIT_RESUMABLE;
+        }
+        let prompt = confirmation_prompt(&report);
+        if !confirm(&prompt) {
             println!(
                 "Aborted — nothing was written. Resume later with `ytt transfer resume {job_id}`."
             );
@@ -520,9 +313,9 @@ async fn execute_new(spec: JobSpec, yes: bool, kind: &str) -> i32 {
     conclude(&report)
 }
 
-async fn resume(job_id: String, _yes: bool) -> i32 {
+async fn resume(job_id: String, yes: bool) -> i32 {
     let cfg = Config::load();
-    let cp = match Checkpoint::load(&job_id) {
+    let mut cp = match Checkpoint::load(&job_id) {
         Ok(cp) => cp,
         Err(e) => {
             eprintln!("ytt transfer: {e:#}");
@@ -533,7 +326,71 @@ async fn resume(job_id: String, _yes: bool) -> i32 {
         println!("Job {job_id} already finished.");
         return EXIT_OK;
     }
+    if matches!(cp.spec.dest, TransferDest::SpotifyMirrorPlaylist { .. }) {
+        let preview_spec = JobSpec {
+            dry_run: true,
+            rematch: false,
+            ..cp.spec.clone()
+        };
+        let mut ctx = match build_ctx(&preview_spec, &cfg).await {
+            Ok(ctx) => ctx,
+            Err(msg) => {
+                eprintln!("ytt transfer: {msg}");
+                return EXIT_FAILED;
+            }
+        };
+        let preview = match run_job(
+            job_id.clone(),
+            preview_spec,
+            Some(cp),
+            &mut ctx,
+            &mut print_progress,
+        )
+        .await
+        {
+            Ok(report) => report,
+            Err(error) => return print_job_error(&job_id, error),
+        };
+        finish_progress_line();
+        println!("{}", preview.render_text());
+        print_report_details(&preview);
+        if preview
+            .spotify_sync
+            .as_ref()
+            .is_some_and(|sync| !sync.ready)
+        {
+            eprintln!("Spotify exact sync remains blocked; nothing was written.");
+            return EXIT_RESUMABLE;
+        }
+        if !yes && !confirm(&confirmation_prompt(&preview)) {
+            println!("Aborted — nothing was written.");
+            return EXIT_OK;
+        }
+        cp = match Checkpoint::load(&job_id) {
+            Ok(cp) => cp,
+            Err(error) => {
+                eprintln!("ytt transfer: {error:#}");
+                return EXIT_FAILED;
+            }
+        };
+    }
     finish_resumed(job_id, cp, &cfg).await
+}
+
+fn confirmation_prompt(report: &TransferReport) -> String {
+    match &report.spotify_sync {
+        Some(sync) => format!(
+            "Replace Spotify playlist \"{}\" ({}) exactly: {} → {} items, {} additions, {} removals{}? [y/N] ",
+            sync.target_name,
+            sync.target_id,
+            sync.current_items,
+            sync.desired_items,
+            sync.additions,
+            sync.removals,
+            if sync.order_changed { ", reorder" } else { "" }
+        ),
+        None => format!("Write {} tracks to the destination? [y/N] ", report.matched),
+    }
 }
 
 async fn finish_resumed(job_id: String, cp: Checkpoint, cfg: &Config) -> i32 {
@@ -1155,6 +1012,7 @@ mod tests {
                 path: "input.csv".into(),
             },
             dest,
+            media_kind: ImportMediaKind::Track,
             dry_run: false,
             min_score: 0.80,
             take_best: false,
@@ -1314,6 +1172,41 @@ mod tests {
     }
 
     #[test]
+    fn music_video_import_is_separate_strict_playlist_mode() {
+        let (spec, yes) = parse_import(&[
+            "liked",
+            "--media",
+            "music-video",
+            "--to",
+            "local:Official videos",
+        ])
+        .expect("music-video import");
+
+        assert!(!yes);
+        assert_eq!(spec.media_kind, ImportMediaKind::MusicVideo);
+        assert_eq!(spec.match_policy, MatchPolicy::Strict);
+        assert!(matches!(
+            spec.dest,
+            TransferDest::LocalPlaylist { name: Some(ref name) } if name == "Official videos"
+        ));
+        assert!(
+            parse_import(&["liked", "--media", "music-video", "--to", "likes"])
+                .unwrap_err()
+                .contains("playlist destination")
+        );
+        assert!(
+            parse_import(&["liked", "--media", "music-video", "--allow-user-videos",])
+                .unwrap_err()
+                .contains("conflicts")
+        );
+        assert!(
+            parse_import(&["liked", "--media", "concert"])
+                .unwrap_err()
+                .contains("track` or `music-video")
+        );
+    }
+
+    #[test]
     fn import_existing_file_wins_over_source_keywords() {
         let path =
             std::env::temp_dir().join(format!("ytt-transfer-cli-{}-liked", std::process::id()));
@@ -1410,6 +1303,41 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn exact_spotify_sync_requires_explicit_id_and_sync_flag() {
+        let id = raw_playlist_id();
+        let target = format!("spotify:{id}");
+        let (spec, yes) = parse_export(&["ytm:PL123", "--to", &target, "--sync", "--dry-run"])
+            .expect("exact sync");
+        assert!(!yes);
+        assert!(spec.dry_run);
+        assert!(matches!(
+            spec.dest,
+            TransferDest::SpotifyMirrorPlaylist { id: ref parsed } if parsed == id
+        ));
+
+        assert!(
+            parse_export(&["ytm:PL123", "--to", "spotify", "--sync"])
+                .unwrap_err()
+                .contains("explicit")
+        );
+        assert!(
+            parse_export(&["ytm:PL123", "--to", &target])
+                .unwrap_err()
+                .contains("requires the explicit")
+        );
+        assert!(
+            parse_export(&["ytm:PL123", "--to", &target, "--sync", "--name", "x"])
+                .unwrap_err()
+                .contains("--name")
+        );
+        assert!(
+            parse_export(&["ytm:PL123", "--to", "spotify:short", "--sync"])
+                .unwrap_err()
+                .contains("22-character")
+        );
     }
 
     #[test]

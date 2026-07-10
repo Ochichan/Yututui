@@ -110,7 +110,8 @@ async fn run_actor(mut rx: UnboundedReceiver<TransferCmd>, emit: EventSink) {
                     continue;
                 }
                 let job_id = new_job_id(match spec.dest {
-                    TransferDest::SpotifyNewPlaylist { .. } => "yt2sp",
+                    TransferDest::SpotifyNewPlaylist { .. }
+                    | TransferDest::SpotifyMirrorPlaylist { .. } => "yt2sp",
                     _ => "sp2yt",
                 });
                 let emit = Arc::clone(&emit);
@@ -257,7 +258,10 @@ async fn build_ctx(spec: &JobSpec, cfg: &Config) -> Result<JobCtx, String> {
     let needs_spotify = matches!(
         spec.source,
         TransferSource::SpotifyPlaylist { .. } | TransferSource::SpotifyLiked
-    ) || matches!(spec.dest, TransferDest::SpotifyNewPlaylist { .. });
+    ) || matches!(
+        spec.dest,
+        TransferDest::SpotifyNewPlaylist { .. } | TransferDest::SpotifyMirrorPlaylist { .. }
+    );
     // LocalPlaylist writes locally but still *matches* against YouTube Music.
     let needs_ytm = matches!(spec.source, TransferSource::YtmPlaylist { .. })
         || matches!(
@@ -329,6 +333,7 @@ mod tests {
                 path: "input.csv".into(),
             },
             dest,
+            media_kind: crate::transfer::ImportMediaKind::Track,
             dry_run: false,
             min_score: 0.80,
             take_best: false,

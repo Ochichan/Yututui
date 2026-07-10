@@ -270,6 +270,7 @@ fn apply_cached_album_matches(
                 .as_deref()
                 .and_then(|year| year.parse::<u16>().ok()),
             explicit: None,
+            music_video_type: None,
             source_kind: CandidateSourceKind::YtmAlbumTrack,
             channel: Some(track.artist.clone()),
             channel_id: None,
@@ -618,6 +619,7 @@ fn album_track_candidate(track: &TransferAlbumTrack, release_year: Option<&str>)
         track_number: track.track_number,
         release_year: release_year.and_then(|year| year.parse::<u16>().ok()),
         explicit: None,
+        music_video_type: None,
         source_kind: CandidateSourceKind::YtmAlbumTrack,
         channel: Some(track.artist.clone()),
         channel_id: None,
@@ -974,6 +976,7 @@ mod tests {
         JobSpec {
             source: TransferSource::SpotifyLiked,
             dest: TransferDest::YtmLikes,
+            media_kind: crate::transfer::ImportMediaKind::Track,
             dry_run: true,
             min_score: 0.80,
             take_best: false,

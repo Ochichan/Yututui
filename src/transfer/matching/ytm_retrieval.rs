@@ -8,14 +8,21 @@ use crate::api::Song;
 use crate::api::ytmusic::{YoutubeSearchKind, YtMusicApi, YtdlpVideoMeta};
 use crate::search_source::SearchConfig;
 use crate::streaming::musicgate;
-use crate::transfer::MatchPolicy;
 use crate::transfer::checkpoint::{MatchTrace, ProbeTrace, ReportCandidate};
+use crate::transfer::{ImportMediaKind, MatchPolicy};
 
 use super::{
     CandidateSourceKind, MatchCandidate, MatchConfig, MatchOutcome, MatchScoreBreakdown,
-    TrackInput, best_outcome, hard_duration_limit, normalize, normalize_stripped,
-    official_signal_score, push_query_variant, release_year, score_candidate_breakdown_with_config,
-    similarity, soft_duration_limit, strip_annotations, title_artist_credit_prefix,
+    TrackInput, best_outcome, hard_duration_limit, normalize, official_signal_score,
+    score_candidate_breakdown_with_config, similarity, soft_duration_limit,
+    title_artist_credit_prefix,
+};
+
+mod query_plan;
+use query_plan::media_scope;
+pub use query_plan::{
+    memo_key, memo_key_for_media, ytm_catalog_query_plan, ytm_fallback_query_plan,
+    ytm_music_video_query_plan, ytm_query_plan,
 };
 
 type QueryMemo = HashMap<String, Vec<(Song, YoutubeSearchKind)>>;
@@ -238,231 +245,6 @@ impl Pacing {
     }
 }
 
-/// Memo key: repeated instances of the same source recording resolve once per engine run,
-/// without aliasing different versions, releases, or source identities.
-pub fn memo_key(input: &TrackInput) -> String {
-    let artists = input
-        .artists
-        .iter()
-        .map(|artist| normalize(artist))
-        .collect::<Vec<_>>()
-        .join("\u{1f}");
-    format!(
-        "source={}|isrc={}|artists={artists}|title={}|stripped={}|album={}|duration={}|album_id={}|disc={}|track={}",
-        normalize(&input.source_key),
-        input
-            .isrc
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_ascii_uppercase(),
-        normalize(&input.title),
-        normalize_stripped(&input.title),
-        input.album.as_deref().map(normalize).unwrap_or_default(),
-        input
-            .duration_secs
-            .map_or_else(String::new, |value| value.to_string()),
-        input.album_id.as_deref().map(normalize).unwrap_or_default(),
-        input
-            .disc_number
-            .map_or_else(String::new, |value| value.to_string()),
-        input
-            .track_number
-            .map_or_else(String::new, |value| value.to_string()),
-    )
-}
-
-/// Build the bounded YTM query plan for a source track.
-///
-/// Easy tracks still stop after the first successful query. The extra variants are only
-/// reached when scoring is uncertain, and they target common Spotify-to-YouTube failure
-/// modes: featured-artist credits, album-specific uploads, and artist romanization drift.
-pub fn ytm_query_plan(input: &TrackInput) -> Vec<String> {
-    let stripped_title = strip_annotations(&input.title);
-    let stripped_title = stripped_title.trim();
-    let original_title = input.title.trim();
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-
-    let first_artist = input
-        .artists
-        .first()
-        .map(|a| a.trim())
-        .filter(|a| !a.is_empty());
-    if let Some(artist) = first_artist {
-        push_query_variant(&mut out, &mut seen, format!("{artist} {stripped_title}"));
-    }
-
-    let all_artists = input
-        .artists
-        .iter()
-        .map(|a| a.trim())
-        .filter(|a| !a.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if !all_artists.is_empty() {
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{all_artists} {stripped_title}"),
-        );
-        if normalize(original_title) != normalize(stripped_title) {
-            push_query_variant(
-                &mut out,
-                &mut seen,
-                format!("{all_artists} {original_title}"),
-            );
-        }
-    }
-
-    let album_artists = input
-        .album_artists
-        .iter()
-        .map(|a| a.trim())
-        .filter(|a| !a.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if !album_artists.is_empty() {
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{album_artists} {stripped_title}"),
-        );
-    }
-
-    if let Some(album) = input
-        .album
-        .as_deref()
-        .map(str::trim)
-        .filter(|a| !a.is_empty())
-        && normalize(album) != normalize(stripped_title)
-    {
-        if let Some(artist) = first_artist {
-            push_query_variant(
-                &mut out,
-                &mut seen,
-                format!("{artist} {stripped_title} {album}"),
-            );
-        }
-        push_query_variant(&mut out, &mut seen, format!("{stripped_title} {album}"));
-    }
-
-    if let Some(year) = release_year(input) {
-        if let Some(artist) = first_artist {
-            push_query_variant(
-                &mut out,
-                &mut seen,
-                format!("{artist} {stripped_title} {year}"),
-            );
-        }
-        if !all_artists.is_empty() {
-            push_query_variant(
-                &mut out,
-                &mut seen,
-                format!("{all_artists} {stripped_title} {year}"),
-            );
-        }
-    }
-
-    if let Some(artist) = first_artist {
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{artist} {stripped_title} official audio"),
-        );
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{artist} {stripped_title} topic"),
-        );
-    }
-
-    if normalize(original_title) != normalize(stripped_title) {
-        push_query_variant(&mut out, &mut seen, original_title.to_owned());
-    }
-    push_query_variant(&mut out, &mut seen, stripped_title.to_owned());
-    out
-}
-
-pub fn ytm_catalog_query_plan(input: &TrackInput) -> Vec<String> {
-    let stripped_title = strip_annotations(&input.title);
-    let stripped_title = stripped_title.trim();
-    let original_title = input.title.trim();
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    if let Some(artist) = input
-        .artists
-        .first()
-        .map(|a| a.trim())
-        .filter(|a| !a.is_empty())
-    {
-        push_query_variant(&mut out, &mut seen, format!("{artist} {stripped_title}"));
-        if normalize(original_title) != normalize(stripped_title) {
-            push_query_variant(&mut out, &mut seen, format!("{artist} {original_title}"));
-        }
-        push_query_variant(&mut out, &mut seen, format!("{stripped_title} {artist}"));
-    } else {
-        push_query_variant(&mut out, &mut seen, stripped_title.to_owned());
-    }
-    out
-}
-
-/// Build the three-query public YouTube rescue plan.
-///
-/// Query deduplication is deliberately scoped to this backend. Even when the YTM song
-/// catalog already tried `artist title`, public YouTube may expose a different (and often
-/// official) result set, so the same text remains the highest-recall first public query.
-pub fn ytm_fallback_query_plan(input: &TrackInput) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-
-    let stripped_title = strip_annotations(&input.title);
-    let stripped_title = stripped_title.trim();
-    let first_artist = input
-        .artists
-        .first()
-        .map(|artist| artist.trim())
-        .filter(|artist| !artist.is_empty());
-
-    if let Some(artist) = first_artist {
-        let base = format!("{artist} {stripped_title}");
-        push_query_variant(&mut out, &mut seen, base.clone());
-        push_query_variant(&mut out, &mut seen, format!("{base} official audio"));
-        // Drop the source artist spelling for the final official-video probe. Official
-        // channels and titles often use a native-script name while Spotify exposes a Latin
-        // transliteration (for example Aimyon vs. あいみょん); repeating the Latin artist in
-        // every query can hide the real official upload. Ranking still requires independent
-        // artist/provenance evidence, so this raises recall without relaxing acceptance.
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{stripped_title} official music video"),
-        );
-    } else {
-        let base = input
-            .album
-            .as_deref()
-            .map(str::trim)
-            .filter(|album| !album.is_empty())
-            .map_or_else(
-                || stripped_title.to_owned(),
-                |album| format!("{stripped_title} {album}"),
-            );
-        push_query_variant(&mut out, &mut seen, base);
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{stripped_title} official audio"),
-        );
-        push_query_variant(
-            &mut out,
-            &mut seen,
-            format!("{stripped_title} official music video"),
-        );
-    }
-    out
-}
-
 /// Whether a failed public-video query is equivalent to a successful empty result.
 ///
 /// yt-dlp already returns `Ok([])` for a valid search with no rows. Process failures,
@@ -597,7 +379,9 @@ async fn match_track_ytm_shared_inner(
     state: &SharedYtmMatchState,
     trace: &mut MatchTrace,
 ) -> Result<YtmMatchResult, YtmMatchFailure> {
-    if let Some(id) = &input.known_video_id {
+    if cfg.media_kind == ImportMediaKind::Track
+        && let Some(id) = &input.known_video_id
+    {
         let outcome = MatchOutcome::Matched {
             key: id.clone(),
             score: 1.0,
@@ -614,7 +398,7 @@ async fn match_track_ytm_shared_inner(
             trace: trace.clone(),
         });
     }
-    let key = memo_key(input);
+    let key = memo_key_for_media(input, cfg.media_kind);
     if let Some(hit) = state.outcome(&key).await {
         trace.terminal_reason = Some("in_run_memo_hit".to_owned());
         return Ok(YtmMatchResult {
@@ -626,87 +410,108 @@ async fn match_track_ytm_shared_inner(
     let mut candidates = Vec::<MatchCandidate>::new();
     let mut candidate_keys = HashSet::new();
     let mut outcome = MatchOutcome::NotFound;
-    for query in ytm_catalog_query_plan(input) {
-        let started = Instant::now();
-        let songs = match shared_catalog_songs(api, &query, search_config, state)
-            .await
-            .map_err(|error| YtmMatchFailure::new(error, trace.clone()))?
-        {
-            SharedCatalogSongs::Complete(songs) => {
-                trace.push_probe(ProbeTrace {
-                    backend: "ytm_song".to_owned(),
-                    intent: "primary_or_targeted".to_owned(),
-                    query: query.clone(),
-                    status: if songs.is_empty() { "empty" } else { "success" }.to_owned(),
-                    result_count: songs.len() as u32,
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                    attempt: 1,
-                    ..ProbeTrace::default()
-                });
-                songs
+    if cfg.media_kind == ImportMediaKind::Track {
+        for query in ytm_catalog_query_plan(input) {
+            let started = Instant::now();
+            let songs =
+                match shared_catalog_songs(api, &query, search_config, state, cfg.media_kind)
+                    .await
+                    .map_err(|error| YtmMatchFailure::new(error, trace.clone()))?
+                {
+                    SharedCatalogSongs::Complete(songs) => {
+                        trace.push_probe(ProbeTrace {
+                            backend: "ytm_song".to_owned(),
+                            intent: "primary_or_targeted".to_owned(),
+                            query: query.clone(),
+                            status: if songs.is_empty() { "empty" } else { "success" }.to_owned(),
+                            result_count: songs.len() as u32,
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            attempt: 1,
+                            ..ProbeTrace::default()
+                        });
+                        songs
+                    }
+                    SharedCatalogSongs::Unavailable => {
+                        trace.push_probe(ProbeTrace {
+                            backend: "ytm_song".to_owned(),
+                            intent: "primary_or_targeted".to_owned(),
+                            query,
+                            status: "unavailable".to_owned(),
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            attempt: 1,
+                            ..ProbeTrace::default()
+                        });
+                        break;
+                    }
+                };
+            for (song, kind) in &songs {
+                if candidate_keys.insert(song.video_id.clone()) {
+                    candidates.push(MatchCandidate::from_youtube_search(song, *kind));
+                }
             }
-            SharedCatalogSongs::Unavailable => {
-                trace.push_probe(ProbeTrace {
-                    backend: "ytm_song".to_owned(),
-                    intent: "primary_or_targeted".to_owned(),
-                    query,
-                    status: "unavailable".to_owned(),
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                    attempt: 1,
-                    ..ProbeTrace::default()
-                });
+            outcome = best_outcome(input, &candidates, cfg);
+            if should_stop_ytm_search(&outcome, cfg) {
                 break;
             }
-        };
-        for (song, kind) in &songs {
-            if candidate_keys.insert(song.video_id.clone()) {
-                candidates.push(MatchCandidate::from_song_with_kind(song, (*kind).into()));
-            }
-        }
-        outcome = best_outcome(input, &candidates, cfg);
-        if should_stop_ytm_search(&outcome, cfg) {
-            break;
         }
     }
 
     // Music-scoped video rescue precedes generic public search. A VideosFilter row is
     // deliberately review-only until finalist metadata confirms authority/playability.
-    if !matches!(outcome, MatchOutcome::Matched { .. }) {
-        for query in ytm_catalog_query_plan(input).into_iter().take(2) {
+    if cfg.media_kind == ImportMediaKind::MusicVideo
+        || !matches!(outcome, MatchOutcome::Matched { .. })
+    {
+        let video_queries = if cfg.media_kind == ImportMediaKind::MusicVideo {
+            ytm_music_video_query_plan(input)
+        } else {
+            ytm_catalog_query_plan(input).into_iter().take(2).collect()
+        };
+        for query in video_queries {
             let started = Instant::now();
-            let songs = match shared_ytm_video_songs(api, &query, search_config, state)
-                .await
-                .map_err(|error| YtmMatchFailure::new(error, trace.clone()))?
-            {
-                SharedCatalogVideos::Complete(songs) => {
-                    trace.push_probe(ProbeTrace {
-                        backend: "ytm_video".to_owned(),
-                        intent: "music_scoped_rescue".to_owned(),
-                        query: query.clone(),
-                        status: if songs.is_empty() { "empty" } else { "success" }.to_owned(),
-                        result_count: songs.len() as u32,
-                        elapsed_ms: started.elapsed().as_millis() as u64,
-                        attempt: 1,
-                        ..ProbeTrace::default()
-                    });
-                    songs
-                }
-                SharedCatalogVideos::Unavailable => {
-                    trace.push_probe(ProbeTrace {
-                        backend: "ytm_video".to_owned(),
-                        intent: "music_scoped_rescue".to_owned(),
-                        query,
-                        status: "unavailable".to_owned(),
-                        elapsed_ms: started.elapsed().as_millis() as u64,
-                        attempt: 1,
-                        ..ProbeTrace::default()
-                    });
-                    break;
-                }
-            };
+            let songs =
+                match shared_ytm_video_songs(api, &query, search_config, state, cfg.media_kind)
+                    .await
+                    .map_err(|error| YtmMatchFailure::new(error, trace.clone()))?
+                {
+                    SharedCatalogVideos::Complete(songs) => {
+                        trace.push_probe(ProbeTrace {
+                            backend: "ytm_video".to_owned(),
+                            intent: if cfg.media_kind == ImportMediaKind::MusicVideo {
+                                "official_music_video"
+                            } else {
+                                "music_scoped_rescue"
+                            }
+                            .to_owned(),
+                            query: query.clone(),
+                            status: if songs.is_empty() { "empty" } else { "success" }.to_owned(),
+                            result_count: songs.len() as u32,
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            attempt: 1,
+                            ..ProbeTrace::default()
+                        });
+                        songs
+                    }
+                    SharedCatalogVideos::Unavailable => {
+                        trace.push_probe(ProbeTrace {
+                            backend: "ytm_video".to_owned(),
+                            intent: if cfg.media_kind == ImportMediaKind::MusicVideo {
+                                "official_music_video"
+                            } else {
+                                "music_scoped_rescue"
+                            }
+                            .to_owned(),
+                            query,
+                            status: "unavailable".to_owned(),
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            attempt: 1,
+                            ..ProbeTrace::default()
+                        });
+                        break;
+                    }
+                };
             for (song, kind) in &songs {
                 if candidate_keys.insert(song.video_id.clone()) {
-                    candidates.push(MatchCandidate::from_song_with_kind(song, (*kind).into()));
+                    candidates.push(MatchCandidate::from_youtube_search(song, *kind));
                 }
             }
             outcome = best_outcome(input, &candidates, cfg);
@@ -726,18 +531,27 @@ async fn match_track_ytm_shared_inner(
     }
 
     if !matches!(outcome, MatchOutcome::Matched { .. }) {
-        for query in ytm_fallback_query_plan(input)
-            .into_iter()
-            .take(PUBLIC_QUERY_BUDGET)
-        {
+        let fallback_queries = if cfg.media_kind == ImportMediaKind::MusicVideo {
+            ytm_music_video_query_plan(input)
+        } else {
+            ytm_fallback_query_plan(input)
+        };
+        for query in fallback_queries.into_iter().take(PUBLIC_QUERY_BUDGET) {
             let started = Instant::now();
-            let search = match shared_video_songs(api, &query, search_config, state).await {
+            let search = match shared_video_songs(api, &query, search_config, state, cfg.media_kind)
+                .await
+            {
                 Ok(search) => search,
                 Err(failure) => {
                     let error_kind = public_video_search_error_kind(&failure.error);
                     trace.push_probe(ProbeTrace {
                         backend: "public_youtube".to_owned(),
-                        intent: "bounded_rescue".to_owned(),
+                        intent: if cfg.media_kind == ImportMediaKind::MusicVideo {
+                            "official_music_video_rescue"
+                        } else {
+                            "bounded_rescue"
+                        }
+                        .to_owned(),
                         query: query.clone(),
                         status: "error".to_owned(),
                         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -764,7 +578,12 @@ async fn match_track_ytm_shared_inner(
             let songs = search.songs;
             trace.push_probe(ProbeTrace {
                 backend: "public_youtube".to_owned(),
-                intent: "bounded_rescue".to_owned(),
+                intent: if cfg.media_kind == ImportMediaKind::MusicVideo {
+                    "official_music_video_rescue"
+                } else {
+                    "bounded_rescue"
+                }
+                .to_owned(),
                 query: query.clone(),
                 status: if songs.is_empty() { "empty" } else { "success" }.to_owned(),
                 result_count: songs.len() as u32,
@@ -774,7 +593,7 @@ async fn match_track_ytm_shared_inner(
             });
             for (song, kind) in &songs {
                 if candidate_keys.insert(song.video_id.clone()) {
-                    candidates.push(MatchCandidate::from_song_with_kind(song, (*kind).into()));
+                    candidates.push(MatchCandidate::from_youtube_search(song, *kind));
                 }
             }
             let provider_first = songs.first().and_then(|(song, _)| {
@@ -874,8 +693,14 @@ async fn shared_catalog_songs(
     query: &str,
     search_config: &SearchConfig,
     state: &SharedYtmMatchState,
+    media_kind: ImportMediaKind,
 ) -> anyhow::Result<SharedCatalogSongs> {
-    let memo_key = format!("v3:{}:ytm-song:{}", provider_scope(api), normalize(query));
+    let memo_key = format!(
+        "v4:{}:{}:ytm-song:{}",
+        media_scope(media_kind),
+        provider_scope(api),
+        normalize(query)
+    );
     if let Some(hit) = cached_query(state, &memo_key).await {
         count_persistent_query_hit(state, &memo_key).await;
         return Ok(SharedCatalogSongs::Complete(hit));
@@ -928,8 +753,13 @@ async fn shared_video_songs(
     query: &str,
     search_config: &SearchConfig,
     state: &SharedYtmMatchState,
+    media_kind: ImportMediaKind,
 ) -> Result<SharedPublicVideos, PublicSearchFailure> {
-    let memo_key = format!("v3:public:youtube-video:{}", normalize(query));
+    let memo_key = format!(
+        "v4:{}:public:youtube-video:{}",
+        media_scope(media_kind),
+        normalize(query)
+    );
     if let Some(hit) = cached_query(state, &memo_key).await {
         count_persistent_query_hit(state, &memo_key).await;
         return Ok(SharedPublicVideos {
@@ -1009,8 +839,14 @@ async fn shared_ytm_video_songs(
     query: &str,
     search_config: &SearchConfig,
     state: &SharedYtmMatchState,
+    media_kind: ImportMediaKind,
 ) -> anyhow::Result<SharedCatalogVideos> {
-    let memo_key = format!("v3:{}:ytm-video:{}", provider_scope(api), normalize(query));
+    let memo_key = format!(
+        "v4:{}:{}:ytm-video:{}",
+        media_scope(media_kind),
+        provider_scope(api),
+        normalize(query)
+    );
     if let Some(hit) = cached_query(state, &memo_key).await {
         count_persistent_query_hit(state, &memo_key).await;
         return Ok(SharedCatalogVideos::Complete(hit));
@@ -1046,7 +882,12 @@ async fn shared_ytm_video_songs(
     }
     let songs = songs
         .into_iter()
-        .map(|song| (song, YoutubeSearchKind::YtmCatalogVideo))
+        .map(|result| {
+            (
+                result.song,
+                YoutubeSearchKind::YtmCatalogTypedVideo(result.music_video_type),
+            )
+        })
         .collect::<Vec<_>>();
     state.remember_query(memo_key, songs.clone()).await;
     Ok(SharedCatalogVideos::Complete(songs))
@@ -1432,7 +1273,9 @@ fn should_stop_ytm_search(outcome: &MatchOutcome, cfg: &MatchConfig) -> bool {
         } => {
             let quality_source = score_breakdown_has(breakdown, "catalog_song")
                 || score_breakdown_has(breakdown, "trusted_channel")
-                || score_breakdown_has(breakdown, "official_like");
+                || score_breakdown_has(breakdown, "official_like")
+                || score_breakdown_has(breakdown, "music_video_type_omv")
+                || score_breakdown_has(breakdown, "music_video_type_official_source_music");
             let target = match cfg.policy {
                 MatchPolicy::Strict => 0.90,
                 MatchPolicy::Balanced => cfg.accept.max(0.84),

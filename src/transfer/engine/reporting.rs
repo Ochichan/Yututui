@@ -152,6 +152,8 @@ pub(super) fn build_report(cp: &Checkpoint, skipped_local: u32) -> TransferRepor
         total: cp.tracks.len() as u32,
         matched,
         skipped_local,
+        source_truncated: cp.source_truncated,
+        spotify_sync: cp.spotify_sync.as_ref().map(|state| state.preview.clone()),
         match_stats: cp.match_stats.clone(),
         defer_reason: cp.defer_reason.clone(),
         ..TransferReport::default()

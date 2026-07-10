@@ -7,15 +7,14 @@ use ytmapi_rs::YtMusic;
 use ytmapi_rs::auth::noauth::NoAuthToken;
 use ytmapi_rs::auth::{AuthToken, BrowserToken};
 use ytmapi_rs::common::{AlbumID, YoutubeID};
-use ytmapi_rs::parse::{SearchResultAlbum, SearchResultSong, SearchResultVideo, SearchResults};
+use ytmapi_rs::parse::{SearchResultAlbum, SearchResultSong, SearchResults};
 use ytmapi_rs::query::SearchQuery;
-use ytmapi_rs::query::search::{
-    AlbumsFilter, BasicSearch, FilteredSearch, SongsFilter, VideosFilter,
-};
+use ytmapi_rs::query::search::{AlbumsFilter, BasicSearch, FilteredSearch, SongsFilter};
 
+use super::official_video_search::OfficialVideoSearchQuery;
 use super::{
-    SEARCH_RESULT_LIMIT, YtMusicApi, auth_search_degraded, mark_auth_search_degraded,
-    mark_auth_search_healthy, ytdlp_search,
+    SEARCH_RESULT_LIMIT, TransferVideoSearchResult, YtMusicApi, auth_search_degraded,
+    mark_auth_search_degraded, mark_auth_search_healthy, ytdlp_search,
 };
 use crate::api::Song;
 use crate::search_source::{SearchConfig, SearchSource};
@@ -37,7 +36,7 @@ const TRANSFER_VIDEO_DEGRADE_COOLDOWN: Duration = Duration::from_secs(120);
 const TRANSFER_VIDEO_FAILURES_BEFORE_DEGRADE: u8 = 2;
 /// Transfer ranking only needs a bounded finalist pool; the interactive Search screen keeps
 /// its wider 50-row result set through `SEARCH_RESULT_LIMIT`.
-const TRANSFER_YTM_RESULT_LIMIT: usize = 20;
+pub(super) const TRANSFER_YTM_RESULT_LIMIT: usize = 20;
 const TRANSFER_PUBLIC_RESULT_LIMIT: usize = 15;
 
 /// ytmapi-rs 0.3.2 treats several legitimate empty filtered-search layouts as parser errors.
@@ -260,12 +259,13 @@ impl YtMusicApi {
     /// The boolean reports a degraded/unavailable provider attempt. A successful empty
     /// result is `(empty, false)`, allowing callers to distinguish a real empty page from
     /// a timeout/parser/anonymous-attestation failure while falling through in either case.
-    /// Podcast `VideoEpisode` rows are intentionally excluded.
+    /// Presentation subtypes, including podcast episodes, remain attached so the matcher can
+    /// apply an explicit hard-rejection rule instead of silently losing provenance.
     pub async fn search_transfer_video_catalog(
         &self,
         query: &str,
         config: &SearchConfig,
-    ) -> Result<(Vec<Song>, bool)> {
+    ) -> Result<(Vec<TransferVideoSearchResult>, bool)> {
         if !config.is_enabled(SearchSource::Youtube) {
             bail!(
                 "{} is disabled in Settings → General",
@@ -536,48 +536,9 @@ async fn search_catalog_songs_bounded(
 async fn search_catalog_videos<A: AuthToken>(
     client: &YtMusic<A>,
     query: &str,
-) -> Result<Vec<Song>> {
-    let q: SearchQuery<FilteredSearch<VideosFilter>> = query.into();
-    let rows = match client.query(q).await {
-        Ok(rows) => rows,
-        Err(error) if filtered_search_missing_music_shelf(&error.to_string()) => {
-            tracing::debug!(
-                "YTM filtered video search omitted its music shelf; retrying as a basic search"
-            );
-            basic_search_first_page(client, query).await?.videos
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let mut videos = Vec::new();
-    append_catalog_videos(&mut videos, rows);
-    Ok(videos)
-}
-
-fn append_catalog_videos(
-    videos: &mut Vec<Song>,
-    rows: impl IntoIterator<Item = SearchResultVideo>,
-) {
-    for row in rows {
-        match row {
-            SearchResultVideo::Video {
-                title,
-                channel_name,
-                video_id,
-                length,
-                ..
-            } => videos.push(Song::from_search(
-                video_id.get_raw(),
-                title,
-                channel_name,
-                length,
-                None,
-            )),
-            SearchResultVideo::VideoEpisode { .. } => {}
-        }
-        if videos.len() >= TRANSFER_YTM_RESULT_LIMIT {
-            break;
-        }
-    }
+) -> Result<Vec<TransferVideoSearchResult>> {
+    let q = OfficialVideoSearchQuery::new(query);
+    Ok(client.query(q).await?.0)
 }
 
 #[cfg(test)]
@@ -649,71 +610,5 @@ mod tests {
         cooldowns.record_failure_at(TransferVideoAuthMode::Anonymous, after_cooldown);
         assert!(!cooldowns.degraded_at(TransferVideoAuthMode::Anonymous, after_cooldown));
         assert_eq!(cooldowns.anonymous.consecutive_failures, 1);
-    }
-
-    #[test]
-    fn catalog_video_mapper_excludes_video_episodes() {
-        // SearchResultVideo's variants are non-exhaustive to downstream Rust code, so
-        // deserialize the public serde representation to exercise the real mapper without
-        // constructing an upstream private-shape value or touching the network.
-        let rows: Vec<SearchResultVideo> = serde_json::from_value(serde_json::json!([
-            {
-                "Video": {
-                    "title": "Artist - Song (Official Video)",
-                    "channel_name": "Artist",
-                    "video_id": "aaa111bbb22",
-                    "views": "12M views",
-                    "length": "3:42",
-                    "thumbnails": []
-                }
-            },
-            {
-                "VideoEpisode": {
-                    "title": "Episode 4",
-                    "date": { "Recorded": { "date": "2026" } },
-                    "channel_name": "Podcast",
-                    "episode_id": "bbb222ccc33",
-                    "thumbnails": []
-                }
-            }
-        ]))
-        .expect("valid upstream video result representation");
-        let mut songs = Vec::new();
-        append_catalog_videos(&mut songs, rows);
-
-        assert_eq!(songs.len(), 1);
-        assert_eq!(songs[0].video_id, "aaa111bbb22");
-        assert_eq!(songs[0].title, "Artist - Song (Official Video)");
-        assert_eq!(songs[0].artist, "Artist");
-        assert_eq!(songs[0].duration, "3:42");
-    }
-
-    #[test]
-    fn catalog_video_mapper_stops_at_transfer_budget() {
-        let rows = (0..(TRANSFER_YTM_RESULT_LIMIT + 5))
-            .map(|index| {
-                serde_json::json!({
-                    "Video": {
-                        "title": format!("Song {index}"),
-                        "channel_name": "Artist",
-                        "video_id": format!("vid{index:08}"),
-                        "views": "1 view",
-                        "length": "3:00",
-                        "thumbnails": []
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-        let rows: Vec<SearchResultVideo> = serde_json::from_value(serde_json::Value::Array(rows))
-            .expect("valid upstream video rows");
-        let mut songs = Vec::new();
-
-        append_catalog_videos(&mut songs, rows);
-
-        assert_eq!(songs.len(), TRANSFER_YTM_RESULT_LIMIT);
-        assert_eq!(
-            songs.last().map(|song| song.title.as_str()),
-            Some("Song 19")
-        );
     }
 }
