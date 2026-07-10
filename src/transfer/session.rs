@@ -424,9 +424,10 @@ impl ImportSession {
                             safe_fs::read_no_symlink_limited(&path, IMPORT_SESSION_MAX_BYTES)
                                 .ok()?;
                         let session: ImportSession = serde_json::from_slice(&bytes).ok()?;
-                        let summary = ImportSessionSummary::from(&session);
-                        let _ = write_session_summary(&session);
-                        Some(summary)
+                        // Keep discovery read-only. Recreating a missing sidecar here can race
+                        // with `delete_record`: a reader that loaded the session just before
+                        // deletion could otherwise resurrect an orphan summary afterwards.
+                        Some(ImportSessionSummary::from(&session))
                     })
                     .or_else(|| read_session_summary(session_id))
             })
@@ -823,13 +824,6 @@ fn summary_is_older_than_session(
         return false;
     };
     summary_modified < session_modified
-}
-
-fn write_session_summary(session: &ImportSession) -> std::io::Result<()> {
-    let Some(path) = session_summary_path(&session.session_id) else {
-        return Ok(());
-    };
-    safe_fs::write_private_atomic_json(&path, &ImportSessionSummaryFile::from(session))
 }
 
 fn sessions_dir() -> Option<PathBuf> {
@@ -1239,6 +1233,32 @@ mod tests {
             .expect("summary from list_all");
         assert_eq!(summary.session_id, session.session_id);
         assert_eq!(summary.counts.total, 1);
+    }
+
+    #[test]
+    fn list_all_does_not_recreate_a_missing_summary_sidecar() {
+        let cp = Checkpoint::new(
+            "sp2yt-session-read-only-list".to_owned(),
+            spec(TransferDest::LocalPlaylist {
+                name: Some("Imported".to_owned()),
+            }),
+            vec![entry(input("Matched", &["A"]), None, false)],
+        );
+        let session = ImportSession::from_checkpoint(&cp);
+        session.save().expect("save import session");
+        let summary_path = session_summary_path(&session.session_id).expect("summary path");
+        std::fs::remove_file(&summary_path).expect("remove summary sidecar");
+
+        assert!(
+            ImportSession::list_all()
+                .iter()
+                .any(|summary| summary.session_id == session.session_id),
+            "the full session remains discoverable without its sidecar"
+        );
+        assert!(
+            !summary_path.exists(),
+            "read-only discovery must not resurrect a removed sidecar"
+        );
     }
 
     #[test]

@@ -34,7 +34,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --check
       - name: Architecture invariants
@@ -111,7 +110,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-15
             name: macOS (arm64)
             target: aarch64-apple-darwin
             bin: ytt
@@ -151,15 +150,19 @@ jobs:
 
       - name: Install macOS smoke dependencies
         if: runner.os == 'macOS'
-        run: brew install mpv
+        run: |
+          # Hosted images currently leave an unrelated, untrusted aws/tap behind. Remove it
+          # rather than granting broad trust so Homebrew 6 can resolve official mpv cleanly.
+          if brew tap | grep -Fxq 'aws/tap'; then
+            brew untap aws/tap
+          fi
+          brew install mpv
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
           components: clippy
-
-      - uses: Swatinem/rust-cache@v2
 
       - name: Clippy (warnings = errors)
         run: cargo clippy --all-targets --target ${{ matrix.target }} -- -D warnings
@@ -172,7 +175,9 @@ jobs:
           cargo clippy --features desktop --target ${{ matrix.target }} --bin yututray -- -D warnings
 
       - name: Test
-        run: cargo test --target ${{ matrix.target }}
+        # Unit tests intentionally share one process-scoped persistence sandbox. Run the
+        # release matrix serially so filesystem fixtures cannot observe each other's writes.
+        run: cargo test --target ${{ matrix.target }} -- --test-threads=1
 
       - name: Test tray helper
         if: runner.os != 'Linux'
