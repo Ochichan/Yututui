@@ -6124,7 +6124,7 @@ dependencies = [
 
 [[package]]
 name = "yututui"
-version = "1.6.26"
+version = "1.6.27"
 dependencies = [
  "anyhow",
  "base64",

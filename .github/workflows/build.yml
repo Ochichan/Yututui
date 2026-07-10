@@ -29,7 +29,7 @@ jobs:
     name: Quality gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -99,8 +99,8 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
 
@@ -137,7 +137,7 @@ jobs:
             bin: ytt
             archive: yututui-linux-arm64.tar.gz
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # native-tls links against the system OpenSSL on Linux, so the runner needs the headers
       # plus pkg-config to locate them. (macOS/Windows use Security.framework/SChannel —
@@ -536,7 +536,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Verify tag matches Cargo version
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -628,7 +628,7 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           name: checksums
@@ -666,7 +666,7 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           name: checksums
@@ -700,7 +700,7 @@ jobs:
     env:
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Render PKGBUILD
         run: |
           sed "s/__VERSION__/${GITHUB_REF_NAME#v}/g" packaging/aur/PKGBUILD.tmpl > PKGBUILD
