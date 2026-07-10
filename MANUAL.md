@@ -151,9 +151,9 @@ You can bring your Spotify playlists and liked songs into YuTuTui!. Nothing is g
 1. **Into the app's own Library playlists** — works immediately, no YouTube account needed. This is what the in-app import does.
 2. **Into your real YouTube Music account** (playlists or likes) — the command-line way, needs your YouTube sign-in cookies (see the README reference).
 
-### 5a. One-time setup (~5 minutes, free)
+### 5a. One-time setup (~5 minutes)
 
-Here's the honest reason this setup exists: Spotify only lets apps read your library if the app is registered with them, and their registration for personal apps ("Development Mode") only serves people the app owner explicitly lists. So instead of everyone sharing one app, *you create your own tiny free one* — it takes five minutes, costs nothing, and only you will ever use it. There is no secret password involved; you'll only copy one ID.
+Here's the honest reason this setup exists: Spotify only lets apps read your library if the app is registered with them, and their registration for personal apps ("Development Mode") only serves people the app owner explicitly lists. So instead of everyone sharing one app, *you create your own tiny personal one*. Under [Spotify's 2026 Dev-Mode rules](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide), its owner needs a Premium account, a new app gets one Client ID, and it can serve up to five allowlisted users. There is no secret password involved; you'll only copy one ID.
 
 1. Go to **[developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)** in your browser and log in with your normal Spotify account.
 2. Click **Create app**.
@@ -168,7 +168,7 @@ Here's the honest reason this setup exists: Spotify only lets apps read your lib
 5. Where it asks **Which API/SDKs are you planning to use?**, tick **Web API**.
 6. Accept the terms, click **Save**.
 7. Open your new app → **Settings**, and copy the **Client ID** (a long string of letters and numbers). Ignore the "Client secret" — you don't need it.
-8. Still in the app's settings, open **User Management** and add *yourself*: your name and the email of your Spotify account. This is the allowlist — without this step Spotify will answer "403" later.
+8. Still in the app's settings, open **User Management** and add *yourself*: your name and the email of your Spotify account. This is the allowlist — without this step Spotify will answer "403" later. New Dev-Mode apps can list up to five users.
 
 Done. You never have to do this again.
 
@@ -189,10 +189,13 @@ In the app: **Settings (`o`) → Accounts → Spotify** → paste the Client ID 
    | **Fast playlist** | Take confident matches *and* safe near-matches. Most songs land immediately. |
    | **Strict playlist** | Only take matches the app is sure about; everything else waits for your review. |
    | **Review first** | Match everything but write *nothing* yet — you approve it all later. |
+   | **Music video playlist** | Build a separate Library playlist from official-family music-video matches. |
 
 4. That's it — the import runs **in the background while your music keeps playing**. The status line shows the progress.
 
 When it finishes, you'll see: *"Import finished … saved in Library → Playlists"*. The playlist is there, playable right away.
+
+The music-video mode names its playlist `<original name> (Music Videos)`. It prefers YouTube Music's OMV / OfficialSourceMusic classifications and strongly corroborated official channels. That is a careful best-effort check, not a 100% guarantee — the public APIs do not publish one definitive “official music video” flag. Clearly ineligible user uploads are rejected; uncertain candidates wait for review.
 
 ### 5d. Reviewing the leftovers
 
@@ -206,12 +209,22 @@ If you're comfortable typing commands, the same machinery is available with more
 ytt transfer import <spotify-url-or-id>      # playlist → your YTM account (needs cookies)
 ytt transfer import liked --to likes         # Spotify likes → YTM likes, order kept
 ytt transfer import <url> --to local:Name    # → the app's own Library playlist (no YTM account)
+ytt transfer import <url> --media music-video
+ytt transfer import liked --media music-video
+                                             # playlist or Liked Songs → a separate official-family MV playlist
+ytt transfer export ytm:<id> --to spotify    # create/append; not continuous sync
+ytt transfer export ytm:<id> --to spotify:<22-character-playlist-id> --sync --dry-run
+                                             # preview a destructive exact mirror
 ytt transfer resume <job-id>                 # pick up after an interruption
 ytt transfer backup --dir ~/music-backup     # back up every playlist to files
 ytt transfer session <id>                    # inspect an import session
 ```
 
 Imports are checkpointed: a rate limit, a closed lid or a power cut just means `resume` later — it continues where it stopped.
+
+The ordinary `--to spotify` export uses Spotify's current `POST /me/playlists` API when it needs to create a destination, then appends missing tracks. It does not remove extras, reproduce duplicate positions, reorder later or keep syncing in the background.
+
+The ID-targeted `--sync` form is deliberately stricter and destructive. It accepts only an existing playlist owned by the connected Spotify account. Run `--dry-run` first to see additions, removals and reordering. If any source row is unresolved or the source was truncated, the whole operation stops before changing Spotify. Otherwise the real run mirrors order, duplicates and removals exactly. Without `--yes`, ytt previews and asks before replacement; `ytt transfer resume <job-id>` refreshes that preview and asks again, while `resume <job-id> --yes` deliberately skips confirmation.
 
 ### If something goes wrong
 

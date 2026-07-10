@@ -324,7 +324,10 @@ pub enum ImportSessionRowStatus {
 
 impl ImportSession {
     pub fn from_checkpoint(cp: &Checkpoint) -> Self {
-        let searched_ytm = !matches!(cp.spec.dest, TransferDest::SpotifyNewPlaylist { .. });
+        let searched_ytm = !matches!(
+            cp.spec.dest,
+            TransferDest::SpotifyNewPlaylist { .. } | TransferDest::SpotifyMirrorPlaylist { .. }
+        );
         let rows: Vec<ImportSessionRow> = cp
             .tracks
             .iter()
@@ -763,6 +766,11 @@ fn endpoint_from_dest(dest: &TransferDest, label: Option<String>) -> SessionEndp
             key: None,
             label: label.or_else(|| name.clone()),
         },
+        TransferDest::SpotifyMirrorPlaylist { id } => SessionEndpoint {
+            kind: "spotify_mirror_playlist".to_owned(),
+            key: Some(id.clone()),
+            label,
+        },
         TransferDest::File { path, format } => SessionEndpoint {
             kind: format!("file_{format:?}").to_ascii_lowercase(),
             key: Some(path.display().to_string()),
@@ -1006,6 +1014,7 @@ mod tests {
                 id: "spotify-playlist".to_owned(),
             },
             dest,
+            media_kind: crate::transfer::ImportMediaKind::Track,
             dry_run: false,
             min_score: 0.80,
             take_best: false,

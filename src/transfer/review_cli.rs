@@ -416,6 +416,10 @@ fn apply_accept(
     selected: SelectedCandidate,
 ) -> anyhow::Result<String> {
     ensure_not_written(cp, index)?;
+    super::review_action::ensure_review_candidate_allowed(
+        &cp.spec,
+        selected.score_breakdown.as_ref(),
+    )?;
     cp.tracks[index].outcome = Some(MatchOutcome::Matched {
         key: selected.key.clone(),
         score: selected.score,
@@ -482,6 +486,7 @@ mod tests {
             dest: TransferDest::LocalPlaylist {
                 name: Some("Imported".to_owned()),
             },
+            media_kind: crate::transfer::ImportMediaKind::Track,
             dry_run: true,
             min_score: 0.80,
             take_best: false,

@@ -443,6 +443,7 @@ fn spotify_picker_keyboard_confirm_maps_all_spotify_imports_to_local_playlists()
             Cmd::Transfer(crate::transfer::actor::TransferCmd::StartJob(spec))
                 if matches!(spec.source, crate::transfer::TransferSource::SpotifyLiked)
                     && matches!(spec.dest, crate::transfer::TransferDest::LocalPlaylist { name: None })
+                    && spec.media_kind == crate::transfer::ImportMediaKind::Track
                     && !spec.dry_run
                     && spec.min_score == 0.80
                     && !spec.take_best
@@ -476,6 +477,7 @@ fn spotify_picker_keyboard_confirm_maps_all_spotify_imports_to_local_playlists()
             Cmd::Transfer(crate::transfer::actor::TransferCmd::StartJob(spec))
                 if matches!(spec.source, crate::transfer::TransferSource::SpotifyPlaylist { .. })
                     && matches!(spec.dest, crate::transfer::TransferDest::LocalPlaylist { name: None })
+                    && spec.media_kind == crate::transfer::ImportMediaKind::Track
                     && !spec.dry_run
                     && spec.auto_accept_ambiguous_min_score == Some(0.75)
         )),
@@ -511,14 +513,37 @@ fn spotify_picker_import_modes_map_to_job_specs() {
     assert!(strict.iter().any(|cmd| matches!(
         cmd,
         Cmd::Transfer(crate::transfer::actor::TransferCmd::StartJob(spec))
-            if !spec.dry_run && spec.auto_accept_ambiguous_min_score.is_none()
+            if !spec.dry_run
+                && spec.auto_accept_ambiguous_min_score.is_none()
+                && spec.media_kind == crate::transfer::ImportMediaKind::Track
+                && spec.match_policy == crate::transfer::MatchPolicy::Strict
+                && !spec.allow_user_videos
     )));
 
     let review = confirm_for(&mut app, crate::config::SpotifyImportMode::ReviewFirst);
     assert!(review.iter().any(|cmd| matches!(
         cmd,
         Cmd::Transfer(crate::transfer::actor::TransferCmd::StartJob(spec))
-            if spec.dry_run && spec.auto_accept_ambiguous_min_score.is_none()
+            if spec.dry_run
+                && spec.auto_accept_ambiguous_min_score.is_none()
+                && spec.media_kind == crate::transfer::ImportMediaKind::Track
+                && spec.match_policy == crate::transfer::MatchPolicy::Strict
+                && !spec.allow_user_videos
+    )));
+
+    let music_video = confirm_for(
+        &mut app,
+        crate::config::SpotifyImportMode::MusicVideoPlaylist,
+    );
+    assert!(music_video.iter().any(|cmd| matches!(
+        cmd,
+        Cmd::Transfer(crate::transfer::actor::TransferCmd::StartJob(spec))
+            if !spec.dry_run
+                && spec.auto_accept_ambiguous_min_score.is_none()
+                && spec.media_kind == crate::transfer::ImportMediaKind::MusicVideo
+                && spec.match_policy == crate::transfer::MatchPolicy::Strict
+                && !spec.take_best
+                && !spec.allow_user_videos
     )));
 }
 
@@ -547,6 +572,19 @@ fn spotify_import_mode_dropdown_keyboard_selects_and_dismisses() {
         crate::config::SpotifyImportMode::StrictPlaylist
     );
     assert!(st.spotify_import_mode_dropdown.is_none());
+
+    app.settings_activate();
+    app.on_key_settings(key(KeyCode::Down));
+    app.on_key_settings(key(KeyCode::Down));
+    assert_eq!(
+        app.settings.as_ref().unwrap().spotify_import_mode_dropdown,
+        Some(crate::config::SpotifyImportMode::MusicVideoPlaylist.index())
+    );
+    app.on_key_settings(key(KeyCode::Enter));
+    assert_eq!(
+        app.settings.as_ref().unwrap().draft.spotify_import_mode,
+        crate::config::SpotifyImportMode::MusicVideoPlaylist
+    );
 
     app.settings_activate();
     assert!(
@@ -604,13 +642,15 @@ fn spotify_import_mode_dropdown_mouse_targets_select_and_dismiss() {
 
     let cmds = click_target(
         &mut app,
-        MouseTarget::SettingsSpotifyImportModeSelect(crate::config::SpotifyImportMode::ReviewFirst),
+        MouseTarget::SettingsSpotifyImportModeSelect(
+            crate::config::SpotifyImportMode::MusicVideoPlaylist,
+        ),
     );
     assert!(cmds.is_empty());
     let st = app.settings.as_ref().unwrap();
     assert_eq!(
         st.draft.spotify_import_mode,
-        crate::config::SpotifyImportMode::ReviewFirst
+        crate::config::SpotifyImportMode::MusicVideoPlaylist
     );
     assert!(st.spotify_import_mode_dropdown.is_none());
 
@@ -640,7 +680,7 @@ fn spotify_import_mode_dropdown_mouse_targets_select_and_dismiss() {
     assert!(st.spotify_import_mode_dropdown.is_none());
     assert_eq!(
         st.draft.spotify_import_mode,
-        crate::config::SpotifyImportMode::ReviewFirst,
+        crate::config::SpotifyImportMode::MusicVideoPlaylist,
         "outside click should dismiss without applying the other setting"
     );
 }

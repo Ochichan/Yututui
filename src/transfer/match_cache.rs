@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::ImportMediaKind;
 use super::matching::{
     MatchConfig, MatchOutcome, MatchScoreBreakdown, TrackInput, normalize, normalize_stripped,
 };
@@ -11,7 +12,7 @@ use crate::api::ytmusic::{TransferAlbum, YoutubeSearchKind, YtdlpVideoMeta};
 use crate::util::safe_fs;
 
 const CACHE_SCHEMA_VERSION: u32 = 1;
-const MATCHER_VERSION: u32 = 3;
+const MATCHER_VERSION: u32 = 4;
 const CACHE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const MATCH_CACHE_TTL_SECS: i64 = 365 * 24 * 60 * 60;
 const ALBUM_CACHE_TTL_SECS: i64 = 180 * 24 * 60 * 60;
@@ -68,6 +69,8 @@ pub(crate) struct TransferMatchCache {
     pub query_results: HashMap<String, CachedQueryResult>,
     pub video_metadata: HashMap<String, CachedVideoMeta>,
     #[serde(skip)]
+    media_kind: ImportMediaKind,
+    #[serde(skip)]
     maintenance: CacheMaintenanceStats,
 }
 
@@ -82,6 +85,7 @@ impl Default for TransferMatchCache {
             albums: HashMap::new(),
             query_results: HashMap::new(),
             video_metadata: HashMap::new(),
+            media_kind: ImportMediaKind::Track,
             maintenance: CacheMaintenanceStats::default(),
         }
     }
@@ -150,19 +154,34 @@ pub(crate) struct CacheLookup {
 }
 
 impl TransferMatchCache {
-    pub fn load() -> Self {
+    pub fn load_for(media_kind: ImportMediaKind) -> Self {
         let Some(path) = cache_path() else {
-            return Self::default();
+            return Self {
+                media_kind,
+                ..Self::default()
+            };
         };
         let mut cache = safe_fs::load_json_or_default_limited::<Self>(&path, CACHE_MAX_BYTES);
         if cache.schema_version == CACHE_SCHEMA_VERSION && cache.matcher_version == MATCHER_VERSION
         {
+            cache.media_kind = media_kind;
             let stats = cache.prune();
             cache.maintenance.add(stats);
             log_maintenance("load", stats);
             cache
         } else {
-            Self::default()
+            Self {
+                media_kind,
+                ..Self::default()
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn for_media_kind(media_kind: ImportMediaKind) -> Self {
+        Self {
+            media_kind,
+            ..Self::default()
         }
     }
 
@@ -184,8 +203,9 @@ impl TransferMatchCache {
 
     pub fn lookup_track(&self, input: &TrackInput) -> Option<CacheLookup> {
         let now = crate::signals::unix_now();
+        let source_key = scoped_key(self.media_kind, &input.source_key);
         if !input.source_key.trim().is_empty()
-            && let Some(hit) = self.source_key.get(&input.source_key)
+            && let Some(hit) = self.source_key.get(&source_key)
             && hit.is_fresh_policy_safe(now)
         {
             return Some(CacheLookup {
@@ -193,7 +213,7 @@ impl TransferMatchCache {
                 kind: "source_key",
             });
         }
-        if let Some(key) = isrc_key(input)
+        if let Some(key) = isrc_key(input).map(|key| scoped_key(self.media_kind, &key))
             && let Some(hit) = self.isrc.get(&key)
             && hit.is_fresh_policy_safe(now)
         {
@@ -202,7 +222,7 @@ impl TransferMatchCache {
                 kind: "isrc",
             });
         }
-        if let Some(key) = normalized_track_key(input)
+        if let Some(key) = normalized_track_key(input).map(|key| scoped_key(self.media_kind, &key))
             && let Some(hit) = self.normalized.get(&key)
             && hit.is_fresh_policy_safe(now)
         {
@@ -222,9 +242,13 @@ impl TransferMatchCache {
         let before = self.source_key.len() + self.isrc.len() + self.normalized.len();
         let compatible =
             |hit: &CachedMatch| hit.is_fresh_policy_safe(now) && hit.score >= cfg.accept;
-        self.source_key.retain(|_, hit| compatible(hit));
-        self.isrc.retain(|_, hit| compatible(hit));
-        self.normalized.retain(|_, hit| compatible(hit));
+        let current_scope = format!("{}:", media_scope(self.media_kind));
+        self.source_key
+            .retain(|key, hit| !key.starts_with(&current_scope) || compatible(hit));
+        self.isrc
+            .retain(|key, hit| !key.starts_with(&current_scope) || compatible(hit));
+        self.normalized
+            .retain(|key, hit| !key.starts_with(&current_scope) || compatible(hit));
         let removed = before - (self.source_key.len() + self.isrc.len() + self.normalized.len());
         self.maintenance.incompatible += removed;
         removed > 0
@@ -236,8 +260,10 @@ impl TransferMatchCache {
             None => return,
         };
         if !input.source_key.trim().is_empty() {
-            self.source_key
-                .insert(input.source_key.clone(), cached.clone());
+            self.source_key.insert(
+                scoped_key(self.media_kind, &input.source_key),
+                cached.clone(),
+            );
             self.maintenance.capacity_evictions += prune_map_batched(
                 &mut self.source_key,
                 SOURCE_KEY_CACHE_MAX,
@@ -246,7 +272,8 @@ impl TransferMatchCache {
             );
         }
         if let Some(key) = isrc_key(input) {
-            self.isrc.insert(key, cached.clone());
+            self.isrc
+                .insert(scoped_key(self.media_kind, &key), cached.clone());
             self.maintenance.capacity_evictions += prune_map_batched(
                 &mut self.isrc,
                 ISRC_CACHE_MAX,
@@ -255,7 +282,8 @@ impl TransferMatchCache {
             );
         }
         if let Some(key) = normalized_track_key(input) {
-            self.normalized.insert(key, cached);
+            self.normalized
+                .insert(scoped_key(self.media_kind, &key), cached);
             self.maintenance.capacity_evictions += prune_map_batched(
                 &mut self.normalized,
                 NORMALIZED_CACHE_MAX,
@@ -268,7 +296,7 @@ impl TransferMatchCache {
     pub fn lookup_album(&self, key: &str) -> Option<&CachedAlbum> {
         let now = crate::signals::unix_now();
         self.albums
-            .get(key)
+            .get(&scoped_key(self.media_kind, key))
             .filter(|album| !is_expired(album.updated_at, now, ALBUM_CACHE_TTL_SECS))
     }
 
@@ -294,7 +322,7 @@ impl TransferMatchCache {
             return;
         }
         self.albums.insert(
-            key,
+            scoped_key(self.media_kind, &key),
             CachedAlbum {
                 ytm_album_id: album.album_id.clone(),
                 title: album.title.clone(),
@@ -573,6 +601,17 @@ fn isrc_key(input: &TrackInput) -> Option<String> {
         .map(str::trim)
         .filter(|isrc| !isrc.is_empty())
         .map(|isrc| isrc.to_ascii_uppercase())
+}
+
+fn media_scope(media_kind: ImportMediaKind) -> &'static str {
+    match media_kind {
+        ImportMediaKind::Track => "track",
+        ImportMediaKind::MusicVideo => "music_video",
+    }
+}
+
+fn scoped_key(media_kind: ImportMediaKind, key: &str) -> String {
+    format!("{}:{key}", media_scope(media_kind))
 }
 
 fn normalized_track_key(input: &TrackInput) -> Option<String> {
@@ -906,6 +945,41 @@ mod tests {
         let mut by_identity = input("Song", "Artist");
         by_identity.source_key = "spotify:track:third".to_owned();
         assert_eq!(cache.lookup_track(&by_identity).unwrap().kind, "normalized");
+    }
+
+    #[test]
+    fn persistent_match_and_album_keys_are_partitioned_by_media_intent() {
+        let source = input("Song", "Artist");
+        let mut cache = TransferMatchCache::for_media_kind(ImportMediaKind::Track);
+        cache.save_match(&source, &matched());
+        cache.save_album(
+            "album-key".to_owned(),
+            &TransferAlbum {
+                album_id: "album-id".to_owned(),
+                title: "Album".to_owned(),
+                artist: "Artist".to_owned(),
+                year: Some("2024".to_owned()),
+                tracks: vec![crate::api::ytmusic::TransferAlbumTrack {
+                    video_id: "video-id".to_owned(),
+                    title: "Song".to_owned(),
+                    artist: "Artist".to_owned(),
+                    album: "Album".to_owned(),
+                    track_number: Some(1),
+                    duration: "3:00".to_owned(),
+                    duration_secs: Some(180),
+                }],
+            },
+        );
+
+        cache.media_kind = ImportMediaKind::MusicVideo;
+        assert!(cache.lookup_track(&source).is_none());
+        assert!(cache.lookup_album("album-key").is_none());
+
+        cache.save_match(&source, &matched());
+        assert!(cache.lookup_track(&source).is_some());
+        cache.media_kind = ImportMediaKind::Track;
+        assert!(cache.lookup_track(&source).is_some());
+        assert!(cache.lookup_album("album-key").is_some());
     }
 
     #[test]

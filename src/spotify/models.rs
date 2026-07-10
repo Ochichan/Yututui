@@ -46,9 +46,14 @@ impl SpotifyUser {
 pub struct SpotifyPlaylist {
     pub id: String,
     pub name: String,
+    /// Human-readable owner label retained for existing list output.
     pub owner: String,
+    /// Stable owner identifier used for authorization-sensitive operations.
+    pub owner_id: Option<String>,
     pub total: u32,
     pub collaborative: bool,
+    /// Snapshot returned by Spotify for optimistic concurrency checks.
+    pub snapshot_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +70,8 @@ pub struct RawPlaylist {
     pub items: Option<RawPlaylistTracksRef>,
     #[serde(default)]
     pub collaborative: bool,
+    #[serde(default)]
+    pub snapshot_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,20 +90,30 @@ pub struct RawPlaylistTracksRef {
 
 impl From<RawPlaylist> for SpotifyPlaylist {
     fn from(raw: RawPlaylist) -> Self {
-        let owner = raw
-            .owner
-            .and_then(|o| o.display_name.filter(|n| !n.is_empty()).or(o.id))
-            .unwrap_or_default();
+        let (owner, owner_id) = raw.owner.map_or_else(
+            || (String::new(), None),
+            |owner| {
+                let owner_id = owner.id.filter(|id| !id.is_empty());
+                let label = owner
+                    .display_name
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| owner_id.clone())
+                    .unwrap_or_default();
+                (label, owner_id)
+            },
+        );
         Self {
             id: raw.id,
             name: raw.name,
             owner,
+            owner_id,
             total: raw
                 .items
                 .or(raw.tracks)
                 .map(|t| t.total)
                 .unwrap_or_default(),
             collaborative: raw.collaborative,
+            snapshot_id: raw.snapshot_id.filter(|id| !id.is_empty()),
         }
     }
 }
@@ -167,6 +184,37 @@ pub struct RawTrackItem {
     /// Wrapper-level local-file flag (post-migration playlists carry it here too).
     #[serde(default)]
     pub is_local: Option<bool>,
+}
+
+/// One destination playlist row, without discarding unsupported Spotify item types.
+///
+/// Exact-mirror previews need the row count and order even when the row is an episode,
+/// local file, unknown future type, or a removed/null item. `uri` and `kind` therefore
+/// remain optional instead of filtering the row out as [`simplify`] does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpotifyPlaylistItemRef {
+    pub uri: Option<String>,
+    pub kind: Option<String>,
+    pub is_local: bool,
+}
+
+pub fn playlist_item_ref(item: &RawTrackItem) -> SpotifyPlaylistItemRef {
+    let value = item.item.as_ref().or(item.track.as_ref());
+    let uri = value.and_then(|entry| string_field(entry, "uri"));
+    let kind = value.and_then(|entry| string_field(entry, "type"));
+    let is_local = item.is_local == Some(true)
+        || value
+            .and_then(|entry| entry.get("is_local"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        || uri
+            .as_deref()
+            .is_some_and(|uri| uri.starts_with("spotify:local:"));
+    SpotifyPlaylistItemRef {
+        uri,
+        kind,
+        is_local,
+    }
 }
 
 /// Decode one item's track object. `None` = episode / local file / removed → the
@@ -308,6 +356,57 @@ fn image_array(value: Option<&serde_json::Value>) -> Option<Vec<SpotifyImage>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playlist_keeps_owner_id_label_and_snapshot_separately() {
+        let raw: RawPlaylist = serde_json::from_value(serde_json::json!({
+            "id": "playlist-id",
+            "name": "Roadtrip",
+            "owner": {"id": "stable-owner-id", "display_name": "DJ Test"},
+            "items": {"total": 23},
+            "collaborative": true,
+            "snapshot_id": "snapshot-1"
+        }))
+        .unwrap();
+
+        let playlist = SpotifyPlaylist::from(raw);
+        assert_eq!(playlist.owner, "DJ Test");
+        assert_eq!(playlist.owner_id.as_deref(), Some("stable-owner-id"));
+        assert_eq!(playlist.snapshot_id.as_deref(), Some("snapshot-1"));
+        assert_eq!(playlist.total, 23);
+        assert!(playlist.collaborative);
+    }
+
+    #[test]
+    fn playlist_item_refs_preserve_track_episode_local_and_null_rows() {
+        let rows: Vec<RawTrackItem> = serde_json::from_value(serde_json::json!([
+            {"item": {"type": "track", "uri": "spotify:track:one"}},
+            {"item": {"type": "episode", "uri": "spotify:episode:two"}},
+            {"is_local": true, "item": {
+                "type": "track", "uri": "spotify:local:artist:album:title:123"
+            }},
+            {"item": null}
+        ]))
+        .unwrap();
+
+        let refs: Vec<SpotifyPlaylistItemRef> = rows.iter().map(playlist_item_ref).collect();
+        assert_eq!(refs.len(), 4);
+        assert_eq!(refs[0].uri.as_deref(), Some("spotify:track:one"));
+        assert_eq!(refs[0].kind.as_deref(), Some("track"));
+        assert!(!refs[0].is_local);
+        assert_eq!(refs[1].uri.as_deref(), Some("spotify:episode:two"));
+        assert_eq!(refs[1].kind.as_deref(), Some("episode"));
+        assert!(!refs[1].is_local);
+        assert_eq!(
+            refs[2].uri.as_deref(),
+            Some("spotify:local:artist:album:title:123")
+        );
+        assert_eq!(refs[2].kind.as_deref(), Some("track"));
+        assert!(refs[2].is_local);
+        assert_eq!(refs[3].uri, None);
+        assert_eq!(refs[3].kind, None);
+        assert!(!refs[3].is_local);
+    }
 
     #[test]
     fn simplify_decodes_tracks_and_skips_the_rest() {

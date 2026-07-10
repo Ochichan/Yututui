@@ -76,6 +76,7 @@ async fn anonymous_catalog_miss_skips_pacing_and_provider_work() {
         "Primary Song Title",
         &SearchConfig::default(),
         &state,
+        ImportMediaKind::Track,
     )
     .await
     .expect("anonymous catalog capability check");

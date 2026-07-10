@@ -91,6 +91,9 @@ pub fn accept_all_candidates(job_id: &str) -> anyhow::Result<ReviewBatchSummary>
         let Some(selected) = first_ambiguous_candidate(&cp.tracks[index].outcome) else {
             continue;
         };
+        if ensure_review_candidate_allowed(&cp.spec, selected.score_breakdown.as_ref()).is_err() {
+            continue;
+        }
         apply_accepted_candidate(&mut cp, index, selected.clone());
         rows.push(ReviewActionSummary {
             source_order,
@@ -117,6 +120,7 @@ fn accept_candidate(
     selected: SelectedCandidate,
     label: &'static str,
 ) -> anyhow::Result<ReviewActionSummary> {
+    ensure_review_candidate_allowed(&cp.spec, selected.score_breakdown.as_ref())?;
     apply_accepted_candidate(cp, index, selected.clone());
     save_checkpoint_and_session(cp)?;
     Ok(ReviewActionSummary {
@@ -126,6 +130,21 @@ fn accept_candidate(
         display: Some(selected.display),
         score: Some(selected.score),
     })
+}
+
+pub(crate) fn ensure_review_candidate_allowed(
+    spec: &super::JobSpec,
+    score: Option<&MatchScoreBreakdown>,
+) -> anyhow::Result<()> {
+    if spec.media_kind == super::ImportMediaKind::MusicVideo {
+        let score = score.ok_or_else(|| {
+            anyhow!("candidate has no music-video eligibility evidence; rematch it first")
+        })?;
+        if let Some(reason) = score.reject_reason.as_deref() {
+            bail!("candidate is not eligible for music-video import: {reason}");
+        }
+    }
+    Ok(())
 }
 
 fn apply_accepted_candidate(cp: &mut Checkpoint, index: usize, selected: SelectedCandidate) {
@@ -257,5 +276,51 @@ fn selected_key(entry: &super::checkpoint::TrackEntry) -> Option<&str> {
             }
             _ => None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transfer::{
+        ImportMediaKind, JobSpec, MatchPolicy, TransferCacheMode, TransferDest, TransferSource,
+    };
+
+    fn spec(media_kind: ImportMediaKind) -> JobSpec {
+        JobSpec {
+            source: TransferSource::SpotifyLiked,
+            dest: TransferDest::LocalPlaylist { name: None },
+            media_kind,
+            dry_run: true,
+            min_score: 0.8,
+            take_best: false,
+            auto_accept_ambiguous_min_score: None,
+            match_policy: MatchPolicy::Strict,
+            allow_user_videos: false,
+            cache_mode: TransferCacheMode::Use,
+            rematch: false,
+        }
+    }
+
+    #[test]
+    fn music_video_review_requires_eligibility_evidence() {
+        let mv = spec(ImportMediaKind::MusicVideo);
+        assert!(ensure_review_candidate_allowed(&mv, None).is_err());
+
+        let rejected = MatchScoreBreakdown {
+            reject_reason: Some("music_video_type_ugc".to_owned()),
+            ..MatchScoreBreakdown::default()
+        };
+        assert!(ensure_review_candidate_allowed(&mv, Some(&rejected)).is_err());
+
+        let review_only = MatchScoreBreakdown {
+            accept_blocked: true,
+            ..MatchScoreBreakdown::default()
+        };
+        assert!(ensure_review_candidate_allowed(&mv, Some(&review_only)).is_ok());
+        assert!(
+            ensure_review_candidate_allowed(&spec(ImportMediaKind::Track), None).is_ok(),
+            "legacy track reviews do not require the new MV evidence field"
+        );
     }
 }

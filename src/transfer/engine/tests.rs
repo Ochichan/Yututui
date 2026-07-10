@@ -8,6 +8,7 @@ fn spec(dest: TransferDest) -> JobSpec {
     JobSpec {
         source: TransferSource::SpotifyLiked,
         dest,
+        media_kind: ImportMediaKind::Track,
         dry_run: false,
         min_score: 0.80,
         take_best: false,
@@ -120,6 +121,14 @@ fn default_dest_name_uses_explicit_names_and_source_fallbacks() {
     assert_eq!(
         default_dest_name(&TransferDest::YtmNewPlaylist { name: None }, "Source"),
         "Source"
+    );
+    assert_eq!(
+        default_dest_name_for_media(
+            &TransferDest::YtmNewPlaylist { name: None },
+            "Source",
+            ImportMediaKind::MusicVideo,
+        ),
+        "Source (Music Videos)"
     );
     assert_eq!(
         default_dest_name(
@@ -265,6 +274,7 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
     let spec = JobSpec {
         source: TransferSource::File { path: path.clone() },
         dest: TransferDest::YtmLikes,
+        media_kind: ImportMediaKind::Track,
         dry_run: false,
         min_score: 0.80,
         take_best: false,
@@ -281,13 +291,15 @@ spotify:track:1,\"CSV Song\",\"Artist A\",\"CSV Album\",90000,ISRC1,dQw4w9WgXcQ
         market: None,
     };
 
-    let (name, entries, skipped_local) = fetch_source("job-fetch-file", &spec, &mut ctx)
-        .await
-        .unwrap_or_else(|err| panic!("fetch source failed: {}", err.error));
+    let (name, entries, skipped_local, source_truncated) =
+        fetch_source("job-fetch-file", &spec, &mut ctx)
+            .await
+            .unwrap_or_else(|err| panic!("fetch source failed: {}", err.error));
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(name, path.file_stem().unwrap().to_string_lossy());
     assert_eq!(skipped_local, 0);
+    assert!(!source_truncated);
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].input.title, "CSV Song");
     assert_eq!(
@@ -313,6 +325,7 @@ async fn fetch_source_caps_large_file_inputs_before_checkpointing() {
     let spec = JobSpec {
         source: TransferSource::File { path: path.clone() },
         dest: TransferDest::YtmLikes,
+        media_kind: ImportMediaKind::Track,
         dry_run: false,
         min_score: 0.80,
         take_best: false,
@@ -329,14 +342,16 @@ async fn fetch_source_caps_large_file_inputs_before_checkpointing() {
         market: None,
     };
 
-    let (_name, entries, skipped_local) = fetch_source("job-fetch-cap", &spec, &mut ctx)
-        .await
-        .unwrap_or_else(|err| panic!("fetch source failed: {}", err.error));
+    let (_name, entries, skipped_local, source_truncated) =
+        fetch_source("job-fetch-cap", &spec, &mut ctx)
+            .await
+            .unwrap_or_else(|err| panic!("fetch source failed: {}", err.error));
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(entries.len(), TRACK_CAP);
     assert_eq!(entries.last().unwrap().input.title, "Song 9999");
     assert_eq!(skipped_local, 0);
+    assert!(source_truncated);
 }
 
 #[test]
@@ -697,7 +712,7 @@ fn report_counts_matched_and_preserves_ambiguous_and_not_found_rows() {
     let report = build_report(&cp, 1);
 
     assert_eq!(report.job_id, "job-report");
-    assert_eq!(report.schema_version, 5);
+    assert_eq!(report.schema_version, 6);
     assert_eq!(report.total, 4);
     assert_eq!(report.matched, 1);
     assert_eq!(report.skipped_local, 1);
@@ -1424,6 +1439,7 @@ async fn file_export_rejects_sources_that_cannot_be_exported_without_clients() {
             path: std::path::PathBuf::from("out.json"),
             format: FileFormat::Json,
         },
+        media_kind: ImportMediaKind::Track,
         dry_run: false,
         min_score: 0.80,
         take_best: false,

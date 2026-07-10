@@ -17,18 +17,23 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::api::Song;
-use crate::api::ytmusic::YoutubeSearchKind;
+use crate::api::ytmusic::{YoutubeSearchKind, YtmMusicVideoType};
 use crate::spotify::models::SpotifyTrack;
 use crate::streaming::musicgate;
 
-use super::MatchPolicy;
+use super::{ImportMediaKind, MatchPolicy};
 
 mod identity;
+mod music_video;
+mod quality;
 mod ytm_retrieval;
 use identity::{CandidateDisposition, disposition, parse_version_profile, version_agreement};
+use music_video::{apply_music_video_gate, is_official_video_presentation};
+use quality::{confidence_tier, official_signal_score, quality_adjustment, quality_tier};
 pub(crate) use ytm_retrieval::YtmMatchDiagnostics;
 pub use ytm_retrieval::{
-    Pacing, memo_key, ytm_catalog_query_plan, ytm_fallback_query_plan, ytm_query_plan,
+    Pacing, memo_key, memo_key_for_media, ytm_catalog_query_plan, ytm_fallback_query_plan,
+    ytm_music_video_query_plan, ytm_query_plan,
 };
 pub(crate) use ytm_retrieval::{SharedYtmMatchState, match_track_ytm_shared};
 
@@ -155,7 +160,9 @@ impl From<YoutubeSearchKind> for CandidateSourceKind {
     fn from(kind: YoutubeSearchKind) -> Self {
         match kind {
             YoutubeSearchKind::YtmCatalogSong => Self::YtmCatalogSong,
-            YoutubeSearchKind::YtmCatalogVideo => Self::YtmCatalogVideo,
+            YoutubeSearchKind::YtmCatalogVideo | YoutubeSearchKind::YtmCatalogTypedVideo(_) => {
+                Self::YtmCatalogVideo
+            }
             YoutubeSearchKind::YoutubeVideoSearch => Self::YoutubeVideoSearch,
         }
     }
@@ -176,6 +183,8 @@ pub struct MatchCandidate {
     pub release_year: Option<u16>,
     pub explicit: Option<bool>,
     pub source_kind: CandidateSourceKind,
+    /// First-party YTM presentation subtype, when the video-filter response exposed it.
+    pub music_video_type: Option<YtmMusicVideoType>,
     pub channel: Option<String>,
     pub channel_id: Option<String>,
     /// Provider verification is corroboration only; it is not OAC/official-upload proof.
@@ -213,6 +222,7 @@ impl MatchCandidate {
             release_year: None,
             explicit: None,
             source_kind,
+            music_video_type: None,
             channel: Some(s.artist.clone()).filter(|a| !a.trim().is_empty()),
             channel_id: None,
             channel_verified: None,
@@ -225,6 +235,12 @@ impl MatchCandidate {
             preflight_reject_reason: None,
             preflight_reason_codes: Vec::new(),
         }
+    }
+
+    pub fn from_youtube_search(s: &Song, kind: YoutubeSearchKind) -> Self {
+        let mut candidate = Self::from_song_with_kind(s, kind.into());
+        candidate.music_video_type = kind.music_video_type();
+        candidate
     }
 }
 
@@ -244,6 +260,7 @@ impl From<&SpotifyTrack> for MatchCandidate {
                 .and_then(|year| year.parse::<u16>().ok()),
             explicit: Some(t.explicit),
             source_kind: CandidateSourceKind::SpotifyCatalog,
+            music_video_type: None,
             channel: None,
             channel_id: None,
             channel_verified: None,
@@ -304,6 +321,7 @@ pub struct MatchConfig {
     pub accept_margin: f32,
     pub policy: MatchPolicy,
     pub allow_user_videos: bool,
+    pub media_kind: ImportMediaKind,
 }
 
 impl Default for MatchConfig {
@@ -314,6 +332,7 @@ impl Default for MatchConfig {
             accept_margin: 0.06,
             policy: MatchPolicy::Strict,
             allow_user_videos: false,
+            media_kind: ImportMediaKind::Track,
         }
     }
 }
@@ -324,6 +343,8 @@ pub struct MatchScoreBreakdown {
     pub raw_total: f32,
     #[serde(default)]
     pub source_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub music_video_type: Option<String>,
     #[serde(default)]
     pub quality_tier: String,
     #[serde(default)]
@@ -857,56 +878,6 @@ fn source_kind_code(kind: CandidateSourceKind) -> &'static str {
     }
 }
 
-fn official_signal_score(cand: &MatchCandidate) -> f32 {
-    if matches!(
-        cand.source_kind,
-        CandidateSourceKind::YtmAlbumTrack
-            | CandidateSourceKind::YtmCatalogSong
-            | CandidateSourceKind::SpotifyCatalog
-    ) {
-        return 1.0;
-    }
-    let channel = cand.channel.as_deref().unwrap_or(&cand.artist);
-    if musicgate::is_trusted_music_channel(channel) {
-        return 1.0;
-    }
-    let title_tier = cand
-        .metadata_title
-        .as_deref()
-        .map(|title| musicgate::music_tier_score(title, channel))
-        .unwrap_or(0.0)
-        .max(musicgate::music_tier_score(&cand.title, channel));
-    if title_tier >= 0.7 {
-        return title_tier;
-    }
-    let channel_lower = channel.to_lowercase();
-    if channel_lower.contains("official") || channel_lower.ends_with(" records") {
-        return 0.7;
-    }
-    title_tier
-}
-
-fn quality_tier(cand: &MatchCandidate) -> &'static str {
-    match cand.source_kind {
-        CandidateSourceKind::YtmAlbumTrack => "album_track",
-        CandidateSourceKind::YtmCatalogSong | CandidateSourceKind::SpotifyCatalog => "catalog",
-        CandidateSourceKind::YtmCatalogVideo
-        | CandidateSourceKind::YoutubeVideoSearch
-        | CandidateSourceKind::Unknown => {
-            let official = official_signal_score(cand);
-            if official >= 1.0 {
-                "trusted_official"
-            } else if official >= 0.7 {
-                "official_like"
-            } else if official >= 0.4 {
-                "music_signal"
-            } else {
-                "unverified_upload"
-            }
-        }
-    }
-}
-
 fn soft_duration_limit(input: &TrackInput) -> u32 {
     input
         .duration_secs
@@ -925,32 +896,6 @@ fn duration_delta_secs(input: &TrackInput, cand: &MatchCandidate) -> Option<i32>
     let input = i32::try_from(input.duration_secs?).ok()?;
     let cand = i32::try_from(cand.duration_secs?).ok()?;
     Some(cand - input)
-}
-
-fn is_official_video_presentation(cand: &MatchCandidate) -> bool {
-    matches!(
-        cand.source_kind,
-        CandidateSourceKind::YtmCatalogVideo | CandidateSourceKind::YoutubeVideoSearch
-    ) && official_signal_score(cand) >= 0.7
-        && cand
-            .metadata_title
-            .as_deref()
-            .into_iter()
-            .chain(std::iter::once(cand.title.as_str()))
-            .any(|title| {
-                let title = title.to_lowercase();
-                [
-                    "official music video",
-                    "official video",
-                    "official mv",
-                    "music video",
-                    " m v",
-                    " mv",
-                    "뮤직비디오",
-                ]
-                .iter()
-                .any(|marker| title.contains(marker))
-            })
 }
 
 fn official_video_runtime_limit(input: &TrackInput) -> u32 {
@@ -1041,113 +986,6 @@ fn evidence_completeness(input: &TrackInput, cand: &MatchCandidate) -> f32 {
     available.into_iter().filter(|present| *present).count() as f32 / available.len() as f32
 }
 
-fn quality_adjustment(cand: &MatchCandidate) -> (f32, f32, Vec<&'static str>) {
-    let mut bonus = 0.0f32;
-    let mut penalty = 0.0f32;
-    let mut reasons = Vec::new();
-    let channel = cand.channel.as_deref().unwrap_or(&cand.artist);
-
-    match cand.source_kind {
-        CandidateSourceKind::YtmAlbumTrack
-        | CandidateSourceKind::YtmCatalogSong
-        | CandidateSourceKind::SpotifyCatalog => {
-            bonus += 0.035;
-            reasons.push("catalog_song");
-            if cand.source_kind == CandidateSourceKind::YtmAlbumTrack {
-                bonus += 0.015;
-                reasons.push("album_track");
-            }
-        }
-        CandidateSourceKind::YtmCatalogVideo => {
-            bonus += 0.01;
-            reasons.push("ytm_video_filter");
-        }
-        CandidateSourceKind::YoutubeVideoSearch | CandidateSourceKind::Unknown => {}
-    }
-
-    let tier = musicgate::music_tier_score(&cand.title, channel);
-    if tier >= 1.0 {
-        bonus += 0.025;
-        reasons.push("trusted_channel");
-    } else if tier >= 0.7 {
-        bonus += 0.015;
-        reasons.push("official_like");
-    } else if tier >= 0.4 {
-        bonus += 0.005;
-        reasons.push("music_video_signal");
-    }
-    if cand.channel_verified == Some(true) && cand.channel_id.is_some() {
-        // Weak corroboration only. A verified YouTube channel is not necessarily the
-        // recording artist and must never cross the official threshold by itself.
-        bonus += 0.005;
-        reasons.push("verified_channel_corroboration");
-    }
-    if cand.has_audio_format == Some(true) {
-        bonus += 0.005;
-        reasons.push("playable_audio_format");
-    }
-
-    let risk = musicgate::non_music_risk_score(&cand.title, channel);
-    if risk >= 0.85 {
-        penalty += 0.35;
-        reasons.push("non_music_risk");
-    } else if risk >= 0.55 {
-        penalty += 0.15;
-        reasons.push("non_music_demote");
-    }
-    if let Some(reason) = musicgate::gimmick_reason(&cand.title) {
-        penalty += 0.35;
-        reasons.push(reason);
-    }
-
-    (bonus, penalty, reasons)
-}
-
-fn confidence_tier(
-    cand: &MatchCandidate,
-    total: f32,
-    title: f32,
-    artist: f32,
-    duration_delta: Option<u32>,
-    accept_blocked: bool,
-    reject_reason: Option<&str>,
-) -> &'static str {
-    if reject_reason.is_some() {
-        return "reject";
-    }
-    if accept_blocked {
-        return "review";
-    }
-    let duration_exact = duration_delta.is_none_or(|delta| delta <= 3);
-    if matches!(
-        cand.source_kind,
-        CandidateSourceKind::YtmAlbumTrack | CandidateSourceKind::YtmCatalogSong
-    ) && title >= 0.98
-        && artist >= 0.92
-        && duration_exact
-    {
-        return "exact";
-    }
-    if matches!(
-        cand.source_kind,
-        CandidateSourceKind::YtmAlbumTrack | CandidateSourceKind::YtmCatalogSong
-    ) && total >= 0.86
-        && title >= 0.90
-        && artist >= 0.80
-    {
-        return "strong";
-    }
-    if matches!(
-        cand.source_kind,
-        CandidateSourceKind::YtmCatalogVideo | CandidateSourceKind::YoutubeVideoSearch
-    ) && official_signal_score(cand) >= 0.7
-        && total >= 0.88
-    {
-        return "strong";
-    }
-    "review"
-}
-
 /// Score one candidate against the input.
 pub fn score_candidate(input: &TrackInput, cand: &MatchCandidate) -> f32 {
     score_candidate_breakdown(input, cand).total
@@ -1188,6 +1026,9 @@ pub fn score_candidate_breakdown_with_config(
         + track_number_bonus)
         .clamp(0.0, 1.0);
     let mut gate = identity_gate(input, cand);
+    if cfg.media_kind == ImportMediaKind::MusicVideo {
+        apply_music_video_gate(&mut gate, cand, title, artist);
+    }
     let delta_secs = duration_delta_secs(input, cand);
     if let Some(delta) = delta_secs.map(i32::unsigned_abs) {
         if delta > hard_duration_limit(input)
@@ -1303,6 +1144,9 @@ pub fn score_candidate_breakdown_with_config(
         total,
         raw_total,
         source_kind: source_kind_code(cand.source_kind).to_owned(),
+        music_video_type: cand
+            .music_video_type
+            .map(|video_type| video_type.code().to_owned()),
         quality_tier: quality_tier(cand).to_owned(),
         confidence_tier: confidence_tier.to_owned(),
         duration_delta_secs: delta_secs,

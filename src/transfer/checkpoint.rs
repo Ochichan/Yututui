@@ -39,6 +39,15 @@ pub struct Checkpoint {
     /// tracks), counted at fetch time for the report.
     #[serde(default)]
     pub skipped_local: u32,
+    /// True when the source contained more rows than the transfer work ceiling. Destructive
+    /// exact-sync destinations must fail closed instead of mirroring a truncated prefix.
+    #[serde(default)]
+    pub source_truncated: bool,
+    /// Prepared Spotify exact-sync state. The preview snapshot is authorization context;
+    /// `started` records that a failed run may have left a partial destination, so resume
+    /// refreshes the preview and rebuilds the full destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spotify_sync: Option<SpotifySyncState>,
     /// Diagnostic counters accumulated while matching. This is intentionally summary-level
     /// so resumed jobs can explain why rows landed in review without storing every probe.
     #[serde(default, skip_serializing_if = "MatchStats::is_empty")]
@@ -106,6 +115,8 @@ impl Checkpoint {
             dest_name: None,
             source_name: None,
             skipped_local: 0,
+            source_truncated: false,
+            spotify_sync: None,
             match_stats: MatchStats::default(),
             defer_reason: None,
             match_traces: BTreeMap::new(),
@@ -358,7 +369,7 @@ pub fn report_path(job_id: &str) -> Option<PathBuf> {
     Some(transfers_dir()?.join(format!("{}.report.json", safe_job_id(job_id)?)))
 }
 
-const TRANSFER_REPORT_SCHEMA_VERSION: u32 = 5;
+const TRANSFER_REPORT_SCHEMA_VERSION: u32 = 6;
 
 pub const MAX_MATCH_TRACE_PROBES: usize = 16;
 pub const MAX_MATCH_TRACE_CANDIDATES: usize = 5;
@@ -574,12 +585,16 @@ pub struct TransferReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capacity_skipped: Vec<ReportRow>,
     pub skipped_local: u32,
+    #[serde(default)]
+    pub source_truncated: bool,
     pub duplicates_dropped: u32,
     pub elapsed_secs: u64,
     #[serde(default, skip_serializing_if = "MatchStats::is_empty")]
     pub match_stats: MatchStats,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defer_reason: Option<JobDeferReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spotify_sync: Option<SpotifySyncPreview>,
 }
 
 impl Default for TransferReport {
@@ -596,12 +611,37 @@ impl Default for TransferReport {
             deferred: Vec::new(),
             capacity_skipped: Vec::new(),
             skipped_local: 0,
+            source_truncated: false,
             duplicates_dropped: 0,
             elapsed_secs: 0,
             match_stats: MatchStats::default(),
             defer_reason: None,
+            spotify_sync: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpotifySyncPreview {
+    pub target_id: String,
+    pub target_name: String,
+    pub snapshot_id: String,
+    pub current_items: u32,
+    pub desired_items: u32,
+    pub additions: u32,
+    pub removals: u32,
+    pub order_changed: bool,
+    pub ready: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpotifySyncState {
+    pub preview: SpotifySyncPreview,
+    pub started: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -711,8 +751,28 @@ impl TransferReport {
         if self.skipped_local > 0 {
             out.push_str(&format!(", {} local/episode skipped", self.skipped_local));
         }
+        if self.source_truncated {
+            out.push_str(", source truncated");
+        }
         if self.duplicates_dropped > 0 {
             out.push_str(&format!(", {} duplicates dropped", self.duplicates_dropped));
+        }
+        if let Some(sync) = &self.spotify_sync {
+            if sync.ready {
+                out.push_str(&format!(
+                    ", Spotify sync {} → {} items ({} add, {} remove{})",
+                    sync.current_items,
+                    sync.desired_items,
+                    sync.additions,
+                    sync.removals,
+                    if sync.order_changed { ", reorder" } else { "" }
+                ));
+            } else {
+                out.push_str(&format!(
+                    ", Spotify sync blocked: {}",
+                    sync.blocked_reasons.join("; ")
+                ));
+            }
         }
         out
     }
@@ -729,6 +789,7 @@ mod tests {
                 id: "37i9dQ".to_owned(),
             },
             dest: TransferDest::YtmNewPlaylist { name: None },
+            media_kind: crate::transfer::ImportMediaKind::Track,
             dry_run: false,
             min_score: 0.80,
             take_best: false,
@@ -823,6 +884,45 @@ mod tests {
     }
 
     #[test]
+    fn exact_spotify_sync_authorization_state_round_trips() {
+        let mut mirror_spec = spec();
+        mirror_spec.dest = TransferDest::SpotifyMirrorPlaylist {
+            id: "2xvhzLfxmV7N8G2mWThBzG".to_owned(),
+        };
+        let mut cp = Checkpoint::new(
+            "yt2sp-sync-roundtrip".to_owned(),
+            mirror_spec,
+            vec![entry("one")],
+        );
+        cp.source_truncated = true;
+        cp.spotify_sync = Some(SpotifySyncState {
+            preview: SpotifySyncPreview {
+                target_id: "2xvhzLfxmV7N8G2mWThBzG".to_owned(),
+                target_name: "Mirror target".to_owned(),
+                snapshot_id: "snapshot-before-write".to_owned(),
+                current_items: 4,
+                desired_items: 1,
+                additions: 1,
+                removals: 4,
+                order_changed: true,
+                ready: false,
+                blocked_reasons: vec!["source was truncated".to_owned()],
+            },
+            started: true,
+        });
+
+        let value = serde_json::to_value(&cp).expect("serialize sync checkpoint");
+        let back: Checkpoint = serde_json::from_value(value).expect("deserialize sync checkpoint");
+
+        assert!(back.source_truncated);
+        let state = back.spotify_sync.expect("persisted sync state");
+        assert!(state.started);
+        assert_eq!(state.preview.snapshot_id, "snapshot-before-write");
+        assert_eq!(state.preview.removals, 4);
+        assert!(!state.preview.ready);
+    }
+
+    #[test]
     fn job_spec_defaults_new_matching_fields_for_old_json() {
         let json = r#"{
             "source": {"kind": "spotify_liked"},
@@ -836,6 +936,7 @@ mod tests {
 
         assert_eq!(spec.match_policy, crate::transfer::MatchPolicy::Strict);
         assert_eq!(spec.cache_mode, crate::transfer::TransferCacheMode::Use);
+        assert_eq!(spec.media_kind, crate::transfer::ImportMediaKind::Track);
         assert!(!spec.allow_user_videos);
     }
 
@@ -872,6 +973,40 @@ mod tests {
         assert!(text.contains("2 auto-accepted"));
         assert!(text.contains("1 ambiguous"));
         assert!(text.contains("local/episode skipped"));
+    }
+
+    #[test]
+    fn report_renders_exact_spotify_sync_preview_and_blockers() {
+        let mut report = TransferReport {
+            job_id: "yt2sp-preview".to_owned(),
+            spotify_sync: Some(SpotifySyncPreview {
+                target_id: "target".to_owned(),
+                target_name: "Mirror".to_owned(),
+                snapshot_id: "snapshot".to_owned(),
+                current_items: 10,
+                desired_items: 8,
+                additions: 2,
+                removals: 4,
+                order_changed: true,
+                ready: true,
+                blocked_reasons: Vec::new(),
+            }),
+            ..TransferReport::default()
+        };
+
+        let ready = report.render_text();
+        assert!(ready.contains("Spotify sync 10 → 8 items"));
+        assert!(ready.contains("2 add, 4 remove, reorder"));
+
+        let preview = report.spotify_sync.as_mut().unwrap();
+        preview.ready = false;
+        preview.blocked_reasons = vec![
+            "1 source row is unresolved".to_owned(),
+            "target is not owned".to_owned(),
+        ];
+        let blocked = report.render_text();
+        assert!(blocked.contains("Spotify sync blocked"));
+        assert!(blocked.contains("target is not owned"));
     }
 
     #[test]

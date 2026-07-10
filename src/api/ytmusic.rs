@@ -20,8 +20,11 @@ use crate::search_source::{SearchConfig, SearchSource};
 use crate::streaming::{self, StreamingConfig, StreamingMode};
 use crate::util::{format, http, sanitize};
 
+mod official_video_search;
 mod transfer_api;
 mod video_metadata;
+pub(crate) use official_video_search::TransferVideoSearchResult;
+pub use official_video_search::YtmMusicVideoType;
 pub use transfer_api::{TransferAlbum, TransferAlbumCandidate, TransferAlbumTrack};
 pub(crate) use video_metadata::YtdlpVideoMeta;
 #[cfg(test)]
@@ -116,8 +119,20 @@ pub enum YtMusicApi {
 #[serde(rename_all = "snake_case")]
 pub enum YoutubeSearchKind {
     YtmCatalogSong,
+    /// Legacy/untyped video-filter row retained for old cache/report compatibility.
     YtmCatalogVideo,
+    YtmCatalogTypedVideo(YtmMusicVideoType),
     YoutubeVideoSearch,
+}
+
+impl YoutubeSearchKind {
+    pub fn music_video_type(self) -> Option<YtmMusicVideoType> {
+        match self {
+            Self::YtmCatalogTypedVideo(video_type) => Some(video_type),
+            Self::YtmCatalogVideo => Some(YtmMusicVideoType::Unknown),
+            Self::YtmCatalogSong | Self::YoutubeVideoSearch => None,
+        }
+    }
 }
 
 impl YtMusicApi {

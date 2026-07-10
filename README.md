@@ -362,15 +362,19 @@ The daemon keeps streaming, scrobbling and OS media controls working. Launching 
 ytt auth spotify --client-id <YOUR-CLIENT-ID>   # one-time PKCE browser connect
 ytt transfer import <spotify-url-or-id>          # → a new YTM playlist
 ytt transfer import liked --to likes             # Spotify likes → YTM likes (order kept)
+ytt transfer import <url> --media music-video    # → a separate official-family MV playlist
+ytt transfer import liked --media music-video    # the same MV mode for Spotify Liked Songs
 ytt transfer import <url> --policy strict        # stricter review-heavy matching
-ytt transfer export ytm:<id> --to spotify        # the other direction
+ytt transfer export ytm:<id> --to spotify        # create/append on Spotify (not a live sync)
+ytt transfer export ytm:<id> --to spotify:<22-character-playlist-id> --sync --dry-run
+                                                  # preview an exact mirror into an existing playlist
 ytt transfer backup --dir ~/music-backup --csv   # every YTM playlist → JSON (+CSV)
 ytt transfer resume <job-id>                     # continue after a rate-limit/abort
 ```
 
-Or stay in the TUI: Settings → **Accounts** → *Import from Spotify…* while the music keeps playing.
+Or stay in the TUI: Settings → **Accounts** → *Import from Spotify…* while the music keeps playing. Its fourth mode, **Music video playlist**, writes a separate playlist into Library → Playlists.
 
-**One-time setup (~5 min).** Spotify apps in Development Mode only serve accounts you explicitly allowlist, so everyone brings their own free app. There is no client *secret* — PKCE doesn't use one.
+**One-time setup (~5 min).** Spotify apps in Development Mode only serve accounts you explicitly allowlist, so everyone brings their own personal app. Under [Spotify's 2026 Dev-Mode rules](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide), the app owner needs Premium, a new app gets one Client ID, and it can serve up to five allowlisted users. There is no client *secret* — PKCE doesn't use one.
 
 1. Sign in at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and click **Create app**.
 2. Give it any **App name** and **App description** (e.g. `yututui`).
@@ -378,10 +382,16 @@ Or stay in the TUI: Settings → **Accounts** → *Import from Spotify…* while
 4. Under **Which API/SDKs are you planning to use?**, tick **Web API**.
 5. Accept the terms and **Save**.
 6. Open the app → **Settings** and copy the **Client ID** (you do *not* need the Client secret).
-7. Open **User Management** (in the app's settings) and add your own account — your name plus the email on your Spotify account. Dev-Mode apps serve up to 25 such allowlisted users.
+7. Open **User Management** (in the app's settings) and add your own account — your name plus the email on your Spotify account. New Dev-Mode apps serve up to five such allowlisted users.
 8. In ytt: **Settings → Accounts → Spotify**, paste the Client ID, and choose **Connect** (or run `ytt auth spotify --client-id <ID>`). Your browser opens Spotify's approval page — approve it and you're done. On headless/SSH where no browser opens, the URL is copied to your clipboard and saved to `spotify_auth_url.txt`, so you can open it on any device.
 
 Matching is metadata-based (NFKC-normalized, CJK-safe) and resolves Spotify imports cache-first, album-aware, and YTM-catalog-first before falling back to public YouTube videos. The CLI default is `--policy balanced`; use `--policy strict` for conservative review-heavy matching, `--policy aggressive` for fewer review rows, and `--allow-user-videos` only if generic public uploads are acceptable. Anything still ambiguous lands in the job report instead of being silently guessed — re-run with `--take-best` / `--min-score`, or preview big playlists with `--dry-run` and then `ytt transfer resume <job-id>`.
+
+`--media music-video` works with a Spotify playlist or `liked` and creates a separate `<source> (Music Videos)` playlist unless you supply a destination name. It prefers YouTube Music's OMV / OfficialSourceMusic classifications and strongly corroborated official channels. That is a best-effort official-family check, not a 100% guarantee: the public APIs do not expose a definitive “official music video” flag. Hard-rejected user uploads cannot be forced through review, and unresolved candidates stay in the report.
+
+The ordinary `--to spotify` export is intentionally non-destructive: it finds or creates a playlist (creation uses Spotify's current `POST /me/playlists` API) and appends missing matches. It does not remove Spotify-only tracks, reproduce duplicate positions, reorder the playlist, or keep watching for later edits.
+
+For a destructive, one-shot exact mirror, use an explicit playlist ID with `--to spotify:<22-character-playlist-id> --sync`. Only a playlist owned by the connected account is accepted. Run `--dry-run` first: the preview shows additions, removals and reordering, and nothing is changed if even one source row is unresolved or the source was truncated. The real run preserves source order and duplicate occurrences and removes destination-only tracks. Without `--yes` it previews and asks before replacing anything; `ytt transfer resume <job-id>` builds a fresh preview and asks again (`resume <job-id> --yes` deliberately skips that confirmation).
 
 </details>
 
