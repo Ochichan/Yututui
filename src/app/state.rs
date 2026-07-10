@@ -472,7 +472,7 @@ pub struct ArtState {
     /// Last visible-overlay bitmask observed by the reducer. When this changes while a native
     /// terminal image can be visible, the next draw clears the terminal before repainting so
     /// Sixel / Kitty / iTerm2 state cannot keep popup residue outside ratatui's diff buffer.
-    pub(in crate::app) overlay_mask: u16,
+    pub(in crate::app) overlay_mask: u32,
     /// One-shot request for the render loop to call `Terminal::clear()` before the next frame.
     /// Kept in art state because the expensive clear is only needed to resync native terminal
     /// graphics after an overlay or screen transition has covered album art or the About icon.
@@ -681,6 +681,13 @@ pub(crate) struct ScrollbarDrag {
 /// nav) — so grouping them keeps the mouse reducer's working set in one place.
 #[derive(Default)]
 pub struct Interaction {
+    /// A left press that dismissed/activated the context menu owns the entire gesture until
+    /// button-up, so a following drag cannot leak through to the covered list.
+    pub(in crate::app) context_menu_press: bool,
+    /// Coordinates of a context-menu left press. Kept across its button-up so the translator's
+    /// paired `MouseDoubleClick` can be swallowed instead of leaking into a modal opened by the
+    /// first press; the next ordinary single click resets it.
+    pub(in crate::app) context_menu_click: Option<(u16, u16)>,
     /// Active mouse drag-selection session. Cleared on left-button release so a later
     /// drag starts from its own first row, not whatever was selected before.
     pub(in crate::app) drag_selection: Option<DragSelection>,
@@ -817,6 +824,8 @@ impl Default for Animation {
 /// dismissal paths both read — in one place. The `transfer_running` job guard stays on [`App`].
 #[derive(Default)]
 pub struct Overlays {
+    /// Row-scoped TUI context menu opened by right click or the keyboard fallback.
+    pub context_menu: Option<ContextMenuState>,
     /// Whether the `?` help / cheat-sheet overlay is shown.
     pub help_visible: bool,
     /// Whether the mouse cheat-sheet overlay is shown. Opened only from the footer mouse icon.

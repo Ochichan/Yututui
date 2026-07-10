@@ -149,19 +149,29 @@ fn clicking_a_queue_delete_button_removes_that_track() {
 }
 
 #[test]
-fn right_clicking_a_queue_row_removes_that_track() {
+fn queue_row_context_menu_can_remove_that_track() {
     let mut app = app_playing(5, 0);
     app.update(Msg::Key(key(KeyCode::Char('c'))));
     render_app(&app);
     let (col, row) = button_center(&app, MouseTarget::QueueRow(2));
 
-    let cmds = app.update(Msg::MouseRightClick { col, row });
+    let open_cmds = app.update(Msg::MouseRightClick { col, row });
 
+    assert_no_load(&open_cmds);
+    assert!(app.overlays.context_menu.is_some());
+    assert_eq!(
+        app.queue.len(),
+        5,
+        "opening the menu must not remove the row"
+    );
+
+    // Queue menus contain "Play now" followed by "Remove".
+    let cmds = choose_context_menu_item(&mut app, 1);
     assert_no_load(&cmds);
     assert_eq!(app.queue.len(), 4);
     assert!(
         app.queue.ordered().iter().all(|s| s.video_id != "id2"),
-        "the right-clicked track should be gone from the queue"
+        "the menu-selected track should be gone from the queue"
     );
 }
 

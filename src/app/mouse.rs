@@ -104,6 +104,20 @@ impl App {
         // below if this click grabs a track.
         self.interaction.seekbar_drag = None;
         self.interaction.recording_drag = None;
+        self.interaction.context_menu_press = false;
+        self.interaction.context_menu_click = None;
+        // The context menu is a small modal: a row click executes it, while every outside
+        // click closes and is consumed so it can never activate the covered surface.
+        if self.overlays.context_menu.is_some() {
+            self.interaction.context_menu_press = true;
+            self.interaction.context_menu_click = Some((col, row));
+            if let Some(MouseTarget::ContextMenuItem(index)) = self.mouse_target_at(col, row) {
+                return self.activate_context_menu_item(index);
+            }
+            self.overlays.context_menu = None;
+            self.dirty = true;
+            return Vec::new();
+        }
         // A click dismisses the modal conflict warning, same as a keypress.
         if self.overlays.key_conflict.take().is_some() {
             self.dirty = true;
@@ -456,6 +470,7 @@ impl App {
 
     pub(in crate::app) fn on_mouse_target(&mut self, target: MouseTarget) -> Vec<Cmd> {
         match target {
+            MouseTarget::ContextMenuItem(_) => Vec::new(),
             MouseTarget::Global(Action::ToggleHelp) => {
                 self.overlays.help_visible = true;
                 self.overlays.mouse_help_visible = false;
@@ -860,8 +875,15 @@ impl App {
     /// back to single-click behavior anywhere else so buttons, tabs, and the seekbar still
     /// respond to the first press of a double-click.
     pub(in crate::app) fn on_mouse_double_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        // The first press may have activated a menu command that opened a confirmation/picker.
+        // Consume its paired double-click press before that new modal can see and act on it.
+        if self.interaction.context_menu_click.take() == Some((col, row)) {
+            self.dirty = true;
+            return Vec::new();
+        }
         // Modal overlays treat a double-click like a single click.
         if self.overlays.help_visible
+            || self.overlays.context_menu.is_some()
             || self.overlays.mouse_help_visible
             || self.overlays.about_visible
             || self.overlays.key_conflict.is_some()
@@ -935,6 +957,9 @@ impl App {
     /// A left-drag: extend a multi-select range to the row under the pointer (the anchor end
     /// stays fixed). Works in the queue window and, identically, in the Library list.
     pub(in crate::app) fn on_mouse_drag(&mut self, col: u16, row: u16) -> Vec<Cmd> {
+        if self.interaction.context_menu_press {
+            return Vec::new();
+        }
         // Radio-recording slider scrub: a press that grabbed a bar track sets the value
         // continuously as the pointer moves (row ignored — grab and drag anywhere horizontally,
         // exactly like the seekbar). `recording_slider_set` dedupes and clamps.
@@ -1046,6 +1071,7 @@ impl App {
     }
 
     pub(in crate::app) fn on_mouse_left_up(&mut self) -> Vec<Cmd> {
+        self.interaction.context_menu_press = false;
         self.interaction.drag_selection = None;
         self.interaction.drag_scrollbar = None;
         self.interaction.seekbar_drag = None;
@@ -1228,6 +1254,10 @@ impl App {
         row: u16,
         ctrl: bool,
     ) -> Vec<Cmd> {
+        if self.overlays.context_menu.is_some() {
+            self.move_context_menu_selection(up);
+            return Vec::new();
+        }
         // While the wheel-zoom lock is on, Ctrl+wheel degrades to a plain wheel scroll
         // (the whole point: modifier-assisted scrolling without accidental zooming);
         // the Ctrl+-/= keys keep zooming either way.
@@ -1412,117 +1442,6 @@ impl App {
                 }
             }
             _ => self.on_list_row_click(index),
-        }
-    }
-
-    /// A right-click is contextual: Search/Library rows enqueue, while queue-window rows remove
-    /// that queue entry. Other targets are ignored so a stray context-click can't disturb modal
-    /// confirmations or the player.
-    pub(in crate::app) fn on_mouse_right_click(&mut self, col: u16, row: u16) -> Vec<Cmd> {
-        if self.overlays.help_visible
-            || self.overlays.mouse_help_visible
-            || self.overlays.about_visible
-            || self.overlays.key_conflict.is_some()
-            || self.radio_mode.pending_radio_mode_confirm.is_some()
-            || self.local_mode.pending_confirm.is_some()
-            || self.local_import_confirmation_open()
-            || self.overlays.pending_settings_confirm.is_some()
-            || self.library_ui.confirm_delete.is_some()
-            || self.library_ui.confirm_playlist_delete.is_some()
-            || self.library_ui.create_input.is_some()
-            || self.playlist_picker.is_some()
-            || self.overlays.recordings_browser.is_some()
-            || self.overlays.recording_settings.is_some()
-        {
-            return Vec::new();
-        }
-
-        // Right-click a filter-popup row: enqueue it *without* closing the popup — filter
-        // once, stack up several matches (the main results list's right-click semantics).
-        if self.search_filter.open {
-            let inside = self
-                .search_filter
-                .rect
-                .get()
-                .is_some_and(|r| rect_contains(r, col, row));
-            if !inside {
-                return Vec::new();
-            }
-            if let Some(MouseTarget::SearchFilterRow(i)) = self.mouse_target_at(col, row)
-                && let Some(&idx) = self.search_filter.matches.get(i)
-            {
-                self.search_filter.cursor = i;
-                self.dirty = true;
-                if let Some(song) = self.search.results.get(idx).cloned() {
-                    return self.enqueue(song);
-                }
-            }
-            return Vec::new();
-        }
-
-        if self.queue_popup.open {
-            let inside = self
-                .queue_popup
-                .rect
-                .get()
-                .is_some_and(|r| rect_contains(r, col, row));
-            if !inside {
-                return Vec::new();
-            }
-            return match self.mouse_target_at(col, row) {
-                Some(MouseTarget::QueueRow(index) | MouseTarget::QueueDel(index)) => {
-                    self.remove_queue_range(index, index)
-                }
-                _ => Vec::new(),
-            };
-        }
-
-        let Some(target) = self.mouse_target_at(col, row) else {
-            return Vec::new();
-        };
-        match self.mode {
-            Mode::Search if matches!(target, MouseTarget::ListRow(_)) => {
-                let MouseTarget::ListRow(index) = target else {
-                    return Vec::new();
-                };
-                if index >= self.search.results.len() {
-                    return Vec::new();
-                }
-                self.search.selected = index;
-                match self.selected_search_song() {
-                    Some(song) => self.enqueue(song),
-                    None => Vec::new(),
-                }
-            }
-            Mode::Library => {
-                if self.local_dedicated_mode {
-                    let MouseTarget::LocalRow(index) = target else {
-                        return Vec::new();
-                    };
-                    if index >= self.local_rows_len() {
-                        return Vec::new();
-                    }
-                    return self.local_enqueue_row_index(index);
-                }
-                let index = match target {
-                    MouseTarget::ListRow(i) | MouseTarget::LibraryDel(i) => i,
-                    _ => return Vec::new(),
-                };
-                if index >= self.library_len() {
-                    return Vec::new();
-                }
-                self.library_ui.selected = index;
-                self.library_ui.anchor = index;
-                // At the Playlists root the row is a playlist: enqueue the whole thing.
-                if self.playlists_root() {
-                    return self.enqueue_selected_playlist();
-                }
-                match self.selected_library_song() {
-                    Some(song) => self.enqueue(song),
-                    None => Vec::new(),
-                }
-            }
-            _ => Vec::new(),
         }
     }
 }

@@ -98,6 +98,8 @@ pub enum Action {
     ToggleRadioMode,
     ToggleLocalMode,
     ToggleHelp,
+    /// Open the selected row's context menu (keyboard accessibility fallback).
+    OpenContextMenu,
     ToggleAbout,
     ToggleAnimations,
     WhyAi,
@@ -419,6 +421,12 @@ const ACTION_META: &[(Action, &str, &str, &str)] = &[
         "toggle_help",
         "Toggle help",
         "도움말 켜기 / 끄기",
+    ),
+    (
+        Action::OpenContextMenu,
+        "open_context_menu",
+        "Open context menu",
+        "문맥 메뉴 열기",
     ),
     (
         Action::ToggleAbout,
@@ -1196,6 +1204,7 @@ pub fn default_bindings() -> Vec<(KeyContext, Action, Chord)> {
         (C::Global, A::Home, ctrl('h')),
         (C::Global, A::ToggleStreaming, ctrl('r')),
         (C::Global, A::ToggleHelp, ch('?')),
+        (C::Global, A::OpenContextMenu, shift(KeyCode::F(10))),
         (C::Global, A::ToggleAbout, key(KeyCode::F(1))),
         (C::Global, A::ToggleAnimations, ch('A')),
         (C::Global, A::WhyAi, ch('w')),

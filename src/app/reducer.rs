@@ -71,6 +71,9 @@ impl App {
             Msg::MouseClick { col, row } => return self.on_mouse_click(col, row),
             Msg::MouseDoubleClick { col, row } => return self.on_mouse_double_click(col, row),
             Msg::MouseRightClick { col, row } => return self.on_mouse_right_click(col, row),
+            Msg::MouseRightDoubleClick { col, row } => {
+                return self.on_mouse_right_double_click(col, row);
+            }
             Msg::MouseDrag { col, row } => return self.on_mouse_drag(col, row),
             Msg::MouseLeftUp => return self.on_mouse_left_up(),
             Msg::MouseScroll { up, col, row, ctrl } => {

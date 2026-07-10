@@ -599,6 +599,11 @@ pub struct Config {
     /// defaults are stored; everything else falls back to [`crate::keymap`]'s defaults.
     pub keybindings: std::collections::BTreeMap<String, String>,
 
+    /// User mouse gesture overrides, keyed `"<context>.<gesture>"` → action id (e.g.
+    /// `"search.right_click" -> "context_menu"`). Only deviations from the built-in
+    /// defaults are stored; everything else falls back to [`crate::mousemap`]'s defaults.
+    pub mouse_bindings: std::collections::BTreeMap<String, String>,
+
     // External video overlay --------------------------------------------------
     /// Window layout for the mpv video overlay (`v` opens, `Shift+V` toggles). Defaults to
     /// `Compact` (top-right ~30%).
@@ -790,6 +795,7 @@ impl Default for Config {
             retro_mode: false,
             language: Language::default(),
             keybindings: std::collections::BTreeMap::new(),
+            mouse_bindings: std::collections::BTreeMap::new(),
             video_layout: VideoOverlay::default(),
             media_controls: None,
             scrobble: ScrobbleConfig::default(),
@@ -1674,6 +1680,7 @@ mod tests {
             retro_mode: true,
             language: Language::Korean,
             keybindings: std::collections::BTreeMap::new(),
+            mouse_bindings: std::collections::BTreeMap::new(),
             video_layout: VideoOverlay::Large,
             media_controls: Some(false),
             scrobble: ScrobbleConfig {

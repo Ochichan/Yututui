@@ -351,7 +351,7 @@ impl App {
         cmds
     }
 
-    fn local_download_selected(&mut self) -> Vec<Cmd> {
+    pub(in crate::app) fn local_download_selected(&mut self) -> Vec<Cmd> {
         let Some(row) = self
             .local_visible_rows()
             .get(self.local_mode.ui.selected)
@@ -940,7 +940,7 @@ impl App {
         (songs, start.unwrap_or(0))
     }
 
-    fn local_songs_for_row(&self, row: &crate::local::LocalRowId) -> Vec<Song> {
+    pub(in crate::app) fn local_songs_for_row(&self, row: &crate::local::LocalRowId) -> Vec<Song> {
         match row {
             crate::local::LocalRowId::Track(id) => self
                 .local_track_by_id(id)
@@ -992,7 +992,10 @@ impl App {
         }
     }
 
-    fn local_downloadable_songs_for_row(&self, row: &crate::local::LocalRowId) -> Vec<Song> {
+    pub(in crate::app) fn local_downloadable_songs_for_row(
+        &self,
+        row: &crate::local::LocalRowId,
+    ) -> Vec<Song> {
         match row {
             crate::local::LocalRowId::ImportSession(session_id) => {
                 self.import_session_download_songs(session_id, None)

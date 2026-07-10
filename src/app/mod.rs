@@ -26,6 +26,7 @@ use crate::eq::{self, EqPreset};
 use crate::keymap::{Action, Chord, Conflict, KeyContext, KeyMap};
 use crate::library::Library;
 use crate::lyrics::LyricLine;
+use crate::mousemap::MouseMap;
 use crate::player::PlayerCmd;
 use crate::playlists::Playlists;
 use crate::queue::{Queue, QueueSnapshot};
@@ -63,6 +64,8 @@ mod ai_reducer;
 pub use ai_reducer::AiMsg;
 mod artwork;
 mod clipboard;
+mod context_menu;
+pub use context_menu::*;
 mod download;
 mod keys;
 mod library;
@@ -87,6 +90,7 @@ mod remote_reducer;
 mod romanize;
 mod scrobble_reducer;
 mod search;
+mod settings_mouse;
 mod settings_reducer;
 mod spotify_import_reducer;
 mod stream_metadata;
@@ -183,6 +187,8 @@ pub struct App {
     pub authenticated: bool,
     /// The resolved keybindings (defaults overlaid with user overrides from config).
     pub keymap: KeyMap,
+    /// The resolved safe mouse gesture bindings (defaults plus persisted overrides).
+    pub mousemap: MouseMap,
     /// Resolved color theme (preset plus user overrides).
     pub theme: ThemeConfig,
     /// Dedicated Radio UI mode: swaps to a cached Radio theme, Radio Browser-only search,

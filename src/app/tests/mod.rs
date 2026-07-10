@@ -12,6 +12,7 @@ use support::*;
 mod ai;
 mod animations;
 mod art_overlay;
+mod context_menu;
 mod downloads;
 mod dropdowns_popups;
 mod keyboard;

@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
-use crate::keymap::{self, Action, KeyContext};
+use crate::keymap::{self, Action, KeyContext, KeyMap};
 use crate::t;
 use crate::theme::ThemeRole as R;
 
@@ -35,7 +35,7 @@ pub fn render_mouse(frame: &mut Frame, app: &App, area: Rect) {
         t!(" Help · mouse ", " 도움말 · 마우스 "),
         (84, 82),
         SheetStyle::Roomy,
-        mouse_help_groups(),
+        mouse_help_groups(app),
     );
 }
 
@@ -247,13 +247,22 @@ fn split_blocks(blocks: Vec<Vec<Line<'static>>>) -> (Vec<Line<'static>>, Vec<Lin
     (left, right)
 }
 
+/// The keymap currently visible to the user. While Settings is open, its draft is the source of
+/// truth so both cheat-sheets update immediately after capture, before the user saves or closes.
+fn visible_keymap(app: &App) -> &KeyMap {
+    app.settings
+        .as_deref()
+        .map_or(&app.keymap, |settings| &settings.keymap)
+}
+
 fn help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
+    let keymap = visible_keymap(app);
     let mut out = Vec::new();
     for (ctx, actions) in keymap::groups() {
         let mut rows: Vec<(String, String)> = actions
             .iter()
             .map(|action| {
-                let key = app.keymap.chord(ctx, *action).map_or_else(
+                let key = keymap.chord(ctx, *action).map_or_else(
                     || "—".to_owned(),
                     |chord| keymap::format_chord_for_display(chord, app.retro_mode()),
                 );
@@ -277,7 +286,24 @@ fn fixed_enter_row(label: &str) -> (String, String) {
     ("Enter".to_owned(), label.to_owned())
 }
 
-fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
+fn mouse_help_groups(app: &App) -> Vec<(String, Vec<(String, String)>)> {
+    let context_menu_key = visible_keymap(app)
+        .chord(KeyContext::Global, Action::OpenContextMenu)
+        .map_or_else(
+            || "—".to_owned(),
+            |chord| keymap::format_chord_for_display(chord, app.retro_mode()),
+        );
+    let context_menu_fallback = (
+        format!(
+            "{} · {context_menu_key}",
+            t!("Open context menu", "문맥 메뉴 열기")
+        ),
+        t!(
+            "Open the selected row's actions without right click. The shortcut shown here updates immediately from Settings › Keys.",
+            "우클릭 없이 선택한 행의 동작 메뉴를 엽니다. 여기에 표시되는 단축키는 설정 › 단축키의 변경값을 즉시 반영합니다."
+        )
+        .to_owned(),
+    );
     vec![
         (
             t!("Common", "공통").to_owned(),
@@ -317,6 +343,19 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                     "피커 행 클릭",
                     "In the add-to-playlist popup, add the pending song(s) to that playlist.",
                     "플레이리스트 추가 팝업에서 해당 플레이리스트로 곡을 추가합니다.",
+                ),
+                mouse_row(
+                    "Right click / double",
+                    "우클릭 / 우더블클릭",
+                    "On supported rows, right click opens actions and right double-click activates quickly; customize each surface in Settings › Keys.",
+                    "지원하는 행에서 우클릭은 동작 메뉴를 열고 우더블클릭은 빠르게 실행합니다. 설정 › 단축키에서 화면별로 바꿀 수 있습니다.",
+                ),
+                context_menu_fallback,
+                mouse_row(
+                    "Terminal-owned menu",
+                    "터미널 자체 메뉴",
+                    "If the host terminal consumes right click, the TUI cannot intercept it. Disable/rebind that terminal action or use the keyboard fallback shown above.",
+                    "호스트 터미널이 우클릭을 먼저 소비하면 TUI는 가로챌 수 없습니다. 터미널 동작을 끄거나 바꾸고 위의 키보드 대체 키를 사용하세요.",
                 ),
             ],
         ),
@@ -373,8 +412,8 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                 mouse_row(
                     "Right click row",
                     "행 우클릭",
-                    "Remove that song from the queue.",
-                    "해당 곡을 대기열에서 삭제합니다.",
+                    "Open actions for the selected queue row or range (play from here, remove).",
+                    "선택한 대기열 행 또는 범위의 동작 메뉴를 엽니다 (여기서 재생, 삭제).",
                 ),
                 mouse_row(
                     "Click x",
@@ -426,8 +465,8 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                 mouse_row(
                     "Result right click",
                     "결과 우클릭",
-                    "Add that result to the queue without interrupting playback.",
-                    "재생을 끊지 않고 해당 결과를 대기열에 추가합니다.",
+                    "Open result actions such as play, enqueue, favorite, playlist, or download.",
+                    "재생, 큐 추가, 즐겨찾기, 플레이리스트, 다운로드 등의 결과 동작을 엽니다.",
                 ),
             ],
         ),
@@ -449,8 +488,8 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                 mouse_row(
                     "Row right click",
                     "행 우클릭",
-                    "Add that library song (or whole playlist) to the queue.",
-                    "해당 곡(플레이리스트 행은 전체)을 대기열에 추가합니다.",
+                    "Open actions for that song, playlist, or selected range.",
+                    "해당 곡, 플레이리스트 또는 선택 범위의 동작 메뉴를 엽니다.",
                 ),
                 mouse_row(
                     "Drag rows",
@@ -473,6 +512,23 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
             ],
         ),
         (
+            t!("Local Deck", "로컬 덱").to_owned(),
+            vec![
+                mouse_row(
+                    "Row right click",
+                    "행 우클릭",
+                    "Open the safe actions available for that local row.",
+                    "해당 로컬 행에서 사용할 수 있는 안전한 동작 메뉴를 엽니다.",
+                ),
+                mouse_row(
+                    "Row right double-click",
+                    "행 우더블클릭",
+                    "Activate that local row by default; customize it in Settings › Keys.",
+                    "기본값은 해당 로컬 행을 실행합니다. 설정 › 단축키에서 바꿀 수 있습니다.",
+                ),
+            ],
+        ),
+        (
             t!("Settings", "설정").to_owned(),
             vec![
                 mouse_row(
@@ -484,8 +540,8 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                 mouse_row(
                     "Field row",
                     "필드 행",
-                    "Click a row or value to focus/activate it.",
-                    "행이나 값을 클릭해 포커스하거나 실행합니다.",
+                    "Click a row or value to focus/activate it; Keys includes safe mouse presets.",
+                    "행이나 값을 클릭해 포커스하거나 실행합니다. 단축키 탭에는 안전한 마우스 프리셋도 있습니다.",
                 ),
                 mouse_row(
                     "Checkbox / arrows",
@@ -530,8 +586,8 @@ fn mouse_help_groups() -> Vec<(String, Vec<(String, String)>)> {
                 mouse_row(
                     "Filter popup",
                     "필터 팝업",
-                    "Click selects; double-click plays; right-click enqueues; wheel scrolls.",
-                    "클릭 선택, 더블클릭 재생, 우클릭 큐 추가, 휠 스크롤.",
+                    "Click selects; double-click plays; right-click opens actions; wheel scrolls.",
+                    "클릭 선택, 더블클릭 재생, 우클릭 동작 메뉴, 휠 스크롤.",
                 ),
                 mouse_row(
                     "Help/About",
@@ -807,7 +863,7 @@ mod tests {
         }
 
         // Mouse sheet: the Common group explains Ctrl+wheel.
-        let common = mouse_help_groups()
+        let common = mouse_help_groups(&app)
             .into_iter()
             .find_map(|(title, rows)| (title == "Common").then_some(rows))
             .expect("common group");
@@ -816,6 +872,57 @@ mod tests {
                 .iter()
                 .any(|(gesture, what)| gesture == "Ctrl + wheel" && what.contains("Zoom")),
             "mouse cheat-sheet should explain Ctrl+wheel zoom"
+        );
+    }
+
+    #[test]
+    fn context_menu_fallback_is_editable_and_draft_live_in_both_cheat_sheets() {
+        let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
+        assert!(
+            keymap::editable_entries().contains(&(KeyContext::Global, Action::OpenContextMenu)),
+            "the keyboard Settings list must expose the context-menu fallback"
+        );
+
+        let mut app = App::new(100);
+        app.update(crate::app::Msg::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('o'),
+            crossterm::event::KeyModifiers::NONE,
+        )));
+        let f8 = keymap::parse_chord("f8").expect("F8 chord");
+        app.settings
+            .as_mut()
+            .expect("Settings draft")
+            .keymap
+            .rebind(KeyContext::Global, Action::OpenContextMenu, f8)
+            .expect("unused Global chord");
+
+        assert_ne!(
+            app.keymap
+                .chord(KeyContext::Global, Action::OpenContextMenu),
+            Some(f8),
+            "the committed keymap remains unchanged until Settings closes"
+        );
+        let global = help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Global").then_some(rows))
+            .expect("Global keyboard group");
+        assert!(global.contains(&("F8".to_owned(), "Open context menu".to_owned())));
+
+        let common = mouse_help_groups(&app)
+            .into_iter()
+            .find_map(|(title, rows)| (title == "Common").then_some(rows))
+            .expect("Common mouse group");
+        assert!(
+            common
+                .iter()
+                .any(|(label, _)| label == "Open context menu · F8")
+        );
+        assert!(
+            common
+                .iter()
+                .all(|(label, description)| !label.contains("F10") && !description.contains("F10")),
+            "mouse help must not retain the old hardcoded default"
         );
     }
 }

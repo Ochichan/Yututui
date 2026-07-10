@@ -208,6 +208,7 @@ impl App {
             editing_text: false,
             secret_restore: None,
             keymap: self.keymap.clone(),
+            mousemap: self.mousemap.clone(),
             capturing: None,
             spotify_import_mode_dropdown: None,
             // Show the radio-recording item whenever the user is in a radio context —
@@ -250,6 +251,7 @@ impl App {
             .settings
             .as_ref()
             .is_some_and(|s| s.tab == SettingsTab::Keys);
+        let on_mouse_binding = self.settings_current_mouse_binding().is_some();
         // A color row can now live anywhere (the Graphics tab), so the "reset color" key gates
         // on the focused field's type rather than a dedicated Colors tab.
         let on_color_field = self
@@ -284,10 +286,21 @@ impl App {
                 self.settings_move_row(1);
                 Vec::new()
             }
+            Some(Action::ChangeDecrease) if on_mouse_binding => {
+                self.settings_change_mouse_binding(-1);
+                Vec::new()
+            }
+            Some(Action::ChangeIncrease) if on_mouse_binding => {
+                self.settings_change_mouse_binding(1);
+                Vec::new()
+            }
             Some(Action::ChangeDecrease) if !on_keys_tab => self.settings_change(-1),
             Some(Action::ChangeIncrease) if !on_keys_tab => self.settings_change(1),
             Some(Action::Confirm) => {
-                if on_keys_tab {
+                if on_mouse_binding {
+                    self.settings_change_mouse_binding(1);
+                    Vec::new()
+                } else if on_keys_tab {
                     self.settings_begin_capture();
                     Vec::new()
                 } else {
@@ -407,6 +420,9 @@ impl App {
 
     /// Reset the highlighted binding (Keys tab) to its built-in default.
     pub(in crate::app) fn settings_reset_binding(&mut self) {
+        if self.settings_reset_mouse_binding() {
+            return;
+        }
         let Some((ctx, action)) = self.settings_current_binding() else {
             return;
         };
@@ -465,7 +481,11 @@ impl App {
         if let Some(st) = self.settings.as_mut() {
             // The Keys tab is a list of remappable bindings rather than `Field`s.
             let n = match st.tab {
-                SettingsTab::Keys => crate::keymap::editable_entries().len() as i32,
+                SettingsTab::Keys => {
+                    (crate::keymap::editable_entries().len()
+                        + crate::mousemap::MouseContext::ALL.len()
+                            * crate::mousemap::MouseGesture::ALL.len()) as i32
+                }
                 _ => st.fields().len() as i32,
             };
             st.row = (st.row as i32 + delta).clamp(0, n.max(1) - 1) as usize;
@@ -1672,6 +1692,7 @@ impl App {
             return Vec::new();
         };
         st.keymap = KeyMap::default();
+        st.mousemap.reset_all();
         st.capturing = None;
         self.status.text = t!(
             "Keybindings reset to defaults",
@@ -1750,6 +1771,7 @@ impl App {
             d.recording_past_tracks = def.effective_recording_past_tracks();
             d.recording_notify = def.recording.notify;
             st.keymap = KeyMap::default();
+            st.mousemap.reset_all();
             st.editing_text = false;
         }
         // Reflect the reset theme + language live so the open settings screen re-colors and
@@ -2077,6 +2099,8 @@ impl App {
         // Commit the edited keybindings (live + persisted as compact overrides).
         self.keymap = st.keymap.clone();
         self.config.keybindings = self.keymap.to_overrides();
+        self.mousemap = st.mousemap.clone();
+        self.config.mouse_bindings = self.mousemap.to_overrides();
         self.theme = st.draft.theme.normalized();
         if self.radio_dedicated_mode {
             self.radio_mode.radio_mode_theme = Some(self.theme.clone());

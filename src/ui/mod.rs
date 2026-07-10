@@ -126,6 +126,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.overlays.recordings_browser.is_some() {
         views::settings::render_recordings_browser(frame, app, area);
     }
+    // The row context menu is pointer-anchored and always topmost. Opening any larger modal
+    // closes it first, so this layer only competes with its underlying list/queue popup.
+    if app.overlays.context_menu.is_some() {
+        views::context_menu::render(frame, app, area);
+    }
     retro::scrub_frame(frame, app);
 }
 

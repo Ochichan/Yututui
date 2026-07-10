@@ -676,6 +676,22 @@ pub(super) fn double_click_target(app: &mut App, target: MouseTarget) -> Vec<Cmd
     app.update(Msg::MouseDoubleClick { col, row })
 }
 
+/// Choose the zero-based item in an already-open context menu using its keyboard controls.
+pub(super) fn choose_context_menu_item(app: &mut App, index: usize) -> Vec<Cmd> {
+    assert!(
+        app.overlays.context_menu.is_some(),
+        "expected an open context menu"
+    );
+    for _ in 0..index {
+        let cmds = app.update(Msg::Key(key(KeyCode::Down)));
+        assert!(
+            cmds.is_empty(),
+            "menu navigation unexpectedly emitted commands"
+        );
+    }
+    app.update(Msg::Key(key(KeyCode::Enter)))
+}
+
 pub(super) fn app_with_playlists() -> App {
     let mut app = App::new(100);
     app.playlists.create("Alpha");

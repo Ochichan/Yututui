@@ -906,7 +906,7 @@ fn local_deck_c_opens_queue_popup_and_space_toggles_pause() {
 }
 
 #[test]
-fn right_clicking_local_deck_collection_enqueues_it() {
+fn local_deck_collection_context_menu_can_enqueue_it() {
     let mut first = local_deck_track(
         "/tmp/music/Daft Punk/Discovery/01 One More Time.flac",
         "One More Time",
@@ -932,8 +932,18 @@ fn right_clicking_local_deck_collection_enqueues_it() {
     render_app(&app);
     let (col, row) = button_center(&app, MouseTarget::LocalRow(0));
 
-    let cmds = app.update(Msg::MouseRightClick { col, row });
+    let open_cmds = app.update(Msg::MouseRightClick { col, row });
 
+    assert!(open_cmds.is_empty());
+    assert!(app.overlays.context_menu.is_some());
+    assert_eq!(
+        app.queue.len(),
+        0,
+        "opening the menu must not enqueue tracks"
+    );
+
+    // Local collection menus contain "Activate" followed by "Add to queue".
+    let cmds = choose_context_menu_item(&mut app, 1);
     assert_eq!(app.queue.len(), 2);
     assert_eq!(
         app.queue.current().map(|song| song.title.as_str()),
@@ -941,8 +951,34 @@ fn right_clicking_local_deck_collection_enqueues_it() {
     );
     assert!(
         load_url(&cmds)
-            .expect("right-click album load")
+            .expect("context-menu album load")
             .contains("01 One")
+    );
+}
+
+#[test]
+fn local_download_seed_context_menu_rejects_an_index_shift() {
+    let mut app = App::new(100);
+    app.mode = Mode::Library;
+    app.apply_local_mode_confirm(LocalModeConfirm::Enter);
+    app.local_mode.ui.section = LocalSection::Tracks;
+    app.library_ui.downloaded = vec![local_song("old-track")];
+    render_app(&app);
+    let (col, row) = button_center(&app, MouseTarget::LocalRow(0));
+
+    app.update(Msg::MouseRightClick { col, row });
+    assert!(app.overlays.context_menu.is_some());
+
+    // DownloadSeed rows carry an index; inserting at the front must not let the old menu act
+    // on the replacement now occupying that index.
+    app.library_ui.downloaded.insert(0, local_song("new-track"));
+    let cmds = choose_context_menu_item(&mut app, 1); // Add to queue
+
+    assert!(cmds.is_empty());
+    assert!(app.queue.is_empty());
+    assert_eq!(app.status.kind, StatusKind::Info);
+    assert!(
+        app.status.text.contains("list changed") || app.status.text.contains("목록이 바뀌었어요")
     );
 }
 

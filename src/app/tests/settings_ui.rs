@@ -45,6 +45,135 @@ fn settings_tab_cycles_through_all_tabs() {
     assert_eq!(app.settings.as_ref().unwrap().tab, SettingsTab::General); // wraps
 }
 
+fn mouse_binding_row(
+    context: crate::mousemap::MouseContext,
+    gesture: crate::mousemap::MouseGesture,
+) -> usize {
+    let context = crate::mousemap::MouseContext::ALL
+        .iter()
+        .position(|candidate| *candidate == context)
+        .unwrap();
+    let gesture = crate::mousemap::MouseGesture::ALL
+        .iter()
+        .position(|candidate| *candidate == gesture)
+        .unwrap();
+    crate::keymap::editable_entries().len()
+        + context * crate::mousemap::MouseGesture::ALL.len()
+        + gesture
+}
+
+#[test]
+fn settings_mouse_binding_cycles_and_persists_with_single_double_safety() {
+    use crate::mousemap::{MouseAction, MouseContext, MouseGesture, MouseMap};
+
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    {
+        let st = app.settings.as_mut().unwrap();
+        st.tab = SettingsTab::Keys;
+        st.row = mouse_binding_row(MouseContext::Search, MouseGesture::RightClick);
+    }
+
+    // Enter cycles Context menu → Activate. A direct single-click action disables the matching
+    // double-click binding so one physical double click cannot execute the row twice.
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    let draft = &app.settings.as_ref().unwrap().mousemap;
+    assert_eq!(
+        draft.action(MouseContext::Search, MouseGesture::RightClick),
+        MouseAction::Activate
+    );
+    assert_eq!(
+        draft.action(MouseContext::Search, MouseGesture::RightDoubleClick),
+        MouseAction::Disabled
+    );
+    assert!(app.settings.as_ref().unwrap().capturing.is_none());
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let saved = save_config(&cmds).expect("a SaveConfig cmd");
+    assert_eq!(
+        saved
+            .mouse_bindings
+            .get("search.right_click")
+            .map(String::as_str),
+        Some("activate")
+    );
+    assert_eq!(
+        saved
+            .mouse_bindings
+            .get("search.right_double_click")
+            .map(String::as_str),
+        Some("disabled")
+    );
+    assert_eq!(app.mousemap, MouseMap::from_config(saved));
+
+    let mut restored = App::new(100);
+    restored.apply_config(saved);
+    assert_eq!(restored.mousemap, app.mousemap);
+}
+
+#[test]
+fn settings_mouse_rows_extend_navigation_and_delete_resets_one_binding() {
+    use crate::mousemap::{MouseAction, MouseContext, MouseGesture};
+
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    {
+        let st = app.settings.as_mut().unwrap();
+        st.tab = SettingsTab::Keys;
+        st.row = mouse_binding_row(MouseContext::Local, MouseGesture::RightDoubleClick);
+        st.mousemap
+            .set(
+                MouseContext::Local,
+                MouseGesture::RightDoubleClick,
+                MouseAction::Disabled,
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        app.settings_current_mouse_binding(),
+        Some((MouseContext::Local, MouseGesture::RightDoubleClick))
+    );
+
+    app.update(Msg::Key(key(KeyCode::Backspace)));
+    assert_eq!(
+        app.settings
+            .as_ref()
+            .unwrap()
+            .mousemap
+            .action(MouseContext::Local, MouseGesture::RightDoubleClick),
+        MouseAction::Activate
+    );
+
+    app.settings.as_mut().unwrap().row = 0;
+    app.settings_move_row(i32::MAX);
+    assert_eq!(
+        app.settings_current_mouse_binding(),
+        Some((MouseContext::Local, MouseGesture::RightDoubleClick))
+    );
+}
+
+#[test]
+fn settings_mouse_binding_row_is_rendered_and_clickable() {
+    use crate::mousemap::{MouseContext, MouseGesture};
+
+    let mut app = app_playing(1, 0);
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    let row = mouse_binding_row(MouseContext::Local, MouseGesture::RightDoubleClick);
+    {
+        let st = app.settings.as_mut().unwrap();
+        st.tab = SettingsTab::Keys;
+        st.row = row;
+    }
+    let _ = render_app_buffer(&app, 120, 40);
+    assert!(
+        app.hits
+            .regions()
+            .iter()
+            .any(|region| region.target == MouseTarget::ListRow(row)),
+        "focused mouse-binding row should publish its combined logical index"
+    );
+}
+
 #[test]
 fn settings_accounts_tab_renders_service_sections() {
     let mut app = App::new(100);
@@ -599,6 +728,53 @@ fn settings_key_capture_accepts_ctrl_chords() {
             .get("player.toggle_pause")
             .map(String::as_str),
         Some("ctrl+x")
+    );
+}
+
+#[test]
+fn settings_context_menu_fallback_is_rendered_rebindable_and_persisted() {
+    let _guard = crate::i18n::lock_for_test();
+    crate::i18n::set_language(crate::i18n::Language::English);
+    let mut app = app_playing(1, 0);
+    app.config.retro_mode = true;
+    app.update(Msg::Key(key(KeyCode::Char('o'))));
+    let row = crate::keymap::editable_entries()
+        .iter()
+        .position(|entry| *entry == (KeyContext::Global, Action::OpenContextMenu))
+        .expect("context-menu fallback binding");
+    {
+        let st = app.settings.as_mut().expect("Settings draft");
+        st.tab = SettingsTab::Keys;
+        st.row = row;
+    }
+
+    let before = render_app_buffer(&app, 120, 40);
+    assert!(buffer_contains(&before, "Open context menu"));
+    assert!(buffer_contains(&before, "Shift+F10"));
+
+    app.update(Msg::Key(key(KeyCode::Enter)));
+    assert_eq!(
+        app.settings.as_ref().unwrap().capturing,
+        Some((KeyContext::Global, Action::OpenContextMenu))
+    );
+    app.update(Msg::Key(key(KeyCode::F(8))));
+    let after = render_app_buffer(&app, 120, 40);
+    assert!(buffer_contains(&after, "Open context menu"));
+    assert!(buffer_contains(&after, "F8"));
+
+    let cmds = app.update(Msg::Key(key(KeyCode::Char('q'))));
+    let saved = save_config(&cmds).expect("a SaveConfig cmd");
+    assert_eq!(
+        saved
+            .keybindings
+            .get("global.open_context_menu")
+            .map(String::as_str),
+        Some("f8")
+    );
+    assert_eq!(
+        app.keymap
+            .chord(KeyContext::Global, Action::OpenContextMenu),
+        crate::keymap::parse_chord("f8")
     );
 }
 
