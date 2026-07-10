@@ -34,7 +34,7 @@ jobs:
     # Match debian-ts custom labels; OS/arch come from the runner automatically.
     runs-on: [self-hosted, debian, yututui]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Persist cargo target dir
         run: |
@@ -116,8 +116,8 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
 
@@ -127,7 +127,7 @@ jobs:
     # Match debian-ts custom labels; OS/arch come from the runner automatically.
     runs-on: [self-hosted, debian, yututui]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Persist cargo target dir
         run: |
@@ -169,7 +169,7 @@ jobs:
     runs-on: [self-hosted, windows, x64, yututui]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -195,7 +195,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, yututui]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Persist cargo target dir
         run: |
