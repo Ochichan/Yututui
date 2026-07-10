@@ -62,6 +62,64 @@ fn rendering_player_registers_control_buttons() {
 }
 
 #[test]
+fn volume_flash_geometry_is_stable_and_off_mode_keeps_legacy_layout() {
+    let mut app = app_playing(2, 0);
+    let targets = [
+        MouseTarget::Player(Action::PrevTrack),
+        MouseTarget::Player(Action::TogglePause),
+        MouseTarget::Player(Action::NextTrack),
+        MouseTarget::Player(Action::VolDown),
+        MouseTarget::Player(Action::VolUp),
+        MouseTarget::VolumeArea,
+    ];
+    let geometry = |app: &App| {
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::render(f, app)).unwrap();
+        targets
+            .iter()
+            .map(|target| {
+                app.hits
+                    .regions()
+                    .iter()
+                    .find(|region| &region.target == target)
+                    .unwrap_or_else(|| panic!("missing hit target {target:?}"))
+                    .rect
+            })
+            .collect::<Vec<_>>()
+    };
+
+    app.playback.volume = 9;
+    let legacy_narrow = geometry(&app);
+    app.playback.volume = 100;
+    let legacy_wide = geometry(&app);
+    let control_row = |app: &App| {
+        let buf = render_app_buffer(app, 80, 20);
+        (0..80).map(|x| buf[(x, 6)].symbol()).collect::<String>()
+    };
+    app.playback.volume = 9;
+    assert_eq!(
+        control_row(&app),
+        "│                        ⇤     ‖     ⇥       vol  - 9% +                       │"
+    );
+    app.playback.volume = 100;
+    assert_eq!(
+        control_row(&app),
+        "│                       ⇤     ‖     ⇥       vol  - 100% +                      │"
+    );
+    assert_ne!(legacy_narrow, legacy_wide, "legacy hit geometry changed");
+
+    app.config.animations.master = true;
+    app.config.animations.volume_flash = true;
+    app.playback.volume = 50;
+    let expected = geometry(&app);
+    for volume in [0, 9, 10, 99, 100] {
+        app.playback.volume = volume;
+        assert_eq!(geometry(&app), expected, "control strip moved at {volume}%");
+    }
+}
+
+#[test]
 fn rendering_settings_registers_clickable_controls() {
     // Each control kind must publish its own hit target *on top of* the row-select rect, so a
     // click changes/activates the value rather than only moving the cursor onto it.

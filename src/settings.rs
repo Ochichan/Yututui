@@ -44,7 +44,7 @@ pub enum SettingsTab {
     Playback,
     /// The remappable-keybinding editor (its own render/navigation path).
     Keys,
-    /// Theme preset, color roles, and animation toggles, as three sub-categories.
+    /// Theme preset, color roles, and animation toggles grouped by feature and expected cost.
     Graphics,
     Ai,
     /// External accounts: Last.fm / ListenBrainz scrobbling (and later Spotify), as
@@ -144,42 +144,39 @@ impl SettingsTab {
                 f.push(Field::Normalize);
                 f
             }
-            // Theme (preset + transparent-bg toggle), then every color role, then the
-            // animation toggles (master kill-switch first, then the behaviour knobs, the
-            // player element effects, the player one-shots, the UI-wide effects, and finally
-            // the filler-canvas set — the same grouping as `AnimationsConfig`).
+            // Theme/colors, then animation groups from low to high average render cost.
             SettingsTab::Graphics => {
                 let mut f = vec![Field::RetroMode, Field::ThemePreset, Field::BackgroundNone];
                 f.extend(ThemeRole::ALL.iter().copied().map(Field::ThemeColor));
                 f.extend([
                     Field::AnimMaster,
-                    Field::AnimFps,
                     Field::AnimPauseUnfocused,
-                    Field::AnimTitle,
-                    Field::AnimHeart,
-                    Field::AnimSeekbar,
-                    Field::AnimSpinner,
-                    Field::AnimEqBars,
-                    Field::AnimControls,
-                    Field::AnimBorder,
-                    Field::AnimTrackIntro,
-                    Field::AnimLyrics,
-                    Field::AnimToast,
-                    Field::AnimVolumeFlash,
+                    Field::AnimFps,
                     Field::AnimLikeBurst,
+                    Field::AnimTrackIntro,
                     Field::AnimSeekFlash,
-                    Field::AnimSelection,
-                    Field::AnimStagger,
-                    Field::AnimCaret,
-                    Field::AnimTabs,
-                    Field::AnimPopupFade,
-                    Field::AnimActivity,
+                    Field::AnimVolumeFlash,
+                    Field::AnimToast,
                     Field::AnimAboutFx,
+                    Field::AnimPopupFade,
+                    Field::AnimTabs,
+                    Field::AnimStagger,
+                    Field::AnimActivity,
+                    Field::AnimCaret,
+                    Field::AnimSelection,
+                    Field::AnimHeart,
+                    Field::AnimSpinner,
+                    Field::AnimControls,
+                    Field::AnimEqBars,
+                    Field::AnimSeekbar,
+                    Field::AnimTitle,
+                    Field::AnimLyrics,
+                    Field::AnimBorder,
+                    Field::AnimBounce,
+                    Field::AnimStarfield,
+                    Field::AnimVisualizer,
                     Field::AnimRain,
                     Field::AnimDonut,
-                    Field::AnimVisualizer,
-                    Field::AnimStarfield,
-                    Field::AnimBounce,
                 ]);
                 f
             }
@@ -230,7 +227,11 @@ impl SettingsTab {
             SettingsTab::Graphics => vec![
                 (t!("Theme", "테마"), 3),
                 (t!("Colors", "색상"), ThemeRole::ALL.len()),
-                (t!("Animations", "애니메이션"), 28),
+                (t!("Animation controls", "애니메이션 제어"), 3),
+                (t!("Event feedback", "이벤트 피드백"), 5),
+                (t!("Interface motion", "인터페이스 동작"), 7),
+                (t!("Now playing", "현재 재생"), 8),
+                (t!("Ambient canvas", "배경 캔버스"), 5),
             ],
             SettingsTab::Accounts => vec![
                 ("Last.fm", 3),
@@ -1521,10 +1522,9 @@ mod tests {
     #[test]
     fn graphics_tab_groups_theme_colors_and_animations() {
         let _guard = crate::i18n::lock_for_test();
+        crate::i18n::set_language(crate::i18n::Language::English);
         let f = SettingsTab::Graphics.fields();
-        // ThemePreset + BackgroundNone + every color role + 28 animation fields
-        // plus the RetroMode fallback toggle.
-        // (master enable + fps slider + pause-when-unfocused toggle + 25 per-effect toggles).
+        // Three base fields, every color role, and 28 animation fields.
         assert_eq!(f.len(), 3 + ThemeRole::ALL.len() + 28);
         assert_eq!(f[0], Field::RetroMode);
         assert_eq!(f[1], Field::ThemePreset);
@@ -1532,8 +1532,8 @@ mod tests {
         assert!(matches!(f[3], Field::ThemeColor(_)));
         let anim_start = 3 + ThemeRole::ALL.len();
         assert_eq!(f[anim_start], Field::AnimMaster);
-        // The fps slider sits right after the master enable; it's the one non-toggle here.
-        assert_eq!(f[anim_start + 1], Field::AnimFps);
+        assert_eq!(f[anim_start + 1], Field::AnimPauseUnfocused);
+        assert_eq!(f[anim_start + 2], Field::AnimFps);
         assert_eq!(Field::AnimFps.kind(), FieldKind::Slider);
         assert!(
             f[anim_start..]
@@ -1542,15 +1542,31 @@ mod tests {
                 .all(|fld| fld.kind() == FieldKind::Toggle)
         );
 
-        // Section counts partition the field list exactly.
-        let total: usize = SettingsTab::Graphics
-            .sections()
-            .iter()
-            .map(|(_, n)| n)
-            .sum();
+        let sections = SettingsTab::Graphics.sections();
+        let total: usize = sections.iter().map(|(_, n)| n).sum();
         assert_eq!(total, f.len());
+        assert_eq!(
+            sections.iter().map(|(_, n)| *n).collect::<Vec<_>>(),
+            vec![3, ThemeRole::ALL.len(), 3, 5, 7, 8, 5]
+        );
+        assert_eq!(
+            sections
+                .iter()
+                .map(|(title, _)| *title)
+                .collect::<Vec<_>>()
+                .join(","),
+            "Theme,Colors,Animation controls,Event feedback,Interface motion,Now playing,Ambient canvas"
+        );
+        let order = f[anim_start..]
+            .iter()
+            .map(|field| format!("{field:?}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            order,
+            "AnimMaster,AnimPauseUnfocused,AnimFps,AnimLikeBurst,AnimTrackIntro,AnimSeekFlash,AnimVolumeFlash,AnimToast,AnimAboutFx,AnimPopupFade,AnimTabs,AnimStagger,AnimActivity,AnimCaret,AnimSelection,AnimHeart,AnimSpinner,AnimControls,AnimEqBars,AnimSeekbar,AnimTitle,AnimLyrics,AnimBorder,AnimBounce,AnimStarfield,AnimVisualizer,AnimRain,AnimDonut"
+        );
 
-        // Default draft: every animation toggle reads as off.
         let mut draft = base_draft();
         assert_eq!(draft.value_display(Field::AnimMaster), "[ ]");
         assert_eq!(draft.value_display(Field::AnimRain), "[ ]");

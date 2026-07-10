@@ -769,7 +769,14 @@ fn render_controls(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         " ‖ "
     };
-    let vol = format!("{}%", app.playback.volume);
+    let animations = app.animations();
+    let vol = if animations.master && animations.volume_flash {
+        // The flash morphs this cluster into a gauge, so keep its numeric slot fixed while the
+        // effect is enabled. The disabled branch deliberately retains the legacy bytes.
+        format!("{:>3}%", app.playback.volume.clamp(0, 100))
+    } else {
+        format!("{}%", app.playback.volume)
+    };
     // Roomy gaps normally; tighter ones when the strip wouldn't fit (a narrow terminal or
     // text zoom shrinking the virtual grid). Buttons keep their one-cell inner padding, so
     // hit targets stay comfortable — only the dead space between them compresses.
