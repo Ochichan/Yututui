@@ -55,6 +55,23 @@ struct MatchJournalCadence {
     last_durable: Instant,
 }
 
+struct MatchCommitContext<'a> {
+    cp: &'a mut Checkpoint,
+    cache_write_enabled: bool,
+    match_cache: &'a mut Option<TransferMatchCache>,
+    cache_dirty: &'a mut bool,
+    local_capacity_keys: &'a mut Option<HashSet<String>>,
+    journal: &'a mut MatchJournalCadence,
+    matched_count: &'a mut u32,
+    ambiguous_count: &'a mut u32,
+    not_found_count: &'a mut u32,
+    completed_count: &'a mut u32,
+    computed_capacity_skips: &'a mut u32,
+    matching_written: u32,
+    total: u32,
+    progress: &'a mut (dyn FnMut(TransferProgress) + Send),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WriteProgressCounts {
     matched: u32,
@@ -691,26 +708,24 @@ async fn match_stage(
             while let Some((idx, input, result)) =
                 take_ready_in_source_order(&mut ready_by_source, &mut next_source_sequence)
             {
-                capacity_reached |= commit_ytm_match_result(
+                let mut commit = MatchCommitContext {
                     cp,
-                    idx,
-                    input,
-                    result.outcome,
-                    result.trace,
                     cache_write_enabled,
-                    &mut match_cache,
-                    &mut cache_dirty,
-                    &mut local_capacity_keys,
-                    &mut journal,
-                    &mut matched_count,
-                    &mut ambiguous_count,
-                    &mut not_found_count,
-                    &mut completed_count,
-                    &mut computed_capacity_skips,
+                    match_cache: &mut match_cache,
+                    cache_dirty: &mut cache_dirty,
+                    local_capacity_keys: &mut local_capacity_keys,
+                    journal: &mut journal,
+                    matched_count: &mut matched_count,
+                    ambiguous_count: &mut ambiguous_count,
+                    not_found_count: &mut not_found_count,
+                    completed_count: &mut completed_count,
+                    computed_capacity_skips: &mut computed_capacity_skips,
                     matching_written,
                     total,
                     progress,
-                )?;
+                };
+                capacity_reached |=
+                    commit_ytm_match_result(&mut commit, idx, input, result.outcome, result.trace)?;
                 if capacity_reached {
                     break 'matching;
                 }
@@ -722,26 +737,23 @@ async fn match_stage(
         }
         if capacity_reached {
             for (_, (idx, input, result)) in std::mem::take(&mut ready_by_source) {
-                commit_ytm_match_result(
+                let mut commit = MatchCommitContext {
                     cp,
-                    idx,
-                    input,
-                    result.outcome,
-                    result.trace,
                     cache_write_enabled,
-                    &mut match_cache,
-                    &mut cache_dirty,
-                    &mut local_capacity_keys,
-                    &mut journal,
-                    &mut matched_count,
-                    &mut ambiguous_count,
-                    &mut not_found_count,
-                    &mut completed_count,
-                    &mut computed_capacity_skips,
+                    match_cache: &mut match_cache,
+                    cache_dirty: &mut cache_dirty,
+                    local_capacity_keys: &mut local_capacity_keys,
+                    journal: &mut journal,
+                    matched_count: &mut matched_count,
+                    ambiguous_count: &mut ambiguous_count,
+                    not_found_count: &mut not_found_count,
+                    completed_count: &mut completed_count,
+                    computed_capacity_skips: &mut computed_capacity_skips,
                     matching_written,
                     total,
                     progress,
-                )?;
+                };
+                commit_ytm_match_result(&mut commit, idx, input, result.outcome, result.trace)?;
             }
             if computed_capacity_skips > 0 {
                 record_capacity_skips(&mut cp.match_stats, computed_capacity_skips);
@@ -782,61 +794,53 @@ fn take_ready_in_source_order<T>(
 }
 
 fn commit_ytm_match_result(
-    cp: &mut Checkpoint,
+    context: &mut MatchCommitContext<'_>,
     idx: usize,
     input: TrackInput,
     outcome: MatchOutcome,
     trace: MatchTrace,
-    cache_write_enabled: bool,
-    match_cache: &mut Option<TransferMatchCache>,
-    cache_dirty: &mut bool,
-    local_capacity_keys: &mut Option<HashSet<String>>,
-    journal: &mut MatchJournalCadence,
-    matched_count: &mut u32,
-    ambiguous_count: &mut u32,
-    not_found_count: &mut u32,
-    completed_count: &mut u32,
-    computed_capacity_skips: &mut u32,
-    matching_written: u32,
-    total: u32,
-    progress: &mut (dyn FnMut(TransferProgress) + Send),
 ) -> Result<bool, JobError> {
     let current = input.display();
-    if cache_write_enabled
-        && let Some(cache) = match_cache.as_mut()
+    if context.cache_write_enabled
+        && let Some(cache) = context.match_cache.as_mut()
         && matches!(outcome, MatchOutcome::Matched { .. })
     {
         cache.save_match(&input, &outcome);
-        *cache_dirty = true;
+        *context.cache_dirty = true;
     }
-    cp.tracks[idx].outcome = Some(outcome);
+    context.cp.tracks[idx].outcome = Some(outcome);
     let capacity_reached = enforce_local_capacity_for_committed_entry(
-        cp,
+        context.cp,
         idx,
-        local_capacity_keys,
-        computed_capacity_skips,
+        context.local_capacity_keys,
+        context.computed_capacity_skips,
     );
-    let outcome = cp.tracks[idx]
+    let outcome = context.cp.tracks[idx]
         .outcome
         .as_ref()
         .expect("committed match has an outcome");
-    record_match_outcome_stats(&mut cp.match_stats, outcome);
-    record_match_trace_stats(&mut cp.match_stats, &trace);
-    increment_outcome_counts(outcome, matched_count, ambiguous_count, not_found_count);
-    cp.match_traces.insert(idx as u32 + 1, trace);
-    journal.append(cp, idx)?;
-    *completed_count = (*completed_count).saturating_add(1);
+    record_match_outcome_stats(&mut context.cp.match_stats, outcome);
+    record_match_trace_stats(&mut context.cp.match_stats, &trace);
+    increment_outcome_counts(
+        outcome,
+        context.matched_count,
+        context.ambiguous_count,
+        context.not_found_count,
+    );
+    context.cp.match_traces.insert(idx as u32 + 1, trace);
+    context.journal.append(context.cp, idx)?;
+    *context.completed_count = (*context.completed_count).saturating_add(1);
 
-    progress(TransferProgress {
-        job_id: cp.job_id.clone(),
+    (context.progress)(TransferProgress {
+        job_id: context.cp.job_id.clone(),
         stage: Stage::Matching,
-        done: *completed_count,
-        total,
-        matched: *matched_count,
+        done: *context.completed_count,
+        total: context.total,
+        matched: *context.matched_count,
         auto_accepted: 0,
-        ambiguous: *ambiguous_count,
-        not_found: *not_found_count,
-        written: matching_written,
+        ambiguous: *context.ambiguous_count,
+        not_found: *context.not_found_count,
+        written: context.matching_written,
         current,
     });
     Ok(capacity_reached)
