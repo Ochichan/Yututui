@@ -184,11 +184,24 @@ impl App {
         match self.mode {
             Mode::Player => {
                 // The element effects already run via the player gate while playing; the two
-                // ambient extras are the lyrics glow (breathes only while playing — pausing
-                // freezes it like every player effect) and animated "fetching" dots.
+                // ambient extras are contextual selections and activity indicators. They retain
+                // the player's pause/track gate while avoiding idle redraws.
                 let playing = !self.playback.paused && self.queue.current().is_some();
-                (playing && a.lyrics && self.lyrics.visible)
-                    || (playing && a.activity && self.lyrics.visible && self.lyrics.loading)
+                let downloading = self.queue.current().is_some_and(|song| {
+                    matches!(
+                        self.downloads.active.get(&song.video_id),
+                        Some(DownloadState::Running(_))
+                    )
+                });
+                (playing
+                    && a.selection
+                    && (self.queue_popup.open
+                        || self.dropdowns.eq_open
+                        || self.dropdowns.streaming_open))
+                    || (playing && a.lyrics && self.lyrics.visible)
+                    || (playing
+                        && a.activity
+                        && ((self.lyrics.visible && self.lyrics.loading) || downloading))
             }
             Mode::Search => {
                 (a.activity && self.search.searching)

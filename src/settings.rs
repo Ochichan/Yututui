@@ -144,8 +144,7 @@ impl SettingsTab {
                 f.push(Field::Normalize);
                 f
             }
-            // Theme and colors, then animation groups ordered by realistic average cost:
-            // controls, intermittent feedback, contextual UI, continuous player, full canvas.
+            // Theme/colors, then animation groups from low to high average render cost.
             SettingsTab::Graphics => {
                 let mut f = vec![Field::RetroMode, Field::ThemePreset, Field::BackgroundNone];
                 f.extend(ThemeRole::ALL.iter().copied().map(Field::ThemeColor));
@@ -1525,9 +1524,7 @@ mod tests {
         let _guard = crate::i18n::lock_for_test();
         crate::i18n::set_language(crate::i18n::Language::English);
         let f = SettingsTab::Graphics.fields();
-        // ThemePreset + BackgroundNone + every color role + 28 animation fields
-        // plus the RetroMode fallback toggle.
-        // (master enable + fps slider + pause-when-unfocused toggle + 25 per-effect toggles).
+        // Three base fields, every color role, and 28 animation fields.
         assert_eq!(f.len(), 3 + ThemeRole::ALL.len() + 28);
         assert_eq!(f[0], Field::RetroMode);
         assert_eq!(f[1], Field::ThemePreset);
@@ -1545,7 +1542,6 @@ mod tests {
                 .all(|fld| fld.kind() == FieldKind::Toggle)
         );
 
-        // Section counts partition the field list exactly.
         let sections = SettingsTab::Graphics.sections();
         let total: usize = sections.iter().map(|(_, n)| n).sum();
         assert_eq!(total, f.len());
@@ -1571,7 +1567,6 @@ mod tests {
             "AnimMaster,AnimPauseUnfocused,AnimFps,AnimLikeBurst,AnimTrackIntro,AnimSeekFlash,AnimVolumeFlash,AnimToast,AnimAboutFx,AnimPopupFade,AnimTabs,AnimStagger,AnimActivity,AnimCaret,AnimSelection,AnimHeart,AnimSpinner,AnimControls,AnimEqBars,AnimSeekbar,AnimTitle,AnimLyrics,AnimBorder,AnimBounce,AnimStarfield,AnimVisualizer,AnimRain,AnimDonut"
         );
 
-        // Default draft: every animation toggle reads as off.
         let mut draft = base_draft();
         assert_eq!(draft.value_display(Field::AnimMaster), "[ ]");
         assert_eq!(draft.value_display(Field::AnimRain), "[ ]");

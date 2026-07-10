@@ -228,6 +228,52 @@ fn idle_event_feedback_does_not_keep_the_player_clock_awake() {
 }
 
 #[test]
+fn visible_player_selections_wake_the_ambient_clock() {
+    let mut app = app_playing(1, 0);
+    app.config.animations.master = true;
+    app.config.animations.selection = true;
+    assert!(!app.animation_active(), "no selection surface is visible");
+
+    app.queue_popup.open = true;
+    assert!(app.animation_active(), "queue selection should breathe");
+    assert_eq!(app.animation_draw_fps(), 12);
+    app.queue_popup.open = false;
+
+    app.dropdowns.eq_open = true;
+    assert!(app.animation_active(), "EQ selection should breathe");
+    app.dropdowns.eq_open = false;
+    app.dropdowns.streaming_open = true;
+    assert!(
+        app.animation_active(),
+        "streaming-mode selection should breathe"
+    );
+
+    app.playback.paused = true;
+    assert!(
+        !app.animation_active(),
+        "player selections retain the pause gate"
+    );
+}
+
+#[test]
+fn running_download_wakes_the_player_activity_clock() {
+    let mut app = app_playing(1, 0);
+    app.config.animations.master = true;
+    app.config.animations.activity = true;
+    assert!(!app.animation_active(), "no activity is visible");
+
+    let id = app.queue.current().unwrap().video_id.clone();
+    app.downloads
+        .active
+        .insert(id.clone(), DownloadState::Running(42));
+    assert!(app.animation_active(), "download spinner should advance");
+    assert_eq!(app.animation_draw_fps(), 12);
+
+    app.downloads.active.insert(id, DownloadState::Done);
+    assert!(!app.animation_active(), "completed downloads are static");
+}
+
+#[test]
 fn turning_the_master_off_cancels_armed_feedback() {
     let mut app = app_playing(1, 0);
     app.config.animations.master = true;
