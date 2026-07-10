@@ -101,6 +101,89 @@ fn queue_right_click_preserves_existing_range_and_menu_removes_it() {
 }
 
 #[test]
+fn queue_menu_play_selected_plays_whole_range_now() {
+    let mut app = app_playing(6, 0);
+    app.update(Msg::Key(key(KeyCode::Char('c'))));
+    app.queue_popup.anchor = 2;
+    app.queue_popup.cursor = 4;
+    render_app(&app);
+    let (col, row) = button_center(&app, MouseTarget::QueueRow(3));
+
+    let cmds = app.update(Msg::MouseRightClick { col, row });
+
+    assert!(cmds.is_empty());
+    assert_eq!(
+        app.overlays
+            .context_menu
+            .as_ref()
+            .expect("queue menu should open")
+            .target_count(),
+        3
+    );
+
+    app.register_mouse_button(Rect::new(col, row, 1, 1), MouseTarget::ContextMenuItem(0));
+    let cmds = app.update(Msg::MouseClick { col, row });
+
+    assert_loads_video(&cmds, "id2");
+    assert_eq!(current(&app), "id2");
+    assert!(!app.queue_popup.open);
+    let ids: Vec<&str> = app
+        .queue
+        .ordered()
+        .iter()
+        .map(|song| song.video_id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            "id0", "id2", "id3", "id4", "id1", "id2", "id3", "id4", "id5"
+        ]
+    );
+}
+
+#[test]
+fn same_right_click_on_open_menu_keeps_selection() {
+    let mut app = search_app();
+    let (col, row) = open_search_menu(&mut app, 1);
+    app.overlays.context_menu.as_mut().unwrap().selected = 2;
+
+    let cmds = app.update(Msg::MouseRightClick { col, row });
+
+    assert!(cmds.is_empty());
+    let menu = app
+        .overlays
+        .context_menu
+        .as_ref()
+        .expect("same right click should keep the menu open");
+    assert_eq!(menu.selected, 2);
+}
+
+#[test]
+fn disabled_right_double_click_keeps_open_menu() {
+    let mut app = search_app();
+    app.mousemap
+        .set(
+            crate::mousemap::MouseContext::Search,
+            crate::mousemap::MouseGesture::RightDoubleClick,
+            crate::mousemap::MouseAction::Disabled,
+        )
+        .unwrap();
+    let (col, row) = open_search_menu(&mut app, 1);
+    app.overlays.context_menu.as_mut().unwrap().selected = 2;
+
+    let cmds = app.update(Msg::MouseRightDoubleClick { col, row });
+
+    assert!(cmds.is_empty());
+    assert_eq!(app.queue.len(), 0);
+    let menu = app
+        .overlays
+        .context_menu
+        .as_ref()
+        .expect("disabled double-click should leave the menu open");
+    assert_eq!(menu.selected, 2);
+}
+
+#[test]
 fn stale_search_identity_prevents_menu_action_and_reports_status() {
     let mut app = search_app();
     let (col, row) = open_search_menu(&mut app, 1);
