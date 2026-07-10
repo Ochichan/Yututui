@@ -944,7 +944,12 @@ mod tests {
     }
 
     fn journal_temp(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
+        let dir = std::env::temp_dir().join(format!(
+            "yututui-transfer-journal-tests-{}",
+            std::process::id()
+        ));
+        safe_fs::ensure_private_dir(&dir).unwrap();
+        dir.join(format!(
             "yututui-transfer-journal-{name}-{}-{}.jsonl",
             std::process::id(),
             crate::signals::unix_now()
