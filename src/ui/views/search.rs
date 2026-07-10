@@ -492,7 +492,7 @@ fn render_dropdown(
             app.theme.style(R::TextPrimary)
         };
         frame.render_widget(Paragraph::new(Line::from(text).style(style)), row);
-        app.register_mouse_button(row, *target);
+        app.register_mouse_button(row, target.clone());
     }
     crate::ui::seal_popup_background(frame, app, popup);
     crate::ui::mark_art_rows_for_popup(frame, app, popup);

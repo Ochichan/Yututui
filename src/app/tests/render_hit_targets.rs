@@ -72,7 +72,11 @@ fn rendering_settings_registers_clickable_controls() {
         let backend = TestBackend::new(80, 32);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::render(f, &app)).unwrap();
-        app.hits.regions().iter().map(|b| b.target).collect()
+        app.hits
+            .regions()
+            .iter()
+            .map(|b| b.target.clone())
+            .collect()
     };
 
     // Graphics: a Toggle (RetroMode, field 0), a Select (ThemePreset, field 1), a Toggle

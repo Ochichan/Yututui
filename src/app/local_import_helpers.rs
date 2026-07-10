@@ -20,6 +20,7 @@ pub(in crate::app) fn import_session_row_status_label(row: &ImportSessionRow) ->
         ImportSessionRowStatus::Ambiguous => "review",
         ImportSessionRowStatus::NotFound => "missing",
         ImportSessionRowStatus::SkippedLocal => "skipped",
+        ImportSessionRowStatus::SkippedCapacity => "capacity",
     }
 }
 
@@ -42,6 +43,10 @@ pub(in crate::app) fn import_session_row_status_detail(
         ImportSessionRowStatus::NotFound => Some(t!(
             "no usable YouTube Music candidate was found",
             "사용 가능한 YouTube Music 후보를 찾지 못했어요"
+        )),
+        ImportSessionRowStatus::SkippedCapacity => Some(t!(
+            "the destination playlist reached its track limit",
+            "대상 플레이리스트가 곡 수 제한에 도달했어요"
         )),
         _ => None,
     }
@@ -189,7 +194,9 @@ pub(in crate::app) fn import_session_row_accepts_manual_review_action(
         && row.local_path.is_none()
         && !matches!(
             row.status,
-            ImportSessionRowStatus::Matched | ImportSessionRowStatus::SkippedLocal
+            ImportSessionRowStatus::Matched
+                | ImportSessionRowStatus::SkippedLocal
+                | ImportSessionRowStatus::SkippedCapacity
         )
 }
 

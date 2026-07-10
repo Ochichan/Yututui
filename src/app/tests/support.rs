@@ -580,7 +580,7 @@ pub(super) fn dropdown_popup_rect(
         .hits
         .regions()
         .iter()
-        .filter_map(|b| is_row(b.target).then_some(b.rect))
+        .filter_map(|b| is_row(b.target.clone()).then_some(b.rect))
         .collect();
     assert!(
         !rects.is_empty(),
@@ -588,7 +588,7 @@ pub(super) fn dropdown_popup_rect(
         app.hits
             .regions()
             .iter()
-            .map(|b| b.target)
+            .map(|b| b.target.clone())
             .collect::<Vec<_>>()
     );
 
@@ -705,7 +705,12 @@ pub(super) fn render_at(app: &App, w: u16, h: u16) -> (Vec<MouseTarget>, String)
         .map(|x| buf.cell((x, 0)).map(|c| c.symbol()).unwrap_or(" "))
         .collect::<Vec<_>>()
         .join("");
-    let targets = app.hits.regions().iter().map(|b| b.target).collect();
+    let targets = app
+        .hits
+        .regions()
+        .iter()
+        .map(|b| b.target.clone())
+        .collect();
     (targets, top)
 }
 

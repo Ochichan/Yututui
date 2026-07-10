@@ -348,7 +348,7 @@ fn render_rows(frame: &mut Frame, app: &App, area: Rect) {
         app.bridges
             .library_scroll
             .resolve(cursor, area.height, len, crate::ui::scroll::SCROLLOFF);
-    let body_w = area.width.saturating_sub(1) as usize;
+    let row_width = area.width.saturating_sub(1);
 
     for (vis, (i, song)) in rows
         .iter()
@@ -359,6 +359,9 @@ fn render_rows(frame: &mut Frame, app: &App, area: Rect) {
     {
         let y = area.y + vis as u16;
         let selected = i == cursor;
+        let deletable = app.local_import_record_deletable(song);
+        let delete_width = if deletable { 2 } else { 0 };
+        let body_w = row_width.saturating_sub(delete_width) as usize;
         let marker = if selected { "> " } else { "  " };
         let text = app.local_row_text(song);
         let text = if selected {
@@ -390,11 +393,36 @@ fn render_rows(frame: &mut Frame, app: &App, area: Rect) {
         let row = Rect {
             x: area.x,
             y,
-            width: area.width.saturating_sub(1),
+            width: row_width,
             height: 1,
         };
         frame.render_widget(Paragraph::new(Line::from(body).style(style)), row);
-        app.register_mouse_button(row, MouseTarget::LocalRow(i));
+        let body_rect = Rect {
+            width: row.width.saturating_sub(delete_width),
+            ..row
+        };
+        app.register_mouse_button(body_rect, MouseTarget::LocalRow(i));
+        if deletable {
+            let delete_rect = Rect {
+                x: row.right().saturating_sub(delete_width),
+                width: delete_width,
+                ..row
+            };
+            let mut delete_style = app.theme.style(R::Error);
+            if selected {
+                delete_style = delete_style.bg(app.theme.color(R::SelectionBg));
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from("✗").style(delete_style)),
+                delete_rect,
+            );
+            if let crate::local::LocalRowId::ImportSession(session_id) = song {
+                app.register_mouse_button(
+                    delete_rect,
+                    MouseTarget::LocalImportDel(session_id.clone()),
+                );
+            }
+        }
     }
 
     buttons::render_list_scrollbar(
@@ -653,6 +681,78 @@ pub fn render_local_accept_all_confirm(
         &segs,
         crate::ui::confirm_button_style(app),
         crate::ui::confirm_gap_style(app),
+        Alignment::Center,
+    );
+    crate::ui::seal_popup_background(frame, app, popup);
+    crate::ui::mark_art_rows_for_popup(frame, app, popup);
+}
+
+/// Confirm removal of transfer/session history only. Imported tracks and destination playlists
+/// are deliberately outside this operation and remain available after the record disappears.
+pub fn render_local_import_delete_confirm(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    session_id: &str,
+) {
+    let popup = centered_fixed(area, 72, 9);
+    crate::ui::render_popup_background(frame, app, popup);
+    let block = Block::default()
+        .title(t!(" ⚠ Delete import record ", " ⚠ 임포트 기록 삭제 "))
+        .borders(Borders::ALL)
+        .border_style(crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD))
+        .style(crate::ui::popup_style(app, R::TextPrimary));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .split(inner);
+    let prompt = if crate::i18n::is_korean() {
+        format!("임포트 세션 {session_id}의 기록을 삭제할까요?")
+    } else {
+        format!("Delete the saved record for import session {session_id}?")
+    };
+    frame.render_widget(
+        Paragraph::new(crate::ui::text::truncate_owned_to_width(
+            prompt,
+            inner.width as usize,
+        ))
+        .alignment(Alignment::Center)
+        .style(crate::ui::popup_style(app, R::TextPrimary)),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(t!(
+            "Imported songs, audio files, and playlists are not deleted.",
+            "임포트한 곡, 오디오 파일, 플레이리스트는 삭제하지 않습니다."
+        ))
+        .alignment(Alignment::Center)
+        .style(crate::ui::popup_style(app, R::TextMuted)),
+        rows[2],
+    );
+    let segs = [
+        buttons::Seg::button(
+            MouseTarget::ConfirmLocalImportDelete,
+            t!(" Delete record (Enter) ", " 기록 삭제 (Enter) "),
+        ),
+        buttons::Seg::label("    "),
+        buttons::Seg::button(
+            MouseTarget::CancelLocalImportDelete,
+            t!(" Cancel (Esc) ", " 취소 (Esc) "),
+        ),
+    ];
+    buttons::render_segments(
+        frame,
+        app,
+        rows[4],
+        &segs,
+        crate::ui::popup_style(app, R::Error).add_modifier(Modifier::BOLD),
+        crate::ui::popup_style(app, R::Accent).add_modifier(Modifier::BOLD),
         Alignment::Center,
     );
     crate::ui::seal_popup_background(frame, app, popup);

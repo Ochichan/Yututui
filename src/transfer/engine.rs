@@ -2,18 +2,20 @@
 //! meaningful boundary so any abort resumes idempotently. One plain async fn — the CLI
 //! runs it on its own runtime, the TUI actor on a worker task.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail};
 use futures::StreamExt;
 
 use super::checkpoint::ReviewDecision;
-use super::checkpoint::{Checkpoint, ReportCandidate, ReportRow, TrackEntry, TransferReport};
+use super::checkpoint::{
+    Checkpoint, MatchStats, MatchTrace, ReportCandidate, ReportRow, TrackEntry, TransferReport,
+};
 use super::match_cache::TransferMatchCache;
 use super::matching::{
     MatchCandidate, MatchConfig, MatchOutcome, Pacing, SharedYtmMatchState, TrackInput,
-    best_outcome, match_track_ytm_shared, spotify_query_plan, ytm_query_plan,
+    best_outcome, match_track_ytm_shared, spotify_query_plan,
 };
 use super::{
     FileFormat, JobSpec, MatchPolicy, Stage, TransferDest, TransferProgress, TransferSource,
@@ -28,6 +30,10 @@ use album_prefill::{
     apply_persistent_cache, merge_ytm_diagnostics, prefill_album_matches,
     record_match_outcome_stats,
 };
+mod reporting;
+use reporting::*;
+mod job_errors;
+use job_errors::*;
 
 /// Every job caps its work list here (YTM's own playlist cap is ~5,000 anyway).
 const TRACK_CAP: usize = 10_000;
@@ -40,6 +46,86 @@ const YTM_LIKE_PAUSE: Duration = Duration::from_millis(1200);
 const SPOTIFY_ADD_CHUNK: usize = 100;
 /// Checkpoint flush cadence during matching/like-writing.
 const CHECKPOINT_EVERY: usize = 10;
+/// Matching outcomes use the append-only journal between compact snapshots. Bound the
+/// interval between durable appends even when a small job advances slowly.
+const MATCH_JOURNAL_DURABLE_EVERY: Duration = Duration::from_secs(1);
+
+struct MatchJournalCadence {
+    pending: usize,
+    last_durable: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WriteProgressCounts {
+    matched: u32,
+    ambiguous: u32,
+    not_found: u32,
+    written: u32,
+}
+
+impl WriteProgressCounts {
+    fn from_checkpoint(cp: &Checkpoint) -> Self {
+        let (matched, ambiguous, not_found) = outcome_counts(&cp.tracks);
+        Self {
+            matched,
+            ambiguous,
+            not_found,
+            written: written_count(&cp.tracks),
+        }
+    }
+
+    fn record_written(&mut self, count: usize) {
+        self.written = self.written.saturating_add(count as u32);
+    }
+}
+
+struct EnsuredDestination {
+    id: String,
+    created_in_run: bool,
+}
+
+impl MatchJournalCadence {
+    fn new() -> Self {
+        Self {
+            pending: 0,
+            last_durable: Instant::now(),
+        }
+    }
+
+    fn next_is_durable(&mut self) -> bool {
+        self.pending += 1;
+        let durable = self.pending >= CHECKPOINT_EVERY
+            || self.last_durable.elapsed() >= MATCH_JOURNAL_DURABLE_EVERY;
+        if durable {
+            self.pending = 0;
+            self.last_durable = Instant::now();
+        }
+        durable
+    }
+
+    fn append(&mut self, cp: &mut Checkpoint, index: usize) -> Result<(), JobError> {
+        let durable = self.next_is_durable();
+        let bytes = cp
+            .append_track_journal(index, durable)
+            .map_err(|error| JobError::fatal(error.into()))?;
+        cp.match_stats.checkpoint_bytes = cp.match_stats.checkpoint_bytes.saturating_add(bytes);
+        if durable && bytes > 0 {
+            cp.match_stats.checkpoint_flushes = cp.match_stats.checkpoint_flushes.saturating_add(1);
+        }
+        Ok(())
+    }
+}
+
+fn append_write_journal(cp: &mut Checkpoint, indexes: &[usize]) -> Result<(), JobError> {
+    let bytes = cp
+        .append_tracks_journal(indexes, true)
+        .map_err(|error| JobError::fatal(error.into()))?;
+    cp.match_stats.checkpoint_bytes = cp.match_stats.checkpoint_bytes.saturating_add(bytes);
+    if bytes > 0 {
+        cp.match_stats.checkpoint_flushes = cp.match_stats.checkpoint_flushes.saturating_add(1);
+    }
+    Ok(())
+}
 
 /// What a failed job means for the caller: `resumable` failures keep their checkpoint
 /// and print/emit the `resume` hint.
@@ -94,6 +180,8 @@ pub async fn run_job(
     ctx: &mut JobCtx,
     progress: &mut (dyn FnMut(TransferProgress) + Send),
 ) -> Result<TransferReport, JobError> {
+    let _record_guard = super::session::ImportRecordGuard::try_acquire_if_persistable(&job_id)
+        .map_err(|error| JobError::fatal(error.into()))?;
     let started = Instant::now();
     if let Some(spotify) = ctx.spotify.as_mut() {
         spotify.reset_rate_budget();
@@ -155,6 +243,7 @@ pub async fn run_job(
     // later `resume` performs exactly the writes).
     if !cp.spec.dry_run {
         write_stage(&mut cp, ctx, progress, &mut report).await?;
+        rebuild_report_after_write(&cp, skipped_local, &mut report);
         cp.stage = Stage::Done;
         cp.save().map_err(|e| JobError::fatal(e.into()))?;
         save_import_session(&cp);
@@ -171,6 +260,8 @@ pub async fn write_reviewed_local_job(
     job_id: &str,
     progress: &mut (dyn FnMut(TransferProgress) + Send),
 ) -> Result<TransferReport, JobError> {
+    let _record_guard = super::session::ImportRecordGuard::try_acquire_if_persistable(job_id)
+        .map_err(|error| JobError::fatal(error.into()))?;
     let started = Instant::now();
     let mut cp = Checkpoint::load(job_id).map_err(JobError::fatal)?;
     if !matches!(cp.spec.dest, TransferDest::LocalPlaylist { .. }) {
@@ -180,6 +271,9 @@ pub async fn write_reviewed_local_job(
     }
     cp.spec.dry_run = false;
     cp.stage = Stage::Writing;
+    if let Some(mut keys) = local_destination_keys(&cp) {
+        enforce_matched_capacity(&mut cp, &mut keys);
+    }
     cp.save().map_err(|e| JobError::fatal(e.into()))?;
     save_import_session(&cp);
 
@@ -191,6 +285,7 @@ pub async fn write_reviewed_local_job(
         market: None,
     };
     write_stage(&mut cp, &mut ctx, progress, &mut report).await?;
+    rebuild_report_after_write(&cp, cp.skipped_local, &mut report);
     cp.stage = Stage::Done;
     cp.save().map_err(|e| JobError::fatal(e.into()))?;
     save_import_session(&cp);
@@ -229,11 +324,10 @@ async fn fetch_source(
             let spotify = ctx.spotify()?;
             let meta = spotify.playlist_meta(id).await.map_err(spotify_job_error)?;
             let mut on_page = |done: u32, total: u32| beat(done, total, meta.name.clone());
-            let tracks = spotify
-                .playlist_tracks(id, &mut on_page)
+            let (tracks, skipped) = spotify
+                .playlist_tracks_for_transfer(id, TRACK_CAP, &mut on_page)
                 .await
                 .map_err(spotify_job_error)?;
-            let skipped = meta.total.saturating_sub(tracks.len() as u32);
             (
                 meta.name,
                 tracks.iter().map(TrackInput::from_spotify).collect(),
@@ -244,7 +338,7 @@ async fn fetch_source(
             let spotify = ctx.spotify()?;
             let mut on_page = |done: u32, total: u32| beat(done, total, "Liked Songs".to_owned());
             let mut tracks = spotify
-                .liked_tracks(&mut on_page)
+                .liked_tracks_for_transfer(TRACK_CAP, &mut on_page)
                 .await
                 .map_err(spotify_job_error)?;
             // Spotify returns newest-first; import oldest-first so the YTM like
@@ -369,6 +463,9 @@ async fn match_stage(
     ctx: &mut JobCtx,
     progress: &mut (dyn FnMut(TransferProgress) + Send),
 ) -> Result<(), JobError> {
+    // A prior provider defer describes the previous attempt. Keep the aggregate counter,
+    // but only expose an active reason when this attempt also has to pause.
+    cp.defer_reason = None;
     let cfg = MatchConfig {
         accept: cp.spec.min_score,
         ambiguous_floor: (cp.spec.min_score - 0.20).max(0.40),
@@ -391,8 +488,16 @@ async fn match_stage(
         }
     });
     let mut cache_dirty = false;
-    if cache_read_enabled && let Some(cache) = match_cache.as_ref() {
+    if cache_read_enabled && let Some(cache) = match_cache.as_mut() {
+        cache_dirty |= cache.retain_compatible_matches(&cfg);
         cache_dirty |= apply_persistent_cache(cp, cache);
+    }
+    let mut local_capacity_keys = local_destination_keys(cp);
+    if let Some(keys) = local_capacity_keys.as_mut() {
+        enforce_matched_capacity(cp, keys);
+        if keys.len() >= crate::playlists::SONGS_PER_PLAYLIST_MAX {
+            mark_pending_capacity_skipped(cp);
+        }
     }
     if !to_spotify && cp.tracks.iter().any(|track| track.outcome.is_none()) {
         let ytm = ctx.ytm()?;
@@ -407,10 +512,24 @@ async fn match_stage(
                 &mut pace,
             )
             .await
-            .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
+            .map_err(|error| defer_ytm_match_error(cp, None, error))?;
         }
     }
+    if let Some(keys) = local_capacity_keys.as_mut() {
+        enforce_matched_capacity(cp, keys);
+        if keys.len() >= crate::playlists::SONGS_PER_PLAYLIST_MAX {
+            mark_pending_capacity_skipped(cp);
+        }
+    }
+    let (mut matched_count, mut ambiguous_count, mut not_found_count) = outcome_counts(&cp.tracks);
+    let mut completed_count = cp
+        .tracks
+        .iter()
+        .filter(|entry| entry.outcome.is_some())
+        .count() as u32;
+    let matching_written = written_count(&cp.tracks);
     if to_spotify {
+        let mut journal = MatchJournalCadence::new();
         for idx in 0..cp.tracks.len() {
             if cp.tracks[idx].outcome.is_some() {
                 continue; // resumed work
@@ -422,29 +541,32 @@ async fn match_stage(
                 .await
                 .map_err(|e| checkpointed(cp, e))?;
             record_match_outcome_stats(&mut cp.match_stats, &outcome);
+            increment_outcome_counts(
+                &outcome,
+                &mut matched_count,
+                &mut ambiguous_count,
+                &mut not_found_count,
+            );
             cp.tracks[idx].outcome = Some(outcome);
+            journal.append(cp, idx)?;
+            completed_count = completed_count.saturating_add(1);
 
-            let (matched, ambiguous, not_found) = outcome_counts(&cp.tracks);
             progress(TransferProgress {
                 job_id: cp.job_id.clone(),
                 stage: Stage::Matching,
-                done: (idx + 1) as u32,
+                done: completed_count,
                 total,
-                matched,
+                matched: matched_count,
                 auto_accepted: 0,
-                ambiguous,
-                not_found,
-                written: written_count(&cp.tracks),
+                ambiguous: ambiguous_count,
+                not_found: not_found_count,
+                written: matching_written,
                 current: input.display(),
             });
-            if (idx + 1) % CHECKPOINT_EVERY == 0 {
-                cp.save().map_err(|e| JobError::fatal(e.into()))?;
-            }
         }
-    } else {
-        // One weird track must not kill a 300-track job: an isolated search failure
-        // becomes NotFound (reported, retryable via --rematch). A *streak* means the
-        // backend itself died (cookie, network) — abort resumably then.
+    } else if cp.tracks.iter().any(|entry| entry.outcome.is_none()) {
+        // Provider/search failures are not negative match evidence. Pause immediately
+        // and leave the failed row pending so resume can retry it without --rematch.
         let ytm = ctx.ytm()?;
         let pending = cp
             .tracks
@@ -472,20 +594,20 @@ async fn match_stage(
         progress(TransferProgress {
             job_id: cp.job_id.clone(),
             stage: Stage::Matching,
-            done: 0,
+            done: completed_count,
             total,
-            matched: 0,
+            matched: matched_count,
             auto_accepted: 0,
-            ambiguous: 0,
-            not_found: 0,
-            written: written_count(&cp.tracks),
+            ambiguous: ambiguous_count,
+            not_found: not_found_count,
+            written: matching_written,
             current: pending
                 .first()
                 .map(|(_, input)| input.display())
                 .unwrap_or_default(),
         });
-        let mut stream = futures::stream::iter(pending)
-            .map(|(idx, input)| {
+        let mut stream = futures::stream::iter(pending.into_iter().enumerate())
+            .map(|(source_sequence, (idx, input))| {
                 let state = shared_state.clone();
                 let match_cfg = cfg;
                 let search_config = search_config.clone();
@@ -493,62 +615,136 @@ async fn match_stage(
                     let outcome =
                         match_track_ytm_shared(ytm, &input, &match_cfg, &search_config, &state)
                             .await;
-                    (idx, input, outcome)
+                    (source_sequence, idx, input, outcome)
                 }
             })
             .buffer_unordered(ytm_track_concurrency());
-        let mut consecutive_failures = 0u32;
-        let mut completed = 0u32;
-        while let Some((idx, input, result)) = stream.next().await {
-            let outcome = match result {
-                Ok(outcome) => {
-                    consecutive_failures = 0;
-                    if cache_write_enabled
-                        && let Some(cache) = match_cache.as_mut()
-                        && matches!(outcome, MatchOutcome::Matched { .. })
-                    {
-                        cache.save_match(&input, &outcome);
-                        cache_dirty = true;
-                    }
-                    outcome
-                }
-                Err(e) => {
-                    consecutive_failures += 1;
-                    if consecutive_failures >= 5 {
-                        return Err(checkpointed(cp, ytm_job_error(e)));
-                    }
-                    tracing::warn!(
-                        track = %input.display(),
-                        error = %crate::util::sanitize::sanitize_error_text(format!("{e:#}")),
-                        "match lookup failed; recording as not-found"
-                    );
-                    MatchOutcome::NotFound
+        let mut journal = MatchJournalCadence::new();
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        heartbeat.tick().await;
+        let mut capacity_reached = false;
+        let mut ready_by_source = BTreeMap::new();
+        let mut next_source_sequence = 0usize;
+        let mut stream_finished = false;
+        'matching: loop {
+            let next = tokio::select! {
+                item = stream.next() => item,
+                _ = heartbeat.tick() => {
+                    progress(TransferProgress {
+                        job_id: cp.job_id.clone(),
+                        stage: Stage::Matching,
+                        done: completed_count,
+                        total,
+                        matched: matched_count,
+                        auto_accepted: 0,
+                        ambiguous: ambiguous_count,
+                        not_found: not_found_count,
+                        written: matching_written,
+                        current: "provider work in flight".to_owned(),
+                    });
+                    continue;
                 }
             };
-            record_match_outcome_stats(&mut cp.match_stats, &outcome);
-            cp.tracks[idx].outcome = Some(outcome);
-            completed += 1;
-
-            let (matched, ambiguous, not_found) = outcome_counts(&cp.tracks);
-            progress(TransferProgress {
-                job_id: cp.job_id.clone(),
-                stage: Stage::Matching,
-                done: cp
-                    .tracks
-                    .iter()
-                    .filter(|entry| entry.outcome.is_some())
-                    .count() as u32,
-                total,
-                matched,
-                auto_accepted: 0,
-                ambiguous,
-                not_found,
-                written: written_count(&cp.tracks),
-                current: input.display(),
-            });
-            if completed.is_multiple_of(CHECKPOINT_EVERY as u32) {
-                cp.save().map_err(|e| JobError::fatal(e.into()))?;
+            match next {
+                Some((source_sequence, idx, input, Ok(result))) => {
+                    ready_by_source.insert(source_sequence, (idx, input, result));
+                }
+                Some((_, idx, input, Err(failure))) => {
+                    // A systemic provider failure must stop new buffered work as soon as it is
+                    // observed, even when an earlier source row is still in flight. Parking the
+                    // error in `ready_by_source` would let later yt-dlp calls continue until the
+                    // ordered commit cursor eventually reached this row.
+                    drop(stream);
+                    tracing::warn!(
+                        track = %input.display(),
+                        error = %crate::util::sanitize::sanitize_error_text(format!("{:#}", failure.error)),
+                        "match lookup failed; deferring the resumable job"
+                    );
+                    record_match_trace_stats(&mut cp.match_stats, &failure.trace);
+                    cp.match_traces.insert(idx as u32 + 1, failure.trace);
+                    if cache_write_enabled && let Some(cache) = match_cache.as_mut() {
+                        let snapshot = shared_state.cache_snapshot().await;
+                        cache_dirty |=
+                            cache.merge_query_cache(snapshot.queries, snapshot.video_metadata);
+                    }
+                    merge_ytm_diagnostics(&mut cp.match_stats, shared_state.diagnostics().await);
+                    if cache_dirty
+                        && cache_write_enabled
+                        && let Some(cache) = match_cache.as_mut()
+                    {
+                        let maintenance = cache.save();
+                        cp.match_stats.cache_evictions = cp
+                            .match_stats
+                            .cache_evictions
+                            .saturating_add(maintenance.removed().try_into().unwrap_or(u32::MAX));
+                    }
+                    return Err(defer_ytm_match_error(cp, Some(idx), failure.error));
+                }
+                None => stream_finished = true,
             }
+
+            // Provider calls finish out of order, but committing in frozen source order keeps
+            // the last local-playlist slot deterministic. The unordered stream still backfills
+            // completed provider slots, so one slow early track does not stop later retrieval.
+            while let Some((idx, input, result)) =
+                take_ready_in_source_order(&mut ready_by_source, &mut next_source_sequence)
+            {
+                let outcome = result.outcome;
+                if cache_write_enabled
+                    && let Some(cache) = match_cache.as_mut()
+                    && matches!(outcome, MatchOutcome::Matched { .. })
+                {
+                    cache.save_match(&input, &outcome);
+                    cache_dirty = true;
+                }
+                let trace = result.trace;
+                record_match_outcome_stats(&mut cp.match_stats, &outcome);
+                record_match_trace_stats(&mut cp.match_stats, &trace);
+                increment_outcome_counts(
+                    &outcome,
+                    &mut matched_count,
+                    &mut ambiguous_count,
+                    &mut not_found_count,
+                );
+                cp.match_traces.insert(idx as u32 + 1, trace);
+                cp.tracks[idx].outcome = Some(outcome);
+                if let Some(keys) = local_capacity_keys.as_mut()
+                    && let Some(key) = effective_write_key(&cp.tracks[idx], cp.spec.take_best)
+                {
+                    keys.insert(key.to_owned());
+                    capacity_reached = keys.len() >= crate::playlists::SONGS_PER_PLAYLIST_MAX;
+                }
+                journal.append(cp, idx)?;
+                completed_count = completed_count.saturating_add(1);
+
+                progress(TransferProgress {
+                    job_id: cp.job_id.clone(),
+                    stage: Stage::Matching,
+                    done: completed_count,
+                    total,
+                    matched: matched_count,
+                    auto_accepted: 0,
+                    ambiguous: ambiguous_count,
+                    not_found: not_found_count,
+                    written: matching_written,
+                    current: input.display(),
+                });
+                if capacity_reached {
+                    break 'matching;
+                }
+            }
+            if stream_finished {
+                debug_assert!(ready_by_source.is_empty());
+                break;
+            }
+        }
+        if capacity_reached {
+            // This is a deterministic in-memory bulk transition followed immediately by the
+            // compact stage snapshot below. Journaling thousands of synthetic capacity rows
+            // would add one open/write per row (and periodic fsyncs) without protecting any
+            // provider result; a crash simply recomputes the same boundary on resume.
+            mark_pending_capacity_skipped(cp);
         }
         if cache_write_enabled && let Some(cache) = match_cache.as_mut() {
             let snapshot = shared_state.cache_snapshot().await;
@@ -558,12 +754,24 @@ async fn match_stage(
     }
     if cache_dirty
         && cache_write_enabled
-        && let Some(cache) = match_cache.as_ref()
+        && let Some(cache) = match_cache.as_mut()
     {
-        cache.save();
+        let maintenance = cache.save();
+        cp.match_stats.cache_evictions = cp
+            .match_stats
+            .cache_evictions
+            .saturating_add(maintenance.removed().try_into().unwrap_or(u32::MAX));
     }
-    cp.save().map_err(|e| JobError::fatal(e.into()))?;
     Ok(())
+}
+
+fn take_ready_in_source_order<T>(
+    ready: &mut BTreeMap<usize, T>,
+    next_sequence: &mut usize,
+) -> Option<T> {
+    let value = ready.remove(next_sequence)?;
+    *next_sequence = next_sequence.saturating_add(1);
+    Some(value)
 }
 
 fn auto_accept_ambiguous_candidates(cp: &mut Checkpoint) -> Result<u32, JobError> {
@@ -571,6 +779,10 @@ fn auto_accept_ambiguous_candidates(cp: &mut Checkpoint) -> Result<u32, JobError
         return Ok(0);
     };
     let mut accepted = 0u32;
+    let mut capacity_keys = local_destination_keys(cp);
+    if let Some(keys) = capacity_keys.as_mut() {
+        enforce_matched_capacity(cp, keys);
+    }
     for entry in &mut cp.tracks {
         if entry.written || entry.review_decision.is_some() {
             continue;
@@ -578,19 +790,22 @@ fn auto_accept_ambiguous_candidates(cp: &mut Checkpoint) -> Result<u32, JobError
         let Some(MatchOutcome::Ambiguous { candidates }) = &entry.outcome else {
             continue;
         };
-        let Some(candidate) = candidates.first() else {
+        let Some(candidate) = best_safe_ambiguous_candidate(candidates) else {
             continue;
         };
         let candidate = candidate.clone();
         if candidate.score < min_score {
             continue;
         }
-        if candidate
-            .score_breakdown
-            .as_ref()
-            .is_some_and(|score| score.accept_blocked || score.reject_reason.is_some())
+        if let Some(keys) = capacity_keys.as_mut()
+            && !keys.contains(&candidate.key)
         {
-            continue;
+            if keys.len() >= crate::playlists::SONGS_PER_PLAYLIST_MAX {
+                entry.outcome = Some(MatchOutcome::SkippedCapacity);
+                record_capacity_skips(&mut cp.match_stats, 1);
+                continue;
+            }
+            keys.insert(candidate.key.clone());
         }
         entry.review_decision = Some(ReviewDecision::Accepted {
             key: candidate.key.clone(),
@@ -672,12 +887,16 @@ async fn write_stage(
 
     match cp.spec.dest.clone() {
         TransferDest::YtmLikes => {
-            let mut done = 0u32;
-            for (idx, key) in writes {
-                if cp.tracks[idx].written {
-                    done += 1;
-                    continue;
-                }
+            let pending: Vec<(usize, String)> = writes
+                .into_iter()
+                .filter(|(idx, _)| !cp.tracks[*idx].written)
+                .collect();
+            let pending_count = pending.len();
+            let mut done = total - pending_count as u32;
+            report.written += done;
+            let mut progress_counts = WriteProgressCounts::from_checkpoint(cp);
+            let mut journal_batch = Vec::with_capacity(CHECKPOINT_EVERY);
+            for (pending_index, (idx, key)) in pending.into_iter().enumerate() {
                 // rate_song is idempotent server-side, so a crash between the call and
                 // the checkpoint flush re-likes harmlessly on resume.
                 ctx.ytm()?
@@ -685,33 +904,53 @@ async fn write_stage(
                     .await
                     .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
                 cp.tracks[idx].written = true;
+                journal_batch.push(idx);
+                progress_counts.record_written(1);
                 report.written += 1;
                 done += 1;
-                progress(progress_write(cp, done, total, idx, report.auto_accepted));
-                if (done as usize).is_multiple_of(CHECKPOINT_EVERY) {
-                    cp.save().map_err(|e| JobError::fatal(e.into()))?;
+                progress(progress_write(
+                    cp,
+                    done,
+                    total,
+                    idx,
+                    report.auto_accepted,
+                    progress_counts,
+                ));
+                if journal_batch.len() >= CHECKPOINT_EVERY {
+                    append_write_journal(cp, &journal_batch)?;
+                    journal_batch.clear();
                 }
-                tokio::time::sleep(YTM_LIKE_PAUSE).await;
+                if pending_index + 1 < pending_count {
+                    tokio::time::sleep(YTM_LIKE_PAUSE).await;
+                }
             }
+            append_write_journal(cp, &journal_batch)?;
         }
         TransferDest::YtmNewPlaylist { .. } | TransferDest::YtmExistingPlaylist { .. } => {
-            let dest_id = ensure_ytm_dest(cp, ctx).await?;
-            reconcile_written_ytm(cp, ctx, &dest_id).await?;
+            let destination = ensure_ytm_dest(cp, ctx).await?;
+            if !destination.created_in_run {
+                reconcile_written_ytm(cp, ctx, &destination.id).await?;
+            }
             let pending: Vec<(usize, String)> = writes
                 .into_iter()
                 .filter(|(idx, _)| !cp.tracks[*idx].written)
                 .collect();
             let mut done = total - pending.len() as u32;
             report.written += done;
-            for chunk in pending.chunks(YTM_ADD_CHUNK) {
+            let mut progress_counts = WriteProgressCounts::from_checkpoint(cp);
+            let chunks = pending.chunks(YTM_ADD_CHUNK);
+            let chunk_count = chunks.len();
+            for (chunk_index, chunk) in chunks.enumerate() {
                 let ids: Vec<String> = chunk.iter().map(|(_, key)| key.clone()).collect();
                 ctx.ytm()?
-                    .add_items_to_account_playlist(&dest_id, &ids)
+                    .add_items_to_account_playlist(&destination.id, &ids)
                     .await
                     .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
                 for (idx, _) in chunk {
                     cp.tracks[*idx].written = true;
                 }
+                append_write_journal(cp, &chunk.iter().map(|(idx, _)| *idx).collect::<Vec<_>>())?;
+                progress_counts.record_written(chunk.len());
                 done += chunk.len() as u32;
                 report.written += chunk.len() as u32;
                 progress(progress_write(
@@ -720,32 +959,39 @@ async fn write_stage(
                     total,
                     chunk.last().unwrap().0,
                     report.auto_accepted,
+                    progress_counts,
                 ));
-                cp.save().map_err(|e| JobError::fatal(e.into()))?;
-                tokio::time::sleep(YTM_ADD_PAUSE).await;
+                if should_pause_after_chunk(chunk_index, chunk_count) {
+                    tokio::time::sleep(YTM_ADD_PAUSE).await;
+                }
             }
         }
         TransferDest::SpotifyNewPlaylist { .. } => {
-            let dest_id = ensure_spotify_dest(cp, ctx).await?;
-            reconcile_written_spotify(cp, ctx, &dest_id).await?;
+            let destination = ensure_spotify_dest(cp, ctx).await?;
+            if !destination.created_in_run {
+                reconcile_written_spotify(cp, ctx, &destination.id).await?;
+            }
             let pending: Vec<(usize, String)> = writes
                 .into_iter()
                 .filter(|(idx, _)| !cp.tracks[*idx].written)
                 .collect();
             let mut done = total - pending.len() as u32;
             report.written += done;
+            let mut progress_counts = WriteProgressCounts::from_checkpoint(cp);
             for chunk in pending.chunks(SPOTIFY_ADD_CHUNK) {
                 let uris: Vec<String> = chunk.iter().map(|(_, key)| key.clone()).collect();
                 {
                     let spotify = ctx.spotify()?;
                     spotify
-                        .add_tracks(&dest_id, &uris)
+                        .add_tracks(&destination.id, &uris)
                         .await
                         .map_err(|e| checkpointed(cp, spotify_job_error(e)))?;
                 }
                 for (idx, _) in chunk {
                     cp.tracks[*idx].written = true;
                 }
+                append_write_journal(cp, &chunk.iter().map(|(idx, _)| *idx).collect::<Vec<_>>())?;
+                progress_counts.record_written(chunk.len());
                 done += chunk.len() as u32;
                 report.written += chunk.len() as u32;
                 progress(progress_write(
@@ -754,8 +1000,8 @@ async fn write_stage(
                     total,
                     chunk.last().unwrap().0,
                     report.auto_accepted,
+                    progress_counts,
                 ));
-                cp.save().map_err(|e| JobError::fatal(e.into()))?;
             }
         }
         TransferDest::File { .. } => unreachable!("file exports take the export_file path"),
@@ -764,27 +1010,17 @@ async fn write_stage(
     Ok(())
 }
 
+fn should_pause_after_chunk(chunk_index: usize, chunk_count: usize) -> bool {
+    chunk_index < chunk_count.saturating_sub(1)
+}
+
 fn collect_writes_without_deduping(cp: &Checkpoint) -> Vec<(usize, String)> {
     let mut writes = Vec::new();
     for (idx, entry) in cp.tracks.iter().enumerate() {
-        let key = match (&entry.review_decision, &entry.outcome, cp.spec.take_best) {
-            (Some(ReviewDecision::Rejected | ReviewDecision::Skipped), _, _) => continue,
-            (Some(ReviewDecision::Accepted { key, .. }), _, _) => key.clone(),
-            (_, Some(MatchOutcome::Matched { key, .. }), _) => key.clone(),
-            (_, Some(MatchOutcome::Ambiguous { candidates }), true) => {
-                match candidates.iter().find(|candidate| {
-                    candidate
-                        .score_breakdown
-                        .as_ref()
-                        .is_none_or(|score| !score.accept_blocked && score.reject_reason.is_none())
-                }) {
-                    Some(best) => best.key.clone(),
-                    None => continue,
-                }
-            }
-            _ => continue,
+        let Some(key) = effective_write_key(entry, cp.spec.take_best) else {
+            continue;
         };
-        writes.push((idx, key));
+        writes.push((idx, key.to_owned()));
     }
     writes
 }
@@ -794,30 +1030,48 @@ fn collect_writes(cp: &Checkpoint, report: &mut TransferReport) -> Vec<(usize, S
     let mut seen: HashSet<String> = HashSet::new();
     let mut writes: Vec<(usize, String)> = Vec::new();
     for (idx, entry) in cp.tracks.iter().enumerate() {
-        let key = match (&entry.review_decision, &entry.outcome, cp.spec.take_best) {
-            (Some(ReviewDecision::Rejected | ReviewDecision::Skipped), _, _) => continue,
-            (Some(ReviewDecision::Accepted { key, .. }), _, _) => key.clone(),
-            (_, Some(MatchOutcome::Matched { key, .. }), _) => key.clone(),
-            (_, Some(MatchOutcome::Ambiguous { candidates }), true) => {
-                match candidates.iter().find(|candidate| {
-                    candidate
-                        .score_breakdown
-                        .as_ref()
-                        .is_none_or(|score| !score.accept_blocked && score.reject_reason.is_none())
-                }) {
-                    Some(best) => best.key.clone(),
-                    None => continue,
-                }
-            }
-            _ => continue,
+        let Some(key) = effective_write_key(entry, cp.spec.take_best) else {
+            continue;
         };
-        if !seen.insert(key.clone()) {
+        if !seen.insert(key.to_owned()) {
             report.duplicates_dropped += 1;
             continue;
         }
-        writes.push((idx, key));
+        writes.push((idx, key.to_owned()));
     }
     writes
+}
+
+fn best_safe_ambiguous_candidate(
+    candidates: &[super::matching::AmbiguousCandidate],
+) -> Option<&super::matching::AmbiguousCandidate> {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .score_breakdown
+                .as_ref()
+                .is_none_or(|score| !score.accept_blocked && score.reject_reason.is_none())
+        })
+        .max_by(|left, right| left.score.total_cmp(&right.score))
+}
+
+/// The exact destination key a row would write under the current review/take-best policy.
+/// Capacity accounting and write collection deliberately share this function so a review row
+/// cannot pass preflight and then overflow the local store later.
+fn effective_write_key(entry: &TrackEntry, take_best: bool) -> Option<&str> {
+    match &entry.review_decision {
+        Some(ReviewDecision::Rejected | ReviewDecision::Skipped) => return None,
+        Some(ReviewDecision::Accepted { key, .. }) => return Some(key),
+        None => {}
+    }
+    match &entry.outcome {
+        Some(MatchOutcome::Matched { key, .. }) => Some(key),
+        Some(MatchOutcome::Ambiguous { candidates }) if take_best => {
+            best_safe_ambiguous_candidate(candidates).map(|candidate| candidate.key.as_str())
+        }
+        _ => None,
+    }
 }
 
 /// Write matches into the app's own playlist store (`playlists.json`): visible in the
@@ -834,8 +1088,9 @@ fn write_local(
         .clone()
         .unwrap_or_else(|| "Imported playlist".to_owned());
     let mut store = crate::playlists::Playlists::load();
-    let key = match store.list().iter().find(|p| p.name == name) {
-        Some(existing) => existing.id.clone(),
+    let existing_id = find_local_destination(&store, cp).map(|playlist| playlist.id.clone());
+    let key = match existing_id {
+        Some(existing_id) => existing_id,
         None => store.create(&name).ok_or_else(|| {
             JobError::fatal(anyhow!("could not create the local playlist `{name}`"))
         })?,
@@ -848,37 +1103,32 @@ fn write_local(
         .collect();
     let total = pending.len() as u32;
     let mut done = 0u32;
-    let mut present: HashSet<String> = store
-        .find(&key)
-        .map(|playlist| {
-            playlist
-                .songs
-                .iter()
-                .map(|song| song.video_id.clone())
-                .collect()
+    let mut progress_counts = WriteProgressCounts::from_checkpoint(cp);
+    let prepared = pending
+        .into_iter()
+        .map(|(idx, video_id)| {
+            let song = song_for_entry(&cp.tracks[idx], &video_id, &cp.job_id, idx as u32 + 1);
+            (idx, song)
         })
-        .unwrap_or_default();
-    for (idx, video_id) in pending {
-        if present.contains(&video_id) {
-            cp.tracks[idx].written = true;
-            done += 1;
-            progress(progress_write(cp, done, total, idx, report.auto_accepted));
-            continue;
-        }
-        let song = song_for_entry(&cp.tracks[idx], &video_id, &cp.job_id, idx as u32 + 1);
-        match store.add(&key, song) {
+        .collect::<Vec<_>>();
+    let results = store.add_many(
+        &key,
+        prepared.iter().map(|(_, song)| song.clone()).collect(),
+    );
+    for ((idx, _), result) in prepared.into_iter().zip(results) {
+        match result {
             crate::playlists::AddResult::Added => {
                 cp.tracks[idx].written = true;
                 report.written += 1;
-                present.insert(video_id);
             }
             crate::playlists::AddResult::Duplicate => {
                 cp.tracks[idx].written = true;
-                present.insert(video_id);
             }
             crate::playlists::AddResult::Full => {
-                tracing::warn!("local playlist `{name}` is full; remaining tracks skipped");
-                break;
+                tracing::warn!("local playlist `{name}` is full; track skipped at capacity");
+                cp.tracks[idx].outcome = Some(MatchOutcome::SkippedCapacity);
+                cp.tracks[idx].review_decision = None;
+                record_capacity_skips(&mut cp.match_stats, 1);
             }
             crate::playlists::AddResult::NotFound => {
                 return Err(JobError::fatal(anyhow!(
@@ -886,8 +1136,16 @@ fn write_local(
                 )));
             }
         }
+        progress_counts.record_written(1);
         done += 1;
-        progress(progress_write(cp, done, total, idx, report.auto_accepted));
+        progress(progress_write(
+            cp,
+            done,
+            total,
+            idx,
+            report.auto_accepted,
+            progress_counts,
+        ));
     }
     store
         .save()
@@ -953,9 +1211,15 @@ fn song_for_entry(entry: &TrackEntry, video_id: &str, job_id: &str, source_order
 
 /// Create (once) or find the YTM destination playlist; the id is checkpointed before
 /// the first add so a resume never creates a duplicate.
-async fn ensure_ytm_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<String, JobError> {
+async fn ensure_ytm_dest(
+    cp: &mut Checkpoint,
+    ctx: &mut JobCtx,
+) -> Result<EnsuredDestination, JobError> {
     if let Some(id) = &cp.dest_id {
-        return Ok(id.clone());
+        return Ok(EnsuredDestination {
+            id: id.clone(),
+            created_in_run: false,
+        });
     }
     let ytm = ctx.ytm()?;
     let existing = ytm
@@ -963,12 +1227,12 @@ async fn ensure_ytm_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<String
         .await
         .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
     let dest = cp.spec.dest.clone();
-    let id = match &dest {
+    let (id, created_in_run) = match &dest {
         // Append-or-create: a `--to-playlist NAME` target that doesn't exist yet is
         // simply created under that exact name (no collision suffixing).
         TransferDest::YtmExistingPlaylist { name } => {
             match existing.iter().find(|(_, title, _)| title == name) {
-                Some((id, _, _)) => id.clone(),
+                Some((id, _, _)) => (id.clone(), false),
                 None => {
                     let description = format!("Imported by YuTuTui! (job {})", cp.job_id);
                     let id = ytm
@@ -976,7 +1240,7 @@ async fn ensure_ytm_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<String
                         .await
                         .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
                     cp.dest_name = Some(name.clone());
-                    id
+                    (id, true)
                 }
             }
         }
@@ -999,17 +1263,23 @@ async fn ensure_ytm_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<String
                 .await
                 .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
             cp.dest_name = Some(name);
-            id
+            (id, true)
         }
     };
     cp.dest_id = Some(id.clone());
     cp.save().map_err(|e| JobError::fatal(e.into()))?;
-    Ok(id)
+    Ok(EnsuredDestination { id, created_in_run })
 }
 
-async fn ensure_spotify_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<String, JobError> {
+async fn ensure_spotify_dest(
+    cp: &mut Checkpoint,
+    ctx: &mut JobCtx,
+) -> Result<EnsuredDestination, JobError> {
     if let Some(id) = &cp.dest_id {
-        return Ok(id.clone());
+        return Ok(EnsuredDestination {
+            id: id.clone(),
+            created_in_run: false,
+        });
     }
     let name = cp
         .dest_name
@@ -1029,10 +1299,10 @@ async fn ensure_spotify_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<St
         .map_err(|e| checkpointed(cp, spotify_job_error(e)))?
         .into_iter()
         .find(|p| p.name == name);
-    let id = match existing {
-        Some(p) => p.id,
+    let (id, created_in_run) = match existing {
+        Some(p) => (p.id, false),
         None => match spotify.create_playlist(&name, &description).await {
-            Ok(id) => id,
+            Ok(id) => (id, true),
             Err(SpotifyError::NotAllowlisted) => {
                 return Err(checkpointed(
                     cp,
@@ -1050,7 +1320,7 @@ async fn ensure_spotify_dest(cp: &mut Checkpoint, ctx: &mut JobCtx) -> Result<St
     };
     cp.dest_id = Some(id.clone());
     cp.save().map_err(|e| JobError::fatal(e.into()))?;
-    Ok(id)
+    Ok(EnsuredDestination { id, created_in_run })
 }
 
 /// Belt-and-braces resume idempotency: whatever already made it into the destination
@@ -1061,18 +1331,12 @@ async fn reconcile_written_ytm(
     ctx: &mut JobCtx,
     dest_id: &str,
 ) -> Result<(), JobError> {
-    if !cp.tracks.iter().any(|t| t.written) && cp.stage == Stage::Writing {
-        // Fresh write stage on a fresh playlist: nothing to reconcile unless resuming.
-        if cp.dest_id.is_none() {
-            return Ok(());
-        }
-    }
-    let present: HashSet<String> = ctx
+    let songs = ctx
         .ytm()?
         .playlist_tracks_full(dest_id)
         .await
-        .map(|songs| songs.into_iter().map(|s| s.video_id).collect())
-        .unwrap_or_default();
+        .map_err(|e| checkpointed(cp, ytm_job_error(e)))?;
+    let present: HashSet<String> = songs.into_iter().map(|song| song.video_id).collect();
     if present.is_empty() {
         return Ok(());
     }
@@ -1091,13 +1355,13 @@ async fn reconcile_written_spotify(
     ctx: &mut JobCtx,
     dest_id: &str,
 ) -> Result<(), JobError> {
-    let spotify = ctx.spotify()?;
     let mut on_page = |_done: u32, _total: u32| {};
-    let present: HashSet<String> = spotify
-        .playlist_tracks(dest_id, &mut on_page)
-        .await
-        .map(|tracks| tracks.into_iter().map(|t| t.uri).collect())
-        .unwrap_or_default();
+    let tracks = {
+        let spotify = ctx.spotify()?;
+        spotify.playlist_tracks(dest_id, &mut on_page).await
+    }
+    .map_err(|e| checkpointed(cp, spotify_job_error(e)))?;
+    let present: HashSet<String> = tracks.into_iter().map(|track| track.uri).collect();
     if present.is_empty() {
         return Ok(());
     }
@@ -1171,213 +1435,12 @@ async fn export_file(
     })
 }
 
-// Shared helpers -----------------------------------------------------------------------
-
-fn outcome_counts(tracks: &[TrackEntry]) -> (u32, u32, u32) {
-    let mut matched = 0;
-    let mut ambiguous = 0;
-    let mut not_found = 0;
-    for t in tracks {
-        match &t.outcome {
-            Some(MatchOutcome::Matched { .. }) => matched += 1,
-            Some(MatchOutcome::Ambiguous { .. }) => ambiguous += 1,
-            Some(MatchOutcome::NotFound) => not_found += 1,
-            _ => {}
-        }
-    }
-    (matched, ambiguous, not_found)
-}
-
-fn build_report(cp: &Checkpoint, skipped_local: u32) -> TransferReport {
-    let (matched, _, _) = outcome_counts(&cp.tracks);
-    let searched_ytm = !matches!(cp.spec.dest, TransferDest::SpotifyNewPlaylist { .. });
-    let mut report = TransferReport {
-        job_id: cp.job_id.clone(),
-        total: cp.tracks.len() as u32,
-        matched,
-        skipped_local,
-        match_stats: cp.match_stats.clone(),
-        ..TransferReport::default()
-    };
-    for (idx, entry) in cp.tracks.iter().enumerate() {
-        match &entry.outcome {
-            Some(MatchOutcome::Ambiguous { candidates }) => {
-                let report_candidates: Vec<ReportCandidate> = candidates
-                    .iter()
-                    .map(|c| ReportCandidate {
-                        key: c.key.clone(),
-                        score: c.score,
-                        display: c.display.clone(),
-                        score_breakdown: c.score_breakdown.clone(),
-                    })
-                    .collect();
-                let note = candidates
-                    .iter()
-                    .map(|c| format!("{} ({:.2})", c.display, c.score))
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-                let mut row = report_row_base(entry, idx, note);
-                if searched_ytm && entry.input.known_video_id.is_none() {
-                    row.search_queries = ytm_query_plan(&entry.input);
-                }
-                row.selected_key = report_candidates.first().map(|c| c.key.clone());
-                row.selected_score = report_candidates.first().map(|c| c.score);
-                if let Some(score) = report_candidates
-                    .first()
-                    .and_then(|candidate| candidate.score_breakdown.as_ref())
-                {
-                    apply_report_quality(&mut row, score);
-                }
-                row.candidates = report_candidates;
-                report.ambiguous.push(row);
-            }
-            Some(MatchOutcome::NotFound) => {
-                let mut row = report_row_base(entry, idx, "no match on the destination".to_owned());
-                if searched_ytm && entry.input.known_video_id.is_none() {
-                    row.search_queries = ytm_query_plan(&entry.input);
-                }
-                report.not_found.push(row);
-            }
-            _ => {}
-        }
-    }
-    report
-}
-
-fn report_row_base(entry: &TrackEntry, idx: usize, note: String) -> ReportRow {
-    ReportRow {
-        title: entry.input.title.clone(),
-        artists: entry.input.artists.join(", "),
-        note,
-        source_order: Some(idx as u32 + 1),
-        source_key: Some(entry.input.source_key.clone()),
-        source_url: entry.input.source_url.clone(),
-        album: entry.input.album.clone(),
-        album_artists: entry.input.album_artists.clone(),
-        album_id: entry.input.album_id.clone(),
-        album_uri: entry.input.album_uri.clone(),
-        album_release_date: entry.input.album_release_date.clone(),
-        album_release_date_precision: entry.input.album_release_date_precision.clone(),
-        album_total_tracks: entry.input.album_total_tracks,
-        album_type: entry.input.album_type.clone(),
-        album_art_url: entry.input.album_art_url.clone(),
-        disc_number: entry.input.disc_number,
-        track_number: entry.input.track_number,
-        duration_secs: entry.input.duration_secs,
-        isrc: entry.input.isrc.clone(),
-        explicit: entry.input.explicit,
-        candidates: Vec::new(),
-        selected_key: None,
-        selected_score: None,
-        search_queries: Vec::new(),
-        source_kind: None,
-        quality_tier: None,
-        reject_reason: None,
-        reason_codes: Vec::new(),
-        duration_delta_secs: None,
-    }
-}
-
-fn apply_report_quality(row: &mut ReportRow, score: &super::matching::MatchScoreBreakdown) {
-    if !score.source_kind.is_empty() {
-        row.source_kind = Some(score.source_kind.clone());
-    }
-    if !score.quality_tier.is_empty() {
-        row.quality_tier = Some(score.quality_tier.clone());
-    }
-    row.reject_reason = score.reject_reason.clone();
-    row.reason_codes = score.reason_codes.clone();
-    row.duration_delta_secs = score.duration_delta_secs;
-}
-
-fn progress_write(
-    cp: &Checkpoint,
-    done: u32,
-    total: u32,
-    idx: usize,
-    auto_accepted: u32,
-) -> TransferProgress {
-    let (matched, ambiguous, not_found) = outcome_counts(&cp.tracks);
-    TransferProgress {
-        job_id: cp.job_id.clone(),
-        stage: Stage::Writing,
-        done,
-        total,
-        matched,
-        auto_accepted,
-        ambiguous,
-        not_found,
-        written: written_count(&cp.tracks),
-        current: cp
-            .tracks
-            .get(idx)
-            .map(|t| t.input.display())
-            .unwrap_or_default(),
-    }
-}
-
-fn written_count(tracks: &[TrackEntry]) -> u32 {
-    tracks.iter().filter(|track| track.written).count() as u32
-}
-
 fn progress_beat(job_id: &str, stage: Stage) -> impl FnMut(u32, u32, String) + use<> {
     let job_id = job_id.to_owned();
     move |_done, _total, _current| {
         // Fetch pagination is fast; per-page progress is deliberately not surfaced (the
         // interesting stages report per-track). Hook kept for symmetry/debugging.
         tracing::debug!(job = %job_id, stage = stage.label(), "fetch page");
-    }
-}
-
-/// Persist the checkpoint before surfacing an error — the resume story depends on it.
-fn checkpointed(cp: &mut Checkpoint, err: JobError) -> JobError {
-    if let Err(e) = cp.save() {
-        tracing::warn!(error = %e, "could not save checkpoint while failing");
-    } else {
-        save_import_session(cp);
-    }
-    err
-}
-
-fn save_import_session(cp: &Checkpoint) {
-    let session = super::session::ImportSession::from_checkpoint(cp);
-    if let Err(e) = session.save() {
-        tracing::warn!(error = %e, "could not save import session");
-    }
-}
-
-fn spotify_job_error(e: SpotifyError) -> JobError {
-    let resumable = matches!(
-        e,
-        SpotifyError::RateLimited | SpotifyError::Network(_) | SpotifyError::Auth(_)
-    );
-    JobError {
-        resumable,
-        error: anyhow!("{e}"),
-    }
-}
-
-fn ytm_job_error(e: anyhow::Error) -> JobError {
-    // Mid-job YTM/yt-dlp failures are resumable. Do not blame cookies when the cause is
-    // clearly a public yt-dlp search / YouTube API rejection.
-    let detail = format!("{e:#}");
-    let detail_lc = detail.to_ascii_lowercase();
-    let ytdlp_search = detail_lc.contains("yt-dlp")
-        || detail_lc.contains("unable to download api page")
-        || detail_lc.contains("http error 403")
-        || detail_lc.contains("403 forbidden")
-        || detail_lc.contains("http error 429")
-        || detail_lc.contains("too many requests")
-        || detail_lc.contains("rate-limited")
-        || crate::tools::classify_ytdlp_failure(&detail).is_some();
-    let context = if ytdlp_search {
-        "YouTube/yt-dlp search failed — wait and retry, or run `ytt tools update` / `ytt doctor --verbose`; then resume this job"
-    } else {
-        "YouTube Music request failed — after fixing the cookie you can resume this job"
-    };
-    JobError {
-        resumable: true,
-        error: e.context(context),
     }
 }
 

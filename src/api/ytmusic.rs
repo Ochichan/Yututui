@@ -2,9 +2,9 @@
 //!
 //! - **Authenticated** (browser cookie): ytmapi-rs `search_songs` → the clean YouTube
 //!   Music *song* catalog.
-//! - **Anonymous**: ytmapi-rs can't search unauthenticated (YTM gates the catalog and
-//!   returns "No results"), so we shell out to `yt-dlp "ytsearch…"` — public YouTube,
-//!   no auth, directly playable, and yt-dlp is already a dependency for playback.
+//! - **Anonymous**: general song search uses `yt-dlp "ytsearch…"` because YTM gates the
+//!   song catalog. Transfer matching may make one bounded, cooldown-protected probe of
+//!   YTM's Videos filter before the same public fallback.
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -21,31 +21,42 @@ use crate::streaming::{self, StreamingConfig, StreamingMode};
 use crate::util::{format, http, sanitize};
 
 mod transfer_api;
+mod video_metadata;
 pub use transfer_api::{TransferAlbum, TransferAlbumCandidate, TransferAlbumTrack};
+pub(crate) use video_metadata::YtdlpVideoMeta;
+#[cfg(test)]
+use video_metadata::{YtdlpAudioSummary, json_bool, parse_ytdlp_video_meta};
+use video_metadata::{enrich_video_meta, reject_enriched};
 
 /// How many results a search returns, for both backends. The anonymous yt-dlp path asks
 /// for exactly this many; the authenticated path pages through continuations until it has
 /// at least this many (or runs out). Capped at 50 — `ytdlp_search` clamps to the same.
 const SEARCH_RESULT_LIMIT: usize = 50;
 const STREAMING_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(8);
-/// When authenticated (innertube) search parsing fails, we fall back to yt-dlp — but only for
-/// a cooldown, not the rest of the session. A one-shot permanent latch turned a single
-/// transient glitch (a momentary network blip, a partial page) into a session-long quality
-/// downgrade with no recovery short of a restart. After the cooldown the authenticated path is
-/// retried; if it's genuinely gated it just degrades again.
-static AUTH_SEARCH_DEGRADED_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+/// Authenticated search falls back to yt-dlp while its short circuit is open. Requiring two
+/// consecutive hard failures prevents one partial page or network hiccup from degrading a large
+/// import for ten minutes; a successful query resets the streak immediately.
+#[derive(Debug, Default)]
+struct AuthSearchHealth {
+    consecutive_failures: u8,
+    degraded_until: Option<Instant>,
+}
+
+static AUTH_SEARCH_HEALTH: Mutex<AuthSearchHealth> = Mutex::new(AuthSearchHealth {
+    consecutive_failures: 0,
+    degraded_until: None,
+});
 const AUTH_DEGRADE_COOLDOWN: Duration = Duration::from_secs(600);
+const AUTH_FAILURES_BEFORE_DEGRADE: u8 = 2;
 
 /// Whether authenticated search is currently in its degraded cooldown. Clears the latch once
 /// the cooldown has elapsed so the next search retries the authenticated path.
 fn auth_search_degraded() -> bool {
-    let mut guard = AUTH_SEARCH_DEGRADED_UNTIL
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    match *guard {
+    let mut guard = AUTH_SEARCH_HEALTH.lock().unwrap_or_else(|e| e.into_inner());
+    match guard.degraded_until {
         Some(until) if Instant::now() < until => true,
         Some(_) => {
-            *guard = None;
+            *guard = AuthSearchHealth::default();
             false
         }
         None => false,
@@ -54,12 +65,16 @@ fn auth_search_degraded() -> bool {
 
 /// Enter the degraded cooldown after an authenticated-search parse failure.
 fn mark_auth_search_degraded() {
-    let until = Instant::now()
-        .checked_add(AUTH_DEGRADE_COOLDOWN)
-        .unwrap_or_else(Instant::now);
-    *AUTH_SEARCH_DEGRADED_UNTIL
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(until);
+    let mut guard = AUTH_SEARCH_HEALTH.lock().unwrap_or_else(|e| e.into_inner());
+    guard.consecutive_failures = guard.consecutive_failures.saturating_add(1);
+    if guard.consecutive_failures >= AUTH_FAILURES_BEFORE_DEGRADE {
+        let now = Instant::now();
+        guard.degraded_until = Some(now.checked_add(AUTH_DEGRADE_COOLDOWN).unwrap_or(now));
+    }
+}
+
+fn mark_auth_search_healthy() {
+    *AUTH_SEARCH_HEALTH.lock().unwrap_or_else(|e| e.into_inner()) = AuthSearchHealth::default();
 }
 
 const PROVIDER_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
@@ -101,6 +116,7 @@ pub enum YtMusicApi {
 #[serde(rename_all = "snake_case")]
 pub enum YoutubeSearchKind {
     YtmCatalogSong,
+    YtmCatalogVideo,
     YoutubeVideoSearch,
 }
 
@@ -450,9 +466,8 @@ impl YtMusicApi {
         &self,
         query: &str,
     ) -> Result<Vec<(Song, YoutubeSearchKind)>> {
-        // Once one authenticated search comes back empty/unparseable this process, they
-        // all will (Google gates innertube search behind browser attestation as of
-        // mid-2026) — skip the wasted round-trip and go straight to yt-dlp.
+        // Once repeated authenticated searches open the provider breaker, skip the wasted
+        // round-trip and go straight to yt-dlp until the bounded cooldown expires.
         if auth_search_degraded() {
             return Ok(ytdlp_search(query, SEARCH_RESULT_LIMIT)
                 .await?
@@ -474,7 +489,7 @@ impl YtMusicApi {
                         mark_auth_search_degraded();
                         tracing::warn!(
                             error = %sanitize::sanitize_error_text(format!("{e:#}")),
-                            "authenticated search parse failed; using yt-dlp for the rest of this session"
+                            "authenticated search failed; using yt-dlp for this query"
                         );
                         return Ok(ytdlp_search(query, SEARCH_RESULT_LIMIT)
                             .await?
@@ -483,6 +498,7 @@ impl YtMusicApi {
                             .collect());
                     }
                 };
+                mark_auth_search_healthy();
                 Ok(songs
                     .into_iter()
                     .map(|song| (song, YoutubeSearchKind::YtmCatalogSong))
@@ -498,7 +514,7 @@ impl YtMusicApi {
 
     /// The upstream YouTube Music watch-playlist continuation for a seed track.
     /// (`get_watch_playlist_from_video_id`) — YTM's own "up next" mix, far better seeded than a
-    /// blind text search. Authenticated uses the logged-in client; anonymous spins up an
+    /// blind text search. Authenticated uses the logged-in client; anonymous reuses a lazy
     /// unauthenticated client (the query isn't login-gated, though YTM may still return nothing
     /// without a cookie — the caller treats an error/empty result as "fall back to yt-dlp").
     pub(crate) async fn streaming_continuation(&self, seed_video_id: &str) -> Result<Vec<Song>> {
@@ -508,9 +524,7 @@ impl YtMusicApi {
                 .await
                 .context("watch-playlist (authenticated) failed")?,
             Self::Anonymous => {
-                let client = YtMusic::new_unauthenticated()
-                    .await
-                    .context("anonymous YouTube Music client init failed")?;
+                let client = transfer_api::anonymous_ytmusic_client().await?;
                 client
                     .get_watch_playlist_from_video_id(VideoID::from_raw(seed_video_id))
                     .await
@@ -568,6 +582,12 @@ async fn ytdlp_flat_search(
     cmd.arg(&spec)
         .arg("--flat-playlist")
         .arg("--dump-single-json")
+        // yt-dlp already retries extractor requests, but its default zero-delay retries can
+        // hammer the same YouTube endpoint three times inside a transient 403/429 window.
+        // A short extractor-only delay lets the provider recover without slowing successful
+        // searches or unrelated download retries.
+        .arg("--retry-sleep")
+        .arg("extractor:1")
         .arg("--no-warnings");
     let json =
         crate::tools::run_ytdlp_json(cmd, YTDLP_SEARCH_TIMEOUT, YTDLP_JSON_MAX, "search").await?;
@@ -945,109 +965,10 @@ async fn lookup_video_song(video_id: &str) -> Song {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct YtdlpVideoMeta {
-    pub title: String,
-    pub channel: String,
-    pub duration_secs: Option<u32>,
-    pub live_status: Option<String>,
-    pub is_live: Option<bool>,
-    pub was_live: Option<bool>,
-    pub media_type: Option<String>,
-    pub description: Option<String>,
-}
-
-async fn enrich_video_meta(video_id: &str) -> Result<YtdlpVideoMeta> {
-    let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let mut cmd = ytmusic_ytdlp_command();
-    cmd.arg("--dump-single-json")
-        .arg("--no-playlist")
-        .arg("--no-warnings")
-        .arg(&url);
-    let json = crate::tools::run_ytdlp_json(
-        cmd,
-        STREAMING_PREFLIGHT_TIMEOUT,
-        YTDLP_JSON_MAX,
-        "metadata lookup",
-    )
-    .await?;
-    Ok(YtdlpVideoMeta {
-        title: json_string(&json, &["title"]).unwrap_or_default(),
-        channel: json_string(&json, &["channel", "uploader"]).unwrap_or_default(),
-        duration_secs: json
-            .get("duration")
-            .and_then(serde_json::Value::as_f64)
-            .filter(|d| d.is_finite() && *d >= 0.0)
-            .map(|d| d.round() as u32),
-        live_status: json_string(&json, &["live_status"]),
-        is_live: json_bool(&json, &["is_live"]),
-        was_live: json_bool(&json, &["was_live"]),
-        media_type: json_string(&json, &["media_type"]),
-        description: json_string(&json, &["description"]),
-    })
-}
-
-impl YtMusicApi {
-    pub(crate) async fn youtube_video_metadata(&self, video_id: &str) -> Result<YtdlpVideoMeta> {
-        enrich_video_meta(video_id).await
-    }
-}
-
 fn json_string(json: &serde_json::Value, keys: &[&str]) -> Option<String> {
     keys.iter()
         .find_map(|key| json.get(key).and_then(serde_json::Value::as_str))
         .map(str::to_owned)
-}
-
-fn json_bool(json: &serde_json::Value, keys: &[&str]) -> Option<bool> {
-    keys.iter()
-        .find_map(|key| json.get(key).and_then(serde_json::Value::as_bool))
-}
-
-fn reject_enriched(meta: &YtdlpVideoMeta, mode: StreamingMode, cfg: &StreamingConfig) -> bool {
-    if meta.is_live == Some(true) {
-        return true;
-    }
-    if matches!(
-        meta.live_status.as_deref(),
-        Some("is_live" | "is_upcoming" | "post_live")
-    ) {
-        return true;
-    }
-    if matches!(meta.media_type.as_deref(), Some("playlist" | "multi_video")) {
-        return true;
-    }
-    if let Some(duration) = meta.duration_secs {
-        let mode_max = match mode {
-            StreamingMode::Focused => 8 * 60,
-            StreamingMode::Balanced => 12 * 60,
-            StreamingMode::Discovery => 15 * 60,
-        };
-        let max_duration = cfg.max_duration_secs.min(mode_max);
-        if duration < cfg.min_duration_secs || duration > max_duration {
-            return true;
-        }
-    }
-    let rich_title = match meta.description.as_deref() {
-        Some(desc) if !desc.trim().is_empty() => format!("{} {}", meta.title, desc),
-        _ => meta.title.clone(),
-    };
-    let decision = streaming::musicgate::decide(
-        &rich_title,
-        &meta.channel,
-        streaming::CandidateSource::YtdlpStreaming,
-        mode,
-    );
-    if decision.action == streaming::musicgate::GateAction::Reject {
-        return true;
-    }
-    let risk = streaming::musicgate::non_music_risk_score(&rich_title, &meta.channel);
-    let music_tier = streaming::musicgate::music_tier_score(&meta.title, &meta.channel);
-    if mode == StreamingMode::Focused && decision.action == streaming::musicgate::GateAction::Demote
-    {
-        return true;
-    }
-    risk >= 0.70 && music_tier <= 0.0 && meta.was_live != Some(true)
 }
 
 fn streaming_queries(seed: &str, mode: StreamingMode) -> Vec<String> {
@@ -1593,26 +1514,36 @@ fi
     }
 
     #[test]
-    fn auth_search_degrade_latch_expires_and_clears() {
-        *AUTH_SEARCH_DEGRADED_UNTIL
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
+    fn auth_search_breaker_requires_a_streak_resets_and_expires() {
+        mark_auth_search_healthy();
         assert!(!auth_search_degraded());
 
         mark_auth_search_degraded();
+        assert!(
+            !auth_search_degraded(),
+            "one transient failure stays closed"
+        );
+        mark_auth_search_healthy();
+        assert!(!auth_search_degraded(), "success clears the failure streak");
+
+        mark_auth_search_degraded();
+        mark_auth_search_degraded();
         assert!(auth_search_degraded());
 
-        *AUTH_SEARCH_DEGRADED_UNTIL
+        AUTH_SEARCH_HEALTH
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now() - Duration::from_millis(1));
+            .unwrap_or_else(|e| e.into_inner())
+            .degraded_until = Some(Instant::now() - Duration::from_millis(1));
         assert!(!auth_search_degraded());
         assert!(
-            AUTH_SEARCH_DEGRADED_UNTIL
+            AUTH_SEARCH_HEALTH
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
+                .degraded_until
                 .is_none(),
             "expired degraded-search latch should clear itself"
         );
+        mark_auth_search_healthy();
     }
 
     #[test]
@@ -1655,6 +1586,79 @@ fi
         );
         assert_eq!(json_bool(&json, &["live", "was_live"]), Some(true));
         assert_eq!(json_bool(&json, &["missing", "live"]), None);
+    }
+
+    #[test]
+    fn ytdlp_metadata_mapper_keeps_authority_and_bounded_audio_summary() {
+        let meta = parse_ytdlp_video_meta(&serde_json::json!({
+            "title": "Artist - Song (Official Video)",
+            "channel": "ArtistVEVO",
+            "channel_id": "UCchannel",
+            "uploader_id": "artistvevo",
+            "channel_is_verified": true,
+            "availability": "public",
+            "extractor": "youtube",
+            "extractor_key": "Youtube",
+            "duration": 201.4,
+            "live_status": "not_live",
+            "is_live": false,
+            "was_live": false,
+            "media_type": "video",
+            "description": "Provided to YouTube by Label",
+            "requested_formats": [
+                {"format_id": "137", "ext": "mp4", "vcodec": "avc1", "acodec": "none"},
+                {
+                    "format_id": "140",
+                    "format_note": "medium",
+                    "audio_ext": "m4a",
+                    "vcodec": "none",
+                    "acodec": "mp4a.40.2",
+                    "abr": 129.5,
+                    "asr": 44100
+                }
+            ],
+            "formats": [
+                {"format_id": "18", "vcodec": "avc1", "acodec": "mp4a.40.2", "abr": 96},
+                {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 129.5},
+                {"format_id": "251", "vcodec": "none", "acodec": "opus", "abr": 160},
+                {"format_id": "137", "vcodec": "avc1", "acodec": "none"}
+            ]
+        }));
+
+        assert_eq!(meta.channel_id.as_deref(), Some("UCchannel"));
+        assert_eq!(meta.uploader_id.as_deref(), Some("artistvevo"));
+        assert_eq!(meta.channel_is_verified, Some(true));
+        assert_eq!(meta.availability.as_deref(), Some("public"));
+        assert_eq!(meta.extractor.as_deref(), Some("youtube"));
+        assert_eq!(meta.audio.selected_format_id.as_deref(), Some("140"));
+        assert_eq!(
+            meta.audio.selected_audio_codec.as_deref(),
+            Some("mp4a.40.2")
+        );
+        assert_eq!(meta.audio.selected_audio_bitrate_kbps, Some(129.5));
+        assert_eq!(meta.audio.selected_sample_rate_hz, Some(44_100));
+        assert_eq!(meta.audio.available_audio_formats, Some(3));
+        assert_eq!(meta.audio.available_audio_only_formats, Some(2));
+        assert_eq!(meta.audio.max_audio_bitrate_kbps, Some(160.0));
+    }
+
+    #[test]
+    fn ytdlp_metadata_added_fields_default_when_reading_legacy_json() {
+        let meta: YtdlpVideoMeta = serde_json::from_value(serde_json::json!({
+            "title": "Legacy",
+            "channel": "Artist",
+            "duration_secs": 180,
+            "live_status": null,
+            "is_live": false,
+            "was_live": false,
+            "media_type": "video",
+            "description": null
+        }))
+        .expect("legacy metadata remains readable");
+
+        assert_eq!(meta.channel_id, None);
+        assert_eq!(meta.channel_is_verified, None);
+        assert_eq!(meta.audio, YtdlpAudioSummary::default());
     }
 
     #[test]
@@ -2252,6 +2256,7 @@ fi
             was_live: None,
             media_type: None,
             description: Some("conversation and commentary".to_owned()),
+            ..YtdlpVideoMeta::default()
         };
         assert!(reject_enriched(&meta, StreamingMode::Balanced, &cfg));
 
@@ -2264,6 +2269,7 @@ fi
             was_live: None,
             media_type: None,
             description: None,
+            ..YtdlpVideoMeta::default()
         };
         assert!(reject_enriched(&meta, StreamingMode::Discovery, &cfg));
     }
@@ -2280,6 +2286,7 @@ fi
             was_live: None,
             media_type: None,
             description: None,
+            ..YtdlpVideoMeta::default()
         };
         assert!(!reject_enriched(&meta, StreamingMode::Focused, &cfg));
     }
@@ -2300,6 +2307,7 @@ fi
             was_live: None,
             media_type: None,
             description: None,
+            ..YtdlpVideoMeta::default()
         };
         assert!(reject_enriched(&meta, StreamingMode::Balanced, &cfg));
 
@@ -2332,6 +2340,7 @@ fi
             was_live: Some(true),
             media_type: None,
             description: Some("official live performance".to_owned()),
+            ..YtdlpVideoMeta::default()
         };
         assert!(reject_enriched(&meta, StreamingMode::Balanced, &cfg));
         assert!(!reject_enriched(&meta, StreamingMode::Discovery, &cfg));

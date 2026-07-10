@@ -337,6 +337,7 @@ mod tests {
             source: SessionEndpoint::default(),
             destination: SessionEndpoint::default(),
             counts,
+            defer_reason: None,
             rows,
         }
     }

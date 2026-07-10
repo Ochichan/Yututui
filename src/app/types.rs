@@ -436,7 +436,7 @@ pub enum ImportReviewAction {
 }
 
 /// A clickable terminal region's semantic target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MouseTarget {
     Global(Action),
     Player(Action),
@@ -472,6 +472,9 @@ pub enum MouseTarget {
     LocalNav(usize),
     /// A row in the Local Deck list, by display index.
     LocalRow(usize),
+    /// The trailing `✗` on a saved Local Deck import-session row. Carries the exact persisted
+    /// job id so a re-sort between render and click can never redirect the destructive action.
+    LocalImportDel(String),
     /// The footer mouse-help icon. Mouse-only: no keybinding maps to this overlay.
     MouseHelp,
     /// A Settings tab header, by index into [`SettingsTab::ALL`].
@@ -565,6 +568,9 @@ pub enum MouseTarget {
     ConfirmLocalAcceptAll,
     /// Cancel button on the local import accept-all modal.
     CancelLocalAcceptAll,
+    /// Buttons on the local import-history delete confirmation.
+    ConfirmLocalImportDelete,
+    CancelLocalImportDelete,
     /// "Save to favorites" on the "what's playing" overlay (resolves a real YT track first).
     NowPlayingFavorite,
     /// "Tell me more" on the "what's playing" overlay — hands off to the DJ Gem view.
@@ -599,7 +605,7 @@ pub enum MouseTarget {
     RecordingBrowseRow(usize),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MouseButtonRegion {
     pub rect: Rect,
     pub target: MouseTarget,

@@ -164,7 +164,7 @@ fn render_segments_inner(
 
     let mut spans = Vec::with_capacity(segments.len());
     for (seg, width) in segments.iter().zip(widths) {
-        let style = if let Some(target) = seg.target {
+        let style = if let Some(target) = seg.target.clone() {
             // The rect hugs the text, plus any `hit_pad` cells of flanking air —
             // clamped to `area` so padding never escapes the strip's row.
             let x0 = x.saturating_sub(seg.hit_pad).max(area.x);

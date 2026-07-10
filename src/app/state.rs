@@ -753,6 +753,8 @@ pub struct LocalMode {
     pub pending_confirm: Option<LocalModeConfirm>,
     pub pending_organize_confirm: Option<LocalOrganizeConfirm>,
     pub pending_accept_all_confirm: Option<LocalImportAcceptAllConfirm>,
+    /// Import-history artifact selected for confirmed deletion. Imported songs are retained.
+    pub pending_import_record_delete: Option<String>,
     pub(in crate::app) pending_accept_write_summaries: HashMap<String, u32>,
     pub(in crate::app) pending_import_reviews: HashMap<String, u64>,
     pub(in crate::app) next_import_review_op_id: u64,

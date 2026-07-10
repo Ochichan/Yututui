@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail};
 use super::checkpoint::{Checkpoint, ReviewDecision};
 use super::cli::{EXIT_FAILED, EXIT_OK, EXIT_USAGE};
 use super::matching::{MatchOutcome, MatchScoreBreakdown};
-use super::session::{ImportSession, ImportSessionRow, ImportSessionRowStatus};
+use super::session::{ImportRecordGuard, ImportSession, ImportSessionRow, ImportSessionRowStatus};
 
 const USAGE: &str = "\
 Usage:
@@ -65,6 +65,8 @@ fn run_inner(args: &[&str]) -> Result<String, ReviewError> {
         return Err(ReviewError::Usage("too many review arguments".to_owned()));
     }
 
+    let _guard = ImportRecordGuard::try_acquire(job_id)
+        .map_err(|error| ReviewError::Failed(error.into()))?;
     let mut cp = Checkpoint::load(job_id).map_err(ReviewError::Failed)?;
     let index = resolve_row_index(&cp, row_ref).map_err(ReviewError::Usage)?;
     let message = match action {
@@ -103,7 +105,7 @@ fn run_inner(args: &[&str]) -> Result<String, ReviewError> {
     };
     cp.save().map_err(|e| ReviewError::Failed(e.into()))?;
     ImportSession::from_checkpoint(&cp)
-        .save()
+        .save_unlocked()
         .map_err(|e| ReviewError::Failed(e.into()))?;
     Ok(format!("{message}\n"))
 }
@@ -315,6 +317,7 @@ fn row_status_label(status: ImportSessionRowStatus) -> &'static str {
         ImportSessionRowStatus::Ambiguous => "review",
         ImportSessionRowStatus::NotFound => "not_found",
         ImportSessionRowStatus::SkippedLocal => "skipped",
+        ImportSessionRowStatus::SkippedCapacity => "capacity",
     }
 }
 
